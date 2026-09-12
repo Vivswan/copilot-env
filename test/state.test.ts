@@ -83,7 +83,6 @@ test("the auth provider round-trips and clears alongside the token", () => {
   state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_x" });
   expect(state.read().authProvider).toBe("gh-token");
 
-  // `--del` clears both halves at once.
   state.clearCredential(null);
   expect(state.read()).toEqual({
     githubToken: null,
@@ -194,7 +193,6 @@ test("run-state clearIfPid clears the daemon tracking ONLY when the tracked pid 
   expect(run.read().port).toBe(5151);
   expect(run.read().lastEnsureAt).toBe(123);
 
-  // The matching pid -> clears pid/port/lastEnsureAt together.
   run.clearIfPid(4242);
   const after = run.read();
   expect(after.pid).toBeUndefined();
@@ -219,7 +217,6 @@ test("a named profile's integrationIdentity is a credential-derived cache: setCr
   expect(state.readProfileSlot(WORK).integrationIdentity).toBeNull();
   expect(state.readProfileSlot(WORK).mode).toBe("direct"); // mode is untouched
 
-  // Deleting the profile removes the whole slot in one write.
   state.deleteProfile(WORK);
   expect(state.profileNames()).toEqual([]);
 });
@@ -321,7 +318,6 @@ test("a gh-cli account pin round-trips; an absent/blank stored pin reads as auto
   state.setCredential(null, { kind: "gh-cli", ghUser: " work-bot " });
   expect(state.read().ghUser).toBe("work-bot");
 
-  // De-auth removes the pin together with its provider.
   state.clearCredential(null);
   expect(state.read().ghUser).toBeNull();
   expect(state.readCredential(null)).toEqual({ kind: "none", provider: null });

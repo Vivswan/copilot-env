@@ -1,28 +1,19 @@
-// The in-binary `agent install` implementation: finalize an install root around
-// the compiled agent binary that install.sh / install.ps1 just downloaded to
-// <root>/bin/copilot-env(.exe). A plan/apply split: one typed plan up front, then
-// execute it (the shape of planImport/applyImportPlan in src/agents/transfer.ts).
+// The in-binary `agent install`: finalize an install root around the compiled binary that
+// install.sh / install.ps1 downloaded to <root>/bin/copilot-env(.exe). A plan/apply split, like
+// planImport/applyImportPlan in src/agents/transfer.ts. Assets are read via URLs relative to
+// import.meta.url (the compiled VFS, or the checkout); that source root equalling the install
+// root is what makes a run in-place.
 //
-// - in-place mode (dev checkout, where the asset source IS the install root):
-//   only shell integration applies; the checkout's own bin/agent launchers and
-//   working files are never overwritten.
-// - assets-only mode (compiled binary): materialize the embedded runtime assets
-//   into the root this process is aimed at. `agent update` runs the NEW binary
-//   this way, aimed (via COPILOT_ENV_INSTALL_ROOT) INSIDE the not-yet-live
-//   version root it just staged.
-// - full installed mode (compiled binary): build the VERSIONED layout at the top:
-//     <top>/versions/vX.Y.Z/   one complete root per release
-//     <top>/current            a link naming the live version (POSIX symlink;
-//                              Windows directory junction)
-//     <top>/bin/agent(.ps1)    stable shims dispatching THROUGH `current`
-//   Every path that outlives a release (agent configs, rc blocks, daemon
-//   preloads) goes through `<top>/current/...`, so flipping the link is the whole
-//   commit of an update and old version dirs can be garbage-collected safely.
+//   in-place (dev checkout)   -> shell integration only; the checkout's own files are never touched
+//   assets-only (compiled)    -> the embedded assets into the aimed root; `agent update` runs the
+//                                NEW binary this way inside the staged version root
+//   full (compiled)           -> the VERSIONED layout at the top:
+//       <top>/versions/vX.Y.Z/   one complete root per release
+//       <top>/current            a link naming the live version (POSIX symlink, Windows junction)
+//       <top>/bin/agent(.ps1)    stable shims dispatching THROUGH `current`
 //
-// Assets are read via URLs relative to import.meta.url, which resolves inside the
-// compiled VFS (readable in-process only) and inside a dev checkout alike;
-// comparing that source root to the install root is what discriminates in-place
-// from the compiled modes.
+// Every path that outlives a release goes through `<top>/current/...`, so flipping the link is
+// the whole commit of an update and old version dirs can be garbage-collected safely.
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -82,14 +73,12 @@ import {
   installedBinaryName,
 } from "./targets.ts";
 
-/** Embedded AND materialized: something outside this process opens these by
- *  path, so they have to exist on real disk in the install root: the daemon's
- *  `--preload` shims, the shell-integration payload the rc block sources, and the
- *  plugin/skill surface other tools read. `src/scripts` is materialized WHOLE
- *  rather than by naming the shims: the daemon loads a per-credential subset of
- *  `DAEMON_SHIM_FILES` (src/copilot_api/shims.ts) whose entrypoints import further
- *  siblings, so copying the directory covers the in-dir ones by construction;
- *  imports reaching OUTSIDE the directory are `MATERIALIZED_ASSET_FILES` below. */
+/** Embedded AND materialized: something outside this process opens these by path (the daemon's
+ *  `--preload` shims, the shell payload the rc block sources, the plugin/skill surface other
+ *  tools read). `src/scripts` is materialized WHOLE: the daemon loads a per-credential subset of
+ *  DAEMON_SHIM_FILES (src/copilot_api/shims.ts) whose entrypoints import siblings, so copying
+ *  the directory covers the in-dir ones; imports reaching OUTSIDE it are
+ *  MATERIALIZED_ASSET_FILES. */
 export const MATERIALIZED_ASSET_DIRS = [
   "src/scripts",
   "shell",
@@ -97,13 +86,10 @@ export const MATERIALIZED_ASSET_DIRS = [
   ".claude-plugin",
 ] as const;
 
-/** Embedded and materialized as INDIVIDUAL files: the daemon shims in
- *  `src/scripts` import these siblings from `src/copilot_api` and `src/utils`,
- *  and the sidecar deno resolves those imports on real disk in the install
- *  root -- a missing one kills the daemon at module load. The list is the
- *  shims' full local import closure OUTSIDE the materialized dirs, pinned
- *  bidirectionally to the computed closure by test/installer_pinning.test.ts
- *  so a new shim import cannot silently break installs again. */
+/** Materialized as individual files: the `src/scripts` shims import these, and the sidecar deno
+ *  resolves them on real disk in the install root, so a missing one kills the daemon at module
+ *  load. The shims' full local import closure OUTSIDE the materialized dirs, pinned
+ *  bidirectionally by test/installer_pinning.test.ts. */
 export const MATERIALIZED_ASSET_FILES = [
   "src/copilot_api/config.ts",
   "src/copilot_api/env_config.ts",
@@ -119,37 +105,31 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/utils/time.ts",
 ] as const;
 
-/** Embedded and NEVER materialized: read in-process through `ASSET_ROOT`, which
- *  resolves inside the compiled VFS. A second copy in the install root would be
- *  something nothing reads that can drift from the binary that shipped it.
- *  `copilot-env.config` is the proxy-float floor/ceiling (`readProjectConfig`),
- *  `.dvmrc` the deno version the sidecar provisions against (`readDvmrcPin`), and
- *  `deno.json` the import map the daemon config is generated from
- *  (`writeDaemonConfig`). `deno.json` MUST stay bundled-only for a second reason:
- *  on disk it is a CHECKOUT_MARKERS entry, so materializing it would make every
- *  install root read as checkout debris. Still verified present at plan time:
- *  absent from the VFS means a broken build, and failing here beats first proxy start. */
+/** Embedded and NEVER materialized: read in-process through ASSET_ROOT (the compiled VFS), a
+ *  copy in the install root would be read by nothing and drift from the binary. Still verified
+ *  present at plan time: absent from the VFS means a broken build.
+ *
+ *    copilot-env.config -> readProjectConfig
+ *    .dvmrc             -> readDvmrcPin
+ *    deno.json          -> writeDaemonConfig; also a CHECKOUT_MARKERS entry, so on disk it would
+ *                          make every install root read as checkout debris */
 export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", ".dvmrc", "deno.json"] as const;
 
-/** Superseded files a pre-binary source install leaves in the root. The binary
- *  install has no runtime bootstrap left to use them and `node_modules` alone
- *  is hundreds of megabytes, so they are removed outright (clean break --
- *  there is no upgrade bridge). This list lives ONLY here: install.sh /
- *  install.ps1 do no sweeping of their own, they hand off to `agent install`,
- *  which plans and applies the removal. */
+/** Superseded files a pre-binary source install leaves in the root; `node_modules` alone is
+ *  hundreds of megabytes, so they are removed outright (no upgrade bridge). This list lives
+ *  ONLY here: install.sh / install.ps1 do no sweeping, they hand off to `agent install`. */
 export const LEGACY_ARTIFACTS = ["node_modules", "bun.lock", "bunfig.toml"] as const;
 
 // --- The versioned layout vocabulary --------------------------------------------
 
-// The layout NAMES (`versions`, `current`) live in src/utils/root.ts -- root
-// detection reads the layout, so root.ts owns the vocabulary; this module
-// re-exports it beside the operations that build the layout.
+// The layout NAMES live in src/utils/root.ts (root detection reads the layout, so root.ts owns
+// the vocabulary); re-exported here beside the operations that build the layout.
 export { CURRENT_LINK, VERSIONS_DIR };
 
-/** root.ts's install-root override env var (ROOT_OVERRIDE_ENV there, unexported):
- *  how a SPAWNED binary is aimed at the exact root it must manage -- `agent
- *  update` aims `install --assets-only` inside the staged version root, and every
- *  post-flip spawn at `<top>/current`. An external contract; never rename. */
+/** root.ts's install-root override (ROOT_OVERRIDE_ENV there, unexported): how a SPAWNED binary
+ *  is aimed at the exact root it must manage (`agent update` aims `install --assets-only` inside
+ *  the staged version root, and every post-flip spawn at `<top>/current`). An external
+ *  contract; never rename. */
 export const INSTALL_ROOT_ENV = "COPILOT_ENV_INSTALL_ROOT";
 
 /** The version-dir name for a release: `v3.5.7` (tolerates a leading v). */
@@ -170,12 +150,10 @@ export function currentLinkPath(top: string): string {
 }
 
 /**
- * What layout an install root is on, and where its TOP is. Accepts both
- * spellings a versioned root reaches this code under: the `current` link path
- * itself (how a versioned binary sees its own root), and the top directory
- * (how the bootstrap sees a root it is about to version). The layout is only
- * believed when `current` is a REAL link into `versions/`
- * (isVersionedInstallTop): coincidental directory names must never reroute an
+ * Accepts both spellings a versioned root reaches this code under: the `current` link path (how
+ * a versioned binary sees its own root) and the top directory (how the bootstrap sees a root it
+ * is about to version). Versioned is believed only when `current` is a REAL link into
+ * `versions/` (isVersionedInstallTop): coincidental directory names must never reroute an
  * install or an update. Anything else is the flat, pre-versioned shape.
  */
 export type InstallRootShape =
@@ -189,10 +167,9 @@ export function classifyInstallRoot(root: string): InstallRootShape {
   return isVersionedInstallTop(top) ? { kind: "versioned", top } : { kind: "flat", top };
 }
 
-/** The target `<top>/current` is linked to for `versionName`, in the spelling the platform
- *  stores: a RELATIVE path on POSIX (the install stays relocatable), an ABSOLUTE one on
- *  Windows (a junction has no relative form). The plan and the flip both take it from
- *  here, so what the dry run names and what the seam reports cannot disagree. */
+/** The link target in the spelling the platform stores: RELATIVE on POSIX (the install stays
+ *  relocatable), ABSOLUTE on Windows (a junction has no relative form). The plan and the flip
+ *  both take it from here, so the dry run and the seam cannot disagree. */
 export function currentLinkTarget(top: string, versionName: string): string {
   return process.platform === "win32"
     ? versionRootPath(top, versionName)
@@ -200,26 +177,22 @@ export function currentLinkTarget(top: string, versionName: string): string {
 }
 
 /**
- * Point `<top>/current` at `<top>/versions/<versionName>`: THE commit step of an
- * install or update. POSIX: build the replacement link aside and rename it over,
- * atomic, so a concurrent reader never observes a missing link. Windows: a directory
- * junction (`New-Item -ItemType Junction` semantics), resolvable by every Win32 path
- * API, stock PowerShell 5.1 included, and creatable without the symlink privilege;
- * Windows cannot rename over an existing directory entry, so replace = remove the
- * old junction (an entry delete; the target's contents are never touched), then
- * create the new one.
+ * THE commit step of an install or update. POSIX: build the replacement link aside and rename
+ * it over, so a concurrent reader sees the old link or the new one (only the corrupt-layout
+ * repair below removes first). Windows: a directory junction
+ * (resolvable by every Win32 path API, PowerShell 5.1 included, and creatable without the
+ * symlink privilege); Windows cannot rename over a directory entry, so replace = remove the old
+ * junction (an entry delete; the target's contents are untouched), then create the new one.
  */
 export function pointCurrentAt(top: string, versionName: string): void {
   const link = currentLinkPath(top);
   const target = currentLinkTarget(top, versionName);
   if (process.platform === "win32") {
-    // Windows has no atomic replace of a directory entry, so the flip is
-    // remove-then-create with a RESTORE on failure: if the new junction cannot
-    // be created (antivirus interference, transient locks), the old one is put
-    // back before the error surfaces, so a failed flip never strands the
-    // layout linkless. The remaining exposure is process termination between
-    // the two calls -- microseconds, and repaired by re-running the update or
-    // installer (both re-point the link).
+    // Remove-then-create with a RESTORE: if the new junction cannot be created (antivirus,
+    // transient locks) the old one is put back before the error surfaces. The layout is left
+    // linkless when the restore fails too (the error below says so), when there was no previous
+    // target to put back (a first install), or when the process dies between the two calls; each
+    // is repaired by re-running the update or installer.
     const previous = readCurrentTargetPath(top);
     removeEmptyDirReported(link);
     try {
@@ -229,8 +202,8 @@ export function pointCurrentAt(top: string, versionName: string): void {
         try {
           symlinkReported(previous, link, "junction");
         } catch {
-          // Double fault: the layout is now LINKLESS -- say so, instead of
-          // reporting only the creation failure as if nothing else changed.
+          // Double fault: the layout is now LINKLESS. Say so, instead of reporting only the
+          // creation failure as if nothing else changed.
           throw new Error(
             `could not create ${link} (and could not restore its previous target); ` +
               `re-run the update or installer to re-point it: ${errMessage(error)}`,
@@ -241,9 +214,9 @@ export function pointCurrentAt(top: string, versionName: string): void {
     }
     return;
   }
-  // A corrupt layout may leave a REAL directory at the link path; rename cannot
-  // replace one. rmdirSync is non-recursive on purpose: an empty stray dir is
-  // repaired, a non-empty one is unknown data and fails the flip loudly.
+  // A corrupt layout may leave a REAL directory at the link path; rename cannot replace one.
+  // rmdirSync is non-recursive on purpose: an empty stray dir is repaired, a non-empty one is
+  // unknown data and fails the flip loudly.
   try {
     if (!lstatSync(link).isSymbolicLink()) removeEmptyDirReported(link);
   } catch (error) {
@@ -270,13 +243,11 @@ export function readCurrentVersionName(top: string): string | null {
   return name.length > 0 ? name : null;
 }
 
-/** Write ONE launcher shim, atomically where the OS allows: skip when the text
- *  already matches (the steady state -- an update then never touches the file a
- *  user's PATH points at), else write beside and rename over. The direct-write
- *  fallback covers a rename refused by an open handle on the live file. Every
- *  write is announced here, once per path: install, update commit, and the
- *  layout repair all land through this one writer -- on the caller's logger, so an
- *  update running inside the autoupdate preflight stays stderr-only. */
+/** Skips when the text already matches (the steady state: an update never touches the file a
+ *  user's PATH points at), else writes beside and renames over; the direct-write fallback covers
+ *  a rename refused by an open handle on the live file. Every shim write is announced here, once
+ *  per path, on the caller's logger so an update inside the autoupdate preflight stays
+ *  stderr-only. */
 function writeShimFile(to: string, text: string, executable: boolean, logger: ShimLogger): void {
   let current: string | null;
   try {
@@ -285,16 +256,16 @@ function writeShimFile(to: string, text: string, executable: boolean, logger: Sh
     current = null; // absent or unreadable: write it below
   }
   if (current === text) {
-    // Text is current; still repair a lost exec bit (a crash between an
-    // earlier write and its chmod would otherwise persist across retries).
+    // Still repair a lost exec bit: a crash between an earlier write and its chmod would
+    // otherwise persist across retries.
     if (executable && (statSync(to).mode & 0o100) === 0) chmodReported(to, 0o755);
     return;
   }
   try {
     atomicWriteFile(to, text, executable ? 0o755 : undefined);
   } catch (error) {
-    // Only a refused publish falls back to the direct write; a failure to stage the
-    // text (disk full, I/O) propagates and never truncates the live shim.
+    // Only a refused publish falls back to the direct write; a failure to stage the text (disk
+    // full, I/O) propagates and never truncates the live shim.
     if (!(error instanceof RenameRefusedError)) throw error;
     writeFileReported(to, text);
     if (executable) chmodReported(to, 0o755);
@@ -307,10 +278,9 @@ export interface ShimLogger {
   info(message: string): void;
 }
 
-/** Write the stable `<top>/bin/agent(.ps1)` shims that dispatch through the
- *  `current` link. Idempotent and cheap in the steady state (identical text is
- *  never rewritten), so every install and update commit can refresh them --
- *  which is also what heals a crash that flipped `current` but got no further. */
+/** Idempotent and cheap in the steady state (identical text is never rewritten), so every
+ *  install and update commit can refresh the shims, which is also what heals a crash that
+ *  flipped `current` but got no further. */
 export function writeTopLevelShims(top: string, logger: ShimLogger = consola): void {
   writeShimFile(join(top, "bin", "agent"), POSIX_CURRENT_SHIM, true, logger);
   writeShimFile(join(top, "bin", "agent.ps1"), POWERSHELL_CURRENT_SHIM, false, logger);
@@ -323,10 +293,8 @@ export function isCheckoutShapedRoot(root: string): boolean {
     existsSync(join(root, ".git"));
 }
 
-/** The pre-versioned (flat) artifacts present at `top`: the materialized asset
- *  dirs/files an old layout kept at the root, its manifest, and the legacy
- *  source-install debris. Empty for a checkout-shaped root -- those files are
- *  SOURCE there, never ours to sweep. */
+/** The pre-versioned (flat) artifacts present at `top`. Empty for a checkout-shaped root: those
+ *  files are SOURCE there, never ours to sweep. */
 export function flatArtifactPaths(top: string): string[] {
   if (isCheckoutShapedRoot(top)) return [];
   const names: string[] = [
@@ -339,9 +307,8 @@ export function flatArtifactPaths(top: string): string[] {
   return names.map((name) => join(top, name)).filter(directoryEntryExists);
 }
 
-/** The flat `src` scaffolding directories at `top` that `removals` (flatArtifactPaths)
- *  will leave EMPTY, innermost first -- exactly the ones the sweep then prunes. A
- *  scaffolding dir holding anything else is not planned and stays. */
+/** The flat `src` scaffolding dirs that `removals` (flatArtifactPaths) will leave EMPTY,
+ *  innermost first. A scaffolding dir holding anything else is not planned and stays. */
 export function flatScaffoldingPaths(top: string, removals: readonly string[]): string[] {
   const going = new Set(removals);
   const prunes: string[] = [];
@@ -361,11 +328,9 @@ export function flatScaffoldingPaths(top: string, removals: readonly string[]): 
   return prunes;
 }
 
-/** Remove the flat artifacts `paths` (the plan's enumeration, best-effort entry by
- *  entry), then prune the emptied scaffolding `prunes` (flatScaffoldingPaths). `keep`
- *  names entries to spare -- the shell payload stays whenever the rc/profile block
- *  still points at it (a stale payload that works beats a swept one a block still
- *  sources). */
+/** Best-effort entry by entry. `keep` names entries to spare: the shell payload stays whenever
+ *  the rc/profile block still points at it (a stale payload that works beats a swept one a block
+ *  still sources). */
 export function removeFlatArtifacts(
   paths: readonly string[],
   prunes: readonly string[],
@@ -388,9 +353,8 @@ export function removeFlatArtifacts(
   }
 }
 
-/** The pre-versioned binary leftovers in `<top>/bin`: the flat-layout
- *  `copilot-env(.exe)` (superseded by `versions/<v>/bin/...`) and any
- *  `.old-<ts>` aside files the pre-versioned Windows updater left. */
+/** The flat-layout `copilot-env(.exe)` in `<top>/bin` (superseded by `versions/<v>/bin/...`)
+ *  and any `.old-<ts>` aside files the pre-versioned Windows updater left. */
 export function flatBinaryResiduePaths(top: string): string[] {
   const binDir = join(top, "bin");
   let entries: string[];
@@ -405,8 +369,7 @@ export function flatBinaryResiduePaths(top: string): string[] {
     .map((entry) => join(binDir, entry));
 }
 
-/** Remove the flat binary residue `paths` (flatBinaryResiduePaths, planned up front).
- *  Best-effort: a still-running image refuses deletion and is swept by a later update. */
+/** Best-effort: a still-running image refuses deletion and is swept by a later update. */
 export function removeFlatBinaryResidue(paths: readonly string[]): void {
   for (const path of paths) {
     try {
@@ -417,10 +380,9 @@ export function removeFlatBinaryResidue(paths: readonly string[]): void {
   }
 }
 
-/** Garbage-collect `<top>/versions`: remove every version dir NOT in `keep`
- *  (the update flow keeps the new version plus exactly one previous, the
- *  rollback candidate). Best-effort per entry -- a version still running a
- *  process (Windows) stays until a later update. */
+/** Best-effort per entry: a version still running a process (Windows) stays until a later
+ *  update. The update flow keeps the new version plus exactly one previous, the rollback
+ *  candidate. */
 export function removeVersionDirsExcept(top: string, keep: ReadonlySet<string>): void {
   let entries: string[];
   try {
@@ -440,12 +402,10 @@ export function removeVersionDirsExcept(top: string, keep: ReadonlySet<string>):
 
 // --- Launcher shim texts ---------------------------------------------------------
 
-/** Per-version bin/agent: a thin dispatcher to the adjacent compiled binary.
- *  Lives INSIDE each version root; the paths persisted into agent configs reach
- *  it as `<top>/current/bin/agent`, so the version it dispatches is always the
- *  live one. The checkout's bin/agent is the dev-mode variant; an install never
- *  overwrites a checkout (in-place mode writes no shims), so the two texts
- *  never compete for the same file. */
+/** Per-version bin/agent, INSIDE each version root; agent configs reach it as
+ *  `<top>/current/bin/agent`, so the version it dispatches is always the live one. The
+ *  checkout's bin/agent is the dev variant, and an install never overwrites a checkout, so the
+ *  two texts never compete for one file. */
 export const POSIX_SHIM = `#!/bin/sh
 # copilot-env launcher (installed): dispatch to the compiled agent binary.
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -460,9 +420,9 @@ $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 exit $LASTEXITCODE
 `;
 
-/** Top-level bin/agent: the stable PATH entry of a versioned install. One
- *  release-independent hop through the `current` link, so an update never has
- *  to touch the file a user's PATH points at. */
+/** Top-level bin/agent: the stable PATH entry of a versioned install. One release-independent
+ *  hop through the `current` link, so an update never has to touch the file a user's PATH points
+ *  at; the post-flip shim refresh rewrites it only when its text differs or its exec bit is lost. */
 export const POSIX_CURRENT_SHIM = `#!/bin/sh
 # copilot-env launcher (installed): dispatch through the current version link.
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -481,24 +441,21 @@ exit $LASTEXITCODE
 export interface InstallOptions {
   noShellIntegration: boolean;
   allHosts: boolean;
-  /**
-   * Materialize the embedded assets and launcher shims into the aimed root and
-   * nothing else: no layout work, no shell wiring, no next-steps epilogue.
-   * `agent update` runs the NEW binary this way INSIDE the staged version root
-   * (aimed via COPILOT_ENV_INSTALL_ROOT), so the release that owns the assets
-   * is the one that writes them -- before the `current` flip makes it live.
-   */
+  /** The embedded assets and launcher shims into the aimed root and nothing else: no layout
+   *  work, no shell wiring, no epilogue. `agent update` runs the NEW binary this way INSIDE the
+   *  staged version root, so the release that owns the assets writes them before the `current`
+   *  flip makes it live. */
   assetsOnly: boolean;
 }
 
-/** Files only a source checkout OR a legacy source-archive install carries at
- *  its root. With `.git` beside them they mark a live checkout an installed-mode
- *  plan must refuse to clobber; without `.git` they are debris the old
- *  source-archive installer left behind, swept like `LEGACY_ARTIFACTS`. */
+/** Files only a source checkout OR a legacy source-archive install carries at its root. With
+ *  `.git` beside them they mark a live checkout an installed-mode plan must refuse to clobber;
+ *  without `.git` they are debris the old source-archive installer left, swept like
+ *  LEGACY_ARTIFACTS. */
 export const CHECKOUT_MARKERS = ["package.json", "deno.json"] as const;
 
-/** One shell-integration wiring pass (Windows may need two: per-host and
- *  all-hosts profiles are separate targets). */
+/** One shell-integration pass (Windows may need two: per-host and all-hosts profiles are
+ *  separate targets). */
 export interface ShellWiring {
   allHosts: boolean;
 }
@@ -548,9 +505,8 @@ export type InstallPlan =
     copies: AssetCopy[];
     shims: ShimWrite[];
     manifest: ManifestWrite;
-    /** The compiled binary to place into the version root (null when it is
-     *  already there, or when no standalone binary is running -- a dev process
-     *  aimed at a foreign root has no binary to contribute). */
+    /** The compiled binary to place into the version root; null when it is already there, or
+     *  when no standalone binary is running (a dev process aimed at a foreign root has none). */
     binary: { from: string; to: string } | null;
     /** The commit step: `<top>/current` linked to `target` (currentLinkTarget). */
     currentLink: { path: string; target: string };
@@ -559,20 +515,18 @@ export type InstallPlan =
     flatRemovals: string[];
     /** The flat `src` scaffolding those removals empty, pruned after them. */
     flatPrunes: string[];
-    /** The flat binary and its `.old-` aside files, swept once the top shims dispatch
-     *  through the link. */
+    /** The flat binary and its `.old-` aside files, swept once the top shims dispatch through
+     *  the link. */
     flatBinaryRemovals: string[];
-    /** Shell wiring passes, run through the INSTALLED binary post-flip (this
-     *  process may be rooted at the flat top, so its own PROJECT_ROOT-derived
-     *  rc paths would not survive the layout change). */
+    /** Run through the INSTALLED binary post-flip: this process may be rooted at the flat top,
+     *  so its own PROJECT_ROOT-derived rc paths would not survive the layout change. */
     shellWires: ShellWiring[];
   };
 
-/** Whether a directory ENTRY exists at `path`, without following a final
- *  symlink: a dangling link or a loop IS an entry, and the guard must hand it
- *  to realpath (which refuses it) instead of peeling it as a missing tail.
- *  Errors other than a clean ENOENT count as existing for the same reason --
- *  "cannot prove absent" must fail closed at the realpath step. */
+/** Without following a final symlink: a dangling link or a loop IS an entry, and the guard must
+ *  hand it to realpath (which refuses it) instead of peeling it as a missing tail. Errors other
+ *  than a clean ENOENT count as existing for the same reason: "cannot prove absent" must fail
+ *  closed at the realpath step. */
 function directoryEntryExists(path: string): boolean {
   try {
     lstatSync(path);
@@ -582,12 +536,11 @@ function directoryEntryExists(path: string): boolean {
   }
 }
 
-/** Canonicalize a path for the unsafe-target guard: resolve the longest
- *  existing prefix physically (symlinks; on Windows also junctions and 8.3
- *  short names, via the OS realpath) and re-append the not-yet-existing tail
- *  lexically. Null when the existing prefix cannot be resolved (a dangling
- *  symlink, a loop, an unreadable parent), so the guard refuses rather than
- *  trust a path it cannot prove. */
+/** Canonicalize for the unsafe-target guard: the longest existing prefix resolved physically
+ *  (symlinks; on Windows also junctions and 8.3 short names, via the OS realpath), the
+ *  not-yet-existing tail re-appended lexically. Null when the prefix cannot be resolved (a
+ *  dangling symlink, a loop, an unreadable parent), so the guard refuses rather than trust a
+ *  path it cannot prove. */
 function canonicalizeForGuard(path: string): string | null {
   let base = resolve(path);
   const tail: string[] = [];
@@ -605,12 +558,10 @@ function canonicalizeForGuard(path: string): string | null {
   return tail.length > 0 ? join(base, ...tail) : base;
 }
 
-/** Why `root` is unsafe to finalize an install into, or null when it is fine.
- *  The REAL canonical twin of the shell installers' pre-download check: they
- *  only absolutize lexically and compare strings, so an alias of the home
- *  directory (a symlink, a Windows junction or 8.3 short name) or of a
- *  filesystem root has to be caught here, where the writes and removals are
- *  planned. */
+/** The REAL canonical twin of the shell installers' pre-download check: they only absolutize
+ *  lexically and compare strings, so an alias of the home directory (a symlink, a Windows
+ *  junction or 8.3 short name) or of a filesystem root has to be caught here, where the writes
+ *  and removals are planned. */
 function unsafeRootReason(root: string): string | null {
   const canonical = canonicalizeForGuard(root);
   if (canonical === null) return "its canonical path cannot be resolved";
@@ -625,9 +576,8 @@ function unsafeRootReason(root: string): string | null {
   return null;
 }
 
-/** Collect every file under `dir` (recursively, sorted for determinism) as
- *  install-root-relative copies. `.sh` files get the executable bit: they are
- *  the only embedded assets ever handed to an OS exec directly. */
+/** Sorted for determinism. `.sh` files get the executable bit: they are the only embedded assets
+ *  ever handed to an OS exec directly. */
 function collectAssetCopies(sourceRoot: string, root: string, dir: string): AssetCopy[] {
   const copies: AssetCopy[] = [];
   const walk = (rel: string): void => {
@@ -650,30 +600,24 @@ function collectAssetCopies(sourceRoot: string, root: string, dir: string): Asse
   return copies;
 }
 
-/** The refusals every installed-mode target must clear: an unsafe canonical
- *  path, and the live-checkout shape. Returns the checkout markers present
- *  WITHOUT `.git` -- legacy source-install debris the caller may sweep. */
+/** The refusals every installed-mode target must clear. Returns the checkout markers present
+ *  WITHOUT `.git`: legacy source-install debris the caller may sweep. */
 function guardInstalledTarget(root: string): string[] {
-  // The install root is DERIVED (from the binary's location, or the
-  // COPILOT_ENV_INSTALL_ROOT override), and the installed-mode writes and
-  // removals aim at it, so an unsafe target must be refused before anything is
-  // planned. The shell installers keep only a lexical pre-check; this is the
-  // canonical one.
+  // The root is DERIVED (from the binary's location, or the COPILOT_ENV_INSTALL_ROOT override)
+  // and the writes and removals aim at it, so an unsafe target is refused before anything is
+  // planned. The shell installers keep only a lexical pre-check; this is the canonical one.
   const unsafe = unsafeRootReason(root);
   if (unsafe !== null) {
     throw new Error(`refusing to install into ${root}: ${unsafe}`);
   }
 
-  // Installed-mode writes replace bin/agent with a dispatch shim and sweep the
-  // flat-layout files -- exactly the files a dev checkout authored. But the
-  // markers alone cannot condemn a root: the source-archive installer era laid
-  // down roots byte-indistinguishable from a checkout (it extracted release
-  // source archives), and LEGACY_ARTIFACTS never swept package.json/deno.json
-  // out of them. `.git` (a directory, or a file in a worktree) is the one
-  // honest discriminant: archives never carry it. Markers + .git is a live
-  // checkout reached through COPILOT_ENV_INSTALL_ROOT -- refuse before planning
-  // any write. Markers without .git is a legacy source install: sweep the
-  // markers with the other superseded artifacts.
+  // The markers alone cannot condemn a root: the source-archive installer era laid down roots
+  // byte-indistinguishable from a checkout, and LEGACY_ARTIFACTS never swept package.json /
+  // deno.json out of them. `.git` (a directory, or a file in a worktree) is the one honest
+  // discriminant: archives never carry it.
+  //
+  //   markers + .git   -> a live checkout reached through COPILOT_ENV_INSTALL_ROOT, refused here
+  //   markers, no .git -> legacy debris, swept with the other superseded artifacts
   const presentMarkers = CHECKOUT_MARKERS.filter((marker) => existsSync(join(root, marker)));
   if (presentMarkers.length > 0 && existsSync(join(root, ".git"))) {
     throw new Error(
@@ -684,8 +628,7 @@ function guardInstalledTarget(root: string): string[] {
   return presentMarkers;
 }
 
-/** Plan the complete materialization of one version root at `root`: verify the
- *  embedded assets, then lay out the copies, per-version shims, and manifest. */
+/** Verifies the embedded assets, then lays out the copies, per-version shims, and manifest. */
 function planMaterialization(root: string, sourceRoot: string): Materialization {
   const copies: AssetCopy[] = [];
   for (const dir of MATERIALIZED_ASSET_DIRS) {
@@ -735,16 +678,14 @@ function planMaterialization(root: string, sourceRoot: string): Materialization 
   };
 }
 
-/** The running compiled binary's on-disk path, or null when this process is not
- *  a standalone binary (a dev run has no binary to contribute to a layout). */
+/** Null when this process is not a standalone binary: a dev run has no binary to contribute. */
 function defaultBinarySource(): string | null {
   if (!isStandaloneBinary()) return null;
   return denoRuntime()?.execPath() ?? null;
 }
 
-/** Build the full typed plan. Exported for tests; `runInstall` is the composed
- *  entry point. `root`/`sourceRoot` default to the live install root and the
- *  embedded asset source; `binarySource` to the running binary. */
+/** Exported for tests; `runInstall` is the composed entry point. `root`/`sourceRoot` default to
+ *  the live install root and the embedded asset source; `binarySource` to the running binary. */
 export function buildInstallPlan(
   options: InstallOptions,
   root: string = PROJECT_ROOT,
@@ -755,20 +696,17 @@ export function buildInstallPlan(
     ? null
     : { allHosts: options.allHosts };
 
-  // The discriminant IS rootMode's, expressed over the arguments rather than
-  // read from ambient state: root.ts sets ASSET_ROOT === PROJECT_ROOT for a
-  // checkout (both resolve to the checkout) and splits them for a compiled
-  // binary (VFS vs install root). Comparing the injected pair therefore gives
-  // the same answer as `rootMode().kind`, and keeps the parameters meaningful -
-  // gating on `rootMode()` instead would ignore them and make the installed
-  // branch unreachable from a test, which is exactly the branch worth testing.
+  // The discriminant IS rootMode's, over the arguments: root.ts sets ASSET_ROOT === PROJECT_ROOT
+  // for a checkout and splits them for a compiled binary (VFS vs install root). Gating on
+  // `rootMode()` would ignore the parameters and make the installed branch unreachable from a
+  // test, which is exactly the branch worth testing.
   if (resolve(sourceRoot) === resolve(root)) {
     return { kind: "in-place", root, shell };
   }
 
   if (options.assetsOnly) {
-    // Materialize INTO the aimed root exactly (an update aims this inside a
-    // staged version root; the pre-versioned updater aimed it at a flat top).
+    // INTO the aimed root exactly: an update aims this inside a staged version root; the
+    // pre-versioned updater aimed it at a flat top.
     const presentMarkers = guardInstalledTarget(root);
     return {
       kind: "installed",
@@ -781,18 +719,17 @@ export function buildInstallPlan(
     };
   }
 
-  // A FULL install builds the versioned layout at the top root, whichever
-  // spelling of it this process was aimed at (the top itself during bootstrap,
-  // the `current` link when re-run from an installed binary).
+  // A FULL install builds the versioned layout at the top root, whichever spelling of it this
+  // process was aimed at (the top during bootstrap, the `current` link from an installed binary).
   const top = classifyInstallRoot(root).top;
   guardInstalledTarget(top);
 
   const versionName = versionDirName(packageVersion());
   const versionRoot = versionRootPath(top, versionName);
   const binaryTarget = join(versionRoot, "bin", installedBinaryName());
-  // CANONICAL identity, not lexical: a binary running through the `current`
-  // link names its own file twice (`<top>/current/bin/...` vs the version
-  // path), and copyFileSync onto the same inode TRUNCATES it before reading.
+  // CANONICAL identity, not lexical: a binary running through the `current` link names its own
+  // file twice (`<top>/current/bin/...` vs the version path), and copyFileSync onto the same
+  // inode TRUNCATES it before reading.
   const sameFile = binarySource !== null &&
     canonicalizeForGuard(binarySource) !== null &&
     canonicalizeForGuard(binarySource) === canonicalizeForGuard(binaryTarget);
@@ -820,9 +757,8 @@ export function buildInstallPlan(
   };
 }
 
-/** Apply one version root's materialization (copies, shims, manifest).
- *  read+write instead of copyFileSync: the source side may be a compiled VFS
- *  path, which is only guaranteed readable through in-process reads. */
+/** read+write instead of copyFileSync: the source side may be a compiled VFS path, which is only
+ *  guaranteed readable through in-process reads. */
 function applyMaterialization(m: Materialization): void {
   for (const copy of m.copies) {
     mkdirReported(dirname(copy.to));
@@ -838,13 +774,12 @@ function applyMaterialization(m: Materialization): void {
   writeFileReported(m.manifest.to, m.manifest.text);
 }
 
-/** Run each shell-integration pass through the INSTALLED binary, aimed at
- *  `<top>/current`: the rc/profile block it writes must reference paths that
- *  survive updates and GC, and only a process rooted at the link derives them.
- *  Returns whether EVERY pass succeeded (vacuously true for none): the caller
- *  must not sweep the flat shell payload while a block still points at it. A
- *  failure downgrades to a warning with the manual command -- a working
- *  install with unwired shell beats a failed install. */
+/** Runs through the INSTALLED binary aimed at `<top>/current`, because only a process rooted at
+ *  the link derives rc-block paths that survive updates and GC.
+ *
+ *   every pass succeeded (vacuously, for none) -> the caller may sweep the flat shell payload
+ *   a pass failed                              -> warn with the manual command and install anyway
+ */
 function wireShellsThroughInstalledBinary(
   top: string,
   versionRoot: string,
@@ -880,12 +815,10 @@ export function applyInstallPlan(plan: InstallPlan): void {
   }
 
   if (plan.kind === "versioned") {
-    // Prepare the version root completely BEFORE the flip: any failure up to
-    // the pointCurrentAt call leaves whatever was live before fully live.
-    // Deliberate exception: a SAME-VERSION reinstall targets the live version
-    // root and so refreshes it in place -- staging plus a dir swap is not
-    // available under a running image on Windows, and in-place refresh is
-    // exactly what every pre-versioned release did on every install.
+    // Prepare the version root completely BEFORE the flip: any failure up to pointCurrentAt
+    // leaves whatever was live before fully live. Deliberate exception: a SAME-VERSION reinstall
+    // refreshes the live version root in place; staging plus a dir swap is not available under
+    // a running image on Windows, and in-place refresh is what every pre-versioned release did.
     applyMaterialization(plan);
     if (plan.binary !== null) {
       mkdirReported(dirname(plan.binary.to));
@@ -897,11 +830,10 @@ export function applyInstallPlan(plan: InstallPlan): void {
       writeShimFile(shim.to, shim.text, shim.executable, consola);
     }
     consola.success(`Installed copilot-env ${plan.versionName} (live via the current link).`);
-    // Shell wiring BEFORE the flat sweep: on a flat->versioned transition the
-    // rc block still points at the flat payload, and the rewire must land
-    // before that payload disappears -- a failed rewire keeps it in place.
-    // Each removal names itself as it happens (through the reporting seam), so
-    // nothing is announced that the keep set then spares.
+    // Shell wiring BEFORE the flat sweep: on a flat->versioned transition the rc block still
+    // points at the flat payload, and the rewire must land before that payload disappears; a
+    // failed rewire keeps it in place. Each removal names itself as it happens (through the
+    // reporting seam), so nothing is announced that the keep set then spares.
     const wiredOk = wireShellsThroughInstalledBinary(plan.top, plan.versionRoot, plan.shellWires);
     removeFlatArtifacts(
       plan.flatRemovals,
@@ -916,13 +848,11 @@ export function applyInstallPlan(plan: InstallPlan): void {
   runShellIntegration({ kind: "wire", allHosts: plan.shell.allHosts });
 }
 
-/** The shell-integration targets currently carrying our wiring block: what a
- *  layout adoption must REWIRE (the block's source path changes), never widen --
- *  a user who opted out stays opted out. A LAUNCHERS-only rc counts as wired:
- *  the launchers ride the main block now (`agent env` function emissions), so
- *  the shell pass is what carries that opt-in into the `launchers` config key
- *  and strips the retired block -- skipping it would leave the user silently
- *  launcher-less once the payload sweep runs. */
+/** What a layout adoption must REWIRE (the block's source path changes), never widen: a user who
+ *  opted out stays out. A LAUNCHERS-only rc counts as wired: the launchers ride the main block
+ *  now (`agent env` function emissions), so the shell pass is what carries that opt-in into the
+ *  `launchers` config key and strips the retired block; skipping it would leave the user
+ *  silently launcher-less once the payload sweep runs. */
 export function wiredShellTargets(): ShellWiring[] {
   const wiredIn = (paths: string[]): boolean =>
     paths.some((path) => {
@@ -930,8 +860,8 @@ export function wiredShellTargets(): ShellWiring[] {
       try {
         content = readFileSync(path, "utf-8");
       } catch (error) {
-        // Present but unreadable: assume wired. The answer gates whether the
-        // flat shell payload may be swept, and "could not look" must retain.
+        // Present but unreadable: assume wired. The answer gates whether the flat shell payload
+        // may be swept, and "could not look" must retain.
         return (error as { code?: string }).code !== "ENOENT";
       }
       return hasMarker(content, MARKER) || hasMarker(content, LAUNCHERS_MARKER);
@@ -945,8 +875,8 @@ export function wiredShellTargets(): ShellWiring[] {
   return wires;
 }
 
-/** Test seam for `adoptVersionedLayout`: the ambient root mode, asset source,
- *  and binary source are all real-machine facts a suite must substitute. */
+/** Test seam for `adoptVersionedLayout`: the ambient root mode, asset source, and binary source
+ *  are all real-machine facts a suite must substitute. */
 export interface AdoptVersionedLayoutDeps {
   mode?: RootMode;
   sourceRoot?: string;
@@ -954,14 +884,15 @@ export interface AdoptVersionedLayoutDeps {
 }
 
 /**
- * The 3.5.6 migration core: build the versioned layout around a live flat install.
- * Runs as the NEW binary (spawned from `<top>/bin/copilot-env` by the pre-versioned
- * updater), so the binary it relocates is its own running image, which is why the
- * placement is a COPY, never a rename: crash-safe (any pre-flip failure leaves the
- * flat install fully live) and legal on every platform, while the flat original is
- * removed only after the flip (POSIX unlinks it; Windows leaves it for a later
- * update's sweep). Idempotent: an already-versioned root only re-sweeps flat debris
- * (a crashed earlier run may have flipped but not swept).
+ * The 3.5.6 migration core: the versioned layout built around a live flat install. It runs as the
+ * NEW binary (spawned from `<top>/bin/copilot-env` by the pre-versioned updater), so the image it
+ * relocates is its own, which is why the placement is a COPY rather than a rename.
+ *
+ *   copy into versions/ -> flip `current` -> top shims -> rewire shells -> sweep the flat original
+ *
+ *   a failure before the flip -> the flat install is still live
+ *   after the flip            -> POSIX unlinks the flat binary, Windows leaves it to a later sweep
+ *   an already versioned root -> re-runs from the shims on, each step converging
  */
 export function adoptVersionedLayout(deps: AdoptVersionedLayoutDeps = {}): void {
   const mode = deps.mode ?? rootMode();
@@ -971,22 +902,18 @@ export function adoptVersionedLayout(deps: AdoptVersionedLayoutDeps = {}): void 
   }
   const shape = classifyInstallRoot(mode.root);
   if (shape.kind === "versioned") {
-    // A checkout-shaped top is never ours to repair: `agent update --force` on
-    // a dev clone can build versions/ + current INSIDE the checkout, but its
-    // bin/agent launchers and rc wiring are SOURCE -- the same guard commit()
-    // applies before refreshing the top shims.
+    // Never ours to repair: `agent update --force` on a dev clone can build versions/ + current
+    // INSIDE the checkout, but its bin/agent launchers and rc wiring are SOURCE (the same guard
+    // commit() applies before refreshing the top shims).
     if (isCheckoutShapedRoot(shape.top)) {
       consola.info("  a source checkout keeps its own launchers; nothing to repair.");
       return;
     }
-    // REPAIR, not a bare no-op: an earlier run may have crashed after the flip
-    // but before the shims, rewire, or sweep. Only behind a link that RESOLVES
-    // to a complete version, though -- the binary present AND a valid manifest
-    // naming the version the link points at (the same postcondition the
-    // updater's provision stage demands). Through a dangling or half-built
-    // `current` the through-link shims dispatch nothing trustworthy, and the
-    // flat leftovers may be the only working install; re-running the installer
-    // is the fix for that.
+    // REPAIR, not a no-op: an earlier run may have crashed after the flip but before the shims,
+    // rewire, or sweep. Only behind a link that RESOLVES to a complete version, though (the
+    // binary present AND a valid manifest naming the linked version, the updater's provision
+    // postcondition): through a dangling or half-built `current` the shims dispatch nothing
+    // trustworthy, and the flat leftovers may be the only working install.
     const link = currentLinkPath(shape.top);
     const manifest = readInstallManifest(link);
     const complete = existsSync(join(link, "bin", installedBinaryName())) &&
@@ -999,10 +926,9 @@ export function adoptVersionedLayout(deps: AdoptVersionedLayoutDeps = {}): void 
       );
       return;
     }
-    // Each step converges (identical shims skip, wiring is idempotent, the
-    // sweep finds nothing on a clean layout), so re-running is always safe --
-    // and the flat binary residue only goes once the top shims dispatch
-    // through the link.
+    // Each step converges (identical shims skip, wiring is idempotent, the sweep finds nothing
+    // on a clean layout), so re-running is always safe. The flat binary residue goes only once
+    // the top shims dispatch through the link.
     writeTopLevelShims(shape.top);
     const repaired = wireShellsThroughInstalledBinary(
       shape.top,
@@ -1028,14 +954,13 @@ export function adoptVersionedLayout(deps: AdoptVersionedLayoutDeps = {}): void 
   if (plan.kind !== "versioned") {
     throw new Error(`expected a versioned install plan for ${shape.top}, got ${plan.kind}`);
   }
-  // Rewire exactly the shell targets that are wired today (their block points
-  // at the flat payload the sweep removes); never wire a target that was not.
+  // Rewire exactly the shell targets wired today (their block points at the flat payload the
+  // sweep removes); never wire a target that was not.
   applyInstallPlan({ ...plan, shellWires: wiredShellTargets() });
   consola.info("  moved the install to the versioned layout (live via the current link).");
 }
 
-/** What to tell the user once a real install finishes. Skipped for
- *  `--assets-only`, which is a machine-to-machine step inside `agent update`. */
+/** Skipped for `--assets-only`, a machine-to-machine step inside `agent update`. */
 function printEpilogue(options: InstallOptions): void {
   console.log("");
   if (options.noShellIntegration) {

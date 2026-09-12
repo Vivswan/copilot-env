@@ -14,9 +14,9 @@ test("no-unmanaged-child-spawn: every spelling of the constructor is rejected", 
   expect(lint('new Deno.Command("x", { args: [] }).spawn();')).toHaveLength(1);
   expect(lint('await new Deno.Command("x", {}).output();')).toHaveLength(1);
   expect(lint('new Deno.Command("x", {}).outputSync();')).toHaveLength(1);
-  // The forms a spawn-shaped rule would have missed: stored first, then spawned.
+  // A spawn-shaped rule would miss these: stored first, then spawned; the constructor reached
+  // without writing `Deno.Command` literally.
   expect(lint('const cmd = new Deno.Command("x", {}); cmd.spawn();')).toHaveLength(1);
-  // ... and the ways of naming the constructor without writing `Deno.Command` literally.
   expect(lint('const C = Deno.Command; new C("x", {}).spawn();')).toHaveLength(1);
   expect(lint('const C = Deno["Command"]; new C("x", {}).spawn();')).toHaveLength(1);
   expect(lint('new globalThis.Deno.Command("x", {}).spawn();')).toHaveLength(1);
@@ -35,16 +35,14 @@ test("no-unmanaged-child-spawn: the other route, node:child_process, is banned w
   expect(lint('import { spawnSync } from "node:child_process";')).toHaveLength(1);
   // Type imports are erased, so they reach no API.
   expect(lint('import type { spawnSync } from "node:child_process";')).toEqual([]);
-  // Same identifier, unrelated module.
   expect(lint('import { spawn } from "./my_helper.ts";')).toEqual([]);
 });
 
 test("no-unmanaged-child-spawn: scoped to the test tree, and never to the helper itself", () => {
   const raw = 'new Deno.Command("x", {}).spawn();';
-  // The REAL absolute spellings deno lint passes, built the way the plugin builds its own
-  // scope: the relative cases below would all still pass if the absolute form matched
-  // nothing, and so would `deno lint`. (The Windows-only half of that risk -- a URL pathname
-  // reading "/C:/..." -- is what the CI matrix covers; here both forms agree.)
+  // deno lint passes absolute paths: if the plugin's absolute scoping matched nothing, the relative
+  // cases below and `deno lint` itself would both pass vacuously. On Windows the URL pathname reads
+  // "/C:/...", which only the CI matrix covers; here both forms agree.
   const abs = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url));
   expect(lint(raw, abs("./example.test.ts"))).toHaveLength(1);
   expect(lint(raw, abs("./helpers/mcp.ts"))).toHaveLength(1);

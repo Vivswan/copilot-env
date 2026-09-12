@@ -8,10 +8,8 @@ import { existsSync } from "node:fs";
 import { ROOT, runScript } from "./helpers/run.ts";
 import { describe, expect, tempDir, test } from "./helpers/testing.ts";
 
-// The user decision behind the container setup: the smokes rewire agent configs (or
-// float a real proxy) in whatever HOME they see, so they must refuse to start on a
-// developer machine. The guard is one pure predicate both scripts call; its table is
-// pinned here, and the executed control below proves the scripts actually die on it.
+// The smokes rewire agent configs (or float a real proxy) in whatever HOME they see, so they
+// must refuse to start on a developer machine. Both scripts call one pure predicate.
 describe("the smokes' disposable-HOME guard", () => {
   test("admits only a GitHub Actions runner or a container marker", () => {
     const none = (): boolean => false;
@@ -33,10 +31,8 @@ describe("the smokes' disposable-HOME guard", () => {
     expect(CONTAINER_MARKERS).toEqual(["/.dockerenv", "/run/.containerenv"]);
   });
 
-  // Executed control where the guard path is reachable: on a POSIX machine with no
-  // container markers, each real script must die on the guard (exit 1, its own hint)
-  // before starting anything. In the container/CI-marked runs the markers legitimately
-  // admit the scripts, so only the table above applies there.
+  // In container or CI-marked runs the markers legitimately admit the scripts, so the executed
+  // control runs only where the guard can fire.
   const guardReachable = process.platform !== "win32" &&
     !CONTAINER_MARKERS.some((marker) => existsSync(marker));
   test.skipIf(!guardReachable)(
@@ -81,8 +77,8 @@ describe("the smokes' disposable-HOME guard", () => {
   );
 });
 
-// The floated smoke's verdict over what `agent start` and the daemon left behind: the
-// checks fire in order, so each row trips exactly one of them and the last row passes.
+// The checks fire in order, so each failing row trips exactly one of them; the two null rows
+// pass, one on drifted upstream wording that still reads as reaching auth.
 test("the floated smoke's verdict names the first failed check", () => {
   const healthy: FloatedSmokeEvidence = {
     startOutput: "info: now using @jeffreycao/copilot-api@2.3.4\nerror: no credential",

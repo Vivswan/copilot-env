@@ -115,11 +115,7 @@ test("account-wide files resolve to the ROOT home, never a daemon home or .run/<
   dir = isolateProxyHome("copilot-env-paths-");
   const paths = new CopilotApiPaths();
 
-  // Load-bearing invariant: the credential store, the preferences store, the
-  // ownership ledger, the proxy's own device-login token, and the Codex catalog
-  // all live at the ROOT home (account/machine-wide) -- never inside the
-  // default daemon's profiles/default home or the per-host runDir. A
-  // regression moving any of them must fail here.
+  // A regression moving any account-wide store into a daemon home or runDir must fail here.
   expect(paths.sharedStateFile).toBe(join(dir, "credentials.json"));
   expect(paths.envConfigFile).toBe(join(dir, "preferences.json"));
   expect(paths.ownershipFile).toBe(join(dir, "ownership.json"));
@@ -141,11 +137,8 @@ test("account-wide files resolve to the ROOT home, never a daemon home or .run/<
   }
 });
 
-// The usage sweep's stat checks narrow like its own readdir: only ENOENT/ENOTDIR
-// read as "nothing there". An EACCES one level below the home (a host dir the
-// sweep cannot look into) must propagate -- swallowed, it silently drops that
-// host's DB from the cost totals the list is summed into. POSIX, non-root only:
-// root bypasses file modes.
+// Only ENOENT/ENOTDIR read as "nothing there"; a swallowed EACCES on a host dir would silently drop
+// that host's DB from the cost totals. POSIX, non-root only: root bypasses file modes.
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "usageDbsUnderHome propagates a stat failure instead of silently dropping a DB",
   () => {

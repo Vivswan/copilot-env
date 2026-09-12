@@ -18,24 +18,18 @@ import {
 import { ROOT, runSync } from "./helpers/run.ts";
 import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
-// The installers hand-roll lists that TypeScript modules own, and nothing at
-// runtime ties them together: shell cannot import TS. Each guard below parses
-// a list back out of the script text and pins it to its TS source of truth, so
-// a drift fails at PR time instead of at release time or, worse, as a silently
-// broken install.
-//
-// scripts/compile.ts needs no such guard for its target list: it imports
-// RELEASE_TARGETS directly, so that drift is impossible by construction.
+// Shell cannot import TS, so the installers hand-roll lists TypeScript modules own; each guard
+// parses a list back out of the script text and pins it to its source of truth.
+// scripts/compile.ts imports RELEASE_TARGETS directly and needs no guard.
 
 const installSh = readFileSync(join(ROOT, "install.sh"), "utf8");
 const installPs1 = readFileSync(join(ROOT, "install.ps1"), "utf8");
 const compileTs = readFileSync(join(ROOT, "scripts", "compile.ts"), "utf8");
 
 describe("release-assets.ts pin needles", () => {
-  // The release pipeline rewrites a handful of installer lines to the release
-  // tag by byte-exact needle. Nothing runs that script at PR time, so without
-  // this guard a cosmetic reformat of those lines merges green and then breaks
-  // the main-branch release with "placeholder not found".
+  // The release pipeline rewrites these installer lines by byte-exact needle and nothing runs
+  // it at PR time, so a cosmetic reformat would merge green and break the release with
+  // "placeholder not found".
   test("match install.sh byte-for-byte", () => {
     for (const { needle } of INSTALLER_PINS["install.sh"]) {
       expect(installSh).toContain(needle);
@@ -62,9 +56,7 @@ describe("release-assets.ts pin needles", () => {
 });
 
 describe("compile targets match the installers", () => {
-  // scripts/compile.ts builds RELEASE_TARGETS by importing it; the installers
-  // decide which binary to download on a given machine and cannot import TS. A
-  // platform mapped onto a triple outside the list is an install that 404s.
+  // A platform mapped onto a triple outside RELEASE_TARGETS is an install that 404s.
   const triples = RELEASE_TARGETS.map((t) => t.triple).sort();
 
   test("install.sh maps its platforms onto RELEASE_TARGETS triples", () => {
@@ -73,7 +65,6 @@ describe("compile targets match the installers", () => {
     for (const triple of mapped) {
       expect(triples).toContain(triple);
     }
-    // Every non-Windows target must be reachable from install.sh.
     for (const target of RELEASE_TARGETS.filter((t) => t.os !== "win32")) {
       expect(mapped).toContain(target.triple);
     }
@@ -88,17 +79,14 @@ describe("compile targets match the installers", () => {
 });
 
 describe("compile.include matches what the binary actually needs", () => {
-  // Three fates, one embed list. MATERIALIZED_* is written to the install root
-  // because something outside this process opens it by path (the shim DIRS, and
-  // the individual FILES their imports reach); BUNDLED_ONLY_* is read in-process
-  // through ASSET_ROOT and must never be written. All have to be embedded, and
-  // nothing else should be: an entry with no fate is dead weight in all five
-  // binaries, and a fate with no entry is a file that is missing exactly when it
-  // is first needed.
+  // Every embedded asset has exactly one fate, and every fate needs its entry embedded.
+  //   MATERIALIZED_*  -> written to the install root; something outside this process opens it by path
+  //   BUNDLED_ONLY_*  -> read in-process through ASSET_ROOT, never written
+  //   entry, no fate  -> dead weight in all five binaries
+  //   fate, no entry  -> missing exactly when first needed
   const needed = [...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES, ...BUNDLED_ONLY_ASSETS];
-  // The list lives in deno.json rather than in scripts/compile.ts on purpose:
-  // a CLI --include MERGES with the config's list instead of replacing it, so
-  // a second copy in the script would silently union rather than fail.
+  // A CLI --include MERGES with deno.json's list instead of replacing it, so a second copy in
+  // scripts/compile.ts would silently union rather than fail.
   const compileInclude: string[] = JSON.parse(
     readFileSync(join(ROOT, "deno.json"), "utf8"),
   ).compile?.include ?? [];
@@ -127,21 +115,16 @@ describe("compile.include matches what the binary actually needs", () => {
   });
 
   test("deno.json itself stays bundled-only", () => {
-    // writeDaemonConfig (src/proxy_float.ts) generates the daemon's config from
-    // the embedded deno.json; dropping it from the bundle breaks every compiled
-    // install's proxy launch while staying green under `deno test`, where the
-    // checkout copy answers. And it must never gain a materialized fate: on
-    // disk, deno.json is a CHECKOUT_MARKERS entry.
+    // writeDaemonConfig (src/proxy_float.ts) reads the embedded deno.json; dropping it breaks
+    // every compiled install's proxy launch while `deno test` stays green on the checkout copy.
+    // It can never be materialized either: on disk, deno.json is a CHECKOUT_MARKERS entry.
     expect(BUNDLED_ONLY_ASSETS).toContain("deno.json");
   });
 });
 
 describe("bundled-only assets are never read through PROJECT_ROOT", () => {
-  // A bundled-only asset exists in the VFS and in a checkout, but never in a
-  // compiled install root. A production read of one through PROJECT_ROOT
-  // typechecks and passes every checkout test -- the two roots coincide there --
-  // and fails only on a real install (the daemon-config launch failure this
-  // guards against recurring). Such reads must go through ASSET_ROOT.
+  // A bundled-only asset read through PROJECT_ROOT passes every checkout test (the two roots
+  // coincide there) and fails only on a real install; such reads go through ASSET_ROOT.
   function srcFiles(dir: string): string[] {
     const files: string[] = [];
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -176,13 +159,10 @@ describe("bundled-only assets are never read through PROJECT_ROOT", () => {
 });
 
 describe("the materialized files are the shims' import closure", () => {
-  // The daemon shims in src/scripts run on real disk in the install root, so
-  // every LOCAL file their imports reach (transitively) must be materialized
-  // beside them or the daemon dies at module load -- exactly the failure a new
-  // shim import would silently reintroduce. This computes the closure from the
-  // sources and pins MATERIALIZED_ASSET_FILES to it in both directions: a
-  // missing file is a broken daemon on every install, an extra one is dead
-  // weight nothing imports.
+  // The shims in src/scripts run from real disk in the install root, so every local file their
+  // imports reach must be materialized beside them or the daemon dies at module load.
+  //   in the closure, not in MATERIALIZED_ASSET_FILES  -> broken daemon on every install
+  //   in MATERIALIZED_ASSET_FILES, not in the closure  -> dead weight nothing imports
   const importRe = /(?:import|export)[^"']*?["'](\.[^"']+\.ts)["']/g;
 
   function localImportClosure(seeds: string[]): Set<string> {
@@ -222,11 +202,8 @@ describe("the materialized files are the shims' import closure", () => {
 });
 
 describe("installers mirror the binary's checkout refusal markers", () => {
-  // Both installers refuse a target root holding a checkout marker AND .git
-  // before their first write, mirroring buildInstallPlan's own
-  // refusal. Shell cannot import TS, so their marker lists are hand-rolled
-  // twins of CHECKOUT_MARKERS: pin them in EXACT order, both directions (the
-  // refusal names the first present marker, so order is part of the contract).
+  // The installers' marker lists are hand-rolled twins of CHECKOUT_MARKERS. Order is part of
+  // the contract: the refusal names the first present marker.
   const expected = [...CHECKOUT_MARKERS];
 
   test("install.sh guard markers match CHECKOUT_MARKERS in order", () => {
@@ -242,12 +219,8 @@ describe("installers mirror the binary's checkout refusal markers", () => {
 });
 
 describe("installer checkout guard refuses before mutating, proceeds on legacy roots", () => {
-  // Runs the REAL installer scripts against throwaway roots and a directory
-  // download source (COPILOT_ENV_DOWNLOAD_BASE), because the guard's whole
-  // point is ordering: it must fire before the bin write (the only mutation
-  // the slimmed installers make) touches the root. install.sh runs on the
-  // POSIX platforms, install.ps1 on Windows, so the CI matrix covers both
-  // twins.
+  // The real installer scripts against throwaway roots, fed by a directory download source:
+  // the guard's point is ordering, so it must fire before the bin write touches the root.
   const skipWin = test.skipIf(Deno.build.os === "windows");
   const winOnly = test.skipIf(Deno.build.os !== "windows");
 
@@ -266,9 +239,8 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     return out.sort();
   }
 
-  /** A directory download source holding this platform's asset (a stand-in
-   *  binary; on POSIX a script that records its own invocation so a test can
-   *  prove the handoff ran) + checksums.txt. */
+  /** This platform's asset plus checksums.txt; the POSIX stand-in records its own invocation
+   *  so a test can prove the handoff ran. */
   function makeDownloadDir(): string {
     const target = currentReleaseTarget();
     if (target === null) throw new Error("no release target for this platform");
@@ -283,8 +255,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     return dir;
   }
 
-  /** A fresh target root: node_modules debris plus the given entries.
-   *  `git` plants .git as a directory, a worktree-style file, or not at all. */
+  /** `git: "file"` is the worktree-style .git (a gitdir pointer), refused like the directory. */
   function makeRoot(marker: string, git: "dir" | "file" | "none"): string {
     const root = tempDir("ce-guard-root-");
     writeFileSync(join(root, marker), "{}\n");
@@ -309,11 +280,9 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       "COPILOT_ENV_DOWNLOAD_BASE": downloadDir,
       "CI": "1",
     };
-    // On GitHub's windows runner this process inherits the CI step shell's --
-    // pwsh's -- PSModulePath, which breaks 5.1's module autoload (see the
-    // reset in install.ps1). Drop it (case-insensitively: Windows does not fix
-    // the key's spelling) so the spawn models the stock powershell.exe session
-    // the README one-liner runs in. Harmless on POSIX, where bash runs.
+    // GitHub's windows runner hands this process pwsh's PSModulePath, which breaks 5.1's module
+    // autoload; drop it under any key spelling (Windows env keys are case-insensitive) so the
+    // spawn models a stock powershell.exe session.
     for (const key of Object.keys(env)) {
       if (key.toLowerCase() === "psmodulepath") delete env[key];
     }
@@ -337,12 +306,8 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     for (const dir of dirs) removeDir(dir);
   }
 
-  /** The transcript a red on this remote-only platform needs to be diagnosed
-   *  without a rerun: the installer's exit code and both streams, plus which
-   *  root mutations landed (they bracket where the script died). Attached to
-   *  every assertion below -- a bare boolean carries none of that. The root's
-   *  own existence is reported too, so a vanished root can never read as a
-   *  successful sweep. */
+  /** Attached to every assertion so a red on a remote-only platform is diagnosable without a
+   *  rerun. The root's existence is reported too, so a vanished root never reads as a clean sweep. */
   function evidence(res: ReturnType<typeof runSync>, root: string): string {
     const at = (...parts: string[]) => existsSync(join(root, ...parts));
     return [
@@ -387,15 +352,13 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
         const res = runInstaller(root, downloadDir);
         const why = evidence(res, root);
         expect(res.exitCode, why).toBe(0);
-        // The installer carries no sweep of its own: the superseded artifacts
-        // are the binary's legacyRemovals (src/install/installer.ts), and the
-        // stand-in binary does nothing, so the debris must survive the handoff.
+        // The sweep is the binary's legacyRemovals (src/install/installer.ts) and the stand-in
+        // does nothing, so the debris must survive the handoff.
         expect(existsSync(join(root, "node_modules")), why).toBe(true);
         expect(existsSync(join(root, "deno.json")), why).toBe(true);
         expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
-        // ... and the handoff must actually have happened: the sweep now lives
-        // on the other side of it, so an installer that never invoked the
-        // binary would pass the assertions above while installing nothing.
+        // An installer that never invoked the binary would pass the assertions above while
+        // installing nothing.
         expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(true);
       } finally {
         cleanup(root, downloadDir);
@@ -460,11 +423,9 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       const downloadDir = makeDownloadDir();
       const root = makeRoot("deno.json", "none");
       try {
-        // The stand-in .exe cannot actually run, so the ATTEMPTED handoff is
-        // what the non-zero exit proves; the mutations before it are the
-        // evidence that the guard let a legacy root through. The installer
-        // carries no sweep of its own (the binary's legacyRemovals own it),
-        // so the debris must survive up to the handoff.
+        // The stand-in .exe cannot run, so the non-zero exit proves the handoff was attempted
+        // and the mutations before it prove the guard let the legacy root through. The sweep
+        // is the binary's legacyRemovals, so the debris survives.
         const res = runInstaller(root, downloadDir);
         const why = evidence(res, root);
         expect(res.exitCode, why).not.toBe(0);
@@ -478,16 +439,11 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
   );
 
   skipWin("install.sh refuses the lexically unsafe targets before any other work", () => {
-    // The slimmed installer keeps only this lexical pre-check (the canonical
-    // one lives in the binary); it must still stop the worst spellings before
-    // the first network call or write. The doubled-slash spellings are the
-    // regression pins for the internal-"//" bypass: "/Users//me" is a distinct
-    // string from home unless separators are collapsed first, and the
-    // internal-only form must be pinned separately or a leading-"//" rejection
-    // could satisfy the test while leaving the original bypass. An empty
-    // download source keeps a regressed run hermetic: it fails at the local
-    // copy instead of reaching the network, and its stderr fails the
-    // refusal-message assertion.
+    // The installer keeps only a lexical pre-check (the canonical one is in the binary); it
+    // must still stop the worst spellings before the first network call or write.
+    //   "/Users//me"                  -> distinct from home unless separators collapse first
+    //   internal-only doubled slash   -> pinned apart, or a leading-"//" rejection alone passes
+    //   empty download source         -> a regressed run fails at the local copy, off the network
     const home = process.env.HOME ?? "";
     expect(home.length).toBeGreaterThan(0);
     const unsafe = [
@@ -517,12 +473,8 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
   });
 
   winOnly("install.ps1 refuses the lexically unsafe targets before any other work", () => {
-    // The ps1 twin of the refusal list above, driven under the real
-    // powershell.exe like the other winOnly tests (its guard collapses
-    // separators and dot components via GetFullPath instead of refusing
-    // them, so those spellings translate to the same refusals). An empty
-    // download source keeps a regressed run hermetic: it fails at the local
-    // copy instead of reaching the network or mutating the real target.
+    // The ps1 guard collapses separators and dot components via GetFullPath, so those spellings
+    // land on the same refusals. The empty download source keeps a regressed run off the network.
     const home = process.env.USERPROFILE ?? "";
     expect(home.length).toBeGreaterThan(0);
     const unsafe = [
@@ -608,10 +560,8 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
 });
 
 describe("the install task spawns what it is allowed to run", () => {
-  // `deno task install` (scripts/install_local.ts) compiles the host binary
-  // and hands off to the platform installer. The task's --allow-run list and
-  // the script's spawn set are two hand-kept spellings of the same contract; a
-  // drift is a permission prompt (or hard denial) at run time.
+  // The task's --allow-run list and scripts/install_local.ts's spawn set are two hand-kept
+  // spellings of one contract; a drift is a permission prompt or denial at run time.
   const installLocal = readFileSync(join(ROOT, "scripts", "install_local.ts"), "utf8");
 
   test("--allow-run covers exactly the spawned commands", () => {
@@ -638,9 +588,7 @@ describe("the install task spawns what it is allowed to run", () => {
 });
 
 describe("compiled-health smoke invariants fail closed", () => {
-  // The CI smoke's compiledHealthFailures must treat a missing row, a reshaped
-  // value, or an unexpected status/kind as a failure: optional-chaining past a
-  // renamed check id would print success while asserting nothing.
+  // Optional-chaining past a renamed check id would print success while asserting nothing.
   const good = () => ({
     checks: [
       { id: "bootstrap.nodeModules", status: "ok", value: { embedded: true } },

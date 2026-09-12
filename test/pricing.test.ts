@@ -100,20 +100,15 @@ test("prefers the bare flagship over -fast/-mini siblings sharing a prefix", () 
     "anthropic/claude-opus-4.8",
     "anthropic/claude-opus-4.8-mini",
   ]);
-  // All three share the `anthropic/claude-opus` prefix; the tiebreaker must
-  // demote the `fast`/`mini` variants and return the bare flagship id.
   expect(resolvePricingId("opus", catalog)).toBe("anthropic/claude-opus-4.8");
 });
 
 test("picks the newest version among prefix matches", () => {
   const catalog = new Set<string>(["anthropic/claude-opus-4.1", "anthropic/claude-opus-4.8"]);
-  // No exact `provider/candidate`; prefix match must prefer the higher version.
   expect(resolvePricingId("opus", catalog)).toBe("anthropic/claude-opus-4.8");
 });
 
 test("breaks an exact sort tie by id, whatever the catalog's insertion order", () => {
-  // Two siblings identical in every ranking feature (length, version numbers,
-  // flags): the pick must not depend on which one the catalog listed first.
   const forward = new Set<string>(["anthropic/claude-opus-4.8-a", "anthropic/claude-opus-4.8-b"]);
   const reversed = new Set<string>(["anthropic/claude-opus-4.8-b", "anthropic/claude-opus-4.8-a"]);
   expect(resolvePricingId("opus", forward)).toBe("anthropic/claude-opus-4.8-a");
@@ -122,7 +117,6 @@ test("breaks an exact sort tie by id, whatever the catalog's insertion order", (
 
 test("returns null when the provider is inferable but the catalog has no match", () => {
   const catalog = new Set<string>(["anthropic/claude-opus-4.8"]);
-  // `gpt-9.9` infers the `openai` provider but nothing in the catalog matches.
   expect(resolvePricingId("gpt-9.9", catalog)).toBeNull();
 });
 
@@ -130,7 +124,6 @@ test("estimateCost computes and includes cache bucket costs in totals", () => {
   const pricing = new Map<string, PricingTier>([
     ["anthropic/claude-opus-4.8", { input: 15, output: 75, cacheRead: 1.5, cacheCreation: 18.75 }],
   ]);
-  // Non-zero cache buckets with non-zero cache rates must be priced and summed.
   const usage = new Map<string, UsageTokens>([
     [
       "claude-opus-4.8",
@@ -195,7 +188,6 @@ test("estimateCost excludes a model whose used bucket has no rate", () => {
   const pricing = new Map<string, PricingTier>([
     ["anthropic/claude-opus-4.8", { input: 15, output: 75 }],
   ]);
-  // cacheRead is used but the tier has no cacheRead rate -> not covered -> unpriced.
   const usage = new Map<string, UsageTokens>([
     ["claude-opus-4.8", { input: 0, output: 0, cacheRead: 1_000, cacheCreation: 0 }],
   ]);
@@ -259,7 +251,6 @@ function fakeFetch(
   return state;
 }
 
-/** Run `body` against a throwaway cache dir, removed afterwards. */
 async function withCacheDir(body: (cacheDir: string) => Promise<void>): Promise<void> {
   const cacheDir = tempDir("pricing-cache-");
   try {

@@ -54,7 +54,6 @@ function runtimeExecPath(): string | undefined {
   return (globalThis as { Deno?: { execPath(): string } }).Deno?.execPath();
 }
 
-/** Plant a fake provisioned sidecar for `version` under `rootHome`. */
 function plantSidecar(rootHome: string, version: string, platform = "linux"): string {
   const bin = sidecarBinPath(rootHome, version, platform);
   mkdirSync(join(rootHome, "deno", version), { recursive: true });
@@ -394,7 +393,6 @@ describe("downloadSidecar", () => {
     expect(calls).toEqual([denoReleaseUrl(PIN, "aarch64-apple-darwin")]);
     expect(bin).toBe(sidecarBinPath(dir, PIN, "darwin"));
     expect(runnerCalls[0]?.command).toBe("unzip");
-    // Executable bit set (POSIX hosts only), temp zip cleaned up.
     if (process.platform !== "win32") {
       expect(statSync(bin).mode & 0o100).not.toBe(0);
     }

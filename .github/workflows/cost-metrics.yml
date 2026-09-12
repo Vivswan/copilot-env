@@ -1,14 +1,9 @@
-# Repo-owned. BEFORE/AFTER `agent cost` numbers on PRs that touch the usage path
-# (.github/scripts/cost-metrics.ts): one sticky PR comment, a failed job when the
-# head's cost JSON differs from the base's. Its own workflow rather than a
-# checks.yml job because jobs inside the all-green caller run with `contents: read`
-# and cannot write a PR comment.
-#
-# Three steps on purpose: the measurement runs the PR's own code (the fixtures script,
-# the cost CLI), so its process environment never carries a token; the sticky-comment
-# action step is the only one handed the token, and it posts the body file the
-# measurement wrote (published as its `comment` output); the verdict step then fails the
-# job on a differing JSON.
+# BEFORE/AFTER `agent cost` on PRs that touch the usage path (.github/scripts/cost-metrics.ts).
+# Its own workflow, not a checks.yml job: jobs inside the all-green caller run with
+# `contents: read` and cannot post a PR comment. Three steps on purpose:
+#   measure  -> runs the PR's own code, so it never sees a token
+#   comment  -> the only step handed the token; posts the body the measurement wrote
+#   verdict  -> fails the job on a differing JSON
 
 name: Cost metrics
 

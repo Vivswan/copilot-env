@@ -1,28 +1,15 @@
-// The machine-local artifact-ownership ledger: which entries copilot-env ITSELF
-// wrote into external config artifacts, so a removal path takes back exactly what
-// we added and never an entry the user (or another program) put there. One store
-// (`ownership.json` under the ROOT home) for every exact-path ownership kind:
-//   - webSearchDeny:  settings.json files whose `permissions.deny` WE added the
-//     `WebSearch` entry to (src/claude/config.ts).
-//   - claudeDesktop:  Claude Desktop config-library entries WE created or
-//     adopted (src/claude/desktop.ts).
-//   - codexCatalog:   Codex config.toml files WE wrote the `model_catalog_json`
-//     reference into (src/codex/config.ts).
-// It names THIS machine's files, so it is never part of the `agent settings` bundle.
-//
-// Doctrine, shared by every kind:
-//   - record AFTER the successful artifact write, release AFTER the successful
-//     take-back. A crash between the two leaves an UNCLAIMED entry, the safe
-//     direction: an unclaimed entry is never deleted (a writer that reproduces
-//     it re-claims it; otherwise it is a harmless orphan), never a claim on
-//     something we did not write.
-//   - a junk-degraded record file reads as "owns less", never as a crash; an
-//     UNREADABLE store THROWS (loadStrict): "owns nothing" is a verdict take-back
-//     paths act on, never assumed from a read that failed.
-//   - the ledger file is the ONLY source of a claim. Every mutation serializes on
-//     ONE advisory ops lock (bounded wait, then proceed); reads take no lock, so a
-//     read-only command (health, --check, a dry run) writes nothing. A read torn
-//     across a mutation is a report, never a decision: take-backs re-read under it.
+// Which entries copilot-env ITSELF wrote into external config artifacts, so a removal takes back exactly
+// what we added and never an entry the user or another program put there. It names THIS machine's files,
+// so it is never part of the `agent settings` bundle.
+//   webSearchDeny  -> settings.json files whose `permissions.deny` WE gave the `WebSearch` entry (src/claude/config.ts)
+//   claudeDesktop  -> Claude Desktop config-library entries WE created or adopted (src/claude/desktop.ts)
+//   codexCatalog   -> Codex config.toml files WE wrote the `model_catalog_json` reference into (src/codex/config.ts)
+// Ordering doctrine for every kind, so a crash or a bad read lands on the safe side of a claim:
+//   record AFTER the write                      -> a crash leaves the entry we wrote UNCLAIMED, never a false claim
+//   release AFTER the take-back                 -> a crash leaves a claim on an entry already gone; a take-back that selects it finds nothing to strip and releases the claim
+//   one exception, the Codex catalog reference  -> claims BEFORE its write (record(), src/codex/catalog_reference.ts), so a crash there claims an unwritten path
+//   unreadable store                            -> loadStrict THROWS; "owns nothing" is a verdict, never a default
+//   mutations on ONE ops lock, reads on none    -> read-only commands write nothing; the lock covers the ledger write alone, never a take-back's owns() decision
 import * as v from "valibot";
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
 import { CopilotApiConfig } from "./config.ts";
@@ -36,30 +23,19 @@ const LEDGER_KEYS = {
   codexCatalog: "codexCatalogConfigPaths",
 } as const;
 
-/** What the ledger's write line says. Stable across claims on purpose: the seam names
- *  a path once per process, and one command records several artifacts (the artifact's
- *  own line already says which). */
-
-/** An ownership kind the ledger records (see the module header for each). */
 export type OwnedArtifactKind = keyof typeof LEDGER_KEYS;
 
-// Pre-ledger releases recorded the same ownership under these keys in the
-// shared state store (`credentials.json`). ONLY adoptLegacyRecords (the
-// 3.5.6 ownership migration's primitive) reads them: the ledger's own readers
-// answer from the ledger file alone, so an unmigrated record owns nothing here
-// until `agent update` has moved it.
+// Pre-ledger keys in the shared state store (`credentials.json`). ONLY adoptLegacyRecords reads them: the
+// ledger's own readers answer from the ledger file alone, so an unmigrated record owns nothing until
+// `agent update` has moved it.
 const LEGACY_STATE_KEYS: Partial<Record<OwnedArtifactKind, string>> = {
   webSearchDeny: "webSearchDenyOwnedPaths",
   claudeDesktop: "claudeDesktopOwnedPaths",
 };
 
-/**
- * THE parser for a recorded path list: junk entries (non-strings, blanks) are
- * dropped INDIVIDUALLY, never the whole list, and survivors come back TRIMMED
- * so a hand-padded entry still matches the exact-path ownership checks. The
- * read schema and every in-place update go through it, so the two can never
- * disagree about the entry shape.
- */
+/** Junk entries are dropped INDIVIDUALLY, never the whole list, and survivors come back TRIMMED so a
+ *  hand-padded entry still matches the exact-path checks. The read schema and every in-place update
+ *  share it, so the two can never disagree about the entry shape. */
 function ownedPathList(value: unknown): string[] {
   return Array.isArray(value)
     ? value
@@ -69,28 +45,20 @@ function ownedPathList(value: unknown): string[] {
     : [];
 }
 
-// Lenient read schema: each list validates independently and falls back to
-// empty rather than throwing -- a hand-mangled file degrades to owning less.
+// Each list falls back independently, so a hand-mangled file degrades to owning less.
 const LEDGER_SCHEMA = v.object({
   webSearchDenyPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),
   claudeDesktopPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),
   codexCatalogConfigPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),
 });
 
-/**
- * Read/write helper for the ownership ledger. Backed by CopilotApiConfig (the
- * project's atomic JSON store: sorted keys, 0600, atomic rename, Windows
- * EPERM/EBUSY retry, best-effort cross-process update lock), like every other
- * copilot-env store.
- */
 export class OwnershipLedger {
   private readonly store: CopilotApiConfig;
   /** The shared state store, read/cleared ONLY by adoptLegacyRecords. */
   private readonly legacyStore: CopilotApiConfig;
-  /** The MUTATION lock (`.ops.lock`, distinct from each store's own update
-   *  `.lock`): the adoption reads the legacy store, then writes the ledger, so
-   *  without one shared scope a release landing between those two could clear
-   *  the ledger's copy just before the adoption re-adds the one it read. */
+  /** Distinct from each store's own update `.lock`: the adoption reads the legacy store, then writes the
+   *  ledger, and a release landing between the two could clear the ledger's copy just before the
+   *  adoption re-adds the one it read. */
   private readonly opsLock: string;
 
   constructor(paths: CopilotApiPaths = new CopilotApiPaths()) {
@@ -99,26 +67,20 @@ export class OwnershipLedger {
     this.opsLock = paths.ownershipOpsLock;
   }
 
-  /** Every artifact path the ledger records for `kind`. STRICT (loadStrict): it
-   *  feeds owns(), the predicate every take-back gates on -- an unreadable store
-   *  must surface, never read as owns-nothing (which would strip a deny's
-   *  replacement while leaving the deny). Junk CONTENT still degrades via the
-   *  lenient schema. Lock-free (the module header says why): it writes nothing. */
+  /** STRICT: this feeds owns(), the predicate every take-back gates on, and an unreadable store must
+   *  surface rather than read as owns-nothing (which would strip a deny's replacement while leaving the
+   *  deny). Lock-free: it writes nothing. */
   ownedPaths(kind: OwnedArtifactKind): string[] {
     return v.parse(LEDGER_SCHEMA, this.store.loadStrict())[LEDGER_KEYS[kind]];
   }
 
-  /** Whether WE wrote the `kind` entry at this exact artifact path. */
   owns(kind: OwnedArtifactKind, artifactPath: string): boolean {
     return this.ownedPaths(kind).includes(artifactPath);
   }
 
-  /** Record ownership of the `kind` entry at `artifactPath` (atomic, idempotent).
-   *  Call AFTER the successful artifact write (the module header's crash-direction
-   *  contract); the one exception is a claim reserved BEFORE a best-effort write
-   *  that must never leave an unrecorded artifact behind (the Codex catalog
-   *  reference's auth-time sync) -- a claim on an unwritten path is released by
-   *  the next cleanup sweep. */
+  /** Call AFTER the successful artifact write. The one exception is a claim reserved BEFORE a best-effort
+   *  write that must never leave an unrecorded artifact behind (the Codex catalog reference's auth-time
+   *  sync); the next cleanup sweep releases a claim on an unwritten path. */
   record(kind: OwnedArtifactKind, artifactPath: string): void {
     withFileLockSync(this.opsLock, BOUNDED_LOCK_POLICY, () => {
       this.store.update((d) => {
@@ -130,9 +92,7 @@ export class OwnershipLedger {
     });
   }
 
-  /** Forget ownership for `artifactPath` (an emptied list drops its key). No
-   *  write fires when nothing records the path, so steady-state sweeps stay
-   *  write-free. */
+  /** No write fires when nothing records the path, so steady-state sweeps stay write-free. */
   release(kind: OwnedArtifactKind, artifactPath: string): void {
     withFileLockSync(this.opsLock, BOUNDED_LOCK_POLICY, () => {
       if (!this.ownedPaths(kind).includes(artifactPath)) return;
@@ -145,17 +105,12 @@ export class OwnershipLedger {
     });
   }
 
-  /**
-   * Move every legacy pre-ledger record from the shared state store into the
-   * ledger and drop the legacy keys (the away-from-3.5.6 ownership migration).
-   * Merge, never replace: ledger entries recorded since the update survive.
-   * Idempotent -- a re-run finds no legacy keys and writes nothing.
-   */
+  /** Merge, never replace: ledger entries recorded since the update survive, and a re-run finds no
+   *  legacy keys and writes nothing. */
   adoptLegacyRecords(): void {
     withFileLockSync(this.opsLock, BOUNDED_LOCK_POLICY, () => {
-      // Strict: "no legacy records" is the decision to skip the move, so it must
-      // be proven, not flattened from a failed read (the runner is best-effort,
-      // so the throw defers the adoption instead of falsely completing it).
+      // "No legacy records" is the decision to skip the move, so it must be proven, not flattened from a
+      // failed read; the runner is best-effort, so the throw defers the adoption instead of falsely completing it.
       const legacy = this.legacyStore.loadStrict();
       const present = (Object.entries(LEGACY_STATE_KEYS) as [OwnedArtifactKind, string][])
         .filter(([, key]) => key in legacy);
@@ -163,16 +118,11 @@ export class OwnershipLedger {
       const moves = present
         .map(([kind, key]) => [kind, ownedPathList(legacy[key])] as const)
         .filter(([, paths]) => paths.length > 0);
-      // The ledger must clear update()'s read-side refusals BEFORE the legacy
-      // delete: a malformed ledger refused after the delete would lose the record
-      // (the runner carries on past a failed step). The same refusal, raised
-      // first, leaves the keys in place for the re-run once the file is fixed.
+      // The ledger's read-side refusals are cleared BEFORE the legacy delete: a malformed ledger refused
+      // after it would lose the record (the runner carries on past a failed step).
       if (moves.length > 0) this.store.loadForUpdate();
-      // Legacy delete FIRST, ledger write second: a crash between the two loses
-      // the claim (the module header's safe direction -- an unclaimed entry is
-      // never deleted), whereas the other order would leave a second copy a
-      // re-run could re-adopt AFTER a take-back released the ledger's,
-      // resurrecting it.
+      // Legacy delete FIRST: a crash between the two loses the claim (the safe direction), whereas the other
+      // order leaves a second copy a re-run could re-adopt AFTER a take-back released the ledger's, resurrecting it.
       this.legacyStore.update((d) => {
         for (const [, key] of present) delete d[key];
       });
@@ -189,19 +139,14 @@ export class OwnershipLedger {
 
 // --- the per-daemon-home projection record ---------------------------------------
 //
-// Ownership record for the OPT-IN proxy config.json projections: which paths copilot-env
-// itself wrote into a daemon's config.json. Recorded ownership is what lets a later
-// `agent start` clear OUR leftover value once its `agent config` key is unset (`--del`),
-// while a value at the same path we never projected -- a hand edit, or the daemon's own
-// write -- is never deleted. The record lives in `.copilot-env-projections.json`
-// (CopilotApiPaths.projectionsFile, beside the config.json it describes), NOT in the
-// ledger file: per-home by design (ProxyProjectionState's doc says why).
+// Which paths copilot-env itself wrote into a daemon's config.json (the OPT-IN projections), so a later
+// `agent start` clears OUR leftover once its `agent config` key is unset, while a value at the same path
+// we never projected (a hand edit, or the daemon's own write) is never deleted. Per home, beside the
+// config.json (ProxyProjectionState says why).
 
-/** THE parser for the recorded path list: junk entries (non-arrays, blank or non-string
- *  keys, empty paths) are dropped WHOLE, never truncated to a parent path, and never fail
- *  the read -- a hand-mangled file degrades to "owns less", not to a crash. A well-formed
- *  path that is not ours parses fine but still claims nothing: applyDefaultConfig
- *  intersects the record with the registry's own opt-in paths before deleting anything. */
+/** Junk entries are dropped WHOLE, never truncated to a parent path, and never fail the read. A
+ *  well-formed path that is not ours still claims nothing: applyDefaultConfig intersects the record with
+ *  the registry's own opt-in paths before deleting anything. */
 function recordedPathList(value: unknown): ProxyConfigPath[] {
   if (!Array.isArray(value)) return [];
   const out: ProxyConfigPath[] = [];
@@ -219,19 +164,14 @@ const PROJECTION_STATE_SCHEMA = v.object({
 });
 
 /**
- * Read/write helper for the per-daemon-home projection-ownership record, backed by
- * CopilotApiConfig like CopilotEnvRunState. Kept OUTSIDE the ledger file on purpose: the
- * record sits beside the config.json it describes because applyDefaultConfig's
- * read-modify-write lock derives from the record path (per HOME, so hosts sharing a daemon
- * home exclude each other) and because a deleted profile home takes its record with it; a
- * global ledger would keep stale claims for dead homes and widen that lock to every daemon.
- * Same doctrine as the ledger: the record is written AFTER the config.json apply, so a
- * crash between the two leaves an unclaimed value (never deleted; the next apply rewrites both).
+ * Kept OUTSIDE the ledger on purpose: applyDefaultConfig's read-modify-write lock derives from the record
+ * path (per HOME, so hosts sharing a daemon home exclude each other), and a deleted profile home takes its
+ * record with it; a global ledger would keep stale claims for dead homes and widen that lock to every daemon.
+ * Same doctrine as the ledger: written AFTER the config.json apply, so a crash leaves an unclaimed value.
  */
 export class ProxyProjectionState {
   private readonly store: CopilotApiConfig;
-  /** The record file (`paths.projectionsFile`); the applyDefaultConfig RMW lock derives
-   *  from it. */
+  /** The applyDefaultConfig RMW lock derives from this path. */
   readonly path: string;
 
   constructor(paths: CopilotApiPaths) {
@@ -239,17 +179,14 @@ export class ProxyProjectionState {
     this.store = new CopilotApiConfig(this.path);
   }
 
-  /** The opt-in paths copilot-env last projected into this home's config.json.
-   *  Strict read: the record decides which config.json paths applyDefaultConfig
-   *  may DELETE (and whether setOwnedPaths skips its write), so an unreadable
+  /** Strict: the record decides which config.json paths applyDefaultConfig may DELETE, so an unreadable
    *  record throws rather than reading as "we projected nothing". */
   ownedPaths(): ProxyConfigPath[] {
     return v.parse(PROJECTION_STATE_SCHEMA, this.store.loadStrict()).optInPaths;
   }
 
-  /** Replace the record with the paths the CURRENT apply projected. An empty record drops
-   *  the key -- and when nothing was recorded before either, skips the write entirely, so
-   *  a default-configured start never materializes an empty record file. */
+  /** No write when nothing was recorded before or after, so a default-configured start never
+   *  materializes an empty record file. */
   setOwnedPaths(paths: readonly ProxyConfigPath[]): void {
     if (paths.length === 0 && this.ownedPaths().length === 0) return;
     this.store.update((d) => {

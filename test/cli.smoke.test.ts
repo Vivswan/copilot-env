@@ -14,11 +14,9 @@ import { ROOT, runCli, runSync } from "./helpers/run.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
-// A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port. We pin the
-// default proxy port to 4199 via config (isolated from any real proxy on 4141 on this host).
-// HOME/USERPROFILE are isolated too: the codex host-farm and shell probes resolve through
-// the home directory, so a developer machine with a built farm or a wired rc file would
-// otherwise leak into the children's health reports.
+// HOME/USERPROFILE are isolated too: the codex host-farm and shell probes resolve through the home
+// directory, so a developer machine with a built farm or a wired rc file would leak into the
+// reports. The port pin (4199) keeps a real proxy on 4141 out of the picture.
 function isolatedEnv(extra: Record<string, string> = {}): Record<string, string> {
   const home = tempDir("copilot-health-");
   writeFileSync(join(home, "preferences.json"), JSON.stringify({ port: 4199 }));
@@ -39,9 +37,8 @@ function isolatedEnv(extra: Record<string, string> = {}): Record<string, string>
 function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, string> {
   const root = tempDir("copilot-health-proxy-");
   const codexHome = join(root, ".codex");
-  // Production shape: the writer emits 127.0.0.1 (not localhost) so the agent reaches the
-  // IPv4 proxy on Windows. The matcher accepts both; the other fixture keeps a localhost
-  // case to prove backward-compat acceptance.
+  // The writer emits 127.0.0.1 (not localhost) so the agent reaches the IPv4 proxy on Windows; the
+  // matcher accepts both spellings (the codex --check case below uses localhost).
   writeCodexConfigToml(codexHome, {
     baseUrl: "http://127.0.0.1:4199/v1",
     envKey: "OPENAI_API_KEY",
@@ -50,9 +47,8 @@ function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, st
   return isolatedEnv({ CODEX_HOME: codexHome, ...extra });
 }
 
-// Pure help screens are read-only and deterministic, so each unique argv is spawned
-// once and its output shared by every test that asserts on it (a cold CLI child
-// spawn is expensive; the suite asserts on the same screens many times over).
+// Help screens are read-only and deterministic, and a cold CLI spawn is expensive, so each argv is
+// spawned once and shared.
 const HELP_CACHE = new Map<string, { exitCode: number | null; stdout: string; output: string }>();
 
 function helpScreen(...args: string[]): {
@@ -70,13 +66,9 @@ function helpScreen(...args: string[]): {
   return entry;
 }
 
-// End-to-end smoke test: the Commander CLI must load its whole import graph and
-// print help without a running daemon or any auth. Catches wiring/import
-// regressions that unit tests on individual modules would miss.
-//
-// CONSOLA_LEVEL is forced for the run* command output (consola silences itself
-// when it detects a "test" environment, as the test runner is); Commander prints its
-// own help to stdout directly, independent of consola.
+// The whole import graph must load and print help without a daemon or auth. CONSOLA_LEVEL is forced
+// because consola silences itself in a detected "test" environment; Commander prints help to stdout
+// itself.
 test("`cli.ts --help` loads the CLI and exits 0", () => {
   const { exitCode, output } = helpScreen("--help");
 
@@ -91,8 +83,6 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
   // `init` is the headline command and appears first in the COMMANDS list.
   expect(output).toContain("init");
   expect(output.indexOf("init")).toBeLessThan(output.indexOf("start"));
-  // Flat command tree: there is no nested `setup` parent, and the root help
-  // surfaces the global --version flag.
   expect(output).toContain("--version");
 });
 
@@ -138,8 +128,6 @@ test("cli.ts config --set writes only inside the data home, so it names no file"
 });
 
 test("cli.ts config --help renders the store's CURRENT values: the same table bare config prints", () => {
-  // A value stored in this isolated home shows up in `config --help`, and the help's table
-  // is byte for byte what bare `config` prints.
   const env = isolatedEnv({ NO_COLOR: "1" });
   expect(runCli(["config", "--set", "strict-port", "true"], { env }).exitCode).toBe(0);
   const table = runCli(["config"], { env });
@@ -151,8 +139,6 @@ test("cli.ts config --help renders the store's CURRENT values: the same table ba
 });
 
 test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
-  // Hermetic homes: a temp CLAUDE_CONFIG_DIR (no registration) and an isolated
-  // copilot-env home, so the status never reads or creates real user state.
   const claudeDir = tempDir("copilot-mcp-status-");
   const status = runCli(["mcp"], { env: isolatedEnv({ CLAUDE_CONFIG_DIR: claudeDir }) });
   const output = status.stderr;
@@ -164,12 +150,10 @@ test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
   expect(existsSync(join(claudeDir, ".claude.json"))).toBe(false);
 });
 
-// Commander folds --verify/--no-verify into ONE optional boolean. Proven at the
-// CLI boundary, not by calling the parser directly: each spelling must reach
-// parseUpdateAction as a SET verify flag, which the report-flag rejection makes
-// observable without any network (--check alone would go on to resolve releases).
-// Which VALUE wins when both are given is Commander's negatable-option contract
-// (last one); observing it needs the apply path, so it is not asserted here.
+// Commander folds --verify/--no-verify into ONE optional boolean, proven at the CLI boundary: each
+// spelling must reach parseUpdateAction as a SET flag, which the report-flag rejection exposes
+// without any network. Which value wins when both are given needs the apply path, so it is not
+// asserted.
 test("cli.ts update folds --verify/--no-verify into the verify flag", () => {
   for (
     const args of [
@@ -186,8 +170,8 @@ test("cli.ts update folds --verify/--no-verify into the verify flag", () => {
 });
 
 test("cli.ts mcp --serve --profile '' hard-fails instead of serving the default credential", () => {
-  // A supplied-but-blank --profile (an unset shell var in `--profile "$P"`) must
-  // never silently resolve the DEFAULT credential (the named-profile hard-fail rule).
+  // A supplied-but-blank --profile (an unset shell var in `--profile "$P"`) must never resolve the
+  // DEFAULT credential.
   const blank = runCli(["mcp", "--serve", "--profile", ""], {
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
@@ -195,12 +179,9 @@ test("cli.ts mcp --serve --profile '' hard-fails instead of serving the default 
   expect(blank.stderr).toContain("--profile expects a profile name");
 });
 
-// One help-surface case per command: shared shape (exit 0, the usage header, every
-// flag named), varying needles. Successor of the former per-command env/shell/
-// health/start/update --help tests; commands whose help test carries extra
-// rejection runs (mcp, launch, codex, claude, init, uninstall, install) stay separate.
-// "--verify " keeps its trailing space: bare "--verify" is a substring of --no-verify,
-// so it alone could not miss a dropped --verify flag.
+// One help-surface case per command; commands whose help test carries extra rejection runs stay
+// separate. "--verify " keeps its trailing space so it matches the padded option entry only; bare
+// "--verify" would also match a mention of the flag inside another option's description.
 const HELP_SURFACES: { cmd: string; needles: string[] }[] = [
   { cmd: "env", needles: ["--format", "--profile"] },
   {
@@ -215,9 +196,8 @@ const HELP_SURFACES: { cmd: string; needles: string[] }[] = [
   },
 ];
 
-// Preferences that moved into `agent config` have no imperative twin left: the
-// autoupdate toggle is the `auto-update` key ("--auto " with its trailing space, as
-// bare "--auto" is a substring of the surviving --auto-status).
+// Preferences that moved into `agent config` have no imperative twin left. "--auto " keeps its
+// trailing space: bare "--auto" is a substring of the surviving --auto-status.
 const REMOVED_FLAGS: { cmd: string; flags: string[] }[] = [
   { cmd: "update", flags: ["--auto ", "--no-auto"] },
   { cmd: "shell", flags: ["--launchers"] },
@@ -298,7 +278,7 @@ test("codex exposes and runs check mode", () => {
   expect(other.stdout).toContain("Codex provider mode: other");
   expect(other.stdout).toContain(`config.toml: ${join(otherHome, "config.toml")}`);
 
-  // none (no config.toml) now exits 2 (proxy default), matching Claude.
+  // No config.toml is "none": still exit 2 (the proxy is the default), matching Claude.
   const missing = runCheck(noneHome);
   expect(missing.exitCode).toBe(2);
   expect(missing.stdout).toContain("Codex provider mode: none");
@@ -408,7 +388,6 @@ test("agent claude reconciles the Desktop library after its write; --check repor
   expect(check.stdout).toContain(`"copilot-env: old" orphaned at ${join(library, "old.json")}`);
   expect(check.stdout).toContain("fix: agent claude");
 
-  // The configure chain: the default entry lands and the orphan goes, in one run.
   const wire = runCli(["claude", "--proxy"], { env });
   expect(wire.exitCode).toBe(0);
   const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
@@ -433,8 +412,7 @@ test("init configures both agents and rejects --direct + --proxy", () => {
   expect(help.output).toContain("--direct");
   expect(help.output).toContain("--proxy");
 
-  // --proxy forces BOTH agents to the proxy (no probe); isolate the homes so we
-  // never touch the real ~/.codex or ~/.claude.
+  // --proxy forces BOTH agents to the proxy (no probe).
   const root = tempDir("copilot-init-");
   const proc = runCli(["init", "--proxy"], {
     env: isolatedEnv({
@@ -482,10 +460,9 @@ test("the mode conflict is rejected at the boundary on every command that takes 
 });
 
 test("codex/claude reject flag combinations the old routing order silently resolved", () => {
-  // `codex --check --direct` used to run the check and drop the mode;
-  // `codex --mobile --check` used to run mobile and drop the check. Each
-  // combination is now a boundary rejection (units in provider_mode.test.ts;
-  // this pins the cli.ts wiring end-to-end).
+  // The bugs pinned: `codex --check --direct` once ran the check and dropped the mode, and
+  // `codex --mobile --check` once ran mobile and dropped the check. Units in provider_mode.test.ts;
+  // this pins the cli.ts wiring.
   const cases: Array<{ argv: string[]; message: string }> = [
     { argv: ["codex", "--check", "--direct"], message: "does not combine with --direct/--proxy" },
     { argv: ["codex", "--mobile", "--check"], message: "--mobile is an interactive pairing flow" },
@@ -500,10 +477,8 @@ test("codex/claude reject flag combinations the old routing order silently resol
 }, 90_000);
 
 test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {
-  // Spawned without a TTY: the interactive pairing flow must bail with a clear
-  // message + exit 1 instead of hanging on a prompt. On macOS/Windows that's the
-  // TTY guard ("interactive"); on Linux the platform gate fires first (no Codex
-  // app there). Either way it refuses.
+  // Without a TTY the pairing flow must bail instead of hanging on a prompt. On macOS/Windows that
+  // is the TTY guard ("interactive"); on Linux the platform gate fires first (no Codex app there).
   const proc = runCli(["codex", "--mobile"], { env: isolatedEnv() });
   expect(proc.exitCode).toBe(1);
   const err = proc.stderr;
@@ -521,8 +496,8 @@ test("the CLI-install flag lives on shell, not init", () => {
   expect(init.exitCode).toBe(0);
   expect(shell.output).toContain("--clis");
   expect(init.output).not.toContain("--clis");
-  // init keeps the agent-config flags; shell does not configure agents. The
-  // credential flags moved to `agent auth`, so init no longer carries --gh-token.
+  // init keeps the agent-config flags; shell does not configure agents; credentials belong to
+  // `agent auth`, so neither carries --gh-token.
   expect(init.output).toContain("--direct");
   expect(init.output).not.toContain("--gh-token");
   expect(shell.output).not.toContain("--gh-token");
@@ -557,10 +532,9 @@ test("install --help surfaces the wiring flags; unknown flags are rejected", () 
   expect(unknown.stderr).toContain("--clis");
 }, 30_000);
 
-// In a checkout `install` builds the in-place plan (the checkout's own files are
-// never rewritten), so what the flags observably steer is the shell wiring and
-// the epilogue -- exactly the option mapping under test. Both rc seams point at
-// a throwaway root, so the wiring runs for real without touching the machine.
+// In a checkout `install` builds the in-place plan (the checkout's own files are never rewritten),
+// so the flags observably steer only the shell wiring and the epilogue. Both rc seams point at a
+// throwaway root.
 test("bare install defaults to shell wiring; the negated and assets-only flags map through", () => {
   const root = tempDir("copilot-install-smoke-");
   const documents = join(root, "Documents");
@@ -597,17 +571,13 @@ test("bare install defaults to shell wiring; the negated and assets-only flags m
   // Three cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 90_000);
 
-// `agent shell` wires whatever this platform's startup file is: the POSIX rc files under
-// an isolated HOME, or the PowerShell $PROFILE under a redirected Documents folder. The
-// Windows lookup asks the OS where Documents is, so no HOME override can move it --
-// COPILOT_ENV_CI_PS_DOCUMENTS_DIR is the seam that can. Both targets are throwaway, so the
-// wiring runs for real on every OS and the machine is never touched.
+// The Windows lookup asks the OS where Documents is, so no HOME override can move it:
+// COPILOT_ENV_CI_PS_DOCUMENTS_DIR is the seam. Both targets are throwaway, so the wiring runs for
+// real on every OS.
 test("shell --clis --no-prereqs verifies only and wires this platform's startup file", () => {
   const root = tempDir("copilot-shell-clis-");
   const documents = join(root, "Documents");
-  // Both seams point at the throwaway root, so this run is floor-proof: it cannot be
-  // moved by an ambient rc-dir value, and it never reaches the machine's own files.
-  // (The homedir()/$HOME fallback keeps its coverage in shell_integration.test.ts.)
+  // The homedir()/$HOME fallback is covered in shell_integration.test.ts.
   const ok = runCli(["shell", "--clis", "--no-prereqs"], {
     env: isolatedEnv({
       HOME: root,
@@ -636,9 +606,9 @@ test("shell --clis --no-prereqs verifies only and wires this platform's startup 
 }, 30_000);
 
 test("shell --clis --no-prereqs rejects --cooldown, never drops it", () => {
-  // A cooldown has nothing to steer when nothing installs, so the boundary rejects the
-  // pair (it used to be silently dropped). The optional-valued flag still PARSES in
-  // every spelling -- the failure below is the boundary conflict, not a parse error.
+  // A cooldown has nothing to steer when nothing installs, so the boundary rejects the pair. The
+  // optional-valued flag still PARSES in every spelling: the failure is the conflict, not a parse
+  // error.
   const root = tempDir("copilot-shell-clis-");
   for (const args of [["--cooldown"], ["--cooldown=0"], ["--cooldown", "14"]] as const) {
     const proc = runCli(["shell", "--clis", "--no-prereqs", ...args], {
@@ -647,20 +617,17 @@ test("shell --clis --no-prereqs rejects --cooldown, never drops it", () => {
     expect(proc.exitCode).toBe(1);
     expect(proc.stderr).toContain("--cooldown and --no-prereqs are mutually exclusive");
   }
-  // Three cold CLI spawns; on a loaded Windows CI runner each cold start + TS
-  // load can take several seconds, so allow generous headroom to avoid flaky timeouts.
+  // Three cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 90_000);
 
 test("the merged commands are gone; --gh-token is off the per-agent commands", () => {
   const rootOut = helpScreen("--help").output;
-  // setup-clis / setup-shell / setup-launchers were folded into init/shell. The
-  // cached help screen is the reintroduction guard: a re-registered command
-  // would surface there (the CLI has a no-hidden-commands rule).
+  // The cached root help is the reintroduction guard for the folded-in setup-* commands (the CLI
+  // has a no-hidden-commands rule).
   for (const stale of ["setup-clis", "setup-shell", "setup-launchers"]) {
     expect(rootOut).not.toContain(stale);
   }
 
-  // --gh-token now lives only on init, not on codex/claude.
   for (const cmd of ["codex", "claude"] as const) {
     const help = helpScreen(cmd, "--help");
     expect(help.exitCode).toBe(0);
@@ -671,7 +638,6 @@ test("the merged commands are gone; --gh-token is off the per-agent commands", (
 test("--full-help prints the overview plus every subcommand's help", () => {
   const proc = helpScreen("--full-help");
   expect(proc.exitCode).toBe(0);
-  // Top-level overview + a sampling of subcommand help sections.
   for (const needle of ["agent init", "agent shell", "agent start", "agent codex", "--clis"]) {
     expect(proc.stdout).toContain(needle);
   }
@@ -709,9 +675,6 @@ test("health --scope bogus exits 1 with a helpful message", () => {
 
 // --- profile-aware health ------------------------------------------------------
 
-/** An isolated env with a seeded proxy profile 'p': store slot (gh-token, proxy),
- *  daemon home, and a reserved port in its run state -- plus throwaway agent
- *  homes so the wiring checks never read the real ~/.codex / ~/.claude. */
 function seededProfileEnv(): Record<string, string> {
   const root = tempDir("copilot-health-profile-");
   const home = join(root, "api-home");
@@ -754,7 +717,6 @@ test("health sweep reports a seeded proxy profile as its own runtime target", ()
     checks: ProfiledCheck[];
   };
   expect(json.profile).toBeNull();
-  // The profile's consistency check and daemon rows, stamped with its name.
   const consistency = json.checks.find((c) => c.id === "profile.consistency");
   expect(consistency?.profile).toBe("p");
   expect(consistency?.status).toBe("ok");
@@ -814,7 +776,6 @@ test("health --profile narrows the run and excludes account-wide checks", () => 
   ) {
     expect(ids).not.toContain(id);
   }
-  // Every check in a narrowed run describes the addressed profile.
   for (const c of json.checks) expect(c.profile).toBe("p");
   // The unwired agent homes read as interrupted profile wiring (warn), and the
   // down daemon fails -- both fixes address the profile.
@@ -822,7 +783,6 @@ test("health --profile narrows the run and excludes account-wide checks", () => 
   expect(json.checks.find((c) => c.id === "runtime.port")?.fix).toBe("agent start --profile p");
   expect(json.exitCode).toBe(1);
 
-  // The acceptance narrowing: --profile with the fast runtime scope.
   const narrowed = runCli(["health", "--profile", "p", "--scope", "runtime", "--json"], { env });
   const narrowedJson = JSON.parse(narrowed.stdout) as {
     profile: string | null;
@@ -844,11 +804,9 @@ test("health --profile with an unknown name is a hard error naming the known pro
   expect(err).toContain("known profiles: p");
 });
 
-// End-to-end coverage of the full diagnostic command: running the REAL
-// `agent health` exercises the whole import graph plus the live probes (deno,
-// node_modules, proxy package, runtime, shell wiring, CLIs, Codex), so it
-// cross-validates the rest of the codebase the way the unit tests can't. An
-// isolated COPILOT_API_HOME + a dead port make the runtime checks deterministic.
+// The REAL `agent health` exercises the whole import graph plus the live probes, cross-validating
+// the codebase the way unit tests cannot. An isolated COPILOT_API_HOME and a dead port make the
+// runtime checks deterministic.
 function runHealthJson(scope: string): { exitCode: number | null; json: HealthJson } {
   const proc = runCli(["health", "--scope", scope, "--json"], { env: isolatedProxyEnv({}) });
   return { exitCode: proc.exitCode, json: JSON.parse(proc.stdout) as HealthJson };
@@ -871,7 +829,6 @@ test("health --scope full runs every group end-to-end and fails on a dead proxy"
   const { exitCode, json } = runHealthJson("full");
   const ids = json.checks.map((c) => c.id);
   expect(json.scope).toBe("full");
-  // Representative checks from each group are present.
   for (
     const id of [
       "bootstrap.deno",
@@ -884,7 +841,6 @@ test("health --scope full runs every group end-to-end and fails on a dead proxy"
   ) {
     expect(ids).toContain(id);
   }
-  // No daemon + isolated state => runtime fails => exit 1, ok=false.
   expect(json.exitCode).toBe(1);
   expect(json.ok).toBe(false);
   expect(exitCode).toBe(1);
@@ -947,8 +903,7 @@ test("health --scope codex covers only Codex wiring", () => {
 
 test("health --scope claude covers only Claude wiring (Code + Desktop)", () => {
   const home = tempDir("copilot-claude-scope-");
-  // Proxy wiring (the proxy is Claude's default; CI has no gh/direct) =>
-  // providerMode "proxy", status ok.
+  // Proxy wiring: the proxy is Claude's default, and CI has no gh/direct.
   writeClaudeSettings(home, { apiKeyHelper: proxyHelperCommand() });
   const proc = runCli(["health", "--scope", "claude", "--json"], {
     env: isolatedEnv({ CLAUDE_CONFIG_DIR: home }),

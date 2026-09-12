@@ -18,9 +18,6 @@ import {
 import { ROOT } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 
-/** A fetch stub: `accept(id)` decides which integration id the fake endpoint accepts on
- *  `/models`; `/copilot_internal/user` returns `apiBase` (or 404 to force the fallback).
- *  Records every requested integration id so tests can assert probe ORDER. */
 function stubFetch(opts: {
   accept: (id: string | null) => boolean;
   apiBase?: string;
@@ -50,7 +47,7 @@ test("probeIntegrationIdentity: first accepted candidate wins, in order", async 
   });
   expect(res.identity?.name).toBe(COPILOT_CLI_INTEGRATION_ID);
   expect(res.conclusive).toBe(true);
-  // vscode-chat tried first (rejected), then the CLI id (accepted) -- sandbox never reached.
+  // The sandbox candidate is never reached once the CLI id is accepted.
   expect(seen).toEqual([VSCODE_CHAT_INTEGRATION_ID, COPILOT_CLI_INTEGRATION_ID]);
 });
 
@@ -94,14 +91,13 @@ test("probeIntegrationIdentity: a transient 5xx/429 is inconclusive, a 400 is de
     }
     return Promise.resolve(new Response("nope", { status: code }));
   };
-  // A 500/429 on every candidate must NOT read as "definitively rejected".
   for (const code of [500, 429, 503, 408, 404]) {
     const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
       fetchImpl: status(code),
     });
     expect(res.conclusive).toBe(false);
   }
-  // A 400 (the verified "PATs not supported" identity rejection) IS definitive.
+  // 400 is the verified "PATs not supported" identity rejection.
   const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
     fetchImpl: status(400),
   });
@@ -264,11 +260,9 @@ test("directIdentityCandidates: the default candidate carries the detected UA an
 });
 
 test("the preload's copied header literal stays in step with the module's (drift guard)", async () => {
-  // The --preload shim stays import-free (a shim must not drag CLI modules into the
-  // daemon), so it re-declares this contract as a literal. Nothing but this test ties the
-  // copy to the original -- a rename here fails loudly instead of silently disabling the
-  // header rewrite in the daemon. (The shim's env-key literal, INTEGRATION_ID_ENV, is
-  // pinned the same way by test/daemon_env_keys.test.ts.)
+  // The --preload shim stays import-free (it must not drag CLI modules into the daemon), so it
+  // re-declares this contract as a literal; nothing but this test ties the copy to the original.
+  // The shim's env-key literal is pinned the same way by test/daemon_env_keys.test.ts.
   const shim = readFileSync(join(ROOT, "src", "scripts", "pat_passthrough_preload.ts"), "utf8");
   expect(shim).toContain(`const INTEGRATION_ID_HEADER = "${INTEGRATION_ID_HEADER}"`);
 });
@@ -308,10 +302,9 @@ test("fetchRawModels(direct): a caller deadline aborts the identity probe chain 
 });
 
 test("fetchRawModels(direct) probes and fetches ONE host, with the resolved identity", async () => {
-  // The real consumer, end to end: a PAT-shaped credential must have its identity probed
-  // against the SAME host the catalog request then hits. Probing a discovered account host
-  // while fetching the public one would render the verdict against a host this request
-  // never touches (and would silently 400 for a PAT).
+  // A PAT's identity must be probed against the SAME host the catalog request then hits;
+  // probing a discovered account host while fetching the public one renders the verdict
+  // against a host this request never touches.
   const { fetchRawModels, DIRECT_MODELS_URL } = await import("../src/copilot_api/catalog.ts");
 
   const seen: string[] = [];
@@ -340,11 +333,10 @@ test("fetchRawModels(direct) probes and fetches ONE host, with the resolved iden
     setIntegrationProbeFetch(null);
   }
 
-  // EVERY request -- probe candidates and the final catalog GET -- hit the one public host.
   expect(seen.length).toBeGreaterThan(1); // a probe happened, then the real fetch
   expect(seen.every((u) => u === DIRECT_MODELS_URL)).toBe(true);
   expect(seen.some((u) => u.includes("/copilot_internal/user"))).toBe(false);
-  // ...and both the winning probe and the catalog GET carried the settled identity.
+  // The winning probe and the catalog GET both carried the settled identity.
   expect(accepted.length).toBe(2);
   expect(accepted.every((id) => id === COPILOT_CLI_INTEGRATION_ID)).toBe(true);
 });

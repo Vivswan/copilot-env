@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
-# copilot-env installer (Linux + macOS).
-#
-# Bootstrap only: pick this platform's compiled agent binary from the selected
-# copilot-env GitHub release, verify its SHA256 against the release's
-# checksums.txt, install it as <install-dir>/bin/copilot-env, then hand off to
-# the binary's own `install` subcommand (it materializes the runtime assets,
-# the bin/agent launcher shims, and the shell integration). Optional CLIs and
-# launchers are managed after install (`agent shell --clis`, `agent config --set launchers true`).
+# copilot-env installer (Linux + macOS); install.ps1 is the Windows twin.
+# Bootstrap only: fetch and verify the release binary, then hand off to its own `install`
+# subcommand, which owns everything after that.
 
 set -eu
 
@@ -82,13 +77,9 @@ retry() {
     done
 }
 
-# Lexically absolutize $1 into INSTALL_DIR and refuse the obviously unsafe
-# targets (empty, "/", the user's home, any "."/".." component). Deliberately
-# minimal and purely lexical: the binary's own `install` re-checks the
-# CANONICAL path (symlinks resolved) when it plans the install
-# (src/install/installer.ts); this pre-check only keeps the bootstrap's
-# mkdir/mv away from the worst targets. Mirrors Resolve-SafeInstallDir in
-# install.ps1 (whose GetFullPath collapses dot components instead).
+# Purely lexical on purpose: the binary's `install` re-checks the CANONICAL path (symlinks
+# resolved) in src/install/installer.ts; this only keeps the bootstrap's mkdir/mv away from
+# the worst targets. Twin: Resolve-SafeInstallDir in install.ps1.
 resolve_safe_install_dir() {
     INSTALL_DIR="$1"
     case "$INSTALL_DIR" in
@@ -96,9 +87,7 @@ resolve_safe_install_dir() {
         "") die "refusing to use unsafe install directory '$1'." ;;
         *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;;
     esac
-    # Collapse consecutive slashes on both sides of the compare: without this,
-    # "/Users//me" is a distinct string that slips past the home refusal below
-    # (the ps1 twin's GetFullPath collapses separators the same way).
+    # Without this "/Users//me" slips past the home refusal below.
     INSTALL_DIR=$(printf '%s' "$INSTALL_DIR" | sed 's://*:/:g')
     _home=$(printf '%s' "$HOME" | sed 's://*:/:g')
     # Refuse "."/".." components outright rather than resolving them: resolved
@@ -133,8 +122,6 @@ resolve_target() {
     esac
 }
 
-# Verify one "<sha256>  <name>" checksums.txt line against the file of that
-# name inside $1, with whichever sha256 tool this system has.
 sha256_check_line() {
     _dir="$1"
     _line="$2"
@@ -174,8 +161,6 @@ resolve_release_tag() {
     esac
 }
 
-# Fetch one release file into $2: from the override directory, the override
-# URL, or the resolved GitHub release download URL.
 fetch_release_file() {
     _name="$1"
     _dest="$2"
@@ -214,11 +199,10 @@ done
 INSTALL_DIR="${INSTALL_DIR_ARG:-${COPILOT_ENV_DIR:-$HOME/.copilot-env}}"
 resolve_safe_install_dir "$INSTALL_DIR"
 
-# A source checkout must never be an install target: checkout markers plus .git
-# (a directory, or a file in a worktree) mirrors the binary's own plan-time
-# refusal (CHECKOUT_MARKERS in src/install/installer.ts), before the bin write
-# touches the root. Markers without .git are a legacy source install, whose
-# superseded artifacts the binary sweeps.
+# Mirrors the binary's plan-time refusal (CHECKOUT_MARKERS in src/install/installer.ts)
+# before the bin write touches the root.
+#   a marker and .git (a file in a worktree, so `-e`)  -> a live source checkout  -> refused
+#   a marker, no .git                                  -> a legacy source install -> proceeds; the binary sweeps it
 if [ -e "$INSTALL_DIR/.git" ]; then
     for _marker in package.json deno.json; do
         if [ -e "$INSTALL_DIR/$_marker" ]; then
@@ -231,9 +215,8 @@ fi
 _tmp="$(mktemp -d)"
 trap 'rm -rf "$_tmp"' EXIT
 
-# A GH token (higher rate limits / private access) must stay off curl's command
-# line: argv is world-readable via `ps`/`/proc/<pid>/cmdline` while curl runs, so
-# write it to a 0600 header file and pass `-H @file` (curl >= 7.55).
+# The token stays off curl's argv (world-readable via `ps` while curl runs): a 0600 header
+# file and `-H @file` (curl >= 7.55) instead.
 if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
     _hdr="$_tmp/auth-header"
     _old_umask="$(umask)"
@@ -249,8 +232,6 @@ ASSET="copilot-env-$TARGET"
 DOWNLOAD_DIR=""
 DOWNLOAD_URL_BASE=""
 if [ -n "${COPILOT_ENV_DOWNLOAD_BASE:-}" ]; then
-    # Override for CI draft-release smokes and mirrors: a local directory or a
-    # base URL that holds the agent binary and checksums.txt.
     if [ -d "$COPILOT_ENV_DOWNLOAD_BASE" ]; then
         DOWNLOAD_DIR="$COPILOT_ENV_DOWNLOAD_BASE"
     else
@@ -267,15 +248,13 @@ fi
 fetch_release_file "$ASSET" "$_tmp/$ASSET"
 fetch_release_file "checksums.txt" "$_tmp/checksums.txt"
 
-# Verify against the one checksums.txt line for this asset (a leading "*"
-# marks binary mode in shasum output; accept both forms).
+# A leading "*" marks binary mode in shasum output, so both forms match.
 _line="$(awk -v name="$ASSET" '$2 == name || $2 == ("*" name) { print }' "$_tmp/checksums.txt" | head -n 1)"
 [ -n "$_line" ] || die "checksums.txt has no entry for $ASSET."
 sha256_check_line "$_tmp" "$_line" || die "SHA256 verification failed for $ASSET."
 
-# The install root (and any missing ancestor a nested --dir needs) is created here,
-# before the binary that names its own writes exists: say so in the same shape it
-# will (stderr, "created -> <path>"), outermost first.
+# The binary names every write it makes outside its own homes, but the root is created before it exists: report
+# in its shape ("created -> <path>" on stderr), outermost first.
 _missing=""
 _probe="$INSTALL_DIR"
 while [ ! -e "$_probe" ]; do
@@ -304,12 +283,9 @@ fi
 
 "$INSTALL_DIR/bin/$BINARY_NAME" "${INSTALLER_ARGS[@]}"
 
-# Offer to reload the shell so the freshly-wired integration takes effect without the
-# user opening a new terminal. Only when integration was wired, we are attached to a
-# real terminal, not under CI, and the caller did not opt out. A child process can't
-# source into its parent shell, so we hand off with `exec`: replacing this process with
-# an interactive shell attached to the tty makes it read the user's rc (where the
-# integration now lives). exec skips the EXIT trap, so clean up the temp dir first.
+# A child cannot source into its parent shell, so the reload is an `exec` of a fresh
+# interactive shell on the tty, which reads the rc the integration now lives in. exec skips
+# the EXIT trap, so the temp dir is removed first.
 if [ "$SKIP_SHELL_INTEGRATION" = false ] && [ "$EXEC_SHELL" = true ] && [ -z "${CI:-}" ] \
     && [ -e /dev/tty ] && { [ -t 0 ] || [ -t 1 ]; }; then
     printf 'Reload your shell now to activate copilot-env? [Y/n] ' >/dev/tty

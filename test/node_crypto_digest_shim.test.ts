@@ -1,8 +1,6 @@
-// The node:crypto digest shim: fills in the digest Node would infer when a
-// caller passes none, which Deno 2.9 refuses. The canary pins the Deno gap
-// itself, so a fixed Deno turns into a failing test that says "delete the shim".
-// The expected defaults below were measured against Node 26 (`crypto.sign` with
-// no digest, then finding the explicit digest that verifies the signature).
+// The expected defaults were measured against Node 26: `crypto.sign` with no digest, then the
+// explicit digest that verifies the signature. Deno 2.9 refuses an unspecified digest on a key
+// whose signature takes one; Ed25519 takes none, so its undefined passes through unshimmed.
 import crypto from "node:crypto";
 import { defaultDigestFor, unshimmedVerify } from "../src/utils/node_crypto_digest_shim.ts";
 import { describe, expect, test } from "./helpers/testing.ts";
@@ -95,7 +93,6 @@ describe("node:crypto digest shim", () => {
     expect(
       crypto.verify(undefined, DATA, dsa.publicKey, crypto.sign("sha256", DATA, dsa.privateKey)),
     ).toBe(true);
-    // Wrapper forms reach the same inference.
     const rsaSig = crypto.sign("sha256", DATA, rsa.privateKey);
     expect(
       crypto.verify(

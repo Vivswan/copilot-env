@@ -1,11 +1,7 @@
-// Copilot web search over the Responses API. Claude Code wired Direct cannot use
-// its builtin WebSearch (an Anthropic server-side tool Copilot's compat layer
-// rejects with a 400), but `POST /responses` with `tools: [{"type":"web_search"}]`
-// executes the search on Copilot's backend and returns a cited answer. This module
-// is the plain client behind the `agent mcp --serve` server's `web_search` tool:
-// credential -> client identity -> one POST -> answer text with a `Sources:` list.
-// It stays in the copilot_api layer (like admin.ts / catalog.ts, the other REST
-// clients) so the MCP server remains a thin protocol adapter over it.
+// Claude Code wired Direct cannot use its builtin WebSearch (an Anthropic server-side tool Copilot's
+// compat layer rejects with a 400), but `POST /responses` with `tools: [{"type":"web_search"}]` runs
+// the search on Copilot's backend. This is the plain client behind the `agent mcp --serve` server's
+// `web_search` tool; it lives here, not in the MCP server, so that server stays a thin protocol adapter.
 
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
@@ -27,10 +23,9 @@ import type { Profile } from "./profile.ts";
 const logger = createStderrLogger();
 
 /**
- * Built-in default model for the MCP web_search tool when `message-websearch-model` is
- * unset: the same model the proxy itself defaults to on its Messages-API web-search path,
- * so one stored key and one default drive both surfaces. Must remain a RAW catalog id,
- * never an alias: the default path skips alias resolution so it stays fetch-free.
+ * The same model the proxy defaults to on its Messages-API web-search path, so one stored key and one
+ * default drive both surfaces. Must stay a RAW catalog id, never an alias: the default path skips
+ * alias resolution so it stays fetch-free.
  */
 export const DEFAULT_WEB_SEARCH_MODEL = "gpt-5-mini";
 
@@ -39,16 +34,13 @@ const WEB_SEARCH_TIMEOUT_MS = 120_000;
 const SEARCH_INSTRUCTIONS =
   "Search the web to answer the user's query. Answer concisely from the search results and cite the source URLs.";
 
-/**
- * Resolve with `promise`, or reject as soon as `signal` aborts -- WITHOUT
- * cancelling the underlying work. Used for the identity probe: its memoized
- * result is worth keeping even when this call stops waiting for it.
- */
+/** Rejects on abort WITHOUT cancelling the work: the identity probe's memoized result is worth keeping
+ *  even when this call stops waiting for it. */
 function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (signal === undefined) return promise;
   return new Promise<T>((resolve, reject) => {
     const abortError = () => {
-      // Preserve the caller's reason (MCP cancellations carry a plain string).
+      // MCP cancellations carry a plain string as the reason.
       if (signal.reason instanceof Error) return signal.reason;
       if (signal.reason === undefined || signal.reason === null) {
         return new Error("web_search was cancelled");
@@ -56,7 +48,7 @@ function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined):
       return new Error(`web_search was cancelled: ${String(signal.reason)}`);
     };
     if (signal.aborted) {
-      promise.catch(() => {}); // abandoned, not cancelled -- swallow its outcome
+      promise.catch(() => {});
       reject(abortError());
       return;
     }
@@ -79,23 +71,20 @@ function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined):
 }
 
 export interface WebSearchOptions {
-  /** Credential slot; a named profile NEVER falls back to the default credential. */
+  /** A named profile NEVER falls back to the default credential. */
   profile?: Profile;
-  /** Explicit model override (already validated non-empty); wins over stored config. */
+  /** Wins over stored config. */
   model?: string;
-  /** Injection seam for tests (both the identity probe and the POST go through it). */
+  /** Test seam for both the identity probe and the POST. */
   fetchImpl?: ProbeFetch;
   timeoutMs?: number;
-  /** Client-side cancellation (the MCP server passes the request's signal through). */
   signal?: AbortSignal;
 }
 
-// Memoized per token so a long-lived MCP server pays the catalog fetch once.
-// Injected fetchImpl bypasses the memo (the probeMemo precedent in
-// integration_identity.ts): test stubs sharing a token must not collide.
+// Memoized per token so a long-lived MCP server pays the catalog fetch once. An injected fetchImpl
+// bypasses the memo (the probeMemo precedent in integration_identity.ts): test stubs sharing a token must not collide.
 const aliasMemo = new Map<string, Promise<Record<string, string>>>();
 
-/** Test hook: drop the alias memo (mirrors resetIntegrationIdentityCache). */
 export function resetWebSearchAliasCache(): void {
   aliasMemo.clear();
 }
@@ -109,8 +98,7 @@ function catalogAliases(token: string, fetchImpl?: ProbeFetch): Promise<Record<s
   let pending = aliasMemo.get(token);
   if (pending === undefined) {
     pending = build();
-    // A failed fetch must not poison the memo for a long-lived server: drop it
-    // so the next call retries.
+    // A failed fetch must not poison the memo for a long-lived server.
     pending.catch(() => aliasMemo.delete(token));
     aliasMemo.set(token, pending);
   }
@@ -118,12 +106,11 @@ function catalogAliases(token: string, fetchImpl?: ProbeFetch): Promise<Record<s
 }
 
 /**
- * Resolve a catalog-derived alias (`gpt-latest`, `claude-latest`, `opus[1m]`, ...)
- * the way the proxy does for the same stored key (start.ts), so the ONE
- * `message-websearch-model` value drives both surfaces. BEST-EFFORT: on catalog
- * failure warn and send the raw value (what this client always did). A lookup
- * miss is a pass-through -- generateAliases skips identity mappings, so an exact
- * catalog id sails through unchanged.
+ * Resolves an alias the way the proxy does for the same stored key (start.ts), so ONE
+ * `message-websearch-model` value drives both surfaces.
+ *
+ *   the catalog fetch fails  -> warn and send the raw value
+ *   no alias for the value   -> sent as-is; generateAliases skips identity mappings
  */
 async function resolveWebSearchModel(
   model: string,
@@ -141,12 +128,9 @@ async function resolveWebSearchModel(
 }
 
 /**
- * The GitHub token the search runs under, or throw with a pointed message.
- * Provider-driven like every other read of the credential; the ONE extra rule here
- * is an explicit env fallback (GH_TOKEN et al.) when the default slot has no
- * provider recorded at all -- that keeps a bare clone (`GH_TOKEN=... bin/agent mcp --serve`)
- * working without `agent auth`, while a recorded-but-broken provider still errors
- * instead of silently switching credentials.
+ * The ONE extra rule over Credential: an env fallback (GH_TOKEN et al.) when the default slot has no
+ * provider recorded at all, so a bare clone (`GH_TOKEN=... bin/agent mcp --serve`) works without
+ * `agent auth`. A recorded-but-broken provider still errors instead of silently switching credentials.
  */
 export function resolveWebSearchCredential(profile: Profile = null): string {
   const credential = new Credential(undefined, profile);
@@ -160,24 +144,19 @@ export function resolveWebSearchCredential(profile: Profile = null): string {
   throw new Error(reason);
 }
 
-/** Search the web through Copilot's /responses endpoint; returns cited answer text. */
 export async function webSearch(query: string, opts: WebSearchOptions = {}): Promise<string> {
   const profile = opts.profile ?? null;
   const token = resolveWebSearchCredential(profile);
   const configured = opts.model ?? new CopilotEnvConfig().messageApiWebSearchModel();
-  // Only a configured value can be an alias; the built-in default is maintained
-  // as a raw catalog id, so the default path stays fetch-free. Like the probe
-  // below, a cancelled call stops WAITING but leaves the memo filling.
+  // Only a configured value can be an alias; the built-in default is a raw catalog id, so the default
+  // path stays fetch-free.
   const model = configured === null
     ? DEFAULT_WEB_SEARCH_MODEL
     : await raceWithAbort(resolveWebSearchModel(configured, token, opts.fetchImpl), opts.signal);
-  // The probe stays MEMOIZED (a per-credential result the next call reuses), so no
-  // fetch is injected in production -- instead a cancelled tool call merely stops
-  // WAITING for a cold PAT probe (raceWithAbort below); the probe runs on and fills
-  // its memo for the next call.
-  // The /responses User-Agent is CODEX_EXEC_USER_AGENT deliberately VERSION-FREE:
-  // the versioned form (codexUserAgent) lives in the codex layer, which this
-  // module must not import.
+  // No fetch is injected in production, so the probe stays MEMOIZED: a cancelled tool call stops
+  // WAITING for a cold PAT probe while the probe runs on and fills its memo for the next call.
+  // The User-Agent is deliberately VERSION-FREE: the versioned codexUserAgent lives in the codex
+  // layer, which this module must not import.
   const integrationId = await raceWithAbort(
     resolveDirectIntegrationId(token, CODEX_EXEC_USER_AGENT, {
       pinned: new CopilotEnvConfig().pinnedIntegrationId(),
@@ -202,8 +181,8 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
       "stream": false,
       "reasoning": { "effort": "low" },
       "tools": [{ "type": "web_search" }],
-      // Force the search: without this the model may answer from its own weights,
-      // and this tool's whole contract is "the answer came from the live web".
+      // Without this the model may answer from its own weights, and the tool's whole contract is
+      // "the answer came from the live web".
       "tool_choice": { "type": "web_search" },
       "instructions": SEARCH_INSTRUCTIONS,
       "input": query,
@@ -212,20 +191,15 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    // Cap the upstream body: it lands in MCP error content (model context), and a
-    // hostile/huge error page must not flood it.
+    // The body lands in MCP error content (model context); a huge error page must not flood it.
     const capped = detail.length > 600 ? `${detail.slice(0, 600)}...` : detail;
     throw new Error(`POST ${url} returned ${res.status} ${res.statusText} ${capped}`.trim());
   }
   return parseResponsesOutput(await res.json());
 }
 
-/**
- * Reduce a /responses body to answer text plus a `Sources:` list. The `output`
- * array carries `web_search_call` items (ignored) and `message` items whose
- * `content[]` holds `output_text` parts; each part may carry `url_citation`
- * annotations. Exported for fixture tests.
- */
+/** Exported for fixture tests. The `output` array carries `web_search_call` items (ignored) and
+ *  `message` items whose `output_text` parts may carry `url_citation` annotations. */
 export function parseResponsesOutput(body: unknown): string {
   const output = isRecord(body) && Array.isArray(body.output) ? body.output : [];
   const texts: string[] = [];

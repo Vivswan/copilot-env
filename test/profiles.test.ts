@@ -1,6 +1,4 @@
-// Named credential/wiring profiles: the opt-in additions beside the default
-// (settings-<name>.json, [profiles.<name>], per-profile credential slots and
-// daemon homes). The default path must stay byte-identical throughout.
+// Every profile write must leave the default path byte-identical.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -69,7 +67,6 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-/** Isolated proxy home (credential store, run state, profile homes). */
 function tmpProxyHome(): string {
   const homes = isolateAgentHomes("copilot-profiles-");
   dir = homes.dir;
@@ -116,8 +113,7 @@ test("a named credential write requires the profile to exist (no half-profile au
   expect(work.resolve()).toBeNull();
   expect(work.isAuthenticated()).toBe(false);
 
-  // The old behavior auto-created a credential-only half profile here; profiles
-  // are created ONLY by the atomic commit, so the write is a rejection.
+  // Profiles are created ONLY by the atomic commit, so the write is a rejection, never a half profile.
   expect(() => work.store("gh-token", "ghp_work")).toThrow(/no such profile 'work'/);
   expect(state.profileNames()).toEqual([]);
   expect(new Credential(state).resolve()).toBe("ghp_default"); // default untouched
@@ -230,7 +226,6 @@ test("reserveProfilePort records stable, distinct ports; resolve peeks read-only
   expect(work).toBe(peek);
   expect(alt).not.toBe(defaultPort);
   expect(alt).not.toBe(work);
-  // Stable: re-reserving and resolving both return the recorded reservation.
   expect(reserveProfilePort(WORK)).toBe(work);
   expect(Number(copilotApiResolvePort(WORK))).toBe(work);
   expect(CopilotEnvRunState.forProfile(WORK).read().port).toBe(work);
@@ -243,10 +238,10 @@ test("copilotApiFallbackPort ignores the addressed profile's own record (snapsho
   // The default target's fallback is the configured/built-in default -- no scan.
   expect(copilotApiFallbackPort(null)).toBe(defaultPort);
 
-  // WORK records the first candidate (default+1). A caller that snapshotted
-  // WORK's state BEFORE that write must get a fallback the write cannot steer:
-  // WORK's own record is excluded, so its fallback is still default+1 -- while
-  // another profile's scan does avoid it and lands on default+2.
+  // A caller that snapshotted WORK's state before the reservation must get a fallback the write
+  // cannot steer.
+  //   WORK's own record  -> excluded, fallback stays default+1
+  //   another profile    -> the scan avoids it, lands on default+2
   expect(reserveProfilePort(WORK)).toBe(defaultPort + 1);
   expect(copilotApiFallbackPort(WORK)).toBe(defaultPort + 1);
   expect(copilotApiFallbackPort(GH_ALT)).toBe(defaultPort + 2);
@@ -595,7 +590,6 @@ test("a wiring failure after the atomic commit leaves a complete slot that --syn
     integrationIdentity: null,
   });
 
-  // Clearing the blocker and re-syncing re-derives the artifacts from the slot.
   rmSync(settingsPathFor(claudeHome, WORK));
   await runProfile({ sync: true, mode: "auto" });
   expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(true);
@@ -611,17 +605,15 @@ test("profile --add requires a mode for a new profile", async () => {
   expect(runProfile({ add: "work", mode: "auto", set: "ghp_x" })).rejects.toThrow(
     /--direct or --proxy/,
   );
-  // The contradictory --direct --proxy pair never reaches runProfile anymore: the
-  // CLI boundary parse rejects it (see provider_mode.test.ts / cli.smoke.test.ts).
-  // Same conflict contract as `agent auth`: --set is the gh-token path; a different
-  // explicit provider must error, never be silently coerced to gh-token.
+  // --direct --proxy is rejected at the CLI boundary (provider_mode.test.ts), never here.
+  // Same conflict contract as `agent auth`: --set is the gh-token path, so another explicit
+  // provider errors instead of being coerced to gh-token.
   expect(
     runProfile({ add: "work", mode: "proxy", provider: "copilot", set: "ghp_x" }),
   ).rejects.toThrow(/--set only applies/);
 });
 
 test("parseProfileAction: one verb per invocation, add-only knobs live on the add arm", () => {
-  // Each verb maps to its own arm; --add carries the mode and the parsed acquisition.
   expect(parseProfileAction({ add: "work", mode: "proxy" })).toEqual({
     kind: "add",
     name: WORK,
@@ -639,7 +631,6 @@ test("parseProfileAction: one verb per invocation, add-only knobs live on the ad
   });
   expect(parseProfileAction({ sync: true, mode: "auto" })).toEqual({ kind: "sync" });
   expect(parseProfileAction({ list: true, mode: "auto" })).toEqual({ kind: "list" });
-  // Zero or two verbs, or an add-only knob on another verb: boundary rejections.
   expect(() => parseProfileAction({ mode: "auto" })).toThrow(/exactly one/);
   expect(() => parseProfileAction({ add: "work", list: true, mode: "auto" })).toThrow(
     /exactly one/,
@@ -831,12 +822,10 @@ test("a direct profile bakes a non-default probed identity into BOTH agents", as
   expect(new CopilotEnvState().readProfileSlot(WORK).integrationIdentity).toBe(
     "copilot-developer-cli",
   );
-  // Claude: the header rides ANTHROPIC_CUSTOM_HEADERS in the profile's settings overlay.
   const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, WORK), "utf8"));
   expect(settings.env.ANTHROPIC_CUSTOM_HEADERS).toContain(
     "Copilot-Integration-Id: copilot-developer-cli",
   );
-  // Codex: the same identity in the profile provider's http_headers.
   const doc = readToml(join(codexHome, "config.toml"));
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
   const headers = providers[codexProviderId(WORK)]?.http_headers as Record<string, string>;
@@ -887,7 +876,7 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
     return meta.entries.map((e) => e.name);
   };
 
-  // Key on (default): the add wires the entry, as before.
+  // Key on (the default): the add wires the entry.
   await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
   expect(entryNames()).toEqual(["copilot-env: work"]);
   const helper = desktopHelperPath(resolveRootHome(), "proxy", WORK);
@@ -903,7 +892,6 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
   await runProfile({ sync: true, mode: "auto" });
   expect(entryNames()).toEqual([]);
 
-  // Still off: a re-add creates nothing; back on: the next sync wires it again.
   await runProfile({ add: "work", mode: "auto" });
   expect(entryNames()).toEqual([]);
   new CopilotEnvConfig().del("claudeDesktop");

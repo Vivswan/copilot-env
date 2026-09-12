@@ -38,9 +38,8 @@ function startFix(profile: Profile): string {
   return profile === null ? "agent start" : `agent start --profile ${profile}`;
 }
 
-/** Whether a classified credential actually resolves -- THE predicate shared by
- *  checkAuth and checkProfileAuth (a stored token resolves by presence, gh-cli
- *  by the live gh probe, none never). Exhaustive on the credential union. */
+/** THE predicate shared by checkAuth and checkProfileAuth: a stored token resolves by presence,
+ *  gh-cli by the live gh probe, none never. */
 function credentialResolves(kind: StoredCredential["kind"], ghAuthenticated: boolean): boolean {
   switch (kind) {
     case "stored":
@@ -76,8 +75,8 @@ export function checkDeno(f: BootstrapFacts): CheckResult {
 export function checkNodeModules(f: BootstrapFacts): CheckResult {
   const base = { ...meta("bootstrap.nodeModules"), profile: null };
   if (f.nodeModules === null) {
-    // Compiled binary: dependencies are embedded and the proxy floats into its
-    // own cache, so there is no node_modules to be missing or stale.
+    // Compiled binary: dependencies are embedded and the proxy floats into its own cache, so
+    // there is no node_modules to be missing or stale.
     return {
       ...base,
       status: "ok",
@@ -110,8 +109,8 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
 
 export function checkProxyPackage(f: ProxyFacts): CheckResult {
   const base = { ...meta("proxy.package"), profile: null };
-  // A config that couldn't be read means we can't judge bounds -- surface that
-  // as the failure rather than letting the exception escape the report.
+  // An unreadable config means the bounds cannot be judged; that is the failure, rather than an
+  // exception escaping the report.
   if (f.configError !== null || f.bounds === null) {
     return {
       ...base,
@@ -134,9 +133,9 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     };
   } else if (bounds.reason === "missing") {
     if (f.sidecar.standalone) {
-      // A compiled install ships no deno.json baseline: the float resolves the
-      // proxy into its own cache at `agent start`, so "missing" is the normal
-      // pre-start state there, not a broken install.
+      // A compiled install ships no deno.json baseline: the float resolves the proxy into its
+      // own cache at `agent start`, so "missing" is the normal pre-start state, not a broken
+      // install.
       standaloneMissing = true;
       outcome = {
         status: "ok",
@@ -167,10 +166,9 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
   }
   let exempted = false;
   if (!bounds.ok && bounds.reason !== "missing" && f.floatSkips) {
-    // The float itself skips (proxyFloatSkips: proxy unused, no env pin), so
-    // the bounds are unenforceable -- the suggested fixes would not move the
-    // version -- and must not read as a failure. A proxy rewire (or a proxy
-    // profile) re-enables the float, which enforces them again.
+    // The float itself skips (proxyFloatSkips: proxy unused, no env pin), so the bounds are
+    // unenforceable (the suggested fixes would not move the version) and must not read as a
+    // failure. A proxy rewire or a proxy profile re-enables the float, which enforces them again.
     exempted = true;
     outcome = {
       status: "ok",
@@ -181,9 +179,8 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
   return {
     ...base,
     ...outcome,
-    // floatSkips/standalone are stamped only when they changed the verdict,
-    // mirroring the runtime checks' bothDirect stamp, so --json consumers can
-    // tell "in bounds" from "out of bounds but exempted".
+    // floatSkips/standalone are stamped only when they changed the verdict, mirroring the runtime
+    // checks' bothDirect stamp, so --json consumers can tell "in bounds" from "exempted".
     value: {
       version: f.version,
       cooldownSeconds: f.cooldownSeconds,
@@ -201,18 +198,16 @@ function floatCooldownLabel(seconds: number | null): string {
   return `cooldown ${seconds}s`;
 }
 
-/**
- * The deno the proxy runs on. A checkout runs on its own runtime and needs nothing; a
- * compiled binary is not a deno CLI, so it CANNOT spawn the proxy until the pinned
- * sidecar is provisioned -- which is a failure, not a note.
- */
+/** A checkout runs on its own runtime; a compiled binary is not a deno CLI, so it needs one from
+ *  PATH, the SIDECAR_DENO_ENV override, or the provisioned copy, and having none of the three is
+ *  a failure, not a note. */
 export function checkProxySidecar(f: ProxyFacts): CheckResult {
   const base = { ...meta("proxy.sidecar"), profile: null };
   const { kind, referenceVersion, denoBin, version, standalone } = f.sidecar;
   if (kind === "absent") {
     if (f.floatSkips) {
-      // Direct-only: nothing spawns the proxy, so a missing deno is idle
-      // capacity, not a failure. A proxy rewire re-enables the requirement.
+      // Direct-only: nothing spawns the proxy, so a missing deno is idle capacity, not a
+      // failure. A proxy rewire re-enables the requirement.
       return {
         ...base,
         status: "ok",
@@ -231,9 +226,8 @@ export function checkProxySidecar(f: ProxyFacts): CheckResult {
       value: { kind, referenceVersion, standalone },
     };
   }
-  // A PATH/override deno older than the tested reference still works -- warn,
-  // never block (upgrading is the user's job). An unreadable version is not a
-  // verdict, so it reads as ok with the version unknown.
+  // A PATH/override deno older than the tested reference still works: warn, never block
+  // (upgrading is the user's job). An unreadable version is not a verdict, so it reads ok.
   const behind = version !== null &&
     (compareDenoVersions(version, referenceVersion) ?? 0) < 0;
   const named = version === null ? "deno (version unknown)" : `deno ${version}`;
@@ -261,12 +255,9 @@ export function checkProxySidecar(f: ProxyFacts): CheckResult {
   };
 }
 
-/**
- * The float's resolved-version record and the cache it points at -- the pair the daemon
- * actually launches from. Absent, the deno.json baseline in node_modules runs instead,
- * which is a working fallback rather than a failure; a record whose cache has gone
- * missing is not (the launch asks for that exact version offline and would fail).
- */
+/** Not resolved yet reads ok: a checkout falls back to the deno.json baseline, a compiled
+ *  install waits for `agent start`. A RECORDED version whose cache has gone missing fails,
+ *  because the launch asks for that exact version offline. */
 export function checkProxyResolved(f: ProxyFacts): CheckResult {
   const base = { ...meta("proxy.resolved"), profile: null };
   const resolved = f.resolved;
@@ -302,8 +293,8 @@ export function checkProxyResolved(f: ProxyFacts): CheckResult {
 
 export function checkRuntimePort(f: RuntimeTarget, p: DaemonProbeFacts): CheckResult {
   const base = { ...meta("runtime.port"), profile: f.profile };
-  // Both agents direct => no agent routes to this port, so neither an empty port
-  // nor some unrelated service listening there is a proxy problem.
+  // Both agents direct: no agent routes to this port, so neither an empty port nor an unrelated
+  // service listening there is a proxy problem.
   if (!f.proxyExpected) {
     return {
       ...base,
@@ -314,8 +305,8 @@ export function checkRuntimePort(f: RuntimeTarget, p: DaemonProbeFacts): CheckRe
       value: { port: f.port, reachable: p.reachable, bothDirect: true },
     };
   }
-  // Managed lifecycle on => the resolver launches the daemon on demand, so a
-  // down daemon is expected between sessions, not a failure.
+  // Managed lifecycle on: the resolver launches the daemon on demand, so a down daemon is
+  // expected between sessions, not a failure.
   if (!p.reachable && f.watchdog.autoStart) {
     return {
       ...base,
@@ -337,12 +328,10 @@ export function checkRuntimePort(f: RuntimeTarget, p: DaemonProbeFacts): CheckRe
 export function checkRuntimePid(f: RuntimeTarget, p: DaemonProbeFacts): CheckResult {
   const tracked = p.pidTracked;
   const base = { ...meta("runtime.pid"), profile: f.profile };
-  // An unproven identity scan (pidScanUnproven) is "failed to look", never "not ours":
-  // every arm below words it honestly, and the final verdict is a warn, not the
-  // confident stale-or-foreign fail. The two excused arms (both-direct, down +
-  // auto-start) may keep their ok: there the verdict is INVARIANT under the unknown --
-  // a "yes" reading would also land on ok (tracked pids always do) -- so the flatten
-  // decides nothing; only the honest detail and the value stamp carry the failed look.
+  // An unproven identity scan (pidScanUnproven) is "failed to look", never "not ours": each arm
+  // words it honestly and the final verdict is a warn, not the confident stale-or-foreign fail.
+  // The two excused arms (both-direct, down + auto-start) keep their ok: a "yes" reading would
+  // also land on ok there, so the flatten decides nothing.
   let detail: string;
   if (p.trackedPid === null) {
     detail = "no tracked copilot-api pid";
@@ -354,7 +343,7 @@ export function checkRuntimePid(f: RuntimeTarget, p: DaemonProbeFacts): CheckRes
     detail = `tracked pid ${p.trackedPid} is stale or foreign`;
   }
   const scanNote = p.pidScanUnproven ? { scanUnproven: true } : {};
-  // Both agents direct => no proxy needed, so a missing tracked pid is fine.
+  // Both agents direct: no proxy needed, so a missing tracked pid is fine.
   if (!tracked && !f.proxyExpected) {
     return {
       ...base,
@@ -363,9 +352,8 @@ export function checkRuntimePid(f: RuntimeTarget, p: DaemonProbeFacts): CheckRes
       value: { pid: p.trackedPid, tracked, alive: p.pidAlive, bothDirect: true, ...scanNote },
     };
   }
-  // Down daemon + managed lifecycle on => it starts on demand; not a failure.
-  // Reachable-but-untracked is NOT down (that is runtime.orphan/identity
-  // territory), so auto-start never excuses it here.
+  // Down daemon + managed lifecycle on: it starts on demand. Reachable-but-untracked is NOT down
+  // (that is runtime.orphan/identity territory), so auto-start never excuses it here.
   if (!tracked && !p.reachable && f.watchdog.autoStart) {
     return {
       ...base,
@@ -401,12 +389,11 @@ export function checkRuntimePaths(f: RuntimeTarget): CheckResult {
 
 export function checkRuntimeWatchdog(f: RuntimeTarget): CheckResult {
   const w = f.watchdog;
-  // Scoped to full + proxy, NOT the launchers' fast `runtime` probe (this is informational and
-  // reads the config + activity file). Always "ok": it reports state, it never fails a run.
+  // Scoped to full + proxy, NOT the launchers' fast `runtime` probe (informational; reads the
+  // config and activity file). Always "ok": it reports state, it never fails a run.
   const base = { ...meta("runtime.watchdog"), profile: f.profile, status: "ok" as const };
   if (!f.proxyExpected) {
-    // Marks left by an earlier run would render a countdown for a daemon no
-    // request will reach.
+    // Marks left by an earlier run would render a countdown for a daemon no request will reach.
     return {
       ...base,
       detail: "not required (Codex + Claude are both direct)",
@@ -427,11 +414,10 @@ export function checkRuntimeWatchdog(f: RuntimeTarget): CheckResult {
       value: { autoStart: true, idleTimeoutMs: 0 },
     };
   }
-  // The shared activity rule (lastActivityMs, owned by the in-daemon watchdog): the most
-  // recent of the heartbeat and the last real model call (the observer's persisted
-  // `.activity.json` mark -- liveness GET / pings are NOT activity). With neither recorded
-  // yet, idle/remaining are unknown -- the daemon's real baseline also includes a
-  // startedAtMs the probe cannot see, so don't fake a precise window.
+  // lastActivityMs is the in-daemon watchdog's own rule (the later of the heartbeat and the last
+  // real model call; liveness pings are NOT activity). With neither recorded, idle/remaining are
+  // unknown: the daemon's baseline also includes a startedAtMs the probe cannot see, so no
+  // precise window is faked.
   const lastActivity = lastActivityMs({ inferenceMs: w.lastRequestMs, ensureAtMs: w.lastEnsureAt });
   const idleMs = lastActivity > 0 ? Math.max(0, w.now - lastActivity) : null;
   const remainingMs = idleMs === null ? null : Math.max(0, w.idleTimeoutMs - idleMs);
@@ -460,12 +446,10 @@ export function checkRuntimeWatchdog(f: RuntimeTarget): CheckResult {
 }
 
 export function checkRuntimeIdentity(f: RuntimeTarget, p: DaemonProbeFacts): CheckResult {
-  // Is whatever is reachable on the port actually copilot-api? checkRuntimePort only proves
-  // SOMETHING answers; a foreign service squatting the port would read green there while every
-  // agent request silently misroutes. Warn-only (never fails a run) and full+proxy scope.
-  // The misroute claim presumes something routes to the port: the probe gates on
-  // proxyExpected, so a target with no route to the port (both modes direct and no
-  // proxy base URL) always arrives here with identityConfirmed null.
+  // checkRuntimePort only proves SOMETHING answers; a foreign service on the port would read
+  // green there while every agent request misroutes. Warn-only, full+proxy scope. The probe
+  // gates on proxyExpected, so a target with no route to the port always arrives with
+  // identityConfirmed null.
   const base = { ...meta("runtime.identity"), profile: f.profile };
   if (!p.reachable || p.identityConfirmed === null) {
     // Nothing reachable (runtime.port owns that verdict) or identity not probed.
@@ -498,16 +482,15 @@ export function checkRuntimeIdentity(f: RuntimeTarget, p: DaemonProbeFacts): Che
 }
 
 export function checkRuntimeOrphan(f: RuntimeTarget, p: DaemonProbeFacts): CheckResult {
-  // The port-ownership verdict: one exhaustive switch over the probe's own
-  // PortState reconciliation (classifyPortState in facts.ts) -- this check no
-  // longer re-derives who holds the port. Pure (no I/O), full+proxy scope.
+  // One exhaustive switch over the probe's PortState (classifyPortState in facts.ts); this check
+  // never re-derives who holds the port. Full+proxy scope.
   const base = { ...meta("runtime.orphan"), profile: f.profile };
   const state = p.portState;
   switch (state.kind) {
     case "foreign":
       // The detail must not claim the tracked daemon owns the port when identity says the
       // responder is foreign (pidTracked only proves the saved pid is a copilot-api process,
-      // not that it owns THIS port) -- defer that wording to runtime.identity.
+      // not that it owns THIS port); runtime.identity owns that wording.
       return {
         ...base,
         status: "ok",
@@ -515,11 +498,9 @@ export function checkRuntimeOrphan(f: RuntimeTarget, p: DaemonProbeFacts): Check
         value: { orphan: false },
       };
     case "unrouted":
-      // SOMETHING is reachable on the port, but both agents are configured direct, so no
-      // proxy is required -- the both-direct gate (not the facts) is why this isn't an
-      // orphan warning. Say that -- even with a tracked pid alive, since identity is never
-      // probed for a both-direct target (proxyExpected gates the probe), nothing here
-      // proves who owns the port, and nothing routes to it anyway.
+      // Something answers, but both agents are direct, so no proxy is required: the both-direct
+      // gate, not the facts, is why this is not an orphan warning. Identity is never probed for
+      // such a target, so nothing here proves who owns the port either.
       return {
         ...base,
         status: "ok",
@@ -542,9 +523,8 @@ export function checkRuntimeOrphan(f: RuntimeTarget, p: DaemonProbeFacts): Check
       };
     case "orphan": {
       const stopFix = f.profile === null ? "agent stop" : `agent stop --profile ${f.profile}`;
-      // An unproven identity scan means "not the tracked daemon" was never established:
-      // the responder may well BE the tracked daemon. Warn with the honest unproven
-      // detail instead of the confident orphan claim below.
+      // An unproven identity scan means "not the tracked daemon" was never established: the
+      // responder may well BE it. Warn with the honest detail instead of the orphan claim.
       if (p.pidScanUnproven && p.trackedPid !== null) {
         return {
           ...base,
@@ -555,8 +535,7 @@ export function checkRuntimeOrphan(f: RuntimeTarget, p: DaemonProbeFacts): Check
           value: { orphan: null, trackedPid: p.trackedPid, scanUnproven: true },
         };
       }
-      // Identity is confirmed copilot-api or indeterminate (probe failed) -- don't
-      // over-claim "copilot-api".
+      // Identity confirmed copilot-api, or indeterminate (probe failed): never over-claim.
       const what = state.identity === "confirmed"
         ? "copilot-api"
         : "a process (identity unconfirmed)";
@@ -573,12 +552,14 @@ export function checkRuntimeOrphan(f: RuntimeTarget, p: DaemonProbeFacts): Check
 }
 
 /**
- * NAMED targets only (the type says so): do the profile's two halves -- the
- * store slot (the source of truth for credential + mode) and the on-disk daemon
- * home (derived, proxy mode only) -- agree? A profile is created/deleted
- * atomically by `agent profile`, so a lone half is an interrupted add/del; warn
- * with the command that finishes the job. Never a failure: the profile's own
- * runtime rows own hard verdicts.
+ * NAMED targets only: do the store slot (credential + mode, the source of truth) and the on-disk
+ * daemon home (derived, proxy mode only) agree? Only the slot write is atomic; `agent profile`
+ * commits it BEFORE the wiring and deletes it BEFORE the home (src/commands/profile.ts), so each
+ * lone half names the step that did not finish, and the fix is the command that finishes it.
+ * Never a failure: the profile's own runtime rows own hard verdicts.
+ *
+ *   home, no slot        -> del stopped after the slot
+ *   proxy slot, no home  -> add stopped before the wiring landed
  */
 export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
   const name = f.profile;
@@ -604,8 +585,8 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
         fix,
       }
       : {
-        // Only reachable when the profile vanished between the sweep and this
-        // read (its name came from the slots+homes union).
+        // Only reachable when the profile vanished between the sweep and this read (its name
+        // came from the slots+homes union).
         ...base,
         status: "warn",
         detail: "no store slot and no daemon home (profile no longer exists)",
@@ -639,9 +620,9 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
   return { ...base, status: "ok", detail };
 }
 
-/** The account note for a gh-cli slot's verdict lines (no hidden information,
- *  on the failing and unproven lines too): the pinned login, or the account an
- *  auto slot follows right now (bare AUTO when the list was unreadable). */
+/** The account note for a gh-cli slot's verdict lines, on the failing and unproven lines too (no
+ *  hidden information): the pinned login, or the account an auto slot follows right now (bare
+ *  AUTO when the list was unreadable). */
 function ghAccountClause(pin: string | null, followed: string | null): string {
   return pin !== null
     ? `account '${pin}'`
@@ -651,14 +632,10 @@ function ghAccountClause(pin: string | null, followed: string | null): string {
 }
 
 /**
- * A narrowed run's credential line: the addressed NAMED profile's slot (provider,
- * mode, probed direct identity) plus whether the credential actually RESOLVES --
- * a token in the slot, or a live gh login for a gh-cli slot -- mirroring the
- * default checkAuth's provider-driven verdict. `slot` null means the store
- * carries no slot at all (a half-created, home-only profile). Named profiles
- * hard-fail rather than fall back to the default credential, so a missing or
- * unresolvable credential is a warn here even though the default `setup.auth`
- * might be green.
+ * A narrowed run's credential line, mirroring checkAuth's provider-driven verdict. `slot` null
+ * means the store carries no slot at all (a half-created, home-only profile). Named profiles
+ * never fall back to the default credential, so a missing or unresolvable one is a warn here
+ * even when the default `setup.auth` is green.
  */
 export function checkProfileAuth(
   name: ProfileName,
@@ -683,8 +660,8 @@ export function checkProfileAuth(
       ...(resolution.ghAuthUnproven ? { ghAuthUnproven: true } : {}),
     },
   };
-  // A slot with no recorded mode (or none at all) needs an explicit mode flag on
-  // the re-add; with a mode recorded the bare re-add keeps it (sticky).
+  // A slot with no recorded mode (or none at all) needs an explicit mode flag on the re-add;
+  // with a mode recorded the bare re-add keeps it (sticky).
   const addFix = slot === null || slot.mode === null
     ? `agent profile --add ${name} --direct|--proxy`
     : profileAddFix(name);
@@ -701,15 +678,13 @@ export function checkProfileAuth(
   }
   const source = storedCredentialKind(slot.provider, resolution.storedToken);
   const resolves = credentialResolves(source, resolution.ghAuthenticated);
-  // Always name the account (no hidden information): a pinned slot's own login,
-  // or the account an auto slot follows right now (when the list was readable) --
-  // on the failing and unproven lines too.
+  // Always name the account (no hidden information), on the failing and unproven lines too.
   const pin = resolution.ghUser ?? null;
   const followed = resolution.ghActiveLogin ?? null;
   const accountClause = ghAccountClause(pin, followed);
   if (!resolves) {
-    // An unproven gh probe keeps this warn arm (the credential still isn't shown
-    // to work) but must not claim gh IS unauthenticated -- gh was never asked.
+    // An unproven gh probe keeps this warn arm (the credential still is not shown to work) but
+    // must not claim gh IS unauthenticated: gh was never asked.
     const unproven = slot.provider === "gh-cli" && resolution.ghAuthUnproven === true;
     return {
       ...base,
@@ -753,14 +728,9 @@ export function checkProfileAuth(
   };
 }
 
-/**
- * An unfinished 3.5.6 default-home move: the fix-up stages the flat root's
- * daemon files under `profiles/` and flips with one atomic rename, so a kill
- * inside that window leaves the staging dir behind. The system still works --
- * home resolution keeps answering the flat root until the flip -- so this is an
- * unfinished migration (warn), never a breakage (fail); re-running the
- * migration completes the move.
- */
+/** The 3.5.6 fix-up stages the flat root's daemon files under `profiles/` and flips with one
+ *  rename, so a kill inside that window leaves the staging dir. Home resolution keeps answering
+ *  the flat root until the flip, so this is an unfinished migration (warn), never a breakage. */
 export function checkDefaultHomeMigration(f: DefaultHomeMigrationFacts): CheckResult {
   const base = {
     ...meta("runtime.defaultHomeMigration"),
@@ -792,8 +762,8 @@ export function checkShellIntegration(f: ShellFacts): CheckResult {
     },
   };
   if (f.integrationWired) return { ...base, status: "ok", detail: "wired into a shell rc/profile" };
-  // Target discovery never ran: the empty census proves nothing, so keep the
-  // warn + fix but never the confident "not wired" claim.
+  // Target discovery never ran: the empty census proves nothing, so keep the warn + fix but
+  // never the confident "not wired" claim.
   if (f.targetsUnproven) {
     return {
       ...base,
@@ -832,8 +802,8 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
 
 export function checkCli(c: CliFacts): CheckResult {
   const base = {
-    // The one check family whose id is minted outside the descriptor table: the
-    // CLI list is runtime data (see CHECK_DESCRIPTORS).
+    // The one check family whose id is minted outside the descriptor table: the CLI list is
+    // runtime data (see CHECK_DESCRIPTORS).
     id: `setup.cli.${c.command}` as const,
     label: `${c.name} (${c.command})`,
     group: "setup" as const,
@@ -877,8 +847,8 @@ export function checkTool(name: "node" | "npm", look: CommandLook): CheckResult 
 }
 
 export function checkAuth(f: AuthFacts): CheckResult {
-  // Named profiles surface as a detail line only (their hard-fail resolution is a
-  // per-profile concern; the default credential drives this check's status).
+  // Named profiles surface as a detail line only: their hard-fail resolution is a per-profile
+  // concern, and the default credential drives this check's status.
   const profileEntries = Object.entries(f.profiles).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   const profilesLine = profileEntries.length === 0 ? [] : [
     `named profiles: ${
@@ -890,8 +860,8 @@ export function checkAuth(f: AuthFacts): CheckResult {
         .join(", ")
     }`,
   ];
-  // The Copilot client identity: a pin overrides the per-credential probe (the knob a
-  // fine-grained PAT needs -- copilot-developer-cli -- when auto-detection is off).
+  // A pin overrides the per-credential identity probe: the knob a fine-grained PAT needs
+  // (copilot-developer-cli) when auto-detection is off.
   const identityLine = f.pinnedIntegrationId === null ? [] : [
     `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`agent config integration-id\`)`,
   ];
@@ -907,8 +877,8 @@ export function checkAuth(f: AuthFacts): CheckResult {
       pinnedIntegrationId: f.pinnedIntegrationId,
     },
   };
-  // Provider classification owned by storedCredentialKind() (env_state.ts); a
-  // chosen-but-unresolved provider is a warn, not OK.
+  // Provider classification is storedCredentialKind()'s (env_state.ts); a chosen-but-unresolved
+  // provider is a warn, not OK.
   if (f.provider === null) {
     return {
       ...base,
@@ -924,8 +894,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
   }
   const source = storedCredentialKind(f.provider, f.storedToken);
   const resolves = credentialResolves(source, f.ghAuthenticated);
-  // Always name the account (no hidden information): a pinned slot's own login,
-  // or the account an auto slot follows right now (see checkProfileAuth's twin).
+  // Always name the account (no hidden information); see checkProfileAuth's twin.
   const pin = f.ghUser ?? null;
   const followed = f.ghActiveLogin ?? null;
   if (resolves) {
@@ -947,9 +916,9 @@ export function checkAuth(f: AuthFacts): CheckResult {
       ].join("\n"),
     };
   }
-  // An unproven gh probe keeps this warn arm (nothing was shown to resolve) but
-  // must not claim gh IS unauthenticated -- `gh auth token` never ran to
-  // completion, so the `gh auth login` advice would be handed out unearned.
+  // An unproven gh probe keeps this warn arm (nothing was shown to resolve) but must not claim
+  // gh IS unauthenticated: `gh auth token` never ran to completion, so the `gh auth login`
+  // advice would be handed out unearned.
   const unproven = f.provider === "gh-cli" && f.ghAuthUnproven === true;
   return {
     ...base,
@@ -987,8 +956,7 @@ export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
       lastResult: f.lastResult,
     },
   };
-  // Always show the full status (enabled, cooldown, last check, last result),
-  // whether or not autoupdate is on -- matching `agent update --auto-status`. One
+  // The full status whether or not autoupdate is on, matching `agent update --auto-status`. One
   // fact per line so the report renders them as `-` sub-items.
   const last = f.lastCheckMs > 0 ? new Date(f.lastCheckMs).toISOString() : "never";
   const detail = [
@@ -1022,11 +990,9 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
       checkProxySidecar(facts.proxy),
     );
   }
-  // One block of runtime checks per target, in gather order (the default target
-  // first, then named profiles). A named target opens with its consistency
-  // check; per-daemon rows render exactly for the targets whose daemon was
-  // interrogated (the probe's own `probed` outcome -- rows can never describe a
-  // probe that did not happen).
+  // One runtime block per target, in gather order. Per-daemon rows render exactly for the
+  // targets whose daemon was interrogated (the probe's `probed` arm), so a row can never
+  // describe a probe that did not happen.
   for (const target of facts.runtimes ?? []) {
     if (target.profile !== null) out.push(checkProfileConsistency(target));
     const probe = target.probe;
@@ -1058,7 +1024,6 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   if (facts.claudeDesktop) out.push(checkClaudeDesktop(facts.claudeDesktop));
   if (facts.claudeLive) out.push(checkClaudeLive(facts.claudeLive, runProfile));
   if (facts.autoupdate) out.push(checkAutoupdate(facts.autoupdate));
-  // Keep only the checks that participate in `scope` (single source of the rule,
-  // shared with the --json path and the unit tests).
+  // The single source of the scope rule, shared with the --json path and the unit tests.
   return filterByScope(out, scope);
 }

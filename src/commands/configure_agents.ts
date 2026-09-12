@@ -1,7 +1,3 @@
-// Shared agent-configuration + result-guidance helpers for `agent init`: configure
-// both agents and print the next-step guidance box. Kept in their own module so
-// init.ts stays focused on orchestration (ensure-auth -> configure -> guide).
-
 import { configureDefaultAgents } from "../agents/configure_defaults.ts";
 import type { AgentProviderMode, RequestedMode } from "../agents/provider_mode.ts";
 import { bold } from "../utils/ansi.ts";
@@ -11,12 +7,8 @@ import { createStderrLogger } from "../utils/logger.ts";
 // Stderr like the per-agent narration, so the guidance box never pollutes any stdout.
 const logger = createStderrLogger();
 
-/**
- * Configure both agents with one shared requested mode ("auto" = each
- * auto-detects) and report the resulting modes -- `agent init`'s view of
- * configureDefaultAgents (which owns the narration and per-agent resilience;
- * init keeps the warn-and-continue contract, so the failures are dropped here).
- */
+/** configureDefaultAgents owns the narration and per-agent resilience; init warns and continues, so
+ *  the failures it reports are dropped here. */
 export async function configureBothAgents(mode: RequestedMode): Promise<{
   codex: AgentProviderMode;
   claude: AgentProviderMode;
@@ -35,7 +27,6 @@ function modeLabel(mode: AgentProviderMode): string {
   return assertNever(mode);
 }
 
-/** Print the result + what to do next, in a single box so it's easy to scan. */
 export function printGuidance(
   codex: AgentProviderMode,
   claude: AgentProviderMode,
@@ -46,9 +37,8 @@ export function printGuidance(
 
   const lines: string[] = [`Codex   →  ${modeLabel(codex)}`, `Claude  →  ${modeLabel(claude)}`];
 
-  // Append a blank line, a bold section header, then `- `-prefixed rows. Commands
-  // wrapped in `backticks` render as highlighted inline code inside the box, so
-  // they stand out without fragile space-padded columns.
+  // Backticked commands render as highlighted inline code inside the box, so no space-padded
+  // columns.
   const section = (title: string, items: string[]): void => {
     lines.push("", bold(title));
     for (const item of items) lines.push(`  • ${item}`);

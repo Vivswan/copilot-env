@@ -1,4 +1,3 @@
-// Setup domain logic for optional agent CLIs, launchers, and shell wiring helpers.
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { dirname } from "node:path";
 import { consola } from "consola";
@@ -15,51 +14,36 @@ import { assertNonNegativeDays, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 
 const NVM_VERSION = "v0.40.1";
 
-// The toolchain command names, decided ONCE per platform: Windows npm is only
-// spawnable/probe-able as `npm.cmd` (the bare name is not an executable), and the
-// Node.js presence probe keys off it there too -- the winget Node.js LTS package
-// ships node and npm together, and npm is what the install path actually invokes.
-// POSIX probes each tool by its own name.
+// Windows npm is only spawnable as `npm.cmd` (the bare name is not an executable), and the Node.js
+// probe keys off it there too: the winget LTS package ships node and npm together, and npm is what
+// the install invokes.
 const NPM_COMMAND = process.platform === "win32" ? "npm.cmd" : "npm";
 const NODE_PROBE_COMMAND = process.platform === "win32" ? NPM_COMMAND : "node";
 
-/** Bare `--cooldown` (no value) means this many days of npm release aging. Distinct
- *  from the autoupdate release cooldown, which happens to share the number. */
+/** Distinct from the autoupdate release cooldown, which happens to share the number. */
 export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
 
-/**
- * `agent shell`: wire shell integration and optionally install the agent CLIs.
- * The cl/co/cx launchers are the `launchers` config key's (`agent env` emits
- * them); a wire only reports that state.
- */
+/** The cl/co/cx launchers belong to the `launchers` config key (`agent env` emits them); a wire
+ *  only reports that state. */
 export interface ShellArgs {
-  /** Unwire instead of wire. */
   remove?: boolean;
-  /** Also install the optional Codex/Claude/Copilot CLIs, updating an outdated npm install. */
   clis?: boolean;
-  /** With `clis`: install npm releases aged >= N days (null = latest). */
+  /** Days of npm release aging; null = latest. */
   cooldown?: number | null;
-  /** With `clis`: avoid sudo/system package managers. */
   noSudo?: boolean;
-  /** With `clis`: verify prerequisites/CLIs only -- install nothing. */
   noPrereqs?: boolean;
-  /** Windows only: target the CurrentUserAllHosts profile. */
+  /** Windows only: the CurrentUserAllHosts profile. */
   allHosts?: boolean;
 }
 
-/**
- * Parsed intent for the `agent shell --clis` path: either verify prerequisites/CLIs
- * only, or install with a cooldown and sudo policy. A union so the internal
- * representation cannot carry the --no-sudo/--no-prereqs conflict runShell rejects
- * at the flag boundary.
- */
+/** A union so the representation cannot carry the --no-sudo/--no-prereqs conflict the parser
+ *  rejects. */
 export type CliSetup = { mode: "verify-only" } | CliInstall;
 
 type CliInstall = {
   mode: "install";
-  /** Install npm releases aged >= N days (null = latest). */
+  /** Days of npm release aging; null = latest. */
   cooldown: number | null;
-  /** Avoid sudo/system package managers. */
   noSudo: boolean;
 };
 
@@ -75,8 +59,7 @@ function warnMissing(command: string, name: string): void {
   const look = findCommand(command);
   if (look.path !== null) return;
   if (look.launchFailed) {
-    // A failed look must not hand out "install it yourself" advice: the probe
-    // shell never ran, which proves nothing about the CLI.
+    // A failed look must not hand out "install it yourself" advice: the probe never completed.
     consola.warn(`Could not check for ${name} ('${command}'): the command probe failed to run.`);
     return;
   }
@@ -126,13 +109,9 @@ function addWindowsUserPath(directory: string): void {
   refreshWindowsPath();
 }
 
-/**
- * The POSIX shell script that installs Node LTS via nvm and pins the `default`
- * alias to the concrete installed version. Kept pure (no spawning) so a test can
- * assert it never regresses to a remote meta-alias like `lts/*` -- which would
- * leave `default` unresolvable offline and break the resolveCommand nvm
- * fallback that every CLI install depends on.
- */
+/** Pure (no spawning) so a test can assert the `default` alias never regresses to a remote
+ *  meta-alias like `lts/*`, which would leave it unresolvable offline and break the nvm fallback
+ *  every CLI install depends on. */
 export function buildNodePosixInstallScript(): string {
   return [
     "set -e",
@@ -146,13 +125,9 @@ export function buildNodePosixInstallScript(): string {
     '. "$NVM_DIR/nvm.sh"',
     'echo "Installing/activating Node.js LTS via nvm ..."',
     "nvm install --lts",
-    // Alias `default` to the concrete version we just installed -- NOT the
-    // remote `lts/*` meta-alias, which needs `nvm ls-remote` LTS data and
-    // resolves to N/A when that is unavailable (offline / uncached). A broken
-    // default means sourcing nvm.sh activates no version, so `node`/`npm` never
-    // land on PATH and the resolveCommand nvm fallback (and thus the CLI
-    // install) silently fails. `nvm current` is the active version after the
-    // install above; fall back to `node` (latest installed) if it is empty.
+    // The concrete version, NOT the `lts/*` meta-alias: that one needs `nvm ls-remote` data and
+    // resolves to N/A offline, and a broken default means sourcing nvm.sh activates no version, so
+    // the resolveCommand nvm fallback (and thus the CLI install) silently fails.
     'NODE_DEFAULT="$(nvm current)"',
     '[ -n "$NODE_DEFAULT" ] && [ "$NODE_DEFAULT" != "none" ] || NODE_DEFAULT=node',
     'nvm alias default "$NODE_DEFAULT"',
@@ -166,9 +141,8 @@ function installNodePosix(): void {
 }
 
 function installNodeWindows(): void {
-  // Accepted flatten: a FAILED winget look reads absent here and only ABORTS
-  // (nothing installs off it), and ensureNpm's npm look just completed through
-  // the same probe shell, so the failed-look window is negligible.
+  // A FAILED winget look reads absent here and only aborts (nothing installs off it); ensureNpm's
+  // npm look just completed through the same probe shell.
   if (!commandExists("winget")) {
     throw new Error(
       "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent shell --clis'.",
@@ -212,11 +186,8 @@ function ensureNpm(options: CliInstall): boolean {
 }
 
 function resolveNpm(): string {
-  // Accepted flatten: every caller runs moments after ensureNpm proved npm
-  // through a completed look, so a failed look here is a just-broken probe
-  // shell, and the miss only THROWS (nothing installs off it) -- the same
-  // direction any npm failure already takes on these call paths (runNpm throws
-  // on a nonzero exit too).
+  // Every caller runs moments after ensureNpm proved npm through a completed look, and the miss
+  // only THROWS (nothing installs off it).
   const resolved = resolveCommand(NPM_COMMAND);
   if (!resolved) throw new Error("npm is required to install agent CLIs.");
   return resolved;
@@ -224,13 +195,11 @@ function resolveNpm(): string {
 
 function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
   const npm = resolveNpm();
-  // npm is a `#!/usr/bin/env node` shim. When resolveNpm finds it via the nvm
-  // fallback (the same process that just installed Node), the parent PATH does
-  // not yet include node's bin dir, so the shim's `node` lookup fails with
-  // "/usr/bin/env: 'node': No such file or directory". Prepend the resolved
-  // npm's own dir (== node's bin dir) to the child PATH so the shim resolves
-  // node. On Windows resolveNpm returns a bare command name (no separator), so
-  // there is nothing to prepend and npm is already on PATH.
+  // npm is a `#!/usr/bin/env node` shim, so found via the nvm fallback right after Node was
+  // installed it runs on a parent PATH without node's bin dir.
+  //   the shim then fails  -> "/usr/bin/env: 'node': No such file or directory"
+  //   npm's own dir        -> IS node's bin dir, so prepending it is the fix
+  //   Windows              -> a bare name, nothing to prepend: npm is already on PATH
   const npmDir = npm.includes("/") || npm.includes("\\") ? dirname(npm) : null;
   return spawnSync(npm, args, {
     encoding: "utf8",
@@ -246,13 +215,10 @@ function runNpm(args: string[], capture = false): string {
   return capture ? result.stdout.trim() : "";
 }
 
-/**
- * npm's global packages by name with each one's version, or null when the look FAILED (npm
- * did not run, printed no JSON, or printed only an `error` object). A package npm lists
- * without a version (its package.json is unreadable) maps to null; an empty tree has no
- * `dependencies` key at all. The exit status is deliberately not consulted: `npm ls` exits
- * non-zero for an unrelated extraneous or invalid global while still printing the full tree.
- */
+/** Null when the look FAILED; a package listed without a version (unreadable package.json) maps to
+ *  null; an empty tree has no `dependencies` key at all. The exit status is not consulted on
+ *  purpose: `npm ls` exits non-zero for an unrelated extraneous or invalid global while still
+ *  printing the full tree. */
 function npmGlobalVersions(): Record<string, string | null> | null {
   const result = spawnNpm(["ls", "-g", "--depth=0", "--json"], true);
   if (result.error) return null;
@@ -274,15 +240,9 @@ function npmGlobalVersions(): Record<string, string | null> | null {
   return versions;
 }
 
-/**
- * Pure computation of how npm's global bin dir folds into PATH for a given
- * platform. Platform-parameterized so it is testable on POSIX CI: on win32 the
- * prefix IS the bin dir and the separator is ';'; elsewhere the bin dir is
- * `${prefix}/bin` and the separator is ':'. Returns the bin dir, the resolved
- * separator, and -- when the bin dir is not already on PATH -- the deliberate
- * `Path`/`PATH` double-key assignments (Windows is case-insensitive about the
- * variable name, so both are written to keep them in lockstep).
- */
+/** Platform-parameterized so it is testable on POSIX CI. On win32 the prefix IS the bin dir, and
+ *  both `Path` and `PATH` are assigned because Windows is case-insensitive about the name and the
+ *  two must stay in lockstep. */
 export function computePathRefresh(
   platform: NodeJS.Platform,
   prefix: string,
@@ -299,10 +259,8 @@ export function computePathRefresh(
 }
 
 function syncNpmGlobalBinToPath(): void {
-  // Best-effort, the same containment as installAgentClis' per-CLI loop: this PATH
-  // sync is a nicety, and `npm prefix -g` throws on ANY npm failure (registry,
-  // permission, disk) -- escaping here would abort the CLI installs and the
-  // shell-integration wiring runShell does after installAgentClis returns.
+  // `npm prefix -g` throws on ANY npm failure, and escaping here would abort the CLI installs and
+  // the shell-integration wiring that follows; this PATH sync is a nicety.
   let prefix: string;
   try {
     prefix = runNpm(["prefix", "-g"], true);
@@ -319,8 +277,8 @@ function syncNpmGlobalBinToPath(): void {
   addWindowsUserPath(bin);
 }
 
-/** The package's latest release. `--json` pins the output shape whatever the user's npmrc
- *  `json` setting is: npm prints the field as a one-element array (or a bare string). */
+/** `--json` pins the output shape whatever the user's npmrc says; npm prints the field as a
+ *  one-element array or a bare string. */
 function resolveLatestVersion(packageName: string): string {
   const raw = runNpm(["view", packageName, "version", "--json"], true);
   let parsed: unknown;
@@ -358,9 +316,7 @@ function resolveAgedVersion(packageName: string, days: number): string {
   return version;
 }
 
-/** What `--clis` does about one CLI given the npm-installed version (null = not installed)
- *  and the version the run targets: install, move an older one up, or keep what is there.
- *  A newer install is kept: a cooled-down target must never downgrade a fresher release. */
+/** A newer install is kept: a cooled-down target must never downgrade a fresher release. */
 export type CliPlan =
   | { action: "install" }
   | { action: "update"; from: string }
@@ -390,13 +346,12 @@ function installCli(
     return;
   }
   if (look.path !== null && !(cli.packageName in npmGlobals)) {
-    // Only an npm-managed install is ours to move: a CLI from its own installer or a
-    // package manager stays as it is.
+    // Only an npm-managed install is ours to move.
     consola.info(`${cli.name} is installed outside npm; leaving it as it is.`);
     return;
   }
-  // npm's version of the package bounds the install whether or not the command is on PATH
-  // (its bin dir may not be): a target below what npm has never overwrites it.
+  // npm's version bounds the install whether or not the command is on PATH (its bin dir may not
+  // be).
   const installed = npmGlobals[cli.packageName];
   if (installed === null) {
     consola.warn(
@@ -451,11 +406,9 @@ function installCli(
   }
 }
 
-/**
- * Install or update (or in verify-only mode, just verify) the optional agent CLIs -- the
- * `agent shell --clis` path. Best-effort: a missing/uninstallable toolchain warns
- * rather than throwing, so the surrounding `agent shell` run still wires the
- * integration. Does NOT wire the rc blocks -- `runShell` owns that ordering.
+/** Best-effort for the agent CLIs: a missing one, or a probe that could not run, warns rather than
+ *  throwing, so the surrounding `agent shell` run still wires the integration. A Node/npm install
+ *  that is attempted and fails throws out of here instead, and the wiring never runs.
  */
 export function installAgentClis(setup: CliSetup): void {
   switch (setup.mode) {
@@ -474,17 +427,15 @@ export function installAgentClis(setup: CliSetup): void {
       syncNpmGlobalBinToPath();
       const npmGlobals = npmGlobalVersions();
       if (npmGlobals === null) {
-        // Fail closed: without npm's view of what is installed, an install could overwrite
-        // a newer package whose bin dir is merely off PATH.
+        // Without npm's view of what is installed, an install could overwrite a newer package whose
+        // bin dir is merely off PATH.
         consola.warn(
           "Could not read npm's global package list (npm ls -g failed); skipping the CLI installs.",
         );
         return;
       }
-      // Best-effort per CLI: a single package failing (npm error, unreachable registry, a
-      // rejected aged-version lookup) must NOT abort the whole run -- installCli/resolveAgedVersion
-      // throw, and an uncaught throw here would skip the remaining CLIs AND the shell-integration
-      // wiring runShell does after this. Warn and continue so the surrounding `agent shell` finishes.
+      // One package failing must not skip the remaining CLIs or the shell-integration wiring that
+      // follows.
       for (const cli of AGENT_CLIS) {
         try {
           installCli(cli, setup, npmGlobals);
@@ -500,14 +451,10 @@ export function installAgentClis(setup: CliSetup): void {
   }
 }
 
-/** What ONE `agent shell` invocation does, parsed ONCE at the CLI boundary: an unwire,
- *  or a wire optionally carrying a CLI install (the install knobs live in CliSetup alone,
- *  so `--remove --clis` and `--cooldown --no-prereqs` are rejected here, never re-checked). */
 export type ShellAction =
   | { kind: "remove"; allHosts: boolean }
   | { kind: "wire"; allHosts: boolean; clis: CliSetup | null };
 
-/** Parse the raw `agent shell` flags into a ShellAction (the CLI boundary). */
 export function parseShellAction(args: ShellArgs): ShellAction {
   const remove = Boolean(args.remove);
   const clis = Boolean(args.clis);
@@ -527,8 +474,7 @@ export function parseShellAction(args: ShellArgs): ShellAction {
   if (noSudo && noPrereqs) {
     throw new Error("--no-sudo and --no-prereqs are mutually exclusive");
   }
-  // Same conflict as its sibling above: --no-prereqs installs nothing, so a cooldown
-  // has nothing to steer -- reject it instead of silently dropping it.
+  // --no-prereqs installs nothing, so a cooldown has nothing to steer.
   if (cooldown !== null && noPrereqs) {
     throw new Error("--cooldown and --no-prereqs are mutually exclusive");
   }
@@ -540,21 +486,12 @@ export function parseShellAction(args: ShellArgs): ShellAction {
   };
 }
 
-/**
- * `agent shell`: set up the shell environment for the agents. Wires the
- * copilot-env integration block and reports the launchers state it reconciles
- * from the `launchers` config key; `--clis` also installs or updates the optional agent
- * CLIs (tuned by --cooldown/--no-sudo/--no-prereqs). `--remove` unwires the
- * integration (the key is the user's and stays). `--all-hosts` targets the
- * Windows CurrentUserAllHosts profile.
- */
 export function runShell(args: ShellArgs): void {
   const action = parseShellAction(args);
   if (action.kind === "remove") {
     runShellIntegration({ kind: "remove", allHosts: action.allHosts });
     return;
   }
-  // Opt-in CLI install (add path only) happens before the rc block is wired.
   if (action.clis !== null) installAgentClis(action.clis);
   runShellIntegration({ kind: "wire", allHosts: action.allHosts });
   consola.info(

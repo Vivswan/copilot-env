@@ -1,23 +1,6 @@
-// `agent auth`: the single front door for the Direct-mode GitHub credential. It
-// ONLY manages the credential -- acquiring it, reading it back, checking status,
-// clearing it. Configuring Codex/Claude (direct vs proxy) is `agent init`'s job.
-// The credential domain (provider-driven resolution, status, state writes) lives in
-// the `Credential` class (`src/copilot_api/credential.ts`); this module is the thin
-// command + interactive layer on top: provider prompt, device-flow spawn, `runAuth`.
-// The agent Direct configs call `agent auth --get` at fetch time, so this command is
-// also the resolver they shell into.
-//
-// Bare `agent auth` (no --provider) prompts you to choose a provider; `--provider`
-// picks one non-interactively:
-//   - copilot  : interactive GitHub device flow, run via the installed copilot-api
-//                (`<entry> auth login --provider copilot`, scope read:user). It
-//                writes copilot-api's own github_token file; we copy that into our
-//                store and scrub it, so the token rests only in our state.
-//   - gh-cli   : rely on the machine's `gh` login (stores nothing; `--get` runs
-//                `gh auth token`).
-//   - gh-token : store a token. `--set <token>` provides it inline (no UI), `--set`
-//                (bare) reads $COPILOT_GITHUB_TOKEN/$GH_TOKEN/$GITHUB_TOKEN (headless
-//                `--set` it prefers those env vars, else prompts for the token in a TTY.
+// The credential domain is the `Credential` class (src/copilot_api/credential.ts); this is the
+// command and interactive layer. The agent Direct configs shell into `agent auth --get` at fetch
+// time, so this command is also their resolver.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -76,28 +59,18 @@ import { removeReported } from "../utils/report_write.ts";
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
 const logger = createStderrLogger();
 
-// The provider vocabulary rendered for flag hints ("copilot|gh-cli|gh-token"), derived
-// from AUTH_PROVIDERS (env_state.ts owns the list) so these messages can never drift.
+// Derived from AUTH_PROVIDERS (env_state.ts owns the list) so the flag hints can never drift.
 const PROVIDER_CHOICES = AUTH_PROVIDERS.join("|");
 
 export interface AuthArgs {
-  /** `--provider`: which provider to authenticate with (no flag => interactive choice). */
   provider?: string;
-  /** `--set [token]`: provide the gh-token value non-interactively (verbatim, or env when bare). */
   set?: string | boolean;
-  /** `--gh-user <login>`: pin gh-cli to that logged-in gh account (implies `--provider gh-cli`). */
   ghUser?: string;
-  /** `--get`: print the resolved token to stdout (what the agent configs call). */
   get?: boolean;
-  /** `--del`: clear the stored token (de-authenticate). */
   del?: boolean;
-  /** `--check`: report auth status; exit 0 authenticated, 1 not. */
   check?: boolean;
-  /** `--print-proxy-token`: print the local proxy's API key to stdout (for proxy-mode agents). */
   printProxyToken?: boolean;
-  /** `--profile <name>`: address a NAMED credential profile instead of the default. */
   profile?: string;
-  /** `--list`: list the default + named credential profiles (providers only, never tokens). */
   list?: boolean;
 }
 
@@ -107,52 +80,36 @@ function asProvider(provider: string): AuthProvider {
   throw new Error(`--provider must be one of: ${AUTH_PROVIDERS.join(", ")} (got '${provider}')`);
 }
 
-/** Where a gh-token comes from: `--set <token>` (verbatim, no UI / no env), bare `--set`
- *  (the GH token env vars only -- headless, never prompts), or no `--set` at all (prefer
- *  the env vars, else prompt for it in a TTY). The token itself is read at acquisition
- *  time (loginWithGhToken), not here. */
+/** `env` (bare `--set`) is headless and never prompts; `env-or-prompt` (no `--set`) falls back to a
+ *  TTY prompt. The token itself is read at acquisition time, not here. */
 type GhTokenSource =
   | { kind: "inline"; token: string }
   | { kind: "env" }
   | { kind: "env-or-prompt" };
 
-/** Which gh account a gh-cli acquisition uses, as PARSED from the flags:
- *  `pinned` records one login (`gh auth token --user`); `choose` asks (the
- *  bare/interactive flow). Auto is never a flag value -- it is what `choose`
- *  SETTLES to (SettledGhAccount below), carrying the active login so the
- *  narration can always name the account in use. */
+/** Auto is never a flag value: it is what `choose` may SETTLE to (SettledGhAccount), carrying the
+ *  active login so the narration names the account in use when gh reports one. */
 type GhCliAccountChoice =
   | { kind: "pinned"; login: string }
   | { kind: "choose" };
 
-/** A gh-cli account choice after settling. PINNING IS THE ONLY DEFAULT: the
- *  credential must never follow an account the user did not choose (their
- *  Copilot credit would burn on it after a `gh auth login`/switch). Auto exists
- *  solely as the picker's explicit last option; every settle path either pins a
- *  named login or errors with the escape hatches. */
+/** PINNING IS THE ONLY DEFAULT: the credential must never follow an account the user did not
+ *  choose, or their Copilot credit would burn on it after a `gh auth login`. Auto is solely the
+ *  picker's explicit last option. */
 type SettledGhAccount =
   | { kind: "auto"; activeLogin: string | null }
   | { kind: "pinned"; login: string };
 
-/** A credential acquisition with the provider already settled (interactively or by flag). */
 type ResolvedAcquisition =
   | { kind: "copilot" }
   | { kind: "gh-cli"; account: GhCliAccountChoice }
   | { kind: "gh-token"; source: GhTokenSource };
 
-/**
- * How to acquire a credential, parsed ONCE from the raw `--provider`/`--set`/
- * `--gh-user` flags by `parseAcquisition` (the shared boundary for `agent auth`
- * and `agent profile --add`). A `--set` token can only ever travel inside the
- * gh-token variant (and a `--gh-user` pin inside the gh-cli one), so
- * `authenticate` cannot receive either under the wrong provider and silently
- * drop it.
- */
+/** A `--set` token can only travel inside the gh-token variant, and a `--gh-user` pin inside the
+ *  gh-cli one, so `authenticate` cannot receive either under the wrong provider and silently drop
+ *  it. */
 export type CredentialAcquisition = { kind: "choose" } | ResolvedAcquisition;
 
-/** Map a settled provider name onto its acquisition: gh-token logs in via the
- *  env-else-prompt token flow; gh-cli asks which gh account (settling to auto
- *  when there is no real choice); copilot carries the provider itself. */
 function acquisitionForProvider(provider: AuthProvider): ResolvedAcquisition {
   switch (provider) {
     case "gh-token":
@@ -166,15 +123,10 @@ function acquisitionForProvider(provider: AuthProvider): ResolvedAcquisition {
   }
 }
 
-/**
- * Parse the raw `--provider [name]` / `--set [token]` / `--gh-user [login]` flags into a
- * CredentialAcquisition: the ONE place "--set implies gh-token" and "--gh-user implies
- * gh-cli" live (each rejecting a conflicting provider, and one another), shared by
- * `agent auth` and `agent profile --add`. The two differ on which error wins for
- * `--set x --provider bogus`: `agent auth` validates the provider name first, while
- * `agent profile --add` treats ANY non-gh-token string as the --set conflict
- * (`setConflictWins`). Both keep their exact messages.
- */
+/** The one place "--set implies gh-token" and "--gh-user implies gh-cli" live, shared by `agent
+ *  auth` and `agent profile --add`. The two differ on `--set x --provider bogus`: `agent auth`
+ *  validates the provider name first, `agent profile --add` treats any non-gh-token string as the
+ *  --set conflict (`setConflictWins`). */
 export function parseAcquisition(
   provider: string | undefined,
   set: string | boolean | undefined,
@@ -206,8 +158,8 @@ export function parseAcquisition(
     if (!isGhToken) {
       throw new Error("--set only applies to `--provider gh-token`");
     }
-    // Commander's `--set [token]` never produces `false` today, but a future
-    // negatable flag must not silently turn into "read the env".
+    // Commander's `--set [token]` never produces `false`, but a negatable flag must not silently
+    // turn into "read the env".
     if (set === false) {
       throw new Error("`--set` requires a token value");
     }
@@ -220,15 +172,13 @@ export function parseAcquisition(
   return acquisitionForProvider(asProvider(provider));
 }
 
-/** Per-provider picker labels, keyed EXHAUSTIVELY on AuthProvider so a vocabulary
- *  change fails the compile here instead of silently missing a picker option. */
+/** Keyed exhaustively on AuthProvider so a vocabulary change fails the compile here. */
 const PROVIDER_PICKER_DETAIL: Record<AuthProvider, string> = {
   "copilot": "device-flow browser login (read:user scope)",
   "gh-cli": "use the machine's `gh auth login`",
   "gh-token": `store ${ghTokenEnvVarsLabel(" / ")} (headless)`,
 };
 
-/** Interactive provider picker for bare `agent auth`. Errors out without a TTY. */
 async function chooseProvider(): Promise<AuthProvider> {
   if (!process.stdin.isTTY) {
     throw new Error(
@@ -247,14 +197,13 @@ async function chooseProvider(): Promise<AuthProvider> {
 }
 
 /**
- * Settle which gh account a gh-cli acquisition uses. PINNING IS THE ONLY DEFAULT (see
- * SettledGhAccount): the sole login pins itself (unless it is env-only under a TTY: its
- * pin may fail verification with nothing to escape to, so the user decides), several
- * logins pin the active one when no TTY can ask, and the picker lists the accounts first
- * with auto as the explicit LAST option -- a later `gh auth login` must never switch whose
- * Copilot credit gets spent. When nothing can be pinned HONESTLY (unreadable account list,
- * no accounts, unknowable active account), this THROWS naming the escape hatches rather
- * than recording auto. `look` is a test seam; exported for the settle-rule tests.
+ * Pinning is the only default: a later `gh auth login` must never switch whose Copilot credit gets
+ * spent. When nothing can be pinned honestly this throws naming the escape hatches; never auto.
+ *   one login        -> pins itself, unless env-only under a TTY: its pin may fail verification
+ *                       with nothing to escape to, so the user decides
+ *   several, no TTY  -> pins the active one when pickable, else errors
+ *   several, TTY     -> the picker lists the accounts first, auto as the explicit LAST option
+ * `look` is a test seam.
  */
 export async function chooseGhAccount(
   look: () => GhAccountsLook = ghAccountsLook,
@@ -266,27 +215,21 @@ export async function chooseGhAccount(
         "retry `agent auth`, or pass --gh-user <login>",
     );
   }
-  // Copilot authenticates against GH_COPILOT_HOST: another host's login is a
-  // menu entry the pinned resolver cannot serve. The SOURCE never filters the
-  // menu (no hidden information) -- gh's status shows only the winning source
-  // per login, so an exported GH_TOKEN shadows a saved keyring credential
-  // ("Vivswan (GH_TOKEN)" with a perfectly pinnable login underneath). The menu
-  // notes an env-token source instead, and loginWithGhCli verifies the chosen
-  // account before anything is recorded, so a genuinely unservable pick fails
-  // there with its own actionable error instead of being hidden here. A BROKEN
-  // login (a failed/timed-out credential) is the one exclusion -- pinning it
-  // could never verify -- yet it still names the active account below.
+  // The SOURCE never filters the menu: gh's status shows only the winning source per login, so an
+  // exported GH_TOKEN shadows a saved keyring credential the pick may still land on.
+  //
+  //   another host               -> excluded, it cannot be served
+  //   broken                     -> excluded, pinning it could never verify
+  //   every listing an env token -> kept; the menu notes it, loginWithGhCli verifies the pick
   const github = accounts.filter((a) => a.host === GH_COPILOT_HOST && a.broken !== true);
   const logins = [...new Set(github.map((a) => a.login))];
-  // Broken entries still count as ACCOUNTS when deciding whether there is a
-  // choice to make: a broken active login is never abandoned for a healthy
-  // bystander without asking (its owner never chose to stop spending on it).
+  // Broken entries still count when deciding whether there is a choice: a broken active login is
+  // never abandoned for a healthy bystander without asking.
   const allLogins = [
     ...new Set(accounts.filter((a) => a.host === GH_COPILOT_HOST).map((a) => a.login)),
   ];
   const active = activeGhLogin(accounts);
-  // A login whose EVERY listing is an env-token source may not have a saved
-  // credential behind it; say so on the option rather than hiding it.
+  // A login whose EVERY listing is an env-token source may have no saved credential behind it.
   const envOnly = (login: string): string | null => {
     const sources = github.filter((a) => a.login === login).map((a) => a.source);
     const envSource = sources.find((s) => /_TOKEN$/.test(s));
@@ -299,17 +242,16 @@ export async function chooseGhAccount(
   }
   if (logins.length === 1 && allLogins.length === 1) {
     const only = logins[0] ?? "";
-    // A sole ENV-ONLY login may have no saved credential behind its token, so
-    // its pin can fail verification with no other account to escape to --
-    // interactively the user decides (try the pin, or explicit auto); without
-    // a TTY the pin proceeds and a failure names the recovery.
+    // A sole env-only login's pin can fail verification with no other account to escape to;
+    // interactively the user decides, without a TTY the pin proceeds and a failure names the
+    // recovery.
     if (!process.stdin.isTTY || envOnly(only) === null) {
       return { kind: "pinned", login: only };
     }
   }
   if (!process.stdin.isTTY) {
-    // No TTY to ask: pin the active account when it is pickable; anything else
-    // would guess whose credit to spend, so it is an error, never a fallback.
+    // Anything but the active account would guess whose credit to spend, so it is an error, never a
+    // fallback.
     if (active !== null && logins.includes(active)) {
       logger.info(
         `gh has ${allLogins.length} logged-in accounts; pinning the active one (${active}). ` +
@@ -323,8 +265,7 @@ export async function chooseGhAccount(
         "`agent auth --provider gh-cli` in a terminal",
     );
   }
-  // Accounts first (the active one leading -- it is the default selection),
-  // auto LAST and explicit: pinning is the default posture.
+  // The active account leads (the default selection); auto is LAST and explicit.
   const ordered = [...logins].sort((a, b) => Number(b === active) - Number(a === active));
   const activeLabel = active === null ? "" : ` (currently ${active})`;
   const value = await consola.prompt("Which gh account should Direct auth use?", {
@@ -355,12 +296,9 @@ export async function chooseGhAccount(
 
 // --- provider acquisition ---------------------------------------------------
 
-/**
- * `copilot`: run the INSTALLED/floated copilot-api's device-flow login (not `npx @latest`,
- * which would bypass the supply-chain cooldown + the float). It writes its own github_token
- * file; return that token for the caller's single store write and scrub copilot-api's copy.
- * Interactive: inherits stdio so the device-code URL and prompt are shown.
- */
+/** The INSTALLED copilot-api runs the device flow, not `npx @latest`, which would bypass the
+ *  supply-chain cooldown and the float. It writes its own github_token file, which is read and
+ *  scrubbed here. */
 function loginWithCopilot(): string {
   const entry = resolveCopilotApiEntry();
   if (entry.kind === "package" && installedProxyVersion() === null) {
@@ -370,11 +308,9 @@ function loginWithCopilot(): string {
     );
   }
   const { githubTokenFile: tokenFile, githubTokenLoginLock: lockPath } = new CopilotApiPaths();
-  // The WHOLE spawn+read+scrub sequence holds a lock on the shared github_token file: every
-  // profile's device flow funnels through that ONE file, so two concurrent logins (default +
-  // a profile, or two profiles) could otherwise read each other's token into the wrong slot.
-  // Dead-holder-only reclaim (Infinity): an interactive login legitimately holds it for
-  // minutes.
+  // Every profile's device flow funnels through the ONE github_token file, so two concurrent logins
+  // could read each other's token into the wrong slot. Dead-holder-only reclaim: an interactive
+  // login holds it for minutes.
   return withFileLockSync(lockPath, {
     staleMs: Number.POSITIVE_INFINITY,
     waitMs: Number.POSITIVE_INFINITY,
@@ -407,11 +343,10 @@ function loginWithCopilot(): string {
       );
     }
     if (!token) throw new Error("the device-flow login did not produce a GitHub token");
-    // Scrub copilot-api's copy so the token rests only in our state (the proxy
-    // receives it via `--github-token` from there, so this file is redundant).
-    // The caller persists AFTER this scrub (the commit is the caller's, so it
-    // can land atomically with a profile's mode); a crash in between costs one
-    // re-login, never a leaked token file.
+    // Scrub copilot-api's copy so the token rests only in our state (the proxy receives it via
+    // `--github-token` from there).
+    //   the removal fails                  -> best-effort, that file stays on disk
+    //   a crash before the caller persists -> one re-login, since the scrub already ran
     try {
       removeReported(tokenFile);
     } catch {
@@ -421,13 +356,8 @@ function loginWithCopilot(): string {
   });
 }
 
-/**
- * Read a line from the terminal WITHOUT echoing it -- for pasting a secret token so
- * it never lingers on screen or in scrollback. consola's text prompt echoes input
- * and has no masked variant, so we drive readline with a muted output stream (echo
- * is discarded) and print the query to stderr ourselves, keeping `--get`'s stdout
- * contract untouched.
- */
+/** consola's text prompt echoes input and has no masked variant, so readline runs with a muted
+ *  output stream and the query goes to stderr, keeping `--get`'s stdout contract untouched. */
 function readSecret(query: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const muted = new Writable({
@@ -449,7 +379,6 @@ function readSecret(query: string): Promise<string> {
   });
 }
 
-/** Interactive masked prompt for a gh-token. Errors out without a TTY. */
 async function promptForGhToken(): Promise<string> {
   if (!process.stdin.isTTY) {
     throw new Error(
@@ -461,18 +390,10 @@ async function promptForGhToken(): Promise<string> {
   return token;
 }
 
-/**
- * `gh-token`: resolve the token to store, from wherever `source` says it comes:
- *   - inline (`--set <token>`) : the value verbatim (no UI / no env).
- *   - env (bare `--set`)       : read $COPILOT_GITHUB_TOKEN/$GH_TOKEN/$GITHUB_TOKEN, error if none set (headless).
- *   - env-or-prompt (no `--set`): prefer those env vars, else prompt for it in a TTY.
- */
 async function loginWithGhToken(source: GhTokenSource): Promise<string> {
   let token: string;
   let fromEnv = true;
   if (source.kind === "env-or-prompt") {
-    // Interactive / no-`--set` path: prefer the environment, but when no token var is
-    // set, prompt for the token instead of erroring out.
     const envToken = ghTokenFromEnv();
     if (envToken) {
       token = envToken;
@@ -481,14 +402,12 @@ async function loginWithGhToken(source: GhTokenSource): Promise<string> {
       fromEnv = false;
     }
   } else {
-    // `--set <token>` (verbatim) or `--set` bare (env-only, headless): never prompts.
     token = tokenFromSetFlag(source.kind === "inline" ? source.token : true);
     fromEnv = source.kind !== "inline";
   }
-  // Narrate the acquisition only ("Using", never "Stored"): persistence is the
-  // CALLER's single store write -- `agent profile --add` commits the token
-  // later, atomically with the profile's mode, and could still fail after this
-  // prints. The caller's own success line reports the stored outcome.
+  // "Using", never "Stored": persistence is the caller's single store write, which `agent profile
+  // --add` commits later, atomically with the profile's mode, and which could still fail after this
+  // prints.
   logger.success(
     fromEnv
       ? "  Using the GitHub token from the environment."
@@ -497,22 +416,17 @@ async function loginWithGhToken(source: GhTokenSource): Promise<string> {
   return token;
 }
 
-/** `gh-cli`: rely on the machine's gh login (store nothing, verify gh works).
- *  `ghUser` verifies THAT account (`gh auth token --user`); null = gh's active
- *  account, with `activeLogin` naming it in the narration when the account list
- *  was readable (no hidden information: the user always sees WHICH account
- *  their credential follows). `look` is a test seam; exported for its wording
- *  tests. */
+/** `activeLogin` names the account an auto slot follows right now, when the account list was
+ *  readable: the user sees WHICH account their credential follows whenever that is known. `look` is
+ *  a test seam; exported for the wording tests. */
 export function loginWithGhCli(
   ghUser: string | null,
   look: (ghUser: string | null) => GhTokenLook = ghAuthTokenLook,
   activeLogin: string | null = null,
 ): void {
-  // Verify gh works BEFORE recording -- otherwise a failed gh check would point
-  // `--get` at a `gh` that can't produce a token. Either miss throws (the
-  // provider is never recorded); an UNPROVEN look wears its own words, because
-  // "not authenticated" and the `gh auth login` advice are wrong when gh was
-  // never actually asked.
+  // Verified BEFORE recording, or a failed check would point `--get` at a `gh` that cannot produce
+  // a token. An UNPROVEN look wears its own words: "not authenticated" and the `gh auth login`
+  // advice are wrong when gh was never asked.
   const gh = look(ghUser);
   if (gh.token === null) {
     if (gh.unproven) {
@@ -539,14 +453,9 @@ export function loginWithGhCli(
   );
 }
 
-/**
- * Acquire a credential WITHOUT persisting it: settle the provider (a parsed
- * acquisition, or the interactive choice for `choose`) and run its flow. The
- * caller owns the single store write -- `authenticate` records it into an
- * existing slot, `agent profile --add` commits it atomically together with the
- * profile's mode. Throws on failure. `seams` are test-only substitutes for the
- * gh lookups.
- */
+/** Never persists: the caller owns the single store write (`authenticate` into an existing slot,
+ *  `agent profile --add` atomically with the profile's mode). `seams` are test substitutes for the
+ *  gh lookups. */
 export async function acquireCredential(
   acquisition: CredentialAcquisition,
   seams: {
@@ -575,14 +484,8 @@ export async function acquireCredential(
   return { kind: "gh-cli", ghUser: null };
 }
 
-/**
- * Authenticate: acquire a credential (acquireCredential) and record it into
- * `profile`'s slot. Does NOT configure the agents -- that is `agent init` /
- * `agent profile`'s job. A NAMED profile's store slot must already exist (this
- * is the re-auth path; `agent profile --add` is the only creator), and the gate
- * fires BEFORE the acquisition so a typo'd name never costs a device flow (the
- * store's own in-update check backstops it at the write). Throws on failure.
- */
+/** A named profile's slot must already exist (`agent profile --add` is the only creator), and the
+ *  gate fires BEFORE the acquisition so a typo'd name never costs a device flow. */
 export async function authenticate(
   acquisition: CredentialAcquisition,
   profile: Profile,
@@ -595,22 +498,15 @@ export async function authenticate(
 
 // --- sub-actions ------------------------------------------------------------
 
-/** True when the named profile has NO store slot at all. The read-back
- *  sub-actions (--get/--del/--check) report instead of hard-failing, so their
- *  repair hint must branch the way the store's write gate does: an existing
- *  slot (complete or partial) re-auths via `agent auth --profile`, while a
- *  nonexistent name can only be created by `agent profile --add`
- *  (assertProfileSlot would refuse the re-auth). */
+/** The read-back sub-actions report instead of hard-failing, so their repair hint must branch the
+ *  way the store's write gate does: an existing slot re-auths via `agent auth --profile`, a
+ *  nonexistent name can only be created by `agent profile --add`. */
 function profileSlotMissing(profile: ProfileName): boolean {
   return !new CopilotEnvState().profileSlotStatus(profile).exists;
 }
 
-/** The store's missing-slot phrasing, reused as a hint pointing at the one
- *  command that creates a profile: a half-created profile (a daemon home
- *  without a store slot) reports itself the way missingProfileSlotError in
- *  env_state.ts does -- never as "no such profile" -- and a never-created name
- *  gets the plain unknown-profile wording. The repair command is the same
- *  atomic re-add either way. */
+/** A half-created profile (a daemon home without a store slot) reports itself the way
+ *  missingProfileSlotError in env_state.ts does, never as "no such profile". */
 function noSuchProfileHint(profile: ProfileName): string {
   if (profileHomeNames().includes(profile)) {
     return `profile '${profile}' has no store slot (half-created; its daemon home exists) - ` +
@@ -632,30 +528,18 @@ async function runGet(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise
   // codeql[js/clear-text-logging] -- emitting the token on stdout IS this command's
   // contract (like `gh auth token`); the agent configs consume it.
   process.stdout.write(`${token}\n`);
-  // Codex re-runs `auth --get` every 300s, making it the freshness hook for the
-  // patched model catalog. AFTER the token is on stdout, best-effort + throttled
-  // (one attempt per day), never throws, stderr-only -- the token contract stays
-  // safe. The just-resolved token is reused so the refresh never re-runs `gh`.
-  // DEFAULT profile only: the account-wide catalog (and its throttle) belongs to
-  // the default credential; refreshing it with a named profile's token would let
-  // one account's limits overwrite another's.
+  // Codex re-runs `auth --get` every 300s, which makes it the freshness hook for the model catalog:
+  // AFTER the token is on stdout, best-effort, stderr-only. Default profile only: the account-wide
+  // catalog belongs to the default credential, and a named profile's token would let one account's
+  // limits overwrite another's.
   if (profile !== null) return;
-  // The sync half runs on EVERY auth call (one cheap TOML read): enabled, it heals a
-  // config whose seed failed (e.g. during mobile pairing) without waiting out the
-  // throttle; disabled, it removes the artifacts within one 300s auth cycle.
+  // The sync half runs on EVERY call: enabled, it heals a config whose seed failed without waiting
+  // out the daily throttle; disabled, it removes the artifacts within one auth cycle.
   await refreshCodexCatalogAndSync("direct", { directToken: token, ...catalogDeps });
 }
 
-/**
- * `--print-proxy-token`: print the local copilot-api proxy's API key on stdout; the
- * proxy-mode resolver (`agent proxy-token`) runs this last, once the proxy is up. Distinct
- * from `--get` (the upstream GitHub credential). `--profile` reads the key from that
- * profile daemon's own config.json. The key line is the ENTIRE stdout contract; after it
- * this runs the same best-effort daily model-catalog refresh as `--get` (stderr-only, never
- * throws, default profile only), sourced from the running proxy's /models. `agent
- * proxy-token` must come through here, not bare ensureApiKey, or the catalog freshness
- * hook silently dies.
- */
+/** The key line is the ENTIRE stdout contract. `agent proxy-token` must come through here, not bare
+ *  ensureApiKey, or the catalog freshness hook silently dies. */
 export async function runPrintProxyToken(
   profile: Profile,
   catalogDeps?: CodexCatalogDeps,
@@ -664,27 +548,21 @@ export async function runPrintProxyToken(
   // codeql[js/clear-text-logging] -- emitting the proxy key on stdout IS this command's
   // contract (the proxy-mode agents' auth.command / apiKeyHelper consume it).
   process.stdout.write(`${key}\n`);
-  if (profile !== null) return; // account-wide catalog: default-profile concern only
-  // Same freshness hook as `--get`, sourced from the local proxy's /models (the
-  // resolver guarantees the proxy is up before this prints; a raw gh-cli token
-  // can 403 upstream, so proxy mode never fetches Copilot directly). The same
-  // every-call sync as `--get` follows (see runGet: self-heal when the catalog
-  // is enabled, artifact cleanup when disabled).
+  if (profile !== null) return; // the account-wide catalog belongs to the default credential
+  // Sourced from the local proxy's /models: a raw gh-cli token can 403 upstream, so proxy mode
+  // never fetches Copilot directly.
   await refreshCodexCatalogAndSync("proxy", catalogDeps);
 }
 
 async function runDel(profile: Profile): Promise<void> {
   if (new Credential(undefined, profile).clear()) {
-    // A running daemon holds the (now-cleared) token in memory and has already exchanged it
-    // for a Copilot bearer, so it would keep serving inference until it idled out. De-auth
-    // must sever that too -- stop THIS profile's tracked daemon, escalating to SIGKILL and
-    // VERIFYING it died (graceMs > 0) so we never falsely report the credential's access as
+    // A running daemon has already exchanged the token for a Copilot bearer and would keep serving
+    // until it idled out; the SIGKILL grace VERIFIES it died so access is never falsely reported as
     // revoked.
     const { signalled, stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, profile);
     if (profile === null) {
-      // The wordings are an output contract -- keep each byte-identical. Branch on
-      // `stopped` first: a stop REFUSED (unprovable pid, nothing signalled) must report
-      // the still-running daemon, never the plain success.
+      // The wordings are an output contract. `stopped` first: a stop REFUSED (unprovable pid,
+      // nothing signalled) must report the still-running daemon, never the plain success.
       if (!stopped) {
         logger.warn(
           "De-authenticated, but the proxy is still running and may keep serving the old " +
@@ -724,11 +602,8 @@ async function runDel(profile: Profile): Promise<void> {
   }
 }
 
-/** The provider label for the read-back lines (`--check`, `--list`, "Already
- *  authenticated"): the provider name, wearing the gh-cli account pin when one
- *  is recorded ("gh-cli as <login>"). Null = never chosen. BRACKET-FREE by
- *  contract: every surface wraps this in its own parens, and nested brackets
- *  are unreadable. Exported for `agent profile`'s credential-reuse line. */
+/** BRACKET-FREE by contract: a surface that wants parens adds its own, and `--list` prints it
+ *  bare. Exported for `agent profile`'s credential-reuse line. */
 export function credentialSourceLabel(credential: StoredCredential): string | null {
   switch (credential.kind) {
     case "none":
@@ -739,12 +614,9 @@ export function credentialSourceLabel(credential: StoredCredential): string | nu
   }
 }
 
-/** credentialSourceLabel with an AUTO gh-cli slot SAYING it is auto, naming the
- *  account it follows RIGHT NOW, and listing every account it may use (one live
- *  `gh auth status`; an unproven or empty look keeps the bare "gh-cli on auto" --
- *  the accounts are never guessed). No hidden information: every read-back
- *  surface says whose credit the credential can spend. `look` is a test seam;
- *  batch callers (--list) pass one memoized look. */
+/** An AUTO gh-cli slot names the account it follows right now and every account it may use, so a
+ *  read-back through here says whose credit the credential can spend; an unproven or empty look
+ *  never guesses. Batch callers (--list) pass one memoized `look`. */
 export function liveCredentialSourceLabel(
   credential: StoredCredential,
   look: () => GhAccountsLook = ghAccountsLook,
@@ -770,10 +642,9 @@ export function liveCredentialSourceLabel(
 }
 
 function runCheck(profile: Profile): void {
-  // The exit code is the machine contract; the status line is a human convenience
-  // printed to stdout (the one stdout exception besides `--get`, like its peers
-  // `agent codex/claude --check`). Default output stays byte-identical (flag/label
-  // are empty strings there).
+  // The exit code is the machine contract; the status line goes to stdout like its peers `agent
+  // codex/claude --check`. The default output is byte-identical to before profiles existed (flag
+  // and label are empty).
   const credential = new Credential(undefined, profile);
   const { provider, resolves } = credential.status();
   const flag = profile === null ? "" : ` --profile ${profile}`;
@@ -800,7 +671,6 @@ function runCheck(profile: Profile): void {
   }
 }
 
-/** `--list`: the default + every named credential profile, providers only (never tokens). */
 function runList(): void {
   const state = new CopilotEnvState();
   const rows: Array<[string, string]> = [];
@@ -824,12 +694,8 @@ function runList(): void {
   printTable(rows, { indent: "" });
 }
 
-/**
- * Ensure a credential exists for `profile` WITHOUT configuring the agents -- used by
- * `agent init` and `agent start`. No-op when already authenticated; otherwise runs the
- * auth flow (interactive provider choice) into the addressed slot. Throws if acquisition
- * fails, so callers error out rather than proceeding unauthenticated.
- */
+/** Throws if acquisition fails, so `agent init` and `agent start` error out rather than proceed
+ *  unauthenticated. */
 export async function ensureAuthenticated(profile: Profile = null): Promise<void> {
   if (new Credential(undefined, profile).isAuthenticated()) return;
   logger.log(
@@ -840,13 +706,6 @@ export async function ensureAuthenticated(profile: Profile = null): Promise<void
   await authenticate({ kind: "choose" }, profile);
 }
 
-/**
- * What ONE `agent auth` invocation does -- exactly one read-back/maintenance
- * sub-action, the profile listing, or an authentication -- parsed ONCE by
- * `parseAuthAction` at the CLI boundary. `--provider`/`--set` travel only inside
- * the authenticate arm's acquisition, so `--get --provider bogus` is a rejection
- * here instead of a silently dropped (and never validated) provider.
- */
 export type AuthAction =
   | { kind: "get"; profile: Profile }
   | { kind: "del"; profile: Profile }
@@ -855,9 +714,6 @@ export type AuthAction =
   | { kind: "list" }
   | { kind: "authenticate"; profile: Profile; acquisition: CredentialAcquisition };
 
-// The rejection for `--provider` alongside a sub-action: the provider steers
-// only an authentication, so combining it with a read-back/maintenance flag
-// used to silently drop (and never validate) it.
 function providerConflictError(): Error {
   return new Error(
     "--provider selects how to authenticate and cannot combine with " +
@@ -865,8 +721,6 @@ function providerConflictError(): Error {
   );
 }
 
-// The rejection for `--gh-user` alongside a sub-action, mirroring
-// providerConflictError: the pin steers only a gh-cli authentication.
 function ghUserConflictError(): Error {
   return new Error(
     "--gh-user pins the gh account for authentication and cannot combine with " +
@@ -874,7 +728,6 @@ function ghUserConflictError(): Error {
   );
 }
 
-/** Parse the raw `agent auth` flags into an AuthAction (the CLI boundary). */
 export function parseAuthAction(args: AuthArgs): AuthAction {
   const subActions = [args.get, args.del, args.check, args.printProxyToken, args.list].filter(
     Boolean,
@@ -897,8 +750,8 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
     if (args.ghUser !== undefined) throw ghUserConflictError();
     return { kind: "list" };
   }
-  // Profile-name validation stays ahead of the provider conflict, so an invalid
-  // name keeps reporting itself even when a stray --provider rides along.
+  // Ahead of the provider conflict, so an invalid name keeps reporting itself when a stray
+  // --provider rides along.
   const profile: Profile = parseProfileFlag(args.profile);
   if (args.provider !== undefined && subActions > 0) throw providerConflictError();
   if (args.ghUser !== undefined && subActions > 0) throw ghUserConflictError();
@@ -913,16 +766,6 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
   };
 }
 
-/**
- * `agent auth`: manage the GitHub credential ONLY (never configures agents).
- * `--get`/`--del`/`--check`/`--list` are standalone, mutually exclusive
- * sub-actions; `--profile <name>` addresses a named credential slot (named
- * profiles never fall back to the default credential). Otherwise it
- * authenticates: bare (no `--provider`) is idempotent when a credential already
- * resolves and prompts for the provider when not; an explicit `--provider`
- * always runs (so it can switch the credential source). `--set [token]` is the
- * non-interactive gh-token path (provide the token inline, or via env).
- */
 export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): Promise<void> {
   const action = parseAuthAction(args);
   switch (action.kind) {
@@ -949,16 +792,9 @@ export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): P
   }
 }
 
-/**
- * The authenticate arm: `--set` is the non-interactive gh-token path (parseAcquisition
- * made it imply `--provider gh-token` and rejected a conflicting provider). Bare
- * `agent auth` (no --provider, no --set) is idempotent only when the recorded provider
- * STILL RESOLVES: then report it and how to change it; otherwise run the auth flow
- * (prompt), covering both "no provider yet" and "provider chosen but broken (e.g. gh-cli
- * after gh logout)". `gh` is never silently used without the `gh-cli` choice, and
- * `agent auth --del` clears the provider so the next run starts fresh. An explicit
- * `--provider` always runs.
- */
+/** Bare `agent auth` is idempotent only while the recorded provider STILL RESOLVES; a broken one
+ *  (gh-cli after gh logout) re-prompts. An explicit `--provider` always runs, so it can switch the
+ *  source. */
 async function runAuthenticate(
   profile: Profile,
   acquisition: CredentialAcquisition,

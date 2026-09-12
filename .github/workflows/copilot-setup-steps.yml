@@ -1,9 +1,9 @@
-# Provisions the ephemeral environment for the GitHub Copilot coding agent before
-# it starts a task: it runs the job named exactly `copilot-setup-steps` (a special
-# name GitHub recognizes) so the agent gets the pinned deno + project deps ready
-# (`deno task typecheck` / `deno task test` / `deno lint` work out of the box).
-# setup-env.sh installs the .dvmrc-pinned deno and runs the frozen install.
-#
+# The job named exactly `copilot-setup-steps` is what GitHub runs to provision the Copilot
+# coding agent's environment before a task. setup-env.sh installs the frozen deps; its deno
+# comes from scripts/ensure-deno.sh, never the .dvmrc pin:
+#   deno on PATH                             -> used
+#   one under ${DENO_INSTALL:-$HOME/.deno}/bin -> restored to PATH, used
+#   neither                                  -> the latest release, installed
 # https://docs.github.com/en/copilot/customizing-copilot/customizing-the-development-environment-for-copilot-coding-agent
 name: Copilot setup steps
 

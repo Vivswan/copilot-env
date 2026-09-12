@@ -1,17 +1,11 @@
-// Single source of truth for "which copilot-env release to install / update to".
-//
-// Discovery reads the GitHub Releases REST API (JSON; published,
-// non-prerelease, vX.Y.Z only for floating installs) and takes the tag and date
-// verbatim. An explicit tag can resolve a prerelease because the user asked for
-// that tag by name.
-//
-// `agent update` (src/commands/update.ts) and the autoupdate preflight are the
-// callers. The installers do NOT use this module: install.sh / install.ps1
-// resolve `latest` themselves against the release endpoint, because they have to
-// run before anything of ours is on disk.
+// The one source of "which release to install / update to". Discovery reads the GitHub Releases
+// REST API (published, non-prerelease, vX.Y.Z only for floating installs); an explicit tag may
+// resolve a prerelease because the user asked for it by name. Callers: `agent update` and the
+// autoupdate preflight. install.sh / install.ps1 resolve `latest` themselves: they run before
+// anything of ours is on disk.
 const SECONDS_PER_DAY = 24 * 60 * 60;
-// per_page=100 reads every release in one page (this repo will not exceed that for
-// years), so cooldown selection sees the whole eligible set, not just the first 30.
+// per_page=100 reads every release in one page (this repo will not exceed that for years), so
+// cooldown selection sees the whole eligible set, not just the first 30.
 const RELEASES_API = "https://api.github.com/repos/Vivswan/copilot-env/releases?per_page=100";
 
 const GH = {
@@ -20,16 +14,14 @@ const GH = {
   "User-Agent": "copilot-env",
 } as const;
 
-/** A published release: its tag and when it was published. The compiled release
- *  assets are named from the tag alone (src/install/targets.ts), so nothing else
- *  from the API row is needed to fetch one. */
+/** The tag picks the release and the running platform picks the asset within it
+ *  (releaseAssetName, src/install/targets.ts), so nothing else from the API row is needed. */
 export interface Release {
   tag: string;
   dateSeconds: number;
 }
 
-/** Parse the GitHub `/releases` JSON into newest-first releases: published,
- *  non-prerelease, exact vX.Y.Z. Returns [] on anything unparseable. */
+/** Newest-first; [] on anything unparseable. */
 export function parseReleasesJson(jsonText: string, includePrereleases = false): Release[] {
   let parsed: unknown;
   try {
@@ -52,7 +44,7 @@ export function parseReleasesJson(jsonText: string, includePrereleases = false):
       releases.push({ tag: r.tag_name, dateSeconds });
     }
   }
-  // Don't trust the API's order -- sort newest-first ourselves.
+  // The API's order is not trusted; sort newest-first here.
   releases.sort((a, b) => b.dateSeconds - a.dateSeconds);
   return releases;
 }
@@ -79,11 +71,9 @@ export function pickTag(releases: Release[], tag: string): Release | null {
   return releases.find((r) => r.tag === normalized) ?? null;
 }
 
-// --- transient-failure retry around the GitHub API call ---------------------
-// The releases endpoint occasionally 5xx's, rate-limits, or drops the connection.
-// A few backed-off retries turn those transients into a successful resolve
-// instead of a spurious "no release found". Tests set
-// COPILOT_ENV_RELEASE_RETRY_BASE_MS=0 for speed.
+// The releases endpoint occasionally 5xx's, rate-limits, or drops the connection; a few
+// backed-off retries turn those into a resolve instead of a spurious "no release found". Tests
+// set COPILOT_ENV_RELEASE_RETRY_BASE_MS=0 for speed.
 const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const MAX_FETCH_ATTEMPTS = 4;
 const RETRY_BASE_MS_ENV = "COPILOT_ENV_RELEASE_RETRY_BASE_MS";
@@ -97,9 +87,8 @@ function retryBaseMs(): number {
 const sleep = (ms: number): Promise<void> =>
   ms <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, ms));
 
-/** GET the releases JSON, retrying transient failures (network drop, 5xx, rate-limit) with
- *  exponential backoff + jitter. Returns the body text, or null after exhausting attempts.
- *  A non-retryable response (e.g. 401/404) gives up immediately -- retrying won't fix it. */
+/** The body text, or null after exhausting attempts. A non-retryable response (401/404) gives up
+ *  immediately: retrying would not fix it. */
 async function fetchReleasesText(
   url: string,
   headers: Record<string, string>,
@@ -120,9 +109,7 @@ async function fetchReleasesText(
   return null;
 }
 
-/** Fetch the releases and pick the target: the latest, or (with a cooldown) the newest
- *  release aged >= `cooldownDays`. Returns null when offline / the API errors / there is
- *  no eligible release. */
+/** Null when offline, the API errors, or no release is eligible. */
 export async function resolveTarget(
   cooldownDays: number | null,
   exactTag: string | null = null,

@@ -1,8 +1,3 @@
-// The metrics job's smokes. The base-vs-head decision: payloads equal once the run-only
-// `runtime` key is dropped and keys are sorted at every level report a match; a changed
-// cost reports DIFFERS with its diff, once a base re-run confirmed the base did not move.
-// The comment's table: a row per measure with base, head, and the head's delta. And the
-// verdict step: the recorded verdict is the job's exit status.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -23,8 +18,7 @@ const BASE = {
   },
   runtime: { indexed: false, index: { bytesRead: 9_001 } },
 };
-// The same values as BASE with every object's keys in the opposite insertion order at
-// every level, and another runtime: only recursive key sorting makes the two texts equal.
+// BASE's values with the keys reversed at every level: only recursive key sorting makes the two comparable texts equal.
 const HEAD_WARM = {
   runtime: { index: { bytesRead: 0 }, indexed: true },
   claudeSessions: {

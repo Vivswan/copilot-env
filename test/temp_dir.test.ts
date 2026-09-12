@@ -11,11 +11,8 @@ import {
 } from "./helpers/run.ts";
 import { expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
-// tempDir is the suite's one way to a temp directory. The guarantees that make the isolate
-// root's removal cover everything -- every directory it hands out sits directly under that
-// root, a child process's root sits inside it, and the root goes when the module ends however
-// its tests fared -- are pinned here rather than assumed, together with the module-cache pin
-// that keeps a fixture HOME from growing a deno cache of its own.
+// tempDir is the suite's one way to a temp directory, and removing the isolate root is what
+// covers every fixture. The guarantees that make that hold are pinned here, not assumed.
 
 /** Proven absence: lstat says ENOENT (a lookup that fails otherwise is an error, not a no). */
 function gone(path: string): boolean {
@@ -56,8 +53,7 @@ test("removeDir: only the path's absence counts as removed", () => {
 test(
   "a failing test module's fixtures go with its root, nested inside the spawning isolate's",
   () => {
-    // A test module of its own, run under a child `deno test`: it makes a fixture, records the
-    // path, and FAILS -- the case the incident was made of.
+    // The child module FAILS on purpose: a failing module is the case the guarantee exists for.
     const scratch = tempDir("copilot-temp-runner-");
     const module = join(scratch, "leaky.test.ts");
     const record = join(scratch, "made.txt");

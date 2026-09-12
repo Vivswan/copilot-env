@@ -1,11 +1,6 @@
-// Read the proxy's per-host SQLite usage tables.
-//
-// The daemon writes one `token_usage_events` row per request into a per-host
-// database (`<home>/.run/<hostname>/copilot-api.sqlite`). Running the proxy on
-// several machines therefore yields several DBs; a legacy top-level
-// `<home>/copilot-api.sqlite` may also exist from before the per-host split. We
-// read all of them read-only and aggregate token counts by model. The DB layout
-// itself is owned by src/copilot_api/paths.ts; this module only sweeps it.
+// One `token_usage_events` row per request, in a per-host DB, so a home shared across machines
+// holds several DBs (plus a pre-host-split flat one). The layout is src/copilot_api/paths.ts's;
+// this module only sweeps it.
 
 import { DatabaseSync } from "node:sqlite";
 import { readdirSync, realpathSync } from "node:fs";
@@ -34,24 +29,17 @@ export interface TokenBuckets {
   cacheCreation: number;
 }
 
-/** Clamp one raw token count for the report: only a finite positive number passes,
- *  floored to an integer. Non-finite or negative counts (hostile or torn lines)
- *  never enter a report -- the ONE sanitization rule every session reader applies
- *  to its buckets. Counts are integral by nature; flooring drops torn fractions
- *  and keeps report arithmetic (sums, the undated remainder) exact. */
+/** The one sanitization rule every session reader applies. Flooring drops torn fractions and keeps
+ *  report arithmetic (sums, the undated remainder) exact. */
 export function sanitizeTokenCount(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
 }
 
-/** The four token buckets plus an event count: an accumulated per-model total in the
- *  report maps, and equally a usage increment on its way into record. */
 export interface ModelUsage extends TokenBuckets {
   events: number;
 }
 
-/** One aggregated `token_usage_events` row, in the shape the report consumes: counts
- *  already sanitized, and `bucket` null only when the group carried no timestamp.
- *  parseUsageRow below is the only mint, so nothing downstream re-checks. */
+/** parseUsageRow is the only mint, so nothing downstream re-checks the counts. */
 export interface UsageRow {
   bucket: number | null;
   model: string;
@@ -59,22 +47,16 @@ export interface UsageRow {
   events: number;
 }
 
-/** Coerce one SQLite numeric column to a finite JS number. node:sqlite hands back a
- *  `bigint` for an integer a double cannot hold exactly, so both shapes arrive here;
- *  anything else (or a non-finite value) reads as absent. */
+/** node:sqlite hands back a `bigint` for an integer a double cannot hold exactly, so both shapes
+ *  arrive here. */
 function numberOrNull(value: unknown): number | null {
   const asNumber = typeof value === "bigint" ? Number(value) : value;
   return typeof asNumber === "number" && Number.isFinite(asNumber) ? asNumber : null;
 }
 
-/**
- * Parse one grouped query result into a UsageRow, or null when it is not one. THE
- * boundary between untyped SQLite output and the rest of this module: every count that
- * reaches a report has passed sanitizeTokenCount here, and every field downstream is a
- * plain finite number -- so no later step re-checks for bigints, nulls, or hostile
- * values. A row with no usable `model` is dropped, since it cannot be attributed.
- * Exported for the unit tests that drive shapes a live DB will not produce.
- */
+/** The boundary between untyped SQLite output and the report: no later step re-checks for bigints,
+ *  nulls, or hostile values. A row with no usable `model` cannot be attributed and is dropped.
+ *  Exported for tests. */
 export function parseUsageRow(raw: unknown): UsageRow | null {
   if (!isRecord(raw)) return null;
   const model = raw.model;
@@ -92,46 +74,31 @@ export function parseUsageRow(raw: unknown): UsageRow | null {
   };
 }
 
-/** Declare-only brand class: privates are nominal, so no object literal or spread
- *  compiles as UsageReport -- mutable reports are born in usageReport(). Deliberate
- *  escape hatches (a cast, Object.assign) remain, as with any compile-time brand. */
+/** Privates are nominal, so no object literal or spread compiles as a UsageReport: mutable reports
+ *  are born in usageReport(). A cast still gets through, as with any compile-time brand. */
 declare class UsageReportMint {
   private readonly usageReportMint: true;
 }
 
-/**
- * Aggregated usage plus a per-day breakdown. The mutable shape is for producers,
- * which mint one via usageReport() and fold into it through record(); readers take
- * ReadonlyUsageReport. The active-day count is `perDay.size`, always read from the
- * map itself.
- */
+/** The mutable shape is for producers, which fold through record(); readers take
+ *  ReadonlyUsageReport. */
 export interface UsageReport extends UsageReportMint {
-  /** The all-days roll-up -- derived from the same rows as `perDay`, kept as a field
-   *  so callers don't recompute it. */
+  /** Derived from the same rows as `perDay`; kept so callers do not recompute it. */
   byModel: Map<string, ModelUsage>;
-  /** Each distinct LOCAL calendar day (YYYY-MM-DD, the user's timezone) to that
-   *  day's per-model token totals, unioned across every DB. */
+  /** Keyed by LOCAL calendar day, YYYY-MM-DD in the user's timezone. */
   perDay: Map<string, Map<string, ModelUsage>>;
 }
 
-/** The read-only face of a UsageReport (every UsageReport is assignable to it).
- *  Consumers take this shape so they cannot mutate a report they were handed;
- *  producers keep the mutable UsageReport and fold through record(). */
+/** Consumers take this shape so they cannot mutate a report they were handed. */
 export interface ReadonlyUsageReport {
   readonly byModel: ReadonlyMap<string, Readonly<ModelUsage>>;
   readonly perDay: ReadonlyMap<string, ReadonlyMap<string, Readonly<ModelUsage>>>;
 }
 
-/**
- * Mint a UsageReport: empty by default (what every producer folds into through
- * record()), or from hand-built maps PARSED at the boundary: every count a
- * non-negative integer, every perDay model present in byModel, and per model the
- * days' sum never above the roll-up in any bucket (the invariant record() keeps).
- * An inconsistent pair fails HERE, at construction, so no consumer has to clamp a
- * negative undated remainder away. The maps are deep-copied so the report never
- * aliases caller state: a later record() fold cannot double-mutate a shared entry
- * and a caller edit cannot invalidate a report already validated.
- */
+/** Hand-built maps are parsed here: every count a non-negative integer, every perDay model in
+ *  byModel, and per model the days' sum never above the roll-up (the invariant record() keeps), so
+ *  no consumer has to clamp a negative undated remainder away. Deep-copied so a later fold or
+ *  caller edit cannot alias validated state. */
 export function usageReport(
   byModel: ReadonlyMap<string, Readonly<ModelUsage>> = new Map(),
   perDay: ReadonlyMap<string, ReadonlyMap<string, Readonly<ModelUsage>>> = new Map(),
@@ -165,9 +132,8 @@ export function usageReport(
   return { byModel: ownByModel, perDay: ownPerDay } as UsageReport;
 }
 
-/** One validated copy of a hand-built ModelUsage. Counts must be non-negative
- *  integers (what sanitizeTokenCount feeds record()): NaN passes every ordering
- *  check, so admitting it would let the perDay-vs-byModel comparison fail open. */
+/** NaN passes every ordering check, so admitting it would let the perDay-vs-byModel comparison fail
+ *  open. */
 function checkedUsage(model: string, u: Readonly<ModelUsage>): ModelUsage {
   const copy = { ...u };
   for (const v of [copy.input, copy.output, copy.cacheRead, copy.cacheCreation, copy.events]) {
@@ -180,24 +146,19 @@ function checkedUsage(model: string, u: Readonly<ModelUsage>): ModelUsage {
   return copy;
 }
 
-/**
- * Fold one usage increment into a report: always into `byModel`, and into
- * `perDay[day]` too unless `day` is null (byModel only -- e.g. a timestamp-less
- * row, which cannot be placed on a local calendar day but must still reach the
- * totals). `usage.events` is the increment's event count (a grouped SQL row
- * carries its COUNT, a session line counts 1, a streaming delta 0). The ONE
- * owner of the two maps' consistency: every producer records through here, so
- * the per-day split can never drift from the roll-up.
- */
+/** The one owner of a new increment's consistency: every source records through here, so the
+ *  per-day split cannot drift from the roll-up. mergeUsageReports bypasses it, unioning two
+ *  reports that are consistent already. `usage.events` is the increment's count: a grouped SQL
+ *  row's COUNT, a session line's 1, a streaming delta's 0. */
 export function record(
   report: UsageReport,
   day: string | null,
   model: string,
   usage: Readonly<ModelUsage>,
 ): void {
-  // Snapshot first: the byModel fold mutates its entry in place, and `usage` may
-  // BE that entry (a caller folding a report's own accumulator back in), which
-  // would hand the perDay fold an already-doubled increment.
+  // The byModel fold mutates its entry in place, and `usage` may BE that entry (a caller folding a
+  // report's own accumulator back in), which would hand the perDay fold an already-doubled
+  // increment.
   const increment = { ...usage };
   addUsage(report.byModel, model, increment);
   if (day !== null) {
@@ -205,9 +166,7 @@ export function record(
   }
 }
 
-/** Fold one usage increment into a model->usage map, seeding a zero-valued record the
- *  first time a model appears. The ONE fold both report maps share -- add a token
- *  bucket here and every source folds it. Never retains `usage` by reference. */
+/** The one fold both report maps share: add a token bucket here and every source folds it. */
 function addUsage(
   target: Map<string, ModelUsage>,
   model: string,
@@ -228,7 +187,6 @@ function addUsage(
   target.set(model, prev);
 }
 
-/** The per-day model map for `day`, created empty the first time the day appears. */
 function dayUsageMap(
   perDay: Map<string, Map<string, ModelUsage>>,
   day: string,
@@ -241,16 +199,8 @@ function dayUsageMap(
   return dayModels;
 }
 
-/**
- * Locate every usage DB under `home`: any unmigrated FLAT root DBs (legacy
- * top-level file plus one per host directory under `.run/`) AND every profile
- * daemon's isolated home under `<home>/profiles/<name>` -- the default
- * profile's `profiles/default` included -- each proxy records its own traffic
- * in its own DB, and the cost report covers all of them. Only the default dir
- * and valid profile names are swept (a stray hand-made folder is not a daemon
- * home), and the result is realpath-deduped so a symlinked alias can never
- * double-count a DB. Only paths that exist on disk are returned.
- */
+/** Only the default dir and valid profile names are swept: a stray hand-made folder is not a daemon
+ *  home. Realpath-deduped so a symlinked alias can never double-count a DB. */
 export function discoverUsageDbs(home: string = resolveHome()): string[] {
   const paths = usageDbsUnderHome(home);
 
@@ -259,10 +209,9 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
   try {
     profiles = readdirSync(profilesDir);
   } catch (e) {
-    // Only a MISSING dir reads as "no profiles" -- the same narrowing (and the same
-    // reason) as usageDbsUnderHome's host scan and profileHomeNames in
-    // copilot_api/paths.ts: this sweep backs a rendered "no usage databases found"
-    // and a summed cost TOTAL, so a scan that failed must not read as an empty one.
+    // Only a MISSING dir reads as "no profiles", as in usageDbsUnderHome and profileHomeNames
+    // (copilot_api/paths.ts): this sweep backs a summed cost TOTAL, so a failed scan must not read
+    // as empty.
     if (!isEnoentOrNotdir(e)) throw e;
     profiles = [];
   }
@@ -274,9 +223,8 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
     }
   }
 
-  // Realpath-dedup: a symlinked alias never double-counts a DB. A hand-COPIED DB
-  // across homes (distinct inodes) still counts twice -- accepted: the default-home
-  // migration only moves or refuses, never copies, so only a hand copy reaches it.
+  // A hand-COPIED DB across homes (distinct inodes) still counts twice: accepted, since the
+  // default-home migration only moves or refuses, never copies.
   const seen = new Set<string>();
   return paths.filter((path) => {
     let canonical = path;
@@ -291,7 +239,6 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
   });
 }
 
-/** Open `path` read-only, run `query`, and always close the handle. */
 function withReadOnlyDb<T>(path: string, query: (db: DatabaseSync) => T): T {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
@@ -301,14 +248,11 @@ function withReadOnlyDb<T>(path: string, query: (db: DatabaseSync) => T): T {
   }
 }
 
-/** The database file and the two WAL sidecars a read of it may need. The main file is
- *  required; a missing -wal/-shm just means there is nothing un-checkpointed to replay. */
+/** A missing sidecar just means there is nothing un-checkpointed to replay. */
 const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm"] as const;
 
-/** Copy the database and its WAL sidecars into a temp directory and read the COPY, then
- *  delete it. The copy is what makes the read work where the original cannot be opened:
- *  a read-only filesystem lets SQLite consult a -wal only if it can create the -shm
- *  beside it, which it can here. */
+/** A read-only filesystem lets SQLite consult a -wal only if it can create the -shm beside it,
+ *  which it can in a temp copy. */
 function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
   const dir = scratchDir(join(tmpdir(), "copilot-usage-"));
   try {
@@ -318,9 +262,8 @@ function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
       try {
         copyFileReported(`${path}${suffix}`, `${copy}${suffix}`);
       } catch (e) {
-        // A PROVEN-absent sidecar means the daemon checkpointed, so the main file is
-        // complete; a sidecar that is there but would not copy must not be dropped
-        // (the read would silently omit its rows).
+        // A PROVEN-absent sidecar means the daemon checkpointed; one that is there but would not
+        // copy must not be dropped, or the read would silently omit its rows.
         if (!entryAbsent(`${path}${suffix}`)) throw e;
       }
     }
@@ -330,16 +273,9 @@ function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
   }
 }
 
-/**
- * Open `path` read-only and run `query` against it, preferring the live database.
- * The daemon runs the DB in WAL mode and only checkpoints on close, so a plain
- * read-only open (which consults the -wal) comes first; if the open OR the query
- * fails (SQLite can defer a WAL/-shm error to prepare/exec time, e.g. a read-only
- * FS where the -shm can't be created), retry against a temp copy of the database
- * and its sidecars -- which keeps the un-checkpointed rows an immutable snapshot
- * would drop. The FIRST error is what propagates when both attempts fail: it
- * describes the real database, not the copy.
- */
+/** The daemon only checkpoints on close, so the live open (which consults the -wal) comes first;
+ *  SQLite can defer a -shm error to prepare time, so the query is inside the try too. The FIRST
+ *  error propagates when both fail: it describes the real database, not the copy. */
 function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: DatabaseSync) => T): T {
   try {
     return withReadOnlyDb(path, query);
@@ -352,33 +288,21 @@ function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: Database
   }
 }
 
-/**
- * Open each DB read-only and aggregate token usage by model. `sinceMs` (unix
- * ms) bounds the query to recent rows when set. A DB that fails to open or query
- * is skipped with a warning rather than aborting the whole report. `timeZone`
- * names the zone the per-day split is cut in (default: the system's own); it
- * exists so the slicing is assertable without pinning the process `TZ`, which
- * deno honors on unix only.
- */
+/** `timeZone` exists so the per-day slicing is assertable without pinning the process `TZ`, which
+ *  deno honors on unix only. */
 export function readUsage(dbPaths: string[], sinceMs?: number, timeZone?: string): UsageReport {
   const report = usageReport();
   const since = sinceMs ?? null;
-  // Resolved BEFORE any DB is opened: an unknown zone must fail here, not once per row
-  // inside the per-path catch below, which would report it as an unreadable database.
+  // Before any DB is opened: an unknown zone must fail here, not inside the per-path catch.
   const dayKey = dayKeyIn(timeZone);
 
-  // A minute bucket never straddles a local midnight: every IANA transition and
-  // offset in the standard-time era is minute-aligned (sub-minute offsets exist
-  // only for pre-standard-time LMT dates, which a daemon-written Date.now()
-  // timestamp can never carry). Minutes, not quarter-hours, deliberately:
-  // historical zones flipped DST at odd minutes (America/Goose_Bay fell back at
-  // 00:01 local), which would split a coarser bucket across two local days.
+  // A minute bucket never straddles a local midnight: every IANA transition in the standard-time
+  // era is minute-aligned. Minutes rather than quarter-hours because historical zones flipped DST
+  // at odd minutes (America/Goose_Bay fell back at 00:01 local), which would split a coarser bucket
+  // across two local days.
   const MINUTE_MS = 60_000;
-  // One grouped query by (UTC minute, model); byModel and perDay both derive from
-  // it, so we never read the same rows twice. The bucket is a UTC minute so the
-  // LOCAL day key can be derived in JS (localDayKey), keeping the timezone math
-  // out of SQL and away from SQLite's cached-libc `localtime`. At most ~1440 rows
-  // per model-day (up to 1560 on Antarctica/Troll's two-hour fall-back day): tiny.
+  // The bucket is a UTC minute so the LOCAL day key is derived in JS, away from SQLite's
+  // cached-libc `localtime`. At most ~1440 rows per model-day.
   const QUERY = `SELECT (created_at_ms / ${MINUTE_MS}) AS bucket,
                   model,
                   SUM(input_tokens)                 AS input,
@@ -395,8 +319,7 @@ export function readUsage(dbPaths: string[], sinceMs?: number, timeZone?: string
     try {
       rows = openSqliteReadOnlyWithWalFallback(
         path,
-        // flatMap over the parse: an unparseable row drops out here rather than
-        // reaching a report as a zero-filled phantom.
+        // An unparseable row drops out here rather than reaching a report as a zero-filled phantom.
         (db) => db.prepare(QUERY).all(since).flatMap((raw) => parseUsageRow(raw) ?? []),
       );
     } catch (e) {
@@ -405,10 +328,8 @@ export function readUsage(dbPaths: string[], sinceMs?: number, timeZone?: string
     }
 
     for (const row of rows) {
-      // Sources spell the same model differently; key rows by the shared form.
-      // The day is the row's LOCAL calendar day; the daemon writes created_at_ms
-      // on every row, so a null bucket is not expected -- record still totals
-      // such a row, just outside the per-day split.
+      // The daemon writes created_at_ms on every row, so a null bucket is not expected; record
+      // still totals such a row, just outside the per-day split.
       record(
         report,
         row.bucket !== null ? dayKey(row.bucket * MINUTE_MS) : null,
@@ -421,13 +342,11 @@ export function readUsage(dbPaths: string[], sinceMs?: number, timeZone?: string
   return report;
 }
 
-/** Sum several usage reports into one (models and days unioned). */
 export function mergeUsageReports(reports: Iterable<ReadonlyUsageReport>): UsageReport {
   const merged = usageReport();
   for (const report of reports) {
-    // A merge unions two already-consistent reports rather than recording rows:
-    // each byModel entry is a full roll-up (its dated rows included), so it
-    // folds in day-less, and the per-day split unions day-wise below.
+    // Each byModel entry is already a full roll-up, dated rows included, so it folds in day-less
+    // and the per-day split unions day-wise below.
     for (const [model, u] of report.byModel) {
       record(merged, null, model, u);
     }
@@ -442,13 +361,8 @@ export function mergeUsageReports(reports: Iterable<ReadonlyUsageReport>): Usage
   return merged;
 }
 
-/**
- * The share of `byModel` no perDay row accounts for: per model, byModel minus
- * the sum over the days, dropping models the days fully cover. record() folds
- * every dated increment into both maps and sanitizeTokenCount keeps every count
- * an integer, so the difference is exactly the usage recorded with a null day
- * (e.g. a timestamp-less DB row).
- */
+/** record() folds every dated increment into both maps and sanitizeTokenCount keeps every count an
+ *  integer, so the difference is exactly the usage recorded with a null day. */
 export function undatedUsage(report: ReadonlyUsageReport): Map<string, ModelUsage> {
   const rest = new Map<string, ModelUsage>();
   for (const [model, u] of report.byModel) {
@@ -458,8 +372,8 @@ export function undatedUsage(report: ReadonlyUsageReport): Map<string, ModelUsag
     for (const [model, u] of dayModels) {
       const r = rest.get(model);
       if (r === undefined) {
-        // record() and usageReport() put every perDay model in byModel; a miss
-        // is a corrupted hand-built report, surfaced rather than papered over.
+        // record() and usageReport() put every perDay model in byModel; a miss is a corrupted
+        // hand-built report.
         throw new Error(`inconsistent usage report: perDay model '${model}' missing from byModel`);
       }
       r.input -= u.input;
@@ -470,9 +384,8 @@ export function undatedUsage(report: ReadonlyUsageReport): Map<string, ModelUsag
     }
   }
   for (const [model, r] of rest) {
-    // record() and usageReport() keep the split within the roll-up, so a
-    // negative remainder can only come from totals past 2^53, where float
-    // addition stops being exact; clamp it.
+    // The split is kept within the roll-up, so a negative remainder can only come from totals past
+    // 2^53, where float addition stops being exact.
     r.input = Math.max(0, r.input);
     r.output = Math.max(0, r.output);
     r.cacheRead = Math.max(0, r.cacheRead);

@@ -1,10 +1,9 @@
-// Utility for picking the newest stable npm release older than a minimum-age window.
+// timeMap is the npm packument's `time` object: version -> publish date, plus the created/modified
+// keys.
 import { versionLessThan } from "./semver.ts";
 
-const STABLE = /^\d+\.\d+\.\d+$/; // plain x.y.z -- excludes prereleases + created/modified
+const STABLE = /^\d+\.\d+\.\d+$/; // excludes prereleases and the created/modified keys
 
-// Pure + deterministic (now is injected, not read from the clock) so it is
-// directly unit-testable. Returns the newest qualifying version, or null.
 export function pickAgedVersion(
   timeMap: Record<string, string>,
   minimumAgeMs: number,
@@ -16,8 +15,6 @@ export function pickAgedVersion(
     if (!STABLE.test(version)) continue;
     const published = Date.parse(iso);
     if (Number.isNaN(published) || published > cutoff) continue;
-    // Only STABLE x.y.z values reach here, so versionLessThan compares numeric
-    // cores; first-seen wins on a tie (kept, matching the previous behavior).
     if (best === null || versionLessThan(best, version)) best = version;
   }
   return best;

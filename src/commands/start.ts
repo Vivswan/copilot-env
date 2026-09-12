@@ -1,7 +1,3 @@
-// `agent start`: the command layer over the launch pipeline (src/copilot_api/launch.ts).
-// It parses the flags into ONE action, dispatches the check/record-event probes, reports
-// the dry run, and orchestrates the live launch steps; every user-facing summary and
-// next-steps rendering lives here.
 import { consola } from "consola";
 import { type PreflightOptions, runPreflight } from "../autoupdate/preflight.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
@@ -38,59 +34,24 @@ import { mkdirReported } from "../utils/report_write.ts";
 import { ensureAuthenticated } from "./auth.ts";
 import { unreadProjectedKeyWarnings } from "./config.ts";
 
-/** Raw `agent start` flag values, exactly as Commander hands them over. Parsed ONCE by
- *  `parseStartAction` at the CLI boundary into a StartAction -- runStart never dispatches
- *  on these directly, so a conflicting combination is rejected instead of resolved by
- *  if-order. */
 export interface StartFlags {
   dryRun?: boolean;
-  /** Pin the proxy to this port instead of auto-resolving (fails if busy). */
   port?: number;
-  /**
-   * `--record-event`: record an activity heartbeat (`lastEnsureAt`) for the idle watchdog
-   * and return WITHOUT launching. The agents' proxy resolver calls this on each token
-   * fetch so an open agent keeps the proxy alive between requests.
-   */
+  /** The agents' proxy resolver calls this on each token fetch, so an open agent keeps the proxy
+   *  alive. */
   recordEvent?: boolean;
-  /**
-   * `--check`: set exit code 0 iff OUR proxy is genuinely running (1 otherwise) and return
-   * WITHOUT launching. The proxy resolver + shell launchers use this as the "is it up?" probe.
-   */
   check?: boolean;
-  /**
-   * `--force`: launch a fresh daemon even when a healthy one is already running. Only relevant in
-   * the managed lifecycle (auto-start on), where a plain `start` is otherwise an idempotent no-op
-   * that leaves the running proxy up; in the unmanaged/default mode `start` always (re)starts. Use
-   * `--force` after changing the credential or a config key the daemon reads at startup (port,
-   * small-model, passthrough, proxy-logs).
-   */
   force?: boolean;
-  /**
-   * `--profile <name>`: operate on that named profile's daemon -- an isolated instance
-   * (own home/config/port) running under the profile's own credential, so several
-   * accounts can serve through local proxies at once. The default daemon is untouched.
-   */
   profile?: string;
 }
 
-/**
- * What ONE `agent start` invocation does -- exactly one of the liveness check, the
- * heartbeat record, or a (possibly dry-run) launch, each addressing `profile`'s daemon.
- * The launch-only knobs (`dryRun`/`force`/`port`) live on the launch variant alone, so
- * `--check --record-event` (or a probe combined with a launch flag) is unrepresentable
- * past the boundary parse and the dispatch order in runStart is not load-bearing.
- * `profile` is already PARSED (parseProfileFlag at the boundary, like McpAction), so an
- * invalid name errors before any action runs and runStart never re-validates.
- */
 export type StartAction =
   | { kind: "check"; profile: Profile }
   | { kind: "record-event"; profile: Profile }
   | { kind: "launch"; dryRun: boolean; force: boolean; port?: number; profile: Profile };
 
-/** Parse the raw flags into a StartAction (the CLI boundary). `--check` and
- *  `--record-event` are standalone probes -- the proxy resolver invokes each in its own
- *  `agent start` call -- so combining them with each other or with a launch-only flag
- *  is an error here, never a silently dropped heartbeat. */
+/** The proxy resolver invokes `--check` and `--record-event` in separate calls, so a combination is
+ *  an error here, never a silently dropped heartbeat. */
 export function parseStartAction(flags: StartFlags): StartAction {
   const probes = (flags.check ? 1 : 0) + (flags.recordEvent ? 1 : 0);
   const launchFlags = Boolean(flags.dryRun) || Boolean(flags.force) || flags.port !== undefined;
@@ -111,16 +72,10 @@ export function parseStartAction(flags: StartFlags): StartAction {
   };
 }
 
-/**
- * The cheap (sync) part of the managed-lifecycle "leave a running proxy up" gate, shared by
- * the dry-run and live paths; the caller still confirms the proxy is up via `proxyStatus()`
- * before short-circuiting. Idempotent ONLY in the managed lifecycle (auto-start on): there
- * the resolver auto-starts and the watchdog auto-stops, so a redundant manual `start` must
- * leave the running daemon (and any connected Codex/Claude) untouched. Unmanaged, the user
- * drives start/stop by hand, so `start` stays an explicit (re)start. `--force` launches a
- * fresh daemon either way (e.g. after a credential change), and an explicit `--port` is a
- * reconfiguration request, so it always (re)launches.
- */
+/** Idempotent only in the managed lifecycle: there the resolver auto-starts and the watchdog
+ *  auto-stops, so a redundant manual `start` must leave the running daemon (and any connected
+ *  agent) alone. Unmanaged, `start` is an explicit (re)start; `--force` and an explicit `--port`
+ *  always (re)launch. */
 function isIdempotentNoOp(
   action: { force: boolean; port?: number },
   envConfig: CopilotEnvConfig,
@@ -128,8 +83,7 @@ function isIdempotentNoOp(
   return !action.force && action.port === undefined && envConfig.autoStartEnabled();
 }
 
-/** The launch-path stores/paths one `start` invocation reads and writes -- constructed ONCE
- *  in runStart (including the single CopilotEnvConfig preference cursor) and passed down. */
+/** Constructed once per launch and passed down, so every step reads the same config cursor. */
 interface LaunchContext {
   profile: Profile;
   paths: CopilotApiPaths;
@@ -139,9 +93,8 @@ interface LaunchContext {
   logFile: string;
 }
 
-/** The "Would ..." line for one cleanup action -- the narration half of the planCleanup
- *  contract (the live half executes the same enumeration). Exhaustive on purpose: a new
- *  CleanupAction without a line here does not compile. Each string is a pinned output
+/** The narration half of the planCleanup contract; the live half executes the same enumeration, and
+ *  a new CleanupAction without a line here does not compile. Each string is a pinned output
  *  contract. */
 function narrateCleanupAction(step: CleanupAction): void {
   switch (step.kind) {
@@ -167,9 +120,8 @@ function narrateCleanupAction(step: CleanupAction): void {
   }
 }
 
-/** Report what a live launch WOULD do (no runtime changes): the would-be port, the
- *  cleanup plan (planCleanup -- the SAME decision source the live path executes, so no
- *  live action can go unreported), and the files that would be written. */
+/** planCleanup is the same decision source the live path executes, so no live action can go
+ *  unreported. */
 async function reportDryRun(
   action: { force: boolean; port?: number },
   ctx: LaunchContext,
@@ -195,29 +147,24 @@ async function reportDryRun(
   consola.info("   Would wait for readiness, sync model aliases, and report proxy details.");
 }
 
-/** The managed-lifecycle no-op report: bump the heartbeat (a manual start is a keep-alive vs
- *  the idle watchdog) and leave the running daemon untouched. */
+/** A manual start is a keep-alive against the idle watchdog, hence the heartbeat. */
 function reportStartNoOp(state: CopilotEnvRunState, port: number, profileFlag: string): void {
   state.set({ lastEnsureAt: Date.now() });
   consola.success(`Proxy already running on port ${port} - leaving it up.`);
-  // "[start:noop]" is a machine marker (external contract): CI's lifecycle smoke
-  // keys its managed-no-op gate on this token, not on the sentence above.
+  // "[start:noop]" is an external contract: CI's lifecycle smoke keys its managed-no-op gate on
+  // this token.
   consola.info("[start:noop]");
   consola.info(
     `Run \`agent start${profileFlag} --force\` to launch a fresh daemon (e.g. after a credential or config change).`,
   );
 }
 
-/**
- * Seed the heartbeat so the in-daemon idle watchdog (preloaded when the managed lifecycle
- * is on) does not consider a freshly started, quiet proxy idle before its first request.
- * Also surface the auto-stop behavior, since a manual `start` arms the same watchdog and
- * the proxy will exit on its own later -- silence here is a surprise (see `agent config`).
- */
+/** The heartbeat keeps a freshly started, quiet proxy from reading as idle before its first
+ *  request. The auto-stop is said out loud because a manual `start` arms the same watchdog and the
+ *  proxy will exit on its own. */
 function reportManagedLifecycle(state: CopilotEnvRunState): void {
   state.set({ lastEnsureAt: Date.now() });
-  // idle-timeout 0 disables auto-stop: armIdleWatchdog() then never arms a timer, so only
-  // promise auto-stop when a window is actually in effect.
+  // idle-timeout 0 never arms a timer, so auto-stop is promised only when a window is in effect.
   const idleMs = idleTimeoutMs();
   if (idleMs > 0) {
     consola.info(
@@ -232,12 +179,6 @@ function reportManagedLifecycle(state: CopilotEnvRunState): void {
   }
 }
 
-/**
- * Log the proxy version `entry` will run and (best-effort) its npm publish date.
- * The version comes from the floor-checked entry itself (a file override has none,
- * so nothing is logged); the publish timestamp lives in the registry's `time` map,
- * so we fetch it with a short timeout and fall back to version-only when offline.
- */
 async function logProxyVersion(entry: FloorCheckedEntry): Promise<void> {
   const version = entryProxyVersion(entry);
   if (version === null) {
@@ -257,13 +198,12 @@ async function logProxyVersion(entry: FloorCheckedEntry): Promise<void> {
       }
     }
   } catch {
-    // offline / slow registry -- version alone is still useful
+    // offline or slow registry: the version alone is still useful
   }
   consola.info(`   Proxy: ${PROXY_PACKAGE_NAME} ${version}${published}`);
 }
 
-/** The end-of-start report: the proxy version line, the path block (one message, one
- *  timestamp -- keeps it from interleaving), and the next-steps box. */
+/** The path block is one message so its lines cannot interleave with other output. */
 async function reportStartSummary(
   profile: Profile,
   live: { pid: number; port: number },
@@ -285,9 +225,7 @@ async function reportStartSummary(
       .map(([label, value]) => `   ${`${label}:`.padEnd(labelWidth + 1)}  ${value}`)
       .join("\n"),
   );
-  // What's next: set off in its own box so it doesn't blend into the path block.
-  // The default box is an output contract; the named-profile variant addresses
-  // the profile's own launchers and stop command.
+  // The default box is an output contract.
   consola.log("");
   consola.box(
     profile === null
@@ -309,9 +247,8 @@ async function reportStartSummary(
   );
 }
 
-/** The `--check` probe: "is the proxy up?" -- no launch. The exit code is the contract;
- *  every machine caller (the proxy resolver + cl/co/cx launchers) discards all output and
- *  reads only it. The status line is purely for a human running `start --check` directly. */
+/** The exit code is the contract: every machine caller (the proxy resolver, the launchers) discards
+ *  the output and reads only it. */
 async function reportCheckProbe(profile: Profile): Promise<void> {
   const status = await proxyStatus(profile);
   if (status.up) {
@@ -322,28 +259,20 @@ async function reportCheckProbe(profile: Profile): Promise<void> {
   process.exitCode = status.up ? 0 : 1;
 }
 
-/** The self-update preflight a live `start` ends with (src/autoupdate/preflight.ts). The
- *  parameter exists so a test can hand runPreflight hermetic state and lock paths. */
+/** Injectable so a test can hand runPreflight hermetic state and lock paths. */
 export type PreflightRunner = (opts: PreflightOptions) => Promise<void>;
 
-// Ordering of the self-update against the launch: PROJECT_ROOT names the `current` link
-// (src/utils/root.ts), so a daemon spawned after a flip loads the new release's preloads
-// under the spawning binary's launch logic. Spawning first keeps this turn's daemon on one
-// consistent release; holding the start lock through the flip means no other start spawns
-// while `current` is mid-flip (withStartLock waits unbounded, with a notice, so once a day
-// a second start may wait out one release download). A waiter that had already loaded the
-// OLD binary then spawns through the NEW `current`: that one-launch skew is accepted with
-// the link-named root.
-
 /**
- * The opt-in self-update, the LAST step of every live `start`: after the launch outcome
- * (spawned, left running, or failed) and still INSIDE the start lock. The preflight alone
- * decides (the auto-update key, the daily cadence, its own update lock, the release
- * cooldown, the source-checkout skip) and may flip the install's live version, which a
- * later start runs. Best-effort by contract: a failed check or update is a stderr warning,
- * never a failed `start`, and nothing it prints lands on stdout or touches the exit code;
- * the shared consola is routed to stderr for exactly this scope, so library narration
- * reached from the update (the installer's shim writes) cannot leak.
+ * The last step of every live `start`, still inside the start lock, because PROJECT_ROOT names the
+ * `current` link (src/utils/root.ts): a daemon spawned after the flip would run the new release's
+ * preloads under this binary's launch logic. Best-effort by contract: a failed check or update is a
+ * stderr warning, never a failed `start`, and consola rides stderr for this scope so the installer's
+ * narration cannot reach stdout.
+ *
+ *   spawn this turn's daemon -> preflight may flip `current` -> lock released -> waiting starts spawn
+ *
+ * A waiter that already loaded the OLD binary spawns through the NEW `current`: an accepted
+ * one-launch skew.
  */
 async function selfUpdatePreflight(preflight: PreflightRunner): Promise<void> {
   await withConsolaOnStderr(async () => {
@@ -355,7 +284,6 @@ async function selfUpdatePreflight(preflight: PreflightRunner): Promise<void> {
   });
 }
 
-/** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
 export async function runStart(
   action: StartAction,
   preflight: PreflightRunner = runPreflight,
@@ -369,10 +297,9 @@ export async function runStart(
     recordHeartbeat(profile);
     return;
   }
-  /** Paths + stores, resolved together so they can never disagree. The LIVE launch
-   *  resolves INSIDE the start lock below: the 3.5.6 default-home migration refuses
-   *  to move the home while that lock is held, so a held-lock resolution cannot go
-   *  stale against a concurrent move (the read-only dry run resolves unlocked). */
+  /** Resolved together so paths and stores can never disagree. The live launch resolves INSIDE the
+   *  start lock: the 3.5.6 default-home migration refuses to move the home while that lock is held,
+   *  so a held-lock resolution cannot go stale against a concurrent move. */
   const launchContext = (): LaunchContext => {
     const paths = new CopilotApiPaths(profile);
     return {
@@ -396,15 +323,13 @@ export async function runStart(
     try {
       await launchUnderLock(lock, action, profile, profileFlag, launchContext);
     } finally {
-      // After the outcome, before the start lock releases, on every exit path: a failed
-      // launch still gets its daily check, and its error passes through.
+      // On every exit path: a failed launch still gets its daily check, and its error passes
+      // through.
       await selfUpdatePreflight(preflight);
     }
   });
 }
 
-/** The live launch under the start lock: the float/floor gate, the managed no-op, the
- *  cleanup, the spawn, readiness, and the report. */
 async function launchUnderLock(
   lock: HeldStartLock,
   action: { force: boolean; port?: number },
@@ -415,9 +340,8 @@ async function launchUnderLock(
   const ctx = launchContext();
   const paths = ctx.paths;
   mkdirReported(paths.runDir);
-  // The float/floor gate runs INSIDE the start lock: it rewrites the shared daemon
-  // config and re-warms the float's cache, so two concurrent starts must not run it
-  // over each other. Its console narration still reaches the user unchanged.
+  // Inside the start lock: the gate rewrites the shared daemon config and re-warms the float's
+  // cache, so two concurrent starts must not run it over each other.
   const entry = await ensureProxyFloor(lock);
 
   if (isIdempotentNoOp(action, ctx.envConfig)) {

@@ -3,9 +3,8 @@ import { basename, join } from "node:path";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { expect, test } from "./helpers/testing.ts";
 
-// The skills + plugin folder is plain content (no code), so this guard only pins the
-// invariants installs depend on: manifests parse, listed paths exist, names line up,
-// and the plugin manifest's inline mcpServers entry launches `bin/agent mcp --serve`.
+// The skills and plugin folder is plain content, so only the invariants an install depends on
+// are pinned here.
 
 function readJson(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
@@ -39,7 +38,6 @@ test("every skill's SKILL.md frontmatter names the skill after its folder", () =
     const description = frontmatter.match(/^description:\s*(.+)$/m)?.[1];
     expect(name).toBe(basename(rel));
     expect((description ?? "").length).toBeGreaterThan(20);
-    // Per-skill Codex manifest parses and matches the name.
     const codex = readJson(join(PROJECT_ROOT, rel, ".codex-plugin", "plugin.json"));
     expect(codex.name).toBe(basename(rel));
   }

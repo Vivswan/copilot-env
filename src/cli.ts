@@ -1,18 +1,6 @@
-// CLI entrypoint: declares Commander commands and delegates behavior to command modules.
-//
-// Direct run:
-//   deno run -P=cli src/cli.ts <command> [args]
-//
-// This is the implementation behind bin/agent and bin/agent.ps1, and the entry
-// `deno compile` builds the released binary from. In a dev checkout the
-// launchers run this after ensuring the pinned deno and the locked deps are
-// present; direct runs are useful for tests and local command debugging. Run
-// `deno run -P=cli src/cli.ts --help` for the command tree and per-command
-// arguments.
-//
-// Commander (not citty) so unknown flags are rejected (`error: unknown option
-// '--x'`, exit 1) instead of silently accepted, and so help wraps to the
-// terminal width natively (no hand-rolled renderer needed).
+// The entry behind bin/agent, bin/agent.ps1, and the `deno compile` binary. Commander rather than
+// citty so unknown flags are rejected (`error: unknown option '--x'`, exit 1) instead of silently
+// accepted, and so help wraps to the terminal width natively.
 import "./utils/dotenv.ts";
 import { Command } from "commander";
 import { consola } from "consola";
@@ -52,18 +40,13 @@ import { errMessage } from "./utils/error.ts";
 import { disableConsolaTimestamps, redirectConsolaToStderr } from "./utils/logger.ts";
 import { packageVersion } from "./utils/version.ts";
 
-// Drop consola's right-aligned wall-clock timestamp from all command output.
 disableConsolaTimestamps();
-
-// Thin Commander wiring: each subcommand only declares its parameters and calls
-// the matching domain/command run function.
 
 /** Commander hands action callbacks an options bag of mixed-typed values. */
 type Opts = Record<string, unknown>;
 
-// Per-provider help details, keyed EXHAUSTIVELY on AuthProvider so the provider list
-// in the help text is derived from AUTH_PROVIDERS (env_state.ts owns the vocabulary)
-// and a membership change fails the compile here instead of drifting the help.
+// Keyed exhaustively on AuthProvider so a membership change in env_state.ts fails the compile here
+// instead of drifting the help.
 const AUTH_PROVIDER_HELP: Record<AuthProvider, string> = {
   "copilot": "device flow, read:user scope",
   "gh-cli": "use the machine's gh login",
@@ -88,16 +71,12 @@ function parseNonNegativeDays(raw: string, flag: string): number {
   return Number.parseInt(raw, 10);
 }
 
-/** Commander value coercion for the optional-valued `--cooldown [days]`. */
 function coerceDays(raw: string): number {
   return parseNonNegativeDays(raw, "--cooldown");
 }
 
-/**
- * Resolve `--cooldown [days]` to a day count or null: absent -> null, bare
- * `--cooldown` -> Commander passes `true` (coercion skipped) -> default days,
- * `--cooldown=N` / `--cooldown N` -> already coerced to the number N.
- */
+/** A bare `--cooldown` reaches here as `true`: Commander skips the coercion when the optional value
+ *  is absent. */
 function resolveCooldown(value: unknown, defaultDays: number): number | null {
   if (value === undefined) return null;
   if (value === true) return defaultDays;
@@ -126,14 +105,12 @@ program
   .helpOption("--help", "Show this help.")
   .option("--full-help", "Print help for `agent` and every subcommand, then exit.");
 
-// `agent --full-help`: dump the top-level help plus each subcommand's help in one
-// shot. The option:full-help listener fires during parse -- before any "missing
-// command" handling -- so it works with no subcommand.
+// The option:full-help listener fires during parse, before any "missing command" handling, so it
+// works with no subcommand.
 program.on("option:full-help", () => {
   const sep = "─".repeat(72);
-  // Render a command's FULL help -- including any `addHelpText('after', ...)` (e.g. the
-  // `config` key list), which `helpInformation()` omits because that text is emitted via
-  // help events during outputHelp(). Capture those events into a string.
+  // `helpInformation()` omits `addHelpText('after', ...)` (the `config` key list), which is emitted
+  // via help events during outputHelp(); those events are captured into a string instead.
   const renderHelp = (cmd: Command): string => {
     let out = "";
     const saved = cmd.configureOutput();
@@ -155,10 +132,8 @@ program.on("option:full-help", () => {
   process.exit(0);
 });
 
-// Tint Commander's native help to match the `agent health` report: bold section
-// titles, cyan command/option names, gray descriptions. The ansi.ts helpers
-// no-op under NO_COLOR / TERM=dumb / CI / test runs, so these hooks degrade to
-// plain text on their own -- Commander still owns all layout and width-wrapping.
+// The ansi.ts helpers no-op under NO_COLOR / TERM=dumb / CI / test runs, so these hooks degrade to
+// plain text on their own; Commander still owns all layout and width-wrapping.
 program.configureHelp({
   styleTitle: bold,
   styleCommandText: cyan,
@@ -167,9 +142,7 @@ program.configureHelp({
   styleDescriptionText: gray,
 });
 
-// Subcommands are added in display order and grouped into help sections via
-// .helpGroup (Commander renders the groups in first-appearance order), so
-// `init` (the headline command) appears first under the first heading.
+// Commander renders help groups in first-appearance order, so `init` is added first.
 
 program
   .command("init")
@@ -399,8 +372,7 @@ program
   .option("--set <key...>", "Set a preference: --set <key> <value>.")
   .option("--get [key]", "Print all preferences, or just one key's value.")
   .option("--del <key>", "Delete a preference (revert to its default).")
-  // The same table bare `agent config` prints, read at help-render time so the current
-  // values are the store's now (a function, not a string baked at startup).
+  // A function, not a string baked at startup, so the values are the store's at help-render time.
   .addHelpText("after", () => `\n${configTableOutput()}`)
   .action((opts: Opts) =>
     runConfig({
@@ -570,8 +542,8 @@ program
     ].join("\n"),
   )
   .action((opts: Opts) => {
-    // The report (and the --json payload) owns stdout; every consola line of the run,
-    // from any module the readers reach, is narration and rides stderr.
+    // The report (and the --json payload) owns stdout; every consola line from any module the
+    // readers reach is narration.
     redirectConsolaToStderr();
     return runCost({
       days: opts.days as string | undefined,
@@ -609,8 +581,7 @@ program
       case "check":
         return runCodex(action);
       case "configure":
-        // A single-agent default rewire stales the default slot's recorded
-        // mode; re-derive it after a successful write (same step as init).
+        // A single-agent default rewire stales the default slot's recorded mode.
         return runCodex(action).then(() => recordDefaultModeFromWiring());
       default:
         return assertNever(action);
@@ -636,13 +607,11 @@ program
     });
     switch (action.kind) {
       case "check":
-        // The Desktop status rides on the report (drift named); the exit code stays
-        // the provider-mode contract.
+        // The exit code stays the provider-mode contract; the Desktop status only prints.
         return runClaude(action).then(() => printClaudeDesktopCheck());
       case "configure":
-        // Same re-derivation as `agent codex`: one default wiring changed. Then the
-        // `claude-desktop` reconcile for the named profiles (the default's Desktop
-        // entry already rode on the write itself).
+        // The default's Desktop entry rode on the write itself; the reconcile covers the named
+        // profiles.
         return runClaude(action)
           .then(() => recordDefaultModeFromWiring())
           .then(() => reconcileClaudeDesktopWiring());
@@ -786,11 +755,9 @@ program
     })
   );
 
-// `agent update` invokes this on the NEW install after swapping it in, so the
-// migrations run from the new code rather than from the pre-update process's memory.
-// A compiled binary has no `src/migrations/index.ts` on disk to run, so the runner is
-// imported statically and reached through this subcommand instead of a script path
-// (`deno run src/migrations/index.ts <from> <to>` keeps working in a dev checkout).
+// `agent update` invokes this on the NEW install after swapping it in, so the migrations run from
+// the new code. A compiled binary has no `src/migrations/index.ts` on disk, hence a subcommand
+// rather than a script path.
 program
   .command("migrate")
   .helpGroup("Maintenance:")
@@ -803,10 +770,9 @@ program
   .action((from: string, to: string) => runMigrations(from, to));
 
 if (import.meta.main) {
-  // Single error renderer for both option-coercion and action errors.
   program.parseAsync(process.argv).catch((e: unknown) => {
     consola.error(errMessage(e));
-    // Set exitCode (not process.exit) so pending stderr writes flush.
+    // exitCode, not process.exit, so pending stderr writes flush.
     process.exitCode = 1;
   });
 }

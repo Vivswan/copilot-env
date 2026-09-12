@@ -81,10 +81,15 @@ interface ScrubState {
   scrubbed: number;
 }
 
-/** Fail-closed: a string survives only as a pseudonymized id, a timestamp or version under one
- *  of its keys, or one of its key's closed enum values; a number only DIRECTLY under a NUMERIC_KEYS key outside a
- *  container (an array element has no owning key); a key only when known (in a container:
- *  structural), and the value under an unknown key is content, container rules inside. */
+/** Fail-closed for strings and numbers: one not listed below is content and becomes its
+ *  placeholder. Booleans, null, and the empty string pass through unchanged
+ *  (test/usage_corpus.test.ts pins a kept null).
+ *    string  -> a pseudonymized id; a timestamp or version under one of its keys; one of its
+ *               key's closed enum values
+ *    number  -> only DIRECTLY under a NUMERIC_KEYS key outside a container (an array element
+ *               has no owning key)
+ *    key     -> KNOWN_KEYS, or CONTAINER_STRUCT_KEYS inside a container; an unknown key's
+ *               value is content, container rules inside */
 function scrubValue(
   key: string,
   value: unknown,

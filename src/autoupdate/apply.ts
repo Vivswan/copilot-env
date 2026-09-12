@@ -1,25 +1,19 @@
 // Apply a resolved release with a prepare-then-commit pipeline over the versioned install
 // layout (src/install/installer.ts owns the layout):
 //
-// 1. download + verify into a staging dir inside the install root: the SHA256 against
-//    checksums.txt first (integrity, cheap, and its failure message is the actionable one),
-//    then the release's Sigstore build-provenance attestation (origin;
-//    src/install/attestation.ts says why both), unless the caller decided to skip it,
-// 2. STAGE the verified binary into `<top>/versions/vNEW/bin/`,
-// 3. PROVISION: run the NEW binary's `install --assets-only` INSIDE that version root (aimed
-//    with COPILOT_ENV_INSTALL_ROOT), so the release that owns the assets writes them, while
-//    the OLD version is still live,
-// 4. COMMIT: flip the `current` link (and refresh the top-level shims).
+//   download + verify (sha256 vs checksums.txt, then the Sigstore attestation) into a staging
+//   dir inside the install root -> STAGE into <top>/versions/vNEW/bin/ -> PROVISION: the NEW
+//   binary's `install --assets-only` inside that root -> COMMIT: flip the `current` link
 //
-// Any failure BEFORE the flip leaves the old version fully live and removes the
-// half-prepared version dir; nothing pre-commit is best-effort. A failure OF the flip also
-// leaves the old version live (the link is replaced atomically on POSIX; Windows restores
-// the old junction on a failed create, except a double fault, restore failing too, which
-// leaves the link absent and says so in the error), with the fully-provisioned new version
-// dir left inert on disk; a retry's staging removes it. Only the post-flip steps are
-// best-effort: `agent migrate` on the new binary, then the GC that keeps exactly ONE
-// previous version for rollback. The flip has already moved the install forward, so failing
+// Nothing pre-commit is best-effort; past the flip the install has moved forward, so failing
 // there would strand it instead of retrying.
+//
+//   fails before the flip -> old version live, half-prepared version dir removed
+//   the flip itself fails -> old version live (POSIX replaces the link atomically; Windows
+//                            restores the old junction, and a double fault leaves the link
+//                            absent and says so)
+//   fails after the flip  -> best-effort: `agent migrate`, then the GC keeping ONE previous
+//                            version
 import { spawnSync, type StdioOptions } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -93,13 +87,9 @@ export type ProvenanceVerifier = (
   required: readonly AttestedSubject[],
 ) => Promise<{ signerIdentity: string }>;
 
-/**
- * The caller's ONE decision about build-provenance verification, resolved at
- * the boundary (flag > stored config > default, see resolveProvenanceDecision)
- * and carried into the pipeline, so no stage re-derives it and no caller can
- * forget it (the option is required). Skipping records WHICH opt-out did it,
- * because the warning names the way back.
- */
+/** The caller's ONE decision about provenance, resolved at the boundary
+ *  (resolveProvenanceDecision) and carried in, so no stage re-derives it and no caller can
+ *  forget it. A skip records WHICH opt-out did it, because the warning names the way back. */
 export type ProvenanceDecision =
   | { kind: "verify"; verifier?: ProvenanceVerifier }
   | { kind: "skip"; via: "--no-verify" | "verify-provenance" };
@@ -199,8 +189,8 @@ type DownloadSource =
 function downloadSource(tag: string): DownloadSource {
   const override = process.env[DOWNLOAD_BASE_ENV];
   if (override) {
-    // A directory override is what CI and the installer e2e use; anything else
-    // is treated as a base URL (mirrors install.sh's `[ -d ... ]` branch).
+    // A directory is what CI and the installer e2e use; anything else is a base URL (install.sh's
+    // `[ -d ... ]` branch).
     try {
       if (Deno.statSync(override).isDirectory) return { kind: "directory", path: override };
     } catch {
@@ -272,14 +262,14 @@ async function verify(downloaded: Downloaded): Promise<Verified> {
 }
 
 /**
- * Stage 2b: prove ORIGIN, not just integrity -- the binary AND the manifest it
- * was checked against must both be subjects of the release's attestation, and
- * the attestation must be signed by our release workflow. It runs AFTER the
- * checksum stage on purpose: a corrupt download is reported as the cheap
- * integrity failure, never as a provenance verdict. Fetching the attestation
- * belongs here too, so a missing bundle (the fail-closed case) can only be
- * reported for bytes that already passed the manifest. Skipping is the
- * caller's recorded decision and is said out loud, naming the way back.
+ * Stage 2b: prove ORIGIN, not just integrity. The binary AND the manifest must both be attested
+ * subjects, signed by our release workflow.
+ *
+ * after the checksum stage -> a corrupt download reads as the cheap integrity failure, never as a
+ *                             provenance verdict
+ * the bundle fetched here  -> a missing one (the fail-closed case) is reported only for bytes that
+ *                             already passed the manifest
+ * a skip                   -> the caller's recorded decision, said out loud
  */
 async function attest(
   verified: Verified,
@@ -315,14 +305,9 @@ async function attest(
   return { path: verified.path, sha256: verified.sha256 } as Attested;
 }
 
-/**
- * Stage 3: place the attested binary into its own version root,
- * `<top>/versions/<versionName>/bin/` -- a rename, since the staging dir lives
- * inside the same filesystem. The OLD version's files are never touched, so
- * there is no running-image problem on any platform: the running binary lives
- * in ITS version dir, and this write happens in a brand-new one (a stale dir
- * from a crashed earlier attempt is removed first; it is never `current`).
- */
+/** Stage 3: a rename, since the staging dir lives on the same filesystem. The OLD version's
+ *  files are never touched, so there is no running-image problem on any platform; a stale dir
+ *  from a crashed attempt is removed first (it is never `current`). */
 function stage(attested: Attested, top: string, versionName: string): Staged {
   const previous = readCurrentVersionName(top);
   if (previous === versionName) {
@@ -342,14 +327,12 @@ function stage(attested: Attested, top: string, versionName: string): Staged {
 }
 
 /**
- * Stage 4: run the NEW binary's `install --assets-only` INSIDE its version
- * root, aimed there explicitly -- the new release is the only thing that knows
- * its own runtime files, and the aim must beat any root the binary would
- * derive (the `current` link still names the OLD version here). Exit 0 is not
- * trusted alone: the per-version manifest the materialization writes LAST is
- * the postcondition, and its version must be the release being applied. A
- * failure is FATAL to the update: nothing has been committed, the old version
- * is live.
+ * Stage 4: the NEW binary lays down its own runtime files, aimed explicitly because `current` still
+ * names the OLD version. Nothing is committed yet, so every failure here leaves that version live.
+ *
+ *   nonzero exit                    -> the materialization failed
+ *   exit 0, no valid manifest       -> the manifest is written LAST, so exit 0 alone proves nothing
+ *   manifest names another version  -> the staged binary provisioned the wrong release
  */
 function provision(staged: Staged, stdio: StdioOptions): Provisioned {
   const result = spawnSync(staged.binary, ["install", "--assets-only"], {
@@ -384,13 +367,12 @@ function provision(staged: Staged, stdio: StdioOptions): Provisioned {
 }
 
 /**
- * Stage 5, THE commit: flip `current` at the fully-provisioned version root,
- * then refresh the stable top-level shims (identical text is skipped, so this
- * is a no-op on healthy versioned installs and a repair on a flat root or a
- * crashed earlier commit). The shim refresh is best-effort: the flip has
- * already landed, and a locked shim file must not fail a committed update.
- * A checkout-shaped root (`--force` on a dev clone) keeps its own bin/agent --
- * that file is source.
+ * Stage 5, THE commit: the `current` flip is what lands the update, so nothing after it may fail
+ * the run.
+ *
+ *   shim text already identical  -> no-op on a healthy install, a repair after a crashed commit
+ *   shim write throws            -> warned, not raised: a locked shim must not undo a landed flip
+ *   checkout-shaped root         -> keeps its own bin/agent; that file is source
  */
 function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Committed {
   pointCurrentAt(top, provisioned.versionName);
@@ -411,9 +393,8 @@ function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Co
   } as Committed;
 }
 
-/** Run the COMMITTED binary for a post-flip step, rooted at the `current` link
- *  (the aim must beat derivation here too: a checkout-shaped top would derive
- *  wrong, and the migrations must see the finished layout). */
+/** Run the COMMITTED binary for a post-flip step, rooted at the `current` link: a
+ *  checkout-shaped top would derive wrong, and the migrations must see the finished layout. */
 function runNewBinary(
   committed: Committed,
   top: string,
@@ -432,11 +413,8 @@ function runNewBinary(
 export interface ApplyUpdateOptions {
   /** Where progress/warnings go (default: the global stdout consola). */
   logger?: UpdateLogger;
-  /**
-   * Send the child processes' stdout to stderr (so migration output can't
-   * pollute stdout). The preflight sets this: like its own logger, an
-   * autoupdate inside `agent start` is stderr-only end to end.
-   */
+  /** Send the children's stdout to stderr so migration output cannot pollute stdout. The
+   *  preflight sets this: an autoupdate inside `agent start` is stderr-only end to end. */
   childStdoutToStderr?: boolean;
   /** The install root to update. Defaults to the live one. */
   root?: string;
@@ -484,9 +462,9 @@ export async function applyUpdate(
       stdio,
     );
   } catch (error) {
-    // Pre-commit failure: the old version is fully live; remove the
-    // half-prepared version dir so a retry starts clean. (The guard is
-    // paranoia -- `current` cannot name the new version before commit.)
+    // Pre-commit failure: the old version is live; remove the half-prepared version dir so a
+    // retry starts clean. stage() also throws when `current` ALREADY names the target, and that
+    // dir is then the live install: the guard is what keeps this from deleting it.
     if (readCurrentVersionName(top) !== versionName) {
       removeTreeReported(versionRoot);
     }
@@ -497,9 +475,8 @@ export async function applyUpdate(
 
   const committed = commit(provisioned, top, logger);
 
-  // Everything after the flip is best-effort: `current` has already moved
-  // forward, so a later `agent update` would see "up to date" and never retry --
-  // failing here would strand the install instead of fixing anything.
+  // Everything after the flip is best-effort: `current` has moved forward, so a later `agent
+  // update` would see "up to date" and never retry; failing here would strand the install.
   try {
     if (
       runNewBinary(committed, top, ["migrate", stripV(current), stripV(target.tag)], stdio) !== 0
@@ -510,22 +487,18 @@ export async function applyUpdate(
     logger.warn(`Post-update migrations could not run: ${errMessage(error)}`);
   }
 
-  // GC: keep the new version plus exactly ONE previous (the rollback
-  // candidate); everything older goes, along with pre-versioned binary residue
-  // in <top>/bin and -- when this update versioned a flat root -- the flat
-  // runtime files the new layout supersedes. The flat shell payload is spared:
-  // nothing here rewires the rc block that may still source it (the 3.5.6
-  // migration and `agent shell` own that), and a stale payload that works
-  // beats a swept one a block still points at.
+  // GC keeps the new version plus ONE previous (the rollback candidate). The flat shell payload
+  // is spared: nothing here rewires the rc block that may still source it (the 3.5.6 migration
+  // and `agent shell` own that), and a stale payload that works beats a swept one a block still
+  // points at.
   const keep = new Set(
     committed.previous === null
       ? [committed.versionName]
       : [committed.versionName, committed.previous],
   );
   removeVersionDirsExcept(top, keep);
-  // Only once the top shims dispatch through the link: while they are the old
-  // adjacent-dispatch text, the flat binary AND its runtime assets are what
-  // they invoke -- neither may go out from under them.
+  // Only once the top shims dispatch through the link: old adjacent-dispatch shims still invoke
+  // the flat binary and its runtime assets, and neither may go out from under them.
   if (committed.shimsRefreshed) {
     removeFlatBinaryResidue(flatBinaryResiduePaths(top));
     if (shape.kind === "flat") {

@@ -1,21 +1,11 @@
-// Side-effect module: make node:crypto's `verify()` infer the digest from the key
-// when the caller passes none, the way Node does.
+// Node's `crypto.verify(undefined, data, key, sig)` infers the digest from the key; Deno 2.9 throws
+// "no default digest" instead, and the Sigstore stack (tuf-js, @sigstore/core) calls it that way
+// throughout. Import for the side effect before the first sigstore import;
+// src/install/provenance.ts does.
 //
-// Node's `crypto.verify(undefined, data, key, sig)` picks the digest from the
-// key: SHA-256 for EC and RSA keys, an RSA-PSS key's own hash restriction, and
-// no digest at all for Ed25519/Ed448. Deno 2.9's node:crypto throws "no default
-// digest" on the same call. The Sigstore verification stack (tuf-js for the
-// trust-root metadata, @sigstore/core for the bundle signatures) calls verify
-// that way throughout, so without this shim the provenance check cannot run
-// under Deno at all.
-//
-// The shim ONLY fills in a missing algorithm; an explicit one passes through
-// untouched, and `sign()` is not patched. It must be imported (for its side
-// effect) before the first sigstore import -- src/install/provenance.ts does.
-//
-// Retire it when Deno infers the digest itself: the canary in
-// test/node_crypto_digest_shim.test.ts asserts the unshimmed call still throws,
-// so its failure is the signal to delete this file and its import.
+// Retire when Deno infers the digest itself: the canary in test/node_crypto_digest_shim.test.ts
+// asserts the unshimmed call still throws, so its failure is the signal to delete this file and its
+// import.
 import crypto from "node:crypto";
 
 type VerifyFn = typeof crypto.verify;
@@ -24,10 +14,7 @@ type VerifyKey = Parameters<VerifyFn>[2];
 /** The runtime's own `verify`, kept for the canary test. */
 export const unshimmedVerify: VerifyFn = crypto.verify;
 
-/** Node's default digest for `key` (measured against Node 26): SHA-256 for EC,
- *  RSA, and DSA, the key's own hash for a restricted RSA-PSS key, undefined for
- *  the digest-less Ed25519/Ed448 and for anything that is not a readable public
- *  key. Exported for tests. */
+/** Node's own defaults, measured against Node 26. Exported for tests. */
 export function defaultDigestFor(key: VerifyKey): string | undefined {
   const keyObject = toKeyObject(key);
   if (!keyObject) return undefined;
@@ -43,9 +30,8 @@ export function defaultDigestFor(key: VerifyKey): string | undefined {
   }
 }
 
-/** Read any accepted `verify()` key form as a public KeyObject: a KeyObject, a
- *  PEM string/Buffer, or a `{ key, format, type, ... }` wrapper (whose extra
- *  signature options `createPublicKey` ignores). */
+/** createPublicKey ignores the extra signature options on a `{ key, format, ... }` wrapper, so the
+ *  whole wrapper can be handed to it. */
 function toKeyObject(key: VerifyKey): crypto.KeyObject | null {
   if (key instanceof crypto.KeyObject) return key;
   if (typeof key === "object" && key !== null && !Buffer.isBuffer(key) && "key" in key) {
@@ -59,8 +45,6 @@ function toKeyObject(key: VerifyKey): crypto.KeyObject | null {
   }
 }
 
-// Both overloads are forwarded: the synchronous one returns the boolean, the
-// callback one (a fifth argument) returns undefined and reports through it.
 const shimmedVerify: VerifyFn = ((
   algorithm: Parameters<VerifyFn>[0],
   data: Parameters<VerifyFn>[1],

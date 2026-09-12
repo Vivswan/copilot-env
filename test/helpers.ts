@@ -1,7 +1,5 @@
-// Shared test harness + fixture builders for the suite. This is NOT a test
-// file (the `test` task only collects test/**/*.test.ts names), so importing it
-// never registers tests. Plain functions only -- each test file keeps its own
-// afterEach and calls these from it.
+// Not a test file (the `test` task collects only test/**/*.test.ts), so importing it registers
+// nothing. Plain functions only: each test file keeps its own afterEach and calls these from it.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -18,10 +16,8 @@ import { removeDir, tempDir } from "./helpers/testing.ts";
 
 // --- env snapshot / restore ---------------------------------------------------
 
-// The union of env vars the suite's isolation harnesses touch. Every snapshot
-// covers the whole union, so a file whose own tests poke only one key still
-// restores the rest -- including the GH-token trio, which most hand-rolled
-// harnesses forgot to save.
+// Every snapshot covers the whole union, so a file whose tests poke one key still restores the
+// rest.
 export const TEST_ENV_KEYS = [
   "HOME",
   "USERPROFILE",
@@ -46,11 +42,6 @@ export const TEST_ENV_KEYS = [
 // tests and silently make them pass, so isolation always clears the trio.
 const CREDENTIAL_ENV_KEYS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
 
-/**
- * Snapshot the standard env keys (plus any file-specific extras) at module load
- * and return a restore function for afterEach. The function is re-callable: it
- * always restores the values captured at snapshot time.
- */
 export function envSnapshot(extraKeys: readonly string[] = []): () => void {
   const keys = [...TEST_ENV_KEYS, ...extraKeys];
   const saved = keys.map((key) => [key, process.env[key]] as const);
@@ -62,11 +53,8 @@ export function envSnapshot(extraKeys: readonly string[] = []): () => void {
   };
 }
 
-/**
- * Reset to 0 (an explicit known value, so a test's exit 1 can never leak into
- * the rest of the run through whatever the runtime's process.exitCode setter
- * does with undefined).
- */
+/** 0, not undefined: the runtime's exitCode setter may not clear on undefined, and a test's exit 1
+ *  must not leak into the rest of the run. */
 export function resetExitCode(): void {
   process.exitCode = 0;
 }
@@ -78,11 +66,8 @@ function clearInheritedEnv(): void {
   delete process.env.COPILOT_ENV_ROOT_HOME;
 }
 
-/**
- * Isolate the proxy stores only: a fresh temp dir becomes COPILOT_API_HOME
- * (config/state/credential stores all live under it). Returns the dir; the
- * caller owns cleanup via removeDir.
- */
+/** COPILOT_API_HOME only (the config, state, and credential stores all live under it); the caller
+ *  removes the dir. */
 export function isolateProxyHome(prefix: string): string {
   const dir = tempDir(prefix);
   process.env.COPILOT_API_HOME = dir;
@@ -90,12 +75,8 @@ export function isolateProxyHome(prefix: string): string {
   return dir;
 }
 
-/**
- * The DEFAULT daemon's home under the current (isolated) root, created on
- * disk: `<root>/profiles/default` on a fresh root. Tests that stage a
- * daemon.lock or run files by hand use this so they land where the consult
- * sites (proxyStatus, stopTrackedProxy, the launch cleanup) resolve them.
- */
+/** Created on disk so hand-staged daemon.lock and run files land where proxyStatus,
+ *  stopTrackedProxy, and the launch cleanup resolve them. */
 export function defaultHomeDir(): string {
   const home = defaultDaemonHome();
   mkdirSync(home, { recursive: true });
@@ -109,11 +90,7 @@ export interface AgentHomes {
   codexHome: string;
 }
 
-/**
- * Isolate everything an agent-wiring test can touch: HOME plus the proxy,
- * Claude, and Codex homes, all under one temp dir. Returns the paths; the
- * caller owns cleanup via removeDir(homes.dir).
- */
+/** The caller removes homes.dir. */
 export function isolateAgentHomes(prefix: string, opts: { mkdirs?: boolean } = {}): AgentHomes {
   const dir = tempDir(prefix);
   const homes: AgentHomes = {
@@ -153,11 +130,9 @@ export interface CodexConfigTomlOptions {
   auth?: { command: string; args: readonly string[] };
 }
 
-/**
- * The managed Codex config shape the writers emit: our provider selected, one
- * [model_providers.copilot-env] table. envKey/wireApi/auth are included only when
- * given (the direct shape has none of them).
- */
+/** A minimal stand-in for the writers' [model_providers.copilot-env] table. The optional fields are
+ *  fixture knobs, not a mode's shape: both managed shapes (src/codex/config.ts) emit wire_api and
+ *  an auth command, and neither emits env_key. */
 export function codexConfigToml(opts: CodexConfigTomlOptions): string {
   const table = [`base_url = "${opts.baseUrl}"`];
   if (opts.envKey !== undefined) table.push(`env_key = "${opts.envKey}"`);
@@ -172,7 +147,6 @@ export function codexConfigToml(opts: CodexConfigTomlOptions): string {
   );
 }
 
-/** Write the managed Codex config into codexHome (created if needed); returns its path. */
 export function writeCodexConfigToml(codexHome: string, opts: CodexConfigTomlOptions): string {
   mkdirSync(codexHome, { recursive: true });
   const configPath = join(codexHome, "config.toml");
@@ -184,11 +158,10 @@ export interface ClaudeSettingsOptions {
   apiKeyHelper: string;
   baseUrl?: string;
   extra?: Record<string, unknown>;
-  /** Pretty-print (2-space indent + trailing newline), the shape our writer emits. */
+  /** The shape our writer emits (2-space indent, trailing newline). */
   pretty?: boolean;
 }
 
-/** A Claude settings.json document: apiKeyHelper, optional ANTHROPIC_BASE_URL env. */
 export function claudeSettingsJson(opts: ClaudeSettingsOptions): string {
   const doc: Record<string, unknown> = { "apiKeyHelper": opts.apiKeyHelper };
   if (opts.baseUrl !== undefined) doc.env = { "ANTHROPIC_BASE_URL": opts.baseUrl };
@@ -196,7 +169,6 @@ export function claudeSettingsJson(opts: ClaudeSettingsOptions): string {
   return opts.pretty ? `${JSON.stringify(doc, null, 2)}\n` : JSON.stringify(doc);
 }
 
-/** Write settings.json into claudeHome (created if needed); returns its path. */
 export function writeClaudeSettings(claudeHome: string, opts: ClaudeSettingsOptions): string {
   mkdirSync(claudeHome, { recursive: true });
   const settingsPath = join(claudeHome, "settings.json");
@@ -204,7 +176,6 @@ export function writeClaudeSettings(claudeHome: string, opts: ClaudeSettingsOpti
   return settingsPath;
 }
 
-/** Seed run state (the default slot, or a profile's) through the real store. */
 export function writeRunState(
   patch: Parameters<CopilotEnvRunState["set"]>[0],
   profile?: ProfileName,
@@ -215,8 +186,8 @@ export function writeRunState(
 
 // --- live-daemon fixtures -------------------------------------------------------------
 
-/** Launch the fake proxy as a real detached daemon over `home` (all preloads, so it takes
- *  `home`'s daemon.lock at boot exactly like a production daemon). */
+/** A real detached daemon over `home`, preloads included, so it takes the daemon.lock at boot like
+ *  production. */
 export function launchFakeDaemon(home: string, port: number): number {
   mkdirSync(home, { recursive: true });
   const logFile = join(home, "daemon.log");
@@ -238,7 +209,6 @@ export function launchFakeDaemon(home: string, port: number): number {
   });
 }
 
-/** Poll `probe` until it holds or `deadlineMs` passes; returns the final reading. */
 export async function until(deadlineMs: number, probe: () => boolean): Promise<boolean> {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
@@ -248,8 +218,8 @@ export async function until(deadlineMs: number, probe: () => boolean): Promise<b
   return probe();
 }
 
-/** SIGKILL `pid` and wait until it is genuinely gone -- throws if it survives, so a daemon
- *  outliving its test (or holding the temp home open into removeDir) fails loudly. */
+/** Throws if the pid survives: a daemon outliving its test would hold the temp home open into
+ *  removeDir. */
 export async function killAndAwaitExit(pid: number): Promise<void> {
   try {
     process.kill(pid, "SIGKILL");
@@ -262,13 +232,9 @@ export async function killAndAwaitExit(pid: number): Promise<void> {
 }
 
 /**
- * Run `body` with process.kill replaced by a thrower mimicking Deno's NotCapable --
- * name "NotCapable", `code` undefined, which is what a permission set without
- * --allow-run (the daemon's own) really throws; the fidelity of that shape is pinned
- * by the restricted-subprocess control in test/pid.test.ts. Every pidLiveness read
- * inside `body` is therefore "unproven", and every signal send fails like it does in
- * the daemon. The real kill is restored on every exit path, so teardown (and every
- * later test) signals normally.
+ * The thrower mimics Deno's NotCapable (name "NotCapable", `code` undefined), what a permission set
+ * without --allow-run really throws; test/pid.test.ts pins that shape. Inside `body` every
+ * pidLiveness read is "unproven" and every signal fails as it does in the daemon.
  */
 export async function withUnprovablePidProbe(body: () => Promise<void>): Promise<void> {
   const realKill = process.kill;
@@ -289,19 +255,14 @@ export async function withUnprovablePidProbe(body: () => Promise<void>): Promise
 export interface RefusedStopFixture {
   /** The live local pid the marker and run state both name (never a daemon). */
   bystanderPid: number;
-  /** Kill the bystander, wait out its exit, and release the held lock. */
   teardown: () => Promise<void>;
 }
 
 /**
- * Stage the shared-home stop REFUSAL for `home` (which must be the effective home of
- * `profile` under the current env): THIS test process holds home's daemon.lock --
- * standing in for the remote host's daemon, so the lock stays held through whatever
- * runs against it -- while the lock marker and the slot's run state both name a live
- * local bystander whose argv is nothing like a daemon. stopTrackedProxy then reads
- * lock-"alive" but cannot corroborate the pid, and refuses with tracking kept
- * ({ signalled: false, stopped: false }) -- the fixture every refusal-consumer pin
- * builds on.
+ * The shared-home stop refusal; `home` must be `profile`'s effective home under the current env.
+ *   this process holds home's daemon.lock (the remote host's daemon) -> the lock reads alive
+ *   marker and slot run state name a live local bystander            -> the pid is uncorroborated
+ *   stopTrackedProxy refuses with tracking kept  -> { signalled: false, stopped: false }
  */
 export function stageRefusedStop(home: string, profile?: ProfileName): RefusedStopFixture {
   mkdirSync(home, { recursive: true });
@@ -334,8 +295,8 @@ export function stageRefusedStop(home: string, profile?: ProfileName): RefusedSt
   };
 }
 
-/** Every stderr line that mentions `path`, in order. "One line per written path" means this
- *  equals exactly the seam's one line: a narrative line beside it would show up here. */
+/** "One line per written path" means this equals exactly the seam's one line: a narrative line
+ *  beside it shows up here. */
 export function linesNaming(text: string, path: string): string[] {
   return text.split("\n").filter((line) => line.includes(path));
 }

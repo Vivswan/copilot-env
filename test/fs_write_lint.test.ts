@@ -10,7 +10,6 @@ const GUARDED = "src/commands/example.ts";
 const lint = (source: string, file = GUARDED): string[] =>
   Deno.lint.runPlugin(fsWritePlugin, file, source).map((d) => d.message);
 
-/** [source, expected diagnostics] for one guarded file. */
 const CASES: readonly (readonly [string, number])[] = [
   // Named imports of a write API, sync and promise spellings alike.
   ['import { writeFileSync } from "node:fs";', 1],

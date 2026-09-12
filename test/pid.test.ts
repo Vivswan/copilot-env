@@ -1,13 +1,7 @@
-// The three-state pid-liveness primitive (src/utils/pid.ts): alive / dead / unproven,
-// and the pidAlive wrapper -- the house accepted-flatten with the safe direction built
-// in (true = NOT PROVABLY DEAD). The unproven arm is the measured bug's home: under the
-// daemon's own permission set (PROXY_PERMISSIONS -- everything but --allow-run) the
-// null signal throws Deno's NotCapable (code: undefined), which the historical
-// EPERM-only catch read as DEAD -- and pidAlive=false gates lock steals, tracking
-// clears, and sweep decisions across the tree. The restricted run below produces the
-// REAL NotCapable, so the "unproven" mapping (and the monkeypatched thrower the
-// consumer tests use, see withUnprovablePidProbe in test/helpers.ts) is anchored to the
-// genuine error shape rather than a guessed one.
+// Under the daemon's permission set (everything but --allow-run) the null signal throws Deno's
+// NotCapable with code undefined, which an EPERM-only catch read as DEAD; pidAlive=false gates lock
+// steals, tracking clears, and sweeps. The restricted run below produces the real NotCapable, so the
+// "unproven" mapping and withUnprovablePidProbe (test/helpers.ts) are anchored to the genuine shape.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pidAlive, pidLiveness } from "../src/utils/pid.ts";
@@ -25,7 +19,6 @@ afterEach(() => {
 test("pidLiveness: alive for our own pid, dead for a never-assigned pid", () => {
   expect(pidLiveness(process.pid)).toBe("alive");
   expect(pidLiveness(DEAD_PID)).toBe("dead");
-  // The flatten under a runnable probe: alive stays true, a proven death reads false.
   expect(pidAlive(process.pid)).toBe(true);
   expect(pidAlive(DEAD_PID)).toBe(false);
 });
@@ -69,11 +62,8 @@ test(
       script,
     ]);
     expect(restricted.exitCode).toBe(0);
-    // A live parent and a never-assigned pid read the SAME: the probe failed to look, so
-    // neither is a verdict -- mapping either to "dead" is exactly the measured bug. The
-    // wrapper flattens both to true (NOT PROVABLY DEAD): under this permission set no
-    // boolean consumer -- lock steal, tracking clear, sweep, died-in-grace,
-    // failed-to-start -- can ever act on a death the probe never proved.
+    // A live pid and a never-assigned pid read the SAME: the probe could not look, so neither is a
+    // verdict, and the wrapper flattens both to true so no boolean consumer acts on an unproven death.
     expect(JSON.parse(restricted.stdout)).toEqual(["unproven", "unproven", true, true]);
     // Control: the identical script under the run-granted test permission set proves the
     // reading above is the permission set's doing, not the harness's.

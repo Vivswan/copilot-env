@@ -1,8 +1,7 @@
-// The usage index, driven in-process against fixture files written here and a
-// pair of fake parsers that turn each fixture line into one Claude occurrence:
-// its dedup key is the line's hash, so the stored contribution carries numbers,
-// a model name, and hashes, and never a byte of the line itself. `IndexStats`
-// is the oracle for what the index did each run.
+// Driven in-process with a pair of fake parsers that turn each fixture line into one Claude
+// occurrence keyed by the line's hash, so a stored contribution carries numbers, a model name,
+// and hashes, never a byte of the line itself. `IndexStats` is the oracle for what the index
+// did each run.
 import {
   appendFileSync,
   existsSync,

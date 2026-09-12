@@ -1,28 +1,13 @@
-// The proxy float: how the runtime version of @jeffreycao/copilot-api is chosen
-// and provisioned. The proxy is never installed into node_modules or patched: it
-// lives in a dedicated Deno npm cache under the root home (<rootHome>/deno/cache),
-// and the successful resolution is recorded in <rootHome>/proxy/resolved-version.json,
-// the freshness oracle every status below reads and the record
-// src/copilot_api/process.ts turns into the daemon's entry. Import-only: no CLI entry.
+// The float installs the proxy into a dedicated Deno npm cache under the root home, never into
+// node_modules. The successful resolution is recorded in <rootHome>/proxy/resolved-version.json:
+// the freshness oracle every status here reads, and the record src/copilot_api/process.ts turns
+// into the daemon's entry.
 //
-// Runtime knobs are environment variables, not CLI flags: COPILOT_API_VERSION pins
-// an exact version/tag; COPILOT_API_MIN_RELEASE_AGE (seconds) overrides the cooldown
-// window (default 7 days; env > config `releaseCooldown` > built-in default).
-//
-// Resolution:
-// 1. Both agents wired Direct (no local proxy) -> proxyFloatSkips reports the float
-//    unnecessary. An explicit COPILOT_API_VERSION env pin overrides this.
-// 2. COPILOT_API_VERSION (or config `proxy-version`) set -> cache exactly that
-//    version/tag, bypassing the copilot-env.config bounds, the cooldown, and the
-//    lifecycle-script preflight (with a warning for the latter).
-// 3. Default float -> the newest stable release in the npm registry document at
-//    least the cooldown old, clamped to [PROXY_MIN_VERSION, PROXY_MAX_VERSION] from
-//    copilot-env.config. A target declaring npm lifecycle scripts is REFUSED: scripts
-//    never run for global-cache npm: execution, so it would misbehave silently at
-//    runtime (a recorded in-bounds version is kept instead; a fresh install fails loud).
-//
-// The cache warm runs the deno sidecar (`deno cache npm:...@<v>`, DENO_DIR under the root
-// home) with the cooldown as --minimum-dependency-age, so TRANSITIVE deps get the window too.
+// npm lifecycle scripts never run for global-cache `npm:` execution, so a target declaring them
+// would misbehave silently at runtime: the default float REFUSES it (a recorded in-bounds version
+// is kept; otherwise it fails loud), while an explicit COPILOT_API_VERSION or `proxy-version` pin
+// installs it with a warning. The cache warm passes the cooldown as --minimum-dependency-age, so
+// TRANSITIVE deps get the window too.
 
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
@@ -58,21 +43,16 @@ const PROXY_VERSION_ENV = "COPILOT_API_VERSION";
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
-/** Built-in supply-chain cooldown (seconds) when neither the env nor the config sets one:
- *  the `release-cooldown` registry default. */
 export const DEFAULT_RELEASE_COOLDOWN_SECONDS = configDefaultNumber("release-cooldown");
 
-/** The npm registry document for the proxy package (full doc: `time` carries
- *  the publish times the cooldown needs; the abbreviated install doc lacks it). */
+/** The full document: its `time` map carries the publish times the cooldown needs; the abbreviated
+ *  install doc lacks it. */
 export const PROXY_REGISTRY_URL = `https://registry.npmjs.org/${PROXY_PKG.replaceAll("/", "%2F")}`;
 
-/** Proxy-version override: an explicit env pin wins over the config pin (undefined if
- *  neither). The config read is the store's STRICT one: an unreadable prefs store
- *  throws rather than reading as "no pin" -- floating past a supply-chain pin on an
- *  unproven empty is exactly what the pin exists to prevent (junk content still
- *  degrades per-field via the lenient schema). An env pin short-circuits before the
- *  store is consulted, so it keeps working even then. Exported for the test that pins
- *  exactly that refusal. */
+/** The config read is the store's STRICT one: an unreadable prefs store throws rather than read as
+ *  "no pin", because floating past a supply-chain pin on an unproven empty is exactly what the pin
+ *  exists to prevent. An env pin short-circuits before the store is consulted, so it keeps working
+ *  even then. */
 export function resolveProxyVersionOverride(): string | undefined {
   return process.env[PROXY_VERSION_ENV]?.trim() || new CopilotEnvConfig().read().proxyVersion;
 }
@@ -89,11 +69,7 @@ const loggerOptions: ProxyConsolaOptions = {
 };
 const logger = createConsola(loggerOptions);
 
-/**
- * The effective cooldown window in seconds. Precedence: COPILOT_API_MIN_RELEASE_AGE env (a
- * whole number of seconds; 0 disables) > config `releaseCooldown` > the built-in 7-day
- * default. The single source the float, the verify status, and health all read.
- */
+/** The single source the float, the verify status, and health all read; 0 disables. */
 export function resolveMinimumReleaseAgeSeconds(): number {
   const raw = process.env[MIN_RELEASE_AGE_ENV]?.trim();
   if (raw) {
@@ -102,8 +78,8 @@ export function resolveMinimumReleaseAgeSeconds(): number {
     }
     return Number.parseInt(raw, 10);
   }
-  // Strict config read, like the version pin above: a stored cooldown must not be
-  // shortened to the default by an unreadable store (env wins before the read).
+  // Strict config read, like the version pin: a stored cooldown must not be shortened to the
+  // default by an unreadable store.
   return new CopilotEnvConfig().read().releaseCooldown ?? DEFAULT_RELEASE_COOLDOWN_SECONDS;
 }
 
@@ -114,19 +90,16 @@ function formatReleaseAge(seconds: number): string {
 
 // --- Registry document: fetch + parse boundary --------------------------------
 
-/** npm's lifecycle scripts that would run at install time -- and therefore NEVER
- *  run for global-cache npm: execution (the refusal below). External contract. */
+/** npm's install-time scripts, which never run for global-cache `npm:` execution. External
+ *  contract. */
 export const NPM_LIFECYCLE_SCRIPT_KEYS = ["preinstall", "install", "postinstall"] as const;
 
-/** One published release, joined from the registry doc's `versions` + `time` maps. */
 export interface ProxyRelease {
   version: string;
   publishedAtMs: number;
-  /** The install-time lifecycle scripts this version declares (empty = clean). */
   lifecycleScripts: string[];
 }
 
-/** The parsed registry document: only what selection needs, nothing half-trusted. */
 export interface ProxyRegistryDoc {
   releases: ReadonlyMap<string, ProxyRelease>;
   distTags: Readonly<Record<string, string>>;
@@ -144,12 +117,8 @@ const REGISTRY_SCHEMA = v.object({
   "time": v.record(v.string(), v.string()),
 });
 
-/**
- * Parse boundary for the raw registry JSON. Malformed documents are rejected
- * whole -- never partially trusted. Versions whose publish time is missing or
- * unparseable are dropped here: without a time they can never prove they clear
- * the cooldown, so they are not selectable.
- */
+/** A malformed document is rejected whole, never partially trusted. A version without a parseable
+ *  publish time can never prove it clears the cooldown, so it is dropped here. */
 export function parseRegistryDoc(raw: unknown): ProxyRegistryDoc {
   const parsed = v.safeParse(REGISTRY_SCHEMA, raw);
   if (!parsed.success) {
@@ -165,8 +134,8 @@ export function parseRegistryDoc(raw: unknown): ProxyRegistryDoc {
     if (Number.isNaN(publishedAtMs)) continue;
     const scripts = manifest.scripts ?? {};
     const lifecycleScripts: string[] = NPM_LIFECYCLE_SCRIPT_KEYS.filter((k) => k in scripts);
-    // hasInstallScript is npm's own summary flag; trust it even when the
-    // per-version manifest omits the scripts map.
+    // hasInstallScript is npm's own summary flag, trusted even when the per-version manifest omits
+    // the scripts map.
     if (manifest.hasInstallScript === true && lifecycleScripts.length === 0) {
       lifecycleScripts.push("install");
     }
@@ -175,10 +144,8 @@ export function parseRegistryDoc(raw: unknown): ProxyRegistryDoc {
   return { "releases": releases, "distTags": parsed.output["dist-tags"] };
 }
 
-/** Injectable fetch (tests); the default is the global. */
 export type FetchLike = (url: string) => Promise<Response>;
 
-/** Fetch + parse the proxy's registry document (throws with an actionable message). */
 export async function fetchRegistryDoc(fetchLike: FetchLike = fetch): Promise<ProxyRegistryDoc> {
   let response: Response;
   try {
@@ -200,10 +167,7 @@ export async function fetchRegistryDoc(fetchLike: FetchLike = fetch): Promise<Pr
 
 // --- Target selection ----------------------------------------------------------
 
-/**
- * The selection outcome. `pinned` is only minted by the pin path (env/config
- * override); `selectProxyVersion` itself returns the other three.
- */
+/** `pinned` is only minted by the pin path; `selectProxyVersion` returns the other three. */
 export type ProxySelection =
   | { kind: "pinned"; version: string }
   | { kind: "resolved"; version: string; publishedAtMs: number; reason: string }
@@ -212,13 +176,8 @@ export type ProxySelection =
 
 type RegistrySelection = Exclude<ProxySelection, { kind: "pinned" }>;
 
-/**
- * Pick the float target from a parsed registry doc: the newest stable release
- * at least `cooldownSeconds` old, clamped to the copilot-env.config window
- * (floor when nothing aged qualifies). A candidate that declares lifecycle
- * scripts is `refused`, never silently swapped for an older one -- the window
- * (or a reviewed pin) is the escape hatch, not an implicit downgrade.
- */
+/** A candidate that declares lifecycle scripts is `refused`, never silently swapped for an older
+ *  one: the window or a reviewed pin is the escape hatch, not an implicit downgrade. */
 export function selectProxyVersion(
   doc: ProxyRegistryDoc,
   config: ProjectConfig,
@@ -283,13 +242,11 @@ function refusalMessage(sel: Extract<ProxySelection, { kind: "refused" }>): stri
 
 // --- The resolved-version record (the freshness oracle) -------------------------
 
-/** The recorded successful resolution: what is cached, when, and into which DENO_DIR. */
 export interface ResolvedVersionRecord {
   version: string;
   resolvedAtMs: number;
   denoDir: string;
-  /** daemonConfigFingerprint() of the build that stamped the record; absent on
-   *  records written by builds that predate the fingerprint. */
+  /** daemonConfigFingerprint() of the build that stamped the record. */
   buildFingerprint?: string;
 }
 
@@ -297,54 +254,40 @@ const RECORD_SCHEMA = v.object({
   "version": v.pipe(v.string(), v.regex(SEMVER_RE)),
   "resolved_at_ms": v.pipe(v.number(), v.finite(), v.minValue(0)),
   "deno_dir": v.pipe(v.string(), v.minLength(1)),
-  // Lenient on purpose: an absent (old-format) or malformed fingerprint reads as
-  // "regenerate the config once, then stamp", never invalidating the resolution.
+  // Lenient on purpose: an absent or malformed fingerprint reads as "regenerate the config once,
+  // then stamp", never invalidating the resolution.
   "build_fingerprint": v.optional(v.unknown()),
 });
 
-/** The DENO_DIR holding the proxy's npm cache, under the root copilot-api home. */
 export function proxyDenoDir(rootHome: string): string {
   return join(rootHome, "deno", "cache");
 }
 
-/** Path of the resolved-version record under the root copilot-api home. */
 export function resolvedVersionFile(rootHome: string): string {
   return join(rootHome, "proxy", "resolved-version.json");
 }
 
-/** Path of the daemon's OWN deno config under the root copilot-api home. */
 export function daemonConfigFile(rootHome: string): string {
   return join(rootHome, "proxy", "deno.json");
 }
 
-/**
- * Path of the proxy's OWN lockfile, written and re-read by the float's cache warms. A
- * float-time artifact only: the daemon run never takes it, so a read-only install or two
- * concurrent daemons can never trip over it. Two jobs: it pins TRANSITIVE resolution
- * between floats (the proxy's own dependency ranges would otherwise re-resolve on every
- * warm, so one proxy version could sit on different transitive trees; each entry carries
- * an integrity hash), and it is the baseline `trust-policy=no-downgrade` compares against
- * (Deno records the publishing-trust level in the lockfile; with none, the policy cannot fire).
- */
+/** A float-time artifact only: the daemon run never takes it, so a read-only install or two
+ *  concurrent daemons cannot trip over it. It pins TRANSITIVE resolution between floats (the
+ *  proxy's own ranges would otherwise re-resolve on every warm) and is the baseline
+ *  `trust-policy=no-downgrade` compares against. */
 export function proxyLockFile(rootHome: string): string {
   return join(rootHome, "proxy", "deno.lock");
 }
 
-/**
- * Write the config the floated daemon runs under: this build's import map and compiler
- * options, with `lock` and `nodeModulesDir` DELIBERATELY dropped. The source is the
- * build's OWN deno.json read through ASSET_ROOT (the embedded VFS in a compiled binary,
- * the checkout root in dev); a compiled install root carries no deno.json on disk, where
- * it is a checkout marker. `lock: {frozen: true}` would reject `npm:<proxy>@<floated>`
- * outright (the frozen lock is a DEV contract; the float moves the runtime version
- * independently of it), and `nodeModulesDir` would resolve through a node_modules tree a
- * compiled install lacks. The import map stays: the preload shims resolve through it.
- */
+/** This build's import map and compiler options, with `lock` and `nodeModulesDir` dropped on
+ *  purpose: `lock: {frozen: true}` would reject `npm:<proxy>@<floated>` (the frozen lock is a DEV
+ *  contract), and `nodeModulesDir` would resolve through a node_modules tree a compiled install
+ *  lacks. The source is read through ASSET_ROOT because a compiled install root carries no
+ *  deno.json on disk. */
 export function writeDaemonConfig(rootHome: string, sourceRoot: string = ASSET_ROOT): void {
   atomicWriteFile(daemonConfigFile(rootHome), renderDaemonConfig(sourceRoot));
 }
 
-/** The exact daemon-config text writeDaemonConfig writes (and the fingerprint hashes). */
 function renderDaemonConfig(sourceRoot: string): string {
   const source = parseJsonRecord(readTextOrNull(join(sourceRoot, "deno.json")) ?? "");
   if (source === null) {
@@ -357,19 +300,15 @@ function renderDaemonConfig(sourceRoot: string): string {
   return `${JSON.stringify(config, null, 2)}\n`;
 }
 
-/**
- * The build-identity fingerprint stamped into the resolved-version record: a hash of
- * the daemon config THIS build writes. A content hash rather than the copilot-env
- * version, so it moves exactly when the generated config would -- an update that
- * leaves the import map alone regenerates nothing, and a dev checkout's deno.json
- * edits are caught without a release.
- */
+/** A content hash rather than the copilot-env version, so it moves exactly when the generated
+ *  config would: it covers deno.json's `imports` and `compilerOptions`, so an update that touches
+ *  neither regenerates nothing, and a dev checkout's edits are caught. */
 export function daemonConfigFingerprint(sourceRoot: string = ASSET_ROOT): string {
   return createHash("sha256").update(renderDaemonConfig(sourceRoot)).digest("hex");
 }
 
-/** Read the record back through its schema; absent or malformed reads as null
- *  (the caller's "install needed" path -- a corrupt record must never brick). */
+/** Malformed reads as null, the caller's "install needed" path: a corrupt record must never brick.
+ */
 export function readResolvedVersionRecord(rootHome: string): ResolvedVersionRecord | null {
   const text = readTextOrNull(resolvedVersionFile(rootHome));
   if (text === null) return null;
@@ -390,15 +329,10 @@ export function readResolvedVersionRecord(rootHome: string): ResolvedVersionReco
   };
 }
 
-/** The proxy version the NEXT daemon launch runs, in the entry's own precedence (see
- *  resolveCopilotApiEntry): the float's recorded resolution, else the checkout's node_modules
- *  copy. A version pin (env or `proxy-version`) the record does not match is what the next
- *  start resolves instead: an exact semver pin (the float's own SEMVER_RE rule) IS that
- *  version, so it answers; a tag pin (`latest`, `legacy`) is unknowable here, since only the
- *  start path resolves tags. Null when it cannot be known: that tag pin, a COPILOT_API_ENTRY
- *  file override, or nothing resolved or installed. Read-only, unlike the entry resolution,
- *  which may write the daemon config: what a version gate on a read path (`agent config`)
- *  judges against. */
+/** The version the NEXT launch runs, in resolveCopilotApiEntry's precedence, but read-only (the
+ *  entry resolution may write the daemon config), so a version gate on a read path (`agent config`)
+ *  can use it. Null when unknowable: a tag pin (only the start path resolves tags), a
+ *  COPILOT_API_ENTRY override, or nothing resolved or installed. */
 export function nextProxyVersion(rootHome: string = resolveRootHome()): string | null {
   if (process.env.COPILOT_API_ENTRY?.trim()) return null;
   const recorded = readResolvedVersionRecord(rootHome)?.version;
@@ -407,12 +341,9 @@ export function nextProxyVersion(rootHome: string = resolveRootHome()): string |
   return recorded ?? installedProxyVersion();
 }
 
-/** Atomically (tmp+rename) write the record for a just-verified cache entry.
- *  `denoDir` defaults to the current cache dir (fresh installs); a timestamp
- *  refresh of an existing record passes the record's own dir through, so the
- *  pointer never drifts away from where the cache actually lives. An omitted
- *  `buildFingerprint` stays omitted: only the float, which just wrote the daemon
- *  config, may claim the config is this build's. */
+/** A timestamp refresh passes the record's own `denoDir` through, so the pointer never drifts from
+ *  where the cache lives. An omitted `buildFingerprint` stays omitted: only a caller that just
+ *  wrote the daemon config may claim the config is this build's. */
 export function writeResolvedVersionRecord(
   rootHome: string,
   version: string,
@@ -429,15 +360,10 @@ export function writeResolvedVersionRecord(
   atomicWriteFile(resolvedVersionFile(rootHome), `${JSON.stringify(record, null, 2)}\n`);
 }
 
-/**
- * Regenerate the daemon config when the record was stamped by a DIFFERENT build (or
- * never stamped), then restamp -- the resolution timestamp stays untouched, because
- * build identity and freshness are separate questions and this must never extend the
- * cooldown window. Runs ahead of every verify/float so a young record from an older
- * build cannot keep an outdated import map steering daemon spawns until it ages out;
- * when the new map needs packages the recorded cache never warmed, the cacheResolves
- * that follows fails and the float re-warms both graphs.
- */
+/** The resolution timestamp stays untouched: build identity and freshness are separate questions,
+ *  and this must never extend the cooldown window. Runs ahead of every verify and float so a young
+ *  record from an older build cannot keep an outdated import map steering daemon spawns until it
+ *  ages out. */
 function ensureDaemonConfigCurrent(rootHome: string): void {
   const record = readResolvedVersionRecord(rootHome);
   if (record === null) return; // nothing resolved -> the resolve-time paths own the config
@@ -455,7 +381,7 @@ function ensureDaemonConfigCurrent(rootHome: string): void {
 
 // --- .npmrc trust policy ---------------------------------------------------------
 
-/** First line of the .npmrc copilot-env owns; its presence marks the file ours. */
+/** Its presence marks the .npmrc as ours. */
 export const NPMRC_MARKER = "# managed by copilot-env (proxy float); do not edit";
 
 const NPMRC_CONTENT = `${NPMRC_MARKER}\ntrust-policy=no-downgrade\n`;
@@ -465,14 +391,8 @@ export type NpmrcStatus =
   | { kind: "current"; path: string }
   | { kind: "kept-foreign"; path: string };
 
-/**
- * Ensure `<rootHome>/.npmrc` carries the no-downgrade trust policy. A
- * user-authored .npmrc (no marker) is NEVER clobbered -- it is kept and the
- * caller surfaces a note instead. An UNREADABLE file is kept the same way:
- * ownership (the marker) was not proven, so the write below would clobber
- * content we never saw -- the same never-act-on-an-unproven-empty rule the
- * JSON store's loadStrict applies.
- */
+/** A user-authored .npmrc (no marker) is never clobbered. An UNREADABLE file is kept the same way:
+ *  ownership was not proven, so the write would clobber content we never saw. */
 export function ensureProxyNpmrc(rootHome: string): NpmrcStatus {
   const path = join(rootHome, ".npmrc");
   const read = readTextResult(path);
@@ -492,10 +412,9 @@ export function ensureProxyNpmrc(rootHome: string): NpmrcStatus {
 
 // --- Deno cache commands ----------------------------------------------------------
 
-/** Result of one spawned deno command. `launchFailed` marks a spawn that never
- *  completed (an error, or killed -- no status of deno's own): the same mark
- *  contract as runCaptured in src/utils/command.ts, so a failed look at the
- *  cache never has to read as deno's own "cannot resolve". */
+/** `launchFailed` marks a spawn that never completed (the same mark as runCaptured in
+ *  src/utils/command.ts), so a failed look at the cache never reads as deno's own "cannot resolve".
+ */
 export interface DenoRunResult {
   status: number;
   stdout: string;
@@ -503,8 +422,7 @@ export interface DenoRunResult {
   launchFailed?: true;
 }
 
-/** Injectable deno-subprocess seam. `env` is an OVERLAY the runner merges over
- *  the process env (DENO_DIR + DENO_NO_UPDATE_CHECK). */
+/** `env` is an OVERLAY the runner merges over the process env. */
 export type DenoRunner = (
   command: string,
   args: string[],
@@ -525,12 +443,11 @@ function defaultDenoRunner(
     "status": result.status ?? 1,
     "stdout": result.stdout?.toString() ?? "",
     "stderr": result.stderr?.toString() ?? "",
-    // A spawn error or a null status (killed) means deno itself never answered.
+    // A spawn error or a null status (killed): deno itself never answered.
     ...(result.error || result.status === null ? { "launchFailed": true as const } : {}),
   };
 }
 
-/** Everything one float/verify/assert invocation runs with, resolved up front. */
 interface FloatContext {
   rootHome: string;
   config: ProjectConfig;
@@ -540,11 +457,10 @@ interface FloatContext {
   nowMs: number;
 }
 
-/** Optional seams/overrides; anything omitted resolves to the live default. */
 export interface ProxyFloatDeps {
   rootHome?: string;
   config?: ProjectConfig;
-  /** Cooldown override in seconds (else env > config > built-in default). */
+  /** Seconds; unset defers to env > config > built-in default. */
   cooldownSeconds?: number;
   denoBin?: string;
   fetchLike?: FetchLike;
@@ -553,8 +469,8 @@ export interface ProxyFloatDeps {
 }
 
 function floatContext(deps: ProxyFloatDeps): FloatContext {
-  // The sidecar resolves under the SAME home the float warms: a caller passing only
-  // rootHome must never warm one home while spawning another home's sidecar.
+  // The sidecar resolves under the SAME home the float warms, so a caller passing only rootHome
+  // never warms one home while spawning another home's sidecar.
   const rootHome = deps.rootHome ?? resolveRootHome();
   return {
     "rootHome": rootHome,
@@ -566,27 +482,19 @@ function floatContext(deps: ProxyFloatDeps): FloatContext {
   };
 }
 
-/** The env overlay every deno subprocess gets: the pinned cache dir, no update
- *  nags, and no package.json discovery -- npm-specifier entrypoints fail under a
- *  discovered manual/auto node-modules config, so together with --no-config and
- *  cwd=rootHome the spawns are location-independent. */
+/** No package.json discovery: npm-specifier entrypoints fail under a discovered node-modules
+ *  config, so with cwd=rootHome the spawns are location-independent. */
 function denoEnv(denoDir: string): Record<string, string> {
   return { "DENO_DIR": denoDir, "DENO_NO_UPDATE_CHECK": "1", "DENO_NO_PACKAGE_JSON": "1" };
 }
 
-/** `--minimum-dependency-age` value for a cooldown in seconds: an ISO-8601
- *  duration (deno's flag takes minutes, durations, or timestamps; `0` disables). */
+/** deno's flag takes minutes, ISO-8601 durations, or timestamps; `0` disables. */
 export function minimumDependencyAgeArg(cooldownSeconds: number): string {
   return cooldownSeconds === 0 ? "0" : `PT${cooldownSeconds}S`;
 }
 
-/**
- * Populate the proxy's DENO_DIR for an exact version. Warms TWO graphs, because the
- * daemon spawn resolves both under `--cached-only` and a miss on either is a hard
- * launch failure: the proxy package itself, and the preload shims (whose own imports
- * come from the map the daemon config carries). Both share the proxy lockfile, so the
- * transitive tree is pinned across floats. Returns the exit status.
- */
+/** Warms TWO graphs, the proxy package and the preload shims, because the daemon spawn resolves
+ *  both under `--cached-only` and a miss on either is a hard launch failure. */
 function denoCacheVersion(ctx: FloatContext, version: string, cooldownSeconds: number): number {
   dropSupersededCache(ctx, version);
   writeDaemonConfig(ctx.rootHome);
@@ -617,36 +525,23 @@ function denoCacheVersion(ctx: FloatContext, version: string, cooldownSeconds: n
   return shims.status;
 }
 
-/**
- * Drop the whole proxy cache when the target differs from what is recorded. The old
- * version's tree is dead weight the moment we move off it, and `deno clean --except`
- * cannot take its place: `--except` retains the graphs of FILES, so an npm specifier is
- * not a thing it can keep -- a prune "keeping" the proxy deletes the very tree the float
- * just warmed. Re-warming from empty is the only sweep that cannot corrupt the cache.
- */
+/** The whole cache goes, not a prune: `deno clean --except` retains the graphs of FILES, so it
+ *  cannot keep an npm specifier, and a prune "keeping" the proxy deletes the very tree the float
+ *  just warmed. */
 function dropSupersededCache(ctx: FloatContext, version: string): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record === null || record.version === version) return;
   removeTreeReported(proxyDenoDir(ctx.rootHome));
 }
 
-/** A look at the cache: "resolves"/"missing" are PROVEN readings (deno info ran
- *  and answered), "unproven" is a look that FAILED (the deno spawn itself). A
- *  string union rather than a boolean so no call site can flatten it by
- *  truthiness -- every consumer must pick an arm (the failed-look discipline of
- *  classifyPidFromScan in src/copilot_api/process.ts). */
+/** "unproven" is a look that FAILED (the deno spawn itself). A string union rather than a boolean
+ *  so no call site can flatten it by truthiness. */
 type CacheLook = "resolves" | "missing" | "unproven";
 
-/**
- * Whether `denoDir` holds EVERYTHING a floated launch resolves offline: the proxy
- * package AND the preload shims' own graph. Checking only the proxy would make a
- * half-warmed cache read as up to date: the float skips its warm and the daemon dies at
- * launch on a missing import-map package instead. Without the daemon config there is no
- * floated launch to verify, so that reads "missing" rather than falling back to a laxer
- * check. A `deno info` that never ran (launchFailed) is "unproven", never "missing": the
- * missing arm feeds recoveries that drop or re-warm the cache, and a failed look must
- * not trigger those.
- */
+/** Checks the preload shims' graph too: a half-warmed cache would otherwise read as up to date and
+ *  the daemon die at launch on a missing import-map package. A `deno info` that never ran is
+ *  "unproven" while the cache dir is there: the missing arm feeds recoveries that drop or
+ *  re-warm the cache. */
 function cacheResolves(ctx: FloatContext, version: string, denoDir: string): CacheLook {
   const config = daemonConfigFile(ctx.rootHome);
   if (!existsSync(config)) return "missing";
@@ -660,12 +555,9 @@ function cacheResolves(ctx: FloatContext, version: string, denoDir: string): Cac
       options,
     );
     if (result.launchFailed) {
-      // A failed look may only read "unproven" while there is a cache dir it
-      // could be vouching for: a dir PROVEN absent (ENOENT, via throwIfNoEntry)
-      // is a "missing" by direct observation (dropSupersededCache may have
-      // removed it this very invocation), and the keep paths must never vouch
-      // for a cache that is gone. Any other stat error (permissions, I/O) is
-      // itself a failed look and stays unproven.
+      // A dir PROVEN absent is "missing" by direct observation (dropSupersededCache may have
+      // removed it this invocation), and the keep paths must never vouch for a cache that is gone;
+      // any other stat error is itself a failed look.
       try {
         return statSync(denoDir, { "throwIfNoEntry": false }) === undefined
           ? "missing"
@@ -679,19 +571,15 @@ function cacheResolves(ctx: FloatContext, version: string, denoDir: string): Cac
   return "resolves";
 }
 
-/** The one honest warn for a cache look that failed -- shared by every keep path. */
 function warnCacheUnverified(version: string): void {
   logger.warn(
     `could not verify the ${PROXY_PKG}@${version} cache (deno info failed to run); keeping it`,
   );
 }
 
-/** The record, but only when its cache entry still resolves -- the one notion of
- *  "a usable installed proxy" every keep/fallback path shares. An UNPROVEN look
- *  keeps the record too, with a warning: the null arm feeds destructive
- *  recoveries (a floor install drops the recorded cache; several callers fail
- *  loud), a failed look must never trigger those, and a genuinely broken cache
- *  still fails honestly at daemon launch. */
+/** The one notion of "a usable installed proxy" every keep and fallback path shares. An UNPROVEN
+ *  look keeps the record too: the null arm feeds destructive recoveries, and a genuinely broken
+ *  cache still fails honestly at daemon launch. */
 function usableRecord(ctx: FloatContext): ResolvedVersionRecord | null {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record === null) return null;
@@ -703,13 +591,9 @@ function usableRecord(ctx: FloatContext): ResolvedVersionRecord | null {
   return look === "resolves" ? record : null;
 }
 
-/**
- * Remove everything the float owns, for `agent uninstall`: the cache the record points
- * at (which may sit OUTSIDE the root home, so deleting the root home alone would miss
- * it), the record's own directory, and the .npmrc -- but only when it still carries our
- * marker. An .npmrc without it is the user's; the float refused to write it, so the
- * uninstall refuses to delete it.
- */
+/** The cache the record points at may sit OUTSIDE the root home, so deleting the home alone would
+ *  miss it. An .npmrc without our marker is the user's: the float refused to write it, so the
+ *  uninstall refuses to delete it. */
 export function removeProxyFloatArtifacts(
   rootHome: string = resolveRootHome(),
   paths: readonly string[] = proxyFloatArtifactPaths(rootHome),
@@ -717,9 +601,8 @@ export function removeProxyFloatArtifacts(
   for (const path of paths) removeTreeReported(path);
 }
 
-/** Every path removeProxyFloatArtifacts would remove from `rootHome` right now: the
- *  uninstall plan resolves this once and renders it both as the dry run and the live
- *  removal. */
+/** The uninstall plan resolves this once and renders it both as the dry run and the live removal.
+ */
 export function proxyFloatArtifactPaths(rootHome: string): string[] {
   const record = readResolvedVersionRecord(rootHome);
   const npmrc = join(rootHome, ".npmrc");
@@ -734,8 +617,8 @@ export function proxyFloatArtifactPaths(rootHome: string): string[] {
 
 // --- Float actions -----------------------------------------------------------------
 
-/** The float's own record write, always stamped with the running build's fingerprint:
- *  the daemon config beside it was just written (or ensured) by this build. */
+/** Always stamped with this build's fingerprint: the daemon config beside it was just written, or
+ *  ensured current, by this build. */
 function recordFloatResolution(
   ctx: FloatContext,
   version: string,
@@ -749,8 +632,8 @@ function logNowUsing(ctx: FloatContext): void {
   logger.success(`now using ${PROXY_PKG}@${record?.version ?? "unknown"}`);
 }
 
-/** Best-effort lifecycle-script warning for a pinned version (the pin BYPASSES
- *  the refusal; the doc may be absent when the registry is unreachable). */
+/** The pin BYPASSES the refusal, so it only warns; the doc may be absent when the registry is
+ *  unreachable. */
 function warnPinnedLifecycleScripts(doc: ProxyRegistryDoc | null, version: string): void {
   const scripts = doc?.releases.get(version)?.lifecycleScripts ?? [];
   if (scripts.length > 0) {
@@ -768,8 +651,8 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
   let doc: ProxyRegistryDoc | null = null;
 
   if (SEMVER_RE.test(override)) {
-    // Only a PROVEN "resolves" earns the no-install fast path: an unproven look
-    // falls through to the (same-version, non-destructive) re-warm below.
+    // Only a PROVEN "resolves" earns the fast path; an unproven look falls through to the
+    // non-destructive re-warm.
     if (
       record?.version === override &&
       cacheResolves(ctx, override, record.denoDir) === "resolves"
@@ -780,10 +663,9 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
     try {
       doc = await fetchRegistryDoc(ctx.fetchLike);
     } catch {
-      doc = null; // the scripts warning is best-effort; the pin itself needs no doc
+      doc = null; // the scripts warning is best-effort
     }
   } else {
-    // A dist-tag pin: resolve it to a concrete version via the registry.
     try {
       doc = await fetchRegistryDoc(ctx.fetchLike);
     } catch (e) {
@@ -827,8 +709,6 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
   );
 }
 
-/** Registry unreachable / target unpublished: keep a floor-satisfying usable
- *  record, else try the floor directly, else fail loud. */
 function handleUnavailable(ctx: FloatContext, reason: string, cooldownSeconds: number): void {
   const record = usableRecord(ctx);
   if (record !== null && proxyVersionFloorStatus(record.version, ctx.config).ok) {
@@ -851,13 +731,10 @@ function handleUnavailable(ctx: FloatContext, reason: string, cooldownSeconds: n
   );
 }
 
-/** Newest eligible release refuses on lifecycle scripts: keep a usable in-bounds
- *  record (loudly), re-warming it first when its cache no longer resolves (a build
- *  change regenerates the daemon config, and the new map may need packages the old
- *  warm never cached); else fail loud -- never install the refused version. The
- *  re-warm only runs when the registry doc CONFIRMS the recorded version is
- *  script-free: a scripted record (left behind by an explicit pin, which bypasses
- *  the refusal) must not be reinstalled without the pin's explicit consent. */
+/** Never installs the refused version. The kept record is re-warmed when its cache no longer
+ *  resolves (a build change may need packages the old warm never cached), but only when the doc
+ *  CONFIRMS it is script-free: a scripted record left by an explicit pin must not be reinstalled
+ *  without the pin's consent. */
 function handleRefused(
   ctx: FloatContext,
   sel: Extract<ProxySelection, { kind: "refused" }>,
@@ -867,9 +744,8 @@ function handleRefused(
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record !== null && proxyVersionBoundsStatus(record.version, ctx.config).ok) {
     const look = cacheResolves(ctx, record.version, record.denoDir);
-    // "resolves" keeps; an UNPROVEN look keeps too (with the honest warn) rather
-    // than re-warming: the re-warm's failure arm is the loud refusal throw, and
-    // a failed look must not brick a possibly-working install.
+    // An UNPROVEN look keeps too rather than re-warming: the re-warm's failure arm is the loud
+    // refusal throw, and a failed look must not brick a possibly-working install.
     if (look !== "missing") {
       if (look === "unproven") warnCacheUnverified(record.version);
       logger.warn(`${refusalMessage(sel)} Keeping ${PROXY_PKG}@${record.version}.`);
@@ -893,9 +769,8 @@ function handleResolved(
   cooldownSeconds: number,
 ): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
-  // Only a PROVEN "resolves" earns the up-to-date fast path: an unproven look
-  // falls through to the (same-version, non-destructive) re-warm below, whose own
-  // failure arm keeps the record via usableRecord.
+  // Only a PROVEN "resolves" earns the fast path; an unproven look falls through to the
+  // non-destructive re-warm, whose failure arm keeps the record via usableRecord.
   const recordedLook: CacheLook = record?.version === sel.version
     ? cacheResolves(ctx, sel.version, record.denoDir)
     : "missing";
@@ -907,8 +782,8 @@ function handleResolved(
   }
 
   if (recordedLook === "unproven") {
-    // The honest wording for the fallthrough: the version already matches, only
-    // its cache could not be verified -- never the confident "update needed".
+    // The version already matches and only its cache could not be verified: never the confident
+    // "update needed".
     logger.info(
       `re-warming ${PROXY_PKG}@${sel.version}: could not verify its cache (deno info failed to run)`,
     );
@@ -938,10 +813,6 @@ function handleResolved(
 
 // --- Public float / verify API -----------------------------------------------
 
-/**
- * Float the proxy: resolve the target (pin, else registry selection), populate
- * the proxy's DENO_DIR, and record the resolution.
- */
 export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
   const ctx = floatContext(deps);
   ensureDaemonConfigCurrent(ctx.rootHome);
@@ -950,8 +821,8 @@ export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
     logger.warn(`${npmrc.path} exists without the copilot-env marker; leaving it untouched`);
   }
 
-  // An exact pin bypasses the cooldown entirely, so resolve the cooldown window
-  // ONLY on the float path -- a bad COPILOT_API_MIN_RELEASE_AGE must not block a pin.
+  // The cooldown is resolved only on the float path: a bad COPILOT_API_MIN_RELEASE_AGE must not
+  // block a pin.
   const override = resolveProxyVersionOverride();
   if (override) {
     await handlePinnedOverride(ctx, override);
@@ -997,16 +868,9 @@ export type ProxyInstallAssertStatus = {
   message: string;
 };
 
-/**
- * Read-only freshness check behind ensureProxyFloor (`agent start`).
- * Offline while the record is younger than the cooldown window (record parse +
- * bounds + cache check only); once stale, the registry is re-consulted. An
- * exact COPILOT_API_VERSION semver pin never needs the network. Read-only by
- * contract with ONE self-heal: a record stamped by a different build regenerates
- * the daemon config (and restamps) first, so a young record can never keep an
- * old build's import map steering daemon spawns until it ages out. The record's
- * timestamp only refreshes when the float itself runs.
- */
+/** Offline while the record is younger than the cooldown window; once stale the registry is
+ *  re-consulted. Read-only by contract with ONE self-heal (ensureDaemonConfigCurrent); the record's
+ *  timestamp only refreshes when the float itself runs. */
 export async function proxyFloatVerifyStatus(
   deps: ProxyFloatDeps = {},
 ): Promise<ProxyFloatVerifyStatus> {
@@ -1033,8 +897,8 @@ export async function proxyFloatVerifyStatus(
     }
     const look = cacheResolves(ctx, override, record.denoDir);
     if (look === "unproven") {
-      // A failed look is never "not in the cache"; upToDate:false still hands the
-      // decision to the float, whose failure arms now keep rather than discard.
+      // A failed look is never "not in the cache"; upToDate:false still hands the decision to the
+      // float, whose failure arms keep rather than discard.
       return {
         "upToDate": false,
         "message":
@@ -1070,8 +934,7 @@ export async function proxyFloatVerifyStatus(
 
   const recordedLook = cacheResolves(ctx, record.version, record.denoDir);
   if (recordedLook === "unproven") {
-    // Same honest arm as the pin path above: never claim "not in the cache" off a
-    // look that failed; the float's failure arms keep rather than discard.
+    // Same arm as the pin path above: never "not in the cache" off a look that failed.
     return {
       "upToDate": false,
       "message":
@@ -1135,16 +998,15 @@ export async function proxyFloatVerifyStatus(
   }
 }
 
-/**
- * A hard check of the float's end state: the float inside `agent start` is best-effort,
- * so this is what makes silent failure visible. Exercised by tests only today (wiring it
- * into CI would float first and hit the npm registry on every runner). Unlike the verify
- * status ("can the float be skipped?") it asks "did the float leave the record + cache
- * as intended?": the recorded version must equal the float's own resolved target, not
- * merely clear the bounds, or a silently failed cache write hides behind a satisfied
- * window. A pin must be the recorded version (exact semver pins only; tag pins are not
- * equality-checked; a pin bypasses the bounds). If npm is unreachable, bounds-only check.
- */
+/** The float inside `agent start` is best-effort, so this is what makes silent failure visible: it
+ *  asks whether the float left the record and cache as intended, since a satisfied version window
+ *  alone would hide a failed cache write. Tests only: in CI it would float first and hit the npm
+ *  registry on every runner.
+ *
+ *  exact semver pin                -> cached and EQUAL to the pin (bounds bypassed)
+ *  tag pin                         -> cached; equality not verified (bounds bypassed)
+ *  float target resolved           -> in bounds, cached, and EQUAL to the target
+ *  target refused or unresolvable  -> in bounds and cached only */
 export async function proxyInstallAssertStatus(
   deps: ProxyFloatDeps = {},
 ): Promise<ProxyInstallAssertStatus> {
@@ -1162,8 +1024,8 @@ export async function proxyInstallAssertStatus(
     }
     const pinLook = cacheResolves(ctx, record.version, record.denoDir);
     if (pinLook === "unproven") {
-      // A hard check must not claim OK off a failed look -- nor the specific
-      // "not in the cache" it never proved.
+      // A hard check must not claim OK off a failed look, nor the specific "not in the cache" it
+      // never proved.
       return {
         "ok": false,
         "message":
@@ -1231,8 +1093,8 @@ export async function proxyInstallAssertStatus(
   }
   const recordedLook = cacheResolves(ctx, record.version, record.denoDir);
   if (recordedLook === "unproven") {
-    // Same honest arm as the pin path above: fail the hard check, but with the
-    // could-not-verify reason, never the "did not land" it never proved.
+    // Same arm as the pin path above: the could-not-verify reason, never the "did not land" it
+    // never proved.
     return {
       "ok": false,
       "message":
@@ -1299,14 +1161,9 @@ export async function proxyInstallAssertStatus(
 
 // --- the Direct-only skip predicate -------------------------------------------
 
-/**
- * True when the float is pointless: nothing uses the local proxy
- * (proxyUnusedEverywhere) and no COPILOT_API_VERSION env pin. An explicit env
- * pin is per-invocation intent, so it always forces the normal path; a stored
- * `proxy-version` config pin does NOT force it (the config only matters once an
- * agent is wired to the proxy again). Consumed by the health engine
- * (src/health/probe.ts), which reports the float as skipped instead of stale.
- */
+/** An env pin is per-invocation intent and forces the normal path; a stored `proxy-version` pin
+ *  does NOT, since the config only matters once an agent is wired to the proxy again.
+ *  src/health/probe.ts reports a skipped float instead of a stale one. */
 export function proxyFloatSkips(codexHome?: string, claudeHome?: string): boolean {
   const envPinned = Boolean(process.env[PROXY_VERSION_ENV]?.trim());
   return !envPinned && proxyUnusedEverywhere({ codexHome, claudeHome });

@@ -1,10 +1,3 @@
-// `agent mcp`: the human-facing status/management command for the copilot-env MCP
-// server. Bare = print the registration/config status; `--serve` = run the stdio
-// server (the argv MCP clients register); `--remove` = durably opt out. The flag
-// bag is parsed ONCE into a three-armed action so contradictory states (--remove
-// plus a serve-only flag, --profile without --serve) are rejected at the boundary
-// and never reach the server or the removal path.
-
 import { syncDefaultWebSearchWiring } from "../claude/config.ts";
 import {
   inspectMcpRegistration,
@@ -53,8 +46,8 @@ function parseMcpAction(args: McpArgs): McpAction {
   }
   const profile = args.profile?.trim();
   if (profile === "") {
-    // A supplied-but-blank --profile (e.g. an unset shell var) must never silently
-    // serve the default credential; `profile: null` is only reachable via an ABSENT flag.
+    // A supplied-but-blank --profile (an unset shell var) must never silently serve the default
+    // credential.
     throw new Error("--profile expects a profile name; omit it for the default credential");
   }
   const name: Profile = parseProfileFlag(profile);
@@ -81,7 +74,7 @@ function printStatus(): void {
   const line = status === "unreadable" ? `could not read ${path}` : STATUS_LINES[status];
   logger.log(`Claude registration: ${line}`);
   logger.log(`  (${path})`);
-  // Value and provenance come from ONE config snapshot (the accessor reads once).
+  // One accessor, so value and provenance come from the same config read.
   const wireMcp = new CopilotEnvConfig().wireMcpResolved();
   logger.log(`wire-mcp: ${wireMcp.value} (${wireMcp.source})`);
   logger.log("");
@@ -100,13 +93,10 @@ export async function runMcp(args: McpArgs): Promise<void> {
     await runMcpServer({ profile: action.profile, model: action.model });
     return;
   }
-  // --remove: a DURABLE opt-out. Store `wire-mcp false` first so a later direct
-  // write respects it, then take back the pair (registration + our deny) in one
-  // go -- lifting the deny alone would leave a direct-wired machine with no
-  // search path at all. The registration is machine-global, so it is removed
-  // even when settings.json is foreign (the sync only manages OUR settings and
-  // leaves a foreign file's deny alone). Re-enable: `agent config --set wire-mcp
-  // true`, then any direct write (`agent claude` / `agent init`).
+  // `wire-mcp false` is stored first so a later direct write respects it; the deny and the
+  // registration then go together, since lifting the deny alone would leave a direct-wired machine
+  // with no search path. The registration is machine-global, so it goes even when settings.json is
+  // foreign and the sync leaves that file's deny alone.
   new CopilotEnvConfig().set({ wireMcp: false });
   syncDefaultWebSearchWiring(resolveClaudeHome());
   const unregistered = removeClaudeMcpRegistration();

@@ -1,14 +1,10 @@
-# Repo-owned CI checks, called by the managed ci.yml inside the all-green
-# gate: every job here must pass before all-green goes green. Written once
-# by the fleet sync and never overwritten, so edit freely: multiple jobs,
-# matrices, and further local reusable workflows all work.
+# Repo-owned checks called by the managed ci.yml inside the all-green gate. Two limits of the
+# `checks` caller; a check that cannot live with them belongs in its own workflow, wired into
+# the ruleset via .github/settings.yml.
 #
-# Two limits from running inside the `checks` caller: jobs here get no
-# secrets and are capped at the caller's permissions (contents: read), and
-# all-green only sees the aggregate result, so a job skipped by its own
-# `if:` does not fail the gate. A check that needs secrets, more
-# permissions, or must never be skippable, belongs in its own workflow wired
-# into the ruleset via .github/settings.yml.
+#   jobs get no secrets, at most `contents: read`  -> a check needing either has its own workflow
+#   all-green sees only the aggregate              -> a job skipped by its own `if:` does not
+#                                                     fail the gate
 
 name: Checks
 
@@ -62,9 +58,7 @@ jobs:
           COPILOT_ENV_USAGE_FIXTURE_MB: ${{ runner.os == 'Windows' && '100' || '1024' }}
         run: deno test -P=test test/usage_index_perf.test.ts test/usage_golden.test.ts
 
-      # End-to-end daemon lifecycle on every OS (script: .github/scripts/lifecycle-smoke.ts):
-      # default daemon start/stop/health cross-checks, managed-lifecycle idempotency, and the
-      # named-profile daemon cycle -- against a fake proxy, so no Copilot auth is needed.
+      # .github/scripts/lifecycle-smoke.ts against the fake proxy, so no Copilot auth is needed.
       - name: Start/stop + health lifecycle (fake proxy)
         env:
           COPILOT_API_ENTRY: ${{ github.workspace }}/test/copilot-api-fake.mjs
@@ -87,16 +81,11 @@ jobs:
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
           deno task lint:ps
 
-  # The same suite again, in the container. Not redundant with the matrix above:
-  # the container is where the throwaway HOME comes from, so it is the only run
-  # that proves the suite is genuinely hermetic rather than merely passing on a
-  # machine that happens to have the right state. `--network=none` inside means
-  # anything reaching for the network fails loudly instead of silently
-  # depending on it.
+  # Not redundant with the matrix: the container is where the throwaway HOME comes from, so this
+  # is the only run proving the suite is hermetic. Never path-gated: it IS the suite.
   #
-  # Always runs, never path-gated: it IS the suite, so there is no change class
-  # it can safely skip. Complements the floated-lifecycle job below, which is
-  # the opposite trade - networked, real proxy, narrow assertion.
+  #   test-container    -> --network=none, the real proxy from the warmed cache; any network reach fails loudly
+  #   floated-lifecycle -> networked, the real proxy from the live registry; asserts only up to auth
   test-container:
     name: container suite (hermetic HOME)
     runs-on: ubuntu-latest
@@ -144,12 +133,12 @@ jobs:
           COPILOT_ENV_LIVE_CODEX: "1"
         run: deno test -P=test test/codex_catalog_live.test.ts
 
-  # The ONLY job that runs the REAL proxy. Every other lifecycle run points
-  # COPILOT_API_ENTRY at test/copilot-api-fake.mjs, so nothing else exercises
-  # the float against the live registry, or the daemon's production permission
-  # set against the proxy's actual dependency tree. It asserts up to auth rather
-  # than through a full lifecycle: there is no credential here, so a daemon that
-  # floats, spawns, and reaches provider resolution is the expected end state.
+  # The one job that floats the REAL proxy against the live registry and runs the daemon to auth.
+  # It asserts up to auth, not through a lifecycle: there is no credential here.
+  #
+  #   matrix lifecycle smoke -> the fake (COPILOT_API_ENTRY)                -> start/stop + health
+  #   test-container         -> the real proxy, offline from the warmed cache -> the suite is hermetic
+  #   floated-lifecycle      -> the real proxy, live registry                -> the float and spawn reach auth
   floated-lifecycle:
     name: floated lifecycle (real proxy)
     runs-on: ubuntu-latest

@@ -1,12 +1,7 @@
-// Subprocess helpers shared by every test that spawns the CLI or a script.
-// Children are deno subprocesses running under the repo's "test" permission
-// set; `--config` pins the root deno.json because deno discovers config (and
-// with it the permission set) from the ENTRYPOINT's directory, so a worker
-// script written to a temp dir would otherwise resolve no set at all.
-//
-// Every spawn here is gated on the running test's abort signal (testing.ts): a
-// body the deadline abandoned keeps executing, and without the gate its next
-// spawn would land in the middle of whichever test is running by then.
+// `--config` pins the root deno.json: deno discovers config, and with it the "test" permission
+// set, from the ENTRYPOINT's directory, so a worker script in a temp dir would resolve no set.
+// Every spawn is gated on the running test's abort signal (testing.ts): a body the deadline
+// abandoned keeps executing, and its next spawn would otherwise land inside a later test.
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
@@ -16,10 +11,8 @@ import { ISOLATE_ROOT, PINNED_DENO_DIR, TEST_ROOT_ENV, testAbortSignal } from ".
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /**
- * `path` as a quoted module specifier, ready to splice into generated source
- * (`import ... from ${importSpecifier(p)}`). It must be a file URL: a Windows
- * absolute path is not a valid specifier, and deno reads its drive letter as an
- * unsupported URL scheme.
+ * A quoted module specifier for splicing into generated source. It must be a file URL: deno
+ * reads a Windows absolute path's drive letter as an unsupported URL scheme.
  */
 export function importSpecifier(path: string): string {
   return JSON.stringify(pathToFileURL(path).href);
@@ -29,23 +22,19 @@ export function importSpecifier(path: string): string {
 const CHILD_VALUES_ENV = "COPILOT_ENV_TEST_CHILD_VALUES";
 
 /**
- * Source text for the values object childValuesEnv() hands a child. The suite writes its
- * child programs as SOURCE TEXT, and a runtime value (a tmp path, a URL) is never spliced
- * into that text: it travels as data in one JSON env var, and the program reads it back
- * through this constant expression (`${CHILD_VALUES}.ready`), so the source is the same
- * whatever the values. Splicing through JSON.stringify would leave U+2028/U+2029 and
- * `</script>` unescaped inside code (CodeQL js/bad-code-sanitization).
+ * Child programs are SOURCE TEXT, and a runtime value (a tmp path, a URL) travels as data in one
+ * JSON env var the program reads back through this expression (`${CHILD_VALUES}.ready`).
+ * Splicing values through JSON.stringify would leave U+2028/U+2029 and `</script>` unescaped
+ * inside code (CodeQL js/bad-code-sanitization).
  */
 export const CHILD_VALUES = `JSON.parse(Deno.env.get("${CHILD_VALUES_ENV}") ?? "{}")`;
 
-/** The env entry carrying `values` to a child program that reads CHILD_VALUES. Spread it into
- *  the spawn's `env`: Deno.Command merges it over the parent's, while runSync REPLACES the
- *  env, so spread process.env first there. */
+/** Spread into the spawn's `env`. Deno.Command merges over the parent's env; runSync REPLACES
+ *  it, so spread process.env first there. */
 export function childValuesEnv(values: Record<string, unknown>): Record<string, string> {
   return { [CHILD_VALUES_ENV]: JSON.stringify(values) };
 }
 
-/** `deno run` argv (before the entrypoint) for a child under the test permission set. */
 export function denoRunArgs(...flags: string[]): string[] {
   return ["run", "--config", join(ROOT, "deno.json"), "-P=test", ...flags];
 }
@@ -67,11 +56,8 @@ export interface RunOptions {
   shell?: boolean;
 }
 
-/**
- * The exact environment the child should get: the requested map with `undefined` values
- * dropped, since those spell "the child must not see this". Null-prototype, so a variable
- * named `toString` or `__proto__` is an ordinary key here rather than something inherited.
- */
+/** Null-prototype, so a variable named `toString` or `__proto__` is an ordinary key here, not
+ *  something inherited. */
 function childEnv(env: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = Object.create(null);
   for (const [key, value] of Object.entries(env)) {
@@ -81,11 +67,10 @@ function childEnv(env: Record<string, string | undefined>): Record<string, strin
 }
 
 /**
- * `env` with the two harness keys every child carries, written LAST so no caller's map can
- * drop or redirect them: TEST_ROOT_ENV, the temp root the child's own root nests under, and
- * DENO_DIR, the module cache pin -- kept when the caller names an absolute cache of its own
- * (the proxy float pins one), replaced when the map lacks one or spells it relative or empty,
- * the same rule testing.ts applies to the environment it inherited.
+ * Written LAST: no caller's map can drop the two harness keys, and only an absolute DENO_DIR
+ * redirects one. DENO_DIR follows the rule testing.ts applies to its own inherited value:
+ *   absolute in the caller's map (the proxy float pins one)  -> kept
+ *   missing, relative, or empty                             -> PINNED_DENO_DIR
  */
 function harnessEnv(
   env: Record<string, string | undefined>,
@@ -107,9 +92,8 @@ function liveTestSignal(): AbortSignal | undefined {
 }
 
 /**
- * Tear `child` down as soon as the running test's signal aborts. Private on purpose:
- * spawnChild below is the only way to make a child, so there is no reachable path that
- * builds one and forgets to register it.
+ * Private on purpose: spawnChild is the only way to make a child, so no reachable path builds
+ * one and forgets to register it.
  */
 function killOnTestAbort(child: Deno.ChildProcess): Deno.ChildProcess {
   const signal = testAbortSignal();
@@ -128,10 +112,9 @@ function killOnTestAbort(child: Deno.ChildProcess): Deno.ChildProcess {
   return child;
 }
 
-/** THE async child spawn for the suite: constructs and registers for abort teardown in one
- *  step. Reaching a child-process API anywhere else under test/ is a lint error
- *  (test/lint/no_unmanaged_child_spawn.ts). The child also carries the harness keys
- *  (harnessEnv), so one killed by that teardown leaves nothing behind. */
+/** The one async child spawn under test/: reaching a child-process API anywhere else is a lint
+ *  error (test/lint/no_unmanaged_child_spawn.ts). The harness keys mean a child killed by the
+ *  abort teardown leaves nothing behind. */
 export function spawnChild(cmd: string, options: Deno.CommandOptions): Deno.ChildProcess {
   liveTestSignal();
   const env = childEnv(harnessEnv(options.env ?? {}));
@@ -139,30 +122,25 @@ export function spawnChild(cmd: string, options: Deno.CommandOptions): Deno.Chil
 }
 
 /**
- * Synchronous spawn with the RunResult shape the suite asserts on. The child gets
- * EXACTLY `opts.env` (node's documented replacement semantics) plus the harness keys
- * (harnessEnv), so a key the caller omits, or spells `undefined`, is genuinely absent in the
- * child.
+ * The child gets EXACTLY `opts.env` (node's replacement semantics) plus the harness keys, so a
+ * key the caller omits, or spells `undefined`, is genuinely absent in the child.
  */
 export function runSync(cmd: string, args: string[], opts: RunOptions = {}): RunResult {
   // spawnSync can take no part in this: it blocks the thread, so the only moment the signal
   // can be observed for a SYNC child is before the call.
   liveTestSignal();
   const wanted = childEnv(harnessEnv(opts.env ?? process.env));
-  // Deno's node:child_process MERGES `env` over the parent instead, so replacement is
-  // restored by clearing the parent's extra keys for the span of the spawn. PRECONDITION:
-  // the suite runs no Web Worker. spawnSync blocks this thread, so nothing on it can observe
-  // the window, but a Worker shares the process environment and would. (Deno.Command's
-  // `clearEnv` needs no such window, but its outputSync has no `timeout` -- and a blocked
-  // thread is precisely what stops the per-test deadline from killing a wedged child.)
+  // Deno's node:child_process MERGES `env` over the parent's, so replacement is restored by
+  // clearing the parent's extra keys for the span of the spawn. PRECONDITION: the suite runs no
+  // Web Worker; one shares the process environment and would see the cleared window.
+  //   Deno.Command + clearEnv  -> no window, but outputSync has no `timeout` for a wedged child
+  //   spawnSync                -> `timeout`; blocks this thread, so nothing on it sees the window
   const cleared: (readonly [string, string])[] = [];
   try {
     // Inside the try: a throw partway through must still restore what was already cleared.
     for (const [key, value] of Object.entries(process.env)) {
-      // hasOwn, not `in`: on the null-prototype map childEnv builds the two are equivalent,
-      // but hasOwn stays correct even if childEnv ever returns an ordinary object again --
-      // there `"toString" in wanted` would be true through the prototype chain and spare a
-      // parent variable of that name, leaking it into the child.
+      // hasOwn, not `in`: on an ordinary object `"toString" in wanted` is true through the
+      // prototype, which would spare a parent variable of that name and leak it into the child.
       if (value !== undefined && !Object.hasOwn(wanted, key)) {
         cleared.push([key, value] as const);
         delete process.env[key];
@@ -184,21 +162,17 @@ export function runSync(cmd: string, args: string[], opts: RunOptions = {}): Run
   }
 }
 
-/** Run a repo TypeScript entrypoint (or a temp-dir worker script) as a deno child. */
 export function runScript(entry: string, args: string[] = [], opts: RunOptions = {}): RunResult {
   return runSync(Deno.execPath(), [...denoRunArgs(), entry, ...args], opts);
 }
 
-/** Run the CLI (`src/cli.ts`) with `args`, from the repo root. */
 export function runCli(args: string[], opts: RunOptions = {}): RunResult {
   return runScript(join(ROOT, "src", "cli.ts"), args, opts);
 }
 
 /**
- * The package directory `name` resolves to from `fromDir`, by node's
- * node_modules ancestor walk. `fromDir` is realpath'd first: deno's store
- * symlinks a package out of node_modules, and its own dependencies sit beside
- * the REAL location (inside the store), not beside the symlink.
+ * `fromDir` is realpath'd first: deno's store symlinks a package out of node_modules, and its
+ * dependencies sit beside the REAL location inside the store, not beside the symlink.
  */
 export function resolvePackageDir(name: string, fromDir: string): string {
   let dir = realpathSync(fromDir);

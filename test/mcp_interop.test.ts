@@ -1,12 +1,7 @@
-// Interop: real MCP client libraries driving the real spawned `agent mcp --serve`
-// process across the stdio boundary. Two eras, two clients:
-//  - the v1 monolith SDK client (the same client library Claude Code embeds)
-//    speaks the legacy `initialize` handshake;
-//  - the v2 client pinned to 2026-07-28 must negotiate the modern era outright --
-//    a pin forbids the silent legacy fallback, so a passing test proves the
-//    modern path rather than a downgrade.
-// Both transports spawn the server process themselves, so client and server
-// objects never share a process.
+// Real MCP client libraries drive the real spawned `agent mcp --serve` process over stdio, so
+// client and server never share a process.
+//   v1 monolith SDK client (what Claude Code embeds)  -> the legacy `initialize` handshake
+//   v2 client pinned to 2026-07-28                    -> the modern era outright; the pin forbids the silent legacy fallback
 
 import { join } from "node:path";
 
@@ -81,9 +76,8 @@ test(
     );
     try {
       await client.connect(new StdioTransportV2(serverParams()));
-      // The pin makes connect() fail loudly unless server/discover offered exactly
-      // this revision; assert the negotiated outcome anyway so a future SDK default
-      // change cannot quietly turn this into a legacy test.
+      // The pin makes connect() fail loudly unless the server offered exactly this revision;
+      // asserted anyway so a future SDK default change cannot quietly make this a legacy test.
       expect(client.getProtocolEra()).toBe("modern");
       expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
 

@@ -11,15 +11,10 @@ import {
 } from "./helpers/run.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
-// The cross-process lock in CopilotApiConfig.update() must serialize concurrent read-modify-
-// writes to the SAME store file so none are lost. Prove it by racing several real
-// subprocesses, each incrementing a shared counter many times via update(); with the lock the
-// final value equals workers * increments (no lost updates). Without the lock, concurrent
-// load-mutate-saves would clobber each other and the total would come up short.
+// Without the cross-process lock in CopilotApiConfig.update(), the racing load-mutate-saves clobber
+// each other and the counter comes up short of workers * increments.
 const CONFIG_MODULE = join(ROOT, "src", "copilot_api", "config.ts");
 
-/** Spawn one worker script as a deno child over the store it reads through CHILD_VALUES;
- *  resolves to its exit code and stdout text. */
 function spawnWorker(worker: string, store: string): Promise<{ code: number; stdout: string }> {
   const child = spawnChild(Deno.execPath(), {
     args: [...denoRunArgs(), worker],
@@ -71,8 +66,7 @@ test("update() reclaims a stale lock (dead holder pid) quickly instead of hangin
   try {
     const store = join(dir, "s.json");
     writeFileSync(store, JSON.stringify({ v: 0 }));
-    // Plant a lock owned by a definitely-dead pid with a fresh timestamp: the pid check (not the
-    // age) must reclaim it, so update() completes fast rather than waiting out the timeout.
+    // A fresh timestamp under a dead pid: the pid check, not the age, must reclaim the lock.
     writeFileSync(`${store}.lock`, `2147480000\n${Date.now()}\n`);
 
     const cfg = new CopilotApiConfig(store);
@@ -94,8 +88,6 @@ test(
     try {
       const store = join(dir, "config.json");
       const worker = join(dir, "keyworker.ts");
-      // Each worker ensures the api + admin key and prints them; with the atomic check-inside-
-      // update + lock, every worker must return the SAME persisted keys.
       writeFileSync(
         worker,
         [
@@ -107,14 +99,13 @@ test(
 
       const procs = Array.from({ length: 6 }, () => spawnWorker(worker, store));
       const outs = (await Promise.all(procs)).map((p) => p.stdout.trim());
-      // Every worker saw the same api+admin key pair, and it matches what's on disk.
       const unique = new Set(outs);
       expect(unique.size).toBe(1);
       const doc = JSON.parse(readFileSync(store, "utf8"));
       const apiKey = doc.auth.apiKeys[0];
       const adminKey = doc.auth.adminApiKey;
       expect(outs[0]).toBe(`${apiKey} ${adminKey}`);
-      // No duplicate api keys were appended by the concurrent creators.
+      // Racing creators would each append their own api key.
       expect(doc.auth.apiKeys.length).toBe(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });

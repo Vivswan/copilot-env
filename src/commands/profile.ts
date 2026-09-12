@@ -1,12 +1,6 @@
-// `agent profile`: the single interface for NAMED profiles. A profile is an
-// atomic unit -- ONE credential + ONE wiring mode (direct or proxy, never both)
-// -- applied to BOTH Codex and Claude, so several agent sessions can run at once
-// under different accounts/backends. The store's profile slot (credential +
-// `mode`, src/copilot_api/env_state.ts) is the source of truth; the per-agent
-// artifacts (settings-<name>.json, [profiles.<name>] in config.toml) are derived
-// from it. The DEFAULT setup stays with `agent init`/`agent claude`/`agent
-// codex`; `agent auth --profile <name>` remains the re-auth path for an existing
-// profile's credential.
+// The store's profile slot (credential + mode, src/copilot_api/env_state.ts) is the source of
+// truth; the per-agent artifacts (settings-<name>.json, [profiles.<name>] in config.toml) are
+// derived from it.
 import { consola } from "consola";
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
 import {
@@ -52,34 +46,18 @@ import {
 const logger = createStderrLogger();
 
 export interface ProfileArgs {
-  /** `--add <name>`: create (or re-wire) a profile: credential + mode + both agents. */
   add?: string;
-  /** `--del <name>`: remove the profile everywhere (daemon, credential, artifacts, home). */
   del?: string;
-  /** `--list`: every profile with its provider, mode, and daemon status. */
   list?: boolean;
-  /** `--check <name>`: report the profile's mode; exit 0 direct / 2 proxy / 1 unknown. */
   check?: string;
-  /** `--settings-for <name>`: re-sync the Claude settings file and print its path. */
   settingsFor?: string;
-  /** `--sync`: refresh every profile's wiring against the live ports (launcher plumbing). */
   sync?: boolean;
-  /** `--direct`/`--proxy` for `--add`, parsed once at the CLI boundary
-   *  (auto = neither; sticky from the store on a re-add). */
   mode: RequestedMode;
-  /** `--provider` / `--set` / `--gh-user`: non-interactive credential acquisition for `--add`. */
   provider?: string;
   set?: string | boolean;
   ghUser?: string;
 }
 
-/**
- * What ONE `agent profile` invocation does -- exactly one of the six verbs,
- * parsed ONCE by `parseProfileAction` at the CLI boundary. The `--add`-only
- * knobs (mode, credential acquisition) live on the add arm alone, so a stray
- * `--direct`/`--provider` on another verb is a rejection here, never a silently
- * ignored flag.
- */
 export type ProfileAction =
   | { kind: "add"; name: ProfileName; mode: RequestedMode; acquisition: CredentialAcquisition }
   | { kind: "del"; name: ProfileName }
@@ -88,7 +66,6 @@ export type ProfileAction =
   | { kind: "sync" }
   | { kind: "list" };
 
-/** Parse the raw `agent profile` flags into a ProfileAction (the CLI boundary). */
 export function parseProfileAction(args: ProfileArgs): ProfileAction {
   const actions = [args.add, args.del, args.check, args.settingsFor].filter(
     (v) => v !== undefined,
@@ -113,10 +90,8 @@ export function parseProfileAction(args: ProfileArgs): ProfileAction {
   }
   const add = parseProfileFlag(args.add);
   if (add !== null) {
-    // Same conflict contract as `agent auth`: `--set` IS the gh-token path, so an
-    // explicit different provider must error, never be silently coerced. Here the
-    // --set conflict wins even over a bogus provider name (setConflictWins) -- the
-    // two commands intentionally report that combination differently.
+    // setConflictWins: unlike `agent auth`, the --set conflict is reported even over a bogus
+    // provider name.
     return {
       kind: "add",
       name: add,
@@ -136,13 +111,6 @@ export function parseProfileAction(args: ProfileArgs): ProfileAction {
   return { kind: "list" };
 }
 
-/**
- * `--add <name>`: make the profile exist end-to-end -- its own credential
- * (acquired now unless the slot already resolves; `--provider`/`--set` are the
- * non-interactive path), its single mode (from `--direct`/`--proxy`; sticky from
- * the store on a re-add), and BOTH agents wired. Re-running with the other mode
- * flag SWITCHES the profile (one mode, never both).
- */
 async function runAdd(
   name: ProfileName,
   requested: RequestedMode,
@@ -159,17 +127,15 @@ async function runAdd(
     );
   }
   const credential = await profileCredential(name, slot, acquisition);
-  // Switching AWAY from proxy strands the profile's daemon (nothing will route to it
-  // anymore); stop it as part of the switch rather than leaving an orphan serving.
+  // Switching away from proxy strands the profile's daemon: nothing will route to it anymore.
   if (previous === "proxy" && mode === "direct") {
     const { signalled } = await stopTrackedProxy(0, name);
     if (signalled) logger.log(`  Stopped ${profileLabel(name)}'s proxy daemon (now direct).`);
   }
   logger.log(configuringLine(profileLabel(name), mode, " (both agents)"));
-  // ONE atomic commit of the whole slot (credential + mode) BEFORE the wiring:
-  // the store can never hold a half profile, whatever happens next. A wiring
-  // failure below (including a rejected credential's identity probe) leaves a
-  // complete-but-unwired slot that a re-add or the launchers' `--sync` re-derives.
+  // One atomic commit of the whole slot BEFORE the wiring, so the store never holds a half profile;
+  // a wiring failure leaves a complete-but-unwired slot that a re-add or the launchers' `--sync`
+  // re-derives.
   state.commitProfile(name, { credential, mode });
   await wireBothAgents(name, mode, false);
   const switched = previous !== null && previous !== mode ? ` (switched from ${previous})` : "";
@@ -182,12 +148,9 @@ async function runAdd(
   }
 }
 
-/** The credential `--add` commits: the slot's own when it still resolves and no
- *  explicit `--provider`/`--set` re-provisions, freshly acquired otherwise --
- *  never the default's (a named profile never falls back). Reuse is judged on
- *  the ONE slot snapshot the caller read (a stored token resolves by presence;
- *  gh-cli by a live `gh` probe) -- never a second store read, so the value
- *  returned is exactly the value that was judged. */
+/** Never the default's credential: a named profile never falls back. Reuse is judged on the one
+ *  slot snapshot the caller read, never a second store read, so the value returned is exactly the
+ *  value judged. */
 async function profileCredential(
   name: ProfileName,
   slot: ProfileSlot,
@@ -195,7 +158,7 @@ async function profileCredential(
 ): Promise<ProvisionedCredential> {
   const existing = slot.credential;
   if (acquisition.kind === "choose" && existing.kind !== "none") {
-    // A gh-cli slot resolves via ITS recorded account pin (null = active account).
+    // A gh-cli slot resolves via its own recorded account pin (null = the active account).
     const resolves = existing.kind === "stored" || ghAuthToken(existing.ghUser) !== null;
     if (resolves) {
       logger.log(
@@ -209,23 +172,17 @@ async function profileCredential(
   return acquireCredential(acquisition);
 }
 
-/**
- * The shared profile teardown, in dependency order: stop its daemon (it holds the
- * credential in memory; a signalled-but-unstoppable daemon throws BEFORE anything
- * is deleted), strip both agents' artifacts, remove the whole store slot in one
- * atomic write (credential + mode together, never a half left behind), and remove
- * its isolated daemon home (config/apiKeys/run-state/sqlite/logs + the port
- * reservation). Used by `agent profile --del` and `agent uninstall`.
- */
+/** Dependency order: the daemon holds the credential in memory and an unstoppable one throws before
+ *  anything is deleted; the store slot goes in one atomic write, credential and mode together.
+ *  Shared with `agent uninstall`. */
 export async function deleteProfileEverywhere(
   name: ProfileName,
   options: RemoveProfileOptions = {},
 ): Promise<void> {
   const { stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, name);
-  // Anything short of CONFIRMED stopped aborts -- a survivor of the kill, or a stop
-  // refused because the pid could not be corroborated as our daemon (the refusal has
-  // already warned with the reason). Deleting the home under a possibly-live daemon
-  // would corrupt what it is still writing.
+  // Anything short of CONFIRMED stopped aborts (a kill survivor, or a stop refused because the pid
+  // could not be corroborated as ours): deleting the home under a possibly-live daemon would
+  // corrupt what it is writing.
   if (!stopped) {
     throw new Error(
       `${profileLabel(name)}'s proxy daemon did not stop; retry, or stop it manually ` +
@@ -237,14 +194,9 @@ export async function deleteProfileEverywhere(
   removeTreeReported(profileHome(name));
 }
 
-/**
- * `--del <name>`: remove the profile EVERYWHERE via deleteProfileEverywhere,
- * guarded so a profile that never existed sweeps nothing.
- */
 async function runDel(name: ProfileName): Promise<void> {
-  // Sweep NOTHING for a profile that never existed: a foreign same-named
-  // settings-<name>.json or a hand-made [model_providers.copilot-env-<name>]
-  // is not ours to delete unless the store/home says the profile was real.
+  // A foreign same-named settings-<name>.json or a hand-made [model_providers.copilot-env-<name>]
+  // is not ours to delete unless the store or home says the profile was real.
   const existed = new CopilotEnvState().profileSlotStatus(name).exists ||
     profileHomeNames().includes(name);
   if (!existed) {
@@ -256,8 +208,7 @@ async function runDel(name: ProfileName): Promise<void> {
   consola.success(`Deleted ${profileLabel(name)} (credential, wiring, daemon home).`);
 }
 
-/** One resolved `--list` row: the store slot plus (for proxy profiles) the
- *  daemon's liveness. `daemon` stays null for direct profiles (no daemon). */
+/** `daemon` is null for a direct profile, which has none. */
 export interface ProfileListRow {
   name: ProfileName;
   provider: string | null;
@@ -265,13 +216,7 @@ export interface ProfileListRow {
   daemon: ProxyStatus | null;
 }
 
-/**
- * Render the `--list` table (same conventions as `agent models`: columns are
- * padded BEFORE coloring so ANSI codes never skew the alignment), headed by a
- * gray NAME/MODE/PROVIDER/DAEMON row. An incomplete slot (no mode / no
- * credential) shows the gap in yellow so it stands out for repair; a direct
- * profile has no daemon, shown as "-".
- */
+/** Columns are padded before coloring so ANSI codes never skew the alignment. */
 export function renderProfileTable(rows: ProfileListRow[]): string {
   const GAP = "    ";
   const modeText = (r: ProfileListRow): string => r.mode ?? "incomplete";
@@ -282,8 +227,7 @@ export function renderProfileTable(rows: ProfileListRow[]): string {
     (m, r) => Math.max(m, providerText(r).length),
     "PROVIDER".length,
   );
-  // One gray span for the whole header; DAEMON is last and unpadded, so no
-  // invisible spaces are baked into the colored text.
+  // DAEMON is last and unpadded, so no invisible spaces are baked into the gray span.
   const header = [
     `     ${"NAME".padEnd(nameWidth)}`,
     "MODE".padEnd(modeWidth),
@@ -310,7 +254,6 @@ export function renderProfileTable(rows: ProfileListRow[]): string {
   return lines.join("\n");
 }
 
-/** `--list`: every profile (store + on-disk homes unioned), provider/mode/daemon. */
 async function runList(): Promise<void> {
   const state = new CopilotEnvState();
   const names = allProfileNames();
@@ -318,9 +261,8 @@ async function runList(): Promise<void> {
     consola.info("No profiles yet. Create one: `agent profile --add <name> --direct|--proxy`.");
     return;
   }
-  // Probe every proxy profile's daemon CONCURRENTLY: each probe can spend the
-  // full connect timeout on a wedged daemon, and paying that serially would make
-  // --list crawl once a couple of profiles are down.
+  // Concurrent probes: each can spend the full connect timeout on a wedged daemon, and paid
+  // serially that would make --list crawl once a couple of profiles are down.
   const rows: ProfileListRow[] = await Promise.all(
     names.map(async (name): Promise<ProfileListRow> => {
       const slot = state.readProfileSlot(name);
@@ -328,9 +270,7 @@ async function runList(): Promise<void> {
       return { name, provider: credentialProvider(slot.credential), mode: slot.mode, daemon };
     }),
   );
-  // One consola message for the whole table (a single prefix, not one per row --
-  // same rationale as the models table), blank-line-separated, with the launch
-  // hint as its footer.
+  // One message, so consola stamps one prefix instead of one per row.
   const hint = gray("   Launch one:  cl --profile <name>  /  cx --profile <name>");
   consola.info(
     `${rows.length} profile${rows.length === 1 ? "" : "s"}:\n\n${
@@ -339,10 +279,8 @@ async function runList(): Promise<void> {
   );
 }
 
-/** `--check <name>`: the launcher contract, driven by the STORE slot. The exit
- *  codes come from providerModeExitCode (the shared `--check` contract): the
- *  slot's own direct/proxy when complete, "other" (1 -- never start a daemon)
- *  for no such profile OR an incomplete one -- a partial slot is never launchable. */
+/** The launcher contract, driven by the store slot. A missing or partial profile exits as "other"
+ *  (never start a daemon): a partial slot is never launchable. */
 function runCheck(name: ProfileName): void {
   const slot = new CopilotEnvState().readProfileSlot(name);
   switch (slot.kind) {
@@ -359,9 +297,8 @@ function runCheck(name: ProfileName): void {
   }
 }
 
-/** `--settings-for <name>`: re-sync the profile's Claude wiring (the COMPLETE slot drives
- *  it; a partial one errors like `--check`) through the adapter, so its Desktop entry
- *  follows the key, and print the settings path `cl --profile` evals into `--settings`. */
+/** Through the adapter so the profile's Desktop entry follows the `claude-desktop` key; the printed
+ *  path is what `cl --profile` evals into `--settings`. */
 async function runSettingsFor(name: ProfileName): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(name);
   if (slot.kind === "partial") {
@@ -374,12 +311,8 @@ async function runSettingsFor(name: ProfileName): Promise<void> {
   process.stdout.write(`${settingsPathFor(resolveClaudeHome(), name)}\n`);
 }
 
-/** `--sync`: refresh EVERY complete profile's wiring (both agents) against the
- *  live ports -- this is also what heals a committed-but-unwired `--add`.
- *  Launcher plumbing (`cx --profile` runs it pre-launch); quiet and per-profile
- *  resilient (one broken profile never blocks the rest; a partial slot is repair
- *  territory, not syncable), never touches the default wiring -- but any failure
- *  still exits non-zero so callers can warn. */
+/** Reached only from `agent profile --sync`; what heals a committed-but-unwired `--add`. One
+ *  broken profile never blocks the rest, but any failure exits non-zero so callers can warn. */
 async function runSync(): Promise<void> {
   let synced = 0;
   let failed = 0;
@@ -395,14 +328,13 @@ async function runSync(): Promise<void> {
       logger.warn(`could not sync ${profileLabel(name)}: ${errMessage(e)}`);
     }
   }
-  // Cleanup-only (quiet): the profile writes above landed their own entries, and the
-  // launcher hot path never probes or discovers; zero complete profiles still sweep.
+  // Cleanup only: the profile writes above landed their own entries, and the launcher hot path
+  // never probes or discovers. Zero complete profiles still sweep.
   await reconcileClaudeDesktopWiring({ quiet: true });
   logger.log(`  ✓ Synced ${synced} profile${synced === 1 ? "" : "s"}.`);
   if (failed > 0) process.exitCode = 1;
 }
 
-/** `agent profile`: create, list, check, sync, and delete named profiles. */
 export async function runProfile(args: ProfileArgs): Promise<void> {
   const action = parseProfileAction(args);
   switch (action.kind) {

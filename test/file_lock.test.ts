@@ -11,11 +11,9 @@ import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import { withUnprovablePidProbe } from "./helpers.ts";
 
-// Direct tests of the shared lock's parameterization (staleMs, injected nowMs, marker
-// format) and of the steal path's restore contract. The multi-process mutual-exclusion
-// proof lives in config_lock.test.ts; here each judgment is exercised deterministically
-// (probes use an injected clock or staleMs=Infinity, so a suspended test process can
-// never age a lock mid-test).
+// The multi-process mutual-exclusion proof is config_lock.test.ts. Here every judgment is
+// deterministic: probes use an injected clock or staleMs=Infinity, so a suspended test
+// process can never age a lock mid-test.
 
 let dir = "";
 afterEach(() => {
@@ -40,10 +38,8 @@ test("acquire, contend against a fresh live holder, release, re-acquire", () => 
 });
 
 test("a HELD lock's marker stays readable and deletable by path (the sidecar invariant)", () => {
-  // The marker is the cross-version contract: other processes read it to judge the holder.
-  // Holding the OS lock on the marker itself would break exactly that on Windows, where an
-  // exclusive LockFileEx fails reads from every other handle -- so the lock lives on a
-  // sidecar and this by-path read must work on every platform.
+  // Other processes read the marker to judge the holder. An exclusive LockFileEx on Windows
+  // fails reads from every other handle, so the OS lock lives on a sidecar, not the marker.
   const path = tmp("x.lock");
   expect(tryAcquireFileLock(path, 10_000, { nowMs: 1_000 })).toBe(true);
   expect(readFileSync(path, "utf-8")).toBe(marker(process.pid, 1_000));
@@ -55,7 +51,6 @@ test("staleMs is the age horizon, judged at the injected nowMs (strictly older s
   writeFileSync(path, marker(process.pid, 1_000));
   // Exactly staleMs old is NOT stale (the judgment is a strict >).
   expect(tryAcquireFileLock(path, 5_000, { nowMs: 6_000 })).toBe(false);
-  // One millisecond past the horizon it is stolen.
   expect(tryAcquireFileLock(path, 5_000, { nowMs: 6_001 })).toBe(true);
 });
 
@@ -76,12 +71,9 @@ test("jsonMarker writes the JSON {pid,ts} contract, and both formats are read", 
   expect(tryAcquireFileLock(path, 10_000, { nowMs: 1_000, jsonMarker: true })).toBe(true);
   // The on-disk form is the pre-unification autoupdate contract (old readers parse it).
   expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({ pid: process.pid, ts: 1_000 });
-  // A live fresh JSON lock blocks a native-format contender ...
   expect(tryAcquireFileLock(path, 10_000, { nowMs: 2_000 })).toBe(false);
-  // ... the same age horizon applies to it ...
   expect(tryAcquireFileLock(path, 5_000, { nowMs: 6_001 })).toBe(true);
   releaseFileLock(path);
-  // ... and a native lock blocks a JSON-format contender.
   writeFileSync(path, marker(process.pid, 1_000));
   expect(tryAcquireFileLock(path, 10_000, { nowMs: 2_000, jsonMarker: true })).toBe(false);
 });
@@ -104,7 +96,6 @@ test("reclaimStaleLock restores a FRESH holder's lock instead of stealing it", (
   reclaimStaleLock(path, marker(DEAD_PID, 1_000));
   expect(readFileSync(path, "utf-8")).toBe(fresh); // restored byte-for-byte
   expect(tryAcquireFileLock(path, Number.POSITIVE_INFINITY)).toBe(false); // still held
-  // No .steal.* remnant is left behind.
   expect(readdirSync(dir).filter((f) => f.includes(".steal."))).toEqual([]);
 });
 
@@ -124,10 +115,9 @@ test("release by a non-holder is refused (a successor's lock survives)", () => {
 });
 
 test("release by the HOLDER still spares a marker a rename-steal replaced", () => {
-  // The mixed-version window: we hold the lock, and an old release (which judges by marker
-  // age alone, seeing no OS lock) renames ours aside and puts its own marker at the path.
-  // Our release must delete OUR marker, never the successor's -- otherwise we would hand a
-  // third process a lock the successor believes it holds.
+  // Mixed-version window: an old release, judging by marker age alone, renames our held lock
+  // aside and puts its marker at the path. Our release must delete OUR marker only, or a
+  // third process gets a lock the successor believes it holds.
   const path = tmp("x.lock");
   expect(tryAcquireFileLock(path, 10_000, { nowMs: 1_000 })).toBe(true);
   const successor = marker(process.pid + 1, 2_000);
@@ -369,16 +359,11 @@ test("releaseFileLock refuses a scope-held path: the scope owns the release", ()
 });
 
 test("the lock primitives and the update-lock test seam stay out of src/", () => {
-  // tryAcquireFileLock/releaseFileLock/reclaimStaleLock are exported for the on-disk
-  // contract tests only, and withUpdateLockForTests exists so suites can lock a hermetic
-  // path; production code goes through the scoped API (withFileLock/withFileLockSync and
-  // withUpdateLock), which is what keeps acquisition, release, and evidence in one owner.
-  // Each name is allowed ONLY in its listed modules, never src-wide. The one production
-  // consumer of tryAcquireFileLock and probeFileLock is the daemon's hold-for-life
-  // liveness lock (src/scripts/daemon_lock.ts): its lock is released by process death, so
-  // acquisition has no scope to release in, and the CLI-side consult probes holder-ship
-  // without ever taking the lock over -- the copilot_api liveness sites go through that
-  // module's daemonLockVerdict/daemonLockHolderPid, never the raw primitives.
+  // The primitives are exported for the on-disk contract tests; production goes through the
+  // scoped API, which keeps acquisition, release, and evidence in one owner. Each name is
+  // allowed ONLY in its listed modules.
+  //   tryAcquireFileLock, probeFileLock in daemon_lock.ts  -> released by process death, so no scope
+  //   withUpdateLockForTests                               -> suites lock a hermetic path
   const allowedIn: Record<string, string[]> = {
     tryAcquireFileLock: [
       join(ROOT, "src", "utils", "file_lock.ts"),
@@ -422,34 +407,25 @@ test("the lock primitives and the update-lock test seam stay out of src/", () =>
 
 // --- the unprovable-liveness posture at the steal boundary --------------------------------
 
-// The marker's dead-holder steal fires only on a PROVEN death (pidAlive's flatten is
-// "not provably dead"). Under a permission set without --allow-run (the daemon's own
-// preload environment; the real NotCapable shape is pinned in test/pid.test.ts) every
-// pid reads "unproven" -- which must never license a steal of a possibly-live holder's
-// lock, however the pid table would have read. The age-horizon arm beside it is the
-// capability control (the refusal above is the judgment, not a probe-broken harness
-// that cannot acquire at all) AND the no-brick direction: the daemon lock's own
-// staleMs-0 acquire is age-governed, so an unprovable token still boots. A wrapper
-// flattened the unsafe way (`=== "alive"`) turns the first arm red: the unprovable probe
-// steals the live holder's lock and rewrites its marker.
+// The dead-holder steal fires only on a PROVEN death. Without --allow-run (the daemon's own
+// preload environment; the NotCapable shape is pinned in test/pid.test.ts) every pid reads
+// "unproven", which must never license a steal of a possibly-live holder's lock.
+//   staleMs=Infinity, unprovable  -> refused, marker untouched (a `=== "alive"` flatten steals here)
+//   finite age horizon            -> still reclaims, so an unprovable token still boots the daemon
 test("an unprovable liveness probe never licenses a steal; the age horizon still reclaims", async () => {
   const path = tmp("unprovable.lock");
   const agedPath = join(dir, "aged.lock");
   const planted = marker(process.pid, Date.now());
   writeFileSync(path, planted); // a test-planted marker: a LIVE holder, freshly stamped
   await withUnprovablePidProbe(async () => {
-    // staleMs=Infinity is the dead-holder-only reclaim (the autoupdate/start-lock
-    // policy): with the holder's death unprovable, the acquire must back off ...
+    // Dead-holder-only reclaim (the autoupdate/start-lock policy) backs off ...
     expect(tryAcquireFileLock(path, Number.POSITIVE_INFINITY)).toBe(false);
-    // ... with the WHOLE outcome intact: the lock is kept and the holder's own marker
-    // is untouched (nothing stolen, nothing rewritten).
+    // ... with the marker untouched.
     expect(readFileSync(path, "utf-8")).toBe(planted);
-    // A genuinely dead holder reads the same to this token ("failed to look" is never
-    // "nobody there"), so dead-holder-only reclaim honestly refuses it too ...
+    // A dead holder reads the same to this token, so the dead-holder-only reclaim refuses it too ...
     writeFileSync(agedPath, marker(DEAD_PID, 1_000));
     expect(tryAcquireFileLock(agedPath, Number.POSITIVE_INFINITY)).toBe(false);
-    // ... and the FINITE age horizon is what still reclaims for an unprovable token:
-    // the same aged marker is stolen by age alone, probe or no probe.
+    // ... and the finite age horizon still reclaims it.
     expect(tryAcquireFileLock(agedPath, 5_000, { nowMs: 6_001 })).toBe(true);
   });
   releaseFileLock(agedPath);

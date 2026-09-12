@@ -1,6 +1,6 @@
-// The schema-drift gate against the INSTALLED Codex CLI, opt-in via COPILOT_ENV_LIVE_CODEX
-// (CI installs the current release first). No token and no Copilot call: the CLI's own
-// bundled dump plus a fixture Copilot /models body, under scratch homes only.
+// Schema-drift gate against the INSTALLED Codex CLI, opt-in via COPILOT_ENV_LIVE_CODEX. No
+// token and no Copilot call: the CLI's bundled dump plus a fixture /models body, under
+// scratch homes only.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stringify } from "smol-toml";
@@ -59,8 +59,7 @@ function fixtureBodyFor(bundledSlugs: Set<string>): { data: Model[]; overlaid: s
   return { data: [...FIXTURE_BODY.data, entry], overlaid };
 }
 
-/** `codex debug models [args]` under `home` (config.toml already in place). A spawn
- *  failure throws (runSync); a killed child reads as a null exit code. */
+/** A spawn failure throws (runSync); a killed child reads as a null exit code. */
 function codexDebugModels(codexPath: string, home: string, args: string[] = []) {
   // The shared CLI recipe: cmd.exe for a Windows .cmd shim, the CLI's own bin dir on
   // PATH for an nvm-resolved shim (resolveCommand returns a bare name on Windows).
@@ -98,7 +97,6 @@ live(
     expect(codexPath).not.toBeNull();
     if (codexPath === null) return;
 
-    // The reference: the installed binary's own bundled catalog.
     const bundledRun = codexDebugModels(codexPath, scratchHome, ["--bundled"]);
     expect(bundledRun.exitCode, bundledRun.stderr).toBe(0);
     const bundled = (JSON.parse(bundledRun.stdout) as { models: Model[] }).models;

@@ -1,8 +1,5 @@
-// Release provenance verification, offline: the real v4.0.0 bundle, the
-// checksums.txt it attests, and a Sigstore trust-root snapshot as fixtures.
-// Sigstore judges the certificate at the log-integrated time, not now, so the
-// fixtures do not expire. The test permission set has no network, which is
-// what keeps every case here pinned to the trust root passed in.
+// Sigstore judges the certificate at the log-integrated time, not now, so the v4.0.0 fixtures never
+// expire. The test permission set has no network, which pins every case to the trust root passed in.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TrustedRoot } from "@sigstore/protobuf-specs";

@@ -1,11 +1,11 @@
-// Away from 4.0.0: the readers know only the current wiring shape. 4.0.0 fenced the
-// shell rc block, moved the proxy resolver from the `src/scripts/proxy-token.{sh,ps1}`
-// script into `agent proxy-token`, made Claude's apiKeyHelper an inline command
-// instead of a helper FILE, and moved the autoupdate preference into the
-// `auto-update` config key -- while its readers still tolerated the shapes 3.5.6
-// wrote. Those tolerances are gone, so the fix-ups below convert what a 3.5.6-shaped
-// install still carries (a 4.0.0 install that never re-ran init/codex/claude/shell
-// included). Each is idempotent: a converted install reads back unchanged.
+// Away from 4.0.0: 4.0.0's readers still tolerated the 3.5.6 shapes and today's know only the
+// new ones, so these fix-ups convert what a 3.5.6-shaped install still carries. Each is
+// idempotent, and a converted install reads back unchanged.
+//
+//   rc block with no end marker          -> fenced in place, body kept
+//   `src/scripts/proxy-token.{sh,ps1}`   -> `agent proxy-token`
+//   Claude apiKeyHelper as a helper FILE -> the inline command
+//   autoupdate state's `enabled` field   -> the `auto-update` config key
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
@@ -36,10 +36,8 @@ import { chmodReported, removeReported, writeFileReported } from "../utils/repor
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import type { Migration } from "./index.ts";
 
-/** A step's outcome is honest about its files: each file converts independently (one
- *  bad file never stops the others), but any file that could not be converted makes
- *  the whole step fail, so the runner warns and names the re-run instead of reporting
- *  a clean pass over wiring that is still broken. */
+/** Each file converts independently, but any file left unconverted fails the whole step, so
+ *  the runner warns and names the re-run instead of reporting a clean pass over broken wiring. */
 function failIfAny(failed: readonly string[]): void {
   if (failed.length === 0) return;
   throw new Error(`${failed.length} file(s) were not converted: ${failed.join(", ")}`);
@@ -47,12 +45,11 @@ function failIfAny(failed: readonly string[]): void {
 
 // --- the shell rc block ----------------------------------------------------------
 
-/** The ordered [assignment, guard] line pair every 3.5.6-or-older release (and the
- *  pre-TS installers) wrote under each rc marker, frozen here: how an UNFENCED block
- *  is bounded without eating user lines. Order matters: a lookalike line in the guard
- *  position must not be consumed. Only the assignment VALUE varied across releases,
- *  so the assignments match on prefix; the guards match whole, in both their
- *  historical (no -LiteralPath) and current spellings. */
+/** The [assignment, guard] pair every 3.5.6-or-older release (and the pre-TS installers) wrote
+ *  under each rc marker, frozen here: how an UNFENCED block is bounded without eating user
+ *  lines. Order matters: a lookalike in the guard position must not be consumed. Only the
+ *  assignment VALUE varied, so assignments match on prefix; guards match whole, in both their
+ *  spellings (with and without -LiteralPath). */
 const UNFENCED_BLOCKS: Record<
   string,
   { end: string; pairs: readonly (readonly [RegExp, RegExp])[] }
@@ -77,13 +74,10 @@ const UNFENCED_BLOCKS: Record<
 };
 const FENCE_LINES: readonly string[] = [MARKER, MARKER_END, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END];
 
-/**
- * Pure core of v400ShellFence: every unfenced marker block in `content` whose two
- * body lines are the pair its release wrote gets its end fence inserted after the
- * guard line, so the current writer (fenced blocks only) refreshes or strips it
- * like any other. Anything else -- a fenced block, a body that is not the pair --
- * is left byte-identical. CR-tolerant, and the fence adopts the marker line's ending.
- */
+/** An unfenced marker block whose two body lines are its release's pair gets the end fence
+ *  inserted after the guard, so the current writer (fenced blocks only) refreshes or strips it
+ *  like any other. Anything else is left byte-identical. CR-tolerant; the fence adopts the
+ *  marker line's ending. */
 export function fenceUnfencedBlocks(content: string): string {
   const lines = content.split("\n");
   const bare = (i: number): string | null =>
@@ -115,10 +109,9 @@ export function fenceUnfencedBlocks(content: string): string {
   return out.join("\n");
 }
 
-/** Fence every unfenced block in this platform's rc/profile files. Shared by the
- *  4.0.0 step below and the 3.5.6 step (v356ShellFence), which must run BEFORE the
- *  versioned-layout adoption re-wires the shell through the current writer -- that
- *  writer owns only the marker line of an unfenced block and would strand its body. */
+/** Shared with the 3.5.6 step (v356ShellFence), which must run BEFORE the versioned-layout
+ *  adoption re-wires the shell: that writer owns only the marker line of an unfenced block and
+ *  would strand its body. */
 export function fenceShellBlocks(): void {
   const failed: string[] = [];
   for (const file of shellTargetFiles()) {
@@ -137,8 +130,7 @@ export function fenceShellBlocks(): void {
   failIfAny(failed);
 }
 
-/** The rc/profile blocks 3.5.6 wrote carry no end fence; fenced in place (the body is
- *  kept, so the next `agent shell` refreshes it like any current block). */
+/** The rc blocks 3.5.6 wrote carry no end fence; fenced in place, body kept. */
 export const v400ShellFence: Migration = {
   version: "4.0.0",
   description: "fence the shell rc blocks written without an end marker",
@@ -151,10 +143,9 @@ export const v400ShellFence: Migration = {
  *  here; no current writer knows it). */
 const LEGACY_DIRECT_ENV_KEY = "COPILOT_ENV_GH_TOKEN";
 
-/** Remove `key` from a Codex `.env` (any `export`-prefixed or duplicate assignment),
- *  keeping every other line (rejoined with LF and a final newline, the file's managed
- *  shape). Returns whether the file changed; an absent file or an absent key changes
- *  nothing (the file is never created or rewritten needlessly). */
+/** Returns whether the file changed; an absent file or key changes nothing (the file is never
+ *  created or rewritten needlessly). Kept lines are rejoined with LF and a final newline, the
+ *  file's managed shape. */
 export function removeEnvKey(envFile: string, key: string): boolean {
   let existing: string;
   try {
@@ -217,15 +208,11 @@ function isScriptShapedProxyAuth(auth: unknown, profile: Profile): boolean {
     tail.every((t, i) => args[lead + 1 + i] === t);
 }
 
-/**
- * Pure core of v400CodexWiring over one parsed config.toml: every managed
- * `copilot-env[-<name>]` table still wired the pre-4.0.0 way -- the script-shaped
- * auth.command, or the `env_key = "OPENAI_API_KEY"` proxy wiring older still -- is
- * rewritten to the current managed proxy table (the same base_url, the `agent
- * proxy-token` auth block) over its user keys; any other env_key left on a managed
- * table is dropped (Codex rejects `auth` + `env_key` on one provider). Foreign
- * tables are never touched. Returns whether anything changed.
- */
+/** Every managed `copilot-env[-<name>]` table still wired the pre-4.0.0 way (the script-shaped
+ *  auth.command, or the older `env_key = "OPENAI_API_KEY"` wiring) becomes the current managed
+ *  proxy table over its user keys; any other env_key on a managed table is dropped (Codex
+ *  rejects `auth` + `env_key` on one provider). Foreign tables are never touched. Returns
+ *  whether anything changed. */
 export function rewriteLegacyCodexTables(doc: Record<string, unknown>): boolean {
   const providers = isRecord(doc.model_providers) ? doc.model_providers : null;
   if (providers === null) return false;
@@ -248,9 +235,8 @@ export function rewriteLegacyCodexTables(doc: Record<string, unknown>): boolean 
   return changed;
 }
 
-/** Rewrite every known Codex home: the managed provider tables move to the current
- *  `agent proxy-token` auth block, and the baked direct bearer leaves `.env`. Shared
- *  by the 4.0.0 step below and its 3.5.6 registration (see v356ShellFence's note). */
+/** Every known Codex home: the managed provider tables move to the current auth block, and the
+ *  baked direct bearer leaves `.env`. Shared with the 3.5.6 registration (see v356ShellFence). */
 export function rewriteCodexWiring(): void {
   const { homes, complete } = knownCodexHomes();
   if (!complete) {
@@ -304,14 +290,12 @@ function legacyHelperPaths(
 }
 
 /**
- * The helper-file bodies the releases wrote on THIS platform, by SHAPE (any install
- * root), frozen from tag history: the POSIX `#!/bin/sh` + `exec` frame with every
- * token single-quoted, or the Windows `@echo off` CRLF frame (a path may carry `%%`,
- * never a raw `%` or a line break). Direct ran `agent auth --get`; proxy ran the
- * `src/scripts/proxy-token` forwarder (v3.3.x spelled `--yes` bare, default profile
- * only). Released bodies only: a `.sh` only ever held the POSIX frame and a `.cmd`
- * the Windows one, so the other platform's frame at this platform's path is nobody's
- * release. Profile names are `[a-z0-9-]`, so they need no escaping in either quoting.
+ * The helper-file bodies the releases wrote on THIS platform, frozen from tag history. Each
+ * platform only ever wrote its own frame, so the match is by platform, never by extension.
+ *
+ *   cmd path class admits `%%` only      -> batch escapes `%` so; a raw `%` or line break never landed
+ *   bare `--yes` row, default profile    -> v3.3.x wrote the proxy args unquoted
+ *   profile unescaped in both quotings   -> names are `[a-z0-9-]`
  */
 function releasedHelperBodies(mode: "direct" | "proxy", profile: Profile): RegExp[] {
   const sh = (path: string, args: string) =>
@@ -357,14 +341,11 @@ function claudeSettingsProfiles(claudeHome: string): Profile[] {
 }
 
 /**
- * Core of v400ClaudeWiring for ONE settings file: an apiKeyHelper that is the
- * profile's helper-file path, with a body one of the releases wrote for that mode and
- * profile, becomes the current inline command and the file goes with it -- it is
- * copilot-env's own artifact (the body proves it), nothing copilot-env wrote ever
- * pointed anything else at it, and its proxy body dies with the swept forwarder
- * anyway. A file at the same name with any other body is the user's: the settings
- * are left alone (the reader classifies them "custom"). Returns whether the settings
- * were rewritten.
+ * Only a helper copilot-env itself wrote is converted; the BODY proves that, since nothing
+ * copilot-env wrote pointed anything else at that path.
+ *
+ *   helper path + a released body -> inlined, the file removed, returns true
+ *   helper path, any other body   -> the user's: left alone, the reader calls it "custom"
  */
 export function rewriteLegacyClaudeHelper(claudeHome: string, profile: Profile): boolean {
   const settingsPath = settingsPathFor(claudeHome, profile);
@@ -397,8 +378,7 @@ export function rewriteLegacyClaudeHelper(claudeHome: string, profile: Profile):
   return true;
 }
 
-/** Rewrite the default and every named profile's settings file in the Claude home.
- *  Shared by the 4.0.0 step below and its 3.5.6 registration. */
+/** Shared with the 3.5.6 registration (see v356ShellFence). */
 export function rewriteClaudeWiring(): void {
   const claudeHome = resolveClaudeHome();
   const failed: string[] = [];
@@ -427,9 +407,8 @@ export const v400ClaudeWiring: Migration = {
 /** The state-file key that carried the preference before the `auto-update` config key. */
 const LEGACY_ENABLED_KEY = "enabled";
 
-/** Drop the field from `file`. Returns whether it was there: an absent file, or one
- *  without the field, is left untouched (the strict read is the decision to skip, so
- *  an unreadable file throws instead of reading as "nothing to drop"). */
+/** The strict read is the decision to skip: an unreadable file throws instead of reading as
+ *  "nothing to drop". An absent file, or one without the field, is left untouched. */
 export function dropLegacyAutoupdateFlag(file: string): boolean {
   const store = new CopilotApiConfig(file);
   if (!(LEGACY_ENABLED_KEY in store.loadStrict())) return false;

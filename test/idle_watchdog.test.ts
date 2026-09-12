@@ -85,10 +85,9 @@ test("idleCheck: the spawn's keep-port value preserves a profile reservation acr
   new CopilotEnvConfig().set({ autoStart: true });
   const state = new CopilotEnvRunState();
   state.set({ pid: process.pid, port: 4242, lastEnsureAt: 1 });
-  // A named profile's daemon is spawned with keep-port "1" (releasesPortOnStop false):
-  // auto-stop clears the pid tracking but the port -- the profile's stable reservation
-  // the baked agent wiring points at -- must survive. The default daemon's spawn sets
-  // "0", which the test above pins (port cleared).
+  // A named profile's daemon is spawned with keep-port "1": auto-stop clears the pid, but the
+  // port (the profile's stable reservation the baked wiring points at) must survive. The default
+  // daemon's "0" is pinned above (port cleared).
   process.env[DAEMON_KEEP_PORT_ENV] = "1";
   const realExit = Deno.exit;
   Deno.exit = ((): never => {
@@ -117,10 +116,8 @@ test("idleTimeoutMs: default is 1 hour; the env knob overrides in whole seconds"
 test("idleTimeoutMs: precedence env > config > default", () => {
   tmpHome();
   delete process.env[IDLE_TIMEOUT_ENV];
-  // config set, env unset -> config wins over the default.
   new CopilotEnvConfig().set({ idleTimeout: 90 });
   expect(idleTimeoutMs()).toBe(90_000);
-  // env set -> overrides config.
   process.env[IDLE_TIMEOUT_ENV] = "7";
   expect(idleTimeoutMs()).toBe(7000);
 });
@@ -141,17 +138,13 @@ test("idleTimeoutMs: 0 disables (<=0 means no watchdog); a malformed value falls
 });
 
 test("defaultCheckIntervalMs: a quarter of the window, clamped to [1s, 60s]", () => {
-  // 1-hour window clamps to the 60s ceiling.
   expect(defaultCheckIntervalMs(3600 * 1000)).toBe(60_000);
-  // A short test window polls proportionally faster (5s -> 1.25s).
   expect(defaultCheckIntervalMs(5000)).toBe(1250);
-  // Tiny windows clamp up to the 1s floor.
   expect(defaultCheckIntervalMs(1000)).toBe(1000);
 });
 
-// The shared activity rule: the daemon's idleCheck and the health report's watchdog
-// check both derive "last activity" from this one function, with different signals
-// available (health cannot see startedAtMs).
+// The daemon's idleCheck and the health report's watchdog check both derive "last activity"
+// from this one function, with different signals available (health cannot see startedAtMs).
 test("lastActivityMs: picks the most recent signal; absent signals don't count", () => {
   expect(lastActivityMs({ startedAtMs: 100, inferenceMs: 300, ensureAtMs: 200 })).toBe(300);
   expect(lastActivityMs({ startedAtMs: 500, inferenceMs: 300, ensureAtMs: null })).toBe(500);
@@ -162,18 +155,17 @@ test("lastActivityMs: picks the most recent signal; absent signals don't count",
 
 test("isIdle: true exactly at and past the timeout boundary, false before it", () => {
   const timeout = 1000;
-  expect(isIdle(0, 999, timeout)).toBe(false); // 999ms idle < 1000
-  expect(isIdle(0, 1000, timeout)).toBe(true); // exactly at the boundary
-  expect(isIdle(0, 1500, timeout)).toBe(true); // past it
+  expect(isIdle(0, 999, timeout)).toBe(false);
+  expect(isIdle(0, 1000, timeout)).toBe(true);
+  expect(isIdle(0, 1500, timeout)).toBe(true);
 });
 
 test("idleCheck: lifecycle OFF (auto-start unset) returns without exiting, even when idle", () => {
   tmpHome();
-  // auto-start is unset (default false) in this fresh temp home -> the managed lifecycle is
-  // disabled, so idleCheck must disengage and leave the daemon running. idleCheck(0, 1) is
-  // long-idle + a 1ms timeout, which WOULD trip process.exit(0) if the OFF gate were removed.
-  // Stub process.exit so that regression throws (fails loudly) instead of silently terminating
-  // the whole `deno test` run with code 0 -- the bug this test exists to catch.
+  // auto-start unset disables the managed lifecycle, so idleCheck must disengage. idleCheck(0, 1)
+  // is long-idle with a 1ms timeout: without the OFF gate it would call shutdownDaemon(0), whose
+  // Deno.exit the process.exit stub below does not intercept, so a broken gate ends the whole
+  // `deno test` run with code 0 rather than failing here.
   expect(new CopilotEnvConfig().autoStartEnabled()).toBe(false);
   const realExit = process.exit;
   let exited = false;
@@ -191,9 +183,9 @@ test("idleCheck: lifecycle OFF (auto-start unset) returns without exiting, even 
 
 test("idleCheck: lifecycle OFF also short-circuits before touching run-state", () => {
   tmpHome();
-  // Seed a run-state pid; the OFF early-return happens before clearIfPid, so the state must be
-  // left untouched. Guard process.exit too: a broken gate would clearIfPid THEN exit(0), which
-  // would end the runner before the assertions -- the stub turns that into a loud failure.
+  // The OFF early-return happens before clearIfPid, so the seeded state must be untouched. A
+  // broken gate would clearIfPid THEN exit via Deno.exit, ending the runner before the assertions
+  // (the process.exit stub does not catch that path).
   const state = new CopilotEnvRunState();
   state.set({ pid: process.pid, port: 4141, lastEnsureAt: 1 });
   const realExit = process.exit;

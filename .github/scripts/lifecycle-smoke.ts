@@ -1,21 +1,13 @@
-// End-to-end daemon lifecycle smoke, run by CI on every OS with COPILOT_API_ENTRY
-// pointing at the fake proxy (test/copilot-api-fake.mjs) so no Copilot auth is
-// needed. process.ts spawns a detached daemon, `start` waits for it to listen +
-// syncs aliases, `stop` verifies the tracked pid is ours and signals it. `health
-// --scope runtime` is the cross-check: it must pass (exit 0) while the daemon is up
-// and fail (exit 1) once it's down, so start/stop and the runtime probe verify each
-// other. Any unexpected nonzero `agent` exit (and the inverted post-stop checks)
-// fails the run; `::error::` lines surface as GitHub annotations.
-//
-// This script rewires agent configs and manages real daemons in whatever HOME it
-// sees, so it refuses to start outside a container or a disposable CI runner. On a
-// developer machine, run it through the container:
+// End-to-end daemon lifecycle against the fake proxy (COPILOT_API_ENTRY -> test/copilot-api-fake.mjs),
+// so no Copilot auth is needed. It rewires agent configs in whatever HOME it sees, so it refuses
+// to run outside a container or a CI runner. On a developer machine:
 //   deno task test:docker --lifecycle
-// Run by checks.yml and scripts/test_docker.ts:
-//   deno run --allow-env --allow-read --allow-sys=homedir,hostname --allow-run \
-//     .github/scripts/lifecycle-smoke.ts
-// `--allow-run` is unscoped because the pid probe below signals the daemon's pid, which
-// a `--allow-run=deno` grant cannot express (process.kill needs the full run permission).
+//
+//   start -> health --scope runtime must pass -> stop -> health --scope runtime must FAIL
+// start/stop and the probe verify each other, so neither can pass alone.
+//
+// `--allow-run` is unscoped: the pid probe signals the daemon's pid, which `--allow-run=deno`
+// cannot express.
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/state.ts";
 import { pidLiveness } from "../../src/utils/pid.ts";
@@ -53,12 +45,9 @@ function daemonAlive(pid: number): boolean {
 cliOrExit(["start"]);
 cliOrExit(["health", "--scope", "runtime"]);
 
-// Managed-lifecycle idempotency (auto-start on): a redundant `start` is a no-op -- it
-// must keep the SAME daemon pid (not restart and disrupt a connected agent); `--force`
-// launches a fresh daemon (new pid). In the default/unmanaged mode `start` still
-// restarts. `start`'s exit code is checked (not just its output) and the check gates on
-// the "[start:noop]" machine marker (an external contract emitted by
-// src/commands/start.ts, so the human wording around it can change freely).
+// Managed mode (auto-start on): a redundant `start` must keep the SAME pid, so it never
+// disrupts a connected agent; `--force` relaunches. The gate is the "[start:noop]" machine
+// marker, an external contract of src/commands/start.ts, so the human wording is free to change.
 cliOrExit(["config", "--set", "auto-start", "true"]);
 const pidBefore = readPid();
 const redundantStart = cliOrExit(["start"], { stdout: "piped" });

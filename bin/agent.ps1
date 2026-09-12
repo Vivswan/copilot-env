@@ -1,16 +1,6 @@
-# Single self-bootstrapping entry point (Windows) for copilot-env. Mirror of
-# bin/agent: uses the deno already on PATH (warning when it is older than the tested
-# .dvmrc version); only a machine with no deno installs the latest release, via the shared
-# scripts/ensure-deno.ps1 that scripts/setup-env.ps1 uses too. Installs dependencies
-# in-place in the checkout only when the lockfile has moved ahead of them, then runs the
-# cli.ts dispatcher (cli.ts owns the subcommand list; see `agent --help`).
-# The `agent` function in agents.ps1 turns `agent env` output into session state.
-#
-# No cache: node_modules lives directly in the checkout and cli.ts runs from there.
-#
-# EVERY line this script emits goes to stderr -- stdout belongs to `agent env`, whose
-# output the profile function evals. `[Console]::Error.WriteLine` is the PowerShell-valid
-# equivalent of the POSIX twin's `>&2` (a literal `1>&2` is reserved).
+# Self-bootstrapping entry point (Windows); the mirror of bin/agent.
+#   stdout                        -> the CLI's own, forwarded as is; `agent env` is the text the `agent` profile function in shell/agents.ps1 evals
+#   `[Console]::Error.WriteLine`  -> every other line; the POSIX twin's `>&2` (a literal `1>&2` is reserved)
 $ErrorActionPreference = 'Stop'
 
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -21,12 +11,8 @@ $Snap = (Resolve-Path (Join-Path $Here '..')).Path
 # bootstrap runs quiet so an old PATH deno warns once per command, not twice.
 Install-Deno -Root $Snap -Quiet:($args.Count -ge 1 -and $args[0] -eq 'env')
 
-# Install dependencies in-place in the checkout, but only when needed: a missing
-# node_modules, or a deno.lock that has moved ahead of it (the lockfile is the source of
-# truth for what should be installed, and every dependency change updates it).
-# Deps are PROVEN current only when both freshness reads succeed AND the lockfile is not
-# newer: a failed read must reinstall (the self-healing direction), never read as
-# "deps current" and run stale node_modules.
+# A failed freshness read reinstalls (the self-healing direction) rather than reading as
+# "deps current" and running stale node_modules.
 $NodeModules = Join-Path $Snap 'node_modules'
 $needInstall = $true
 if (Test-Path $NodeModules) {

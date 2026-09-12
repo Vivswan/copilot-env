@@ -68,8 +68,7 @@ function usage(partial: Partial<ModelUsage>): ModelUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, events: 0, ...partial };
 }
 
-/** A report folded through record(), the real producer path: a per-day, per-model
- *  breakdown plus optional `undated` usage that reaches byModel only. */
+/** Folded through record(), the real producer path; `undated` usage reaches byModel only. */
 function makeReport(
   perDay: Record<string, Record<string, ModelUsage>>,
   undated: Record<string, ModelUsage> = {},
@@ -87,14 +86,13 @@ function makeReport(
 }
 
 test("median handles odd, even, and empty samples", () => {
-  expect(median([5, 1, 3])).toBe(3); // sorts then picks middle
-  expect(median([1, 2, 3, 4])).toBe(2.5); // mean of the two middles
+  expect(median([5, 1, 3])).toBe(3);
+  expect(median([1, 2, 3, 4])).toBe(2.5);
   expect(median([])).toBe(0);
   expect(median([42])).toBe(42);
 });
 
 test("activeDayCoverage measures the inclusive min..max span and density", () => {
-  // 3 active days across 2026-06-01..2026-06-05 -> 5-day span, 60%.
   const report = makeReport({
     "2026-06-01": { "openai/gpt-5.5": usage({ input: 1, events: 1 }) },
     "2026-06-03": { "openai/gpt-5.5": usage({ input: 1, events: 1 }) },
@@ -102,19 +100,17 @@ test("activeDayCoverage measures the inclusive min..max span and density", () =>
   });
   expect(activeDayCoverage(report)).toEqual({ spanDays: 5, percent: 60 });
 
-  // A single day is a 1-day span at 100%.
   const one = makeReport({ "2026-06-01": { "openai/gpt-5.5": usage({ input: 1, events: 1 }) } });
   expect(activeDayCoverage(one)).toEqual({ spanDays: 1, percent: 100 });
 
-  // No days: 0 span, 100% (the printer shows "0 active days" instead).
+  // Zero days reads 100%: the printer shows "0 active days" instead of a percentage.
   expect(activeDayCoverage(makeReport({}))).toEqual({ spanDays: 0, percent: 100 });
 });
 
 test("computeDayMetrics sums tokens per day and reconciles cost with the aggregate", () => {
-  // Ragged token counts: every per-day, per-model cost lands on a fraction of a
-  // cent, so the reconciliation below holds only while stored costs stay exact.
-  // Any mid-pipeline rounding (e.g. 4dp per-model values) shifts the day sum
-  // away from the aggregate by orders of magnitude more than this tolerance.
+  // Ragged counts land every per-day, per-model cost on a fraction of a cent, so the
+  // reconciliation holds only while stored costs stay exact; a 4dp rounding mid-pipeline
+  // shifts the day sum far past the tolerance.
   const report = makeReport({
     "2026-06-01": {
       "openai/gpt-5.5": usage({ input: 1_234_567, output: 89_012, events: 3 }),
@@ -153,10 +149,9 @@ test("computeDayMetrics sums tokens per day and reconciles cost with the aggrega
 });
 
 test("computeDayMetrics keeps a model unpriced in the aggregate at $0 every day", () => {
-  // claude uses a cacheCreation bucket on day 1 only. The pricing below omits a
-  // cache-write rate, so the AGGREGATE is unpriced. Day 2 (no cacheCreation)
-  // would be priceable in isolation -- it must still contribute $0, or the
-  // per-day breakdown would not reconcile with the excluded aggregate total.
+  // Day 1 alone uses cacheCreation, which the pricing omits, so the aggregate is unpriced.
+  // Day 2 would be priceable in isolation and must still contribute $0, or the breakdown
+  // stops reconciling with the excluded aggregate.
   const report = makeReport({
     "2026-06-01": {
       "anthropic/claude-opus-4.8": usage({ input: 1_000_000, cacheCreation: 50, events: 1 }),
@@ -171,7 +166,6 @@ test("computeDayMetrics keeps a model unpriced in the aggregate at $0 every day"
   ]);
   const estimate = estimateCost(report.byModel, pricing);
 
-  // Aggregate excludes the model entirely.
   expect(estimate.unpriced).toContain("anthropic/claude-opus-4.8");
   expect(estimate.totalUsd).toBe(0);
 
@@ -229,9 +223,7 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
     "2026-06-02",
   ]);
 
-  // The printed row list: dated rows oldest first, the undated remainder
-  // closing it. Its label is applied at render time only; the spelling is an
-  // external display contract, pinned here.
+  // The undated label is applied at render time only; its spelling is a display contract.
   expect(UNDATED_DAY_LABEL).toBe("(undated)");
   const rows = perDayRows(report, pricing, estimate);
   expect(rows.map((r) => r.kind)).toEqual(["dated", "dated", "undated"]);
@@ -244,8 +236,6 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
   expect(undated.reqs).toBe(1);
   expect(undated.cost).toBeCloseTo(1, 10);
 
-  // Dated rows + the undated row: the TOTAL's token columns now really sum to
-  // the aggregate cost it carries.
   const total = sumDayTotals(rows, estimate);
   expect(total.input).toBe(2_000_000);
   expect(total.total).toBe(2_000_000);
@@ -253,14 +243,12 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
   expect(total.cost).toBe(estimate.totalUsd);
   expect(estimate.totalUsd).toBe(2);
 
-  // An all-undated report still yields a printable row list.
   const allUndated = makeReport({}, { "openai/gpt-5.5": usage({ input: 42, events: 1 }) });
   const undatedEstimate = estimateCost(allUndated.byModel, pricing);
   expect(perDayRows(allUndated, pricing, undatedEstimate).map((r) => r.kind)).toEqual([
     "undated",
   ]);
 
-  // Fully dated usage: no synthetic row.
   const dated = makeReport({
     "2026-06-01": { "openai/gpt-5.5": usage({ input: 5, events: 1 }) },
   });
@@ -373,7 +361,6 @@ test("daysCutoffMs: an exact window is a plain multiple of 24 hours", () => {
   expect(daysCutoffMs({ kind: "exact", days: 2.5 }, now)).toBe(now - 2.5 * MILLISECONDS_PER_DAY);
 });
 
-/** Calendar distance in days between two YYYY-MM-DD keys (b - a). */
 function dayKeyDistance(a: string, b: string): number {
   return Math.round(
     (Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / MILLISECONDS_PER_DAY,
@@ -389,9 +376,7 @@ test("daysCutoffMs: a calendar window starts at a local midnight N-1 days back",
     // A real day boundary: the instant before the cutoff is the previous local day.
     expect(localDayKey(cutoff - 1)).not.toBe(localDayKey(cutoff));
     expect(localDayKey(cutoff) < localDayKey(now)).toBe(days > 1);
-    // Exactly `days` local calendar days from the cutoff's day through today.
     expect(dayKeyDistance(localDayKey(cutoff), localDayKey(now))).toBe(days - 1);
-    // The window covers `now` and never reaches past it.
     expect(cutoff <= now).toBe(true);
   }
   // `1` is today alone: the cutoff is today's own local midnight.
@@ -452,7 +437,7 @@ const PRICED_BODY = {
   }],
 };
 
-/** A fetch answering `body` once per call; `fail` rejects the way the transport does. */
+/** `fail` rejects with the TypeError shape the real transport throws. */
 function fakeFetch(body: unknown, opts: { fail?: boolean } = {}): typeof fetch {
   return ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     if (init?.signal?.aborted) return Promise.reject(init.signal.reason);
@@ -468,7 +453,6 @@ function fakeFetch(body: unknown, opts: { fail?: boolean } = {}): typeof fetch {
   }) as typeof fetch;
 }
 
-/** `fakeFetch` that also records every URL it was asked for. */
 function recordingFetch(body: unknown, opts: { fail?: boolean } = {}): {
   fetch: typeof fetch;
   urls: string[];
@@ -482,10 +466,7 @@ function recordingFetch(body: unknown, opts: { fail?: boolean } = {}): {
   return { fetch: fetchImpl, urls };
 }
 
-/** The usage index under `home` at one instant: whether a connection still holds it
- *  open (SQLite keeps the WAL sidecar beside the file until the last connection
- *  closes) and the session-log paths it has stored. An index not created yet reads
- *  as closed and empty. */
+/** `open` reads the WAL sidecar: SQLite keeps it beside the file until the last connection closes. */
 interface IndexSnapshot {
   open: boolean;
   paths: string[];
@@ -506,14 +487,11 @@ function snapshotIndex(home: string): IndexSnapshot {
   }
 }
 
-/** `fakeFetch(body)` that answers only once the run's usage index has been closed
- *  with `parsedPath` stored: the readers are what store it, and the index closes
- *  only after both have returned, fold included, so a request that finds it so was
- *  made after the whole synchronous parse. Asked earlier, it fails the way a request
- *  nobody serviced does, and either way it keeps what each request saw. */
+/** Answers only once the index is closed with `parsedPath` stored. The readers store it and
+ *  the index closes after both return, fold included, so such a request was made after the
+ *  whole synchronous parse. */
 function afterParseFetch(home: string, parsedPath: string, body: unknown): {
   fetch: typeof fetch;
-  /** The index as each request found it, in request order. */
   sawAtRequests: () => IndexSnapshot[];
 } {
   const seen: IndexSnapshot[] = [];
@@ -530,13 +508,10 @@ function afterParseFetch(home: string, parsedPath: string, body: unknown): {
 }
 
 interface CostHome {
-  /** The run's COPILOT_API_HOME: usage DBs, the index, and the price cache live under it. */
   home: string;
-  /** One Claude projects root holding a single priced turn. */
   claudeRoot: string;
 }
 
-/** Run `body` with COPILOT_API_HOME pointed at a fresh temp home, restored afterwards. */
 async function withCostHome(body: (ctx: CostHome) => Promise<void>): Promise<void> {
   const dir = tempDir("cost-run-");
   const savedHome = process.env.COPILOT_API_HOME;
@@ -555,20 +530,16 @@ async function withCostHome(body: (ctx: CostHome) => Promise<void>): Promise<voi
 
 const NO_SOURCES = { sessionRoots: { codex: () => [] as string[], claude: () => [] as string[] } };
 
-/** Codex roots `codex`, Claude roots `claude`, as runCost's deps. */
 function rootsOf(codex: string[], claude: string[]): { sessionRoots: SessionRootDiscovery } {
   return { sessionRoots: { codex: () => codex, claude: () => claude } };
 }
 
-/** The parts of the `--json` payload these tests read. */
 interface CostJson {
   runtime: CostRuntime;
   claudeSessions: { totalUsd: number };
 }
 
-/** One `--json` run: the payload parsed from the WHOLE of stdout (a stray line there
- *  breaks every consumer, so it fails here rather than being skipped past), plus
- *  what rode stderr. */
+/** Parses the WHOLE of stdout: a stray line there breaks every consumer, so it fails here. */
 async function jsonRun(args: CostArgs, deps: CostDeps): Promise<{
   payload: CostJson;
   stderr: string;
@@ -599,7 +570,6 @@ test("a cold run fetches the price list only after the synchronous parse, so the
       fetchImpl: net.fetch,
       ...rootsOf([], [claudeRoot]),
     });
-    // Exactly one request, made once the parse was over.
     expect(net.sawAtRequests()).toEqual([{ open: false, paths: [transcript] }]);
     expect(stderr).not.toContain("could not fetch OpenRouter pricing");
     // Priced: 10 in at $15/M + 20 out at $75/M.
@@ -622,10 +592,9 @@ test("runCost discovers roots before it opens the index, so a failing discovery 
         })
       ),
     ).rejects.toThrow("codex homes unreadable");
-    // The index directory is created by opening the index (the run never reached
-    // the price list, so no cache landed there either), so its absence proves no
-    // index was opened. The control: the same run with a working discovery (and a
-    // fetch that writes no cache) does create it.
+    // Opening the index creates its directory, and no cache landed there either (the run never
+    // reached the price list), so its absence proves no index was opened. Control: a working
+    // discovery creates it.
     expect(net.urls).toEqual([]);
     const indexDir = join(home, USAGE_INDEX_DIR_NAME);
     expect(existsSync(indexDir)).toBe(false);
@@ -674,7 +643,6 @@ test("runCost warns when the fetched price list cannot be cached", () =>
     expect(payload.runtime.indexed).toBe(false);
   }));
 
-/** The `runtime` key of one `--json` run over the given roots. */
 async function runtimeOf(
   args: { noIndex?: boolean },
   roots: { codex: string[]; claude: string[] },
@@ -775,9 +743,8 @@ function codexRootWithTwoRollouts(dir: string): string {
   return root;
 }
 
-// Each source in turn: seed its rows, then hand the run NO roots for it while the
-// other source keeps the run past the no-sources return. The old `roots.length > 0`
-// guards would skip the reconcile and leave the rows; the count says they all went.
+// Each source in turn loses all its roots while the other keeps the run past the no-sources
+// return; a reconcile skipped on empty roots would leave the rows behind.
 for (const vanished of ["codex", "claude"] as const) {
   test(`runCost reconciles ${vanished} with no roots left, so its rows go with the root`, () =>
     withCostHome(async ({ claudeRoot }) => {

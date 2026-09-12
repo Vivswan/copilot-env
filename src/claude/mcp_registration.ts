@@ -1,14 +1,9 @@
-// Registers the copilot-env MCP server in Claude Code's USER-SCOPE server list.
-// That list lives in `~/.claude.json` (the file `claude mcp add --scope user`
-// writes) -- NOT settings.json, which is why this sits beside but apart from
-// src/claude/config.ts. Registration is default-profile-only by nature: the file
-// is global to the machine, and the registered entry runs `agent mcp --serve`
-// with no `--profile`, so the server resolves the default credential (a named
-// profile that wants its own credential registers its own entry by hand).
-//
-// Everything here is BEST-EFFORT and must never fail the wiring that calls it:
-// Claude Code rewrites this file constantly and owns its schema, so a malformed
-// or surprising document is warned about and left alone, never clobbered.
+// Registers the copilot-env MCP server in Claude Code's USER-SCOPE list, `~/.claude.json` (what
+// `claude mcp add --scope user` writes), NOT settings.json: hence beside but apart from config.ts.
+// Claude Code rewrites this file constantly and owns its schema, so a surprising document is warned
+// about and left alone, never clobbered.
+//   machine-global file, `agent mcp --serve` without `--profile` -> default profile only; a named
+//                                                                  profile registers by hand
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { consola } from "consola";
@@ -22,41 +17,31 @@ import { claudeConfigDirOverride } from "./paths.ts";
 
 const logger = consola.withTag("claude.mcp");
 
-/**
- * Whose entry (if any) sits under our name in `mcpServers`:
- *   - absent        -- no entry
- *   - ours-current  -- exactly the launcher invocation this checkout would write
- *   - ours-stale    -- our shape, different path (the checkout moved); safe to
- *                      rewrite or remove
- *   - foreign       -- someone else's `copilot-env` entry; never touched
- */
+/** Whose entry sits under our name in `mcpServers`.
+ *    absent        -> no entry
+ *    ours-current  -> exactly the launcher invocation this checkout would write
+ *    ours-stale    -> our shape, different path (the checkout moved); safe to rewrite or remove
+ *    foreign       -> someone else's `copilot-env` entry; never touched */
 export type McpRegistrationStatus = "absent" | "ours-current" | "ours-stale" | "foreign";
 
-/**
- * Claude Code's user-scope state file. CLAUDE_CONFIG_DIR relocates it alongside
- * settings.json (version-dependent Claude Code behavior -- true of current
- * releases); the fallback is homedir() ITSELF (not `~/.claude`), deliberately
- * without an $HOME override (Windows resolves %USERPROFILE%, where Claude Code
- * actually reads).
- */
+/** CLAUDE_CONFIG_DIR relocates it alongside settings.json (true of current Claude Code releases).
+ *  The fallback is homedir() ITSELF, not `~/.claude`, and without an $HOME override: Windows
+ *  resolves %USERPROFILE%, where Claude Code reads. */
 export function claudeJsonPath(): string {
   return join(claudeConfigDirOverride() ?? homedir(), ".claude.json");
 }
 
-/** The subcommand argv the managed registration runs (the current shape). */
 const CURRENT_MCP_SUBARGS: readonly string[] = ["mcp", "--serve"];
 
-/** The server's own PATH: gh's directory in front of the client's, written as
- *  Claude Code's `${PATH}` expansion so nothing the client had is lost. MCP
- *  clients start servers with a minimal environment, and the gh-cli credential
- *  needs `gh` there; undefined when gh is not on PATH at wiring time. */
+/** MCP clients start servers with a minimal environment and the gh-cli credential needs `gh`, so
+ *  gh's directory goes in front of Claude Code's `${PATH}` expansion (nothing the client had is
+ *  lost). Undefined when gh is not on PATH at wiring time. */
 export function serverPathEnv(ghPath: string | null): { PATH: string } | undefined {
   return ghPath === null ? undefined : { PATH: `${dirname(ghPath)}${delimiter}\${PATH}` };
 }
 
-/** The entry to write. When gh does not resolve from THIS process (a wiring pass
- *  started with a minimal PATH), the env already recorded in `previous` is kept:
- *  a rewrite never downgrades a working registration. */
+/** When gh does not resolve from THIS process (a wiring pass started with a minimal PATH), the env
+ *  already recorded in `previous` is kept: a rewrite never downgrades a working registration. */
 function managedEntry(ghPath: string | null, previous?: unknown): Record<string, unknown> {
   const { command, args } = agentLauncherCommand(CURRENT_MCP_SUBARGS);
   const recorded = isRecord(previous) && isRecord(previous.env) ? previous.env : undefined;
@@ -68,9 +53,8 @@ function sameStrings(a: readonly unknown[], b: readonly string[]): boolean {
   return a.length === b.length && b.every((v, i) => a[i] === v);
 }
 
-/** Classify the entry under our name (see McpRegistrationStatus). `ghPath` is
- *  where gh resolves from this process (null: unknown here, so a recorded env
- *  is taken as current rather than stale). */
+/** `ghPath` null means gh is unknown HERE, so a recorded env is taken as current rather than stale.
+ */
 export function classifyMcpEntry(
   entry: unknown,
   ghPath: string | null = resolveExecutablePath("gh"),
@@ -89,9 +73,8 @@ export function classifyMcpEntry(
     return "ours-current";
   }
   if (process.platform === "win32") {
-    // Split the managed argv at -File: the flag prefix must match verbatim, the
-    // path element must still end in bin/agent.ps1 (a moved checkout, not a
-    // foreign tool), and the trailing subargs must be the current shape.
+    // Split at -File: the flag prefix must match verbatim, the path must still end in bin/agent.ps1
+    // (a moved checkout, not a foreign tool), and the trailing subargs must be the current shape.
     const fileIdx = managed.args.indexOf("-File");
     const shape = command
       .toLowerCase()
@@ -104,8 +87,8 @@ export function classifyMcpEntry(
       sameStrings(args.slice(fileIdx + 2), CURRENT_MCP_SUBARGS);
     return shape ? "ours-stale" : "foreign";
   }
-  // POSIX: a command that ends in bin/agent (the checkout layout -- a bare
-  // `agent` from someone's PATH is NOT claimed) running the current subargs.
+  // POSIX: a command ending in bin/agent (the checkout layout); a bare `agent` from someone's PATH
+  // is NOT claimed.
   const shape = /[\\/]bin[\\/]agent$/.test(command) && sameStrings(args, CURRENT_MCP_SUBARGS);
   return shape ? "ours-stale" : "foreign";
 }
@@ -116,10 +99,9 @@ interface ClaudeJsonDoc {
   raw: string;
 }
 
-/** Read `.claude.json` (PROVEN-missing/empty -> {}); null = unreadable or
- *  malformed, leave it alone. Absence comes from readTextResult, so a dangling
- *  symlink reads unreadable, never absent: the entry at the path exists, and
- *  writing "back" through {} would replace the user's link with a plain file. */
+/** Null (unreadable or malformed) means leave it alone. Absence comes from readTextResult, so a
+ *  dangling symlink reads unreadable, never absent: the entry at the path exists, and writing
+ *  "back" through {} would replace the user's link with a plain file. */
 function loadClaudeJson(): ClaudeJsonDoc | null {
   const path = claudeJsonPath();
   const read = readTextResult(path);
@@ -139,13 +121,8 @@ function loadClaudeJson(): ClaudeJsonDoc | null {
   }
 }
 
-/**
- * Write back atomically (the shared atomicWriteFile recipe -- never a torn file),
- * skipping the write when nothing changed byte-for-byte. Claude Code writes this
- * file WITHOUT a trailing newline, so the serialization mirrors whatever
- * convention the source text had -- otherwise the unchanged-skip could never
- * match a file Claude wrote.
- */
+/** Claude Code writes this file WITHOUT a trailing newline, so the serialization mirrors the source
+ *  text's convention; otherwise the unchanged-skip could never match a file Claude wrote. */
 function saveClaudeJson(loaded: ClaudeJsonDoc): void {
   const newline = loaded.raw === "" || loaded.raw.endsWith("\n");
   const text = `${JSON.stringify(loaded.doc, null, 2)}${newline ? "\n" : ""}`;
@@ -155,13 +132,12 @@ function saveClaudeJson(loaded: ClaudeJsonDoc): void {
 
 /** What `agent mcp` (status) reports about the registration. */
 export interface McpRegistrationInspection {
-  /** The `.claude.json` path inspected. */
   path: string;
-  /** Entry classification, or "unreadable" when the file could not be read/parsed. */
+  /** "unreadable" when the file could not be read or parsed. */
   status: McpRegistrationStatus | "unreadable";
 }
 
-/** Read-only registration lookup for the status command; never creates the file. */
+/** Never creates the file. */
 export function inspectMcpRegistration(): McpRegistrationInspection {
   const path = claudeJsonPath();
   const loaded = loadClaudeJson(); // already warns on unreadable/malformed
@@ -171,11 +147,8 @@ export function inspectMcpRegistration(): McpRegistrationInspection {
   return { path, status: classifyMcpEntry(entry) };
 }
 
-/**
- * Ensure the managed `copilot-env` entry is registered. Returns true when the
- * entry is in place (freshly written or already current) -- the caller gates the
- * WebSearch deny on that, so a machine is never left denied without a server.
- */
+/** True when the entry is in place (freshly written or already current): the caller gates the
+ *  WebSearch deny on that, so a machine is never left denied without a server. */
 export function registerClaudeMcpServer(
   ghPath: string | null = resolveExecutablePath("gh"),
 ): boolean {
@@ -209,14 +182,9 @@ export function registerClaudeMcpServer(
   return true;
 }
 
-/**
- * Remove the managed entry (ours-current or ours-stale only); foreign survives.
- * Returns true when NO managed entry remains (removed, or none was there); false
- * when a foreign entry was left in place or the write failed.
- */
-/** The `.claude.json` removeClaudeMcpRegistration would rewrite right now (an entry of ours
- *  is registered in it), or null (none, a foreign entry, or a file that cannot be judged).
- *  Read-only; the uninstall plan resolves this once and renders it both ways. */
+/** The `.claude.json` removeClaudeMcpRegistration would rewrite right now, or null (no entry, a
+ *  foreign one, or a file that cannot be judged). Read-only; the uninstall plan resolves this once
+ *  and renders it both ways. */
 export function plannedClaudeMcpRemoval(): string | null {
   const loaded = loadClaudeJson();
   if (loaded === null) return null;
@@ -226,6 +194,8 @@ export function plannedClaudeMcpRemoval(): string | null {
   return status === "ours-current" || status === "ours-stale" ? loaded.path : null;
 }
 
+/** Foreign survives. True when NO managed entry remains (removed, or none was there); false when a
+ *  foreign entry was left in place or the write failed. */
 export function removeClaudeMcpRegistration(): boolean {
   const loaded = loadClaudeJson();
   if (loaded === null) return false;

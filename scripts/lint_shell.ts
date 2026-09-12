@@ -1,16 +1,10 @@
-// Lint the tree's shell scripts with shellcheck (`deno task lint:sh`) or its PowerShell
-// scripts with PSScriptAnalyzer (`deno task lint:ps`). No-op with a hint when the tool is
-// not installed, so commits on machines without it (most macOS/Linux boxes lack pwsh)
-// still go through. shellcheck gates on warnings+errors only (`--severity=warning`);
-// the PowerShell severity and intentional rule exclusions live in
-// PSScriptAnalyzerSettings.psd1.
+// The file lists are DISCOVERED, never hand-maintained: an enumerated list stops covering a
+// script the moment one is added. A missing tool is a no-op with a hint, so commits on machines
+// without it still go through.
 //
-// The file lists are DISCOVERED, never hand-maintained: an enumerated list silently
-// stops covering a script the moment someone adds one (it did once: ensure-deno.ps1 went
-// unlinted). Both kinds share one walk and one exclusion rule.
-//
-//   deno run --allow-read=. --allow-run=shellcheck scripts/lint_shell.ts sh
-//   deno run --allow-read=. --allow-run=pwsh scripts/lint_shell.ts ps
+//   deno task lint:sh -> shellcheck
+//   deno task lint:ps -> PSScriptAnalyzer; severity and rule exclusions live in
+//                        PSScriptAnalyzerSettings.psd1
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 

@@ -1,7 +1,6 @@
-// `agent uninstall`: the full-teardown command. Every run injects the deps seam
-// (install root + codexHomes + farm + shell removal) so `deno test` never touches
-// the real ~/.codex, the host farm, or the shell rc files -- and the install root
-// it deletes is a sandbox directory, never the tree this process runs from.
+// Every run injects the deps seam, so `deno test` never touches the real ~/.codex, the host
+// farm, or the shell rc files, and the install root it deletes is a sandbox directory, never
+// the tree this process runs from.
 
 import {
   chmodSync,
@@ -70,7 +69,6 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-/** Isolated homes for one test: proxy home + Claude home + Codex home. */
 function tmpHomes(): { proxyHome: string; claudeHome: string; codexHome: string } {
   const homes = isolateAgentHomes("copilot-uninstall-");
   dir = homes.dir;
@@ -78,9 +76,7 @@ function tmpHomes(): { proxyHome: string; claudeHome: string; codexHome: string 
 }
 
 /**
- * A sandbox stand-in for the install root, shaped like what the installers build
- * (`<root>/bin/copilot-env`). `kind: "compiled"` means the delete step treats it as an
- * installed binary root and REALLY removes it -- the production code path, run
+ * `kind: "compiled"` makes the delete step REALLY remove the root: the production path, run
  * against a temp directory instead of the tree under test.
  */
 function sandboxRoot(kind: RootMode["kind"] = "compiled"): RootMode {
@@ -137,7 +133,6 @@ test(
 test("uninstall removes everything managed and preserves user config", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
 
-  // Default wiring: Claude direct + Codex proxy, each with a user key alongside.
   mkdirSync(claudeHome, { recursive: true });
   writeFileSync(settingsPathFor(claudeHome), JSON.stringify({ model: "opus" }));
   configureClaudeConfig(claudeHome, { mode: "direct" });
@@ -153,7 +148,6 @@ test("uninstall removes everything managed and preserves user config", async () 
     baseUrl: "http://127.0.0.1:4199/v1",
   });
 
-  // Default credential + a named direct profile (credential, mode, both agents, home).
   new Credential().store("gh-token", "ghp_default");
   new CopilotEnvState().commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
@@ -178,11 +172,9 @@ test("uninstall removes everything managed and preserves user config", async () 
   // exitCode stays undefined until someone sets it; a clean run sets nothing.
   expect(process.exitCode ?? 0).toBe(0);
 
-  // Named profile artifacts gone.
   expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(false);
   expect(existsSync(profileHome(WORK))).toBe(false);
 
-  // Claude: managed keys stripped, user key survives, helper scripts gone.
   const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome), "utf8")) as Record<
     string,
     unknown
@@ -196,8 +188,6 @@ test("uninstall removes everything managed and preserves user config", async () 
   ).toBeUndefined();
   expect(settings.model).toBe("opus");
 
-  // Codex: our selector + tables gone from BOTH homes, the user's key and
-  // provider table survive.
   for (const home of [codexHome, codexHome2]) {
     const swept = readToml(home);
     expect(swept.model_provider).toBeUndefined();
@@ -212,9 +202,8 @@ test("uninstall removes everything managed and preserves user config", async () 
   expect(isRecord(providers.mine)).toBe(true);
   expect(doc.foo).toBe("bar");
 
-  // The whole copilot-api home (store, run state, profile homes) is gone, and the
-  // injected side-effect seams both ran. The install root deleted is the injected
-  // sandbox; the tree this process runs from is untouched.
+  // The install root deleted is the injected sandbox; the tree this process runs from is
+  // untouched.
   expect(existsSync(proxyHome)).toBe(false);
   expect(deps.calls).toEqual(["farm", "shell"]);
   expect(existsSync(deps.installRoot.root)).toBe(false);
@@ -386,8 +375,8 @@ test("uninstall --dry-run changes nothing and narrates every step", async () => 
   new Credential().store("gh-token", "ghp_default");
 
   const deps = tmpDeps(codexHome);
-  // Capture the narration: the registry must describe EVERY execution step,
-  // including the two that were once missing (the drift this guards against).
+  // The registry must describe EVERY execution step; a step missing from the narration is
+  // the drift this guards against.
   const written: string[] = [];
   const savedLevel = consola.level;
   const origOut = process.stdout.write.bind(process.stdout);
@@ -487,7 +476,6 @@ test("uninstall removes owned Claude Desktop entries via the injected library di
   const { codexHome } = tmpHomes();
   const library = join(dir, "desktop-library");
   mkdirSync(library, { recursive: true });
-  // One owned entry, one foreign sibling beside it.
   writeFileSync(join(library, "ours.json"), '{"inferenceGatewayBaseUrl":"x"}\n');
   writeFileSync(join(library, "theirs.json"), '{"userKey":1}\n');
   writeFileSync(
@@ -695,7 +683,6 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     const { removeShellIntegration: _real, ...deps } = tmpDeps(codexHome);
     try {
       await expect(runUninstall({ yes: true }, deps)).rejects.toThrow(rc);
-      // Refused up front: the credential, the home and the install root all stand.
       expect(new Credential().resolve()).toBe("ghp_default");
       expect(existsSync(proxyHome)).toBe(true);
       expect(existsSync(deps.installRoot.root)).toBe(true);
@@ -753,7 +740,6 @@ test("uninstall --dry-run names every Claude Desktop path the sweep would delete
   expect(out).toContain(helper);
   // The foreign sibling is never named: it would never be deleted.
   expect(out).not.toContain(join(library, "theirs.json"));
-  // A dry run deletes nothing.
   expect(existsSync(join(library, "ours.json"))).toBe(true);
   expect(existsSync(helper)).toBe(true);
 });

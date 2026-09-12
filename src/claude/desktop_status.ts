@@ -1,7 +1,5 @@
-// The read-only side of the Claude Desktop wiring (desktop.ts writes it): judge the
-// config library against the entries the current wiring promises, and render that
-// verdict as the lines and repair command `agent claude --check` and the health
-// engine share, so the two can never disagree. Nothing here writes or reserves.
+// The read-only side of the Claude Desktop wiring; desktop.ts is what writes it. `agent claude
+// --check` and the health engine share these lines and repair commands so the two cannot disagree.
 import { basename, join } from "node:path";
 import type { ManagedWrite } from "../agents/configure.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -37,15 +35,13 @@ import {
   sameBaseUrl,
 } from "./desktop.ts";
 
-/** One expected Desktop entry: a wiring's profile and the mode its source of truth
- *  records (settings.json's managed mode for the default, the store slot for a profile). */
+/** `mode` is what the wiring's source of truth records: settings.json's managed mode for the
+ *  default, the store slot for a profile. */
 export interface DesktopTarget {
   profile: Profile;
   mode: ProfileMode;
 }
 
-/** How one expected entry compares with the library: present and matching its target,
- *  absent, or present but not what the target needs (`reason` names the mismatch). */
 export type DesktopEntryVerdict =
   | { kind: "wired"; path: string }
   | { kind: "missing" }
@@ -54,25 +50,22 @@ export type DesktopEntryVerdict =
 
 export type DesktopEntryStatus = DesktopTarget & { verdict: DesktopEntryVerdict };
 
-/** An owned claim as the status reports it: the uuid path and the wiring its document
- *  names -- undefined when it names none (see entryProfileAt), which no target can claim. */
+/** `profile` is undefined when the document names no helper of ours (see entryProfileAt), which no
+ *  target can claim. */
 export interface DesktopClaim {
   path: string;
   profile: Profile | undefined;
 }
 
-/** A listed owned entry: its claim plus the display name (the user's). An orphan is one
- *  no current target promises. */
+/** The name is the user's. An orphan is an owned entry no current target promises. */
 export type DesktopOwnedEntry = DesktopClaim & { name: string };
 
-/** The promised targets, or why they cannot be known. An unreadable or malformed
- *  settings.json is NOT "the default promises nothing": that reading is what would
- *  make the default's entry an orphan to delete. */
+/** An unreadable or malformed settings.json is NOT "the default promises nothing": that reading is
+ *  what would make the default's entry an orphan to delete. */
 export type DesktopTargetResolution =
   | { kind: "resolved"; targets: readonly DesktopTarget[] }
   | { kind: "unresolvable"; reason: string };
 
-/** The library's common facts: the `claude-desktop` key and the app detection. */
 interface DesktopStatusBase {
   enabled: boolean;
   installed: boolean;
@@ -80,15 +73,12 @@ interface DesktopStatusBase {
   helperPaths: string[];
 }
 
-/** The Desktop wiring as `agent claude --check` and the health engine report it. Each
- *  failed look (an unreadable library, unknowable targets) is its own kind, so it can
- *  never render as a clean one. */
+/** Each failed look is its own kind, so it can never render as a clean one. */
 export type ClaudeDesktopStatus =
   | (DesktopStatusBase & { kind: "no-library" })
   | (DesktopStatusBase & { kind: "unreadable"; metaPath: string })
-  /** A failed look: the promised targets could not be known (Claude's own settings.json
-   *  could not be read or parsed) or an owned document could not be read, so no entry is
-   *  judged and none may be swept as an orphan. */
+  /** The targets could not be known (Claude's settings.json unreadable or unparseable) or an owned
+   *  document could not be read: no entry is judged and none may be swept as an orphan. */
   | (DesktopStatusBase & { kind: "unjudged"; reason: string })
   | (DesktopStatusBase & {
     kind: "inspected";
@@ -104,9 +94,9 @@ export type ClaudeDesktopStatus =
     unlisted: DesktopClaim[];
   });
 
-/** Judge the library against the promised targets WITHOUT writing or reserving anything
- *  (read-only port resolution). The caller supplies the targets: the default's mode lives
- *  in settings.json, read above this module. `dirOverride` as in removeAllClaudeDesktopWiring. */
+/** Read-only port resolution: nothing is written or reserved. The caller supplies the targets (the
+ *  default's mode lives in settings.json, read above this module); `dirOverride` as in
+ *  removeAllClaudeDesktopWiring. */
 export function inspectClaudeDesktopWiring(
   promised: readonly DesktopTarget[] | DesktopTargetResolution,
   dirOverride?: string | null,
@@ -114,15 +104,15 @@ export function inspectClaudeDesktopWiring(
   const resolution: DesktopTargetResolution = "kind" in promised
     ? promised
     : { kind: "resolved", targets: promised };
-  // Verdict order: the library's own facts first (no library, unreadable, key off or app
-  // absent -- leftovers must show whatever the targets are), then the targets.
+  // Library facts first: with the key off or the app absent, leftovers must still show whatever the
+  // targets are.
   const base = desktopStatusBase(dirOverride);
   const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
   if (dir === null) return { ...base, kind: "no-library" };
   const library = readOwnedLibrary(dir);
   if (library === null) return { ...base, kind: "unreadable", metaPath: join(dir, META_FILENAME) };
-  // Attribution (which wiring each owned document serves) is read whatever the key says:
-  // the key-off report tells the default's entry, left in place, from the leftovers by it.
+  // Attribution is read whatever the key says: the key-off report tells the default's entry, left
+  // in place, from the leftovers by it.
   let judged: JudgedDesktopEntry[];
   let unlisted: DesktopClaim[];
   try {
@@ -154,7 +144,6 @@ export function inspectClaudeDesktopWiring(
   return status;
 }
 
-/** The facts every status arm carries (see DesktopStatusBase). */
 export function desktopStatusBase(dirOverride?: string | null): DesktopStatusBase {
   return {
     enabled: new CopilotEnvConfig().claudeDesktopEnabled(),
@@ -207,8 +196,8 @@ function entryVerdict(
   if (recorded !== helper) {
     return stale(`credential helper ${String(recorded)}, expected ${helper}`);
   }
-  // The helper must be the body this wiring would write, and runnable: a failed look
-  // is a stale verdict, never a wired one.
+  // The helper must be the body this wiring would write, and runnable; a failed look is stale,
+  // never wired.
   try {
     if (readFileOrNull(helper) !== desktopHelperBody(target.mode, target.profile)) {
       return stale(`credential helper ${helper} is missing or has a stale body`);
@@ -217,9 +206,8 @@ function entryVerdict(
   } catch (e) {
     return stale(`credential helper ${helper} could not be checked: ${errMessage(e)}`);
   }
-  // Wired means the QUIET rewire (the launcher hot path: recorded rows, the replayed
-  // identity, the live codex User-Agent, no probe) would be a byte-identical no-op -- the
-  // same bytes saveJsonIfChanged compares. A direct entry must also carry model rows.
+  // Wired means the QUIET rewire (recorded rows, the replayed identity, the live codex User-Agent,
+  // no probe) would be a byte-identical no-op: the same bytes saveJsonIfChanged compares.
   const write: ManagedWrite = target.mode === "direct"
     ? { mode: "direct", directIntegrationId: expectedIntegrationId(target.profile, doc) }
     : { mode: "proxy" };
@@ -241,9 +229,9 @@ function entryVerdict(
   return { kind: "wired", path };
 }
 
-/** The identity a rewire would bake, without probing: the config pin, else the slot's
- *  persisted verdict (the replay every rewire uses), else -- never probed yet -- the one
- *  the document already carries. */
+/** The identity a rewire would bake, without probing:
+ *    config pin -> the slot's persisted verdict (the replay every rewire uses)
+ *    -> the header the document already carries (never probed yet) */
 function expectedIntegrationId(profile: Profile, doc: Record<string, unknown>): string | null {
   const pin = new CopilotEnvConfig().pinnedIntegrationId();
   if (pin !== null) return pin;
@@ -252,22 +240,17 @@ function expectedIntegrationId(profile: Profile, doc: Record<string, unknown>): 
   return recordedHeader(doc, INTEGRATION_ID_HEADER);
 }
 
-/** A direct entry's recorded custom header value, or null when absent/blank. */
 function recordedHeader(doc: Record<string, unknown>, name: string): string | null {
   const headers = doc["inferenceCustomHeaders"];
   const value = isRecord(headers) ? headers[name] : undefined;
   return typeof value === "string" && value !== "" ? value : null;
 }
 
-/** The repair command for one target's entry: the default rides on `agent claude`,
- *  a named profile on its atomic re-add (mode sticky from the store). */
+/** A named profile repairs through its atomic re-add (mode sticky from the store). */
 function desktopEntryFix(profile: Profile): string {
   return profile === null ? "agent claude" : `agent profile --add ${profile}`;
 }
 
-/** Render a status as human lines plus the repair command(s) when it shows drift (a failed
- *  look, a missing/stale/orphaned entry, leftovers with the key off), null otherwise. Shared
- *  by `agent claude --check` and the health check so the two can never disagree. */
 export function renderClaudeDesktopStatus(
   status: ClaudeDesktopStatus,
 ): { lines: string[]; fix: string | null } {
@@ -285,8 +268,8 @@ export function renderClaudeDesktopStatus(
     };
   }
   if (!status.enabled) {
-    // The default's entry and helper stay by design; leftovers are the profile entries
-    // (listed or not) and helper scripts an interrupted sweep can leave.
+    // The default's entry and helper stay by design; leftovers are the profile entries (listed or
+    // not) and helper scripts an interrupted sweep can leave.
     const owned = status.kind === "inspected" ? status.owned : [];
     const unlisted = status.kind === "inspected" ? status.unlisted : [];
     const unmanaged = [
@@ -298,8 +281,8 @@ export function renderClaudeDesktopStatus(
       ),
     ];
     // A claim of unknown wiring is one the key-off sweep deliberately keeps (it may be the
-    // default's), so `agent claude` cannot clear it while the key is off: only the key-on
-    // reconcile (which removes it as an orphan) or uninstall does.
+    // default's), so only the key-on reconcile (which removes it as an orphan) or uninstall clears
+    // it.
     const claims = [...owned, ...unlisted];
     const unknown = claims.filter((c) => c.profile === undefined).map((c) => c.path);
     const left = [
@@ -344,8 +327,8 @@ export function renderClaudeDesktopStatus(
   }
   const lines: string[] = [];
   const fixes = new Set<string>();
-  // An entry is labelled by the display name it carries in the app (the user's, possibly
-  // renamed); a missing one by the name a wire would seed.
+  // An entry is labelled by the display name it carries in the app (the user's, possibly renamed);
+  // a missing one by the name a wire would seed.
   const nameAt = (path: string) => status.owned.find((o) => o.path === path)?.name;
   for (const e of status.entries) {
     const shown = "path" in e.verdict ? nameAt(e.verdict.path) : undefined;

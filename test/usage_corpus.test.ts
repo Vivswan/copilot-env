@@ -226,8 +226,8 @@ describe("usage corpus recorder", () => {
           timeoutMs: 9 * 60_000,
         });
         expect(result.exitCode).toBe(0);
-        // The consumer contract: one stdout line, usage lines for both CLIs.
-        // Exactly one line, then the trailing newline: CI's `tail -n 1` must get the summary.
+        // The consumer contract: exactly one stdout line, then the trailing newline, since
+        // CI's `tail -n 1` must get the summary.
         const lines = result.stdout.split(/\r?\n/);
         expect(lines).toHaveLength(2);
         expect(lines[1]).toBe("");

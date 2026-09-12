@@ -1,10 +1,6 @@
-// release-please's `release-as` is a one-shot override for cutting a specific
-// version. release-please does not remove it from the config after the release
-// PR merges, and a pin left behind makes every later release PR propose the
-// SAME version again (with force-tag-creation, merging one would move the
-// published tag). It has already been cleaned up by hand twice (after v1.0.0
-// and after v4.0.0), so pin the rule: absent, or strictly newer than the
-// version the manifest says has shipped.
+// release-please never removes a `release-as` pin after the release PR merges, so a stale
+// one makes every later release PR propose the SAME version again; with force-tag-creation,
+// merging one would move the published tag.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { greaterThan, parse } from "semver";

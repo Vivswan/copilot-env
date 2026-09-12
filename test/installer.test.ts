@@ -53,8 +53,7 @@ import { runSync } from "./helpers/run.ts";
 import { afterEach, beforeEach, describe, expect, tempDir, test } from "./helpers/testing.ts";
 
 const OPTIONS: InstallOptions = { noShellIntegration: false, allHosts: false, assetsOnly: false };
-/** Full-install options that plan no shell wiring (tests that APPLY plans use
- *  these, so nothing tries to spawn a binary or touch rc files). */
+/** Plans no shell wiring, so applying never spawns a binary or touches rc files. */
 const QUIET: InstallOptions = { noShellIntegration: true, allHosts: false, assetsOnly: false };
 const ASSETS_ONLY: InstallOptions = {
   noShellIntegration: false,
@@ -87,12 +86,10 @@ function writeAssetSource(dir: string): void {
   }
 }
 
-/** The assets-only plan for a compiled binary: materialize into `dest` as-is. */
 function assetsOnlyPlan(options: InstallOptions = ASSETS_ONLY): InstallPlan {
   return buildInstallPlan(options, dest, source);
 }
 
-/** The FULL installed-mode plan: builds the versioned layout at `dest`. */
 function versionedPlan(
   options: InstallOptions = QUIET,
   binarySource: string | null = null,
@@ -100,7 +97,6 @@ function versionedPlan(
   return buildInstallPlan(options, dest, source, binarySource);
 }
 
-/** The version-dir name every full plan in this suite targets. */
 const VERSION_NAME = versionDirName(packageVersion());
 
 /** Capture BOTH process write streams (consola routes by level) while running `fn`. */
@@ -123,7 +119,6 @@ function captureAllWrites(fn: () => void): string {
   return out;
 }
 
-/** A stand-in compiled binary next to nothing in particular. */
 function writeFakeBinary(path: string, content = "#!/bin/sh\nexit 0\n"): string {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content);
@@ -154,9 +149,9 @@ afterEach(() => {
 
 describe("buildInstallPlan", () => {
   test("a checkout (asset source IS the root) plans no file writes", () => {
-    // A dev checkout already has its own bin/agent and working files; an
-    // install must never overwrite them. In-place applies before the checkout
-    // refusal, so a checkout installing into itself never trips it either.
+    // A checkout has its own bin/agent and working files, so an install never overwrites
+    // them. In-place applies before the checkout refusal, so a checkout installing into
+    // itself never trips it.
     writeFileSync(join(source, "package.json"), "{}");
     mkdirSync(join(source, ".git"));
     const plan = buildInstallPlan(OPTIONS, source, source);
@@ -234,8 +229,7 @@ describe("buildInstallPlan", () => {
     const plan = assetsOnlyPlan();
     if (plan.kind !== "installed") throw new Error("expected an installed plan");
 
-    // Only what is actually there: an install must not report removing files
-    // it never found.
+    // Only what is actually there: an install must not report removing files it never found.
     expect(plan.legacyRemovals).toEqual([join(dest, "node_modules")]);
     expect(LEGACY_ARTIFACTS.length).toBeGreaterThan(0);
   });
@@ -368,7 +362,6 @@ describe("the versioned full-install plan", () => {
   });
 
   test("a flat root's runtime files are swept only AFTER the flip", () => {
-    // Seed a flat-layout install: runtime files and manifest at the top.
     writeAssetSource(dest);
     rmSync(join(dest, "copilot-env.config"));
     rmSync(join(dest, ".dvmrc"));
@@ -595,11 +588,9 @@ describe("the current link primitives", () => {
 });
 
 describe("the unsafe-target canonical guard", () => {
-  // The shell installers keep only a lexical pre-check before they download;
-  // the CANONICAL refusal lives in the plan, because the install root is
-  // DERIVED (binary location or COPILOT_ENV_INSTALL_ROOT) and the plan's
-  // writes and removals aim at it. Building a plan writes nothing, so
-  // aiming one at the real home directory here is safe.
+  // The canonical refusal lives in the plan: the install root is derived (binary location or
+  // COPILOT_ENV_INSTALL_ROOT) and the plan's writes aim at it; the shell installers keep only
+  // a lexical pre-check. Building a plan writes nothing, so aiming one at the real home is safe.
   test("refuses the home directory as an installed-mode target", () => {
     expect(() => buildInstallPlan(OPTIONS, homedir(), source)).toThrow(
       "it is the home directory",
@@ -626,8 +617,7 @@ describe("the unsafe-target canonical guard", () => {
   });
 
   winOnly("refuses a junction alias of the home directory", () => {
-    // The Windows spelling of the same alias class the removed install.ps1
-    // P/Invoke resolver used to catch; realpath resolves junctions too.
+    // The Windows spelling of the same alias class; realpath resolves junctions too.
     const alias = join(root, "home-alias");
     symlinkSync(homedir(), alias, "junction");
     expect(() => buildInstallPlan(OPTIONS, alias, source)).toThrow(
@@ -652,12 +642,11 @@ describe("the unsafe-target canonical guard", () => {
 });
 
 describe("the checkout guard and the install manifest sentinel", () => {
-  // The install root is DERIVED (or an env override), so an installed-mode plan
-  // can be aimed at a dev checkout via COPILOT_ENV_INSTALL_ROOT -- and its
-  // writes would replace the checkout's bin/agent and src/scripts. The markers
-  // alone cannot decide: the pre-binary installer extracted source archives, so
-  // those roots carry package.json/deno.json too. `.git` is the discriminant
-  // (archives never have one), and the manifest records what a real install is.
+  // An installed-mode plan can be aimed at a dev checkout through COPILOT_ENV_INSTALL_ROOT, and
+  // its writes would replace the checkout's bin/agent and src/scripts. The pre-binary installer
+  // extracted source archives, so package.json/deno.json alone cannot decide.
+  //   .git present (dir or file)  -> a checkout: refuse
+  //   markers, no .git            -> an archive root: sweep and install over it
   test("refuses a root with checkout markers and .git", () => {
     for (const marker of CHECKOUT_MARKERS) {
       writeFileSync(join(dest, marker), "{}");
@@ -694,10 +683,8 @@ describe("the checkout guard and the install manifest sentinel", () => {
   });
 
   test("a legacy source-archive root (markers, no .git) is swept and versioned over", () => {
-    // The source-archive installer era left roots byte-indistinguishable from a
-    // checkout minus .git; their first full install must proceed, remove the
-    // stale markers alongside the other superseded artifacts, and leave a
-    // versioned layout whose manifest is positively an install's.
+    // An archive root is a checkout minus .git; its first full install must proceed, sweep the
+    // stale markers with the other superseded artifacts, and leave a versioned layout.
     writeFileSync(join(dest, "package.json"), "{}");
     writeFileSync(join(dest, "deno.json"), "{}");
     mkdirSync(join(dest, "node_modules"), { recursive: true });
@@ -818,10 +805,9 @@ describe("adoptVersionedLayout (the 3.5.6 migration core)", () => {
       binarySource: binary,
     });
 
-    // A crashed earlier run: the flip landed, but the top shims were never
-    // rewritten, flat debris reappeared, and the flat binary residue survived.
-    // The retry must converge all of it, not just re-sweep -- and name each
-    // shim it rewrites (nothing written silently); a converged re-run names none.
+    // A crashed earlier run: the flip landed, but the top shims were never rewritten, flat
+    // debris reappeared, and the flat binary residue survived. The retry must converge all of
+    // it and name each shim it rewrites; a converged re-run names none.
     writeFileSync(join(dest, INSTALL_MANIFEST_FILE), "{}");
     writeFileSync(join(dest, "bin", "agent"), "stale adjacent-dispatch shim");
     writeFileSync(join(dest, "bin", "agent.ps1"), "stale adjacent-dispatch shim");
@@ -874,20 +860,16 @@ describe("adoptVersionedLayout (the 3.5.6 migration core)", () => {
   });
 
   test("a checkout-shaped top is never repaired: launchers and wiring stay untouched", () => {
-    // Reachable state: `agent update --force` on a dev clone builds versions/ +
-    // current INSIDE the checkout (commit() skips the shims there), then the
-    // post-flip migrate runs this adoption. The repair arm must apply the same
-    // checkout guard -- the clone's bin/agent(.ps1) are TRACKED SOURCE, and
-    // overwriting them breaks "a checkout can never be overwritten by an
-    // install".
+    // Reachable: `agent update --force` on a dev clone builds versions/ + current inside the
+    // checkout, then the post-flip migrate runs this adoption. The clone's bin/agent(.ps1) are
+    // tracked source, so the repair arm must apply the same checkout guard.
     writeFileSync(join(dest, "package.json"), "{}");
     mkdirSync(join(dest, ".git"));
     mkdirSync(join(dest, "bin"), { recursive: true });
     writeFileSync(join(dest, "bin", "agent"), "dev launcher");
-    // A COMPLETE version behind the link (binary + matching manifest), so only
-    // the checkout guard stands between the repair arm and the overwrite. The
-    // binary is an EXECUTABLE recorder: any shell rewire attempt would leave
-    // wires.log (non-executable, the absence would prove nothing).
+    // A complete version behind the link, so only the checkout guard stands between the repair
+    // arm and the overwrite. The binary is an executable recorder: a shell rewire would leave
+    // wires.log (non-executable, its absence would prove nothing).
     const versionRoot = versionRootPath(dest, VERSION_NAME);
     const recorder = writeFakeBinary(
       join(versionRoot, "bin", installedBinaryName()),
@@ -945,10 +927,9 @@ describe("wiredShellTargets", () => {
   });
 
   test("a launchers-only rc counts as wired: the shell pass must migrate its opt-in", () => {
-    // A pre-`agent launch` user could carry ONLY the launchers block (main
-    // integration removed by hand). The adoption's shell pass is what carries
-    // that opt-in to the `launchers` config key and strips the retired block,
-    // so such an rc must still be a rewire target.
+    // An rc carrying only the launchers block (main integration removed by hand) must still
+    // be a rewire target: the shell pass carries that opt-in to the `launchers` key and strips
+    // the retired block.
     const file = sandboxRcFile();
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, "# copilot-env launchers\n# copilot-env launchers end\n");
@@ -958,9 +939,8 @@ describe("wiredShellTargets", () => {
 
 describe("launcher shims", () => {
   test("per-version shims dispatch to the compiled binary next to them", () => {
-    // The per-version shims are what `<top>/current/bin/agent` resolves to, so
-    // their dispatch target is a contract with the layout (the binary sits
-    // beside them inside the version root).
+    // `<top>/current/bin/agent` resolves to these, so their dispatch target is a contract with
+    // the layout: the binary sits beside them inside the version root.
     expect(POSIX_SHIM).toContain('exec "$HERE/copilot-env" "$@"');
     expect(POSIX_SHIM.startsWith("#!/bin/sh\n")).toBe(true);
     expect(POWERSHELL_SHIM).toContain("copilot-env.exe");
@@ -968,8 +948,9 @@ describe("launcher shims", () => {
   });
 
   test("top-level shims dispatch through the current link", () => {
-    // The stable PATH entry: one release-independent hop, so updates never
-    // rewrite the file a user's PATH (or a persisted config) points at.
+    // The stable PATH entry: one release-independent hop, so the path a user's PATH (or a
+    // persisted config) points at stays valid across updates; writeShimFile rewrites the file
+    // only when its content changed.
     expect(POSIX_CURRENT_SHIM).toContain('exec "$HERE/../current/bin/copilot-env" "$@"');
     expect(POSIX_CURRENT_SHIM.startsWith("#!/bin/sh\n")).toBe(true);
     expect(POWERSHELL_CURRENT_SHIM).toContain("current\\bin\\copilot-env.exe");
@@ -978,13 +959,10 @@ describe("launcher shims", () => {
 });
 
 describe("the install root carries the markers uninstall requires", () => {
-  // `agent uninstall` deletes the resolved root wholesale, and in a compiled
-  // install that root is DERIVED from the binary's location -- so root.ts
-  // refuses any root missing these markers (a binary dropped in
-  // ~/.local/bin would otherwise aim `rm -rf` at ~/.local). That makes them a
-  // contract ON this installer: narrowing MATERIALIZED_ASSET_DIRS below them turns
-  // uninstall into a silent no-op on every install.
-  //
+  // root.ts refuses a root missing these markers, so narrowing MATERIALIZED_ASSET_DIRS below them
+  // turns uninstall into a silent no-op on every install. The reason: a compiled install derives
+  // its root from the binary's location, and a binary dropped in ~/.local/bin would otherwise
+  // aim uninstall's `rm -rf` at ~/.local.
   test("applying a plan produces every marker directory", () => {
     applyInstallPlan(assetsOnlyPlan());
 
@@ -994,9 +972,8 @@ describe("the install root carries the markers uninstall requires", () => {
   });
 
   test("the asset lists cannot be narrowed below the markers", () => {
-    // Fails at the list, not only at the applied result, so the intent is
-    // visible when someone edits MATERIALIZED_ASSET_DIRS. `bin` is absent from it
-    // on purpose: the shims create that directory.
+    // Fails at the list, not only at the applied result, so the intent is visible when someone
+    // edits MATERIALIZED_ASSET_DIRS. `bin` is absent on purpose: the shims create that directory.
     expect(MATERIALIZED_ASSET_DIRS).toContain("shell");
     expect(MATERIALIZED_ASSET_DIRS).toContain("src/scripts");
   });

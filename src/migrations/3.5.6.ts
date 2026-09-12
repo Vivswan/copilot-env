@@ -1,11 +1,8 @@
 // Away from 3.5.6: the data home moved from the proxy package's default
-// (`~/.local/share/copilot-api`) to copilot-env's own (`~/.local/share/copilot-env`).
-// Every daemon spawn pins COPILOT_API_HOME (DaemonSpec.home), so the move is a
-// directory rename plus repointing the artifacts that persist absolute paths into
-// the home: the managed Codex configs' `model_catalog_json`, the owned Claude
-// Desktop entries' `inferenceCredentialHelper`, and the proxy float's
-// resolved-version record (`deno_dir`). Idempotent: a re-run finds nothing left to
-// move and the repoint pass rewrites only values still carrying the legacy prefix.
+// (`~/.local/share/copilot-api`) to copilot-env's own (`~/.local/share/copilot-env`). Every
+// daemon spawn pins COPILOT_API_HOME (DaemonSpec.home), so the move is a directory rename plus
+// repointing the artifacts that persist absolute paths into the home. Idempotent: a re-run finds
+// nothing to move and repoints only values still carrying the legacy prefix.
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, sep } from "node:path";
@@ -75,12 +72,10 @@ export async function moveDataHome(opts: DataHomeMoveOptions): Promise<void> {
     renameSync(legacyHome, nextHome);
     consola.info(`  moved ${legacyHome} -> ${nextHome}`);
   }
-  // The moved-in stores still wear their pre-4.0.2 names, but every read below
-  // (the ledger-fed desktopEntryPaths thunk above all) goes through the
-  // new-only readers -- and the hoisted v402RootLayout step only runs after
-  // this whole step returns. Rename them whenever the destination exists, NOT
-  // only on the move path: a re-run resuming after a crash right after the
-  // directory rename enters with legacyHome already absent.
+  // The moved-in stores still wear their pre-4.0.2 names, and every read below goes through the
+  // new-only readers (the hoisted v402RootLayout step runs only after this step returns). Rename
+  // whenever the destination exists, not only on the move path: a re-run after a crash right
+  // after the directory rename enters with legacyHome already absent.
   if (existsSync(nextHome)) moveRootStores(nextHome);
 
   /** `value` repointed onto the new home, or null when it does not reference the
@@ -130,13 +125,10 @@ export async function moveDataHome(opts: DataHomeMoveOptions): Promise<void> {
   }
 }
 
-/** Stop every daemon still tracked under the LEGACY home (default + profiles) so
- *  none keeps writing into (or re-creating) the old dir mid-move. The env override
- *  is how the whole paths layer is pointed at the legacy layout for the duration.
- *  Any daemon NOT confirmed stopped -- a kill survivor, or a stop refused because
- *  the pid could not be corroborated as ours -- aborts the migration (the move must
- *  not race a live writer); the runner treats that as non-fatal and the re-run
- *  retries. */
+/** The env override points the whole paths layer at the legacy layout for the duration. Any
+ *  daemon NOT confirmed stopped (a kill survivor, or a pid that could not be corroborated as
+ *  ours) aborts the migration: the move must not race a live writer. The runner treats that as
+ *  non-fatal and the re-run retries. */
 async function stopLegacyDaemons(): Promise<void> {
   const saved = process.env.COPILOT_API_HOME;
   process.env.COPILOT_API_HOME = LEGACY_HOME;
@@ -166,10 +158,9 @@ export const v356: Migration = {
       nextHome: DEFAULT_HOME,
       stopDaemons: stopLegacyDaemons,
       codexConfigPaths: () => knownCodexHomes().homes.map((home) => codexConfigPath(home)),
-      // The ledger answers from its own file only, and this step runs BEFORE the
-      // ownership fix-up below, so adopt the pre-ledger record first (post-move,
-      // where the state store is readable; idempotent, so the fix-up's own run
-      // is then a no-op) and both layouts answer.
+      // The ledger answers from its own file only, and this step runs BEFORE the ownership
+      // fix-up below, so adopt the pre-ledger record first (post-move, where the state store
+      // is readable; idempotent, so the fix-up's own run is then a no-op).
       desktopEntryPaths: () => {
         const ledger = new OwnershipLedger();
         ledger.adoptLegacyRecords();
@@ -178,53 +169,40 @@ export const v356: Migration = {
     }),
 };
 
-/** Second fix-up of the same step: recorded artifact ownership (the
- *  WebSearch-deny and Claude Desktop paths) moved from the shared state store
- *  into the machine-local ownership ledger. The ledger's readers answer from
- *  the ledger alone, so a pre-ledger claim is unowned until this has run
- *  (the home move above already runs the same idempotent adoption for its own
- *  read, so on that path this is a no-op). Registered AFTER the
- *  home move: the state store it reads lives inside the moved home. */
+/** Recorded artifact ownership moved from the shared state store into the machine-local
+ *  ledger, whose readers answer from the ledger alone: a pre-ledger claim is unowned until this
+ *  runs. Registered AFTER the home move because the state store lives inside the moved home
+ *  (the move already runs this adoption for its own read, so on that path this is a no-op). */
 export const v356Ownership: Migration = {
   version: "3.5.6",
   description: "move recorded artifact ownership into the ownership ledger",
   run: () => new OwnershipLedger().adoptLegacyRecords(),
 };
 
-/** Third fix-up of the same step: the default credential moved from the state
- *  store's top-level pair into the reserved `default` profile slot. The store
- *  reads the slot shape ONLY -- an unlifted pair reads as no default credential
- *  -- and its writes leave the pair in place, so this lift is the one path that
- *  converts it: a correctness gate, like the ownership adoption above, not a
- *  tidy-up. Registered after the home move for the same reason as the
- *  ownership adoption (the state store lives inside the moved home) and BEFORE
- *  the versioned-layout adoption: this fix-up is install-layout-independent,
- *  and the adoption's invariant is that it runs last (it relocates the install
- *  everything else fixed up). */
+/** The default credential moved from the state store's top-level pair into the reserved
+ *  `default` slot. The store reads the slot shape ONLY and its writes leave the pair in place,
+ *  so this lift is the one path that converts it: a correctness gate, not a tidy-up. After the
+ *  home move (the store lives inside it) and BEFORE the versioned-layout adoption, whose
+ *  invariant is that it runs last. */
 export const v356DefaultSlot: Migration = {
   version: "3.5.6",
   description: "lift the default credential into the reserved 'default' profile slot",
   run: () => new CopilotEnvState().adoptLegacyDefaultCredential(),
 };
 
-/** Fourth fix-up of the same step: the DEFAULT daemon's home moved from the
- *  flat root layout (config.json, .run/, logs, usage DBs at the data home
- *  itself) into `<root>/profiles/default/`, so every daemon home has one
- *  shape. The paths layer tolerates an unmigrated flat root
- *  (defaultDaemonHome prefers profiles/default only once it exists), so unlike
- *  the two store fix-ups above this one is a tidy-up, not a gate. Registered
- *  after the home move (it relocates files inside the moved home) and BEFORE
- *  the versioned-layout adoption, whose invariant is that it runs last. */
+/** The DEFAULT daemon's home moved from the flat root into `<root>/profiles/default/`, so every
+ *  daemon home has one shape. The paths layer tolerates an unmigrated flat root
+ *  (defaultDaemonHome prefers profiles/default only once it exists), so this is a tidy-up, not
+ *  a gate. After the home move and BEFORE the versioned-layout adoption, which must run last. */
 export const v356DefaultHome: Migration = {
   version: "3.5.6",
   description: "move the default daemon home into profiles/default",
   run: () => moveDefaultDaemonHome(),
 };
 
-/** How the move acquires each lock (the global start lock, then the flat root's
- *  daemon.lock): dead-holder-only reclaim (staleMs Infinity -- a LIVE holder is a
- *  running launch/daemon, never aged out) with a short bounded wait that absorbs
- *  a transient CLI probe's momentary hold. Not held -> the move refuses. */
+/** Dead-holder-only reclaim (staleMs Infinity: a LIVE holder is a running launch or daemon,
+ *  never aged out) with a short wait that absorbs a transient CLI probe's hold. Not held -> the
+ *  move refuses. */
 const DEFAULT_HOME_MOVE_LOCK_POLICY: LockPolicy = {
   staleMs: Number.POSITIVE_INFINITY,
   waitMs: 2_000,
@@ -232,14 +210,15 @@ const DEFAULT_HOME_MOVE_LOCK_POLICY: LockPolicy = {
 };
 
 /**
- * The v356DefaultHome core: move the flat root's daemon files (DAEMON_HOME_ARTIFACTS) into
- * `<root>/profiles/default/`. Never yank files from under a live daemon or launch: a busy
- * global start lock, a held root daemon.lock, or a live pre-lock pid not CONFIDENTLY another
- * process each refuse the move with a warning (the re-run after `agent stop` picks it up).
- * The flip is atomic: artifacts stage into `profiles/.default.migrating` and ONE rename
- * creates `profiles/default`; defaultDaemonHome counts the staging dir as the flat layout,
- * so a crash mid-move still resolves flat and a re-run resumes. A pre-existing hand-made
- * profiles/default gets per-file moves under ITS lock; a name on BOTH sides is refused.
+ * Refuses rather than yank files from a daemon or launch it can SEE, with a warning naming the
+ * re-run after `agent stop`. Two gaps stay, each noted at its guard below: a start that begins
+ * after the start-lock probe, and a pre-lock daemon on another host (flatTrackedPid reads this
+ * one). defaultDaemonHome counts the staging dir as the flat layout, so a crash mid-move still
+ * resolves flat and a re-run resumes.
+ *
+ *   busy start lock / held root daemon.lock / pre-lock pid not CONFIDENTLY foreign -> refuse
+ *   no profiles/default      -> stage into profiles/.default.migrating -> ONE rename creates it
+ *   profiles/default exists  -> per-file moves under ITS lock; a name on BOTH sides refuses
  */
 export async function moveDefaultDaemonHome(
   classifyPid: typeof classifyDaemonPid = classifyDaemonPid,
@@ -254,12 +233,11 @@ export async function moveDefaultDaemonHome(
   ) {
     return; // fresh or already migrated: touch nothing
   }
-  // Probe the global start lock WITHOUT materializing its run dir (a lock cannot be
-  // held where its directory does not exist): a launch in flight has resolved the
-  // paths it will spawn into -- flat or target-homed, it must finish before anything
-  // moves. (A start beginning after this probe can still spawn within the move's
-  // few-ms window; a flat-homed daemon it leaves is untracked in the new home, so
-  // the next start's orphan sweep reaps it -- the accepted residual.)
+  // Probe the start lock WITHOUT materializing its run dir (a lock cannot be held where its
+  // directory does not exist): a launch in flight must finish before anything moves. A start
+  // beginning after this probe can still spawn in the move's few-ms window; the flat-homed
+  // daemon it leaves is untracked in the new home and the next start's orphan sweep reaps it,
+  // the accepted residual.
   const startLock = startLockPath();
   if (existsSync(dirname(startLock))) {
     const startBusy = await withFileLock(
@@ -286,16 +264,12 @@ export async function moveDefaultDaemonHome(
     // Re-list under the lock: the wait above may have raced a writer.
     const pending = DAEMON_HOME_ARTIFACTS.filter((name) => existsSync(join(root, name)));
     if (pending.length > 0 || existsSync(staging)) {
-      // A pre-lock daemon holds no lock; the FLAT root's tracked pid is the remaining
-      // liveness signal this host can judge. Read the flat state file by explicit
-      // path (the paths layer may already resolve elsewhere) and judge by
-      // CLASSIFICATION, refusing on "yes" AND "unknown": "failed to look" is never
-      // "nobody there" (daemon_lock.ts's posture). The kill paths' boolean scan maps
-      // an unreadable identity to false because there false means "don't signal" --
-      // here false would mean "move the home out from under a possibly-live daemon",
-      // the exact inversion. Fail-closed is recoverable (`agent stop`, re-run the
-      // migrate); cross-host pre-lock daemons stay undetectable -- the same accepted
-      // residual every pre-lock consult has.
+      // A pre-lock daemon holds no lock; the FLAT root's tracked pid is the remaining liveness
+      // signal. Judge by CLASSIFICATION and refuse on "yes" AND "unknown": "failed to look" is
+      // never "nobody there" (daemon_lock.ts's posture). The kill paths flatten an unreadable
+      // identity to false because there false means "don't signal"; here it would mean "move
+      // the home out from under a possibly-live daemon", the exact inversion. Fail-closed is
+      // recoverable (`agent stop`, re-run); cross-host pre-lock daemons stay undetectable.
       const tracked = flatTrackedPid(root);
       if (tracked !== undefined && pidAlive(tracked)) {
         const cls = await classifyPid(tracked);
@@ -310,9 +284,8 @@ export async function moveDefaultDaemonHome(
       }
       const target = join(root, PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR);
       if (existsSync(target)) {
-        // Reads already resolve to `target`, so a daemon may be RUNNING out of it:
-        // fence the target home with ITS OWN lock before the per-file moves write
-        // into it -- the root lock held above says nothing about this home.
+        // Reads already resolve to `target`, so a daemon may be RUNNING out of it: fence it
+        // with ITS OWN lock before writing into it; the root lock says nothing about this home.
         await withFileLock(
           daemonLockPath(target),
           DEFAULT_HOME_MOVE_LOCK_POLICY,
@@ -343,23 +316,19 @@ export async function moveDefaultDaemonHome(
         consola.info(`  moved the default daemon home into ${target}`);
       }
     }
-    // Delete the dead holder's stale marker UNDER the held lock (the OS lock lives on
-    // the `.oslock` sidecar, so the marker file is plain data here) -- no gap in which
-    // a booting daemon could have re-acquired it. Nothing consults the root's lock
-    // after the move: a new daemon locks its own home under profiles/.
+    // Delete the dead holder's marker UNDER the held lock (the OS lock lives on the `.oslock`
+    // sidecar, so the marker is plain data here): no gap for a booting daemon to re-acquire it.
+    // Nothing consults the root's lock after the move; a new daemon locks its own home.
     rmSync(lockPath, { force: true });
   });
 }
 
-/** The FLAT root's tracked daemon pid for THIS host, read by explicit path (the run-state
- *  store would resolve through defaultDaemonHome, which no longer answers the flat root
- *  once profiles/default exists). Only the pid is wanted; any other shape reads as none.
- *  A missing or unreadable file also flattens to none (the plain load(), DECIDED over the
- *  strict read) -- accepted: our store writes atomically, so the common case is "never
- *  written", and the residue (a permissions or corruption failure hiding a live pre-lock
- *  daemon) joins this consult's existing accepted residuals (see the call site: cross-host
- *  daemons are undetectable too), while a strict throw would fail the whole best-effort
- *  migration over a blind spot it tolerates elsewhere. */
+/** Read by explicit path: the run-state store would resolve through defaultDaemonHome, which
+ *  stops answering the flat root once profiles/default exists. A missing or unreadable file
+ *  flattens to none (the plain load(), DECIDED over the strict read): our store writes
+ *  atomically, so the common case is "never written", and the residue (a corruption hiding a
+ *  live pre-lock daemon) joins this consult's accepted residuals, where a strict throw would
+ *  fail the whole best-effort migration over a blind spot it tolerates elsewhere. */
 function flatTrackedPid(root: string): number | undefined {
   const stateFile = join(root, RUN_DIR_NAME, getSanitizedHostname(), RUN_STATE_FILENAME);
   const pid = new CopilotApiConfig(stateFile).load()["pid"];
@@ -381,13 +350,11 @@ function moveArtifactsInto(root: string, names: readonly string[], into: string)
   }
 }
 
-/** Fifth to seventh fix-ups of the same step: the wiring 3.5.6 wrote, converted to
- *  the shapes the current readers know. The conversions live in 4.0.0.ts (whose
- *  readers still tolerated those shapes, so a 4.0.0 install runs them too) and are
- *  registered here as well because they must land BEFORE the layout adoption below:
- *  it re-wires the shell through the current writer, which owns only the marker
- *  line of an unfenced block and would leave its body behind as user lines, and it
- *  sweeps the flat `src/scripts` the old Codex and Claude wiring still pointed at. */
+/** The wiring 3.5.6 wrote, converted to the shapes the current readers know. The conversions
+ *  live in 4.0.0.ts (a 4.0.0 install runs them too) and are registered here as well because
+ *  they must land BEFORE the layout adoption below: it re-wires the shell through the current
+ *  writer, which owns only the marker line of an unfenced block and would strand its body, and
+ *  it sweeps the flat `src/scripts` the old Codex and Claude wiring still pointed at. */
 export const v356ShellFence: Migration = {
   version: "3.5.6",
   description: "fence the shell rc blocks written without an end marker",
@@ -404,15 +371,11 @@ export const v356ClaudeWiring: Migration = {
   run: rewriteClaudeWiring,
 };
 
-/** Eighth (and LAST) fix-up of the same step: installs moved from the flat layout (one
- *  binary and its runtime files at the install root) to the versioned one
- *  (`<top>/versions/vX.Y.Z/` roots behind a `current` link). The pre-versioned updater has
- *  already swapped THIS binary into `<top>/bin` when it spawns the migrate step, so the
- *  adoption builds the layout around the live binary: copy its own running image (readable
- *  everywhere, deletable nowhere on Windows) into its version root, materialize the runtime
- *  files, flip `current`, rewrite the top shims, then sweep the flat leftovers. Idempotent;
- *  a no-op for versioned roots and dev checkouts (adoptVersionedLayout owns those guards).
- *  Registered last: it relocates the install the earlier fix-ups operated on. */
+/** Installs moved from the flat layout to the versioned one (`<top>/versions/vX.Y.Z/` roots
+ *  behind a `current` link). The pre-versioned updater has already swapped THIS binary into
+ *  `<top>/bin` when it spawns the migrate step, so the adoption builds the layout around the
+ *  live binary (adoptVersionedLayout owns the guards and the idempotence). Registered LAST: it
+ *  relocates the install the earlier fix-ups operated on. */
 export const v356VersionedLayout: Migration = {
   version: "3.5.6",
   description: "adopt the versioned install layout (versions/ + a current link)",

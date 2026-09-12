@@ -48,7 +48,6 @@ function tmpHome(): void {
   dir = isolateProxyHome("copilot-envconfig-");
 }
 
-/** The projected value at `path`, or undefined when no entry addresses it. */
 function projectedValue(
   entries: readonly ProjectedProxyEntry[],
   path: readonly string[],
@@ -141,9 +140,8 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
 
 test("the read schema is lenient: ill-typed / out-of-range stored values fall back to default", () => {
   tmpHome();
-  // Write a junk value past the typed setter (port out of range, wrong types).
   new CopilotEnvConfig().set({ port: 70000 as unknown as number });
-  // 70000 > 65535 -> schema fallback -> undefined (NOT a thrown error).
+  // Out of range reads back as undefined, never a throw.
   expect(new CopilotEnvConfig().read().port).toBeUndefined();
 
   // A stored non-positive multiplier is equally junk: reads back as unset.
@@ -246,8 +244,8 @@ test("runConfig --set validates + persists; --del reverts; unknown key / bad val
 
 test("runConfig --get cannot combine with --set/--del (never silently dropped)", () => {
   tmpHome();
-  // `--set port 5000 --get` used to write the key and drop --get; the boundary
-  // parse now rejects the combination (both --get spellings: bare and keyed).
+  // The bug: `--set port 5000 --get` wrote the key and silently dropped --get. Both --get
+  // spellings, bare and keyed, are rejected.
   expect(() => runConfig({ set: ["port", "5000"], get: true })).toThrow(
     "--get reads a preference and cannot combine with --set/--del",
   );
@@ -260,9 +258,8 @@ test("runConfig --get cannot combine with --set/--del (never silently dropped)",
 
 test("integration-id is header-safe end to end: --set rejects without echoing, stored junk reads unset", () => {
   tmpHome();
-  // The pin lands in HTTP headers (and wins over probed identities), so a
-  // header-splitting value is rejected -- and never echoed (no-echo rule: junk
-  // pasted here can be anything, a token included).
+  // The pin lands in HTTP headers, so a header-splitting value is rejected, and never
+  // echoed: junk pasted here may be a token.
   let message = "";
   try {
     runConfig({ set: ["integration-id", "evil\nX-Injected: 1"] });
@@ -326,9 +323,8 @@ test("runConfig --get <key> prints just the value to stdout (script-friendly)", 
   expect(written.join("")).toBe("gpt-5-mini\n");
 });
 
-// One valid `--set` string per registry key, typed over ConfigCli: adding a registry key
-// without extending this map is a compile error, so the round trip below provably covers
-// EVERY key.
+// One valid `--set` string per registry key, typed over ConfigCli: a new registry key without
+// an entry here is a compile error, so the round trip below covers every key.
 const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "alpha-search-codex-priority": "false",
   "alpha-search-model": "gpt-5",
@@ -457,7 +453,6 @@ test("codex-host: stored else default, POSIX-only set, and Windows always reads 
 
 test("configTableOutput() takes the terminal's width; off a TTY or on a size-less pty it uses 80", () => {
   tmpHome();
-  // What configTableOutput() renders at `width`: the (empty) store and the live daemon/proxy state.
   const tableAt = (width: number): string =>
     configTable(new CopilotEnvConfig().read(), {
       platform: "linux",
@@ -522,9 +517,8 @@ test("configTable() renders the header, the sections, and key=value rows with ty
   expect(header).toBe(
     `4 of ${CONFIG_REGISTRY.length} keys set (*).  agent config --set <key> <value>  |  --del <key> reverts`,
   );
-  // One block per section, heading first; a key row is `<mark> key=value...`, a right-column
-  // line is indented past the key=value column. Parsing the rows back pins the grouping and
-  // order (and that every section has keys), not just presence.
+  // Parsing the rows back pins the grouping and order (and that every section has keys),
+  // not just presence.
   expect(new Set(CONFIG_SECTIONS).size).toBe(CONFIG_SECTIONS.length);
   const rowRe = /^([* ]) (\S+)=/;
   const parsed = blocks.map((block) => {
@@ -550,9 +544,8 @@ test("configTable() renders the header, the sections, and key=value rows with ty
     const typeLine = lines.slice(rowAt(def.cli)).find((l) => l.includes(`[${def.type}]`)) ?? "";
     expect(typeLine.indexOf("[")).toBe(column);
   }
-  // The right column's cells (type, default, inert note) pack to the width like the
-  // description's words; the one line past the cap is a single unbreakable cell wider than
-  // the right column (the URL default), which no rule may split.
+  // Right-column cells pack to the width like words; the one line past the cap is the URL
+  // default, an unbreakable cell wider than the column.
   expect(lines.filter((l) => l.length > PLAIN_TABLE.width)).toEqual([
     " ".repeat(column) + `default ${OPENROUTER_MODELS_URL}`,
   ]);
@@ -604,9 +597,10 @@ test("configTable() renders the header, the sections, and key=value rows with ty
       " ".repeat(column) + "restart the proxy to apply";
   expect(restartAfter("strict-port")).toBe(true);
   expect(restartAfter("launchers")).toBe(false);
-  // A stored projected key the proxy that runs next is too old to read gets no restart line
-  // (no restart makes it read; `--set` suppresses its hint the same way); a new-enough proxy
-  // does; a version that cannot be known suppresses the line on every row.
+  // A restart line only when the proxy that runs next will read the key.
+  //   proxy older than the key's gate  -> no line (`--set` suppresses its hint the same way)
+  //   new enough                       -> line
+  //   version unknown                  -> no line on any row
   const gated = { ...data, alphaSearchModel: "gpt-5" };
   const restartLineFor = (proxyVersion: string | null, cli: string): boolean => {
     const out = configTable(gated, { ...PLAIN_TABLE, daemonUp: true, proxyVersion }).split("\n");
@@ -650,9 +644,8 @@ test("every registry key carries a type label owned by its value domain", () => 
 
 test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys only when set", () => {
   tmpHome();
-  // Empty store -> the FORCE-projected keys (smallModel + the three flags) resolve to their
-  // built-in defaults; the OPT-IN keys (context-management, websearch-model) are absent so
-  // the proxy's own defaults stand.
+  // Empty store: the force-projected keys resolve to their built-in defaults; the opt-in keys
+  // are absent so the proxy's own defaults stand.
   const empty = projectedProxyConfig();
   expect(projectedValue(empty, ["smallModel"])).toBe("gpt-5-mini");
   expect(projectedValue(empty, ["useResponsesApiWebSocket"])).toBe(true);
@@ -801,9 +794,8 @@ test("the union rejects sinceProxyVersion on internal (non-projected) entries", 
 });
 
 test("the entry type forces a schema matching the key's own value type", () => {
-  // Every registry entry must carry the key's VALUE domain schema: CONFIG_SCHEMA is folded
-  // from these, so an entry that compiled without one would be write-only (accepted by
-  // --set, stripped by the read schema) -- the exact bug the fold removes.
+  // CONFIG_SCHEMA is folded from these entries, so one without a schema would be write-only:
+  // accepted by --set, stripped by the read schema.
   // @ts-expect-error - schema is required on every entry
   const missing: ConfigKeyDef = {
     cli: "bogus",
@@ -815,9 +807,8 @@ test("the entry type forces a schema matching the key's own value type", () => {
     defaultValue: false,
   };
   expect(missing.cli).toBe("bogus");
-  // ... and the schema's output must BE the key's declared field type, so one key's entry
-  // cannot smuggle in another key's domain (autoStart is a boolean field; a number schema
-  // cannot serve it).
+  // ... and the schema's output must be the key's declared field type, so one key's entry
+  // cannot smuggle in another key's domain.
   // @ts-expect-error - the schema must validate the key's own value type
   const mismatched: ConfigKeyDef = {
     cli: "bogus",
@@ -847,9 +838,9 @@ test("the entry type forces a schema matching the key's own value type", () => {
 });
 
 test("the registry's storage keys are pinned total over CopilotEnvConfigData", () => {
-  // Every CopilotEnvConfigData field is optional, so a registry literal missing one would
-  // still compile: the key would be written by set() yet silently stripped by the folded
-  // read schema. The totality pin in env_config.ts makes the omission a compile error.
+  // Every CopilotEnvConfigData field is optional, so a registry missing one would compile and
+  // the key would be written by set() yet stripped by the read schema; the totality pin makes
+  // the omission a compile error.
   // @ts-expect-error - a mapped record missing a stored key (autoStart) fails the pin
   type _Missing = TotalOverConfigKeys<{ [K in Exclude<ConfigKey, "autoStart">]: K }>;
   // ... and the other direction: a storage key OUTSIDE CopilotEnvConfigData is rejected
@@ -931,12 +922,9 @@ test("registry defaults are bare values: what --set stores, or absent when unset
   }
 });
 
-// The prefs store's read() is STRICT -- wiring (wire-mcp), the float pin, and the
-// port knobs must never decide on an unproven "no preference set" -- while the
-// gates the in-daemon idle watchdog reads on its tick degrade to their built-in
-// defaults: a throw escaping the timer callback would kill the serving daemon,
-// and their flatten direction is the safe one (disengage / default window). One
-// unreadable file, both contracts. POSIX, non-root only: root bypasses file modes.
+// One unreadable prefs file, two contracts. POSIX non-root only: root bypasses file modes.
+//   read(), wiring, the float pin, the port knobs  -> throw; never decide on an unproven "no preference"
+//   the in-daemon watchdog's tick gates            -> built-in defaults; a throw there would kill the serving daemon
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "an unreadable prefs store: read() throws; the watchdog gates degrade to defaults",
   () => {

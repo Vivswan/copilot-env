@@ -1,17 +1,9 @@
-// Produce a REAL floated install under `.proxy-cache/`, for the floated-spawn test to
-// execute against.
+// A REAL floated install under `.proxy-cache/` for the floated-spawn test to launch from: the
+// daemon config, proxy lockfile, warmed DENO_DIR and resolved-version record are genuine float
+// output. Run it where there IS a network (the container build); the test then runs offline.
 //
-// It runs the actual float, pinned to the locked proxy version, so the fixture is not a
-// hand-built approximation: the daemon config, the proxy lockfile, the warmed DENO_DIR
-// and the resolved-version record are all genuine float output. The test then launches
-// the proxy out of it exactly as a floated install would.
-//
-// `deno ci` cannot stand in for this. It caches the WORKSPACE graph -- our source and
-// its imports -- and never resolves the proxy's bin entrypoint, whose own dependencies
-// (citty and friends) only appear once that entrypoint is cached.
-//
-// Run it where there IS a network (a container build, a CI step); the test that depends
-// on it then runs offline.
+//   deno ci   -> caches the workspace graph only; never resolves the proxy's bin entrypoint
+//   the float -> caches that entrypoint, and only then its own dependencies (citty and friends)
 import { join } from "node:path";
 import { installedProxyVersion, PROXY_PACKAGE_NAME } from "../src/copilot_api/version.ts";
 import { floatProxy, readResolvedVersionRecord } from "../src/proxy_float.ts";

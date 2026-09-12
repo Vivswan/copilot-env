@@ -1,8 +1,5 @@
-// `agent proxy-token`: the resolver decision matrix at the deps seam, and the stdout
-// contract at the spawn level. Stdout is sacred in every branch -- the key line from
-// runPrintProxyToken is the only write -- so each table row asserts the full effect
-// set {launched, prompted, heartbeat, key printed, exit code} and the spawn tests
-// assert stdout byte-for-byte.
+// Stdout is the external contract: the key line is the only write in every branch, so each matrix
+// row asserts the full effect set and the spawn tests assert stdout byte for byte.
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
@@ -45,7 +42,6 @@ interface FakeOptions {
   autoStart?: boolean;
   /** The interactive answer readAnswer resolves ("" = the EOF/default shape). */
   answer?: string;
-  /** Whether a launch actually brings the proxy up (default true). */
   launchBringsUp?: boolean;
 }
 
@@ -205,11 +201,8 @@ test("spawned decline path: prompt and refusal live on stderr, stdout stays byte
 
 skipWin("spawned happy path: stdout is EXACTLY the persisted key + newline, exit 0", async () => {
   dir = tempDir("copilot-proxy-token-");
-  // A live pid whose command line matches the daemon signature -- since the sweep/status
-  // match was narrowed, that means a real deno process running a copilot-api-named entry
-  // file with the `start` subcommand (the COPILOT_API_ENTRY shape), not just any argv
-  // mentioning the words -- plus a real listening loopback port recorded in run state:
-  // exactly what proxyStatus verifies before the resolver prints a key.
+  // proxyStatus corroborates a daemon by a real deno process running a copilot-api-named entry with
+  // the `start` subcommand plus a listening loopback port in run state, so the decoy supplies both.
   const decoy = join(dir, "copilot-api-decoy.mjs");
   writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
   const daemon = spawnChild(Deno.execPath(), {
@@ -236,10 +229,8 @@ skipWin("spawned happy path: stdout is EXACTLY the persisted key + newline, exit
     writeRunState({ pid: daemon.pid, port });
     const res = runCli(["proxy-token", "--yes"], { env: isolatedEnv(dir) });
     expect(res.exitCode).toBe(0);
-    // The whole stdout is one key line -- the external contract every consumer
-    // (Codex auth.command, Claude apiKeyHelper, the launchers' eval) relies on.
-    // The key is persisted in the DEFAULT daemon home's config.json (resolved
-    // through the paths layer: profiles/default on a fresh root).
+    // Stdout is one key line, the contract Codex auth.command, Claude apiKeyHelper, and the
+    // launchers' eval rely on; the key lives in the default daemon home's config.json.
     const config = JSON.parse(
       readFileSync(new CopilotApiPaths().configFile, "utf8"),
     ) as {

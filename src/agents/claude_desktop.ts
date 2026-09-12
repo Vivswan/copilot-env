@@ -28,9 +28,9 @@ import { readAgentWirings } from "./wiring.ts";
 
 const logger = createStderrLogger();
 
-/** The default entry mirrors settings.json's managed mode (`none` or a custom provider
- *  promises none), then every COMPLETE profile slot. Any read failure is `unresolvable`,
- *  never "nothing": that misreading is what would sweep a live entry as an orphan. */
+/** Any read failure is `unresolvable`, never an empty target list: an empty list would sweep
+ *  every live entry as an orphan. A custom provider is not a failure; it promises no default
+ *  entry. */
 export function resolveClaudeDesktopTargets(): DesktopTargetResolution {
   const targets: DesktopTarget[] = [];
   try {
@@ -55,12 +55,11 @@ export function resolveClaudeDesktopTargets(): DesktopTargetResolution {
   return { kind: "resolved", targets };
 }
 
-/** The Desktop wiring judged against the promised targets (read-only). A failed look
- *  anywhere (an unreadable ledger, root home, or store) is an `unjudged` status, never a
- *  throw: `agent claude --check` and health report it and keep their own verdicts. */
+/** Never throws: a failed look anywhere is an `unjudged` status, so `agent claude --check`
+ *  and health report it and keep their own verdicts. */
 export function claudeDesktopStatus(): ClaudeDesktopStatus {
   // The preference is read on its own first, so a later failed look still reports the
-  // value actually configured (health publishes it), never an assumed one.
+  // configured value (health publishes it), not an assumed one.
   let enabled = configDefaultBoolean("claude-desktop");
   try {
     enabled = new CopilotEnvConfig().claudeDesktopEnabled();
@@ -84,13 +83,12 @@ function unjudged(enabled: boolean, reason: string): ClaudeDesktopStatus {
   };
 }
 
-/** The whole-library reconcile after a default write: key off removes the profile entries
- *  and names the default's, left in place -- the ONE place that notice prints (the default
- *  write's own sync stays silent; src/claude/desktop.ts has the rule); key on
- *  clears orphans and unlisted claims, then upserts every named target (cleanup first,
- *  so an orphan that held the applied slot hands it to the entry replacing it). `quiet`
- *  (the launcher hot path) is cleanup-only: no upsert, so no identity probe and no
- *  discovery. */
+/** Cleanup runs before the upserts so an orphan holding the applied slot hands it to the entry
+ *  replacing it. This is the ONE caller of the key-off sweep, so its notice naming the default's
+ *  leftover entry prints from here and nowhere else; the default write's own key-off stays
+ *  silent (syncClaudeDesktopWiring in src/claude/desktop.ts).
+ *
+ *    quiet (the launcher hot path) -> cleanup only: no upsert, identity probe, discovery, or notice */
 export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {}): Promise<void> {
   try {
     // Resolved targets gate EVERY cleanup, the key-off sweep included: a store that
@@ -119,10 +117,10 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
     if (status.kind !== "inspected") return;
     for (const orphan of status.orphans) removeClaudeDesktopOrphan(orphan);
     if (status.unlisted.length > 0) removeUnlistedClaudeDesktopClaims();
-    // Every promised target, the default included (a key flipped back to true by a
-    // config-only import has no adapter write to ride on) -- except a default already
-    // judged wired: init / `agent claude` synced it a moment ago, and re-discovering
-    // its models would be a network call for a byte-identical no-op.
+    // The default is upserted too: a key flipped back on by a config-only import has no
+    // adapter write to ride on. A default already judged wired is skipped: init / `agent
+    // claude` just synced it, and re-discovering its models would be a network call for a
+    // byte-identical no-op.
     const defaultWired = status.entries.some(
       (e) => e.profile === null && e.verdict.kind === "wired",
     );
@@ -135,8 +133,8 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
   }
 }
 
-/** One target's upsert, resilient like `agent profile --sync`. The default resolves its
- *  credential for the catalog fetch; a named profile's wire resolves its own. */
+/** Resilient like `agent profile --sync`. The default resolves its credential here for the
+ *  catalog fetch; a named profile's wire resolves its own. */
 async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
   try {
     const ghToken = profile === null && mode === "direct" ? new Credential().resolve() : undefined;

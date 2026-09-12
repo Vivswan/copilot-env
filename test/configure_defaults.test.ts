@@ -1,8 +1,4 @@
-// recordDefaultModeFromWiring (src/agents/configure_defaults.ts): the read-back +
-// record step the single-agent rewires (`agent codex` / `agent claude`) run after
-// a successful default wire, keeping the default slot's recorded mode fresh.
-// Wiring fixtures mirror test/agents_wiring.test.ts; the record's store-level
-// semantics live in test/state.test.ts.
+// The record's store-level semantics are pinned in test/state.test.ts.
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -36,7 +32,6 @@ const PROXY_CLAUDE_BASE = "http://127.0.0.1:4141";
 
 type WiredMode = "direct" | "proxy" | "none";
 
-/** A Codex home wired to `mode` ("none" = an empty home, no config.toml). */
 function makeCodexHome(mode: WiredMode): string {
   const home = join(dir, "codex-home");
   mkdirSync(home, { recursive: true });
@@ -47,7 +42,6 @@ function makeCodexHome(mode: WiredMode): string {
   return home;
 }
 
-/** A Claude home wired to `mode` ("none" = an empty home, no settings.json). */
 function makeClaudeHome(mode: WiredMode): string {
   const home = join(dir, "claude-home");
   mkdirSync(home, { recursive: true });
@@ -96,12 +90,10 @@ test("an unmanaged pair (none/none) records null, never a managed mode", () => {
 });
 
 // --- the CLI dispatch hooks, end-to-end (src/cli.ts) -------------------------------
-// Each test hand-wires the OTHER agent first, so the spawned child's rewire is
-// the transition that creates agreement: the assertion fails if that agent's
-// dispatch hook is missing. A forced-proxy wire needs no credential, probe, or
-// network (the catalog seed is best-effort), so the children run offline.
+// Each test hand-wires the OTHER agent first, so the child's rewire is the transition that
+// creates agreement. A forced-proxy wire needs no credential, probe, or network, so the
+// children run offline.
 
-/** The child env for one CLI spawn, everything isolated under `dir`. */
 function childCliEnv(codexHome: string, claudeHome: string): Record<string, string | undefined> {
   return {
     ...process.env,
@@ -118,7 +110,6 @@ function childCliEnv(codexHome: string, claudeHome: string): Record<string, stri
   };
 }
 
-/** The default slot's recorded mode, read raw from the isolated state store. */
 function recordedMode(): string | undefined {
   const statePath = join(dir, "credentials.json");
   if (!existsSync(statePath)) return undefined;

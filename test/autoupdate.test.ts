@@ -29,9 +29,8 @@ function tmp(name: string): string {
 // --- autoupdate paths -------------------------------------------------------
 
 test("autoupdate state lives at the TOP of a versioned root, never through the link", () => {
-  // The state is machine state: written through `<top>/current` it would land
-  // inside a version dir, and the next update's GC (or just the flip) would
-  // silently drop the check record (and re-check the next day).
+  // Machine state: written through `<top>/current` it would land inside a version dir, and the
+  // next update's GC (or the flip) would silently drop the check record.
   const top = tempDir("copilot-env-autoupdate-paths-");
   try {
     expect(autoupdateDir(top)).toBe(join(top, ".autoupdate")); // flat: in place
@@ -69,9 +68,8 @@ test("AutoupdateState round-trips the check record and preserves unknown keys", 
 
 test("AutoupdateState coerces ill-typed fields back to safe defaults", () => {
   const path = tmp("state.json");
-  // `cooldownDays` and `enabled` are legacy keys (pre-live-cooldown releases
-  // snapshotted the first; the second became the auto-update config key); the
-  // lenient schema simply ignores them.
+  // `cooldownDays` and `enabled` are retired keys older state files still carry; the lenient
+  // schema ignores them.
   writeFileSync(
     path,
     JSON.stringify({ enabled: "yes", cooldownDays: 14, lastCheckMs: "soon", lastResult: 42 }),
@@ -87,9 +85,8 @@ function isolatedConfig(): CopilotEnvConfig {
   return new CopilotEnvConfig();
 }
 
-// The preflight's gate is the key ALONE: off -> nothing, even when a check is due and
-// the file still carries the pre-key `enabled: true`; on but not due -> nothing. (An
-// on-and-due run would resolve releases over the network, so it is not driven here.)
+// The preflight's gate is the key ALONE: off -> nothing, even when a check is due and the file
+// still carries the pre-key `enabled: true`; on but not due -> nothing.
 test("runPreflight honors the auto-update key and ignores a legacy enabled field", async () => {
   const path = tmp("state.json");
   const config = isolatedConfig();
@@ -200,10 +197,9 @@ test("isDue is false under a day, true at/after a day", () => {
 });
 
 // --- lock -------------------------------------------------------------------
-// All through the TEST-ONLY path seam (withUpdateLockForTests): production
-// withUpdateLock always locks autoupdateLockFile() under the install root, so
-// pointing these at a temp dir any other way would mint HeldUpdateLock evidence
-// against a lock that is not THE update lock.
+// All through the test-only path seam: production withUpdateLock always locks autoupdateLockFile()
+// under the install root, so pointing these at a temp dir any other way would mint HeldUpdateLock
+// evidence against a lock that is not THE update lock.
 
 const DEAD_PID = 2_147_483_646; // never alive -> pidAlive() returns false
 

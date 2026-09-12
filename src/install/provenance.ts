@@ -1,11 +1,10 @@
-// Release build-provenance verification: the sigstore-backed half. What the
-// attestation says and who may sign it is ./attestation.ts (pure, and the module
-// the update pipeline imports statically); this one is loaded lazily by the
-// pipeline's default verifier, because the sigstore stack is well over a
-// megabyte of CommonJS and `agent env` runs at every shell start.
+// Release build-provenance verification, the sigstore-backed half; ./attestation.ts (pure) says
+// what the attestation says and who may sign it. Loaded lazily by the update pipeline's default
+// verifier: the sigstore stack is well over a megabyte of CommonJS and `agent env` runs at every
+// shell start.
 //
-// The digest shim MUST load before the first sigstore import: tuf-js and
-// @sigstore/core call node:crypto verify() without a digest, which Deno rejects.
+// The digest shim MUST load before the first sigstore import: tuf-js and @sigstore/core call
+// node:crypto verify() without a digest, which Deno rejects.
 import "../utils/node_crypto_digest_shim.ts";
 import { bundleFromJSON } from "@sigstore/bundle";
 import type { TrustedRoot } from "@sigstore/protobuf-specs";
@@ -30,14 +29,12 @@ import {
   verificationFailedMessage,
 } from "./attestation.ts";
 
-/** Sigstore's public-good TUF mirror, which the trust root is refreshed from.
- *  Passed explicitly (never the dependency's default) because deno.json's
- *  `permissions.cli.net` allows exactly this host. */
+/** Sigstore's public-good TUF mirror. Passed explicitly (never the dependency's default) because
+ *  deno.json's `permissions.cli.net` allows exactly this host. */
 export const TUF_MIRROR_URL = "https://tuf-repo-cdn.sigstore.dev";
 
-/** Where the TUF client caches the Sigstore trust-root metadata: a subsystem
- *  cache under copilot-env's own root home (like the proxy float's deno cache),
- *  so `agent uninstall`'s home sweep removes it. */
+/** A subsystem cache under copilot-env's own root home (like the proxy float's deno cache), so
+ *  `agent uninstall`'s home sweep removes it. */
 export function tufCachePath(rootHome: string = resolveRootHome()): string {
   return join(rootHome, "sigstore", "tuf");
 }
@@ -51,11 +48,8 @@ export interface VerifyProvenanceOptions {
   cachePath?: string;
 }
 
-/**
- * Verify `bundleJson` (the release's attestation.json) and require every
- * `required` digest to be attested in it. Resolves with the verified signer
- * identity; rejects with a "cannot verify" or "verification FAILED" message.
- */
+/** Resolves with the verified signer identity; rejects with a "cannot verify" or "verification
+ *  FAILED" message (attestation.ts owns both wordings). */
 export async function verifyReleaseProvenance(
   tag: string,
   bundleJson: string,

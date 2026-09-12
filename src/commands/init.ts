@@ -1,10 +1,3 @@
-// `agent init`: the headline one-shot -- ensure a GitHub credential exists (running
-// the auth flow first if not), then configure BOTH Codex and Claude (each auto-
-// detects GitHub Copilot Direct vs the local proxy, or --direct / --proxy forces
-// both), and print next-step guidance. The credential itself is managed by
-// `agent auth` (--provider / --get / --del / --check); shell wiring + CLI install
-// live in `agent shell`.
-
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
 import type { RequestedMode } from "../agents/provider_mode.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
@@ -12,33 +5,20 @@ import { ensureAuthenticated } from "./auth.ts";
 import { configureBothAgents, printGuidance } from "./configure_agents.ts";
 
 export interface InitArgs {
-  /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
   mode: RequestedMode;
 }
 
-/**
- * `init`: ensure authentication, then configure both agents and explain the
- * result. `--direct`/`--proxy` force both; with no flag each auto-detects (live
- * Copilot Direct probe, else the proxy). If no credential exists, the GitHub login
- * flow runs first (`agent auth`) and ERRORS OUT if it fails -- init never proceeds
- * to configure agents without a credential. (The managed-lifecycle flag is set via
- * `agent config --set auto-start <bool>`.)
- */
 export async function runInit(args: InitArgs): Promise<void> {
-  // A credential is only needed for a Direct-capable setup. `--proxy` opts out of
-  // Direct entirely (the daemon handles its own auth on `agent start`), so don't
-  // prompt there. Otherwise ensure auth first -- when none, ask; never silently fall
-  // back. Throws (propagated) if login fails, so we never configure half-broken.
+  // `--proxy` needs no credential here: the daemon handles its own auth on `agent start`. A failed
+  // login throws, so no agent is configured without a credential.
   if (args.mode !== "proxy") {
     await ensureAuthenticated();
   }
 
   const { codex, claude } = await configureBothAgents(args.mode);
 
-  // The `claude-desktop` reconcile for the named profiles (the default's Desktop entry
-  // rode on the Claude write above): init leaves the whole library in the key's shape.
+  // configureBothAgents wrote only the default's Desktop entry; this covers the named profiles.
   await reconcileClaudeDesktopWiring();
 
-  // A token is "in use" for guidance if one is now stored.
   printGuidance(codex, claude, new CopilotEnvState().read().githubToken !== null);
 }

@@ -1,14 +1,10 @@
 import { isUpToDate, stripV, versionLessThan } from "../src/utils/semver.ts";
 import { expect, test } from "./helpers/testing.ts";
 
-// Lock the ordering contract before more callers route through versionLessThan
-// (e.g. aged_version). These cases pin numeric-core ordering, the prerelease rule,
-// build-metadata stripping, and ragged-length comparison.
-
 test("versionLessThan compares numeric cores segment by segment (not lexically)", () => {
   expect(versionLessThan("1.10.13", "1.10.30")).toBe(true);
   expect(versionLessThan("1.10.30", "1.10.13")).toBe(false);
-  expect(versionLessThan("1.2.9", "1.2.10")).toBe(true); // numeric, not string
+  expect(versionLessThan("1.2.9", "1.2.10")).toBe(true);
   expect(versionLessThan("1.9.9", "1.10.0")).toBe(true);
   expect(versionLessThan("2.0.0", "1.99.99")).toBe(false);
 });
@@ -23,7 +19,7 @@ test("versionLessThan: equal cores are not less-than; ragged lengths pad with 0"
 test("versionLessThan: a prerelease ranks below its plain release; build metadata is ignored", () => {
   expect(versionLessThan("1.2.3-rc.1", "1.2.3")).toBe(true);
   expect(versionLessThan("1.2.3", "1.2.3-rc.1")).toBe(false);
-  expect(versionLessThan("1.2.3+build", "1.2.3")).toBe(false); // build meta stripped
+  expect(versionLessThan("1.2.3+build", "1.2.3")).toBe(false);
   expect(versionLessThan("1.2.3", "1.2.3+build")).toBe(false);
 });
 

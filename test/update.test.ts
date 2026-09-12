@@ -23,9 +23,8 @@ const rel = (tag: string, date: string, over: Record<string, unknown> = {}): unk
   ...over,
 });
 
-// The CLI boundary: `agent update`'s flags parse ONCE into an UpdateAction, so
-// a combination the old if-chain would resolve by order (`--auto-status --check`
-// ran the status and dropped --check) is a rejection instead.
+// The flags parse ONCE into an UpdateAction, so a combination like `--auto-status --check` is
+// a rejection instead of an if-order pick.
 describe("parseUpdateAction", () => {
   test("each single-intent invocation maps to its own arm", () => {
     expect(parseUpdateAction({})).toEqual({ kind: "apply", force: false, verify: undefined });
@@ -158,10 +157,6 @@ describe("pickLatest / pickAged", () => {
   test("pickLatest is null on empty", () => expect(pickLatest([])).toBeNull());
 });
 
-// runUpdate resolves the cooldown inline from the stored config `update-cooldown` (set via
-// `agent config --set update-cooldown <days>`), else null (immediate) -- there is no flag and no
-// wrapper. The config-key round-trip is covered in env_config.test.ts; the `?? null` is trivial.
-
 describe("resolveTarget retry (de-flakes the release lookup)", () => {
   const realFetch = globalThis.fetch;
   const realBase = process.env.COPILOT_ENV_RELEASE_RETRY_BASE_MS;
@@ -210,34 +205,26 @@ describe("resolveTarget retry (de-flakes the release lookup)", () => {
   });
 });
 
-// The under-lock re-validate. resolveTarget's null unions "no eligible release"
-// with "the look FAILED" (an API error or offline read, swallowed into null by
-// the retry loop above -- the two tests directly above prove a persistent 503 and
-// a 404 both land there). By the time the re-check runs, the pre-lock resolve has
-// already proved an eligible release exists, so a null can only be the failed
-// look. Reading it as "already up to date" would render a green success line over
-// a SKIPPED update; `unproven` is what keeps the two apart.
+// resolveTarget's null unions "no eligible release" with "the look FAILED" (the retry loop
+// above swallows a persistent 503 or a 404 into null). The pre-lock resolve already proved an
+// eligible release exists, so under the lock a null can only be a failed look; `unproven`
+// keeps it off the green up-to-date line that would otherwise cover a SKIPPED update.
 describe("recheckVerdict (the under-lock re-validate)", () => {
   const target = (tag: string): Release => ({ tag, dateSeconds: secs("2026-06-01T00:00:00Z") });
 
   test("a failed re-check is unproven, NOT up-to-date", () => {
-    // The whole point: the same null the 503/404 cases above produce must not
-    // reach the up-to-date arm.
     expect(recheckVerdict("v1.0.0", null)).toEqual({ kind: "unproven" });
   });
 
   test("a genuine up-to-date re-check still reports up-to-date", () => {
-    // The control for the row above: a SUCCESSFUL look at the same version is
-    // what the success line is for, and it must keep working.
     expect(recheckVerdict("v1.2.3", target("v1.2.3"))).toEqual({ kind: "up-to-date" });
-    // A concurrent updater having moved us PAST the target is up-to-date too --
-    // the downgrade guard this re-validate exists to be.
+    // A concurrent updater having moved us PAST the target is up-to-date too: the downgrade
+    // guard this re-validate exists to be.
     expect(recheckVerdict("v2.0.0", target("v1.2.3"))).toEqual({ kind: "up-to-date" });
   });
 
   test("a newer release still applies, carrying the re-resolved target", () => {
-    // The third arm: the update must still happen on the happy path, and the
-    // target it applies is the one resolved UNDER the lock, not the pre-lock one.
+    // The target applied is the one resolved UNDER the lock, not the pre-lock one.
     expect(recheckVerdict("v1.0.0", target("v1.5.0"))).toEqual({
       kind: "apply",
       target: target("v1.5.0"),

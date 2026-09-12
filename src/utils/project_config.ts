@@ -1,4 +1,3 @@
-// Parser for copilot-env.config proxy floor/ceiling settings.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ASSET_ROOT } from "./root.ts";
@@ -36,9 +35,9 @@ function requiredValue(
   return value;
 }
 
-// versionLessThan treats an unparseable side as "not less-than", so a garbage bound
-// would silently disable every downstream range check -- the floor fails OPEN.
-// Parsing (and normalizing) here makes that state unrepresentable past this boundary.
+// versionLessThan reads an unparseable side as "not less-than", so a garbage bound would silently
+// disable every downstream range check: the floor would fail open. Parsing here makes that state
+// unrepresentable.
 function semverValue(key: ProjectConfigKey, value: string, source: string): SemverString {
   const parsed = toSemverString(value);
   if (parsed === null) {
@@ -75,9 +74,8 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
   const proxyMaxVersion = rawMaxVersion === null
     ? null
     : semverValue("PROXY_MAX_VERSION", rawMaxVersion, source);
-  // Reject an inverted window here at the parse boundary: this parser is the only
-  // PRODUCTION producer of a ProjectConfig, so consumers never see floor > ceiling
-  // (SemverString's literal shape keeps test-built configs assignable directly).
+  // This parser is the only production producer of a ProjectConfig, so consumers never see floor >
+  // ceiling.
   if (proxyMaxVersion !== null && versionLessThan(proxyMaxVersion, proxyMinVersion)) {
     throw new Error(
       `PROXY_MAX_VERSION (${proxyMaxVersion}) is below PROXY_MIN_VERSION (${proxyMinVersion})`,
@@ -87,12 +85,8 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
   return { proxyMinVersion, proxyMaxVersion };
 }
 
-/**
- * Read the copilot-env.config that ships with this build. Defaults to ASSET_ROOT,
- * NOT the install root: the file is embedded in the compiled binary and never
- * materialized onto disk, so an installed root has no copy of it. `root` is for
- * tests pointing at a fixture directory.
- */
+/** ASSET_ROOT, not the install root: the file is embedded in the compiled binary and never
+ *  materialized, so an installed root has no copy. `root` is for test fixtures. */
 export function readProjectConfig(root: string = ASSET_ROOT): ProjectConfig {
   const path = join(root, PROJECT_CONFIG_FILE);
   return parseProjectConfig(readFileSync(path, "utf8"), path);

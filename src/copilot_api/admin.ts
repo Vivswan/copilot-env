@@ -1,9 +1,4 @@
-// REST client for the local copilot-api daemon.
-//
-// The daemon proxies GitHub Copilot's live model catalog at `GET /models` and
-// exposes live model-alias updates at `GET`/`POST /admin/config/model-mappings`
-// (the latter gated by the admin key). This class owns all of that HTTP; the
-// alias-derivation logic stays pure in `models.ts`.
+// HTTP client for the local copilot-api daemon; alias derivation stays pure in models.ts.
 
 import { isRecord } from "../utils/json.ts";
 import { type CatalogModel, parseCatalogModels } from "./models.ts";
@@ -12,7 +7,7 @@ import { proxyLoopbackOrigin } from "./port.ts";
 const FETCH_TIMEOUT_MS = 5000;
 
 interface RequestOptions {
-  /** Use the admin key instead of the regular api key (for `/admin/*`). */
+  /** The daemon's `/admin/*` routes accept only the admin key. */
   admin?: boolean;
   method?: "GET" | "POST";
   body?: unknown;
@@ -29,17 +24,15 @@ export class CopilotAdminClient {
     this.adminKey = opts.adminKey;
   }
 
-  /** Fetch the live catalog, normalizing the display-only `[1m]` suffix. */
   async getModels(): Promise<CatalogModel[]> {
     return parseCatalogModels(await this.request("/models"));
   }
 
-  /** The raw `/models` body (untyped), for callers that need `capabilities.limits`. */
+  /** Untyped for readers of `capabilities.limits`, which parseCatalogModels does not keep. */
   async getRawModels(): Promise<unknown> {
     return this.request("/models");
   }
 
-  /** Read the daemon's current live model mappings (requires the admin key). */
   async getModelMappings(): Promise<Record<string, string>> {
     const body = await this.request("/admin/config/model-mappings", { admin: true });
     const mappings = isRecord(body) ? body.modelMappings : undefined;
@@ -55,7 +48,6 @@ export class CopilotAdminClient {
     return out;
   }
 
-  /** Replace the daemon's live model mappings (requires the admin key). */
   async setModelMappings(mappings: Record<string, string>): Promise<void> {
     await this.request("/admin/config/model-mappings", {
       admin: true,
@@ -64,7 +56,6 @@ export class CopilotAdminClient {
     });
   }
 
-  /** Shared `fetch` wrapper: bearer selection, timeout, non-2xx -> throw, JSON parse. */
   private async request(path: string, opts: RequestOptions = {}): Promise<unknown> {
     const method = opts.method ?? "GET";
     const headers: Record<string, string> = {

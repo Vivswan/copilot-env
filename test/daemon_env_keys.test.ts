@@ -6,16 +6,11 @@ import { ROOT } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 import shimImportsPlugin, { SHIM_FILES } from "./lint/no_shim_imports.ts";
 
-// Some daemon preload shims stay import-free: a `--preload` shim runs inside the proxy
-// daemon, and pulling a CLI module in with it would drag the whole CLI layer into that
-// process. The price of the isolation is duplication -- each env-var contract between
-// launchDaemon and such a shim is spelled TWICE, once as an exported CLI constant and once
-// as a local literal in the shim, synchronized by nothing but comments. If the copies
-// drift, nothing fails at launch: the daemon just comes up token-less (or skips the
-// integration-id rewrite) silently. These tests pin each pair by reading the shim as TEXT
-// (importing it would defeat the import-free design) and comparing the extracted literal
-// against the imported CLI constant, and they pin the import-free invariant itself --
-// the moment a shim may import, the duplication should be replaced by an import.
+// Some `--preload` shims run import-free inside the proxy daemon (a CLI import would drag that
+// layer into the daemon), so each env-var contract between launchDaemon and such a shim is spelled
+// twice, and a drift fails silently at launch (a token-less daemon, a skipped integration-id rewrite).
+//   the shim's literal, read as text  -> must equal the CLI constant (importing the shim would defeat the design)
+//   the shim's runtime imports        -> none for these shims; once one may import, the copy becomes an import
 
 const SRC_DIR = join(ROOT, "src");
 const SCRIPTS_DIR = join(SRC_DIR, "scripts");
@@ -58,14 +53,11 @@ const REGEX_POSITION_KEYWORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * `source` with comments and regex-literal bodies blanked out and, when `stripStrings`,
- * string-literal contents too (the quotes stay). Blanking is offset-preserving -- every
- * blanked character becomes a space (newlines stay) -- so positions are comparable across
- * passes. A character scanner, not regexes, so a `//` inside a string or a quote inside a
- * comment cannot derail it; a `/` in expression position opens a regex literal. Not a full
- * parser: a misread `/` (say, after a control-condition `)`) mangles or hides the declaration,
- * and extractStringConst's exactly-one/same-offset cross-checks turn that into a LOUD failure.
- * So this scanner backs only extraction; the sweep, where a miss would be silent, is parser-backed.
+ * Offset-preserving (a blanked character becomes a space) so extractStringConst can compare
+ * positions across its two passes. Not a full parser, and each consumer bounds the damage:
+ *   misread `/` here                  -> caught when the two passes then disagree (the exactly-one/
+ *                                        same-offset cross-check); a misread both share passes
+ *   the sweep test (a miss is silent) -> parser-backed, never this scanner
  */
 function blankSource(source: string, stripStrings: boolean): string {
   let out = "";
@@ -94,10 +86,9 @@ function blankSource(source: string, stripStrings: boolean): string {
       continue;
     }
     if (ch === "/") {
-      // After an operand (identifier, number, `)`, `]`, `}`, or a closed literal) a slash
-      // is division; anywhere else -- including right after a keyword like `return`,
-      // which ends in identifier characters but cannot be an operand -- it opens a regex
-      // literal, which must be lexed here so the comment checks above never see its body.
+      // After an operand a slash is division; anywhere else, including after a keyword like
+      // `return` (identifier characters, but no operand), it opens a regex literal, lexed here
+      // so the comment checks above never see its body.
       const trimmed = out.trimEnd();
       const prev = trimmed.slice(-1);
       const word = trimmed.match(/[A-Za-z_$][\w$]*$/)?.[0];
@@ -149,10 +140,8 @@ function blankSource(source: string, stripStrings: boolean): string {
   return out;
 }
 
-/** Matches `const NAME = "value"` with any quote style, any whitespace (including line
- *  breaks a formatter might introduce), and an optional type annotation. The value group
- *  admits only a plain single-token literal -- no escapes and, since `$` is excluded, no
- *  template interpolation -- so whatever it captures is the exact runtime string. */
+/** The value group admits only a plain literal, no escapes and no `$` (so no template
+ *  interpolation): whatever it captures is the exact runtime string. */
 const STRING_CONST_RE = /\bconst\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=\s*(["'`])([^"'`\\$\r\n]*)\2/g;
 
 function constMatches(code: string, name: string): { value: string; index: number }[] {
@@ -166,14 +155,11 @@ function constMatches(code: string, name: string): { value: string; index: numbe
 }
 
 /**
- * The exact string literal assigned to `const <name>` in `source`. Two passes cross-check
- * each other: the structural pass runs with string contents blanked, so text INSIDE some
- * other string (say, a stale `const ENV_KEY = "..."` quoted in a message) cannot pose as
- * the declaration, and the value pass extracts the literal. Each must find exactly one
- * candidate AND both at the same source offset (blanking preserves offsets), so the
- * passes provably saw the same declaration; anything else -- missing, duplicated,
- * shadowed by a look-alike inside a string, or not a plain literal -- throws, so a shim
- * refactor breaks this test loudly, never silently.
+ * Two passes cross-check each other; both must find exactly one candidate at the same offset.
+ *   structural pass, strings blanked  -> a look-alike `const ENV_KEY = "..."` quoted in a message cannot pose as the declaration
+ *   value pass                        -> extracts the literal
+ * Missing, duplicated, or shadowed throws, so a shim refactor breaks loudly; a literal followed by a
+ * concatenated suffix is read as its first literal (keysIn's fragment check is the guard for that).
  */
 function extractStringConst(source: string, name: string, file: string): string {
   const structural = constMatches(blankSource(source, true), name);
@@ -198,14 +184,9 @@ for (const { key, keyName, shim, localConst } of PINNED_PAIRS) {
   });
 
   test(`${shim} stays free of runtime imports (why the literal is duplicated)`, () => {
-    // The repo's own lint rule, run through deno's real parser: it reports every
-    // runtime module reference -- static imports, side-effect imports, re-exports
-    // with a source, dynamic import(), and any bare `require` identifier -- while
-    // type-only imports are erased at runtime and stay allowed. The same rule is
-    // registered in deno.json, so `deno lint` enforces the invariant too; this
-    // test pins it (and the rule itself, below) even if that registration goes
-    // away. If this ever needs to change, the duplicated literal should become an
-    // import and the PINNED_PAIRS entry above should go away with it.
+    // The repo's own lint rule through deno's real parser: every runtime module reference is
+    // reported, type-only imports are erased and stay allowed. deno.json registers the same
+    // rule; this test pins the invariant even if that registration goes away.
     const file = join(SCRIPTS_DIR, shim);
     const diagnostics = Deno.lint.runPlugin(shimImportsPlugin, file, readFileSync(file, "utf8"));
     expect(diagnostics).toEqual([]);
@@ -239,7 +220,6 @@ test("no-shim-imports: scoped to the shim files, silent elsewhere", () => {
   }
 });
 
-/** All .ts files under `dir`, recursively. */
 function tsFilesUnder(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -256,19 +236,13 @@ function tsFilesUnder(dir: string): string[] {
 const SCRIPT_ONLY_KEYS: ReadonlySet<string> = new Set();
 
 test("every env key spelled in a script is a pinned CLI pair (sweep)", () => {
-  // The pair list must stay complete. A COPILOT_ENV_* key is always set by the CLI layer,
-  // so one spelled in the .ts code (not comments) of src/scripts/ -- rather than imported
-  // -- is by definition a duplicated cross-boundary contract with the same silent-drift
-  // failure mode, and belongs in PINNED_PAIRS. (The .sh/.ps1 scripts there spell no such
-  // keys today and could never import a TS constant anyway.) Requiring the script-side
-  // key set to EQUAL the pinned set (not merely intersect the CLI side) also catches a
-  // pair that is born drifted, where the two spellings never match anywhere. A script
-  // that imports the CLI constant never spells the literal and never trips this.
-  // The `*` quantifier surfaces key FRAGMENTS too; keysIn below rejects them.
+  // A COPILOT_ENV_* key is always set by the CLI layer, so one spelled (not imported) in
+  // src/scripts/ is a duplicated cross-boundary contract and belongs in PINNED_PAIRS.
+  //   script-side keys != pinned set     -> fails, a pair born drifted included
+  //   `*` quantifier catches a fragment  -> keysIn below rejects it
   const ENV_KEY_RE = /\bCOPILOT_ENV_[A-Z0-9_]*/g;
-  // Files are scanned through deno's own parser (the collector visits string literals,
-  // template chunks, and identifiers -- comments are never AST nodes), so no text heuristic
-  // can silently HIDE a key here.
+  // Scanned through deno's own parser (string literals, template chunks, identifiers; comments
+  // are never AST nodes), so no text heuristic can silently hide a key.
   const envKeyCollector: Deno.lint.Plugin = {
     name: "env-key-collector",
     rules: {
@@ -300,9 +274,9 @@ test("every env key spelled in a script is a pinned CLI pair (sweep)", () => {
       const diagnostics = Deno.lint.runPlugin(envKeyCollector, file, readFileSync(file, "utf8"));
       for (const diagnostic of diagnostics) {
         const match = diagnostic.message.slice("key:".length);
-        // A key assembled by concatenation or interpolation would dodge the set comparison;
-        // its leading fragment ends with "_" (as does the bare prefix), while no whole key
-        // ever does, so an underscore-terminated match is rejected outright on either side.
+        // A key assembled by concatenation would dodge the set comparison. A leading fragment
+        // ending in "_" (as the bare prefix does) is rejected here; a whole pinned key with a
+        // concatenated suffix is not caught (the collector reports the first literal).
         if (match.endsWith("_")) {
           throw new Error(
             `env-key fragment "${match}" in ${relative(SRC_DIR, file)} -- spell env ` +

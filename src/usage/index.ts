@@ -1,21 +1,11 @@
-// The per-file usage index behind `agent cost`: what each session log CONTRIBUTES
-// (contribution.ts), keyed by path, so a warm run re-reads only what changed.
+// A pre-index, never a cache of results: rows hold a file's identity, resume point, and
+// contribution (contribution.ts), and the report is folded fresh from them every run. An index that
+// fails to open or read degrades to whole parses, never to a missing or "unreadable" session.
 //
-// Invariants the code below keeps:
-// - A pre-index, never a cache of results: rows hold a file's identity, its resume
-//   point, and its contribution; the report is folded fresh from them every run.
-// - Deleted sessions vanish: records come only from walked candidates, and rows of
-//   unwalked paths are deleted before the records are returned.
-// - No session text and no raw ids on disk: contributions are projected through a
-//   schema that admits only numbers, model names, and dedup keys; the tail probe is
-//   stored hashed; secure_delete and a truncating checkpoint keep deleted rows from
-//   lingering in free pages or old WAL frames.
-// - Overlapping runs cannot corrupt each other: the open and each run's single
-//   write transaction take the shared advisory lock; without it a run keeps its
-//   results and saves nothing. A stale database is removed only once a WAL round
-//   trip proves no other WAL-mode connection holds it (our databases always are);
-//   every other failure leaves the file alone. An index that fails to open or
-//   read degrades to whole parses, never to a missing or "unreadable" session.
+// No session text and no raw ids on disk: contributions pass a schema admitting only numbers, model
+// names, and dedup keys, the tail probe is stored hashed, and secure_delete plus a truncating
+// checkpoint keep deleted rows out of free pages and old WAL frames. The open and each run's one
+// write transaction take the advisory lock; without it a run keeps its results and saves nothing.
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { closeSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
@@ -46,40 +36,33 @@ import {
 } from "./contribution.ts";
 import { usageIndexDir } from "./paths.ts";
 
-// Every line this module says rides stderr: `cost --json` owns stdout, and its consumers
-// parse the whole of it.
+// `cost --json` owns stdout and its consumers parse the whole of it.
 const logger = createStderrLogger();
 
-/** The database file inside the index directory (paths.ts); its `-wal`/`-shm`
- *  sidecars sit beside it. */
 export const USAGE_INDEX_DB_NAME = "index.sqlite";
-/** The advisory lock every open and every write of the index takes. */
 export const USAGE_INDEX_LOCK_NAME = "index.lock";
 
-/** Bump when the TABLE layout changes (a column, a type, a meta key): a database
- *  stamped with another version is deleted and rebuilt. Contribution-shape changes
- *  are `CONTRIBUTION_VERSION`'s business and re-parse per row instead. */
+/** Bump when the TABLE layout changes: a database stamped with another version is deleted and
+ *  rebuilt. Contribution-shape changes are `CONTRIBUTION_VERSION`'s business and re-parse per row
+ *  instead. */
 export const USAGE_INDEX_SCHEMA_VERSION = 2;
 
-/** The parser stamp recorded in `meta` when the caller supplies none: the
- *  contribution version, so a bump of it alone rebuilds the whole index at once
- *  instead of row by row. */
+/** The contribution version, so a bump of it alone rebuilds the whole index at once instead of row
+ *  by row. */
 export const DEFAULT_PARSER_FINGERPRINT = `contribution-v${CONTRIBUTION_VERSION}`;
 
-/** How long a SQLite statement waits on another connection's write lock before
- *  failing. The advisory lock serializes our own writers, so this only covers a
- *  writer from a release that does not take it. */
+/** The advisory lock serializes our own writers, so this only covers a writer from a release that
+ *  does not take it. */
 const BUSY_TIMEOUT_MS = 2_000;
 
-/** SQLite files a rebuild removes: the database and every sidecar it may leave. */
 const DB_FILE_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
 
 const META_SCHEMA_VERSION = "schema_version";
 const META_PARSER_FINGERPRINT = "parser_fingerprint";
 
-// Quoted snake_case names below are the on-disk contract. `tail_probe` holds
-// dedupKey(tailProbeHex), never the probe bytes: the last bytes of a session line
-// are session text, and the equality check needs only a hash.
+// The quoted snake_case names are the on-disk contract. `tail_probe` holds dedupKey(tailProbeHex),
+// never the probe bytes: the last bytes of a session line are session text, and the equality check
+// needs only a hash.
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS "meta" (
   "key" TEXT PRIMARY KEY,
@@ -97,27 +80,21 @@ CREATE TABLE IF NOT EXISTS "files" (
 `;
 
 export interface OpenUsageIndexOptions {
-  /** The index directory (default `usageIndexDir()`). */
   dir?: string;
-  /** The parser stamp; a database stamped differently is rebuilt. */
+  /** A database stamped differently is rebuilt. */
   fingerprint?: string;
-  /** How the open and the writes wait for the lock (default the shared bounded policy). */
   lockPolicy?: LockPolicy;
 }
 
 // ---------- the stored contribution, parsed at BOTH boundaries ----------
 
-// A stored `record` is input: reading is STRICT (any undeclared field means "no row",
-// so the file is re-parsed and the row rewritten clean), writing is a PROJECTION
-// (undeclared parser fields are stripped). One schema pair per source.
-/** Every count and timestamp must survive JSON: Infinity would serialize as null
- *  and turn a stored row into a re-parse (or evict a clean one). */
+// Reading is STRICT (any undeclared field means "no row", so the file is re-parsed and the row
+// rewritten clean); writing is a PROJECTION (undeclared parser fields are stripped).
+/** Infinity would serialize as null and turn a stored row into a re-parse. */
 const FINITE_SCHEMA = v.pipe(v.number(), v.finite());
 const TS_SCHEMA = v.nullable(FINITE_SCHEMA);
-/** A non-negative safe integer: an event count. */
 const COUNT_SCHEMA = v.pipe(v.number(), v.safeInteger(), v.minValue(0));
-/** Every id field must be a dedupKey: exactly its hex length, lowercase. A parser
- *  regression that leaks a raw id fails this and the row is not stored. */
+/** A parser regression that leaks a raw id fails this and the row is not stored. */
 const HASH_SCHEMA = v.pipe(v.string(), v.regex(new RegExp(`^[0-9a-f]{${dedupKey("").length}}$`)));
 const CODEX_EVENT_ITEMS = [
   TS_SCHEMA,
@@ -146,7 +123,6 @@ const CLAUDE_OCCURRENCE_ITEMS = [
   FINITE_SCHEMA,
 ] as const;
 
-/** The write side: the same fields, undeclared ones dropped from the output. */
 const STORABLE_CODEX_SCHEMA = v.object({
   v: v.literal(CONTRIBUTION_VERSION),
   state: v.object(CODEX_STATE_ENTRIES),
@@ -157,10 +133,9 @@ const STORABLE_CLAUDE_SCHEMA = v.object({
   occurrences: v.array(v.tuple(CLAUDE_OCCURRENCE_ITEMS)),
 });
 
-// The READ side is hand-written (a schema-library parse of half a million stored
-// tuples dominated the warm run) and admits exactly what the STORABLE_* schemas
-// write: declared OWN keys only at every level, exact tuple lengths, finite
-// numbers, dedupKey-shaped hashes. test/usage_index.test.ts holds the two sides together.
+// The READ side is hand-written because a schema-library parse of half a million stored tuples
+// dominated the warm run. It admits exactly what the STORABLE_* schemas write;
+// test/usage_index.test.ts holds the two together.
 
 const HASH_LENGTH = dedupKey("").length;
 const HASH_RE = new RegExp(`^[0-9a-f]{${HASH_LENGTH}}$`);
@@ -173,7 +148,6 @@ function isFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-/** Whether `value` is a plain object whose OWN keys are all in `declared`. */
 function hasOnlyDeclaredKeys(
   value: unknown,
   declared: ReadonlySet<string>,
@@ -191,7 +165,6 @@ const CODEX_FORK_KEYS: ReadonlySet<string> = new Set(Object.keys(CODEX_FORK_ENTR
 const CLAUDE_KEYS: ReadonlySet<string> = new Set(["v", "occurrences"]);
 const TUPLE_LENGTH = 7;
 
-/** A stored Codex contribution exactly, or null. */
 function readStoredCodex(doc: unknown): CodexContribution | null {
   if (!hasOnlyDeclaredKeys(doc, CODEX_KEYS) || doc.v !== CONTRIBUTION_VERSION) return null;
   const state = doc.state;
@@ -216,11 +189,10 @@ function readStoredCodex(doc: unknown): CodexContribution | null {
       return null;
     }
   }
-  // Every field was checked above; the assertions only name what the checks proved.
+  // Every field was checked above; the assertion only names what the checks proved.
   return doc as unknown as CodexContribution;
 }
 
-/** A stored Claude contribution exactly, or null. */
 function readStoredClaude(doc: unknown): ClaudeContribution | null {
   if (!hasOnlyDeclaredKeys(doc, CLAUDE_KEYS) || doc.v !== CONTRIBUTION_VERSION) return null;
   const occurrences = doc.occurrences;
@@ -239,8 +211,6 @@ function readStoredClaude(doc: unknown): ClaudeContribution | null {
   return doc as unknown as ClaudeContribution;
 }
 
-/** Parse a stored `record` for `source`; null for anything that is not exactly a
- *  current contribution of that source (the caller re-parses the file whole). */
 function parseStoredContribution(source: UsageSource, text: string): Contribution | null {
   let doc: unknown;
   try {
@@ -251,9 +221,8 @@ function parseStoredContribution(source: UsageSource, text: string): Contributio
   return source === "codex" ? readStoredCodex(doc) : readStoredClaude(doc);
 }
 
-/** What a contribution becomes on disk: the schema's projection of it as JSON. A
- *  parser that hands over extra properties cannot smuggle them onto disk, and one
- *  that leaks a raw id or a non-finite count stores nothing: null. */
+/** A parser that hands over extra properties cannot smuggle them onto disk; one that leaks a raw id
+ *  or a non-finite count stores nothing. */
 function storableContribution(source: UsageSource, contribution: Contribution): string | null {
   const parsed = source === "codex"
     ? v.safeParse(STORABLE_CODEX_SCHEMA, contribution)
@@ -263,9 +232,7 @@ function storableContribution(source: UsageSource, contribution: Contribution): 
 
 // ---------- the row, parsed at the boundary ----------
 
-/** A stored row's identity and resume point; its contribution is fetched only when
- *  the reconcile decides to reuse or resume it. A row that fails the shape checks
- *  reads as "no row" (a whole parse), never as a bad session. */
+/** A row that fails the shape checks reads as "no row" (a whole parse), never as a bad session. */
 interface KnownFile {
   size: number;
   mtimeMs: number;
@@ -274,12 +241,10 @@ interface KnownFile {
   tailProbeKey: string;
 }
 
-/** A non-negative safe integer: a byte count, an event count. */
 function isCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-/** The identity columns of one row (aliased in the SELECT), or null when malformed. */
 function readKnownFile(raw: unknown): { path: string; known: KnownFile } | null {
   if (!isRecord(raw)) return null;
   const { path, size, mtimeMs, parsedThrough, tailProbeKey } = raw;
@@ -292,9 +257,7 @@ function readKnownFile(raw: unknown): { path: string; known: KnownFile } | null 
   return { path, known: { size, mtimeMs, parsedThrough, tailProbeKey } };
 }
 
-/** Read the probe bytes ending at `parsedThrough` (TAIL_PROBE_BYTES, or the whole
- *  prefix when it is shorter) and compare their hash with the stored key. A short
- *  read is a mismatch; the caller counts the bytes read either way. */
+/** A short read is a mismatch; the bytes read count either way. */
 function tailProbeMatches(
   path: string,
   parsedThrough: number,
@@ -315,10 +278,8 @@ function tailProbeMatches(
   }
 }
 
-/** One row the run will write, already validated and serialized (see `upsertFor`),
- *  or a path whose row goes away: because the walk no longer saw it (`unwalked`,
- *  the `filesDeleted` stat), because its parse failed, or because its
- *  contribution was not storable. */
+/** Only an `unwalked` delete counts toward the `filesDeleted` stat; a failed parse or an unstorable
+ *  contribution also deletes the row, uncounted. */
 type PendingWrite =
   | {
     kind: "upsert";
@@ -332,9 +293,8 @@ type PendingWrite =
   }
   | { kind: "delete"; path: string; unwalked: boolean };
 
-/** The row a parse becomes, or null when its contribution is not storable (then
- *  the caller warns and deletes any row the path had). Built at parse time, so the
- *  verdict does not depend on whether the commit lock is taken later. */
+/** Built at parse time, so the storable verdict does not depend on whether the commit lock is taken
+ *  later. */
 function upsertFor(
   source: UsageSource,
   file: WalkedFile,
@@ -354,16 +314,11 @@ function upsertFor(
   };
 }
 
-/**
- * An open index. Everything is synchronous (node:sqlite is), and one instance
- * belongs to one run: open, reconcile per source, close. Only `openUsageIndex`
- * mints one, so every instance has been stamped, configured, and locked the same
- * way.
- */
+/** One instance belongs to one run: open, reconcile per source, close. Only `openUsageIndex` mints
+ *  one, so every instance has been stamped, configured, and locked the same way. */
 export interface UsageIndex {
-  /** The contract's Reconcile (see contribution.ts for the decision order). */
   readonly reconcile: Reconcile;
-  /** Fold the WAL back into the main file, truncate it (best effort), and close. */
+  /** Checkpoints the WAL (best effort) before closing. */
   close(): void;
 }
 
@@ -378,10 +333,9 @@ class SqliteUsageIndex implements UsageIndex {
     this.#lockPolicy = lockPolicy;
   }
 
-  /** Every stored row of `source` by path, identity columns only: one query for the
-   *  not-walked deletion set and the reuse/resume decisions alike. Every row is
-   *  listed (its path is what deletion needs); a row whose identity columns are
-   *  malformed is listed with no identity, so its file parses whole. */
+  /** One query for the not-walked deletion set and the reuse/resume decisions alike. A row with
+   *  malformed identity columns is listed with no identity, so its file parses whole and its path
+   *  can still be deleted. */
   #knownFiles(source: UsageSource): Map<string, KnownFile | null> {
     const rows = this.#db.prepare(
       `SELECT "path", "size", "mtime_ms" AS mtimeMs, "parsed_through" AS parsedThrough,
@@ -400,10 +354,9 @@ class SqliteUsageIndex implements UsageIndex {
     return known;
   }
 
-  /** The stored contribution of `path` under `source`, or null when the row is gone,
-   *  its identity no longer matches `known` (another run rewrote it between the two
-   *  reads: the identity snapshot and this fetch are not one transaction), or its
-   *  record is not exactly a current contribution. The caller parses whole then. */
+  /** The identity is re-checked against `known` because the snapshot and this fetch are not one
+   *  transaction: another run may have rewritten the row between them. Null = the caller parses
+   *  whole. */
   #storedContribution<S extends UsageSource>(
     source: S,
     path: string,
@@ -425,9 +378,7 @@ class SqliteUsageIndex implements UsageIndex {
     return parseStoredContribution(source, raw.record) as ContributionOf<S> | null;
   }
 
-  /** Apply every pending write in one transaction under the shared lock. Returns
-   *  how many not-walked rows the deletes removed, or null when the lock could not
-   *  be taken and nothing was written. */
+  /** Null = the lock could not be taken and nothing was written. */
   #commit(writes: readonly PendingWrite[]): number | null {
     if (writes.length === 0) return 0;
     return withFileLockSync(this.#lockPath, this.#lockPolicy, (outcome) => {
@@ -436,7 +387,6 @@ class SqliteUsageIndex implements UsageIndex {
     });
   }
 
-  /** The locked write itself: one transaction over every pending row. */
   #write(writes: readonly PendingWrite[]): number {
     const upsert = this.#db.prepare(
       `INSERT OR REPLACE INTO "files"
@@ -471,9 +421,8 @@ class SqliteUsageIndex implements UsageIndex {
     return removed;
   }
 
-  /** The contract's Reconcile (see contribution.ts for the decision order).
-   *  `bytesRead` counts successful parses and probe reads only: a parse that throws
-   *  contributes no bytes, so the warm-run and append oracles stay exact. */
+  /** `bytesRead` counts successful parses and probe reads only: a parse that throws contributes no
+   *  bytes, so the warm-run and append oracles stay exact. */
   readonly reconcile: Reconcile = <S extends UsageSource>(
     source: S,
     walked: readonly WalkedFile[],
@@ -485,9 +434,8 @@ class SqliteUsageIndex implements UsageIndex {
     const records: FileRecord<ContributionOf<S>>[] = [];
     const writes: PendingWrite[] = [];
 
-    // A read that the index itself fails (not the session file) turns the rest of
-    // the run index-less: every remaining candidate parses whole and nothing is
-    // saved. Warned once, so a broken index is one line, not one per file.
+    // A read the index itself fails (not the session file) turns the rest of the run index-less:
+    // every remaining candidate parses whole and nothing is saved. Warned once, not once per file.
     let indexFailure: string | null = null;
     const indexRead = <T>(read: () => T, fallback: T): T => {
       if (indexFailure !== null) return fallback;
@@ -508,7 +456,7 @@ class SqliteUsageIndex implements UsageIndex {
     for (const path of knownFiles.keys()) {
       if (!walkedPaths.has(path)) writes.push({ kind: "delete", path, unwalked: true });
     }
-    // Prepared once for the run: a per-file prepare cost as much as the read itself.
+    // Prepared once: a per-file prepare cost as much as the read itself.
     const recordStatement = indexRead(
       () =>
         this.#db.prepare(
@@ -525,8 +473,8 @@ class SqliteUsageIndex implements UsageIndex {
 
     for (const file of walked) {
       if (!file.candidate) continue;
-      // Once the index has failed, the snapshot is not consulted either: every
-      // remaining candidate parses whole, with no probe read on its behalf.
+      // Once the index has failed the snapshot is not consulted either, so no probe read happens on
+      // its behalf.
       const known = indexFailure === null ? knownFiles.get(file.path) ?? null : null;
       try {
         let parsed: ParsedFile<ContributionOf<S>> | null = null;
@@ -593,13 +541,13 @@ class SqliteUsageIndex implements UsageIndex {
   }
 }
 
-/** SQLite result codes this module decides on: busy (another connection holds the
- *  database) and not-a-database (a garbage file no connection can hold). */
+/** Busy: another connection holds the database. Not-a-database: a garbage file no connection can
+ *  hold. */
 const SQLITE_BUSY = 5;
 const SQLITE_NOTADB = 26;
 
-/** The code of a node:sqlite error, by its `errcode` when exposed, else by the two
- *  messages SQLite emits for the codes above; null for anything else. */
+/** node:sqlite does not always expose `errcode`, so the two messages SQLite emits for these codes
+ *  count too. */
 function sqliteErrcode(e: unknown): number | null {
   const errcode = (e as { errcode?: unknown }).errcode;
   if (typeof errcode === "number") return errcode;
@@ -609,18 +557,15 @@ function sqliteErrcode(e: unknown): number | null {
   return null;
 }
 
-/** What one open attempt found: a usable database, a valid one we must not use
- *  (`stale`: another schema version or parser stamp, or unstamped rows), or a file
- *  that failed as a database (`broken`). The connection travels with the verdict
- *  when there is one, because only it can prove the file is safe to remove. */
+/** The connection travels with a `stale` or `broken` verdict when there is one, because only it
+ *  can prove the file is safe to remove (relinquishDb). */
 type OpenAttempt =
   | { kind: "ok"; db: DatabaseSync }
   | { kind: "stale"; db: DatabaseSync; detail: string }
   | { kind: "broken"; db: DatabaseSync | null; detail: string };
 
-/** Open (creating if needed) and stamp the database, or say why it cannot be used
- *  as is. Only an EMPTY database gets our stamps; one with rows but no stamps is
- *  of unknown provenance and is stale like any other mismatch. */
+/** Only an EMPTY database gets our stamps; one with rows but no stamps is of unknown provenance and
+ *  is stale like any other mismatch. */
 function tryOpenDb(dbPath: string, fingerprint: string): OpenAttempt {
   let db: DatabaseSync;
   try {
@@ -661,16 +606,15 @@ function tryOpenDb(dbPath: string, fingerprint: string): OpenAttempt {
   }
 }
 
-/** Whether the database file behind a connection we will not use may be removed. */
 type Relinquish =
   | { kind: "exclusive" }
   | { kind: "not-a-database" }
   | { kind: "in-use" }
   | { kind: "failed"; detail: string };
 
-/** Close `db` and say whether its file may be unlinked: only after a WAL round trip
- *  (enter, then leave) proved no other WAL-mode connection holds it, or when the file
- *  is not a database at all. Anything else, a close failure included, fails closed. */
+/** The file may be unlinked only after a WAL round trip (enter, then leave) proved no other
+ *  WAL-mode connection holds it, or when it is not a database at all. Anything else, a close
+ *  failure included, fails closed. */
 function relinquishDb(db: DatabaseSync): Relinquish {
   const journalModeSchema = v.object({ journal_mode: v.picklist(["wal", "delete"]) });
   const switchTo = (mode: "wal" | "delete"): Relinquish | null => {
@@ -704,17 +648,15 @@ function removeDbFiles(dbPath: string): void {
   for (const suffix of DB_FILE_SUFFIXES) removeReported(`${dbPath}${suffix}`);
 }
 
-/** Open the usage index, creating or rebuilding it as needed, under the lock the
- *  writes take; a stale file is unlinked only once relinquishDb allows it. Null means
- *  "run index-less": the reader falls back to the contract's `parseEveryCandidate`. */
+/** Null means "run index-less": the reader falls back to `parseEveryCandidate`. */
 export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | null {
   const dir = opts.dir ?? usageIndexDir();
   const fingerprint = opts.fingerprint ?? DEFAULT_PARSER_FINGERPRINT;
   const lockPolicy = opts.lockPolicy ?? BOUNDED_LOCK_POLICY;
   try {
     mkdirReported(dir, 0o700);
-    // mkdir's mode only applies on creation; a pre-existing wider dir must still end
-    // up 0700 (the index names every session file, its models and timestamps).
+    // mkdir's mode only applies on creation; a pre-existing wider dir must still end up 0700, since
+    // the index names every session file, its models and timestamps.
     if (process.platform !== "win32") chmodReported(dir, 0o700);
   } catch (e) {
     logger.warn(`could not create the usage index directory ${dir} (${errMessage(e)}).`);

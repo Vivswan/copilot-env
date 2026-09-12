@@ -1,12 +1,6 @@
-# copilot-env installer (Windows).
-#
-# Bootstrap only: download the compiled Windows agent binary from the selected
-# copilot-env GitHub release, verify its SHA256 against the release's
-# checksums.txt, install it as <install-dir>\bin\copilot-env.exe, then hand off
-# to the binary's own `install` subcommand (it materializes the runtime
-# assets, the bin\agent launcher shims, and the shell integration). Optional
-# CLIs and launchers are managed after install (`agent shell --clis`,
-# `agent config --set launchers true`).
+# copilot-env installer (Windows); install.sh is the POSIX twin.
+# Bootstrap only: fetch and verify the release binary, then hand off to its own `install`
+# subcommand, which owns everything after that.
 
 <#
 .SYNOPSIS
@@ -60,10 +54,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
-# Windows PowerShell 5.1 (the shell the README one-liner runs) inherits .NET
-# Framework's protocol default, which can exclude TLS 1.2 on older machines;
-# GitHub requires TLS 1.2+. -bor preserves anything newer the machine already
-# negotiates. pwsh needs no floor, and its HttpClient ignores this property.
+# Windows PowerShell 5.1 inherits .NET Framework's protocol default, which can exclude the
+# TLS 1.2 GitHub requires; -bor keeps anything newer. pwsh's HttpClient ignores this property.
 if ($PSVersionTable.PSVersion.Major -lt 6) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
@@ -71,13 +63,9 @@ if ($PSVersionTable.PSVersion.Major -lt 6) {
 # downloads by orders of magnitude; the installer has no other progress UI.
 $ProgressPreference = 'SilentlyContinue'
 
-# Windows PowerShell 5.1 spawned from pwsh (the README one-liner run inside a
-# pwsh session) inherits pwsh's PSModulePath, whose prepended PowerShell 7
-# module directories shadow 5.1's own: in-box cmdlets (Invoke-WebRequest,
-# Get-FileHash) then autoload Core-edition modules 5.1 cannot load. Reset the
-# Desktop edition to its native machine module path -- the same defense as
-# src/shell/integration.ts's execution-policy command. pwsh resolves its own
-# modules fine, so it is left alone.
+# 5.1 spawned from pwsh inherits pwsh's PSModulePath, whose PowerShell 7 directories shadow
+# its own: Invoke-WebRequest and Get-FileHash then autoload Core modules 5.1 cannot load.
+# The same defense as src/shell/integration.ts's execution-policy command.
 if ($PSVersionTable.PSVersion.Major -lt 6) {
     $MachineModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
     # No cmdlet in the fallback: it runs exactly when autoload cannot be trusted.
@@ -121,13 +109,9 @@ function Invoke-WithRetry {
     }
 }
 
-# Lexically absolutize and normalize $InstallDir and refuse the obviously
-# unsafe targets (wildcards, any filesystem root, the user's home).
-# Deliberately minimal and purely lexical: the binary's own `install`
-# re-checks the CANONICAL path (reparse points and 8.3 short names resolved)
-# when it plans the install (src/install/installer.ts); this pre-check only
-# keeps the bootstrap's writes away from the worst targets. Mirrors
-# resolve_safe_install_dir in install.sh.
+# Purely lexical on purpose: the binary's `install` re-checks the CANONICAL path (reparse
+# points and 8.3 short names resolved) in src/install/installer.ts; this only keeps the
+# bootstrap's writes away from the worst targets. Twin: resolve_safe_install_dir in install.sh.
 function Resolve-SafeInstallDir {
     # Reject wildcard characters up front: PowerShell's file cmdlets expand
     # them, so an input like 'C:\Users\*' would otherwise act on every match.
@@ -174,9 +158,7 @@ function Resolve-ReleaseTag {
     return $tag
 }
 
-# Fetch one release file into $Destination: from the override directory
-# (pwsh's Invoke-WebRequest cannot fetch file:// URIs, hence directory mode),
-# the override URL, or the resolved GitHub release download URL.
+# Directory mode exists because pwsh's Invoke-WebRequest cannot fetch file:// URIs.
 function Get-ReleaseFile {
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -192,8 +174,7 @@ function Get-ReleaseFile {
     }
 }
 
-# The one checksums.txt line for $AssetName, parsed to its lowercase SHA256 (a
-# leading "*" marks binary mode in shasum output; accept both forms).
+# A leading "*" marks binary mode in shasum output, so both forms match.
 function Get-ExpectedSha256 {
     param(
         [Parameter(Mandatory)][string]$ChecksumsPath,
@@ -210,11 +191,9 @@ function Get-ExpectedSha256 {
 
 $InstallDir = Resolve-SafeInstallDir
 
-# A source checkout must never be an install target: checkout markers plus .git
-# (a directory, or a file in a worktree) mirrors the binary's own plan-time
-# refusal (CHECKOUT_MARKERS in src/install/installer.ts), before the bin write
-# touches the root. Markers without .git are a legacy source install, whose
-# superseded artifacts the binary sweeps.
+# Mirrors the binary's plan-time refusal (CHECKOUT_MARKERS in src/install/installer.ts)
+# before the bin write touches the root; a worktree's .git is a file, so no -PathType.
+# Markers without .git are a legacy source install, which the binary sweeps.
 if (Test-Path -LiteralPath (Join-Path $InstallDir '.git')) {
     foreach ($marker in @('package.json', 'deno.json')) {
         if (Test-Path -LiteralPath (Join-Path $InstallDir $marker)) {
@@ -256,9 +235,8 @@ try {
         throw "SHA256 verification failed for ${AssetName}: expected $expected, got $actual."
     }
 
-    # The install root (and any missing ancestor a nested -InstallDir needs) is created
-    # here, before the binary that names its own writes exists: say so in the same shape
-    # it will (stderr, "created -> <path>"), outermost first.
+    # The binary names every write it makes outside its own homes, but the root is created before it exists: report
+    # in its shape ("created -> <path>" on stderr), outermost first.
     $missing = @()
     $probe = $InstallDir
     while ($probe -and -not (Test-Path -LiteralPath $probe)) {
@@ -285,14 +263,9 @@ if ($AllHosts) { $installerArgs += '--all-hosts' }
 & (Join-Path (Join-Path $InstallDir 'bin') $BinaryName) @installerArgs
 if ($LASTEXITCODE -ne 0) { throw 'copilot-env install failed.' }
 
-# Offer to reload the shell so the freshly-wired integration takes effect without the
-# user opening a new window. Only when integration was wired, we can actually prompt on
-# a console (UserInteractive AND stdin not redirected -- the PowerShell equivalent of
-# the POSIX tty gate, so `pwsh -NonInteractive` / piped runs are skipped), not under CI,
-# and the caller did not opt out ($COPILOT_ENV_NO_EXEC_SHELL or -NoExecShell). PowerShell
-# has no `exec`, so the POSIX-matched behavior is a nested interactive shell: launching a
-# fresh PowerShell loads $PROFILE (where the integration now lives); when the user exits
-# it, control returns here.
+# UserInteractive plus an unredirected stdin is the PowerShell form of install.sh's tty gate.
+# PowerShell has no `exec`, so the reload is a nested interactive shell: it loads the $PROFILE
+# the integration now lives in, and control returns here when the user exits it.
 $execShell = -not $NoExecShell -and -not $env:COPILOT_ENV_NO_EXEC_SHELL
 $canPrompt = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
 if (-not $NoShellIntegration -and $execShell -and -not $env:CI -and $canPrompt) {

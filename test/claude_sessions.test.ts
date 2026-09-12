@@ -25,9 +25,8 @@ import {
 import { CLAUDE_SCENARIOS, scenarioNamed } from "./helpers/session_scenarios.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
-// The reader fixtures live in the shared catalog, which the index equivalence tests
-// read three ways with the same checks; one default-reconcile read here covers the
-// reader's own entry point.
+// The index equivalence tests read the shared catalog scenarios three ways; this one
+// default-reconcile read covers the reader's own entry point.
 test("readClaudeSessions reads a catalog scenario without a reconcile", async () => {
   const scenario = scenarioNamed(
     CLAUDE_SCENARIOS,
@@ -97,7 +96,6 @@ test("discoverClaudeSessionRoots returns existing projects dirs only, deduped", 
   expect(roots).toEqual([join(home, "projects")]);
 });
 
-/** The walk record for one file on disk, as a candidate. */
 function walkedFile(path: string): WalkedFile {
   const { size, mtimeMs } = statSync(path);
   return { path, size, mtimeMs, candidate: true, resumable: true };

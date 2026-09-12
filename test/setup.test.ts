@@ -35,8 +35,6 @@ test("parseShellAction: remove vs wire arms, with the CLI install inside the wir
     kind: "remove",
     allHosts: true,
   });
-  // Wiring: no --clis means no CliSetup at all; --clis folds the install knobs
-  // into the arm (verify-only under --no-prereqs).
   expect(parseShellAction({})).toEqual({ kind: "wire", allHosts: false, clis: null });
   expect(parseShellAction({ clis: true, cooldown: 7 })).toEqual({
     kind: "wire",
@@ -73,9 +71,7 @@ test("shell --clis cannot combine with --remove", () => {
   expect(() => runShell({ clis: true, remove: true })).toThrow("cannot be combined with --remove");
 });
 
-// The launchers are the `launchers` config key's alone (the rc writes ride the
-// suite's rc-dir/Documents seams, so this runs for real on every OS): a wire reports
-// the stored state and never writes the key; a remove leaves the key alone too.
+// The rc writes ride the suite's rc-dir/Documents seams, so this runs for real on every OS.
 test("runShell reports the launchers key on a wire and never writes it", () => {
   const restore = envSnapshot();
   let dir = isolateProxyHome("copilot-setup-");
@@ -102,11 +98,8 @@ test("runShell reports the launchers key on a wire and never writes it", () => {
 
 // --- the best-effort `--clis` install run ---------------------------------------
 //
-// These drive the REAL install arm end to end against a fake `npm` on PATH (a sh
-// script, so the trio is POSIX-only: the win32 arm additionally rewrites the real
-// user-registry PATH, which no test may touch). The whole outcome under guard: a
-// contained npm failure warns honestly, the remaining CLIs are still attempted,
-// and the rc wiring `runShell` does afterwards still lands.
+// POSIX-only: the fake `npm` is a sh script, and the win32 arm rewrites the real
+// user-registry PATH, which no test may touch.
 
 /** What the fake `npm view <pkg> version` answers: the version every run targets. */
 const FAKE_LATEST = "2.0.0";
@@ -120,13 +113,9 @@ interface CliInstallFixture {
 }
 
 /**
- * Stage a hermetic `--clis` run: PATH holds ONLY a fixture bin -- the fake npm plus
- * `sh`/`chmod` symlinks (all the probes and the fake need) -- so no real CLI on the
- * host can satisfy a look; NVM_DIR points nowhere (so findCommand's nvm fallback
- * cannot resolve real CLIs either) and the rc seam targets a fresh dir. The fake
- * npm answers `prefix -g`, `ls -g`, `view <pkg> version`, and `install -g <pkg>@<version>`
- * per the options, silently (stdio is inherited, so a chatty fake would bypass the
- * capture below).
+ * Nothing real may satisfy a look: PATH holds only the fixture bin (the fake npm plus `sh` and
+ * `chmod` links), NVM_DIR points nowhere, and the rc seam targets a fresh dir. The fake npm
+ * answers silently: stdio is inherited, so a chatty fake would bypass captureRun.
  */
 function stageCliInstallFixture(opts: {
   /** `npm prefix -g` exits 1 instead of printing the prefix. */
@@ -207,7 +196,6 @@ function stageCliInstallFixture(opts: {
   return { dir, globalBin, bashrc };
 }
 
-/** Run `fn` with stdout/stderr captured and consola at info level; returns the output. */
 function captureRun(fn: () => void): string {
   const written: string[] = [];
   const savedLevel = consola.level;
@@ -251,7 +239,6 @@ test.skipIf(process.platform === "win32")(
       );
       expect(output).not.toContain("probe failed to run");
       expect(existsSync(join(fixture.globalBin, broken.command))).toBe(false);
-      // The remaining CLIs really installed, and the rc wiring still ran.
       for (const cli of others) {
         expect(existsSync(join(fixture.globalBin, cli.command))).toBe(true);
       }
@@ -278,10 +265,8 @@ test.skipIf(process.platform === "win32")(
       expect(output).toContain(
         "Could not sync npm's global bin dir to PATH (npm prefix -g failed); continuing.",
       );
-      // The loop still ran over every CLI (each is on PATH but absent from the fake
-      // `npm ls`, so it reads as a non-npm install and is left alone), and the sync
-      // failure was never dressed as a per-CLI install failure or a could-not-check
-      // look failure.
+      // Each CLI is on PATH but absent from the fake `npm ls`, so it reads as a non-npm install;
+      // the sync failure must never be dressed as a per-CLI install or could-not-check failure.
       for (const cli of AGENT_CLIS) {
         expect(output).toContain(`${cli.name} is installed outside npm; leaving it as it is.`);
       }
@@ -343,9 +328,8 @@ test.skipIf(process.platform === "win32")(
       expect(output).toContain(
         `${newer.name} 3.0.0 is newer than the target ${FAKE_LATEST}; keeping it.`,
       );
-      // Only the outdated CLI went through `npm install -g`, at the target (the fake lays
-      // its shim down naming the spec); the current and the newer one were never
-      // reinstalled, let alone downgraded.
+      // The fake shim names the spec it was installed at, so the readback proves WHICH version;
+      // the current and the newer CLI were never reinstalled, let alone downgraded.
       expect(readFileSync(join(fixture.globalBin, outdated.command), "utf-8")).toContain(
         `${outdated.packageName}@${FAKE_LATEST}`,
       );
@@ -365,7 +349,6 @@ test.skipIf(process.platform === "win32")(
     const [unreadable, absent, offPath] = AGENT_CLIS;
     let dir = "";
     try {
-      // No command is on PATH; npm lists one CLI beyond the target and one without a version.
       const fixture = stageCliInstallFixture({
         npmInstalled: { [unreadable.packageName]: null, [offPath.packageName]: "3.0.0" },
       });
@@ -381,7 +364,6 @@ test.skipIf(process.platform === "win32")(
       expect(output).toContain(
         `Installing ${absent.name} (${absent.packageName}@${FAKE_LATEST}) ...`,
       );
-      // Only the CLI npm does not have went through `npm install -g`.
       expect(existsSync(join(fixture.globalBin, absent.command))).toBe(true);
       expect(existsSync(join(fixture.globalBin, offPath.command))).toBe(false);
       expect(existsSync(join(fixture.globalBin, unreadable.command))).toBe(false);
@@ -417,9 +399,7 @@ test.skipIf(process.platform === "win32")(
     }
   },
 );
-// computePathRefresh is the platform-parameterized core of syncNpmGlobalBinToPath:
-// it picks the bin dir + PATH separator and produces the Path/PATH assignments.
-// Parameterizing on platform lets these run on POSIX CI without win32 gating.
+// computePathRefresh takes the platform as a parameter so the win32 arm runs on POSIX CI.
 
 test("computePathRefresh on win32 writes BOTH Path and PATH with ';' and prepends the prefix", () => {
   const prefix = "C:\\Users\\me\\AppData\\Roaming\\npm";
@@ -429,10 +409,8 @@ test("computePathRefresh on win32 writes BOTH Path and PATH with ';' and prepend
   // On Windows the npm prefix IS the bin dir (no /bin suffix).
   expect(bin).toBe(prefix);
   expect(separator).toBe(";");
-  // The deliberate double-key write: both casings are produced.
   expect(Object.keys(assignments).sort()).toEqual(["PATH", "Path"]);
   expect(assignments.Path).toBe(assignments.PATH);
-  // The bin dir is prepended, separated by ';', ahead of the old PATH.
   expect(assignments.PATH).toBe(`${prefix};${old}`);
   expect(assignments.PATH?.startsWith(`${prefix};`)).toBe(true);
 });
@@ -454,17 +432,13 @@ test("computePathRefresh is a no-op when the bin dir is already on PATH", () => 
   const prefix = "/home/me/.npm-global";
   const old = `/home/me/.npm-global/bin:/usr/bin`;
   const { assignments } = computePathRefresh("linux", prefix, old);
-  // Already present: nothing to assign, so neither key is rewritten.
   expect(assignments).toEqual({});
 });
 
-// The nvm install script must pin `default` to a LOCALLY resolvable version, not
-// the remote `lts/*` meta-alias. A remote default resolves to N/A offline, so
-// sourcing nvm.sh activates nothing and the resolveCommand nvm fallback (and the
-// whole CLI install) silently breaks. Guard against that regression.
+// A `default` aliased at the remote `lts/*` meta-alias resolves to N/A offline, so sourcing
+// nvm.sh activates nothing and the resolveCommand nvm fallback silently breaks.
 test("buildNodePosixInstallScript pins default to the installed version, not lts/*", () => {
   const script = buildNodePosixInstallScript();
-  // Installs LTS, but never aliases default at the remote meta-alias.
   expect(script).toContain("nvm install --lts");
   expect(script).not.toContain("alias default 'lts/*'");
   expect(script).not.toContain("alias default lts/*");

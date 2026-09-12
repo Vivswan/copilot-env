@@ -1,16 +1,7 @@
 #!/bin/sh
-# Single self-bootstrapping entry point (Linux + macOS) for copilot-env.
-# Uses the deno already on PATH (warning when it is older than the tested .dvmrc version);
-# only a machine with no deno installs the latest release, via the shared
-# scripts/ensure-deno.sh that scripts/setup-env.sh uses too. Installs dependencies in-place
-# in the checkout only when the lockfile has moved ahead of them, then runs the cli.ts
-# dispatcher (cli.ts owns the subcommand list; see `agent --help`). The `agent` shell
-# function (agents.bashrc) is what turns `agent env` output into shell state.
-#
-# No cache: node_modules lives directly in the checkout and cli.ts runs from there.
-#
-# EVERY line this script emits goes to stderr -- stdout belongs to `agent env`, whose
-# output the shell function evals.
+# Self-bootstrapping entry point (Linux + macOS); bin/agent.ps1 is the Windows twin.
+# Every line this script emits goes to stderr: stdout belongs to `agent env`, which the
+# `agent` shell function in shell/agents.bashrc evals.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SNAP="$(cd "${HERE}/.." && pwd)"
@@ -24,13 +15,8 @@ if ! ensure_deno "${SNAP}" "$([ "${1:-}" = "env" ] && echo quiet)"; then
     exit 1
 fi
 
-# Install dependencies in-place in the checkout, but only when needed: a missing
-# node_modules, or a deno.lock that has moved ahead of it (the lockfile is the source of
-# truth for what should be installed, and every dependency change updates it).
-# `find -prune -newer` is the freshness test because POSIX sh does not define `[ a -nt b ]`.
-# Deps are PROVEN current only when the freshness read itself succeeds AND reports no
-# newer lockfile: a failed read must reinstall (the self-healing direction), never read
-# as "deps current" and run stale node_modules.
+# `find -prune -newer` is the freshness test: POSIX sh does not define `[ a -nt b ]`.
+# A failed read reinstalls (the self-healing direction) rather than reading as "deps current".
 deps_proven_current() {
     [ -d "${SNAP}/node_modules" ] || return 1
     newer="$(find "${SNAP}/deno.lock" -prune -newer "${SNAP}/node_modules" 2>/dev/null)" || return 1

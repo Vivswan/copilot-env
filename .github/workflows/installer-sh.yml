@@ -1,15 +1,9 @@
 name: installer-sh smoke
 
-# Reusable, single-scenario install.sh smoke. The caller (checks.yml) invokes this
-# once per (OS, flag) combination, so each scenario runs as its OWN job on a
-# fresh runner -- separate $HOME, separate rc files. Scenarios can never share or
-# clobber each other's state, so no "strip the marker first" dance is needed: a
-# fresh rc has no wiring to begin with, so expect-wiring=false can assert the
-# absence directly.
-#
-# The job compiles this tree's host-target binary and points the installer at it
-# through COPILOT_ENV_DOWNLOAD_BASE, so the installer runs its real download, verify,
-# and handoff path against the code in the PR -- no published release required.
+# One install.sh scenario per call, so each runs as its OWN job on a fresh runner: scenarios
+# never share rc files, and expect-wiring=false asserts absence directly. The job compiles this
+# tree's host binary and points COPILOT_ENV_DOWNLOAD_BASE at it, so the real fetch/verify/
+# handoff path runs against the PR's code without a published release.
 on:
   workflow_call:
     inputs:

@@ -135,8 +135,7 @@ export interface GoldenTree {
   delta: PlantedDelta | null;
 }
 
-/** The case's tree: generated, then planted when the case says so. The ledger covers the
- *  planted lines too. */
+/** The ledger covers the planted lines too (plantSplitLines books them). */
 export async function generateGoldenTree(entry: GoldenCase, root: string): Promise<GoldenTree> {
   const tree = await generateUsageTree({ root, ...entry.generator });
   return { tree, delta: entry.split ? plantSplitLines(tree) : null };
@@ -351,8 +350,6 @@ function sortKeys(value: unknown): unknown {
   return value;
 }
 
-/** The first line where `actual`'s stable form departs from `expected`'s, both sides quoted,
- *  or null when the two serialize identically (deep equality, for JSON values). */
 export function describeMismatch(actual: unknown, expected: unknown): string | null {
   const a = stableStringify(actual).split("\n");
   const e = stableStringify(expected).split("\n");
@@ -371,7 +368,6 @@ export function describeMismatch(actual: unknown, expected: unknown): string | n
  *  parseCostPayload drops it. */
 export const RUNTIME_KEY = "runtime";
 
-/** A `cost --json` stdout as its payload object, the runtime key dropped. */
 export function parseCostPayload(stdout: string, what: string): Record<string, unknown> {
   let parsed: unknown;
   try {
@@ -428,7 +424,6 @@ export function usageTreeEnv(root: string): Record<string, string> {
   };
 }
 
-/** Env keys the in-process run overrides or clears, restored afterwards. */
 const RUN_ENV_KEYS = [...Object.keys(usageTreeEnv("")), "COPILOT_ENV_ROOT_HOME", "TZ"] as const;
 
 /** Whether Date's local-day arithmetic can be pinned to UTC here: deno honors a runtime
@@ -460,9 +455,7 @@ export interface CurrentCostOptions {
   days?: string;
 }
 
-/** The current implementation over the tree at `root`, run IN PROCESS through runCost with
- *  the readers pointed at the tree by env and the process pinned to UTC (the caller has
- *  checked utcPinnable()). */
+/** In process, pinned to UTC: the caller has checked utcPinnable(). */
 export async function runCurrentCost(
   root: string,
   opts: CurrentCostOptions = {},

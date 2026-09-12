@@ -1,6 +1,6 @@
-// Human-readable renderer for `agent health`. Side-effect-free except stdout
-// (the orchestrator owns process.exitCode), mirroring the builder/printer split
-// in src/usage/cost.ts. The `--json` path bypasses this entirely.
+// Human-readable renderer for `agent health`. Side-effect-free except stdout (the orchestrator
+// owns process.exitCode), like the builder/printer split in src/usage/cost.ts. The `--json` path
+// bypasses this entirely.
 import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { bold, gray, green, red, yellow } from "../utils/ansi.ts";
 import { worstStatus } from "./aggregate.ts";
@@ -31,12 +31,9 @@ function glyph(status: CheckStatus): string {
   return red("✘");
 }
 
-/**
- * Print a grouped, human-readable diagnostic report to stdout. `profileModes`
- * carries each named runtime target's recorded mode (from its store slot, null =
- * none recorded) so a profile's Runtime section header can say which kind of
- * daemon it describes.
- */
+/** `profileModes` carries each named runtime target's recorded mode (from its store slot, null =
+ *  none recorded) so a profile's Runtime section header can say which kind of daemon it
+ *  describes. */
 export function renderReport(
   scope: HealthScope,
   results: CheckResult[],
@@ -45,9 +42,9 @@ export function renderReport(
   console.log(bold(`copilot-env health - scope: ${scope}`));
   for (const group of GROUP_ORDER) {
     const inGroup = results.filter((r) => r.group === group);
-    // Sections are keyed on (group, profile): default-target (null) checks render
-    // under the plain group label -- exactly the historical report -- and each
-    // named profile's checks get their own headed section, in evaluation order.
+    // Sections are keyed on (group, profile): default-target (null) checks render under the
+    // plain group label, exactly the historical report, and each named profile's checks get
+    // their own headed section, in evaluation order.
     for (const profile of sectionProfiles(inGroup)) {
       const section = inGroup.filter((r) => r.profile === profile);
       let heading: string;
@@ -83,8 +80,7 @@ export function renderReport(
   console.log(`\n${glyph(overall)} ${bold(summary)}`);
 }
 
-/** The distinct profiles present in a group, in first-appearance (evaluation)
- *  order -- the default (null) target evaluates first, so it leads naturally. */
+/** First-appearance (evaluation) order: the default (null) target evaluates first, so it leads. */
 function sectionProfiles(results: CheckResult[]): CheckResult["profile"][] {
   const seen: CheckResult["profile"][] = [];
   for (const r of results) {

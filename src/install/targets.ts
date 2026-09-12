@@ -1,12 +1,8 @@
-// The release target list: which platforms get a compiled `agent` binary, and
-// what that binary is called as a release asset.
-//
-// This module is the ONE source of truth. scripts/compile.ts imports it
-// directly; two other places must agree with it and cannot import it (they are
-// shell), so test/installer_pinning.test.ts parses them and pins the match at
-// PR time:
-//   - install.sh           resolve_target()  (POSIX platform -> triple)
-//   - install.ps1          Resolve-Target    (Windows platform -> triple)
+// Which platforms get a compiled `agent` binary, and what the release asset is called. The ONE
+// source of truth: scripts/compile.ts imports it, and two shell files that cannot are pinned to
+// it by test/installer_pinning.test.ts:
+//   install.sh    resolve_target()   (POSIX platform -> triple)
+//   install.ps1   Resolve-Target     (Windows platform -> triple)
 
 /** A platform we ship a compiled binary for. `os`/`arch` are the values
  *  `process.platform` / `process.arch` report on it. */
@@ -42,10 +38,9 @@ export function currentReleaseTarget(
   return RELEASE_TARGETS.find((t) => t.os === platform && t.arch === arch) ?? null;
 }
 
-/** The installed name of the compiled binary inside `<root>/bin`. Unlike the
- *  release asset it is platform-independent: one install root only ever holds
- *  its own platform's binary, and the launcher shims hardcode this name. The
- *  `bin/agent`(`.ps1`) shim beside it IS the `agent` alias. */
+/** Platform-independent, unlike the release asset: one install root only ever holds its own
+ *  platform's binary, and the launcher shims hardcode this name. The `bin/agent`(`.ps1`) shim
+ *  beside it IS the `agent` alias. */
 export const INSTALLED_BINARY_POSIX = "copilot-env";
 /** Windows twin of `INSTALLED_BINARY_POSIX`. */
 export const INSTALLED_BINARY_WINDOWS = "copilot-env.exe";

@@ -116,9 +116,8 @@ test("a qualifier id like claude-opus-4.7-high gets no [1m] alias", () => {
   expect(aliases["claude-opus-4.7-high[1m]"]).toBeUndefined();
 });
 
-// The live daemon catalog returns dash-form version ids (`claude-opus-4-8`),
-// not the dot form. These mirror that shape so the regex never silently drops
-// every Claude model again.
+// The live daemon catalog returns dash-form ids (`claude-opus-4-8`), not the dot form; the regex
+// once silently dropped every Claude model because of it.
 test("dash-form catalog ids still produce the full alias set", () => {
   const catalog: CatalogModel[] = [
     { id: "claude-opus-4-8", is1m: true },
@@ -139,8 +138,7 @@ test("dash-form qualifier ids emit no identity alias", () => {
   const catalog: CatalogModel[] = [{ id: "claude-opus-4-7-high", is1m: false }];
   const aliases = generateAliases(catalog);
 
-  // The generated key equals the catalog id, so the identity mapping is
-  // skipped: the exact id passes through the proxy unchanged anyway.
+  // An alias equal to the catalog id is skipped: the exact id passes through the proxy unchanged anyway.
   expect(aliases["claude-opus-4-7-high"]).toBeUndefined();
   expect(aliases["claude-opus-4-7"]).toBeUndefined();
 });
@@ -152,7 +150,6 @@ test("dash-form [1m] requests resolve to a distinct dash-form 1m sibling", () =>
   ];
   const aliases = generateAliases(catalog);
 
-  // No identity alias for the base id; the [1m] links still emit.
   expect(aliases["claude-opus-4-8"]).toBeUndefined();
   expect(aliases["claude-opus-4-8[1m]"]).toBe("claude-opus-4-8-1m");
   expect(aliases["claude-opus-4.8[1m]"]).toBe("claude-opus-4-8-1m");
@@ -356,7 +353,6 @@ test("a newer version beats an older 1m-capable version for shorthands and claud
   expect(aliases.fable).toBe("claude-fable-5");
   expect(aliases["fable[1m]"]).toBe("claude-fable-5");
   expect(aliases["claude-latest"]).toBe("claude-fable-5");
-  // The older version still links its own 1m sibling.
   expect(aliases["claude-fable-4-8[1m]"]).toBe("claude-fable-4-8-1m");
 });
 

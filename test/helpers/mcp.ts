@@ -1,8 +1,5 @@
-// Shared harness for the MCP stdio server suites (mcp_server, mcp_interop,
-// mcp_fuzz): ONE hermetic environment builder and ONE wire-level client.
-// The consolidation is the point -- a credential env var scrubbed here is
-// scrubbed for every suite, so no test can silently pick up an ambient
-// credential and start making real network calls.
+// The one MCP harness for every stdio-server suite: a credential env var scrubbed here is
+// scrubbed for all of them, so no test can pick up an ambient credential and reach the network.
 import { join } from "node:path";
 import { denoRunArgs, ROOT, spawnChild } from "./run.ts";
 import { expect, removeDir, tempDir } from "./testing.ts";
@@ -45,8 +42,8 @@ export interface JsonRpcMessage {
   error?: { code: number; message: string };
 }
 
-/** Drive the spawned server over NEWLINE-DELIMITED JSON-RPC (the stdio MCP framing --
- *  no Content-Length headers), collecting every stdout line for purity checks. */
+/** Drives the server over newline-delimited JSON-RPC: the stdio MCP framing has no
+ *  Content-Length headers. */
 export class McpClient {
   private readonly proc: Deno.ChildProcess;
   private readonly decoder = new TextDecoder();
@@ -68,8 +65,7 @@ export class McpClient {
       env: mcpEnv(),
       stdin: "piped",
       stdout: "piped",
-      // Discarded, matching the old pipe-and-never-read: an unread deno pipe would
-      // backpressure a chatty server into a deadlock instead.
+      // An unread deno pipe would backpressure a chatty server into a deadlock.
       stderr: "null",
     });
     this.reader = this.proc.stdout.getReader();
@@ -84,7 +80,6 @@ export class McpClient {
     return this.exit;
   }
 
-  /** Write one raw line (or raw bytes) plus the newline straight onto stdin. */
   sendRaw(line: string | Uint8Array): void {
     const bytes = typeof line === "string" ? this.encoder.encode(line) : line;
     const payload = new Uint8Array(bytes.length + 1);
@@ -99,13 +94,11 @@ export class McpClient {
     this.sendRaw(JSON.stringify(msg));
   }
 
-  /** Send a request and read messages until its response arrives. */
   async request(id: number | string, method: string, params?: unknown): Promise<JsonRpcMessage> {
     this.send({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
     return await this.waitFor(id);
   }
 
-  /** Read messages until the response with the given id arrives. */
   async waitFor(id: number | string): Promise<JsonRpcMessage> {
     const deadline = Date.now() + 10_000;
     for (;;) {
@@ -154,7 +147,7 @@ export class McpClient {
     }
   }
 
-  /** Close stdin (client disconnect) and wait for the process to exit. */
+  /** A client disconnect, as the server sees it. */
   async closeAndWait(): Promise<number> {
     await this.writer.close().catch(() => {});
     return (await this.proc.status).code;
@@ -165,10 +158,8 @@ export class McpClient {
   }
 }
 
-/** Every stdout line the client read this session must parse as JSON --
- *  error responses are fine, corrupted frames are not. (Only lines a
- *  request/waitFor actually consumed are recorded; the harness never sees
- *  output the server might emit after the last awaited response.) */
+/** Error responses pass; a corrupted frame fails. Only lines a request consumed are recorded,
+ *  so output after the last awaited response is never checked. */
 export function expectStdoutPurity(client: McpClient): void {
   for (const line of client.stdoutLines) {
     expect(() => JSON.parse(line)).not.toThrow();

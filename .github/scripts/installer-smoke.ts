@@ -1,14 +1,7 @@
-// install.sh / install.ps1 smoke driver, one sub-step per CI workflow step:
-// run-install, the no-optional-CLIs assertion, and the final outcome
-// verification (installed launcher, CLIs, shell wiring, launcher wiring).
-//
-// The installer under test fetches a compiled binary rather than a source
-// archive, so the workflow compiles the host target from the tree first and
-// points COPILOT_ENV_DOWNLOAD_BASE at dist/. That is what makes this smoke
-// meaningful on every PR instead of only once a release exists to download.
-//
-// Run by installer-sh.yml / installer-ps1.yml:
-//   deno run -P=cli .github/scripts/installer-smoke.ts run-install|assert-no-optional-clis|verify-outcome
+// install.sh / install.ps1 smoke, one sub-step per workflow step (installer-sh.yml,
+// installer-ps1.yml). The workflow compiles the host binary and points
+// COPILOT_ENV_DOWNLOAD_BASE at dist/, so the installer's real fetch/verify/handoff path runs
+// on every PR instead of only once a release exists.
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -215,10 +208,8 @@ function verifyLauncherWiring(launcher: string): void {
   if (!envBool("SETUP_LAUNCHERS")) {
     return;
   }
-  // The cl/co/cx launchers are `agent env` function emissions gated on the
-  // `launchers` config key -- there is no launcher rc block, so both halves of
-  // that contract are asserted: the stored key, and the emission the shell
-  // wrapper would eval.
+  // The launchers are `agent env` emissions gated on the `launchers` key, not an rc block,
+  // so both halves of that contract are asserted.
   const stored = launcherOutput(launcher, ["config", "--get", "launchers"]);
   if (stored !== "true") {
     console.error(
@@ -245,9 +236,7 @@ function verifyLauncherWiring(launcher: string): void {
   console.log("launcher opt-in verified: config key on, agent env emits the launcher functions");
 }
 
-/** The root the installer installed into: its default unless the scenario
- *  passed an explicit target. Everything after run-install addresses the
- *  INSTALLED tree, never the checkout it was built from. */
+/** Everything after run-install addresses the INSTALLED tree, never the checkout. */
 function installRoot(args: string[], home: string): string {
   const flag = isWindows ? "-installdir" : "--dir";
   const index = args.findIndex((arg) => arg.toLowerCase() === flag);
@@ -274,14 +263,12 @@ function verifyInstalledLauncher(): string {
 }
 
 /**
- * Compiled-install health invariants, FAIL-CLOSED: the report is parsed from unknown and
- * every expectation is POSITIVE, so a missing row, a renamed id, a reshaped value, or an
- * unexpected status/kind is a failure, never a silent pass. The whole-report exit code is
- * environment-dependent (a fresh install legitimately fails the proxy runtime probes), so
- * this asserts only what a compiled binary must get right about ITSELF: dependencies read
- * as embedded, the proxy package reads ok (never "not installed"), and the sidecar is
- * provisioned or absent, never the "dev" deno a compiled binary cannot be. Exported for the
- * unit tests' negative controls; the CI entry point below feeds it the real binary's report.
+ * FAIL-CLOSED: every expectation is positive, so a renamed id or reshaped value fails rather
+ * than passing silently. Exported for the unit tests' negative controls.
+ *
+ *   the report's exit code -> environment-dependent (a fresh install fails the proxy runtime
+ *                             probes), so never asserted
+ *   the rows below         -> only what a compiled binary must get right about ITSELF
  */
 export function compiledHealthFailures(reportJson: unknown): string[] {
   const checks = isRecord(reportJson) && Array.isArray(reportJson.checks)
@@ -345,20 +332,16 @@ function verifyCompiledHealth(launcher: string): void {
 }
 
 /**
- * The compiled binary's daemon spawn must resolve a usable deno -- a compiled
- * binary is not a deno CLI, so a resolve that misses can start nothing at all.
- * On CI runners a PATH deno (setup-deno's) serves the spawn; a provisioned copy
- * is also planted so the step keeps passing on a runner image with no deno, and
- * the seam-level PATH-vs-provisioned precedence is pinned by test/sidecar.test.ts.
- * Kept offline. Nothing is pre-written under the daemon home: generating the
- * daemon config from the binary's own embedded assets is part of what this
- * start proves.
+ * A compiled binary is not a deno CLI, so a daemon spawn that resolves no deno starts nothing.
+ * Offline.
+ *
+ *   provisioned copy planted       -> passes on a runner image with no PATH deno; the
+ *                                     PATH-vs-provisioned precedence is test/sidecar.test.ts's
+ *   nothing under the daemon home  -> generating the daemon config is part of the proof
  */
 function verifySidecarDaemonSpawn(launcher: string): void {
-  // A live override would let the start succeed WITHOUT the resolution under
-  // test, so it is scrubbed -- and a bogus one is planted first as the scrub's
-  // negative control: removing the scrub turns this step red (the spawn would use the
-  // unspawnable path) instead of passing green whenever the runner leaves the var unset.
+  // A live override would let the start succeed without the resolution under test. The bogus
+  // value planted first is the scrub's negative control: dropping the scrub turns this red.
   process.env[SIDECAR_DENO_ENV] = isWindows ? "C:\\bogus\\deno.exe" : "/bogus/deno";
   delete process.env[SIDECAR_DENO_ENV];
   const rootHome = resolveRootHome();
@@ -399,13 +382,9 @@ function verifySidecarDaemonSpawn(launcher: string): void {
   console.log(`compiled start generated the daemon config at ${daemonConfig}`);
 }
 
-/** The installer's manifest, per-version behind the `current` link, held to its
- *  reader's FULL contract (readInstallManifest in src/utils/root.ts): kind ==
- *  "installed", a string version, a string-array asset inventory. Filename and
- *  shape are external contracts written by `agent install`; mirroring the
- *  reader makes a writer regression fail this smoke. The layout entries are
- *  asserted first: a missing link and a missing manifest are different
- *  failures and must read differently in CI. */
+/** Held to the reader's FULL contract (readInstallManifest in src/utils/root.ts), so a writer
+ *  regression fails here. Layout first: a missing link and a missing manifest must read as
+ *  different failures in CI. */
 function verifyInstallManifest(): void {
   const home = (isWindows ? process.env.USERPROFILE : process.env.HOME) ?? "";
   const root = installRoot(installerArgs(), home);

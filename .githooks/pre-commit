@@ -1,8 +1,6 @@
 #!/bin/sh
-# The pre-commit gate, wired by scripts/setup-env.sh (.ps1 on Windows) via
-# `git config core.hooksPath .githooks`. Deno-native: no node required.
-# Same gate as the `check` job in .github/workflows/checks.yml -- staged-file
-# autofix first, then the full typecheck/test/lint sequence.
+# Wired by scripts/setup-env.sh (.ps1 on Windows) through core.hooksPath; deno-native, so no
+# node. The same gate as the `check` job in .github/workflows/checks.yml.
 set -e
 # The one-time deno install dir is only a FALLBACK: a deno already on PATH wins.
 PATH="$PATH:${DENO_INSTALL:-$HOME/.deno}/bin"

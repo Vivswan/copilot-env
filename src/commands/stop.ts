@@ -1,4 +1,3 @@
-// `agent stop`: terminates the tracked local proxy daemon(s).
 import { consola } from "consola";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
@@ -12,23 +11,15 @@ import { assertNever } from "../utils/assert.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
 export interface StopArgs {
-  /** `--profile <name>`: stop that named profile's daemon instead of the default. */
   profile?: string;
-  /** `--all`: stop the default daemon AND every named profile's daemon. */
   all?: boolean;
 }
 
-/**
- * What ONE `agent stop` invocation addresses -- every daemon, one named
- * profile's, or the default's -- parsed ONCE by `parseStopAction` at the CLI
- * boundary, where `--all --profile` is rejected instead of one flag winning.
- */
 export type StopAction =
   | { kind: "all" }
   | { kind: "profile"; name: ProfileName }
   | { kind: "default" };
 
-/** Parse the raw `agent stop` flags into a StopAction (the CLI boundary). */
 export function parseStopAction(args: StopArgs): StopAction {
   if (args.all && args.profile !== undefined) {
     throw new Error("--all stops every daemon; it does not combine with --profile");
@@ -38,7 +29,6 @@ export function parseStopAction(args: StopArgs): StopAction {
   return named === null ? { kind: "default" } : { kind: "profile", name: named };
 }
 
-/** Stop one daemon and report the outcome. Returns true when something was stopped. */
 async function stopOne(profile: Profile): Promise<boolean> {
   const { trackedPid, signalled, stopped } = await stopTrackedProxy(0, profile);
   const what = profile === null ? "proxy" : `${profileLabel(profile)} proxy`;
@@ -48,8 +38,8 @@ async function stopOne(profile: Profile): Promise<boolean> {
   }
   if (!signalled) {
     if (!stopped) {
-      // The refusal: stopTrackedProxy just warned why the pid could not be signalled
-      // (an uncorroborated lock holder); the summary must agree that nothing changed.
+      // stopTrackedProxy already warned why the pid was not signalled; the summary must agree
+      // nothing changed.
       consola.info(`The ${what} (PID ${trackedPid}) was left running; tracking kept.`);
     } else {
       consola.info(`The ${what} (PID ${trackedPid}) was already stopped; cleared stale tracking.`);
@@ -60,7 +50,6 @@ async function stopOne(profile: Profile): Promise<boolean> {
   return true;
 }
 
-/** The daemons one StopAction addresses (`null` = the default daemon). */
 function stopTargets(action: StopAction): Profile[] {
   switch (action.kind) {
     case "all":
@@ -74,7 +63,6 @@ function stopTargets(action: StopAction): Profile[] {
   }
 }
 
-/** `stop`: terminate the proxy daemon(s) tracked on this host. */
 export async function runStop(args: StopArgs = {}): Promise<void> {
   const action = parseStopAction(args);
   let stoppedAny = false;
@@ -82,8 +70,8 @@ export async function runStop(args: StopArgs = {}): Promise<void> {
     if (await stopOne(profile)) stoppedAny = true;
   }
   if (!stoppedAny) {
-    // Not a crash -- just nothing to do. Friendly note, no stack trace, but a
-    // non-zero exit so scripts can still tell "stopped" from "nothing running".
+    // Non-zero without a throw: scripts can tell "stopped" from "nothing running" and nobody sees a
+    // stack trace.
     process.exitCode = 1;
     return;
   }

@@ -1,12 +1,8 @@
-// Live GitHub Copilot model-catalog fetch: the raw `/models` body, from either
-// source that serves it. Shared by every raw-catalog reader (`agent models`,
-// the Codex catalog limits overlay in src/codex/catalog.ts) so the two roads
-// to the same catalog live in one place:
-//   - proxy:  the running local daemon's `GET /models` (via CopilotAdminClient)
-//   - direct: upstream api.githubcopilot.com with the resolved GitHub credential,
-//     under the client identity that credential is accepted by (integration_identity.ts:
-//     the default for OAuth/device, copilot-developer-cli for a fine-grained PAT).
+// The shared raw `/models` fetch (`agent models`, src/codex/catalog.ts, Desktop, web_search.ts);
+// discovery.ts runs its own under each identity it probes.
 // Failures THROW with actionable messages; best-effort callers catch.
+//   proxy  -> the running local daemon's GET /models
+//   direct -> api.githubcopilot.com under the identity the credential is accepted by (integration_identity.ts)
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig } from "./config.ts";
 import { Credential } from "./credential.ts";
@@ -24,29 +20,16 @@ import { createStderrLogger } from "../utils/logger.ts";
 /** Where the catalog comes from: upstream Copilot (direct) or the running local proxy. */
 export type CatalogSource = "direct" | "proxy";
 
-/** The direct catalog endpoint. DERIVED from the shared base so the host this fetches and
- *  the host the identity probe validates against can never drift apart. */
+/** Derived from the shared base so this fetch and the identity probe can never target different hosts. */
 export const DIRECT_MODELS_URL = `${DEFAULT_COPILOT_API_BASE}/models`;
 const DIRECT_FETCH_TIMEOUT_MS = 5000;
 
 export interface FetchRawModelsOptions {
-  /**
-   * An already-resolved credential for the direct fetch. Passing one skips
-   * re-resolving, which for a gh-cli provider re-runs `gh auth token` (up to 5s).
-   */
+  /** Skips re-resolving, which for a gh-cli provider re-runs `gh auth token` (up to 5s). */
   directToken?: string;
-  /**
-   * The proxy port to read. Callers that just confirmed liveness pass the port
-   * they probed so the fetch cannot race a restart onto a different port;
-   * otherwise the recorded/configured port is resolved here.
-   */
+  /** Callers that just probed liveness pass that port so the fetch cannot race a restart onto another. */
   port?: number;
-  /**
-   * The named profile whose catalog to read (null/absent = the default). Proxy:
-   * the profile daemon's own home (its config.json holds ITS api/admin keys) and
-   * its resolved port. Direct: the profile's own credential -- a named profile
-   * never falls back to the default one.
-   */
+  /** null/absent = the default profile. A named profile never falls back to the default credential (credential.ts). */
   profile?: Profile;
   /** Injection seam for tests (direct source only: the identity probe and the GET). */
   fetchImpl?: ProbeFetch;
@@ -54,7 +37,6 @@ export interface FetchRawModelsOptions {
   signal?: AbortSignal;
 }
 
-/** Fetch the raw `/models` body from `source`. */
 export async function fetchRawModels(
   source: CatalogSource,
   opts: FetchRawModelsOptions = {},
@@ -74,12 +56,11 @@ export async function fetchRawModels(
     : new Credential(undefined, profile).resolveWithReason();
   if (resolved.token === null) throw new Error(resolved.reason);
   const token = resolved.token;
-  // The catalog endpoint gates on the same client identity as inference: a fine-grained
-  // PAT is rejected under the default vscode-chat and needs copilot-developer-cli. Resolve
-  // it (pin > probe; network-free for non-PAT credentials) so `agent models` works for a
-  // PAT Direct setup too -- probing DIRECT_MODELS_URL's own host, the one this fetch uses,
-  // so the verdict can't be rendered against a different (account-designated) host.
-  // Narrate on stderr: `agent auth --get` runs this fetch and its stdout is the token.
+  // The catalog endpoint gates on the same client identity as inference, so the fetch resolves one: a
+  // configured pin wins, a non-PAT token takes vscode-chat unprobed, and only a PAT is probed.
+  //   a fine-grained PAT     -> rejected under the default identity; it needs copilot-developer-cli
+  //   the probe's apiBase    -> the host this fetch uses, so its verdict is never rendered against a different host
+  //   the probe's narration  -> stderr: `agent auth --get` runs this fetch and its stdout is the token
   const integrationId = await resolvePassthroughIntegrationId(token, {
     pinned: new CopilotEnvConfig().pinnedIntegrationId(),
     apiBase: DEFAULT_COPILOT_API_BASE,

@@ -28,9 +28,8 @@ import {
   until,
   writeRunState,
 } from "./helpers.ts";
-// The lifecycle primitives the proxy-token resolver orchestrates: `start --record-event`
-// (heartbeat) and `start --check` (is-it-up probe). Each is isolated in a temp
-// COPILOT_API_HOME and resets the shared process.exitCode.
+// `start --record-event` (the heartbeat) and `start --check` (the is-it-up probe) are the
+// primitives the proxy-token resolver orchestrates.
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
 
@@ -85,21 +84,18 @@ async function streamsOf(
   return { stdout: out.join(""), stderr: err.join("") };
 }
 
-/** Run `fn` and return everything it wrote to either process stream. */
 async function narrationOf(fn: () => Promise<void>): Promise<string> {
   const { stdout, stderr } = await streamsOf(fn);
   return stdout + stderr;
 }
 
-/** Run `start --dry-run` for the default profile and return its captured narration. */
 function dryRunNarration(): Promise<string> {
   return narrationOf(() =>
     runStart({ kind: "launch", dryRun: true, force: false, port: undefined, profile: null })
   );
 }
 
-// Open a loopback TCP server on an ephemeral port and resolve once it is accepting
-// connections. Mirrors the daemon's listening socket so portListening can probe a real port.
+// A real listening socket, so portListening can probe a real port.
 function listenEphemeral(host = "127.0.0.1"): Promise<{ server: Server; port: number }> {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -119,7 +115,6 @@ function closeServer(server: Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-/** A free loopback port: grabbed on an ephemeral listener, then released. */
 async function freePort(): Promise<number> {
   const { server, port } = await listenEphemeral();
   await closeServer(server);
@@ -154,9 +149,8 @@ test("start --record-event --profile heartbeats ONLY the profile's run state", a
   expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
 });
 
-// parseStartAction is the CLI boundary: exactly one of check / record-event / launch.
-// A conflicting flag combination is rejected there, never resolved by dispatch order
-// (the old silent-if-order shape dropped `--record-event` when `--check` was present).
+// A conflicting flag combination is rejected at the boundary, never resolved by dispatch order:
+// the old shape silently dropped `--record-event` when `--check` was present.
 test("parseStartAction rejects conflicting mode flags at the boundary", () => {
   const CONFLICT =
     "--check and --record-event are mutually exclusive and cannot combine with --dry-run/--port/--force";
@@ -170,7 +164,6 @@ test("parseStartAction rejects conflicting mode flags at the boundary", () => {
 });
 
 test("parseStartAction parses each valid flag shape into its single action", () => {
-  // `profile` comes back PARSED: a branded ProfileName, or null when the flag is absent.
   expect(parseStartAction({ check: true, profile: "work" })).toEqual({
     kind: "check",
     profile: WORK,
@@ -208,10 +201,9 @@ test("start --check exits non-zero when no proxy is tracked/running", async () =
   expect(process.exitCode).toBe(1);
 });
 
-// The dry run narrates cleanupExistingProxies' plan (planCleanup, the SHARED decision
-// source) and never acts on it. Staged via the refused-stop fixture: the test process
-// holds the lock (so it stays held through both dry runs) while the marker and run state
-// name a live local bystander the plan cannot corroborate.
+// The dry run narrates planCleanup (the SHARED decision source) and never acts on it. In the
+// refused-stop fixture the test process holds the lock through both dry runs, while the marker
+// and run state name a live local bystander the plan cannot corroborate.
 test(
   "start --dry-run narrates the refused holder and the tracking clear, and never acts",
   async () => {
@@ -248,9 +240,8 @@ test(
   30_000,
 );
 
-// The two live actions the dry run once omitted, staged together: stale tracking of a
-// DEAD pid (live: a durable state-file clear) and a corroborated daemon.lock holder
-// beside it (live: the holder stop). The dry run must narrate both and perform neither.
+// Stale tracking of a DEAD pid (live: a durable state-file clear) beside a corroborated
+// daemon.lock holder (live: the holder stop): the dry run must narrate both and perform neither.
 test(
   "start --dry-run reports the corroborated holder stop and the dead-pid tracking clear without acting",
   async () => {
@@ -278,15 +269,12 @@ test(
   60_000,
 );
 
-// The self-update preflight runs inside a LIVE `start`, as its last step after the launch
-// outcome, behind the same gate as its unit tests (the auto-update key, then the daily
-// cadence). The launch itself resolves as the managed-lifecycle no-op: a fake daemon holds
-// the home's lock AND listens on the tracked port (both awaited: the lock is taken at boot,
-// before the server listens, and a lock without a listener reads as a stale holder to
-// stop), so `start` leaves it up and spawns nothing. The release listing is a stubbed fetch
-// whose newest release is the running version, so the due check records "up to date" and
-// applies nothing. The preflight's on-disk state and lock come through runStart's seam, so
-// the checkout's own are untouched.
+// A fake daemon holds the home's lock AND listens on the tracked port, so the launch resolves
+// as the managed-lifecycle no-op and spawns nothing. Both are awaited: the lock is taken at
+// boot before the server listens, and a lock without a listener reads as a stale holder to stop.
+//
+//   release listing            -> a stubbed fetch whose newest release is the running version
+//   preflight's state and lock -> runStart's seam, so the checkout's own are untouched
 test(
   "start runs the self-update preflight after a live launch's outcome, gated on the auto-update key",
   async () => {
@@ -388,12 +376,9 @@ test(
   60_000,
 );
 
-// portListening is the liveness half of proxyStatus's UP-path composition. proxyStatus's
-// OTHER half (classifyDaemonPid) checks the recorded pid's identity against a `copilot-api
-// ... start` command line, which the deno test runner's own pid cannot satisfy -- so the full
-// UP-path through runStart({kind:"check"}) is not reproducible in-test without a real daemon (see
-// the "stays DOWN" test below). These two tests pin the part that IS deterministic: the raw TCP
-// liveness probe against a real listening port vs. a dead one.
+// The full UP path is not reproducible here: classifyDaemonPid needs a `copilot-api ... start`
+// command line, which the test runner's own pid cannot satisfy (see the "stays DOWN" test
+// below). These two pin the TCP liveness half alone.
 test("portListening resolves true against a real listening loopback port", async () => {
   const { server, port } = await listenEphemeral();
   try {
@@ -404,8 +389,6 @@ test("portListening resolves true against a real listening loopback port", async
 });
 
 test("portListening resolves false for a port with nothing listening", async () => {
-  // Grab an ephemeral port, then close the server so the port is free again. Nothing is
-  // listening, so the connect should error/refuse and the probe must report not-listening.
   const { server, port } = await listenEphemeral();
   await closeServer(server);
   expect(await portListening(port, 1000)).toBe(false);
@@ -413,7 +396,7 @@ test("portListening resolves false for a port with nothing listening", async () 
 
 test("portListening detects an IPv6-loopback-only listener too", async () => {
   // The probe connects to 127.0.0.1 and ::1 concurrently and settles on the first success, so a
-  // daemon bound only to IPv6 loopback is still found. Skip if the host has no IPv6 loopback.
+  // daemon bound only to IPv6 loopback is still found.
   let listener: { server: Server; port: number };
   try {
     listener = await listenEphemeral("::1");
@@ -427,21 +410,17 @@ test("portListening detects an IPv6-loopback-only listener too", async () => {
   }
 });
 
-// The full UP-path (live pid + real listening port -> exit 0) requires proxyStatus's
-// classifyDaemonPid guard to NOT return "no", which means the seeded pid must be a process whose
-// command line matches `copilot-api ... start`. The test runner's pid is identifiable but does
-// NOT match, so classifyDaemonPid returns "no" and even a genuinely listening port stays DOWN.
-// This asserts the guard is load-bearing: a live-but-foreign, IDENTIFIABLE pid plus a real port
-// still yields exit 1, never a false UP. (A restricted token that cannot read the pid's command
-// line yields "unknown" -> the port probe decides; see the classifyDaemonPid unit test below. A
-// true exit-0 path is covered end-to-end by the start/stop lifecycle against the fake proxy,
-// where the daemon's command line does match.)
+// The guard is load-bearing: a live, IDENTIFIABLE pid whose command line is not
+// `copilot-api ... start`, plus a genuinely listening port, must still be DOWN, never a false UP.
+//   identifiable non-daemon pid -> "no"      -> exit 1, whatever the port says
+//   unreadable command line     -> "unknown" -> the port probe decides (classifyDaemonPid test below)
+// The true exit-0 path runs in the start/stop lifecycle against the fake proxy, whose command
+// line does match.
 test("start --check stays DOWN for a live pid + listening port that is not a copilot-api daemon", async () => {
   tmpHome();
   const { server, port } = await listenEphemeral();
   try {
-    // process.pid is alive (pidAlive true) and the port genuinely listens, but the test runner
-    // is not a copilot-api daemon and IS identifiable, so classifyDaemonPid(process.pid) is "no".
+    // process.pid is alive and the port listens, but the runner is identifiable as not a daemon.
     writeRunState({ pid: process.pid, port });
     expect(new CopilotEnvRunState().read().pid).toBe(process.pid);
     expect(new CopilotEnvRunState().read().port).toBe(port);
@@ -453,12 +432,9 @@ test("start --check stays DOWN for a live pid + listening port that is not a cop
   }
 });
 
-// classifyDaemonPid is the PID-identity half of proxyStatus. A definitive "no" (dead pid, or a
-// live but identifiable non-daemon) is what keeps the DOWN test above honest; "unknown" (a
-// restricted token that cannot read a command line) is reserved for sandboxed callers and is
-// exercised by proxyStatus's fall-through, not reproducible here.
+// A definitive "no" is what keeps the DOWN test above honest; "unknown" (a restricted token that
+// cannot read a command line) is reserved for sandboxed callers and is not reproducible here.
 test("classifyDaemonPid returns 'no' for a dead pid and a live non-daemon pid", async () => {
   expect(await classifyDaemonPid(DEAD_PID)).toBe("no");
-  // The test runner is alive and identifiable, but its command line is not `copilot-api ... start`.
   expect(await classifyDaemonPid(process.pid)).toBe("no");
 });

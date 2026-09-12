@@ -47,15 +47,12 @@ afterEach(() => {
 
 function isolate(): void {
   dir = isolateProxyHome("copilot-catalog-");
-  // The catalog is opt-in (default false); these tests exercise the enabled
-  // machinery, so flip it on in the isolated home. The disabled-gate tests
-  // below undo this per-test.
+  // The catalog is opt-in (default false); the disabled-gate tests at the end turn it back off.
   new CopilotEnvConfig().set({ codexModelCatalog: true });
 }
 
 type Model = Record<string, unknown>;
 
-/** A Copilot entry Codex can drive, with only the limits varying by default. */
 function copilotModel(
   limits: CopilotModelLimits,
   extra: Partial<CopilotCatalogModel> = {},
@@ -157,7 +154,6 @@ test("parseCopilotModels reads limits, identity, and Codex-servability, skipping
       },
       // Missing prompt cap: skipped (both numbers are required for the patch).
       { id: "gpt-5.4-mini", capabilities: { limits: { max_context_window_tokens: 400_000 } } },
-      // Ill-typed / degenerate values: skipped.
       {
         id: "bad-types",
         capabilities: { limits: { max_context_window_tokens: "1m", max_prompt_tokens: 1 } },
@@ -243,7 +239,6 @@ test("parseCopilotModels merges a [1m] twin into its base: larger window, every 
       supports: { reasoning_effort: ["low"], parallel_tool_calls: true },
     },
   };
-  // The twin states only its limits.
   const twin = {
     id: "claude-x[1m]",
     capabilities: { limits: { max_context_window_tokens: 1_000_000, max_prompt_tokens: 900_000 } },
@@ -258,8 +253,6 @@ test("parseCopilotModels merges a [1m] twin into its base: larger window, every 
   expect(parseCopilotModels({ data: [base, twin] }).get("claude-x")).toEqual(expected);
   expect(parseCopilotModels({ data: [twin, base] }).get("claude-x")).toEqual(expected);
 
-  // Both state a fact and disagree: the larger window's entry speaks first, in
-  // either order.
   const loudTwin = {
     ...twin,
     name: "Claude X 1M",
@@ -278,8 +271,8 @@ test("parseCopilotModels merges a [1m] twin into its base: larger window, every 
   expect(parseCopilotModels({ data: [base, loudTwin] }).get("claude-x")).toEqual(twinWins);
   expect(parseCopilotModels({ data: [loudTwin, base] }).get("claude-x")).toEqual(twinWins);
 
-  // A twin advertising an EMPTY effort list says nothing, so the base's list wins
-  // in either order (an empty list must never read as "no shared effort").
+  // An EMPTY effort list on the twin says nothing, so the base's list wins (an empty list must
+  // never read as "no shared effort").
   const emptyTwin = {
     ...twin,
     capabilities: { ...twin.capabilities, supports: { reasoning_effort: [] } },
@@ -328,23 +321,18 @@ test("patchModelCatalog overlays matching slugs and keeps every other field verb
   expect(doc).not.toBeNull();
   const models = modelsIn(doc);
 
-  // Patched: Copilot's window, and the percent floored to the prompt cap
-  // (922000 / 1050000 => 87; the bundled 95% would 413 upstream before compact).
+  // The percent is floored to the prompt cap (922000 / 1050000 -> 87): the bundled 95% would 413
+  // upstream before compact.
   expect(models[0]?.context_window).toBe(1_050_000);
   expect(models[0]?.max_context_window).toBe(1_050_000);
   expect(models[0]?.effective_context_window_percent).toBe(87);
-  // Untouched fields survive verbatim.
   expect(models[0]?.display_name).toBe("GPT-5.5");
   expect(models[0]?.nested).toEqual({ keep: ["me", 1] });
-  // Tier advertisements are EMPTIED on every model (limits-matched or not): they
-  // make Codex send `service_tier`, which Copilot's /responses rejects -- but
-  // the keys stay, so the entry keeps the dump's exact key set.
+  // Tiers are EMPTIED on every model: they make Codex send `service_tier`, which Copilot's
+  // /responses rejects. The keys stay, so the entry keeps the dump's exact key set.
   expect(models[0]?.service_tiers).toEqual([]);
   expect(models[0]?.additional_speed_tiers).toEqual([]);
-  // The known-required extra: Copilot's advertised value where known...
   expect(models[0]?.supports_parallel_tool_calls).toBe(true);
-  // ...and false for a model Copilot does not list. A non-matching sibling is
-  // otherwise untouched apart from the emptied tiers.
   expect(models[1]).toEqual({
     slug: "gpt-5.2",
     context_window: 272_000,
@@ -352,9 +340,7 @@ test("patchModelCatalog overlays matching slugs and keeps every other field verb
     service_tiers: [],
     supports_parallel_tool_calls: false,
   });
-  // A slug-less entry survives (with the fill, which every entry gets).
   expect(models[2]).toEqual({ no_slug: true, supports_parallel_tool_calls: false });
-  // Top-level extras survive.
   expect((doc as Record<string, unknown>).schema_version).toBe(3);
 });
 
@@ -450,7 +436,6 @@ test("a Copilot-only model is appended as a clone of its closest bundled relativ
   ]);
 
   const solFast = bySlug(doc, "gpt-5.6-sol-fast");
-  // Identity + limits from Copilot.
   expect(solFast.display_name).toBe("GPT-5.6 Sol Fast");
   expect(solFast.description).toBe(
     "GPT-5.6 Sol Fast, served by GitHub Copilot (not bundled with Codex)",
@@ -459,10 +444,9 @@ test("a Copilot-only model is appended as a clone of its closest bundled relativ
   expect(solFast.max_context_window).toBe(1_050_000);
   expect(solFast.effective_context_window_percent).toBe(87);
   expect(solFast.supports_parallel_tool_calls).toBe(true);
-  // The donor's Codex-side shape survives...
   expect(solFast.base_instructions).toBe("instructions for gpt-5.6-sol");
   expect(solFast.experimental_supported_tools).toEqual(["a", "b"]);
-  // ...but not its donor-specific claims: listed and API-served in its own right.
+  // Donor-specific claims are dropped: the clone is listed and API-served in its own right.
   expect(solFast.visibility).toBe("list");
   expect(solFast.supported_in_api).toBe(true);
   expect(solFast.upgrade).toBeNull();
@@ -510,7 +494,6 @@ test("advertised efforts sharing nothing with the donor's levels (or a donor lis
     modelsOf([["gpt-5.3-codex", copilotModel(GPT55_LIMITS, { reasoningEfforts: ["zeta"] })]]),
   );
   expect(modelsIn(disjoint).some((m) => m.slug === "gpt-5.3-codex")).toBe(false);
-  // A donor without a level list has nothing to intersect: no clone either.
   const levelless = JSON.stringify({
     models: [{ ...donor("gpt-5.4"), supported_reasoning_levels: undefined }],
   });
@@ -623,8 +606,6 @@ test("every field of every bundled entry survives (tiers emptied, limits overlai
     expect(Object.keys(out).sort()).toEqual(
       [...Object.keys(entry), "supports_parallel_tool_calls"].sort(),
     );
-    // Only the tiers, and the limits of the ONE model Copilot lists, are rewritten;
-    // every other value is byte-identical.
     const rewritten = new Set(
       slug === "gpt-5.6-sol" ? [...tierFields, ...limitFields] : tierFields,
     );
@@ -716,8 +697,6 @@ test("a candidate the installed codex rejects is never written; an unverifiable 
   // The probe judged the patched document, not the raw dump.
   expect(JSON.parse(probed).models[0].context_window).toBe(1_050_000);
 
-  // No codex to ask (null): the JSON-valid candidate is written, and the line says
-  // plainly that its schema acceptance could not be verified (nothing hidden).
   let narrated = "";
   const realWrite = process.stderr.write;
   process.stderr.write = (chunk: string | Uint8Array): boolean => {
@@ -753,7 +732,6 @@ test("a failed regeneration never touches an existing (stale but valid) catalog"
   ).toBe(true);
   const before = readFileSync(new CopilotApiPaths().codexModelCatalogFile, "utf8");
 
-  // Bundled dump fails; a throwing fetch is also swallowed; a rejected candidate too.
   expect(
     await generateCodexModelCatalog("direct", {
       bundledCatalog: () => null,
@@ -844,7 +822,6 @@ test("an accepted catalog is remembered by content and codex version: no re-prob
     },
     codexVersion: () => version,
   });
-  // Generation under codex 1.0.0, accepted: the (hash, version) pair is recorded.
   expect(
     await generateCodexModelCatalog("direct", {
       bundledCatalog: () => BUNDLED,
@@ -857,15 +834,12 @@ test("an accepted catalog is remembered by content and codex version: no re-prob
   expect(recorded?.codexVersion).toBe("1.0.0");
   expect(recorded?.sha256).toMatch(/^[0-9a-f]{64}$/);
 
-  // The sync's later inspection (a fresh process would read the same state):
-  // same bytes, same codex -- accepted without asking.
   expect(inspectCatalogFile(file, probing(false, "1.0.0"))).toBe("accepted");
   expect(probes).toBe(1);
   // A codex upgrade asks again (and a rejection is not recorded).
   expect(inspectCatalogFile(file, probing(false, "2.0.0"))).toBe("rejected");
   expect(probes).toBe(2);
   expect(new CopilotEnvState().read().codexCatalogAccepted).toEqual(recorded);
-  // An acceptance by the new codex is recorded, then trusted.
   expect(inspectCatalogFile(file, probing(true, "2.0.0"))).toBe("accepted");
   expect(inspectCatalogFile(file, probing(false, "2.0.0"))).toBe("accepted");
   expect(probes).toBe(3);
@@ -904,7 +878,6 @@ test("inspectCatalogFile: one read decides unusable, then hands the same bytes t
     },
     codexVersion: () => null,
   });
-  // Absent, unreadable (a directory), malformed, empty: unusable before any probe.
   expect(inspectCatalogFile(file, judging(true))).toBe("unusable");
   mkdirSync(file);
   expect(inspectCatalogFile(file, judging(true))).toBe("unusable");
@@ -914,7 +887,6 @@ test("inspectCatalogFile: one read decides unusable, then hands the same bytes t
   writeFileSync(file, '{"models":[]}');
   expect(inspectCatalogFile(file, judging(true))).toBe("unusable");
   expect(seen).toBeNull();
-  // A catalog: the probe's verdict, over exactly the bytes read.
   writeFileSync(file, '{"models":[{"slug":"x"}]}');
   expect(inspectCatalogFile(file, judging(false))).toBe("rejected");
   expect(seen).toBe('{"models":[{"slug":"x"}]}');
@@ -929,7 +901,6 @@ test("inspectCatalogFile: one read decides unusable, then hands the same bytes t
 
 const onPosix = test.skipIf(process.platform === "win32");
 
-/** A fake `codex` first on PATH, a probe-runs ledger, and the catalog file to judge. */
 function fakeCodexHarness() {
   isolate();
   const bin = join(dir, "bin");
@@ -950,7 +921,6 @@ function fakeCodexHarness() {
     seen,
     readCandidate,
     dump: `echo '{"models":[{"slug":"fake"}]}'`,
-    /** Install the fake: `debug models` runs append "<cwd> <CODEX_HOME>" to the ledger. */
     fake(body: string): void {
       const script = [
         "#!/bin/sh",
@@ -1051,7 +1021,6 @@ onPosix("a spent probe budget judges nothing and spawns nothing", () => {
   h.write("budgeted");
   expect(inspectCatalogFile(h.file)).toBe("unverifiable");
   expect(h.runs().length).toBe(1);
-  // Spent: a further file is not even spawned for.
   h.write("unbudgeted");
   resetCatalogProbeState(0);
   try {
@@ -1099,14 +1068,12 @@ test("past the refresh deadline the catalog is still written but its acceptance 
 test("a codex version change bypasses the daily throttle (new bundled catalog within one cycle)", async () => {
   isolate();
   const now = 1_700_000_000_000;
-  // A refresh just ran (fresh timestamp) against codex 0.144.0.
   new CopilotEnvState().set({
     codexCatalogLastAttemptMs: now - 1000,
     codexCatalogCodexVersion: "0.144.0",
     codexCatalogPatchVersion: CATALOG_PATCH_VERSION,
   });
 
-  // Same version + fresh timestamp: throttled.
   let called = false;
   const deps = {
     nowMs: () => now,
@@ -1141,8 +1108,7 @@ test("a codex version change bypasses the daily throttle (new bundled catalog wi
 test("a catalog patch-logic change bypasses the daily throttle", async () => {
   isolate();
   const now = 1_700_000_000_000;
-  // A refresh just ran (fresh timestamp, same codex) under the PREVIOUS patch
-  // logic: its on-disk catalog may carry exactly what the new patch removes.
+  // A catalog written under the PREVIOUS patch logic may carry exactly what the new patch removes.
   new CopilotEnvState().set({
     codexCatalogLastAttemptMs: now - 1000,
     codexCatalogCodexVersion: "0.144.0",

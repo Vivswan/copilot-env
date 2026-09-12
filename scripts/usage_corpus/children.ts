@@ -46,8 +46,6 @@ const REAL_ENV_KEYS = [
   "NODE_EXTRA_CA_CERTS",
 ];
 
-/** The exact environment a CLI child gets: an allowlist over `parent` (case-insensitive keys),
- *  `home` as HOME, `binDir` prepended to PATH, loopback excluded from any proxy, then `extra`. */
 function childEnvironment(
   parent: Record<string, string | undefined>,
   home: string,

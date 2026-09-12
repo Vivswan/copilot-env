@@ -24,11 +24,9 @@ export interface PreflightOptions {
   lock?: typeof withUpdateLock;
 }
 
-/** Run the autoupdate check (and apply) if the `auto-update` key is on and a check
- *  is due. A failed check or update is recorded and logged, never thrown; the caller
- *  keeps an error boundary for the I/O around the gate itself (config, state, lock). An
- *  applied update flips the install's live version, which later starts run; the calling
- *  process keeps running the image it loaded. */
+/** A failed check or update is recorded and logged, never thrown; the caller keeps an error
+ *  boundary for the I/O around the gate itself (config, state, lock). An applied update flips
+ *  the live version for later starts; this process keeps running the image it loaded. */
 export async function runPreflight(opts: PreflightOptions): Promise<void> {
   const state = opts.state ?? new AutoupdateState();
   if (!new CopilotEnvConfig().autoUpdateEnabled()) return;
@@ -41,9 +39,9 @@ export async function runPreflight(opts: PreflightOptions): Promise<void> {
       );
       return;
     }
-    // Re-read under the lock: a concurrent run may have completed the check (and the
-    // apply) between the unlocked read above and this acquire, and its record is ours
-    // too -- rechecking here is what keeps two starts from applying the same release twice.
+    // Re-read under the lock: a concurrent run may have completed the check (and apply) between
+    // the unlocked read above and this acquire. This is what keeps two starts from applying
+    // one release twice.
     if (!isDue(state.read().lastCheckMs, opts.nowMs)) return;
     await checkAndApply(state, effectiveUpdateCooldownDays(), opts.nowMs, outcome);
   });
@@ -88,9 +86,8 @@ async function checkAndApply(
 
   logger.start(`autoupdate: updating ${current} -> ${target.tag} ...`);
   try {
-    // Route applyUpdate's own + child-process output to stderr too, so an
-    // autoupdate can never write to stdout (protects `agent env` on every OS).
-    // No flag here: the stored `verify-provenance` (default: verify) decides.
+    // Stderr end to end, so an autoupdate can never write to stdout (protects `agent env`). No
+    // flag here: the stored `verify-provenance` (default: verify) decides.
     const provenance = resolveProvenanceDecision(
       undefined,
       new CopilotEnvConfig().verifyProvenanceEnabled(),

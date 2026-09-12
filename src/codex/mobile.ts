@@ -1,11 +1,6 @@
-// `agent codex --mobile`: guide the user through pairing the Codex desktop app
-// with the phone remote-control flow. Codex's phone pairing needs the app on its
-// DEFAULT OpenAI provider, so this temporarily removes the managed `model_provider`
-// from config.toml, walks the user through pairing in the app, then restores it.
-//
-// macOS and Windows drive the app programmatically (macOS: open/osascript/pgrep;
-// Windows: PowerShell Get-Process/Start-Process/Stop-Process). There is no Linux
-// Codex app, so `--mobile` is gated to macOS/Windows.
+// Codex's phone pairing needs the app on its DEFAULT OpenAI provider, so `agent codex --mobile`
+// temporarily removes the managed `model_provider`, walks the user through pairing in the app, then
+// restores it. There is no Linux Codex app, so it is gated to macOS/Windows.
 import * as fs from "node:fs";
 import { consola } from "consola";
 import { parse, stringify } from "smol-toml";
@@ -25,7 +20,6 @@ const QUIT_TIMEOUT_MS = 8000;
 
 // --- pure config toggle (unit-tested) ---------------------------------------
 
-/** Force `requires_openai_auth = false` on our managed provider table (idempotent). */
 function ensureNoForcedOpenaiAuth(doc: Record<string, unknown>): void {
   const providers = isRecord(doc.model_providers) ? doc.model_providers : null;
   if (!providers) return;
@@ -33,7 +27,6 @@ function ensureNoForcedOpenaiAuth(doc: Record<string, unknown>): void {
   if (isRecord(table)) table.requires_openai_auth = false;
 }
 
-/** Read the configured `model_provider` (null when unset/malformed). Pure. */
 export function readModelProvider(configToml: string): string | null {
   try {
     const doc = parse(configToml);
@@ -43,7 +36,6 @@ export function readModelProvider(configToml: string): string | null {
   }
 }
 
-/** Read the configured `model_catalog_json` path (null when unset/malformed). Pure. */
 export function readModelCatalogJson(configToml: string): string | null {
   try {
     const doc = parse(configToml);
@@ -55,13 +47,8 @@ export function readModelCatalogJson(configToml: string): string | null {
   }
 }
 
-/**
- * Remove the top-level `model_provider` key (so the app uses its default OpenAI
- * provider for pairing) and re-assert `requires_openai_auth = false`. The
- * Copilot-patched `model_catalog_json` goes with it -- during pairing the app
- * runs the real OpenAI provider, whose limits the patched catalog would
- * misstate. Everything else in the file is preserved. Pure.
- */
+/** The Copilot-patched `model_catalog_json` goes with the provider: during pairing the app runs the
+ *  real OpenAI provider, whose limits the patched catalog would misstate. */
 export function stripModelProvider(configToml: string): string {
   const doc = parse(configToml) as Record<string, unknown>;
   delete doc.model_provider;
@@ -70,10 +57,6 @@ export function stripModelProvider(configToml: string): string {
   return stringify(doc);
 }
 
-/**
- * Restore the top-level `model_provider` key to `provider` (and, when captured,
- * the `model_catalog_json` path stripped alongside it). Pure.
- */
 export function restoreModelProvider(
   configToml: string,
   provider: string,
@@ -90,51 +73,38 @@ export function restoreModelProvider(
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** A look by one of the app scans (running / installed): "present"/"absent" are PROVEN
- *  readings -- the scan ran to completion and emitted its verdict -- while "unproven"
- *  is a look that FAILED: pgrep/open/PowerShell erroring or missing, or the spawn
- *  itself failing. An unproven look never reads as a confident absence (the same
- *  failed-look discipline as classifyPidFromScan in src/copilot_api/process.ts). */
+/** "present" and "absent" are PROVEN readings (the scan ran to completion and emitted its verdict);
+ *  "unproven" is a look that FAILED (pgrep/open/PowerShell erroring or missing, or the spawn itself
+ *  failing) and never reads as a confident absence, as in classifyPidFromScan
+ *  (src/copilot_api/process.ts). */
 export type AppScan = "present" | "absent" | "unproven";
 
-/** The shared verdict over a scripted platform scan, pure for testing: the scan script
- *  emits an explicit verdict word on stdout WITH exit 0, so those two readings are the
- *  only confident ones. The exit-0 guard is LOAD-BEARING beside the word check, not
- *  redundant with it: a scan killed AFTER printing its verdict (a timeout kill, OOM,
- *  a user interrupt) exits nonzero with a valid word already on stdout, and without
- *  the guard that killed look would mint a proven reading -- on the Windows path this
- *  guard is the sole protection. A missing or garbled word on exit 0 is equally
- *  unproven. */
+/** The exit-0 guard is LOAD-BEARING beside the word check: a scan killed AFTER printing its verdict
+ *  (a timeout kill, OOM, a user interrupt) exits nonzero with a valid word already on stdout, and
+ *  on the Windows path this guard is the sole protection against minting a proven reading from it.
+ */
 export function appScanVerdict(result: { exitCode: number; stdout: string }): AppScan {
   if (result.exitCode !== 0) return "unproven";
   const verdict = result.stdout.trim();
   return verdict === "present" || verdict === "absent" ? verdict : "unproven";
 }
 
-/** The verdict over a scan whose TOOL already speaks a three-state exit vocabulary
- *  (pgrep, `open -Ra`: 0 match, 1 ran-no-match, anything else an error), pure for
- *  testing. The proven absence requires BOTH the tool's own exit 1 AND no launch-
- *  failure mark: runCaptured synthesizes the same exit 1 for a look that never ran
- *  (a spawn failure), and the mark is what keeps that failed look from reading as a
- *  confident absence. */
+/** For tools that already speak a three-state exit vocabulary (pgrep, `open -Ra`: 0 match, 1
+ *  ran-no-match, anything else an error). runCaptured synthesizes the same exit 1 for a look that
+ *  never ran, so a proven absence also requires no launch-failure mark. */
 export function appScanFromExit(result: { exitCode: number; launchFailed?: true }): AppScan {
   if (result.launchFailed) return "unproven";
   if (result.exitCode === 0) return "present";
   return result.exitCode === 1 ? "absent" : "unproven";
 }
 
-/** The one honest warn for a running scan that failed -- contract text, chosen once,
- *  shared by the pre-swap close gate and the post-pairing close. */
+/** Contract text, shared by the pre-swap close gate and the post-pairing close. */
 const RUNNING_SCAN_UNPROVEN_WARN =
   `The process scan failed, so it could not prove the ${APP_NAME} app is closed.`;
 
-/**
- * The close-gate judgment over a running scan, pure for testing. A PROVEN absence is
- * the only silent proceed; a proven-present app takes the interactive close gate; an
- * UNPROVEN look warns honestly and takes the SAME gate -- a scan that failed to run
- * never authorizes the confident "not running" that would swap config under a
- * possibly-open app. Its prompt never claims the app IS open, only possibly so.
- */
+/** A PROVEN absence is the only silent proceed. An UNPROVEN look warns and takes the SAME gate as a
+ *  proven-present app: a scan that failed to run never authorizes swapping config under a possibly
+ *  open app, and its prompt never claims the app IS open. */
 export function closeGateFromScan(
   scan: AppScan,
 ): { close: false } | { close: true; warn: string | null; prompt: string } {
@@ -149,12 +119,8 @@ export function closeGateFromScan(
   };
 }
 
-/**
- * The install-gate judgment over an installed scan, pure for testing. A proven
- * presence proceeds silently; a PROVEN absence aborts with the install hint; an
- * UNPROVEN look is NOT a "not installed" -- it says the scan could not check and
- * asks the user, who can see their own machine, whether to continue.
- */
+/** An UNPROVEN look is NOT "not installed": it says the scan could not check and asks the user, who
+ *  can see their own machine, whether to continue. */
 export function installGateFromScan(
   scan: AppScan,
 ):
@@ -177,34 +143,23 @@ export function installGateFromScan(
   };
 }
 
-/**
- * The post-pairing close judgment, pure for testing: only a PROVEN-present app earns
- * the automatic quit -- an unproven look must not mint a close signal today's flow
- * never sent -- and the unproven look keeps the honest warn, because restore then
- * proceeds under an app the scan could not prove closed.
- */
+/** Only a PROVEN-present app earns the automatic quit; an unproven look keeps the warn, because
+ *  restore then proceeds under an app the scan could not prove closed. */
 export function postPairingCloseFromScan(scan: AppScan): { quit: boolean; warn: string | null } {
   if (scan === "present") return { quit: true, warn: null };
   if (scan === "absent") return { quit: false, warn: null };
   return { quit: false, warn: RUNNING_SCAN_UNPROVEN_WARN };
 }
 
-/** The Get-Process scan fragment shared by the Windows running and installed looks:
- *  'present' on a match, 'absent' ONLY on the SPECIFIC no-match error id, a nonzero
- *  verdict-less exit for every other failure -- so no real Get-Process error can
+/** Shared by the Windows running and installed looks: 'absent' ONLY on the SPECIFIC no-match error
+ *  id, a nonzero verdict-less exit for every other failure, so no real Get-Process error can
  *  flatten into a proven reading. */
 const PS_PROCESS_SCAN =
   `try { $null = Get-Process -Name '${APP_NAME}' -ErrorAction Stop; 'present' } ` +
   "catch { if ($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenName*') { 'absent' } else { exit 1 } }";
 
-/**
- * Drives the Codex desktop app (install check / running check / open / quit) across
- * macOS and Windows. macOS uses `open`/`pgrep`/`osascript`/`pkill`; Windows drives it
- * via PowerShell (Get-StartApps/Get-Process/Start-Process/Stop-Process). The
- * graceful-then-force `quit()` poll loop is shared; only the per-platform primitives differ.
- * The process executor, platform, and quit timing are injectable for tests only;
- * production callers construct it bare.
- */
+/** The graceful-then-force `quit()` poll loop is shared; only the per-platform primitives differ.
+ *  The executor, platform, and quit timing are injectable for tests only. */
 export class CodexAppController {
   private readonly windows: boolean;
   private readonly exec: (
@@ -242,11 +197,9 @@ export class CodexAppController {
   /** Three-state look at whether the app appears installed (see AppScan). */
   async installedState(): Promise<AppScan> {
     if (this.windows) {
-      // Under Stop, a Get-StartApps that cannot run (module missing, restricted host)
-      // exits nonzero -> unproven, never a false "absent". The Get-Process fallback is
-      // the shared discriminated fragment: a REAL Get-Process error is never
-      // suppressed into a proven absence either -- 'absent' needs Start Apps empty
-      // AND the specific no-process error.
+      // Under Stop, a Get-StartApps that cannot run (module missing, restricted host) exits
+      // nonzero, never a false 'absent'; 'absent' needs Start Apps empty AND the specific
+      // no-process error.
       return appScanVerdict(
         await this.ps(
           "$ErrorActionPreference = 'Stop'; " +
@@ -255,31 +208,26 @@ export class CodexAppController {
         ),
       );
     }
-    // `open -Ra` exits 0 when the app resolves and, by convention, 1 when it does
-    // not; a marked launch failure or any other exit stays unproven (appScanFromExit).
-    // open(1) documents no exclusive exit vocabulary, so an exotic LaunchServices
-    // failure could still exit 1 -- there is no stable further discriminant (stderr
-    // text is not a contract), which is why the absent arm's rendering stays hedged
-    // ("does not appear to be installed") rather than claiming proof.
+    // `open -Ra` exits 1 by convention when the app does not resolve, but open(1) documents no
+    // exclusive exit vocabulary, so an exotic LaunchServices failure could still exit 1 (stderr
+    // text is not a contract). Hence the absent arm's rendering stays hedged ("does not appear to
+    // be").
     return appScanFromExit(await this.run("open", ["-Ra", APP_NAME]));
   }
 
   /** Three-state look at whether the app is currently running (see AppScan). */
   async runningState(): Promise<AppScan> {
     if (this.windows) {
-      // The shared fragment: -ErrorAction Stop turns the no-match case into a
-      // terminating error whose FullyQualifiedErrorId (NoProcessFoundForGivenName)
-      // is the PROVEN absence. Every other failure -- other Get-Process errors, a
-      // PowerShell launch that never ran (no verdict word) -- reads unproven.
+      // -ErrorAction Stop turns the no-match case into a terminating error whose
+      // FullyQualifiedErrorId (NoProcessFoundForGivenName) is the PROVEN absence.
       return appScanVerdict(await this.ps(PS_PROCESS_SCAN));
     }
-    // pgrep's exit vocabulary is already three-state (0 match, 1 ran-no-match, >1
-    // error); the launch-failure mark separates a REAL exit 1 from the one runCaptured
-    // synthesizes for a pgrep that never ran (appScanFromExit).
+    // pgrep's exit vocabulary is already three-state; the launch-failure mark separates a REAL exit
+    // 1 from the one runCaptured synthesizes for a pgrep that never ran.
     return appScanFromExit(await this.run("pgrep", ["-x", APP_NAME]));
   }
 
-  /** Open / focus the app. On Windows, falls back to a manual prompt if it can't launch. */
+  /** On Windows, falls back to a manual prompt if it can't launch. */
   async open(): Promise<void> {
     if (this.windows) {
       const r = await this.ps(
@@ -292,15 +240,12 @@ export class CodexAppController {
     await this.run("open", ["-a", APP_NAME]);
   }
 
-  /** Ensure the app is closed: ask it to quit, poll, then force-kill if it overstays. */
   async quit(): Promise<void> {
     await this.requestQuit();
     const deadline = Date.now() + this.quitTimeoutMs;
     while (Date.now() < deadline) {
-      // Only a PROVEN absence ends the wait: an unproven look cannot satisfy "ensure
-      // the app is closed", so it keeps polling toward the deadline, where the
-      // pre-existing force-quit fires as before -- a targeted, by-name close attempt
-      // that claims nothing about whether the app was actually running.
+      // Only a PROVEN absence ends the wait: an unproven look keeps polling toward the deadline,
+      // where the by-name force-quit fires and claims nothing about whether the app was running.
       if ((await this.runningState()) === "absent") return;
       await sleep(this.quitPollMs);
     }
@@ -325,7 +270,6 @@ export class CodexAppController {
     }
   }
 
-  /** Non-programmable launch fallback: ask the user to open the app. */
   private manualPromptOpen(): Promise<unknown> {
     return consola.prompt(`Open the ${APP_NAME} app, then press Enter.`, { type: "text" });
   }
@@ -333,15 +277,16 @@ export class CodexAppController {
 
 // --- orchestration ----------------------------------------------------------
 
-/**
- * `agent codex --mobile`: temporarily drop the managed model_provider, walk the
- * user through the Codex app's phone remote-control pairing, then restore it.
- * Interactive (TTY required). The config is restored in a finally block so an
- * abort mid-flow can't leave Codex unconfigured.
- */
+/** Interactive (TTY required). Restore re-applies onto the current file and falls back to the
+ *  pre-flow one; it runs in a `finally` and again on SIGINT/SIGTERM, and those two paths part
+ *  company once the write itself fails.
+ *
+ *    on the signal  -> one retry, then exit 130 either way
+ *    in `finally`   -> the error propagates, leaving config.toml with no provider
+ *
+ *  Both leave the best-effort backup beside config.toml as the recovery. */
 export async function runCodexMobile(): Promise<void> {
-  // The Codex desktop app exists on macOS and Windows only (no Linux app). Gate
-  // other platforms BEFORE touching any config.
+  // Gate other platforms BEFORE touching any config.
   if (process.platform !== "darwin" && process.platform !== "win32") {
     logger.info(
       `The ${APP_NAME} desktop app isn't available on ${process.platform} - \`codex --mobile\` is macOS/Windows only.`,
@@ -380,8 +325,6 @@ export async function runCodexMobile(): Promise<void> {
     return;
   }
   if (installGate.kind === "confirm") {
-    // A failed look is not a "not installed": say so honestly, and let the user --
-    // who can see their own machine -- decide whether to continue.
     logger.warn(installGate.warn);
     const cont = await consola.prompt(installGate.prompt, {
       type: "confirm",
@@ -394,9 +337,6 @@ export async function runCodexMobile(): Promise<void> {
   }
 
   // Close the app first (ask permission, default yes) so the config swap is clean.
-  // Three-stated: a FAILED scan (unproven) warns and takes the SAME interactive gate
-  // as a proven-present app, never the silent proceed -- swapping config under a
-  // possibly-open app is exactly what this gate exists to prevent.
   const gate = closeGateFromScan(await app.runningState());
   if (gate.close) {
     if (gate.warn !== null) logger.warn(gate.warn);
@@ -411,8 +351,8 @@ export async function runCodexMobile(): Promise<void> {
     await app.quit();
   }
 
-  // Durable backup so a hard kill (SIGINT/SIGTERM) mid-pairing leaves a recovery
-  // file rather than a Codex with no provider. Removed on a clean finish.
+  // A durable backup so a hard kill mid-pairing leaves a recovery file rather than a Codex with no
+  // provider. Removed on a clean finish.
   const backupPath = `${configPath}.copilot-env-mobile.bak`;
   let backupWritten = false;
   try {
@@ -423,15 +363,15 @@ export async function runCodexMobile(): Promise<void> {
   }
 
   const usableCatalog = (): string | null => {
-    // Re-check at write time: disabling the opt-in catalog mid-pairing deletes the
-    // file, and a dangling or schema-rejected reference is a Codex startup error.
+    // Re-checked at write time: disabling the opt-in catalog mid-pairing deletes the file, and a
+    // dangling or schema-rejected reference is a Codex startup error.
     if (catalogPath === null) return null;
     const verdict = inspectCatalogFile(catalogPath);
     return verdict === "accepted" || verdict === "unverifiable" ? catalogPath : null;
   };
   const rebuildFromOriginal = (): string =>
-    // Strip+restore so the catalog guard applies (`original` may carry the deleted
-    // path verbatim); the pure rewrites cannot throw -- `original` parsed at flow start.
+    // Strip+restore so the catalog guard applies (`original` may carry the deleted path verbatim);
+    // the pure rewrites cannot throw, since `original` parsed at flow start.
     restoreModelProvider(stripModelProvider(original), provider, usableCatalog());
 
   let restored = false;
@@ -440,8 +380,8 @@ export async function runCodexMobile(): Promise<void> {
     restored = true;
     let next: string;
     try {
-      // Prefer re-applying onto the current file (the app may have edited it), but
-      // fall back to the pre-flow config if it's now unreadable/invalid.
+      // The app may have edited the file, so re-apply onto the current one; fall back to the
+      // pre-flow config when it is now unreadable or invalid.
       next = restoreModelProvider(fs.readFileSync(configPath, "utf8"), provider, usableCatalog());
     } catch {
       next = rebuildFromOriginal();
@@ -450,8 +390,8 @@ export async function runCodexMobile(): Promise<void> {
     writeFileReported(configPath, next);
   };
 
-  // `finally` does not run on a signal, so restore synchronously on SIGINT/SIGTERM
-  // too -- otherwise Ctrl-C during pairing leaves config.toml without a provider.
+  // `finally` does not run on a signal, so restore synchronously on SIGINT/SIGTERM too; otherwise
+  // Ctrl-C during pairing leaves config.toml without a provider.
   const onSignal = (): void => {
     try {
       restore();
@@ -468,9 +408,8 @@ export async function runCodexMobile(): Promise<void> {
   process.once("SIGTERM", onSignal);
 
   try {
-    // Drop the managed provider so the app pairs on its default OpenAI provider. The
-    // restore below rewrites the same path, silently (the seam names a path once per
-    // process), so this line names the act and nothing about a write not yet made.
+    // The restore below rewrites the same path silently (the seam names a path once per process),
+    // so this line names the act and nothing about a write not yet made.
     writeFileReported(configPath, stripModelProvider(original), {
       detail: `Codex config, rewritten around the pairing (model_provider "${provider}")`,
     });
@@ -488,10 +427,8 @@ export async function runCodexMobile(): Promise<void> {
       type: "text",
     });
 
-    // Post-pairing close: the pure judgment (postPairingCloseFromScan) -- only a
-    // PROVEN-present app earns the automatic quit, an unproven look warns honestly
-    // instead (restore itself is swap-tolerant: it re-reads the current file and
-    // falls back to the pre-flow config).
+    // Restore itself is swap-tolerant (it re-reads the current file and falls back to the pre-flow
+    // config), so an unproven look here only warns.
     const afterPairing = postPairingCloseFromScan(await app.runningState());
     if (afterPairing.warn !== null) logger.warn(afterPairing.warn);
     if (afterPairing.quit) await app.quit();

@@ -1,7 +1,5 @@
-// Capture everything a body writes to stdout and stderr: consola routes through
-// process.stdout/stderr.write, while deno's console.log/error write to the
-// runtime's own streams, so both layers are intercepted. Plain functions only
-// (this is not a test file).
+// consola writes through process.stdout/stderr.write, while deno's console.log/error write to
+// the runtime's own streams, so a capture must patch both layers.
 import { consola } from "consola";
 
 export interface CapturedOutput {
@@ -11,8 +9,7 @@ export interface CapturedOutput {
   all: string;
 }
 
-/** Run `body` with stdout and stderr captured per channel; the consola level is
- *  raised so warnings are not self-silenced under the test runner. */
+/** The consola level is raised for the span: under the test runner it self-silences warnings. */
 export async function captureChannels(
   body: () => void | Promise<void>,
 ): Promise<CapturedOutput> {
@@ -52,7 +49,6 @@ export async function captureChannels(
   return { stdout: out.join(""), stderr: err.join(""), all: all.join("") };
 }
 
-/** Both channels of `body`'s output as one string, in write order. */
 export async function captureAllWrites(body: () => void | Promise<void>): Promise<string> {
   return (await captureChannels(body)).all;
 }

@@ -2,13 +2,11 @@ import { pickAgedVersion } from "../src/utils/aged_version.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { describe, expect, test } from "./helpers/testing.ts";
 
-// --- pure-function units: `now` is injected, so these are clock-independent ---
 const NOW = Date.parse("2026-06-05T00:00:00.000Z");
 const iso = (daysAgo: number): string =>
   new Date(NOW - daysAgo * MILLISECONDS_PER_DAY).toISOString();
 
-// A realistic `npm view <pkg> time --json` payload: the created/modified
-// bookkeeping keys plus stable releases at various ages and one prerelease.
+// The shape of `npm view <pkg> time --json`: created/modified bookkeeping keys ride alongside the versions.
 const TIME: Record<string, string> = {
   created: iso(800),
   modified: iso(1),
@@ -25,12 +23,10 @@ describe("pickAgedVersion", () => {
   });
 
   test("excludes releases still inside the cooldown window", () => {
-    // 1.10.0 is only 10d old; at 14d the newest qualifying release is 1.2.10 (20d).
     expect(pickAgedVersion(TIME, 14 * MILLISECONDS_PER_DAY, NOW)).toBe("1.2.10");
   });
 
   test("orders by numeric semver, not lexically (1.2.10 > 1.2.9)", () => {
-    // At 25d, 1.2.10 (20d) is too new, so it falls back to 1.2.9 (30d).
     expect(pickAgedVersion(TIME, 25 * MILLISECONDS_PER_DAY, NOW)).toBe("1.2.9");
   });
 
@@ -41,7 +37,6 @@ describe("pickAgedVersion", () => {
   });
 
   test("never selects a prerelease, even when it is newest and highest", () => {
-    // 4.0.0-rc.1 (15d) is numerically the highest but must be skipped.
     expect(pickAgedVersion(TIME, 14 * MILLISECONDS_PER_DAY, NOW)).not.toBe("4.0.0-rc.1");
   });
 

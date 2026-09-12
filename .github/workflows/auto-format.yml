@@ -1,8 +1,5 @@
-# Repo-owned auto-format: label a pull request `fix-lint` (the label ships
-# with the template's settings.yml) and this workflow pushes a formatting
-# commit to the PR branch, then removes the label. Written once by the
-# fleet sync and never overwritten: adjust the format commands to this
-# repository's tooling.
+# Label a PR `fix-lint` (the label ships with the template's settings.yml) and this pushes a
+# formatting commit to the PR branch, then removes the label.
 
 name: Auto Format
 

@@ -46,7 +46,6 @@ function stderrDuring(run: () => void): string {
   return captured;
 }
 
-/** Run runEnv(posix) capturing its stdout lines. */
 function envLines(profile?: string): string[] {
   const lines: string[] = [];
   const orig = console.log;
@@ -64,9 +63,8 @@ function envLines(profile?: string): string[] {
 function isolate(): string {
   dir = tempDir("copilot-env-cmd-");
   process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "gw"); // empty state => no host CODEX_HOME
-  // Unique need: `agent env` emits/clears CODEX_HOME and ANTHROPIC_BASE_URL exports based
-  // on their CURRENT values, so both must start unset (not pointed at a temp home).
+  process.env.COPILOT_API_HOME = join(dir, "gw"); // empty state -> no host CODEX_HOME
+  // `agent env` emits or clears these exports based on their CURRENT values, so both must start unset.
   delete process.env.CODEX_HOME;
   delete process.env.ANTHROPIC_BASE_URL;
   const claudeHome = join(dir, ".claude");
@@ -75,12 +73,8 @@ function isolate(): string {
   return claudeHome;
 }
 
-/**
- * Run `runEnv` in a CHILD process (`deno eval`) with HOME set at spawn time.
- * `agent env` is always a fresh process in production, so its rc-file scan
- * (os.homedir(), bound at process startup) resolves correctly only when HOME
- * is in the spawn environment -- which in-process runEnv() can't fake.
- */
+// In production `agent env` is always a fresh process spawned by the shell wrapper, so these cases
+// run runEnv the same way: a child whose spawn environment carries the isolated homes.
 function childEnvLines(env: Record<string, string | undefined>, profile?: string): string[] {
   const script = `import{runEnv}from${
     importSpecifier(join(ROOT, "src/commands/env.ts"))
@@ -92,16 +86,14 @@ function childEnvLines(env: Record<string, string | undefined>, profile?: string
   return result.stdout.split("\n").filter((l) => l.length > 0);
 }
 
-/** Base isolated env for a child `agent env`: no proxy state. */
 function childBaseEnv(): Record<string, string | undefined> {
   const claudeHome = join(dir, ".claude");
   mkdirSync(claudeHome, { recursive: true });
   return {
     HOME: dir,
     USERPROFILE: dir,
-    // The suite floor redirects rc lookups away from every real home; this child
-    // wants them under ITS isolated home, so the seams point there explicitly -
-    // BOTH of them: the POSIX rc seam and the Windows PS-Documents seam.
+    // The suite floor redirects rc lookups away from every real home; this child wants them under
+    // ITS home, so both seams (POSIX rc and Windows PS-Documents) point there explicitly.
     [CI_RC_DIR_ENV]: dir,
     [CI_PS_DOCUMENTS_DIR_ENV]: join(dir, "Documents"),
     COPILOT_API_HOME: join(dir, "gw"),
@@ -123,8 +115,8 @@ test("env exports ANTHROPIC_BASE_URL when Claude is proxy at a localhost proxy U
 });
 
 test("env exports a 127.0.0.1 proxy URL (the production shape the writer now emits)", () => {
-  // The Claude writer now emits http://127.0.0.1:<port> (not localhost) so the agent reaches
-  // the IPv4 proxy on Windows. isLocalProxyUrl must accept it -- this is the production path.
+  // The Claude writer emits http://127.0.0.1:<port>, not localhost, so the agent reaches the IPv4
+  // proxy on Windows; isLocalProxyUrl must accept the production shape.
   const home = isolate();
   writeClaude(home, proxyHelperCommand(), "http://127.0.0.1:4141");
   const lines = envLines();
@@ -142,7 +134,6 @@ test("env clears a stale 127.0.0.1 ANTHROPIC_BASE_URL when Claude switched to di
 
 test("env clears a stale localhost ANTHROPIC_BASE_URL when Claude switched to direct", () => {
   const home = isolate();
-  // Claude is now DIRECT, but the shell still carries our old proxy URL.
   writeClaude(home, directHelperCommand(), "https://api.githubcopilot.com");
   process.env.ANTHROPIC_BASE_URL = "http://localhost:4141";
   const lines = envLines();
@@ -152,18 +143,15 @@ test("env clears a stale localhost ANTHROPIC_BASE_URL when Claude switched to di
 
 test("env never touches a user's own (non-local) ANTHROPIC_BASE_URL", () => {
   const home = isolate();
-  // Managed proxy helper, but the user hand-edited the URL to a remote host.
   writeClaude(home, proxyHelperCommand(), "https://example.test");
   process.env.ANTHROPIC_BASE_URL = "https://example.test";
   const lines = envLines();
-  // Not a localhost proxy URL => neither exported nor unset.
   expect(lines.some((l) => l.includes("ANTHROPIC_BASE_URL"))).toBe(false);
 });
 
 test("env leaves a localhost ANTHROPIC_BASE_URL alone when settings.json is unreadable", () => {
   const home = isolate();
-  // A directory at the settings path EXISTS but cannot be read (the
-  // cross-platform unreadable fixture).
+  // A directory at the settings path exists but cannot be read, on every platform.
   mkdirSync(join(home, "settings.json"));
   process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
   const lines = envLines();
@@ -179,8 +167,7 @@ test("env does not unset a CODEX_HOME the user pointed elsewhere", () => {
 
 // --- CODEX_HOME: the `codex-host` key against the farm on disk -------------------
 
-/** An activated per-host farm under the isolated HOME: the dir, its config.toml, and
- *  the run-state record a wiring pass leaves after a successful write. */
+// The run-state record is what a successful wiring pass leaves; without it the farm is not active.
 function wireFarm(): string {
   const hostHome = getHostLocalCodexHome();
   mkdirSync(hostHome, { recursive: true });
@@ -194,16 +181,14 @@ skipWin(
   () => {
     isolate();
     const hostHome = wireFarm();
-    // The key is the switch: unset (= off) exports nothing even for an activated farm,
-    // and clears the shell's copy of OUR spelling at once.
+    // The key is the switch: unset exports nothing even for an activated farm and clears OUR spelling at once.
     expect(envLines()).toEqual([]);
     process.env.CODEX_HOME = hostHome;
     expect(envLines()).toEqual(["unset CODEX_HOME"]);
     delete process.env.CODEX_HOME;
     new CopilotEnvConfig().set({ codexHost: true });
     expect(envLines()).toEqual([`export CODEX_HOME='${hostHome}'`]);
-    // Wired but not recorded (no managed write succeeded there yet): not exported, and
-    // the warning says so.
+    // Wired but not recorded: no managed write succeeded there yet.
     writeRunState({ codexHome: null });
     expect(stderrDuring(() => expect(envLines()).toEqual([]))).toContain(
       `${hostHome} is not the active CODEX_HOME`,
@@ -227,9 +212,7 @@ skipWin(
     const stderr = stderrDuring(() => {
       stdout = envLines();
     });
-    // The eval'd stdout carries no directive at all; the warning goes to stderr only.
-    // consola keeps the backticks on a plain stream and drops them when it renders
-    // inline code, so both sides are compared without them (the whole line otherwise).
+    // consola drops the backticks when it renders inline code, so both sides are compared without them.
     expect(stdout).toEqual([]);
     expect(stderr.replaceAll("`", "")).toContain(
       codexHostDriftLine({ kind: "missing", hostHome }).replaceAll("`", ""),
@@ -258,10 +241,8 @@ skipWin(
   },
 );
 
-// The exact launcher emissions, pinned per platform flavor: the wrappers eval these
-// lines verbatim (agents.ps1 line by line, inside a function -- hence global:), so the
-// spellings are external contracts. Every function delegates to `agent launch` with the
-// user's args behind `--` (quoted on PowerShell, whose bare `--` token would be eaten).
+// The wrappers eval these lines verbatim (agents.ps1 line by line inside a function, hence global:),
+// so the spellings are external contracts. PowerShell quotes the `--` because a bare `--` token would be eaten.
 const POSIX_LAUNCHER_LINES = [
   'cl() { agent launch claude -- "$@"; }',
   'co() { agent launch copilot -- "$@"; }',
@@ -295,9 +276,6 @@ test("env emits the launcher functions only when the launchers config key is on"
 
 // --- --profile ------------------------------------------------------------------
 
-/** Seed a named profile: its store slot (credential + mode, the atomic unit) +
- *  its run-state port reservation + its own settings-<name>.json (proxy or
- *  direct helper). */
 function seedProfile(
   claudeHome: string,
   name: string,
@@ -321,20 +299,16 @@ function seedProfile(
 test("env (no flag) output is byte-identical to the default wiring, profiles present or not", () => {
   const home = isolate();
   writeClaude(home, proxyHelperCommand(), "http://127.0.0.1:4141");
-  // The default eval contract, pinned as the EXACT full output (child process:
-  // an isolated HOME keeps the machine's own launchers wiring out of the scan).
+  // A child with an isolated HOME keeps the machine's own launcher wiring out of the scan.
   const expected = ["export ANTHROPIC_BASE_URL='http://127.0.0.1:4141'"];
   expect(childEnvLines(childBaseEnv())).toEqual(expected);
-  // Seeding a named profile (own slot, port, settings file) must not perturb the
-  // no-flag output by a single byte.
   seedProfile(home, "work", "proxy", 4242);
   expect(childEnvLines(childBaseEnv())).toEqual(expected);
 });
 
 test("env --profile resolves a proxy profile's OWN settings file and port", () => {
   const home = isolate();
-  // Default wiring points at a DIFFERENT port; the profile answer must come from
-  // settings-work.json, never from the default settings.json.
+  // The default wiring sits on a DIFFERENT port, so the answer can only come from settings-work.json.
   writeClaude(home, proxyHelperCommand(), "http://127.0.0.1:4141");
   seedProfile(home, "work", "proxy", 4242);
   expect(childEnvLines(childBaseEnv(), "work")).toEqual([

@@ -1,13 +1,6 @@
-// Install copilot-env from this checkout: compile the host-platform binary,
-// then run the platform installer with COPILOT_ENV_DOWNLOAD_BASE pointed at
-// dist/ -- the same override CI uses to smoke installers against branch
-// builds, so the result is exactly a release install whose source is the
-// repo. Invoked as `deno task install [--force]`.
-//
-// `--force` first deletes the existing install root -- the same directory the
-// installer will target ($COPILOT_ENV_DIR, else ~/.copilot-env) -- for a
-// from-scratch install. Deletion is guarded: never this checkout, and never a
-// directory that does not carry the install-root markers.
+// `deno task install [--force]`: compile the host binary, then run the platform installer with
+// COPILOT_ENV_DOWNLOAD_BASE at dist/ (the same override CI smokes use), so the result is
+// exactly a release install whose source is this checkout.
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -59,9 +52,8 @@ run("deno", ["task", "compile", "--target", target.triple]);
 // Delete only after a successful compile, so a broken build never leaves the
 // machine with no install at all.
 if (force) {
-  // Exactly the installers' semantics (`${COPILOT_ENV_DIR:-default}` / PS
-  // falsy-empty): only the EMPTY value reads as unset, everything else -- even
-  // whitespace -- is used verbatim, or deletion and install could diverge.
+  // The installers' exact semantics (`${COPILOT_ENV_DIR:-default}`, PS falsy-empty): only the
+  // EMPTY value reads as unset, or deletion and install could diverge.
   const envDir = process.env.COPILOT_ENV_DIR;
   const requested = envDir !== undefined && envDir !== ""
     ? envDir

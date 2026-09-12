@@ -40,8 +40,7 @@ test("usePatPassthrough: provider scoping - gh-cli auto-on, copilot never, gh-to
   expect(usePatPassthrough({ force: undefined, token: "gho_oauth", provider: "gh-cli" })).toBe(
     true,
   );
-  // The copilot device-flow token DOES the exchange (and rotates), so never shim it -- even though
-  // it is gho_-shaped. The explicit copilot exclusion protects that rotating path.
+  // The copilot device-flow token is gho_-shaped but does the exchange and rotates, so it is never shimmed.
   expect(usePatPassthrough({ force: undefined, token: "gho_oauth", provider: "copilot" })).toBe(
     false,
   );
@@ -49,6 +48,5 @@ test("usePatPassthrough: provider scoping - gh-cli auto-on, copilot never, gh-to
   expect(usePatPassthrough({ force: undefined, token: "gho_oauth", provider: "gh-token" })).toBe(
     true,
   );
-  // gh-token holding a genuinely exchange-capable non-gho_/non-PAT token stays on the exchange.
   expect(usePatPassthrough({ force: undefined, token: "ghu_x", provider: "gh-token" })).toBe(false);
 });

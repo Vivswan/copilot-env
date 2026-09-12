@@ -1,22 +1,14 @@
-// The release's checksums.txt: the `shasum -a 256`-form manifest
-// scripts/compile.ts emits next to the binaries and the release uploads
-// alongside them.
-//
-// install.sh / install.ps1 verify the same file with the platform's own sha256
-// tool before the binary ever lands; this module is the in-process twin that
-// `agent update` uses.
+// The release's checksums.txt: the `shasum -a 256`-form manifest scripts/compile.ts emits next
+// to the binaries. install.sh / install.ps1 verify the same file with the platform's own sha256
+// tool before the binary lands; this module is the in-process twin `agent update` uses.
 import { crypto } from "@std/crypto";
 
 /** One parsed manifest line: the expected lowercase hex digest for a file. */
 export type Checksums = ReadonlyMap<string, string>;
 
-/**
- * Parse `shasum -a 256` / `sha256sum` output into name -> lowercase digest.
- * A leading `*` on the name marks binary mode in both tools' output and is not
- * part of the file name. Malformed lines are skipped rather than throwing: the
- * caller fails on the ONE name it needs being absent, which is the error a user
- * can act on.
- */
+/** A leading `*` on the name marks binary mode in both tools' output and is not part of the file
+ *  name. Malformed lines are skipped rather than throwing: the caller fails on the ONE name it
+ *  needs being absent, the error a user can act on. */
 export function parseChecksums(text: string): Checksums {
   const entries = new Map<string, string>();
   for (const line of text.split("\n")) {

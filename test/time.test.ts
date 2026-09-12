@@ -26,10 +26,9 @@ test("localDayKey slices the calendar day in the zone it is NAMED, on every plat
 });
 
 test("the named-zone path agrees with the default path for the system's own zone", () => {
-  // localDayKey has two halves: Date's accessors for the default (the hot path, and the
-  // one that follows the process TZ) and an Intl formatter for a named zone. If they
-  // could disagree, every named-zone assertion above would be pinning something the
-  // production default never does. Whatever zone this machine runs in, they must match.
+  // localDayKey has two halves, Date's accessors for the default zone and an Intl formatter
+  // for a named one. If they could disagree, the named-zone assertions above would pin
+  // something the production default never does.
   const systemZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   for (
     const iso of [
@@ -59,12 +58,11 @@ test("dayKeyIn rejects an unknown zone up front, before any row is bucketed", ()
 test.skipIf(!TZ_PINNABLE)(
   "the DEFAULT zone honors the process TZ (the reason the day math is JS, not SQLite)",
   () => {
-    // The ONE test that genuinely needs a process-level TZ, and so the only reason
-    // TZ_PINNABLE still exists: it pins the property that justifies deriving the day key
-    // in JS instead of with SQLite's `localtime` (whose libc zone is cached at first use).
-    // Day SLICING itself is covered by the named-zone test above, on every platform.
-    // TZ assignments are ignored after a `delete process.env.TZ` (verified), so
-    // save/restore by explicit zone name and never delete.
+    // One of the two tests needing a process-level TZ (test/helpers/testing.ts names both).
+    // SQLite's `localtime` caches its libc zone at first use, so a TZ change mid-process would
+    // not reach it; JavaScript's does.
+    //   restore by zone name     -> honored
+    //   `delete process.env.TZ`  -> every later TZ assignment is ignored
     const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     try {
       process.env.TZ = "UTC";

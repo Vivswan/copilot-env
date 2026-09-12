@@ -1,7 +1,3 @@
-// Profile-aware `agent health`: the named-target sweep, the profile.consistency
-// check, named-target severity (profile-carrying fix strings), the --profile
-// narrowing, and the zero-writes invariant over a home with seeded profiles.
-
 import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
@@ -42,9 +38,8 @@ const restoreEnv = envSnapshot();
 
 const P = parseProfileName("p");
 
-/** Flat named-target overrides, assembled into the union shape. `skipped` turns
- *  the daemon probe into a skipped outcome (its why is fixture copy); otherwise
- *  the probe is built with PortState derived through the real classifier. */
+// `skipped` turns the daemon probe into a skipped outcome; otherwise PortState is derived through
+// the real classifier, so a fixture can never carry a torn ownership verdict.
 interface NamedOverrides {
   slot?: ProfileSlotFacts;
   homeExists?: boolean;
@@ -62,7 +57,6 @@ interface NamedOverrides {
   watchdog?: WatchdogFacts;
 }
 
-/** A named-profile runtime target (healthy homed proxy daemon by default). */
 function namedTarget(name: string, overrides: NamedOverrides = {}): NamedRuntimeTarget {
   const proxyExpected = overrides.proxyExpected ?? true;
   const raw = {
@@ -112,19 +106,16 @@ function namedTarget(name: string, overrides: NamedOverrides = {}): NamedRuntime
   };
 }
 
-/** The probed outcome of a target (throws on the skipped arm). */
 function probeOf(t: RuntimeTarget | undefined): DaemonProbed {
   if (!t || t.probe.kind !== "probed") throw new Error("expected a probed runtime target");
   return t.probe;
 }
 
-/** A named target narrowed to the union arm gatherNamedTarget produces. */
 function named(t: RuntimeTarget | undefined): NamedRuntimeTarget {
   if (!t || t.profile === null) throw new Error("expected a named runtime target");
   return t;
 }
 
-// Per-daemon checks take (target, probed facts); these fixtures are probed.
 const runPort = (t: RuntimeTarget) => checkRuntimePort(t, probeOf(t));
 const runPid = (t: RuntimeTarget) => checkRuntimePid(t, probeOf(t));
 const runIdentity = (t: RuntimeTarget) => checkRuntimeIdentity(t, probeOf(t));
@@ -145,7 +136,6 @@ function offlineDeps(extra: Partial<ProbeDeps> = {}): Partial<ProbeDeps> {
 // --- profile.consistency (pure) -----------------------------------------------
 
 test("profile.consistency: slot + home agreement per mode", () => {
-  // Proxy slot + home: agree.
   const proxyOk = checkProfileConsistency(namedTarget("p"));
   expect(proxyOk.status).toBe("ok");
   expect(proxyOk.profile).toBe(P);
@@ -217,8 +207,7 @@ test("profile.consistency: a slot with no recorded mode warns", () => {
   expect(modeless.fix).toContain("agent profile --add p");
 });
 
-// (A default target can no longer reach checkProfileConsistency: the
-// RuntimeTarget union makes it a compile error, not a runtime throw.)
+// A default target cannot reach checkProfileConsistency: the RuntimeTarget union makes it a compile error.
 
 // --- named-target severity (pure) ---------------------------------------------
 
@@ -256,8 +245,7 @@ test("named target down + auto-start on reads ok (starts on demand)", () => {
 });
 
 test("a foreign listener on a named profile's port is a real misroute warning", () => {
-  // The profile's configs bake THIS port, so a foreign occupant genuinely
-  // captures the profile's traffic -- unlike the default both-direct case.
+  // The profile's configs bake THIS port, so a foreign occupant genuinely captures its traffic.
   const foreign = runIdentity(namedTarget("p", { identityConfirmed: false }));
   expect(foreign.status).toBe("warn");
   expect(foreign.detail).toContain("misroute");
@@ -310,8 +298,7 @@ test("a homeless proxy slot yields only the consistency warn (no probes of a can
 });
 
 test("a homed proxy profile whose port is not persisted here says so instead of plain agreement", () => {
-  // The daemon was never probed (no persisted port), so its consistency line
-  // must not read as "daemon fine" -- it says what is missing on this host.
+  // The daemon was never probed, so its consistency line must not read as "daemon fine".
   const unstarted = namedTarget("p", {
     portPersisted: false,
     skipped: "no persisted port on this host",
@@ -376,7 +363,6 @@ test("checkProfileAuth: a provisioned slot reads ok with provider + mode + ident
   expect(ok.detail).toContain("agent auth --get --profile p");
   expect(ok.detail).toContain("agent start --profile p");
 
-  // A direct slot's usage line never mentions a daemon.
   const direct = checkProfileAuth(
     P,
     { provider: "gh-token", mode: "direct", integrationIdentity: null },
@@ -434,8 +420,7 @@ test("checkProfileAuth: a recorded provider whose credential does not resolve wa
   const ghDown = checkProfileAuth(P, ghSlot, { storedToken: false, ghAuthenticated: false });
   expect(ghDown.status).toBe("warn");
   expect(ghDown.detail).toContain("gh auth login");
-  // A failing AUTO slot still names the account it follows (no hidden
-  // information: the failure is about vivswan's credential).
+  // A failing AUTO slot names the account it follows: the failure is about vivswan's credential.
   const ghDownNamed = checkProfileAuth(P, ghSlot, {
     storedToken: false,
     ghAuthenticated: false,
@@ -473,8 +458,7 @@ test("checkProfileAuth: a recorded provider whose credential does not resolve wa
     "gh CLI (`gh auth token`, AUTO - currently account vivswan)",
   );
 
-  // An UNPROVEN gh probe keeps the warn + fix but says could-not-check: gh was
-  // never actually asked, so the confident wording and its advice never render.
+  // gh was never actually asked, so the confident wording and its advice never render.
   const ghUnproven = checkProfileAuth(P, ghSlot, {
     storedToken: false,
     ghAuthenticated: false,
@@ -520,7 +504,6 @@ test("checkCodex(named): missing wiring warns with the profile re-add fix", () =
   expect(unwired.detail).toContain("profile 'p' is not wired into Codex");
   expect(unwired.fix).toBe("agent profile --add p");
 
-  // The unselected-provider message names the profile's own provider id.
   const unselected = checkCodex(
     {
       home: "/c",
@@ -586,10 +569,8 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
   expect(stale.status).toBe("warn");
   expect(stale.fix).toContain("agent profile --add p");
 
-  // Foreign wiring in the profile's settings file is drift (the default's
-  // historical "other is the user's business" verdict does not apply): the
-  // profile promises managed wiring, and the writer refuses to overwrite an
-  // unmanaged file, so the fix names the removal first.
+  // Foreign wiring in the profile's settings file is drift: the profile promises managed wiring, and
+  // the writer refuses to overwrite an unmanaged file, so the fix names the removal first.
   const other = checkClaude(
     {
       ...base,
@@ -616,7 +597,6 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
 });
 
 test("named wiring in the OTHER mode than the slot records warns as an interrupted rewire", () => {
-  // Codex: valid DIRECT wiring, but the slot says proxy.
   const codexDirect = checkCodex(
     {
       home: "/c",
@@ -643,7 +623,6 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
   expect(codexDirect.status).toBe("warn");
   expect(codexDirect.detail).toContain("recorded mode is proxy");
   expect(codexDirect.fix).toBe("agent profile --add p");
-  // Matching modes stay green.
   const codexMatch = checkCodex(
     {
       home: "/c",
@@ -669,7 +648,6 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
   );
   expect(codexMatch.status).toBe("ok");
 
-  // Claude: valid PROXY wiring, but the slot says direct.
   const claudeProxy = checkClaude(
     {
       home: "/h/.claude",
@@ -695,8 +673,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
 // --- --live argv + env scrub -----------------------------------------------------
 
 test("--live --profile argv matches the launchers' profile selection exactly", () => {
-  // Codex rides its native selector, in the launcher's spelling; the default
-  // argv stays byte-identical to the pre-profile shape.
+  // Codex rides its native selector in the launcher's spelling; the default argv stays byte-identical.
   expect(CODEX_PROBE.args("hi", "/h", P)).toEqual([
     "exec",
     "--profile",
@@ -721,8 +698,7 @@ test("--live --profile argv matches the launchers' profile selection exactly", (
 });
 
 test("a named Claude live probe scrubs ANTHROPIC_BASE_URL; the default scrubs nothing", async () => {
-  // The decision: only a named profile drops the var (env would beat its
-  // settings file and answer with the DEFAULT wiring).
+  // Only a named profile drops the var: env would beat its settings file and answer with the DEFAULT wiring.
   expect(claudeLiveOmitEnv(null)).toEqual([]);
   expect(claudeLiveOmitEnv(P)).toEqual(["ANTHROPIC_BASE_URL"]);
   // The mechanism: runLiveCli really drops the requested vars from the child env.
@@ -749,7 +725,6 @@ test("the default sweep gathers the default target first, then sorted named targ
   const home = isolateProxyHome("copilot-health-sweep-");
   try {
     const store = new CopilotEnvState();
-    // b: full proxy profile (slot + home + persisted port). a: direct slot only.
     const a = parseProfileName("a-direct");
     const b = parseProfileName("b-proxy");
     store.commitProfile(a, {
@@ -762,7 +737,6 @@ test("the default sweep gathers the default target first, then sorted named targ
     });
     mkdirSync(profileHome(b), { recursive: true });
     writeRunState({ port: 4555 }, b);
-    // c: half-created (home only, no slot).
     mkdirSync(join(home, "profiles", "c-half"), { recursive: true });
 
     const probed: string[] = [];
@@ -781,24 +755,20 @@ test("the default sweep gathers the default target first, then sorted named targ
     expect(facts.runtimes?.map((t) => t.profile)).toEqual([null, a, b, parseProfileName("c-half")]);
 
     const [, aTarget, bTarget, cTarget] = facts.runtimes ?? [];
-    // a-direct: no daemon -- proxy not expected, nothing probed.
     expect(named(aTarget).proxyExpected).toBe(false);
     expect(named(aTarget).homeExists).toBe(false);
     expect(named(aTarget).probe.kind).toBe("skipped");
-    // b-proxy: homed daemon on its persisted reserved port.
     expect(named(bTarget).proxyExpected).toBe(true);
     expect(named(bTarget).homeExists).toBe(true);
     expect(named(bTarget).port).toBe(4555);
     expect(named(bTarget).portPersisted).toBe(true);
     expect(named(bTarget).probe.kind).toBe("probed");
-    // c-half: a homed daemon MAY be running, but with no persisted port there is
-    // nothing safe to probe.
+    // c-half: a homed daemon MAY be running, but with no persisted port there is nothing safe to probe.
     expect(named(cTarget).proxyExpected).toBe(true);
     expect(named(cTarget).slot.exists).toBe(false);
     expect(named(cTarget).portPersisted).toBe(false);
     expect(named(cTarget).probe.kind).toBe("skipped");
-    // Exactly two reach probes fired: the default port and b's persisted 4555 --
-    // never a-direct or c-half's unpersisted candidates.
+    // Never a-direct's or c-half's unpersisted candidates.
     expect(probed.some((u) => u.includes(":4555/"))).toBe(true);
     expect(probed).toHaveLength(2);
   } finally {
@@ -836,7 +806,6 @@ test("--profile narrows gathering to the named target and excludes account-wide 
     mkdirSync(profileHome(P), { recursive: true });
     writeRunState({ port: 4555 }, P);
 
-    // Real per-profile wiring for both agents, baked at the profile's port.
     const codexHome = join(home, "codex-home");
     configureCodexConfig(codexHome, {
       mode: "proxy",
@@ -866,7 +835,6 @@ test("--profile narrows gathering to the named target and excludes account-wide 
         claudeHome: () => claudeHome,
       }),
     );
-    // Only the narrowed runtime target; account-wide fact groups never gathered.
     expect(facts.profile).toBe(P);
     expect(facts.runtimes?.map((t) => t.profile)).toEqual([P]);
     expect(probed).toEqual([`${proxyLoopbackOrigin(4555)}/`]);
@@ -878,18 +846,15 @@ test("--profile narrows gathering to the named target and excludes account-wide 
     expect(facts.codexHost).toBeUndefined();
     expect(facts.autoupdate).toBeUndefined();
     expect(facts.auth).toBeUndefined();
-    // The profile's own credential slot line.
     expect(facts.profileAuth?.name).toBe(P);
     expect(facts.profileAuth?.slot?.provider).toBe("gh-token");
     expect(facts.profileAuth?.slot?.mode).toBe("proxy");
-    // Per-agent wiring inspected AS the profile, against the profile's port.
     expect(facts.codex?.providerMode).toBe("proxy");
     expect(facts.codex?.providerWired).toBe(true);
     expect(facts.claude?.providerMode).toBe("proxy");
     expect(facts.claude?.baseUrlMatches).toBe(true);
     expect(facts.claude?.settingsPath).toBe(join(claudeHome, "settings-p.json"));
 
-    // Evaluation: nothing account-wide leaks into the narrowed report.
     const results = evaluateAll("full", facts);
     const ids = results.map((r) => r.id);
     expect(ids).toContain("profile.consistency");
@@ -921,7 +886,6 @@ test("--profile narrows gathering to the named target and excludes account-wide 
 
 // --- zero writes over a seeded home ----------------------------------------------
 
-/** Recursive path -> (size, mtime) snapshot of everything under `dir`. */
 function snapshotTree(dir: string, prefix = ""): Map<string, string> {
   const out = new Map<string, string>();
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -939,8 +903,7 @@ function snapshotTree(dir: string, prefix = ""): Map<string, string> {
 }
 
 test("health gathering does zero writes over a home with seeded profiles", async () => {
-  // Sweep + narrowed runs must create/modify nothing: no port reservation for
-  // the homeless proxy slot, no state/activity/home creation anywhere.
+  // No port reservation for the homeless proxy slot, no state, activity, or home creation anywhere.
   const home = isolateProxyHome("copilot-health-zerowrites-");
   try {
     const store = new CopilotEnvState();
@@ -950,14 +913,12 @@ test("health gathering does zero writes over a home with seeded profiles", async
     });
     mkdirSync(profileHome(P), { recursive: true });
     writeRunState({ port: 4555 }, P);
-    // A proxy slot with NO home (its resolvePort answer is an unreserved
-    // candidate -- resolving it must not persist anything).
+    // A proxy slot with NO home: its resolvePort answer is an unreserved candidate that must not persist.
     const q = parseProfileName("q-homeless");
     store.commitProfile(q, {
       credential: { kind: "stored", provider: "gh-token", token: "tok-q" },
       mode: "proxy",
     });
-    // A half-created home with no slot.
     mkdirSync(join(home, "profiles", "r-half"), { recursive: true });
 
     const before = snapshotTree(home);
@@ -997,8 +958,7 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
         claudeHome: () => join(home, "no-claude"),
       }),
     );
-    // The profile-addressed managed auth block reads as direct + wired, and the
-    // slot's stored token means Direct needs no gh.
+    // The slot's stored token means Direct needs no gh.
     expect(facts.codex?.providerMode).toBe("direct");
     expect(facts.codex?.providerWired).toBe(true);
     expect(facts.codex?.directNeedsNoGh).toBe(true);
@@ -1092,9 +1052,8 @@ test("the default sweep never runs per-profile live probes", async () => {
 });
 
 test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth fact rows", async () => {
-  // The gatherFacts spreads (probe.ts, the auth + profileAuth jobs) are what
-  // carry CodexDirectAuthFacts.unproven onto the facts; dropping either would
-  // silently restore the confident "gh is unauthenticated" render.
+  // The gatherFacts spreads (probe.ts, the auth + profileAuth jobs) carry CodexDirectAuthFacts.unproven;
+  // dropping either silently restores the confident "gh is unauthenticated" render.
   const unproven = { command: "/bin/gh", authenticated: false, unproven: true as const };
   const facts = await gatherFacts("auth", {}, {
     authProvider: () => "gh-cli",
@@ -1188,8 +1147,7 @@ test("profile.consistency and setup.auth reuse ids across targets, disambiguated
   const results = evaluateAll("full", {
     profile: null,
     runtimes: [namedTarget("p"), namedTarget("q-two")],
-    // Both setup.auth producers at once: the default credential (checkAuth) and a
-    // narrowed profile's credential (checkProfileAuth) share the id by design.
+    // checkAuth and checkProfileAuth share the setup.auth id by design.
     auth: {
       storedToken: true,
       ghAuthenticated: false,
@@ -1210,12 +1168,9 @@ test("profile.consistency and setup.auth reuse ids across targets, disambiguated
   expect(auth.map((r) => `${r.profile}:${r.status}`)).toEqual(["null:ok", "p:ok"]);
 });
 
-// --- unproven tracked-pid scans (three-state identity, never a silent flatten) ----------
-//
-// A FAILED identity scan (classifyDaemonPid "unknown") used to flatten into
-// pidTracked:false, which rendered a confident "orphaned" warn and a confident
-// "stale or foreign" fail for a daemon health simply failed to look at. The probe now
-// carries the failure (pidScanUnproven) and the renderers say "could not be verified".
+// A FAILED identity scan (classifyDaemonPid "unknown") used to flatten into pidTracked:false, rendering
+// a confident "orphaned" warn and "stale or foreign" fail for a daemon health never looked at. The
+// probe now carries pidScanUnproven and the renderers say "could not be verified".
 
 describe("unproven tracked-pid scans", () => {
   test("interrogation carries a FAILED scan as pidScanUnproven, never a confident untracked", async () => {
@@ -1237,9 +1192,8 @@ describe("unproven tracked-pid scans", () => {
           }),
         );
 
-      // The failed scan: pidTracked stays the fail-closed false (never upgraded to
-      // "tracked"), but the probe SAYS the reading is unproven. Restoring the boolean
-      // flatten (unknown -> plain false) turns exactly these assertions red.
+      // pidTracked stays the fail-closed false, but the probe SAYS the reading is unproven. Restoring
+      // the boolean flatten (unknown -> plain false) turns exactly these assertions red.
       const unknown = probeOf((await gather("unknown")).runtimes?.[0]);
       expect(unknown.pidTracked).toBe(false);
       expect(unknown.pidScanUnproven).toBe(true);
@@ -1275,8 +1229,8 @@ describe("unproven tracked-pid scans", () => {
   });
 
   test("runtime.pid excused arms stay ok under an unproven scan (verdict-invariant), worded honestly", () => {
-    // Both-direct: a tracked pid would also read ok, so the unknown decides nothing --
-    // the ok survives, but the detail and value still carry the failed look.
+    // Both-direct: a tracked pid would also read ok, so the unknown decides nothing; the detail and
+    // value still carry the failed look.
     const bothDirect = runPid(
       namedTarget("p", { pidTracked: false, pidScanUnproven: true, proxyExpected: false }),
     );

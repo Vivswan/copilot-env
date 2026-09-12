@@ -1,22 +1,13 @@
-// `agent env`: prints machine-readable shell directives, evaluated by the calling
-// shell. It may set OR clear two managed vars, each only when relevant:
-//   - CODEX_HOME: set to the per-host farm while a wiring pass has activated it and
-//     the `codex-host` key is not off; cleared when the shell still carries OUR farm
-//     path but it is no longer the managed home.
-//   - ANTHROPIC_BASE_URL: set when Claude is wired to a LOCAL proxy URL;
-//     cleared when the shell still carries a localhost proxy URL (one WE set)
-//     but Claude is no longer in proxy mode -- otherwise a stale proxy URL would
-//     override the now-direct settings.json (shell env wins) and mask it in health.
-// It NEVER touches a value the user set themselves (a foreign CODEX_HOME, or a
-// non-local ANTHROPIC_BASE_URL). Everything else lives in each agent's own config
-// file (Codex: config.toml; Claude: settings.json).
+// Stdout is evaled by the shell wrapper, so it carries only directives; shell env beats
+// settings.json, which is why a stale ANTHROPIC_BASE_URL is cleared instead of being left to
+// override a now-direct Claude and mask it in health.
+//   CLEAR -> matched by shape, not by ownership: a managed farm CODEX_HOME, and any loopback base
+//            URL, a user's own http://localhost:9999/custom included
+//   SET   -> overrides whatever the shell already carries
 //
-// It may ALSO emit the opt-in cl/co/cx launcher functions (one-line definitions
-// delegating to `agent launch`) when the `launchers` config key is on, so the
-// launchers need no rc block of their own: the eager `agent env` at shell startup
-// defines them, and the next `agent` command (whose wrapper evals this output)
-// picks up a toggle without a restart. Defining a function is idempotent, so
-// re-emitting on every command is harmless.
+// The launcher functions ride here rather than in an rc block, so enabling `launchers` takes effect
+// on the next `agent` command, whose wrapper evals this output; redefining a function is
+// idempotent. Disabling emits nothing, so functions a shell already defined live until it exits.
 import { BASE_URL_ENV, DIRECT_BASE_URL, inspectClaudeWiring } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import {
@@ -38,34 +29,23 @@ const logger = createStderrLogger();
 
 export interface EnvArgs {
   format?: string;
-  /**
-   * `--profile <name>`: resolve the profile-scoped directives against that named
-   * profile's wiring (its settings-<name>.json, its reserved port) instead of the
-   * default. Account-wide directives (CODEX_HOME, the launcher functions) are the
-   * same either way. An unknown name is a hard error BEFORE anything is printed:
-   * this stdout is evaled, so a half-wrong export set must never be emitted.
-   */
   profile?: string;
 }
 
-/** A shell directive: assign a value, or clear the var entirely. */
 type EnvDirective = { key: string; value: string } | { key: string; unset: true };
 
-/** What a managed env var should become in the calling shell: a value to set, an
- *  order to clear OUR stale value, or null = leave whatever is there alone. */
+/** null = leave whatever the shell has alone. */
 export type ManagedEnvValue = { value: string } | { unset: true } | null;
 
-/** True for an http://localhost or http://127.0.0.1 URL -- the proxy shape we write.
- *  Deliberately port- and path-agnostic (the shared grammar in port.ts, bare null-test):
- *  this gates both setting AND clearing the var, and a stale URL on an old port must
- *  still read as ours to clear. */
+/** Port- and path-agnostic on purpose: this gates clearing as well as setting, and a stale URL on
+ *  an old port must still read as ours to clear. */
 function isLocalProxyUrl(url: string): boolean {
   return parseLoopbackProxyUrl(url) !== null;
 }
 
-/** CODEX_HOME's managed value, the shell-side mirror of effectiveCodexHome: the
- *  activated farm unless the key is off; a clear of OUR exact farm spelling when it
- *  is no longer the managed home; a foreign CODEX_HOME is the user's (hands-off). */
+/** The shell-side mirror of effectiveCodexHome (src/codex/host.ts). They part on drift: with
+ *  codex-host on and a recorded farm home that still exists, effectiveCodexHomeFor keeps it, while
+ *  this wants farm.wired and otherwise clears the export. */
 export function managedCodexHome(): ManagedEnvValue {
   if (process.platform === "win32") return null;
   const farm = codexHostFarm();
@@ -78,16 +58,8 @@ export function managedCodexHome(): ManagedEnvValue {
   return null;
 }
 
-/**
- * ANTHROPIC_BASE_URL's managed value for `profile`: the LOCAL proxy URL when the
- * profile's Claude wiring selects the proxy at one; a clear when the shell carries
- * a localhost proxy URL (one WE set) but Claude is no longer proxy; otherwise
- * hands-off (a non-local URL is the user's, and a settings file that exists but
- * could not be read is unknown wiring -- neither set nor cleared). Read-only -- a
- * named profile answers from ITS settings-<name>.json and ITS resolved port
- * (never reserves one). Shared by `agent env` and `agent launch` (see
- * managedCodexHome).
- */
+/** Read-only: a named profile answers from its own settings-<name>.json and resolved port, never
+ *  reserving one. Shared by `agent env` and `agent launch`. */
 export function managedClaudeBaseUrl(profile: Profile): ManagedEnvValue {
   const claudeHome = resolveClaudeHome();
   const claude = inspectClaudeWiring(
@@ -95,9 +67,8 @@ export function managedClaudeBaseUrl(profile: Profile): ManagedEnvValue {
     Number(copilotApiResolvePort(profile)),
     profile,
   );
-  // The clear below is authorized by "Claude is no longer proxy" -- a fact an
-  // unreadable settings file cannot establish (an ABSENT one can: nothing is
-  // wired). On a read failure the eval'd output degrades safely to hands-off.
+  // The clear below rests on "Claude is no longer proxy", which an unreadable settings file cannot
+  // establish (an absent one can: nothing is wired), so a read failure degrades to hands-off.
   if (claude.otherReason === "read-error") return null;
   const proxyUrl = claude.providerMode === "proxy" &&
       claude.baseUrl &&
@@ -111,8 +82,7 @@ export function managedClaudeBaseUrl(profile: Profile): ManagedEnvValue {
   return null;
 }
 
-/** The opt-in launcher functions, one per line: name, agent CLI, and whether the
- *  variant adds `--relaxed` (each agent's most-relaxed flag; see `agent launch`). */
+// [name, agent CLI, adds `--relaxed`]
 const LAUNCHER_FUNCTIONS = [
   ["cl", "claude", false],
   ["co", "copilot", false],
@@ -123,14 +93,10 @@ const LAUNCHER_FUNCTIONS = [
 ] as const;
 
 /**
- * The one-line launcher function definitions `agent env` emits when the `launchers` config
- * key is on. They call the `agent` WRAPPER function (defined by shell/agents.bashrc /
- * agents.ps1 before this output is ever evaled), so the env refresh after each launch keeps
- * working. Everything the user typed rides behind `--` as verbatim pass-through args;
- * `agent launch` hoists a leading `--profile <name>` pair itself. The PowerShell `--` is
- * quoted: unquoted it is PowerShell's own end-of-parameters token and would be swallowed.
- * `global:` scope because agents.ps1 evals these inside a function (Import-CopilotEnv),
- * where an unscoped definition would die with that call. Exported for tests.
+ * These call the `agent` wrapper function (shell/agents.bashrc, agents.ps1), so the env refresh
+ * after each launch keeps working. `agent launch` hoists a leading `--profile <name>` pair itself.
+ *   '--' quoted   -> unquoted it is PowerShell's own end-of-parameters token and would be swallowed
+ *   global: scope -> agents.ps1 evals these inside a function; unscoped, they die with the call
  */
 export function launcherFunctionLines(powershell: boolean): string[] {
   return LAUNCHER_FUNCTIONS.map(([name, cli, relaxed]) => {
@@ -141,22 +107,14 @@ export function launcherFunctionLines(powershell: boolean): string[] {
   });
 }
 
-/**
- * `env`: print env directives for the calling shell. This is the only command
- * whose stdout is machine-readable (the shell `agent` wrapper evals it), so it
- * must emit ONLY shell directives the wrapper is built to eval -- assignment /
- * unset lines, plus the launcher function lines below -- never logs.
- */
 export function runEnv(args: EnvArgs): void {
   const format = String(args.format ?? "posix").toLowerCase();
   const isPowershell = format === "powershell" || format === "pwsh" || format === "ps";
   if (!isPowershell && format !== "posix" && format !== "sh" && format !== "bash") {
     throw new Error(`Unknown --format '${args.format}' (expected 'posix' or 'powershell').`);
   }
-  // Validate the profile BEFORE any directive is computed or printed: an unknown
-  // name must exit non-zero with an EMPTY stdout (a machine consumer evals this
-  // output, so it must never see a partially resolved export set). A named
-  // profile never falls back to the default wiring.
+  // Before any directive is printed: an unknown profile must exit non-zero with an EMPTY stdout,
+  // since the wrapper evals whatever came out.
   const profile: Profile = parseProfileFlag(args.profile);
   if (profile !== null) assertKnownProfile(profile);
 
@@ -182,28 +140,21 @@ export function runEnv(args: EnvArgs): void {
 
   for (const directive of directives) {
     if ("unset" in directive) {
-      // Clear the var. Both wrappers eval every emitted directive
-      // (agents.bashrc's unconditional eval; agents.ps1's Import-CopilotEnv).
-      // SilentlyContinue: clearing an already-absent var must be a no-op (POSIX
-      // `unset` parity); the wrapper reads no verdict from the eval'd line.
+      // SilentlyContinue: clearing an already-absent var must be a no-op, like POSIX `unset`.
       console.log(
         isPowershell
           ? `Remove-Item -LiteralPath Env:${directive.key} -ErrorAction SilentlyContinue`
           : `unset ${directive.key}`,
       );
     } else if (isPowershell) {
-      // Single-quoted PS literal; double any embedded quote per PS escaping.
       console.log(`$env:${directive.key} = ${quotePowerShell(directive.value)}`);
     } else {
-      // Single-quoted POSIX literal so values with spaces/metacharacters survive
-      // the shell wrapper's `eval`. Embedded `'` -> `'\''`.
       console.log(`export ${directive.key}=${quotePosix(directive.value)}`);
     }
   }
 
-  // Launcher functions: gated on the `launchers` config key, so we never define
-  // short names for an opt-out user. The functions only delegate to `agent launch`
-  // (which never runs `agent env` itself), so this cannot recurse.
+  // The functions only delegate to `agent launch`, which never runs `agent env` itself, so this
+  // cannot recurse.
   if (new CopilotEnvConfig().launchersEnabled()) {
     for (const line of launcherFunctionLines(isPowershell)) console.log(line);
   }

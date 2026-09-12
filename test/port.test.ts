@@ -26,11 +26,8 @@ function tmpHome(): void {
 }
 
 test("daemonPolicy pins every default-vs-named lifecycle policy in one place", () => {
-  // The policy object is what the launch/status/stop sites read INSTEAD of
-  // `profile === null`; a change to any of these answers must be a deliberate
-  // edit to the resolver, so the full field set is pinned for both kinds.
-  // (No home field: every daemon -- the default included -- runs in its own
-  // home under profiles/, resolved by the paths layer.)
+  // Launch/status/stop read this object instead of `profile === null`, so the full field set is
+  // pinned. There is no home field: every daemon's home comes from the paths layer.
   expect(daemonPolicy(null)).toEqual({
     port: { source: "config" },
     strictPortEligible: true,

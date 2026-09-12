@@ -36,9 +36,8 @@ import {
 import { CODEX_SCENARIOS, scenarioNamed } from "./helpers/session_scenarios.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
-// The reader fixtures live in the shared catalog, which the index equivalence tests
-// read three ways with the same checks; one default-reconcile read here covers the
-// reader's own entry point.
+// The index equivalence tests read the shared catalog scenarios three ways; this one
+// default-reconcile read covers the reader's own entry point.
 test("readCodexSessions reads a catalog scenario without a reconcile", async () => {
   const scenario = scenarioNamed(
     CODEX_SCENARIOS,
@@ -144,7 +143,6 @@ test("discoverCodexSessionRoots dedupes farm symlinks by realpath", () => {
   expect(roots.sort()).toEqual([join(shared, "archived_sessions"), join(shared, "sessions")]);
 });
 
-/** The walk record for one file on disk, as a candidate. */
 function walkedFile(path: string): WalkedFile {
   const { size, mtimeMs } = statSync(path);
   return { path, size, mtimeMs, candidate: true, resumable: !path.endsWith(".zst") };
@@ -171,7 +169,6 @@ test("parseCodexTail resumed from a prefix parse equals one whole parse", () => 
     "claude-haiku-4-5-20251001",
   ]);
 
-  // The same file written in two steps: parse the prefix, append, resume.
   const grownPath = writeRollout(join(dir, "grown"), "2026-06-01", "aaa", lines.slice(0, 3));
   const prefix = parseCodexWhole(walkedFile(grownPath));
   const priorSnapshot = JSON.stringify(prefix.contribution);

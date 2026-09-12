@@ -39,8 +39,7 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-// Fresh isolated homes for one test; the proxy home exists (catalog tests write
-// the generated JSON straight into it).
+// The proxy home exists: catalog tests write the generated JSON straight into it.
 function isolate(): void {
   dir = isolateAgentHomes("copilot-codex-", { mkdirs: true }).dir;
 }
@@ -52,8 +51,7 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-// The catalog is opt-in (default false); tests exercising the enabled paths
-// flip it on in the isolated COPILOT_API_HOME first.
+// The catalog key defaults to false, so the enabled paths need this first.
 function enableCatalog(): void {
   new CopilotEnvConfig().set({ codexModelCatalog: true });
 }
@@ -92,8 +90,7 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(asRecord(doc.my_custom).keep).toBe("me");
   expect(doc.model_provider).toBe("copilot-env");
   expect(doc.web_search).toBe("live");
-  // [features] is user content the writer never touches (the 3.3.17 migration heals
-  // the managed image-generation disable older releases wrote).
+  // [features] is user content the writer never touches.
   expect(asRecord(doc.features).image_generation).toBe(false);
   // Direct talks to a public host, not the loopback proxy, so it does NOT open the sandbox.
   expect(doc.sandbox_workspace_write).toBeUndefined();
@@ -162,10 +159,8 @@ test("direct uses the launcher auth.command (no env_key, no token at rest), clas
   expect(auth.command).toBe(expected.command);
   expect(auth.args).toEqual(expected.args);
 
-  // No .env is written at all.
   expect(existsSync(join(codexHome, ".env"))).toBe(false);
 
-  // Wiring classifies as direct and flags the managed auth.command.
   const wiring = inspectCodexWiring(
     readFileSync(join(codexHome, "config.toml"), "utf8"),
     null,
@@ -181,9 +176,6 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
 
-  // Seed a STALE existing config: a user-added section to preserve, plus our
-  // provider table with an old env_key, a stale base_url, a user-added key, and
-  // several managed fields missing entirely.
   writeFileSync(
     join(codexHome, "config.toml"),
     [
@@ -214,7 +206,6 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   });
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  // Unknown user content survives, and our proxy is reselected as default.
   expect(asRecord(doc.my_custom).keep).toBe("me");
   expect(doc.model_provider).toBe("copilot-env");
   expect(doc.web_search).toBe("live");
@@ -243,7 +234,6 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   // access is granted, so proxy mode enables it (the auth.command's liveness probe needs it).
   expect(asRecord(doc.sandbox_workspace_write).network_access).toBe(true);
 
-  // A second, unrelated provider table is left fully intact.
   const other = asRecord(asRecord(doc.model_providers).other);
   expect(other.base_url).toBe("http://other/v1");
   expect(other.env_key).toBe("OTHER_KEY");
@@ -273,7 +263,6 @@ test("refuses to overwrite an unparseable config.toml (preserves the user's file
   expect(() =>
     configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://localhost:4141/v1" })
   ).toThrow(/not valid TOML|refusing to overwrite/);
-  // The user's file is left exactly as it was.
   expect(readFileSync(configPath, "utf8")).toBe(original);
 });
 
@@ -367,7 +356,6 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
   isolate();
   const codexHome = join(dir, ".codex");
 
-  // Start direct: the table carries the managed auth (agent auth --get) + http_headers.
   configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.139.0" });
   let provider = asRecord(
     asRecord(asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8"))).model_providers)[
@@ -377,9 +365,8 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
   expect(asRecord(provider.auth).args).toEqual(agentLauncherCommand(["auth", "--get"]).args);
   expect(provider.http_headers).toBeDefined();
 
-  // Switch to proxy on the SAME table: the proxy auth (`agent proxy-token --yes`)
-  // replaces the direct auth, env_key stays absent, and direct-only http_headers is
-  // scrubbed.
+  // Proxy on the SAME table: the proxy auth replaces the direct auth, env_key stays absent,
+  // and the direct-only http_headers is scrubbed.
   configureCodexConfig(codexHome, {
     mode: "proxy",
     baseUrl: "http://localhost:4141/v1",
@@ -561,19 +548,19 @@ test("syncCodexCatalogReference never adds the key to a config not on our provid
   enableCatalog();
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
 
-  // No model_provider (the --mobile pairing shape) => leave the file alone.
+  // No model_provider (the --mobile pairing shape): leave the file alone.
   const pairing = 'user_key = "kept"\n';
   writeFileSync(join(codexHome, "config.toml"), pairing);
   syncCodexCatalogReference();
   expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(pairing);
 
-  // A foreign provider => also untouched.
+  // A foreign provider: also untouched.
   const foreign = 'model_provider = "openai"\n';
   writeFileSync(join(codexHome, "config.toml"), foreign);
   syncCodexCatalogReference();
   expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(foreign);
 
-  // No config.toml at all => a silent no-op.
+  // No config.toml at all: a silent no-op.
   rmSync(join(codexHome, "config.toml"));
   syncCodexCatalogReference();
   expect(existsSync(join(codexHome, "config.toml"))).toBe(false);
@@ -771,12 +758,9 @@ test("disabled: a symlinked spelling of our path blocks deletion (fail closed)",
   expect(existsSync(catalogFile)).toBe(true);
 });
 
-// The same fail-closed policy, one step further out: the symlink case above is a
-// reference we PROVED points at our file, this is one we could not resolve AT ALL.
-// A realpath that cannot run (EACCES on a path component, ELOOP) is not proof the
-// reference is someone else's, so it must not authorize deleting the catalog --
-// Codex treats a dangling model_catalog_json as a STARTUP error. Non-root POSIX
-// only: 0000 blocks the resolve, and root bypasses file modes.
+// One step further out than the symlink case: a reference realpath cannot resolve at all (EACCES
+// on a component, ELOOP) is not proof it is someone else's, and Codex treats a dangling
+// model_catalog_json as a startup error. Non-root POSIX only: root bypasses file modes.
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "disabled: a reference we CANNOT resolve blocks deletion too (fail closed)",
   () => {
@@ -805,9 +789,8 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 );
 
 test("disabled: a reference that provably is NOT ours still lets the catalog go (the control)", () => {
-  // The control for the two fail-closed rows above: the refusals must not seize up
-  // the ordinary cleanup. A resolvable reference pointing somewhere else is a proven
-  // "not ours", so the catalog file is still deleted and the foreign key left alone.
+  // The control for the two fail-closed cases above: a resolvable reference pointing elsewhere
+  // is a proven "not ours", so the ordinary cleanup still runs.
   isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;

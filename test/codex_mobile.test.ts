@@ -45,14 +45,11 @@ test("readModelProvider returns the configured provider, null when absent/malfor
 
 test("stripModelProvider removes model_provider, forces requires_openai_auth=false, keeps the rest", () => {
   const doc = asRecord(parse(stripModelProvider(CONFIG)));
-  // model_provider gone; unrelated keys/sections preserved.
   expect(doc.model_provider).toBeUndefined();
   expect(doc.web_search).toBe("live");
   expect(asRecord(doc.my_custom).keep).toBe("me");
-  // requires_openai_auth flipped to false on our managed table (was true).
   const providers = asRecord(doc.model_providers);
   expect(asRecord(providers["copilot-env"]).requires_openai_auth).toBe(false);
-  // The provider tables themselves survive.
   expect(asRecord(providers["copilot-env"]).base_url).toBe("http://localhost:4141/v1");
   expect(asRecord(providers.other).base_url).toBe("https://api.githubcopilot.com");
 });
@@ -62,7 +59,6 @@ test("restoreModelProvider puts the provider back and round-trips through strip"
   expect(readModelProvider(stripped)).toBe(null);
   const restored = restoreModelProvider(stripped, "copilot-env");
   expect(readModelProvider(restored)).toBe("copilot-env");
-  // requires_openai_auth stays false after restore.
   const doc = asRecord(parse(restored));
   expect(asRecord(asRecord(doc.model_providers)["copilot-env"]).requires_openai_auth).toBe(false);
 });
@@ -89,7 +85,6 @@ test("strip removes model_catalog_json; restore puts it back only when captured"
     "/home/u/.local/share/copilot-api/codex-model-catalog.json",
   );
 
-  // An absent key round-trips as absent (restore with null adds nothing).
   const neverHad = restoreModelProvider(stripModelProvider(CONFIG), "copilot-env", null);
   expect(readModelCatalogJson(neverHad)).toBe(null);
 });
@@ -97,19 +92,16 @@ test("strip removes model_catalog_json; restore puts it back only when captured"
 // --- the three-state app scans and their gates --------------------------------
 
 test("closeGateFromScan: proven absence proceeds silently; present and unproven take the gate", () => {
-  // Proven-absent (the scan ran and found nothing): the silent proceed, unchanged.
   expect(closeGateFromScan("absent")).toEqual({ close: false });
 
-  // Proven-present: the interactive close gate, no warn, unchanged.
   expect(closeGateFromScan("present")).toEqual({
     close: true,
     warn: null,
     prompt: "The Codex app is open. Close it now?",
   });
 
-  // A FAILED look is unproven: the honest warn plus the SAME interactive gate --
-  // never the silent proceed that would swap config under a possibly-open app.
-  // The prompt claims "possibly open", never "is open".
+  // A failed look takes the same gate, never the silent proceed that would swap config under
+  // a possibly-open app; the prompt says "possibly open", never "is open".
   expect(closeGateFromScan("unproven")).toEqual({
     close: true,
     warn: "The process scan failed, so it could not prove the Codex app is closed.",
@@ -146,8 +138,7 @@ test("installGateFromScan: present proceeds; proven absence aborts; unproven ask
     warn: "The Codex app does not appear to be installed.",
     info: "Install the Codex app, then re-run `agent codex --mobile`.",
   });
-  // A FAILED look is NOT "not installed": it says the scan could not check and asks
-  // the user, never the false abort.
+  // A failed look is NOT "not installed": it asks the user, never the false abort.
   expect(installGateFromScan("unproven")).toEqual({
     kind: "confirm",
     warn: "The install scan failed, so it could not check whether the Codex app is installed.",
@@ -158,9 +149,7 @@ test("installGateFromScan: present proceeds; proven absence aborts; unproven ask
 test("postPairingCloseFromScan: only PROVEN-present quits; unproven warns, never quits", () => {
   expect(postPairingCloseFromScan("present")).toEqual({ quit: true, warn: null });
   expect(postPairingCloseFromScan("absent")).toEqual({ quit: false, warn: null });
-  // No new signal authorization: the failed look does not escalate into quit(), and
-  // it keeps the honest warn -- restore proceeds under an app the scan could not
-  // prove closed.
+  // The failed look does not escalate into quit(); the warn stays, so restore proceeds knowingly.
   expect(postPairingCloseFromScan("unproven")).toEqual({
     quit: false,
     warn: "The process scan failed, so it could not prove the Codex app is closed.",
@@ -182,24 +171,20 @@ test("quit() ends early only on a PROVEN absence; anything else rides to the dea
     return calls;
   };
 
-  // Proven absence: the first poll ends the wait -- the polite ask-quit went out,
-  // and the force-quit never fires.
+  // Proven absence ends the wait on the first poll: no force-quit.
   const absent = await quitCalls({ exitCode: 1, stdout: "" });
   expect(absent[0]?.file).toBe("osascript");
   expect(absent.some((c) => c.file === "pkill")).toBe(false);
 
-  // An UNPROVEN look cannot satisfy "ensure the app is closed": no early return --
-  // the poll keeps looking and the pre-existing deadline force-quit fires.
+  // An unproven look cannot satisfy "ensure closed": the poll runs to the deadline force-quit.
   const unproven = await quitCalls({ exitCode: 1, stdout: "", launchFailed: true });
   expect(unproven.filter((c) => c.file === "pgrep").length).toBeGreaterThanOrEqual(1);
   expect(unproven.at(-1)?.file).toBe("pkill");
 
-  // Proven-present overstay: unchanged -- polls to the deadline, then force-quits.
   const present = await quitCalls({ exitCode: 0, stdout: "" });
   expect(present.at(-1)?.file).toBe("pkill");
 });
 
-/** A controller whose process executor replays `result` and records the calls. */
 function scannedController(
   platform: "darwin" | "win32",
   result: { exitCode: number; stdout: string; launchFailed?: true },

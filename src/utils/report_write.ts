@@ -1,28 +1,17 @@
-// The one write-reporting seam: every file a command creates, rewrites, deletes, moves
-// or links OUTSIDE copilot-env's own homes is named on stderr -- "<kind> -> <path>" --
-// once per process, so nothing a command does to the user's disk is hidden. Always
-// stderr, written raw (not through consola, whose level a CONSOLA_LEVEL could silence):
-// the machine-readable stdout contracts (`agent env`, `--json`, `auth --get`, the
-// proxy-token key line) survive, and the lines cannot be turned off.
+// Every file a command creates, rewrites, deletes, moves or links outside copilot-env's own homes
+// is named on stderr, once per process. Raw stderr, not consola (a CONSOLA_LEVEL could silence it),
+// so the machine-readable stdout contracts survive and the lines cannot be turned off.
+// test/lint/no_unreported_fs_writes.ts refuses a raw node:fs write anywhere else in src/, bar the
+// lock protocol's internals (file_lock.ts), the preload that patches the proxy's own stream
+// (log_mute_preload.ts), and src/migrations/.
 //
-// Every raw filesystem mutation in src/ goes through the wrappers below (the lint rule
-// in test/lint/no_unreported_fs_writes.ts refuses a raw node:fs write anywhere else,
-// bar the lock protocol's internals in file_lock.ts); the seam then decides what prints.
-// NOT reported: copilot-env's own homes (each home's owner registers its root through
-// hideWritesUnder; the roots THEMSELVES still report when created or removed), scratch (a
-// temp dir this process creates AND removes before it exits), and the transient side of a
-// recipe (an atomic write's temp file, the lock protocol's per-acquisition marker file).
+// Dedup is per path, with a delete as the epoch boundary: five saves of one path print once, and a
+// delete re-arms it. What does not print:
 //
-// A line is printed only for a mutation that PROVABLY landed: on success, the kind the
-// operation performed; after a failure, only what a before/after look at the path proves
-// changed (absent then present, present then absent, or a different identity, mtime or
-// size) -- never from "the path still exists", which a refused write leaves true.
-//
-// One line per path: a writer with something to say about a write (which config it is,
-// why the entry went) says it in the line's `detail`, never in a second line naming the
-// same path. Dedup is per path, with a delete as the epoch boundary: a store saved five
-// times in one run prints once, a create then a rewrite is one fact, and a delete clears
-// the slate so a later re-creation (or re-link, or a second delete) is announced again.
+//   inside a home registered via hideWritesUnder -> silent; the root itself still prints
+//   scratch this process creates and removes     -> silent
+//   a recipe's transient side (a temp file)      -> silent
+//   a write that failed                          -> only what a before/after look PROVES changed
 import {
   chmodSync,
   copyFileSync,
@@ -44,37 +33,30 @@ import { sleepSync } from "./time.ts";
 
 export type WriteKind = "created" | "rewritten" | "deleted" | "moved" | "linked";
 
-/** The kinds already announced per path (see the dedup rule in the header). */
 const REPORTED = new Map<string, Set<WriteKind>>();
 
 declare const scratchBrand: unique symbol;
 
-/** A temp root minted by scratchDir: the only thing removeScratchDir accepts, so a
- *  permanent directory can never be removed silently through the scratch path. */
+/** The only thing removeScratchDir accepts, so a permanent directory can never be removed silently
+ *  through the scratch path. */
 export type ScratchDir = string & { readonly [scratchBrand]: true };
 
-/** Temp roots this process owns for its own lifetime; writes under them are not reported. */
 const SCRATCH_ROOTS = new Set<string>();
 
-/** The resolvers of copilot-env's own homes (see the header), registered by each home's
- *  owner when it loads: the data home by src/copilot_api/paths.ts, the install root by
- *  src/utils/root.ts. Resolved per report, because a home follows the environment. */
+/** Registered by each home's owner when it loads: src/copilot_api/paths.ts, src/utils/root.ts.
+ *  Resolved per report, because a home follows the environment. */
 const INTERNAL_ROOTS: (() => string)[] = [];
 
-/** Register one of copilot-env's own homes: writes INSIDE it print nothing. */
 export function hideWritesUnder(root: () => string): void {
   INTERNAL_ROOTS.push(root);
 }
 
-/** Whether `path` sits strictly inside one of the registered homes. A home itself is a
- *  path the user sees come and go, so it always prints -- even when it is nested inside
- *  another home (the data home under the install root): the exact match is checked
- *  against every root before any prefix test. Compared as resolved paths, trailing
- *  separator dropped so a filesystem root (`/`, `C:\`) prefixes correctly,
- *  case-insensitively on Windows. */
+/** A home itself always prints, even nested inside another home (the data home under the install
+ *  root), so the exact match is checked against every root before any prefix test. The trailing
+ *  separator is dropped so a filesystem root (`/`, `C:\`) prefixes correctly. */
 function insideInternalRoot(path: string): boolean {
-  // Only the platform's own separator is a separator: on POSIX a backslash is a byte
-  // of the name, and stripping it would fold a home onto a sibling's prefix.
+  // On POSIX a backslash is a byte of the name; stripping it would fold a home onto a sibling's
+  // prefix.
   const trailing = process.platform === "win32" ? /[\\/]+$/ : /\/+$/;
   const fold = (p: string): string => {
     const r = resolve(p).replace(trailing, "");
@@ -86,7 +68,6 @@ function insideInternalRoot(path: string): boolean {
   return roots.some((root) => target.startsWith(root + sep));
 }
 
-/** Non-null while reports are deferred to process exit (deferWriteReports). */
 let deferred: string[] | null = null;
 
 function underScratch(path: string): boolean {
@@ -98,8 +79,8 @@ function underScratch(path: string): boolean {
 
 const ENCODER = new TextEncoder();
 
-/** Write one line to stderr synchronously, in full: a buffered stream write could still
- *  be pending when a process.exit() (a signal handler's) ends the process. */
+/** Synchronous and in full: a buffered stream write could still be pending when a process.exit()
+ *  ends the process. */
 function emit(line: string): void {
   if (deferred !== null) {
     deferred.push(line);
@@ -110,9 +91,8 @@ function emit(line: string): void {
   while (written < bytes.length) written += Deno.stderr.writeSync(bytes.subarray(written));
 }
 
-/** Announce one mutation of `path`. The primitive for writers whose mutation happens
- *  through another API (the lock sidecar's create-on-open); everything else uses the
- *  wrappers below, which pick the kind themselves. */
+/** The primitive for a writer whose mutation happens through another API (the tree a spawned
+ *  `codex exec` leaves, src/codex/host.ts); everything else uses the wrappers below. */
 export function reportWrite(kind: WriteKind, path: string, detail?: string): void {
   if (underScratch(path) || insideInternalRoot(path)) return;
   const kinds = REPORTED.get(path) ?? new Set<WriteKind>();
@@ -132,8 +112,8 @@ export function reportWrite(kind: WriteKind, path: string, detail?: string): voi
   emit(`${kind} -> ${path}${detail === undefined ? "" : ` (${detail})`}`);
 }
 
-/** A tree that went (deleted, or moved away) takes every recorded descendant with it, so
- *  a child re-created afterwards is announced again. */
+/** A tree that went takes every recorded descendant with it, so a child re-created afterwards is
+ *  announced again. */
 function forgetBelow(path: string): void {
   for (const recorded of REPORTED.keys()) {
     if (recorded.startsWith(path + sep)) REPORTED.delete(recorded);
@@ -142,14 +122,10 @@ function forgetBelow(path: string): void {
 
 // --- the before/after look -----------------------------------------------------------
 
-/** One look at a path: present, with a fingerprint of the identity a change would alter
- *  (dev, inode, mtime, size); proven absent (lstat's own ENOENT/ENOTDIR -- a dangling
- *  symlink IS present); or a look that FAILED (permissions, a transient error), which
- *  never reads as absent or a report would be fabricated from it. A DEEP look at a
- *  directory fingerprints its whole tree, one line per descendant keyed by its FULL
- *  relative path (so moving an entry between levels changes the fingerprint even when
- *  no directory metadata does), and a change anywhere below shows at the root -- the
- *  shape a tree operation (rm -rf, a cross-device copy, a `deno cache` run) is judged by. */
+/** A look that FAILED (permissions, a transient error) never reads as absent, or a report would be
+ *  fabricated from it; a dangling symlink IS present. A deep look fingerprints the whole tree keyed
+ *  by full relative path, so moving an entry between levels changes it even when no directory
+ *  metadata does. */
 type Look =
   | { kind: "present"; fingerprint: string }
   | { kind: "absent" }
@@ -174,9 +150,8 @@ function entryFingerprint(stat: Stats): string {
   return `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.size}`;
 }
 
-/** Append `<relative path>=<entry fingerprint>` for every descendant of `dir`, sorted;
- *  false when a level cannot be listed or an entry vanishes mid-walk (a tree that cannot
- *  be judged). */
+/** False when a level cannot be listed or an entry vanishes mid-walk: a tree that cannot be judged.
+ */
 function fingerprintTree(dir: string, rel: string, lines: string[]): boolean {
   let names: string[];
   try {
@@ -198,8 +173,6 @@ function fingerprintTree(dir: string, rel: string, lines: string[]): boolean {
   return true;
 }
 
-/** Report what a second look at `path` PROVES changed since `was`: nothing when either
- *  look failed, or when the fingerprint is unchanged. */
 function reportTransition(path: string, was: Look, detail?: string, deep = false): void {
   const now = look(path, deep);
   if (was.kind === "unknown" || now.kind === "unknown") return;
@@ -217,16 +190,14 @@ function reportTransition(path: string, was: Look, detail?: string, deep = false
   reportWrite(kind, path, detail);
 }
 
-/** The kind a write to `path` performs: creation when it is absent, else a rewrite (a
- *  look that failed reads as present, so the weaker claim is made). */
+/** A look that failed reads as present, so the weaker claim is made. */
 function kindOf(was: Look): "created" | "rewritten" {
   return was.kind === "absent" ? "created" : "rewritten";
 }
 
 // --- deferral --------------------------------------------------------------------------
 
-/** Hold every report until the process exits (or flushWriteReports runs): for a command
- *  that hands the terminal to another program, so the lines land after it returns
+/** For a command that hands the terminal to another program, so the lines land after it returns
  *  instead of being cleared by its screen. */
 export function deferWriteReports(): void {
   if (deferred !== null) return;
@@ -234,8 +205,6 @@ export function deferWriteReports(): void {
   process.once("exit", flushWriteReports);
 }
 
-/** Print the deferred reports now and return to immediate reporting. Returns the lines
- *  it printed. */
 export function flushWriteReports(): string[] {
   const lines = deferred ?? [];
   deferred = null;
@@ -272,8 +241,8 @@ export function copyFileReported(from: string, to: string, detail?: string): voi
   reportWrite(kindOf(was), to, detail);
 }
 
-/** mkdir -p, naming every directory it actually creates (missing ancestors too,
- *  outermost first); `detail` rides on the directory asked for, not its ancestors. */
+/** Names every directory actually created, outermost first; `detail` rides on the directory asked
+ *  for. */
 export function mkdirReported(path: string, mode?: number, detail?: string): void {
   const missing: string[] = [];
   for (let cur = path; look(cur).kind === "absent"; cur = dirname(cur)) {
@@ -289,16 +258,15 @@ export function mkdirReported(path: string, mode?: number, detail?: string): voi
   for (const made of missing) reportWrite("created", made, made === path ? detail : undefined);
 }
 
-/** A mode change is a rewrite of the entry; deduped away when this process already
- *  announced writing the path. */
+/** A mode change is a rewrite of the entry, deduped away when this process already announced the
+ *  path. */
 export function chmodReported(path: string, mode: number, detail?: string): void {
   chmodSync(path, mode);
   reportWrite("rewritten", path, detail);
 }
 
-/** Remove ONE entry (a file, a symlink); a directory at the path throws, as rmSync does
- *  without `recursive` -- a caller that meant a file must never take a tree. Returns
- *  whether anything was there to remove. */
+/** A directory at the path throws, as rmSync does without `recursive`: a caller that meant a file
+ *  must never take a tree. */
 export function removeReported(path: string, detail?: string): boolean {
   if (look(path).kind === "absent") return false;
   rmSync(path, { force: true });
@@ -306,8 +274,7 @@ export function removeReported(path: string, detail?: string): boolean {
   return true;
 }
 
-/** rm -rf; returns whether anything was there to remove. A removal that fails partway
- *  is named for what it provably changed (the tree's own entry, when a child went). */
+/** A removal that fails partway is named for what it provably changed. */
 export function removeTreeReported(path: string, detail?: string): boolean {
   const was = look(path, true);
   if (was.kind === "absent") return false;
@@ -321,11 +288,9 @@ export function removeTreeReported(path: string, detail?: string): boolean {
   return true;
 }
 
-/** Discard a transient (a staged temp file or link, a scratch root) after the recipe it
- *  served is over. When the removal fails the transient is a file the user now keeps, so
- *  it is named -- the one moment a transient is reported -- but only as the transition
- *  `was` proves: a recipe that failed before it ever wrote the transient (a temp path
- *  already occupied by a directory) changed nothing, and says nothing. */
+/** A transient whose removal fails is a file the user now keeps, so it is named (the one moment a
+ *  transient is reported), but only as the transition `was` proves: a recipe that never wrote it
+ *  says nothing. */
 function dropTransient(path: string, was: Look, recursive = false): void {
   try {
     rmSync(path, { recursive, force: true });
@@ -334,17 +299,14 @@ function dropTransient(path: string, was: Look, recursive = false): void {
   }
 }
 
-/** rmdir (non-recursive: throws on a non-empty directory, like rmdirSync). Absent is a
- *  no-op. */
 export function removeEmptyDirReported(path: string): void {
   if (look(path).kind === "absent") return;
   rmdirSync(path);
   reportWrite("deleted", path);
 }
 
-/** Move `from` to `to` (copy+delete across devices). A move OUT of a scratch dir is the
- *  creation of `to` (the source never existed for the user); a move INTO one is the
- *  deletion of `from`. */
+/** A move OUT of a scratch dir is the creation of `to` (the source never existed for the user); a
+ *  move INTO one is the deletion of `from`. */
 export function renameReported(from: string, to: string): void {
   const was = look(to, true);
   try {
@@ -386,9 +348,8 @@ export function symlinkReported(target: string, path: string, type?: "junction")
   reportWrite("linked", path, `to ${target}`);
 }
 
-/** THE atomic link-replace recipe (POSIX): build the replacement link aside and rename it
- *  over `link`, so a concurrent reader never observes a missing link. The staged link is
- *  dropped when the rename fails. */
+/** The replacement link is built aside and renamed over `link`, so a concurrent reader never sees a
+ *  missing link. */
 export function atomicSymlink(target: string, link: string): void {
   const staged = join(dirname(link), `.${basename(link)}-next-${process.pid}`);
   rmSync(staged, { force: true });
@@ -403,16 +364,14 @@ export function atomicSymlink(target: string, link: string): void {
   reportWrite("linked", link, `to ${target}`);
 }
 
-/** A temp dir for this process's own lifetime (mkdtemp on `prefix`); nothing written
- *  under it is reported, because removeScratchDir takes it all away before exit. */
+/** Nothing written under it is reported, because removeScratchDir takes it all away before exit. */
 export function scratchDir(prefix: string): ScratchDir {
   const dir = mkdtempSync(prefix) as ScratchDir;
   SCRATCH_ROOTS.add(dir);
   return dir;
 }
 
-/** Remove a scratch dir. A root scratchDir never minted is refused outright; a removal
- *  that fails names the root it left behind (the one scratch fact the user then keeps). */
+/** A removal that fails names the root it left behind, the one scratch fact the user then keeps. */
 export function removeScratchDir(dir: ScratchDir): void {
   if (!SCRATCH_ROOTS.has(dir)) throw new Error(`${dir} is not a scratch dir of this process`);
   SCRATCH_ROOTS.delete(dir);
@@ -420,16 +379,9 @@ export function removeScratchDir(dir: ScratchDir): void {
   dropTransient(dir, { kind: "absent" }, true);
 }
 
-/**
- * THE atomic file-write recipe: write to a same-directory temp file (`<name>.tmp.<pid>`:
- * one writer per process at a time, so the pid alone keeps writers apart), then
- * renameWithRetry over the target -- a reader never sees a torn file. The temp file is
- * removed on failure.
- * `mode` (when given) restricts the temp file from creation, so the rename
- * publishes an already-restricted inode. Shared by the JSON store's save
- * (src/copilot_api/config.ts), saveClaudeJson (src/claude/mcp_registration.ts), the
- * proxy float's records and the installer's launcher shims.
- */
+/** A same-directory temp file (`<name>.tmp.<pid>`: one writer per process at a time, so the pid
+ *  alone keeps writers apart) renamed over the target, so a reader never sees a torn file. `mode`
+ *  restricts the temp file from creation, so the rename publishes an already-restricted inode. */
 export function atomicWriteFile(
   path: string,
   text: string,
@@ -439,10 +391,9 @@ export function atomicWriteFile(
   mkdirReported(dirname(path));
   const was = look(path);
   const tmp = join(dirname(path), `${basename(path)}.tmp.${process.pid}`);
-  // A stale temp (a crashed earlier run under this pid) goes first: `mode` applies only
-  // to a fresh inode, so writing into it would publish its old permissions. Through the
-  // seam, never silently: with pid reuse the path could be a file the user made. One
-  // entry only, so a directory at the path still refuses without being touched.
+  // A stale temp from a crashed run under this pid goes first: `mode` applies only to a fresh
+  // inode, so writing into it would publish its old permissions. Through the seam, because with pid
+  // reuse the path could be a file the user made.
   removeReported(tmp, "stale temp file");
   const tmpWas = look(tmp);
   try {
@@ -464,14 +415,13 @@ export function atomicWriteFile(
   reportWrite(kindOf(was), path, detail);
 }
 
-/** The error codes a rename refused by an open handle on the destination surfaces
- *  (Windows: the daemon, antivirus, the search indexer). renameWithRetry retries them. */
+/** What a rename refused by an open handle on the destination surfaces (Windows: the daemon,
+ *  antivirus, the search indexer). */
 const RENAME_REFUSED_CODES: ReadonlySet<string> = new Set(["EPERM", "EBUSY", "EACCES"]);
 
-/** atomicWriteFile staged the text but the publish (the rename over `path`) stayed
- *  refused past the retries: the text is intact and the live file untouched. The one
- *  failure a caller may answer with a direct write (the installer's launcher shims);
- *  every other failure is not a rename problem and must propagate as itself. */
+/** The live file is untouched; the staged copy is dropped where removal succeeded, and a leftover
+ *  is reported. The one failure a caller may answer with a direct write (the installer's launcher
+ *  shims); every other failure propagates as itself. */
 export class RenameRefusedError extends Error {
   constructor(readonly path: string, cause: unknown) {
     super(`rename over ${path} refused (the file is held open)`, { cause });
@@ -479,11 +429,8 @@ export class RenameRefusedError extends Error {
   }
 }
 
-/**
- * Rename with a short retry. A POSIX rename over an open destination always
- * succeeds, but Windows can transiently throw EPERM/EBUSY/EACCES when another
- * process holds the file open. Retry briefly, then surface the original error.
- */
+/** A POSIX rename over an open destination always succeeds; Windows transiently refuses it while
+ *  another process holds the file open. */
 export function renameWithRetry(
   from: string,
   to: string,

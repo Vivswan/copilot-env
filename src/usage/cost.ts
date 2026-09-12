@@ -1,4 +1,3 @@
-// `agent cost`: fetches pricing, reads usage DBs, and prints spend estimates.
 import { consola } from "consola";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { errMessage } from "../utils/error.ts";
@@ -32,12 +31,6 @@ import {
   usageReport,
 } from "./usage.ts";
 
-/**
- * The default table merges the proxy DBs (proxied traffic) with the Codex and
- * Claude session logs (ALL of each agent's traffic, Direct included); traffic
- * through the proxy appears in both its agent's logs and the proxy DB, so
- * merged totals can double count it. This note closes every run.
- */
 const SOURCES_NOTE =
   "Note: merges three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts " +
   "(each agent's full traffic, Direct included). Traffic through the proxy appears twice, so totals can double count it; " +
@@ -47,8 +40,8 @@ const SOURCES_NOTE =
 
 const EMPTY_REPORT: ReadonlyUsageReport = usageReport();
 
-/** Where the session logs are: one resolver per source, supplied together or not
- *  at all, so a test cannot redirect one source and still sweep the other's real home. */
+/** Supplied together or not at all, so a test cannot redirect one source and still sweep the
+ *  other's real home. */
 export interface SessionRootDiscovery {
   codex(): string[];
   claude(): string[];
@@ -59,13 +52,12 @@ const DEFAULT_SESSION_ROOTS: SessionRootDiscovery = {
   claude: () => discoverClaudeSessionRoots(),
 };
 
-/** The run's environment seams; production takes every default. Tests inject a
- *  fetch and their own session roots, because the default discovery sweeps the
- *  real Codex and Claude homes. */
+/** Tests inject a fetch and their own session roots, because the default discovery sweeps the real
+ *  Codex and Claude homes. */
 export interface CostDeps {
   fetchImpl?: typeof fetch;
   sessionRoots?: SessionRootDiscovery;
-  /** The clock every `runtime.timing` figure is read from, in ms (default `performance.now`). */
+  /** The clock every `runtime.timing` figure is read from, in ms. */
   now?: () => number;
 }
 
@@ -73,19 +65,16 @@ export interface CostArgs {
   days?: string;
   json?: boolean;
   perDay?: boolean;
-  /** The per-run `--pricing-url`; unset defers to the `pricing-url` config key. */
+  /** Unset defers to the `pricing-url` config key. */
   pricingUrl?: string;
   sources?: boolean;
-  /** Parse every session log; the usage index is neither opened nor written. */
+  /** The usage index is neither opened nor written. */
   noIndex?: boolean;
 }
 
-/** The `--json` `runtime` key: how the run went, never what it found. Consumers
- *  comparing two runs' numbers drop it; `index` sums the IndexStats of every
- *  reconcile this run made; `timing` is wall-clock ms per phase. `pricing` is the
- *  price-list load, made after the logs are read: the network round-trip, or
- *  the cache read when a fresh list was already there. `total` runs from the
- *  start of the run to the moment the JSON payload is built. */
+/** How the run went, never what it found, so consumers comparing two runs' numbers drop it.
+ *  `timing` is wall-clock ms per phase; `pricing` is the price-list load (network, or the cache
+ *  read), and `total` runs from the start to the moment the JSON payload is built. */
 export interface CostRuntime {
   /** False under --no-index and when the index could not be opened. */
   indexed: boolean;
@@ -93,8 +82,8 @@ export interface CostRuntime {
   timing: { walk: number; parse: number; fold: number; pricing: number; total: number };
 }
 
-/** Everything `runtime` reports except `total`, which only the payload's builder
- *  can stamp (it is the last thing measured); `startedAt` is the run's clock origin. */
+/** `total` is missing because only the payload's builder can stamp it: it is the last thing
+ *  measured. */
 interface MeasuredRun {
   indexed: boolean;
   index: IndexStats;
@@ -103,7 +92,6 @@ interface MeasuredRun {
   now: () => number;
 }
 
-/** Add every field of `more` into `into` (all seven are additive counts). */
 export function addIndexStats(into: IndexStats, more: IndexStats): void {
   into.filesSeen += more.filesSeen;
   into.filesReused += more.filesReused;
@@ -114,12 +102,9 @@ export function addIndexStats(into: IndexStats, more: IndexStats): void {
   into.bytesRead += more.bytesRead;
 }
 
-/**
- * One run's view of what its reconciles did: the IndexStats of every call
- * summed, and each reader call split into walk / parse / fold by the wall clock
- * at the reconcile's entry and exit (a reader walks, reconciles, and folds in
- * sequence, and always calls the reconcile exactly once).
- */
+/** Each reader call is split into walk / parse / fold by the wall clock at the reconcile's entry
+ *  and exit: a reader walks, reconciles, and folds in sequence, and always calls the reconcile
+ *  exactly once. */
 export class ReconcileMeter {
   readonly stats: IndexStats = emptyIndexStats();
   readonly timing = { walk: 0, parse: 0, fold: 0 };
@@ -128,7 +113,6 @@ export class ReconcileMeter {
   #enteredAt = 0;
   #exitedAt = 0;
 
-  /** `now` is the clock, in ms; tests hand in a fake one. */
   constructor(inner: Reconcile, now: () => number = () => performance.now()) {
     this.#now = now;
     this.reconcile = (source, walked, parseWhole, parseTail) => {
@@ -141,8 +125,7 @@ export class ReconcileMeter {
     };
   }
 
-  /** Run one reader through this meter's reconcile. The readers' bodies are
-   *  synchronous, so the clock is read when the reader RETURNS its promise;
+  /** The readers' bodies are synchronous, so the clock is read when the reader RETURNS its promise;
    *  awaiting first would bill whatever else the microtask queue held to `fold`. */
   async read<T>(reader: (reconcile: Reconcile) => Promise<T>): Promise<T> {
     const startedAt = this.#now();
@@ -156,8 +139,7 @@ export class ReconcileMeter {
   }
 }
 
-/** THE price-list URL resolution: the per-run flag, else the stored `pricing-url`
- *  preference, else the registry's built-in (the accessor folds the last two). */
+/** Flag, else the stored `pricing-url` key, else the built-in (the accessor folds the last two). */
 export function resolvePricingUrl(
   flag: string | undefined,
   config: CopilotEnvConfig = new CopilotEnvConfig(),
@@ -165,13 +147,12 @@ export function resolvePricingUrl(
   return flag ?? config.pricingUrl();
 }
 
-/** `cost`: aggregate per-host SQLite + Codex session usage and estimate spend. */
 export async function runCost(args: CostArgs, deps: CostDeps = {}): Promise<void> {
   const now = deps.now ?? (() => performance.now());
   const startedAt = now();
   const window = args.days === undefined ? undefined : parseDaysWindow(args.days);
-  // Resolved up front: an unreadable preference store rejects the command here,
-  // before any source is read, rather than degrading to a token-only report.
+  // Up front, so an unreadable preference store rejects the command before any source is read
+  // rather than degrading to a token-only report.
   const pricingUrl = resolvePricingUrl(args.pricingUrl);
   await reportCost(args, deps.sessionRoots ?? DEFAULT_SESSION_ROOTS, {
     window,
@@ -183,7 +164,6 @@ export async function runCost(args: CostArgs, deps: CostDeps = {}): Promise<void
 }
 
 interface CostRun {
-  /** The `--days` window; its cutoff instant is derived from it where the readers need one. */
   window: DaysWindow | undefined;
   startedAt: number;
   now: () => number;
@@ -191,7 +171,6 @@ interface CostRun {
   fetchImpl: typeof fetch | undefined;
 }
 
-/** Read every source, price it, and render. */
 async function reportCost(
   args: CostArgs,
   roots: SessionRootDiscovery,
@@ -202,8 +181,7 @@ async function reportCost(
   const dbPaths = discoverUsageDbs();
   const proxyReport = dbPaths.length > 0 ? readUsage(dbPaths, sinceMs) : EMPTY_REPORT;
 
-  // Roots are discovered before the index opens, so nothing but the reads sits
-  // between open and close.
+  // Discovered before the index opens, so nothing but the reads sits between open and close.
   const sessionRoots = roots.codex();
   const claudeRoots = roots.claude();
   const logs = await readSessionLogs(
@@ -222,12 +200,9 @@ async function reportCost(
     return;
   }
 
-  // The price list is loaded only now, after the readers, never beside them: they
-  // are synchronous, so a fetch in flight across them could make no progress until
-  // they returned, and its timeout fired the moment the event loop was free again.
-  // A fresh cache answers without the network, so the order costs it nothing.
-  // Best-effort: a fetch failure still yields a token-only report. The wait is
-  // clocked the moment the load settles, either way, before any warning work.
+  // After the readers, never beside them: they are synchronous, so a fetch in flight across them
+  // could make no progress and its timeout fired the moment the event loop was free again. A fetch
+  // failure prices from an expired cache when one exists, and reports tokens only when none does.
   let pricing = new Map<string, PricingTier>();
   const pricingWaitStartedAt = now();
   let pricingWaitMs = 0;
@@ -267,8 +242,7 @@ async function reportCost(
     now,
   };
 
-  // ModelUsage is a structural superset of UsageTokens, so the read-only
-  // estimateCost reads report.byModel directly -- no per-model copy needed.
+  // ModelUsage is a structural superset of UsageTokens, so no per-model copy is needed.
   const proxyEstimate = estimateCost(proxyReport.byModel, pricing);
   const codexProviders = [...codexByProvider.keys()].sort();
 
@@ -345,12 +319,9 @@ interface SessionLogs {
   meter: ReconcileMeter;
 }
 
-/**
- * Read both session-log sources through the usage index (or index-less), with
- * the index closed on every path out. Both readers run even when a source has
- * no roots: the reconcile is what deletes the rows of a session root that no
- * longer exists, and only that source's walk (an empty one included) reaches it.
- */
+/** Both readers run even when a source has no roots: the reconcile is what deletes the rows of a
+ *  session root that no longer exists, and only that source's walk (an empty one included) reaches
+ *  it. */
 async function readSessionLogs(
   codexRoots: string[],
   claudeRoots: string[],
@@ -373,14 +344,12 @@ async function readSessionLogs(
   }
 }
 
-/** The one human-output line about the index: what it spared and what it read. */
 export function describeIndexRun(stats: IndexStats): string {
   return `usage index: ${stats.filesReused} files reused, ${stats.filesParsedTail} tail-parsed, ${stats.filesParsedWhole} whole-parsed, ${
     formatBytesCompact(stats.bytesRead)
   } read`;
 }
 
-/** Decimal units, one decimal place from kB up. */
 export function formatBytesCompact(bytes: number): string {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
@@ -388,7 +357,6 @@ export function formatBytesCompact(bytes: number): string {
   return `${bytes} B`;
 }
 
-/** Shared per-call context for the two report layouts. */
 interface ReportOpts {
   pricing: Map<string, PricingTier>;
   window: DaysWindow | undefined;
@@ -407,7 +375,6 @@ interface ClaudeSource {
   roots: number;
 }
 
-/** `--sources`: one full table (with day stats) per source and Codex provider. */
 function printSeparateReports(
   proxy: ProxySource,
   codexByProvider: ReadonlyMap<string, ReadonlyUsageReport>,
@@ -454,7 +421,6 @@ function printSeparateReports(
   }
 }
 
-/** Default layout: the classic single table over the union of all sources. */
 function printCombinedView(
   proxy: ProxySource,
   codexByProvider: ReadonlyMap<string, ReadonlyUsageReport>,
@@ -483,31 +449,23 @@ function printCombinedView(
   }
 }
 
-/**
- * The `--days` window, told apart by SPELLING: a whole number counts local
- * calendar days (`1` = today since local midnight, `7` = today plus the six
- * days before), while a decimal is an exact span of 24-hour days (`1.0` = the
- * last 24 hours, `0.5` = the last 12). Number("1.0") === 1, so the raw flag
- * text is the only place the two can be distinguished -- which is why the
- * parser takes the string, not a number.
- */
+/** Told apart by SPELLING: `7` counts local calendar days (today plus the six before), `1.0` is an
+ *  exact span of 24-hour days. Number("1.0") === 1, so the raw flag text is the only place the two
+ *  differ, which is why the parser takes the string. */
 export type DaysWindow =
   | { kind: "calendar"; days: number }
   | { kind: "exact"; days: number };
 
-/** The two admitted spellings: ASCII digits alone for calendar days, digits with one
- *  decimal point for exact days. Nothing else parses. Number() would also admit a
- *  sign, whitespace, an exponent, or hex, and each of those would silently land in a
- *  window kind the user never chose. */
+/** Number() would also admit a sign, whitespace, an exponent, or hex, and each would silently land
+ *  in a window kind the user never chose. */
 const WHOLE_DAYS = /^\d+$/;
 const DECIMAL_DAYS = /^(\d+\.\d*|\.\d+)$/;
 
-/** The longest window with a valid cutoff instant: Date represents 8.64e15 ms either
- *  side of the epoch, which is exactly this many 24-hour days. */
+/** Date represents 8.64e15 ms either side of the epoch, which is exactly this many 24-hour days. */
 const MAX_DAYS = 8.64e15 / MILLISECONDS_PER_DAY;
 
-/** Parse the raw `--days` text into a DaysWindow; the ONE mint, so a window's `days`
- *  is always positive, finite, and small enough to yield a real cutoff. */
+/** The one mint, so a window's `days` is always positive, finite, and small enough to yield a real
+ *  cutoff. */
 export function parseDaysWindow(raw: string): DaysWindow {
   const kind = WHOLE_DAYS.test(raw) ? "calendar" : DECIMAL_DAYS.test(raw) ? "exact" : null;
   const days = Number(raw);
@@ -522,21 +480,15 @@ export function parseDaysWindow(raw: string): DaysWindow {
   return { kind, days };
 }
 
-/**
- * Translate a DaysWindow into the unix-ms cutoff the readers apply. A calendar
- * window starts at a real local midnight (`days - 1` days before today's), so
- * it always covers whole calendar days and its first day is never partial; an
- * exact window is a plain multiple of 24 hours back from now.
- */
+/** A calendar window starts at a real local midnight, so its first day is never partial. */
 export function daysCutoffMs(window: DaysWindow, nowMs: number = Date.now()): number {
   return window.kind === "calendar"
     ? startOfLocalDay(nowMs, window.days - 1)
     : nowMs - window.days * MILLISECONDS_PER_DAY;
 }
 
-/** The report header's period phrase: "all time", "today", "last 7 calendar
- *  days", or the exact span as a duration ("last 36h"). formatDuration rounds to
- *  whole seconds, so a span it would render as "0s" falls back to the day count. */
+/** formatDuration rounds to whole seconds, so a span it would render as "0s" falls back to the day
+ *  count. */
 export function describeDaysWindow(window: DaysWindow | undefined): string {
   if (window === undefined) {
     return "all time";
@@ -548,7 +500,6 @@ export function describeDaysWindow(window: DaysWindow | undefined): string {
   return window.days === 1 ? "today" : `last ${window.days} calendar days`;
 }
 
-/** One row group's totals across all models, including per-category cost. */
 export interface DayTotals {
   reqs: number;
   input: number;
@@ -563,28 +514,20 @@ export interface DayTotals {
   cost: number;
 }
 
-/** One calendar day's totals: DayTotals pinned to its YYYY-MM-DD day. */
 export interface DayMetrics extends DayTotals {
   day: string;
 }
 
-/** One per-day table row: a calendar day's totals, or the undated rest (usage
- *  recorded without a date). The discriminant replaces a magic day label; the
- *  "(undated)" spelling is applied at render time only. */
+/** The discriminant replaces a magic day label; the "(undated)" spelling is applied at render time
+ *  only. */
 export type PerDayRow =
   | ({ kind: "dated" } & DayMetrics)
   | ({ kind: "undated" } & DayTotals);
 
-/**
- * Collapse the per-day, per-model breakdown into one DayMetrics per active day.
- * Dated days only: usage recorded without a day is undatedTotals' row, kept out
- * of here so the per-day medians stay per-DAY statistics (avg/day differs by
- * design: it spreads the aggregate, undated included, over the active days).
- * Cost is priced per day (estimateCost is linear in tokens), but only for models
- * the aggregate `estimate` actually priced: a model it excluded as unpriced (some
- * non-zero bucket lacks a rate) must contribute $0 every day too, or summing the
- * days would not reconcile with the aggregate totalUsd.
- */
+/** Dated days only, so the per-day medians stay per-DAY statistics (avg/day spreads the aggregate,
+ *  undated included, over the active days). Cost is priced per day only for models the aggregate
+ *  `estimate` priced: a model it excluded must contribute $0 every day too, or the days would not
+ *  sum to the aggregate totalUsd. */
 export function computeDayMetrics(
   report: ReadonlyUsageReport,
   pricing: Map<string, PricingTier>,
@@ -598,7 +541,6 @@ export function computeDayMetrics(
   return out;
 }
 
-/** One row group's totals across its models: a calendar day, or the undated rest. */
 function groupTotals(
   models: ReadonlyMap<string, Readonly<ModelUsage>>,
   pricing: Map<string, PricingTier>,
@@ -625,9 +567,8 @@ function groupTotals(
     m.cacheRead += u.cacheRead;
     m.cacheWrite += u.cacheCreation;
     const c = est.perModel[model];
-    // A group's tokens are a subset of the aggregate's, so any model the
-    // aggregate priced is priced here too; gating on `priced` only drops the
-    // models the aggregate already excluded.
+    // A group's tokens are a subset of the aggregate's, so `priced` only drops models the aggregate
+    // excluded.
     if (c !== undefined && priced.has(model)) {
       m.inputCost += c.inputCostUsd;
       m.outputCost += c.outputCostUsd;
@@ -640,17 +581,11 @@ function groupTotals(
   return m;
 }
 
-/** The render-time label of the per-day table's row for usage no day claims.
- *  Exported only to pin the spelling, an external display contract, in tests. */
+/** Exported only to pin the spelling, an external display contract, in tests. */
 export const UNDATED_DAY_LABEL = "(undated)";
 
-/**
- * The undated rest's totals: usage recorded without a date reaches byModel but
- * no perDay entry, and without its row the per-day table's columns could not
- * sum to the TOTAL line (which always carries the aggregate's numbers).
- * null when the days account for everything -- the normal case, since the
- * daemon timestamps every DB row.
- */
+/** Without this row the per-day table's columns could not sum to the TOTAL line, which always
+ *  carries the aggregate's numbers. Null is the normal case: the daemon timestamps every DB row. */
 function undatedTotals(
   report: ReadonlyUsageReport,
   pricing: Map<string, PricingTier>,
@@ -663,11 +598,7 @@ function undatedTotals(
   return groupTotals(rest, pricing, new Set(Object.keys(estimate.perModel)));
 }
 
-/**
- * The per-day table's body rows: one dated row per active day, oldest first,
- * closed by the undated row when one is due. THE row list the table prints
- * and its TOTAL line sums over.
- */
+/** THE row list the per-day table prints and its TOTAL line sums over. */
 export function perDayRows(
   report: ReadonlyUsageReport,
   pricing: Map<string, PricingTier>,
@@ -683,7 +614,6 @@ export function perDayRows(
   return rows;
 }
 
-/** Median of a numeric sample (mean of the two middles when even). 0 if empty. */
 export function median(values: number[]): number {
   if (values.length === 0) {
     return 0;
@@ -693,11 +623,7 @@ export function median(values: number[]): number {
   return sorted.length % 2 === 0 ? ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2 : sorted[mid]!;
 }
 
-/**
- * Calendar span and density of the active days: how many distinct days carried
- * usage out of the inclusive min..max calendar window, and what fraction of
- * that window was active. `spanDays` is 0 (and `percent` 100) when no days.
- */
+/** The inclusive min..max calendar span of the active days, and what fraction of it was active. */
 export function activeDayCoverage(
   report: ReadonlyUsageReport,
 ): { spanDays: number; percent: number } {
@@ -713,12 +639,8 @@ export function activeDayCoverage(
   return { spanDays, percent };
 }
 
-/**
- * Format a token count with a one-decimal K/M/B/T suffix ("1.2K", "1.0M", "45.9B").
- * Distinct from commands/models.ts's formatTokens, which renders catalog
- * context-window sizes as bare "200k"/"1M" -- different semantics, so a
- * different name.
- */
+/** "1.2K", "1.0M", "45.9B". Distinct from commands/models.ts's formatTokens, which renders catalog
+ *  context-window sizes as bare "200k"/"1M": different semantics, so a different name. */
 export function formatTokensCompact(n: number): string {
   if (n >= 1_000_000_000_000) {
     return `${(n / 1_000_000_000_000).toFixed(1)}T`;
@@ -739,18 +661,13 @@ function formatCurrency(amount: number | undefined): string {
   return amount === undefined ? "N/A" : `$${amount.toFixed(2)}`;
 }
 
-/** A category cell: a token count and, when priced, its cost (null = unpriced). */
 interface CatCell {
   tok: string;
   cost: string | null;
 }
 
-/**
- * Sub-align a category column: pad the token parts to one width and the `$`
- * amounts to another, separated by `|`, so the tokens, the separator, and the
- * decimal points all line up vertically -- e.g.
- *   `   176 |   $0.00`  /  `90.3K |   $0.45`  /  `234.2M | $117.09`.
- */
+/** Token parts padded to one width and `$` amounts to another, so the separator and the decimal
+ *  points line up: `   176 |   $0.00`  /  `90.3K |   $0.45`  /  `234.2M | $117.09` */
 function alignCatColumn(cells: CatCell[]): string[] {
   const tokW = Math.max(...cells.map((c) => c.tok.length));
   const costStrs = cells.map((c) => (c.cost === null ? "" : `$${c.cost}`));
@@ -761,7 +678,6 @@ function alignCatColumn(cells: CatCell[]): string[] {
   });
 }
 
-/** One assembled table row: label, requests, the four category cells, total, cost. */
 interface CostRow {
   label: string;
   reqs: string;
@@ -773,10 +689,8 @@ interface CostRow {
   cost: string;
 }
 
-/** The CostRow category columns, in table order. */
 const CAT_COLUMNS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 
-/** Column headings and alignment shared by the by-model and per-day tables. */
 const COST_TABLE_COLUMNS = [
   "Requests",
   "Input",
@@ -797,17 +711,12 @@ const COST_TABLE_ALIGNS: Align[] = [
   "right",
 ];
 
-/** Build a category cell: a bare cost amount (alignCatColumn re-adds the `$`
- *  after padding), or a null cost to render the token count alone (unpriced). */
+/** A bare cost amount: alignCatColumn re-adds the `$` after padding. */
 function catCell(tokens: number, costUsd: number | null): CatCell {
   return { tok: formatTokensCompact(tokens), cost: costUsd === null ? null : costUsd.toFixed(2) };
 }
 
-/**
- * Turn assembled rows into printTable cells. Each category column is
- * sub-aligned across body and footer TOGETHER, so the `|` separators and
- * decimal points line up down the whole table, footer included.
- */
+/** Body and footer are sub-aligned TOGETHER, so the `|` separators line up down the whole table. */
 function renderCostRows(
   body: CostRow[],
   footer: CostRow[],
@@ -824,8 +733,8 @@ function renderCostRows(
   return { body: cells.slice(0, body.length), footer: cells.slice(body.length) };
 }
 
-/** Running token totals across the by-model rows. Cost totals deliberately live
- *  elsewhere (sumEstimateCosts): every TOTAL row renders the aggregate's numbers. */
+/** No cost fields on purpose: every TOTAL row renders the aggregate's numbers (sumEstimateCosts).
+ */
 interface CostSums {
   reqs: number;
   input: number;
@@ -840,12 +749,9 @@ type CostFields = Pick<
   "inputCost" | "outputCost" | "cacheReadCost" | "cacheWriteCost" | "cost"
 >;
 
-/**
- * Per-category cost sums over the estimate's exact per-model costs. EVERY total
- * row (by-model TOTAL and per-day TOTAL alike) renders these same doubles:
- * summing the same costs regrouped differently (by model vs by day) can differ
- * by one ulp, which toFixed can stretch into a visible cent at a boundary.
- */
+/** EVERY total row (by-model and per-day alike) renders these same doubles: the same costs
+ *  regrouped by day can differ by one ulp, which toFixed can stretch into a visible cent at a
+ *  boundary. */
 function sumEstimateCosts(estimate: CostEstimate): CostFields {
   const sums = {
     inputCost: 0,
@@ -863,13 +769,12 @@ function sumEstimateCosts(estimate: CostEstimate): CostFields {
   return sums;
 }
 
-/** One row per model (most expensive first) plus the totals they sum to. */
 function buildModelRows(
   report: ReadonlyUsageReport,
   estimate: CostEstimate,
 ): { rows: CostRow[]; sum: CostSums } {
   const { byModel } = report;
-  // Most expensive first; unpriced models sink to the bottom, ties by name.
+  // Unpriced models sink to the bottom.
   const models = [...byModel.keys()].sort((a, b) => {
     const costA = estimate.perModel[a]?.estimatedCostUsd ?? -1;
     const costB = estimate.perModel[b]?.estimatedCostUsd ?? -1;
@@ -890,7 +795,7 @@ function buildModelRows(
       continue;
     }
     const total = u.input + u.output + u.cacheRead + u.cacheCreation;
-    const c = estimate.perModel[model]; // ModelCost | undefined (unpriced)
+    const c = estimate.perModel[model];
     sum.reqs += u.events;
     sum.input += u.input;
     sum.output += u.output;
@@ -911,7 +816,6 @@ function buildModelRows(
   return { rows, sum };
 }
 
-/** The TOTAL / Avg-day / Median-day footer rows of the by-model table. */
 function buildAggregateFooter(
   sum: CostSums,
   estimate: CostEstimate,
@@ -969,7 +873,6 @@ function buildAggregateFooter(
   ];
 }
 
-/** Print one source's by-model usage + cost table (tokens with $ per category). */
 function printCostReport(
   report: ReadonlyUsageReport,
   estimate: CostEstimate,
@@ -1006,7 +909,6 @@ function printCostReport(
   console.log("");
 }
 
-/** One assembled per-day table row: the caller-chosen label over a group's totals. */
 function dayRow(label: string, d: DayTotals): CostRow {
   return {
     label,
@@ -1020,15 +922,8 @@ function dayRow(label: string, d: DayTotals): CostRow {
   };
 }
 
-/**
- * The per-day table's TOTAL line (the "TOTAL" label is the renderer's), summing
- * the token and request columns of the rows above it (the dated days, plus the
- * undated row when one prints -- so the columns really add up to it). The cost
- * fields are the aggregate's numbers via sumEstimateCosts, NOT the column sum:
- * the two tables regroup the SAME aggregate (by model there, by day plus the
- * undated rest here), so both TOTAL rows render the one true grand total,
- * bit-identically.
- */
+/** The cost fields are the aggregate's numbers, NOT the column sum: both tables regroup the SAME
+ *  aggregate, so both TOTAL rows must render the one grand total bit-identically. */
 export function sumDayTotals(days: readonly DayTotals[], estimate: CostEstimate): DayTotals {
   const sum: DayTotals = {
     reqs: 0,
@@ -1054,11 +949,6 @@ export function sumDayTotals(days: readonly DayTotals[], estimate: CostEstimate)
   return { ...sum, ...sumEstimateCosts(estimate) };
 }
 
-/**
- * Print a day-by-day table (one row per active day, oldest first, plus the
- * undated row when usage carries no date) and a TOTAL footer, sharing the main
- * report's per-category token+cost sub-alignment.
- */
 function printPerDayReport(
   report: ReadonlyUsageReport,
   pricing: Map<string, PricingTier>,
@@ -1084,7 +974,6 @@ function printPerDayReport(
   console.log("");
 }
 
-/** Round a ModelCost's USD fields for serialization; in-memory values stay exact. */
 function roundModelCost(cost: ModelCost): ModelCost {
   return {
     pricingReference: cost.pricingReference,
@@ -1096,8 +985,7 @@ function roundModelCost(cost: ModelCost): ModelCost {
   };
 }
 
-/** Build one source's usage/cost JSON block (shared by the proxy and each provider).
- *  This is the ONE place estimate USD values get rounded for machine output. */
+/** The one place estimate USD values get rounded for machine output. */
 export function buildSourceJson(
   report: ReadonlyUsageReport,
   estimate: CostEstimate,
@@ -1140,7 +1028,6 @@ export function buildSourceJson(
   };
 }
 
-/** The measured run with `total` stamped now. */
 function completeRuntime(measured: MeasuredRun): CostRuntime {
   return {
     indexed: measured.indexed,
@@ -1149,12 +1036,8 @@ function completeRuntime(measured: MeasuredRun): CostRuntime {
   };
 }
 
-/**
- * Build the `--json` payload. The top-level keys keep their historical
- * proxy-report shape; the Codex session source is the added `codexSessions`
- * key so existing consumers are unaffected, and `runtime` is the one reserved
- * key that describes the run rather than the usage.
- */
+/** The top-level keys are the proxy report; `codexSessions`/`claudeSessions` sit beside them, and
+ *  `runtime` is the one key that describes the run rather than the usage. */
 function buildCostJson(
   report: ReadonlyUsageReport,
   estimate: CostEstimate,
@@ -1166,8 +1049,8 @@ function buildCostJson(
   claudeSessions: Record<string, unknown>,
   measured: MeasuredRun,
 ): Record<string, unknown> {
-  // Property order is evaluation order: `runtime` is the LAST property, so its
-  // `total` covers the construction of everything else in the payload.
+  // Property order is evaluation order: `runtime` last, so its `total` covers the construction of
+  // the rest.
   return {
     dbCount,
     sinceMs: sinceMs ?? null,

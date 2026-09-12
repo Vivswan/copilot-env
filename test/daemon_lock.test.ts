@@ -32,12 +32,9 @@ import {
   writeRunState,
 } from "./helpers.ts";
 
-// The daemon liveness lock: the daemon holds `<home>/daemon.lock` for its whole life
-// (acquired by the daemon_lock_preload shim), and the liveness consults judge it BEFORE
-// the pid table. These tests pin the decision table, the OS-enforced release semantics
-// (SIGKILL frees the lock with no unlock code running -- the whole point), and the two
-// consult sites' lock-first behavior against controls that the pre-lock pid
-// classification would have decided the other way.
+// The daemon holds `<home>/daemon.lock` for life (acquired by daemon_lock_preload), and the
+// liveness consults judge it BEFORE the pid table. SIGKILL frees it with no unlock code
+// running; that is the whole point.
 
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
@@ -54,7 +51,6 @@ const plantMarker = (home: string, pid: number): void => {
   writeFileSync(daemonLockPath(home), `${pid}\n${Date.now()}\n`);
 };
 
-// Open a loopback TCP listener standing in for a listening daemon; caller closes it.
 function listenEphemeral(): Promise<{ server: Server; port: number }> {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -171,7 +167,7 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
     };\n` +
       `if (!acquireDaemonLockForLife(${CHILD_VALUES}.home)) Deno.exit(1);\n` +
       `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "locked");\n` +
-      "setInterval(() => {}, 60_000);\n", // hold for life (until killed)
+      "setInterval(() => {}, 60_000);\n",
   );
   const child = spawnChild(Deno.execPath(), {
     args: [...denoRunArgs(), holder],
@@ -291,11 +287,9 @@ test(
     dir = isolateProxyHome("copilot-daemon-lock-");
     const home = defaultHomeDir();
     const ready = join(dir, "ready");
-    // A DAEMON-SHAPED holder (copilot-api entry basename + `start`): a lock-"alive" pid is
-    // signalled only under the owner-filtered scan's corroboration -- on a shared home the
-    // lock can be another host's daemon whose marker pid names an innocent local process
-    // (the refusal is pinned by the coincidence test below). It locks the EFFECTIVE home,
-    // which is what stopTrackedProxy consults for the default profile.
+    // Daemon-shaped (copilot-api basename + `start`): a lock-alive pid is signalled only under
+    // the owner-filtered scan's corroboration; the shared-home refusal is the test below. It
+    // locks the effective home, which stopTrackedProxy consults for the default profile.
     const holder = join(dir, "copilot-api-holder.ts");
     writeFileSync(
       holder,
@@ -331,11 +325,9 @@ test(
   30_000,
 );
 
-// The shared-home coincidence, on the STOP path: our daemon crashed leaving its state pid
-// uncleared, the remote host's live daemon over the same home wrote the SAME number into
-// the marker, and the local number was recycled onto an innocent process. The verdict
-// reads "alive" -- the arm that used to signal uncorroborated -- but the stop must refuse
-// and KEEP the tracking: the user asked to stop something provably still up, and silently
+// Shared-home coincidence on the STOP path: our crashed daemon's state pid, the remote
+// daemon's marker, and an innocent local process all carry the same number. The stop must
+// refuse AND keep the tracking: the user asked to stop something provably still up, and
 // unbinding it would lie.
 test(
   "stopTrackedProxy: stale tracking + a held lock naming a local NON-daemon pid is refused, tracking kept",
@@ -355,7 +347,7 @@ test(
     try {
       writeFileSync(daemonLockPath(home), `${child.pid}\n${Date.now()}\n`);
       writeRunState({ pid: child.pid, port: 4141 });
-      expect(daemonLockVerdict(home, child.pid)).toBe("alive"); // the old signal-alone arm
+      expect(daemonLockVerdict(home, child.pid)).toBe("alive"); // must not authorize alone
 
       const result = await stopTrackedProxy();
 
@@ -376,16 +368,13 @@ test(
   30_000,
 );
 
-// The KILL-boundary reuse, on the STOP path: the TERM'd daemon dies inside the grace and
-// the OS recycles its pid onto a foreign process, so terminatePid's boundary re-proof
-// refuses the SIGKILL ("refused-reused-pid"). OUR daemon is provably gone -- the stop
-// must count as STOPPED, CLEAR the tracking, and say so honestly, never keep pointing
-// follow-up stops (or de-auth's "still running" warning) at an innocent bystander. Under
-// the historical void-returning terminatePid this control goes red: the caller could only
-// guess from the live foreign pid, computed stopped=false, and KEPT the tracking. The
-// classify seam answers "yes" at the TERM gate (the seconds-old proof that authorized the
-// signal) and "no" at the KILL boundary; the TERM-surviving bystander needs a trappable
-// SIGTERM, so POSIX-only (same gating as the terminate_pid controls).
+// KILL-boundary pid reuse on the STOP path: the TERM'd daemon dies inside the grace and the
+// OS recycles its pid onto a foreign process, so terminatePid's boundary re-proof refuses
+// the SIGKILL. Our daemon is provably gone, so the stop counts as STOPPED, clears the
+// tracking and says so; keeping it would point follow-up stops at the bystander.
+//   classify at the TERM gate      -> "yes" (the proof that authorized the signal)
+//   classify at the KILL boundary  -> "no"
+// POSIX-only: the TERM-surviving bystander needs a trappable SIGTERM.
 test.skipIf(process.platform === "win32")(
   "stopTrackedProxy: a KILL-boundary pid-reuse refusal counts as stopped, clears tracking, reports",
   async () => {
@@ -459,11 +448,9 @@ test("stopTrackedProxy: a lock-dead tracked pid is never signalled, and tracking
 
 // --- the unprovable-liveness posture (probe cannot run: every pid reads "unproven") ------
 
-// proxyStatus under a token whose liveness probe cannot run (the real NotCapable shape is
-// pinned in test/pid.test.ts): a healthy proxy must not be false-reported as DOWN. With no
-// lock to consult and an unprovable pid-table read, the identity scan and the port probe
-// own the verdict -- a live daemon-shaped tracked pid whose recorded port answers reads UP.
-// Under the historical dead-on-unproven read this control goes red ({ up: false }).
+// With no lock to consult and an unprovable pid-table read, the identity scan and the port
+// probe own the verdict: a live daemon-shaped tracked pid whose recorded port answers reads
+// UP (the real NotCapable probe shape is pinned in test/pid.test.ts).
 test(
   "proxyStatus: an unprovable liveness read defers to identity + port probe, not DOWN",
   async () => {
@@ -496,12 +483,9 @@ test(
   30_000,
 );
 
-// stopTrackedProxy under the same unprovable probe, graceMs > 0 (the caller that must be
-// SURE it stopped, e.g. de-auth): with no signal deliverable and no death provable, the
-// stop must NOT claim "stopped" -- and must KEEP the tracking, so a follow-up `agent stop`
-// from a capable shell can still target the possibly-live daemon. Under the historical
-// read the unprovable probe minted died-in-grace/stopped=true and CLEARED the tracking of
-// a daemon that is provably still alive.
+// graceMs > 0 is the caller that must be SURE (de-auth): with no signal deliverable and no
+// death provable, the stop must not claim stopped and must keep the tracking, so a follow-up
+// `agent stop` from a capable shell can still target the daemon.
 test(
   "stopTrackedProxy: an unprovable stop keeps the tracking and never claims stopped",
   async () => {
@@ -531,9 +515,7 @@ test(
       });
       // Signalled (attempted, honestly reported) but NOT stopped: no death was proven.
       expect(result).toEqual({ trackedPid: child.pid, signalled: true, stopped: false });
-      // The whole outcome: the daemon is genuinely still alive (nothing could signal
-      // it), and the tracking is KEPT for a follow-up stop -- never cleared on a
-      // failed look.
+      // Alive and still tracked: never cleared on a failed look.
       expect(pidAlive(child.pid)).toBe(true);
       expect(new CopilotEnvRunState().read().pid).toBe(child.pid);
     } finally {

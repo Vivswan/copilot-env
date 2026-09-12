@@ -1,20 +1,9 @@
-// `agent launch <claude|codex|copilot>`: launch an agent CLI with the managed
-// flag set, provider wiring, and child environment -- the TypeScript home of the
-// logic the retired shell/agents.launchers rc pair carried, so the `agent env`-
-// emitted cl/co/cx one-liners on both platforms share ONE implementation.
+// The one implementation behind the cl/co/cx one-liners `agent env` emits on both platforms. The
+// child env is composed here rather than inherited: the wiring step may have just moved a port or
+// built the farm, and nothing refreshes the shell's env between wiring and exec inside one process.
 //
-// A default launch reads the CONFIGURED provider in-process (the inspect
-// functions behind `agent <name> --check`; no live probe); proxy/none ensures the
-// proxy FIRST (a cold start may move the port), then re-syncs the wiring. A
-// `--profile` launch never rewires the profile and hard-fails on an unknown or
-// credential-less one. The child env is composed here rather than inherited
-// blindly: the rc launchers relied on the `agent` wrapper's env refresh between
-// wiring and exec, which an in-process launch no longer has (managedClaudeBaseUrl
-// / managedCodexHome, shared with `agent env`, give the set/clear/leave verdicts).
-//
-// Neither deno nor node exposes an execve-style process replacement, so every
-// platform launches the agent as a child with inherited stdio and passes its
-// exit code (or 128+signal) through.
+// Neither deno nor node exposes an execve-style replacement, so the agent runs as a child with
+// inherited stdio and its exit code (or 128+signal) passes through.
 import { spawnSync } from "node:child_process";
 import { constants } from "node:os";
 import type { ManagedWrite } from "../agents/configure.ts";
@@ -51,31 +40,24 @@ import {
   resolveProxyToken,
 } from "./proxy_token.ts";
 
-/** The agent CLIs `agent launch` can start (also each one's command name). */
+/** Each name is also the command spawned. */
 const LAUNCH_CLIS = ["claude", "codex", "copilot"] as const;
 type LaunchCliName = (typeof LAUNCH_CLIS)[number];
 
-/** Raw `agent launch` inputs, parsed at the CLI boundary into a LaunchAction. */
 export interface LaunchFlags {
   cli: string;
-  /** Pass-through args (everything after `--`), handed to the agent CLI verbatim
-   *  once a leading `--profile <name>` pair is hoisted (claude/codex only). */
   args: string[];
   profile?: string;
   relaxed?: boolean;
 }
 
-/**
- * What ONE `agent launch` invocation does. Copilot's arm carries no profile:
- * profiles wire Codex and Claude, so a copilot profile launch is unrepresentable
- * rather than silently ignored.
- */
+/** Copilot's arm carries no profile: profiles wire Codex and Claude, so a copilot profile launch is
+ *  unrepresentable rather than silently ignored. */
 export type LaunchAction =
   | { kind: "claude"; profile: Profile; relaxed: boolean; args: string[] }
   | { kind: "codex"; profile: Profile; relaxed: boolean; args: string[] }
   | { kind: "copilot"; relaxed: boolean; args: string[] };
 
-/** Parse the raw `agent launch` flags into a LaunchAction (the CLI boundary). */
 export function parseLaunchAction(flags: LaunchFlags): LaunchAction {
   if (!(LAUNCH_CLIS as readonly string[]).includes(flags.cli)) {
     throw new Error(`unknown agent CLI '${flags.cli}' (expected claude | codex | copilot)`);
@@ -84,11 +66,8 @@ export function parseLaunchAction(flags: LaunchFlags): LaunchAction {
   const relaxed = Boolean(flags.relaxed);
   let profile = parseProfileFlag(flags.profile);
   let args = [...flags.args];
-  // The rc-launcher contract: cl/cx recognized `--profile <name>` as the LEADING
-  // pass-through pair only, so `cl --profile work ...` keeps working through the
-  // one-line wrappers. An explicit --profile flag wins; the pair then rides
-  // through to the agent CLI untouched (the launchers only ever hoisted one).
-  // co never hoisted -- a leading pair passes through to copilot itself.
+  // The one-line wrappers cannot split `cl --profile work ...`, so a LEADING pair is hoisted here;
+  // with an explicit --profile the pair rides through to the agent CLI untouched. co never hoists.
   if (cli !== "copilot" && profile === null && args[0] === "--profile" && args[1]) {
     profile = parseProfileName(args[1]);
     args = args.slice(2);
@@ -102,69 +81,48 @@ export function parseLaunchAction(flags: LaunchFlags): LaunchAction {
   return { kind: cli, profile, relaxed, args };
 }
 
-/** The resolved child invocation: command, argv, and the env deltas to apply on
- *  top of the inherited environment. Pure data, so tests assert composition
- *  without spawning an agent. */
+/** Pure data, so tests assert the composition without spawning an agent. */
 export interface LaunchPlan {
   command: LaunchCliName;
   args: string[];
-  /** Vars set for the child. */
   env: Record<string, string>;
-  /** Vars removed from the inherited environment (canonical UPPER-CASE names). */
+  /** Canonical UPPER-CASE names. */
   scrub: string[];
 }
 
-/**
- * The launch orchestration's effects, injectable so prepareLaunch is unit-testable
- * without daemons or config writes (the seam mirrors ProxyTokenDeps).
- */
 export interface LaunchDeps {
-  /** The CONFIGURED provider of the agent's default selection (no live probe). */
+  /** The CONFIGURED provider, no live probe. */
   agentMode(agent: "claude" | "codex"): AgentProviderMode;
-  /** Ensure `profile`'s proxy daemon is reachable (the interactive resolver:
-   *  managed auto-start, else a prompt). False = launch must abort. */
+  /** False = the launch must abort. */
   ensureProxy(profile: Profile): Promise<boolean>;
-  /** Re-sync the agent's DEFAULT wiring to the proxy (`agent <name> --proxy`). */
   wireProxyDefault(agent: "claude" | "codex"): Promise<void>;
-  /** Bring the opt-in Codex model catalog up to date for a DIRECT default launch
-   *  (the proxy launch does this inside ensureProxy's token step). */
+  /** For a DIRECT default launch; the proxy launch refreshes inside ensureProxy's token step. */
   refreshCodexCatalog(): Promise<void>;
-  /** The named profile's store slot -- the source of truth for its mode/credential. */
   profileSlot(name: ProfileName): ProfileSlot;
-  /** Re-sync the profile's Claude settings file against the live port and return
-   *  its absolute path (what `claude --settings` gets). */
+  /** Returns the absolute path `claude --settings` gets. */
   writeClaudeProfileSettings(name: ProfileName, mode: ProfileMode): Promise<string>;
-  /** Refresh the profile's wiring (both agents) against the live ports. */
   syncProfileWiring(name: ProfileName, mode: ProfileMode): Promise<void>;
   managedClaudeBaseUrl(profile: Profile): ManagedEnvValue;
   managedCodexHome(): ManagedEnvValue;
-  /** A human-facing stderr line (stdout belongs to the launched agent). */
+  /** stderr: stdout belongs to the launched agent. */
   notify(line: string): void;
 }
 
-/** The managed Claude flag set, stated ONCE (both the default and profile arms). */
 const CLAUDE_MANAGED_FLAGS = ["--permission-mode", "auto", "--enable-auto-mode"] as const;
 
-/** Fold a managed set/clear/leave verdict into the plan's env deltas. */
 function applyManagedEnv(plan: LaunchPlan, key: string, value: ManagedEnvValue): void {
   if (value === null) return;
   if ("unset" in value) plan.scrub.push(key);
   else plan.env[key] = value.value;
 }
 
-/**
- * Ensure a NAMED profile is launchable and return its mode: it must exist with a
- * credential (hard-fail -- named profiles never fall back to the default), and a
- * proxy profile's own daemon must be reachable (null = the resolver said no and
- * already explained itself on stderr).
- */
+/** Null = the resolver said no and already explained itself on stderr. */
 async function ensureProfileReady(
   name: ProfileName,
   deps: LaunchDeps,
 ): Promise<ProfileMode | null> {
   const slot = deps.profileSlot(name);
-  // Only a COMPLETE slot (one credential + one mode) is launchable; a partial
-  // slot reports its gap -- exactly `agent profile --check`'s contract.
+  // A partial slot reports its gap, exactly `agent profile --check`'s contract.
   if (slot.kind === "partial") {
     throw new Error(partialSlotGap(name, slot));
   }
@@ -172,12 +130,8 @@ async function ensureProfileReady(
   return slot.mode;
 }
 
-/**
- * Sync the default selection's provider before launch, mirroring the rc
- * launchers' _copilot_wire_provider: proxy/none ensures the proxy THEN re-syncs
- * the wiring (a cold start may have moved the port); "other" is not ours to
- * touch, so just say so; direct needs nothing. Returns the mode, or null to abort.
- */
+/** The proxy is ensured THEN the wiring re-synced, because a cold start may have moved the port.
+ *  "other" is not ours to touch. Null = abort. */
 async function wireDefaultProvider(
   agent: "claude" | "codex",
   display: string,
@@ -196,11 +150,7 @@ async function wireDefaultProvider(
   return mode;
 }
 
-/**
- * Resolve a LaunchAction into the child invocation, running the provider/profile
- * wiring on the way (pure orchestration over `deps`). Null = abort with exit 1;
- * the failing step already narrated on stderr.
- */
+/** Null = abort with exit 1; the failing step already narrated on stderr. */
 export async function prepareLaunch(
   action: LaunchAction,
   deps: LaunchDeps,
@@ -214,9 +164,7 @@ export async function prepareLaunch(
         env: { CLAUDE_CODE_NO_FLICKER: "1" },
         scrub: [],
       };
-      // IS_SANDBOX tells Claude it runs sandboxed, so skipping permission
-      // prompts is acceptable -- scoped to the child, exactly like the rc
-      // launchers' subshell export.
+      // IS_SANDBOX tells Claude it runs sandboxed, so skipping permission prompts is acceptable.
       if (relaxed) plan.env.IS_SANDBOX = "1";
       const flags = [
         ...CLAUDE_MANAGED_FLAGS,
@@ -226,8 +174,8 @@ export async function prepareLaunch(
         const mode = await ensureProfileReady(action.profile, deps);
         if (mode === null) return null;
         const settings = await deps.writeClaudeProfileSettings(action.profile, mode);
-        // The shell may carry the DEFAULT proxy's URL (from `agent env`), which
-        // would override the profile's own env block: scrub it unconditionally.
+        // The shell may carry the DEFAULT proxy's URL (from `agent env`), which would override the
+        // profile's own env block.
         plan.scrub.push(BASE_URL_ENV);
         plan.args = ["--settings", settings, ...flags, ...action.args];
         return plan;
@@ -244,10 +192,9 @@ export async function prepareLaunch(
       if (action.profile !== null) {
         const mode = await ensureProfileReady(action.profile, deps);
         if (mode === null) return null;
-        // Order matters: the daemon was ensured FIRST (a cold start may move its
-        // port), so this refresh bakes the port the daemon actually bound. A
-        // failed refresh warns and launches with the existing config, like the
-        // rc launchers did.
+        // After the daemon was ensured (a cold start may move its port), so this refresh bakes the
+        // port the daemon actually bound. A failed refresh warns and launches with the existing
+        // config.
         try {
           await deps.syncProfileWiring(action.profile, mode);
         } catch (e) {
@@ -265,9 +212,8 @@ export async function prepareLaunch(
       if (mode === null) return null;
       // Read AFTER the wiring step: a proxy re-wire may have just built the farm.
       applyManagedEnv(plan, "CODEX_HOME", deps.managedCodexHome());
-      // Codex parses `model_catalog_json` at startup, BEFORE it reaches the auth
-      // refresh that would regenerate a catalog an upgraded codex rejects -- so a
-      // direct launch refreshes (version-change aware, daily otherwise) here first.
+      // Codex parses `model_catalog_json` at startup, BEFORE the auth refresh that would regenerate
+      // a catalog an upgraded codex rejects, so a direct launch refreshes here first.
       if (mode === "direct") await deps.refreshCodexCatalog();
       plan.args = [...flags, ...action.args];
       return plan;
@@ -291,16 +237,10 @@ export async function prepareLaunch(
 
 // --- production effects --------------------------------------------------------
 
-/**
- * Ensure the addressed proxy is reachable via the SHARED resolver decision matrix
- * (resolveProxyToken): managed auto-start silently, else offer to start it (no `--yes`: a
- * down unmanaged proxy prompts, exactly like the rc launchers' `agent proxy-token` call).
- * The print step emits no key (launch needs reachability, not the credential; the agent's
- * own wiring resolves the token) but keeps runPrintProxyToken's OTHER duty: the retired
- * launchers' pre-flight also refreshed the Codex model catalog, so the freshness hook runs
- * here directly (default profile only, like every catalog write; the resolver guarantees
- * the proxy is up before this step).
- */
+/** The shared resolver matrix (resolveProxyToken) without `--yes`, so a down unmanaged proxy
+ *  prompts. The print step emits no key (launch needs reachability, not the credential) but keeps
+ *  runPrintProxyToken's other duty, the Codex catalog refresh, for the default profile only, like
+ *  every catalog write. */
 async function ensureProxyUp(profile: Profile): Promise<boolean> {
   const deps: ProxyTokenDeps = {
     proxyUp: async (p) => (await proxyStatus(p)).up,
@@ -319,7 +259,7 @@ async function ensureProxyUp(profile: Profile): Promise<boolean> {
   return (await resolveProxyToken({ assumeYes: false, profile }, deps)) === 0;
 }
 
-/** The production dependency set (see LaunchDeps). Exported for its tests. */
+/** Exported for its tests. */
 export function commandDeps(): LaunchDeps {
   return {
     agentMode: (agent) => readAgentModes()[agent],
@@ -328,10 +268,8 @@ export function commandDeps(): LaunchDeps {
       await (agent === "claude"
         ? runClaude({ kind: "configure", mode: "proxy" })
         : runCodex({ kind: "configure", mode: "proxy" }));
-      // A DEFAULT wiring changed: re-derive the recorded default mode, the same
-      // success-only step the `agent codex`/`agent claude` configure arms run
-      // (non-throwing, so it can never abort the launch; profile launches never
-      // reach this dep).
+      // The same success-only step the `agent codex`/`agent claude` configure arms run;
+      // non-throwing, so it can never abort the launch.
       recordDefaultModeFromWiring();
     },
     refreshCodexCatalog: () => refreshCodexCatalogAndSync("direct"),
@@ -340,8 +278,8 @@ export function commandDeps(): LaunchDeps {
       const write: ManagedWrite = mode === "direct"
         ? { mode, directIntegrationId: await resolveAndPersistDirectIdentity(name) }
         : { mode };
-      // Through the adapter, so the profile's Desktop entry follows the
-      // `claude-desktop` key on every launch, exactly like `--settings-for`.
+      // Through the adapter so the profile's Desktop entry follows the `claude-desktop` key, like
+      // `--settings-for`.
       await claudeAdapter().configureProfile(name, write, { quiet: true });
       return settingsPathFor(resolveClaudeHome(), name);
     },
@@ -354,22 +292,10 @@ export function commandDeps(): LaunchDeps {
   };
 }
 
-/**
- * Run the planned agent as a child with inherited stdio (see the module header
- * for why there is no exec) and return the exit code to pass through: the
- * child's own status, or the conventional 128+N when a signal killed it.
- */
 function spawnAgentCli(plan: LaunchPlan): number {
-  // verbatimCliSpawn keeps the pass-through contract: the resolved CLI gets the
-  // args as plain argv (POSIX exec-direct with the nvm fallback; Windows via a
-  // native .exe or the npm .ps1 shim through `powershell -File` -- never cmd.exe,
-  // whose parser expands %VAR% even inside quotes; only a batch-ONLY shim still
-  // falls back to it). The resolved bin dir joins the child PATH: an npm/nvm
-  // shim needs node beside it.
   const spawn = verbatimCliSpawn(plan.command, plan.args);
-  // Deno's node:child_process MERGES the `env` option over the parent environment
-  // (node replaces), so a scrubbed key must also be cleared from the parent for
-  // the child's span, then restored.
+  // Deno's node:child_process MERGES the `env` option over the parent environment (node replaces),
+  // so a scrubbed key must also be cleared from the parent for the child's span, then restored.
   const scrubbed: [string, string][] = [];
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && plan.scrub.includes(key.toUpperCase())) {
@@ -396,30 +322,27 @@ function spawnAgentCli(plan: LaunchPlan): number {
   }
 }
 
-/** `agent launch`: prepare (wiring + env), then hand the terminal to the agent.
- *  process.exitCode (never process.exit) so pending stderr writes flush. */
+/** process.exitCode, never process.exit, so pending stderr writes flush. */
 export async function runLaunch(
   action: LaunchAction,
   deps: LaunchDeps = commandDeps(),
 ): Promise<void> {
-  // The pre-launch wiring writes are named AFTER the agent hands the terminal back
-  // (deferred, flushed on every return and throw), not into a screen the agent is
-  // about to clear. A signal that kills this process while the agent runs loses them:
-  // the alternative, a signal listener, would keep the launcher alive past a signal
-  // aimed at it alone for as long as the agent ignores the same signal.
+  // The wiring writes are named AFTER the agent hands the terminal back, not into a screen it is
+  // about to clear. A signal that kills this process while the agent runs loses them: a signal
+  // listener would keep the launcher alive past a signal aimed at it alone for as long as the agent
+  // ignores the same signal.
   deferWriteReports();
   try {
     const cliLook = findCommand(action.kind);
     if (cliLook.path === null) {
       if (cliLook.launchFailed) {
-        // A failed look must not read "not installed": the probe shell never ran,
-        // which proves nothing about the CLI. The launch below is the honest test --
-        // its own spawn error names the real problem if there is one.
+        // A failed look must not read "not installed": the probe never completed, which proves
+        // nothing about the CLI. The launch below is the honest test; its own spawn error names the
+        // real problem.
         process.stderr.write(
           `could not check whether '${action.kind}' is installed (the command probe failed to run); launching anyway\n`,
         );
       } else {
-        // The rc launchers' wording, verbatim -- the fix is the same command.
         throw new Error(
           `'${action.kind}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`,
         );

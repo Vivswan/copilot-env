@@ -1,18 +1,12 @@
-// terminatePid's SIGKILL boundary (src/copilot_api/process.ts): the escalation re-proves
-// daemon identity through the injected classify seam (classifyDaemonPid in production)
-// instead of firing on the seconds-old proof the caller held at SIGTERM time. Each
-// three-state arm gets one control, and each control asserts the returned
-// TerminateVerdict alongside the observable behavior (the whole outcome -- signals sent
-// AND the answer callers act on):
-//   - "no"      -> the KILL is refused ("refused-reused-pid") and the reuse reported (the
-//                  arm that goes red under the historical pidAlive-only escalation),
-//   - "yes"     -> the KILL proceeds ("killed"),
-//   - "unknown" -> the KILL proceeds ("killed" -- the documented deliberate default:
-//                  every caller gates its TERM on an identity read at least as demanding
-//                  as the kill gate, and a transient scan failure must not strand a stop).
-// The TERM-survivor arms need a trappable SIGTERM, which Windows does not have
-// (process.kill maps to TerminateProcess), so they are POSIX-only -- same gating as the
-// stopLockHolder escalation controls in test/launch_steps.test.ts.
+// terminatePid re-proves daemon identity through the injected classify seam at the SIGKILL
+// boundary, never on the proof the caller held at SIGTERM time. Each arm asserts the
+// TerminateVerdict alongside the signals sent.
+//   "no"      -> KILL refused, "refused-reused-pid", the reuse reported
+//   "yes"     -> KILL sent, "killed"
+//   "unknown" -> KILL sent, "killed": every caller gates its TERM on an identity read at
+//                least as demanding, so a transient scan failure must not strand a stop
+// The TERM-survivor arms need a trappable SIGTERM, which Windows lacks (process.kill is
+// TerminateProcess there), so they are POSIX-only.
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
@@ -89,10 +83,8 @@ async function withCapturedOutput(body: () => Promise<void>): Promise<string> {
   return written.join("");
 }
 
-// The arm the fix exists for: at the KILL boundary the pid classifies as NOT ours (the
-// TERM'd daemon died inside the grace and the OS reassigned the pid), so no SIGKILL is
-// sent and the reuse is reported. Under the historical pidAlive-only escalation this
-// control goes red: the still-alive impostor would be killed on the stale TERM-time proof.
+// The TERM'd daemon died inside the grace and the OS reassigned the pid: a KILL on the
+// stale TERM-time proof would hit the impostor.
 test.skipIf(process.platform === "win32")(
   "a pid classifying 'no' at the KILL boundary is spared, and the reuse is reported",
   async () => {
@@ -103,10 +95,8 @@ test.skipIf(process.platform === "win32")(
       const output = await withCapturedOutput(async () => {
         verdict = await terminatePid(child.pid, 300, classify);
       });
-      // The identity was re-proven at the boundary (exactly once), the KILL was refused
-      // (the child ignored SIGTERM, so only terminatePid's SIGKILL could have ended it),
-      // and the refusal was reported honestly -- in the log AND in the verdict, so the
-      // caller learns the daemon is gone instead of guessing from a live foreign pid.
+      // The refusal lands in the verdict AND the log, so the caller learns the daemon is
+      // gone instead of guessing from a live foreign pid.
       expect(verdict).toBe("refused-reused-pid");
       expect(calls).toEqual([child.pid]);
       expect(pidAlive(child.pid)).toBe(true);
@@ -118,8 +108,7 @@ test.skipIf(process.platform === "win32")(
   30_000,
 );
 
-// The positive control: a pid still classifying as ours draws the escalation. The child
-// ignores SIGTERM, so its death is attributable only to the SIGKILL.
+// The child ignores SIGTERM, so its death is attributable only to the SIGKILL.
 test.skipIf(process.platform === "win32")(
   "a pid still classifying 'yes' draws the SIGKILL escalation",
   async () => {
@@ -136,12 +125,9 @@ test.skipIf(process.platform === "win32")(
   30_000,
 );
 
-// The deliberate "unknown" default, pinned behaviorally: a scan that cannot answer does
-// NOT strand the stop. Every terminatePid caller gates its TERM on an identity read at
-// least as demanding as this kill gate, so a kill-on-unknown never acts under a weaker
-// identity standard than some TERM in the tree already does (contrast with the
-// fail-closed reads where no recent identity read backs the pid, e.g.
-// corroborateLockHolder's unreadable-scan refusal in launch.ts).
+// A scan that cannot answer must not strand the stop: every caller gates its TERM on an
+// identity read at least as demanding as this kill gate. Contrast corroborateLockHolder in
+// launch.ts, which fails closed because no recent identity read backs the pid there.
 test.skipIf(process.platform === "win32")(
   "a failed identity scan ('unknown') at the KILL boundary still escalates",
   async () => {
@@ -160,9 +146,8 @@ test.skipIf(process.platform === "win32")(
   30_000,
 );
 
-// Cross-platform: a pid already dead at the boundary consults no scan and sends no KILL --
-// the escalation is gated on liveness first, so the identity seam is a KILL-boundary
-// check only, never a side channel on the happy path.
+// Liveness is checked before identity, so the classify seam is a KILL-boundary check only
+// and never runs on the happy path.
 test(
   "a pid that died within the grace consults no identity scan",
   async () => {
@@ -199,11 +184,8 @@ test(
   30_000,
 );
 
-// graceMs 0 is the no-escalation mode: one SIGTERM, no wait, no identity consult. The
-// verdict says exactly that ("term-only" -- signalled, nothing verified) rather than
-// claiming a death it never observed -- and the compliant child's exit proves the TERM
-// was genuinely sent, so a do-nothing "term-only" stub could not pass. Cross-platform:
-// no signal is trapped (SIGTERM is TerminateProcess on Windows).
+// graceMs 0 is the no-escalation mode; "term-only" means signalled, nothing verified, never a
+// death that was not observed. The child traps nothing, so Windows runs this too.
 test(
   "graceMs 0 sends the TERM only, consults no identity, and answers 'term-only'",
   async () => {
@@ -235,13 +217,10 @@ test(
   30_000,
 );
 
-// The unprovable-liveness arm at the grace boundary: under the daemon's own permission
-// set the liveness probe throws NotCapable (pinned real in test/pid.test.ts) and every
-// pid reads "unproven" -- which must never mint "died-in-grace", the verdict callers
-// read as a confirmed death (stopTrackedProxy clears tracking on it). Instead the
-// classify boundary rules, exactly as it does for a proven-alive pid. Under the
-// historical EPERM-only catch this control goes red: the unprovable probe reads dead,
-// the verdict claims "died-in-grace", and the classify seam is never consulted.
+// Under the daemon's own permission set the liveness probe throws NotCapable (pinned in
+// test/pid.test.ts) and every pid reads "unproven". That must never mint "died-in-grace",
+// which stopTrackedProxy reads as a confirmed death and clears tracking on; the classify
+// boundary rules instead, as it does for a proven-alive pid.
 test(
   "an unprovable liveness read at the KILL boundary never mints 'died-in-grace'",
   async () => {
@@ -268,9 +247,7 @@ test(
       await withUnprovablePidProbe(async () => {
         verdict = await terminatePid(child.pid, 200, classify);
       });
-      // The classify boundary ruled ("killed", the same deliberate arm as proven-alive),
-      // it was consulted exactly once (a died-in-grace return would have skipped it),
-      // and no false death was reported: the child is provably still alive.
+      // A died-in-grace return would have skipped the classify call entirely.
       expect(verdict).toBe("killed");
       expect(calls).toEqual([child.pid]);
       expect(pidAlive(child.pid)).toBe(true);

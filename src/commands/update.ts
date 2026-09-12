@@ -1,4 +1,3 @@
-// `agent update`: resolves a release, applies it, refreshes deps, and runs migrations.
 import { consola } from "consola";
 import {
   applyUpdate,
@@ -15,58 +14,39 @@ import { isUpToDate } from "../utils/semver.ts";
 import { assertNonNegativeDays } from "../utils/time.ts";
 import { packageVersion } from "../utils/version.ts";
 
-// `agent update` moves this install to the newest GitHub release WITHOUT git:
-//  - discovery (which release) is resolveTarget() from
-//    ../install/resolve-release.ts, shared with the autoupdate preflight so the
-//    release-pick logic has one home. Then
-//  - apply (../autoupdate/apply.ts) downloads that release's binary for this
-//    platform, verifies it against the release checksums.txt and (unless opted
-//    out) the release's build-provenance attestation, swaps it in, and lets
-//    the new binary lay down its own runtime files and run migrations.
+// resolveTarget is shared with the autoupdate preflight so the release-pick logic has one home.
 
 export interface UpdateArgs {
   check?: boolean;
   force?: boolean;
-  /** Print autoupdate status and exit. */
   autoStatus?: boolean;
-  /** The --verify/--no-verify toggle: Commander folds the pair into ONE option (last
-   *  one wins), so it arrives as one optional boolean -- true
-   *  forces the build-provenance check on, false skips it for this run, absent
-   *  defers to the stored `verify-provenance` config (default: verify). */
+  /** Commander folds `--verify`/`--no-verify` into one option (last wins), so it arrives as one
+   *  optional boolean; absent defers to the stored `verify-provenance` key. */
   verify?: boolean;
 }
 
-/** What ONE `agent update` invocation does, parsed ONCE at the CLI boundary: a report
- *  (`--check` / `--auto-status`) or the apply (the only arm `--force`/`--verify` ride on,
- *  so a report combined with them is a rejection, not an if-order pick). */
 export type UpdateAction =
   | { kind: "check" }
   | { kind: "auto-status" }
   | { kind: "apply"; force: boolean; verify: boolean | undefined };
 
 /**
- * The under-lock re-validate judgment, pure for testing. `targetNow` is resolveTarget's
- * SECOND look, taken after the update lock is held, and its null unions two facts: "no
- * eligible release" and "the look failed" (an API error or an offline read, swallowed into
- * null by resolve-release.ts). The pre-lock resolve has ALREADY proved an eligible release
- * exists, so a null here can only be the failed look: `unproven`, never the confident
- * `up-to-date`. Keeping the two apart is what stops a transient 5xx from rendering a green
- * "already up to date" over a skipped update; falling back to the pre-lock target instead
- * would defeat the downgrade guard the re-validate exists to be.
+ * resolveTarget swallows a failed look (API error, offline) into the same null as "no eligible
+ * release". The pre-lock resolve already proved a release exists, so under the lock null can only
+ * be the failed look: `unproven`, never a green "already up to date" over a skipped update. Falling
+ * back to the pre-lock target would defeat the downgrade guard the re-check exists for.
  */
 export type RecheckVerdict =
   | { kind: "apply"; target: Release }
   | { kind: "up-to-date" }
   | { kind: "unproven" };
 
-/** The pure judgment over the under-lock re-check (see RecheckVerdict). */
 export function recheckVerdict(currentNow: string, targetNow: Release | null): RecheckVerdict {
   if (targetNow === null) return { kind: "unproven" };
   if (isUpToDate(currentNow, targetNow.tag)) return { kind: "up-to-date" };
   return { kind: "apply", target: targetNow };
 }
 
-/** Parse the raw `agent update` flags into an UpdateAction (the CLI boundary). */
 export function parseUpdateAction(args: UpdateArgs): UpdateAction {
   const reports = [args.check, args.autoStatus].filter(Boolean).length;
   if (reports > 1) throw new Error("--check and --auto-status are mutually exclusive");
@@ -87,9 +67,6 @@ export function parseUpdateAction(args: UpdateArgs): UpdateAction {
 
 export async function runUpdate(args: UpdateArgs): Promise<void> {
   const action = parseUpdateAction(args);
-  // The update/autoupdate cooldown is the stored config `update-cooldown` (set via
-  // `agent config --set update-cooldown <days>`), else null (immediate). The config key is the
-  // single knob -- there is no per-invocation flag.
   const config = new CopilotEnvConfig();
   const cooldown = config.updateCooldownDays();
   assertNonNegativeDays(cooldown, "update-cooldown");
@@ -104,7 +81,6 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
         check: false,
         cooldown,
         force: action.force,
-        // flag > stored config > default, resolved ONCE here (the boundary).
         provenance: resolveProvenanceDecision(action.verify, config.verifyProvenanceEnabled()),
       });
     default:
@@ -132,7 +108,7 @@ async function runManualUpdate(
     provenance: ProvenanceDecision;
   },
 ): Promise<void> {
-  // Current checkout version as `vX.Y.Z`, to match the upstream tag format for display.
+  // `v` prefix to match the upstream tag format.
   const current = `v${packageVersion()}`;
   const target = await resolveTarget(args.cooldown);
   if (!target) {
@@ -152,10 +128,8 @@ async function runManualUpdate(
     return;
   }
 
-  // Running from source means a dev clone that may hold uncommitted or untracked
-  // work -- refuse unless --force so an update can't silently touch it. (The
-  // distinction is the RootMode this process was started in, not a file probe:
-  // an installed binary is freely replaceable.)
+  // A source checkout may hold uncommitted work, so refuse unless --force. The distinction is the
+  // RootMode this process was started in, not a file probe.
   if (!args.force && isProtectedRoot()) {
     throw new Error(
       "This is a source checkout and `agent update` writes a versioned install layout " +
@@ -164,9 +138,8 @@ async function runManualUpdate(
   }
 
   consola.start(`Updating copilot-env ${current} -> ${target.tag} ...`);
-  // Take the autoupdate lock so a manual update can't race a concurrent autoupdate preflight
-  // (triggered by `agent start` in another shell) applying a release onto the same checkout --
-  // two simultaneous mirrors/migrations would corrupt the tree.
+  // The autoupdate preflight (`agent start` in another shell) takes the same lock; two simultaneous
+  // applies would corrupt the tree.
   await withUpdateLock(Date.now(), async (outcome) => {
     if (!outcome.held) {
       consola.warn(
@@ -175,15 +148,12 @@ async function runManualUpdate(
       process.exitCode = 1;
       return;
     }
-    // Re-validate UNDER the lock: a concurrent preflight may have applied a NEWER release
-    // between our resolve above and acquiring the lock. Re-read the on-disk version (fresh --
-    // packageVersion() is not cached) and re-resolve, so we never apply a now-stale target
-    // that would DOWNGRADE the checkout (releases only ever move forward).
+    // A concurrent preflight may have applied a newer release between the resolve above and the
+    // lock, and releases only move forward, so the target is re-resolved under the lock before
+    // anything is applied.
     const currentNow = `v${packageVersion()}`;
     const verdict = recheckVerdict(currentNow, await resolveTarget(args.cooldown));
     if (verdict.kind === "unproven") {
-      // A failed re-check, not an up-to-date verdict (see RecheckVerdict): say so
-      // and refuse, rather than claim a check that did not happen.
       consola.warn("Could not re-check the latest release under the update lock; not updating.");
       process.exitCode = 2; // same code the pre-lock resolve failure reports
       return;

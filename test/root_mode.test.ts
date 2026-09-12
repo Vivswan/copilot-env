@@ -1,11 +1,5 @@
-// The two roots src/utils/root.ts resolves, and the policy their kinds carry.
-//
-// Running under `deno test` is always checkout mode, so the compiled-mode half of
-// the contract cannot be asserted in-process. What IS pinned here is everything a
-// compiled binary would break if the detection regressed: the on-disk shape of
-// PROJECT_ROOT, the paths handed to other programs, and the kind -> protection
-// policy every destructive gate reads. Verifying the compiled half means building a
-// binary and running it from an install root.
+// `deno test` always runs in checkout mode, so the compiled half of the root contract is
+// only checkable by building a binary and running it from an install root.
 import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, parse } from "node:path";
@@ -43,10 +37,8 @@ test("PROJECT_ROOT is a real absolute directory on disk", () => {
   // are handed paths under this root and must be able to open them.
   expect(isAbsolute(PROJECT_ROOT)).toBe(true);
   expect(existsSync(PROJECT_ROOT)).toBe(true);
-  // The resolver the agent configs invoke is the launcher itself (`agent proxy-token`),
-  // per platform. On Windows the argv is `powershell -NoProfile ... -File <launcher>`,
-  // so pick the path off `-File` rather than a fixed index (args[0] there is a flag,
-  // which would assert nothing).
+  // On Windows the launcher argv is `powershell -NoProfile ... -File <launcher>`, so the path
+  // is picked off `-File`: a fixed index would land on a flag and assert nothing.
   const { command, args } = proxyTokenCommand();
   const launcherPath = process.platform === "win32" ? args[args.indexOf("-File") + 1] : command;
   expect(launcherPath).toBeDefined();

@@ -46,9 +46,7 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-// A temp Claude home, exported via CLAUDE_CONFIG_DIR (the only home knob now),
-// with an isolated proxy home so proxy writes (which resolve the proxy
-// endpoint/token) don't touch any real state.
+// Proxy writes resolve the proxy endpoint and token, so the proxy home is isolated along with Claude's.
 function tmpHome(): string {
   const homes = isolateAgentHomes("copilot-claude-");
   dir = homes.dir;
@@ -75,9 +73,8 @@ test("direct mode writes the inline apiKeyHelper command + env, preserving user 
   const env = doc.env as Record<string, unknown>;
   expect(env.ANTHROPIC_BASE_URL).toBe(DIRECT_BASE_URL);
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1");
-  // Direct sends Copilot's editor-client headers (Openai-Intent + a codex_exec User-Agent
-  // derived from the installed codex binary; versionless when codex is absent here --
-  // the runtime npm-latest fallback is off under the suite's live-lookup seam).
+  // The codex_exec User-Agent derives from the installed codex binary; the suite's live-lookup
+  // seam turns the npm-latest lookup off, so here it carries FALLBACK_CODEX_UA_VERSION.
   const headers = env[CUSTOM_HEADERS_ENV] as string;
   expect(headers).toContain("Openai-Intent: conversation-edits");
   expect(headers).toMatch(/(^|\n)User-Agent: codex_exec/);
@@ -86,8 +83,7 @@ test("direct mode writes the inline apiKeyHelper command + env, preserving user 
   expect(doc.model).toBe("sonnet");
   expect((doc.permissions as Record<string, unknown>).allow).toEqual(["Bash"]);
 
-  // apiKeyHelper is an inline COMMAND invoking `agent auth --get` (the resolver) --
-  // never `gh auth token`, never a baked token, and NO helper file is written.
+  // apiKeyHelper is an inline command invoking the resolver: never `gh auth token`, never a baked token, no helper file.
   const helperCommand = String(doc.apiKeyHelper);
   expect(helperCommand).toContain(WIN ? "agent.ps1" : "bin/agent");
   expect(helperCommand).toContain("auth");
@@ -131,8 +127,6 @@ test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), pres
   expect(env[CUSTOM_HEADERS_ENV]).toBeUndefined();
   expect(doc.model).toBe("sonnet"); // unrelated user key survives
 
-  // The inline command runs the resolver subcommand (`agent proxy-token --yes`); no
-  // literal token is baked in, and NO helper file is written.
   const helperCommand = String(doc.apiKeyHelper);
   expect(helperCommand).toContain(WIN ? "agent.ps1" : "bin/agent");
   expect(helperCommand).toContain("proxy-token");
@@ -143,9 +137,8 @@ test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), pres
 });
 
 test("cmdHelperBody: @echo off + CRLF, quotes paths with spaces, escapes % as %%", () => {
-  // The Windows .cmd helper shells into PowerShell; paths carry spaces/`%` (a legal Windows
-  // path char). winQuote double-quotes the path; cmdHelperBody doubles every `%` so batch
-  // variable-expansion can't mangle it. Pure + platform-independent, so it runs on POSIX CI.
+  // Windows paths may carry spaces and `%`; cmdHelperBody doubles every `%` so batch variable-expansion
+  // cannot mangle the path. Pure, so it runs on POSIX CI.
   const body = cmdHelperBody("powershell", [
     "-NoProfile",
     "-File",
@@ -155,11 +148,9 @@ test("cmdHelperBody: @echo off + CRLF, quotes paths with spaces, escapes % as %%
   ]);
   expect(body.startsWith("@echo off\r\n")).toBe(true);
   expect(body.endsWith("\r\n")).toBe(true);
-  // path quoted AND every % doubled; bare flags/words stay unquoted.
   expect(body).toContain('"C:\\Users\\a b\\50%%done\\agent.ps1"');
   expect(body).toContain("powershell -NoProfile -File ");
   expect(body).toContain(" auth --get");
-  // no single (unescaped) % survives.
   expect(/[^%]%[^%]/.test(body)).toBe(false);
 });
 
@@ -167,14 +158,12 @@ test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (
   const home = "/home/x/.claude";
   const inspect = (text: string | null) => inspectClaudeWiring(text, 4141);
 
-  // The managed contract: the exact inline command strings.
   expect(inspect(JSON.stringify({ apiKeyHelper: directHelperCommand() })).providerMode)
     .toBe("direct");
   expect(inspect(JSON.stringify({ apiKeyHelper: proxyHelperCommand() })).providerMode)
     .toBe("proxy");
 
-  // The helper-file PATHS 3.5.6 wrote are foreign now (the 4.0.0 migration rewrites
-  // them): "custom", never managed, whatever the file holds.
+  // The helper-file PATHS 3.5.6 wrote are foreign now (the 4.0.0 migration rewrites them), whatever the file holds.
   for (const name of ["copilot-token.sh", "copilot-proxy-token.sh"]) {
     const stale = inspect(JSON.stringify({ apiKeyHelper: join(home, name) }));
     expect(stale.providerMode).toBe("other");
@@ -185,7 +174,6 @@ test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (
   const foreign = inspect(JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }));
   expect(foreign.providerMode).toBe("other");
   expect(foreign.otherReason).toBe("custom");
-  // A custom base URL with no managed helper is also "other"/"custom".
   const customBase = inspect(
     JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://other.example" } }),
   );
@@ -253,8 +241,7 @@ test("runClaude direct/proxy round-trip cleans the other mode", async () => {
 
 test("detectClaudeDirect: true only when CLI+gh present, gh authed, and the probe succeeds", () => {
   const home = tmpHome();
-  // detectClaudeDirect writes a throwaway direct config under a temp home; the
-  // tmpHome()/COPILOT_API_HOME isolation keeps it off any real state.
+  // detectClaudeDirect writes a throwaway direct config; tmpHome() keeps it off any real state.
   void home;
   const ok = {
     findCommand: (c: string) => ({ path: `/bin/${c}` }),
@@ -306,8 +293,8 @@ test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy st
   const home = tmpHome(); // also points COPILOT_API_HOME at an isolated dir
   const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), 4141);
 
-  // A configured credential selects Direct with NO probe -- but the inline helper
-  // resolves it at fetch time (`agent auth --get`), so it's never written anywhere.
+  // A configured credential selects Direct with NO probe; the helper resolves it at fetch time
+  // (`agent auth --get`), so settings.json never carries the token.
   new CopilotEnvState().setCredential(null, {
     kind: "stored",
     provider: "gh-token",
@@ -346,7 +333,6 @@ test("a direct default write registers the MCP server and denies the builtin Web
     join(home, "settings.json"),
   ]);
 
-  // Foreign permissions entries survive; ours joins them.
   const seeded = readSettings(home);
   seeded.permissions = { allow: ["Bash"], deny: ["Foreign", WEBSEARCH_DENY_RULE] };
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
@@ -354,7 +340,6 @@ test("a direct default write registers the MCP server and denies the builtin Web
   expect(denyOf(readSettings(home))).toEqual(["Foreign", WEBSEARCH_DENY_RULE]);
   expect((readSettings(home).permissions as Record<string, unknown>).allow).toEqual(["Bash"]);
 
-  // The proxy write removes only OUR deny entry and the registration.
   configureClaudeConfig(home, { mode: "proxy" });
   const after = readSettings(home);
   expect(denyOf(after)).toEqual(["Foreign"]);
@@ -362,12 +347,10 @@ test("a direct default write registers the MCP server and denies the builtin Web
   expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 });
 
-// The boundary the ledger's strict read exists FOR: were an unreadable ledger to
-// read as owns-nothing, the proxy take-back would keep the deny (not ours to
-// strip) while still removing the MCP registration -- the builtin denied with no
-// replacement, the exact torn state the register-then-deny pair forbids. The
-// take-back must REFUSE instead, leaving the consistent old pair intact.
-// POSIX, non-root only: root bypasses file modes.
+// The register-then-deny pair forbids a denied builtin with no replacement, so an unreadable
+// ledger must refuse the take-back rather than read as owns-nothing.
+//   read as owns-nothing  -> MCP registration stripped, deny kept (not ours to strip): torn
+//   Windows, root         -> skipped: chmod 000 does not deny the read there
 test.skipIf(WIN || process.getuid?.() === 0)(
   "an unreadable ownership ledger refuses the take-back instead of leaving a deny with no replacement",
   () => {
@@ -378,8 +361,6 @@ test.skipIf(WIN || process.getuid?.() === 0)(
     chmodSync(ledgerFile, 0o000);
     try {
       expect(() => configureClaudeConfig(home, { mode: "proxy" })).toThrow(ledgerFile);
-      // The whole outcome: BOTH halves still stand -- deny and registration --
-      // never "denied with the replacement removed".
       expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
       expect((readClaudeJson().mcpServers as Record<string, unknown>)["copilot-env"])
         .toMatchObject({ "type": "stdio" });
@@ -395,7 +376,6 @@ test.skipIf(WIN || process.getuid?.() === 0)(
 
 test("a pre-existing user WebSearch deny is never claimed nor removed", () => {
   const home = tmpHome();
-  // Seed the user's own deny BEFORE any managed write.
   mkdirSync(home, { recursive: true });
   writeFileSync(
     join(home, "settings.json"),
@@ -463,8 +443,8 @@ test("removeClaudeDefaultWiring keeps user keys and drops an emptied permissions
 test("removeClaudeDefaultWiring leaves an 'other' wiring AND the helper file it names whole", () => {
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
-  // A user-owned helper FILE (the shape 3.5.6 wrote, foreign now) classifies "other":
-  // the settings key stays, so the file it points at must stay too.
+  // A helper FILE (the shape 3.5.6 wrote, foreign now) classifies "other"; the key stays, so the
+  // file it points at must stay too.
   const helper = join(home, "copilot-token.sh");
   writeFileSync(helper, "#!/bin/sh\nexec my-own-resolver\n");
   writeFileSync(
@@ -484,8 +464,7 @@ test("removeClaudeDefaultWiring strips an OWNED deny from a foreign-edited confi
   doc.apiKeyHelper = "/usr/local/bin/my-helper"; // foreign edit: classifies "other"
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(doc, null, 2)}\n`);
 
-  // Ownership is the proof the deny is ours, independent of the classification:
-  // exactly it goes, the foreign wiring stays, and nothing owned remains.
+  // Ownership, not the classification, proves the deny is ours.
   const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
   expect(ownedDenyRemains).toBe(false);
   const after = readSettings(home);
@@ -510,8 +489,7 @@ test("removeClaudeDefaultWiring never strips a deny it does not own from a forei
   writeFileSync(join(home, "settings.json"), settingsText);
 
   const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
-  // The user's own deny stands (it was never ours), but nothing OWNED remains
-  // either, so the caller is free to remove the MCP registration.
+  // The user's own deny was never ours, so nothing OWNED remains and the caller may remove the MCP registration.
   expect(ownedDenyRemains).toBe(false);
   expect(readFileSync(join(home, "settings.json"), "utf8")).toBe(settingsText);
 });
@@ -540,8 +518,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     writeFileSync(settingsPath, `${JSON.stringify(doc, null, 2)}\n`);
     chmodSync(settingsPath, 0o444);
     try {
-      // The deny-only write fails; the throw is contained (best-effort), the deny
-      // stays in the file, and ownership is NOT released while it may still stand.
+      // The throw is contained; ownership is NOT released while the deny may still stand.
       const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
       expect(ownedDenyRemains).toBe(true);
       expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
@@ -565,8 +542,8 @@ test("removeClaudeDefaultWiring releases a stale ownership marker for a vanished
 });
 
 test("removeClaudeDefaultWiring tolerates a Claude home that is a file (nothing there)", () => {
-  // A settings path under a non-directory parent reads "absent" (ENOTDIR) -- an
-  // uninstall or profile delete over a bogus CLAUDE_CONFIG_DIR must finish, not throw.
+  // A settings path under a file parent reads "absent" (ENOTDIR), so an uninstall over a bogus
+  // CLAUDE_CONFIG_DIR finishes instead of throwing.
   const home = tmpHome();
   mkdirSync(dir, { recursive: true });
   const bogusHome = join(dir, "claude-as-file");
@@ -582,7 +559,6 @@ test("removeClaudeProfile removes a managed settings file but leaves an 'other' 
   mkdirSync(home, { recursive: true });
   const settingsPath = join(home, "settings-work.json");
 
-  // Managed wiring addressed at WORK: the file goes.
   writeFileSync(
     settingsPath,
     `${JSON.stringify({ apiKeyHelper: directHelperCommand(WORK) }, null, 2)}\n`,
@@ -590,7 +566,6 @@ test("removeClaudeProfile removes a managed settings file but leaves an 'other' 
   removeClaudeProfile(home, WORK);
   expect(existsSync(settingsPath)).toBe(false);
 
-  // A foreign apiKeyHelper classifies "other": the file stays.
   writeFileSync(
     settingsPath,
     `${JSON.stringify({ apiKeyHelper: "/usr/local/bin/my-own-resolver" }, null, 2)}\n`,
@@ -602,9 +577,8 @@ test("removeClaudeProfile removes a managed settings file but leaves an 'other' 
 test("an unreadable settings file is hands-off for removal, never read as unconfigured", () => {
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
-  // A directory at the settings path forces a non-ENOENT read error on every
-  // platform: the settings EXIST but cannot be read -- that must not classify as
-  // "none" (removeClaudeDefaultWiring shares the same reader), and removal finishes.
+  // A directory at the settings path is a non-ENOENT read error on every platform: settings that exist
+  // but cannot be read must not classify as "none" (removeClaudeDefaultWiring shares the reader).
   const settingsPath = join(home, "settings-work.json");
   mkdirSync(settingsPath);
   removeClaudeProfile(home, WORK);
@@ -616,14 +590,12 @@ test("--check: absent settings exit 2 (none), unreadable settings exit 1 (other)
   mkdirSync(home, { recursive: true });
   const before = process.exitCode;
   try {
-    // Absent: unconfigured -- the launcher defaults to the proxy (exit 2).
+    // Absent means unconfigured: the launcher defaults to the proxy.
     await runClaude({ kind: "check" });
     expect(process.exitCode).toBe(2);
 
-    // A directory at the settings path (a non-ENOENT read error on every
-    // platform): the settings EXIST but cannot be read -- ownership we cannot
-    // verify must read "other" (exit 1: the launcher must not take over), never
-    // collapse into the absent case above.
+    // A directory at the settings path: ownership we cannot verify reads "other" so the launcher does
+    // not take over; it must never collapse into the absent case above.
     process.exitCode = 0;
     mkdirSync(join(home, "settings.json"));
     await runClaude({ kind: "check" });
@@ -720,8 +692,7 @@ test("the default write reclaims a helper-path apiKeyHelper, leaving the user's 
 
   configureClaudeConfig(home, { mode: "proxy" });
 
-  // The default settings.json keeps its historical contract (an explicit mode write
-  // reclaims even a custom config); the file is the user's and stays.
+  // An explicit mode write reclaims even a custom default settings.json; the helper file is the user's and stays.
   expect(readSettings(home).apiKeyHelper).toBe(proxyHelperCommand());
   expect(existsSync(helperFile)).toBe(true);
 });
@@ -757,9 +728,8 @@ test("--check: the helper-file path 3.5.6 wrote exits 1 (other), even with the f
 });
 
 test("mode inspection recognizes the managed helper from ANY copilot-env root", () => {
-  // A dev checkout and ~/.copilot-env spell different roots into apiKeyHelper; both
-  // resolve the same shared store, so inspection must read both as managed. Shapes
-  // are platform-parameterized so both run on every CI runner.
+  // A dev checkout and ~/.copilot-env spell different roots into apiKeyHelper; both resolve the same
+  // shared store, so inspection reads both as managed.
   const posixDirect = ["/opt/somewhere/bin/agent auth --get", "'/with space/bin/agent' auth --get"];
   for (const value of posixDirect) {
     expect(managedHelperShape(value, ["auth", "--get"], false)).toBe(true);
@@ -797,8 +767,8 @@ test("mode inspection recognizes the managed helper from ANY copilot-env root", 
       true,
     ),
   ).toBe(true);
-  // A bare (unquoted) -File path is NOT a spelling the writer can produce (a real
-  // agent.ps1 path carries \ and :, which winQuote always quotes): never managed.
+  // A bare -File path is not a spelling the writer can produce: a real agent.ps1 path carries \ and :,
+  // which winQuote always quotes.
   expect(
     managedHelperShape(
       "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\x\\bin\\agent.ps1 auth --get",
@@ -813,8 +783,7 @@ test("mode inspection recognizes the managed helper from ANY copilot-env root", 
       true,
     ),
   ).toBe(false);
-  // The quoted -File path never spans a line break (a Windows path cannot carry
-  // one; a value smuggling a second line inside the quotes is not managed)...
+  // A Windows path cannot carry a line break, so a value smuggling one inside the quotes is not managed.
   expect(
     managedHelperShape(
       'powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\x\r\nevil\\bin\\agent.ps1" auth --get',
@@ -822,9 +791,8 @@ test("mode inspection recognizes the managed helper from ANY copilot-env root", 
       true,
     ),
   ).toBe(false);
-  // ...but raw % IS a spelling the inline writer produces (helperCommandLine does
-  // no %%-doubling -- the inline command is not a batch file, unlike the legacy
-  // .cmd bodies): a root containing % keeps classifying.
+  // Raw % IS a spelling the inline writer produces: helperCommandLine does no %%-doubling because
+  // the inline command is not a batch file.
   expect(
     managedHelperShape(
       'powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\50%done\\bin\\agent.ps1" auth --get',
@@ -835,8 +803,7 @@ test("mode inspection recognizes the managed helper from ANY copilot-env root", 
 });
 
 test("inspectClaudeWiring reads a sibling root's wiring as its real mode, not other", () => {
-  // Platform-native helper spelling: the writer only ever emits (and the inspector
-  // only ever recognizes) the current platform's shape, so the fixture follows it.
+  // The writer emits and the inspector recognizes only the current platform's shape, so the fixture follows it.
   const helper = (args: string) =>
     process.platform === "win32"
       ? `powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\other\\checkout\\bin\\agent.ps1" ${args}`

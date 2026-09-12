@@ -1,7 +1,6 @@
-// Shared types for `agent health` diagnostics, plus the two helpers every check
-// family spells its identity and named-profile fix with. Kept dependency-free
-// (the only import is the profile vocabulary, itself dependency-free) so the pure
-// aggregation/evaluation layers (aggregate.ts, checks*.ts) import only from here.
+// Shared types for `agent health`, plus the two helpers every check family spells its identity
+// and named-profile fix with. Dependency-free (the only import is the profile vocabulary) so the
+// pure aggregation/evaluation layers import only from here.
 import type { ProfileName } from "../copilot_api/profile.ts";
 
 /** Worst-to-best diagnostic outcome for a single check. */
@@ -21,23 +20,19 @@ export const HEALTH_SCOPES = [
   "claude",
 ] as const;
 
-// Scope membership per check/fact: the scopes each participates in. SINGLE SOURCE
-// shared by the fact-gatherer (probe.ts, which gates which facts to collect) and
-// the check descriptors below (which stamp CheckResult.scopes) -- the two must
-// stay in lockstep, so the sets live here rather than as two hand-synced copies.
-// Every set includes "full".
+// SINGLE SOURCE for scope membership, shared by the fact-gatherer (probe.ts gates which facts to
+// collect) and the check descriptors below (which stamp CheckResult.scopes), so the two cannot
+// drift. Every set includes "full".
 export const RUNTIME_SCOPES: readonly HealthScope[] = ["full", "proxy", "runtime"];
-// The default run's NAMED-profile runtime sweep joins only the diagnostic scopes
-// (full, proxy) -- never the launchers' fast `runtime` probe, whose row set and
-// exit code are a contract of the DEFAULT daemon alone (a stopped profile daemon
-// must not fail a launcher's readiness gate). A `--profile` narrowing addresses
-// its target in every runtime-bearing scope regardless.
+// The named-profile runtime sweep joins only the diagnostic scopes, never the launchers' fast
+// `runtime` probe, whose row set and exit code are a contract of the DEFAULT daemon alone (a
+// stopped profile daemon must not fail a launcher's readiness gate). A `--profile` narrowing
+// addresses its target in every runtime-bearing scope regardless.
 export const PROFILE_SWEEP_SCOPES: readonly HealthScope[] = ["full", "proxy"];
 export const BOOTSTRAP_SCOPES: readonly HealthScope[] = ["full", "proxy"];
 export const SETUP_SCOPES: readonly HealthScope[] = ["full", "setup"];
-// The GitHub credential underpins Direct for both agents, but it gets its own
-// section rather than crowding the narrow per-agent scopes: full, setup, and its
-// own focused `auth` scope.
+// The GitHub credential underpins Direct for both agents but gets its own section rather than
+// crowding the narrow per-agent scopes.
 export const AUTH_SCOPES: readonly HealthScope[] = ["full", "auth", "setup"];
 export const CODEX_SCOPES: readonly HealthScope[] = ["full", "setup", "codex"];
 export const CLAUDE_SCOPES: readonly HealthScope[] = ["full", "setup", "claude"];
@@ -56,13 +51,11 @@ interface CheckDescriptor {
 }
 
 /**
- * THE check registry: one descriptor per registered check id, the single source
- * of each check's label/group/scopes (checkAuth and checkProfileAuth share the
- * `setup.auth` row by design -- one credential line per target). The id strings
- * and labels are external contracts (`--json` consumers key on them; the labels
- * are the report's row headers): never rename them. The per-CLI family
- * (`setup.cli.<command>`) is the one id minted outside this table -- the CLI
- * list is runtime data (probe deps), so it cannot be enumerated here.
+ * The ids and labels are external contracts, so never rename them: `--json` consumers key on the
+ * ids, and the labels are the report's row headers.
+ *
+ *   setup.auth          -> shared by checkAuth and checkProfileAuth: one credential line per target
+ *   setup.cli.<command> -> the one id minted outside this table; the CLI list is runtime data
  */
 export const CHECK_DESCRIPTORS = {
   "bootstrap.version": {
@@ -81,8 +74,8 @@ export const CHECK_DESCRIPTORS = {
   "proxy.resolved": { label: "Proxy resolved + cached", group: "proxy", scopes: BOOTSTRAP_SCOPES },
   "runtime.port": { label: "Proxy port reachable", group: "runtime", scopes: RUNTIME_SCOPES },
   "runtime.pid": { label: "Tracked proxy process", group: "runtime", scopes: RUNTIME_SCOPES },
-  // Informational rows: full-scope only (paths), or full+proxy -- never the
-  // launchers' fast `runtime` probe, whose row set and exit code are a contract.
+  // Informational rows: full-scope only (paths), or full+proxy; never the launchers' fast
+  // `runtime` probe, whose row set and exit code are a contract.
   "runtime.paths": { label: "Paths", group: "runtime", scopes: ["full"] },
   "runtime.watchdog": { label: "Idle watchdog", group: "runtime", scopes: ["full", "proxy"] },
   "runtime.identity": { label: "Proxy identity", group: "runtime", scopes: ["full", "proxy"] },
@@ -92,9 +85,7 @@ export const CHECK_DESCRIPTORS = {
     group: "runtime",
     scopes: RUNTIME_SCOPES,
   },
-  // Diagnostic-only (full + proxy), like the informational runtime rows: the
-  // launchers' fast `runtime` probe's row set is a contract of the default
-  // daemon's liveness alone.
+  // Diagnostic-only (full + proxy), like the informational runtime rows above.
   "runtime.defaultHomeMigration": {
     label: "Default home migration",
     group: "runtime",
@@ -114,8 +105,8 @@ export const CHECK_DESCRIPTORS = {
     scopes: CLAUDE_SCOPES,
   },
   "setup.autoupdate": { label: "Autoupdate", group: "setup", scopes: SETUP_SCOPES },
-  // The live rows keep the full agent scope set (their FACTS are gathered only
-  // under --live in the *_LIVE_SCOPES, which is what actually gates them).
+  // The live rows keep the full agent scope set; their FACTS are gathered only under --live in
+  // the *_LIVE_SCOPES, which is what gates them.
   "codex.live": { label: "Codex live prompt", group: "codex", scopes: CODEX_SCOPES },
   "claude.live": { label: "Claude live prompt", group: "claude", scopes: CLAUDE_SCOPES },
 } as const satisfies Record<string, CheckDescriptor>;
@@ -127,21 +118,16 @@ export type RegisteredCheckId = keyof typeof CHECK_DESCRIPTORS;
  *  are external contracts (`--json` consumers key on them). */
 export type CheckId = RegisteredCheckId | `setup.cli.${string}`;
 
-/** The verdict half of a check result: a fix hint is REQUIRED on warn/fail and
- *  unrepresentable on ok (`fix?: never` keeps the property readable as
- *  undefined without narrowing), so neither the renderer nor the --json builder
- *  needs a fix-presence guard. */
+/** A fix hint is REQUIRED on warn/fail and unrepresentable on ok (`fix?: never` keeps the
+ *  property readable as undefined without narrowing), so neither the renderer nor the --json
+ *  builder needs a fix-presence guard. */
 export type CheckOutcome =
   | { status: "ok"; detail: string; fix?: never }
   | { status: "warn" | "fail"; detail: string; fix: string };
 
-/**
- * One diagnostic result. `id` is a stable machine-readable key (e.g.
- * "runtime.port"); `scopes` lists every scope the check participates in (every
- * check includes "full"). `profile` names the runtime target a check describes
- * (null = the default target; environment-wide checks are always null).
- * `value` carries structured data for `--json`.
- */
+/** `id` is a stable machine-readable key; `scopes` lists every scope the check participates in
+ *  (every check includes "full"); `profile` names the runtime target (null = the default target;
+ *  environment-wide checks are always null); `value` carries structured data for `--json`. */
 export type CheckResult = {
   id: CheckId;
   label: string;

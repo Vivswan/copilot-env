@@ -55,9 +55,7 @@ import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, writeRunState } from "./helpers.ts";
 
-// Pure selection logic for which migrations run across a version range, with a synthetic
-// registry so the real migrations' side effects are never triggered here. Migrations are
-// named for the version they migrate AWAY FROM, and run for the range [from, to).
+// A synthetic registry: the real migrations' side effects never run here.
 const mig = (version: SemverString): Migration => ({
   version,
   description: version,
@@ -76,7 +74,6 @@ afterEach(() => {
 });
 
 test("dueMigrations selects [from, to) in ascending order over the registry", () => {
-  // One row per selection guarantee, each named by its comment.
   const cases: { from: string; to: string; expected: string[] }[] = [
     { from: "1.2.1", to: "1.3.0", expected: ["1.2.1", "1.2.5"] }, // ascending [from, to)
     { from: "1.2.5", to: "1.3.0", expected: ["1.2.5"] }, // from included, to excluded
@@ -95,22 +92,17 @@ test("dueMigrations selects [from, to) in ascending order over the registry", ()
 });
 
 test("the shipped registry holds exactly the named fix-ups in order, home move first", () => {
-  // Adding a step has to be a deliberate edit to the registry, not an accident of
-  // a stale import; this pins the full set BY IDENTITY and in order -- a count
-  // (or a list of version strings) could stay green while a same-version fix-up
-  // was silently dropped in a merge. Order matters within the version: the
-  // later fix-ups read the state store the home move relocates, the default
-  // daemon-home move relocates files inside that moved home, the three wiring
-  // rewrites land before the layout adoption re-wires the shell through the
-  // fence-only writer and sweeps the flat src/scripts, and the layout adoption runs
-  // LAST among the 3.5.6 steps (it relocates the install the others fixed up). The
-  // 4.0.0 registrations of the same rewrites follow, for installs already on 4.0.0.
+  // Pinned BY IDENTITY and in order: a count or a list of version strings could stay green while a
+  // same-version fix-up was dropped in a merge. Each position has a reason:
+  //   layout steps first (home move, then store rename) -> later steps read stores at the new paths
+  //   default daemon-home move after the home move       -> it moves files inside the moved home
+  //   shell fence before the layout adoption             -> the adoption rewires the shell through the
+  //                                                         current writer, which strands an unfenced body
+  //   Codex/Claude rewrites before the layout adoption   -> the adoption removes the flat src/scripts
+  //                                                         the old wiring pointed at
+  //   layout adoption last among the 3.5.6 steps         -> it relocates the install they fixed up
+  //   Desktop helper move last of all                    -> its wiring pass needs the rewrites done
   expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
-    // The LAYOUT steps are hoisted ahead of everything else, in version order:
-    // the home move first (it may carry the old-name stores in), the root-store
-    // rename second, and only then the steps that READ the stores -- through
-    // the NEW code, so at the new paths. The Desktop helper move is deliberately
-    // LAST: its wiring pass needs the v356/v400 wiring rewrites done.
     v356,
     v402RootLayout,
     v356Ownership,
@@ -143,8 +135,6 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
   const solo = {
     accounts: [{ host: "github.com", login: "vivswan", active: true, source: "keyring" }],
   };
-  // Pin-less default + named gh-cli slots pin to the sole login; a pinned slot,
-  // a token slot, and a non-gh-cli slot are untouched. Idempotent by re-run.
   state.setCredential(null, { kind: "gh-cli", ghUser: null });
   state.commitProfile(WORK, { credential: { kind: "gh-cli", ghUser: null }, mode: "direct" });
   state.commitProfile(OTHER, { credential: { kind: "gh-cli", ghUser: "kept" }, mode: "proxy" });
@@ -161,17 +151,15 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
     throw new Error("nothing left to pin - the look must not run");
   });
 
-  // A sole login gh cannot serve pinned (`gh auth token --user` finds no saved
-  // credential - an env-only GH_TOKEN) is never pinned: the pin would break a
-  // working auto slot.
+  // A sole login gh cannot serve pinned (an env-only GH_TOKEN: `gh auth token --user` finds no
+  // saved credential) is never pinned: the pin would break a working auto slot.
   state.setCredential(null, { kind: "gh-cli", ghUser: null });
   pinSoleGhAccount(() => solo, () => false);
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
 
-  // Multiple accounts (or an unproven look): auto slots stay auto - only the
-  // user can choose whose Copilot credit to spend. A BROKEN entry still counts
-  // as an account: a broken active login is never abandoned for a healthy
-  // bystander, and a login seen only broken could never verify its pin.
+  // Multiple accounts, or an unproven look: only the user can choose whose Copilot credit to spend.
+  // A BROKEN entry still counts: a broken active login is never abandoned for a healthy bystander,
+  // and a login seen only broken could never verify its pin.
   state.setCredential(null, { kind: "gh-cli", ghUser: null });
   pinSoleGhAccount(() => ({
     accounts: [
@@ -223,9 +211,6 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
   // A WIRED Desktop whose pass rewired every entry to helpers/: nothing
   // references the loose helpers anymore, so they go after ONE pass.
   await moveDesktopHelpers(dir, pass, () => true, none);
-  // Stores renamed byte-identically; every old name and lock sidecar is gone;
-  // unreferenced generated helpers removed while the lookalikes survive
-  // (never ours).
   expect(readFileSync(join(dir, "credentials.json"), "utf8")).toBe(
     `${JSON.stringify({ profiles: {} })}\n`,
   );
@@ -249,8 +234,7 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
   expect(existsSync(join(dir, "claude-desktop-token-work.bak.sh"))).toBe(true);
   expect(reconciled).toBe(1);
 
-  // Idempotent: nothing left to move, the wiring pass is not re-run, and the
-  // renamed stores are untouched.
+  // Idempotent: the wiring pass is not re-run.
   moveRootStores(dir);
   await moveDesktopHelpers(dir, pass, () => true, none);
   expect(reconciled).toBe(1);
@@ -258,9 +242,8 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
     `${JSON.stringify({ port: 4199 })}\n`,
   );
 
-  // A helper a Desktop entry STILL references (the pass could not rewire it -
-  // blocked metadata, a failed entry save) is kept: the entry keeps working off
-  // it. Once nothing references it, a later run finishes the move.
+  // A helper a Desktop entry STILL references (the pass could not rewire it: blocked metadata, a
+  // failed entry save) is kept so the entry keeps working; a later run finishes the move.
   const helper = join(dir, "claude-desktop-token.sh");
   writeFileSync(helper, "#!/bin/sh\n");
   await moveDesktopHelpers(dir, () => Promise.resolve(), () => true, () => new Set([helper]));
@@ -326,7 +309,6 @@ test("fenceUnfencedBlocks fences the 3.5.6 rc blocks and leaves everything else 
   expect(fenceUnfencedBlocks(rc)).toBe(
     `export KEEP=1\n\n${main}\n${MARKER_END}\n\n${launchers}\n${LAUNCHERS_MARKER_END}\nexport AFTER=1\n`,
   );
-  // Idempotent: a fenced file is byte-identical.
   expect(fenceUnfencedBlocks(fenceUnfencedBlocks(rc))).toBe(fenceUnfencedBlocks(rc));
   // A lookalike in the guard position (the user's own assignment) is not the pair:
   // nothing is fenced, nothing is touched.
@@ -439,7 +421,6 @@ test("a file that cannot be converted fails the step; the other files still conv
   writeFileSync(join(dir, "settings-work.json"), JSON.stringify({ apiKeyHelper: workHelper }));
 
   expect(() => rewriteClaudeWiring()).toThrow(join(dir, "settings-work.json"));
-  // The step's outcome is the failure, but the convertible file was still converted.
   expect(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).apiKeyHelper).toBe(
     directHelperCommand(),
   );
@@ -495,11 +476,10 @@ test("rewriteLegacyClaudeHelper inlines a released helper body and removes the f
   // Converged: the inline command is not a helper path.
   expect(rewriteLegacyClaudeHelper(dir, null)).toBe(false);
 
-  // Near misses at our name are the user's: untouched, settings included. A body that
-  // only MENTIONS the resolver, a trailing shell command, a body addressed at another
-  // profile, the pre-v3.3.5 `gh auth token` helper.
-  // ...the OTHER platform's frame at this platform's path (no release paired them), and
-  // the proxy body only unreleased mains wrote (the launcher's own subcommand).
+  // Near misses at our name are the user's: untouched, settings included. Bodies that only MENTION
+  // the resolver, carry a trailing command, address another profile, use the pre-v3.3.5
+  // `gh auth token` helper, wear the OTHER platform's frame, or use the proxy body only unreleased
+  // mains wrote.
   const nearMisses = win
     ? [
       '@echo off\r\npowershell -File "C:\\r\\bin\\agent.ps1" auth --get\r\n',
@@ -589,8 +569,8 @@ test("runMigrations is best-effort: a failing step never stops the rest", async 
     },
     { version: "1.2.0", description: "ok", run: () => void ran.push("third") },
   ];
-  // A migration hiccup must never abort an otherwise-successful update, so the third
-  // step still runs after the second throws -- and runMigrations itself must not reject.
+  // A migration hiccup must never abort an otherwise-successful update, and runMigrations itself
+  // must not reject.
   await runMigrations("1.0.0", "2.0.0", steps);
   expect(ran).toEqual(["first", "third"]);
 });
@@ -606,8 +586,6 @@ interface MoveFixture {
   run: () => Promise<void>;
 }
 
-/** A legacy home with a marker file, plus a codex config and a Desktop entry whose
- *  managed values point into it. */
 function moveFixture(): MoveFixture {
   dir = tempDir("copilot-migrate-");
   delete process.env.COPILOT_API_HOME; // the unpinned path is the one under test
@@ -616,10 +594,8 @@ function moveFixture(): MoveFixture {
   mkdirSync(legacy, { recursive: true });
   writeFileSync(join(legacy, "config.json"), "{}\n");
   const desktopEntry = join(dir, "entry.json");
-  // The stores ride the move under their pre-4.0.2 names, and the move itself
-  // must rename them BEFORE its ledger-fed rewrites: the entry below is only
-  // discoverable through the renamed ownership.json, so a late rename would
-  // leave the helper path unrepointed and fail the assertion.
+  // The stores ride the move under their pre-4.0.2 names, and the move must rename them BEFORE its
+  // ledger-fed rewrites: the entry below is only discoverable through the renamed ownership.json.
   writeFileSync(
     join(legacy, ".copilot-env-ownership.json"),
     `${JSON.stringify({ claudeDesktopPaths: [desktopEntry] })}\n`,
@@ -658,10 +634,9 @@ function moveFixture(): MoveFixture {
           return Promise.resolve();
         },
         codexConfigPaths: () => [codexConfig],
-        // The production binding: entries come from the ownership ledger, whose
-        // reader knows ONLY the renamed store - readable at the moved home once
-        // the move (incl. the in-move rename) has happened. Pinning the home at
-        // INVOKE time mirrors how the real thunk resolves it post-move.
+        // The production binding: the ledger reader knows ONLY the renamed store, readable at the
+        // moved home once the in-move rename happened. Pinning the home at INVOKE time mirrors the
+        // real thunk.
         desktopEntryPaths: () => {
           process.env.COPILOT_API_HOME = next;
           return new OwnershipLedger().ownedPaths("claudeDesktop");
@@ -692,7 +667,6 @@ test("3.5.6 move: daemons stopped, dir renamed, both artifact kinds repointed", 
     denoDir: join(fx.next, "proxy", "deno"),
   });
 
-  // Idempotent: a re-run has nothing to move and rewrites nothing.
   await fx.run();
   expect(fx.stopped.count).toBe(1);
 });
@@ -712,9 +686,9 @@ test("3.5.6 move: a re-run resuming after a crash mid-move still renames the sto
 
 test("3.5.6 move: a stopDaemons refusal aborts the move -- the legacy home is untouched", async () => {
   const fx = moveFixture();
-  // The production stopDaemons (stopLegacyDaemons) throws for ANY daemon not confirmed
-  // stopped -- a kill survivor, or a stop refused because the pid could not be
-  // corroborated as ours. The move must then never race the (possibly live) writer.
+  // The production stopDaemons throws for a daemon it tried to stop and could not confirm stopped
+  // (a kill survivor, or a pid it could not corroborate), so the move never proceeds over such a
+  // writer. A lock holder with no recorded pid is not tried, and not refused.
   await expect(
     moveDataHome({
       legacyHome: fx.legacy,
@@ -740,11 +714,9 @@ test(
     const next = join(home, ".local", "share", "copilot-env");
     mkdirSync(legacy, { recursive: true });
     writeFileSync(join(legacy, "config.json"), "{}\n");
-    // The refusal, staged for real: THIS test process holds legacy's daemon.lock (the
-    // marker names our pid -- alive, but nothing like a daemon), and legacy's run state
-    // tracks the same pid. The child's stopTrackedProxy reads lock-"alive", cannot
-    // corroborate the pid, and refuses with stopped: false -- the guard must abort the
-    // rename rather than race the (possibly live) writer.
+    // The refusal, staged for real: THIS process holds legacy's daemon.lock (the marker names our
+    // pid, alive but nothing like a daemon) and legacy's run state tracks the same pid, so the
+    // child's stopTrackedProxy reads lock-alive, cannot corroborate, and refuses (stopped: false).
     expect(acquireDaemonLockForLife(legacy, { waitMs: 0 })).toBe(true);
     const savedApiHome = process.env.COPILOT_API_HOME;
     process.env.COPILOT_API_HOME = legacy;
@@ -849,7 +821,6 @@ test("3.5.6 ownership: legacy records move into the ledger; a re-run finds nothi
   expect(raw.claudeDesktopOwnedPaths).toBeUndefined();
   expect(raw.githubToken).toBe("ghu_keep");
 
-  // Idempotent: the re-run has nothing to adopt and rewrites nothing.
   const stateBytes = readFileSync(join(dir, "credentials.json"), "utf8");
   await v356Ownership.run();
   expect(readFileSync(join(dir, "credentials.json"), "utf8")).toBe(stateBytes);
@@ -895,7 +866,6 @@ test("3.5.6 default slot: the top-level pair lifts into profiles.default; a re-r
     token: "ghu_keep",
   });
 
-  // Idempotent: the re-run finds nothing to lift and rewrites nothing.
   const stateBytes = readFileSync(stateFile, "utf8");
   await v356DefaultSlot.run();
   expect(readFileSync(stateFile, "utf8")).toBe(stateBytes);
@@ -927,10 +897,8 @@ test("3.5.6 default slot: a slot already holding a credential wins over a linger
 test("3.5.6 default slot: a store without legacy keys is untouched; an absent file is never created", async () => {
   dir = isolateProxyHome("copilot-migrate-slot-");
   const stateFile = join(dir, "credentials.json");
-  // Fresh install: no state file at all -- the migration must not materialize one.
   await v356DefaultSlot.run();
   expect(existsSync(stateFile)).toBe(false);
-  // Already-migrated (or never-authenticated) store: byte-identical after the run.
   writeFileSync(
     stateFile,
     `${JSON.stringify({ profiles: { default: { authProvider: "gh-cli" } } })}\n`,
@@ -947,9 +915,6 @@ test("3.5.6 default slot: a store without legacy keys is untouched; an absent fi
 // could refuse on a live coincidental pid and flake the test.
 const DEAD_PID = 2_147_483_646;
 
-/** A flat root: every daemon-home artifact at the root itself, a stale
- *  daemon.lock (marker file naming a dead pid, held by nobody), and the
- *  account-wide stores beside them. Returns the root (== dir). */
 function flatRootFixture(): string {
   dir = isolateProxyHome("copilot-migrate-home-");
   mkdirSync(join(dir, ".run", "myhost"), { recursive: true });
@@ -968,8 +933,8 @@ test("3.5.6 default home: the flat daemon files move whole into profiles/default
   const root = flatRootFixture();
   await moveDefaultDaemonHome();
   const target = join(root, "profiles", "default");
-  // The daemon-home set moved -- contents included -- and the stale lock marker was
-  // DELETED, not moved (its holder is dead; the new home takes a fresh one).
+  // The stale lock marker is DELETED, not moved: its holder is dead and the new home takes a fresh
+  // one.
   expect(readFileSync(join(target, ".run", "myhost", ".state.json"), "utf8")).toContain("4141");
   for (
     const name of ["config.json", ".copilot-env-projections.json", "logs", "copilot-api.sqlite"]
@@ -987,7 +952,6 @@ test("3.5.6 default home: the flat daemon files move whole into profiles/default
   expect(existsSync(join(root, "github_token"))).toBe(true);
   // The paths layer now resolves the default daemon into the moved home.
   expect(defaultDaemonHome()).toBe(target);
-  // Idempotent: the re-run finds nothing flat and moves nothing.
   await moveDefaultDaemonHome();
   expect(existsSync(join(target, "config.json"))).toBe(true);
 });
@@ -998,7 +962,6 @@ test("3.5.6 default home: a LIVE daemon.lock refuses the whole move, files untou
   expect(acquireDaemonLockForLife(root, { waitMs: 0 })).toBe(true);
   try {
     await moveDefaultDaemonHome();
-    // Nothing moved, nothing created: the daemon still owns the flat home.
     expect(existsSync(join(root, "profiles"))).toBe(false);
     expect(existsSync(join(root, "config.json"))).toBe(true);
     expect(existsSync(join(root, ".run", "myhost", ".state.json"))).toBe(true);
@@ -1068,11 +1031,8 @@ test("3.5.6 default home: a busy start lock refuses the move (a launch is in fli
 test("3.5.6 default home: an UNREADABLE pid identity refuses the move (fail closed)", async () => {
   const root = flatRootFixture();
   rmSync(daemonLockPath(root), { force: true });
-  // The tracked pid is alive (this very process) but its identity cannot be read -- a
-  // restricted token, or a failed process scan. "Failed to look" is never "nobody
-  // there": proceeding would relocate the home out from under a possibly-live pre-lock
-  // daemon, so the move must refuse. (The kill paths' boolean scan reads this state as
-  // false and would PROCEED here -- the inversion this control pins.)
+  // The tracked pid is alive (this process) but its identity cannot be read: a restricted token
+  // or a failed scan. "Failed to look" is never "nobody there", so the move must refuse.
   writeRunState({ pid: process.pid, port: 4141 });
   await moveDefaultDaemonHome(() => Promise.resolve("unknown" as const));
   expect(existsSync(join(root, "profiles", "default"))).toBe(false);

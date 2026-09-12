@@ -1,13 +1,11 @@
-// Away from 4.0.2: gh-cli slots recorded before account pinning existed carry
-// no pin, so they follow gh's ACTIVE account -- a later `gh auth login` (or
-// switch) would silently move whose Copilot credit gets spent. The fix-up pins
-// every pin-less gh-cli slot to the machine's SOLE gh account, but only after
-// proving `gh auth token --user <login>` resolves (an env-only token lists a
-// login gh has no saved credential for -- pinning it would break a working
-// auto slot); a multi-account machine is left on auto (only the user can
-// choose between accounts -- the next `agent auth` asks). Idempotent: pinned
-// slots and non-gh-cli slots are untouched, and a re-run re-derives the same
-// answer.
+// Away from 4.0.2: gh-cli slots recorded before account pinning follow gh's ACTIVE account, so a
+// later `gh auth login` would silently move whose Copilot credit gets spent. The fix-up pins every
+// pin-less gh-cli slot to the machine's SOLE gh account.
+//
+//   sole login, `gh auth token --user <login>` resolves -> pinned
+//   sole login, no saved credential (env-only token)    -> auto; pinning would break a working slot
+//   several logins, or the account look never ran       -> auto; only the user can choose
+//   already pinned, or not gh-cli                       -> untouched
 import { consola } from "consola";
 import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join, normalize } from "node:path";
@@ -27,13 +25,10 @@ import type { Profile } from "../copilot_api/profile.ts";
 import { isRecord } from "../utils/json.ts";
 import type { Migration } from "./index.ts";
 
-/** The machine's sole pickable github.com login, or null: the same pin-or-ask
- *  rule the auth flow settles with. An unproven look pins nothing (a guess
- *  could spend the wrong account's credit), and so does any count but one --
- *  where EVERY github.com entry counts, broken ones included: a broken active
- *  login is still an account the user never chose to abandon, so a healthy
- *  bystander is never pinned over it. A login seen only broken could never
- *  verify its pin. */
+/** The same pin-or-ask rule the auth flow settles with. An unproven look pins nothing, and so
+ *  does any count but one, where EVERY github.com entry counts, broken ones included: a broken
+ *  active login is still an account the user never chose to abandon, so a healthy bystander is
+ *  never pinned over it. A login seen only broken could never verify its pin. */
 function soleGhLogin(look: () => GhAccountsLook): string | null {
   const { accounts, unproven } = look();
   if (unproven) return null;
@@ -100,14 +95,15 @@ export const v402GhAccountPin: Migration = {
 
 // --- root-home layout ------------------------------------------------------------
 //
-// Away from 4.0.2: the root home's stores wore dot-prefixed `.copilot-env-*` names from
-// the era when the root doubled as the proxy's flat daemon home, lock sidecars piled up
-// beside them, and the Claude Desktop helper scripts sat loose at the top level. Readers
-// know ONLY the new paths (plain store names, `locks/`, `helpers/`); these two fix-ups are
-// the single place the old names exist. TWO steps because they need opposite ends of the
-// run: the store renames are a `layout` step (hoisted, right after the 3.5.6 home move that
-// may carry old-name stores in), while the helper move runs LAST: its wiring pass reads the
-// agents' configs, which the v356/v400 wiring rewrites must normalize first.
+// Away from 4.0.2: the root home wore dot-prefixed `.copilot-env-*` stores, their lock sidecars,
+// and loose Desktop helper scripts from the era when the root doubled as the flat daemon home.
+// Readers know ONLY the new paths, so these two fix-ups are the single place the old names exist.
+// They sit at opposite ends of the run:
+//
+//   store renames -> a `layout` step, right after the 3.5.6 home move, which may carry old-name
+//                    stores in
+//   helper move   -> LAST: its wiring pass reads agent configs the v356/v400 rewrites normalize
+//                    first
 
 /** The three store renames, old basename -> new basename. */
 const STORE_RENAMES: ReadonlyArray<readonly [string, string]> = [
@@ -127,13 +123,9 @@ const LOCK_DEBRIS: readonly string[] = [
   "github_token.login.lock",
 ].flatMap((name) => [name, `${name}.oslock`]);
 
-/** The store renames + lock debris ONLY (the layout step, hoisted to the front
- *  of the run right after the 3.5.6 home move -- every later step reads the
- *  stores at their new paths). The Desktop helper move lives in its own LAST
- *  step (moveDesktopHelpers): its reconcile derives targets from the agents'
- *  wiring, which the v356/v400 wiring rewrites have not normalized yet this
- *  early -- reconciling now could misread a valid entry as an orphan.
- *  Exported for the migration test; `rootHome` isolates. */
+/** The layout step (hoisted; see the section comment). The Desktop helper move is its own LAST
+ *  step (moveDesktopHelpers): reconciling this early, before the wiring rewrites, could misread
+ *  a valid entry as an orphan. Exported for the migration test; `rootHome` isolates. */
 export function moveRootStores(rootHome: string = resolveRootHome()): void {
   for (const [oldName, newName] of STORE_RENAMES) {
     const oldPath = join(rootHome, oldName);
@@ -155,10 +147,9 @@ export function moveRootStores(rootHome: string = resolveRootHome()): void {
   }
 }
 
-/** Every helper path a Claude Desktop entry we own still REFERENCES (its
- *  `inferenceCredentialHelper`), one ledger read. Fail closed: an unreadable
- *  ledger or entry document THROWS (runMigrations warns and nothing gets
- *  deleted), while a proven-absent entry references nothing. */
+/** Every helper path an owned Desktop entry still REFERENCES (`inferenceCredentialHelper`), one
+ *  ledger read. Fail closed: an unreadable ledger or entry document THROWS (runMigrations warns
+ *  and nothing gets deleted), while a proven-absent entry references nothing. */
 function referencedDesktopHelpers(): Set<string> {
   const referenced = new Set<string>();
   for (const path of new OwnershipLedger().ownedPaths("claudeDesktop")) {
@@ -176,23 +167,22 @@ function referencedDesktopHelpers(): Set<string> {
   return referenced;
 }
 
-/** Path equality the way the filesystem judges it: exact on POSIX, case-blind
- *  on Windows (its filesystems are case-insensitive by default, and an entry's
- *  recorded path can differ from today's resolved root home only in case). */
+/** Path equality as the filesystem judges it: case-blind on Windows, where an entry's recorded
+ *  path can differ from today's resolved root home only in case. */
 function samePath(a: string, b: string): boolean {
   const na = normalize(a);
   const nb = normalize(b);
   return process.platform === "win32" ? na.toLowerCase() === nb.toLowerCase() : na === nb;
 }
 
-/** Move the loose generated helper scripts: one Desktop wiring pass FIRST (it regenerates
- *  the helpers under `helpers/` and rewires the Desktop entries to them), then delete
- *  exactly the loose helpers NO entry of ours references anymore, the direct safety
- *  property rather than a proxy for it. Whatever the pass could not rewire keeps its
- *  still-referenced helper and keeps WORKING off it; the notice says how to finish by hand
- *  and promises no automatic retry (a shipped migration range never re-runs). The three
- *  function parameters are the migration test's seams. NOT quiet: quiet skips the
- *  per-target sync, and regenerating the deleted helpers IS the point. */
+/** One Desktop wiring pass FIRST (it regenerates the helpers under `helpers/` and rewires the
+ *  entries to them), then delete exactly the loose helpers NO entry of ours references: the
+ *  direct safety property, not a proxy for it. The pass is never quiet, because quiet skips the
+ *  per-target sync and regenerating the helpers IS the point.
+ *
+ *    an entry the pass rewired -> its loose helper goes
+ *    an entry it could not     -> the helper stays and keeps WORKING, and the notice says how to
+ *                                 finish by hand: a shipped migration range never re-runs */
 export async function moveDesktopHelpers(
   rootHome: string = resolveRootHome(),
   reconcile: () => Promise<void> = () => reconcileClaudeDesktopWiring(),

@@ -1,24 +1,20 @@
-// The `agent settings` export/import domain: one JSON bundle carrying every
-// PORTABLE copilot-env setting, for moving a setup to another machine.
+// The `agent settings` export/import domain: one JSON bundle of every PORTABLE setting, for
+// moving a setup to another machine. Cross-agent (import re-wires BOTH agents), so it lives in
+// src/agents/.
 //
-// Portable state is exactly the two account-wide stores -- the preferences
-// (`preferences.json`, CopilotEnvConfig) and the credential store
-// (`credentials.json`, CopilotEnvState: default credential + named
-// profile slots). Everything else is DERIVED or machine-local and is re-derived
-// on import, never copied: agent config files, daemon homes,
-// port reservations, the Codex catalog cache fields (`codexCatalog*`), and the
-// artifact-ownership ledger (its own machine-local store, naming THIS machine's
-// files -- src/copilot_api/ownership.ts).
+// Portable is exactly the two account-wide stores: preferences.json (CopilotEnvConfig) and
+// credentials.json (CopilotEnvState). Everything else is re-derived on import, never copied:
+// agent config files, daemon homes, port reservations, the Codex catalog cache fields, and the
+// machine-local ownership ledger (src/copilot_api/ownership.ts).
 //
-// Import is NON-destructive toward the target machine: profiles that exist only
-// here are preserved, a bundle mode of "none" leaves that agent's wiring alone,
-// and a slot whose credential would not resolve after the import is skipped
-// whole (ask, never silently break a working setup). Proxy wiring is the one
-// credential-independent write, exactly like `agent init --proxy` (the daemon
-// acquires its own auth at `agent start`).
+// The bundle wins where it resolves: a bundle credential this machine can resolve REPLACES the
+// local slot, and a store write is not rolled back when the wiring after it fails (the slot
+// stays committed-but-unwired for a re-add or `--sync`). Proxy wiring is the one
+// credential-free write, as for `agent init --proxy`.
 //
-// Cross-agent by nature (import re-wires BOTH Codex and Claude), so it lives in
-// src/agents/ beside wiring.ts and profile_wiring.ts.
+//   bundle credential unresolvable here -> local slot kept; skipped whole when it is unresolvable too
+//   profile absent from the bundle      -> untouched
+//   bundle mode "none"                  -> that agent left alone
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
@@ -101,8 +97,7 @@ export interface SettingsBundle {
   modes: { codex: AgentProviderMode; claude: AgentProviderMode };
 }
 
-/** Copy `key` from the store read into the bundle's config section when set
- *  (generic so the per-key value type survives the assignment). */
+/** Generic so the per-key value type survives the assignment. */
 function copyStoredPref<K extends ConfigKey>(
   from: CopilotEnvConfigData,
   to: CopilotEnvConfigData,
@@ -112,11 +107,9 @@ function copyStoredPref<K extends ConfigKey>(
   if (value !== undefined) to[key] = value;
 }
 
-/** Preferences whose VALUE may carry a credential (a custom price-list URL can hold a
- *  token in its query). A default export replaces each stored one with
- *  REDACTED_TOKEN exactly like a token, and import treats that marker exactly like a
- *  redacted token: keep whatever the local store holds. Absence still means "unset"
- *  (full-replace deletes the local value), as for every other preference. */
+/** Preferences whose VALUE may carry a credential (a price-list URL can hold a token in its
+ *  query): exported as REDACTED_TOKEN by default and, on import, treated like a redacted token
+ *  (the local value stays). Absence still means unset, as for every other preference. */
 const CREDENTIAL_BEARING_PREFS = ["pricingUrl"] as const satisfies readonly ConfigKey[];
 
 /** Whether the bundle carries the redaction marker for `key` instead of a value. */
@@ -124,8 +117,6 @@ function isRedactedPref(config: CopilotEnvConfigData, key: ConfigKey): boolean {
   return CREDENTIAL_BEARING_PREFS.some((k) => k === key) && config[key] === REDACTED_TOKEN;
 }
 
-/** Every stored preference, with unset keys omitted (defaults never travel) and the
- *  credential-bearing ones replaced by REDACTED_TOKEN unless `withCredentials`. */
 function storedPrefs(withCredentials: boolean): CopilotEnvConfigData {
   const data = new CopilotEnvConfig().read();
   const out: CopilotEnvConfigData = {};
@@ -138,14 +129,7 @@ function storedPrefs(withCredentials: boolean): CopilotEnvConfigData {
   return out;
 }
 
-/**
- * Build the export bundle from the current stores. Tokens and the
- * credential-bearing preferences are replaced by REDACTED_TOKEN unless
- * `withCredentials` -- redaction is the default so a casually shared bundle never
- * leaks a credential. The machine-local state
- * fields (`codexCatalog*`) are never included; artifact ownership lives in its
- * own machine-local ledger file, outside both exported stores.
- */
+/** Redaction is the default so a casually shared bundle never leaks a credential. */
 export function buildExportBundle(options: { withCredentials?: boolean } = {}): SettingsBundle {
   const withCredentials = options.withCredentials ?? false;
   const state = new CopilotEnvState().read();
@@ -167,23 +151,18 @@ export function buildExportBundle(options: { withCredentials?: boolean } = {}): 
       ghUser: state.ghUser,
     },
     profiles,
-    // Safe read: a wiring-read failure must never abort an export (or an
-    // unrelated import, via the pre-import backup). It collapses to "other",
-    // which imports as "leave that agent alone" -- the right posture for
-    // wiring we could not even read.
+    // A wiring-read failure must not abort an export (or an import, via the pre-import
+    // backup); readAgentModesSafe collapses it to "other", which imports as "leave alone".
     modes: readAgentModesSafe(),
   };
 }
 
-/** The bundle as the on-disk/stdout JSON document (pretty, trailing newline). */
 export function serializeSettingsBundle(bundle: SettingsBundle): string {
   return `${JSON.stringify(bundle, null, 2)}\n`;
 }
 
-/** True when the bundle's STORES carry nothing: no stored preference, no
- *  default credential, no profiles. Deliberately silent about `modes` --
- *  wiring is derived state, so it matters to the import confirmation (which
- *  checks it separately) but not to backups (nothing to roll back). */
+/** Deliberately silent about `modes`: wiring is derived state, so it matters to the import
+ *  confirmation (checked separately) but not to a backup (nothing to roll back). */
 export function bundleIsEmpty(bundle: SettingsBundle): boolean {
   return (
     CONFIG_REGISTRY.every((def) => bundle.config[def.key] === undefined) &&
@@ -195,14 +174,12 @@ export function bundleIsEmpty(bundle: SettingsBundle): boolean {
 
 // --- bundle parsing -------------------------------------------------------------
 //
-// A bundle is UNTRUSTED input (hand-carried between machines, possibly edited),
-// so this is a strict parse boundary: unknown keys and malformed values are
-// rejections -- never silently dropped or coerced to null the way the stores'
-// own lenient read schemas would, because the full-replace import semantics
-// would then quietly reset a local preference or wipe a credential. Error
-// messages carry only text this parser owns: section paths, expected shapes,
-// and profile names that already passed validation. No value and no unknown
-// KEY name from the bundle is ever echoed (either could be a pasted token).
+// A bundle is UNTRUSTED input (hand-carried, possibly edited), so this is a strict parse
+// boundary: unknown keys and malformed values are rejections, never dropped or coerced the way
+// the stores' lenient read schemas would, because a full-replace import would then quietly
+// reset a preference or wipe a credential. Error messages carry only text this parser owns
+// (section paths, expected shapes, validated profile names); no bundle value or unknown KEY is
+// echoed, since either could be a pasted token.
 
 function bundleError(detail: string): Error {
   return new Error(`invalid settings bundle: ${detail}`);
@@ -246,9 +223,9 @@ function parseNullableEnum<T extends string>(
   return hit;
 }
 
-// The identity is interpolated into an HTTP header (Copilot-Integration-Id) by
-// the config writers; INTEGRATION_ID_RE (env_config.ts, shared with the
-// `integration-id` pin) is the single source of the header-safe token shape.
+// The identity is interpolated into the Copilot-Integration-Id header by the config writers;
+// INTEGRATION_ID_RE (env_config.ts, shared with the `integration-id` pin) owns the header-safe
+// shape.
 function parseNullableIdentity(value: unknown, path: string): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== "string" || !INTEGRATION_ID_RE.test(value)) {
@@ -259,12 +236,10 @@ function parseNullableIdentity(value: unknown, path: string): string | null {
   return value;
 }
 
-/** The credential fields shared by the default slot and every profile slot.
- *  Three contradictions are rejected outright: a token without a provider could
- *  never resolve (resolution keys off `authProvider`), a token WITH the gh-cli
- *  provider would sit ignored in the store (gh-cli holds no token of its own)
- *  until a later --with-credentials export exposed it, and a gh account pin on
- *  a non-gh-cli provider would sit equally dead. */
+/** Three contradictions the store would otherwise carry dead or dangerous:
+ *    token, no provider     -> could never resolve (resolution keys off authProvider)
+ *    token + gh-cli         -> sits ignored until a --with-credentials export exposes it
+ *    ghUser + non-gh-cli    -> a dead account pin */
 function parseCredentialFields(doc: Record<string, unknown>, path: string): ProfileCredentialData {
   const githubToken = parseNullableString(doc.githubToken, `${path}.githubToken`);
   const authProvider = parseNullableEnum(doc.authProvider, AUTH_PROVIDERS, `${path}.authProvider`);
@@ -297,14 +272,9 @@ function parseCredentialFields(doc: Record<string, unknown>, path: string): Prof
 const CREDENTIAL_KEYS = ["githubToken", "authProvider", "ghUser"] as const;
 const PROFILE_SLOT_KEYS = [...CREDENTIAL_KEYS, "mode", "integrationIdentity"] as const;
 
-/**
- * The config section: keys must be registry keys, and each present value must
- * satisfy the store's own per-key schema. The value validation deliberately
- * reuses CONFIG_SCHEMA (env_config owns every value shape, so new keys are
- * accepted here automatically); its lenient fallback is turned strict by
- * rejecting any present key the schema refused (fallback -> undefined) instead
- * of letting the full-replace import silently reset that preference.
- */
+/** Values are validated by CONFIG_SCHEMA itself (env_config owns every value shape, so new keys
+ *  are accepted here automatically); its lenient fallback is made strict by rejecting any
+ *  present key the schema turned into undefined. */
 function parseConfigSection(raw: unknown): CopilotEnvConfigData {
   const doc = requireRecord(raw, "config");
   rejectUnknownKeys(
@@ -380,11 +350,8 @@ function parseModesSection(raw: unknown): { codex: AgentProviderMode; claude: Ag
 
 const BUNDLE_KEYS = ["formatVersion", "config", "credential", "profiles", "modes"] as const;
 
-/**
- * Parse untrusted JSON into a SettingsBundle (strict; see the section comment
- * above). An unknown `formatVersion` is rejected with its own message -- the
- * one deliberate compatibility gate.
- */
+/** An unknown `formatVersion` is rejected with its own message: the one deliberate
+ *  compatibility gate. */
 export function parseSettingsBundle(raw: unknown): SettingsBundle {
   if (!isRecord(raw)) {
     throw new Error("not a settings bundle (expected a JSON object)");
@@ -407,11 +374,11 @@ export function parseSettingsBundle(raw: unknown): SettingsBundle {
 
 // --- import planning --------------------------------------------------------
 //
-// The import is computed as ONE plan up front -- every slot's landing, the
-// default modes to write, and the exact store/file writes -- and both the
-// confirmation summary and the apply execute that same plan. Modelling the
-// writes once means the prompt can never claim (or miss) a write the apply
-// would not (or would) perform, and the gh CLI is probed once per import.
+// The import is ONE plan computed up front (every slot's landing, the default modes, the exact
+// writes); the confirmation summary and the apply both execute that plan, so the prompt cannot
+// describe a landing the apply would not perform. Its `writes` lines are overwrite-only
+// (planWrites), so a bundle preference with no local counterpart lands without a line. The gh CLI
+// is probed once per pinned account (ghUser; null is gh's active account) per import.
 
 /** Import test seams, threaded through to the wiring layers untouched.
  *  `ghAuthToken` substitutes the gh CLI token probe so gh-cli slot handling is
@@ -479,9 +446,7 @@ function planSlotCredential(
         "machine (`gh auth login`), and no stored credential resolves either",
     };
   }
-  // A writable token slot: a token-backed provider carrying a REAL token (the
-  // strict parse already banned token-without-provider; a redacted placeholder
-  // is "not a token", so the slot falls through to keep/skip).
+  // A redacted placeholder is not a token, so that slot falls through to keep/skip.
   if (authProvider !== null && githubToken !== null && githubToken !== REDACTED_TOKEN) {
     return {
       action: "write",
@@ -497,11 +462,9 @@ function planSlotCredential(
   };
 }
 
-/** The default wiring to write for one agent, or null to leave it alone:
- *  only managed modes are ours to write. Direct needs the default credential
- *  to resolve (its helper fetches the token at request time); proxy is written
- *  credential-free, exactly like `agent init --proxy` -- the daemon acquires
- *  its own auth at `agent start`. */
+/** Only managed modes are ours to write. Direct needs the default credential to resolve (its
+ *  helper fetches the token at request time); proxy is written credential-free, as `agent init
+ *  --proxy` is: the daemon acquires its own auth at `agent start`. */
 function importableMode(
   mode: AgentProviderMode,
   label: string,
@@ -540,31 +503,32 @@ export interface ImportPlan {
   profiles: PlannedProfile[];
   /** Skip messages, decided here so the summary and the apply agree. */
   skipped: string[];
-  /** Confirmation lines: every store section and file the apply writes. */
+  /** Confirmation lines from planWrites: what the apply OVERWRITES, not all it writes. */
   writes: string[];
 }
 
-/** Named-profile wiring writes its provider tables into the effective home's
- *  config.toml. It runs after the store replace, so the home is resolved under the
- *  BUNDLE's codex-host value. */
+/** Named-profile wiring writes its provider tables into the effective home's config.toml. The
+ *  apply replaces the preference store before it wires, so the home named here is resolved under
+ *  the BUNDLE's codex-host value, not the local one. */
 function profileCodexLine(codexHost: boolean): string {
   return `Codex config: ${codexConfigPath(effectiveCodexHomeFor(codexHost))}`;
 }
 
-// PLAN-INPUT RULE for planWrites: everything read there must be either apply-immutable
-// (env, homes, the pre-import store content being described as overwritten) or resolved as
-// its POST-import value when the apply mutates it before the writers read it. Two
-// preferences gate the written file set: wire-mcp is resolved post-import (the preference
-// store is replaced before the Claude writer consults it); codex-model-catalog is covered
-// by the default-Codex line's unconditional "may rewrite" hedge instead.
+// PLAN-INPUT RULE for planWrites: everything read there is either apply-immutable (env, homes,
+// the pre-import store content described as overwritten) or resolved as its POST-import value
+// when the apply mutates it before the writers read it. wire-mcp is resolved post-import (the
+// preference store is replaced before the Claude writer consults it); codex-model-catalog is
+// covered by the default-Codex line's unconditional "may rewrite" hedge.
 
 /**
- * The confirmation lines: every store section and config file the apply will write, and
- * nothing else; a skipped slot produces no line, and preserved local content appears only
- * where it is actually overwritten. The file list mirrors what the wiring writers touch
- * (configureClaudeConfig / applyCodexConfig / wireBothAgents); they expose no dry-run
- * surface to derive it from, so the mapping lives here, next to the plan it describes, and
- * dynamic sets (the catalog sync's host-config sweep) are summarized in one honest line.
+ * The lines name what the apply OVERWRITES locally, never everything it writes. The file list
+ * mirrors what the wiring writers touch (configureClaudeConfig / applyCodexConfig /
+ * wireBothAgents); they expose no dry run to derive it from, so the mapping lives here beside
+ * the plan.
+ *
+ *   no locally stored pref key       -> no line; the bundle's preferences still land
+ *   skipped slot, or an empty one    -> no line
+ *   catalog sync's host-config sweep -> one summary line, the set is dynamic
  */
 function planWrites(
   bundle: SettingsBundle,
@@ -574,9 +538,8 @@ function planWrites(
 ): string[] {
   const lines: string[] = [];
   const prefs = new CopilotEnvConfig().read();
-  // Preferences are full-replace, so every locally stored key is rewritten (or
-  // reset, when absent from the bundle), except one the bundle redacted: that
-  // keeps the local value, like a redacted token.
+  // Preferences are full-replace: every locally stored key is rewritten or reset, except one
+  // the bundle redacted, which keeps the local value like a redacted token.
   const storedPrefKeys = CONFIG_REGISTRY.filter(
     (def) => prefs[def.key] !== undefined && !isRedactedPref(bundle.config, def.key),
   );
@@ -598,9 +561,8 @@ function planWrites(
   }
   const wired = profiles.filter((p) => p.landing.action !== "skip" && p.slot.mode !== null);
   if (modes.codex !== null) {
-    // POST-import resolution (the plan-input rule, as for wire-mcp below): the default
-    // Codex write first derives the per-host farm from the bundle's codex-host through
-    // the SAME decision the apply takes, so name its action and where the write lands.
+    // Post-import resolution (the plan-input rule): the farm decision is the SAME one the apply
+    // takes, so its action and landing can be named.
     const farm = codexHostFarm();
     const codexHost = codexHostEnabledFor(bundle.config.codexHost);
     const plan = planCodexHostFarm(codexHost, farm);
@@ -614,9 +576,8 @@ function planWrites(
     const home = plan.action === "build" || plan.action === "verify"
       ? farm.hostHome
       : unmanagedCodexHome();
-    // The default write can reach beyond config.toml: the catalog sync may rewrite
-    // other known host configs and the generated model-catalog file. The exact set
-    // is dynamic, so one honest summary line beats an enumeration that would go stale.
+    // The catalog sync may rewrite other host configs and the generated catalog file; the set is
+    // dynamic, so one honest line beats an enumeration that would go stale.
     lines.push(
       `Codex config: ${codexConfigPath(home)} (the model-catalog sync may rewrite ` +
         "other known host configs and the generated catalog file)",
@@ -627,11 +588,8 @@ function planWrites(
   const claudeHome = resolveClaudeHome();
   if (modes.claude !== null) {
     lines.push(`Claude settings: ${settingsPathFor(claudeHome)}`);
-    // POST-import resolution (the plan-input rule above): the apply replaces
-    // the preference store BEFORE the Claude writer reads wire-mcp, so the
-    // bundle's value (else the built-in default) decides -- the same
-    // stored-else-default precedence as wireMcpResolved, against the store
-    // this import is about to create.
+    // Post-import resolution: the bundle's wire-mcp (else the default) decides, the same
+    // stored-else-default precedence wireMcpResolved applies to the store this import creates.
     const wireMcp = bundle.config.wireMcp ?? configDefaultBoolean("wire-mcp");
     if (modes.claude === "direct" && wireMcp) {
       lines.push(`Claude MCP registration (+ WebSearch deny): ${claudeJsonPath()}`);
@@ -660,9 +618,8 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
   const skipped: string[] = [];
   const defaultSlot = planSlotCredential(bundle.credential, null, gh);
   if (defaultSlot.action === "skip" && bundle.credential.authProvider !== null) {
-    // Only report a slot the bundle actually carried: an empty bundle
-    // credential over an empty store is not an event, and any skipped wiring
-    // still gets its own importableMode message.
+    // Only a slot the bundle carried is an event; skipped wiring gets its own importableMode
+    // message.
     skipped.push(`default credential: ${defaultSlot.reason}; run \`agent auth\``);
   }
   const defaultUsable = defaultSlot.action !== "skip";
@@ -679,9 +636,8 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
       landing.action === "write" && slot.mode === null &&
       !state.profileSlotStatus(name).exists
     ) {
-      // A credential with no mode can only RE-AUTH an existing profile; with no
-      // profile here to re-auth, writing it would create the half profile the
-      // atomic slot commit exists to prevent -- skip the slot whole instead.
+      // A credential with no mode can only RE-AUTH an existing profile; with none here, writing
+      // it would create the half profile the atomic slot commit exists to prevent.
       landing = {
         action: "skip",
         reason:
@@ -710,8 +666,7 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
 
 // --- import apply -------------------------------------------------------------
 
-/** Set `key` in a full-replace patch: the bundle's value, or null to delete
- *  (generic so the per-key value type survives the assignment). */
+/** Generic so the per-key value type survives the assignment. */
 function restorePref<K extends ConfigKey>(
   patch: ConfigPatch,
   config: CopilotEnvConfigData,
@@ -720,11 +675,9 @@ function restorePref<K extends ConfigKey>(
   patch[key] = config[key] ?? null;
 }
 
-/** Replace the whole preference store with the bundle's `config` section: keys
- *  absent from the bundle revert to their defaults (restore, not merge -- safe
- *  because the strict parse already rejected junk instead of dropping it). A
- *  redacted credential-bearing key is left out of the patch, so the local value
- *  stays, exactly as a redacted token keeps the local credential. */
+/** Restore, not merge: keys absent from the bundle revert to their defaults, which is safe only
+ *  because the strict parse rejected junk instead of dropping it. A redacted key is left out of
+ *  the patch, so the local value stays, as a redacted token keeps the local credential. */
 function importPreferences(config: CopilotEnvConfigData): void {
   const patch: ConfigPatch = {};
   for (const def of CONFIG_REGISTRY) {
@@ -734,24 +687,20 @@ function importPreferences(config: CopilotEnvConfigData): void {
 }
 
 /**
- * Execute the profile half of the plan through the same atomic machinery `agent profile
- * --add` uses: credential + mode land as ONE commitProfile write, so a crash or wiring
- * failure can never leave a half profile (at worst a complete-but-unwired slot that
- * `profile --sync` or a re-add re-derives). Per-profile resilient, the commit included: a
- * slot whose commit throws is reported and skipped whole, never blocking the rest. Unlike
- * the DEFAULT slot, a proxy-mode profile still requires a resolvable credential: `agent
- * profile --add` always ensures the profile's OWN credential before committing either mode
- * (runAdd in src/commands/profile.ts), so the import restores nothing weaker than `--add`.
+ * Credential + mode land as ONE commitProfile write, the machinery `agent profile --add` uses.
+ * Each profile stands alone: a failure is recorded and the next profile still runs.
+ *
+ *   a crash mid-import   -> at worst a complete-but-unwired slot, re-derived by `profile --sync`
+ *   a proxy-mode profile -> still needs its OWN resolvable credential, unlike the default slot
+ *                           (the rule runAdd enforces in src/commands/profile.ts)
  */
 async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise<void> {
   const state = new CopilotEnvState();
   for (const { name, slot, landing } of plan.profiles) {
     if (landing.action === "skip") continue;
     if (slot.mode === null) {
-      // No mode travels: at most a re-auth of an existing profile's credential
-      // (planImport already skipped the slot when no profile exists here; the
-      // store's own guard can still fire if a concurrent --del removed it after
-      // planning, so this stays per-profile resilient like everything else).
+      // No mode: at most a re-auth. planImport skipped the no-profile case; the store's own
+      // guard still fires if a concurrent --del raced the plan, hence the try.
       if (landing.action === "write") {
         try {
           state.setCredential(name, landing.credential);
@@ -788,12 +737,12 @@ function keptCredential(state: CopilotEnvState, name: ProfileName): ProvisionedC
   return credential.kind === "none" ? null : credential;
 }
 
-/** The bundled identity is derived from the bundle's own credential, so it is
- *  replayed ONLY when that exact token landed (letting a direct profile wire
- *  without re-probing the network), and the write is keyed to that credential
- *  (a concurrent rotation drops it, never mis-attaches it). gh-cli and kept
- *  slots resolve a DIFFERENT credential here, so their identity is re-derived
- *  by the normal probe at wire time instead of trusting the bundle's. */
+/** The bundled identity was derived under the bundle's own credential, so it is replayed only
+ *  when that exact token landed (a direct profile then wires without a network probe), keyed to
+ *  that credential so a concurrent rotation drops it rather than mis-attaching it. gh-cli and
+ *  kept slots hold a DIFFERENT credential, so nothing is replayed for them: a kept slot wires off
+ *  whatever verdict it already cached (commitProfile keeps it while the credential is unchanged),
+ *  and only an uncached one costs a wire-time probe. */
 function replayBundledIdentity(
   state: CopilotEnvState,
   name: ProfileName,
@@ -808,13 +757,13 @@ function replayBundledIdentity(
   }
 }
 
-/**
- * Execute the plan: write both stores through their own classes, then
- * RE-DERIVE everything else -- the default agents through the same machinery
- * `agent init` uses (configureDefaultAgents) and each profile through the same
- * machinery `agent profile` uses (wireBothAgents). Every wiring path receives
- * the plan's already-resolved credential, so no resolver re-runs.
- */
+/** Stores first, then everything else is RE-DERIVED through the same machinery `agent init`
+ *  (configureDefaultAgents) and `agent profile` (wireBothAgents) use. Every wiring path takes the
+ *  plan's already-resolved credential except the Claude Desktop syncs:
+ *
+ *    a named profile's Desktop sync -> claudeAdapter.configureProfile passes no directToken
+ *    an unwired default entry       -> syncTarget resolves that slot itself, and the reconcile
+ *                                      below runs even for a config-only import */
 export async function applyImportPlan(
   plan: ImportPlan,
   deps: ImportDeps = {},
@@ -849,9 +798,8 @@ export async function applyImportPlan(
   return outcome;
 }
 
-/** Plan + apply in one call -- the whole-import entry for callers that need no
- *  confirmation step between the two (`agent settings` plans first to render
- *  the prompt, then applies that same plan). */
+/** Plan + apply in one call, for callers that need no confirmation step between the two
+ *  (`agent settings` plans first to render the prompt, then applies that same plan). */
 export async function applyImportBundle(
   bundle: SettingsBundle,
   deps: ImportDeps = {},
@@ -882,10 +830,8 @@ export function settingsBackupDir(): string {
 
 const BACKUP_FILE_RE = /^settings-.*\.json$/;
 
-// Appended to every backup filename after the millisecond timestamp: it
-// uniquifies same-millisecond backups AND keeps the prune's lexicographic name
-// sort chronological within one process (across processes the timestamp part
-// already orders the names).
+// Appended after the millisecond timestamp: uniquifies same-millisecond backups and keeps the
+// prune's lexicographic sort chronological within one process.
 let backupSeq = 0;
 
 /** Best-effort prune: keep only the newest SETTINGS_BACKUP_KEEP backups. */
@@ -908,14 +854,12 @@ function pruneSettingsBackups(dir: string): void {
 }
 
 /**
- * Write a full-fidelity backup of the CURRENT stores (credentials included --
- * a rollback without tokens is not a rollback; the file stays on this machine
- * in the same trust domain as the plaintext stores: dir 0700, file 0600 where
- * modes apply) and prune the pile to the newest SETTINGS_BACKUP_KEEP. Returns
- * the file path, or null when both stores are empty (nothing to roll back to;
- * wiring alone is re-derivable). Rolling back IS an import of the backup file:
- * it restores the STORE contents -- profiles a later import created are not
- * deleted by it, since import never deletes profiles.
+ * Credentials included: a rollback without tokens is not a rollback, so the file stays in the
+ * same trust domain as the plaintext stores.
+ *
+ *   dir 0700, file 0600 where modes apply -> the tokens never widen past the stores
+ *   both stores empty                     -> null, nothing to roll back to and wiring re-derives
+ *   a rollback IS an import of the file   -> profiles a later import created survive it
  */
 export function writeSettingsBackup(): string | null {
   const bundle = buildExportBundle({ withCredentials: true });

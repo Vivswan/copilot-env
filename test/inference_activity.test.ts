@@ -30,7 +30,6 @@ function tmpHome(): void {
 }
 
 test("isInferenceRequest: inference POSTs only -- never GETs, pings, or model/count routes", () => {
-  // The proxy's inference endpoints, in bare / v1 / provider-prefixed route forms.
   expect(isInferenceRequest("POST", "/v1/messages")).toBe(true);
   expect(isInferenceRequest("POST", "/v1/responses")).toBe(true);
   expect(isInferenceRequest("POST", "/v1/chat/completions")).toBe(true);
@@ -40,7 +39,7 @@ test("isInferenceRequest: inference POSTs only -- never GETs, pings, or model/co
   expect(isInferenceRequest("post", "/v1/messages")).toBe(true); // method case-insensitive
   expect(isInferenceRequest("POST", "/v1/messages/")).toBe(true); // trailing slash tolerated
 
-  // Search and image generation are usage too, in the same route forms.
+  // Search and image generation count as usage too.
   expect(isInferenceRequest("POST", "/alpha/search")).toBe(true);
   expect(isInferenceRequest("POST", "/v1/alpha/search")).toBe(true);
   expect(isInferenceRequest("POST", "/myprovider/alpha/search")).toBe(true);
@@ -78,11 +77,9 @@ test("markInference: memory always moves; the activity-file persist is throttled
   markInference(t0);
   expect(persistedInferenceMs()).toBe(t0);
 
-  // A mark inside the persist window updates memory only -- the file keeps the old value.
   markInference(t0 + 1000);
   expect(persistedInferenceMs()).toBe(t0);
 
-  // Past the window, the next mark persists again.
   markInference(t0 + PERSIST_INTERVAL_MS);
   expect(persistedInferenceMs()).toBe(t0 + PERSIST_INTERVAL_MS);
 
@@ -91,10 +88,9 @@ test("markInference: memory always moves; the activity-file persist is throttled
   expect(persistedInferenceMs()).toBe(0);
 });
 
-// Deno.serve takes the handler in three places. srvx's deno adapter uses the
-// (options, handler) form, but the observer must not silently stop marking if the proxy
-// stack ever moves to another -- and an argument list matching NONE of them must still
-// reach the real serve untouched (arity included), so the daemon serves either way.
+// srvx's deno adapter uses the (options, handler) form today; the other two shapes are covered so
+// a proxy stack move cannot silently stop marking. An argument list matching none of them must
+// reach the real serve untouched, arity included.
 test("observeServeArgs substitutes the handler in every Deno.serve calling shape", async () => {
   tmpHome(); // marking persists to the activity file -- keep it out of the real home
   const seen: string[] = [];
@@ -105,20 +101,17 @@ test("observeServeArgs substitutes the handler in every Deno.serve calling shape
   const post = (path: string): Request =>
     new Request(`http://127.0.0.1${path}`, { method: "POST" });
 
-  // serve(handler)
   const [wrappedOnly, ...noTail] = observeServeArgs([handler]);
   expect(noTail).toEqual([]); // arity preserved
   await (wrappedOnly as typeof handler)(post("/v1/messages"));
   expect(lastObservedInferenceMs()).toBeGreaterThan(0);
 
-  // serve(options, handler)
   resetInferenceActivityForTests();
   const twoArg = observeServeArgs([{ port: 0 }, handler]);
   expect(twoArg[0]).toEqual({ port: 0 }); // options relayed untouched
   await (twoArg[1] as typeof handler)(post("/v1/responses"));
   expect(lastObservedInferenceMs()).toBeGreaterThan(0);
 
-  // serve({ ...options, handler })
   resetInferenceActivityForTests();
   const [options] = observeServeArgs([{ port: 0, handler }]);
   const wrapped = (options as { handler: typeof handler }).handler;
@@ -126,17 +119,14 @@ test("observeServeArgs substitutes the handler in every Deno.serve calling shape
   await wrapped(post("/v1/chat/completions"));
   expect(lastObservedInferenceMs()).toBeGreaterThan(0);
 
-  // Every shape delegated to the real handler, in order, exactly once.
   expect(seen).toEqual(["/v1/messages", "/v1/responses", "/v1/chat/completions"]);
 
-  // An unrecognized shape passes through verbatim rather than being mangled.
   expect(observeServeArgs([42, "x"])).toEqual([42, "x"]);
   expect(observeServeArgs([])).toEqual([]);
 });
 
-// The observer must be exercised as a real preloaded subprocess (`--preload`, how
-// launchDaemon loads it): it patches the serve entrypoint before srvx runs, and the
-// target script shares the preloaded module instance, so it can read the in-memory mark.
+// A real `--preload` subprocess, as launchDaemon loads it: the patch must land before srvx runs.
+// The target shares the preloaded module instance, so it can read the in-memory mark.
 const TARGET_SCRIPT = `
 import { lastObservedInferenceMs, persistedInferenceMs } from ${
   importSpecifier(join(ROOT, "src", "scripts", "inference_activity.ts"))
@@ -170,20 +160,17 @@ test("the preloaded observer marks inference POSTs through a real Deno.serve, no
     persisted: number;
   };
   expect(out.body).toBe("ok"); // observation never broke serving
-  expect(out.afterGet).toBe(0); // GETs are not activity
-  expect(out.afterPost).toBeGreaterThanOrEqual(before); // the POST marked, in memory...
-  expect(out.persisted).toBe(out.afterPost); // ...and the first mark persisted to the file
+  expect(out.afterGet).toBe(0);
+  expect(out.afterPost).toBeGreaterThanOrEqual(before);
+  expect(out.persisted).toBe(out.afterPost); // the first mark persists immediately
 });
 
-// Drift alarm for the floated proxy stack: the observer intercepts the serve
-// entrypoint, which only works because srvx's runtime adapter looks it up AT SERVE
-// TIME (a preload-time patch is then seen). A release that captures the serve
-// function at import, drops srvx, or serves another way would silently stop
-// marking activity -- fail here instead. The check runs against the module srvx's
-// own exports map hands the daemon under the "deno" condition, not fixed paths.
+// Drift alarm: the observer wraps Deno.serve from a preload, and srvx's Deno adapter looks
+// Deno.serve up at serve time, so the wrapper is what serves. A release that drops srvx or
+// serves without Deno.serve would silently stop marking, so the check follows srvx's own
+// "deno" export condition, not fixed paths.
 test("the installed proxy still serves through srvx's call-time Deno.serve lookup", () => {
   const proxyDir = resolvePackageDir("@jeffreycao/copilot-api", ROOT);
-  // The proxy's start bundle must still serve through srvx at all.
   const startBundle = readdirSync(join(proxyDir, "dist")).find(
     (name) => name.startsWith("start-") && name.endsWith(".js"),
   );
@@ -191,8 +178,6 @@ test("the installed proxy still serves through srvx's call-time Deno.serve looku
   expect(readFileSync(join(proxyDir, "dist", startBundle as string), "utf8")).toContain(
     'from "srvx"',
   );
-  // The daemon loads srvx under deno, so the "deno" export condition names the
-  // exact adapter module it serves through. Scan it plus its one-level relative imports.
   const srvxDir = resolvePackageDir("srvx", proxyDir);
   const srvxPkg = JSON.parse(readFileSync(join(srvxDir, "package.json"), "utf8")) as {
     exports?: Record<string, { deno?: unknown }>;

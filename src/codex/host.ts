@@ -1,5 +1,5 @@
-// Per-host Codex home manager: the per-host CODEX_HOME symlink farm (Linux/macOS),
-// DERIVED from the `codex-host` config key by every default Codex wiring pass.
+// The per-host CODEX_HOME symlink farm (Linux/macOS), DERIVED from the `codex-host` config key by
+// every default Codex wiring pass.
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { homedir } from "node:os";
@@ -27,26 +27,23 @@ import { readCodexToml } from "./toml_io.ts";
 
 const logger = createStderrLogger();
 
-// The per-host CODEX_HOME (<farm root>/<hostname>), resolved absolute at its one
-// source: it is recorded, exported into shells, and removed by this path, so a
-// relative HOME must never make it cwd-dependent.
+// Resolved absolute at its one source: it is recorded, exported into shells, and removed by this
+// path, so a relative HOME must never make it cwd-dependent.
 export function getHostLocalCodexHome(): string {
   return path.resolve(codexFarmHostsDir(), getSanitizedHostname());
 }
 
-/** The per-host farm's state: what is on disk, and whether a wiring pass activated
- *  it (recorded it in run state AFTER its config write succeeded). */
+/** `active` is recorded in run state AFTER the config write succeeded. */
 export interface CodexHostFarm {
   hostHome: string;
   /** The farm directory exists (a half-built farm counts). */
   present: boolean;
-  /** Its config.toml selects OUR managed provider: proof the farm is copilot-env's (the
-   *  build's empty seed, a foreign config, or an unparseable one are all not wired). */
+  /** Its config.toml selects OUR managed provider: proof the farm is copilot-env's (the build's
+   *  empty seed, a foreign config, or an unparseable one are all not wired). */
   wired: boolean;
-  /** A probe (the dir, or its config.toml) failed for a reason other than absence, so
-   *  `present`/`wired` are unproven. */
+  /** A probe (the dir, or its config.toml) failed for a reason other than absence, so `present` and
+   *  `wired` are unproven. */
   probeError: string | null;
-  /** Run state records it as the active CODEX_HOME (the post-write commit marker). */
   active: boolean;
 }
 
@@ -67,8 +64,8 @@ function probeFarm(hostHome: string): Pick<CodexHostFarm, "present" | "wired" | 
     return { present: false, wired: false, probeError: isEnoentOrNotdir(e) ? null : errMessage(e) };
   }
   try {
-    // Wiring reached THROUGH a symlink (the home or its config.toml) is someone else's
-    // tree, never proof the farm is ours.
+    // Wiring reached THROUGH a symlink (the home or its config.toml) is someone else's tree, never
+    // proof the farm is ours.
     const configPath = codexConfigPath(hostHome);
     if (viaLink || (lexists(configPath) && isSymlinkPath(configPath))) {
       return { present: true, wired: false, probeError: null };
@@ -81,24 +78,21 @@ function probeFarm(hostHome: string): Pick<CodexHostFarm, "present" | "wired" | 
   }
 }
 
-// The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent env`
-// may clear it). Exact spelling on purpose: a trailing-slash variant is not ours.
+// The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent env` may clear it).
+// Exact spelling on purpose: a trailing-slash variant is not ours.
 export function isManagedFarmExport(envHome: string | undefined): boolean {
   return Boolean(envHome && envHome === getHostLocalCodexHome());
 }
 
-/**
- * The Codex home every default-selection read and write uses: the recorded farm
- * while its directory exists, else `$CODEX_HOME`, else `~/.codex`. A dead record
- * and OUR dead farm export are skipped: a write through either would resurrect
- * the removed farm as a plain dir.
- */
+/** The recorded farm while its directory exists, else `$CODEX_HOME`, else `~/.codex`. A dead record
+ *  and OUR dead farm export are skipped: a write through either would resurrect the removed farm as
+ *  a plain dir. */
 export function effectiveCodexHome(): string {
   return effectiveCodexHomeFor(codexHostEnabledOrOff());
 }
 
-/** effectiveCodexHome under a given key value: the settings-import plan resolves the
- *  POST-import home with the bundle's value before the store is replaced. */
+/** The settings-import plan resolves the POST-import home with the bundle's value before the store
+ *  is replaced. */
 export function effectiveCodexHomeFor(enabled: boolean): string {
   const recorded = new CopilotEnvRunState().read().codexHome;
   // The key off (or unset) retires the record at once; the next pass removes the farm.
@@ -106,8 +100,8 @@ export function effectiveCodexHomeFor(enabled: boolean): string {
   return unmanagedCodexHome();
 }
 
-/** The Codex home when no farm record applies: `$CODEX_HOME` unless it is OUR farm
- *  export (POSIX only; Windows never has a farm), else `~/.codex`. */
+/** `$CODEX_HOME` unless it is OUR farm export (POSIX only; Windows never has a farm), else
+ *  `~/.codex`. */
 export function unmanagedCodexHome(): string {
   if (process.platform !== "win32" && isManagedFarmExport(process.env.CODEX_HOME)) {
     return path.join(homedir(), ".codex");
@@ -115,14 +109,13 @@ export function unmanagedCodexHome(): string {
   return defaultCodexHome();
 }
 
-/** What ONE wiring pass does to the farm: the single decision the derivation
- *  (withCodexHostFarm) and the settings-import plan share. `leave` = something sits
- *  at the farm path that is not proven ours (no record, no managed wiring). */
+/** The single decision the derivation (withCodexHostFarm) and the settings-import plan share.
+ *  `leave` = something sits at the farm path that is not proven ours (no record, no managed
+ *  wiring). */
 export type CodexHostFarmPlan = { action: "build" | "verify" | "remove" | "leave" | "none" };
 
-/** Proof that what is on disk NOW is copilot-env's: our managed wiring in its
- *  config.toml. The activation record alone proves only that we built something there
- *  once; the user may have replaced it since, so it never authorizes a delete. */
+/** The activation record alone proves only that we built something there once; the user may have
+ *  replaced it since, so it never authorizes a delete. */
 export function isOurFarm(farm: CodexHostFarm): boolean {
   return farm.wired;
 }
@@ -135,13 +128,13 @@ export function planCodexHostFarm(
   if (platform === "win32") return { action: "none" };
   if (enabled) return { action: farm.present ? "verify" : "build" };
   if (!farm.present && farm.probeError === null) return { action: "none" };
-  // Never delete what we cannot prove is ours right now: a foreign dir, a symlink, a
-  // half-built leftover, an unprobeable path.
+  // Never delete what we cannot prove is ours right now: a foreign dir, a symlink, a half-built
+  // leftover, an unprobeable path.
   return isOurFarm(farm) ? { action: "remove" } : { action: "leave" };
 }
 
-/** The key read behind the effective-home rule only: this runs on every read path
- *  (`--check`, health, the wiring read-back), where an unreadable store must not throw. */
+/** Runs on every read path (`--check`, health, the wiring read-back), where an unreadable store
+ *  must not throw. */
 function codexHostEnabledOrOff(): boolean {
   try {
     return new CopilotEnvConfig().codexHostEnabled();
@@ -150,8 +143,8 @@ function codexHostEnabledOrOff(): boolean {
   }
 }
 
-/** The farm's disagreement with the `codex-host` key (each kind's line below says
- *  what the next wiring pass does about it), or null when they agree. */
+/** The farm's disagreement with the `codex-host` key (each kind's line says what the next wiring
+ *  pass does about it), or null when they agree. */
 export type CodexHostDrift = { kind: "missing" | "inactive" | "disabled"; hostHome: string };
 
 export function codexHostDrift(
@@ -162,8 +155,7 @@ export function codexHostDrift(
   return codexHostDriftFrom(config.codexHostEnabled(), codexHostFarm());
 }
 
-/** The pure decision behind codexHostDrift, over already-gathered facts (health
- *  probes them through its own seams). */
+/** Over already-gathered facts: health probes them through its own seams. */
 export function codexHostDriftFrom(enabled: boolean, farm: CodexHostFarm): CodexHostDrift | null {
   if (!enabled) return isOurFarm(farm) ? { kind: "disabled", hostHome: farm.hostHome } : null;
   if (!farm.wired) return { kind: "missing", hostHome: farm.hostHome };
@@ -183,9 +175,8 @@ export function codexHostDriftLine(drift: CodexHostDrift): string {
 }
 
 // --- small fs probes ---------------------------------------------------------
-// These answer "what is at this path right now?"; a stat/read failure means
-// "not that kind of thing", never an error. Mutating operations below are the
-// opposite: they throw, and the failure surfaces through the farm error.
+// A stat/read failure means "not that kind of thing", never an error. The mutating operations below
+// are the opposite: they throw, and the failure surfaces through the farm error.
 
 function lexists(p: string): boolean {
   try {
@@ -230,11 +221,10 @@ function isDirPath(p: string): boolean {
 }
 
 // --- fs operations that throw on failure --------------------------------------
-// Every mutation below goes through the reporting seam, which names the path it
-// changed (nothing hidden); what the farm did to it rides as the line's detail.
+// Every mutation goes through the reporting seam, which names the path it changed (nothing hidden);
+// what the farm did to it rides as the line's detail.
 
-// Every path under root, one level at a time, without descending into symlinked
-// directories (each level lists dirs before files).
+// Symlinked directories are not descended into; each level lists dirs before files.
 function listDescendants(root: string): string[] {
   const results: string[] = [];
   const stack: string[] = [root];
@@ -254,7 +244,7 @@ function listDescendants(root: string): string[] {
   return results;
 }
 
-// Merge-copy contents of localPath into sharedPath, preserving symlinks.
+// Symlinks are preserved as links.
 function mergeDirInto(localPath: string, sharedPath: string): void {
   const entries = fs.readdirSync(localPath, { withFileTypes: true });
   for (const entry of entries) {
@@ -276,7 +266,7 @@ function mergeDirInto(localPath: string, sharedPath: string): void {
   }
 }
 
-/** Recursive copy that names every entry it writes (symlinks copied as links). */
+/** Names every entry it writes; symlinks are copied as links. */
 function copyTree(src: string, dst: string): void {
   mkdirReported(dst);
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -305,13 +295,12 @@ function warnExistingCodexPath(p: string): void {
   logger.warn(`Leaving existing Codex path unchanged: ${p}`);
 }
 
-// "refused" is a normal outcome (the caller warns and moves on), not an error;
-// filesystem failures throw instead.
+// "refused" is a normal outcome (the caller warns and moves on), not an error; filesystem failures
+// throw instead.
 type PromoteResult = "promoted" | "refused";
 
-// Promote a host-local directory into the shared Codex root when it can be
-// merged without overwriting existing shared content; refuse (warning, local
-// dir left unchanged) when the contents conflict.
+// Refused (warning, local dir left unchanged) when the merge would overwrite existing shared
+// content.
 function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): PromoteResult {
   if (!lexists(sharedPath)) {
     ensureParentDir(sharedPath);
@@ -364,43 +353,40 @@ function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): P
 }
 
 function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
-  // Proven absence only: a look that failed (permissions, a blip) must not start a prime
-  // whose scan below would then name an existing tree as newly created.
+  // Proven absence only: a look that failed (permissions, a blip) must not start a prime whose scan
+  // below would then name an existing tree as newly created.
   try {
     fs.lstatSync(sharedRoot);
     return;
   } catch (e) {
     if (!isEnoentOrNotdir(e)) return;
   }
-  // resolveCommand, not a bare PATH lookup: its nvm fallback also finds an
-  // nvm-only codex, and spawning the RESOLVED path below keeps the prime
-  // working even though this process never sourced nvm.sh.
+  // resolveCommand's nvm fallback also finds an nvm-only codex, and spawning the RESOLVED path
+  // keeps the prime working even though this process never sourced nvm.sh.
   const codexBin = resolveCommand("codex");
   if (codexBin === null) return;
 
-  // Best effort: let Codex create the shared home before we seed and symlink into
-  // it. CODEX_HOME is set to that root explicitly: an inherited value (our own farm
-  // export) would send codex's writes elsewhere, and the scan below covers exactly the
-  // home the spawn was given. Timeout prevents a misconfigured codex from blocking.
-  // spawnSync reports failures (a nonzero exit, ENOENT, the timeout) in its result
-  // rather than throwing, and the result is ignored on purpose: the prime is a
-  // convenience, never a build failure.
+  // Codex itself creates the shared home before we seed and symlink into it. The prime is a
+  // convenience, never a build failure, so spawnSync's result (a nonzero exit, ENOENT, and the
+  // timeout land there; none throw) is ignored on purpose.
+  //   CODEX_HOME set explicitly -> an inherited value (our own farm export) would send codex's
+  //                                writes elsewhere; the scan below covers exactly the home given
   spawnSync(codexBin, ["exec"], {
     input: "hi\n",
     stdio: ["pipe", "ignore", "ignore"],
     timeout: 10_000,
     env: { ...process.env, CODEX_HOME: sharedRoot },
   });
-  // The root was absent, so everything under it now is what the prime made: a write
-  // asked for by us, named by us. Judged by lstat: a root that came back as a symlink
-  // is named as the one entry it is, never walked into.
+  // The root was absent, so everything under it now is what the prime made: a write asked for by
+  // us, named by us. A root that came back as a symlink is named as the one entry it is, never
+  // walked into.
   if (!lexists(sharedRoot)) return;
   reportWrite("created", sharedRoot);
   if (isDirPath(sharedRoot) && !isSymlinkPath(sharedRoot)) reportTreeCreated(sharedRoot);
 }
 
-/** Name every entry under `dir` (a real directory) as created, dirs before files, one
- *  level at a time; a level that cannot be listed leaves only its own entries unnamed. */
+/** Each level names all its entries in readdir order, then recurses into its directories; a level
+ *  that cannot be listed leaves its whole subtree unnamed. */
 function reportTreeCreated(dir: string): void {
   let entries: fs.Dirent[];
   try {
@@ -441,10 +427,9 @@ function seedLocalCodexFileIfMissing(
   }
 }
 
-// Shared desktop state files need a one-time promotion path from host-local
-// CODEX_HOME into ~/.codex so existing installs keep their saved projects.
-// With `createPlaceholder`, a missing shared file is created empty; without it
-// the shared file only appears when a host-local copy exists to promote.
+// Shared desktop state files need a one-time promotion from the host-local CODEX_HOME into ~/.codex
+// so existing installs keep their saved projects. Without `createPlaceholder` the shared file only
+// appears when a host-local copy exists to promote.
 function seedSharedCodexFileIfMissing(
   sharedPath: string,
   localPath: string,
@@ -494,8 +479,8 @@ function ensureCodexDirSymlink(localPath: string, sharedPath: string): void {
   }
 }
 
-// After the shared file is seeded, replace a matching host-local copy with a
-// symlink so future desktop updates read and write the same shared state.
+// A host-local copy identical to the seeded shared file becomes a symlink, so future desktop
+// updates read and write the same shared state.
 function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
   if (isSymlinkPath(localPath)) {
     if (readlinkOrEmpty(localPath) !== sharedPath) warnExistingCodexPath(localPath);
@@ -518,8 +503,8 @@ function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
 }
 
 // --- the farm layout, as data ------------------------------------------------
-// Every entry name is an on-disk contract with the Codex desktop app: renaming
-// one is a layout change, not a refactor.
+// Every entry name is an on-disk contract with the Codex desktop app: renaming one is a layout
+// change, not a refactor.
 
 // Host-local scratch: real directories, never shared or symlinked.
 const HOST_LOCAL_DIRS = [
@@ -528,20 +513,18 @@ const HOST_LOCAL_DIRS = [
   "tmp", // Host-local transient working files.
 ];
 
-// Host-local files seeded once from the shared root (or empty, with `placeholder`),
-// then owned by the host; `role` is what the seed's write line calls the file. The
-// default config write that follows every build rewrites config.toml, silently when the
-// seed already named it (the seam names a path once per process), so the seed's line
-// calls it what it is; it gets no empty placeholder, so a fresh farm's config.toml is
-// named by that config write instead.
+// Seeded once from the shared root (or empty, with `placeholder`), then owned by the host; `role`
+// is what the seed's write line calls the file. config.toml gets no placeholder: the default config
+// write that follows every build rewrites it, silently when the seed already named it (the seam
+// names a path once per process), so a fresh farm's config.toml is named by that write instead.
 const HOST_LOCAL_SEED_FILES = [
   { name: ".personality_migration", placeholder: true, role: "host-local seed" },
   { name: "config.toml", placeholder: false, role: "Codex config" },
   { name: "history.jsonl", placeholder: true, role: "host-local seed" },
 ];
 
-// Shared directories: a real directory at the shared root, symlinked from the
-// host home (host-local content is promoted into the shared copy when safe).
+// A real directory at the shared root, symlinked from the host home (host-local content is promoted
+// into the shared copy when safe).
 const SHARED_DIRS = [
   "ambient-suggestions", // Background suggestion state surfaced by Codex.
   "archived_sessions", // Older conversation transcripts kept by the desktop app.
@@ -556,9 +539,9 @@ const SHARED_DIRS = [
   "worktrees", // Shared worktree metadata used across checkouts.
 ];
 
-// Shared files: seeded at the shared root, symlinked from the host home.
-// `placeholder: false` marks state only worth syncing when a host already has
-// it, so no empty shared file is fabricated (the host symlink dangles).
+// Seeded at the shared root, symlinked from the host home. `placeholder: false` marks state only
+// worth syncing when a host already has it, so no empty shared file is fabricated (the host symlink
+// dangles).
 const SHARED_FILES: readonly { name: string; placeholder: boolean }[] = [
   { name: ".codex-global-state.json", placeholder: true }, // Desktop workspace and project state.
   { name: "AGENTS.md", placeholder: true }, // Shared agent instructions exposed inside Codex home.
@@ -569,9 +552,9 @@ const SHARED_FILES: readonly { name: string; placeholder: boolean }[] = [
 ];
 
 function buildCodexSymlinkFarm(codexHome: string): void {
-  // Both halves from the ONE resolved host path (<shared root>/hosts/<host>): a shared
-  // root spelled relative would make every symlink target relative to the link's own
-  // directory, pointing back inside the farm.
+  // Both halves from the ONE resolved host path (<shared root>/hosts/<host>): a shared root spelled
+  // relative would make every symlink target relative to the link's own directory, pointing back
+  // inside the farm.
   const sharedRoot = path.dirname(path.dirname(codexHome));
   primeSharedCodexHomeIfMissing(sharedRoot);
   mkdirReported(sharedRoot);
@@ -605,9 +588,9 @@ function buildCodexSymlinkFarm(codexHome: string): void {
   }
 }
 
-/** Run ONE default Codex config write with the farm derived from the `codex-host`
- *  key around it (planCodexHostFarm decides). The activation record lands only AFTER a
- *  successful write, and is cleared BEFORE a rebuild, so it never outlives a proven farm. */
+/** ONE default Codex config write with the farm derived from the `codex-host` key around it
+ *  (planCodexHostFarm decides). The activation record lands only AFTER a successful write and is
+ *  cleared BEFORE a rebuild, so it never outlives a proven farm. */
 export async function withCodexHostFarm(
   write: (codexHome: string) => Promise<void>,
 ): Promise<void> {
@@ -620,14 +603,12 @@ export async function withCodexHostFarm(
   switch (plan.action) {
     case "build":
     case "verify": {
-      // Cleared here and re-recorded after the write below, so the record never
-      // outlives a proven farm.
       if (farm.active) state.set({ codexHome: null });
       try {
         buildCodexSymlinkFarm(farm.hostHome);
       } catch (e: unknown) {
-        // The one terminal handler for farm filesystem failures; the cause message
-        // names the failing operation and path.
+        // The one terminal handler for farm filesystem failures; the cause names the failing
+        // operation and path.
         throw new Error(
           `Failed to build the CODEX_HOME symlink farm at ${farm.hostHome}: ${errMessage(e)}`,
           { cause: e },
@@ -659,18 +640,15 @@ export async function withCodexHostFarm(
   await write(effectiveCodexHome());
 }
 
-/** Every Codex home that may hold per-home state (config.toml, sessions): the
- *  active home (run state / CODEX_HOME env), the default ~/.codex, and each
- *  per-host symlink-farm home, enumerated through the farm layout's owner
- *  (codexFarmHostsDir in src/utils/hostname.ts). `complete` is false when the
- *  farm directory exists but cannot be enumerated -- unseen homes may still
- *  hold state. */
+/** The active home (run state / CODEX_HOME env), the default ~/.codex, and each per-host farm home,
+ *  enumerated through the layout's owner (codexFarmHostsDir, src/utils/hostname.ts). `complete` is
+ *  false when the farm directory exists but cannot be enumerated: unseen homes may still hold
+ *  state. */
 export function knownCodexHomes(): { homes: string[]; complete: boolean } {
   const homes = new Set<string>([effectiveCodexHome()]);
-  // The default home resolves via homedir() (the effectiveCodexHome contract);
-  // the farm root via its creator's contract (codexFarmHostsDir on homeDir,
-  // process.env.HOME first). They usually agree, but can differ (e.g. HOME set
-  // on Windows), so sweep BOTH -- the Set dedupes the common case.
+  // The default home resolves via homedir(); the farm root via its creator's contract
+  // (codexFarmHostsDir on homeDir, process.env.HOME first). They can differ (HOME set on Windows),
+  // so BOTH are swept; the Set dedupes the common case.
   homes.add(path.join(homedir(), ".codex"));
   const hostsDir = codexFarmHostsDir();
   homes.add(path.dirname(hostsDir));
@@ -680,9 +658,8 @@ export function knownCodexHomes(): { homes: string[]; complete: boolean } {
       if (entry.isDirectory()) homes.add(path.join(hostsDir, entry.name));
     }
   } catch (e) {
-    // No farm directory (ENOENT/ENOTDIR): the two base homes cover everything.
-    // Any OTHER failure (EACCES, I/O) hides farm homes that may hold state,
-    // so the sweep is incomplete.
+    // No farm directory: the two base homes cover everything. Any OTHER failure (EACCES, I/O) hides
+    // farm homes that may hold state.
     if (isRecord(e) && !isEnoentOrNotdir(e)) complete = false;
   }
   return { homes: [...homes], complete };

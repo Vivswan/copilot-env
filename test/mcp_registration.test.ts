@@ -30,8 +30,6 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-// The registration lives in CLAUDE_CONFIG_DIR's .claude.json; point it at the temp
-// dir itself (no other homes involved).
 function tmpConfigDir(): string {
   dir = tempDir("copilot-mcpreg-");
   process.env.CLAUDE_CONFIG_DIR = dir;
@@ -42,8 +40,6 @@ function readDoc(): Record<string, unknown> {
   return JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<string, unknown>;
 }
 
-/** The same entry after the checkout moved: on POSIX the command is the launcher
- *  path; on Windows it is the -File argument inside the argv. */
 function movedCheckout(entry: Record<string, unknown>): Record<string, unknown> {
   return process.platform === "win32"
     ? {
@@ -73,7 +69,6 @@ test("a wiring pass that cannot see gh keeps a recorded PATH env instead of drop
   const env = { PATH: `/somewhere/bin${delimiter}\${PATH}` };
   const recorded = { "type": "stdio", "command": command, "args": args, env };
   expect(classifyMcpEntry(recorded, null)).toBe("ours-current");
-  // A moved checkout is still stale, and its rewrite carries the env over.
   const moved = movedCheckout(recorded);
   expect(classifyMcpEntry(moved, null)).toBe("ours-stale");
   writeFileSync(
@@ -252,9 +247,7 @@ test("a bare `agent` from someone's PATH is foreign, not ours-stale", () => {
 test("malformed launcher argvs are foreign, never reclaimed", () => {
   const managed = managedEntry();
   const args = managed.args as string[];
-  // Extra trailing argument after the known subargs.
   expect(classifyMcpEntry({ ...managed, "args": [...args, "extra"] })).toBe("foreign");
-  // Truncated argv (the subargs are gone entirely).
   expect(classifyMcpEntry({ ...managed, "args": args.slice(0, -2) })).toBe("foreign");
   // Our launcher shape running some OTHER subcommand is not a registration of ours.
   const otherSubargs = args.map((a) => (a === "--serve" ? "--verbose" : a));
@@ -264,7 +257,6 @@ test("malformed launcher argvs are foreign, never reclaimed", () => {
     // Missing script path: -File runs straight into the subargs.
     const missingPath = [...args.slice(0, fileIdx + 1), ...args.slice(fileIdx + 2)];
     expect(classifyMcpEntry({ ...managed, "args": missingPath })).toBe("foreign");
-    // A mutated flag prefix is not our launcher shape.
     const mutatedPrefix = args.map((a) => (a === "-NoProfile" ? "-Profile" : a));
     expect(classifyMcpEntry({ ...managed, "args": mutatedPrefix })).toBe("foreign");
   }
@@ -297,8 +289,7 @@ test.skipIf(process.platform === "win32")(
     expect(inspectMcpRegistration()).toEqual({ path: claudeJsonPath(), status: "unreadable" });
     expect(registerClaudeMcpServer()).toBe(false);
     expect(removeClaudeMcpRegistration()).toBe(false);
-    // Never clobbered: still the same link to the same place (not replaced by
-    // a plain file), and nothing materialized at its target.
+    // Still the same link to the same place, and nothing materialized at its target.
     expect(lstatSync(claudeJsonPath()).isSymbolicLink()).toBe(true);
     expect(readlinkSync(claudeJsonPath())).toBe(target);
     expect(existsSync(target)).toBe(false);

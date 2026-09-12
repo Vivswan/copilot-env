@@ -2,12 +2,8 @@ import { parseClaudeAction, parseCodexAction } from "../src/agents/configure.ts"
 import { parseModeFlags } from "../src/agents/provider_mode.ts";
 import { expect, test } from "./helpers/testing.ts";
 
-// The CLI boundary (src/cli.ts) parses --direct/--proxy ONCE into the
-// RequestedMode union via parseModeFlags; the contradictory pair is rejected
-// right there, so the internal arg shapes (InitArgs, ModelsArgs, ProfileArgs,
-// CodexConfigArgs, ClaudeConfigArgs) cannot represent it at all.
-// The end-to-end `agent init --direct --proxy` rejection is pinned in
-// cli.smoke.test.ts; this pins the parse itself.
+// src/cli.ts parses --direct/--proxy once through parseModeFlags, so no internal arg shape can hold
+// the contradictory pair. The end-to-end rejection is pinned in cli.smoke.test.ts.
 
 test("parseModeFlags: --direct and --proxy are mutually exclusive", () => {
   expect(parseModeFlags({})).toBe("auto");
@@ -25,10 +21,8 @@ test("parseModeFlags: a command can keep its own rejection wording (profile)", (
   expect(parseModeFlags({ direct: true }, message)).toBe("direct");
 });
 
-// The `agent codex`/`agent claude` flag bags parse ONCE into per-command action
-// unions (src/agents/configure.ts), so a combination the old if-chain resolved
-// by routing order (`--check --direct` ran the check and dropped the mode,
-// `--mobile --check` ran mobile) is a rejection instead.
+// The flag bags parse once into action unions (src/agents/configure.ts), so a combination that
+// routing order once resolved silently (`--check --direct` ran the check and dropped the mode) is a rejection.
 
 test("parseCodexAction: each single-intent invocation maps to its own arm", () => {
   expect(parseCodexAction({ mode: "auto" })).toEqual({ kind: "configure", mode: "auto" });

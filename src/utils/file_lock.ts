@@ -1,22 +1,12 @@
-// Shared cross-process advisory file lock (the JSON-store update() serialization, the
-// `agent start` critical section, the device-flow login mutex, the autoupdate preflight).
-// Mutual exclusion is carried by an OS advisory lock (flock/LockFileEx via
-// Deno.FsFile.tryLockSync), which a crashed holder releases automatically. The pid+ts MARKER
-// the lock file carries is the lock's observable on-disk contract: a release that predates
-// the OS lock judges liveness by the marker alone (and can still rename-steal a live lock it
-// judges stale by age), and the marker is how a lock such a marker-only writer left behind is
-// judged stale and taken over. Among current-version processes exclusion is exact.
+// Exclusion is the OS advisory lock (flock/LockFileEx via Deno.FsFile.tryLockSync), which a crashed
+// holder releases automatically. The pid+ts marker in the lock file is the on-disk contract a
+// release predating the OS lock judges liveness by (and may rename-steal by age), so it is still
+// written and honored.
 //
-// The OS lock is held on a SIDECAR file (`<lock>.oslock`), never on the marker file itself:
-// on Windows an exclusive LockFileEx blocks reads and writes from every OTHER handle, so
-// locking the marker would make it unreadable to exactly the readers whose contract it is.
-// The sidecar is created on demand and NEVER unlinked -- a lock file that can be deleted can
-// be locked as an orphan inode by a contender that opened it just before the holder released
-// the path, and a permanent sidecar makes that race unrepresentable.
-//
-// `tryAcquireFileLock` makes ONE attempt; the scoped `withFileLock`/`withFileLockSync` own
-// the wait loop (parameterized per caller by a LockPolicy) and pair every acquisition with
-// exactly one release in their own finally.
+// The OS lock is held on a sidecar (`<lock>.oslock`), never on the marker file: on Windows an
+// exclusive LockFileEx blocks reads from every other handle, which would blind exactly the readers
+// whose contract the marker is. The sidecar is never unlinked: a deletable lock file can be locked
+// as an orphan inode by a contender that opened it just before the holder released the path.
 import { linkSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
@@ -28,19 +18,14 @@ import { sleepSync } from "./time.ts";
 
 // --- the shared bounded-wait acquisition policy --------------------------------
 //
-// ONE stale/wait/retry contract for every millisecond-scale SYNC read-modify-write
-// (the JSON store's update() serialization and the profile-port reservation): a
-// lock whose holder pid is dead -- or older than LOCK_STALE_MS -- is reclaimed,
-// and after a bounded LOCK_WAIT_MS wait the caller proceeds WITHOUT the lock
-// rather than deadlock a command. Since a real critical section is milliseconds,
-// a live holder is never seen stale and the wait effectively never expires -- the
-// backstops only ever reclaim a crashed/leaked lock.
+// For every millisecond-scale SYNC read-modify-write: after the bounded wait the caller proceeds
+// WITHOUT the lock rather than deadlock a command. A real critical section is milliseconds, so a
+// live holder is never seen stale; the backstops only ever reclaim a crashed or leaked lock.
 const LOCK_STALE_MS = 10_000;
 const LOCK_WAIT_MS = 4_000;
 const LOCK_RETRY_MS = 15;
 
-/** Read a lock file's raw marker by path, or null if absent/unreadable. Only for a lock we
- *  do NOT hold: our own held lock's marker is the `#raw` HeldFileLock remembers, never a
+/** Only for a lock we do NOT hold: our own marker is the `#raw` HeldFileLock remembers, never a
  *  fresh disk read, because a rename-steal can put a successor's marker at the path. */
 function readLockRaw(lockPath: string): string | null {
   return readTextOrNull(lockPath);
@@ -51,21 +36,16 @@ interface LockMarker {
   ts: number;
 }
 
-/** Per-lock knobs for `tryAcquireFileLock`. */
 export interface FileLockOptions {
-  /** The clock used both for the marker written and the age judgment (default Date.now()),
-   *  injectable so a caller with an injected clock stays deterministic under test. */
+  /** One clock for the marker written and the age judgment, so an injected clock stays
+   *  deterministic. */
   nowMs?: number;
-  /** Write the marker as JSON `{pid,ts}` instead of the native `${pid}\n${ts}\n`. This is the
-   *  autoupdate lock's on-disk contract: pre-unification releases both wrote and PARSED only
-   *  that form, so keeping it means a not-yet-updated reader still recognizes a live holder
-   *  during the in-place upgrade window instead of misjudging the lock malformed and stealing
-   *  it. Readers here always accept BOTH formats regardless of this flag. */
+  /** The autoupdate lock's on-disk contract: a not-yet-updated reader parses only the JSON form,
+   *  and must still recognize a live holder during the upgrade window instead of stealing the lock
+   *  as malformed. */
   jsonMarker?: boolean;
 }
 
-/** Parse a lock marker: the native `${pid}\n${ts}\n` form, or the JSON `{pid,ts}` form written
- *  under `jsonMarker`. Null = malformed. */
 function parseMarker(raw: string): LockMarker | null {
   const [pidStr, tsStr] = raw.split("\n");
   const pid = Number.parseInt(pidStr ?? "", 10);
@@ -89,8 +69,6 @@ function parseMarker(raw: string): LockMarker | null {
   return null;
 }
 
-/** Whether a raw lock marker is stale: malformed, its holder pid is dead, or (finite staleMs
- *  only) older than staleMs as of `nowMs`. */
 function markerStale(raw: string, staleMs: number, nowMs: number): boolean {
   const marker = parseMarker(raw);
   if (marker === null) return true;
@@ -98,17 +76,14 @@ function markerStale(raw: string, staleMs: number, nowMs: number): boolean {
   return Number.isFinite(staleMs) && nowMs - marker.ts > staleMs;
 }
 
-/** Render the marker in the format `opts.jsonMarker` selects. */
 function renderMarker(nowMs: number, jsonMarker: boolean): string {
   return jsonMarker
     ? JSON.stringify({ pid: process.pid, ts: nowMs })
     : `${process.pid}\n${nowMs}\n`;
 }
 
-/** A lock held by THIS process: the OS-locked SIDECAR handle plus the marker we last WROTE.
- *  `#raw` is what we wrote, NOT a claim about what is on disk -- another release can
- *  rename-steal the path, which is precisely what releaseFileLock checks for. Private so our
- *  own record cannot drift: refresh() adopts a marker only after writing it. */
+/** `#raw` is what we WROTE, not a claim about what is on disk: another release can rename-steal the
+ *  path, which is precisely what releaseFileLock checks for. */
 class HeldFileLock implements Disposable {
   #raw: string;
 
@@ -120,36 +95,32 @@ class HeldFileLock implements Disposable {
     this.#raw = raw;
   }
 
-  /** Whether the marker WE last wrote reads stale under `staleMs`, judged at `nowMs`. */
   isStale(staleMs: number, nowMs: number): boolean {
     return markerStale(this.#raw, staleMs, nowMs);
   }
 
-  /** Re-stamp the lock: write `marker`, then adopt it. False = the write threw, so we keep
-   *  remembering the previous one (the file itself may be torn; the next by-path read judges). */
+  /** False = the write threw, so the previous marker stays remembered; the file itself may be torn.
+   */
   refresh(marker: string): boolean {
     if (!writeMarker(this.path, marker)) return false;
     this.#raw = marker;
     return true;
   }
 
-  /** Releases the OS lock and closes the handle. Does NOT delete the marker file (that is
-   *  releaseFileLock's marker-verified job) and never the sidecar. */
+  /** Does NOT delete the marker file (releaseFileLock's marker-verified job) and never the sidecar.
+   */
   [Symbol.dispose](): void {
     dropHandle(this.file);
   }
 }
 
-/** The locks THIS process currently holds, by lock path. The OS lock is per open handle, so
- *  the handle must stay open for the lock's lifetime; release finds it here. */
+/** The OS lock is per open handle, so the handle must stay open for the lock's lifetime. */
 const HELD_LOCKS = new Map<string, HeldFileLock>();
 
-/** The sidecar carrying the OS lock for `lockPath`. */
 function osLockPath(lockPath: string): string {
   return `${lockPath}.oslock`;
 }
 
-/** Unlock and close a sidecar handle we are not keeping. */
 function dropHandle(file: Deno.FsFile): void {
   try {
     file.unlockSync();
@@ -163,8 +134,7 @@ function dropHandle(file: Deno.FsFile): void {
   }
 }
 
-/** What a by-path read of the marker file found. `absent` is a free lock; `unreadable` is a
- *  marker we cannot judge, and therefore one we never steal. */
+/** `unreadable` is a marker we cannot judge, and therefore one we never steal. */
 type MarkerRead =
   | { kind: "absent" }
   | { kind: "unreadable" }
@@ -178,7 +148,6 @@ function readMarker(lockPath: string): MarkerRead {
   }
 }
 
-/** Replace the marker file's content. False on any I/O error. */
 function writeMarker(lockPath: string, text: string): boolean {
   try {
     writeFileSync(lockPath, text);
@@ -188,16 +157,12 @@ function writeMarker(lockPath: string, text: string): boolean {
   }
 }
 
-/**
- * One attempt to take the lock: OS-lock the sidecar, then honor a non-stale marker left by a
- * writer the OS lock cannot see (a pre-OS-lock release, or a test-planted marker) by backing
- * off. Returns whether the lock is now held by us. Re-attempting a lock this process already
- * holds returns false while the marker is fresh, and refreshes the marker in place (returning
- * true) once it has aged past `staleMs` -- the same outcome the marker-only protocol produced.
+/** A primitive: production code scopes lock lifetimes through withFileLock/withFileLockSync, bar
+ *  src/scripts/daemon_lock.ts, and this stays exported for the on-disk contract tests.
  *
- * A PRIMITIVE: production code scopes lock lifetimes through withFileLock/withFileLockSync
- * below; this stays exported for the on-disk contract tests.
- */
+ *  fresh marker the OS lock cannot see (a pre-OS-lock release, a test plant) -> back off
+ *  our own hold, marker still fresh                                         -> false
+ *  our own hold, marker aged past staleMs                                   -> refreshed, true */
 export function tryAcquireFileLock(
   lockPath: string,
   staleMs: number,
@@ -240,10 +205,9 @@ export function tryAcquireFileLock(
   }
 }
 
-/** What a non-mutating holder probe observed at a lock path. `held`/`free` carry the
- *  marker's pid -- the holder's (`held`) or the LAST holder's (`free`) -- so a consumer
- *  can tie the verdict to a specific pid; `absent` means no marker file exists, so no
- *  lock-aware writer ever ran here; `unknown` is an unreadable marker or a failed probe. */
+/** `markerPid` is the holder's (`held`) or the LAST holder's (`free`), so a consumer can tie the
+ *  verdict to a specific pid; `absent` means no marker file is there NOW, which a completed
+ *  release also leaves behind. */
 export type FileLockProbe =
   | { readonly kind: "held"; readonly markerPid: number | null }
   | { readonly kind: "free"; readonly markerPid: number | null }
@@ -253,29 +217,21 @@ export type FileLockProbe =
 const PROBE_ABSENT: FileLockProbe = Object.freeze({ kind: "absent" });
 const PROBE_UNKNOWN: FileLockProbe = Object.freeze({ kind: "unknown" });
 
-/**
- * Probe whether `lockPath`'s OS lock is currently held, WITHOUT taking the lock over:
- * the sidecar is try-locked SHARED and, when that succeeds, immediately unlocked again,
- * and the marker file is only read, never written or deleted. For a lock whose holder
- * keeps it for its whole process lifetime (the daemon liveness lock), held-ness IS
- * liveness -- enforced by the OS, immune to pid reuse, and released at process death with
- * no unlock code running (SIGKILL included).
- */
+/** Non-mutating: the sidecar is try-locked SHARED and unlocked at once, and the marker is only
+ *  read. */
 export function probeFileLock(lockPath: string): FileLockProbe {
   const observed = readMarker(lockPath);
   if (observed.kind === "unreadable") return PROBE_UNKNOWN;
   const pid = observed.kind === "present" ? markerPid(observed.raw) : null;
-  // Our own held lock: the OS may report a second same-process attempt either way, so
-  // answer from the process-local record instead of racing our own handle.
+  // The OS may report a second same-process attempt either way, so our own lock answers from the
+  // record.
   if (HELD_LOCKS.has(lockPath)) return Object.freeze({ kind: "held", markerPid: pid });
   const lockState = observeOsLock(lockPath);
   if (lockState === "unknown") return PROBE_UNKNOWN;
-  // The marker is read BEFORE and AFTER the lock observation and must agree, or the probe
-  // reports `unknown`: a holder change mid-probe (the old holder died and a successor
-  // acquired) would otherwise pair the previous holder's pid with the successor's lock
-  // state -- a verdict about the wrong process. The one residual window is a successor
-  // between its lock and its marker write while both reads still see the old marker; a
-  // sub-millisecond misread that the next probe corrects.
+  // The marker must read the same BEFORE and AFTER the lock observation, or a holder change
+  // mid-probe would pair the previous holder's pid with the successor's lock state. The residual
+  // window (a successor between its lock and its marker write) is a sub-millisecond misread the
+  // next probe corrects.
   const reread = readMarker(lockPath);
   if (reread.kind !== observed.kind) return PROBE_UNKNOWN;
   if (observed.kind === "present" && reread.kind === "present" && reread.raw !== observed.raw) {
@@ -287,13 +243,10 @@ export function probeFileLock(lockPath: string): FileLockProbe {
     : PROBE_ABSENT;
 }
 
-/** Whether `lockPath`'s sidecar OS lock is exclusively held right now. `free` includes a
- *  missing sidecar (no sidecar -> no OS lock can be held). The SHARED try-lock is what
- *  keeps probes honest about each other: any number of concurrent probes coexist without
- *  ever reading one another as a holder, and only a real holder's EXCLUSIVE lock reports
- *  `held`. A prober's momentary shared hold can still make an exclusive acquirer's single
- *  attempt fail, which is why acquirers contending with probes retry rather than judging
- *  one failed attempt final. */
+/** The SHARED try-lock lets any number of concurrent probes coexist without reading one another as
+ *  a holder; only a real holder's EXCLUSIVE lock reports `held`. A prober's momentary shared hold
+ *  can still fail an exclusive acquirer's single attempt, which is why acquirers contending with
+ *  probes retry. */
 function observeOsLock(lockPath: string): "held" | "free" | "unknown" {
   let file: Deno.FsFile;
   try {
@@ -302,7 +255,6 @@ function observeOsLock(lockPath: string): "held" | "free" | "unknown" {
     return isEnoentOrNotdir(e) ? "free" : "unknown";
   }
   try {
-    // Shared-locked only to observe: dropHandle below releases it, marker untouched.
     return file.tryLockSync(false) ? "free" : "held";
   } catch {
     return "unknown";
@@ -311,15 +263,11 @@ function observeOsLock(lockPath: string): "held" | "free" | "unknown" {
   }
 }
 
-/**
- * The identity-verified steal of the marker-only protocol: renameSync the lock aside and
- * confirm the yanked marker MATCHES the stale one the caller observed; if a FRESH holder
- * replaced it between the caller's read and the rename, restore it via linkSync (which fails
- * rather than clobbering a lock a third process may have made) and do NOT steal. The
- * sidecar-lock acquire path above no longer needs this dance, but it remains the documented
- * takeover contract old-release processes still execute against our markers, so its restore
- * behavior stays pinned (and tested) here.
- */
+/** The marker-only protocol's identity-verified steal: a FRESH holder that replaced the marker
+ *  between the caller's read and the rename is restored via linkSync (which fails rather than
+ *  clobber a third process's lock). The sidecar acquire path no longer needs it; it stays as the
+ *  takeover contract old-release processes execute against our markers, pinned by
+ *  test/file_lock.test.ts. */
 export function reclaimStaleLock(lockPath: string, observed: string): void {
   const claimed = `${lockPath}.steal.${process.pid}.${Date.now()}`;
   let yanked: string | null = null;
@@ -351,9 +299,8 @@ export function reclaimStaleLock(lockPath: string, observed: string): void {
   }
 }
 
-/** The holder pid of a raw marker, parsed LENIENTLY from either format (ts ignored). Release
- *  needs only the identity: a holder must still be able to delete its own marker even if the
- *  ts half got corrupted. Null when no pid can be read. */
+/** Lenient on purpose (ts ignored): a holder must still be able to delete its own marker even if
+ *  the ts half got corrupted. */
 function markerPid(raw: string): number | null {
   const pid = Number.parseInt(raw.split("\n")[0] ?? "", 10);
   if (!Number.isNaN(pid) && pid > 0) return pid;
@@ -373,13 +320,10 @@ function markerPid(raw: string): number | null {
   return null;
 }
 
-/** Release the lock: delete the marker file, but only while it is still OURS (pid marker
- *  matches) -- never a successor's, which an old-release rename-steal may have put at the
- *  path. The OS lock drops after, when the sidecar handle closes; the sidecar file itself
- *  stays (see the orphan-inode note in the header). A PRIMITIVE like tryAcquireFileLock:
- *  production releases happen inside withFileLock/withFileLockSync -- a primitive release
- *  of a SCOPE-held path is refused outright, because it would strand the scope accounting
- *  (SCOPE_HOLDS) and let the scope's own exit release a lock a later acquirer holds. */
+/** The marker is deleted only while still OURS, never a successor's that a rename-steal put at the
+ *  path; the sidecar stays (the orphan-inode note in the header). A release of a SCOPE-held path is
+ *  refused: it would strand SCOPE_HOLDS and let the scope's own exit release a lock a later
+ *  acquirer holds. */
 export function releaseFileLock(lockPath: string): void {
   if (SCOPE_HOLDS.has(lockPath)) {
     throw new Error(
@@ -404,59 +348,50 @@ export function releaseFileLock(lockPath: string): void {
 
 // --- the scoped lock API --------------------------------------------------------
 //
-// Production code takes a lock only through withFileLock / withFileLockSync: the
-// acquisition wait, the critical section, and the release live in ONE scope, so no
-// call site can leak a lock across an early return or a throw.
+// Production takes a lock through these: wait, critical section, and release live in one scope, so
+// no call site can leak a lock across an early return or a throw. src/scripts/daemon_lock.ts is the
+// one exception, holding the primitive's lock until the process dies.
 
 declare const heldLockBrand: unique symbol;
 
-/** Evidence that a scoped lock is held for the duration of the caller's fn. Only the
- *  held branch of withFileLock/withFileLockSync mints one, so an API that demands lock
- *  evidence cannot be called without a lock scope. A domain that needs to name WHICH
- *  lock re-brands it (see HeldUpdateLock in src/autoupdate/lock.ts). */
+/** Only the held branch of withFileLock/withFileLockSync mints one, so an API that demands lock
+ *  evidence cannot be called without a lock scope. A domain that needs to name WHICH lock
+ *  re-brands it (HeldUpdateLock, src/autoupdate/lock.ts). */
 export interface HeldLock {
   readonly held: true;
   readonly [heldLockBrand]: true;
 }
 
-/** What the scope observed. The fn runs either way: it passes the held branch on as
- *  evidence, and on `held: false` it skips -- or proceeds unlocked, where the lock is
- *  best-effort by design. */
+/** The fn runs either way; on `held: false` it skips, or proceeds unlocked where the lock is
+ *  best-effort. */
 export type LockOutcome = HeldLock | { readonly held: false };
 
 const HELD_OUTCOME: HeldLock = Object.freeze({ held: true } as HeldLock);
 const NOT_HELD_OUTCOME: LockOutcome = Object.freeze({ held: false });
 
-/** How one scoped acquisition waits. `waitMs` 0 makes a single attempt; Infinity never
- *  gives up, so the fn always observes `held` (for a lock that must not be bypassed).
- *  `onWait` fires ONCE: on the first failed attempt by default, or -- with `noticeAfterMs`
- *  -- on the first failed attempt after MORE than that much waiting. */
+/** `waitMs` Infinity never gives up, so the fn always observes `held`. `onWait` fires ONCE: on the
+ *  first failed attempt, or with `noticeAfterMs` on the first failed attempt after more than that
+ *  much waiting. */
 export interface LockPolicy extends FileLockOptions {
-  /** The stale horizon passed to tryAcquireFileLock. Infinity reclaims ONLY a dead holder
-   *  and never age-steals a live one: right for a lock a live process may legitimately
-   *  hold for a long time, e.g. `agent start` blocking on interactive auth. */
+  /** Infinity reclaims ONLY a dead holder and never age-steals a live one, for a lock a live
+   *  process may hold a long time (`agent start` blocking on interactive auth). */
   readonly staleMs: number;
-  /** Total wait budget before reporting `held: false`. */
   readonly waitMs: number;
-  /** Poll cadence while waiting (default LOCK_RETRY_MS). */
   readonly retryMs?: number;
   readonly onWait?: () => void;
   readonly noticeAfterMs?: number;
 }
 
-/** The shared bounded-wait policy (see the stale/wait/retry contract above LOCK_STALE_MS):
- *  after the bounded wait the caller proceeds WITHOUT the lock, best-effort. */
+/** After the bounded wait the caller proceeds WITHOUT the lock, best-effort. */
 export const BOUNDED_LOCK_POLICY: LockPolicy = Object.freeze({
   staleMs: LOCK_STALE_MS,
   waitMs: LOCK_WAIT_MS,
   retryMs: LOCK_RETRY_MS,
 });
 
-/** One acquisition step: the outcome when decided, else how long to sleep before retrying.
- *  Shared by the sync and async wait loops so the notice/give-up judgments cannot drift.
- *  `owned` is whether THIS attempt took the lock: a re-acquire of a lock this process
- *  already held (the aged-marker refresh tryAcquireFileLock documents) reports held but
- *  joins the holding scopes instead of owning the lock outright (see SCOPE_HOLDS). */
+/** Shared by the sync and async loops so the notice and give-up judgments cannot drift. `owned` is
+ *  whether THIS attempt took the lock: a refresh of a lock this process already held joins the
+ *  holding scopes instead. */
 function acquireStep(
   lockPath: string,
   policy: LockPolicy,
@@ -477,15 +412,13 @@ function acquireStep(
   return { sleepMs: policy.retryMs ?? LOCK_RETRY_MS };
 }
 
-/** How many scopes currently share a held lock, by path. Concurrent ASYNC scopes in one
- *  process can interleave: a second scope may refresh-acquire the first scope's aged
- *  marker and outlive it, so the physical release belongs to the LAST settling scope,
- *  not the first acquirer. A lock held by a PRIMITIVE caller (no entry here) is never
- *  released by a scope that only refreshed it. */
+/** Concurrent async scopes in one process can interleave: a second scope may refresh-acquire the
+ *  first's aged marker and outlive it, so the physical release belongs to the LAST settling scope.
+ *  A lock held by a primitive caller (no entry here) is never released by a scope that only
+ *  refreshed it. */
 const SCOPE_HOLDS = new Map<string, number>();
 
-/** Join the holding scopes for a held outcome. Returns whether this scope participates
- *  in the release accounting (false = a primitive caller holds the lock; leave it be). */
+/** False = a primitive caller holds the lock; leave it be. */
 function enterHeldScope(lockPath: string, owned: boolean): boolean {
   if (owned) {
     SCOPE_HOLDS.set(lockPath, 1);
@@ -497,7 +430,6 @@ function enterHeldScope(lockPath: string, owned: boolean): boolean {
   return true;
 }
 
-/** Leave the holding scopes; the last one out performs the physical release. */
 function exitHeldScope(lockPath: string): void {
   const current = SCOPE_HOLDS.get(lockPath) ?? 0;
   if (current > 1) {
@@ -508,20 +440,17 @@ function exitHeldScope(lockPath: string): void {
   releaseFileLock(lockPath);
 }
 
-/** An async fn handed to withFileLockSync must be rejected BEFORE it runs: by the time its
- *  returned promise could be inspected, the body up to the first await has already executed
- *  and the continuation would outlive the release. */
+/** Rejected BEFORE it runs: by the time the returned promise could be inspected, the body up to the
+ *  first await has executed and the continuation would outlive the release. */
 function isAsyncFn(fn: (outcome: LockOutcome) => unknown): boolean {
   return fn.constructor?.name === "AsyncFunction";
 }
 
-/** The compile-time face of the same rule: a fn whose return type is PromiseLike can only
- *  satisfy `never`, so handing one to withFileLockSync is a type error before the runtime
- *  guards below ever see it. */
+/** The compile-time face of the same rule: a PromiseLike return can only satisfy `never`. */
 type SyncResult<T> = T extends PromiseLike<unknown> ? never : T;
 
-/** The backup for a non-async fn that still returns a thenable (its sync body at least ran
- *  fully under the lock): refuse loudly instead of releasing under the pending promise. */
+/** A non-async fn can still return a thenable; the lock releases without awaiting it, so the throw
+ *  is how the caller learns, loudly, that its body ran async. */
 function assertNotThenable(result: unknown): void {
   const then = (typeof result === "object" || typeof result === "function") && result !== null &&
       "then" in result
@@ -532,10 +461,7 @@ function assertNotThenable(result: unknown): void {
   }
 }
 
-/** Run `fn` scoped to one acquisition of `lockPath` under `policy`: the fn sees the
- *  LockOutcome, and the lock is released exactly once, by the last scope out, on every
- *  exit path (return and throw alike) -- a nested or overlapping scope that merely
- *  refreshed another scope's aged marker only joins that accounting (SCOPE_HOLDS). */
+/** Released exactly once, by the last scope out, on every exit path. */
 export function withFileLockSync<T>(
   lockPath: string,
   policy: LockPolicy,
@@ -566,8 +492,6 @@ export function withFileLockSync<T>(
   }
 }
 
-/** The async counterpart of withFileLockSync: the wait yields the event loop, and the
- *  release waits for `fn`'s promise to settle. Same outcome/accounting/release contract. */
 export async function withFileLock<T>(
   lockPath: string,
   policy: LockPolicy,

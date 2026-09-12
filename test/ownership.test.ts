@@ -1,7 +1,3 @@
-// The machine-local artifact-ownership ledger and the per-daemon-home projection
-// record (src/copilot_api/ownership.ts): per-kind exact-path round-trips, junk
-// degradation, and the 3.5.6 adoption of the pre-ledger state-store records
-// (the ledger's own readers never consult them).
 import {
   chmodSync,
   existsSync,
@@ -117,8 +113,6 @@ test("reads write nothing on a fresh home (no lock sidecar); a mutation takes th
 
 test("a junk-degraded ledger owns less, never crashes; survivors come back trimmed", () => {
   const paths = isolate();
-  // Hand-mangled file: junk entries drop individually, a padded entry still
-  // matches the exact-path checks, an ill-typed list reads as owning nothing.
   writeFileSync(
     paths.ownershipFile,
     `${
@@ -152,9 +146,7 @@ test("an unmigrated pre-ledger record in the state store owns nothing; only the 
   expect(ledger.owns("webSearchDeny", "/a/settings.json")).toBe(false);
   expect(ledger.ownedPaths("claudeDesktop")).toEqual([]);
 
-  // A release of the unowned path touches neither store: the state store's
-  // legacy keys survive (the state store's own writes preserve them too) for
-  // the migration to move, and no ledger file materializes.
+  // The legacy keys must survive every write (a release, a state-store set) for the migration to move them.
   const stateBytes = readFileSync(paths.sharedStateFile, "utf8");
   ledger.release("webSearchDeny", "/a/settings.json");
   expect(readFileSync(paths.sharedStateFile, "utf8")).toBe(stateBytes);
@@ -200,7 +192,6 @@ test("adoptLegacyRecords moves both legacy kinds into the ledger and is idempote
   expect(raw.claudeDesktopOwnedPaths).toBeUndefined();
   expect(raw.githubToken).toBe("ghu_keep");
 
-  // Re-run: nothing left to adopt, nothing rewritten.
   const ledgerBytes = readFileSync(paths.ownershipFile, "utf8");
   const stateBytes = readFileSync(paths.sharedStateFile, "utf8");
   ledger.adoptLegacyRecords();
@@ -268,12 +259,10 @@ test("a non-array optInPaths value reads as owning nothing", () => {
   expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
 });
 
-// THE ownership-boundary control: an unreadable record must NOT read as
-// owns-nothing. owns()/ownedPaths() gate every take-back (the WebSearch deny,
-// desktop entries, the codex catalog reference) and the projection record gates
-// applyDefaultConfig's config.json deletions -- a false "not ours" leaves a deny
-// with its replacement removed, so a failed read must surface, never flatten.
-// Junk CONTENT keeps degrading (the tests above); a failed READ is different.
+// owns()/ownedPaths() gate every take-back, so an unreadable record must throw, never read as
+// owns-nothing: a false "not ours" leaves a WebSearch deny with its replacement removed.
+//   junk CONTENT  -> degrades (the tests above)
+//   failed READ   -> throws
 // POSIX, non-root only: root bypasses file modes.
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "an unreadable ownership record THROWS at the read instead of owning nothing",

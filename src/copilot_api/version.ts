@@ -1,4 +1,3 @@
-// Proxy package version helpers shared by startup checks and the postinstall float.
 import { join } from "node:path";
 
 import type { ProjectConfig } from "../utils/project_config.ts";
@@ -17,7 +16,6 @@ export type ProxyVersionStatus =
   | ProxyVersionFloorStatus
   | { ok: false; reason: "aboveCeiling"; version: string; ceiling: string };
 
-/** Installed proxy version (from its package.json), or null if unresolved. */
 export function installedProxyVersion(root: string = PROJECT_ROOT): string | null {
   const packagePath = join(root, "node_modules", ...PROXY_PACKAGE_NAME.split("/"), "package.json");
   return readPackageVersion(packagePath);

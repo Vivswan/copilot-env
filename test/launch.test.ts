@@ -1,11 +1,3 @@
-// `agent launch` units: the CLI-boundary parse (profile hoisting, the copilot
-// no-profile rule) and the prepareLaunch orchestration/plan composition over
-// scripted deps, plus end-to-end launches against fake agent CLIs (a throwaway
-// bin dir on PATH) -- direct env composition, the proxy gate, and the proxy path
-// against a staged live "daemon" (decoy pid + real listener), all under an
-// isolated COPILOT_API_HOME. The parse/plan/picker units run everywhere; most
-// e2e spawns are POSIX (sh fakes), and a Windows-only e2e drives the verbatim
-// .ps1-shim dispatch (verbatimCliSpawn) with a %VAR% literalness control.
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
@@ -28,7 +20,6 @@ import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "./help
 const WORK = parseProfileName("work");
 const skipWin = test.skipIf(process.platform === "win32");
 
-// Every e2e root is registered here and swept after each test.
 let roots: string[] = [];
 afterEach(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
@@ -49,8 +40,8 @@ test("parseLaunchAction rejects an unknown CLI naming the choices", () => {
 });
 
 test("parseLaunchAction hoists a LEADING --profile pair for claude/codex only", () => {
-  // The rc-launcher contract: `cl --profile work --resume` reaches launch as
-  // pass-through args, and the leading pair becomes the profile.
+  // The shell rc launcher (`cl --profile work --resume`) hands the whole tail through as args, so
+  // the leading pair is hoisted here.
   expect(parseLaunchAction({ cli: "claude", args: ["--profile", "work", "--resume"] })).toEqual({
     kind: "claude",
     profile: WORK,
@@ -70,7 +61,6 @@ test("parseLaunchAction hoists a LEADING --profile pair for claude/codex only", 
     relaxed: false,
     args: ["--resume", "--profile", "work"],
   });
-  // co never hoisted: the pair passes through to copilot itself.
   expect(parseLaunchAction({ cli: "copilot", args: ["--profile", "work"] })).toEqual({
     kind: "copilot",
     relaxed: false,
@@ -112,7 +102,6 @@ test("parseLaunchAction rejects --profile on copilot and validates hoisted names
 
 // --- prepareLaunch over scripted deps --------------------------------------------
 
-/** A launchable (complete) store slot for the scripted deps. */
 function completeSlot(mode: ProfileMode, provider: TokenProvider = "gh-token"): ProfileSlot {
   return {
     kind: "complete",
@@ -122,7 +111,6 @@ function completeSlot(mode: ProfileMode, provider: TokenProvider = "gh-token"): 
   };
 }
 
-/** A non-launchable (partial) slot: mode-only when given, empty otherwise. */
 function partialSlot(mode: ProfileMode | null = null): ProfileSlot {
   return {
     kind: "partial",
@@ -209,7 +197,7 @@ test("claude direct: no proxy work, managed flags + env, stale local URL scrubbe
     env: { CLAUDE_CODE_NO_FLICKER: "1" },
     scrub: ["ANTHROPIC_BASE_URL"],
   });
-  expect(calls).toEqual(["mode:claude"]); // never ensured, never rewired
+  expect(calls).toEqual(["mode:claude"]);
   expect(notes).toEqual([]);
 });
 
@@ -367,14 +355,11 @@ test("copilot: the managed flag set verbatim, --relaxed adds --allow-all", async
     env: {},
     scrub: [],
   });
-  expect(calls).toEqual([]); // no provider work, no proxy work
+  expect(calls).toEqual([]);
 });
 
 // --- POSIX end-to-end against fake agent CLIs -------------------------------------
 
-/** A bin dir holding a fake agent CLI that prints its argv and the managed env
- *  vars, then exits with `exitCode` -- what `agent launch` actually spawns when
- *  the dir leads PATH. */
 function fakeCliBin(root: string, command: string, exitCode = 0): string {
   const bin = join(root, "bin");
   mkdirSync(bin, { recursive: true });
@@ -395,7 +380,6 @@ function fakeCliBin(root: string, command: string, exitCode = 0): string {
   return bin;
 }
 
-/** Isolated homes + a leading fake-CLI bin dir for a spawned `agent launch`. */
 function launchEnv(root: string, bin: string): Record<string, string> {
   // IS_SANDBOX is what the direct launch under test decides; a harness that set it
   // for THIS process (Claude Code's sandbox does) must not leak into the assertions.
@@ -414,8 +398,6 @@ function launchEnv(root: string, bin: string): Record<string, string> {
 
 const DIRECT_BASE = "https://api.githubcopilot.com";
 
-/** The default slot's recorded mode inside root's isolated state store (see
- *  launchEnv: COPILOT_API_HOME is <root>/api-home). */
 function recordedMode(root: string): string | undefined {
   const statePath = join(root, "api-home", "credentials.json");
   if (!existsSync(statePath)) return undefined;
@@ -436,19 +418,18 @@ skipWin("e2e: a direct Claude launch composes flags and scrubs a stale local URL
     env: { ...launchEnv(root, bin), ANTHROPIC_BASE_URL: "http://127.0.0.1:4141" },
   });
   expect(res.stdout).toContain("ARGS=--permission-mode auto --enable-auto-mode --resume x y");
-  // Exact argv boundaries: "x y" must arrive as ONE argument, in position 5.
   expect(res.stdout).toContain("ARG4=[--resume]");
   expect(res.stdout).toContain("ARG5=[x y]");
   expect(res.stdout).not.toContain("ARG6=");
-  expect(res.stdout).toContain("BASE=unset"); // OUR stale proxy URL was scrubbed
+  expect(res.stdout).toContain("BASE=unset");
   expect(res.stdout).toContain("FLICKER=1");
   expect(res.stdout).toContain("SANDBOX=unset");
   expect(res.exitCode).toBe(7); // the agent's own exit code passes through
 });
 
 skipWin("e2e: %VAR% / $VAR user args arrive literally (no shell between us and the CLI)", () => {
-  // The verbatim contract, with the vars DEFINED so an expansion would be visible:
-  // any shell hop between `agent launch` and the CLI would substitute these.
+  // The vars are DEFINED so an expansion would be visible: any shell hop between `agent launch`
+  // and the CLI would substitute these.
   const root = e2eRoot();
   const bin = fakeCliBin(root, "claude");
   writeClaudeSettings(join(root, ".claude"), {
@@ -464,10 +445,9 @@ skipWin("e2e: %VAR% / $VAR user args arrive literally (no shell between us and t
   expect(res.exitCode).toBe(0);
 });
 
-// The Windows half of the verbatim contract: an npm-style shim pair on PATH, where
-// the .cmd (whose cmd.exe parsing would expand %USERPROFILE% even inside quotes)
-// must be bypassed for its .ps1 sibling -- powershell -File passes argv literally.
-// The .cmd exits 99, so a wrong dispatch fails loudly on the exit code too.
+// cmd.exe expands %USERPROFILE% even inside quotes, so the launcher must bypass an npm-style .cmd
+// shim for its .ps1 sibling (powershell -File passes argv literally). The .cmd exits 99, so a wrong
+// dispatch fails on the exit code too.
 test.skipIf(process.platform !== "win32")(
   "e2e (Windows): user args reach the CLI verbatim through the .ps1 shim",
   () => {
@@ -502,8 +482,6 @@ test.skipIf(process.platform !== "win32")(
     expect(res.stdout).toContain('ARG8=[a"b]');
     expect(res.exitCode).toBe(0);
 
-    // Nonzero exit propagation through powershell -File: the shim's own exit code
-    // is what `agent launch` passes through.
     writeFileSync(join(bin, "claude.ps1"), "exit 41\n");
     expect(runCli(["launch", "claude", "--"], { env: winEnv }).exitCode).toBe(41);
   },
@@ -522,7 +500,7 @@ skipWin("e2e: --relaxed exports IS_SANDBOX and never scrubs a foreign base URL",
   expect(res.exitCode).toBe(0);
   expect(res.stdout).toContain("SANDBOX=1");
   expect(res.stdout).toContain("--dangerously-skip-permissions");
-  expect(res.stdout).toContain("BASE=https://my-gateway.example"); // the user's, untouched
+  expect(res.stdout).toContain("BASE=https://my-gateway.example");
 });
 
 skipWin("e2e: a proxy-wired Claude launch aborts (exit 1) when the start offer is declined", () => {
@@ -546,10 +524,10 @@ skipWin("e2e: a proxy-wired Claude launch aborts (exit 1) when the start offer i
 skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success records", async () => {
   const root = e2eRoot();
   const bin = fakeCliBin(root, "claude");
-  // A live "daemon": since the sweep/status match was narrowed, that means a real
-  // deno process running a copilot-api-named entry file with the `start` subcommand
-  // (the COPILOT_API_ENTRY shape), plus a real listening loopback port, recorded in
-  // run state (what proxyStatus verifies) -- the same staging as proxy_token.test.ts.
+  // With no daemon lock (this decoy holds none), proxyStatus falls back to pid classification: the
+  // tracked pid must be a deno process running a copilot-api-named entry with the `start`
+  // subcommand, and the recorded loopback port must really listen. proxy_token.test.ts stages
+  // the same.
   const decoy = join(root, "copilot-api-decoy.mjs");
   writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
   const daemon = spawnChild(Deno.execPath(), {
@@ -582,12 +560,10 @@ skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success recor
       envKey: "OPENAI_API_KEY",
     });
 
-    // Success-only: a FAILED wire records nothing. A plain file in the Claude
-    // home's place reads as unwired ("none", so the wire IS attempted after the
-    // ensure succeeds) and then fails the settings write for any uid (mkdir
-    // over a file). The seeded sentinel makes any premature record visible: a
-    // hook firing despite the failure would clear it (the pair reads as
-    // proxy/none) or overwrite it, never leave it "direct".
+    // Success-only: a FAILED wire records nothing. The "direct" sentinel exposes any premature
+    // record, since a hook firing anyway would clear or overwrite it.
+    //   plain file where the Claude home should be -> reads unwired ("none"): the wire IS attempted
+    //   settings write (mkdir over a file)          -> fails for any uid
     new CopilotEnvState().recordDefaultMode("direct");
     writeFileSync(join(root, ".claude"), "");
     const failed = runCli(["launch", "claude", "--"], { env: launchEnv(root, bin) });
@@ -595,7 +571,6 @@ skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success recor
     expect(failed.stdout).not.toContain("ARGS="); // claude was never launched
     expect(recordedMode(root)).toBe("direct"); // the sentinel survived: no record
 
-    // The wirable home again: the same launch now re-syncs, records, and spawns.
     rmSync(join(root, ".claude"), { force: true });
     writeClaudeSettings(join(root, ".claude"), {
       apiKeyHelper: proxyHelperCommand(),
@@ -605,9 +580,8 @@ skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success recor
     expect(res.stderr).not.toContain("Start it now?"); // up: nothing to offer
     expect(res.stdout).toContain(`BASE=http://127.0.0.1:${port}`);
     const settings = readFileSync(join(root, ".claude", "settings.json"), "utf8");
-    expect(settings).toContain(`http://127.0.0.1:${port}`); // re-synced off the stale port
+    expect(settings).toContain(`http://127.0.0.1:${port}`);
     expect(res.exitCode).toBe(0);
-    // The auto-wire's read-back recorded the agreement into the default slot.
     expect(recordedMode(root)).toBe("proxy");
   } finally {
     process.env.COPILOT_API_HOME = previousHome;

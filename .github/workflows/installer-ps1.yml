@@ -1,15 +1,9 @@
 name: installer-ps1 smoke
 
-# Reusable, single-scenario install.ps1 smoke (Windows). The caller (checks.yml)
-# invokes this once per flag combination, so each scenario runs as its OWN job on
-# a fresh runner -- separate profile, separate $HOME. Scenarios can never share or
-# clobber each other's state, so expect-wiring=false asserts the absence of
-# profile wiring directly (a fresh profile has none to begin with).
-#
-# Windows twin of installer-sh.yml: the job compiles this tree's host-target
-# binary and points install.ps1 at it through COPILOT_ENV_DOWNLOAD_BASE, so the
-# real download/verify/handoff path is exercised against the PR's code without a
-# published release.
+# The Windows twin of installer-sh.yml: one install.ps1 scenario per call, so each runs as its
+# OWN job on a fresh runner, and expect-wiring=false asserts absence directly. The job compiles
+# this tree's host binary and points COPILOT_ENV_DOWNLOAD_BASE at it, so the real
+# fetch/verify/handoff path runs against the PR's code without a published release.
 on:
   workflow_call:
     inputs:

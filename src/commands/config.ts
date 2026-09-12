@@ -1,6 +1,5 @@
-// `agent config`: get/set/delete copilot-env preferences (the typed key-value store in
-// src/copilot_api/env_config.ts). The CONFIG_REGISTRY there is the single source of truth for
-// the keys; configTable() below is the one table both `agent config` and its `--help` print.
+// configTable() is the one table both `agent config` and its `--help` print; the key registry is
+// src/copilot_api/env_config.ts.
 import { consola } from "consola";
 import { anyTrackedDaemonAlive } from "../copilot_api/daemon.ts";
 import {
@@ -22,11 +21,9 @@ import { errMessage } from "../utils/error.ts";
 import { versionLessThan } from "../utils/semver.ts";
 
 export interface ConfigArgs {
-  /** `--set <key> <value>` (Commander variadic -> exactly two strings). */
+  /** A Commander variadic; exactly two strings when well-formed. */
   set?: string[];
-  /** `--get [key]`: a key string for one value, `true` for all, undefined when not passed. */
   get?: string | boolean;
-  /** `--del <key>`: delete the key (revert to its default). */
   del?: string;
 }
 
@@ -35,13 +32,8 @@ function unknownKeyError(cli: string): Error {
   return new Error(`unknown config key '${cli}'. Valid keys: ${keys}`);
 }
 
-/** Keys projected into the proxy's config.json -- or read by `agent start`'s launch wiring
- *  (`restartToApply`) -- take effect only when a daemon launches, so a running proxy won't see
- *  the change until it restarts. Nudge the user when that applies. Keys applied through some
- *  other mechanism carry their own `applyHint`. The hints stay shell-neutral (no `&&`) for
- *  Windows PowerShell 5.1. */
-/** The generic restart hint for keys a running daemon will not re-read (shared
- *  with `agent settings --import`, which writes such keys in bulk). */
+/** Shared with `agent settings --import`. Hints stay shell-neutral (no `&&`) for Windows PowerShell
+ *  5.1. */
 export const PROXY_RESTART_HINT =
   "Applies on the next proxy start; restart it: `agent stop`, then `agent start`.";
 
@@ -54,10 +46,9 @@ function noteHowItApplies(def: ConfigKeyDef): void {
   consola.info(PROXY_RESTART_HINT);
 }
 
-/** The warning for a projected key the installed proxy is too old to read (its
- *  `sinceProxyVersion` postdates `installed`): the projection would be a silent no-op until
- *  the float catches up. Null `installed` (no proxy installed -- e.g. a Direct-only setup)
- *  warns about nothing: the value applies once a new-enough proxy arrives. */
+/** A projected key the installed proxy is too old to read is a silent no-op until the float catches
+ *  up. Null `installed` (a Direct-only setup) warns about nothing: the value applies once a
+ *  new-enough proxy arrives. */
 export function sinceProxyVersionWarning(
   def: ConfigKeyDef,
   installed: string | null,
@@ -71,18 +62,11 @@ export function sinceProxyVersionWarning(
   );
 }
 
-/**
- * What ONE `agent config` invocation does -- exactly one of set, delete, or read
- * (one key or all), parsed ONCE by `parseConfigAction` at the CLI boundary so a
- * conflicting combination (e.g. `--set port 5000 --get`) is rejected instead of
- * one flag being silently dropped.
- */
 export type ConfigAction =
   | { kind: "set"; key: string; value: string }
   | { kind: "del"; key: string }
   | { kind: "get"; key?: string };
 
-/** Parse the raw `agent config` flags into a ConfigAction (the CLI boundary). */
 export function parseConfigAction(args: ConfigArgs): ConfigAction {
   if (args.set !== undefined && args.del !== undefined) {
     throw new Error("--set and --del are mutually exclusive");
@@ -98,12 +82,10 @@ export function parseConfigAction(args: ConfigArgs): ConfigAction {
     return { kind: "set", key, value };
   }
   if (args.del !== undefined) return { kind: "del", key: args.del };
-  // No --set/--del: print one key (`--get <key>`) or all (bare `agent config` / `--get`).
   return { kind: "get", key: typeof args.get === "string" ? args.get : undefined };
 }
 
-/** `agent config`: get (default/`--get`), set, or delete one preference. `platform` is
- *  the POSIX-only key guard's test seam. */
+/** `platform` is the POSIX-only key guard's test seam. */
 export function runConfig(args: ConfigArgs, platform: NodeJS.Platform = process.platform): void {
   const action = parseConfigAction(args);
   switch (action.kind) {
@@ -139,16 +121,13 @@ function runSet(cli: string, raw: string, platform: NodeJS.Platform): void {
   consola.success(`set ${def.cli} = ${formatConfigValue(value)}`);
   const warning = sinceProxyVersionWarning(def, nextProxyVersion());
   if (warning !== null) consola.warn(warning);
-  // The warning supersedes only the GENERIC restart hint (a restart cannot make an old proxy
-  // read the key); a bespoke applyHint often covers a non-proxy surface and still applies.
+  // The warning supersedes only the generic restart hint (a restart cannot make an old proxy read
+  // the key); a bespoke applyHint often covers a non-proxy surface and still applies.
   if (def.applyHint !== undefined || warning === null) noteHowItApplies(def);
 }
 
-/** The warnings for every STORED projected key the proxy that runs next (`proxyVersion`, the
- *  float's resolution else the checkout's copy) is too old to read: the projection just wrote
- *  values the daemon will ignore. `agent start` prints these after projecting, passing the
- *  version its resolved entry runs, so a key set before the first start (when no proxy
- *  existed to compare against) still gets its warning; callers without a resolved entry
+/** `agent start` prints these after projecting, passing the version its resolved entry runs, so a
+ *  key set before the first start still gets its warning; callers without a resolved entry
  *  (`--set`, the table, `settings --import`) take the read-only default. */
 export function unreadProjectedKeyWarnings(
   envConfig: CopilotEnvConfig = new CopilotEnvConfig(),
@@ -176,9 +155,8 @@ function runGet(get: string | undefined, platform: NodeJS.Platform): void {
   const data = new CopilotEnvConfig().read();
 
   if (typeof get === "string") {
-    // One key -> print just the value on stdout (script-friendly); blank line when unset.
-    // A stored value that is inert on this platform answers with the built-in default,
-    // which is what every read site sees.
+    // Just the value, for scripts; a blank line when unset. A stored value inert on this platform
+    // answers with the built-in default, which is what every read site sees.
     const def = configKeyDef(get);
     if (def === undefined) throw unknownKeyError(get);
     const value = isStoredValueInert(def, data, platform) ? configDefaultValue(def) : data[def.key];
@@ -186,29 +164,25 @@ function runGet(get: string | undefined, platform: NodeJS.Platform): void {
     return;
   }
 
-  // All keys -> the same grouped table `agent config --help` prints, with current values.
-  // Straight to stdout, not consola: consola reformats the backticks in the descriptions,
-  // and the two outputs must match byte for byte.
+  // Straight to stdout, not consola: consola reformats the backticks in the descriptions, and this
+  // must match `agent config --help` byte for byte.
   process.stdout.write(`${configTableOutput(platform)}\n`);
 }
 
-/** Columns assumed off a TTY (`process.stdout.columns` is undefined there and 0 on a size-less
- *  pty), the same fallback Commander's help uses; on a TTY the table takes the terminal's width. */
+/** `process.stdout.columns` is undefined off a TTY and 0 on a size-less pty; the same fallback
+ *  Commander's help uses. */
 const TABLE_WIDTH_FALLBACK = 80;
-/** Fewest columns the right column (type, default, description) keeps before the key=value
- *  column stops growing for it (a longer key=value overflows onto its own line) and below
- *  which wrapping stops (a narrower ribbon reads worse than the terminal's own breaking). */
+/** Below this the right column stops wrapping: a narrower ribbon reads worse than the terminal's
+ *  own breaking. */
 const MIN_RIGHT_COLUMNS = 30;
-/** Indent of a right column stacked under its key row when no key=value column leaves
- *  MIN_RIGHT_COLUMNS beside it (a narrow terminal). */
+/** Indent of a right column stacked under its key row on a narrow terminal. */
 const STACKED_INDENT = 6;
-/** The value cell of a key that is unset AND has no built-in default. */
+/** For a key that is unset AND has no built-in default. */
 const UNSET_VALUE = "<unset>";
 const RESTART_LINE = "restart the proxy to apply";
 
-/** Pack `items` into lines of at most `columns` characters, `gap` spaces between items, never
- *  splitting an item: an item longer than `columns` stands on its own line. The one wrap rule
- *  for the header's halves, the description's words, and the right column's cells alike. */
+/** Never splits an item: one longer than `columns` stands on its own line. The one wrap rule for
+ *  the header's halves, the description's words, and the right column's cells alike. */
 function packToWidth<T>(
   items: T[],
   length: (item: T) => number,
@@ -231,36 +205,24 @@ function packToWidth<T>(
   return lines;
 }
 
-/** One styled cell of the right column's first line(s): `[type]`, `default x`, the inert note. */
 interface Cell {
   text: string;
   paint: (text: string) => string;
 }
 
 export interface ConfigTableOptions {
-  /** Decides which stored values are inert (a POSIX-only key's on Windows). */
   platform: NodeJS.Platform;
-  /** Columns the table may use: the terminal's, or TABLE_WIDTH_FALLBACK off a TTY. */
   width: number;
-  /** A tracked daemon is alive, so a stored key it read at launch earns the restart line. */
+  /** A stored key the live daemon read at launch earns the restart line. */
   daemonUp: boolean;
-  /** The proxy version the next launch runs (nextProxyVersion): a stored projected key it is
-   *  too old to read (sinceProxyVersionWarning) earns no restart line, since no restart makes
-   *  it read. Null = the version cannot be known, and then NO row earns the line: a missing
-   *  hint is cheaper than a wrong one. */
+  /** A stored projected key the next proxy is too old to read earns no restart line, since no
+   *  restart makes it read. Null means the version cannot be known, and then NO row earns the line:
+   *  a missing hint is cheaper than a wrong one. */
   proxyVersion: string | null;
-  /** Emit ANSI styling; off yields the same bytes minus the escapes. */
   color: boolean;
 }
 
-/** The ONE table `agent config` and `agent config --help` both print. A header counting the
- *  stored keys and naming the set/del syntax; then every key under its section
- *  (CONFIG_SECTIONS order, registry order within) as `key=value` (the stored value, else the
- *  built-in default, else `<unset>`; `* ` marks a stored key) with a right column holding
- *  `[type]` (plus ` default <x>` on a stored key, and the inert note), the restart line when
- *  it applies, and the description wrapped to the width. The key=value column is the longest
- *  key=value that still leaves the right column MIN_RIGHT_COLUMNS; a longer one (a URL) gets
- *  its own line and its right column starts on the next. Nothing breaks mid-word. */
+/** The one table `agent config` and `agent config --help` both print. Nothing breaks mid-word. */
 export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions): string {
   const plain = (text: string): string => text;
   const paint = opts.color ? { bold, cyan, dim, green } : {
@@ -279,10 +241,10 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
       : formatConfigValue(fallback);
     return { def, stored: stored !== undefined, fallback, value, keyValue: `${def.cli}=${value}` };
   });
-  // The key=value column: the longest key=value that still leaves the right column
-  // MIN_RIGHT_COLUMNS (a longer one gets its own line, its right column below). When none
-  // does, every right column stacks under its key row at STACKED_INDENT; and when even that
-  // leaves fewer than the floor, the right column stops wrapping altogether.
+  // The key=value column is the longest key=value that still leaves the right column
+  // MIN_RIGHT_COLUMNS; a longer one (a URL) gets its own line with its right column below. When
+  // none fits, every right column stacks at STACKED_INDENT, and when even that leaves fewer than
+  // the floor, wrapping stops altogether.
   const fitting = rows
     .map((row) => row.keyValue.length)
     .filter((n) => 2 + n + 2 + MIN_RIGHT_COLUMNS <= opts.width);
@@ -347,9 +309,8 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
   return [header, ...blocks].join("\n\n");
 }
 
-/** The table for the CURRENT store, terminal, and daemon: the one string both `agent config`
- *  and `agent config --help` print, so their outputs are byte-identical. `platform` is the
- *  POSIX-only inert note's test seam. */
+/** The one string both `agent config` and `agent config --help` print, so their outputs are
+ *  byte-identical. `platform` is the inert note's test seam. */
 export function configTableOutput(platform: NodeJS.Platform = process.platform): string {
   return configTable(new CopilotEnvConfig().read(), {
     platform,

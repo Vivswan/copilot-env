@@ -3,15 +3,13 @@ import { join } from "node:path";
 import { CHILD_VALUES, childValuesEnv, denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
-// The preload shim wraps the daemon's globalThis.fetch to fake copilot-api's editor
-// token exchange for a PAT. It reads the token from `--github-token` in argv and only
-// acts on the exchange URL, so it must be exercised as a real preloaded subprocess
-// (`--preload`), which is how launchDaemon loads it.
+// The shim reads its token from argv and wraps globalThis.fetch, so it is exercised as a real
+// `--preload` subprocess, the way launchDaemon loads it.
 const SHIM = join(ROOT, "src", "scripts", "pat_passthrough_preload.ts");
 
-// A throwaway "exchange"/other URL on a refused port: if the shim intercepts, fetch
-// returns a synthetic body WITHOUT touching the socket; if it doesn't, the real fetch
-// fails fast (connection refused) and the target prints PASSTHROUGH.
+// Port 1 is refused, so the outcome is decided without a server:
+//   intercepted    -> synthetic body, socket untouched
+//   passed through -> connection refused, the target prints PASSTHROUGH
 const EXCHANGE_URL = "http://127.0.0.1:1/copilot_internal/v2/token";
 const OTHER_URL = "http://127.0.0.1:1/other";
 const MODELS_URL = "https://api.githubcopilot.com/models";
@@ -24,7 +22,6 @@ function runPreloaded(
   const dir = tempDir("copilot-preload-");
   try {
     const target = join(dir, "target.ts");
-    // Exercise each fetch input shape the shim must handle: string | URL | Request.
     const input = inputKind === "url"
       ? `new URL(${CHILD_VALUES}.url)`
       : inputKind === "request"
@@ -68,9 +65,7 @@ test("with no --github-token in argv, no wrap is installed (real fetch is used)"
 });
 
 test("the wrap acts for ANY token shape (the load decision is the launch pipeline's job, not the shim's)", () => {
-  // A non-PAT token still gets intercepted when the shim is preloaded -- launch.ts only
-  // preloads it on purpose, per the precedence documented on `usePatPassthrough`
-  // (integration_identity.ts).
+  // The load decision lives in launch.ts and `usePatPassthrough` (integration_identity.ts).
   expect(runPreloaded(EXCHANGE_URL, "gho_test")).toBe("INTERCEPTED:gho_test:21600");
 });
 
@@ -96,7 +91,6 @@ test("isCopilotApiHost: only the Copilot inference hosts match", () => {
 });
 
 test("headersWithIntegrationId: overrides the id across every fetch input shape", () => {
-  // init.headers present -> overridden.
   expect(
     headersWithIntegrationId(
       MODELS_URL,
@@ -104,7 +98,6 @@ test("headersWithIntegrationId: overrides the id across every fetch input shape"
       "copilot-developer-cli",
     ).get("Copilot-Integration-Id"),
   ).toBe("copilot-developer-cli");
-  // Headers on the Request itself (no init) -> still overridden.
   expect(
     headersWithIntegrationId(
       new Request(MODELS_URL, { headers: { "Copilot-Integration-Id": "vscode-chat" } }),
@@ -112,7 +105,6 @@ test("headersWithIntegrationId: overrides the id across every fetch input shape"
       "copilot-developer-cli",
     ).get("Copilot-Integration-Id"),
   ).toBe("copilot-developer-cli");
-  // No headers anywhere -> set fresh.
   expect(
     headersWithIntegrationId(MODELS_URL, undefined, "copilot-developer-cli").get(
       "Copilot-Integration-Id",

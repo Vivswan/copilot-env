@@ -4,9 +4,8 @@ import { isRecord } from "../src/utils/json.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { expect, test } from "./helpers/testing.ts";
 
-// The runtime pin has ONE source of truth (.dvmrc); the Dockerfile's ARG
-// default is a convenience copy for bare `docker build` - pin the two together
-// so a version bump cannot silently fork them.
+// .dvmrc is the one source of truth for the runtime pin; the Dockerfile ARG default is a copy
+// for bare `docker build`, so a version bump must not fork them.
 test("Dockerfile's DENO_VERSION default tracks .dvmrc", () => {
   const dvmrc = readFileSync(join(PROJECT_ROOT, ".dvmrc"), "utf8").trim();
   const dockerfile = readFileSync(join(PROJECT_ROOT, "Dockerfile"), "utf8");
@@ -14,9 +13,8 @@ test("Dockerfile's DENO_VERSION default tracks .dvmrc", () => {
   expect(arg?.[1]).toBe(dvmrc);
 });
 
-// Podman resolves unqualified image names against configurable registries and
-// prompts interactively when ambiguous; a fully-qualified ref keeps the build
-// engine-agnostic.
+// Podman resolves unqualified image names against configurable registries and prompts when
+// ambiguous; a fully-qualified ref keeps the build engine-agnostic.
 test("Dockerfile FROM is fully qualified for podman", () => {
   const dockerfile = readFileSync(join(PROJECT_ROOT, "Dockerfile"), "utf8");
   const from = dockerfile.match(/^FROM (\S+)/m);
@@ -27,12 +25,8 @@ test("Dockerfile FROM is fully qualified for podman", () => {
 // secrets: the dependency layer is built from the lockfile alone.
 const KEEP_OUT = ["node_modules/", ".git/", ".claude/", ".env"];
 
-/** Whether a `.dockerignore` negation (the text after `!`) could re-admit `entry`.
- *  Dot segments are cleaned first (docker normalizes them before matching), then
- *  the pattern is judged by its literal prefix (up to the first glob/backslash
- *  metachar): exact/under the protected root always counts, and for a glob
- *  pattern any literal that the root extends counts too (conservative:
- *  `!**` and `!.env*` fail, a disjoint `!README.md` passes). */
+// Docker cleans dot segments before matching, so the pattern is cleaned the same way first.
+// A glob is judged by its literal prefix and errs toward re-admitting: `!.env*` and `!**` both count.
 function negationReadmits(pattern: string, entry: string): boolean {
   const cleaned = pattern
     .split("/")
@@ -59,8 +53,7 @@ test(".dockerignore keeps host state out of the build context", () => {
   for (const entry of KEEP_OUT) {
     expect(entries).toContain(entry);
   }
-  // Negations are fine in general -- but never one that could re-admit a
-  // protected path.
+  // A negation is fine unless it could re-admit a protected path.
   for (const line of entries.filter((entry) => entry.startsWith("!"))) {
     for (const entry of KEEP_OUT) {
       expect(negationReadmits(line.slice(1), entry), `${line} re-admits ${entry}`).toBe(false);
@@ -68,10 +61,8 @@ test(".dockerignore keeps host state out of the build context", () => {
   }
 });
 
-// The committed .dockerignore carries no negation lines, so the live-file loop
-// above never executes the predicate; these synthetic patterns keep every branch
-// exercised (dot-segment cleaning, the literal prefix, the glob/backslash
-// metachar class) against the KEEP_OUT set.
+// The committed .dockerignore has no negation lines, so the loop above never reaches the predicate;
+// these rows do.
 test(".dockerignore negation verdicts hold for synthetic patterns", () => {
   const cases: { pattern: string; readmits: boolean }[] = [
     { pattern: "README.md", readmits: false }, // disjoint literal

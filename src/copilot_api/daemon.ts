@@ -1,8 +1,5 @@
-// The proxy daemon's shared status/stop domain: "is our daemon up?", the raw port
-// liveness probe, the idle-watchdog heartbeat, and the tracked-daemon teardown.
-// `agent start`/`stop` remain the command handlers, but the logic lives here so the
-// other consumers (models, profile, auth, uninstall) import it from this layer
-// instead of from another command file.
+// Status, liveness, heartbeat, and teardown for the proxy daemon, kept out of the command files so
+// models, profile, auth, and uninstall never import another command.
 import { connect } from "node:net";
 import { consola } from "consola";
 import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
@@ -14,14 +11,11 @@ import { classifyDaemonPid, isCopilotApiPid, pidAlive, terminatePid } from "./pr
 import type { Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./state.ts";
 
-/** The `proxyStatus` verdict: a proxy reported up ALWAYS carries the port it was probed
- *  on, so no consumer ever has to handle a tracked-but-portless "up" daemon. */
+/** An "up" verdict ALWAYS carries the port it was probed on, so no consumer handles a portless up daemon. */
 export type ProxyStatus = { up: false } | { up: true; port: number };
 
-/** Whether `profile`'s TRACKED daemon pid is alive, from the daemon lock verdict and the pid
- *  table alone: proxyStatus() minus the async pid classification and the port probe, so a
- *  synchronous renderer (the `agent config` table's "restart the proxy to apply" line) can
- *  ask. A false positive here costs a spare hint, never an action. */
+/** proxyStatus() minus the async pid classification and the port probe, for a synchronous renderer
+ *  (the `agent config` "restart the proxy to apply" line). A false positive costs a spare hint, never an action. */
 export function trackedDaemonAlive(profile: Profile = null): boolean {
   const { pid } = CopilotEnvRunState.forProfile(profile).read();
   if (pid === undefined) return false;
@@ -29,30 +23,25 @@ export function trackedDaemonAlive(profile: Profile = null): boolean {
   return lock === "alive" || (lock === "unproven" && pidAlive(pid));
 }
 
-/** Whether ANY tracked daemon on this host is alive: the default's or a named profile's.
- *  The preferences are account-wide, so a stored daemon-read key needs every daemon
- *  restarted, whichever profile launched it. */
+/** The preferences are account-wide, so a stored daemon-read key needs every daemon restarted,
+ *  whichever profile launched it. */
 export function anyTrackedDaemonAlive(): boolean {
   return [null, ...profileHomeNames()].some((profile) => trackedDaemonAlive(profile));
 }
 
-// Whether OUR proxy for `profile` is genuinely up (and on which recorded port): the tracked,
-// alive copilot-api pid AND the port it actually recorded both confirm it. Reading pid AND port
-// from the SAME run-state snapshot ties the probe to the daemon's real listening port -- so
-// a moved port (start chose a different one) or a stranger on the default port can't produce
-// a false result, and the returned port matches what was probed. Exported for the other
-// commands that need the same "is it up?" answer (`agent models` source auto-pick).
+// pid AND port come from the SAME run-state snapshot, so the port returned is the port probed. What the
+// snapshot does NOT settle:
+//   lock says dead, pid gone, or a confident "not copilot-api"  -> down, whatever listens
+//   unproven lock + unknown pid + no recorded port              -> a recycled pid and any listener on the config-sourced default port read as up
 export async function proxyStatus(profile: Profile = null): Promise<ProxyStatus> {
   const { pid, port } = CopilotEnvRunState.forProfile(profile).read();
   if (pid === undefined) {
     return { up: false };
   }
-  // The daemon lock is consulted BEFORE the pid table: the daemon holds
-  // `<home>/daemon.lock` for its whole life, so a held lock naming the tracked pid is
-  // OS-proven liveness and a released one naming it is death -- immune to pid reuse, and
-  // cheaper than the Windows WMI classification. "unproven" (a pre-lock daemon holds no
-  // lock; a marker naming some other pid proves nothing about this one) falls back to
-  // the pid-liveness and identity checks below.
+  // The daemon lock rules first: the daemon holds `<home>/daemon.lock` for its whole life, so a held
+  // lock naming the tracked pid is OS-proven liveness and a released one is death, immune to pid reuse
+  // and cheaper than the Windows WMI classification. "unproven" (a pre-lock daemon, or a marker naming
+  // another pid) falls back to the pid checks below.
   const lock = daemonLockVerdict(new CopilotApiPaths(profile).home, pid);
   if (lock === "dead") {
     return { up: false };
@@ -61,36 +50,24 @@ export async function proxyStatus(profile: Profile = null): Promise<ProxyStatus>
     if (!pidAlive(pid)) {
       return { up: false };
     }
-    // PID-reuse guard, but liveness-safe: only a CONFIDENT "no" (the recorded pid is gone or is a
-    // different, identifiable process) rules the proxy out. "unknown" -- the caller's token can't
-    // read the pid's command line, as in Codex's packaged/sandboxed app where WMI is unavailable --
-    // falls back to probing OUR recorded pid+port, so a healthy proxy isn't false-reported as down.
+    // Only a CONFIDENT "no" rules the proxy out. "unknown" (the caller's token cannot read the pid's
+    // command line, as in Codex's sandboxed app without WMI) falls through to the port probe, so a
+    // healthy proxy is not reported down.
     if ((await classifyDaemonPid(pid)) === "no") {
       return { up: false };
     }
   }
-  // Only a config-ported daemon has a meaningful port fallback (the configured/
-  // built-in default); a reservation-ported daemon with a tracked pid but no
-  // recorded port is unprobeable (the reservation IS the recorded port).
+  // Only a config-ported daemon has a meaningful fallback port; a reservation-ported daemon's
+  // reservation IS the recorded port, so without it there is nothing to probe.
   const probePort = port ??
     (daemonPolicy(profile).port.source === "config" ? defaultProxyPort() : undefined);
   if (probePort === undefined) return { up: false };
-  // Return the port actually probed (not the raw state field, which can be
-  // absent): callers reuse it for follow-up requests, so probe and fetch must
-  // name the same port.
   return (await portListening(probePort)) ? { up: true, port: probePort } : { up: false };
 }
 
-// A raw TCP-connect liveness probe. It opens (and immediately closes) a loopback socket to
-// confirm the daemon is accepting connections WITHOUT sending an HTTP request -- so `--check`
-// (run by an open agent's resolver, a monitor, etc.) leaves no trace in the daemon access log.
-// The idle watchdog keys off the daemon's inbound-request observer (inference POSTs only),
-// not this access log, so a liveness ping never resets the idle clock regardless; a bare
-// connect still keeps the access log clean and returns faster than an HTTP round-trip.
-// Probes IPv4 and IPv6 loopback
-// CONCURRENTLY and settles on the FIRST success (so a healthy proxy returns immediately,
-// mirroring fetch's localhost happy-eyeballs) -- only a both-fail result waits, and at most one
-// timeout, never two serial.
+// A bare TCP connect, no HTTP: `--check` runs from an open agent's resolver and from monitors, and must
+// leave no trace in the daemon's access log. Both loopbacks are probed CONCURRENTLY and the FIRST
+// success wins (fetch's localhost happy-eyeballs), so only a both-fail result waits, for at most one timeout.
 export function portListening(port: number, timeoutMs = 2000): Promise<boolean> {
   const tryHost = (host: string): Promise<boolean> =>
     new Promise((resolve) => {
@@ -109,31 +86,24 @@ export function portListening(port: number, timeoutMs = 2000): Promise<boolean> 
     for (const host of ["127.0.0.1", "::1"]) {
       void tryHost(host).then((ok) => {
         if (ok) {
-          resolve(true); // first success wins; later resolve() calls are no-ops
-        } else if (--remaining === 0) resolve(false); // both failed
+          resolve(true);
+        } else if (--remaining === 0) resolve(false);
       });
     }
   });
 }
 
-/**
- * Record an activity heartbeat (`lastEnsureAt`) for `profile`'s daemon so the in-daemon
- * idle watchdog does not stop a proxy an open agent is still using.
- * setIfExists: a typo'd `--profile <name>` must not fabricate a phantom profile home.
- */
+/** Keeps the in-daemon idle watchdog from stopping a proxy an open agent still uses.
+ *  setIfExists: a typo'd `--profile <name>` must not fabricate a phantom profile home. */
 export function recordHeartbeat(profile: Profile = null): void {
   CopilotEnvRunState.forProfile(profile).setIfExists({ lastEnsureAt: Date.now() });
 }
 
 /**
- * Terminate `profile`'s tracked proxy daemon if it is ours, clearing our run-state tracking
- * and the persisted activity mark. Quiet on success: the shared core of `agent stop` and
- * the de-authenticate teardown. `graceMs > 0` waits that long and escalates to SIGKILL
- * (for callers that must be sure, e.g. de-auth); `0` sends one SIGTERM without waiting.
- * A lock-"alive" pid the owner-filtered scan cannot confirm as ours is REFUSED with a
- * warning, tracking left intact. A kill REFUSED at terminatePid's SIGKILL boundary (our
- * daemon died inside the grace and the OS recycled the pid) counts as STOPPED, tracking
- * cleared: there the daemon is provably gone. `classify` is the injectable identity seam.
+ * The shared core of `agent stop` and the de-authenticate teardown. `graceMs > 0` waits and escalates
+ * to SIGKILL for callers that must be sure; `0` sends one SIGTERM without waiting. `classify` is the test seam.
+ *   lock "alive" but the owner-filtered scan cannot confirm ours  -> REFUSED with a warning, tracking kept
+ *   kill refused at the SIGKILL boundary (pid recycled)           -> counts as STOPPED: the daemon is provably gone
  */
 export async function stopTrackedProxy(
   graceMs = 0,
@@ -141,41 +111,30 @@ export async function stopTrackedProxy(
   classify: (pid: number) => Promise<"yes" | "no" | "unknown"> = classifyDaemonPid,
 ): Promise<{ trackedPid?: number; signalled: boolean; stopped: boolean }> {
   const state = CopilotEnvRunState.forProfile(profile);
-  // Whether stopping releases the port tracking is the daemon's policy: a named
-  // profile's `port` is its stable reservation (the baked agent wiring points at
-  // it), so only the default's port tracking reverts on stop.
+  // A named profile's `port` is its stable reservation (the baked agent wiring points at it), so only
+  // the default's port tracking reverts on stop.
   const clearPort = daemonPolicy(profile).releasesPortOnStop ? { port: null } : {};
   const trackedPid = state.read().pid;
   if (trackedPid === undefined) {
-    // Nothing tracked. Still clear any stale activity marks so a fresh start is not seen
-    // as recently active. The activity-file removal is safe unconditionally (rmSync
-    // creates nothing), and setIfExists keeps the state write from fabricating a phantom
-    // profile home for a typo'd `agent stop --profile <name>`.
+    // Stale activity marks still go, so a fresh start is not seen as recently active; setIfExists keeps
+    // a typo'd `agent stop --profile <name>` from fabricating a profile home.
     state.setIfExists({ lastEnsureAt: null });
     clearPersistedInferenceActivity(profile);
     return { signalled: false, stopped: true };
   }
-  // The daemon lock rules first (same table as proxyStatus): a released lock naming the
-  // tracked pid means the daemon is DEAD, so the pid is never signalled however alive
-  // the pid table says it is (the OS may have recycled it onto an unrelated process).
-  // "unproven" falls back to classification: signal on "yes" (confirmed ours) AND
-  // "unknown" (a restricted/sandboxed token that can't read the pid's identity, e.g.
-  // Windows Constrained Language Mode) -- the tracked pid is almost certainly still our
-  // daemon, and treating "unknown" as "already gone" would leave a live daemon running
-  // while reporting it stopped. Only a confident "no" skips the signal. On Windows there
-  // are no POSIX signals: SIGTERM maps to TerminateProcess (a hard kill; SQLite WAL
-  // recovery makes that safe). Killing the daemon also tears down its idle watchdog.
+  // The lock rules first (same table as proxyStatus): "dead" is never signalled however alive the pid
+  // table says it is, since the OS may have recycled the pid. "unproven" signals on "yes" AND "unknown"
+  // (a sandboxed token that cannot read the pid's identity, e.g. Windows Constrained Language Mode):
+  // treating "unknown" as gone would leave a live daemon running while reporting it stopped.
+  // On Windows SIGTERM maps to TerminateProcess, a hard kill; SQLite WAL recovery makes that safe.
   const lock = daemonLockVerdict(new CopilotApiPaths(profile).home, trackedPid);
   let signalled: boolean;
   switch (lock) {
     case "alive":
-      // "alive" proves a live holder SOMEWHERE, not that the local pid is it: on a home
-      // shared across hosts the holder is another HOST's daemon, and per-host run state
-      // only proves the tracked number was ours ONCE -- today it can sit on any innocent
-      // local process. So the signal needs the owner-filtered scan's corroboration (the
-      // same rule as the start cleanup's holder stop); an unconfirmed pid is refused
-      // LOUDLY with tracking kept, because the user asked to stop something provably
-      // still up and silently unbinding it would lie.
+      // "alive" proves a live holder SOMEWHERE, not that the local pid is it: on a home shared across
+      // hosts the holder is another HOST's daemon, and the tracked number can sit on any innocent local
+      // process. An unconfirmed pid is refused LOUDLY with tracking kept: silently unbinding something
+      // provably up would lie.
       if (!(await isCopilotApiPid(trackedPid))) {
         consola.warn(
           `Not stopping pid ${trackedPid}: its daemon.lock is held, but this host cannot identify the pid as our daemon (a shared home's daemon on another host, or an unreadable process table). Stop it from its own host; tracking is left in place.`,
@@ -195,18 +154,14 @@ export async function stopTrackedProxy(
     default:
       signalled = assertNever(lock);
   }
-  // "stopped" = the tracked daemon is no longer alive as our process. A confident "no" -- or
-  // the lock's "dead" verdict (already gone / replaced) -- counts as stopped.
   let stopped: boolean;
   if (signalled) {
     const verdict = await terminatePid(trackedPid, graceMs, classify);
     switch (verdict) {
       case "refused-reused-pid":
-        // The KILL boundary proved the tracked daemon died inside the grace and the OS
-        // recycled its pid onto a FOREIGN process: our daemon is provably gone, so keeping
-        // the tracking would point every follow-up stop (and the de-auth "still running"
-        // warning) at an innocent bystander. Report the true outcome (terminatePid already
-        // warned that the impostor was spared) and let the clear below unbind it.
+        // The daemon died inside the grace and the OS recycled its pid onto a FOREIGN process; keeping
+        // the tracking would aim every follow-up stop at an innocent bystander. terminatePid already
+        // warned that the impostor was spared.
         consola.info(
           `The tracked proxy (pid ${trackedPid}) already exited and its pid now belongs to a different process; cleared the stale tracking.`,
         );
@@ -215,9 +170,8 @@ export async function stopTrackedProxy(
       case "term-only":
       case "died-in-grace":
       case "killed":
-        // With graceMs 0 ("term-only", no wait) a just-SIGTERMed process can still be
-        // alive for a tick, so a caller needing certainty passes graceMs > 0 (waited +
-        // SIGKILL) before this check.
+        // With graceMs 0 a just-SIGTERMed process can still be alive for a tick; a caller needing
+        // certainty passes graceMs > 0.
         stopped = !pidAlive(trackedPid);
         break;
       default:
@@ -226,10 +180,8 @@ export async function stopTrackedProxy(
   } else {
     stopped = true;
   }
-  // Preserve the pid/port tracking ONLY when we actually waited (graceMs > 0) and the daemon is
-  // confirmed still alive -- a genuinely stuck daemon a follow-up `agent stop` must be able to
-  // target. Otherwise clear it (the graceMs 0 path can't confirm death, so it stays optimistic,
-  // exactly as `agent stop` always has). Activity marks are cleared either way.
+  // Tracking survives only when we waited and the daemon is confirmed still alive: a stuck daemon a
+  // follow-up `agent stop` must be able to target. The graceMs 0 path cannot confirm death, so it stays optimistic.
   const keepTracking = graceMs > 0 && !stopped;
   state.set(
     keepTracking ? { lastEnsureAt: null } : { pid: null, ...clearPort, lastEnsureAt: null },

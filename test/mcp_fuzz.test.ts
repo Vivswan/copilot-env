@@ -1,25 +1,14 @@
-// Robustness corpus for the MCP stdio server, aimed at serveStdio's
-// opening-exchange classifier (legacy initialize vs modern _meta-envelope
-// requests vs server/discover probes) -- the youngest code we depend on.
-// Each test hammers a fresh server with malformed input, then proves the three
-// invariants that matter: the process survives, every stdout line is JSON
-// (error responses are fine, corrupted frames are not), and a full legacy
-// handshake + tools/call still works afterwards.
+// The corpus hammers serveStdio's opening-exchange classifier with malformed input; nothing here
+// closes the transport, so categories share one server. The assertions pin LESS than the server
+// does today: for garbage a spec-shaped error and a silent drop are both acceptable (an SDK patch
+// may trade one for the other), and exact codes are pinned only where the JSON-RPC spec mandates
+// them.
 //
-// Observed behavior per category (probed against the real server): invalid
-// JSON, raw bytes, non-JSON-RPC values, early responses, and id:null messages
-// are dropped silently; malformed _meta envelope claims get -32602; an
-// unsupported revision claim gets an error response; unknown methods with a
-// valid id get -32601; a ~1MB request (under the transport's 10MB buffer) is
-// answered normally. Nothing in this corpus closes the transport, so no
-// category needs an isolated server.
-//
-// The assertions deliberately pin LESS than that: for garbage categories a
-// spec-shaped error response and a silent drop are both acceptable (an SDK
-// patch may legitimately trade one for the other), and exact codes are pinned
-// only where the JSON-RPC spec mandates them (-32602 InvalidParams for a
-// malformed envelope, -32601 MethodNotFound). The product contract is the
-// three invariants above.
+// invalid JSON, raw bytes, non-JSON-RPC values, early responses, id:null  -> dropped silently
+// malformed _meta envelope claim                                          -> -32602 InvalidParams
+// unsupported revision claim                                              -> error response, code unpinned
+// unknown method with a valid id                                          -> -32601 MethodNotFound
+// ~1MB request (under the transport's 10MB buffer)                        -> answered normally
 
 import {
   cleanupTmpDirs,
@@ -58,7 +47,6 @@ function garbageLine(rnd: () => number): string {
   return s;
 }
 
-/** PRNG-generated cases: truncated JSON, bare values, objects without jsonrpc. */
 function generatedCorpus(rnd: () => number, count: number): string[] {
   const lines: string[] = [];
   for (let i = 0; i < count; i++) {
@@ -77,20 +65,18 @@ function generatedCorpus(rnd: () => number, count: number): string[] {
   return lines;
 }
 
-/** Raw bytes forming no valid UTF-8 sequence -- deterministic, no literals. */
+/** Bytes forming no valid UTF-8 sequence. */
 function binaryGarbage(): Uint8Array {
   const bytes = new Uint8Array(64);
   for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 37 + 128) % 256 || 1;
   return bytes;
 }
 
-/** A request whose params carry the given `_meta` envelope claim. */
 function envelopeProbe(id: number, meta: Record<string, unknown>): string {
   const params = { "_meta": meta };
   return JSON.stringify({ "jsonrpc": "2.0", "id": id, "method": "tools/list", "params": params });
 }
 
-/** Hardcoded opening-phase probes that the classifier must answer or discard. */
 function classifierCorpus(): string[] {
   return [
     JSON.stringify({ "jsonrpc": "2.0", "id": 99, "result": {} }),
@@ -103,7 +89,6 @@ function classifierCorpus(): string[] {
   ];
 }
 
-/** Invariant 3: after the garbage, the legacy handshake and the tool still work. */
 async function expectFullRecovery(client: McpClient): Promise<void> {
   const init = await client.request(1001, "initialize", {
     "protocolVersion": "2024-11-05",
@@ -127,7 +112,6 @@ async function expectFullRecovery(client: McpClient): Promise<void> {
   expect(result.content[0]?.text).toContain("agent auth");
 }
 
-/** A spec-shaped JSON-RPC error response: an error object and no result. */
 function isErrorResponse(msg: JsonRpcMessage): boolean {
   return (
     msg.jsonrpc === "2.0" &&
@@ -137,12 +121,8 @@ function isErrorResponse(msg: JsonRpcMessage): boolean {
   );
 }
 
-/**
- * Garbage may draw a spec-shaped error response or nothing at all -- both are
- * acceptable. What is NOT acceptable is a result for a request we never sent:
- * every stdout line must answer one of our ids, be a server notification, or
- * be a spec-shaped error response.
- */
+// Garbage may draw a spec-shaped error or nothing; a result for a request we never sent is the one
+// unacceptable answer.
 function expectNoUnsolicitedResults(client: McpClient, knownIds: (number | string)[]): void {
   for (const line of client.stdoutLines) {
     const msg = JSON.parse(line) as JsonRpcMessage;
@@ -159,10 +139,8 @@ test(
     try {
       for (const line of classifierCorpus()) client.sendRaw(line);
 
-      // Processing is serial, so these responses arriving proves every earlier
-      // line was consumed. -32602 InvalidParams is the spec-mandated code for a
-      // malformed envelope; the unsupported-revision code is the SDK's choice,
-      // so only the error shape is pinned there.
+      // Processing is serial, so these arriving proves every earlier line was consumed. The
+      // unsupported-revision code is the SDK's choice, so only the error shape is pinned there.
       const badEnvelope = await client.waitFor(101);
       expect(badEnvelope.error?.code).toBe(-32602);
 
@@ -178,8 +156,7 @@ test(
       expect(client.exitCode).toBeNull();
       await expectFullRecovery(client);
 
-      // The early response (id 99) and the null-id request may be dropped or
-      // answered with an error, but never with a result.
+      // The early response (id 99) and the null-id request may be dropped or refused, never answered.
       expectNoUnsolicitedResults(client, [101, 102, 103, "str-1", 1001, 1002, 1003]);
       expectStdoutPurity(client);
     } catch (e) {
@@ -206,8 +183,6 @@ test(
       expect(client.exitCode).toBeNull();
       await expectFullRecovery(client);
 
-      // Silent drop or an error response are both fine; a result for a request
-      // we never sent is not.
       expectNoUnsolicitedResults(client, [1001, 1002, 1003]);
       expectStdoutPurity(client);
     } catch (e) {

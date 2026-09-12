@@ -1,18 +1,12 @@
-// Floated-proxy smoke: the ONE run that uses the REAL @jeffreycao/copilot-api
-// instead of test/copilot-api-fake.mjs.
+// The one run that floats the REAL @jeffreycao/copilot-api against the live registry and runs
+// the daemon; the container suite launches the real proxy too, but offline from the warmed
+// fixture, and the lifecycle smoke uses test/copilot-api-fake.mjs. There is no credential here,
+// so the daemon dying for want of one is the expected end state, not a failure.
 //
-// It cannot complete a lifecycle, because the real proxy needs a Copilot
-// credential and there is none here. What it CAN prove, and what nothing else
-// covers, is everything up to that point: the float resolves a version against
-// the live registry and installs it, the daemon spawns under the production
-// permission set with its `--preload` shims, and it runs far enough to start
-// resolving an auth provider. The daemon dying for want of a credential after
-// that is the expected end state, not a failure.
+//   float resolves + installs a version -> daemon spawns under the production permission set
+//   with its `--preload` shims -> reaches auth-provider resolution
 //
-// Run it through the container, which is where the throwaway HOME comes from:
-//   deno task test:docker --floated-lifecycle
-// Run by checks.yml and scripts/test_docker.ts:
-//   deno run --allow-env --allow-read --allow-run=deno .github/scripts/floated-smoke.ts
+// On a developer machine: deno task test:docker --floated-lifecycle
 import { join } from "node:path";
 import { cli, fail, requireDisposableHome, runnerOs } from "./smoke-support.ts";
 
@@ -27,13 +21,14 @@ export interface FloatedSmokeEvidence {
 }
 
 /**
- * The first failed check's message, in assertion order, or null when the daemon got as
- * far as auth-provider resolution. Pure; exported for test/smoke_scripts.test.ts.
- * A recreated npm-default home means the spawn stopped pinning COPILOT_API_HOME. The
- * permission check is THE regression this job exists for: the real dependency tree
- * probes the environment in ways the fake never does (that is how the /proc read behind
- * node_compat_preload.ts was found). The auth check is matched loosely on purpose: the
- * wording is upstream's, so this fails for our regressions, not their copy edits.
+ * The first failed check, in assertion order, or null once the daemon reached auth-provider
+ * resolution. Pure; test/smoke_scripts.test.ts drives it.
+ *
+ * legacy home recreated  -> the spawn stopped pinning COPILOT_API_HOME
+ * NotCapable in the log  -> THE regression this job exists for: the real dependency tree
+ *                           probes the environment in ways the fake never does
+ * provider|auth, loose   -> the wording is upstream's; this fails for our regressions, not
+ *                           their copy edits
  */
 export function floatedSmokeFailure(evidence: FloatedSmokeEvidence): string | null {
   if (!evidence.startOutput.includes("now using @jeffreycao/copilot-api@")) {

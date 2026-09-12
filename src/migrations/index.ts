@@ -1,16 +1,8 @@
-// Migration runner: selects and executes version-to-version fixups after update.
-//
-// Run via the `agent migrate <fromVersion> <toVersion>` subcommand -- a compiled
-// binary has no source file on disk to spawn, so the runner is reached through the CLI.
-// Direct run still works in a dev checkout:
+// The migration runner: selects and runs version-to-version fix-ups after an update. Reached
+// through `agent migrate <from> <to>`: `agent update` spawns it on the NEW binary so the
+// migrations load from the new code, not the already-running old process. A dev checkout may
+// run it directly:
 //   deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>
-//
-// Arguments:
-//   <fromVersion>  Version being updated away from, with or without a leading v.
-//   <toVersion>    Version being updated to, with or without a leading v.
-//
-// `agent update` invokes this after swapping in the new release so migrations load from
-// the new code rather than from the already-running old update process.
 import "../utils/dotenv.ts";
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
@@ -29,38 +21,26 @@ import {
 import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence } from "./4.0.0.ts";
 import { v402DesktopHelpers, v402GhAccountPin, v402RootLayout } from "./4.0.2.ts";
 
-/**
- * One step in the version history, named for the release it migrates AWAY FROM (so a
- * migration is authored against the current released version -- no need to predict the
- * future release number). It runs when an update leaves that version behind: oldVersion
- * <= version < newVersion. Keep `run` IDEMPOTENT: an update can be retried, and a
- * migration may run more than once.
- */
+/** One step, named for the release it migrates AWAY FROM (authored against the current release,
+ *  with no future number to predict). It runs when an update leaves that version behind:
+ *  oldVersion <= version < newVersion. `run` must be IDEMPOTENT: an update can be retried. */
 export interface Migration {
   /** The release this migrates away from, as a bare "X.Y.Z" (the file name). */
   version: SemverString;
   /** One line shown when the migration runs. */
   description: string;
-  /** This step RELOCATES the shared stores the other steps read (a rename or a
-   *  directory move at the root home). dueMigrations hoists every selected
-   *  layout step to the FRONT of the run -- ahead of older versions' steps too,
-   *  which read those stores through the NEW code and therefore at the new
-   *  paths. Among layout steps (and among the rest) version-then-registry order
-   *  still applies. */
+  /** This step RELOCATES the shared stores the others read. dueMigrations hoists every selected
+   *  layout step to the FRONT of the run, ahead of older versions' steps too, which read those
+   *  stores through the NEW code and so at the new paths. Version-then-registry order still
+   *  applies within each half. */
   layout?: true;
   run: () => void | Promise<void>;
 }
 
-/**
- * One file per version step (named for the from-version), registered in ascending order.
- * A release with several INDEPENDENT fix-ups registers them all under its version (in that
- * one file); registry order is their run order (dueMigrations keeps it within a version).
- * Every step shipped before the deno rewrite was deleted: a pre-rewrite install runs the
- * OLD bun-based updater, which cannot even load this file (its first import reaches
- * `@std/dotenv`, a jsr specifier only deno's import map resolves), so no historical step
- * could still be reached; each one's fix was re-derivable by `agent init` / `auth` /
- * `claude` / `shell`, or self-healing on the catalog sync timer.
- */
+/** Ascending version order; a release with several INDEPENDENT fix-ups registers them all under
+ *  its version, and registry order is their run order within it. No step predates the deno
+ *  rewrite: a pre-rewrite install runs the OLD bun-based updater, which cannot load this file,
+ *  so no such step could be reached. */
 const MIGRATIONS: Migration[] = [
   v356,
   v356Ownership,
@@ -90,13 +70,10 @@ function requireSemver(value: string, what: string): SemverString {
   return parsed;
 }
 
-/**
- * The migrations whose (from-)version falls in the half-open range [from, to), i.e.
- * every version left behind by an update from `from` to `to` -- layout steps first
- * (see Migration.layout), then version-ascending. Pure (no side effects) and exported
- * so the selection logic is unit-tested without running any migration. `from`/`to`
- * may carry a leading "v".
- */
+/** The migrations whose version falls in [from, to): every version an update from `from` to
+ *  `to` leaves behind, layout steps first (Migration.layout), then version-ascending. Pure and
+ *  exported so the selection is unit-tested without running one. `from`/`to` may carry a
+ *  leading "v". */
 export function dueMigrations(
   from: string,
   to: string,
@@ -119,11 +96,8 @@ export function dueMigrations(
     );
 }
 
-/**
- * Run every due migration in order. Best-effort: a failing migration warns and the rest
- * still run -- migrations must never abort an otherwise-successful update. `migrations`
- * is the injection seam for tests, matching `dueMigrations`.
- */
+/** Best-effort: a failing migration warns and the rest still run; migrations must never abort
+ *  an otherwise-successful update. `migrations` is the test seam, as for dueMigrations. */
 export async function runMigrations(
   from: string,
   to: string,
@@ -146,12 +120,7 @@ export async function runMigrations(
   }
 }
 
-// Runnable entry for a dev checkout. `agent update` normally reaches the runner through
-// the `agent migrate` subcommand instead -- this process still holds the
-// pre-update code in memory, so the new migration set must load from the new release.
-// Guarded by import.meta.main so importing this module (registry/dueMigrations/CLI) never
-// executes it.
-//   deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>
+// Guarded by import.meta.main so importing the registry never executes the runner.
 if (import.meta.main) {
   disableConsolaTimestamps();
   const [from, to] = process.argv.slice(2);

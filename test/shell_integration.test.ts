@@ -19,8 +19,7 @@ import {
 import { runCli, runSync } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, tempDir, test } from "./helpers/testing.ts";
 
-// `agent shell` wires/unwires the rc block. Exercise the POSIX path by
-// running the CLI with a throwaway $HOME so we never touch the real rc files.
+// The POSIX path runs the real CLI under a throwaway $HOME so the real rc files are never touched.
 
 const MARKER = "# copilot-env shell integration";
 const LAUNCHERS_MARKER = "# copilot-env launchers";
@@ -112,7 +111,7 @@ skipWin("is idempotent -- a second wire is byte-for-byte identical", () => {
   const first = readFileSync(join(home, ".bashrc"), "utf-8");
   run();
   const second = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(second).toBe(first); // no duplicate block, no reordering
+  expect(second).toBe(first);
   expect(markerLines(second, MARKER)).toBe(1);
 });
 
@@ -151,23 +150,18 @@ skipWin("wire then --remove restores the rc byte-for-byte, owned blanks included
 });
 
 skipWin("re-wiring refreshes the block in place without reordering later lines", () => {
-  // A stale block followed by a user line that must stay AFTER the integration.
   const stale = `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n` +
     `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n${MARKER_END}`;
   writeFileSync(join(home, ".bashrc"), `export BEFORE=1\n\n${stale}\n\nexport AFTER=1\n`);
   run();
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain("shell/agents.bashrc"); // migrated in place
+  expect(rc).toContain("shell/agents.bashrc");
   expect(rc).not.toContain("/old/agents.bashrc");
-  // BEFORE still precedes the block; AFTER still follows it.
   expect(rc.indexOf("export BEFORE=1")).toBeLessThan(rc.indexOf(MARKER));
   expect(rc.indexOf(MARKER)).toBeLessThan(rc.indexOf("export AFTER=1"));
 });
 
 skipWin("shell wires and removes the integration", () => {
-  // Also the strip test: wire (exit 0, block present), then --remove (exit 0,
-  // block gone) -- the former separate "--remove strips the block back out"
-  // test asserted a strict subset of exactly these steps.
   expect(run().code).toBe(0);
   expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(MARKER);
   expect(run("--remove").code).toBe(0);
@@ -240,10 +234,10 @@ skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
   writeFileSync(join(home, ".bashrc"), `export KEEP=1\n${stale}`);
   run();
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain("export KEEP=1"); // user content preserved
-  expect(rc).toContain("shell/agents.bashrc"); // migrated to the new path
-  expect(rc).not.toContain("/old/agents.bashrc"); // stale path gone
-  expect(markerLines(rc, MARKER)).toBe(1); // exactly one block, not duplicated
+  expect(rc).toContain("export KEEP=1");
+  expect(rc).toContain("shell/agents.bashrc");
+  expect(rc).not.toContain("/old/agents.bashrc");
+  expect(markerLines(rc, MARKER)).toBe(1);
 });
 
 skipWin("wiring strips old launchers blocks and never touches the config key", () => {
@@ -287,8 +281,7 @@ skipWin("a launchers block directly below the main one: ONE wire converges", () 
 });
 
 skipWin("posixBlock safely quotes paths with shell metacharacters", () => {
-  // A path containing a single quote, $, backtick, and a space must round-trip
-  // through `source` as the exact literal -- never expand or break parsing.
+  // Sourcing under real bash is the proof: the path must come back as the exact literal.
   const weird = "/tmp/we'ird $dir/`x`/agents.bashrc";
   const blockFile = join(home, "block.sh");
   writeFileSync(blockFile, posixBlock(weird));
@@ -302,10 +295,9 @@ skipWin("posixBlock safely quotes paths with shell metacharacters", () => {
 });
 
 skipWin("posixBlock anchors a path under the home directory at $HOME", () => {
-  // The written block must follow $HOME wherever the rc file travels (dotfile syncs,
-  // renamed users). A plain tail gets the readable double-quoted form; a tail with
-  // double-quote metacharacters falls back to "$HOME"'<tail>' so only $HOME expands.
-  // Both proven by sourcing the block under a DIFFERENT $HOME.
+  // The rc file travels (dotfile syncs, renamed users), so the block must follow $HOME. A tail
+  // with double-quote metacharacters falls back to "$HOME"'<tail>' so only $HOME expands;
+  // sourcing under a DIFFERENT $HOME is the proof.
   const plain = posixBlock(join(homedir(), "shell", "agents.bashrc"));
   expect(plain).toContain(`AGENTS_BASHRC="$HOME${sep}shell${sep}agents.bashrc"`);
 
@@ -323,9 +315,7 @@ skipWin("posixBlock anchors a path under the home directory at $HOME", () => {
 });
 
 test("the PowerShell blocks anchor an under-home path at $HOME, and only then", () => {
-  // Parity with posixBlock: a profile synced across machines follows $HOME. A plain
-  // tail reads "$HOME\tail"; one with PS metacharacters concatenates a literal; a
-  // path outside home (e.g. a dev checkout) stays a single-quoted literal.
+  // Parity with posixBlock: a profile synced across machines must follow $HOME.
   expect(windowsBlock(join(homedir(), "shell", "agents.ps1"))).toContain(
     `$AgentsPs1 = "$HOME${sep}shell${sep}agents.ps1"`,
   );
@@ -406,10 +396,8 @@ test("a first wire into a CRLF file appends CRLF, never mixed endings", () => {
 
 test("an append matches the file's DOMINANT ending, not any stray one", () => {
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  // One stray CRLF in an LF file must not flip the appended block to CRLF...
   const mostlyLf = "a\nb\nc\r\nd\n";
   expect(up(mostlyLf, MARKER, block)).toBe(mostlyLf + block);
-  // ...and one stray LF in a CRLF file must not keep it LF.
   const mostlyCrlf = "a\r\nb\r\nc\nd\r\n";
   expect(up(mostlyCrlf, MARKER, block)).toBe(
     mostlyCrlf + block.replaceAll("\n", "\r\n"),
@@ -417,7 +405,6 @@ test("an append matches the file's DOMINANT ending, not any stray one", () => {
   // A tie stays LF, like an empty (or new) file: the builders' platform-neutral form.
   expect(up("a\r\nb\n", MARKER, block)).toBe("a\r\nb\n" + block);
   expect(up("", MARKER, block)).toBe(block);
-  // A CRLF file with an unterminated last line still appends CRLF.
   expect(up("a\r\nb", MARKER, block)).toBe("a\r\nb" + block.replaceAll("\n", "\r\n"));
 });
 
@@ -431,12 +418,11 @@ test("upsert refreshes the first duplicate block and strips the rest", () => {
     `Write-Host after\n`;
   const next = up(content, MARKER, block);
   expect(markerLines(next, MARKER)).toBe(1);
-  // Refreshed IN PLACE at the first site: user lines keep their order around it.
   expect(next.indexOf("Write-Host before")).toBeLessThan(next.indexOf(MARKER));
   expect(next.indexOf(MARKER_END)).toBeLessThan(next.indexOf("Write-Host middle"));
   expect(next.indexOf("Write-Host middle")).toBeLessThan(next.indexOf("Write-Host after"));
   expect(next).not.toContain("C:\\old\\agents.ps1");
-  expect(up(next, MARKER, block)).toBe(next); // and the result is idempotent
+  expect(up(next, MARKER, block)).toBe(next);
 });
 
 test("stripping a duplicate block never deletes a user line under its marker", () => {
@@ -465,12 +451,10 @@ test("deduping a block at EOF converges on the wired form, terminated", () => {
 
 test("upsert owns ONE separating blank: adds it once, reuses it forever", () => {
   const block = posixBlock(join(homedir(), "shell", "agents.bashrc"));
-  // A pre-blank wired file (end fence directly against the user's next line) gains
-  // the separator on the next wire...
+  // `snug` is a pre-blank release's wire: the end fence directly against the user's next line.
   const snug = `A=1\n${block.slice(1, -1)}B=1\n`; // block sans leading blank + separator
   const migrated = up(snug, MARKER, block);
   expect(migrated).toBe(`A=1\n${block.slice(1)}B=1\n`);
-  // ...and every later wire REUSES that blank: byte-identical, no accumulation.
   expect(up(migrated, MARKER, block)).toBe(migrated);
   // A user's own extra blank beyond the owned one is their spacing: kept, and stable.
   const spaced = `A=1\n${block.slice(1)}\nB=1\n`;
@@ -481,27 +465,21 @@ test("a block at EOF normalizes to end-fence + ONE blank, then never grows", () 
   const block = posixBlock(join(homedir(), "shell", "agents.bashrc"));
   const wired = up("A=1\n", MARKER, block);
   expect(wired).toBe(`A=1\n${block}`);
-  // Blank-less EOF shapes older releases wrote -- fence-terminated and unterminated --
-  // converge on that one appended form...
+  // The blank-less EOF shapes older releases wrote, fence-terminated and unterminated.
   expect(up(`A=1\n${block.slice(0, -1)}`, MARKER, block)).toBe(wired);
   expect(up(`A=1\n${block.trimEnd()}`, MARKER, block)).toBe(wired);
-  // ...which is a fixed point: no trailing-blank pileup at EOF, ever.
   expect(up(wired, MARKER, block)).toBe(wired);
 });
 
 test("removal owns ONE separating blank: the reused blank goes, extra user spacing stays", () => {
   const fenced = posixBlock(join(homedir(), "shell", "agents.bashrc")).slice(1);
-  // Wired mid-file: the block plus its two owned blanks vanish, nothing else.
   const wired = `export A=1\n\n${fenced}export B=1\n`;
   expect(stripBlocks(wired, [MARKER]).content).toBe("export A=1\nexport B=1\n");
-  // The user's OWN blank beyond the owned one survives the removal.
   const spaced = `export A=1\n\n${fenced}\nexport B=1\n`;
   expect(stripBlocks(spaced, [MARKER]).content).toBe("export A=1\n\nexport B=1\n");
-  // A fenced block with NO trailing blank (pre-blank releases) still strips cleanly
-  // without eating the user's adjacent line...
+  // A fenced block with NO trailing blank (pre-blank releases) must not eat the adjacent line.
   const snug = `export A=1\n${fenced.replace(/\n$/, "")}export B=1\n`;
   expect(stripBlocks(snug, [MARKER]).content).toBe("export A=1\nexport B=1\n");
-  // ...and a block at EOF round-trips the pre-wire bytes exactly, final newline intact.
   expect(stripBlocks(`export A=1\n\n${fenced}`, [MARKER]).content).toBe("export A=1\n");
 });
 
@@ -558,7 +536,6 @@ test("the Windows $PROFILE lookup honors the Documents redirect on every OS", ()
   // resolving it here at all is the proof that PowerShell was never spawned.
   const documents = join(home, "Documents");
   withEnv(CI_PS_DOCUMENTS_DIR_ENV, documents, () => {
-    // One filename per call, under each PowerShell edition's directory.
     expect(windowsProfileTarget(false).paths).toEqual([
       join(documents, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1"),
       join(documents, "PowerShell", "Microsoft.PowerShell_profile.ps1"),
@@ -611,9 +588,6 @@ test("the POSIX rc lookup honors the rc-dir seam on every OS", () => {
 });
 
 skipWin("the rc-dir seam beats $HOME end to end, so a stray run cannot reach it", () => {
-  // The structural floor: even with $HOME pointed at a live directory, the seam decides
-  // where `agent shell` writes. This is what keeps a test that forgets its own isolation
-  // from landing in the real ~/.bashrc.
   const rcDir = tempDir("copilot-rc-");
   try {
     const proc = runCli(["shell"], {
@@ -627,16 +601,15 @@ skipWin("the rc-dir seam beats $HOME end to end, so a stray run cannot reach it"
     });
     expect({ exitCode: proc.exitCode, stderr: proc.stderr }).toMatchObject({ exitCode: 0 });
     expect(readFileSync(join(rcDir, ".bashrc"), "utf-8")).toContain(MARKER);
-    expect(existsSync(join(home, ".bashrc"))).toBe(false); // $HOME never touched
+    expect(existsSync(join(home, ".bashrc"))).toBe(false);
   } finally {
     rmSync(rcDir, { recursive: true, force: true });
   }
 });
 
-// Windows only, and the one test that exercises the REAL lookup end to end: it spawns
-// PowerShell and asks the OS where Documents is. It clears any inherited redirect first,
-// or it would quietly stop testing the thing it exists for. Read-only -- it resolves
-// paths and writes nothing, so it is safe against a real profile.
+// Windows only: it spawns PowerShell and asks the OS where Documents is, so an inherited
+// redirect is cleared first or it would quietly stop testing the real lookup. Read-only: it
+// resolves paths and writes nothing, so it is safe against a real profile.
 test.skipIf(process.platform !== "win32")(
   "the un-redirected Windows lookup resolves the machine's real $PROFILE candidates",
   () => {
@@ -669,10 +642,8 @@ test("windows execution policy command skips unavailable policy cmdlets", () => 
 });
 
 test("the PowerShell agent wrapper evals every env line, mirroring the POSIX eval", () => {
-  // agents.bashrc evals the whole `agent env` output unconditionally; the PS
-  // wrapper must do the same (Invoke-Expression on every non-blank line, no
-  // shape-matching filter), so a new upstream directive shape is never
-  // silently dropped on Windows.
+  // agents.bashrc evals the whole `agent env` output unconditionally; the PS wrapper must do
+  // the same, so a new upstream directive shape is never silently dropped on Windows.
   const ps1 = readFileSync(join(process.cwd(), "shell", "agents.ps1"), "utf8");
   expect(ps1).toContain("Invoke-Expression");
   expect(ps1).not.toContain("$line -match");
@@ -686,8 +657,7 @@ test("env-refresh stderr parity: eager source is silenced, the agent wrapper's r
   // (matching the ps1 twin's eager Import-CopilotEnv -Quiet).
   expect(posix).toMatch(/bin\/agent" env 2>\/dev\/null/);
 
-  // The `agent` wrapper's refresh must NOT silence stderr -- a genuine failure
-  // should stay visible. Assert the refresh line and that it carries no redirect.
+  // The `agent` wrapper's refresh must NOT silence stderr: a genuine failure stays visible.
   const body = shellFunctionBody(posix, "agent");
   const refresh = body.split("\n").find((line) => line.includes('bin/agent" env)'));
   expect(refresh).toBeDefined();
@@ -698,7 +668,6 @@ test("env-refresh stderr parity: eager source is silenced, the agent wrapper's r
 test("env-refresh stderr parity: Import-CopilotEnv takes -Quiet, eager passes it, the agent wrapper omits it (PowerShell)", () => {
   const powershell = readFileSync(join(process.cwd(), "shell", "agents.ps1"), "utf8");
 
-  // Import-CopilotEnv declares a [switch]$Quiet param that gates the 2>$null redirect.
   expect(powershell).toMatch(/function Import-CopilotEnv\s*\{\s*param\(\[switch\]\$Quiet\)/);
   expect(powershell).toMatch(/if \(\$Quiet\) \{ Invoke-Agent env --format powershell 2>\$null \}/);
 
@@ -714,11 +683,9 @@ test("env-refresh stderr parity: Import-CopilotEnv takes -Quiet, eager passes it
   expect(refresh).not.toContain("-Quiet");
 });
 
-// The seam NAMES are external contracts: the suite floor (test/helpers/testing.ts) exports
-// them into every test process, and a child spawned with a hand-built env spells them as
-// literals. Pin the exported constants to those literals so a rename fails here instead of
-// silently orphaning a hand-spelled seam; asserting the live env also proves the floor is
-// active in this very process.
+// The seam NAMES are external contracts: the suite floor (test/helpers/testing.ts) exports them
+// and hand-built child envs spell them as literals, so a rename must fail here rather than
+// silently orphan a seam. The live env proves the floor is active in this very process.
 test("the sandbox floor sets both shell seams under their exported names", () => {
   expect(CI_RC_DIR_ENV).toBe("COPILOT_ENV_CI_RC_DIR");
   expect(CI_PS_DOCUMENTS_DIR_ENV).toBe("COPILOT_ENV_CI_PS_DOCUMENTS_DIR");

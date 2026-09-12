@@ -65,15 +65,13 @@ import {
 
 function result(id: CheckId, status: CheckStatus, scopes: HealthScope[]): CheckResult {
   const base = { id, label: String(id), group: "runtime" as const, profile: null, scopes };
-  // The CheckOutcome union: warn/fail must carry a fix, ok cannot.
   return status === "ok"
     ? { ...base, status, detail: "" }
     : { ...base, status, detail: "", fix: "fix-hint" };
 }
 
-/** Flat probe/target overrides, assembled into the RuntimeTarget union shape
- *  (PortState always derived through the probe's own classifier, so a fixture
- *  can never carry a torn ownership verdict). */
+// PortState is always derived through the probe's own classifier, so a fixture can never carry a
+// torn ownership verdict.
 interface TargetOverrides {
   proxyExpected?: boolean;
   port?: number;
@@ -97,20 +95,16 @@ function probedFrom(proxyExpected: boolean, o: TargetOverrides): DaemonProbed {
   return { kind: "probed", ...raw, portState: classifyPortState({ proxyExpected, ...raw }) };
 }
 
-/** The probed outcome of a target (all fixtures here interrogate the daemon;
- *  gatherFacts-produced targets are narrowed the same way). */
 function probeOf(t: RuntimeTarget | undefined): DaemonProbed {
   if (!t || t.probe.kind !== "probed") throw new Error("expected a probed runtime target");
   return t.probe;
 }
 
-// Per-daemon checks take (target, probed facts); the fixtures are always probed.
 const runPort = (t: RuntimeTarget) => checkRuntimePort(t, probeOf(t));
 const runPid = (t: RuntimeTarget) => checkRuntimePid(t, probeOf(t));
 const runIdentity = (t: RuntimeTarget) => checkRuntimeIdentity(t, probeOf(t));
 const runOrphan = (t: RuntimeTarget) => checkRuntimeOrphan(t, probeOf(t));
 
-/** A default-target runtime fixture (profile null, healthy tracked daemon). */
 function defaultTarget(overrides: TargetOverrides = {}): DefaultRuntimeTarget {
   const proxyExpected = overrides.proxyExpected ?? true;
   return {
@@ -137,7 +131,6 @@ function defaultTarget(overrides: TargetOverrides = {}): DefaultRuntimeTarget {
   };
 }
 
-/** A named-profile runtime target fixture (used by the profile-aware tier). */
 function profileTarget(name: string, overrides: TargetOverrides = {}): RuntimeTarget {
   const base = defaultTarget(overrides);
   return {
@@ -215,13 +208,11 @@ test("buildHealthJson exposes scope/ok/status/exitCode/checks with ok === no-fai
   const okJson = buildHealthJson("full", [result("runtime.port", "warn", ["full"])]);
   expect(okJson).toMatchObject({ scope: "full", ok: true, status: "warn", exitCode: 0 });
   expect(okJson.checks).toHaveLength(1);
-  // The CheckOutcome union projected into JSON: fix present exactly on non-ok.
   expect(okJson.checks[0]?.fix).toBe("fix-hint");
   expect(
     buildHealthJson("full", [result("runtime.port", "ok", ["full"])]).checks[0]?.fix,
   ).toBeUndefined();
-  // The profile dimension: top-level = the run's narrowing (default null), and
-  // every check names its own target (environment checks are null).
+  // The top-level profile is the run's narrowing; each check names its own target, environment checks null.
   expect(okJson.profile).toBeNull();
   expect(okJson.checks[0]?.profile).toBeNull();
 
@@ -303,9 +294,9 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
 });
 
 test("proxy package bounds are not enforced when both agents are direct", () => {
-  // The float skips when Codex + Claude are both wired Direct (the proxy is
-  // unused), so out-of-bounds versions must read ok with a note, not fail --
-  // the suggested fixes could not move the version anyway.
+  // The float skips when both default agents are wired Direct (Claude's base URL exactly the Direct
+  // host) and no profile home exists, so an out-of-bounds version reads ok with a note: the suggested
+  // fixes could not move the version anyway.
   const below = checkProxyPackage({
     version: "1.0.0",
     bounds: { ok: false, reason: "belowFloor", version: "1.0.0", floor: "1.10.0" },
@@ -326,8 +317,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
   // pin only the stable "not enforced" token.
   expect(below.detail).toContain("not enforced");
   expect(below.fix).toBeUndefined();
-  // The exemption is machine-readable for --json consumers (mirrors the
-  // runtime checks' bothDirect stamp).
+  // Machine-readable for --json consumers, mirroring the runtime checks' bothDirect stamp.
   expect((below.value as Record<string, unknown>).floatSkips).toBe(true);
 
   const above = checkProxyPackage({
@@ -348,8 +338,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
   expect(above.status).toBe("ok");
   expect(above.fix).toBeUndefined();
 
-  // A missing package is a broken CHECKOUT in any mode: the exemption must not
-  // swallow it (a reinstall genuinely fixes it, float or no float).
+  // A missing package is a broken CHECKOUT in any mode: a reinstall fixes it, float or no float.
   const missing = checkProxyPackage({
     version: null,
     bounds: { ok: false, reason: "missing", version: null },
@@ -368,8 +357,6 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
   expect(missing.status).toBe("fail");
   expect(missing.fix).toBe("deno install --frozen");
 
-  // An in-bounds proxy on a direct-only machine reads plain ok: no note glued
-  // onto the version/cooldown detail, no floatSkips stamp.
   const inBounds = checkProxyPackage({
     version: "1.10.5",
     bounds: { ok: true, version: "1.10.5" },
@@ -389,8 +376,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
   expect(inBounds.detail).not.toContain("not enforced");
   expect((inBounds.value as Record<string, unknown>).floatSkips).toBeUndefined();
 
-  // An unreadable copilot-env.config stays a failure in any mode: the early
-  // return fires before the exemption, and its fix is actionable regardless.
+  // An unreadable copilot-env.config fails in any mode: the early return fires before the exemption.
   const badConfig = checkProxyPackage({
     version: "1.10.5",
     bounds: null,
@@ -410,9 +396,8 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
 });
 
 test("proxy package: a compiled install treats missing as pre-start, not broken", () => {
-  // A compiled binary ships no deno.json baseline -- the float resolves the proxy
-  // into its own cache at `agent start`. "Missing" is therefore the normal state
-  // of a fresh or direct-only binary install and must not fail.
+  // A compiled binary ships no deno.json baseline; the float resolves the proxy at `agent start`, so
+  // "missing" is the normal pre-start state of a binary install.
   const standalone = {
     kind: "provisioned",
     referenceVersion: "2.9.5",
@@ -435,7 +420,6 @@ test("proxy package: a compiled install treats missing as pre-start, not broken"
   // Machine-readable for --json consumers, like the floatSkips stamp.
   expect((unused.value as Record<string, unknown>).standalone).toBe(true);
 
-  // Proxy wired but never started: still ok, pointing at `agent start`.
   const preStart = checkProxyPackage({
     version: null,
     bounds: { ok: false, reason: "missing", version: null },
@@ -557,9 +541,8 @@ test("proxy sidecar: absent is fatal for a compiled build, a warning for a check
   expect(provisioned.status).toBe("ok");
   expect(provisioned.detail).toContain("2.9.5");
 
-  // A PATH deno is the normal answer under the user's-toolchain-wins policy:
-  // ok at or above the tested reference, a WARN (never a block) when older,
-  // and unknown-version reads ok (an unreadable version is not a verdict).
+  // A PATH deno is the normal answer under the user's-toolchain-wins policy: older is a WARN, never
+  // a block, and an unreadable version is not a verdict.
   const onPath = checkProxySidecar(
     facts({
       kind: "path",
@@ -595,8 +578,7 @@ test("proxy sidecar: absent is fatal for a compiled build, a warning for a check
   expect(unknownVersion.status).toBe("ok");
   expect(unknownVersion.detail).toContain("deno (version unknown) on PATH");
 
-  // Direct-only (the float skips): nothing spawns the proxy, so an absent
-  // sidecar is idle capacity, not a failure -- even on a compiled build.
+  // Direct-only: nothing spawns the proxy, so an absent sidecar is idle capacity even on a compiled build.
   const unused = checkProxySidecar({
     ...facts({
       kind: "absent",
@@ -637,8 +619,7 @@ test("proxy resolved: no record is ok, a record with a missing cache fails", () 
   // Direct-only says so explicitly rather than implying a pending float.
   expect(checkProxyResolved(facts(null, true)).detail).toContain("both direct");
 
-  // Recorded but the cache is gone: the launch asks for that exact version
-  // offline, so this is a real failure rather than a fallback.
+  // Recorded but the cache is gone: the launch asks for that exact version offline, so no fallback exists.
   const stale = checkProxyResolved(
     facts({ version: "1.10.5", resolvedAtMs: 1, denoDir: "/gone", cached: false }),
   );
@@ -662,8 +643,8 @@ test("copilot-env version check is always ok and surfaces the version", () => {
 // --- runtime checks (preserve original semantics) ---------------------------
 
 test("gatherFacts probes the proxy at 127.0.0.1, never localhost (Windows IPv6 safety)", async () => {
-  // The daemon binds IPv4; on Windows `localhost` resolves to ::1 first with no fallback, so the
-  // reachability probe MUST hit 127.0.0.1 or health falsely reports the proxy down. Capture the URL.
+  // The daemon binds IPv4; on Windows `localhost` resolves to ::1 first with no fallback, so a
+  // localhost probe falsely reports the proxy down.
   let probed = "";
   await gatherFacts(
     "runtime",
@@ -687,7 +668,6 @@ test("runtime port fails only when unreachable", () => {
 
 test("runtime: a down proxy is OK when both Codex and Claude are direct", () => {
   const down = defaultTarget({ reachable: false, trackedPid: null, pidTracked: false });
-  // Proxy not required => no failure (warnings/ok only), so the overall exit is 0.
   expect(runPort(down).status).toBe("fail");
   expect(runPid(down).status).toBe("fail");
   const bothDirect = defaultTarget({
@@ -704,8 +684,8 @@ test("runtime: a down proxy is OK when both Codex and Claude are direct", () => 
 });
 
 test("runtime: a foreign listener on the port is not a problem when both agents are direct", () => {
-  // The driving bug: default setup Direct for both agents + an unrelated service on the
-  // default port. Nothing routes to that port, so health must not warn about it.
+  // The driving bug: both agents Direct plus an unrelated service on the default port made health
+  // warn about a port nothing routes to.
   const listener = defaultTarget({
     proxyExpected: false,
     trackedPid: null,
@@ -724,23 +704,19 @@ test("runtime: a foreign listener on the port is not a problem when both agents 
   const orphan = runOrphan(listener);
   expect(orphan.status).toBe("ok");
   expect(orphan.detail).toContain("both agents are direct");
-  // The pid check carries the same machine-readable stamp for --json consumers.
   const pid = runPid(listener);
   expect(pid.status).toBe("ok");
   expect((pid.value as Record<string, unknown>).bothDirect).toBe(true);
-  // Even a tracked-and-alive pid never lets ownership wording claim the port for a
-  // both-direct target: identity was never probed, so who owns the port is unknown.
+  // Identity is never probed for a both-direct target, so even a tracked-and-alive pid may not claim the port.
   const trackedListener = defaultTarget({ proxyExpected: false, identityConfirmed: null });
   expect(runOrphan(trackedListener).detail).toContain("both agents are direct");
-  // The whole run: nothing warns or fails, so the summary is clean and exit 0.
   const results = evaluateAll("full", { runtimes: [listener] });
   expect(worstStatus(results)).toBe("ok");
   expect(exitCodeFor(results)).toBe(0);
 });
 
 test("runtime: a down daemon reads ok (starts on demand) when auto-start is on", () => {
-  // Deliberate severity change: with the managed lifecycle enabled the resolver
-  // launches the daemon on demand, so "down between sessions" is the normal state.
+  // With auto-start on the resolver launches the daemon on demand, so "down between sessions" is normal.
   const down = defaultTarget({
     reachable: false,
     trackedPid: null,
@@ -759,12 +735,10 @@ test("runtime: a down daemon reads ok (starts on demand) when auto-start is on",
   expect(pid.detail).toContain("starts on demand (auto-start on)");
   expect(pid.fix).toBeUndefined();
   expect((pid.value as Record<string, unknown>).autoStart).toBe(true);
-  // The exit-code consumer: a down daemon must no longer fail the run.
   expect(exitCodeFor(evaluateAll("runtime", { runtimes: [down] }))).toBe(0);
   expect(exitCodeFor(evaluateAll("full", { runtimes: [down] }))).toBe(0);
 
-  // Reachable-but-untracked is NOT "down": auto-start never excuses an orphan/foreign
-  // occupant (the resolver would not relaunch over a busy port).
+  // Auto-start never excuses an orphan or foreign occupant: the resolver would not relaunch over a busy port.
   const occupied = defaultTarget({
     trackedPid: null,
     pidTracked: false,
@@ -790,8 +764,7 @@ test("runtime: a down daemon still fails with the agent start fix when auto-star
 });
 
 test("runtime identity: the misroute warning remains when the proxy IS expected", () => {
-  // proxyExpected + reachable + no x-trace-id: agent requests genuinely route to the
-  // foreign occupant, so this warning is real and must survive the both-direct fix.
+  // Agent requests genuinely route to the foreign occupant here, so the warning must survive the both-direct fix.
   const foreign = runIdentity(defaultTarget({ identityConfirmed: false }));
   expect(foreign.status).toBe("warn");
   expect(foreign.detail).toContain("misroute");
@@ -800,7 +773,6 @@ test("runtime identity: the misroute warning remains when the proxy IS expected"
 
 test("runtime pid: stale/foreign and untracked fail, tracked ok", () => {
   expect(runPid(defaultTarget()).status).toBe("ok");
-  // reachable but not our pid (foreign squatter / stale): pid check fails, port ok
   const foreign = defaultTarget({ pidTracked: false });
   expect(runPid(foreign).status).toBe("fail");
   expect(runPort(foreign).status).toBe("ok");
@@ -875,13 +847,11 @@ test("classifyPortState matches the pre-union ownership decision tree over every
 });
 
 test("runtime watchdog: off, disabled, and active states are all ok with informative detail", () => {
-  // auto-start off -> reports off, never auto-stops.
   const off = checkRuntimeWatchdog(defaultTarget()); // the fixture has watchdog.autoStart=false
   expect(off.status).toBe("ok");
   expect(off.detail).toContain("off");
   expect(off.value).toEqual({ autoStart: false });
 
-  // auto-start on but idle-timeout 0 -> auto-stop disabled.
   const disabled = checkRuntimeWatchdog(
     defaultTarget({
       watchdog: { ...defaultTarget().watchdog, autoStart: true, idleTimeoutMs: 0 },
@@ -910,8 +880,7 @@ test("runtime watchdog: off, disabled, and active states are all ok with informa
   expect(active.value?.remainingMs).toBe(40 * 60_000);
   expect(active.value?.idleMs).toBe(20 * 60_000);
 
-  // Idle past the window clamps remaining to 0; the persisted request mark counts as the
-  // latest activity.
+  // Idle past the window clamps remaining to 0; the persisted request mark beats the older beat.
   const expired = checkRuntimeWatchdog(
     defaultTarget({
       watchdog: {
@@ -927,8 +896,7 @@ test("runtime watchdog: off, disabled, and active states are all ok with informa
   expect(expired.value?.remainingMs).toBe(0);
   expect(expired.detail).toContain("auto-stops in 0s");
 
-  // No activity recorded yet -> idle AND remaining are unknown (the daemon's real baseline
-  // includes a startedAtMs the probe can't see, so we don't fake a precise full window).
+  // The daemon's real baseline includes a startedAtMs the probe cannot see, so no precise full window is faked.
   const fresh = checkRuntimeWatchdog(
     defaultTarget({
       watchdog: {
@@ -947,8 +915,7 @@ test("runtime watchdog: off, disabled, and active states are all ok with informa
 });
 
 test("runtime watchdog: both agents direct collapses to one line, no stale countdown", () => {
-  // A daemon nothing routes to may still carry marks from an earlier run; reporting
-  // its idle countdown (or "auto-stops in 0s" from an expired mark) is noise.
+  // A daemon nothing routes to may still carry marks from an earlier run; its countdown is noise.
   const stale = checkRuntimeWatchdog(
     defaultTarget({
       proxyExpected: false,
@@ -968,8 +935,7 @@ test("runtime watchdog: both agents direct collapses to one line, no stale count
   expect(stale.detail).not.toContain("last beat");
   expect(stale.value).toEqual({ bothDirect: true });
 
-  // The gate precedes the auto-start and idle-timeout branches: neither of those
-  // states may reintroduce watchdog narration when nothing routes to the daemon.
+  // The gate precedes the auto-start and idle-timeout branches, so neither reintroduces the narration.
   const offAndDirect = checkRuntimeWatchdog(
     defaultTarget({
       proxyExpected: false,
@@ -991,18 +957,16 @@ test("runtime watchdog is scoped to full + proxy, not the launchers' fast runtim
 });
 
 test("runtime identity: confirmed ok, foreign warns, down/not-probed stays ok", () => {
-  // x-trace-id present -> confirmed copilot-api.
   const ok = runIdentity(defaultTarget()); // identityConfirmed: true
   expect(ok.status).toBe("ok");
   expect(ok.detail).toContain("confirmed copilot-api");
 
-  // Reachable but no x-trace-id -> a foreign service squats the port.
   const foreign = runIdentity(defaultTarget({ identityConfirmed: false }));
   expect(foreign.status).toBe("warn");
   expect(foreign.detail).toContain("non-copilot-api");
   expect(foreign.fix).toContain("free the port");
 
-  // Not reachable / not probed -> ok (runtime.port owns the down verdict).
+  // runtime.port owns the down verdict.
   expect(
     runIdentity(defaultTarget({ reachable: false, identityConfirmed: null })).status,
   ).toBe("ok");
@@ -1011,7 +975,6 @@ test("runtime identity: confirmed ok, foreign warns, down/not-probed stays ok", 
 });
 
 test("runtime orphan: untracked-but-ours warns, foreign defers to identity, tracked ok", () => {
-  // Reachable copilot-api (or unknown) but no tracked pid, proxy required -> orphan warn.
   const orphan = runOrphan(
     defaultTarget({ pidTracked: false, trackedPid: null, identityConfirmed: true }),
   );
@@ -1019,30 +982,26 @@ test("runtime orphan: untracked-but-ours warns, foreign defers to identity, trac
   expect(orphan.detail).toContain("orphaned");
   expect(orphan.fix).toContain("agent stop");
 
-  // A foreign listener is runtime.identity's verdict -> orphan must NOT also warn.
+  // A foreign listener is runtime.identity's verdict, so orphan must not also warn.
   expect(
     runOrphan(defaultTarget({ pidTracked: false, identityConfirmed: false })).status,
   ).toBe("ok");
 
-  // Foreign responder while our tracked pid is alive: orphan stays ok but must NOT claim the
-  // tracked daemon owns the port (that wording belongs to runtime.identity).
+  // A foreign responder while the tracked pid is alive: orphan stays ok and must not claim the
+  // tracked daemon owns the port; the misrouting warning is runtime.identity's.
   const foreignTracked = runOrphan(defaultTarget({ identityConfirmed: false }));
   expect(foreignTracked.status).toBe("ok");
   expect(foreignTracked.detail).not.toContain("tracked daemon");
   expect(foreignTracked.detail).toContain("not copilot-api");
 
-  // Tracked daemon -> ok.
   expect(runOrphan(defaultTarget()).status).toBe("ok");
 
-  // Both agents direct -> no proxy required -> a missing tracked pid is not an orphan.
   expect(
     runOrphan(defaultTarget({ pidTracked: false, proxyExpected: false })).status,
   ).toBe("ok");
 });
 
 test("runtime checks stamp the target's profile; environment checks stay null", () => {
-  // The default target's checks carry profile null (today's only shape); a named
-  // target's checks carry its name -- the plumbing the profile tier builds on.
   expect(runPort(defaultTarget()).profile).toBeNull();
   expect(checkRuntimeWatchdog(defaultTarget()).profile).toBeNull();
   const named = profileTarget("work", { reachable: false });
@@ -1053,7 +1012,6 @@ test("runtime checks stamp the target's profile; environment checks stay null", 
 });
 
 test("the identity probe (an extra request) is skipped in the launchers' fast runtime scope", async () => {
-  // runtime scope must stay minimal: reach is probed, but proxyIdentity is NOT called.
   let identityCalls = 0;
   const facts = await gatherFacts(
     "runtime",
@@ -1073,9 +1031,8 @@ test("the identity probe (an extra request) is skipped in the launchers' fast ru
 });
 
 test("gatherFacts never probes identity for a both-direct default target (proxyExpected gate)", async () => {
-  // Both agents wired Direct + something listening on the default port: nothing routes
-  // there, so the identity probe must not even fire -- which makes the misroute warning
-  // structurally unreachable for this state, not merely suppressed.
+  // Nothing routes to the port, so the identity probe must not fire; the misroute warning is
+  // structurally unreachable here, not merely suppressed.
   const root = tempDir("copilot-health-bothdirect-");
   const restoreEnv = envSnapshot();
   process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
@@ -1108,7 +1065,6 @@ test("gatherFacts never probes identity for a both-direct default target (proxyE
     expect(identityCalls).toBe(0);
     expect(target.proxyExpected).toBe(false);
     expect(probeOf(target).identityConfirmed).toBeNull();
-    // End to end: the gathered facts evaluate warning-free.
     const runtime = evaluateAll("proxy", { runtimes: facts.runtimes });
     expect(worstStatus(runtime)).toBe("ok");
   } finally {
@@ -1118,12 +1074,9 @@ test("gatherFacts never probes identity for a both-direct default target (proxyE
 });
 
 test("a mixed default Claude config (direct helper, proxy base URL) expects the proxy", async () => {
-  // Claude's MODE keys off apiKeyHelper alone, so this config reads
-  // codex=direct claude=direct -- yet Claude's ANTHROPIC_BASE_URL sends its
-  // traffic to the local daemon. Health once trusted the modes and reported
-  // "not required (both direct)" with the daemon down and Claude broken; the
-  // base-URL fact must bring back the full runtime treatment: proxyExpected
-  // true, the daemon-down FAIL (with the start fix), and the identity probe.
+  // Claude's MODE keys off apiKeyHelper alone, so this config reads both-direct while ANTHROPIC_BASE_URL
+  // sends Claude's traffic to the local daemon. Health once trusted the modes and reported "not
+  // required" with the daemon down; the base-URL fact must bring back the full runtime treatment.
   const root = tempDir("copilot-health-mixed-");
   const restoreEnv = envSnapshot();
   process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
@@ -1142,7 +1095,7 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
       claudeHome: () => claudeHome,
     };
 
-    // Daemon down (auto-start defaults off): the port row must FAIL with the start fix.
+    // Auto-start defaults off, so a down daemon is a FAIL here.
     const down = await gatherFacts("proxy", {}, { ...deps, reach: async () => false });
     const downTarget = down.runtimes?.[0];
     if (!downTarget) throw new Error("expected the default runtime target");
@@ -1175,9 +1128,8 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
 });
 
 test("an unreadable settings file reaches health as other/read-error, never as none", async () => {
-  // The settings file is read three-way (deps.readFileResult); an unreadable
-  // file must not collapse into the absent/none verdict readFileSafe's null
-  // would produce -- and the warn keys off the classifier's reason.
+  // The settings file is read three-way (deps.readFileResult); readFileSafe's null would collapse an
+  // unreadable file into the absent/none verdict.
   const claudeHome = "/hc";
   const deps = {
     claudeHome: () => claudeHome,
@@ -1199,9 +1151,8 @@ test("an unreadable settings file reaches health as other/read-error, never as n
 });
 
 test("an unreadable codex config reaches health as other/read-error, never as none", async () => {
-  // The codex config.toml is ALSO read three-way (deps.readFileResult): before
-  // that, its readFileSafe null collapsed an unreadable config into the
-  // absent/"not wired" OK verdict.
+  // The codex config.toml is read three-way too; readFileSafe's null once collapsed an unreadable
+  // config into the absent "not wired" OK verdict.
   const deps = {
     codexHome: () => "/hx",
     readFileSafe: () => null,
@@ -1225,8 +1176,7 @@ test("an unreadable codex config reaches health as other/read-error, never as no
 });
 
 test("gatherFacts still probes identity when an agent routes through the proxy", async () => {
-  // Codex wired to the local proxy: requests genuinely route to the port, so the
-  // identity probe fires and a foreign responder still earns the misroute warning.
+  // Codex routes through the proxy, so the identity probe fires and a foreign responder earns the warning.
   const root = tempDir("copilot-health-proxywired-");
   const restoreEnv = envSnapshot();
   process.env.COPILOT_API_HOME = join(root, "api-home");
@@ -1267,10 +1217,8 @@ test("gatherFacts still probes identity when an agent routes through the proxy",
 });
 
 test("health's own proxy probes do not move the watchdog activity signal", async () => {
-  // lastRequestMs reads the observer's persisted `.activity.json` mark, which health's
-  // reach/identity GET / requests never move (only inference POSTs mark it). So even though
-  // the proxy IS probed, the 'last request' / idle signal is the persisted value, untouched --
-  // observing the proxy can't reset the numbers.
+  // lastRequestMs reads the observer's persisted `.activity.json` mark; only inference POSTs move
+  // it, so health's own GET probes cannot reset the idle signal.
   let probes = 0;
   const facts = await gatherFacts(
     "proxy",
@@ -1292,17 +1240,14 @@ test("health's own proxy probes do not move the watchdog activity signal", async
       idleTimeoutMs: () => 60_000,
     },
   );
-  expect(probes).toBeGreaterThan(0); // the proxy WAS probed (reach + identity)
-  expect(facts.runtimes?.[0]?.watchdog.lastRequestMs).toBe(100); // ...yet the signal is unchanged
+  expect(probes).toBeGreaterThan(0);
+  expect(facts.runtimes?.[0]?.watchdog.lastRequestMs).toBe(100);
   expect(facts.runtimes?.[0]?.watchdog.now).toBe(5000);
 });
 
 test("gatherFacts derives proxy.floatSkips from the float's own predicate", async () => {
-  // The package-bounds exemption must key off proxyUnusedEverywhere (the float's
-  // skip predicate: modes AND the managed direct base URL AND no profile homes),
-  // never a looser both-direct read -- health and the float must agree. The
-  // predicate's own edge cases (profile homes, proxy wiring) live in
-  // agents_wiring.test.ts; this pins the fact-gathering seam.
+  // The exemption must key off proxyUnusedEverywhere, the float's own skip predicate, so health and
+  // the float agree. The predicate's edge cases live in agents_wiring.test.ts.
   const root = tempDir("copilot-health-float-");
   const restoreEnv = envSnapshot();
   process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
@@ -1327,8 +1272,7 @@ test("gatherFacts derives proxy.floatSkips from the float's own predicate", asyn
     const direct = await gatherFacts("proxy", {}, overrides);
     expect(direct.proxy?.floatSkips).toBe(true);
 
-    // A mixed Claude config (direct helper, proxy base URL) floats again, so
-    // the bounds are enforced again.
+    // A mixed Claude config (direct helper, proxy base URL) floats again, so the bounds are enforced again.
     writeClaudeSettings(claudeHome, { apiKeyHelper, baseUrl: "http://127.0.0.1:4141" });
     const mixed = await gatherFacts("proxy", {}, overrides);
     expect(mixed.proxy?.floatSkips).toBe(false);
@@ -1339,9 +1283,8 @@ test("gatherFacts derives proxy.floatSkips from the float's own predicate", asyn
 });
 
 test("a target's pid and port pair from ONE state snapshot (fallback never re-reads)", async () => {
-  // proxyStatus's rule, kept by health: with no recorded port, the fallback is
-  // fallbackPort (state-independent for the addressed profile), never a second
-  // read() that could pair the snapshot's pid with a newer port.
+  // proxyStatus's rule: with no recorded port the fallback is fallbackPort, never a second read()
+  // that could pair the snapshot's pid with a newer port.
   let stateReads = 0;
   const facts = await gatherFacts(
     "runtime",
@@ -1361,8 +1304,7 @@ test("a target's pid and port pair from ONE state snapshot (fallback never re-re
 });
 
 test("gatherFacts is read-only: no files appear in a fresh isolated home", async () => {
-  // Health observes, never writes: it must not create the copilot-api home, a
-  // run dir, or a port reservation (reserveProfilePort is a write-path API).
+  // Health observes, never writes: no home, run dir, or port reservation (reserveProfilePort is write-path).
   const root = tempDir("copilot-health-readonly-");
   const restoreEnv = envSnapshot();
   const home = join(root, "api-home"); // never created -- gatherFacts must not mkdir it
@@ -1377,11 +1319,7 @@ test("gatherFacts is read-only: no files appear in a fresh isolated home", async
         claudeHome: () => join(root, "claude-home"),
       },
     );
-    // Exactly one runtime target this commit: the default (profile null) --
-    // slot/homeExists no longer exist on the default variant (type-level).
     expect(facts.runtimes?.map((t) => t.profile)).toEqual([null]);
-    // The zero-writes invariant: the home was never created and nothing else
-    // landed under the isolated root.
     expect(existsSync(home)).toBe(false);
     expect(readdirSync(root)).toEqual([]);
   } finally {
@@ -1391,12 +1329,9 @@ test("gatherFacts is read-only: no files appear in a fresh isolated home", async
 });
 
 test("an interrupted default-home migration warns, naming the staging dir and the migrate re-run", async () => {
-  // The 3.5.6 fix-up stages the flat root's daemon files into
-  // profiles/.default.migrating and flips with ONE atomic rename; a kill inside
-  // that window leaves the staging dir behind. Home resolution still answers the
-  // flat root (the system keeps working), so the verdict is warn -- an unfinished
-  // migration, never a breakage -- and the fix is the exact re-run that completes
-  // the move.
+  // The 3.5.6 fix-up stages the flat root's daemon files into profiles/.default.migrating and flips
+  // with ONE atomic rename, so a kill inside that window leaves the staging dir. Home resolution
+  // still answers the flat root, so the verdict is warn and the fix is the re-run that completes it.
   const root = tempDir("copilot-health-staging-");
   const restoreEnv = envSnapshot();
   const home = join(root, "api-home");
@@ -1409,7 +1344,6 @@ test("an interrupted default-home migration warns, naming the staging dir and th
       codexHome: () => join(root, "codex-home"),
       claudeHome: () => join(root, "claude-home"),
     };
-    // The negative: a root with no staging dir reads ok (no fix, per the union).
     const clean = await gatherFacts("proxy", {}, overrides);
     if (!clean.defaultHomeMigration) throw new Error("expected default-home migration facts");
     expect(clean.defaultHomeMigration.staged).toBe(false);
@@ -1417,7 +1351,6 @@ test("an interrupted default-home migration warns, naming the staging dir and th
     expect(cleanRow.status).toBe("ok");
     expect(cleanRow.fix).toBeUndefined();
 
-    // The interrupted move: exactly the staging dir on disk.
     const staging = join(home, PROFILES_DIR_NAME, DEFAULT_HOME_STAGING_DIR);
     mkdirSync(staging, { recursive: true });
     const facts = await gatherFacts("proxy", {}, overrides);
@@ -1425,12 +1358,10 @@ test("an interrupted default-home migration warns, naming the staging dir and th
     if (!row) throw new Error("expected the default-home migration check in the proxy scope");
     expect(row.status).toBe("warn");
     expect(row.detail).toContain(staging);
-    // The fix line is an external contract: the exact command that re-runs the
-    // 3.5.6 fix-ups and completes the move.
+    // The fix line is an external contract: the exact command that re-runs the 3.5.6 fix-ups.
     expect(row.fix).toBe("agent migrate 3.5.6 3.5.7");
 
-    // The launchers' fast `runtime` probe never gathers the fact at all, so its
-    // contracted row set cannot grow a migration row.
+    // The launchers' fast `runtime` probe never gathers the fact, so its contracted row set cannot grow.
     const fast = await gatherFacts("runtime", {}, overrides);
     expect(fast.defaultHomeMigration).toBeUndefined();
   } finally {
@@ -1453,8 +1384,7 @@ test("deno unavailable fails; node_modules absent fails, stale warns, fresh ok",
   expect(
     checkNodeModules({ ...BOOTSTRAP_OK, nodeModules: { present: true, fresh: false } }).status,
   ).toBe("warn");
-  // A compiled binary embeds its dependencies (nodeModules fact is null): the
-  // check must read ok and say so, never fail on the node_modules it cannot have.
+  // A compiled binary embeds its dependencies (nodeModules null); it cannot have node_modules to fail on.
   const embedded = checkNodeModules({ ...BOOTSTRAP_OK, nodeModules: null });
   expect(embedded.status).toBe("ok");
   expect(embedded.detail).toContain("embedded");
@@ -1470,8 +1400,7 @@ test("shell + launcher wiring: missing warns, present ok", () => {
   const notWired = checkShellIntegration(bare);
   expect(notWired.status).toBe("warn");
   expect(notWired.detail).toBe("not wired into any shell rc/profile");
-  // An UNPROVEN target census (discovery never ran) keeps the warn + fix but
-  // never the confident "not wired" claim.
+  // An UNPROVEN census (discovery never ran) keeps the warn + fix but never the confident "not wired".
   const unproven = checkShellIntegration({ ...bare, targetsUnproven: true });
   expect(unproven.status).toBe("warn");
   expect(unproven.detail).toBe(
@@ -1529,8 +1458,7 @@ test("directAuthFromSpawn: completed exits prove the verdict; error/kill stays u
     authenticated: false,
     unproven: true,
   });
-  // The account pin travels on the fact (so the check can name it); auto adds
-  // nothing, keeping the pre-pin fact shape byte-identical.
+  // The account pin travels on the fact so the check can name it; auto adds nothing to the shape.
   expect(directAuthFromSpawn("/bin/gh", { status: 1 }, "work-bot")).toEqual({
     command: "/bin/gh",
     authenticated: false,
@@ -1601,7 +1529,7 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
   ].join("\n"));
   expect(unproven.fix).toBe("agent auth");
   expect(unproven.value).toMatchObject({ ghAuthUnproven: true });
-  // The PROVEN miss keeps the landed confident wording + advice.
+  // A PROVEN miss keeps the confident wording and advice.
   const proven = checkAuth({
     storedToken: false,
     ghAuthenticated: false,
@@ -1614,8 +1542,7 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     "`gh` is unauthenticated (AUTO - follows gh's active account) - run `gh auth login`, " +
     "or `agent auth` to switch provider",
   ].join("\n"));
-  // A failing AUTO slot still names the account it follows (no hidden
-  // information: the failure is about vivswan's credential).
+  // A failing AUTO slot names the account it follows: the failure is about vivswan's credential.
   const provenNamed = checkAuth({
     storedToken: false,
     ghAuthenticated: false,
@@ -1627,8 +1554,7 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
   expect(provenNamed.detail).toContain(
     "`gh` is unauthenticated (AUTO - currently account vivswan) - run `gh auth login`",
   );
-  // A PINNED slot's verdict names its account (the probe ran `gh auth token
-  // --user`); gh's active account may well be fine.
+  // A PINNED slot's verdict names its account (the probe ran `gh auth token --user`); gh's active one may be fine.
   const pinned = checkAuth({
     storedToken: false,
     ghAuthenticated: false,
@@ -1687,7 +1613,6 @@ test("evaluateAll(full) includes the live checks only when their facts are prese
   const ids = evaluateAll("full", facts).map((r) => r.id);
   expect(ids).toContain("codex.live");
   expect(ids).toContain("claude.live");
-  // No live facts => no live checks.
   expect(evaluateAll("full", {}).map((r) => r.id)).not.toContain("codex.live");
 });
 
@@ -1703,8 +1628,7 @@ test("evalShellFiles: launchersWired is the config key; markers stay per-file fa
   ], true);
   expect(facts.integrationWired).toBe(true);
   expect(facts.launchersWired).toBe(true);
-  // The legacy launchers marker stays a per-file fact (a leftover block), but it
-  // no longer decides launchersWired -- the config key does.
+  // The legacy launchers marker stays a per-file fact but no longer decides launchersWired; the key does.
   expect(facts.files.find((f) => f.path === "/b")?.hasLaunchers).toBe(true);
   expect(facts.files.find((f) => f.path === "/c")?.hasIntegration).toBe(false);
   expect(
@@ -1727,7 +1651,6 @@ test("evalCodex: no config.toml at the home reads as not-configured", () => {
   expect(f.providerMode).toBe("none");
 });
 
-/** The managed proxy config at `baseUrl`: the `agent proxy-token` auth block. */
 function proxyToml(baseUrl: string): string {
   return codexConfigToml({ baseUrl, auth: proxyTokenCommand() });
 }
@@ -1748,9 +1671,8 @@ test("evalCodex: provider wired only when default + managed auth + host:port all
   });
   expect(evalCodex("/c", stalePort, env, 4141, false).providerWired).toBe(false);
   expect(evalCodex("/c", foreignAuth, env, 4141, false).providerWired).toBe(false);
-  // The pre-4.0.0 default proxy shape (`env_key` instead of the managed auth block), with
-  // the token present: proxy by base_url, but never managed wiring -- the 4.0.0
-  // migration rewrites it, and `agent health` sends an unconverted one to `agent codex`.
+  // The pre-4.0.0 proxy shape (`env_key` instead of the managed auth block) is proxy by base_url but
+  // never managed wiring; the 4.0.0 migration rewrites it.
   const legacyEnvKey = codexConfigToml({
     baseUrl: "http://localhost:4141/v1",
     envKey: "OPENAI_API_KEY",
@@ -1761,13 +1683,11 @@ test("evalCodex: provider wired only when default + managed auth + host:port all
     providerWired: false,
     tokenAvailable: true,
   });
-  // No token in .env, but present in the environment => still available.
   expect(evalCodex("/c", good, "FOO=1\n", 4141, true)).toMatchObject({
     envKeyInDotenv: false,
     envKeyInEnviron: true,
     tokenAvailable: true,
   });
-  // No token anywhere => not available.
   expect(evalCodex("/c", good, "FOO=1\n", 4141, false).tokenAvailable).toBe(false);
 });
 
@@ -1790,7 +1710,6 @@ test("evalCodex: a port that only appears as a substring does not match", () => 
 test("evalCodex: base_url must be the full http://localhost:<port>/v1 contract", () => {
   const mk = proxyToml;
   const env = "OPENAI_API_KEY=x\n";
-  // Right host+port but missing /v1, or https, or a different path => not wired.
   expect(evalCodex("/c", mk("http://localhost:4141"), env, 4141, false).baseUrlMatches).toBe(false);
   expect(evalCodex("/c", mk("https://localhost:4141/v1"), env, 4141, false).baseUrlMatches).toBe(
     false,
@@ -1798,7 +1717,6 @@ test("evalCodex: base_url must be the full http://localhost:<port>/v1 contract",
   expect(evalCodex("/c", mk("http://localhost:4141/not-v1"), env, 4141, false).baseUrlMatches).toBe(
     false,
   );
-  // The managed contract (and the 127.0.0.1 equivalent, trailing slash) match.
   expect(evalCodex("/c", mk("http://localhost:4141/v1"), env, 4141, false).baseUrlMatches).toBe(
     true,
   );
@@ -1818,7 +1736,6 @@ test("checkAutoupdate: full status always shown (disabled too); recorded error w
   const base = { enabled: false, cooldownDays: 7, lastCheckMs: 0, lastResult: "" };
   const disabled = checkAutoupdate(base);
   expect(disabled.status).toBe("ok");
-  // Even when disabled, cooldown / last check / last result are surfaced.
   expect(disabled.detail).toContain("disabled");
   expect(disabled.detail).toContain("cooldown 7d");
   expect(disabled.detail).toContain("last check never");
@@ -1960,8 +1877,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
 });
 
 test("checkAuth renders the named-profiles detail line from the swept facts", () => {
-  // The producer sweeps the store via profileNames(), so only validated names
-  // arrive here (pinned in state.test.ts); this pins the non-empty rendering.
+  // Only validated names arrive here: the producer sweeps via profileNames() (pinned in state.test.ts).
   const res = checkAuth({
     storedToken: true,
     ghAuthenticated: false,

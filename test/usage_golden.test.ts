@@ -120,11 +120,10 @@ function ledgerBlocks(tree: GeneratedTree): Record<string, unknown> {
 }
 
 /**
- * The three read paths of `agent cost` over one tree, each held to `expected`: `--no-index`,
- * then cold and warm through the index in a fresh copilot-api home of its own. The stats
- * prove BOTH readers went through the index: every generated file was walked by it (the
- * summed count equals the tree's), and the warm run reuses exactly the rows the cold run
- * parsed and reads no bytes (a reader that bypassed it would parse again).
+ * The three read paths over one tree, each held to `expected`: `--no-index`, then cold and
+ * warm through the index in a fresh copilot-api home. The stats prove BOTH readers went
+ * through the index: the summed file count equals the tree's, and the warm run reuses exactly
+ * the rows the cold run parsed and reads no bytes (a reader that bypassed it would parse again).
  */
 async function checkReadPaths(tree: GeneratedTree, golden?: Record<string, unknown>) {
   const plain = await runCurrentCost(tree.root, { noIndex: true });

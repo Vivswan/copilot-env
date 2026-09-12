@@ -12,13 +12,10 @@ import { join } from "node:path";
 import { denoRunArgs, resolvePackageDir, ROOT, runSync } from "./helpers/run.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
-// The preload shim swaps the daemon's `fs.createWriteStream` for a discarding sink on paths
-// under <home>/logs (the proxy's handler-log directory), touching the files' mtimes instead
-// of growing them. Patching the `node:fs` default export must be exercised as a real
-// preloaded subprocess (`--preload`), which is how launchDaemon loads it.
+// The shim patches `node:fs` at import, so any import would show it; the subprocess proves it
+// loads the way production does, through `--preload` (src/copilot_api/process.ts).
 const SHIM = join(ROOT, "src", "scripts", "log_mute_preload.ts");
 
-/** Run a target script under the shim with COPILOT_API_HOME pointed at `home`. */
 function runPreloaded(home: string, script: string): string {
   const target = join(home, "target.ts");
   writeFileSync(target, script);
@@ -32,8 +29,6 @@ function runPreloaded(home: string, script: string): string {
 }
 
 // Mirrors the proxy logger's own usage: append-mode stream, write(content, cb), end().
-// Writes go to a seeded handler log AND a never-created one, plus a control file outside
-// the logs dir.
 const TARGET_SCRIPT = `
 import fs from "node:fs";
 import { join } from "node:path";
@@ -58,8 +53,8 @@ console.log("DONE");
 test("writes under <home>/logs are discarded outright (no growth, no file creation)", () => {
   const home = tempDir("copilot-logmute-");
   try {
-    // Seed one handler log EMPTY with an hour-old mtime: pure discard must leave it exactly
-    // as-is (the old touch behavior would have bumped the mtime).
+    // An hour-old mtime on the seeded log pins that discard never touches the file, not even its
+    // mtime.
     const seeded = join(home, "logs", "responses-handler-2026-01-01.log");
     mkdirSync(join(home, "logs"), { recursive: true });
     writeFileSync(seeded, "");
@@ -69,23 +64,19 @@ test("writes under <home>/logs are discarded outright (no growth, no file creati
 
     expect(runPreloaded(home, TARGET_SCRIPT)).toBe("DONE");
 
-    // Seeded file: still empty, mtime untouched. Unseeded file: never created at all.
     expect(statSync(seeded).size).toBe(0);
     expect(statSync(seeded).mtimeMs).toBe(seededMtime);
     expect(existsSync(join(home, "logs", "messages-handler-2026-01-01.log"))).toBe(false);
 
-    // A stream OUTSIDE the logs dir goes through the real fs.createWriteStream untouched.
     expect(readFileSync(join(home, "outside.log"), "utf8")).toBe("real content\n");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 });
 
-// Drift alarm for the floated proxy: the shim (and the idle watchdog's mtime signal) depend
-// on the proxy's logger opening append streams via the `node:fs` DEFAULT export's
-// createWriteStream, under an APP_DIR-rooted "logs" directory. The package floats to the
-// newest release on install, so assert those internals against whatever is INSTALLED -- a
-// release that reworks its logger fails here instead of silently logging payloads again.
+// Drift alarm: the shim assumes the proxy's logger opens append streams through the `node:fs`
+// DEFAULT export under an APP_DIR-rooted "logs" dir. The proxy floats, so a release that reworks
+// its logger fails here instead of silently logging payloads again.
 test("the installed proxy's logger still matches the shim's assumptions", () => {
   const pkgDir = resolvePackageDir("@jeffreycao/copilot-api", ROOT);
   const distDir = join(pkgDir, "dist");

@@ -1,14 +1,11 @@
-// BEFORE/AFTER `agent cost` for a PR: base commit and head, one synthetic tree, one runner,
-// one sticky PR comment; the head's JSON must match the base's or the job fails.
+// BEFORE/AFTER `agent cost` for a PR: base and head over one synthetic tree on one runner;
+// a head JSON that differs from the base fails the job.
 //
-// `measure` runs head-controlled code (fixtures script, cost CLI) with an explicit child
-// environment and no token, and leaves the rendered comment and the verdict in --out; the
-// workflow (cost-metrics.yml) posts the comment file, published as the step's `comment`
-// output, through the sticky-comment action, then `verdict` turns the recorded verdict into
-// the job's exit status. No step of this script ever holds a token.
-//   deno run --allow-read --allow-write --allow-env --allow-run=git,deno \
-//     .github/scripts/cost-metrics.ts measure --out <dir> [--base <ref>] [--mb <n>]
-//   deno run --allow-read .github/scripts/cost-metrics.ts verdict --in <dir>
+// `measure` runs head-controlled code, so it never holds a token; the workflow
+// (cost-metrics.yml) posts the comment file it leaves in --out, then `verdict` reads the
+// recorded verdict back as the exit status.
+//   measure --out <dir> [--base <ref>] [--mb <n>]  -> comment.md + verdict in <dir>
+//   verdict --in <dir>                               -> exit 1 when the JSON differs
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -28,24 +25,17 @@ import { join, relative, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-/** Marks the comment body as this script's; the workflow's sticky-comment header keys it. */
+/** Leads both the comment body and the failure summary, so either is recognizable as this script's. */
 const COMMENT_MARKER = "<!-- cost-metrics -->";
 
-/** The measurement's hand-off inside the --out/--in directory: the comment body (its path
- *  published as the COMMENT_OUTPUT step output for the sticky-comment action) and the
- *  verdict the `verdict` step reads back. */
+/** The hand-off through --out/--in; the workflow reads the comment path from the COMMENT_OUTPUT step output. */
 const COMMENT_FILE = "comment.md";
 const VERDICT_FILE = "verdict";
 const COMMENT_OUTPUT = "comment";
 
-/** The cost invocation under measurement (after `deno run --config`); the window adds to it. */
 const COST_ARGS = ["-P=cli", "src/cli.ts", "cost", "--json", "--per-day"];
 
-/**
- * The one top-level JSON key that describes the run rather than the cost (timings, index
- * statistics). It is the only key dropped before the comparison; when present, the comment
- * says so. Its `index.bytesRead` feeds the "warm bytes read" row.
- */
+/** The one top-level key that describes the run, not the cost; dropped before the comparison. */
 const RUNTIME_KEY = "runtime";
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -92,7 +82,6 @@ interface Checkout {
 interface Measurement {
   ms: number;
   json: Record<string, unknown>;
-  /** The comparable text: the runtime key dropped, keys sorted. */
   text: string;
 }
 
@@ -114,7 +103,6 @@ interface TreeSummary {
   lastDay: string;
 }
 
-/** One table row: the `--days` window and its label. */
 interface Window {
   label: string;
   args: readonly string[];
@@ -171,7 +159,6 @@ function nonNegativeInt(raw: string, what: string): number {
   return value;
 }
 
-/** `--name` first, then the environment variable, then the default. */
 function setting(flags: Flags, name: string, envName: string): string | undefined {
   const flag = flags.get(name);
   if (flag !== undefined) return flag;
@@ -225,9 +212,8 @@ export interface RunOptions {
 }
 
 /**
- * Run `command` with an argv array (never a shell) and capture both streams. Deno.Command with
- * clearEnv (deno's node:child_process polyfill MERGES `env` into the parent's); async so the
- * timeout or the caller's signal can SIGKILL a wedged child (Deno's `signal` only SIGTERMs).
+ * Deno.Command with clearEnv, not node:child_process: deno's polyfill MERGES `env` into the
+ * parent's. The kill is manual because Deno's own `signal` option only SIGTERMs.
  */
 export async function run(
   command: string,
@@ -280,7 +266,6 @@ export async function run(
   };
 }
 
-/** `run`, failing loudly (command, exit status, stderr) on a non-zero exit. */
 async function mustRun(
   command: string,
   args: readonly string[],
@@ -295,10 +280,8 @@ async function mustRun(
   return result;
 }
 
-/** The only variables a child may see from this process's environment, when set. */
 const PASSTHROUGH_ENV = ["PATH", "TZ", "LANG", "LC_ALL"] as const;
 
-/** An explicit child environment: the passthrough set plus `extra`, nothing else. */
 export function childEnv(extra: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of PASSTHROUGH_ENV) {
@@ -358,7 +341,6 @@ function denoRun(checkoutDir: string): string[] {
   return ["run", "--config", join(checkoutDir, "deno.json")];
 }
 
-/** The environment that points a cost run at the synthetic tree under `treeHome`. */
 function treeEnv(treeHome: string, copilotEnvHome: string, cache: string): Record<string, string> {
   return childEnv({
     HOME: treeHome,
@@ -393,7 +375,6 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-/** The generator's last stdout line as a validated TreeSummary; anything else is an error. */
 function parseTreeSummary(line: string): TreeSummary {
   const what = "fixtures summary";
   const parsed = record(line === "" ? undefined : JSON.parse(line));
@@ -497,7 +478,6 @@ function unsealTree(root: string): void {
   }
 }
 
-/** Content digest of the whole tree: paths, kinds, file bytes, symlink targets. */
 function treeDigest(root: string): string {
   const hash = createHash("sha256");
   for (const { rel, path } of treeEntries(root)) {
@@ -530,7 +510,6 @@ export function canonical(value: unknown): unknown {
   return value;
 }
 
-/** The comparable text of a payload: RUNTIME_KEY dropped, keys sorted. */
 export function comparable(json: Record<string, unknown>): string {
   const { [RUNTIME_KEY]: _runtime, ...kept } = json;
   return `${JSON.stringify(canonical(kept), null, 2)}\n`;
@@ -555,7 +534,6 @@ async function measure(
   return { ms, json, text: comparable(json) };
 }
 
-/** `runtime.index.bytesRead`, when the payload carries it. */
 export function bytesRead(json: Record<string, unknown>): number | undefined {
   const value = record(record(json[RUNTIME_KEY])?.index)?.bytesRead;
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -704,7 +682,6 @@ function boundedBlock(
   }
 }
 
-/** The step-summary body for a failed measurement, within FAILURE_SUMMARY_LINES/BYTES. */
 function failureSummary(message: string): string {
   const header = `${COMMENT_MARKER}\n## Cost metrics: measurement failed\n\n`;
   const block = boundedBlock(
@@ -719,12 +696,10 @@ function failureSummary(message: string): string {
 /** Room for the diff section's one heading line; anything longer is cut, never spilled. */
 const DIFF_HEADING_BYTES = 256;
 
-/** `text` as one line of at most `maxBytes` bytes: newlines become spaces, the tail is cut. */
 function oneLine(text: string, maxBytes: number): string {
   return UTF8_STRICT.decode(cutBytes(UTF8.encode(text.replaceAll("\n", " ")), maxBytes));
 }
 
-/** The comment's diff section for one window, within DIFF_SECTION_LINES/BYTES. */
 function diffSection(window: string, label: string, diff: string): string {
   const heading = oneLine(`### ${window}: ${label} vs base (excerpt)`, DIFF_HEADING_BYTES);
   const header = `\n${heading}\n\n`;
@@ -737,7 +712,7 @@ function diffSection(window: string, label: string, diff: string): string {
   return `${header}${block}`;
 }
 
-/** Unified diff of two texts (git, no shell); bounded later, at render. */
+/** Bounded later, at render. */
 async function unifiedDiff(scratch: string, baseText: string, headText: string): Promise<string> {
   writeFileSync(join(scratch, "base.json"), baseText);
   writeFileSync(join(scratch, "head.json"), headText);
@@ -772,10 +747,9 @@ export interface Payload {
 }
 
 /**
- * Classify the head payloads against the base's. A difference is confirmed against a SECOND
- * base run (`recheck`): the inputs (live pricing, the local day boundary) can move between
- * runs, and only a difference that survives an unchanged base is the code's. `recheck` and
- * `diff` are the effects, injected so the decision itself is pure.
+ * A head/base difference is confirmed against a SECOND base run: live pricing and the local
+ * day boundary can move between runs, and only a difference that survives an unchanged base
+ * is the code's.
  */
 export async function classifyPayloads(
   baseText: string,
@@ -799,7 +773,6 @@ export async function classifyPayloads(
   );
 }
 
-/** One side's timed runs of a window: cold, warm, and --no-index when the flag is known. */
 interface SideRuns {
   cold: Measurement;
   warm: Measurement;
@@ -909,7 +882,6 @@ export function deltaCell(
   return `${signed(delta, 0)}${unit} (${signed(percent, 1)}%)`;
 }
 
-/** The measure rows, one per line: label, the side's value, and its unit. */
 const MEASURE_ROWS: readonly [string, (side: SideMetrics) => number | undefined, string][] = [
   ["cold", (side) => side.coldMs, " ms"],
   ["warm", (side) => side.warmMs, " ms"],
@@ -917,7 +889,6 @@ const MEASURE_ROWS: readonly [string, (side: SideMetrics) => number | undefined,
   ["warm bytes read", (side) => side.bytesRead, ""],
 ];
 
-/** One window's caption and markdown table: a row per measure, base | head | diff. */
 export function renderWindowTable(result: WindowResult): string[] {
   const value = (v: number | undefined, unit: string): string =>
     v === undefined ? "n/a" : `${v}${unit}`;
@@ -987,7 +958,6 @@ function appendStepSummary(text: string): void {
   if (summaryFile !== undefined && summaryFile !== "") appendFileSync(summaryFile, text);
 }
 
-/** `name=value` as this step's output, when running under Actions. */
 function setStepOutput(name: string, value: string): void {
   const outputFile = process.env.GITHUB_OUTPUT;
   if (outputFile !== undefined && outputFile !== "") {
@@ -1000,7 +970,7 @@ interface Teardown {
   run: () => Promise<void> | void;
 }
 
-/** Run every teardown step; one failing must not skip the rest. Returns the failures. */
+/** One failing step must not skip the rest. */
 async function cleanup(steps: readonly Teardown[]): Promise<string[]> {
   const failures: string[] = [];
   for (const { what, run } of steps) {
@@ -1101,7 +1071,6 @@ function readVerdict(dir: string): Verdict {
   throw new Error(`${join(dir, VERDICT_FILE)}: unknown verdict ${JSON.stringify(raw)}`);
 }
 
-/** The recorded verdict as the job's exit status: `differs` fails the job. */
 function runVerdict(opts: VerdictOptions): number {
   const verdict = readVerdict(opts.in);
   if (verdict === "differs") console.error("cost JSON differs from the base commit");
@@ -1121,7 +1090,7 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-// Importable (test/cost_metrics.test.ts drives the pure functions); only run when invoked.
+// test/cost_metrics.test.ts imports the pure functions, so nothing runs on import.
 if (import.meta.main) {
   try {
     process.exit(await main(process.argv.slice(2)));

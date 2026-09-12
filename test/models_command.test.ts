@@ -65,8 +65,6 @@ test("parseModelList keeps ids verbatim ([1m] suffix) and merges duplicates fiel
     ],
   };
   const [entry] = parseModelList(body);
-  // The later duplicate backfills the missing name/vendor; the first entry's
-  // context window survives.
   expect(entry?.id).toBe("claude-opus-4.8[1m]");
   expect(entry?.name).toBe("Claude Opus 4.8 (1M)");
   expect(entry?.vendor).toBe("Anthropic");
@@ -155,20 +153,16 @@ test("renderModelTable groups by vendor, chat first, unknown vendor last", () =>
   expect(lines[2]).toBe("   OpenAI");
   expect(lines[3]).toContain("gpt-5.5");
   expect(lines[3]).toContain("128k context, preview");
-  // Non-chat models trail their vendor's chat models and carry their type tag.
   expect(lines[4]).toContain("text-embedding-3-small");
   expect(lines[4]).toContain("embeddings");
-  // Unknown vendor groups under "Other", after the named vendors.
   expect(lines[5]).toBe("   Other");
   expect(lines[6]).toContain("mystery-model");
 });
 
 // --- CLI wiring (offline: isolated home, no credential) -------------------------
 
-// A throwaway COPILOT_API_HOME (no tracked pid, no credential): the proxy reads
-// as down without probing any port, and the direct path fails on the missing
-// credential BEFORE any network fetch. `seed` runs against the home first (e.g.
-// writing a profile slot into the state store).
+// An empty COPILOT_API_HOME keeps every case offline: the proxy reads as down without a port
+// probe, and Direct fails on the missing credential before any fetch.
 function runModelsCli(
   args: string[],
   seed?: (home: string) => void,
@@ -185,10 +179,10 @@ function runModelsCli(
   }
 }
 
-/** Seed a named DIRECT profile slot (no credential of its own) into the isolated
- *  state store, BESIDE a resolvable default credential: a fallback regression
- *  would resolve the default token (and fail past the credential gate), so the
- *  hard-fail assertions below genuinely pin the never-falls-back rule. */
+/** profiles.<name> carries no credential, so `--profile <name>` must hard-fail. The root-level pair
+ *  is the pre-3.5.6 legacy shape: CopilotEnvState reads the default slot only from profiles.default
+ *  (src/copilot_api/env_state.ts), so no resolvable default credential exists here for a fallback
+ *  regression to reach. */
 function seedDirectProfile(home: string, name: string): void {
   writeFileSync(
     join(home, "credentials.json"),
@@ -242,9 +236,6 @@ test("models --profile with an unknown name hard-fails naming the known profiles
 });
 
 test("models --profile never falls back: a credential-less direct profile hard-fails", () => {
-  // The store holds a RESOLVABLE default credential but the profile's own slot
-  // has none, so Direct must fail naming the profile -- silently resolving the
-  // default token instead would sail past this error and fail the assertions.
   const { exitCode, out } = runModelsCli(
     ["--profile", "p1", "--direct"],
     (home) => seedDirectProfile(home, "p1"),

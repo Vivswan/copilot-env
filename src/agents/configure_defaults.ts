@@ -1,8 +1,5 @@
-// Configure the agents' DEFAULT selections, resiliently (a failure on one only
-// warns, the other still runs) and per-agent. This is the shared write half of
-// `agent init` (both agents, one mode) and the settings-bundle import (per-agent
-// recorded modes, either skippable) -- it needs BOTH src/codex/ and src/claude/,
-// so it lives in src/agents/ like wiring.ts, not in src/commands/.
+// The default-selection write half shared by `agent init` and the settings-bundle import. It
+// needs BOTH src/codex/ and src/claude/, so it lives in src/agents/, not src/commands/.
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { bold } from "../utils/ansi.ts";
@@ -17,10 +14,8 @@ import { type AgentWiringOptions, readAgentModesSafe } from "./wiring.ts";
 // the per-agent probe/config narration (also stderr) and never pollutes any stdout.
 const logger = createStderrLogger();
 
-/** What to write per agent, keyed by ManagedAgentId: a requested mode, or null to
- *  leave that agent alone. The per-adapter lookup below indexes this by
- *  `adapter.id`, so a new agent in bothAgents() is a compile error here until the
- *  request names it -- it can never be silently skipped. */
+/** null leaves that agent alone. Indexed by `adapter.id`, so a new agent in bothAgents() is a
+ *  compile error here until the request names it. */
 export interface DefaultAgentRequest {
   codex: RequestedMode | null;
   claude: RequestedMode | null;
@@ -30,13 +25,9 @@ export interface DefaultAgentRequest {
 }
 
 /**
- * Configure the requested agents' default selections and report BOTH resulting modes (a
- * skipped agent still reports its current wiring) plus every per-agent failure: the warn
- * here keeps init's narration, and the returned `failures` let callers with a stricter
- * contract (the settings-bundle import) fail the run instead of printing success over a
- * broken wiring. Runs through the ONE cross-agent adapter list (bothAgents) and the shared
- * skeleton (runAgentConfig), in the list's order, each agent's narration grouped under a
- * header. `catalogDeps` is the Codex adapter's catalog test seam, threaded through untouched.
+ * Warns per agent and keeps going; the returned `failures` let a caller with a stricter contract
+ * (the settings-bundle import) fail the run instead of printing success over a broken wiring.
+ * The read-back covers both agents, so an agent left alone still reports its current mode.
  */
 export async function configureDefaultAgents(
   request: DefaultAgentRequest,
@@ -66,24 +57,15 @@ export async function configureDefaultAgents(
   return { ...modes, failures };
 }
 
-/**
- * Re-derive and record the default slot's mode from the CURRENT wiring: the
- * read-back + record step configureDefaultAgents ends on, exported for the
- * single-agent default rewires (`agent codex` / `agent claude`) so there is
- * ONE recording path. Best-effort; `opts` is the wiring read's test seam.
- */
+/** Exported for the single-agent rewires (`agent codex` / `agent claude`) so there is ONE
+ *  recording path. `opts` is the wiring read's test seam. */
 export function recordDefaultModeFromWiring(opts: AgentWiringOptions = {}): void {
   recordDefaultModeSafe(readAgentModesSafe(opts));
 }
 
-/**
- * Record the default slot's desired mode from the just-written wiring: one
- * managed mode when BOTH agents landed on it, null when they diverge (or could
- * not be read back -- the record is derived state the next successful configure
- * re-derives, so clearing beats keeping a value the artifacts contradict).
- * Best-effort like the read-back it derives from: a store-write failure only
- * warns, never fails an otherwise-successful wiring.
- */
+/** null when the agents diverge or could not be read back: the record is derived state the
+ *  next successful configure re-derives, so clearing beats keeping a value the artifacts
+ *  contradict. A store-write failure only warns, never fails a successful wiring. */
 function recordDefaultModeSafe(
   modes: { codex: AgentProviderMode; claude: AgentProviderMode },
 ): void {

@@ -1,10 +1,10 @@
-// Filesystem paths for the opt-in autoupdate state, under the install root.
+// Autoupdate state is machine state, not release payload, so it lives clear of the version dirs a
+// later update garbage-collects: installStateRoot maps `<top>/current` to `<top>` rather than
+// resolving the link into one.
 //
-// State lives in `<install>/.autoupdate/`. In a VERSIONED install the state is
-// machine state, not release payload, so it sits beside `versions/` at the TOP
-// root (installStateRoot) -- never inside a version dir a later update
-// garbage-collects, and never through the `current` link (which would resolve
-// into one). A flat install and a dev checkout keep it at the root itself.
+//   versioned install  -> `<top>/.autoupdate/`, beside `versions/` (installStateRoot)
+//   flat install       -> `<root>/.autoupdate/`
+//   dev checkout       -> `<root>/.autoupdate/`
 import { join } from "node:path";
 import { installStateRoot, PROJECT_ROOT } from "../utils/root.ts";
 

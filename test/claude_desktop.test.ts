@@ -1,8 +1,5 @@
-// Claude Desktop config-library wiring (src/claude/desktop.ts): the managed entries,
-// the never-clobber posture toward the app's own files, and the ownership record.
-// Isolation: the suite floor points CLAUDE_DESKTOP_DIR_ENV at a NON-created dir, so
-// nothing here can reach a real library; each test that wants Desktop "installed"
-// creates its own data dir and re-points the seam at it.
+// The suite floor points CLAUDE_DESKTOP_DIR_ENV at a dir that is never created, so no test
+// can reach a real library; a test that wants Desktop installed makes its own data dir.
 import {
   chmodSync,
   existsSync,
@@ -84,7 +81,6 @@ afterEach(() => {
 /** chmod-based fault injection needs POSIX permissions that bind (not root). */
 const NO_CHMOD_FAULTS = process.platform === "win32" || process.getuid?.() === 0;
 
-/** Isolated homes + an EXISTING Desktop data dir the seam points at (opt-in). */
 function isolateWithDesktop(): { library: string } {
   dir = isolateAgentHomes("copilot-desktop-").dir;
   const dataDir = join(dir, "claude-desktop");
@@ -93,7 +89,6 @@ function isolateWithDesktop(): { library: string } {
   return { library: desktopLibraryDirUnder(dataDir) };
 }
 
-/** A fetchImpl serving a fixed /models catalog body. */
 function catalogFetch(ids: { id: string; window?: number; name?: string }[]): typeof fetch {
   const body = {
     data: ids.map((m) => ({
@@ -168,10 +163,9 @@ test("desktopAppInstalledFor: app locations OR an existing data dir; never on li
 });
 
 test("the desktop seam is absolute-or-throw and governs detection; the floor sets it", () => {
-  // The floor self-check: constant pinned to its literal, seam live in this process.
   expect(CLAUDE_DESKTOP_DIR_ENV).toBe("COPILOT_ENV_CI_CLAUDE_DESKTOP_DIR");
   expect(Deno.env.get(CLAUDE_DESKTOP_DIR_ENV)).toBeDefined();
-  // The floor's dir is never created => the whole suite sees "not installed".
+  // The floor's dir is never created, so the whole suite sees "not installed".
   expect(claudeDesktopInstalled()).toBe(false);
   process.env[CLAUDE_DESKTOP_DIR_ENV] = "relative/dir";
   expect(() => resolveDesktopLibraryDir()).toThrow("must be an absolute path");
@@ -246,7 +240,6 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
     expect(direct[key]).toBe(true);
   }
   expect(isRecordLike(direct["managedMcpServers"])).toBe(true);
-  // Import/export all on; a hand-set sibling field would survive the merge.
   expect(direct["claudeAiImport"]).toEqual({
     "enabled": true,
     "automatic3pImport": true,
@@ -264,9 +257,8 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
   expect(proxy["modelDiscoveryEnabled"]).toBe(true);
   expect(proxy["inferenceCustomHeaders"]).toBeUndefined();
   expect(proxy["inferenceCredentialHelperTimeoutSec"]).toBe(120);
-  // The 1m annotations stay even with discovery on (claude-code#88345: discovery
-  // alone carries no capability metadata): the proxy payload keeps the direct
-  // payload's rows byte-for-byte, annotations included.
+  // Discovery alone carries no capability metadata (claude-code#88345), so the proxy
+  // payload keeps the direct payload's rows, 1m annotations included.
   expect(proxy["inferenceModels"]).toEqual(direct["inferenceModels"]);
 });
 
@@ -283,7 +275,6 @@ test("payload: foreign keys in the existing document survive the surgical merge"
     existing: {
       "banner": { "enabled": true, "text": "keep me" },
       "userKey": 42,
-      // A hand-set import field survives; managed fields win on conflict.
       "claudeAiImport": { "bannerBehavior": "detect", "enabled": false },
     },
   });
@@ -337,7 +328,6 @@ test("helper scripts: written 0755, regenerated when tampered, other mode remove
   if (process.platform !== "win32") {
     expect(statSync(direct).mode & 0o755).toBe(0o755);
   }
-  // Tampering heals on the next wire.
   chmodSync(direct, 0o644);
   writeFileSync(direct, "#!/bin/sh\nexec echo tampered\n");
   const again = writeDesktopHelperScript("direct", null);
@@ -348,7 +338,7 @@ test("helper scripts: written 0755, regenerated when tampered, other mode remove
     writeDesktopHelperScript("direct", null);
     expect(statSync(again).mode & 0o111).not.toBe(0);
   }
-  // A mode switch retires the stale twin (post-save, via retireDesktopHelperScript).
+  // A mode switch retires the stale twin after the save.
   const proxy = writeDesktopHelperScript("proxy", null);
   expect(readFileSync(proxy, "utf8")).toContain("proxy-token");
   retireDesktopHelperScript("proxy", null);
@@ -375,7 +365,7 @@ test("fresh upsert: config + meta entry + appliedId only when the library had no
   const configPath = join(library, `${entries[0]?.id}.json`);
   const doc = readJson(configPath);
   expect(doc["inferenceGatewayBaseUrl"]).toBe(DEFAULT_COPILOT_API_BASE);
-  // Catalog-derived picks: newest per family, 1m-marked; gpt ignored.
+  // One row per Claude id in the catalog; the gpt id is ignored.
   const models = doc["inferenceModels"] as {
     name: string;
     labelOverride: string;
@@ -551,7 +541,6 @@ test("never-clobber: a foreign entry carrying our name, or a malformed _meta.jso
     fetchImpl: catalogFetch(CATALOG),
   };
   await wireClaudeDesktopEntry(opts);
-  // Nothing written, nothing owned.
   expect(readJson(join(library, "f-1.json"))["inferenceGatewayBaseUrl"]).toBe(
     "https://elsewhere.example",
   );
@@ -742,9 +731,8 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
   });
   const servers = doc["managedMcpServers"] as Record<string, { command: string; args: string[] }>;
   expect(Object.keys(servers).sort()).toEqual(["copilot-env", "their-server"]);
-  // Derived from the same launcher-command builder the writer uses: on Windows the
-  // args carry the PowerShell invocation ahead of the copilot-env subcommand, so a
-  // hand-spelled POSIX shape would be wrong there.
+  // On Windows the args carry the PowerShell invocation ahead of the subcommand, so the
+  // expectation comes from the same launcher-command builder the writer uses.
   const launcher = agentLauncherCommand(["mcp", "--serve", "--profile", "work"]);
   expect(servers["copilot-env"]?.command).toBe(launcher.command);
   expect(servers["copilot-env"]?.args).toEqual(launcher.args);
@@ -828,12 +816,10 @@ async function captureAllWrites(fn: () => Promise<void> | void): Promise<string>
   return out;
 }
 
-/** How many times `needle` occurs in `text` (exact-count assertions on announcements). */
 function count(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }
 
-/** A direct wire with a fixed catalog (no network, no credential store). */
 function directWire(profile: Profile = null): DesktopWireOptions {
   return {
     profile,
@@ -860,8 +846,7 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   const metaPath = join(library, "_meta.json");
   const helper = desktopHelperPath(resolveRootHome(), "direct", null);
 
-  // Default on: the entry lands, and every file touched is named -- config, meta,
-  // helper, and the ownership claim.
+  // Key on: the entry lands; the library files are named, the in-home files are not.
   const wired = await captureAllWrites(() => syncClaudeDesktopWiring(directWire()));
   const configPath = firstEntryPath(library);
   expect(existsSync(configPath)).toBe(true);
@@ -890,9 +875,9 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   expect(await captureAllWrites(() => syncClaudeDesktopWiring({ ...directWire(), quiet: true })))
     .toBe("");
 
-  // Off: the default's write leaves ITS entry in place, silently (the whole-library
-  // reconcile that follows every default write names it); a profile's write removes ITS
-  // entry, naming each path -- another profile's entry is the reconcile's business too.
+  // Key off. The whole-library reconcile that follows every default write owns the notice.
+  //   default's write  -> leaves its entry in place, silent
+  //   profile's write  -> removes its own entry and names it; other profiles' are the reconcile's
   await wireClaudeDesktopEntry(directWire(WORK));
   const workHelper = desktopHelperPath(resolveRootHome(), "direct", WORK);
   const firstWork = entryPathNamed(library, "copilot-env: work");
@@ -965,9 +950,8 @@ test.skipIf(NO_CHMOD_FAULTS)(
   "the config write is announced the moment it lands, even when a later step fails",
   async () => {
     const { library } = isolateWithDesktop();
-    // Pre-write the helper so the wire has nothing to write under the root home, then
-    // make the root home read-only: the config + meta saves (in the library) succeed,
-    // the ownership record (under the root home) fails.
+    // With the helper pre-written and the root home read-only, the library saves succeed
+    // and the ownership record (under the root home) fails.
     writeDesktopHelperScript("proxy", null);
     const rootHome = resolveRootHome();
     chmodSync(rootHome, 0o555);
@@ -989,7 +973,6 @@ test.skipIf(NO_CHMOD_FAULTS)(
   },
 );
 
-/** The inspected arm of a status, or a failed assertion (the tests below expect a readable library). */
 function inspected(
   status: ReturnType<typeof inspectClaudeDesktopWiring>,
 ): Extract<ReturnType<typeof inspectClaudeDesktopWiring>, { kind: "inspected" }> {
@@ -1016,7 +999,6 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   ]);
   expect(rendered.fix).toBe("agent claude, then agent profile --add work");
 
-  // Wire the default: wired at its path; the profile stays missing.
   await wireClaudeDesktopEntry(directWire());
   const configPath = firstEntryPath(library);
   status = inspected(inspectClaudeDesktopWiring(targets));
@@ -1117,9 +1099,8 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
     reason: `credential helper ${helper} is missing or has a stale body`,
   });
 
-  // Key off: the default's entry is present and unmanaged, never drift -- whatever the
-  // targets say (the library's facts come first). A profile's entry or helper script IS a
-  // leftover (an interrupted sweep can leave either), and the sweep is its fix.
+  // Key off: the default's entry is present and unmanaged, never drift, whatever the targets
+  // say. A profile's entry or helper is a leftover (an interrupted sweep leaves either).
   new CopilotEnvConfig().set({ claudeDesktop: false });
   status = inspected(
     inspectClaudeDesktopWiring({ kind: "unresolvable", reason: "settings.json junk" }),
@@ -1203,9 +1184,8 @@ test.skipIf(process.platform === "win32")(
 
 test("reconcileClaudeDesktopWiring: orphans go when the key is on, the profiles' when it is off", async () => {
   const { library } = isolateWithDesktop();
-  // Owned entries with NO managed Claude wiring (the isolated home has no settings.json)
-  // and no profile slot (`work` was never added): nothing promises either, so the
-  // reconcile removes both -- the default's and the named one's helpers included.
+  // No settings.json and no `work` slot: nothing promises either entry, so the reconcile
+  // removes both, helpers included.
   await wireClaudeDesktopEntry(directWire());
   await wireClaudeDesktopEntry(directWire(WORK));
   const [configPath, workPath] = (metaOf(library).entries as { id: string }[]).map((e) =>
@@ -1451,7 +1431,6 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   );
 });
 
-/** Every Desktop artifact's existence, for "nothing changed" comparisons. */
 function artifactsOf(library: string): Record<string, boolean> {
   const rootHome = resolveRootHome();
   const paths = [

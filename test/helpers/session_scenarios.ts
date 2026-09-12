@@ -1,6 +1,5 @@
-// The session-log reader fixtures, ONE catalog per source, so the reader tests and
-// the index equivalence tests (three ways, same check) can never drift apart.
-// Plain data and functions only (this is not a test file).
+// One catalog per source, so the reader tests and the index equivalence tests can never drift
+// apart.
 import { appendFileSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
@@ -19,8 +18,7 @@ import {
 } from "./session_fixtures.ts";
 import { expect } from "./testing.ts";
 
-/** What a reader is handed for one scenario. `files` lists the session files
- *  written, for tests that change one between two reads. */
+/** `files`: the session files written, for tests that change one between two reads. */
 export interface ReaderInput {
   roots: string[];
   sinceMs?: number;
@@ -70,9 +68,8 @@ export const CODEX_SCENARIOS: readonly ReaderScenario<CodexReport>[] = [
         turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
         // input 100 includes 40 cached -> input 60 / cacheRead 40.
         tokenCount("2026-06-01T10:00:05.000Z", codexUsage(100, 40, 20), codexUsage(100, 40, 20)),
-        // Model switch mid-session, a full day later: distinct local days in any
-        // runner timezone (a fall-back transition could stretch a day to 25h, but
-        // these June dates avoid one).
+        // A model switch a full day later: distinct local days in any runner zone (a fall-back
+        // transition could stretch a day to 25h; June has none).
         turnContext("2026-06-02T10:00:01.000Z", "gpt-5.6-mini"),
         tokenCount("2026-06-02T10:00:05.000Z", codexUsage(300, 40, 50), codexUsage(200, 0, 30)),
       ]);
@@ -589,9 +586,8 @@ export const CODEX_SCENARIOS: readonly ReaderScenario<CodexReport>[] = [
       expect(gptRow(byProvider)?.events).toBe(1);
     },
   },
-  // The archive path has always dropped a leading byte order mark, the plain
-  // path never did: its first line stays unparseable and the session lands on the
-  // default provider. Both behaviours are the old ones.
+  // The archive path drops a leading byte order mark; the plain path does not, so its first
+  // line stays unparseable and the session lands on the default provider.
   {
     name: "reads a zstd archive that starts with a byte order mark, as before",
     build(dir) {
@@ -651,8 +647,8 @@ export const CLAUDE_SCENARIOS: readonly ReaderScenario<UsageReport>[] = [
           "msg_1",
           claudeUsage(10, 20, 300, 40),
         ),
-        // A full day later: distinct local days in any runner timezone (a fall-back
-        // transition could stretch a day to 25h, but these June dates avoid one).
+        // A full day later: distinct local days in any runner zone (a fall-back transition
+        // could stretch a day to 25h; June has none).
         assistantLine(
           "2026-06-02T10:00:01.000Z",
           "claude-fable-5",
@@ -962,9 +958,8 @@ export const CLAUDE_SCENARIOS: readonly ReaderScenario<UsageReport>[] = [
     build(dir) {
       const root = join(dir, "projects");
       const proj = join(root, "-Users-x-proj");
-      // The first-folded occurrence books its snapshot on ITS day, so order decides
-      // attribution. This pins the deterministic order (ascending path); the old
-      // reader folded in filesystem readdir order.
+      // The first-folded occurrence books its snapshot on ITS day, so the fold order
+      // (ascending path) decides attribution.
       writeTranscript(proj, "aaa.jsonl", [
         assistantLine("2026-06-01T10:00:00.000Z", "claude-opus-4-8", "msg_1", claudeUsage(10, 20)),
       ]);

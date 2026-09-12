@@ -1,7 +1,3 @@
-// Unit tests for src/codex/toml_io.ts (the shared Codex config.toml reader/writer)
-// plus one test per call-site POLICY in src/codex/config.ts and catalog_reference.ts,
-// proving each site still maps the shared read variants onto its pre-refactor behavior.
-
 import {
   chmodSync,
   existsSync,
@@ -63,8 +59,7 @@ test("readCodexToml: a file that exists but is not TOML reads as unparseable", (
 });
 
 test("readCodexToml: an empty or whitespace-only file reads as absent", () => {
-  // The seed-a-default site (loadOrCreateConfig) has always treated an empty
-  // file like a missing one; the shared reader keeps that mapping.
+  // The seed-a-default site (loadOrCreateConfig) treats an empty file like a missing one.
   dir = tempDir("codex-toml-io-");
   const path = join(dir, "config.toml");
   writeFileSync(path, "");
@@ -123,8 +118,7 @@ test("saveCodexToml: round-trips through readCodexToml and writes smol-toml's ex
 });
 
 test("saveCodexToml: a write error propagates to the caller", () => {
-  // Same contract as the old inline fs.writeFileSync: each call site's own
-  // error handling (throw, or an outer swallow) stays in charge.
+  // Each call site's own error handling (throw, or an outer swallow) stays in charge.
   dir = tempDir("codex-toml-io-");
   const asDir = join(dir, "config.toml");
   mkdirSync(asDir);
@@ -136,7 +130,6 @@ test("saveCodexToml: a write error propagates to the caller", () => {
 // Real user content plus one TOML syntax error (an unbalanced quote from a hand edit).
 const UNPARSEABLE = ["[mcp_servers.mine]", 'command = "my-server', ""].join("\n");
 
-/** Run `fn` and return what it threw (fails the test when it does not throw). */
 function capture(fn: () => void): unknown {
   try {
     fn();
@@ -250,13 +243,10 @@ test("policy: removeCodexDefaultWiring skips an absent config and never blind-wr
   expect(readFileSync(envPath, "utf8")).toBe("OPENAI_API_KEY=user\n");
 });
 
-// The removal strips `model_catalog_json` only when it DENOTES our catalog file.
-// The cases differ solely in what the reference resolves to, so this pins the
-// ownership rule rather than one errno. The "ours" case deliberately uses a SYMLINK
-// alias, not the exact path: the exact spelling short-circuits before the resolver,
-// so only an alias exercises the resolver's "yes" branch that the other arms are
-// contrasted against. Windows is a VISIBLE skip like the sibling below (symlink
-// creation needs privileges there), never a silent early return.
+// The removal strips `model_catalog_json` only when it DENOTES our catalog file; the cases differ
+// solely in what the reference resolves to. The "ours" case uses a symlink alias (hence the Windows
+// skip, where symlinks need privileges): the exact spelling short-circuits before the resolver, so
+// only an alias exercises its "yes" branch.
 test.skipIf(process.platform === "win32")(
   "policy: removeCodexDefaultWiring strips model_catalog_json only when it is provably ours",
   () => {
@@ -283,10 +273,9 @@ test.skipIf(process.platform === "win32")(
   },
 );
 
-// The third arm, in its own test so the platform skip is VISIBLE in the output
-// rather than silently emptying a passing test: a reference whose resolve cannot
-// run is not proof the key is ours, so it is left alone like the foreign one --
-// never stripped on doubt. Non-root POSIX only: root bypasses file modes.
+// Its own test so the platform skip is visible in the output: a reference whose resolve cannot
+// run is not proof the key is ours, so it is left alone, never stripped on doubt. Non-root POSIX
+// only: root bypasses file modes.
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "policy: removeCodexDefaultWiring leaves a reference it CANNOT resolve alone",
   () => {

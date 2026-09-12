@@ -25,15 +25,13 @@ import {
 } from "../src/install/targets.ts";
 import { afterEach, beforeEach, describe, expect, tempDir, test } from "./helpers/testing.ts";
 
-// The compiled-era update: fetch this platform's binary, verify it against the
-// release manifest and (through an injected verifier -- the real one needs the
-// Sigstore trust root, see test/provenance.test.ts) the release's attestation,
-// STAGE it into its own version root, PROVISION that root by
-// running the new binary's `install --assets-only` inside it, then COMMIT by
-// flipping the `current` link -- prepare-then-commit, so a pre-flip failure
-// leaves the old version fully live. The download source is redirected at a
-// local directory through COPILOT_ENV_DOWNLOAD_BASE, which is the same hook
-// install.sh and the CI smokes use.
+// The update is prepare-then-commit, so a pre-flip failure leaves the old version fully live:
+//   download -> verify against the manifest -> attest (injected verifier) -> STAGE into its
+//   own version root -> PROVISION by running the new binary's `install --assets-only` there
+//   -> COMMIT by flipping the `current` link
+// The real verifier needs the Sigstore trust root (test/provenance.test.ts). Downloads are
+// redirected at a local directory through COPILOT_ENV_DOWNLOAD_BASE, the same hook install.sh
+// and the CI smokes use.
 
 const skipWin = test.skipIf(process.platform === "win32");
 
@@ -70,11 +68,9 @@ function hostTarget() {
   return target;
 }
 
-/** A shell script standing in for the staged binary: it records every
- *  invocation (with the root it was aimed at) so the provision/migrate handoff
- *  can be asserted, and writes the per-version manifest `install` must leave
- *  behind (the provision postcondition). It lives at <top>/versions/<v>/bin/,
- *  hence the three hops up to the log at the top. */
+/** Records every invocation with the root it was aimed at, and writes the per-version
+ *  manifest `install` must leave behind (the provision postcondition). It lives at
+ *  <top>/versions/<v>/bin/, hence the three hops up to the log. */
 const RECORDING_BINARY = `#!/bin/sh
 HERE="$(dirname "$0")"
 echo "\${COPILOT_ENV_INSTALL_ROOT:-} $@" >> "$HERE/../../../invocations.log"
@@ -184,10 +180,8 @@ describe("release targets", () => {
   });
 
   test("currentReleaseTarget maps each shipped (platform, arch) to its triple, null otherwise", () => {
-    // The full mapping, positives and negatives in one table: an unsupported
-    // pair must resolve to null (never a guess), and each supported pair to
-    // exactly its triple -- these are the release-asset names, so they are
-    // external contracts, not restated implementation.
+    // An unsupported pair must resolve to null, never a guess. The triples are the
+    // release-asset names, so they are external contracts.
     const cases: { platform: string; arch: string; triple: string | null }[] = [
       { platform: "darwin", arch: "x64", triple: "x86_64-apple-darwin" },
       { platform: "darwin", arch: "arm64", triple: "aarch64-apple-darwin" },
@@ -407,7 +401,6 @@ describe("applyUpdate", () => {
       childStdoutToStderr: true,
     });
 
-    // The new binary landed in ITS version root; the old version is untouched.
     const versionRoot = join(installDir, VERSIONS_DIR, "v9.9.9");
     expect(readFileSync(join(versionRoot, "bin", installedBinaryName()), "utf8")).toBe(
       RECORDING_BINARY,
@@ -419,8 +412,7 @@ describe("applyUpdate", () => {
       ),
     ).toBe("OLD");
 
-    // The commit: current points at the new version, and reads THROUGH the
-    // link reach the new binary (the shim dispatch path).
+    // Reads THROUGH the link reach the new binary: the shim dispatch path.
     expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
     expect(
       readFileSync(join(installDir, CURRENT_LINK, "bin", installedBinaryName()), "utf8"),
@@ -432,9 +424,8 @@ describe("applyUpdate", () => {
       ["agent", "agent.ps1"].map((shim) => `Wrote launcher shim ${join(installDir, "bin", shim)}`),
     );
 
-    // Both handoffs ran the NEW binary, each aimed at the right root: the
-    // provision INSIDE its version root (pre-flip), the migrations at the
-    // current link (post-flip).
+    // Both handoffs ran the NEW binary: the provision INSIDE its version root (pre-flip), the
+    // migrations at the current link (post-flip).
     expect(invocations()).toEqual([
       `${versionRoot} install --assets-only`,
       `${join(installDir, CURRENT_LINK)} migrate 9.9.8 9.9.9`,
@@ -534,8 +525,6 @@ describe("applyUpdate", () => {
       applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
     ).rejects.toThrow("failed to lay down its runtime files");
 
-    // Nothing was committed: current still names the old version, the
-    // half-prepared version dir is gone, and no migration ran.
     expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
     expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
     expect(invocations()).toEqual([
@@ -553,7 +542,6 @@ describe("applyUpdate", () => {
       applyLocked("v9.9.8", { root: installDir, logger: quiet }),
     ).rejects.toThrow("SHA256 verification failed");
 
-    // Nothing was staged or committed, and the staging directory is gone.
     expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
     expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
     expect(stagingDirs()).toEqual([]);

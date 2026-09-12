@@ -1,8 +1,7 @@
-// The managed config's `model_catalog_json` reference to the generated Codex model
-// catalog (catalog.ts generates the file; config.ts's managed write seeds the key):
-// the auth-time sync that heals or strips the reference, and the account-wide sweep
-// over every known Codex home that keeps a deleted catalog from leaving a dangling
-// reference anywhere. Best-effort throughout: stderr-only, never throws.
+// The managed config's `model_catalog_json` reference (catalog.ts generates the file; config.ts's
+// managed write seeds the key): the auth-time sync that heals or strips it, and the account-wide
+// sweep that keeps a deleted catalog from leaving a dangling reference in any known Codex home.
+// Best-effort throughout: stderr-only, never throws.
 import * as fs from "node:fs";
 import { parse, stringify } from "smol-toml";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -29,14 +28,15 @@ import { readCodexToml, saveCodexToml } from "./toml_io.ts";
 const logger = createStderrLogger();
 
 /**
- * Auth-time sync: keep the managed config's `model_catalog_json` in step with the opt-in
- * `codex-model-catalog` preference, on every auth resolution. Best-effort: never throws.
- * ENABLED is an ADD-only self-heal: when a usable catalog exists but the config predates it
- * (the wiring-time seed failed, or the file appeared while mobile pairing had the provider
- * stripped), add the reference in place, and only while the config selects OUR provider:
- * `agent codex --mobile` strips `model_provider` to run on OpenAI's default, whose limits
- * the patched catalog would misstate. A present key, ours or a user-pinned custom path, is
- * never rewritten here; enforcing OUR path is configureCodexConfig's job.
+ * Runs on every auth resolution. ENABLED, it is an ADD-only self-heal for a config that predates
+ * a usable catalog: the wiring-time seed failed, or the file appeared while mobile pairing had the
+ * provider stripped.
+ *
+ * config selects OUR provider -> the reference is added
+ * any other provider          -> left alone; `agent codex --mobile` runs OpenAI's default, whose
+ *                                limits the patched catalog would misstate
+ * a key already present       -> never rewritten, ours or a user-pinned custom path; enforcing OUR
+ *                                path is configureCodexConfig's
  */
 export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): void {
   try {
@@ -45,10 +45,10 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
       cleanupCodexCatalogArtifacts(catalogFile);
       return;
     }
-    // Absent, malformed, or empty, or rejected by the installed codex (an upgrade that now
-    // requires a field the file predates): any reference to it is a Codex startup failure,
-    // so strip ours everywhere, whatever the active config's state; a rejected file stays
-    // for the next regeneration, and nothing is added meanwhile.
+    // Any reference to an unusable or rejected file (an upgrade that now requires a field the file
+    // predates) is a Codex startup failure, so ours is stripped everywhere whatever the active
+    // config's state; a rejected file stays for the next regeneration, and nothing is added
+    // meanwhile.
     const verdict = inspectCatalogFile(catalogFile, catalogDeps);
     if (verdict === "unusable" || verdict === "rejected") {
       if (stripCodexCatalogReferences(catalogFile).stripped) {
@@ -62,15 +62,14 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
     }
     const configPath = codexConfigPath(effectiveCodexHome());
     const read = readCodexToml(configPath);
-    // Absent (Codex never wired) or unparseable: nothing to heal in place -- the
-    // next full managed write owns both cases.
+    // Absent (Codex never wired) or unparseable: the next full managed write owns both cases.
     if (read.kind !== "ok") return;
     const doc = read.doc;
     if (doc.model_provider !== CODEX_PROVIDER_ID) return;
     if (doc.model_catalog_json !== undefined) return;
-    // The ledger is the inventory a later cleanup sweeps for configs outside the
-    // known homes: a reference it does not know about could outlive the catalog it
-    // points at. So record ownership FIRST, and add nothing when that cannot happen.
+    // The ledger is the inventory a later cleanup sweeps for configs outside the known homes: a
+    // reference it does not know about could outlive the catalog it points at. So ownership is
+    // recorded FIRST, and nothing is added when that cannot happen.
     if (!catalogBookkeepingAllowed() || !recordCatalogOwnership(configPath)) {
       logger.warn(
         `codex model catalog reference not set in ${configPath}: ownership could not be ` +
@@ -86,12 +85,12 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
         (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : ""),
     );
   } catch {
-    // An unreadable config (non-ENOENT) or a write race: the next
-    // `agent codex`/`agent init` wiring writes the key anyway.
+    // An unreadable config (non-ENOENT) or a write race: the next `agent codex`/`agent init` wiring
+    // writes the key anyway.
   }
 }
 
-/** Record the ledger claim for `configPath`; false when the ledger cannot be written. */
+/** False when the ledger cannot be written. */
 function recordCatalogOwnership(configPath: string): boolean {
   try {
     new OwnershipLedger().record("codexCatalog", configPath);
@@ -101,9 +100,8 @@ function recordCatalogOwnership(configPath: string): boolean {
   }
 }
 
-/** The one catalog freshness hook every auth-time and launch path runs: the throttled,
- *  version-aware regeneration from `source`, then the reference sync (self-heal when
- *  enabled, cleanup when disabled), under ONE refresh deadline so the paths cannot drift. */
+/** The one catalog freshness hook every auth-time and launch path runs: the throttled regeneration,
+ *  then the reference sync, under ONE refresh deadline so the two paths cannot drift. */
 export function refreshCodexCatalogAndSync(
   source: CatalogSource,
   deps: CodexCatalogDeps = {},
@@ -114,26 +112,20 @@ export function refreshCodexCatalogAndSync(
   });
 }
 
-/** Every config.toml that may reference the account-wide catalog file: one per
- *  known Codex home (a farm home's config.toml is a host-LOCAL seeded copy,
- *  not a symlink -- each needs its own strip). An incomplete home sweep means
- *  unseen configs may still hold references, so deletion must not proceed on
- *  that sweep. */
+/** One config.toml per known Codex home: a farm home's config.toml is a host-LOCAL seeded copy, not
+ *  a symlink, so each needs its own strip. An incomplete home sweep means unseen configs may still
+ *  hold references, so deletion must not proceed on it. */
 function codexCatalogConfigCandidates(): { configs: string[]; complete: boolean } {
   const { homes, complete } = knownCodexHomes();
   return { configs: homes.map((home) => codexConfigPath(home)), complete };
 }
 
-/** Whether `value` may denote `catalogFile` ALIAS-wise: "yes" when it is a
- *  non-identical spelling that still resolves to the same file (case variant,
- *  symlink, relative segmenting), "no" when it is not a candidate at all (not a
- *  string, the exact spelling -- which callers test themselves before asking -- or a
- *  path that resolves elsewhere or does not exist), "unknown" when the resolve
- *  itself FAILED and the question stays open. The three-state matters because the
- *  callers act destructively on "no": a resolve that could not run (EACCES on a path
- *  component, ELOOP, a path under a non-directory) must not authorize deleting a
- *  catalog file this config may still reference -- the same fail-closed direction the
- *  sibling catch in cleanupCodexCatalogArtifacts takes. */
+/** Callers act destructively on "no", so a resolve that could not RUN (EACCES on a path component,
+ *  ELOOP, a path under a non-directory) must leave the question open rather than authorize deleting
+ *  a catalog this config may still reference. The exact spelling is the caller's own test.
+ *    a different spelling resolving to the same file (case, symlink, segmenting)  -> "yes"
+ *    not a string, the exact spelling, resolves elsewhere, or proven absent      -> "no"
+ *    the resolve itself failed                                                   -> "unknown" */
 export function resolvesToCatalogFile(
   value: unknown,
   catalogFile: string,
@@ -142,21 +134,15 @@ export function resolvesToCatalogFile(
   try {
     return fs.realpathSync(value) === fs.realpathSync(catalogFile) ? "yes" : "no";
   } catch (e) {
-    // A path proven absent is a proven "no": it cannot denote our existing file.
-    // Every other failure leaves the question open.
+    // A path proven absent cannot denote our existing file.
     return isEnoent(e) ? "no" : "unknown";
   }
 }
 
-/** The disabled branch of syncCodexCatalogReference: strip our reference from every
- *  candidate config, THEN delete the generated file, then clear the throttle state, each
- *  step skipped when already clean so the 300s auth cadence stays write-free. Strip before
- *  delete keeps the dangling-reference window to the one unavoidable TOCTOU sliver (a Codex
- *  that read the old config but has not opened the file yet). Deletion fails closed: while
- *  any config may still reference the file, it is kept this round and the next auth retries.
- *  The ownership ledger EXTENDS the sweep (a recorded config outside the enumerated homes
- *  still gets its reference stripped), but the exact value match stays the per-config
- *  proof: pre-ledger installs recorded nothing, and a user-repointed key is no longer ours. */
+/** Deletion fails closed while any readable config may still reference the file, and each step is
+ *  skipped when already clean so the 300s auth cadence stays write-free.
+ *    strip our reference from every config -> delete the file -> clear the throttle state
+ *  Left after that: only a Codex that read the old config but has not opened the file yet. */
 function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   const { deletionSafe } = stripCodexCatalogReferences(catalogFile);
   if (deletionSafe && fs.existsSync(catalogFile)) {
@@ -181,12 +167,11 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   }
 }
 
-/** Strip our `model_catalog_json` reference from every candidate config (the sweep
- *  cleanupCodexCatalogArtifacts describes), releasing each claim as it goes. The exact
- *  value match alone proves ownership, with no provider check: a reference left behind
+/** The exact value match alone proves ownership, with no provider check: a reference left behind
  *  while the file goes breaks Codex startup, and a user-pinned custom path survives.
- *  `stripped` reports whether any config changed; `deletionSafe` is the sweep's proof
- *  that no readable config still references the file. */
+ *
+ *  the ledger     -> only EXTENDS the known homes; pre-ledger installs recorded nothing
+ *  `deletionSafe` -> the sweep's proof that no readable config still references the file */
 function stripCodexCatalogReferences(
   catalogFile: string,
 ): { stripped: boolean; deletionSafe: boolean } {
@@ -206,20 +191,18 @@ function stripCodexCatalogReferences(
         stripped = true;
         if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);
       } else if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile) !== "no") {
-        // An alternate spelling of OUR path (case variant on Windows, a
-        // symlinked home) -- or a resolve that could not RUN, which leaves the
-        // question open. Either way not provably ours to strip, and deleting the
-        // file would dangle it -- keep the file.
+        // An alternate spelling of OUR path (case variant on Windows, a symlinked home), or a
+        // resolve that could not RUN: not provably ours to strip, and deleting the file would
+        // dangle it.
         deletionSafe = false;
       } else if (recordedPaths.has(configPath)) {
-        // Recorded, but the config no longer references our file (the user
-        // removed or repointed the key since we wrote it): a stale claim.
+        // Recorded, but the config no longer references our file (the user removed or repointed the
+        // key): a stale claim.
         if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);
       }
     } catch (e) {
-      // ENOENT (no config there anymore) cannot hold a reference -- a recorded
-      // claim on it is stale; any other failure might hold one, so keep the
-      // file until every readable config proves it unreferenced.
+      // ENOENT cannot hold a reference (a recorded claim on it is stale); any other failure might,
+      // so the file stays until every readable config proves it unreferenced.
       if (!isEnoent(e)) deletionSafe = false;
       else if (recordedPaths.has(configPath)) {
         if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);

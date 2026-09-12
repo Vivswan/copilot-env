@@ -1,25 +1,6 @@
-// Read Codex CLI session rollout logs and aggregate token usage.
-//
-// The Codex CLI persists every session as a JSONL "rollout" file under
-// `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<local-ts>-<uuid>.jsonl` (archived
-// sessions move to a flat `$CODEX_HOME/archived_sessions/`, optionally
-// zstd-compressed to `.jsonl.zst`). Each line is
-// `{"timestamp":"<UTC ISO-8601>","type":...,"payload":{...}}`:
-//   - the first line (`type:"session_meta"`) carries `model_provider` and, for
-//     forked sessions, `forked_from_id`;
-//   - `type:"turn_context"` lines carry the model in effect (`payload.model`),
-//     which can change mid-session;
-//   - `type:"event_msg"` lines with `payload.type:"token_count"` carry
-//     `payload.info.last_token_usage` (the turn's own tokens) plus a cumulative
-//     `total_token_usage`. `input_tokens` INCLUDES `cached_input_tokens`.
-//
-// We attribute each token_count's `last_token_usage` to the model in effect at
-// that line and bucket by the line timestamp's LOCAL calendar day, grouped by the
-// session's `model_provider`. This covers Direct-wired Codex, which bypasses
-// the proxy and therefore never reaches the proxy's SQLite usage tables.
-//
-// Split as walk -> pure per-file parse (a CodexContribution, dedup and window
-// NOT applied) -> fold, so a per-file index can cache the parse.
+// Rollouts live at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<local-ts>-<uuid>.jsonl`; archived
+// sessions move to a flat `archived_sessions/`, optionally zstd-compressed. This is the only usage
+// source for Direct-wired Codex, which never reaches the proxy's SQLite tables.
 
 import { type Dirent, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
@@ -58,7 +39,6 @@ const SESSION_SUBDIRS = ["sessions", "archived_sessions"];
 const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
 const MAX_WALK_DEPTH = 4; // sessions/YYYY/MM/DD/<file>
 
-/** The line kinds the parser reads; every other line is never decoded. */
 const CODEX_NEEDLES: readonly string[] = [
   '"session_meta"',
   '"turn_context"',
@@ -66,33 +46,21 @@ const CODEX_NEEDLES: readonly string[] = [
   '"thread_settings_applied"',
 ];
 
-/** Label for sessions whose meta omits `model_provider` (Codex's built-in). */
+/** A meta line without `model_provider` means Codex's built-in provider. */
 const DEFAULT_PROVIDER = "default";
-/** Label for usage seen before any turn_context names a model. */
 const UNKNOWN_MODEL = "unknown";
 
-/**
- * Forked sessions copy the parent's rollout items -- token_count events
- * included -- into the new file in one batch at session start; the fork's own
- * first turn needs a model round-trip. When the parent file is unavailable for
- * exact dedup, a copied-prefix token_count is recognized by landing within
- * this window of the session_meta line timestamp.
- */
+/** A fork copies the parent's items, token_count events included, in one batch at session start,
+ *  while its own first turn needs a model round-trip. With the parent file unavailable for exact
+ *  dedup, a token_count within this window of the session_meta timestamp is read as copied. */
 const FORK_PREFIX_WINDOW_MS = 2_000;
 
-/**
- * The `sessions/` date tree and rollout filenames use LOCAL dates while the
- * `--days` cutoff and per-line timestamps are UTC, so file-level skipping
- * keeps a day and a half of slack and the per-event cutoff does the exact cut.
+/** The date tree and filenames use LOCAL dates while the cutoff and line timestamps are UTC, so
+ *  file-level skipping keeps a day and a half of slack and the per-event cutoff does the exact cut.
  */
 const FILENAME_CUTOFF_SLACK_MS = 1.5 * MILLISECONDS_PER_DAY;
 
-/**
- * Locate every Codex session directory worth scanning: `sessions/` and
- * `archived_sessions/` under each known Codex home (active home, ~/.codex,
- * per-host farm homes). Farm homes symlink these directories back into the
- * shared ~/.codex, so roots are deduplicated by realpath.
- */
+/** Farm homes symlink these directories back into the shared ~/.codex, hence the realpath dedup. */
 export function discoverCodexSessionRoots(homes: string[] = knownCodexHomes().homes): string[] {
   const byRealpath = new Map<string, string>();
   for (const home of homes) {
@@ -112,25 +80,15 @@ export function discoverCodexSessionRoots(homes: string[] = knownCodexHomes().ho
   return [...byRealpath.values()];
 }
 
-/**
- * Parse every rollout file under `roots` and aggregate token usage per
- * `model_provider`, per model, per LOCAL calendar day. `sinceMs` (unix ms) bounds the
- * report to recent events when set. A file that fails to read is skipped with
- * a warning rather than aborting the whole report. `timeZone` names the zone the
- * per-day split is cut in (default: the system's own); it exists so the slicing is
- * assertable without pinning the process `TZ`, which deno honors on unix only.
- * `reconcile` (the usage index) may supply the per-file contributions; without
- * it every candidate is parsed whole.
- */
+/** One report per `model_provider`. `timeZone` exists so the per-day slicing is assertable without
+ *  pinning the process `TZ`, which deno honors on unix only. */
 export async function readCodexSessions(
   roots: string[],
   sinceMs?: number,
   timeZone?: string,
   reconcile?: Reconcile,
 ): Promise<Map<string, UsageReport>> {
-  // Resolved FIRST, before any directory walk or file read: an unknown zone must fail here,
-  // not once per file inside the parse catch, which would report it as an
-  // unreadable rollout and return a report silently missing its per-day split.
+  // Before any file read: an unknown zone must fail here, not inside the per-file parse catch.
   const dayKey = dayKeyIn(timeZone);
   const walked = walkCodexSessions(roots, sinceMs);
   const { records } = (reconcile ?? parseEveryCandidate)(
@@ -142,15 +100,16 @@ export async function readCodexSessions(
   return foldCodex(inWalkOrder(walked, records), sinceMs, dayKey);
 }
 
-/** Every rollout under `roots`, ascending by basename (the start timestamp, so a
- *  fork's parent precedes the fork). A candidate may hold in-window events and won
- *  the same-session dedup (the plain `.jsonl` over its `.jsonl.zst` twin). */
+/** Ascending by basename, which embeds the start timestamp, so a fork's parent precedes the fork.
+ *  Of a same-session `.jsonl` / `.jsonl.zst` pair the resumable plain file wins, but only among
+ *  the files the cutoff left as candidates: a plain file dropped for an old mtime leaves the
+ *  compressed twin. */
 export function walkCodexSessions(roots: string[], sinceMs: number | undefined): WalkedFile[] {
   const collected: WalkedFile[] = [];
   for (const root of roots) {
     collectRolloutFiles(root, 1, sinceMs, collected);
   }
-  // Roots may overlap (the same directory named twice); a path is walked once.
+  // Roots may overlap (the same directory named twice).
   const seen = new Set<string>();
   const files = collected.filter((f) => {
     if (seen.has(f.path)) {
@@ -179,9 +138,6 @@ export function walkCodexSessions(roots: string[], sinceMs: number | undefined):
   return files;
 }
 
-/** Parse a rollout from its first byte. A `.jsonl.zst` archive is decompressed
- *  whole and cut with the same complete-lines rule; it cannot be resumed, so it
- *  reports the compressed size as `parsedThrough` and no probe. */
 export const parseCodexWhole: ParseWhole<CodexContribution> = (file) => {
   if (!file.resumable) {
     const compressed = readFileSync(file.path);
@@ -199,8 +155,7 @@ export const parseCodexWhole: ParseWhole<CodexContribution> = (file) => {
   return parseCodexFrom(file, 0, emptyCodexContribution());
 };
 
-/** Resume a rollout at `fromByte`, continuing `prior`'s parser state; `prior`
- *  itself is never mutated (the index still holds it). */
+/** Copies of `prior`'s state and events: the index still holds `prior`. */
 export const parseCodexTail: ParseTail<CodexContribution> = (file, fromByte, prior) => {
   return parseCodexFrom(file, fromByte, {
     v: prior.v,
@@ -209,11 +164,9 @@ export const parseCodexTail: ParseTail<CodexContribution> = (file, fromByte, pri
   });
 };
 
-/** Fold the contributions (walk order) into one report per provider. Per event:
- *  fork dedup (an info hash seen in this file or the parent is a copied
- *  token_count; parent unscanned: FORK_PREFIX_WINDOW_MS), THEN the window. The
- *  fork rules start at the event the fork was learned before (`fork.knownAfter`);
- *  every event's hash enters the file's own set regardless. */
+/** Per event: the fork dedup (an info hash seen in this file or in the parent is a copied
+ *  token_count; parent unscanned, the FORK_PREFIX_WINDOW_MS heuristic), THEN the window. Every hash
+ *  enters the file's own set, counted or not. */
 export function foldCodex(
   records: readonly FileRecord<CodexContribution>[],
   sinceMs: number | undefined,
@@ -221,8 +174,8 @@ export function foldCodex(
 ): Map<string, UsageReport> {
   const providers = new Map<string, UsageReport>();
   const canonical = canonicalModelNames();
-  // Every token_count `info` seen per session (counted or not), keyed by the
-  // session id hash, so a later fork can drop the events it copied from its parent.
+  // Every info hash seen per session, counted or not, so a later fork can drop the events it
+  // copied.
   const infoHashesBySession = new Map<string, Set<string>>();
   for (const { contribution: { state, events } } of records) {
     const { fork, metaTsMs } = state;
@@ -250,9 +203,8 @@ export function foldCodex(
         report = usageReport();
         providers.set(rawProvider, report);
       }
-      // Bucket by the user's LOCAL calendar day, not the UTC day the rollout
-      // timestamp spells; a line with no parseable timestamp still counts
-      // toward the totals.
+      // The day is the user's local one, not the UTC day the timestamp spells; a line with no
+      // parseable timestamp still counts toward the totals.
       record(report, tsMs === null ? null : dayKey(tsMs), canonical(rawModel), {
         input,
         output,
@@ -270,8 +222,6 @@ export function foldCodex(
 
 // ---------- internals ----------
 
-/** Recursively collect rollout files, deciding candidacy by the start date in
- *  the filename and the mtime. */
 function collectRolloutFiles(
   dir: string,
   depth: number,
@@ -307,9 +257,8 @@ function collectRolloutFiles(
     }
     let candidate = true;
     if (sinceMs !== undefined) {
-      // A resumed session appends new events to its ORIGINAL rollout, so an
-      // old start date alone cannot exclude a file -- only an old start date
-      // AND no writes since the cutoff can.
+      // A resumed session appends to its ORIGINAL rollout, so an old start date alone cannot
+      // exclude a file; only an old start date AND no writes since the cutoff can.
       const startedMs = Date.parse(`${m[1]}-${m[2]}-${m[3]}T00:00:00Z`);
       if (Number.isFinite(startedMs) && startedMs + FILENAME_CUTOFF_SLACK_MS < sinceMs) {
         candidate = !(mtimeMs < sinceMs);
@@ -319,8 +268,7 @@ function collectRolloutFiles(
   }
 }
 
-/** The archive path has always dropped a leading UTF-8 BOM (its whole-text
- *  decoder did); the file path never did, and the scanner keeps it that way. */
+/** Only the archive path strips a BOM; the file scanner (scan.ts) is byte-faithful on purpose. */
 function withoutBom(bytes: Uint8Array): Uint8Array {
   return bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? bytes.subarray(3) : bytes;
 }
@@ -344,14 +292,13 @@ function parseCodexFrom(
   return { contribution, ...scan };
 }
 
-/** Map one `last_token_usage` object onto the proxy report's token buckets. */
 function tokenBuckets(last: Record<string, unknown>): TokenBuckets {
-  // sanitizeTokenCount (usage.ts): hostile or torn counts never enter a report.
+  // Hostile or torn counts never enter a report.
   const num = sanitizeTokenCount;
   const cached = num(last.cached_input_tokens);
   return {
-    // Codex reports input INCLUSIVE of the cached tokens; the pricing buckets
-    // charge cached reads separately, so split them out here.
+    // Codex reports input INCLUSIVE of the cached tokens; the pricing buckets charge cached reads
+    // separately.
     input: Math.max(0, num(last.input_tokens) - cached),
     cacheRead: cached,
     // output_tokens already includes the reasoning tokens (a details field).
@@ -360,8 +307,7 @@ function tokenBuckets(last: Record<string, unknown>): TokenBuckets {
   };
 }
 
-/** Fold one needle-bearing line into `state` / `events`. A needle may sit inside
- *  another line's content, so the type checks stay. */
+/** A needle may sit inside another line's content, so the type checks stay. */
 function parseCodexLine(line: string, contribution: CodexContribution): void {
   const { state, events } = contribution;
   const isMeta = line.includes('"session_meta"');

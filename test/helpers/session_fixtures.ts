@@ -1,7 +1,4 @@
-// Session-log fixture builders shared by the reader tests and the index
-// equivalence tests: one Codex rollout line / file and one Claude transcript
-// line / file, spelled the way the CLIs write them. Plain functions only (this
-// is not a test file).
+// Fixture lines spelled exactly the way the Codex and Claude CLIs write them.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -53,7 +50,6 @@ export function tokenCount(
   });
 }
 
-/** Write one rollout file into `dir` with the canonical filename for `localDate`. */
 export function writeRollout(dir: string, localDate: string, id: string, lines: string[]): string {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `rollout-${localDate}T01-00-00-${id}.jsonl`);

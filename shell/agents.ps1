@@ -1,19 +1,11 @@
-# Agent commands (Windows / PowerShell) -- dot-sourced from your PowerShell
-# $PROFILE. PowerShell equivalent of agents.bashrc.
-#
-# Thin wrapper over bin\agent.ps1 (which self-bootstraps deno, installs
-# node_modules in-place in the checkout, and dispatches). This file only adds what
-# a subprocess can't do for the session: eval the proxy env into the current
-# shell after `start`.
+# Dot-sourced from the PowerShell $PROFILE; the twin of shell/agents.bashrc.
+# It adds only what a subprocess cannot do: eval `agent env` into the current session.
 
-# Resolve the repo root; this file lives in shell/, so the checkout root is its
-# parent and bin\agent.ps1 lives there.
 $script:AgentsDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $script:AgentPs1 = Join-Path $AgentsDir 'bin\agent.ps1'
 
-# A deno already on PATH wins; the one-time install under DENO_INSTALL is only a
-# fallback for sessions whose PATH lost it. DENO_INSTALL is the same override
-# scripts/ensure-deno.ps1 honors, so every entry point looks in one place.
+# DENO_INSTALL is the same override scripts/ensure-deno.ps1 honors, so every entry point
+# looks in one place.
 $DenoHome = if ($env:DENO_INSTALL) { $env:DENO_INSTALL } else { Join-Path $HOME '.deno' }
 $DenoDir = Join-Path $DenoHome 'bin'
 $DenoExe = Join-Path $DenoDir 'deno.exe'
@@ -23,20 +15,13 @@ if ((Test-Path $DenoExe) -and (-not (Get-Command deno -ErrorAction SilentlyConti
 
 # --- low-level helpers -----------------------------------------------------
 
-# Invoke bin\agent.ps1 with the given arguments.
 function Invoke-Agent {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 @args
 }
 
-# Apply the `env` output to the current session: evaluate every non-blank line of
-# the contract-stable `agent env --format powershell` stdout, mirroring the POSIX
-# twin's unconditional eval (agents.bashrc). env stdout carries ONLY shell directives
-# (see src/commands/env.ts); install noise goes to stderr. -Quiet silences stderr --
-# used only by the eager startup call so bootstrap noise ("Installing copilot-env
-# node_modules ...") doesn't disrupt the prompt. The `agent` wrapper omits -Quiet so
-# a genuine env-refresh failure stays visible, matching the POSIX twin
-# (agents.bashrc: the wrapper's refresh is unsilenced; the eager source is
-# 2>/dev/null).
+# `agent env` stdout carries only shell directives (src/commands/env.ts), so every line is
+# safe to Invoke-Expression. -Quiet drops stderr for the eager startup call alone, matching
+# agents.bashrc: the wrapper's refresh stays audible, the first-source call is silent.
 function Import-CopilotEnv {
     param([switch]$Quiet)
     $lines = if ($Quiet) { Invoke-Agent env --format powershell 2>$null } else { Invoke-Agent env --format powershell }
@@ -46,14 +31,8 @@ function Import-CopilotEnv {
     }
 }
 
-# Uniform wrapper over bin\agent.ps1 (mirrors the POSIX agents.bashrc `agent`):
-# run the requested command, then re-apply the full session env from the single
-# source of truth -- `agent env`, which prints `$env:KEY = ...` / `Remove-Item
-# Env:KEY` lines (CODEX_HOME + the proxy ANTHROPIC_BASE_URL, set or cleared) and,
-# when the `launchers` config key is on, the one-line global cl/co/cx launcher
-# functions (each delegating to `agent launch`). No per-subcommand logic; we only
-# ever eval the dedicated, contract-stable `env` output.
-# The refresh is NOT -Quiet: a real failure should be visible (it stays non-fatal).
+# `agent env` is the ONLY output this file ever evals, so a new subcommand never touches
+# this wrapper. The refresh is not -Quiet: a failed refresh should be visible.
 function agent {
     Invoke-Agent @args
     if ($LASTEXITCODE -ne 0) { return }
@@ -62,7 +41,6 @@ function agent {
 
 # --- shell-startup side effects --------------------------------------------
 
-# Eagerly apply the managed env (CODEX_HOME + proxy ANTHROPIC_BASE_URL) for the current shell.
-# -Quiet so first-source bootstrap output doesn't break the prompt; a later agent/launcher
-# call will surface any genuine env-resolution failure.
+# -Quiet: bootstrap output on first source would disrupt the prompt; a failed resolution
+# surfaces on the next `agent` call instead.
 Import-CopilotEnv -Quiet

@@ -4,10 +4,9 @@ import { DAEMON_GH_TOKEN_ENV } from "../src/copilot_api/process.ts";
 import { denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
-// The shim reads the GitHub token from DAEMON_GH_TOKEN_ENV and splices it into
-// process.argv as `--github-token <token>`, keeping it off the launch command line. It must
-// be exercised as a real preloaded subprocess (`--preload`), which is how launchDaemon
-// loads it -- and BEFORE the PAT shim, which reads the token from argv.
+// The shim runs here as a real `--preload` subprocess, the way launchDaemon loads it. Production
+// also orders it before the PAT shim, which reads the token from argv (daemonPreloadFlags in
+// src/copilot_api/process.ts); these runs preload it alone.
 const SHIM = join(ROOT, "src", "scripts", "token_argv_preload.ts");
 const ENV_KEY = DAEMON_GH_TOKEN_ENV;
 
@@ -47,9 +46,8 @@ test("splices the token from the env var into argv as --github-token, then scrub
   // Fake-token fixtures stay short and low-entropy: gitleaks' generic-api-key rule only
   // matches secrets of 10+ chars AND entropy >= 3.5, so neither gate can trip on them.
   const out = runPreloaded("ghp_test");
-  // The proxy's own flags survive, and the token is appended as a trailing --github-token pair.
   expect(out.argv).toEqual(["start", "--port", "4141", "--github-token", "ghp_test"]);
-  // The env var is deleted so it can't leak to a child process.
+  // The env var is deleted so it cannot leak to a child process.
   expect(out.envHadKey).toBe(false);
 });
 
@@ -60,7 +58,6 @@ test("with no env var set, argv is unchanged and no flag is added", () => {
 });
 
 test("does not double-add when --github-token is already present in argv", () => {
-  // If a caller passed the flag directly (e.g. an old launch), the shim must not duplicate it.
   const dir = tempDir("copilot-tokenargv-");
   try {
     const target = join(dir, "target.ts");

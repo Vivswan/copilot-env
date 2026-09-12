@@ -17,11 +17,10 @@ import {
 import { localDayKey } from "../src/utils/time.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
-// Day keys are LOCAL calendar days now, so expectations derive from the same
-// helper the reader uses; timestamps meant to share a day are written at the
-// SAME instant, and distinct days sit a full day apart (which lands on
-// different local days in any runner timezone -- a fall-back transition could
-// stretch a day to 25h, but these June dates avoid one).
+// Day keys are LOCAL calendar days, so expectations derive from the reader's own helper.
+// Timestamps meant to share a day are written at the SAME instant; distinct days sit a full
+// day apart, which lands on different local days in any runner zone (a fall-back transition
+// could stretch a day to 25h, but these June dates avoid one).
 const ms = (utc: string): number => Date.parse(utc);
 const day = (utc: string): string => localDayKey(ms(utc));
 
@@ -40,8 +39,7 @@ afterEach(() => {
   }
 });
 
-// The ONE token-count sanitization rule both session readers apply: only a finite
-// positive number passes, floored to an integer; hostile or torn values become 0.
+// The ONE token-count sanitization rule both session readers apply.
 test("sanitizeTokenCount clamps non-finite, negative, and non-number counts to 0", () => {
   expect(sanitizeTokenCount(42)).toBe(42);
   expect(sanitizeTokenCount(0)).toBe(0);
@@ -56,10 +54,9 @@ test("sanitizeTokenCount clamps non-finite, negative, and non-number counts to 0
   expect(sanitizeTokenCount(0.4)).toBe(0);
 });
 
-// parseUsageRow is THE boundary between untyped SQLite output and the report. It runs on
-// values a live daemon DB should never hold, because the file is external state a torn
-// write or a hand edit can corrupt -- so the shapes below are driven directly rather than
-// through a DB that cannot produce all of them.
+// parseUsageRow is THE boundary between untyped SQLite output and the report. The file is
+// external state a torn write or a hand edit can corrupt, so shapes a live daemon DB never
+// holds are driven directly rather than through a DB that cannot produce all of them.
 test("parseUsageRow normalizes every count and drops rows it cannot attribute", () => {
   const ok = parseUsageRow({
     bucket: 100,
@@ -82,7 +79,6 @@ test("parseUsageRow normalizes every count and drops rows it cannot attribute", 
   expect(parseUsageRow({ bucket: 5n, model: "m", input: 7n, events: 1n })?.buckets.input).toBe(7);
   expect(parseUsageRow({ bucket: 5n, model: "m", events: 1 })?.bucket).toBe(5);
 
-  // Hostile or absent counts clamp to 0 rather than reaching a report.
   const clamped = parseUsageRow({
     bucket: null,
     model: "m",
@@ -95,7 +91,6 @@ test("parseUsageRow normalizes every count and drops rows it cannot attribute", 
   expect(clamped?.buckets).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
   expect(clamped?.bucket).toBeNull(); // no timestamp -> omitted from the per-day split
 
-  // Nothing usable to attribute the row to -> the whole row is dropped.
   expect(parseUsageRow({ model: null, input: 10, events: 1 })).toBeNull();
   expect(parseUsageRow({ model: "", input: 10, events: 1 })).toBeNull();
   expect(parseUsageRow({ model: 42, input: 10, events: 1 })).toBeNull();
@@ -103,9 +98,8 @@ test("parseUsageRow normalizes every count and drops rows it cannot attribute", 
   expect(parseUsageRow("not a row")).toBeNull();
 });
 
-// record is the ONE owner of the report's two maps: every producer folds through it,
-// so its contract -- always byModel, perDay only when a day is given -- is what every
-// source's totals-vs-split behavior reduces to.
+// record is the ONE owner of the report's two maps; every producer folds through it, so every
+// source's totals-vs-split behaviour reduces to this contract.
 test("record folds into byModel always and into perDay only when a day is given", () => {
   const report = usageReport();
   record(report, "2026-06-01", "m", {
@@ -204,7 +198,6 @@ test("undatedUsage returns exactly the share of byModel no day accounts for", ()
 });
 
 test("usageReport validates a hand-built perDay split against the byModel roll-up", () => {
-  // The default mint is the empty report every producer folds into via record().
   const empty = usageReport();
   expect(empty.byModel.size).toBe(0);
   expect(empty.perDay.size).toBe(0);
@@ -225,9 +218,8 @@ test("usageReport validates a hand-built perDay split against the byModel roll-u
   const report = usageReport(byModel, perDay);
   expect(undatedUsage(report).get("m")?.input).toBe(2);
 
-  // The factory deep-copies both maps top to bottom: the report never aliases
-  // caller maps or entries, so a caller edit cannot invalidate a report
-  // already validated.
+  // The factory deep-copies both maps top to bottom, so a caller edit cannot invalidate a
+  // report already validated.
   expect(report.byModel).not.toBe(byModel);
   expect(report.byModel.get("m")).not.toBe(byModel.get("m"));
   expect(report.perDay).not.toBe(perDay);
@@ -418,7 +410,6 @@ test("readUsage drops an unattributable DB row instead of reporting a phantom mo
     cacheCreation: 0,
     events: 1,
   });
-  // The dropped row contributed nothing to the totals or the per-day split.
   expect(report.byModel.get("gpt-5.5")?.input).toBe(100);
   expect(report.perDay.get(day("2026-06-01T00:00:00Z"))?.size).toBe(2);
 });
@@ -468,13 +459,11 @@ test("readUsage exposes a per-day, per-model breakdown that reconciles with byMo
 
   const report = readUsage([path]);
 
-  // perDay keys are the distinct LOCAL calendar days.
   expect([...report.perDay.keys()].sort()).toEqual([
     day("2026-06-01T00:00:00Z"),
     day("2026-06-02T00:00:00Z"),
   ]);
 
-  // The first day carried both claude rows (100+100 input, 50+50 output, 0+10 cache read).
   expect(report.perDay.get(day("2026-06-01T00:00:00Z"))?.get("claude-opus-4.8")).toEqual({
     input: 200,
     output: 100,
@@ -482,7 +471,6 @@ test("readUsage exposes a per-day, per-model breakdown that reconciles with byMo
     cacheCreation: 0,
     events: 2,
   });
-  // The second day carried only the gpt row.
   expect(report.perDay.get(day("2026-06-02T00:00:00Z"))?.get("gpt-5.5")?.input).toBe(200);
   expect(report.perDay.get(day("2026-06-02T00:00:00Z"))?.has("claude-opus-4.8")).toBe(false);
 });
@@ -527,9 +515,8 @@ test("readUsage sums tokens by model and unions active days across two DBs", () 
   const pathB = join(dir, "b.sqlite");
   seedUsageDb(pathA);
 
-  // DB B shares the "claude-opus-4.8" model and the 2026-06-01 day with A, plus
-  // a fresh model and a fresh day, so we can prove SUM (not overwrite) and a
-  // UNION of distinct days (not a per-DB reset).
+  // B shares a model and a day with A, plus a fresh model and a fresh day: SUM, not overwrite,
+  // and a UNION of days, not a per-DB reset.
   const db = new DatabaseSync(pathB);
   db.exec(`CREATE TABLE token_usage_events (
     model TEXT NOT NULL,
@@ -547,7 +534,6 @@ test("readUsage sums tokens by model and unions active days across two DBs", () 
 
   const report = readUsage([pathA, pathB]);
 
-  // claude-opus-4.8: A (200/100/10/0/2 events) summed with B (5/7/1/2/1 event).
   expect(report.byModel.get("claude-opus-4.8")).toEqual({
     input: 205,
     output: 107,
@@ -555,10 +541,8 @@ test("readUsage sums tokens by model and unions active days across two DBs", () 
     cacheCreation: 2,
     events: 3,
   });
-  // Models only in one DB carry through untouched.
   expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
   expect(report.byModel.get("gemini-3.0")?.input).toBe(9);
-  // Distinct days: 2026-06-01 (both DBs), 2026-06-02 (A), 2026-06-03 (B) = 3.
   expect(report.perDay.size).toBe(3);
 });
 
@@ -567,14 +551,12 @@ test("readUsage sinceMs filters older rows from token totals and active days", (
   const path = join(dir, "copilot-api.sqlite");
   seedUsageDb(path);
 
-  // Seed rows live on 2026-06-01 (claude) and 2026-06-02 (gpt). A cutoff at
-  // the gpt row's own timestamp keeps only the gpt row.
+  // The cutoff sits at the gpt row's own timestamp: the boundary row is kept.
   const report = readUsage([path], ms("2026-06-02T00:00:00Z"));
 
   expect(report.byModel.has("claude-opus-4.8")).toBe(false);
   expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
   expect(report.byModel.get("gpt-5.5")?.events).toBe(1);
-  // Only 2026-06-02 survives the cutoff.
   expect(report.perDay.size).toBe(1);
 });
 
@@ -604,10 +586,9 @@ test("readUsage buckets by the user's local day, not the UTC day", () => {
   );
   db.close();
 
-  // The zone is NAMED rather than pinned through process.env.TZ, so this runs on Windows
-  // too (deno honors the TZ env var on unix only). Asserting the SAME row in two zones
-  // is what keeps the teeth on every runner: a reader that ignored the zone -- or sliced
-  // by UTC -- would have to return one key for both, and these two differ.
+  // The zone is NAMED rather than pinned through process.env.TZ, so this runs on Windows too
+  // (deno honours the TZ env var on unix only). The SAME row in two zones keeps the teeth: a
+  // reader that ignored the zone or sliced by UTC would return one key for both.
   expect([...readUsage([path], undefined, "America/New_York").perDay.keys()])
     .toEqual(["2026-06-01"]);
   expect([...readUsage([path], undefined, "UTC").perDay.keys()]).toEqual(["2026-06-02"]);
@@ -649,7 +630,6 @@ test("a null created_at_ms row counts in byModel but is dropped from perDay", ()
     cacheCreation: 0,
     events: 2,
   });
-  // Only the dated row appears in the per-day split.
   expect(report.perDay.size).toBe(1);
   expect(report.perDay.get(day("2026-06-01T00:00:00Z"))?.get("gpt-5.5")?.input).toBe(1);
 });
@@ -671,12 +651,10 @@ test("readUsage skips a corrupt DB file without throwing", () => {
   const good = join(dir, "good.sqlite");
   const corrupt = join(dir, "corrupt.sqlite");
   seedUsageDb(good);
-  // Not a valid SQLite file; opening/querying it must be caught and skipped.
   writeFileSync(corrupt, "this is not a sqlite database");
 
   const report = readUsage([corrupt, good]);
 
-  // The good DB still contributes its full totals; the corrupt one is dropped.
   expect(report.byModel.get("claude-opus-4.8")?.input).toBe(200);
   expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
   expect(report.perDay.size).toBe(2);
@@ -718,7 +696,6 @@ test("discoverUsageDbs also sweeps named profile daemon homes", () => {
   const defaultDb = join(defaultHost, "copilot-api.sqlite");
   writeFileSync(defaultDb, "");
 
-  // A named profile's isolated daemon home carries its own per-host DB.
   const profileHost = join(dir, "profiles", "work", ".run", "host-a");
   mkdirSync(profileHost, { recursive: true });
   const profileDb = join(profileHost, "copilot-api.sqlite");
@@ -767,18 +744,15 @@ test("discoverUsageDbs sweeps the DEFAULT profile's home; a stray invalid dir st
 test("discoverUsageDbs excludes a stray .run file and a host dir missing the sqlite", () => {
   dir = tempDir("copilot-usage-");
 
-  // A stray plain file sitting directly under .run/ (not a host directory).
   const runDir = join(dir, ".run");
   mkdirSync(runDir, { recursive: true });
   const strayFile = join(runDir, "stray.txt");
   writeFileSync(strayFile, "not a host dir");
 
-  // A host directory that exists but has no copilot-api.sqlite inside it.
   const emptyHost = join(runDir, "host-empty");
   mkdirSync(emptyHost, { recursive: true });
   writeFileSync(join(emptyHost, "other.txt"), "no db here");
 
-  // A real host directory that does carry the sqlite.
   const goodHost = join(runDir, "host-good");
   mkdirSync(goodHost, { recursive: true });
   const goodDb = join(goodHost, "copilot-api.sqlite");
@@ -790,14 +764,12 @@ test("discoverUsageDbs excludes a stray .run file and a host dir missing the sql
   expect(found).not.toContain(strayFile);
 });
 
-// A scan that FAILED must not read as an empty one. discoverUsageDbs backs a
-// rendered "no copilot-api usage databases ... found" line and a summed cost TOTAL,
-// so a silently short answer under-reports money without ever saying so. Only a
-// MISSING directory is the proven "nothing here" -- the same narrowing (and the same
-// stated reason) as profileHomeNames in copilot_api/paths.ts, which has always done
-// it this way. ENOENT/ENOTDIR both stay "nothing here" (a lookup under a
-// non-directory parent finds nothing); the class that must NOT be swallowed is a
-// directory that exists and cannot be read, so these drive a real EACCES.
+// A scan that FAILED must not read as an empty one: discoverUsageDbs backs a "no databases
+// found" line and a summed cost TOTAL, so a silently short answer under-reports money. Only a
+// MISSING directory is the proven "nothing here", the same narrowing as profileHomeNames in
+// copilot_api/paths.ts.
+//   ENOENT / ENOTDIR                 -> nothing here
+//   a directory that cannot be read  -> raises; driven here as a real EACCES
 // POSIX, non-root only: 0000 blocks the readdir, and root bypasses file modes.
 const skipUnreadableDir = process.platform === "win32" || process.getuid?.() === 0;
 
@@ -850,10 +822,8 @@ test.skipIf(skipUnreadableDir)(
 );
 
 test("both scans still read ABSENT dirs as empty, never as a failure (the control)", () => {
-  // The control for the two rows above, and the one that runs everywhere (no
-  // permission dependency): absence is the PROVEN "nothing here" and must keep
-  // flowing through silently -- a fresh home has neither .run nor profiles/, and
-  // `agent cost` must not raise on it.
+  // Absence is the PROVEN "nothing here" and must keep flowing silently: a fresh home has
+  // neither .run nor profiles/, and `agent cost` must not raise on it.
   dir = tempDir("copilot-usage-");
   const legacy = join(dir, "copilot-api.sqlite");
   writeFileSync(legacy, "");

@@ -1,20 +1,14 @@
-// The daemon's `--preload` shims: real files on disk that `deno run` loads into the
-// proxy process.
-//
-// The set lives here rather than in process.ts because two callers need it and they
-// need different slices: the spawn picks a SUBSET per credential/config, while the
-// proxy float must pre-warm EVERY one into its cache (any of them may be loaded by a
-// later start, and `--cached-only` gives no second chance). process.ts already imports
-// the float, so the float cannot import back from it.
+// Lives apart from process.ts because the spawn picks a SUBSET per credential/config while the proxy
+// float must pre-warm EVERY shim into its cache (`--cached-only` gives no second chance), and
+// process.ts already imports the float.
 import { join } from "node:path";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
-/** The shim EVERY proxy spawn loads, daemon or foreground: it restores node's
- *  `fs.existsSync` contract, without which the proxy dies at module load on Linux. */
+/** Loaded by EVERY proxy spawn, daemon or foreground: it restores node's `fs.existsSync` contract,
+ *  without which the proxy dies at module load on Linux. */
 export const NODE_COMPAT_SHIM = "node_compat_preload.ts";
 
-/** Every shim a proxy spawn can load, by filename under `src/scripts/`. The float warms
- *  all of them, since any one may be loaded by a later start. */
+/** Filenames under `src/scripts/`. */
 export const DAEMON_SHIM_FILES = [
   "node_compat_preload.ts",
   "daemon_lock_preload.ts",
@@ -27,12 +21,11 @@ export const DAEMON_SHIM_FILES = [
 
 export type DaemonShimFile = (typeof DAEMON_SHIM_FILES)[number];
 
-/** Absolute path of one shim. */
 export function shimPath(name: DaemonShimFile): string {
   return join(PROJECT_ROOT, "src", "scripts", name);
 }
 
-/** Absolute paths of every shim -- the float's cache-warm entrypoint list. */
+/** The float's cache-warm entrypoint list. */
 export function allShimPaths(): string[] {
   return DAEMON_SHIM_FILES.map(shimPath);
 }

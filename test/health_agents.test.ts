@@ -1,7 +1,5 @@
-// The agent-wiring checks (src/health/checks_agents.ts): Codex and Claude against their
-// gathered facts, the per-host CODEX_HOME farm, the Claude Desktop library, and the
-// `--live` end-to-end verdicts. The environment/runtime checks and the fact gatherer are
-// pinned in health.test.ts; named-profile behaviour in health_profiles.test.ts.
+// The environment/runtime checks and the fact gatherer are pinned in health.test.ts,
+// named-profile behaviour in health_profiles.test.ts.
 import { join } from "node:path";
 import type { ClaudeDesktopStatus } from "../src/claude/desktop_status.ts";
 import { type CodexHostDrift, codexHostDriftLine } from "../src/codex/host.ts";
@@ -59,7 +57,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
       providerWired: false,
     }).status,
   ).toBe("ok");
-  // Fully wired -> ok, multi-line detail: wiring, proxy, then the auth.command resolver.
+  // Fully wired -> ok; the detail names the wiring, the proxy, and the auth.command resolver.
   const ok = checkCodex(wired);
   expect(ok.status).toBe("ok");
   expect(ok.detail).toContain("copilot-env");
@@ -219,9 +217,8 @@ test("codex: not configured is ok; each broken part warns with a precise message
     "gh auth: authenticated via /bin/gh (AUTO - currently account vivswan)",
   );
 
-  // Non-gh-cli provider (or none) with no stored token: gh is NOT a fallback, so
-  // a managed Direct config that doesn't resolve warns and points at `agent auth`
-  // (NOT the gh-specific message). Guards against the provider-blind false-OK.
+  // Non-gh-cli provider with no stored token: gh is NOT a fallback, so the warn points at
+  // `agent auth`, never the gh-specific message (the provider-blind false-OK).
   const directNoCred = checkCodex({
     ...wired,
     providerMode: "direct",
@@ -617,9 +614,8 @@ test("checkCodexHost: the codex-host key against the disk, every drift warns wit
     expect(result.fix).toBe("agent codex");
     expect(result.detail).toBe(withConfig ? `${summary}\n${configLine}` : summary);
   }
-  // Off with something at the path that is not proven ours NOW (no managed wiring on
-  // disk, recorded or not, probeable or not): no drift, nothing to fix; the derivation
-  // leaves it alone.
+  // Off with something at the path not proven ours NOW (no managed wiring on disk, recorded or
+  // not, probeable or not): no drift, nothing to fix.
   for (
     const facts of [
       { ...on, wired: false, active: false, enabled: false },

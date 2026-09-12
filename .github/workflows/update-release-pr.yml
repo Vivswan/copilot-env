@@ -1,13 +1,9 @@
-# The release-PR hook of the release pipeline: repo-owned, written once by
-# the fleet sync and never overwritten. The fleet release pipeline (ci.yml's
-# update-release-pr job) calls this workflow whenever release-please
-# creates or refreshes the release PR (independently of any release cut),
-# so everything this repository wants on that PR happens here: regenerating
-# files that must ride in the release commit, updating version references
-# in docs. Add jobs freely - releases never wait on this path.
-# Token caveat: pushes made with the default github.token do NOT re-trigger
-# the PR's CI checks (a maintainer closes and reopens the PR to get them);
-# GH_TOKEN below therefore prefers REPO_PLATFORM_TOKEN when it is set.
+# Repo-owned release-PR hook: ci.yml's update-release-pr job calls it whenever release-please
+# creates or refreshes the release PR, independently of any release cut. Add jobs freely;
+# releases never wait on this path.
+#
+#   push with github.token         -> the PR's checks do NOT re-run (a maintainer closes and reopens it)
+#   push with REPO_PLATFORM_TOKEN  -> they re-run, so GH_TOKEN prefers it
 
 name: Update Release PR
 

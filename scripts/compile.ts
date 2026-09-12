@@ -1,15 +1,7 @@
-// Compile the copilot-env agent binary for the release targets (all five by
-// default, or a subset via --target), then emit dist/checksums.txt. Runs from
-// anywhere; operates on the repo root. Invoked as `deno task compile`.
-//
-// The target list is imported from src/install/targets.ts, the single source
-// of truth, so it can no longer drift the way the old bash TARGETS copy could.
-//
-// The --include list is NOT here: deno.json's `compile.include` owns it,
-// pinned to installer.ts's asset lists by test/installer_pinning.test.ts. That
-// has to stay one list -- a CLI --include MERGES with the config's list rather
-// than replacing it, so a second copy here would silently union instead of
-// failing loudly.
+// `deno task compile`: the release binaries and dist/checksums.txt. The --include list is NOT
+// here: deno.json's `compile.include` owns it (test/installer_pinning.test.ts pins it to
+// installer.ts's asset lists), and a CLI --include MERGES with the config's list rather than
+// replacing it, so a second copy would silently union.
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { fileSha256 } from "../src/install/checksums.ts";
@@ -72,12 +64,9 @@ Deno.mkdirSync(join(ROOT, OUT_DIR), { recursive: true });
 for (const target of targets) {
   const out = `${OUT_DIR}/${releaseAssetName(target)}`;
   console.error(`==> deno compile --target ${target.triple} -> ${out}`);
-  // --node-modules-dir=none resolves npm through the global cache instead of
-  // the checkout's node_modules. That is what makes --exclude-unused-npm work
-  // at all (it is silently a no-op while a local node_modules exists), and it
-  // is worth a lot: the checkout's node_modules carries the proxy's own
-  // dependency tree, which the daemon resolves for itself and this binary
-  // never imports. Embedding it whole costs ~78MB per target.
+  // --node-modules-dir=none resolves npm through the global cache; --exclude-unused-npm is
+  // silently a no-op while a local node_modules exists. Without it the checkout's node_modules
+  // (the proxy's own tree, which this binary never imports) embeds whole: ~78MB per target.
   const { code } = new Deno.Command("deno", {
     args: [
       "compile",

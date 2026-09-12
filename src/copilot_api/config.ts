@@ -1,4 +1,3 @@
-// File-backed proxy config helper for config.json and persistent API keys.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
@@ -20,8 +19,7 @@ type StoreRead =
   | { kind: "unparseable"; error: string }
   | { kind: "unreadable"; error: string };
 
-/** The shared unparseable degrade for the two read-only loaders: warn once,
- *  answer `{}` -- junk content reads as empty, never as a crash. */
+/** Junk content reads as empty (warned), never as a crash; both read-only loaders share the rule. */
 function dataOrDegrade(
   path: string,
   read: Exclude<StoreRead, { kind: "unreadable" }>,
@@ -33,35 +31,25 @@ function dataOrDegrade(
   return read.data;
 }
 
-// Bounded backoff for reading config.json across the daemon's non-atomic write (see load()):
-// ~5 attempts x 4ms = up to ~16ms of retry, far longer than a truncate-then-write window.
+// Covers the daemon's truncate-then-write window on config.json (see read()): five attempts with a 4 ms
+// sleep before each retry, so at most four sleeps (16 ms), far longer than the window.
 const LOAD_RETRY_ATTEMPTS = 5;
 const LOAD_RETRY_MS = 4;
 
-// --- cross-process advisory lock for update()'s read-modify-write ---
-//
-// update() takes a best-effort `<file>.lock` (shared implementation in utils/file_lock.ts) so
-// concurrent read-modify-writes to the SAME store file across processes (the CLI, the daemon
-// shims, several shells at once) don't lost-update one another -- e.g. a `start --record-event`
-// heartbeat clobbering a fresh pid/port, an `auth --del` undone by a concurrent catalog-throttle
-// write, or two ensureApiKey callers each minting a key. It is BEST-EFFORT, not a hard mutex:
-// the shared bounded-wait policy (BOUNDED_LOCK_POLICY) proceeds WITHOUT the lock after its
-// wait rather than deadlock a command, and reclaims only a crashed/leaked holder.
+// update()'s read-modify-write takes a best-effort `<file>.lock` (utils/file_lock.ts): the CLI, the daemon
+// shims, and several shells write the SAME store, and BOUNDED_LOCK_POLICY proceeds WITHOUT the lock after
+// its wait rather than deadlock a command.
+//   `start --record-event` heartbeat vs a fresh pid/port  -> without it, the heartbeat clobbers them
+//   two ensureApiKey callers                              -> without it, two keys minted
 
 /**
- * Atomic JSON store for `~/.local/share/copilot-env/` files: the proxy's
- * `config.json` and the small state files (`CopilotEnvState`, `CopilotEnvRunState`,
- * `AutoupdateState` all wrap one of these). Sorted keys, 0600, atomic rename with a
- * Windows EPERM/EBUSY retry. Schema-agnostic on purpose: it manipulates a JSON
- * document plus a few domain helpers for the keys this tooling cares about, and
- * unknown keys in the file survive every write so hand edits and new upstream
- * fields are not clobbered.
+ * Atomic JSON store under the copilot-env home: the proxy's `config.json` and the small state files.
+ * Schema-agnostic on purpose: unknown keys survive every write, so hand edits and new upstream fields
+ * in the daemon's config.json are never clobbered.
  */
 export class CopilotApiConfig {
   readonly path: string;
-  /** update()'s serialization lock. Defaults beside the store; the ROOT stores
-   *  pass their `locks/` path from CopilotApiPaths (one home-clutter-free dir
-   *  for the permanent sidecars). */
+  /** The ROOT stores pass CopilotApiPaths' `locks/` path so permanent sidecars do not clutter the home. */
   readonly lockPath: string;
 
   constructor(path?: string, lockPath?: string) {
@@ -80,24 +68,19 @@ export class CopilotApiConfig {
   // ---------- low-level I/O ----------
 
   /**
-   * What one read of the store found. `doc` is a read that COMPLETED: the file
-   * parsed, or it is genuinely absent/empty. `unparseable` is content that WAS
-   * seen but is not JSON -- a proven fact about the file. `unreadable` is a read
-   * that FAILED: absence was not established and the contents could not be seen
-   * either. The kinds must not collapse, because `update()` writes back what this
-   * returns -- persisting a failed (or half-seen) read as `{}` is what would WIPE
-   * the file (the daemon's api key, admin key, providers).
+   * The kinds must not collapse: update() writes back what this returns, and persisting a failed
+   * or half-seen read as `{}` would WIPE the file (the daemon's api key, admin key, providers).
+   *   doc          -> the read COMPLETED: parsed, or the file is proven absent/empty
+   *   unparseable  -> content WAS seen and is not JSON, a proven fact about the file
+   *   unreadable   -> the read FAILED: neither absence nor contents were established
    */
   private read(): StoreRead {
-    // The proxy DAEMON writes config.json non-atomically (a plain truncate-then-write in the
-    // floated package), so a concurrent read can momentarily see it empty, half-written, or --
-    // on Windows -- fail outright with a sharing violation. Retry a few times before concluding
-    // anything: otherwise update()'s save would persist the emptied doc and WIPE the daemon's
-    // keys (api key, admin key, providers). Only config.json can be seen TORN, so only it gets
-    // the empty/parse-arm retries: our own stores (state, prefs) write via atomic rename. The
-    // read-ERROR arm retries for EVERY store -- a transient failure (a Windows sharing
-    // violation) is not a fact about the file, and "unreadable" is refused at update() and
-    // loadStrict(), so <=16ms of backoff is worth not refusing on a blip.
+    // The daemon owns config.json and its write path floats with the version (the 2.3.14 build renames
+    // atomically, the 2.0.1 floor truncates in place), so a read can still land mid-write; accepting that
+    // would let update() WIPE the daemon's keys.
+    //   empty file or a JSON syntax error, config.json only  -> retried; our own stores rename atomically, so junk in one is a fact
+    //   valid JSON whose root is not an object               -> NOT retried; the read completed, so there is nothing torn to wait out
+    //   read error, every store                              -> retried; a transient failure (a Windows sharing violation) is no fact about the file
     const retryTorn = basename(this.path) === PROXY_CONFIG_FILENAME;
     for (let attempt = 1;; attempt++) {
       const last = attempt >= LOAD_RETRY_ATTEMPTS;
@@ -105,12 +88,8 @@ export class CopilotApiConfig {
       try {
         raw = readFileSync(this.path, "utf8");
       } catch (e) {
-        // Absence is a PROVEN answer (no file -> an empty document) -- proven by
-        // entryAbsent, readTextResult's rule: a DANGLING SYMLINK reads ENOENT
-        // through readFileSync but the entry itself exists, and writing "absent"
-        // back would replace the user's link with a plain file. Every other
-        // failure is a look that did not complete, reported honestly after the
-        // retries rather than as empty.
+        // Absence is proven by entryAbsent, never by ENOENT alone: a DANGLING SYMLINK reads ENOENT but
+        // the entry exists, and writing "absent" back would replace the user's link with a plain file.
         if (isEnoentOrNotdir(e) && entryAbsent(this.path)) return { kind: "doc", data: {} };
         if (!last) {
           sleepSync(LOAD_RETRY_MS);
@@ -121,10 +100,8 @@ export class CopilotApiConfig {
       if (raw.trim()) {
         try {
           const data: unknown = JSON.parse(raw);
-          // A parsed non-object root (a scalar, an array) is the same class as a
-          // parse failure: content we could not interpret as the store, which a
-          // write-back would discard -- so it degrades on read and refuses on
-          // update, never collapses to a writable empty doc.
+          // A scalar or array root is content the store cannot interpret, so it takes the parse-failure
+          // path: a write-back would discard it.
           if (isRecord(data)) return { kind: "doc", data };
           return { kind: "unparseable", error: "the JSON root is not an object" };
         } catch (e) {
@@ -135,7 +112,7 @@ export class CopilotApiConfig {
           return { kind: "unparseable", error: String(e) };
         }
       }
-      // Empty read: retry (a transient truncate window) before accepting it as genuinely empty.
+      // An empty read may be the daemon's truncate window.
       if (retryTorn && !last) {
         sleepSync(LOAD_RETRY_MS);
         continue;
@@ -144,13 +121,9 @@ export class CopilotApiConfig {
     }
   }
 
-  /** The store as a document, with a failed or unparsed read flattened to `{}`
-   *  (warned). The flatten is KEPT for readers whose degraded answer is safe --
-   *  pure display, and the surfaces that must never throw (the in-daemon watchdog
-   *  gates) -- but it is a real flatten: a reader that renders "owns nothing" /
-   *  "no preference set" from this cannot tell an unreadable store from an empty
-   *  one. Readers whose emptiness is a DECISION read `loadStrict()` instead; a
-   *  caller that writes the result back goes through `update()`, which refuses. */
+  /** The flatten cannot tell an unreadable store from an empty one, so only readers whose degraded
+   *  answer is safe use it: display, preference reads that fall back to their built-in defaults, the
+   *  in-daemon gates that must never throw, and fast paths whose slow path re-checks. */
   load(): Record<string, unknown> {
     const read = this.read();
     if (read.kind === "unreadable") {
@@ -160,12 +133,9 @@ export class CopilotApiConfig {
     return dataOrDegrade(this.path, read);
   }
 
-  /** `load()` for DECISION-bearing readers (ownership take-backs, wiring, the
-   *  proxy float pin, credential resolution): a read that FAILED throws -- a
-   *  destructive or ownership decision must never act on an unproven empty --
-   *  while unparseable CONTENT still degrades to `{}` like `load()`: junk in the
-   *  file is a proven fact about the file (warned), which the stores' lenient
-   *  schemas already read as "owns less" / defaults. */
+  /** For DECISION-bearing readers (ownership take-backs, wiring, the proxy float pin, credential
+   *  resolution): a read that FAILED throws, since a destructive decision must never act on an
+   *  unproven empty. Unparseable CONTENT still degrades to `{}`: junk in the file is a proven fact. */
   loadStrict(): Record<string, unknown> {
     const read = this.read();
     if (read.kind === "unreadable") {
@@ -176,12 +146,10 @@ export class CopilotApiConfig {
     return dataOrDegrade(this.path, read);
   }
 
-  /** Atomically write ``data`` to disk with mode 0600. */
   save(data: Record<string, unknown>): void {
     const sorted = sortKeys(data);
-    // Created 0600 from the start, so a secret it may hold (the GitHub token, the
-    // proxy admin key) is never briefly readable at the default umask -- the
-    // rename publishes an already-restricted inode.
+    // Created 0600 from the start, so a secret it may hold (the GitHub token, the proxy admin key)
+    // is never briefly readable at the default umask.
     atomicWriteFile(this.path, `${JSON.stringify(sorted, null, 2)}\n`, 0o600);
     try {
       chmodReported(this.path, 0o600);
@@ -190,12 +158,9 @@ export class CopilotApiConfig {
     }
   }
 
-  /** The document a read-modify-write starts from (`{}` for an absent or empty file).
-   *  REFUSES on a store that could not be read OR parsed: treating either as an empty
-   *  document would persist the emptiness and wipe every key the file holds. Same
-   *  direction as codex/toml_io.ts's "refusing to overwrite it" -- an unreadable or
-   *  unparsed document is never clobbered, it is reported. Public so a caller about
-   *  to destroy its SOURCE can clear these read-side refusals for the destination first. */
+  /** REFUSES a store that could not be read OR parsed: treating either as empty would wipe every key
+   *  the file holds (the same direction as codex/toml_io.ts's "refusing to overwrite it"). Public so
+   *  a caller about to destroy its SOURCE can clear these refusals for the destination first. */
   loadForUpdate(): Record<string, unknown> {
     const read = this.read();
     if (read.kind === "unreadable") {
@@ -204,13 +169,9 @@ export class CopilotApiConfig {
       );
     }
     if (read.kind === "unparseable") {
-      // The same refusal as the unreadable arm, decided separately: a corrupt-but-
-      // readable file is NOT a reset candidate here, because (a) for config.json the
-      // daemon's torn-write window read() retries over can outlast the retries, so
-      // "unparseable" may still be a half-written LIVE store, and (b) for our own
-      // atomic stores it is outside corruption (a hand edit) whose salvageable
-      // content a reset would silently discard. The reset stays an explicit user
-      // act: fix or delete the file.
+      // A corrupt-but-readable file is NOT a reset candidate: config.json may still be mid-write past
+      // read()'s retries, and a hand-edited store holds salvageable content. The reset stays an
+      // explicit user act: fix or delete the file.
       throw new Error(
         `${this.path} is not valid JSON (${read.error}); refusing to overwrite it ` +
           `(a rewrite would discard whatever it still holds - fix or delete the file to reset it).`,
@@ -219,9 +180,6 @@ export class CopilotApiConfig {
     return read.data;
   }
 
-  /** Load (loadForUpdate, with its refusals), apply ``mutate`` in place, save, and return
-   *  the result. Serialized across processes by a best-effort lock (`lockPath`) so
-   *  concurrent read-modify-writes don't lost-update. */
   update(mutate: (d: Record<string, unknown>) => void): Record<string, unknown> {
     return withFileLockSync(this.lockPath, BOUNDED_LOCK_POLICY, () => {
       const data = this.loadForUpdate();
@@ -233,23 +191,18 @@ export class CopilotApiConfig {
 
   // ---------- domain helpers (auth) ----------
 
-  /** A fresh 64-char hex secret (the entropy/encoding for persisted keys). */
   private generateToken(): string {
     return randomBytes(32).toString("hex");
   }
 
-  /** The `auth` block narrowed to a record, or null when absent/ill-typed. The
-   *  plain load() flatten is ACCEPTED here: this only feeds the ensure* fast
-   *  paths, and their slow path re-checks inside update(), which refuses an
-   *  unreadable or unparsed store before anything could be clobbered. */
+  /** The plain load() flatten is safe here: it feeds only the ensure* fast paths, whose slow path
+   *  re-checks inside update(). */
   private readAuth(): Record<string, unknown> | null {
     const auth = this.load().auth;
     return isRecord(auth) ? auth : null;
   }
 
-  /** Return ``auth.apiKeys[0]``, generating and persisting one if absent. */
   ensureApiKey(): string {
-    // Fast path: a key already exists -> return it without writing.
     const auth = this.readAuth();
     if (auth) {
       const keys = auth.apiKeys;
@@ -257,9 +210,8 @@ export class CopilotApiConfig {
         return String(keys[0]);
       }
     }
-    // Missing: generate INSIDE update() and re-check there, so two concurrent creators (each of
-    // whom saw "missing" above) converge on ONE key -- the second's update() loads the first's
-    // key (the lock serializes them) and returns it instead of appending a second.
+    // Generated INSIDE update() with a re-check, so two concurrent creators that both saw "missing"
+    // converge on ONE key - unless update()'s best-effort lock times out and both write unlocked.
     let result = "";
     this.update((d) => {
       const authBlock = ensureDict(d, "auth");
@@ -276,19 +228,14 @@ export class CopilotApiConfig {
     return result;
   }
 
-  /**
-   * Return ``auth.adminApiKey``, generating and persisting one if absent.
-   * The admin key gates the ``/admin/*`` routes (e.g. live model-mapping
-   * updates); without it those routes reject every request.
-   */
+  /** The daemon rejects every `/admin/*` request without this key. */
   ensureAdminApiKey(): string {
     const auth = this.readAuth();
     if (auth && typeof auth.adminApiKey === "string" && auth.adminApiKey) {
       return auth.adminApiKey;
     }
-    // Generate INSIDE update() and re-check there: unlike an api key (an array we could append
-    // to), adminApiKey is a single value, so two concurrent creators must not each overwrite it
-    // and hand back a token the other clobbered. The lock + re-check makes them converge.
+    // Generated INSIDE update() with a re-check: adminApiKey is a single value, so two concurrent
+    // creators must not each overwrite it and hand back a token the other clobbered.
     let result = "";
     this.update((d) => {
       const authBlock = ensureDict(d, "auth");
@@ -303,8 +250,7 @@ export class CopilotApiConfig {
   }
 }
 
-/** Return ``parent[key]`` as a dict, creating/replacing if needed. Also the record-walk
- *  primitive for nested config.json writes (setProxyConfigValue in launch.ts). */
+/** Also the record-walk primitive for nested config.json writes (setProxyConfigValue in launch.ts). */
 export function ensureDict(parent: Record<string, unknown>, key: string): Record<string, unknown> {
   const value = parent[key];
   if (isRecord(value)) {
@@ -315,13 +261,6 @@ export function ensureDict(parent: Record<string, unknown>, key: string): Record
   return fresh;
 }
 
-/**
- * Recursively return a copy of ``value`` with object keys sorted
- * alphabetically at every level. Mirrors Python's ``json.dump(...,
- * sort_keys=True)`` so the on-disk file is byte-stable with the
- * previous Python writer. Arrays preserve order; their elements are
- * sorted recursively.
- */
 function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(sortKeys);

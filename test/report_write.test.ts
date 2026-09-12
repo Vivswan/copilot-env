@@ -103,8 +103,6 @@ test("every kind prints once per process, on stderr only, and a delete re-arms t
   }
 });
 
-/** One contract case: set up under `dir`, run under deferred reporting, and the exact
- *  lines it must produce (paths relative to `dir`). */
 interface ContractCase {
   name: string;
   skip?: boolean;
@@ -166,7 +164,6 @@ test("scratch dirs are silent, and deferred reports come out at the flush in ord
     const kept = join(dir, "kept.txt");
     writeFileReported(kept, "");
     expect(flushWriteReports()).toEqual([`created -> ${kept}`]);
-    // Flushed once: a second flush has nothing left.
     expect(flushWriteReports()).toEqual([]);
 
     // Deferred and never flushed by hand (the launch path): the lines reach stderr at
@@ -204,7 +201,6 @@ test("writes inside copilot-env's own homes print nothing; the same write outsid
     // Inside it: a store, a lock sidecar's directory, a profile home -- bookkeeping.
     writeFileReported(join(rootHome, "credentials.json"), "{}");
     mkdirReported(join(rootHome, "profiles", "work"));
-    // Outside it: the user's Codex config, named.
     const codexConfig = join(home, ".codex", "config.toml");
     mkdirReported(join(home, ".codex"));
     writeFileReported(codexConfig, "");

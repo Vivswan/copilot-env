@@ -12,9 +12,8 @@ import {
 import { ghAuthVerdict, ghTokenFromEnv, tokenFromSetFlag } from "../src/copilot_api/gh_cli.ts";
 import { expect, test } from "./helpers/testing.ts";
 
-// The ONE catalog-noise filter both failure formatters share (summarizeProbeFailure
-// here, formatLiveFailure in src/health/probe.ts): catalog dump lines match, a real
-// failure line never does.
+// The one catalog-noise filter shared by summarizeProbeFailure and formatLiveFailure
+// (src/health/probe.ts).
 test("CODEX_CATALOG_NOISE_RE matches catalog dump lines and not real errors", () => {
   expect(CODEX_CATALOG_NOISE_RE.test('{"object": "model", "id": "gpt-5.5"}')).toBe(true);
   expect(CODEX_CATALOG_NOISE_RE.test('"capabilities": {"family": "gpt"}')).toBe(true);
@@ -41,7 +40,6 @@ test("CLAUDE_PROBE pairs --bare with --settings so the apiKeyHelper is loaded", 
   expect(args[i + 1]).toMatch(/[\\/]tmp[\\/]home[\\/]settings\.json$/);
 });
 
-// A throwaway descriptor pointing at a fake home env var.
 const FAKE_DESCRIPTOR: ProbeDescriptor = {
   cli: "claude",
   homeEnvVar: "CLAUDE_CONFIG_DIR",
@@ -50,8 +48,7 @@ const FAKE_DESCRIPTOR: ProbeDescriptor = {
 
 type RunProbe = (cliPath: string, args: string[], env: Record<string, string>) => ProbeOutcome;
 
-// Deps that pass every cheap gate so the live smoke call is reached; retries fire
-// with no real backoff so the suite stays fast.
+// retryDelayMs 0: the retry cases would otherwise wait out the real backoff.
 function passingDeps(runProbe: RunProbe) {
   return {
     findCommand: (c: string) => ({ path: `/bin/${c}` }),
@@ -75,7 +72,6 @@ test("summarizeProbeFailure prefers a recognizable marker line over raw exit", (
 });
 
 test("summarizeProbeFailure skips codex's model-catalog noise", () => {
-  // A giant model-catalog line must not be picked as the reason.
   const noise = `{"id":"gpt-5.5","object":"model","capabilities":{"family":"gpt-5.5"}}`;
   const real = "ERROR auth: token refresh failed";
   const reason = summarizeProbeFailure(1, null, undefined, noise, real);
@@ -84,7 +80,6 @@ test("summarizeProbeFailure skips codex's model-catalog noise", () => {
 });
 
 test("summarizeProbeFailure falls back to a non-timeout spawn error message", () => {
-  // No marker in the (empty) output: the spawn error itself is the reason.
   expect(summarizeProbeFailure(null, null, "spawn codex ENOENT", "", "")).toContain("ENOENT");
 });
 
@@ -114,7 +109,6 @@ test("tokenFromSetFlag: undefined -> null, string -> trimmed literal, bare -> en
     expect(tokenFromSetFlag("  ghu_trim  ")).toBe("ghu_trim");
     expect(() => tokenFromSetFlag("")).toThrow("is empty");
 
-    // Bare flag reads the env vars, most specific first.
     delete process.env.COPILOT_GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
     delete process.env.GITHUB_TOKEN;
@@ -146,7 +140,7 @@ test("ghTokenFromEnv: precedence COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN,
     expect(ghTokenFromEnv()).toBeNull();
     // A blank/whitespace value is treated as unset (falls through).
     expect(ghTokenFromEnv({ GH_TOKEN: "   " })).toBeNull();
-    expect(ghTokenFromEnv({ GITHUB_TOKEN: "  ghu_g  " })).toBe("ghu_g"); // trimmed
+    expect(ghTokenFromEnv({ GITHUB_TOKEN: "  ghu_g  " })).toBe("ghu_g");
     expect(ghTokenFromEnv({ COPILOT_GITHUB_TOKEN: "c", GH_TOKEN: "g", GITHUB_TOKEN: "gh" })).toBe(
       "c",
     );
@@ -163,10 +157,8 @@ test("ghTokenFromEnv: precedence COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN,
 
 test("resolveDirectMode: a stored token selects Direct only when no forced mode wins", () => {
   const probe = () => false; // probe says "not direct" so token-vs-probe is visible
-  // A forced "proxy" / "direct" wins over a stored token.
   expect(resolveDirectMode("proxy", "ghu_x", probe)).toBe(false);
   expect(resolveDirectMode("direct", null, probe)).toBe(true);
-  // "auto": a present token selects Direct without probing; no token probes.
   expect(resolveDirectMode("auto", "ghu_x", probe)).toBe(true);
   expect(resolveDirectMode("auto", null, probe)).toBe(false);
   expect(resolveDirectMode("auto", null, () => true)).toBe(true);
@@ -181,14 +173,12 @@ test("resolveDirectMode: a stored token selects Direct only when no forced mode 
 test("ghAuthVerdict: exit 0 proves auth, a completed nonzero disproves it, a dead spawn proves nothing", () => {
   expect(ghAuthVerdict({ status: 0 })).toBe(true);
   expect(ghAuthVerdict({ status: 1 })).toBe(false); // gh RAN and said "not authenticated"
-  // The spawn never completed (an error, or the timeout kill): auth was never
-  // actually checked, so neither confident verdict may be minted.
+  // A spawn that never completed checked nothing, so neither confident verdict may be minted.
   expect(ghAuthVerdict({ status: null, error: new Error("spawnSync ETIMEDOUT") })).toBe("unproven");
   expect(ghAuthVerdict({ status: null })).toBe("unproven");
 });
 
 test("probeDirectWorks: failed cheap looks fall back to proxy without reaching later gates", () => {
-  // An unproven gh-auth look: proxy fallback, and the live model call never runs.
   let probeCalls = 0;
   const deps = {
     findCommand: (c: string) => ({ path: `/bin/${c}` }),
@@ -202,7 +192,6 @@ test("probeDirectWorks: failed cheap looks fall back to proxy without reaching l
   expect(probeDirectWorks(FAKE_DESCRIPTOR, () => {}, deps)).toBe(false);
   expect(probeCalls).toBe(0);
 
-  // A failed CLI look: proxy fallback before gh auth is even asked.
   let ghAuthCalls = 0;
   const failedLook = probeDirectWorks(FAKE_DESCRIPTOR, () => {}, {
     ...deps,
@@ -226,7 +215,7 @@ test("probeDirectWorks retries the live smoke call and succeeds once it passes",
     () => {}, // no-op writeDirectConfig
     passingDeps(() => {
       calls++;
-      return { ok: calls >= 3 }; // fail twice (transient), then succeed
+      return { ok: calls >= 3 };
     }),
   );
   expect(ok).toBe(true);
@@ -240,7 +229,7 @@ test("probeDirectWorks falls back after exhausting retries", () => {
     () => {},
     passingDeps(() => {
       calls++;
-      return { ok: false }; // never succeeds
+      return { ok: false };
     }),
   );
   expect(ok).toBe(false);
@@ -270,14 +259,11 @@ test("probeDirectWorks strips provider/CLI env families but keeps gh auth", () =
     expect(ok).toBe(true);
     expect(seen).not.toBeNull();
     const env = seen as unknown as Record<string, string>;
-    // Every OPENAI_*/ANTHROPIC_*/CODEX_*/CLAUDE_* var is gone (by prefix),
-    // case-insensitively...
     expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(env.OPENAI_BASE_URL).toBeUndefined();
     expect(env.CODEX_API_KEY).toBeUndefined();
     expect(env.CLAUDE_CODE_FOO).toBeUndefined();
     expect(env.openai_org).toBeUndefined();
-    // ...gh auth survives, and the probe's own home var wins over the leaked one.
     expect(env.GH_TOKEN).toBe("keep-me");
     expect(env.CLAUDE_CONFIG_DIR).toBeTruthy();
     expect(env.CLAUDE_CONFIG_DIR).not.toBe("leaked-home");

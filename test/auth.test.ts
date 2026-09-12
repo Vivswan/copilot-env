@@ -45,10 +45,6 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-// Isolate every store/config write under temp homes so tests never touch real state.
-// isolateAgentHomes also clears an inherited COPILOT_GITHUB_TOKEN (FIRST in the gh-token
-// env precedence) so a real one in the runner env can't satisfy the "no credential"
-// paths; GH_TOKEN/GITHUB_TOKEN are set per-test.
 function isolate(): { claudeHome: string } {
   const homes = isolateAgentHomes("copilot-auth-");
   dir = homes.dir;
@@ -59,13 +55,11 @@ function state(): CopilotEnvState {
   return new CopilotEnvState();
 }
 
-// The catalog is opt-in (default false); the refresh-path tests flip it on so
-// the auth-time refresh really runs.
+// The catalog is opt-in (default false); without this the auth-time refresh never runs.
 function enableCatalog(): void {
   new CopilotEnvConfig().set({ codexModelCatalog: true });
 }
 
-/** Capture process.stdout.write output while awaiting `fn`. */
 async function captureStdout(fn: () => Promise<void>): Promise<string> {
   const original = process.stdout.write.bind(process.stdout);
   let out = "";
@@ -81,8 +75,6 @@ async function captureStdout(fn: () => Promise<void>): Promise<string> {
   return out;
 }
 
-/** Capture process.stderr.write output (the command's narration logger) while
- *  awaiting `fn`. */
 async function captureStderr(fn: () => Promise<void>): Promise<string> {
   const original = process.stderr.write.bind(process.stderr);
   let out = "";
@@ -98,7 +90,6 @@ async function captureStderr(fn: () => Promise<void>): Promise<string> {
   return out;
 }
 
-/** Capture console.log output while awaiting `fn`. */
 async function captureLog(fn: () => Promise<void>): Promise<string> {
   const original = console.log;
   let out = "";
@@ -136,9 +127,6 @@ test(
     state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_refused" });
     const fx = stageRefusedStop(new CopilotApiPaths().home);
     try {
-      // The credential clears, but the daemon (whose lock-held pid this host cannot
-      // corroborate) was refused: the summary must say it may still be serving, never
-      // the plain "De-authenticated." success.
       const err = await captureStderr(() => runAuth({ del: true }));
       expect(err).toContain("but the proxy is still running");
       expect(err).not.toContain("De-authenticated. Run");
@@ -170,9 +158,8 @@ test("auth --check: a configured provider reports authenticated, exit 0", async 
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
   const out = await captureLog(() => runAuth({ check: true }));
-  // Exit 0 is the machine "authenticated" contract; the status line is human
-  // copy, so pin only the parenthesized provider identifier it must name (the
-  // parens keep a longer provider name like "gh-token-file" from matching).
+  // The status line is human copy, so only the parenthesized provider identifier is pinned (the
+  // parens keep a longer name like "gh-token-file" from matching); exit 0 is the machine contract.
   expect(out).toContain("(gh-token)");
   expect(process.exitCode).toBe(0);
 });
@@ -180,20 +167,16 @@ test("auth --check: a configured provider reports authenticated, exit 0", async 
 test("auth (bare) is idempotent on a RECORDED provider - no re-auth, no config writes", async () => {
   const { claudeHome } = isolate();
   state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_stored123" });
-  // A recorded provider => runAuth returns WITHOUT prompting, acquiring, or configuring.
   await runAuth({});
   expect(state().read().githubToken).toBe("ghu_stored123");
-  // auth never configures agents, so no Claude settings.json was written.
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
 });
 
 test("auth (bare) with NO recorded provider re-runs the flow even when gh works (no idempotency loop)", async () => {
   isolate();
-  // No stored token and no recorded provider. Idempotency must key on the RECORDED
-  // choice, not on whether `gh` happens to work -- otherwise a machine with a gh
-  // login could never reach a fresh login (and --del would clear nothing). With no
-  // recorded provider, bare auth runs the flow: interactive choice, which throws
-  // here because the test env is non-TTY (proving it did NOT short-circuit on gh).
+  // Idempotency keys on the RECORDED choice, not on whether gh works: otherwise a machine with a gh
+  // login could never reach a fresh login. The non-TTY throw proves the flow ran, not a gh
+  // short-circuit.
   await expect(runAuth({})).rejects.toThrow("not a terminal");
 });
 
@@ -254,15 +237,13 @@ test("auth --set rejects a conflicting --provider", async () => {
 
 test("auth --profile <unknown> errors instead of creating a half profile", async () => {
   isolate();
-  // The old behavior wrote a credential-only half profile into the store; a
-  // profile is created ONLY by `agent profile --add`'s atomic commit, so the
-  // re-auth path refuses an unknown name -- BEFORE any acquisition runs.
+  // A profile is created ONLY by `agent profile --add`'s atomic commit, so re-auth refuses an
+  // unknown name BEFORE any acquisition runs.
   await expect(runAuth({ set: "ghu_x", profile: "ghost" })).rejects.toThrow(
     /no such profile 'ghost'/,
   );
   expect(state().read().profiles).toEqual({});
 
-  // An existing profile's re-auth still lands in ITS slot only.
   const ghost = parseProfileName("ghost");
   state().commitProfile(ghost, {
     credential: { kind: "stored", provider: "gh-token", token: "ghu_old" },
@@ -298,10 +279,9 @@ test("gh-token acquisition narrates 'Using', never 'Stored' (persistence is the 
 
 test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile --add`", async () => {
   isolate();
-  // `agent auth --profile` refuses a name with no store slot (creation belongs
-  // to `agent profile --add` alone), so recommending a re-auth here would just
-  // hit that gate -- the hint reuses the store's no-such-profile phrasing.
-  // Asserted without backticks: consola renders code spans, stripping them.
+  // Recommending a re-auth would hit the no-store-slot gate, so the hint reuses the store's
+  // no-such-profile phrasing. Asserted without backticks: consola renders code spans, stripping
+  // them.
   const addHint = "no such profile 'ghost' - create it with ";
   const addCommand = "agent profile --add ghost --direct|--proxy";
   const got = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
@@ -319,8 +299,8 @@ test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile -
   expect(process.exitCode).toBe(1);
   resetExitCode();
 
-  // An EXISTING slot (here partial: de-authed, mode kept) re-auths in place, so
-  // the hint stays `agent auth --profile`.
+  // A partial slot (de-authed, mode kept) re-auths in place, so the hint stays
+  // `agent auth --profile`.
   const ghost = parseProfileName("ghost");
   state().commitProfile(ghost, {
     credential: { kind: "stored", provider: "gh-token", token: "ghu_old" },
@@ -340,10 +320,8 @@ test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile -
 
 test("auth --get/--del/--check on a HALF-CREATED profile reuse the store's missing-slot phrasing", async () => {
   isolate();
-  // A daemon home without a store slot (an interrupted add): the store's write
-  // gate (missingProfileSlotError via assertProfileSlot) words this as
-  // "half-created", so the read-back hints must say the same instead of
-  // claiming "no such profile". The repair command stays the atomic re-add.
+  // A daemon home without a store slot (an interrupted add): the store's own write gate words this
+  // "half-created", so the read-back hints must say the same, never "no such profile".
   const ghost = parseProfileName("ghost");
   mkdirSync(profileHome(ghost), { recursive: true });
   const phrase = "profile 'ghost' has no store slot (half-created; its daemon home exists)";
@@ -379,8 +357,7 @@ test("auth --get/--del/--check on a HALF-CREATED profile reuse the store's missi
 
 test("auth: --provider cannot combine with a sub-action (never silently dropped)", async () => {
   isolate();
-  // `--get --provider bogus` used to run --get and drop the provider without
-  // ever validating it; the boundary parse now rejects the combination.
+  // The bug pinned: `--get --provider bogus` once ran --get and dropped the provider unvalidated.
   for (
     const args of [
       { get: true, provider: "bogus" },
@@ -395,8 +372,8 @@ test("auth: --provider cannot combine with a sub-action (never silently dropped)
         "--get/--del/--check/--list/--print-proxy-token",
     );
   }
-  // Pre-existing rejections keep their precedence over the new conflict: the
-  // --list/--profile error and an invalid profile name still report themselves.
+  // Other rejections keep precedence over the conflict: --list/--profile and an invalid name still
+  // report themselves.
   await expect(runAuth({ list: true, profile: "work", provider: "copilot" })).rejects.toThrow(
     "--list reports every profile; it does not combine with --profile",
   );
@@ -517,8 +494,7 @@ test("auth --print-proxy-token stdout stays EXACTLY the key even when the refres
       },
     )
   );
-  // ensureApiKey generates a stable 64-char hex key on first use; the line is the
-  // ENTIRE stdout, refresh failure or not.
+  // ensureApiKey mints a 64-char hex key on first use.
   expect(first).toMatch(/^[0-9a-f]{64}\n$/);
   expect(process.exitCode).toBe(0);
 });
@@ -617,7 +593,6 @@ test("resolveWithReason: one probe answers with the token or names the provider 
 });
 
 test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven", () => {
-  // Exit 0 with a token: the one proven-token arm.
   expect(ghTokenLookFromSpawn({ status: 0, stdout: " tok \n" })).toEqual({ token: "tok" });
   // gh RAN: proven misses, the detail carrying gh's own first stderr line when there is one.
   expect(ghTokenLookFromSpawn({ status: 0, stdout: "" })).toEqual({
@@ -650,8 +625,7 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps
     "gh is not authenticated - run `gh auth login`, then retry `agent auth`",
   );
   expect(() => loginWithGhCli(null, () => ({ token: "tok" }))).not.toThrow();
-  // The auto success line NAMES the followed account when it is known (no
-  // hidden information), and keeps the bare wording when it is not.
+  // The auto success line names the followed account when known (nothing hidden).
   const named = await captureStderr(() => {
     loginWithGhCli(null, () => ({ token: "tok" }), "vivswan");
     return Promise.resolve();
@@ -703,11 +677,10 @@ test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins
     acct("vivswan", true),
     acct("work-bot", false),
   ]);
-  // A broken login must never surface as pickable, and its block's own "Active
-  // account: true" line must not mark the healthy account parsed before it --
-  // in ANY of gh's failure wordings. Each failure block sits DIRECTLY after a
-  // healthy account, so a reset regex that misses that wording marks the wrong
-  // account and fails here.
+  // A broken login is never pickable, and its block's own "Active account: true" must not mark the
+  // healthy account parsed before it, in ANY of gh's failure wordings. Each failure block sits
+  // DIRECTLY after a healthy account, so a reset regex missing that wording marks the wrong
+  // account.
   const withBrokenActive = [
     "github.com",
     "  ✓ Logged in to github.com account healthy (keyring)",
@@ -735,14 +708,12 @@ test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins
       broken: true,
     },
   ]);
-  // The BROKEN active login still names what auto follows (never the healthy
-  // bystander -- gh's bare resolution tracks the active account even when its
-  // login is broken).
+  // The BROKEN active login still names what auto follows: gh's bare resolution tracks the active
+  // account even when its login is broken.
   expect(activeGhLogin(parseGhAuthStatusAccounts(withBrokenActive))).toBe("slow");
   expect(parseGhAuthStatusAccounts("You are not logged into any GitHub hosts.")).toEqual([]);
-  // The credential source is captured for DISPLAY only -- an exported GH_TOKEN
-  // can shadow a saved keyring credential for the same login, so the source
-  // never decides pinnability. Distinct sources stay distinct entries.
+  // The credential source is captured for DISPLAY only: an exported GH_TOKEN can shadow a saved
+  // keyring credential for the same login, so the source never decides pinnability.
   const envOverlap = parseGhAuthStatusAccounts(
     [
       "  ✓ Logged in to github.com account ci-bot (GH_TOKEN)",
@@ -752,7 +723,6 @@ test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins
     ].join("\n"),
   );
   expect(envOverlap).toEqual([acct("ci-bot", true, "GH_TOKEN"), acct("ci-bot", false)]);
-  // activeGhLogin: the active github.com login, else the only login, else null.
   expect(activeGhLogin(envOverlap)).toBe("ci-bot");
   expect(activeGhLogin([acct("solo", false)])).toBe("solo");
   expect(activeGhLogin([acct("a", false), acct("b", false)])).toBeNull();
@@ -995,12 +965,10 @@ test("credentialSourceLabel: a pinned gh account is named, bracket-free", () => 
   expect(credentialSourceLabel({ kind: "none", provider: null })).toBeNull();
 });
 
-// The credential store reads STRICTLY: an unreadable store must diagnose the
-// failed read, never read as "no credential" (a wrong fix pointer) or "no such
-// profile" (a false hard-fail naming the profile instead of the store). The
-// named-profile arm is the sharper one -- profiles never fall back, so a
-// fabricated empty would deny a credential that exists. POSIX, non-root only:
-// root bypasses file modes.
+// The store reads STRICTLY: a fabricated "empty" would deny a credential that exists, since
+// profiles never fall back.
+//   unreadable store  -> the failed read is diagnosed, never "no credential" or "no such profile"
+//   Windows, root     -> skipped: chmod 000 does not deny the read there
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "an unreadable credential store throws at read, never 'no credential / no such profile'",
   () => {

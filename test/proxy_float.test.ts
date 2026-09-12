@@ -43,8 +43,7 @@ import { PROXY_CACHE_FIXTURE } from "../scripts/warm-proxy-cache.ts";
 import { ROOT, runSync } from "./helpers/run.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
-// The float resolves the proxy into a Deno npm cache under the root home and
-// records the resolution in resolved-version.json -- the freshness oracle
+// resolved-version.json records each float; it is the freshness oracle that
 // proxyFloatVerifyStatus's offline fast path reads.
 
 const PROXY_PKG = "@jeffreycao/copilot-api";
@@ -67,8 +66,7 @@ function isoDaysAgo(days: number): string {
   return new Date(NOW_MS - days * MILLISECONDS_PER_DAY).toISOString();
 }
 
-/** A raw registry document: versions keyed by days-ago, optional per-version
- *  lifecycle scripts / hasInstallScript flags, optional dist-tags. */
+/** A registry document: each version with its publish age in days before NOW_MS. */
 function registryDoc(
   daysByVersion: Record<string, number>,
   opts: {
@@ -121,12 +119,11 @@ interface DenoCall {
   env: Record<string, string>;
 }
 
-/** A fake deno sidecar with an in-memory cache. Both graphs the float warms are
- *  modelled: the proxy package keyed by version, and the preload shims as one unit --
- *  `cache` populates whichever the argv names, `info` answers for it. A cache seeded
- *  with any proxy version stands for a completed prior float, so its shims are warm
- *  too. `infoLaunchFails` makes every `deno info` a marked FAILED look (the spawn
- *  never completed), leaving the cache warms working. */
+/** A fake deno sidecar. A cache seeded with any proxy version stands for a completed prior
+ *  float, so its shims count as warm too.
+ *    cache <spec>     -> warms the proxy version or the shim unit the argv names
+ *    info <spec>      -> answers for whichever is warm
+ *    infoLaunchFails  -> every info is a marked FAILED look (spawn never completed); cache still warms */
 function fakeDeno(
   initialCached: string[] = [],
   opts: { cacheExit?: number; infoLaunchFails?: boolean } = {},
@@ -158,34 +155,29 @@ function fakeDeno(
   return { calls, cached, runner };
 }
 
-/** Seed the artifact set a COMPLETED prior float leaves behind: the daemon config, the
- *  record, and the cache dir the record points at (cacheResolves' unproven arm checks
- *  the dir exists before vouching). A record alone is a half-written float, which the
- *  freshness check now (correctly) refuses to trust. */
+/** The artifact set a COMPLETED prior float leaves behind. A record alone is a half-written
+ *  float: cacheResolves' unproven arm checks the cache dir exists before vouching. */
 function seedFloat(version: string, atMs: number, denoDir?: string): void {
   writeDaemonConfig(dir, ROOT);
   writeResolvedVersionRecord(dir, version, atMs, denoDir);
   mkdirSync(denoDir ?? proxyDenoDir(dir), { "recursive": true });
 }
 
-/** The `cache` spawns a float made. Each successful float warms TWO graphs into the
- *  DENO_DIR -- the proxy package, then the preload shims -- because the daemon spawn
- *  resolves both under `--cached-only`. */
+/** A float that installs warms TWO graphs, the proxy package and then the preload shims, because
+ *  the daemon spawn resolves both under `--cached-only`; a recorded target that still resolves
+ *  warms nothing. */
 function cacheCalls(calls: DenoCall[]): DenoCall[] {
   return calls.filter((c) => c.args[0] === "cache");
 }
 
-/** Just the proxy-package warm (its last arg is the npm specifier). */
 function proxyCacheCalls(calls: DenoCall[]): DenoCall[] {
   return cacheCalls(calls).filter((c) => (c.args[c.args.length - 1] ?? "").startsWith("npm:"));
 }
 
-/** Just the preload-shim warm (its trailing args are shim file paths). */
 function shimCacheCalls(calls: DenoCall[]): DenoCall[] {
   return cacheCalls(calls).filter((c) => !(c.args[c.args.length - 1] ?? "").startsWith("npm:"));
 }
 
-/** Deps every float/verify/assert invocation in this file shares. */
 function deps(fetchLike: FetchLike, runner: DenoRunner, cooldownSeconds?: number) {
   return {
     "rootHome": dir,
@@ -206,9 +198,8 @@ beforeEach(() => {
 });
 
 test("nextProxyVersion: the override is unknowable, a record wins, else the checkout's copy", () => {
-  // The version a gate judges before a launch, in the entry's precedence, without writing
-  // anything (unlike the entry resolution). The checkout's node_modules copy is the control:
-  // it exists here, so a null would be a wrong "unknown", not an absent package.
+  // Judged without writing anything, unlike the entry resolution. The checkout's node_modules
+  // copy is the control: it exists here, so a null would be a wrong "unknown", not an absent package.
   const installed = installedProxyVersion();
   expect(installed).not.toBeNull();
   expect(nextProxyVersion(dir)).toBe(installed);
@@ -367,12 +358,10 @@ describe("resolveMinimumReleaseAgeSeconds", () => {
     expect(() => resolveMinimumReleaseAgeSeconds()).toThrow("whole number of seconds");
   });
 
-  // The float-pin honesty control: a stored version pin or cooldown behind an
-  // unreadable store must FAIL the read, never silently read as "no pin" /
-  // default cooldown -- floating past a supply-chain pin on an unproven empty
-  // defeats the control outright. The env layer still wins first, so an
-  // explicit per-invocation value never even consults the store. POSIX,
-  // non-root only: root bypasses file modes.
+  // An unreadable store must FAIL the pin and cooldown reads: silently reading "no pin" would
+  // float past a supply-chain pin.
+  //   env override set  -> wins first; the store is never consulted
+  //   Windows, root     -> skipped: chmod 000 does not deny the read there
   test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     "an unreadable prefs store fails the version-pin and cooldown reads; the env override still wins first",
     () => {
@@ -411,9 +400,8 @@ describe("floatProxy", () => {
       "cache",
       "--config",
       daemonConfigFile(dir),
-      // The proxy's OWN lockfile: it pins the transitive tree across floats, and it is
-      // the baseline trust-policy=no-downgrade compares against (deno records the
-      // publishing-trust level there, so with no lockfile there is nothing to compare).
+      // The proxy's OWN lockfile pins the transitive tree across floats and is the baseline
+      // trust-policy=no-downgrade compares against; with no lockfile there is nothing to compare.
       "--lock",
       proxyLockFile(dir),
       "--node-modules-dir=none",
@@ -598,11 +586,9 @@ describe("floatProxy", () => {
   });
 
   test("a FAILED cache look keeps the recorded version -- never the floor reinstall", async () => {
-    // Registry unreachable AND `deno info` itself never runs: the record must be
-    // KEPT untouched. The flatten this replaced read the failed look as "cache
-    // missing", installed the floor, and dropSupersededCache discarded the recorded
-    // (possibly working) cache on the way -- contrast the proven-missing control
-    // above, where the floor install is the correct recovery.
+    // The bug this pins: a failed look read as "cache missing" installed the floor, and
+    // dropSupersededCache discarded the recorded, possibly working, cache on the way. Contrast
+    // the proven-missing control above, where the floor install is the correct recovery.
     seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
     const deno = fakeDeno(["1.10.30"], { "infoLaunchFails": true });
 
@@ -648,10 +634,8 @@ describe("floatProxy", () => {
   });
 
   test("a superseded-then-failed install never 'keeps' the cache it just dropped", async () => {
-    // Target B replaces recorded A: the warm DROPS A's cache first
-    // (dropSupersededCache), then fails -- and the deno info look fails too. The
-    // unproven keep must not vouch for A: its cache dir is observably gone, so
-    // this stays the loud throw it always was.
+    // The warm DROPS A's cache (dropSupersededCache) before failing, and the info look fails
+    // too; the unproven keep must not vouch for A when its cache dir is observably gone.
     seedFloat("1.10.5", NOW_MS - 30 * MILLISECONDS_PER_DAY);
     const { fetchLike } = docFetch(registryDoc({ "1.10.30": 8 }));
     const deno = fakeDeno(["1.10.5"], { "cacheExit": 1, "infoLaunchFails": true });
@@ -736,9 +720,8 @@ describe("ensureProxyNpmrc", () => {
     expect(readFileSync(join(dir, ".npmrc"), "utf8")).toBe("registry=https://example.test\n");
   });
 
-  // The unreadable variant of the row above: ownership (the marker) was not
-  // proven, so the file is kept, never rewritten over content we could not see.
-  // POSIX, non-root only: root bypasses file modes.
+  // Ownership (the marker) is unproven, so the file is kept, never rewritten over content
+  // we could not see. POSIX, non-root only: root bypasses file modes.
   test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     "never clobbers an UNREADABLE .npmrc either (ownership unproven)",
     () => {
@@ -793,10 +776,9 @@ describe("resolved-version record", () => {
   });
 });
 
-// The build-identity fingerprint: the record remembers WHICH build's import map the
-// daemon config was generated from, so an `agent update` behind a still-young record
-// (no float due) cannot leave the old build's config steering daemon spawns until the
-// record ages out of the cooldown window.
+// The record remembers WHICH build's import map generated the daemon config, so an
+// `agent update` behind a still-young record (no float due) cannot leave the old build's
+// config steering daemon spawns until the record ages out of the cooldown window.
 describe("the build-identity fingerprint", () => {
   test("a float-written record carries it; the on-disk key is the external contract", async () => {
     const deno = fakeDeno();
@@ -833,24 +815,20 @@ describe("the build-identity fingerprint", () => {
   });
 
   test("a young record from an older build regenerates the daemon config on verify", async () => {
-    // The `agent update` gap this closes: the record is younger than the cooldown, so
-    // no float runs -- but the old build's generated config must not keep steering
-    // daemon spawns until the record ages out. An unstamped record (seedFloat writes
-    // none) stands for any build whose fingerprint is not the running one.
+    // An unstamped record (seedFloat writes none) stands for any build whose fingerprint
+    // is not the running one.
     seedFloat("1.10.30", NOW_MS - 1000);
     writeFileSync(daemonConfigFile(dir), '{"imports":{"stale":"npm:stale@1.0.0"}}\n');
     const offline = offlineFetch();
     const status = await proxyFloatVerifyStatus(
       deps(offline.fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS),
     );
-    expect(status.upToDate).toBe(true); // the cooldown fast path still holds...
+    expect(status.upToDate).toBe(true);
     expect(offline.calls).toEqual([]);
-    // ...but the config was regenerated from THIS build's import map,
     const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
     expect(config.imports.stale).toBeUndefined();
     expect(config.imports[PROXY_PKG]).toBeDefined();
-    // and the record restamped WITHOUT touching the resolution timestamp -- build
-    // identity must never extend the cooldown window.
+    // Build identity must never extend the cooldown window, so the resolution timestamp stays.
     const record = readResolvedVersionRecord(dir);
     expect(record?.buildFingerprint).toBe(daemonConfigFingerprint());
     expect(record?.resolvedAtMs).toBe(NOW_MS - 1000);
@@ -894,10 +872,9 @@ describe("the build-identity fingerprint", () => {
   });
 
   test("regeneration happens BEFORE the cache probe, so a changed map can trigger the re-warm", async () => {
-    // fakeDeno's cache ignores config content, so a regeneration moved AFTER
-    // cacheResolves would still pass the other tests -- while production would trust
-    // a probe of the OLD map and skip the re-warm the new map needs. Pin the order:
-    // every probe in the verify must already see the regenerated config.
+    // fakeDeno's cache ignores config content, so a regeneration moved AFTER cacheResolves
+    // would still pass the other tests, while production would probe the OLD map and skip
+    // the re-warm the new map needs. Every probe must already see the regenerated config.
     seedFloat("1.10.30", NOW_MS - 1000);
     writeFileSync(daemonConfigFile(dir), '{"imports":{"stale":"npm:stale@1.0.0"}}\n');
     const probed: string[] = [];
@@ -1195,10 +1172,9 @@ describe("writeDaemonConfig", () => {
   });
 
   test("the float writes it before caching", async () => {
-    // Captured inside the runner's cache call: the spawned `deno cache` resolves
-    // through this very config, so a config written only after the warm would
-    // leave the cache built against nothing -- an existsSync after floatProxy
-    // returned could not tell the difference.
+    // Captured inside the runner's cache call: `deno cache` resolves through this config, so
+    // one written after the warm would leave the cache built against nothing, and an
+    // existsSync after floatProxy returned could not tell the difference.
     const seen: string[] = [];
     const inner = fakeDeno();
     const runner: DenoRunner = (command, args, options) => {
@@ -1223,12 +1199,10 @@ describe("writeDaemonConfig", () => {
   });
 });
 
-// A compiled install root has no deno.json on disk (the checkout marker), so the
-// two no-float spawn paths -- a COPILOT_API_ENTRY override and the mapped package
-// fallback -- must generate the daemon config from the embedded assets instead of
-// pointing `deno run --config` at a file that cannot exist. The mode is injected
-// (the suite itself always runs in checkout mode); the ambient-default half is
-// exercised by the installer smoke against a real compiled binary.
+// A compiled install root has no deno.json on disk (the checkout marker), so both no-float
+// spawn paths (a COPILOT_API_ENTRY override, the mapped package fallback) must generate the
+// daemon config from the embedded assets. The mode is injected because the suite always runs
+// in checkout mode; the installer smoke covers the ambient default against a real binary.
 describe("resolveCopilotApiEntry on a compiled root", () => {
   const compiledMode = () => ({ "kind": "compiled", "root": join(dir, "install-root") }) as const;
 
@@ -1363,19 +1337,13 @@ describe("proxyFloatSkips", () => {
 // --- the floated spawn, actually executed -------------------------------------
 describe("the floated spawn executes", () => {
   test("a real floated install actually launches the proxy, with no node_modules", () => {
-    // Every other test here asserts the SHAPE of what we hand deno. That is not enough:
-    // the first version of this landing produced a well-shaped argv that no deno would
-    // run (the checkout's frozen lock rejected the floated specifier, and `--config`
-    // with `--cached-only` demanded the whole import map in a cache holding only the
-    // proxy). Both gates were green. So this runs the real thing.
-    //
-    // The fixture is genuine float output -- config, lockfile, warmed DENO_DIR, record
-    // -- built by scripts/warm-proxy-cache.ts, which the container image runs while it
-    // still has a network. That keeps this offline and deterministic.
+    // Every other test here asserts the SHAPE of the argv, and a well-shaped argv no deno would
+    // run (frozen lock, import map incomplete under --cached-only) once passed both gates. The
+    // fixture is genuine float output built by scripts/warm-proxy-cache.ts while the container
+    // image still has a network, which keeps this offline and deterministic.
     const record = readResolvedVersionRecord(PROXY_CACHE_FIXTURE);
     if (record === null) {
-      // Never silently pass: say exactly what is missing and how to get it. In CI and
-      // the container -- where this test matters most -- the fixture always exists.
+      // Never silently pass. In CI and the container the fixture always exists.
       console.warn(
         `skipping the floated-spawn execution: no float fixture at ${PROXY_CACHE_FIXTURE}. ` +
           "Build it with `deno run -A scripts/warm-proxy-cache.ts`.",
@@ -1388,27 +1356,23 @@ describe("the floated spawn executes", () => {
     if (entry.kind !== "floated") throw new Error(`expected a floated entry, got ${entry.kind}`);
     expect(entry.version).toBe(record.version);
 
-    // Merged over our own environment, exactly as daemonEnvironment does in production
-    // -- the overlay is an addition, not a replacement, and a child stripped of
-    // PATH/HOME would be testing something the daemon never does.
+    // Merged over our own environment, as daemonEnvironment does in production: a child
+    // stripped of PATH/HOME would test something the daemon never does.
     const result = runSync(Deno.execPath(), copilotApiArgv(["--help"], [], entry), {
       env: { ...process.env, ...copilotApiEnv(entry) },
       timeoutMs: 120_000,
     });
     const output = `${result.stdout}${result.stderr}`;
-    // What this chunk owns is RESOLUTION: the config, the lockfile and the cache have to
-    // let deno assemble the whole graph offline. Both defects this test was written for
-    // surfaced exactly here, so these are the assertions that must never soften.
+    // Resolution: config, lockfile and cache must let deno assemble the whole graph offline.
+    // Both defects this test was written for surfaced exactly here.
     expect(output).not.toContain("not found in cache");
     expect(output).not.toContain("lockfile is out of date");
     expect(output).not.toContain("Module not found");
 
-    // ...and the launch must then genuinely complete. On Linux that only happens
-    // because every spawn preloads the node-compat shim: the proxy probes /proc at
-    // module load, which deno answers with a thrown NotCapable under any permission
-    // set short of all-access.
-    // Fold the output into the assertion: a bare exit-code diff says nothing about WHY
-    // deno refused, and the refusals this test exists to catch are all in stderr.
+    // On Linux the launch completes only because every spawn preloads the node-compat shim:
+    // the proxy probes /proc at module load, which deno answers with a thrown NotCapable
+    // under any permission set short of all-access. The output rides in the assertion so
+    // a failure says WHY deno refused; the refusals this catches are all in stderr.
     expect(`exit=${result.exitCode} ${output}`).toContain("exit=0");
     expect(output).toContain("copilot-api");
   });

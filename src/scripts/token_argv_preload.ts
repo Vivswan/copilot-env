@@ -1,22 +1,13 @@
-// Preloaded FIRST into the copilot-api daemon -- before pat_passthrough_preload and before
-// the proxy parses its argv. It reads the GitHub token from the COPILOT_ENV_DAEMON_GH_TOKEN
-// environment variable and splices it into process.argv as `--github-token <token>`.
+// Argv is world-readable for the daemon's lifetime (/proc/<pid>/cmdline, `ps aux`, WMI
+// CommandLine) while the environment is owner-only, so the token rides in env and the flag is
+// spliced in-process, leaving the kernel's cmdline copy unchanged.
+//   launchDaemon sets the env var -> this shim pushes `--github-token` onto process.argv -> the
+//   proxy's parser and pat_passthrough_preload read it there
 //
-// Why: the proxy only accepts the token via the `--github-token` flag (or its own token
-// file, which we deliberately never write). Passing it on the launch argv puts the secret in
-// the WORLD-READABLE process command line -- /proc/<pid>/cmdline, `ps aux`, WMI CommandLine --
-// where any other local user can read it for the daemon's whole lifetime. The environment is
-// owner-only instead (/proc/<pid>/environ is 0600; `ps e` shows only your own processes), so
-// we hand the token through env and reconstruct the flag in-process. Mutating process.argv at
-// runtime does NOT change the kernel's cmdline copy, so the token never appears there -- yet
-// the proxy's arg parser and the PAT passthrough shim, which both read process.argv, still
-// receive it unchanged.
-//
-// This is a RUNTIME shim: it touches none of copilot-api's files, so it never pins the
-// floated proxy version. It must load before pat_passthrough_preload (which reads the token
-// from argv at module-load time); launchDaemon orders the `--preload` flags accordingly.
-// Same value as DAEMON_GH_TOKEN_ENV (process.ts); preloads stay import-free so a
-// shim never drags CLI modules into the daemon process.
+// Must load before pat_passthrough_preload, which reads the token at module load; launchDaemon
+// (src/copilot_api/process.ts) orders the `--preload` flags.
+//   ENV_KEY duplicates DAEMON_GH_TOKEN_ENV there    -> this preload stays import-free
+//   the proxy's GITHUB_TOKEN_PATH file is unwritten -> one credential, resolved from our state
 const ENV_KEY = "COPILOT_ENV_DAEMON_GH_TOKEN";
 const FLAG = "--github-token";
 
@@ -24,10 +15,9 @@ const token = process.env[ENV_KEY];
 if (token && !process.argv.includes(FLAG)) {
   process.argv.push(FLAG, token);
 }
-// Scrub it either way so the secret can't leak to a child process the daemon might spawn,
-// and isn't left readable in this process's environment longer than necessary.
+// Scrubbed either way so a child the daemon spawns never inherits it.
 delete process.env[ENV_KEY];
 
-// `export {}` marks this file an ES module so its top-level `token`/`ENV_KEY`/`FLAG` are
-// module-scoped, not globals that would collide with the other preload scripts under tsc.
+// Module marker: without it tsc treats the top-level consts as globals shared with the other
+// preloads.
 export {};

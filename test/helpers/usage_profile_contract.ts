@@ -1,8 +1,6 @@
-// The usage-profile contract shared by the profiler (scripts/usage_profile.ts, which
-// measures real logs into a profile) and the generator (usage_fixtures.ts, which samples
-// from one): what a profile document is (strict schema and parse), the closed label sets
-// its record keys may carry (line types, model ids, filename shapes), and the quantile
-// table both sides speak. Nothing here reads a file or draws a random number.
+// The profile contract shared by the profiler (scripts/usage_profile.ts) and the generator
+// (usage_fixtures.ts): the strict schema, the closed label sets its record keys may carry, and
+// the quantile table both sides speak. Nothing here reads a file or draws a random number.
 import * as v from "valibot";
 import { isRecord } from "../../src/utils/json.ts";
 
@@ -129,7 +127,6 @@ const ModelProfileSchema = v.strictObject({
 });
 export type ModelProfile = v.InferOutput<typeof ModelProfileSchema>;
 
-/** A record key naming a model: the vendor-id pattern or the fold-all label. */
 const ModelKeySchema = v.pipe(
   v.string(),
   v.check((k) => k === OTHER_MODEL || MODEL_ID.test(k), "model id outside the vendor-id pattern"),
@@ -249,11 +246,6 @@ export function quantiles(values: number[]): Quantiles {
 
 // ---------- line classification (shared with the profiler) ----------
 
-/**
- * The type label of one Codex rollout line: `type`, `type/payload.type` for
- * event and response items, and the role appended for messages, folded onto
- * CODEX_LINE_TYPES.
- */
 export function codexLineType(line: Record<string, unknown>): string {
   const type = typeof line.type === "string" ? line.type : "";
   const payload = isRecord(line.payload) ? line.payload : {};
@@ -267,11 +259,6 @@ export function codexLineType(line: Record<string, unknown>): string {
   return CODEX_LINE_TYPES.has(label) ? label : OTHER_LINE_TYPE;
 }
 
-/**
- * The type label of one Claude transcript line: `type`, `system/<subtype>`,
- * and user lines split into prompts and tool results, folded onto
- * CLAUDE_LINE_TYPES.
- */
 export function claudeLineType(line: Record<string, unknown>): string {
   const type = typeof line.type === "string" ? line.type : "";
   let label = type;
@@ -294,9 +281,8 @@ export function modelLabel(model: unknown): string {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * The shape of a log filename, from a CLOSED set: the writers' known patterns with ids and
- * digits normalized away, `other.jsonl` for anything else, so a private basename never
- * reaches the profile.
+ * From a CLOSED set, ids and digits normalized away and `other.jsonl` for anything else, so a
+ * private basename never reaches the profile.
  */
 export function filenameShape(name: string): string {
   const rollout = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl(\.zst)?$/.exec(name);

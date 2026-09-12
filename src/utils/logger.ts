@@ -1,30 +1,22 @@
-// Shared consola configuration for copilot-env. Two things every logger here
-// wants: no right-aligned wall-clock timestamp (noise for short-lived CLI output,
-// and it wraps awkwardly), and -- for the per-module loggers -- stderr only, so the
-// machine-readable `agent env` stdout is never polluted.
+// No wall-clock timestamp (noise on short-lived CLI output that wraps awkwardly), and stderr for
+// the per-module loggers so the eval'd `agent env` stdout is never polluted.
 import { consola, type ConsolaInstance, createConsola } from "consola";
 
 const NO_DATE = { date: false } as const;
 
-/** Strip the timestamp from the shared global `consola`. Call once per entry point. */
+/** Call once per entry point. */
 export function disableConsolaTimestamps(): void {
   consola.options.formatOptions = { ...consola.options.formatOptions, ...NO_DATE };
 }
 
-/**
- * Route the shared global `consola` to stderr. The MCP stdio server owns stdout as a
- * JSON-RPC stream, and library code it calls logs through the global consola (e.g.
- * the integration-identity narration) -- one stray info line would corrupt the
- * protocol, so the server redirects everything before its first request.
- */
+/** The MCP stdio server owns stdout as JSON-RPC and library code it calls logs through the global
+ *  consola; one stray info line would corrupt the protocol. */
 export function redirectConsolaToStderr(): void {
   consola.options.stdout = process.stderr;
 }
 
-/** Run `fn` with the shared global `consola` routed to stderr, restoring the previous
- *  routing after: for a scope whose narration must not land on the command's stdout
- *  (the self-update preflight inside `agent start`, where library code such as the
- *  installer's shim writer logs through the global consola). */
+/** For a scope whose narration must stay off the command's stdout, such as the self-update
+ *  preflight inside `agent start`. */
 export async function withConsolaOnStderr<T>(fn: () => Promise<T>): Promise<T> {
   const previous = consola.options.stdout;
   consola.options.stdout = process.stderr;
@@ -35,7 +27,6 @@ export async function withConsolaOnStderr<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** A consola that writes to stderr (keeping stdout machine-readable), no timestamp. */
 export function createStderrLogger(): ConsolaInstance {
   return createConsola({
     stdout: process.stderr,

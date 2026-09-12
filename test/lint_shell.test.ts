@@ -3,10 +3,8 @@ import { dirname, join } from "node:path";
 import { discoverLintTargets } from "../scripts/lint_shell.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
-// The lint lists are DISCOVERED (AGENTS.md): one walk, pruned at the vendored and
-// generated dirs at any depth, files by case-insensitive suffix, never following
-// symlinks, plus the two extensionless shell entry points. The whole list per kind is
-// pinned over one fixture tree so a change to any of those rules reads as a changed list.
+// The whole list per kind is pinned over one fixture tree, so a change to any discovery rule
+// (pruned dirs, suffix case, symlinks, the fixed entries) reads as a changed list.
 test("discoverLintTargets walks the tree by suffix, prunes vendored dirs, adds the fixed entries", () => {
   const root = tempDir("copilot-lint-shell-");
   const files = [

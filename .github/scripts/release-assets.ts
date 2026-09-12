@@ -1,7 +1,5 @@
-// Prepare/validate the per-release installer assets: copies of
-// install.sh/install.ps1 pinned to the release tag.
-// Run by the release workflow:
-//   deno run --allow-read --allow-write --allow-env .github/scripts/release-assets.ts <command> <tag>
+// The per-release installer assets: install.sh/install.ps1 pinned to the release tag. Run by
+// update-release.yml.
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -32,14 +30,9 @@ interface InstallerPin {
   pinned: (tag: string) => string;
 }
 
-// The lines this script rewrites to the release tag, one entry per pinned line:
-// `needle` is the unpinned line as it appears in the repo installer (byte-exact)
-// and `pinned(tag)` is the release-asset form -- prepare() replaces the first
-// with the second, validate() asserts the second. Since the installers became
-// runtime-free binary fetchers there is exactly one pinned line each: the
-// default release ref. The needles MUST stay byte-for-byte in sync with
-// install.sh/install.ps1; test/installer_pinning.test.ts pins that match at PR
-// time so an installer reformat fails in CI instead of at release.
+// `needle` is the unpinned line byte-exact as it sits in the repo installer; prepare() replaces
+// it with `pinned(tag)` and validate() asserts the result. test/installer_pinning.test.ts pins
+// the match at PR time, so an installer reformat fails in CI instead of at release.
 export const INSTALLER_PINS: Record<"install.sh" | "install.ps1", InstallerPin[]> = {
   "install.sh": [
     {
@@ -91,8 +84,7 @@ function main(): void {
   }
 }
 
-// Importable (test/installer_pinning.test.ts reads INSTALLER_PINS); only run
-// the CLI when invoked directly.
+// test/installer_pinning.test.ts imports INSTALLER_PINS, so nothing runs on import.
 if (import.meta.main) {
   try {
     main();

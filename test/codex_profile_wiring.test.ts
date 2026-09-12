@@ -1,9 +1,6 @@
-// inspectCodexWiring's named-profile view: the selection fact is Codex's native
-// `[profiles.<name>].model_provider` pointing at `[model_providers.copilot-env-<name>]`,
-// and key resolution is the managed auth.command alone (the writer never emits an
-// env_key for a named profile, so the OPENAI_API_KEY facts read false). Fixtures are
-// built via configureCodexConfig where practical, so inspection is tested against the
-// real write output; the drift cases are hand-mutated copies of that output.
+// A named profile is selected through `[profiles.<name>].model_provider` pointing at its own
+// `[model_providers.copilot-env-<name>]`, and keyed through the managed auth.command alone. The
+// writer never emits an env_key for a named profile, so the OPENAI_API_KEY facts read false here.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -68,8 +65,7 @@ test("a writer-produced proxy profile inspects as wired; token facts stay off", 
   const codexHome = isolate();
   writeProxyProfile(codexHome);
 
-  // envText carries the token and envKeyInEnviron is passed true: both are
-  // DEFAULT-selection facts, so the named view must report them false anyway.
+  // The token in envText and envKeyInEnviron are DEFAULT-selection facts; the named view reports them false anyway.
   const wiring = inspectCodexWiring(
     configText(codexHome),
     "OPENAI_API_KEY=sk-user\n",
@@ -98,7 +94,6 @@ test("a base_url on the wrong port un-wires the proxy profile", () => {
 
   const wiring = inspectCodexWiring(configText(codexHome), null, PROFILE_PORT + 1, false, WORK);
   expect(wiring.providerSelected).toBe(true);
-  // A selected-but-unrecognized table shape still reads as proxy for messaging.
   expect(wiring.providerMode).toBe("proxy");
   expect(wiring.baseUrlMatches).toBe(false);
   expect(wiring.providerWired).toBe(false);
@@ -122,7 +117,6 @@ test("foreign or missing managed proxy auth un-wires the profile", () => {
   const codexHome = isolate();
   writeProxyProfile(codexHome);
 
-  // A foreign auth.command in an otherwise perfect table.
   let text = mutateConfig(codexHome, (doc) => {
     profileProvider(doc).auth = { "command": "/usr/local/bin/my-token", "args": [] };
   });
@@ -132,8 +126,7 @@ test("foreign or missing managed proxy auth un-wires the profile", () => {
   expect(wiring.envKeyMatches).toBe(false);
   expect(wiring.providerWired).toBe(false);
 
-  // The DEFAULT selection's managed auth (no --profile) is NOT the profile's:
-  // it would route the resolver at the default daemon, not this profile's.
+  // The DEFAULT selection's managed auth would route the resolver at the default daemon, not this profile's.
   text = mutateConfig(codexHome, (doc) => {
     const auth = proxyTokenCommand();
     profileProvider(doc).auth = { "command": auth.command, "args": auth.args };
@@ -142,7 +135,6 @@ test("foreign or missing managed proxy auth un-wires the profile", () => {
   expect(wiring.envKeyMatches).toBe(false);
   expect(wiring.providerWired).toBe(false);
 
-  // No auth block at all.
   text = mutateConfig(codexHome, (doc) => {
     delete profileProvider(doc).auth;
   });
@@ -159,8 +151,7 @@ test("an env_key never wires a named profile", () => {
     provider.env_key = "OPENAI_API_KEY";
   });
 
-  // Even with the token exported AND in .env: those facts are the default
-  // selection's, so the named profile stays unwired.
+  // The exported token and the .env line are the default selection's facts; the named profile stays unwired.
   const wiring = inspectCodexWiring(text, "OPENAI_API_KEY=sk-user\n", PROFILE_PORT, true, WORK);
   expect(wiring.providerMode).toBe("proxy");
   expect(wiring.envKeyMatches).toBe(false);
@@ -171,9 +162,8 @@ test("an env_key never wires a named profile", () => {
 test("an env_key alongside intact managed auth still un-wires a named profile", () => {
   const codexHome = isolate();
   writeProxyProfile(codexHome);
-  // The managed auth block stays byte-identical; only a stray env_key appears.
-  // The writer strips env_key from a profile table and Codex rejects auth +
-  // env_key on one provider, so this drift must not read as wired.
+  // The writer strips env_key from a profile table and Codex rejects auth + env_key on one
+  // provider, so a stray env_key beside intact auth is drift and must not read as wired.
   const text = mutateConfig(codexHome, (doc) => {
     profileProvider(doc).env_key = "OPENAI_API_KEY";
   });
@@ -184,7 +174,6 @@ test("an env_key alongside intact managed auth still un-wires a named profile", 
   expect(wiring.envKeyMatches).toBe(false);
   expect(wiring.providerWired).toBe(false);
 
-  // Same on a direct-mode profile table.
   configureCodexConfig(codexHome, { mode: "direct", profile: WORK });
   const directText = mutateConfig(codexHome, (doc) => {
     profileProvider(doc).env_key = "OPENAI_API_KEY";
@@ -210,10 +199,8 @@ test("a writer-produced direct profile inspects as wired via its own auth comman
   expect(wiring.directUsesToken).toBe(true);
   expect(wiring.providerWired).toBe(true);
 
-  // The DEFAULT direct auth (`agent auth --get` without --profile) resolves the
-  // default credential, not the profile's -- it must not read as the profile's,
-  // and a named direct profile is only wired through ITS OWN managed auth
-  // (named profiles hard-fail, never fall back to the default credential).
+  // The DEFAULT direct auth (`agent auth --get` without --profile) resolves the default credential;
+  // a named profile hard-fails rather than fall back to it, so this must not read as wired.
   const drifted = mutateConfig(codexHome, (doc) => {
     const auth = asRecord(profileProvider(doc).auth);
     auth.args = ["auth", "--get"];
@@ -223,7 +210,6 @@ test("a writer-produced direct profile inspects as wired via its own auth comman
   expect(driftedWiring.directUsesToken).toBe(false);
   expect(driftedWiring.providerWired).toBe(false);
 
-  // Same with the auth block missing entirely.
   const authless = mutateConfig(codexHome, (doc) => {
     delete profileProvider(doc).auth;
   });
@@ -237,8 +223,6 @@ test("default and profile wiring coexist; each view reads only its own selection
   configureCodexConfig(codexHome, { mode: "direct" });
   writeProxyProfile(codexHome);
 
-  // The default view (existing 4-arg call shape, untouched by this refactor)
-  // still reads the top-level selection only.
   const defaultWiring = inspectCodexWiring(configText(codexHome), null, DEFAULT_PORT, false);
   expect(defaultWiring.modelProvider).toBe("copilot-env");
   expect(defaultWiring.providerMode).toBe("direct");
@@ -246,7 +230,7 @@ test("default and profile wiring coexist; each view reads only its own selection
   expect(defaultWiring.directUsesToken).toBe(true);
   expect(defaultWiring.providerWired).toBe(true);
 
-  // The profile view reads its own tables only -- the default's port/mode play no part.
+  // The profile view reads its own tables only; the default's port and mode play no part.
   const profileWiring = inspectCodexWiring(configText(codexHome), null, PROFILE_PORT, false, WORK);
   expect(profileWiring.modelProvider).toBe("copilot-env-work");
   expect(profileWiring.providerMode).toBe("proxy");
@@ -258,8 +242,7 @@ test("a profile-only config leaves the default view unconfigured", () => {
   const codexHome = isolate();
   writeProxyProfile(codexHome);
 
-  // The named write seeds no top-level selection (it even scrubs the template's),
-  // so the default view must read none while the profile view reads wired.
+  // The named write seeds no top-level selection (it even scrubs the template's).
   const defaultWiring = inspectCodexWiring(configText(codexHome), null, DEFAULT_PORT, false);
   expect(defaultWiring.modelProvider).toBeNull();
   expect(defaultWiring.providerMode).toBe("none");
@@ -314,15 +297,13 @@ test("a selected profile whose provider table is absent reads unwired, not a fal
 
   const wiring = inspectCodexWiring(text, null, PROFILE_PORT, false, WORK);
   expect(wiring.providerSelected).toBe(true);
-  // Selected but unrecognized table shape reads as proxy for messaging, with
-  // every wiring fact off.
+  // A selected but unrecognized table shape still reads as proxy, so the message names what is off.
   expect(wiring.providerMode).toBe("proxy");
   expect(wiring.baseUrl).toBeNull();
   expect(wiring.baseUrlMatches).toBe(false);
   expect(wiring.envKeyMatches).toBe(false);
   expect(wiring.providerWired).toBe(false);
 
-  // A non-record table (a scalar where the table should be) degrades the same way.
   const scalar = mutateConfig(codexHome, (doc) => {
     asRecord(doc.model_providers)["copilot-env-work"] = "not-a-table";
   });
@@ -333,9 +314,8 @@ test("a selected profile whose provider table is absent reads unwired, not a fal
 });
 
 test("malformed TOML reads other/malformed for the named view too, never none", () => {
-  // "none" would authorize a best-effort caller to write over a config it could
-  // not parse; the classifier mints other/malformed instead (the writer's own
-  // refuse-to-overwrite guard is the second layer of the same decision).
+  // "none" would authorize a best-effort caller to write over a config it could not parse; the
+  // writer's refuse-to-overwrite guard is the second layer of the same decision.
   const wiring = inspectCodexWiring('model_provider = "unclosed', null, PROFILE_PORT, false, WORK);
   expect(wiring.configExists).toBe(true);
   expect(wiring.modelProvider).toBeNull();
@@ -347,8 +327,8 @@ test("malformed TOML reads other/malformed for the named view too, never none", 
 });
 
 test("a script-shaped auth on a named profile's table never reads wired", () => {
-  // The 3.5.6 shape (the src/scripts resolver script); the migration rewrites it, and a
-  // table it never reached is unwired -- addressed at this profile or not.
+  // The 3.5.6 shape (the src/scripts resolver script): a table the migration never reached is
+  // unwired, addressed at this profile or not.
   const codexHome = isolate();
   writeProxyProfile(codexHome);
   const text = mutateConfig(codexHome, (doc) => {

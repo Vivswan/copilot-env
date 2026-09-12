@@ -1,7 +1,6 @@
-// I/O fact-gathering for `agent health`. Each scope gathers ONLY the facts it
-// needs (the `runtime` scope stays minimal -- no shell/CLI probes -- though the
-// tracked-pid check still spawns `ps`/PowerShell exactly as the original health
-// command did). Pure sub-evaluators (evalShellFiles, evalCodex) take raw content
+// I/O fact-gathering for `agent health`. Each scope gathers ONLY the facts it needs; the
+// `runtime` scope stays minimal (no shell or CLI probes), though the tracked-pid check still
+// spawns `ps`/PowerShell. The pure sub-evaluators (evalShellFiles, evalCodex) take raw content
 // so they unit-test without touching the world.
 import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
@@ -129,9 +128,9 @@ export interface ProbeDeps {
     codexHome?: string;
     lastEnsureAt?: number;
   };
-  /** Three-state identity of the tracked pid (classifyDaemonPid): "unknown" means the
-   *  scan FAILED and must render as "could not verify", never as a confident "not
-   *  tracked" -- the boolean flatten this replaced read a broken scan as an orphan. */
+  /** Three-state identity of the tracked pid (classifyDaemonPid): "unknown" means the scan
+   *  FAILED and must render as "could not verify", never as a confident "not tracked"; the
+   *  boolean flatten this replaced read a broken scan as an orphan. */
   classifyTrackedPid(pid: number): Promise<"yes" | "no" | "unknown">;
   isPidAlive(pid: number): boolean;
   paths(profile: Profile): RuntimePathsView;
@@ -139,9 +138,8 @@ export interface ProbeDeps {
   now(): number;
   idleTimeoutMs(): number;
   autoStartEnabled(): boolean;
-  /** Epoch ms of the most recent inference request against `profile`'s daemon -- the
-   *  in-process observer's persisted `.activity.json` mark -- or null when there has
-   *  been none. NOT moved by liveness `GET /` pings. */
+  /** Epoch ms of the most recent inference request against `profile`'s daemon (the in-process
+   *  observer's persisted `.activity.json` mark), or null. NOT moved by liveness `GET /` pings. */
   lastRequestMs(profile: Profile): number | null;
   /** Every named profile the system knows about (store slots + on-disk homes). */
   profileNames(): ProfileName[];
@@ -149,16 +147,14 @@ export interface ProbeDeps {
   profileSlot(name: ProfileName): ProfileSlotFacts;
   /** True when the named profile has an isolated daemon home on disk. */
   profileHomeExists(name: ProfileName): boolean;
-  /** One look for a command, failure arm kept (see CommandLook): the CLI/tool
-   *  census rows render "not installed" verdicts, so an unproven look must stay
-   *  marked instead of flattening into "absent". */
+  /** Failure arm kept (see CommandLook): the CLI/tool census rows render "not installed"
+   *  verdicts, so an unproven look must stay marked instead of flattening into "absent". */
   commandLook(command: string): CommandLook;
   agentClis(): readonly { command: string; name: string }[];
   shellTargets(): string[];
   readFileSafe(path: string): string | null;
-  /** Three-way read for the Claude settings file: its classification must keep
-   *  "absent" and "unreadable" apart (the read-error verdict), where
-   *  readFileSafe's null deliberately collapses them for don't-care reads. */
+  /** Three-way read for the Claude settings file: its classification must keep "absent" and
+   *  "unreadable" apart (the read-error verdict), where readFileSafe's null collapses them. */
   readFileResult(path: string): TextReadResult;
   installedProxyVersion(): string | null;
   /** The float's resolved-version record, or null when it has never resolved here. */
@@ -214,9 +210,9 @@ async function reachUrl(url: string, timeoutMs: number): Promise<boolean> {
   }
 }
 
-/** copilot-api stamps every response with an `x-trace-id` header. Use it as a cheap,
- *  unauthenticated identity marker: true when present, false when the responder answered
- *  without it (likely a foreign service squatting the port), null when nothing answered. */
+/** copilot-api stamps every response with an `x-trace-id` header: a cheap, unauthenticated
+ *  identity marker. true when present, false when the responder answered without it (a foreign
+ *  service on the port), null when nothing answered. */
 async function proxyIdentity(url: string, timeoutMs: number): Promise<boolean | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
@@ -226,11 +222,9 @@ async function proxyIdentity(url: string, timeoutMs: number): Promise<boolean | 
   }
 }
 
-/** Fold one finished `gh auth token` spawn into the direct-auth facts (exported
- *  for tests): ghAuthVerdict's completed exits prove the verdict; its "unproven"
- *  (a spawn error, the timeout kill -- status null) marks the facts instead of
- *  flattening into a confident authenticated:false. `ghUser` records which
- *  pinned account the probe asked about (absent = gh's active account). */
+/** Exported for tests. ghAuthVerdict's completed exits prove the verdict; its "unproven" (a spawn
+ *  error, the timeout kill: status null) marks the facts instead of flattening into a confident
+ *  authenticated:false. `ghUser` records which pinned account the probe asked about. */
 export function directAuthFromSpawn(
   command: string,
   result: { status: number | null; error?: unknown },
@@ -242,11 +236,9 @@ export function directAuthFromSpawn(
   return { command, authenticated: verdict, ...pinned };
 }
 
-/** The github.com login an AUTO gh-cli slot follows right now, or null (gh
- *  absent, no account, or the look never completed -- naming only, never a
- *  verdict, so the flatten is safe). Async like codexDirectAuth so the status
- *  spawn overlaps the other probes; stdout+stderr both captured (older gh wrote
- *  the status to stderr). */
+/** Null when gh is absent, has no account, or the look never completed: naming only, never a
+ *  verdict, so the flatten is safe. Async like codexDirectAuth so the status spawn overlaps the
+ *  other probes; stdout and stderr are both captured (older gh wrote the status to stderr). */
 function ghActiveLoginProbe(): Promise<string | null> {
   const look = findCommand("gh");
   if (look.path === null) return Promise.resolve(null);
@@ -268,9 +260,9 @@ function ghActiveLoginProbe(): Promise<string | null> {
       output += String(chunk);
     });
     child.on("error", () => resolve(null));
-    // Only a COMPLETED exit parses (any code -- matching ghAccountsLookFromSpawn);
-    // a timeout kill closes with code null mid-output, and naming an account off
-    // a truncated list could name the wrong one.
+    // Only a COMPLETED exit parses (any code, matching ghAccountsLookFromSpawn); a timeout kill
+    // closes with code null mid-output, and naming an account off a truncated list could name
+    // the wrong one.
     child.on("close", (code) => {
       resolve(code === null ? null : activeGhLogin(parseGhAuthStatusAccounts(output)));
     });
@@ -278,9 +270,8 @@ function ghActiveLoginProbe(): Promise<string | null> {
 }
 
 function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts> {
-  // findCommand with the failure arm kept: this fact renders auth VERDICTS
-  // ("GitHub CLI not found", "not authenticated"), so a look that never ran must
-  // arrive marked instead of reading as a proven absence.
+  // The failure arm is kept: this fact renders auth VERDICTS ("GitHub CLI not found", "not
+  // authenticated"), so a look that never ran must arrive marked, not as a proven absence.
   const look = findCommand("gh");
   if (look.path === null) {
     return Promise.resolve({
@@ -291,13 +282,10 @@ function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts> {
     });
   }
   const command = look.path;
-  // Async (non-blocking) so it runs concurrently with the other probes under
-  // gatherFacts' Promise.all, instead of freezing the event loop for the whole
-  // `gh auth token` call. ghAuthTokenSpawnSpec owns the spawn recipe (resolved path,
-  // gh's bin dir on PATH, the shared timeout, the account pin). stdio:"ignore"
-  // keeps the printed token out of our process memory. A completed non-zero exit
-  // => authenticated: false; a spawn error or the timeout kill (close with a null
-  // code) never completed the probe, so directAuthFromSpawn marks it unproven instead.
+  // Async so it overlaps the other probes under gatherFacts' Promise.all instead of freezing the
+  // loop for the whole `gh auth token` call. stdio "ignore" keeps the printed token out of our
+  // memory. A completed non-zero exit is authenticated:false; a spawn error or the timeout kill
+  // (close with a null code) never completed, so directAuthFromSpawn marks it unproven.
   return new Promise((resolve) => {
     const s = ghAuthTokenSpawnSpec(command, ghUser);
     // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
@@ -316,14 +304,9 @@ function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts> {
   });
 }
 
-/**
- * Build the `--live` failure detail: the CLI's FULL stdout/stderr, verbatim, so
- * `agent health --live` shows the complete error instead of a one-line summary.
- * codex's giant model-catalog lines are dropped (noise, not error); everything
- * else is kept untruncated. When the child produced no output (e.g. a timeout
- * kill, with code null + signal), fall back to the bare exit/timeout status so
- * the detail is never blank.
- */
+/** The CLI's FULL output, verbatim, so `agent health --live` shows the complete error. Codex's
+ *  catalog lines are dropped (noise). With no output (a timeout kill: code null + signal) the
+ *  bare exit/timeout status keeps the detail from being blank. */
 function formatLiveFailure(
   code: number | null,
   signal: string | null,
@@ -344,14 +327,11 @@ function formatLiveFailure(
 }
 
 /**
- * Run an agent CLI's read-only smoke prompt against a CONFIGURED home (`--live`): async
- * (overlaps the other probes) with a hard timeout; a timeout or any non-zero exit =>
- * ok:false, with `detail` carrying the captured reason + output; skipped (ran:false)
- * when the CLI isn't installed. Spawns the RESOLVED path so the nvm fallback isn't
- * defeated. Unlike the init probe, the environment is NOT sanitized (`--live` tests the
- * user's real, fully-resolved setup) except `omitEnvVars` (upper-case names), the
- * narrow scrub a NAMED profile needs so a shell export of the DEFAULT wiring cannot
- * override the profile's own and misattribute the answer. Exported for the scrub's test.
+ * Unlike the init probe, the environment is NOT sanitized (`--live` tests the real, fully
+ * resolved setup), except `omitEnvVars` (upper-case names): the narrow scrub a NAMED profile
+ * needs so a shell export of the DEFAULT wiring cannot override the profile's own and
+ * misattribute the answer. Spawns the RESOLVED path so the nvm fallback is not defeated. Exported
+ * for the scrub's test.
  */
 export function runLiveCli(
   cli: string,
@@ -361,8 +341,8 @@ export function runLiveCli(
   omitEnvVars: readonly string[] = [],
   find: (command: string) => CommandLook = findCommand,
 ): Promise<LiveProbeFacts> {
-  // `find` is a test seam; the real look keeps its failure arm (see CommandLook) because
-  // the skip renders a "CLI not installed" verdict.
+  // `find` is a test seam; the real look keeps its failure arm (see CommandLook) because the
+  // skip renders a "CLI not installed" verdict.
   const look = find(cli);
   if (look.path === null) {
     return Promise.resolve(
@@ -373,19 +353,17 @@ export function runLiveCli(
   const ghPath = resolveCommand("gh");
   return new Promise((resolve) => {
     const s = cliSpawn(resolved, args);
-    // Capture stdout/stderr (not stdio:"ignore") so a failure reports the FULL
-    // reason the backend didn't answer. The cap is effectively unbounded (64 MB) --
-    // a smoke prompt's real output is tiny, and the catalog noise is filtered out
-    // when formatting -- but it guards against a pathologically chatty CLI.
+    // Output is captured so a failure reports the FULL reason. The 64 MB cap is effectively
+    // unbounded (a smoke prompt's output is tiny) and only guards a pathologically chatty CLI.
     // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     const child = spawn(s.file, s.args, {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: PROBE_TIMEOUT_MS,
       windowsHide: true,
       shell: s.shell,
-      // Put the resolved CLI's and gh's bin dirs on the child PATH so an nvm-only
-      // toolchain (node-shim CLI, the config's bare `gh` call) is reachable even
-      // when the parent process never sourced nvm.
+      // The resolved CLI's and gh's bin dirs lead the child PATH so an nvm-only toolchain (a
+      // node-shim CLI, the config's bare `gh` call) is reachable even when the parent never
+      // sourced nvm.
       env: childEnvWithPath([dirname(resolved), ghPath ? dirname(ghPath) : null], {
         extra: { [homeEnvVar]: home },
         omit: (upper) => omitEnvVars.includes(upper),
@@ -420,11 +398,10 @@ export function runLiveCli(
   });
 }
 
-/** Env vars scrubbed from a `--live` Claude probe child. A NAMED profile drops a
- *  shell-exported ANTHROPIC_BASE_URL: env beats the profile's settings file, so a
- *  default-proxy export would silently answer for the profile and misattribute
- *  the result -- the same scrub the `cl --profile` launcher performs. The default
- *  probe scrubs nothing (`--live` tests the real, fully-resolved environment). */
+/** A NAMED profile drops a shell-exported ANTHROPIC_BASE_URL: env beats the profile's settings
+ *  file, so a default-proxy export would silently answer for the profile and misattribute the
+ *  result (the same scrub the `cl --profile` launcher performs). The default probe scrubs
+ *  nothing: `--live` tests the real environment. */
 export function claudeLiveOmitEnv(profile: Profile): readonly string[] {
   return profile === null ? [] : [BASE_URL_ENV];
 }
@@ -438,9 +415,9 @@ export function defaultProbeDeps(): ProbeDeps {
     reach: reachUrl,
     proxyIdentity,
     readState: (profile) => CopilotEnvRunState.forProfile(profile).read(),
-    // The owner-gated three-state (not bare classifyDaemonPid): the boolean scan this
-    // replaced was owner-filtered, so an elevated Windows health run must not start
-    // claiming another user's daemon as our tracked pid.
+    // The owner-gated three-state, not bare classifyDaemonPid: the boolean scan this replaced
+    // was owner-filtered, so an elevated Windows health run must not start claiming another
+    // user's daemon as our tracked pid.
     classifyTrackedPid: classifyOwnedDaemonPid,
     isPidAlive: pidAlive,
     now: () => Date.now(),
@@ -486,8 +463,8 @@ export function defaultProbeDeps(): ProbeDeps {
     defaultGhUser: () => new CopilotEnvState().read().ghUser,
     ghActiveLogin: ghActiveLoginProbe,
     authProfiles: () => {
-      // Sweep via profileNames() (the store's validated, sorted view), never the raw
-      // record: its keys are a trust boundary, and only profileNames() mints the brand.
+      // Sweep via profileNames() (the store's validated, sorted view), never the raw record: its
+      // keys are a trust boundary, and only profileNames() mints the brand.
       const store = new CopilotEnvState();
       const profiles: Record<ProfileName, ProfileAuthFacts> = {};
       for (const name of store.profileNames()) {
@@ -501,16 +478,14 @@ export function defaultProbeDeps(): ProbeDeps {
       return profiles;
     },
     pinnedIntegrationId: () => new CopilotEnvConfig().pinnedIntegrationId(),
-    // Claude's direct mode also authenticates via `gh auth token`, so it reuses
-    // the same probe. Effective Claude home matches resolveClaudeHome precedence.
     claudeHome: () => resolveClaudeHome(),
     codexHostFarm,
     codexHostEnabled: () => new CopilotEnvConfig().codexHostEnabled(),
     claudeDesktop: claudeDesktopStatus,
     dirExists: (path: string) => existsSync(path),
     defaultHomeMigration: () => {
-      // The same spelling defaultDaemonHome's precedence rule reads (paths.ts):
-      // the staging dir the 3.5.6 fix-up renames into profiles/default.
+      // The same spelling defaultDaemonHome's precedence rule reads (paths.ts): the staging dir
+      // the 3.5.6 fix-up renames into profiles/default.
       const stagingPath = join(resolveRootHome(), PROFILES_DIR_NAME, DEFAULT_HOME_STAGING_DIR);
       return { stagingPath, staged: existsSync(stagingPath) };
     },
@@ -521,8 +496,7 @@ export function defaultProbeDeps(): ProbeDeps {
     }),
     nodeModulesPresent: () => existsSync(join(root, "node_modules")),
     nodeModulesFresh: () => {
-      // Same predicate as bin/agent's freshness gate: node_modules at least as
-      // new as deno.lock.
+      // Same predicate as bin/agent's freshness gate: node_modules at least as new as deno.lock.
       try {
         const lock = statSync(join(root, "deno.lock")).mtimeMs;
         const modules = statSync(join(root, "node_modules")).mtimeMs;
@@ -553,9 +527,8 @@ export function defaultProbeDeps(): ProbeDeps {
 
 // --- pure sub-evaluators (no I/O) -------------------------------------------
 
-/** Derive shell-wiring facts from raw rc/profile contents (null = absent file) plus
- *  the stored launcher opt-in. Per-file hasLaunchers reports a leftover LEGACY block;
- *  launchersWired is the `launchers` config key (see ShellFacts). */
+/** Per-file hasLaunchers reports a leftover LEGACY block; launchersWired is the `launchers`
+ *  config key (see ShellFacts). */
 export function evalShellFiles(
   contents: { path: string; content: string | null }[],
   launchersEnabled: boolean,
@@ -572,11 +545,8 @@ export function evalShellFiles(
   };
 }
 
-/**
- * Codex-wiring facts for the effective CODEX_HOME. Thin wrapper over the codex
- * module's `inspectCodexWiring` (the single source of the wiring contract) that
- * just attaches the home being inspected.
- */
+/** A thin wrapper over `inspectCodexWiring` (the single source of the wiring contract) that
+ *  attaches the home being inspected. */
 export function evalCodex(
   home: string,
   configToml: TextReadResult | string | null,
@@ -585,8 +555,8 @@ export function evalCodex(
   envKeyInEnviron: boolean,
   directAuth: CodexDirectAuthFacts = { command: null, authenticated: false },
   directNeedsNoGh = false,
-  // The caller (gatherFacts) already inspected the wiring to gate the gh probe;
-  // accept it to avoid a second parse. Tests call without it and parse internally.
+  // gatherFacts already inspected the wiring to gate the gh probe; accepting it avoids a second
+  // parse. Tests call without it and parse internally.
   wiring: CodexWiringStatus = inspectCodexWiring(
     configToml,
     envText,
@@ -621,13 +591,10 @@ export function evalClaude(
 // --- orchestration ----------------------------------------------------------
 
 /**
- * Read ONE runtime target's shared fields. READ-ONLY: nothing here writes a
- * file or reserves a port. Snapshot semantics: pid and port come from a single
- * run-state read (proxyStatus's documented rule), so a concurrent start/stop
- * can't pair one daemon's pid with another's port; fallbackPort covers the
- * no-recorded-port case without a second read of the same file. The state is
- * returned alongside so the caller can hand the SAME snapshot's pid to
- * interrogateDaemon.
+ * READ-ONLY: nothing here writes a file or reserves a port. pid and port come from a single
+ * run-state read (proxyStatus's rule), so a concurrent start/stop cannot pair one daemon's pid
+ * with another's port; fallbackPort covers the no-recorded-port case without a second read. The
+ * state is returned so the caller hands the SAME snapshot's pid to interrogateDaemon.
  */
 function snapshotTarget(
   profile: Profile,
@@ -648,8 +615,8 @@ function snapshotTarget(
         autoStart: deps.autoStartEnabled(),
         idleTimeoutMs: deps.idleTimeoutMs(),
         lastEnsureAt: state.lastEnsureAt ?? null,
-        // The observer's persisted mark; our own reach/identity GET / probes are not
-        // inference POSTs, so health observing the proxy never moves these numbers.
+        // The observer's persisted mark; our own reach/identity GET probes are not inference
+        // POSTs, so health observing the proxy never moves these numbers.
         lastRequestMs: deps.lastRequestMs(profile),
         now: deps.now(),
       },
@@ -657,8 +624,8 @@ function snapshotTarget(
   };
 }
 
-/** Interrogate one daemon: the reach/pid probes plus (in the full/proxy scopes)
- *  the identity request, reconciled into the target's PortState. */
+/** The reach/pid probes plus (in the full/proxy scopes) the identity request, reconciled into the
+ *  target's PortState. */
 async function interrogateDaemon(
   scope: HealthScope,
   deps: ProbeDeps,
@@ -666,13 +633,12 @@ async function interrogateDaemon(
   trackedPid: number | null,
   proxyExpected: boolean,
 ): Promise<DaemonProbed> {
-  // proxyLoopbackOrigin, matching portListening: a localhost probe reads DOWN on Windows
-  // while the proxy is up.
+  // proxyLoopbackOrigin, matching portListening: a localhost probe reads DOWN on Windows while
+  // the proxy is up.
   const probeUrl = `${proxyLoopbackOrigin(port)}/`;
-  // The pid identity is a three-state read (deps.classifyTrackedPid): "no tracked pid"
-  // is a genuine "no" (nothing to look at), but a FAILED scan is "unknown" -- carried
-  // as pidScanUnproven beside the pidTracked flatten, so a broken `ps` renders as
-  // "could not verify" instead of a confident orphan/stale verdict.
+  // The pid identity is three-state (deps.classifyTrackedPid): "no tracked pid" is a genuine
+  // "no", but a FAILED scan is "unknown", carried as pidScanUnproven beside the pidTracked
+  // flatten so a broken `ps` renders as "could not verify" instead of a confident verdict.
   const [reachable, pidClass] = await Promise.all([
     deps.reach(probeUrl, 2000),
     trackedPid !== null
@@ -680,11 +646,10 @@ async function interrogateDaemon(
       : Promise.resolve<"yes" | "no" | "unknown">("no"),
   ]);
   const pidTracked = pidClass === "yes";
-  // Identity probe (an extra local request) only in the full/proxy scopes -- never the
-  // launchers' fast `runtime` probe. Only meaningful when something is reachable AND this
-  // target's setup actually routes through the port: with both agents direct, nothing we
-  // manage talks to whatever answers there, so its identity is none of our business (and
-  // never grounds for a misroute warning).
+  // The identity probe (an extra local request) runs only in the full/proxy scopes, never the
+  // launchers' fast `runtime` probe, and only when something is reachable AND this target's
+  // setup routes through the port: with both agents direct, nothing we manage talks to whatever
+  // answers, so its identity is never grounds for a misroute warning.
   const identityConfirmed = SCOPE_BOOTSTRAP.includes(scope) && reachable && proxyExpected
     ? await deps.proxyIdentity(probeUrl, 2000)
     : null;
@@ -700,15 +665,14 @@ async function interrogateDaemon(
   };
 }
 
-/** Gather the DEFAULT daemon's target. Always interrogated, with the configured
- *  default port as the fallback -- the historical fast-probe behavior. */
+/** Always interrogated, with the configured default port as the fallback: the historical
+ *  fast-probe behavior. */
 async function gatherDefaultTarget(
   scope: HealthScope,
   deps: ProbeDeps,
 ): Promise<DefaultRuntimeTarget> {
-  // When nothing in the default setup routes to the local daemon (both agents
-  // direct AND Claude's base URL not aimed at it), no proxy is required, so a
-  // down proxy must not read as a runtime failure.
+  // When nothing in the default setup routes to the local daemon (both agents direct AND
+  // Claude's base URL not aimed at it), a down proxy must not read as a runtime failure.
   const { state, common } = snapshotTarget(null, deps, (targetPort) =>
     defaultSetupNeedsProxy({
       codexHome: deps.codexHome(),
@@ -729,13 +693,12 @@ async function gatherDefaultTarget(
 }
 
 /**
- * Gather a NAMED profile's runtime target: its store slot + on-disk daemon home,
- * with `proxyExpected` derived from the slot's recorded mode -- or, when the slot
- * is missing but a home exists, assumed proxy (a homed daemon may be running,
- * and a running daemon always has its port in run state). The daemon is
- * interrogated only when a proxy is expected, the home exists, AND the port is
- * persisted: a DIRECT profile has no daemon, a homeless proxy slot has no
- * persisted port, and an unpersisted candidate port is never probed.
+ * `proxyExpected` derives from the slot's recorded mode, or, with no slot but a home, is assumed
+ * (a homed daemon may be running, and a daemon past its start records its port in run state).
+ * The
+ * daemon is interrogated only when a proxy is expected, the home exists, AND the port is
+ * persisted: a DIRECT profile has no daemon, a homeless proxy slot has no persisted port, and an
+ * unpersisted candidate port is never probed.
  */
 async function gatherNamedTarget(
   name: ProfileName,
@@ -764,13 +727,10 @@ async function gatherNamedTarget(
   };
 }
 
-/**
- * Gather exactly the facts `scope` needs, running independent probes concurrently.
- * `opts.profile` narrows the run to ONE named profile: its runtime target, its
- * credential slot, and its per-agent wiring -- the account-wide fact groups
- * (bootstrap, proxy package, shell/CLI/tool setup, autoupdate, codex-host) are
- * not gathered at all, so they cannot leak into a narrowed report.
- */
+/** `opts.profile` narrows the run to ONE named profile: its runtime target, its credential slot,
+ *  and its per-agent wiring. The account-wide fact groups (bootstrap, proxy package,
+ *  shell/CLI/tool setup, autoupdate, codex-host) are not gathered at all, so they cannot leak
+ *  into a narrowed report. */
 export async function gatherFacts(
   scope: HealthScope,
   opts: { live?: boolean; profile?: Profile } = {},
@@ -778,19 +738,17 @@ export async function gatherFacts(
 ): Promise<HealthFacts> {
   const deps: ProbeDeps = { ...defaultProbeDeps(), ...overrides };
   const profile = opts.profile ?? null;
-  // The wiring expectation for the codex/claude scopes: the addressed target's
-  // resolved port (READ-ONLY -- a named profile's reservation is peeked, never
-  // made). Lazy + cached: only the scopes that inspect wiring resolve it, so a
+  // The addressed target's resolved port (READ-ONLY: a named profile's reservation is peeked,
+  // never made). Lazy and cached: only the scopes that inspect wiring resolve it, so a
   // runtime/auth run never computes a named profile's candidate port at all.
   let wiringPortCache: number | undefined;
   const wiringPort = (): number => (wiringPortCache ??= Number(deps.resolvePort(profile)));
   const facts: HealthFacts = { profile };
 
-  // gh auth backs BOTH Codex and Claude direct mode; probe it at most once per
-  // run AND per pinned account (a default sweep can cross slots pinned to
-  // different gh accounts), and asynchronously, so each ~5s `gh auth token` call
-  // overlaps with the other probes under Promise.all instead of serializing into
-  // the health timeout. Jobs addressing the same account await the same promise.
+  // gh auth backs BOTH agents' direct mode: probed at most once per run AND per pinned account
+  // (a default sweep can cross slots pinned to different gh accounts), asynchronously, so each
+  // ~5s `gh auth token` call overlaps the other probes instead of serializing into the health
+  // timeout. Jobs addressing the same account await the same promise.
   const directAuthCache = new Map<string | null, Promise<CodexDirectAuthFacts>>();
   const sharedDirectAuth = (ghUser: string | null): Promise<CodexDirectAuthFacts> => {
     let probe = directAuthCache.get(ghUser);
@@ -801,19 +759,18 @@ export async function gatherFacts(
     return probe;
   };
 
-  // The account an AUTO gh-cli slot follows right now, for the report's naming
-  // (no hidden information): probed once per run, only when some auto gh-cli
-  // slot is actually being judged.
+  // The account an AUTO gh-cli slot follows right now, for the report's naming: probed once per
+  // run, only when some auto gh-cli slot is actually being judged.
   let activeLoginCache: Promise<string | null> | undefined;
   const sharedActiveLogin = (): Promise<string | null> => (
     activeLoginCache ??= deps.ghActiveLogin()
   );
-  // The gh facts for one slot: the auth verdict, plus the followed account's
-  // name on an AUTO slot (a pinned slot already names itself via ghUser).
+  // The auth verdict, plus the followed account's name on an AUTO slot (a pinned slot already
+  // names itself via ghUser).
   const slotGhFacts = async (ghUser: string | null): Promise<CodexDirectAuthFacts> => {
     if (ghUser !== null) return await sharedDirectAuth(ghUser);
-    // Both spawns start before either is awaited: two timing-out gh calls cost
-    // one 5s budget, not two back to back.
+    // Both spawns start before either is awaited: two timing-out gh calls cost one 5s budget,
+    // not two back to back.
     const [directAuth, activeLogin] = await Promise.all([
       sharedDirectAuth(null),
       sharedActiveLogin(),
@@ -821,10 +778,10 @@ export async function gatherFacts(
     return activeLogin === null ? directAuth : { ...directAuth, ghActiveLogin: activeLogin };
   };
 
-  // The credential the run's Direct wiring resolves: the default store pair, or
-  // the narrowed profile's own slot (named profiles never fall back). `mode` is
-  // the named slot's recorded wiring mode (null for the default run, where no
-  // single mode is recorded). Cached -- several jobs consult it.
+  // The credential the run's Direct wiring resolves: the default store pair, or the narrowed
+  // profile's own slot (named profiles never fall back). `mode` is the named slot's recorded
+  // mode; the default run leaves it null and judges from the agents' own wiring instead of the
+  // recorded default mode (recordDefaultMode). Cached; several jobs consult it.
   let credentialCache:
     | {
       provider: AuthProvider | null;
@@ -860,13 +817,11 @@ export async function gatherFacts(
     return credentialCache;
   };
 
-  // Skip the (~5s) gh probe -- and report Direct as "uses token" -- only when the
-  // config is `managed` (execs `agent auth --get [--profile <name>]`) AND the
-  // addressed credential classifies as a stored token; gh-cli classifies to a live gh
-  // probe. Shared by the Codex and Claude scope jobs so the gating stays identical.
-  // Classification is owned by storedCredentialKind() (env_state.ts, the same
-  // parse the credential union uses) -- a leftover token with no provider is
-  // "none": no gh probe (no implicit fallback), and Direct never reads green.
+  // The (~5s) gh probe is skipped, and Direct reported as "uses token", only when the config is
+  // `managed` (execs `agent auth --get [--profile <name>]`) AND the credential classifies as a
+  // stored token; gh-cli means a live gh probe. Classification is storedCredentialKind()
+  // (env_state.ts): a leftover token with no provider is "none", so no gh probe (no implicit
+  // fallback) and Direct never reads green. Shared by the Codex and Claude jobs.
   const directAuthFor = async (
     managed: boolean,
   ): Promise<{ directAuth: CodexDirectAuthFacts; noGhNeeded: boolean }> => {
@@ -892,9 +847,9 @@ export async function gatherFacts(
           facts.runtimes = [await gatherNamedTarget(profile, scope, deps)];
           return;
         }
-        // The default target first, then every named profile in sorted order --
-        // but only in the diagnostic scopes (see PROFILE_SWEEP_SCOPES): the
-        // launchers' fast `runtime` probe stays the default daemon alone.
+        // The default target first, then every named profile in sorted order, but only in the
+        // diagnostic scopes (PROFILE_SWEEP_SCOPES): the launchers' fast `runtime` probe stays
+        // the default daemon alone.
         const names = SCOPE_PROFILE_SWEEP.includes(scope) ? deps.profileNames() : [];
         facts.runtimes = await Promise.all<RuntimeTarget>([
           gatherDefaultTarget(scope, deps),
@@ -913,29 +868,27 @@ export async function gatherFacts(
         facts.bootstrap = {
           cliVersion: deps.cliVersion(),
           deno: { available: deps.denoVersion() !== null, version: deps.denoVersion() },
-          // A compiled binary embeds its dependencies -- no node_modules to judge.
+          // A compiled binary embeds its dependencies: no node_modules to judge.
           nodeModules: sidecar.standalone
             ? null
             : { present: deps.nodeModulesPresent(), fresh: deps.nodeModulesFresh() },
         };
         const resolved = deps.proxyResolved();
-        // Report the version that would actually RUN, in the daemon entry's own
-        // precedence: the float's recorded resolution, else the deno.json baseline
-        // in node_modules. Judging bounds on anything else would grade a copy the
-        // daemon never loads.
+        // The version that would actually RUN, in the daemon entry's own precedence: the float's
+        // recorded resolution, else the deno.json baseline in node_modules. Judging bounds on
+        // anything else would grade a copy the daemon never loads.
         const version = resolved?.version ?? deps.installedProxyVersion();
-        // A bad COPILOT_API_MIN_RELEASE_AGE / cooldown setting shouldn't crash health.
+        // A bad COPILOT_API_MIN_RELEASE_AGE / cooldown setting must not crash health.
         let cooldownSeconds: number | null = null;
         try {
           cooldownSeconds = deps.proxyCooldownSeconds();
         } catch {
           cooldownSeconds = null;
         }
-        // Reading copilot-env.config can throw on a malformed/missing file; turn
-        // that into a proxy-check failure rather than crashing the whole report.
-        // The exemption uses the float's OWN skip predicate (not the runtime
-        // checks' looser both-direct read) so health and the float can never
-        // disagree about whether the bounds are enforced.
+        // Reading copilot-env.config can throw on a malformed/missing file; that becomes a
+        // proxy-check failure rather than crashing the whole report. The exemption uses the
+        // float's OWN skip predicate (not the runtime checks' looser both-direct read) so health
+        // and the float can never disagree about whether the bounds are enforced.
         const floatSkips = proxyFloatSkips(deps.codexHome(), deps.claudeHome());
         try {
           facts.proxy = {
@@ -966,14 +919,13 @@ export async function gatherFacts(
     jobs.push(
       (async () => {
         const home = deps.codexHome();
-        // config.toml is read three-way (deps.readFileResult) so an unreadable
-        // file classifies other/read-error instead of collapsing into the
-        // absent/none verdict readFileSafe's null would produce; the .env read
-        // stays don't-care (its absence and unreadability are alike here).
+        // config.toml is read three-way (deps.readFileResult) so an unreadable file classifies
+        // other/read-error instead of collapsing into the absent/none verdict readFileSafe's null
+        // would produce; the .env read stays don't-care (absence and unreadability are alike).
         const configRead = deps.readFileResult(codexConfigPath(home));
         const envText = deps.readFileSafe(join(home, ".env"));
-        // A named profile inspects ITS selection ([profiles.<name>] over the
-        // suffixed provider table) against ITS resolved port.
+        // A named profile inspects ITS selection ([profiles.<name>] over the suffixed provider
+        // table) against ITS resolved port.
         const wiring = inspectCodexWiring(
           configRead,
           envText,
@@ -982,9 +934,8 @@ export async function gatherFacts(
           profile,
         );
         const { directAuth, noGhNeeded } = await directAuthFor(wiring.directUsesToken);
-        // The wiring's `directUsesToken` stays a pure CONFIG fact; the store-aware
-        // "Direct needs no gh" verdict travels on its own field (`directNeedsNoGh`,
-        // the meaning checkCodex consumes).
+        // The wiring's `directUsesToken` stays a pure CONFIG fact; the store-aware "Direct needs
+        // no gh" verdict travels on its own field (`directNeedsNoGh`, what checkCodex consumes).
         const codexFacts = evalCodex(
           home,
           configRead,
@@ -1008,13 +959,12 @@ export async function gatherFacts(
     jobs.push(
       (async () => {
         const home = deps.claudeHome();
-        // A named profile answers from its own settings-<name>.json. The settings
-        // file itself is read three-way (deps.readFileResult) so an unreadable
-        // file classifies other/read-error instead of collapsing into "none".
+        // A named profile answers from its own settings-<name>.json, read three-way
+        // (deps.readFileResult) so an unreadable file classifies other/read-error, not "none".
         const settingsRead = deps.readFileResult(settingsPathFor(home, profile));
-        // "direct" here means the apiKeyHelper truly invokes `agent auth --get`
-        // addressed at THIS profile (never a stale/foreign/mis-addressed helper);
-        // directAuthFor then decides the gh probe.
+        // "direct" here means the apiKeyHelper truly invokes `agent auth --get` addressed at
+        // THIS profile (never a stale/foreign/mis-addressed helper); directAuthFor then decides
+        // the gh probe.
         const wiring = inspectClaudeWiring(settingsRead, wiringPort(), profile);
         const { directAuth, noGhNeeded } = await directAuthFor(wiring.providerMode === "direct");
         facts.claude = {
@@ -1022,8 +972,8 @@ export async function gatherFacts(
           provider: runCredential().provider,
           ...(profile === null ? {} : { expectedMode: runCredential().mode }),
         };
-        // The Desktop library spans the default AND every profile, so it is judged
-        // once, on the whole-environment run only.
+        // The Desktop library spans the default AND every profile, so it is judged once, on the
+        // whole-environment run only.
         if (profile === null) facts.claudeDesktop = deps.claudeDesktop();
       })(),
     );
@@ -1031,15 +981,12 @@ export async function gatherFacts(
 
   if (SCOPE_AUTH.includes(scope)) {
     if (profile !== null) {
-      // Narrowed: the addressed profile's slot line only (never the default
-      // credential -- named profiles never fall back to it). Every slot field
-      // comes from ONE profileSlot() snapshot, so provider and token presence
-      // can never pair across a concurrent credential write; resolution mirrors
-      // the default checkAuth (a token slot resolves by presence, a gh-cli slot
-      // by the shared (cached) gh probe). The snapshot reads the credential
-      // store STRICTLY: an unreadable store propagates (profileHomeNames'
-      // stance), so `slot: null` below always means the store was READ and
-      // holds no slot -- never an unproven empty rendered as "no credential".
+      // The addressed profile's slot line only: a named profile never falls back to the default
+      // credential. Every field comes from ONE profileSlot() snapshot, so a concurrent write
+      // cannot pair its provider with another's token.
+      //
+      //   the store cannot be read -> the failure propagates (profileHomeNames' strict stance)
+      //   slot: null               -> the store WAS read and holds no slot, never an unproven empty
       jobs.push(
         (async () => {
           const slot = deps.profileSlot(profile);
@@ -1066,9 +1013,8 @@ export async function gatherFacts(
     } else {
       jobs.push(
         (async () => {
-          // The credential state, agent-independent. gh is a credential ONLY when
-          // storedCredentialKind() says gh-cli (no implicit fallback); reuses the shared
-          // (cached) gh probe -- no extra spawn.
+          // gh is a credential ONLY when storedCredentialKind() says gh-cli (no implicit
+          // fallback); reuses the shared (cached) gh probe, so no extra spawn.
           const provider = deps.authProvider();
           const storedToken = deps.storedTokenPresent();
           const gh = storedCredentialKind(provider, storedToken) === "gh-cli"
@@ -1089,11 +1035,9 @@ export async function gatherFacts(
     }
   }
 
-  // `--live`: run each agent's read-only smoke prompt against its CONFIGURED home
-  // (a `--profile` narrowing routes it through that profile's wiring). Only in
-  // the agent-focused scopes, and only when explicitly requested (a live model
-  // call, slow). Skipped instantly when the CLI isn't installed. The default
-  // sweep never runs per-profile live probes -- only a narrowed run does.
+  // `--live` runs each agent's smoke prompt against its CONFIGURED home (a `--profile` narrowing
+  // routes it through that profile's wiring), only in the agent-focused scopes and only when
+  // asked for (a slow live model call). The default sweep never runs per-profile live probes.
   if (opts.live && SCOPE_CODEX_LIVE.includes(scope)) {
     jobs.push(
       (async () => {
@@ -1112,10 +1056,9 @@ export async function gatherFacts(
   if (profile === null && SCOPE_SETUP.includes(scope)) {
     jobs.push(
       (async () => {
-        // Resolving shell targets shells out to PowerShell on Windows and can
-        // throw; degrade to "no targets" rather than crashing the whole
-        // diagnostic -- but MARKED (targetsUnproven), so the empty census
-        // renders "could not check", never a confident "not wired".
+        // Resolving shell targets shells out to PowerShell on Windows and can throw; degrade to
+        // "no targets" rather than crashing the diagnostic, but MARKED (targetsUnproven), so the
+        // empty census renders "could not check", never a confident "not wired".
         let targets: string[] = [];
         let targetsUnproven = false;
         try {

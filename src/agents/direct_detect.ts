@@ -1,19 +1,12 @@
-// The direct-vs-proxy decision for one agent, shared by the Codex and Claude
-// config writers so "what does a mode flag plus a
-// provisioned token mean?" is answered exactly once. The live probe that backs
-// the "auto" case lives in ./live_probe.ts; this module only decides when to
-// consult it.
+// The direct-vs-proxy decision for one agent, shared by the Codex and Claude writers so "a mode
+// flag plus a provisioned token" is answered once. The live probe behind "auto" is
+// ./live_probe.ts; this module only decides when to consult it.
 import { assertNever } from "../utils/assert.ts";
 import type { RequestedMode } from "./provider_mode.ts";
 
-/**
- * Decide whether to write DIRECT (true) or PROXY (false), honoring a provisioned
- * token (the shared store's githubToken): "proxy" => proxy, "direct" => direct,
- * and on "auto" a present token selects Direct (we already hold a credential, so
- * no probe is needed) while no token falls back to the live `detectDirect` probe.
- * Total over RequestedMode -- the contradictory flag pair cannot reach here (it is
- * rejected once, at the CLI boundary parse).
- */
+/** On "auto" a provisioned token selects Direct without probing: holding a credential is the
+ *  evidence the probe would look for. The contradictory flag pair never reaches here; it is
+ *  rejected once, at the CLI boundary parse (parseModeFlags). */
 export function resolveDirectMode(
   mode: RequestedMode,
   ghToken: string | null,

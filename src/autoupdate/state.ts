@@ -1,9 +1,8 @@
-// Autoupdate THROTTLE state (`<install>/.autoupdate/state.json`): the last check and
-// its result. The preference is the `auto-update` config key, never this file.
+// A typed wrapper over CopilotApiConfig, the project's atomic JSON store, like CopilotEnvRunState,
+// so autoupdate adds no second I/O implementation.
 //
-// Thin typed wrapper over CopilotApiConfig (the project's atomic JSON store:
-// sorted keys, 0600, atomic rename, Windows retry) -- mirroring CopilotEnvRunState,
-// so there's no second I/O implementation.
+//   this file            -> throttle only: when the last check ran and how it went
+//   `auto-update` config -> the preference itself, never copied here
 import * as v from "valibot";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -12,11 +11,8 @@ import { autoupdateStateFile } from "./paths.ts";
 /** Default release cooldown for autoupdate: adopt releases at least this old. */
 export const DEFAULT_AUTOUPDATE_COOLDOWN_DAYS = 7;
 
-/**
- * The effective autoupdate cooldown is always the live `update-cooldown` config, so
- * `agent config --set update-cooldown N` takes effect on the next run; it is never
- * snapshotted into state.
- */
+/** Always the live `update-cooldown` config, never snapshotted into state, so `agent config
+ *  --set update-cooldown N` takes effect on the next run. */
 export function effectiveUpdateCooldownDays(): number {
   return new CopilotEnvConfig().updateCooldownDays() ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
 }
@@ -46,10 +42,9 @@ export class AutoupdateState {
     this.store = new CopilotApiConfig(this.path);
   }
 
-  /** Current state; absent or ill-typed fields fall back to safe defaults. The
-   *  plain load() flatten (unreadable reads as "never checked") is ACCEPTED,
-   *  decided rather than inherited: this state only paces the best-effort
-   *  preflight, and its writes go through update(), which refuses. */
+  /** The plain load() flatten (unreadable reads as "never checked") is ACCEPTED, decided rather
+   *  than inherited: this state only paces the best-effort preflight, and its writes go
+   *  through update(), which refuses. */
   read(): AutoupdateData {
     return v.parse(AUTOUPDATE_SCHEMA, this.store.load());
   }

@@ -1,17 +1,7 @@
-# The update stage of the release pipeline: repo-owned, written once by the
-# fleet sync and never overwritten. The fleet release pipeline (ci.yml's
-# update-release job) calls this workflow between cutting the draft release
-# and the attested publish: publishing waits for every job here, and every asset
-# uploaded here is attested at publish time into the release's single
-# attestation.json.
-#
-# copilot-env's stage: pin the installers to the tag, cross-compile the
-# agent binary for every release target, upload everything to the draft,
-# then verify and run the REAL uploaded binaries and installers on Linux +
-# Windows so the draft only flips live after they pass. A broken build
-# fails here, after the draft and its forced tag already exist: re-run this
-# run's failed jobs (AGENTS.md's Releases section has the recovery);
-# releases only ever move forward.
+# Repo-owned update stage of the release pipeline: ci.yml's update-release job calls it between
+# cutting the draft and the attested publish, which waits for every job here and attests every
+# asset uploaded here. A broken build fails after the draft and its forced tag exist: re-run
+# the failed jobs (AGENTS.md, Releases); releases only ever move forward.
 
 name: Update Release
 
@@ -76,12 +66,9 @@ jobs:
             dist/checksums.txt \
             --clobber
 
-  # Pre-publish gate: verify and run the REAL uploaded binary, then the REAL
-  # uploaded installer end to end, on both platforms - the managed publish
-  # waits for every job in this file, so the draft cannot go live before
-  # these pass. COPILOT_ENV_DOWNLOAD_BASE points the installer at the assets
-  # gh already downloaded (draft assets are invisible to the installer's
-  # public release URL until the release is published).
+  # Pre-publish gate on the REAL uploaded assets; the managed publish waits for it.
+  # COPILOT_ENV_DOWNLOAD_BASE points the installer at what gh downloaded: draft assets are
+  # invisible at the public release URL until publication.
   release-installer-smoke:
     name: release installer smoke / ${{ matrix.os }}
     needs: [upload-assets]

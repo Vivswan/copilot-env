@@ -1,17 +1,13 @@
-// Live "does GitHub Copilot Direct actually work?" probe, shared by `agent codex`
-// / `agent claude` (the auto-detect path) and `agent shell --clis`. Direct mode
-// resolves its credential via `agent auth --get` (provider-driven: gh-cli -> `gh
-// auth token`, copilot/gh-token -> the stored token; no implicit gh fallback), so a
-// machine with no credential -- or where Copilot Direct rejects the request -- must
-// fall back to the local proxy. Rather than guess, we
-// WRITE a throwaway direct config into a temp
-// home and run the agent CLI's own read-only smoke prompt against it; exit 0 means
-// direct works. Cheap gates (CLI present, gh authenticated) run first so the
-// common "no gh auth" case -- e.g. CI -- returns instantly without a model call. Two
-// guards keep the live test honest: the child env is SANITIZED (the provider env
-// families are dropped) so a leaked shell export can't hijack auth, and the
-// single live call is RETRIED so a transient blip doesn't silently flip a working
-// Direct setup to proxy.
+// The live "does Copilot Direct work?" probe behind `agent codex` / `agent claude` auto-detect
+// and `agent shell --clis`. Rather than guess, it writes a throwaway direct config into a temp
+// home and runs the agent CLI's own read-only smoke prompt against it; exit 0 means Direct works.
+//
+//   CLI present -> gh authenticated -> smoke prompt (retried) -> Direct, else the local proxy
+//
+//   gh unauthenticated (the CI case)       -> the proxy, before any model call
+//   a provider env var in the shell        -> dropped, so a leaked export cannot hijack auth
+//   a failure past DEFAULT_PROBE_RETRIES   -> the proxy
+//   a FAILED attempt near PROBE_TIMEOUT_MS -> no further retry; a slow SUCCESS still wins
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -25,8 +21,8 @@ import { createStderrLogger } from "../utils/logger.ts";
 import { sleepSync } from "../utils/time.ts";
 import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/report_write.ts";
 
-// Probe progress goes to stderr (consola), never stdout: the `--check`/`env`
-// machine-readable paths never probe, so this narration can't pollute them.
+// Narration goes to stderr, never stdout: the machine-readable `--check` / `env` paths must
+// stay clean.
 const logger = createStderrLogger();
 
 /** The trivial read-only prompt both CLIs run for the smoke test. */
@@ -41,58 +37,40 @@ export const DEFAULT_PROBE_RETRIES = 3;
 /** Base backoff before each retry (multiplied by the attempt index: 600ms, 1200ms). */
 export const DEFAULT_PROBE_RETRY_DELAY_MS = 600;
 
-/**
- * A failed attempt that ran for ~this fraction of the timeout was a hang/outage,
- * not a transient blip -- retrying would just burn another PROBE_TIMEOUT_MS, so we
- * stop and fall back immediately. Fast 4xx/5xx blips (the case worth retrying)
- * return well under this.
- */
+/** A FAILED attempt that ran this close to the timeout was a hang, not a blip: retrying would
+ *  burn another PROBE_TIMEOUT_MS. The blips worth retrying (fast 4xx/5xx) return well under
+ *  this, and a slow SUCCESS never reaches the check. */
 const TIMEOUT_RETRY_FRACTION = 0.9;
 
-/**
- * How to drive one agent CLI's read-only smoke test: the binary, the env var that
- * points it at a config home, and the argv for a given prompt. Shared by the
- * temp-config detect below and the live health probe (src/health/probe.ts) so the
- * exact command never drifts between them.
- */
+/** Shared by the temp-home detect below and the health `--live` probe (src/health/probe.ts)
+ *  so the exact smoke command never drifts between them. */
 export interface ProbeDescriptor {
   cli: string;
   homeEnvVar: string;
-  /**
-   * Build the smoke-test argv for `prompt`, given the config `home` the probe points the
-   * CLI at (the temp dir for detect, the real home for the health probe). Codex auto-loads
-   * `$CODEX_HOME/config.toml` and ignores `home`, but Claude's `--bare` disables
-   * settings.json auto-discovery, so it must pass `--settings <home>/settings.json` to load
-   * its managed apiKeyHelper. `profile` selects a NAMED profile's wiring (health `--live
-   * --profile`) via the same knob each launcher uses: Codex's native `--profile <name>`,
-   * Claude's per-profile settings file. Null keeps the default argv.
-   */
+  /** `home` is the config dir the probe points the CLI at (the temp dir for detect, the real
+   *  home for health); `profile` selects a named profile's wiring through the same knob each
+   *  launcher uses (null = the default argv). The per-CLI notes below say how. */
   args: (prompt: string, home: string, profile?: Profile) => string[];
 }
 
-/**
- * Env-var PREFIXES whose every variable is stripped from the probe child, for BOTH agent
- * CLIs: a stray `OPENAI_*`, `ANTHROPIC_*`, `CODEX_*`, or `CLAUDE_*` export (an api key, an
- * org, a base url, a config override) must not steer the "does Direct work?" test away from
- * the throwaway temp config. The probe re-sets its own home var (`CODEX_HOME` /
- * `CLAUDE_CONFIG_DIR`) AFTER this clear, so stripping those families is safe. `GH_*` /
- * `GITHUB_*` are NOT here on purpose: Direct mints its token via `gh auth token`, so they
- * must survive. The health probe (src/health/probe.ts) deliberately clears none of this: it
- * tests the user's real, fully-resolved environment.
- */
+/** Stripped from the probe child so a stray export (an api key, an org, a base url, a config
+ *  override) cannot steer the test away from the throwaway config.
+ *
+ *    OPENAI_ / ANTHROPIC_ / CODEX_ / CLAUDE_ -> dropped; the home var is re-set AFTER the clear
+ *    GH_ / GITHUB_                           -> kept: Direct mints its token via `gh auth token`
+ *
+ *  The health probe (src/health/probe.ts) strips none of these; it tests the real environment,
+ *  dropping only ANTHROPIC_BASE_URL for a named profile (claudeLiveOmitEnv). */
 export const PROVIDER_ENV_PREFIXES = ["OPENAI_", "ANTHROPIC_", "CODEX_", "CLAUDE_"];
 
 export const CODEX_PROBE: ProbeDescriptor = {
   cli: "codex",
   homeEnvVar: "CODEX_HOME",
-  // --skip-git-repo-check: the probe runs against a throwaway home with no
-  // `[projects]` trust list, so without this codex refuses to run unless the cwd
-  // happens to be a git repo ("Not inside a trusted directory and
-  // --skip-git-repo-check was not specified.") -- making Direct detection fail
-  // purely based on where `agent init` was invoked.
-  // A named profile rides Codex's native selector (`codex exec --profile <name>`,
-  // the exact flag the `cx --profile` launcher passes), selecting the managed
-  // `[profiles.<name>]` table.
+  // --skip-git-repo-check: the throwaway home has no `[projects]` trust list, so without it
+  // codex refuses unless the cwd happens to be a git repo, and Direct detection would depend on
+  // where `agent init` was invoked:
+  //   "Not inside a trusted directory and --skip-git-repo-check was not specified."
+  // A named profile rides `--profile <name>`, the flag the `cx --profile` launcher passes.
   args: (prompt, _home, profile = null) => [
     "exec",
     ...(profile === null ? [] : ["--profile", profile]),
@@ -107,14 +85,12 @@ export const CODEX_PROBE: ProbeDescriptor = {
 export const CLAUDE_PROBE: ProbeDescriptor = {
   cli: "claude",
   homeEnvVar: "CLAUDE_CONFIG_DIR",
-  // --bare forces auth STRICTLY through the apiKeyHelper (OAuth and keychain are
-  // never read) so a user's Claude subscription login can't make Direct look
-  // available when the managed credential path is actually broken -- but it also disables
-  // settings.json auto-discovery from CLAUDE_CONFIG_DIR, so the managed
-  // apiKeyHelper is only honored when handed in via --settings. Without it the
-  // probe has NO auth path and always fails (apiKeySource "none").
-  // A named profile loads its own settings-<name>.json (what `cl --profile`
-  // launches via `claude --settings`).
+  // --bare forces auth through the apiKeyHelper alone (no OAuth, no keychain), so a Claude
+  // subscription login cannot make Direct look available when the managed path is broken.
+  //
+  //   --bare               -> also stops settings.json discovery from CLAUDE_CONFIG_DIR
+  //   --settings <path>    -> the only auth path left; without it apiKeySource is "none"
+  //   settings-<name>.json -> a named profile's own file, the one `cl --profile` loads
   args: (prompt, home, profile = null) => [
     "--bare",
     "--settings",
@@ -129,12 +105,8 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
   ],
 };
 
-/**
- * The result of one live smoke call: `ok` is exit 0, and on failure `detail` is a
- * concise, single-line reason (an HTTP status, an auth rejection, a timeout, a
- * stream disconnect, or the raw exit) lifted from the child's stderr/stdout -- so
- * a fallback to the proxy is never silent.
- */
+/** `detail` is the one-line failure reason lifted from the child's output, so a fallback to
+ *  the proxy is never silent. */
 export interface ProbeOutcome {
   ok: boolean;
   detail?: string;
@@ -169,15 +141,11 @@ function defaultGhAuthOk(ghPath: string, ghUser: string | null): boolean | "unpr
   return ghAuthVerdict(result);
 }
 
-/**
- * Recognizes codex's giant model-catalog dump in probe output (noise, never the
- * failure reason). The ONE filter both probe failure formatters apply --
- * summarizeProbeFailure below and formatLiveFailure in src/health/probe.ts -- so
- * a catalog format change upstream is accommodated in one place.
- */
+/** Codex's model-catalog dump in probe output is noise, never the failure reason. Both failure
+ *  formatters (summarizeProbeFailure here, formatLiveFailure in src/health/probe.ts) filter
+ *  through this one regex. */
 export const CODEX_CATALOG_NOISE_RE = /"capabilities"|"object":\s*"model"|model_picker/;
 
-/** Collapse a probe child's output to one concise, human-readable failure reason. */
 export function summarizeProbeFailure(
   status: number | null,
   signal: string | null,
@@ -189,10 +157,8 @@ export function summarizeProbeFailure(
   if (errorMessage && /ETIMEDOUT|timed?\s?out/i.test(errorMessage)) {
     return `timed out after ${Math.round(PROBE_TIMEOUT_MS / 1000)}s`;
   }
-  // Scan stderr (tracing/errors) and the JSON stdout stream -- newest line first --
-  // for the most informative failure marker: an HTTP 4xx/5xx, an auth rejection,
-  // a stream disconnect, or the "waiting on stdin" hang. Skip codex's giant model
-  // catalog lines so they can't drown out the real reason.
+  // Scanned from the end of stderr-then-stdout: the last marker line in stdout wins, else the
+  // last in stderr; within one stream that is the marker nearest the child's death.
   const lines = `${stderr}\n${stdout}`
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -203,9 +169,7 @@ export function summarizeProbeFailure(
     const line = lines[i];
     if (line && MARKER.test(line)) return truncateReason(line);
   }
-  // No recognizable marker. A non-timeout spawn error (ENOENT, ENOBUFS, ...) carries
-  // the real reason when the output didn't, so prefer it; else report the raw exit
-  // plus a hint of the last line.
+  // A non-timeout spawn error (ENOENT, ENOBUFS) carries the real reason when the output did not.
   if (errorMessage) return truncateReason(errorMessage);
   const last = lines[lines.length - 1];
   const tail = last ? ` - last output: ${truncateReason(last)}` : "";
@@ -225,14 +189,12 @@ function defaultRunProbe(
   env: Record<string, string>,
 ): ProbeOutcome {
   const s = cliSpawn(cliPath, args);
-  // `env` is the COMPLETE child environment (process.env minus the provider env
-  // families, plus the temp home + PATH) -- built by probeDirectWorks.
-  // Spawn with it verbatim; do NOT re-merge process.env or the cleared vars return.
-  // Capture stdout/stderr (not stdio:"ignore") so a failure carries a real reason
-  // instead of silently flipping the user to the proxy. A generous maxBuffer keeps
-  // a working Direct from being misread as failed: codex prints a large (~tens of
-  // KB) model catalog, and the default 1 MB cap would set result.error (ENOBUFS) --
-  // failing the probe even on exit 0. 16 MB is far above any real probe output.
+  // `env` is the COMPLETE child environment probeDirectWorks built; re-merging process.env here
+  // would bring the cleared provider vars back.
+  //
+  //   stdout/stderr piped -> a failure carries a reason (summarizeProbeFailure)
+  //   maxBuffer 16 MB     -> codex prints tens of KB of model catalog, and the 1 MB default sets
+  //                          result.error (ENOBUFS) on a probe that exited 0
   // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
   const result = spawnSync(s.file, s.args, {
     stdio: ["ignore", "pipe", "pipe"],
@@ -256,13 +218,12 @@ function defaultRunProbe(
   };
 }
 
-/**
- * Decide whether GitHub Copilot Direct works for an agent CLI. The CLI must be
- * installed, `gh` must be installed and authenticated, and a throwaway read-only
- * prompt against a temp direct config must exit 0. Any miss => false (the caller
- * configures proxy instead). Never throws; always removes the temp home. The gh
- * and agent-CLI RESOLVED paths are threaded to the spawns so the nvm fallback in
- * findCommand isn't defeated by spawning a bare (PATH-only) command name.
+/** The RESOLVED gh and CLI paths are threaded to the spawns, or findCommand's nvm fallback is
+ *  defeated by a bare PATH-only command name.
+ *
+ *   store unreadable          -> throws; that read sits before the try below
+ *   any failure from tmp home -> caught, false, and the caller wires the proxy
+ *   temp-home removal fails   -> best effort; removeScratchDir reports the path left behind
  */
 export function probeDirectWorks(
   descriptor: ProbeDescriptor,
@@ -277,10 +238,9 @@ export function probeDirectWorks(
 
   logger.log(`  Probing GitHub Copilot Direct for ${descriptor.cli} ...`);
 
-  // Every cheap-gate miss falls back to the proxy (the safe direction either
-  // way), but a FAILED look never borrows a proven verdict's words: "not found"
-  // and "not authenticated" carry advice that is wrong when the look itself
-  // failed, so those arms say "could not check" instead.
+  // A FAILED look never borrows a proven verdict's words: "not found" and "not authenticated"
+  // carry advice that is wrong when the look itself failed, so those arms say "could not
+  // check". Every miss still falls back to the proxy, the safe direction either way.
   const cliLook = find(descriptor.cli);
   if (cliLook.path === null) {
     logger.log(
@@ -302,11 +262,9 @@ export function probeDirectWorks(
   }
   const ghPath = ghLook.path;
   logger.log("    • checking gh authentication ...");
-  // The detect probe wires the DEFAULT profile, so the cheap gate checks the
-  // default credential's own account pin (null = gh's active account) -- a
-  // pinned account must not read green off whichever account happens to be
-  // active. The smoke prompt below exercises the pin end-to-end regardless
-  // (its config resolves via `agent auth --get`).
+  // The gate checks the DEFAULT credential's own account pin (null = gh's active account): a
+  // pinned account must not read green off whichever account happens to be active. The smoke
+  // prompt below exercises the pin end-to-end regardless.
   const defaultCredential = new Credential().read();
   const ghUser = defaultCredential.kind === "gh-cli" ? defaultCredential.ghUser : null;
   const ghAuth = ghAuthOk(ghPath, ghUser);
@@ -332,18 +290,13 @@ export function probeDirectWorks(
   try {
     tmpHome = scratchDir(join(tmpdir(), `copilot-env-${descriptor.cli}-`));
     writeDirectConfig(tmpHome);
-    // Sanitized COMPLETE child env: provider families stripped case-insensitively
-    // (why: see PROVIDER_ENV_PREFIXES), temp home set, and the resolved CLI's and
-    // gh's bin dirs put first on PATH (why: see childEnvWithPath/childPathPrepending).
+    // Provider families stripped (why: PROVIDER_ENV_PREFIXES); the resolved CLI's and gh's bin
+    // dirs lead PATH so an nvm-only toolchain resolves (why: childEnvWithPath).
     const childEnv = childEnvWithPath([dirname(cliPath), dirname(ghPath)], {
       extra: { [descriptor.homeEnvVar]: tmpHome },
       omit: (upper) => PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)),
     });
 
-    // The smoke call is a single live model call, so a transient blip (a fast
-    // 4xx/5xx, a momentary network hiccup) must not silently downgrade a working
-    // Direct setup to proxy. Retry on failure -- but a near-timeout failure is a
-    // hang/outage, not a blip, so stop rather than burn another PROBE_TIMEOUT_MS.
     const args = descriptor.args(PROBE_PROMPT, tmpHome);
     let lastDetail: string | undefined;
     for (let attempt = 0; attempt <= retries; attempt++) {

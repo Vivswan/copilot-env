@@ -1,12 +1,6 @@
-// Staged-file autofix for .githooks/pre-commit (`deno task lint:staged`): the
-// deno-native replacement for lint-staged, so the hook needs no node. Runs
-// `deno lint --fix` then `deno fmt` on the staged TypeScript under the source
-// trees (fmt alone for deno.json) and re-stages the results; anything the
-// fixers cannot resolve exits nonzero and blocks the commit.
-//
-// Whole files are re-staged, not patches, so a partially staged target is
-// REFUSED up front (stage it fully or stash the rest): silently widening a
-// `git add -p` commit is the failure mode, and the stash dance lint-staged
+// `deno task lint:staged`, the pre-commit hook's autofix; deno-native so the hook needs no node.
+// Whole files are re-staged, not patches, so a partially staged target is REFUSED up front:
+// silently widening a `git add -p` commit is the failure mode, and the stash dance lint-staged
 // performs to support partial staging IS most of lint-staged.
 
 const TS_TREES = ["src/", "test/", "scripts/", ".github/scripts/"];

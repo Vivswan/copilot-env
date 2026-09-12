@@ -1,10 +1,9 @@
-// Where `agent cost` keeps its on-disk state under the root copilot-api home. Both
-// the usage index (index.ts) and the price-list cache (pricing.ts) live in this one
-// directory; pricing.ts must not import index.ts (node:sqlite), so the name lives here.
+// pricing.ts must not import index.ts (it loads node:sqlite), so the shared directory name lives
+// here.
 import { join } from "node:path";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 
-/** The `agent cost` state directory under the root copilot-api home. */
+/** Holds the price-list cache as well as the index, despite the name. */
 export const USAGE_INDEX_DIR_NAME = "usage-index";
 
 export function usageIndexDir(): string {

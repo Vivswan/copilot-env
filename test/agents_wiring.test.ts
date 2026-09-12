@@ -1,9 +1,6 @@
-// Matrix tests for src/agents/wiring.ts -- the single source of truth for
-// "how are the agents wired?". The two predicates answer different questions:
-// defaultSetupNeedsProxy ignores named profiles (health's default-daemon
-// question), proxyUnusedEverywhere counts them (the float's npm-work question).
-// The proxyUnusedEverywhere cases moved here from test/proxy_float.test.ts
-// when the predicate moved into this module.
+// The two predicates answer different questions, and the matrix pins the split:
+//   defaultSetupNeedsProxy -> health's question; ignores profile homes (they run their own daemon)
+//   proxyUnusedEverywhere  -> the float's question; counts them (a profile daemon uses the package)
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -41,7 +38,6 @@ const PROXY_CLAUDE_BASE = "http://127.0.0.1:4141";
 
 type WiredMode = "direct" | "proxy" | "none";
 
-/** A Codex home wired to `mode` ("none" = an empty home, no config.toml). */
 function makeCodexHome(mode: WiredMode): string {
   const home = join(dir, "codex-home");
   mkdirSync(home, { recursive: true });
@@ -52,7 +48,6 @@ function makeCodexHome(mode: WiredMode): string {
   return home;
 }
 
-/** A Claude home wired to `mode` ("none" = an empty home, no settings.json). */
 function makeClaudeHome(mode: WiredMode): string {
   const home = join(dir, "claude-home");
   mkdirSync(home, { recursive: true });
@@ -71,8 +66,8 @@ function makeClaudeHome(mode: WiredMode): string {
   return home;
 }
 
-/** A named profile's daemon home -- created only by proxy wiring or `agent
- *  start --profile`, so its presence means a local proxy is in use. */
+/** Only proxy wiring or `agent start --profile` creates a profile's daemon home, so its presence
+ *  means a local proxy is in use. */
 function addProfileHome(): void {
   mkdirSync(join(dir, "profiles", "work"), { recursive: true });
 }
@@ -87,10 +82,7 @@ describe("mode matrix: codex x claude x profile home", () => {
           const opts = { codexHome: makeCodexHome(codex), claudeHome: makeClaudeHome(claude) };
           if (profilePresent) addProfileHome();
           expect(readAgentModes(opts)).toEqual({ codex, claude });
-          // Health's question ignores profile homes: a named proxy profile runs
-          // its own daemon and never makes the DEFAULT setup need one.
           expect(defaultSetupNeedsProxy(opts)).toBe(!bothDirect);
-          // The float's question counts them: any profile daemon uses the package.
           expect(proxyUnusedEverywhere(opts)).toBe(bothDirect && !profilePresent);
         });
       }
@@ -99,9 +91,8 @@ describe("mode matrix: codex x claude x profile home", () => {
 });
 
 test("driving bug: both defaults Direct while a proxy profile home exists", () => {
-  // The configuration health once misdiagnosed: the DEFAULT setup needs no
-  // proxy (both agents Direct), yet the proxy package is NOT unused -- the
-  // profile's own daemon still runs on it, so the float must keep floating.
+  // Health once misdiagnosed this: the DEFAULT setup needs no proxy, yet the profile's own daemon
+  // still runs on the package, so the float must keep floating.
   const opts = { codexHome: makeCodexHome("direct"), claudeHome: makeClaudeHome("direct") };
   addProfileHome();
   expect(defaultSetupNeedsProxy(opts)).toBe(false);
@@ -121,11 +112,9 @@ describe("proxyUnusedEverywhere edge cases", () => {
       apiKeyHelper: directHelperCommand(),
       baseUrl: PROXY_CLAUDE_BASE,
     });
-    // The MODE alone keys off apiKeyHelper and still reads direct -- which
-    // is exactly why BOTH predicates must also check the base URL: Claude's
-    // traffic genuinely goes to the local daemon, so the default setup needs
-    // the proxy (this assertion once said false -- that WAS the bug health
-    // inherited) and the float must keep floating.
+    // The mode keys off apiKeyHelper alone and still reads direct, so both predicates must also
+    // check the base URL: Claude's traffic really goes to the local daemon. (The needsProxy
+    // assertion once said false; that was the bug health inherited.)
     expect(readAgentModes({ codexHome, claudeHome }).claude).toBe("direct");
     expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(true);
     expect(proxyUnusedEverywhere({ codexHome, claudeHome })).toBe(false);
@@ -154,9 +143,8 @@ describe("proxyUnusedEverywhere edge cases", () => {
   });
 
   test("an UNREADABLE codex config reads other, never none (nothing synthesizes it)", () => {
-    // config.toml as a DIRECTORY: the entry exists but cannot be read as text,
-    // the portable stand-in for a permission failure. The classifier itself
-    // (not a caller-side seam) must report present-but-unknown.
+    // A directory at config.toml is the portable stand-in for a permission failure: the entry
+    // exists but cannot be read as text.
     const codexHome = join(dir, "codex-home");
     mkdirSync(join(codexHome, "config.toml"), { recursive: true });
     const claudeHome = makeClaudeHome("direct");
@@ -166,11 +154,9 @@ describe("proxyUnusedEverywhere edge cases", () => {
 });
 
 describe("defaultSetupNeedsProxy base-URL matrix (codex direct + Claude direct helper)", () => {
-  // Claude's mode keys off apiKeyHelper alone, so the base URL decides whether
-  // a mode-direct Claude still routes to OUR daemon. Only a URL the proxy-mode
-  // matcher accepts (loopback host, the resolved port, bare origin) counts;
-  // anything routed elsewhere leaves the daemon out of the path -- its state
-  // can neither fix nor break the agent, so health must not demand it.
+  // Claude's mode keys off apiKeyHelper alone, so the base URL decides whether a mode-direct Claude
+  // still routes to OUR daemon. A daemon that is not in the path can neither fix nor break the
+  // agent, so health must not demand it.
   const cases: { name: string; baseUrl?: string; needsProxy: boolean }[] = [
     { name: "the local proxy origin", baseUrl: PROXY_CLAUDE_BASE, needsProxy: true },
     {
@@ -236,8 +222,8 @@ test("unparseable Claude settings read as 'other' (a config we must not clobber)
 });
 
 test("unreadable configs read as 'other', never as unconfigured 'none'", () => {
-  // A directory at each config path EXISTS but cannot be read as text (a
-  // non-ENOENT error on every platform) -- the cross-platform unreadable fixture.
+  // A directory at each config path is the cross-platform unreadable fixture (a non-ENOENT error
+  // everywhere).
   const codexHome = join(dir, "codex-home");
   mkdirSync(join(codexHome, "config.toml"), { recursive: true });
   const claudeHome = join(dir, "claude-home");
@@ -254,9 +240,6 @@ describe("default home resolution", () => {
   test.skipIf(process.platform === "win32")(
     "codex follows the run-state codexHome override; claude follows $CLAUDE_CONFIG_DIR",
     () => {
-      // The effective-home precedence every caller shares: with the `codex-host` key
-      // on, the run-state record its derivation wrote wins over $CODEX_HOME; Claude's
-      // one knob is $CLAUDE_CONFIG_DIR.
       const farmHome = join(dir, "farm-codex");
       writeCodexConfigToml(farmHome, { baseUrl: DIRECT_BASE });
       process.env.CODEX_HOME = join(dir, "empty-codex"); // must lose to run state

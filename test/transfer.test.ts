@@ -1,7 +1,4 @@
-// The `agent settings` bundle: export/import round-trips the two portable
-// stores and re-derives everything else. Every test runs against isolated temp
-// homes (isolateAgentHomes) and a stubbed integration-identity probe, so no
-// real config, credential, or network is ever touched.
+// The `agent settings` bundle round-trips the two portable stores and re-derives everything else.
 
 import {
   chmodSync,
@@ -60,9 +57,8 @@ const restoreEnv = envSnapshot();
 // machine"), so cleanup tracks every temp dir created in a test.
 let dirs: string[] = [];
 
-// Direct wiring probes the Copilot integration identity over the network; stub it
-// so every test resolves to the default identity (200 = first candidate accepted)
-// offline. Direct tests that must prove NO probe ran install a counting stub.
+// Direct wiring probes the Copilot integration identity over the network; the stub resolves
+// the default identity offline. Tests that must prove NO probe ran install a counting stub.
 beforeEach(() => {
   setIntegrationProbeFetch(() =>
     Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
@@ -83,8 +79,7 @@ function isolate(): AgentHomes {
   return homes;
 }
 
-/** Capture process.stderr.write output (the command's narration logger) while
- *  awaiting `fn`. */
+/** stderr is the command's narration logger. */
 async function captureStderr(fn: () => Promise<void>): Promise<string> {
   const original = process.stderr.write.bind(process.stderr);
   let out = "";
@@ -100,10 +95,8 @@ async function captureStderr(fn: () => Promise<void>): Promise<string> {
   return out;
 }
 
-/** Seed a representative setup: prefs (including a registry key newer than the
- *  bundle feature itself, proving the schema reuse tracks the registry), a
- *  default credential, a proxy profile, both agents wired proxy, plus the
- *  machine-local state fields and an ownership-ledger record. */
+/** claudeTokenMultiplier is a registry key newer than the bundle feature, so its round trip
+ *  proves the schema reuse tracks the registry. */
 async function seedStores(): Promise<void> {
   new CopilotEnvConfig().set({ autoStart: true, port: 5050, claudeTokenMultiplier: 2.5 });
   const state = new CopilotEnvState();
@@ -354,7 +347,6 @@ test("round trip: export -> wipe -> import restores stores and re-derives wiring
   expect(new OwnershipLedger().ownedPaths("webSearchDeny")).not.toContain(
     "/some/other/machine/settings.json",
   );
-  // The wiring artifacts exist on the new machine (default + profile, both agents).
   expect(existsSync(settingsPathFor(machine2.claudeHome))).toBe(true);
   expect(existsSync(settingsPathFor(machine2.claudeHome, WORK))).toBe(true);
   expect(readFileSync(join(machine2.codexHome, "config.toml"), "utf8")).toContain(
@@ -451,7 +443,6 @@ test("a redacted bundle over resolvable LOCAL credentials wires normally (result
   expect(outcome.skipped).toEqual([]);
   expect(outcome.modes).toEqual({ codex: "proxy", claude: "proxy" });
   expect(outcome.wiredProfiles).toEqual([WORK]);
-  // The local tokens survived; the placeholder never landed anywhere.
   expect(new Credential().resolve()).toBe("ghp_local_default");
   expect(new Credential(undefined, WORK).resolve()).toBe("ghp_local_work");
   const slot = new CopilotEnvState().readProfileSlot(WORK);
@@ -536,10 +527,9 @@ test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the id
   expect(new CopilotEnvState().read().profiles).toEqual({});
   expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(false);
 
-  // gh resolves: the provider is recorded (no token -- gh-cli holds none) and
-  // REAL direct wiring runs for the default AND the profile -- still exactly
-  // one gh probe (the wiring consumes the plan's resolved token) and no
-  // subprocess (the identity probe is the stubbed fetch).
+  // gh resolves: REAL direct wiring runs for the default AND the profile, with still exactly
+  // one gh probe (the wiring consumes the plan's resolved token) and no subprocess (the
+  // identity probe is the stubbed fetch).
   probeCount = 0;
   const withGh = await applyImportBundle(bundle, {
     catalogDeps: NOOP_CATALOG_DEPS,
@@ -698,11 +688,10 @@ test("a throwing profile COMMIT is contained per-slot: the rest of the import pr
     }),
   );
   const plan = planImport(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
-  // Make the FIRST slot's commit itself throw: a whitespace token travels fine
-  // in the plan's types but rawCredentialPatch (inside commitProfile) rejects
-  // it. The commit sits INSIDE the per-profile containment -- a slot whose
-  // commit throws is skipped whole ("ask, never break", same posture as a
-  // credential that fails to resolve) and never blocks the profiles after it.
+  // A whitespace token travels fine in the plan's types but rawCredentialPatch (inside
+  // commitProfile) rejects it, so the FIRST slot's commit itself throws. The commit sits
+  // INSIDE the per-profile containment: the slot is skipped whole and never blocks the
+  // profiles after it.
   const bad = plan.profiles.find((p) => p.name === parseProfileName("bad"));
   if (
     bad === undefined || bad.landing.action !== "write" || bad.landing.credential.kind !== "stored"
@@ -775,7 +764,6 @@ test("parseSettingsAction: each arm carries only its own knobs", () => {
   });
 });
 
-/** `runSettings(args)` with stdout captured; stderr (the narration logger) too. */
 async function runSettingsCaptured(
   args: Parameters<typeof runSettings>[0],
 ): Promise<{ stdout: string; stderr: string }> {

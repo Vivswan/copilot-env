@@ -1,7 +1,6 @@
-// readTextResult: the three-way text read (text / absent / unreadable) and its
-// don't-care wrapper readTextOrNull. "Absent" and "unreadable" must never
-// collapse into each other -- removal paths authorize destructive action on
-// absent and hands-off treatment on unreadable (see removeClaudeProfile).
+// readTextResult keeps "absent" and "unreadable" apart: a caller that authorizes destructive
+// action on absent must never see a permission error collapsed into it. readTextOrNull is the
+// don't-care wrapper that folds both to null.
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readTextOrNull, readTextResult } from "../src/utils/fs.ts";
@@ -18,13 +17,13 @@ test("readTextResult keeps text, absent, and unreadable apart", () => {
   writeFileSync(file, "hello");
   expect(readTextResult(file)).toEqual({ kind: "text", text: "hello" });
 
-  // Nothing at the path, and a lookup under a non-directory parent (ENOENT /
-  // ENOTDIR), both read "absent": nothing is there to protect.
+  // A lookup under a non-directory parent (ENOTDIR) reads absent like ENOENT: nothing is there
+  // to protect.
   expect(readTextResult(join(dir, "missing.txt"))).toEqual({ kind: "absent" });
   expect(readTextResult(join(file, "child.txt"))).toEqual({ kind: "absent" });
 
-  // A directory at the path EXISTS but cannot be read as text (a non-ENOENT
-  // error on every platform): "unreadable", never "absent", with the cause kept.
+  // Reading a directory fails with a non-ENOENT error on every platform, so it must read
+  // unreadable.
   const asDir = join(dir, "settings.json");
   mkdirSync(asDir);
   const result = readTextResult(asDir);
@@ -50,9 +49,8 @@ test.skipIf(process.platform === "win32")(
     dir = tempDir("copilot-fs-");
     const link = join(dir, "settings.json");
     symlinkSync(join(dir, "gone.json"), link);
-    // readFileSync follows the link and reports ENOENT, but lstat shows an
-    // entry AT the path: classifying it absent would authorize cleanup of
-    // something that is still there.
+    // readFileSync follows the link and reports ENOENT, but an entry exists AT the path:
+    // classifying it absent would authorize cleanup of something still there.
     expect(readTextResult(link).kind).toBe("unreadable");
     expect(readTextOrNull(link)).toBe(null);
   },

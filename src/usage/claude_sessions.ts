@@ -1,27 +1,12 @@
-// Read Claude Code transcript logs and aggregate token usage.
+// Transcripts live under `<claude-home>/projects/<cwd-slug>/`, subagents nested deeper, so the walk
+// is recursive.
+//   Claude Code's `stats-cache.json` -> never read, it is pre-aggregated
+//   Direct-wired Claude              -> covered only here, it never reaches the proxy's tables
 //
-// Claude Code persists every conversation as JSONL transcripts under
-// `<claude-home>/projects/<cwd-slug>/<sessionId>.jsonl`, with subagent
-// transcripts nested deeper (`<slug>/<sessionId>/subagents/**/agent-*.jsonl`),
-// so discovery walks recursively. Each assistant line is
-// `{"type":"assistant","timestamp":"<UTC ISO-8601>","message":{...}}` where
-// `message.model` names the model and `message.usage` carries `input_tokens`
-// (EXCLUDING cache, unlike Codex), `output_tokens`, `cache_read_input_tokens`
-// and `cache_creation_input_tokens` -- everything needed to price a turn.
-//
-// Deduplication is mandatory and value-aware: streaming writes one line per
-// content block, all sharing the same `message.id`, and the usage SNAPSHOT
-// GROWS across those lines -- `output_tokens` rises until the final line
-// carries the true count (the input-side buckets never change). Resume/fork
-// additionally copies finished lines into new files. So each message is counted
-// once, at the running per-bucket MAX across every occurrence: the first line
-// books its snapshot and later lines add only the positive delta. This covers
-// Direct-wired Claude, which bypasses the proxy and never reaches its SQLite
-// usage tables. The raw transcripts are the source of truth on purpose: Claude
-// Code's own `stats-cache.json` is a pre-aggregated cache, not raw data.
-//
-// Split as walk -> pure per-file parse (a ClaudeContribution, window and dedup
-// NOT applied) -> fold, so a per-file index can cache the parse.
+// Streaming writes one line per content block, all sharing `message.id`, and the usage snapshot
+// GROWS across them (`output_tokens` rises until the final line; the input buckets never change);
+// resume/fork copies finished lines into new files. So a message counts once, at the running
+// per-bucket max over every occurrence.
 
 import { type Dirent, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
@@ -58,26 +43,18 @@ import {
 /** Error placeholders carry this model id and no real usage attribution. */
 const SYNTHETIC_MODEL = "<synthetic>";
 
-/** The line kind the parser reads; every other line is never decoded. */
 const CLAUDE_NEEDLES: readonly string[] = ['"type":"assistant"'];
 
-/** Headroom over the observed layout:
+/** Headroom over the deepest observed layout:
  *  projects/<slug>/<session>/subagents/workflows/<wf>/agent-<id>.jsonl */
 const MAX_WALK_DEPTH = 8;
 
-/**
- * Transcript filenames carry no date, so file-level `--days` skipping leans on
- * the mtime (appends refresh it, so a resumed session is never dropped) with a
- * day of slack for clock skew.
- */
+/** Transcript filenames carry no date, so `--days` skipping leans on the mtime (appends refresh it,
+ *  so a resumed session is never dropped) with a day of slack for clock skew. */
 const MTIME_CUTOFF_SLACK_MS = MILLISECONDS_PER_DAY;
 
-/**
- * Locate the Claude transcript root(s): `<home>/projects`. There is a single
- * Claude home (no per-host farm), but the injectable list keeps the shape of
- * discoverCodexSessionRoots and the realpath dedup guards against symlinked
- * spellings of the same directory.
- */
+/** There is one Claude home, but the injectable list keeps the shape of discoverCodexSessionRoots,
+ *  and the realpath dedup guards against symlinked spellings of the same directory. */
 export function discoverClaudeSessionRoots(homes: string[] = [resolveClaudeHome()]): string[] {
   const byRealpath = new Map<string, string>();
   for (const home of homes) {
@@ -95,25 +72,15 @@ export function discoverClaudeSessionRoots(homes: string[] = [resolveClaudeHome(
   return [...byRealpath.values()];
 }
 
-/**
- * Parse every transcript under `roots` and aggregate token usage per model,
- * per LOCAL calendar day, into ONE report (transcripts carry no provider dimension).
- * `sinceMs` (unix ms) bounds the report to recent events when set. A file that
- * fails to read is skipped with a warning rather than aborting the report.
- * `timeZone` names the zone the per-day split is cut in (default: the system's own);
- * it exists so the slicing is assertable without pinning the process `TZ`, which
- * deno honors on unix only. `reconcile` (the usage index) may supply the per-file
- * contributions; without it every candidate is parsed whole.
- */
+/** `timeZone` exists so the per-day slicing is assertable without pinning the process `TZ`, which
+ *  deno honors on unix only. */
 export async function readClaudeSessions(
   roots: string[],
   sinceMs?: number,
   timeZone?: string,
   reconcile?: Reconcile,
 ): Promise<UsageReport> {
-  // Resolved FIRST, before any directory walk or file read: an unknown zone must fail here,
-  // not once per file inside the parse catch, which would report it as an
-  // unreadable transcript and return a report silently missing its per-day split.
+  // Before any file read: an unknown zone must fail here, not inside the per-file parse catch.
   const dayKey = dayKeyIn(timeZone);
   const walked = walkClaudeSessions(roots, sinceMs);
   const { records } = (reconcile ?? parseEveryCandidate)(
@@ -125,14 +92,12 @@ export async function readClaudeSessions(
   return foldClaude(inWalkOrder(walked, records), sinceMs, dayKey);
 }
 
-/** Every transcript under `roots`, ascending by path; a file is a candidate
- *  unless its mtime says it was untouched since the cutoff. */
 export function walkClaudeSessions(roots: string[], sinceMs: number | undefined): WalkedFile[] {
   const collected: WalkedFile[] = [];
   for (const root of roots) {
     collectTranscriptFiles(root, 1, sinceMs, collected);
   }
-  // Roots may overlap (the same directory named twice); a path is walked once.
+  // Roots may overlap (the same directory named twice).
   const seen = new Set<string>();
   const files = collected.filter((f) => {
     if (seen.has(f.path)) {
@@ -145,19 +110,16 @@ export function walkClaudeSessions(roots: string[], sinceMs: number | undefined)
   return files;
 }
 
-/** Parse a transcript from its first byte. */
 export const parseClaudeWhole: ParseWhole<ClaudeContribution> = (file) => {
   return parseClaudeFrom(file, 0, { v: CONTRIBUTION_VERSION, occurrences: [] });
 };
 
-/** Resume a transcript at `fromByte`, appending to a copy of `prior`'s
- *  occurrences; `prior` itself is never mutated (the index still holds it). */
+/** A copy of `prior`'s occurrences: the index still holds `prior`. */
 export const parseClaudeTail: ParseTail<ClaudeContribution> = (file, fromByte, prior) => {
   return parseClaudeFrom(file, fromByte, { v: prior.v, occurrences: [...prior.occurrences] });
 };
 
-/** Fold the contributions (walk order) into one report. Per occurrence: the
- *  window, THEN the running-max dedup (one map across all files), then record. */
+/** Per occurrence: the window, THEN the running-max dedup (one map across all files). */
 export function foldClaude(
   records: readonly FileRecord<ClaudeContribution>[],
   sinceMs: number | undefined,
@@ -165,8 +127,8 @@ export function foldClaude(
 ): UsageReport {
   const report = usageReport();
   const seenMessages = new Map<string, TokenBuckets>();
-  // Transcripts log Anthropic's dashed, date-snapshotted ids; key rows by the
-  // canonical spelling so they merge with the proxy's Copilot ids.
+  // Transcripts log Anthropic's dashed, date-snapshotted ids; the canonical spelling merges them
+  // with the proxy's Copilot ids.
   const canonical = canonicalModelNames();
   for (const { contribution } of records) {
     for (const occurrence of contribution.occurrences) {
@@ -181,10 +143,7 @@ export function foldClaude(
         cacheRead: occurrence[5],
         cacheCreation: occurrence[6],
       };
-      // A repeated id books only the positive per-bucket delta over what was
-      // already counted (streaming snapshots grow toward the final count;
-      // resume/fork copies repeat it exactly, delta zero). Id-less lines (not
-      // observed in practice) are counted unconditionally.
+      // Id-less lines (not observed in practice) are counted unconditionally.
       let buckets = snapshot;
       let isNewMessage = true;
       if (idHash !== null) {
@@ -215,11 +174,9 @@ export function foldClaude(
           }
         }
       }
-      // A repeated id is the same message continuing (streaming) or copied
-      // (resume/fork), so only the FIRST occurrence counts as an event. Bucket
-      // by the user's LOCAL calendar day, not the UTC day the transcript
-      // timestamp spells; a line with no parseable timestamp still counts
-      // toward the totals.
+      // Only the first occurrence of an id is an event. The day is the user's local one, not the
+      // UTC day the timestamp spells; a line with no parseable timestamp still counts toward the
+      // totals.
       record(report, tsMs === null ? null : dayKey(tsMs), model, {
         ...buckets,
         events: isNewMessage ? 1 : 0,
@@ -231,7 +188,6 @@ export function foldClaude(
 
 // ---------- internals ----------
 
-/** Recursively collect transcript files, deciding candidacy by mtime. */
 function collectTranscriptFiles(
   dir: string,
   depth: number,
@@ -280,25 +236,22 @@ function parseClaudeFrom(
   return { contribution, ...scan };
 }
 
-/** Map one assistant `message.usage` onto the report's token buckets. */
 function tokenBuckets(usage: Record<string, unknown>): TokenBuckets {
-  // sanitizeTokenCount (usage.ts): hostile or torn counts never enter a report.
+  // Hostile or torn counts never enter a report.
   const num = sanitizeTokenCount;
   return {
     // Unlike Codex, Claude's input_tokens already excludes the cache buckets.
     input: num(usage.input_tokens),
     output: num(usage.output_tokens),
     cacheRead: num(usage.cache_read_input_tokens),
-    // The 5m/1h split (usage.cache_creation) is not priced separately: the
-    // OpenRouter cache-write rate approximates the 5m tier, and the 1h bucket
-    // is 0 in all observed data.
+    // The 5m/1h split (usage.cache_creation) is not priced separately: the OpenRouter cache-write
+    // rate approximates the 5m tier, and the 1h bucket is 0 in all observed data.
     cacheCreation: num(usage.cache_creation_input_tokens),
   };
 }
 
-/** Append the line's usage occurrence, if it is one. A needle may sit inside
- *  another line's content, so the type checks stay; synthetic placeholders touch
- *  no cross-file state, so they are dropped here. */
+/** A needle may sit inside another line's content, so the type checks stay. Synthetic placeholders
+ *  touch no cross-file state, so they are dropped here rather than in the fold. */
 function parseClaudeLine(line: string, occurrences: ClaudeOccurrence[]): void {
   let parsed: unknown;
   try {

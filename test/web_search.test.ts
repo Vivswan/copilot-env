@@ -336,9 +336,7 @@ test("a cancelled call stops waiting for a cold PAT probe instead of sitting it 
   // A probe fetch that never resolves: without the abort race the call would hang.
   const neverFetch = () => new Promise<Response>(() => {});
 
-  // Rejects promptly (the probe fetch never resolves, so anything other than the
-  // abort race would hang past the test timeout), preserving the caller's reason --
-  // MCP cancellations carry a plain string.
+  // The caller's reason is preserved: MCP cancellations carry a plain string.
   const plain = new AbortController();
   plain.abort();
   await expect(webSearch("q", { fetchImpl: neverFetch, signal: plain.signal })).rejects.toThrow(

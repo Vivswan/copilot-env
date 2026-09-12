@@ -49,7 +49,6 @@ interface MeteredRead<T> {
   stats: IndexStats;
 }
 
-/** Read through `reconcile`, returning the report and the reconcile's stats. */
 async function readWith<T>(
   read: (reconcile: Reconcile) => Promise<T>,
   reconcile: Reconcile,
@@ -59,7 +58,6 @@ async function readWith<T>(
   return { report, stats: meter.stats };
 }
 
-/** Read through a fresh open of the index at `indexDir`, closed afterwards. */
 async function readIndexed<T>(
   read: (reconcile: Reconcile) => Promise<T>,
   indexDir: string,

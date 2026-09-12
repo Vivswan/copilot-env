@@ -1,13 +1,5 @@
-// OpenRouter pricing lookup + cost estimation.
-//
-// Fetch live per-token pricing from the OpenRouter models API, resolve internal
-// model ids onto OpenRouter ids (provider inference + version-aware best match),
-// and price the aggregated token usage. Models OpenRouter cannot price are
-// reported as unpriced and excluded from the total.
-//
-// The price list is PUBLIC data, which is why loadPricing may keep a day-old
-// copy on disk. Nothing else `agent cost` reads (usage, tokens, transcripts) is
-// ever cached by this module.
+// The price list is PUBLIC data, which is why loadPricing may keep a day-old copy on disk; nothing
+// else `agent cost` reads is ever cached by this module.
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -23,10 +15,9 @@ const FETCH_TIMEOUT_MS = 10_000;
 const PER_MILLION = 1_000_000;
 const PRICING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** A routable model id: nonempty, no whitespace. */
 const MODEL_ID_RE = /^\S+$/;
 
-/** Per-million-token USD rates; a field is absent when OpenRouter omits it. */
+/** Per-million-token USD; a field is absent when OpenRouter omits it. */
 export interface PricingTier {
   input?: number;
   output?: number;
@@ -34,7 +25,6 @@ export interface PricingTier {
   cacheCreation?: number;
 }
 
-/** Token counts to price (cache buckets optional). */
 export interface UsageTokens {
   input: number;
   output: number;
@@ -42,9 +32,8 @@ export interface UsageTokens {
   cacheCreation: number;
 }
 
-/** Cost breakdown for a single model. USD fields are exact (unrounded), so no
- *  intermediate rounding drifts derived sums; rounding happens once at the
- *  render/JSON boundaries in cost.ts. */
+/** USD fields are exact: rounding happens once, at cost.ts's render and JSON boundaries, so no
+ *  intermediate rounding drifts the sums. */
 export interface ModelCost {
   pricingReference: string;
   estimatedCostUsd: number;
@@ -54,20 +43,18 @@ export interface ModelCost {
   cacheCreationCostUsd: number;
 }
 
-/** Result of pricing a whole usage map. */
 export interface CostEstimate {
   perModel: Record<string, ModelCost>;
   totalUsd: number;
   unpriced: string[];
 }
 
-/** Fixed text, no URL: the price-list host is outside the CLI's network policy. */
+/** Fixed text, no URL: a custom --pricing-url may carry credentials. */
 const HOST_NOT_PERMITTED =
   "the pricing-url host is not permitted by the CLI's network policy (only the hosts the CLI may reach, openrouter.ai among them); change the pricing-url config key or --pricing-url";
 
-/** Fetch live model pricing keyed by lowercased OpenRouter model id. Errors are
- *  fixed text (plus a numeric HTTP status), never the transport's, because a
- *  custom --pricing-url may carry credentials. `signal` cancels the request. */
+/** Keyed by lowercased OpenRouter id. Errors are fixed text (plus a numeric HTTP status), never the
+ *  transport's, because a custom --pricing-url may carry credentials. */
 export async function fetchPricing(
   url: string = OPENROUTER_MODELS_URL,
   fetchImpl: typeof fetch = fetch,
@@ -82,9 +69,8 @@ export async function fetchPricing(
       signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]),
     });
   } catch (e) {
-    // A cancel or timeout ranks first. Then a host outside the CLI's pinned permission set
-    // (deno.json `cli`): the runtime refuses it before any request leaves, and that must
-    // read as the policy it is, never as a network failure.
+    // A host outside the CLI's pinned permission set (deno.json `cli`) is refused by the runtime
+    // before any request leaves, and must read as the policy it is, never as a network failure.
     const aborted = abortError(timeout, signal);
     if (aborted !== null) throw aborted;
     if (e instanceof Deno.errors.NotCapable) throw new Error(HOST_NOT_PERMITTED);
@@ -97,8 +83,8 @@ export async function fetchPricing(
   try {
     body = await res.json();
   } catch {
-    // The timeout or a cancel can fire while the body is still streaming; that
-    // rejects here too and is not a malformed response.
+    // The timeout or a cancel can fire while the body is still streaming; that is not a malformed
+    // response.
     throw abortError(timeout, signal) ?? new Error("pricing response was not valid JSON");
   }
   const data = isRecord(body) && Array.isArray(body.data) ? body.data : [];
@@ -114,8 +100,6 @@ export async function fetchPricing(
   return out;
 }
 
-/** The error for a request our own timeout or the caller's signal cut short, or
- *  null when neither fired (the failure is the transport's or the body's). */
 function abortError(timeout: AbortSignal, signal: AbortSignal | undefined): Error | null {
   if (timeout.aborted) {
     return new Error(`pricing request timed out after ${FETCH_TIMEOUT_MS / 1000}s`);
@@ -124,9 +108,8 @@ function abortError(timeout: AbortSignal, signal: AbortSignal | undefined): Erro
   return null;
 }
 
-/** An entry's tier, or null when a supplied rate is not a price (OpenRouter's
- *  router pseudo-models list `-1`): that model stays unpriced instead of
- *  spoiling the whole list. */
+/** Null when a supplied rate is not a price (OpenRouter's router pseudo-models list `-1`): that
+ *  model stays unpriced instead of spoiling the whole list. */
 function tierOf(pricing: Record<string, unknown>): PricingTier | null {
   const tier: PricingTier = {
     input: perMillion(pricing.prompt),
@@ -137,8 +120,7 @@ function tierOf(pricing: Record<string, unknown>): PricingTier | null {
   return v.is(TIER_SCHEMA, tier) ? tier : null;
 }
 
-/** A loaded price list and where it came from. `fetchedAtMs` is when the
- *  returned list was fetched from OpenRouter (the cache stamp). */
+/** `fetchedAtMs` is the cache stamp: when the returned list was fetched. */
 export type LoadedPricing =
   | { source: "cache"; pricing: Map<string, PricingTier>; fetchedAtMs: number }
   | {
@@ -156,15 +138,9 @@ export type LoadedPricing =
     fetchError: string;
   };
 
-/**
- * The price list with a day-long on-disk cache: a fresh cache answers without
- * touching the network, an expired one is refreshed (and the refreshed copy
- * persisted), and a refresh failure falls back to the expired copy rather than
- * to a token-only report. Rejects only when there is neither a fetch nor any
- * cached copy. The cache file is treated as absent whenever it fails
- * validation or was written for a different URL; a cache stamped in the
- * future (clock moved back) is expired, never fresh.
- */
+/** A refresh failure falls back to the expired copy rather than to a token-only report. A cache
+ *  that fails validation or was written for another URL is absent; one stamped in the future (clock
+ *  moved back) is expired, never fresh. */
 export async function loadPricing(
   url: string,
   opts: {
@@ -191,8 +167,8 @@ export async function loadPricing(
   let pricing: Map<string, PricingTier>;
   try {
     pricing = await fetchPricing(canonical, opts.fetchImpl ?? fetch, opts.signal);
-    // A 200 that does not carry a usable price list is a broken response:
-    // persisting it would silence pricing for a whole TTL.
+    // A 200 without a usable price list is a broken response: persisting it would silence pricing
+    // for a TTL.
     const problem = priceListProblem(pricing);
     if (problem !== null) throw new Error(`pricing response ${problem}`);
   } catch (e) {
@@ -204,8 +180,8 @@ export async function loadPricing(
       fetchError: errorText(e),
     };
   }
-  // The cache only accelerates the next run; a list that was fetched is served
-  // whether or not it could be persisted.
+  // The cache only accelerates the next run; a fetched list is served whether or not it could be
+  // persisted.
   try {
     writePricingCache(cachePath, urlDigest, nowMs, pricing);
   } catch (e) {
@@ -214,8 +190,7 @@ export async function loadPricing(
   return { pricing, source: "fetched", fetchedAtMs: nowMs };
 }
 
-/** `<cacheDir>/pricing-<key>.json`, keyed by a SHA-256 prefix of the CANONICAL URL, so
- *  every distinct price list gets one file and two spellings of one list share it. */
+/** Keyed by the CANONICAL URL, so two spellings of one list share a file. */
 export function pricingCachePath(url: string, cacheDir: string): string {
   return join(cacheDir, `pricing-${sha256Hex(canonicalPricingUrl(url)).slice(0, 16)}.json`);
 }
@@ -237,9 +212,8 @@ const TIER_SCHEMA = v.strictObject({
   "cacheCreation": RATE_SCHEMA,
 });
 
-// THE definition of a usable price list, applied to a fetched response before
-// it is persisted and to a cache record when it is read, so the two can never
-// disagree; tierOf holds each fetched entry to TIER_SCHEMA on its own.
+// Applied to a fetched response before it is persisted and to a cache record when it is read, so
+// the two can never disagree.
 const TIERS_SCHEMA = v.pipe(
   v.record(
     v.pipe(v.string(), v.regex(MODEL_ID_RE), v.check((id) => id === id.toLowerCase())),
@@ -252,7 +226,6 @@ const TIERS_SCHEMA = v.pipe(
   ),
 );
 
-/** Why `pricing` is not a usable price list, or null when it is. */
 function priceListProblem(pricing: ReadonlyMap<string, PricingTier>): string | null {
   const parsed = v.safeParse(TIERS_SCHEMA, Object.fromEntries(pricing));
   if (parsed.success) return null;
@@ -260,9 +233,8 @@ function priceListProblem(pricing: ReadonlyMap<string, PricingTier>): string | n
   return issue.path === undefined ? `has ${issue.message}` : "carries an invalid rate";
 }
 
-// The record identifies its URL by digest only: a custom --pricing-url may
-// carry credentials or signed query parameters, and this file holds nothing
-// but the public price list.
+// The URL is stored as a digest only: a custom --pricing-url may carry credentials or signed query
+// parameters.
 const PRICING_CACHE_SCHEMA = v.strictObject({
   "url_sha256": v.pipe(v.string(), v.regex(/^[0-9a-f]{64}$/)),
   "fetched_at_ms": v.pipe(v.number(), v.finite(), v.minValue(0)),
@@ -305,33 +277,26 @@ function writePricingCache(
   atomicWriteFile(path, `${JSON.stringify(record)}\n`);
 }
 
-/** Bare Anthropic family slugs that map to `claude-<family>` catalog stems. */
 const ANTHROPIC_FAMILY_SLUGS = new Set(["fable", "opus", "sonnet", "haiku"]);
 
 /**
- * Canonical spelling of a model id, shared by every usage reader so the same model
- * keys the same row no matter which source recorded it: the proxy logs Copilot's
- * dotted ids (`claude-opus-4.8`) while agent transcripts log Anthropic's dashed,
- * sometimes date-snapshotted ids (`claude-opus-4-8`, `claude-haiku-4-5-20251001`).
- * Lowercases, drops whitespace and trailing asterisks, normalizes any 1M-context
- * marker (`[1m]`/`.1m`/`-1m`) to a trailing `-1m` (kept distinct: 1M usage is a
- * different offering), and, for claude ids only, strips a `-YYYYMMDD` snapshot
- * date and converts digit-dash-digit to dots.
+ * Shared by every usage reader so the same model keys the same row: the proxy logs Copilot's dotted
+ * ids (`claude-opus-4.8`), transcripts Anthropic's dashed, sometimes date-snapshotted ones
+ * (`claude-opus-4-8`, `claude-haiku-4-5-20251001`). A 1M-context marker stays distinct as a
+ * trailing `-1m`: 1M usage is a different offering.
  */
 export function canonicalModelName(model: string): string {
   let n = (model || "").trim().toLowerCase().replace(/\*+$/, "").replace(/\s+/g, "-");
-  // Detach the known terminal qualifiers (upstream ids can end in
-  // `-1m-internal`) so the digit-dash-digit dotting cannot mangle the 1m
-  // marker in ids like `claude-opus-4-7-1m-internal`.
+  // Detached first so the digit-dash-digit dotting cannot mangle the 1m marker in
+  // `claude-opus-4-7-1m-internal`.
   const internal = n.endsWith("-internal");
   if (internal) {
     n = n.slice(0, -"-internal".length);
   }
   const oneM = n.endsWith(ONE_M_SUFFIX) || /(-|\.)1m$/.test(n);
   n = n.replace(ONE_M_SUFFIX, "").replace(/(-|\.)1m$/, "");
-  // The dash/dot and dated-snapshot respellings are Anthropic/Copilot claude
-  // conventions; other vendors' ids are legitimately dashed (gpt-4-0314) or
-  // date-suffixed, so only claude ids are rewritten.
+  // Other vendors' ids are legitimately dashed (gpt-4-0314) or date-suffixed, so only claude ids
+  // are rewritten.
   const slash = n.indexOf("/");
   const provider = slash >= 0 ? n.slice(0, slash + 1) : "";
   let bare = slash >= 0 ? n.slice(slash + 1) : n;
@@ -345,9 +310,8 @@ export function canonicalModelName(model: string): string {
   return internal ? `${n}-internal` : n;
 }
 
-/** canonicalModelName memoized per distinct raw id, for a fold that meets the same
- *  handful of ids hundreds of thousands of times. One memo per fold keeps the map's
- *  life bounded by the run, whatever ids a log happens to contain. */
+/** For a fold that meets the same handful of ids hundreds of thousands of times. One memo per fold
+ *  keeps the map's life bounded by the run. */
 export function canonicalModelNames(): (model: string) => string {
   const memo = new Map<string, string>();
   return (model) => {
@@ -360,7 +324,6 @@ export function canonicalModelNames(): (model: string) => string {
   };
 }
 
-/** Map an internal model id onto an OpenRouter id, or null if none matches. */
 export function resolvePricingId(model: string, catalogIds: Set<string>): string | null {
   const normalized = normalizeModelName(model);
   const bare = normalized.includes("/") ? normalized.split("/").slice(1).join("/") : normalized;
@@ -375,14 +338,12 @@ export function resolvePricingId(model: string, catalogIds: Set<string>): string
     }
   }
 
-  // Direct hit on a fully-qualified id.
   if (normalized.includes("/") && catalogIds.has(normalized)) {
     return normalized;
   }
 
   const candidates = ANTHROPIC_FAMILY_SLUGS.has(bare) ? [`claude-${bare}`] : [bare];
 
-  // Exact `provider/candidate`.
   for (const provider of providers) {
     for (const candidate of candidates) {
       const id = `${provider}/${candidate}`;
@@ -392,7 +353,6 @@ export function resolvePricingId(model: string, catalogIds: Set<string>): string
     }
   }
 
-  // Prefix match, longest stem first, version-aware best pick.
   const stems = new Set(candidates);
   for (const suffix of ["-preview", "-1m"]) {
     if (bare.endsWith(suffix)) {
@@ -413,7 +373,6 @@ export function resolvePricingId(model: string, catalogIds: Set<string>): string
   return null;
 }
 
-/** Price an aggregated usage map; unpriceable models are excluded from the total. */
 export function estimateCost(
   usageByModel: ReadonlyMap<string, UsageTokens>,
   pricing: Map<string, PricingTier>,
@@ -454,15 +413,14 @@ export function estimateCost(
 // ---------- internals ----------
 
 interface PricingLookup {
-  /** The ids the lookup was built for: resolutions depend only on the key set,
-   *  so a lookup stays valid exactly while the map still has these keys. */
+  /** Resolutions depend only on the key set, so a lookup stays valid exactly while the map has
+   *  these keys. */
   catalogIds: Set<string>;
   resolve(model: string): string | null;
 }
 
-// One lookup per price list, keyed by map identity: `agent cost` prices the
-// same list once per source and once per day per model, and every one of those
-// calls used to rebuild the catalog Set and re-run the prefix scan per model.
+// One lookup per price list: `agent cost` prices the same list once per source and once per day per
+// model.
 const PRICING_LOOKUPS = new WeakMap<Map<string, PricingTier>, PricingLookup>();
 
 function pricingLookupFor(pricing: Map<string, PricingTier>): PricingLookup {
@@ -492,14 +450,13 @@ function sameKeys(pricing: ReadonlyMap<string, PricingTier>, ids: Set<string>): 
   return true;
 }
 
-/** Pricing-lookup form: the canonical spelling minus the -internal/1m markers. */
+/** The canonical spelling minus the -internal/1m markers, which OpenRouter ids never carry. */
 function normalizeModelName(model: string): string {
   return canonicalModelName(model)
     .replace(/-internal$/, "")
     .replace(/-1m$/, "");
 }
 
-/** Likely OpenRouter providers for a bare slug (no provider prefix). */
 function inferProviders(slug: string): string[] {
   if (ANTHROPIC_FAMILY_SLUGS.has(slug) || slug.startsWith("claude-")) {
     return ["anthropic"];
@@ -513,7 +470,6 @@ function inferProviders(slug: string): string[] {
   return [];
 }
 
-/** Pick the most likely stable OpenRouter match from prefix candidates. */
 function chooseBestMatch(matches: string[], requestedSlug: string): string | null {
   if (matches.length === 0) {
     return null;
@@ -534,15 +490,13 @@ function chooseBestMatch(matches: string[], requestedSlug: string): string | nul
       slug.length,
     ];
   };
-  // The id itself breaks any remaining tie, so the pick is a function of the
-  // catalog's key SET alone (never its insertion order): the memoized lookup
-  // in estimateCost relies on exactly that.
+  // The id itself breaks any remaining tie, so the pick is a function of the catalog's key SET
+  // alone, never its insertion order; the memoized lookup in estimateCost relies on that.
   return [...matches].sort((a, b) =>
     compareKeys(sortKey(a), sortKey(b)) || (a < b ? -1 : a > b ? 1 : 0)
   )[0] ?? null;
 }
 
-/** Lexicographic compare of mixed scalar/array sort keys. */
 function compareKeys(a: Array<number | number[]>, b: Array<number | number[]>): number {
   for (let i = 0; i < a.length; i++) {
     const x = a[i];
@@ -567,7 +521,6 @@ function compareNumberArrays(a: number[], b: number[]): number {
   return 0;
 }
 
-/** True when every non-zero token bucket has a corresponding rate. */
 function tierCoversUsage(tier: PricingTier, usage: UsageTokens): boolean {
   const checks: Array<[number, number | undefined]> = [
     [usage.input, tier.input],
@@ -585,9 +538,8 @@ function tokenCost(tokens: number, ratePerMillion: number | undefined): number {
   return (tokens / PER_MILLION) * ratePerMillion;
 }
 
-/** Convert OpenRouter's per-token price into per-million USD. Absent (undefined)
- *  when the field is omitted, blank, or not a string/number; otherwise the
- *  parsed number as-is, so a non-price (`-1`, `abc`) reaches tierOf's check. */
+/** Only a non-blank string or a number counts as present; a non-price among them (`-1`, `abc`)
+ *  passes through as-is so it reaches tierOf's check. */
 function perMillion(value: unknown): number | undefined {
   if (typeof value !== "string" && typeof value !== "number") {
     return undefined;
@@ -598,10 +550,8 @@ function perMillion(value: unknown): number | undefined {
   return Number(value) * PER_MILLION;
 }
 
-/** The ONE precision every SERIALIZED USD amount uses: 4 decimal places. Applied
- *  only at cost.ts's `--json` boundary -- in-memory estimates stay exact, so sums
- *  never accumulate rounding error (regrouped float sums can still differ by one
- *  ulp; the render layer draws every TOTAL from one set of numbers for that). */
+/** The one precision every SERIALIZED USD amount uses, applied only at cost.ts's `--json` boundary;
+ *  in-memory estimates stay exact so sums never accumulate rounding error. */
 export function roundUsd(value: number): number {
   return Math.round(value * 10_000) / 10_000;
 }

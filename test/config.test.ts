@@ -100,7 +100,6 @@ test("ensureAdminApiKey is stable across calls and differs from ensureApiKey", (
   expect(adminAgain).toBe(admin);
   expect(admin).not.toBe(api);
 
-  // Persisted independently under auth, and re-reading keeps both.
   const loaded = cfg.load();
   const auth = loaded.auth as { adminApiKey: string; apiKeys: string[] };
   expect(auth.adminApiKey).toBe(admin);
@@ -112,11 +111,9 @@ test("load returns {} for an empty/whitespace file", () => {
   const path = join(dir, "config.json");
   const cfg = new CopilotApiConfig(path);
 
-  // Empty file.
   writeFileSync(path, "");
   expect(cfg.load()).toEqual({});
 
-  // Whitespace-only file.
   writeFileSync(path, "  \n\t \n");
   expect(cfg.load()).toEqual({});
 });
@@ -151,11 +148,9 @@ test("save sorts keys inside array elements while preserving array order", () =>
   // Array order is preserved: the first element's value (1) precedes the second's (3).
   expect(raw.indexOf('"zulu": 1')).toBeLessThan(raw.indexOf('"delta": 3'));
 
-  // Each element's own keys are sorted alphabetically.
   expect(raw.indexOf('"alpha"')).toBeLessThan(raw.indexOf('"zulu"'));
   expect(raw.indexOf('"bravo"')).toBeLessThan(raw.indexOf('"delta"'));
 
-  // Values are unchanged on round-trip.
   expect(cfg.load()).toEqual({
     items: [
       { zulu: 1, alpha: 2 },
@@ -206,15 +201,13 @@ test("renameWithRetry surfaces a non-transient error immediately", () => {
   expect(calls).toBe(1);
 });
 
-// An UNREADABLE store is not an empty one. update() is a read-modify-WRITE, so treating
-// a failed read as `{}` would persist the emptiness and wipe every key the file holds --
-// the daemon's api key, admin key and providers. The retry loop exists for exactly that
-// wipe: the proxy writes config.json non-atomically.
+// update() is a read-modify-WRITE: a failed read taken as `{}` would persist the emptiness and wipe
+// the daemon's api key, admin key and providers. The proxy writes config.json non-atomically, which
+// is the wipe the retry loop exists for.
 //
-// The row that REPRODUCES the wipe: an unreadable file (0000) inside a writable directory,
-// so the read fails while the atomic rename would still succeed. A directory at the config
-// path would prove nothing -- the rename fails there on its own, so the content survives
-// with or without the refusal. POSIX, non-root only: root bypasses file modes.
+//   unreadable file (0000), writable dir  -> the read fails, the rename would succeed: the wipe
+//   a directory at the path               -> the rename fails on its own, proves nothing
+//   POSIX, non-root only                  -> root bypasses file modes
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "update REFUSES an unreadable store instead of WIPING it",
   () => {
@@ -234,8 +227,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
       } catch (e) {
         threw = e instanceof Error ? e.message : String(e);
       }
-      // Positive assertion, so a call that did NOT throw fails this test rather
-      // than passing on an empty string.
+      // Positive assertion: a call that did NOT throw fails here instead of passing on "".
       expect(threw).toContain("refusing to overwrite it");
       // THE outcome: the secrets are still on disk, byte for byte.
       chmodSync(path, 0o600);
@@ -247,8 +239,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 );
 
 test("update still writes normally when the store IS readable (the control)", () => {
-  // The control for the row above: the refusal must not cost the ordinary path.
-  // Same shape, same keys -- the only difference is that the store is readable.
+  // Control: the refusal must not cost the ordinary path.
   dir = tempDir("copilot-config-");
   const path = join(dir, "config.json");
   const cfg = new CopilotApiConfig(path);
@@ -302,10 +293,8 @@ test.skipIf(process.platform === "win32")(
   },
 );
 
-// The strict/display split over the SAME failed read: loadStrict is the
-// DECISION reader (ownership take-backs, wiring, the float pin) and must throw,
-// while load keeps its documented display flatten -- only the reader's stakes
-// differ. POSIX, non-root only: root bypasses file modes.
+// loadStrict is the DECISION reader (ownership take-backs, wiring, the float pin) and throws;
+// load keeps its display flatten. POSIX, non-root only: root bypasses file modes.
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "an unreadable store: loadStrict THROWS while load still degrades to {}",
   () => {
@@ -335,12 +324,9 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 );
 
 test("update REFUSES a store that is present but not valid JSON, preserving its bytes", () => {
-  // Parse-fail is refused like the read-error arm, decided separately: for
-  // config.json the torn-write window can outlast the retries, and for our own
-  // atomic stores the junk is outside corruption whose salvageable content a
-  // reset would silently discard. The read-only readers still degrade it to {}.
-  // A parsed NON-OBJECT root is the same class -- content a write-back would
-  // discard -- so the cases differ only in what corrupted the root.
+  // A parse failure is refused like a read error: config.json's torn-write window can outlast
+  // the retries, and for our own atomic stores the junk is outside corruption whose
+  // salvageable content a reset would discard. A parsed NON-OBJECT root is the same class.
   const cases = ['{ "auth": { "apiKeys": ["secret-key"] }, half-written', '[42, "secret-key"]'];
   for (const content of cases) {
     dir = tempDir("copilot-config-");

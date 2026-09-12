@@ -1,11 +1,7 @@
-// `agent settings`: export/import every portable copilot-env setting as one
-// JSON bundle (the domain lives in src/agents/transfer.ts). Flag-verb style
-// like `auth`/`profile`: exactly one of --export/--import per invocation.
-// Export defaults to stdout so nothing lands on disk unasked, and to REDACTED
-// tokens so a shared bundle never leaks a credential. Import computes the full
-// plan first, confirms against the plan's own write list, backs the previous
-// settings up, then applies that same plan -- so a bad import is one
-// `--import <backup>` away from undone.
+// The domain is src/agents/transfer.ts; this file validates, orchestrates, and renders.
+//   export  -> stdout and redacted tokens by default, so nothing lands on disk or leaks unasked
+//   import  -> confirms against the plan it then applies, after backing the stores up, so a bad
+//              import is one `--import <backup>` away from undone
 import { readFileSync } from "node:fs";
 import { consola } from "consola";
 import {
@@ -35,39 +31,26 @@ import { PROXY_RESTART_HINT, unreadProjectedKeyWarnings } from "./config.ts";
 const logger = createStderrLogger();
 
 export interface SettingsArgs {
-  /** `--export [file]`: write the bundle to the file, or stdout when bare. */
   exportTo?: string | boolean;
-  /** `--import <file>`: restore the bundle from the file. */
   importFrom?: string;
-  /** `--with-credentials`: with --export, include the real tokens. */
   withCredentials?: boolean;
-  /** `--force`: with --import, skip the confirmation prompt (headless use). */
   force?: boolean;
-  /** `--no-backup`: with --import, skip the pre-import settings backup. */
   noBackup?: boolean;
 }
 
-/** Test seams: the domain deps plus the plan/apply steps themselves,
- *  injectable so the failure path (rollback messaging) can be exercised
+/** The plan/apply steps are injectable so the failure path (rollback messaging) can be exercised
  *  hermetically. */
 export interface SettingsDeps extends ImportDeps {
   planImport?: typeof planImport;
   applyPlan?: typeof applyImportPlan;
 }
 
-/**
- * What ONE `agent settings` invocation does -- an export or an import, parsed
- * ONCE by `parseSettingsAction` at the CLI boundary. Each arm carries only its
- * own knobs, so a mismatched flag (`--import --with-credentials`, `--export
- * --force`) is a rejection here and the handlers never re-narrow the raw bag.
- */
 export type SettingsAction =
   | { kind: "export"; target: string | boolean; withCredentials: boolean }
   | { kind: "import"; file: string; force: boolean; noBackup: boolean };
 
 const EXACTLY_ONE = "pass exactly one of --export [file], --import <file>";
 
-/** Parse the raw `agent settings` flags into a SettingsAction (the CLI boundary). */
 export function parseSettingsAction(args: SettingsArgs): SettingsAction {
   if (args.importFrom !== undefined) {
     if (args.exportTo !== undefined) throw new Error(EXACTLY_ONE);
@@ -90,26 +73,18 @@ export function parseSettingsAction(args: SettingsArgs): SettingsAction {
   return { kind: "export", target: args.exportTo, withCredentials: Boolean(args.withCredentials) };
 }
 
-// Rollback restores the STORES; it does not delete profiles an import created
-// (import never deletes profiles), so the hint says exactly that.
 const ROLLBACK_SCOPE_NOTE =
   "(restores the stores; profiles this import created stay until `agent profile --del`)";
 
-/**
- * Post-import restart guidance (hint first, then warnings): a bundle carrying
- * any proxy-projected key just wrote preferences a RUNNING daemon will not see
- * -- projection happens at `agent start`, and with auto-start the idempotent
- * no-op start never re-projects -- so the import surfaces the same restart
- * hint and too-old-proxy warnings `agent config --set` / `agent start` would.
- * Exported for tests; empty when no projected key is set or reset.
- */
+/** Projection happens at `agent start`, and an auto-start no-op never re-projects, so a running
+ *  daemon misses a projected key the bundle set or reset until it restarts. Hint first, then
+ *  warnings. Exported for tests. */
 export function importRestartHints(
   config: CopilotEnvConfigData,
   preImportPrefs: CopilotEnvConfigData,
 ): string[] {
-  // Prefs are FULL-REPLACE, so a projected key changes when the bundle carries
-  // it OR when the bundle drops one the store had (reset to default) -- a
-  // running daemon misses either direction until it restarts.
+  // Prefs are full-replace, so a projected key changes when the bundle carries it OR when the
+  // bundle drops one the store had.
   const projectedChanges = CONFIG_REGISTRY.some(
     (def) =>
       isProxyProjected(def) &&
@@ -131,11 +106,11 @@ function runExport(target: string | boolean, withCredentials: boolean): void {
     return;
   }
   if (withCredentials) {
-    // The atomic write publishes a FRESH 0600 inode by rename: a write into an
-    // existing 0644 target would hold the plaintext tokens under its old permissions.
+    // A fresh 0600 inode by rename: a write into an existing 0644 target would hold the plaintext
+    // tokens under its old permissions.
     atomicWriteFile(target, text, 0o600, "settings bundle with your REAL tokens");
-    // Its own line, not the write report's detail: a target inside copilot-env's own
-    // homes gets no write line, and the warning must reach the user regardless.
+    // Its own line, not the write report's detail: a target inside copilot-env's own homes gets no
+    // write line.
     logger.warn(
       `${target} contains your REAL tokens (and any stored pricing-url) - treat it like a password file.`,
     );
@@ -175,8 +150,8 @@ async function runImport(
   }
   const bundle = parseSettingsBundle(parsed);
 
-  // ONE plan drives both the confirmation and the apply, so the prompt models
-  // exactly what will be written (a plan with no writes needs no prompt).
+  // One plan drives both the confirmation and the apply, so the prompt shows exactly what the
+  // import OVERWRITES (planWrites), not every file it writes.
   const plan = (deps.planImport ?? planImport)(bundle, deps);
   if (plan.writes.length > 0 && !action.force && !(await confirmImport(plan.writes, file))) {
     consola.info("Import aborted - nothing was changed.");
@@ -184,19 +159,16 @@ async function runImport(
     return;
   }
 
-  // Backup BEFORE any write (even with --force), unless opted out; empty
-  // stores skip it inside writeSettingsBackup (nothing to roll back to).
   const backupPath = action.noBackup ? null : writeSettingsBackup();
-  // Snapshot the prefs the full-replace import is about to drop: the restart
-  // hint must fire for a projected key the bundle RESETS, not just one it sets.
+  // The restart hint must fire for a projected key the bundle RESETS, not just one it sets.
   const preImportPrefs = new CopilotEnvConfig().read();
 
   let outcome: ImportOutcome;
   try {
     outcome = await (deps.applyPlan ?? applyImportPlan)(plan, deps);
   } catch (e) {
-    // A mid-import throw may leave the stores half-written; the rollback hint
-    // must reach the user HERE, riding the rendered error.
+    // A mid-import throw may leave the stores half-written, so the rollback hint rides the rendered
+    // error.
     if (backupPath !== null) {
       throw new Error(
         `${errMessage(e)}\nThe previous settings were backed up first - roll back with: ` +
@@ -212,8 +184,8 @@ async function runImport(
     ? ` (profiles: ${outcome.wiredProfiles.join(", ")})`
     : "";
   if (outcome.failures.length > 0) {
-    // failures carries BOTH kinds: a profile whose commit/wiring failed and a
-    // default-agent wiring failure -- the summary must not claim only "wiring".
+    // failures carries both a failed profile commit and a failed default-agent wiring; the summary
+    // must not claim only "wiring".
     logger.error(
       `Settings imported from ${file}${wired}, but some profiles or wiring could not be applied (see above).`,
     );
@@ -221,22 +193,21 @@ async function runImport(
   } else {
     logger.success(`Settings imported from ${file}${wired}.`);
   }
-  // The profile writes' own lines name the shared Codex config once per process, so the
-  // launch hint for each imported profile is said here (the same line `agent profile` prints).
+  // The profile writes name the shared Codex config once per process, so each imported profile's
+  // launch hint (the line `agent profile` prints) is said here.
   for (const name of outcome.wiredProfiles) {
     logger.log(`  Launch ${profileLabel(name)}:  cl --profile ${name}  /  cx --profile ${name}`);
   }
   const [restartHint, ...projectionWarnings] = importRestartHints(bundle.config, preImportPrefs);
   if (restartHint !== undefined) logger.info(restartHint);
   for (const warning of projectionWarnings) logger.warn(warning);
-  // The backup lives inside copilot-env's own home, where writes are silent bookkeeping,
-  // so the rollback command (with the backup's path) is said here in full.
+  // The backup lives inside copilot-env's own home, where writes are silent, so the rollback
+  // command is said here.
   if (backupPath !== null) {
     logger.log(`  Roll back with: ${rollbackCommand(backupPath)} ${ROLLBACK_SCOPE_NOTE}.`);
   }
 }
 
-/** `agent settings`: export or import the portable-settings bundle. */
 export async function runSettings(args: SettingsArgs, deps: SettingsDeps = {}): Promise<void> {
   const action = parseSettingsAction(args);
   if (action.kind === "export") {

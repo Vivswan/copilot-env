@@ -1,17 +1,12 @@
-# The deno bootstrap, DOT-SOURCED (never executed) by scripts/setup-env.ps1 and
-# bin/agent.ps1 so the two cannot drift on which deno they use or where they install one.
-# Windows parity of scripts/ensure-deno.sh.
+# Dot-sourced (never executed) by scripts/setup-env.ps1 and bin/agent.ps1, so the two cannot
+# drift on which deno they use; the Windows parity of scripts/ensure-deno.sh. Every message
+# goes to stderr; bin/agent.ps1's stdout is the text the `agent env` profile function evals.
 #
-# Every message goes to stderr: bin/agent.ps1's stdout is the `$env:... = ...` text the
-# `agent env` profile function evals, and one stray line there breaks the caller's session.
-#
-# Install-Deno -Root <repo-root> [-Quiet]: a deno already on PATH always wins. When it is
-# older than the tested version in .dvmrc it gets ONE stderr warning and is used anyway --
-# upgrading is the user's job, and CI stays pinned via .dvmrc either way. -Quiet
-# suppresses that warning: the profile function re-invokes bin/agent.ps1 for the
-# `agent env` refresh after every command, and the refresh must not repeat it. Only a
-# machine with no deno at all installs one: the LATEST release, once, into
-# $env:DENO_INSTALL (default ~\.deno). Throws only when no deno resolves afterwards.
+# Install-Deno -Root <repo-root> [-Quiet]
+#   deno on PATH, older than .dvmrc  -> one warning, used anyway (upgrading is the user's job)
+#   -Quiet                           -> no warning: the profile function re-runs bin/agent.ps1
+#                                       for every `agent env` refresh and must not repeat it
+#   no deno at all                   -> the latest release, once, into $env:DENO_INSTALL
 
 # The version of the deno executable $Exe ("deno 2.9.5 (stable, ...)" -> "2.9.5"), or
 # $null when it does not run.
@@ -23,8 +18,7 @@ function Get-CopilotEnvDenoVersion {
     return $null
 }
 
-# True only when version $Have is strictly older than $Want, both x.y.z. An unparseable
-# version never compares, so it never warns.
+# An unparseable version never compares, so it never warns.
 function Test-CopilotEnvDenoOlder {
     param([string]$Have, [string]$Want)
     if ($Have -notmatch '^\d+\.\d+\.\d+$' -or $Want -notmatch '^\d+\.\d+\.\d+$') { return $false }
@@ -60,11 +54,8 @@ function Install-Deno {
     }
 
     [Console]::Error.WriteLine('==> Installing the latest deno (one-time; none found on PATH) ...')
-    # A private scratch directory for the download: a fixed name under the shared temp
-    # root can be pre-created by another local user, who would then have written the
-    # script we are about to execute. New-Item without -Force fails rather than reusing a
-    # directory we did not make. No version argument: the official installer defaults to
-    # the latest release.
+    # A random scratch name, and New-Item without -Force: a fixed name under the shared temp
+    # root could be pre-created by another local user, who would then own the script run next.
     $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
     New-Item $scratch -ItemType Directory | Out-Null
     try {
@@ -74,8 +65,7 @@ function Install-Deno {
     } finally {
         Remove-Item $scratch -Recurse -Force -ErrorAction SilentlyContinue
     }
-    # One attempt, then verify the installed file itself runs (the exact version is
-    # whatever "latest" was): a botched install fails loudly here.
+    # The installed file must itself run: a botched install fails loudly here.
     if (-not (Get-CopilotEnvDenoVersion $installed)) {
         throw "the deno install did not produce a runnable $installed."
     }

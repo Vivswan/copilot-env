@@ -27,9 +27,9 @@ const MEGABYTE = 1024 * 1024;
 /** The window's end when a caller names none: a fixed instant, never the clock. */
 export const DEFAULT_END = "2026-09-01T00:00:00.000Z";
 export const DEFAULT_DAYS = 40;
-/** Bounds that keep the byte budget and the day table finite and sane: a tebibyte, a century.
- *  The floor leaves the Codex budget room for one session (MIN_FILE_BYTES), so a tree always
- *  carries at least one timestamped line and its span is always defined. */
+/** Under the default byte shares the floor leaves the Codex budget room for one MIN_FILE_BYTES
+ *  session, so a default tree always carries a timestamped line and its span is defined; a
+ *  Codex share near 0.1 at this size gets no session. */
 export const MIN_MB = 0.01;
 export const MAX_MB = 1024 * 1024;
 export const MAX_DAYS = 36_500;
@@ -58,11 +58,8 @@ const QUANTILE_POINTS: readonly (readonly [number, keyof Omit<Quantiles, "count"
   [0.99, "p99"],
 ];
 
-/**
- * One draw from the distribution a quantile table summarizes: piecewise-linear inverse CDF
- * through the six points, clamped (never extrapolated) below p5 and above p99. Linear
- * arithmetic only, so every host computes the same double.
- */
+/** Piecewise-linear inverse CDF, clamped (never extrapolated) outside p5..p99. Linear
+ *  arithmetic only, so every host computes the same double. */
 function sampleQuantile(rng: Rng, q: Quantiles): number {
   const u = rng();
   let prev = QUANTILE_POINTS[0]!;
@@ -78,7 +75,6 @@ function sampleQuantile(rng: Rng, q: Quantiles): number {
   return q[prev[1]];
 }
 
-/** sampleQuantile rounded to a whole number, never below `min`. */
 function sampleCount(rng: Rng, q: Quantiles, min = 0): number {
   return Math.max(min, Math.round(sampleQuantile(rng, q)));
 }
@@ -109,7 +105,7 @@ function chance(rng: Rng, probability: number): boolean {
   return rng() < probability;
 }
 
-/** A key of `table` drawn by weight; keys are visited sorted so the draw is order-free. */
+/** Keys are visited sorted, so the draw does not depend on insertion order. */
 function weightedKey(rng: Rng, table: Record<string, number>): string {
   const keys = Object.keys(table).sort();
   if (keys.length === 0) throw new Error("weighted draw over an empty table");
@@ -175,7 +171,6 @@ const SourceTemplatesSchema = v.strictObject({
   blocks: v.record(v.string(), v.unknown()),
 });
 
-/** Load `<dir>/<source>.json` for both sources; the fixture set is committed and ASCII. */
 function loadTemplates(dir: string = TEMPLATES_DIR): Templates {
   const files = readdirSync(dir).filter((name) => name.endsWith(".json")).sort();
   const out: Partial<Templates> = {};
@@ -196,14 +191,10 @@ function loadTemplates(dir: string = TEMPLATES_DIR): Templates {
 
 export const templates: Templates = loadTemplates();
 
-/** A placeholder is a string of the form `@name`; everything else is literal. */
 const PLACEHOLDER = /^@[a-zA-Z]+$/;
 
-/**
- * Substitute `@name` placeholders in `template` from `ctx`. An unknown
- * placeholder is a template bug and throws, so a typo cannot ship as content.
- * Values from `ctx` are inserted as they are, not walked again.
- */
+/** An unknown placeholder throws, so a template typo cannot ship as content. Values from
+ *  `ctx` are inserted as they are, never walked again. */
 export function render(template: Json, ctx: Record<string, Json>): Json {
   if (typeof template === "string") {
     if (!PLACEHOLDER.test(template)) return template;
@@ -228,18 +219,15 @@ const KEEP_FILL: Record<string, Json> = { fill: "@fill" };
 type FillKind = "prose" | "opaque";
 
 /**
- * Code points no filler may carry: node:readline (the pre-index reader) splits lines on
- * U+2028 and U+2029, so a line holding one unescaped would vanish from the goldens recorded
- * with it; U+0085 (NEL) is kept out only for uniformity, readline does not split on it.
- * Everything else non-ASCII is welcome.
+ * Code points no filler may carry: node:readline (the pre-index reader) splits lines on the
+ * first two, so a filler holding one would vanish from the goldens recorded with it. Every
+ * other non-ASCII code point is welcome.
+ *   U+2028, U+2029  -> readline splits here
+ *   U+0085 (NEL)    -> readline does not split; kept out for uniformity only
  */
 export const LINE_SPLITTING_CODE_POINTS: readonly string[] = ["\u2028", "\u2029", "\u0085"];
 
-/**
- * The filler vocabulary, in escapes so this file stays ASCII: accents, CJK, Arabic, Hebrew,
- * emoji, quotes, backslashes and control characters the way pasted prose and tool output
- * carry them, never a LINE_SPLITTING_CODE_POINTS member.
- */
+/** Written in escapes so this file stays ASCII; the shapes pasted prose and tool output carry. */
 const PROSE_TOKENS: readonly string[] = [
   "the",
   "index",
@@ -287,12 +275,10 @@ for (const token of [...PROSE_TOKENS, OPAQUE_ALPHABET]) {
   }
 }
 
-/** The JSON-escaped UTF-8 length of `text` inside a string literal. */
 function escapedBytes(text: string): number {
   return Buffer.byteLength(JSON.stringify(text)) - 2;
 }
 
-/** Bytes a token occupies once JSON-escaped inside a string, plus its trailing space. */
 const PROSE_COSTS: readonly number[] = PROSE_TOKENS.map((token) => escapedBytes(token) + 1);
 
 /** Text whose JSON-escaped UTF-8 form is exactly `bytes` long. */
@@ -320,11 +306,7 @@ function filler(rng: Rng, bytes: number, kind: FillKind): string {
 
 // ---------- line rendering ----------
 
-/**
- * Serialize `line` (rendered except for `@fill`) padded to `targetBytes` before its LF, or
- * unpadded when already longer; `prefix` (a marker, a pasted needle) leads the filled text.
- * Two serializations per line; the second is written.
- */
+/** `targetBytes` excludes the trailing LF; a line already longer is left unpadded. */
 function serializeSized(
   rng: Rng,
   line: Json,
@@ -349,7 +331,6 @@ function utcDay(ms: number): string {
   return isoTimestamp(ms).slice(0, 10);
 }
 
-/** `YYYY-MM-DD` and `HH-MM-SS` of a UTC instant, the synthetic user's local clock. */
 function utcParts(ms: number): { date: string; time: string; y: string; m: string; d: string } {
   const iso = isoTimestamp(ms);
   const date = iso.slice(0, 10);
@@ -383,9 +364,8 @@ interface GeneratedFile {
 }
 
 /**
- * The usage the tree carries, per model_provider for Codex and one report for Claude, days
- * cut in UTC and models keyed by the RAW id the lines spell (canonicalize to compare with a
- * reader). Every planted count is booked once: copies of any kind add nothing.
+ * Models are keyed by the RAW id the lines spell (canonicalize before comparing with a
+ * reader) and days are cut in UTC. Every planted count is booked once: copies add nothing.
  */
 export interface ExpectedReport {
   byModel: Map<string, ModelUsage>;
@@ -456,19 +436,16 @@ const MIN_FILE_BYTES = 2_048;
 const MAX_FILE_BYTES = 256 * MEGABYTE;
 /** A hard stop on one turn's round trips, so a tiny line-size draw can never spin forever. */
 const MAX_EVENTS_PER_TURN = 5_000;
-/** The scripted edge-case sessions (the first few of each source) stay small so every one
- *  of them fits a few-MB tree: Codex plants the midnight/torn/archived session, a fork
- *  parent, its fork, a fork without its parent, and an archive-only session; Claude plants
- *  a truncated original, its resume, and a subagent workflow. */
+/** The scripted edge-case sessions (the first few of each source; see generateCodex and
+ *  generateClaude) are capped so all of them fit a few-MB tree. */
 const CODEX_SCRIPTED_SESSIONS = 5;
 const CLAUDE_SCRIPTED_SESSIONS = 3;
 const SCRIPTED_MAX_BYTES = 96 * 1024;
 /** A single between-line gap is capped here; longer breaks are resumes, modelled apart. */
 const MAX_LINE_GAP_MS = 10 * 60 * 1000;
-/** A fork's copied prefix lands inside this window after its session_meta, and its own
- *  first line waits until READER_FORK_WINDOW_MS has passed: the readers' fallback when the
- *  parent is gone drops every token_count inside their two-second window, so an own count
- *  landing there would be lost. */
+/** The readers' orphan-fork fallback drops every token_count inside READER_FORK_WINDOW_MS of
+ *  the session_meta, so a fork's copied prefix lands inside FORK_COPY_WINDOW_MS and its own
+ *  first line waits past the reader window. */
 const FORK_COPY_WINDOW_MS = 800;
 const READER_FORK_WINDOW_MS = 2_000;
 const CODEX_MODEL_CONTEXT_WINDOW = 272_000;
@@ -531,7 +508,6 @@ function nextMarker(g: Generator): string {
   return marker;
 }
 
-/** Prompt text: a marker, plus a pasted needle half the time when adversarial. */
 function promptText(g: Generator): string {
   const marker = nextMarker(g);
   if (!g.adversarial || !chance(g.rng, 0.5)) return marker;
@@ -540,13 +516,11 @@ function promptText(g: Generator): string {
   return `${marker} pasted: ${needle}`;
 }
 
-/** A session start inside the window, on a day drawn by the per-day session weights. */
 function sessionStart(g: Generator, source: UsageSource): number {
   const day = Number(weightedKey(g.rng, g.dayWeights[source]));
   return g.startMs + day * MILLISECONDS_PER_DAY + g.rng() * MILLISECONDS_PER_DAY;
 }
 
-/** The byte target of the next file: a profile draw clamped into what the budget allows. */
 function nextFileBytes(g: Generator, source: UsageSource, budget: number): number {
   const remaining = budget - g.written;
   const drawn = sampleQuantile(g.rng, g.profile[source].fileBytes);
@@ -583,7 +557,6 @@ interface LineStamps {
   nested: number[];
 }
 
-/** The earliest and latest instant a set of stamps carries, nested ones included. */
 function spanOf(stamps: Iterable<LineStamps>): { first: number; last: number } {
   let first = Number.POSITIVE_INFINITY;
   let last = Number.NEGATIVE_INFINITY;
@@ -597,9 +570,8 @@ function spanOf(stamps: Iterable<LineStamps>): { first: number; last: number } {
 }
 
 /**
- * The lines of one file under construction, with a running byte count (LF included) and
- * each line's stamps. The span a tree reports is merged from these only when a buffer is
- * WRITTEN, so a discarded session, a popped line, or an unemitted instant never moves it.
+ * The span a tree reports is folded from a buffer only when it is WRITTEN (noteSpan), so a
+ * discarded session, a popped line, or an unemitted instant never moves it. Bytes count the LF.
  */
 class LineBuffer {
   readonly lines: string[] = [];
@@ -626,7 +598,6 @@ class LineBuffer {
     return this.lines.length === 0 ? "" : `${this.lines.join("\n")}\n`;
   }
 
-  /** Fold the instants this buffer carries into the tree's span; called when it is written. */
   noteSpan(g: Generator): void {
     const { first, last } = spanOf(this.stamps);
     g.firstEventMs = Math.min(g.firstEventMs, first);
@@ -634,8 +605,7 @@ class LineBuffer {
   }
 }
 
-/** The instant placeholders a template emits: `@ts` (the outer timestamp) and the nested
- *  numeric ones. Nothing else in a template is an instant (durations are not). */
+/** Every placeholder a template fills with an instant; durations are not instants. */
 const INSTANT_PLACEHOLDERS = ["ts", "startedMs", "nowMs"] as const;
 type InstantPlaceholder = (typeof INSTANT_PLACEHOLDERS)[number];
 const TEMPLATE_INSTANTS = new Map<Json, InstantPlaceholder[]>();
@@ -650,7 +620,6 @@ function templateInstants(template: Json): InstantPlaceholder[] {
   return found;
 }
 
-/** The stamps a rendered line carries, from its template's instant placeholders and `ctx`. */
 function lineStamps(template: Json, ctx: Record<string, Json>): LineStamps {
   const instants = templateInstants(template);
   const nested: number[] = [];
@@ -826,11 +795,7 @@ function expectCodex(
   });
 }
 
-/**
- * One model round trip: reasoning, then a tool call (its usage record, its
- * completion, its output) or the final message, then the token count. The
- * count is what the readers price, so it is booked into the expected report.
- */
+/** The token_count is what the readers price, so it alone is booked into the expected report. */
 function codexRoundTrip(
   g: Generator,
   session: CodexSession,
@@ -922,11 +887,9 @@ function codexRoundTrip(
   }
 }
 
-/**
- * One turn. A turn before the last stops at its sampled event count or byte share; the LAST
- * turn runs until the session reaches its sampled file size, so file and line sizes both
- * follow the profile and the event count per file emerges, as in the real logs.
- */
+/** File and line sizes both follow the profile and the event count per file emerges, as in the
+ *  real logs: the LAST turn runs until the file reaches its sampled size, capped at
+ *  MAX_EVENTS_PER_TURN round trips. */
 function codexTurn(
   g: Generator,
   session: CodexSession,
@@ -1300,9 +1263,8 @@ function expectClaude(g: Generator, ms: number, model: string, delta: Usage, fir
 }
 
 /**
- * One assistant message: `repeats` lines sharing the id, the snapshot growing toward the
- * final count or repeating it; the ledger books the first snapshot and each positive delta
- * on its line's day. With `truncate` the last line is held in `pendingFinal` for a resume.
+ * Booked the way readClaudeSessions prices a message id: the first snapshot, then each
+ * positive delta on its line's day. With `truncate` the last line is held in `pendingFinal`.
  */
 function claudeMessage(
   g: Generator,
@@ -1519,7 +1481,6 @@ function claudeSession(
   return session;
 }
 
-/** A project slug directory: an existing one most of the time, else a new synthetic path. */
 function claudeSlug(g: Generator, existing: string[]): string {
   if (existing.length > 0 && chance(g.rng, 0.7)) return pick(g.rng, existing);
   const segments = sampleCount(g.rng, g.profile.claude.slugSegments, 2);

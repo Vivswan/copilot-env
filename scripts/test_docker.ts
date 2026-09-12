@@ -1,19 +1,13 @@
-// Containerized test runner: one cross-platform implementation for docker and
-// podman (replaces a POSIX/PowerShell script pair). The container's throwaway
-// HOME is the structural guarantee behind the lifecycle smoke (which rewires
-// agent configs and is container-or-CI only); for the unit suite - already
-// HOME-safe by its own temp-dir design - it adds defense in depth and a
-// Linux-parity run.
+// One cross-platform runner for docker and podman. The container's throwaway HOME is the
+// structural guarantee behind the lifecycle smoke; for the unit suite it adds a Linux-parity run.
 //
-//   deno task test:docker                     full suite (image CMD)
-//   deno task test:docker test/usage.test.ts  selected files
-//   deno task test:docker --lifecycle         daemon lifecycle smoke, in-container
-//   deno task test:docker --floated-lifecycle the REAL floated proxy, asserted
-//                                             as far as auth (needs the network;
-//                                             a credential is NOT required)
+//   deno task test:docker                        full suite (image CMD)
+//   deno task test:docker test/usage.test.ts     selected files
+//   deno task test:docker --lifecycle            daemon lifecycle smoke, in-container
+//   deno task test:docker --floated-lifecycle    the REAL floated proxy, asserted as far as auth
+//                                                (needs the network; no credential required)
 //
-// Engine: $CONTAINER_ENGINE picks between "docker" and "podman" (the task's
-// --allow-run grants exactly those two); otherwise podman is preferred.
+// $CONTAINER_ENGINE picks "docker" or "podman" (the task's --allow-run grants exactly those two).
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -26,11 +20,8 @@ function isEngine(v: string): v is Engine {
   return (ENGINES as readonly string[]).includes(v);
 }
 
-// Accepted flatten: a spawn that never ran (the catch) and an engine that ran
-// `--version` and failed both read "engine not usable" here -- so a failed look can
-// surface as the "neither podman nor docker on PATH" hint below. Kept deliberately:
-// this is a dev convenience script, the miss costs one wrong hint line, and
-// CONTAINER_ENGINE overrides the scan outright.
+// A spawn that never ran and an engine whose `--version` failed both read "not usable", so a
+// failed look can surface as the "neither on PATH" hint. Accepted: CONTAINER_ENGINE overrides.
 async function engineWorks(name: string): Promise<boolean> {
   try {
     const out = await new Deno.Command(name, {
@@ -106,10 +97,8 @@ if (first === "--lifecycle") {
     ...rest,
   ];
 } else if (first === "--floated-lifecycle") {
-  // No COPILOT_API_ENTRY: `agent start` resolves and runs the REAL proxy, so
-  // this is the only run that covers the float and the daemon's production
-  // permission set end to end. Needs the network for the registry; it asserts
-  // up to auth rather than through a lifecycle, because there is no credential.
+  // No COPILOT_API_ENTRY: `agent start` runs the REAL proxy, so this is the only run covering
+  // the float and the daemon's production permission set end to end.
   for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"]) {
     const value = Deno.env.get(name);
     if (value) runArgs.push("-e", `${name}=${value}`);

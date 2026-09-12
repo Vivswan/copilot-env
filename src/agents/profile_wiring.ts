@@ -1,8 +1,6 @@
-// The cross-agent write half of a NAMED profile: wire BOTH agents from the
-// store slot (the source of truth), resolving the direct client identity once
-// and baking it into both. Shared by `agent profile` (add/sync/settings-for)
-// and the settings-bundle import (src/agents/transfer.ts) -- it needs BOTH
-// src/codex/ and src/claude/, so it lives in src/agents/ like wiring.ts.
+// The write half of a NAMED profile: both agents from the store slot (the source of truth), the
+// direct identity resolved once and baked into both. Needs BOTH src/codex/ and src/claude/, so
+// it lives in src/agents/ like wiring.ts.
 import { claudeAdapter } from "../claude/config.ts";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { codexAdapter, probeDirectIntegrationId } from "../codex/config.ts";
@@ -18,26 +16,17 @@ import { type Profile, profileLabel, type ProfileName } from "../copilot_api/pro
 import { errMessage } from "../utils/error.ts";
 import type { AgentAdapter, ManagedWrite } from "./configure.ts";
 
-/** BOTH agents' adapters, in the wiring order profile operations use (Claude first --
- *  per-agent narration and failure aggregation keep their long-standing order). Built
- *  fresh per call: adapters are cheap closures and a stale one would pin a stale
- *  effective home. `catalogDeps` is runCodex's catalog test seam, threaded to the
- *  Codex adapter untouched. THE single cross-agent list: every both-agent flow
- *  (profile wiring, teardown, the default-selection writes) iterates it, so a
- *  third agent lands everywhere by construction. */
+/** THE cross-agent adapter list; the both-agent flows iterate it rather than naming agents, and
+ *  Claude comes first because per-agent narration and failure lists come out in this order. A
+ *  function, not a constant, so the Codex adapter can take `catalogDeps` per call. */
 export function bothAgents(catalogDeps?: CodexCatalogDeps): AgentAdapter[] {
   return [claudeAdapter(), codexAdapter(catalogDeps)];
 }
 
-/** Wire BOTH agents for `name` at `mode`. Order and resilience mirror
- *  configureDefaultAgents: try each adapter, report per-agent, fail if either failed.
- *  Direct mode resolves the client identity ONCE (pin > persisted slot > probe,
- *  persisting a freshly probed non-default id so a later launcher `--sync` replays
- *  it offline; a null slot means "re-derive", which is network-free for the
- *  non-PAT common case) and passes it DOWN inside the shared ManagedWrite, so
- *  both agents and their derived surfaces bake the same value without re-probing.
- *  `credentialToken` hands the identity probe an already-resolved credential
- *  (undefined = the probe resolves the slot itself). */
+/** Every adapter runs even after one throws, and the collected failures then fail the wiring as
+ *  a whole. Direct resolves the client identity ONCE into the ManagedWrite (from
+ *  `credentialToken` when the caller already holds the credential), so both agents and their
+ *  derived surfaces bake the same value without re-probing. */
 export async function wireBothAgents(
   name: ProfileName,
   mode: ProfileMode,
@@ -64,14 +53,14 @@ export async function wireBothAgents(
 }
 
 /**
- * The direct client identity header to bake for `profile` (null = the default slot): the
- * config pin, else the persisted slot value, else a fresh probe, persisted only when it can
- * be keyed to the credential it ran under. So the launcher hot path (`--settings-for` /
- * `--sync` on every `cl --profile`) and the default's re-wires replay the stored verdict and
- * re-probe only while no verdict could be keyed (a rotation raced the probe, or it ran
- * credential-free). A credential change clears the slot (CopilotEnvState.setCredential),
- * which re-arms the probe. `credentialToken` is forwarded to the probe (see wireBothAgents).
- * Throws if the credential is rejected under every identity.
+ * The direct client identity to bake for `profile` (null = the default slot). Throws when the
+ * credential is rejected under every identity.
+ *
+ *   config pin -> persisted slot verdict -> fresh probe, persisted only when it can be keyed to
+ *   the credential it ran under (identityCacheKey)
+ *
+ * The launcher hot path (`--sync` on every `cl --profile`) thus replays the stored verdict
+ * offline; a credential change clears the slot (CopilotEnvState.setCredential) and re-arms it.
  */
 export async function resolveAndPersistDirectIdentity(
   profile: Profile,
@@ -87,9 +76,7 @@ export async function resolveAndPersistDirectIdentity(
     return slot.integrationIdentity === CODEX_IDENTITY_NAME ? null : slot.integrationIdentity;
   }
   const probed = await probeDirectIntegrationId(profile, credentialToken);
-  // Persist keyed to the credential the probe ACTUALLY ran under, so a rotation
-  // racing the probe can only drop the verdict, never attach it to the wrong
-  // credential; identityCacheKey returns null when the two cannot be tied.
+  // Keyed to the credential the probe ACTUALLY ran under; null means the two cannot be tied.
   const keyCredential = identityCacheKey(slot.credential, credentialToken);
   if (keyCredential !== null) {
     new CopilotEnvState().setProfileIntegrationIdentity(
@@ -101,15 +88,11 @@ export async function resolveAndPersistDirectIdentity(
   return probed;
 }
 
-/**
- * The credential to key a probed identity cache entry to: the pre-probe slot
- * snapshot -- but when the probe ran under an EXPLICIT token, only if that
- * token is the snapshot credential's own (a stored token must match
- * byte-for-byte; gh-cli holds no token, so any explicit token is its live
- * resolution). A mismatch means the slot rotated around the caller: return
- * null and persist nothing, because the CAS alone would key the OLD
- * credential's verdict to the NEW credential and succeed.
- */
+/** The credential to key a probed identity to: the pre-probe slot snapshot, but only if an
+ *  explicit token is that snapshot's own (a stored token byte-for-byte; gh-cli holds no token,
+ *  so any explicit token is its live resolution). A mismatch means the slot rotated around the
+ *  caller: persist nothing, because the store's CAS alone would key the OLD credential's
+ *  verdict to the NEW one and succeed. */
 function identityCacheKey(
   snapshot: StoredCredential,
   credentialToken: string | null | undefined,

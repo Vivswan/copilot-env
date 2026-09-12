@@ -1,5 +1,3 @@
-// Port selection and discovery helpers for the local copilot-api proxy, plus the
-// resolved per-daemon policy (daemonPolicy) the launch/status/stop sites share.
 import * as net from "node:net";
 
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
@@ -10,46 +8,34 @@ import { CopilotEnvRunState } from "./state.ts";
 
 // --- the per-daemon policy ------------------------------------------------------
 
-/** Where a daemon's port comes from when its run state records none: the
- *  config-driven default port, or a named profile's stable reservation. The
- *  name travels with the reservation arm so its consumers never re-derive it. */
+/** Where a daemon's port comes from when its run state records none. */
 export type DaemonPortSource =
   | { readonly source: "config" }
   | { readonly source: "reservation"; readonly name: ProfileName };
 
 /**
- * The resolved lifecycle policy for one daemon -- THE single place the default profile's
- * genuinely-default-only behavior is decided. The launch pipeline, the status probe, and the
- * stop path read these fields instead of each re-deriving the answer from `profile === null`,
- * so a policy can only be changed here, in one resolver. A union of the two literal shapes
- * (not one wide interface), so a contradictory combination is unrepresentable. There is
- * deliberately NO home field: every daemon -- the default included -- runs in its own home
- * under `<root>/profiles/`, resolved by the paths layer (defaultDaemonHome/profileHome), and
- * every spawn passes the root-home pointer alongside for the account-wide files.
+ * THE one place the default profile's default-only behavior is decided: launch, status, and stop
+ * read these fields instead of re-deriving from `profile === null`. Two literal shapes, so a
+ * contradictory combination is unrepresentable. No home field on purpose: a daemon's home is paths.ts's
+ * to resolve.
  */
 export type DaemonPolicy =
   | {
-    /** Where the port comes from when run state records none (see DaemonPortSource). */
     readonly port: { readonly source: "config" };
-    /** Whether the `strict-port` preference may gate this daemon: the default only. */
     readonly strictPortEligible: true;
-    /** Whether stop/cleanup releases the port tracking: the default's recorded port reverts
-     *  to the configured default. */
     readonly releasesPortOnStop: true;
-    /** The ` --profile <name>` suffix follow-up-command hints must carry ("" for the default). */
+    /** Follow-up-command hints carry this suffix. */
     readonly flagSuffix: "";
   }
   | {
     readonly port: { readonly source: "reservation"; readonly name: ProfileName };
     /** A named profile's reservation is soft and always auto-increments. */
     readonly strictPortEligible: false;
-    /** A named profile's port is its stable reservation (the baked agent wiring points at
-     *  it), so it stays. */
+    /** The baked agent wiring points at the reservation, so it survives a stop. */
     readonly releasesPortOnStop: false;
     readonly flagSuffix: ` --profile ${string}`;
   };
 
-/** Resolve `profile`'s daemon policy (the one `profile === null` decision). */
 export function daemonPolicy(profile: Profile): DaemonPolicy {
   if (profile === null) {
     return {
@@ -67,26 +53,18 @@ export function daemonPolicy(profile: Profile): DaemonPolicy {
   };
 }
 
-/** The configured lower bound of the allowed proxy port range (`agent config --set min-port`),
- *  else the built-in default (owned by the config registry; privileged ports <1024 are
- *  excluded by default). */
 export function minProxyPort(): number {
   return new CopilotEnvConfig().minPort();
 }
 
-/** The configured upper bound of the allowed proxy port range (`agent config --set max-port`),
- *  else the built-in default (owned by the config registry). */
 export function maxProxyPort(): number {
   return new CopilotEnvConfig().maxPort();
 }
 
-/** Whether `port` is within the allowed proxy range [min-port, max-port] (config-driven). */
 export function proxyPortInRange(port: number): boolean {
   return Number.isInteger(port) && port >= minProxyPort() && port <= maxProxyPort();
 }
 
-/** The default proxy port: the configured `port` (`agent config --set port`), else the
- *  built-in default (owned by the config registry). */
 export function defaultProxyPort(): number {
   return new CopilotEnvConfig().defaultPort();
 }
@@ -107,15 +85,12 @@ async function portFree(port: number): Promise<boolean> {
   });
 }
 
-/** Liveness-only probe (no range policy): whether anything is listening on `port`.
- *  For callers that must honor a port the range no longer covers (an existing
- *  profile reservation after min/max narrowed). */
+/** No range policy: for callers honoring a port the range no longer covers (an existing profile
+ *  reservation after min/max narrowed). */
 export function proxyPortFree(port: number): Promise<boolean> {
   return portFree(port);
 }
 
-/** Probe whether the proxy can bind `port`. Out-of-range is its own verdict: the proxy runs
- *  unprivileged (binding <1024 fails anyway) and the range is a deliberate policy. */
 export async function checkProxyPort(port: number): Promise<"free" | "busy" | "out-of-range"> {
   if (!proxyPortInRange(port)) {
     return "out-of-range";
@@ -125,8 +100,6 @@ export async function checkProxyPort(port: number): Promise<"free" | "busy" | "o
 
 export async function copilotApiFindPort(start: number = defaultProxyPort()): Promise<number> {
   const maxAttempts = 50;
-  // Search only within the configured range: clamp the base into [min, max] and never scan past
-  // the ceiling, so the automatic search can't wander outside the allowed range.
   const min = minProxyPort();
   const max = maxProxyPort();
   const from = Math.min(Math.max(start, min), max);
@@ -144,14 +117,9 @@ export async function copilotApiFindPort(start: number = defaultProxyPort()): Pr
 }
 
 /**
- * The wiring/probe port for `profile`'s daemon (null = the default daemon). READ-ONLY:
- * `--check`/`--dry-run` style callers must never mutate state, so an unreserved named
- * profile gets the CANDIDATE its reservation would pick, without recording it -- the
- * WRITE paths (wiring a proxy profile, `agent start --profile`) go through
- * `reserveProfilePort`, which persists the pick under a lock.
- *
- * Default: the port recorded in run state by `start` (removed by `stop`), else the
- * configured/built-in default -- so config wiring matches what a fresh `start` would bind.
+ * READ-ONLY: `--check` and `--dry-run` callers must never mutate state, so an unreserved named
+ * profile gets the CANDIDATE its reservation would pick without recording it. WRITE paths go
+ * through reserveProfilePort.
  */
 export function copilotApiResolvePort(profile: Profile = null): string {
   const statePort = CopilotEnvRunState.forProfile(profile).read().port;
@@ -160,21 +128,15 @@ export function copilotApiResolvePort(profile: Profile = null): string {
 }
 
 /**
- * The port `profile`'s daemon WOULD use when its run state records none: the
- * configured/built-in default, or an unreserved named profile's candidate pick.
- * READ-ONLY like copilotApiResolvePort, and independent of the addressed
- * profile's own run state (a named profile's record is EXCLUDED from the
- * candidate scan) -- so a caller holding a state snapshot (health's fact
- * gathering) can fall back without a concurrent write to that same file
- * steering the answer.
+ * Independent of the addressed profile's own run state (its record is EXCLUDED from the candidate
+ * scan), so a caller holding a state snapshot (health's fact gathering) can fall back without a
+ * concurrent write to that file steering the answer.
  */
 export function copilotApiFallbackPort(profile: Profile): number {
   const port = daemonPolicy(profile).port;
   return port.source === "config" ? defaultProxyPort() : candidateProfilePort(port.name);
 }
 
-/** Every port currently reserved/recorded across the default and all profile
- *  daemons, minus `excluding`'s own record (see copilotApiFallbackPort). */
 function recordedPorts(excluding: Profile): Set<number> {
   const ports = new Set<number>([defaultProxyPort()]);
   const defaultPort = new CopilotEnvRunState().read().port;
@@ -187,10 +149,8 @@ function recordedPorts(excluding: Profile): Set<number> {
   return ports;
 }
 
-/** The smallest in-range port no daemon has spoken for (`excluding`'s own record
- *  aside): scan upward from just past the default daemon's port (so profile
- *  reservations cluster predictably beside it), then wrap to the bottom of the
- *  range. Pure -- records nothing. */
+/** The scan starts just past the default daemon's port so profile reservations cluster beside it,
+ *  then wraps to the bottom of the range. */
 function candidateProfilePort(excluding: Profile = null): number {
   const min = minProxyPort();
   const max = maxProxyPort();
@@ -213,29 +173,21 @@ function candidateProfilePort(excluding: Profile = null): number {
   );
 }
 
-// The reservation is a cross-profile scan-then-write, so concurrent reservers (two
-// profiles being wired at once) must be serialized or both could record the same port.
-// Same best-effort bounded-wait contract as the JSON store's update lock -- literally:
-// both use BOUNDED_LOCK_POLICY (utils/file_lock.ts), the shared stale/wait/retry policy.
-
 /**
- * Reserve (and persist) a stable port for the named profile: the recorded one when it
- * exists, else the smallest in-range port not spoken for by the default daemon or another
- * profile, so the profile's baked agent wiring (base URLs) and its daemon agree on a
- * deterministic port across restarts. An EXISTING reservation is honored even if the min/max
- * range has since narrowed (the same round-trip contract the default's recorded port has; the
- * range governs NEW allocations). `start` may later re-record a different LIVE-BOUND port
- * outside this lock when the reservation was busy at bind time; a reserver that raced it
- * simply finds ITS port busy at its own start and moves too, so collisions self-heal there.
+ * Best-effort serialization: the scan-then-write holds the shared BOUNDED_LOCK_POLICY lock, and past its
+ * bounded wait it runs UNLOCKED rather than deadlock, so two profiles wired at once can still collide there.
+ * An EXISTING reservation is honored even if min/max has since narrowed: the range governs NEW allocations only.
+ *
+ *   reservation busy at bind time  -> `start` re-records the LIVE-BOUND port outside this lock
+ *   a reserver that raced it       -> finds ITS port busy at its own start and moves too; collisions self-heal there
  */
 export function reserveProfilePort(profile: ProfileName): number {
   const state = CopilotEnvRunState.forProfile(profile);
   const recorded = state.read().port;
   if (recorded !== undefined) return recorded;
   const lockPath = new CopilotApiPaths().profilePortsLock;
-  // Best-effort: after the bounded wait, proceed unlocked rather than deadlock.
   return withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
-    // Re-check under the lock: a concurrent reserver may have just recorded one.
+    // A concurrent reserver may have recorded one during the wait.
     const raced = state.read().port;
     if (raced !== undefined) return raced;
     const port = candidateProfilePort();
@@ -245,38 +197,28 @@ export function reserveProfilePort(profile: ProfileName): number {
 }
 
 /**
- * The port a WRITE path bakes into `profile`'s agent wiring: the default daemon's
- * resolved port, or the named profile's stable reservation -- PERSISTED via
- * reserveProfilePort, so the baked base URLs and the daemon agree across restarts.
- * Read-only checks use copilotApiResolvePort instead, which peeks without recording.
- * Shared by the two agent writers (src/claude/config.ts, src/codex/config.ts).
+ * The WRITE-path port for `profile`'s agent wiring (src/claude/config.ts, src/codex/config.ts):
+ * PERSISTED, so the baked base URLs and the daemon agree across restarts. Read-only checks use
+ * copilotApiResolvePort, which peeks without recording.
  */
 export function wiringPortFor(profile: Profile): string {
   const port = daemonPolicy(profile).port;
   return port.source === "config" ? copilotApiResolvePort() : String(reserveProfilePort(port.name));
 }
 
-/** The proxy's loopback origin for `port` (single source for the emitted string, no path, no
- *  trailing slash). Uses the 127.0.0.1 literal, not `localhost`: the daemon binds 0.0.0.0
- *  (IPv4), but on Windows `localhost` resolves to ::1 first with no IPv4 fallback in fetch or
- *  the agent CLIs -- so a `localhost` URL would ECONNREFUSED (or read DOWN) while the proxy is
- *  up. 127.0.0.1 always hits the IPv4 listener. */
+/** 127.0.0.1, never `localhost`: the daemon binds IPv4 only, and on Windows `localhost` resolves to
+ *  ::1 first with no IPv4 fallback in fetch or the agent CLIs, so a `localhost` URL would
+ *  ECONNREFUSED while the proxy is up. */
 export function proxyLoopbackOrigin(port: number | string): string {
   return `http://127.0.0.1:${port}`;
 }
 
-/** The OpenAI-wire proxy base URL for `port`: the loopback origin plus the `/v1` path contract.
- *  Host rationale on proxyLoopbackOrigin. */
 export function openaiBaseUrl(port: string): string {
   return `${proxyLoopbackOrigin(port)}/v1`;
 }
 
-/** Parse `url` as a candidate managed local-proxy URL -- the read-side inverse of the
- *  writers above. An http URL on `127.0.0.1` (what we write) or `localhost` (a hand-edit
- *  that still means the local proxy) yields its port and path (trailing slash tolerated);
- *  anything else is null. Each read site layers its own expected port/path on top --
- *  matchesProxyOrigin for the strict per-port checks, a bare null-test for the
- *  port-agnostic ones (`agent env`). */
+/** `localhost` is accepted on read: a hand-edit that still means the local proxy. Each read site
+ *  layers its own port/path expectation on top (matchesProxyOrigin, or a bare null-test in `agent env`). */
 export function parseLoopbackProxyUrl(url: string): { port: string; path: string } | null {
   try {
     const u = new URL(url);
@@ -288,11 +230,9 @@ export function parseLoopbackProxyUrl(url: string): { port: string; path: string
   }
 }
 
-/** The two written path contracts: "" for the bare origin Claude bakes (proxyLoopbackOrigin),
- *  "/v1" for Codex's OpenAI-wire base (openaiBaseUrl). */
+/** "" is the bare origin Claude bakes; "/v1" is Codex's OpenAI-wire base. */
 export type ProxyPathContract = "" | "/v1";
 
-/** Whether `url` is the managed proxy URL for `expectedPort` with exactly `expectedPath`. */
 export function matchesProxyOrigin(
   url: string,
   expectedPort: number,

@@ -13,7 +13,6 @@ import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 const SEP = process.platform === "win32" ? ";" : ":";
 
-// Save/restore the env keys these tests poke so they never leak between tests.
 const SAVED_PATH = process.env.PATH;
 const HAD_PATH_CASE = Object.hasOwn(process.env, "Path");
 const SAVED_PATH_CASE = process.env.Path;
@@ -42,8 +41,7 @@ test("childEnvWithPath prepends dirs to PATH and keeps other inherited vars", ()
 });
 
 test("childEnvWithPath drops any case-variant PATH key (the Windows Path/PATH collision)", () => {
-  // Simulate the Windows shape: process.env carries a `Path` key AND we set canonical PATH.
-  // The child env must end up with EXACTLY one PATH (`PATH`), never the stale `Path`.
+  // The Windows shape: process.env carries `Path` while we set canonical PATH; the child gets exactly one.
   process.env.Path = "C:\\stale\\only";
   const env = childEnvWithPath(["/new/dir"]);
   expect(Object.hasOwn(env, "Path")).toBe(false);
@@ -52,9 +50,8 @@ test("childEnvWithPath drops any case-variant PATH key (the Windows Path/PATH co
 });
 
 test("childEnvWithPath applies extra and honors the omit predicate (case-insensitive)", () => {
-  // The predicate receives the UPPERCASED key, so a mixed-case inherited var is matched by its
-  // uppercase form -- mirroring Windows' case-insensitive env names. The original-cased key must
-  // be dropped from the child env.
+  // The predicate sees the UPPERCASED key, mirroring Windows' case-insensitive env names; the
+  // original-cased key is what gets dropped.
   process.env.Copilot_Mixed_Var = "leaked";
   const env = childEnvWithPath([], {
     extra: { HOME_OVERRIDE: "/tmp/h" },
@@ -64,12 +61,8 @@ test("childEnvWithPath applies extra and honors the omit predicate (case-insensi
   expect(Object.hasOwn(env, "Copilot_Mixed_Var")).toBe(false);
 });
 
-// --- verbatim agent-CLI spawn ------------------------------------------------
-//
-// User-typed launch args must reach the agent CLI verbatim: cmd.exe expands %VAR%
-// even inside double quotes, so the Windows dispatch may only fall back to it for
-// a batch-ONLY shim. The picker is pure (candidates + an injected sibling probe),
-// so the whole Windows decision table runs on every platform.
+// cmd.exe expands %VAR% even inside double quotes, so the Windows dispatch may fall back to it only
+// for a batch-ONLY shim. The picker is pure, so the whole decision table runs on every platform.
 
 const PS_PREFIX = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"];
 const ARGS = ["--resume", "%USERPROFILE%", "x y"];
@@ -82,7 +75,7 @@ test("pickVerbatimWindowsSpawn: a native .exe spawns directly with plain argv", 
     () => true,
   );
   expect(picked.file).toBe("C:\\apps\\claude.exe");
-  expect(picked.args).toEqual(ARGS); // untouched: no quoting layer at all
+  expect(picked.args).toEqual(ARGS);
   expect(picked.shell).toBe(false);
   expect(picked.binDir).toBe("C:\\apps");
 });
@@ -103,12 +96,10 @@ test("pickVerbatimWindowsSpawn: the npm .ps1 shim runs via powershell -File (lit
   );
   expect(sibling.file).toBe("powershell");
   expect(sibling.args).toEqual([...PS_PREFIX, "C:\\npm\\claude.ps1", ...ARGS]);
-  // The extensionless npm sh script was skipped, not spawned.
 });
 
 test("cmdSpawn quotes the program like every arg, and only when needed", () => {
-  // The program is part of the one command line cmd.exe re-parses: unquoted, a path
-  // with a space launches `C:\Users\Jane` and fails, with or without args.
+  // Unquoted, a program path with a space launches `C:\Users\Jane` and fails, with or without args.
   expect(cmdSpawn("C:\\Users\\Jane Doe\\bin\\codex.cmd", [])).toEqual({
     file: '"C:\\Users\\Jane Doe\\bin\\codex.cmd"',
     args: [],
@@ -128,7 +119,7 @@ test("pickVerbatimWindowsSpawn: batch-only shims and no-candidate fall back to c
     ["a b"],
     () => false,
   );
-  expect(batchOnly.file).toBe('"C:\\hand tools\\claude.cmd"'); // quoted for the cmd.exe line
+  expect(batchOnly.file).toBe('"C:\\hand tools\\claude.cmd"');
   expect(batchOnly.shell).toBe(true); // cmd.exe: batch parsing is that shim's own semantics
   expect(batchOnly.args).toEqual(['"a b"']);
   expect(batchOnly.binDir).toBe("C:\\hand tools"); // the real directory, never the quoted form
@@ -150,12 +141,9 @@ test("verbatimCliSpawn on POSIX resolves the command and never adds a shell", ()
 
 test("commandLookFromSpawn: only a completed probe yields a proven verdict", () => {
   const resolved = () => "/bin/gh";
-  // Ran and found: exit 0 asks for the resolution.
   expect(commandLookFromSpawn({ status: 0 }, resolved)).toEqual({ path: "/bin/gh" });
-  // Ran and found nothing: a PROVEN absence, no mark.
   expect(commandLookFromSpawn({ status: 1 }, resolved)).toEqual({ path: null });
-  // Never completed -- a spawn error, or killed (status null): the marked failed
-  // look, never a proven "command missing" (the runCaptured mark contract).
+  // A probe that never completed is the marked failed look, never a proven absence (the runCaptured mark contract).
   expect(commandLookFromSpawn({ status: null, error: new Error("ENOENT") }, resolved)).toEqual({
     path: null,
     launchFailed: true,
@@ -171,25 +159,21 @@ test("findCommand: a real found command and a real proven absence, both unmarked
   const found = findCommand(process.platform === "win32" ? "powershell" : "sh");
   expect(found.path).toBeTruthy();
   expect(found.launchFailed).toBeUndefined();
-  // Ran, found nothing: a proven absence carries no mark.
   expect(findCommand("copilot-env-no-such-command-xyz")).toEqual({ path: null });
 });
 
 test("runCaptured: the launch-failure mark rides ONLY the synthesized exit", async () => {
-  // Ran and succeeded: exit 0, no mark.
   const ok = await runCaptured(process.execPath, ["eval", "console.log('ok')"]);
   expect(ok.exitCode).toBe(0);
   expect(ok.launchFailed).toBeUndefined();
   expect(ok.stdout.trim()).toBe("ok");
 
-  // Ran and failed: the child's OWN nonzero exit, still no mark -- to a scan this is
-  // a COMPLETED look (pgrep's "ran, found nothing" exit 1 rides exactly here).
+  // The child's OWN nonzero exit is a completed look: pgrep's "ran, found nothing" exit 1 rides exactly here.
   const ranNonzero = await runCaptured(process.execPath, ["eval", "Deno.exit(1)"]);
   expect(ranNonzero.exitCode).toBe(1);
   expect(ranNonzero.launchFailed).toBeUndefined();
 
-  // Never ran: ENOENT coerces to the SAME exit 1, and the mark is the only thing
-  // separating it from a real completed exit 1.
+  // ENOENT coerces to the SAME exit 1; the mark is the only thing separating it from a real exit 1.
   const missing = await runCaptured(join(tempDir("copilot-env-no-such-tool-"), "missing"), []);
   expect(missing.exitCode).toBe(1);
   expect(missing.launchFailed).toBe(true);

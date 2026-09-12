@@ -1,6 +1,5 @@
-// Every `agent config` key must be documented: the README's Configuration table
-// is hand-written, so this pins registry -> README coverage (a new registry key
-// without a table row fails here instead of slipping past review).
+// The README's Configuration table is hand-written, so a new registry key needs its row
+// added by hand; this is where a missing one fails.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

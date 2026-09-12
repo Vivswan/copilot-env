@@ -1,25 +1,14 @@
-// `agent proxy-token`: the proxy-mode credential resolver -- ensure the local
-// copilot-api proxy for the addressed profile is up (per the managed-lifecycle rules
-// below), then print its API key on stdout. It is what the proxy-mode Codex
-// `auth.command` and Claude `apiKeyHelper` run (headless, `--yes`), what the cl/cx
-// launchers run before a proxy-backed launch (interactive, no `--yes`), and equally
-// usable by hand or from a script that needs the key.
+// Codex's `auth.command` and Claude's `apiKeyHelper` run this headless (`--yes`); the cl/cx
+// launchers run it interactively. Claude Code hard-fails an apiKeyHelper whose stdout is anything
+// but the single credential line, so the only stdout write in any branch is the key line inside
+// runPrintProxyToken.
 //
-// Stdout is sacred: the ONLY stdout write in any branch is the key line inside
-// runPrintProxyToken -- callers eval/cache the output as a credential, and Claude
-// Code hard-fails an apiKeyHelper whose stdout is anything but the single
-// credential line. Everything else (the prompt, start noise, failure pointers)
-// goes to stderr. Exit 0 with the key, exit 1 with an empty stdout otherwise.
+// The launch stays a child `agent start` on purpose: the launch pipeline narrates to its own
+// stdout, and in-process that would land on ours.
 //
-// The LAUNCH stays a child `agent start` process on purpose: the daemon launch
-// pipeline narrates freely to ITS stdout, and running it in-process would put that
-// narration on OUR stdout. A child with stdout suppressed (managed branch) or
-// redirected to our stderr (interactive branch) preserves the purity structurally.
-// Both branches forward the child's stderr: that is where it names every file it
-// writes, and a start that touches the disk unseen would be the one hidden write.
-// The managed branch also ignores the child's stdin (the `</dev/null` shape): with
-// no stored credential `agent start` would otherwise render an auth prompt whose
-// output is suppressed here -- an invisible hang.
+//   child stderr  -> always forwarded: that is where it names every file it writes
+//   child stdin   -> ignored on the managed branch: with no stored credential `agent start` would
+//                    render an auth prompt whose output is suppressed here, an invisible hang
 import { spawnSync } from "node:child_process";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -27,82 +16,61 @@ import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { runPrintProxyToken } from "./auth.ts";
 
-/** Raw `agent proxy-token` flags, parsed at the CLI boundary into a ProxyTokenAction. */
 export interface ProxyTokenFlags {
-  /** `--yes`: the headless path -- never prompt (and never auto-start when unmanaged). */
   yes?: boolean;
-  /** `--profile <name>`: address the named profile's isolated daemon. */
   profile?: string;
 }
 
-/** One resolver run: headless or interactive, addressed at `profile`'s daemon. */
 export interface ProxyTokenAction {
   assumeYes: boolean;
   profile: Profile;
 }
 
-/** How the launched `agent start` child's output is handled: `suppressed` (the managed
- *  auto-start -- stdin and stdout ignored, stderr forwarded to ours) or `visible` (the
- *  interactive confirm -- stdin and stderr inherited, the child's stdout redirected to
- *  OUR stderr so start progress shows while our stdout stays clean for the key). */
 export type LaunchOutput = "suppressed" | "visible";
 
-/**
- * The resolver's effects, injectable so the decision matrix in resolveProxyToken is
- * unit-testable without daemons, TTYs, or child processes (the seam mirrors
- * launch.ts's LaunchCredentialDeps). Every member is daemon-scoped by `profile`
- * except the auto-start gate, which is the one account-wide preference.
- */
+/** Every daemon-touching member is scoped by `profile`; autoStartEnabled is the one account-wide
+ *  preference. */
 export interface ProxyTokenDeps {
   proxyUp(profile: Profile): Promise<boolean>;
   autoStartEnabled(): boolean;
   launchProxy(profile: Profile, output: LaunchOutput): void;
-  /** Show `query` on stderr and read one answer line from stdin (EOF resolves ""). */
+  /** Prompts on stderr; EOF resolves "". */
   readAnswer(query: string): Promise<string>;
   recordHeartbeat(profile: Profile): void;
-  /** The step run once the proxy is confirmed up -- runPrintProxyToken in
-   *  production (the key line, the sole stdout write). `agent launch` injects a
-   *  keyless variant that keeps only its catalog-freshness side effect: launch
-   *  needs reachability, not the credential. */
+  /** runPrintProxyToken in production. `agent launch` injects a keyless variant that keeps only the
+   *  catalog-freshness side effect: launch needs reachability, not the credential. */
   printProxyToken(profile: Profile): Promise<void>;
-  /** A human-facing stderr line (never stdout). */
+  /** stderr, never stdout. */
   notify(line: string): void;
 }
 
-/** Launch `agent start [--profile <name>]` as a child (see LaunchOutput). Through
- *  bin/agent (agentLauncherCommand), NOT in-process: deno + deps get bootstrapped in a
- *  dev checkout, and the child's stdio placement keeps the caller's stdout untouched
- *  (key-only here, the launched agent's terminal in `agent launch`). The exit
- *  status is deliberately unread -- the follow-up proxyUp probe is the verdict.
- *  Exported as `agent launch`'s launchProxy dependency too, so the child-start
- *  shape is stated once. */
+/** Through bin/agent rather than in-process, so a dev checkout bootstraps deno and deps there.
+ *   the child's stdio  -> placed so the caller's stdout stays untouched
+ *   the exit status    -> unread; the follow-up proxyUp probe is the verdict
+ *   `agent launch`     -> injects this as its own launchProxy dependency */
 export function launchProxy(profile: Profile, output: LaunchOutput): void {
   const { command, args } = agentLauncherCommand(
     profile === null ? ["start"] : ["start", "--profile", profile],
   );
   spawnSync(command, args, {
-    // `2` = our stderr fd: the visible child's start progress must show WITHOUT
-    // touching our stdout (the .sh twin's `>&2`).
+    // `2` is our stderr fd: the visible child's start progress must show without touching our
+    // stdout.
     stdio: output === "suppressed" ? ["ignore", "ignore", "inherit"] : ["inherit", 2, "inherit"],
     windowsHide: true,
   });
 }
 
 /**
- * Show `query` on stderr and read one raw answer line from stdin. Raw stdin data events,
- * NOT node:readline's question(): with stdin already CLOSED and no line ever arriving (the
- * redirected/headless shape) rl.question never settles, and EOF-resolves-to-"" is
- * load-bearing (EOF means START, the apiKeyHelper case). Piped lines DO deliver, so testing
- * only that case would not show the hang. Readline's prompt (and consola.prompt) also
- * write to stdout, which must stay key-only. Like the shells' `read -r`: a canonical-mode
- * TTY delivers a full echoed line, EOF with no line resolves "", and Ctrl-C stays the
- * terminal's SIGINT. Exported for the spawn-level EOF/answer test.
+ * Raw stdin events, not readline's question(): the query goes to stderr, since stdout stays
+ * key-only and both readline's prompt and consola.prompt write to stdout.
+ *   stdin already closed, no line coming  -> rl.question never settles, the `end` event does
+ *   EOF                                   -> "", which means START (the apiKeyHelper case)
  */
 export function readStartAnswer(query: string): Promise<string> {
   process.stderr.write(query);
   return new Promise((resolve) => {
-    // String chunks split on character boundaries: per-chunk Buffer.toString could
-    // mangle a multi-byte UTF-8 sequence straddling a chunk boundary.
+    // String chunks split on character boundaries; per-chunk Buffer.toString could mangle a
+    // straddling UTF-8 sequence.
     process.stdin.setEncoding("utf8");
     let buf = "";
     const finish = (answer: string): void => {
@@ -116,29 +84,22 @@ export function readStartAnswer(query: string): Promise<string> {
       const newline = buf.indexOf("\n");
       if (newline !== -1) finish(buf.slice(0, newline).replace(/\r$/, ""));
     };
-    // EOF before a newline: whatever arrived (usually "") is the answer.
     const onEnd = (): void => finish(buf);
     process.stdin.on("data", onData);
     process.stdin.once("end", onEnd);
   });
 }
 
-/** The confirm prompt's accepted "start it" answers: empty (the [Y/n] default -- EOF
- *  included) and y/yes in any letter case, the same answer set the shell resolvers took. */
 function answerMeansStart(answer: string): boolean {
   const a = answer.trim().toLowerCase();
   return a === "" || a === "y" || a === "yes";
 }
 
 /**
- * The resolver decision matrix (pure orchestration over `deps`):
- * 1. Proxy down + managed lifecycle on -> auto-start silently (no prompt, even
- *    interactive: the opt-in is honored on every path).
- * 2. Proxy down + unmanaged + interactive -> offer to start; declining continues without.
- * 3. Proxy down + unmanaged + --yes -> never auto-start (headless callers opted out of the
- *    managed lifecycle; starting here would un-opt them).
- * Then always: heartbeat, re-probe, print the key ONLY if the proxy is actually up. Returns
- * 0 (key printed) or 1 (proxy down, with a stderr pointer when a silent auto-start hid it).
+ * The key is printed only if the proxy is actually up after the re-probe.
+ *   down, managed lifecycle on   -> silent auto-start, even interactive: the opt-in holds anywhere
+ *   down, unmanaged, interactive -> offer to start; declining continues without
+ *   down, unmanaged, --yes       -> never auto-start: a headless caller opted out of the lifecycle
  */
 export async function resolveProxyToken(
   action: ProxyTokenAction,
@@ -151,8 +112,6 @@ export async function resolveProxyToken(
   if (!(await deps.proxyUp(profile))) {
     if (deps.autoStartEnabled()) {
       deps.launchProxy(profile, "suppressed");
-      // Remember we tried with the child's stdout (its narration) hidden, to point at a
-      // hard failure below.
       suppressedStart = true;
     } else if (!action.assumeYes) {
       if (
@@ -177,7 +136,6 @@ export async function resolveProxyToken(
   return 1;
 }
 
-/** The production dependency set (see ProxyTokenDeps). */
 function commandDeps(): ProxyTokenDeps {
   return {
     proxyUp: async (profile) => (await proxyStatus(profile)).up,
@@ -192,8 +150,7 @@ function commandDeps(): ProxyTokenDeps {
   };
 }
 
-/** `agent proxy-token`: parse the flags at the boundary and run the resolver.
- *  process.exitCode (never process.exit) so pending stderr writes flush. */
+/** process.exitCode, never process.exit, so pending stderr writes flush. */
 export async function runProxyToken(flags: ProxyTokenFlags): Promise<void> {
   const action: ProxyTokenAction = {
     assumeYes: Boolean(flags.yes),

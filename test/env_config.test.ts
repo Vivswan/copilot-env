@@ -345,6 +345,7 @@ const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "passthrough": "on",
   "port": "4242",
   "pricing-url": "https://pricing.example/models",
+  "credits-target": "8000000",
   "proxy-logs": "false",
   "proxy-version": "1.2.3",
   "release-cooldown": "86400",

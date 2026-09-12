@@ -14,6 +14,7 @@ import { runCodex } from "./codex/config.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
 import { runAuth } from "./commands/auth.ts";
 import { configTableOutput, runConfig } from "./commands/config.ts";
+import { runCredits } from "./commands/credits.ts";
 import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";
@@ -408,9 +409,13 @@ program
   .option("--no-backup", "With --import: skip the automatic pre-import settings backup.")
   .addHelpText(
     "after",
-    "\nImport semantics: preferences are FULL-REPLACE (a key absent from the bundle resets " +
-      "to its built-in default), while credentials are PRESERVE-IF-ABSENT (a slot whose " +
-      "token is redacted or missing never overwrites a working local credential).",
+    `\n${
+      gray(
+        "Import semantics: preferences are FULL-REPLACE (a key absent from the bundle resets " +
+          "to its built-in default), while credentials are PRESERVE-IF-ABSENT (a slot whose " +
+          "token is redacted or missing never overwrites a working local credential).",
+      )
+    }`,
   )
   .action((opts: Opts) =>
     runSettings({
@@ -525,20 +530,26 @@ program
   )
   .addHelpText(
     "after",
+    // Two unwrapped paragraphs: the terminal folds them to its own width, like the
+    // option descriptions above, and they take that column's colour.
     [
       "",
-      "Sources: the proxy's per-host SQLite DBs (default + every profile daemon home;",
-      "proxied traffic only), the Codex CLI's local session logs, and Claude Code's local",
-      "transcripts (each agent's FULL traffic, Direct included). The default table merges",
-      "all three, so traffic through the proxy can be double counted; use --sources for",
-      "per-source tables.",
+      gray(
+        "Sources: the proxy's per-host SQLite DBs (default + every profile daemon home; " +
+          "proxied traffic only), the Codex CLI's local session logs, and Claude Code's local " +
+          "transcripts (each agent's FULL traffic, Direct included). The default table merges " +
+          "all three, so traffic through the proxy can be double counted; use --sources for " +
+          "per-source tables.",
+      ),
       "",
-      "Active days: distinct local calendar days (your timezone) that recorded at",
-      "least one request, unioned across the displayed sources. The header also shows",
-      "the inclusive min..max calendar span and what percent of it was active. Avg/day",
-      "divides each total by the active-day count; Median/day takes the median of each",
-      "column independently across the active days (so columns need not sum, but",
-      "each is robust to a few outlier days). Idle days are never counted in either.",
+      gray(
+        "Active days: distinct local calendar days (your timezone) that recorded at " +
+          "least one request, unioned across the displayed sources. The header also shows " +
+          "the inclusive min..max calendar span and what percent of it was active. Avg/day " +
+          "divides each total by the active-day count; Median/day takes the median of each " +
+          "column independently across the active days (so columns need not sum, but " +
+          "each is robust to a few outlier days). Idle days are never counted in either.",
+      ),
     ].join("\n"),
   )
   .action((opts: Opts) => {
@@ -555,6 +566,26 @@ program
       noIndex: opts.index === false,
     });
   });
+
+program
+  .command("credits")
+  .helpGroup("Daemon:")
+  .description(
+    "This month's Copilot AI credits (100 to the dollar): spent, projected, and paced against the " +
+      "plan's entitlement and an optional target. One live read of GitHub's meter; nothing local.",
+  )
+  .option("--json", "Emit a JSON object instead of the block.")
+  .option(
+    "--target <credits>",
+    "Credits to stay under this month, overriding COPILOT_CREDITS_TARGET and the credits-target " +
+      "config key for this run.",
+  )
+  .action((opts: Opts) =>
+    runCredits({
+      json: Boolean(opts.json),
+      creditsTarget: opts.target === undefined ? undefined : String(opts.target),
+    })
+  );
 
 program
   .command("codex")

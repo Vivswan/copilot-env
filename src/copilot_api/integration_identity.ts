@@ -32,7 +32,7 @@ export const CODEX_EXEC_USER_AGENT = "codex_exec";
 export const DAEMON_INTEGRATION_ID_ENV = "COPILOT_ENV_DAEMON_INTEGRATION_ID";
 
 /** Where the account's designated API base is discovered (best-effort). */
-const COPILOT_USER_URL = "https://api.github.com/copilot_internal/user";
+export const COPILOT_USER_URL = "https://api.github.com/copilot_internal/user";
 /** The individual-plan host; the fallback when the account lookup fails. */
 export const DEFAULT_COPILOT_API_BASE = "https://api.githubcopilot.com";
 

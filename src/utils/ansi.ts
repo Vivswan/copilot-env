@@ -1,6 +1,8 @@
 const NO_COLOR = (() => {
   const env = process.env;
-  return Boolean(env.NO_COLOR === "1" || env.TERM === "dumb" || env.TEST || env.CI);
+  return Boolean(
+    env.NO_COLOR === "1" || env.TERM === "dumb" || env.TEST || env.CI || !process.stdout.isTTY,
+  );
 })();
 
 export function style(open: number, close = 39): (text: string) => string {
@@ -12,6 +14,7 @@ export const COLOR_ENABLED = !NO_COLOR;
 
 export const bold = style(1, 22);
 export const dim = style(2, 22);
+export const blue = style(34);
 export const cyan = style(36);
 export const gray = style(90);
 export const green = style(32);

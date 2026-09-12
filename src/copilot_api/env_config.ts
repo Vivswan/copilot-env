@@ -30,6 +30,7 @@ export interface CopilotEnvConfigData {
   claudeTokenMultiplier?: number;
   port?: number;
   pricingUrl?: string;
+  creditsTarget?: number;
   minPort?: number;
   maxPort?: number;
   strictPort?: boolean;
@@ -47,6 +48,7 @@ export type ConfigPatch = { [K in keyof CopilotEnvConfigData]?: CopilotEnvConfig
 
 // Generous ceilings: anything larger is a typo, not a setting.
 const MAX_SECONDS = 365 * 24 * 60 * 60;
+const MAX_CREDITS = 1_000_000_000_000;
 const MAX_TOKEN_MULTIPLIER = 1000;
 const MAX_DAYS = 3650;
 
@@ -427,6 +429,15 @@ const CONFIG_REGISTRY_LITERAL = [
     defaultValue: false,
     applyHint:
       "Applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring.",
+  },
+  {
+    cli: "credits-target",
+    key: "creditsTarget",
+    section: "Cost",
+    describe:
+      "Copilot AI credits (100 to the dollar) to stay under per month; unset paces against the plan's entitlement alone",
+    ...wholeNumberDomain(1, MAX_CREDITS, "credits"),
+    applyHint: "Applies to the next `agent credits` run.",
   },
   {
     cli: "idle-timeout",
@@ -856,6 +867,11 @@ export class CopilotEnvConfig {
   /** The per-run `--pricing-url` layer stays at the read site (resolvePricingUrl in src/usage/cost.ts). */
   pricingUrl(): string {
     return this.read().pricingUrl ?? configDefaultString("pricing-url");
+  }
+
+  /** The stored `credits-target`, else null: `agent credits` then paces against the entitlement alone. */
+  creditsTarget(): number | null {
+    return this.read().creditsTarget ?? null;
   }
 
   /** null = no cooldown by hand; autoupdate layers its own policy default on top

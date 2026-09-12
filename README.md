@@ -81,6 +81,7 @@ agent models               # list the model ids + names Copilot serves (--proxy 
 agent env                  # print shell directives for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL exports + the opt-in launcher functions)
 agent mcp                  # MCP wiring status (--serve runs the stdio server; --remove unwires)
 agent cost                 # estimated token spend across the proxy usage DBs + Codex/Claude session logs (--days N, --json, --per-day, --sources; --no-index parses every log instead of using the usage index)
+agent credits              # this month's Copilot AI credits (100 to the dollar): spent, projected, paced against the plan and an optional target (--json, --target N)
 agent update               # update to the latest release (--check; --auto-status; --no-verify skips the provenance check; `agent config --set auto-update true` self-updates daily, cooldown via `update-cooldown`)
 agent shell                # wire rc / $PROFILE; --clis installs/updates the CLIs, --remove unwires (cl/co/cx follow the `launchers` config key)
 agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run preview, --force to delete a source checkout)
@@ -255,9 +256,10 @@ agent config --del idle-timeout       # revert one to its default
 
 **Cost**
 
-| Key           | Default                               | Effect                                                                                           |
-| ------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `pricing-url` | `https://openrouter.ai/api/v1/models` | OpenRouter models API URL `agent cost` prices at (`agent cost --pricing-url` overrides one run). |
+| Key              | Default                               | Effect                                                                                                                                                                                                                             |
+| ---------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pricing-url`    | `https://openrouter.ai/api/v1/models` | OpenRouter models API URL `agent cost` prices at (`agent cost --pricing-url` overrides one run).                                                                                                                                   |
+| `credits-target` | none                                  | Copilot AI credits (100 to the dollar) to stay under per month; `agent credits` paces the month against it, and without one against the plan's entitlement alone (`COPILOT_CREDITS_TARGET` or `agent credits --target` overrides). |
 
 Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags, `message-websearch-model`, the `alpha-search-*` pair, `claude-auto-model`, `claude-token-multiplier`) are projected into the proxy's own `config.json` at `agent start`, so changing them needs a daemon restart to take effect - except that the MCP `web_search` tool reads `message-websearch-model` fresh on every call.
 

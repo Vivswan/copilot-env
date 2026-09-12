@@ -94,6 +94,7 @@ function escapeRegExp(s: string): string {
 /** sigstore-js matches the SAN as a regular expression even when given a string, so the
  *  workflow URLs are escaped and the whole pattern anchored. */
 export function signerSanPattern(policy: SignerPolicy): RegExp {
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- our URLs, escaped and anchored, vs a SAN
   return new RegExp(`^(?:${policy.signerWorkflows.map(escapeRegExp).join("|")})@refs/.+$`);
 }
 

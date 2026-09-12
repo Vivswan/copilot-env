@@ -163,6 +163,7 @@ export function removeEnvKey(envFile: string, key: string): boolean {
     if (isEnoent(e)) return false;
     throw e;
   }
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- key is our own env var name
   const matcher = new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=`);
   const lines = existing.split(/\r?\n/);
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
@@ -314,8 +315,10 @@ function legacyHelperPaths(
  */
 function releasedHelperBodies(mode: "direct" | "proxy", profile: Profile): RegExp[] {
   const sh = (path: string, args: string) =>
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- our helper body, our paths
     new RegExp(String.raw`^#!/bin/sh\nexec '(?:[^']|'\\'')*${path}' ${args}\n$`);
   const cmd = (path: string, args: string) =>
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- our helper body, our paths
     new RegExp(
       String
         .raw`^@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "(?:[^"%\r\n]|%%)*${path}" ${args}\r\n$`,

@@ -545,7 +545,7 @@ test("an unparseable registry version throws instead of silently never running",
   );
 });
 
-test("an unparseable from or to bound throws instead of mis-selecting", () => {
+test("an unparseable from or to bound throws instead of selecting the wrong migrations", () => {
   // A garbage `to` would otherwise select [] (no migration runs); a garbage `from`
   // would select everything below `to` -- both silent, both wrong.
   expect(() => dueMigrations("1.0.0", "oops", LIST)).toThrow(

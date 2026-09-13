@@ -401,7 +401,7 @@ export interface ProcessRow {
 
 /** Only the leading columns are split off: the command line may itself contain runs of spaces. Lines
  *  not pid-prefixed (a header, a wrapped continuation) are dropped rather than guessed at, and an
- *  executable named with spaces mis-splits and simply never reads as a runtime. */
+ *  executable named with spaces splits wrong and simply never reads as a runtime. */
 export function parseProcessRows(stdout: string): ProcessRow[] {
   const rows: ProcessRow[] = [];
   for (const line of stdout.split(/\r?\n/)) {

@@ -739,7 +739,7 @@ function keptCredential(state: CopilotEnvState, name: ProfileName): ProvisionedC
 
 /** The bundled identity was derived under the bundle's own credential, so it is replayed only
  *  when that exact token landed (a direct profile then wires without a network probe), keyed to
- *  that credential so a concurrent rotation drops it rather than mis-attaching it. gh-cli and
+ *  that credential so a concurrent rotation drops it rather than misattaching it. gh-cli and
  *  kept slots hold a DIFFERENT credential, so nothing is replayed for them: a kept slot wires off
  *  whatever verdict it already cached (commitProfile keeps it while the credential is unchanged),
  *  and only an uncached one costs a wire-time probe. */

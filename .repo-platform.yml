@@ -2,7 +2,6 @@
 modules:
   - deno
   - release-please
-  - issue-templates
   - pr-title
   - custom-license
 project:

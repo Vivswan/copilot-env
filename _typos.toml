@@ -10,3 +10,5 @@ extend-ignore-re = [
 [default.extend-words]
 # "look-alikes" (typographic look-alike characters), used in AGENTS.md and a test.
 alikes = "alikes"
+# "unparseable" is the TomlReadResult kind in src/codex/toml_io.ts: a string literal, so a contract.
+unparseable = "unparseable"

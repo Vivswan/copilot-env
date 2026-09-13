@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.0.7](https://github.com/Vivswan/copilot-env/compare/v4.0.6...v4.0.7) (2026-09-12)
+
+
+### Features
+
+* **credits:** this month's Copilot AI credits as their own command ([#196](https://github.com/Vivswan/copilot-env/issues/196)) ([d63bc71](https://github.com/Vivswan/copilot-env/commit/d63bc7186347a174f2a4e745bd6d6f2982ff81ec))
+
+
+### Bug Fixes
+
+* **mcp:** give the Claude Code server entry gh's directory in front of PATH ([#192](https://github.com/Vivswan/copilot-env/issues/192)) ([1f31fe6](https://github.com/Vivswan/copilot-env/commit/1f31fe6788142f653e75dad93b41913075678b6d))
+
 ## [4.0.6](https://github.com/Vivswan/copilot-env/compare/v4.0.5...v4.0.6) (2026-09-11)
 
 

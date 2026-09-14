@@ -51,7 +51,8 @@ type Opts = Record<string, unknown>;
 const AUTH_PROVIDER_HELP: Record<AuthProvider, string> = {
   "copilot": "device flow, read:user scope",
   "gh-cli": "use the machine's gh login",
-  "gh-token": `store ${ghTokenEnvVarsLabel()} - for headless servers`,
+  "gh-token": "paste a GitHub token, or --set <token>",
+  "gh-env": `copy a token from ${ghTokenEnvVarsLabel()} - for headless servers`,
 };
 
 /** The providers as natural-language help: "'a' (...), 'b' (...), or 'c' (...)". */
@@ -60,7 +61,7 @@ function authProviderChoicesHelp(): string {
   return `${parts.slice(0, -1).join(", ")}, or ${parts[parts.length - 1]}`;
 }
 
-/** The providers as a bare quoted list: "'copilot' | 'gh-cli' | 'gh-token'". */
+/** The providers as a bare quoted list: "'copilot' | 'gh-cli' | 'gh-token' | 'gh-env'". */
 function authProviderNamesHelp(): string {
   return AUTH_PROVIDERS.map((p) => `'${p}'`).join(" | ");
 }
@@ -195,9 +196,8 @@ program
     `How to authenticate (no flag => interactive choice): ${authProviderChoicesHelp()}.`,
   )
   .option(
-    "--set [token]",
-    `Non-interactive gh-token: store this token verbatim, or read ${ghTokenEnvVarsLabel()} ` +
-      "when given no value. Implies --provider gh-token.",
+    "--set <token>",
+    "Non-interactive gh-token: store this token verbatim. Implies --provider gh-token.",
   )
   .option(
     "--gh-user <login>",
@@ -207,7 +207,7 @@ program
   .option(
     "--get",
     "Print the resolved token to stdout (provider-driven: gh-cli → `gh auth token`, " +
-      "copilot/gh-token → the stored token).",
+      "copilot/gh-token/gh-env → the stored token).",
   )
   .option("--del", "Clear the stored token (de-authenticate).")
   .option("--check", "Report auth status and exit (0 authenticated, 1 not).")
@@ -224,7 +224,7 @@ program
   .action((opts: Opts) =>
     runAuth({
       provider: opts.provider as string | undefined,
-      set: opts.set as string | boolean | undefined,
+      set: opts.set as string | undefined,
       ghUser: opts.ghUser as string | undefined,
       get: Boolean(opts.get),
       del: Boolean(opts.del),
@@ -270,11 +270,7 @@ program
     "--provider <provider>",
     `With --add: how the profile authenticates (${authProviderNamesHelp()}); no flag prompts.`,
   )
-  .option(
-    "--set [token]",
-    "With --add: non-interactive gh-token - store this token verbatim, or read " +
-      `${ghTokenEnvVarsLabel()} when given no value.`,
-  )
+  .option("--set <token>", "With --add: non-interactive gh-token - store this token verbatim.")
   .option(
     "--gh-user <login>",
     "With --add: pin gh-cli to this logged-in gh account (omit = follow gh's active account).",
@@ -292,7 +288,7 @@ program
         "--direct and --proxy are mutually exclusive (a profile has ONE mode)",
       ),
       provider: opts.provider as string | undefined,
-      set: opts.set as string | boolean | undefined,
+      set: opts.set as string | undefined,
       ghUser: opts.ghUser as string | undefined,
     })
   );

@@ -25,6 +25,7 @@ import {
   ghAuthTokenSpawnSpec,
   parseGhAuthStatusAccounts,
 } from "../src/copilot_api/gh_cli.ts";
+import { githubLoginLook, setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
   INTEGRATION_ID_HEADER,
@@ -34,7 +35,13 @@ import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { errMessage } from "../src/utils/error.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, resetExitCode, stageRefusedStop } from "./helpers.ts";
+import {
+  envSnapshot,
+  isolateAgentHomes,
+  resetExitCode,
+  stageRefusedStop,
+  stubGithubLogins,
+} from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -42,12 +49,21 @@ let dir = "";
 afterEach(() => {
   restoreEnv();
   resetExitCode();
+  setGithubLoginFetch(null);
   dir = removeDir(dir);
 });
 
+/** Every token this file provisions reads as octocat's; a test that cares stubs its own. */
 function isolate(): { claudeHome: string } {
   const homes = isolateAgentHomes("copilot-auth-");
   dir = homes.dir;
+  stubGithubLogins({
+    ghu_inline_value: "octocat",
+    ghu_new_from_env: "octocat",
+    ghu_env_value: "octocat",
+    ghu_x: "octocat",
+    ghu_new: "octocat",
+  });
   return { claudeHome: homes.claudeHome };
 }
 
@@ -180,24 +196,28 @@ test("auth (bare) with NO recorded provider re-runs the flow even when gh works 
   await expect(runAuth({})).rejects.toThrow("not a terminal");
 });
 
-test("auth --provider gh-token: missing GH_TOKEN/GITHUB_TOKEN errors clearly", async () => {
+test("headless gh-token never reads the env: that is gh-env's job", async () => {
   isolate();
+  state().clearCredential(null);
+  process.env.GH_TOKEN = "ghu_env_value";
+  await expect(runAuth({ provider: "gh-token" })).rejects.toThrow(/--set <token>/);
+  expect(state().read().githubToken).toBeNull();
+  delete process.env.COPILOT_GITHUB_TOKEN;
   delete process.env.GH_TOKEN;
   delete process.env.GITHUB_TOKEN;
-  state().clearCredential(null);
-  await expect(runAuth({ provider: "gh-token" })).rejects.toThrow(/GH_TOKEN|GITHUB_TOKEN/);
+  await expect(runAuth({ provider: "gh-env" })).rejects.toThrow(/GH_TOKEN/);
 });
 
-test("auth --provider gh-token stores the env token + provider, and does NOT configure agents", async () => {
+test("auth --provider gh-env stores the env token + provider, and does NOT configure agents", async () => {
   const { claudeHome } = isolate();
   // A recorded, RESOLVING credential under another provider: an explicit
   // provider must still run (never short-circuited by "already authenticated").
   state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_old" });
   process.env.GH_TOKEN = "ghu_new_from_env";
-  await runAuth({ provider: "gh-token" });
+  await runAuth({ provider: "gh-env" });
   expect(state().read()).toEqual({
     githubToken: "ghu_new_from_env",
-    authProvider: "gh-token",
+    authProvider: "gh-env",
     ghUser: null,
     profiles: {},
     codexCatalogLastAttemptMs: 0,
@@ -263,18 +283,46 @@ test("auth --set cannot combine with --get/--del/--check", async () => {
   await expect(runAuth({ set: "ghu_x", get: true })).rejects.toThrow("cannot combine");
 });
 
-test("gh-token acquisition narrates 'Using', never 'Stored' (persistence is the caller's write)", async () => {
+test("token acquisition narrates 'Using' + the account, never 'Stored' (persistence is the caller's write)", async () => {
   isolate();
   // The token is only ACQUIRED here -- `agent profile --add` commits it later,
   // atomically with the profile's mode, so a "Stored" claim at this point would
   // be false on that path (and premature even on the plain auth path).
   const inline = await captureStderr(() => runAuth({ set: "ghu_inline_value" }));
-  expect(inline).toContain("Using the provided GitHub token.");
+  expect(inline).toContain("Using the provided GitHub token as octocat.");
   expect(inline).not.toContain("Stored");
   process.env.GH_TOKEN = "ghu_env_value";
-  const fromEnv = await captureStderr(() => runAuth({ provider: "gh-token" }));
-  expect(fromEnv).toContain("Using the GitHub token from the environment.");
+  const fromEnv = await captureStderr(() => runAuth({ provider: "gh-env" }));
+  expect(fromEnv).toContain("Using $GH_TOKEN as octocat.");
   expect(fromEnv).not.toContain("Stored");
+  // A missed look labels, never blocks: the token is still used, shown by its ends with GitHub's verdict.
+  const unknown = await captureStderr(() => runAuth({ set: "ghu_unlisted_0123456789" }));
+  expect(unknown).toContain(
+    "Using the provided GitHub token = ghu_un...6789, unverified (GitHub rejected it, HTTP 401).",
+  );
+  expect(state().read().githubToken).toBe("ghu_unlisted_0123456789");
+});
+
+test("githubLoginLook asks GraphQL for the viewer and reads a login, a 401, or an unreachable GitHub", async () => {
+  const seen: { url: string; init?: RequestInit }[] = [];
+  const answer = (status: number, body: string) => (url: string, init?: RequestInit) => {
+    seen.push({ url, init });
+    return Promise.resolve(new Response(body, { status }));
+  };
+  expect(await githubLoginLook("ghp_a", answer(200, '{"data":{"viewer":{"login":"octocat"}}}')))
+    .toEqual({ login: "octocat" });
+  const [request] = seen;
+  expect(request?.url).toBe("https://api.github.com/graphql");
+  expect(new Headers(request?.init?.headers).get("authorization")).toBe("Bearer ghp_a");
+  expect(JSON.parse(String(request?.init?.body))).toEqual({ query: "query { viewer { login } }" });
+  expect(await githubLoginLook("ghp_b", answer(401, '{"message":"Bad credentials"}'))).toEqual({
+    login: null,
+    detail: "GitHub rejected it, HTTP 401",
+  });
+  expect(await githubLoginLook("ghp_c", () => Promise.reject(new Error("ENOTFOUND")))).toEqual({
+    login: null,
+    detail: "GitHub could not be reached: ENOTFOUND",
+  });
 });
 
 test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile --add`", async () => {

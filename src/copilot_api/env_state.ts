@@ -18,9 +18,9 @@ import {
 
 // The provider vocabulary lives with the store that persists it: importing it from credential.ts
 // would cycle, since Credential wraps this store.
-export const AUTH_PROVIDERS = ["copilot", "gh-cli", "gh-token"] as const;
+export const AUTH_PROVIDERS = ["copilot", "gh-cli", "gh-token", "gh-env"] as const;
 export type AuthProvider = (typeof AUTH_PROVIDERS)[number];
-export type TokenProvider = Extract<AuthProvider, "copilot" | "gh-token">;
+export type TokenProvider = Extract<AuthProvider, "copilot" | "gh-token" | "gh-env">;
 
 function isAuthProvider(provider: string): provider is AuthProvider {
   return (AUTH_PROVIDERS as readonly string[]).includes(provider);

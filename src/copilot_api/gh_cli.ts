@@ -15,31 +15,25 @@ export function ghTokenEnvVarsList(): string {
   return GH_TOKEN_ENV_VARS.join(" / ");
 }
 
-export function ghTokenFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
-  for (const name of GH_TOKEN_ENV_VARS) {
-    const value = env[name]?.trim();
-    if (value) return value;
-  }
-  return null;
+export type GhTokenEnvVar = (typeof GH_TOKEN_ENV_VARS)[number];
+
+export interface GhEnvToken {
+  name: GhTokenEnvVar;
+  token: string;
 }
 
-/**
- * `true` (a bare `--provider gh-token`) reads GH_TOKEN_ENV_VARS; a string is the token itself. The narrow
- * overload proves a definite request always yields a token or throws, so those callers never handle null.
- */
-export function tokenFromSetFlag(flag: string | true): string;
-export function tokenFromSetFlag(flag: string | boolean | undefined): string | null;
-export function tokenFromSetFlag(flag: string | boolean | undefined): string | null {
-  // `false` is treated as absence rather than the literal token "false".
-  if (flag === undefined || flag === false) return null;
-  if (flag === true) {
-    const fromEnv = ghTokenFromEnv();
-    if (fromEnv) return fromEnv;
-    throw new Error(`no GitHub token found: set one of ${ghTokenEnvVarsList()}`);
+/** Every set var, most specific first, so a headless pick and a menu read the same list. */
+export function ghTokensInEnv(env: NodeJS.ProcessEnv = process.env): GhEnvToken[] {
+  const found: GhEnvToken[] = [];
+  for (const name of GH_TOKEN_ENV_VARS) {
+    const token = env[name]?.trim();
+    if (token) found.push({ name, token });
   }
-  const token = flag.trim();
-  if (token === "") throw new Error("the provided GitHub token is empty");
-  return token;
+  return found;
+}
+
+export function ghTokenFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
+  return ghTokensInEnv(env)[0]?.token ?? null;
 }
 
 /** Shared by every "is gh authenticated?" probe. */

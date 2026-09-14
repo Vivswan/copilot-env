@@ -9,7 +9,7 @@ import {
   type ProbeOutcome,
   summarizeProbeFailure,
 } from "../src/agents/live_probe.ts";
-import { ghAuthVerdict, ghTokenFromEnv, tokenFromSetFlag } from "../src/copilot_api/gh_cli.ts";
+import { ghAuthVerdict, ghTokenFromEnv } from "../src/copilot_api/gh_cli.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 // The one catalog-noise filter shared by summarizeProbeFailure and formatLiveFailure
@@ -94,38 +94,7 @@ test("summarizeProbeFailure truncates an oversized reason line", () => {
   expect(reason.endsWith("...")).toBe(true);
 });
 
-// --- tokenFromSetFlag (flag -> token string | null) ---------------------------
-
-test("tokenFromSetFlag: undefined -> null, string -> trimmed literal, bare -> env, else throws", () => {
-  const saved = {
-    COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN,
-    GH_TOKEN: process.env.GH_TOKEN,
-    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-  };
-  try {
-    expect(tokenFromSetFlag(undefined)).toBeNull();
-    expect(tokenFromSetFlag(false)).toBeNull(); // defensive: never the token "false"
-    expect(tokenFromSetFlag("ghu_abc")).toBe("ghu_abc");
-    expect(tokenFromSetFlag("  ghu_trim  ")).toBe("ghu_trim");
-    expect(() => tokenFromSetFlag("")).toThrow("is empty");
-
-    delete process.env.COPILOT_GITHUB_TOKEN;
-    delete process.env.GH_TOKEN;
-    delete process.env.GITHUB_TOKEN;
-    expect(() => tokenFromSetFlag(true)).toThrow("COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN");
-    process.env.GITHUB_TOKEN = "ghu_github";
-    expect(tokenFromSetFlag(true)).toBe("ghu_github");
-    process.env.GH_TOKEN = "ghu_gh";
-    expect(tokenFromSetFlag(true)).toBe("ghu_gh"); // GH_TOKEN beats GITHUB_TOKEN
-    process.env.COPILOT_GITHUB_TOKEN = "ghu_copilot";
-    expect(tokenFromSetFlag(true)).toBe("ghu_copilot"); // COPILOT_GITHUB_TOKEN wins
-  } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-});
+// --- the gh-token env vars ------------------------------------------------------
 
 test("ghTokenFromEnv: precedence COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN, trims, null when unset", () => {
   const saved = {

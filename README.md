@@ -97,7 +97,7 @@ agent init                 # set up BOTH Codex + Claude (auto-detect direct vs p
 agent launch <cli>         # launch claude|codex|copilot with managed flags + provider wiring
                            #   --profile <name>, --relaxed; agent args after --
 agent auth                 # manage the GitHub Copilot credential
-                           #   --provider copilot|gh-cli|gh-token, --set, --get, --del, --check
+                           #   --provider copilot|gh-cli|gh-token|gh-env, --set <token>, --get, --del, --check
                            #   --profile <name> addresses one profile's slot, --list shows every slot
 agent profile              # manage named profiles: one credential + one mode, both agents
                            #   --add <name> --direct|--proxy, --del <name>, --list, --check <name>
@@ -360,7 +360,9 @@ agent config --set codex-host true    # false removes the farm again
 
 - `--provider copilot` - GitHub device flow (`read:user` scope).
 - `--provider gh-cli` - use the machine's existing `gh` login.
-- `--provider gh-token` - store `$COPILOT_GITHUB_TOKEN` / `$GH_TOKEN` / `$GITHUB_TOKEN`, first set wins (headless servers). `--set [token]` stores one non-interactively.
+- `--provider gh-token` - paste a GitHub token; `--set <token>` stores one non-interactively.
+- `--provider gh-env` - copy a token from `$COPILOT_GITHUB_TOKEN` / `$GH_TOKEN` / `$GITHUB_TOKEN`. A terminal always shows the var and its GitHub account first: one set asks yes/no, several set get a menu. Headless takes the most specific (servers).
+- Every pasted or copied token is labelled with the account GitHub reports for it (GraphQL `viewer`, no `gh` needed); a lookup miss only changes the label.
 - `--get` / `--del` / `--check` - print, clear, or check that a credential resolves.
 
 Classic and fine-grained PATs can't perform the proxy's editor token exchange. So `agent start` transparently enables a passthrough shim for PAT-shaped tokens, using the PAT as the bearer directly. Force it either way with `agent config --set passthrough on|off`.
@@ -370,7 +372,7 @@ Classic and fine-grained PATs can't perform the proxy's editor token exchange. S
 A profile is an atomic unit: ONE credential + ONE mode (direct or proxy, never both), always wired into BOTH agents. Several sessions then run at once without touching the default setup.
 
 ```bash
-agent profile --add work --proxy --provider gh-token --set   # credential + mode + both agents
+agent profile --add work --proxy --provider gh-env   # credential + mode + both agents
 cl --profile work        # Claude under the profile (its own proxy daemon, own port)
 cx --profile work        # Codex under the same profile
 agent profile --list     # NAME  MODE  PROVIDER  DAEMON

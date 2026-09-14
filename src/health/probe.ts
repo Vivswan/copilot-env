@@ -169,7 +169,7 @@ export interface ProbeDeps {
   codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts>;
   /** True when a GitHub token is provisioned in the store (Direct needs no gh then). */
   storedTokenPresent(): boolean;
-  /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
+  /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token` | `gh-env`), or null. */
   authProvider(): AuthProvider | null;
   /** The default slot's gh-cli account pin, or null (= follow gh's active account). */
   defaultGhUser(): string | null;

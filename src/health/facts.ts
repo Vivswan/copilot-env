@@ -361,7 +361,7 @@ export type ProfileAuthFacts = {
 };
 
 /** The GitHub credential state, independent of any one agent. Direct resolves the credential at
- *  fetch time via `agent auth --get`, provider-driven (`gh-cli` -> `gh`, `copilot`/`gh-token` ->
+ *  fetch time via `agent auth --get`, provider-driven (`gh-cli` -> `gh`, `copilot`/`gh-token`/`gh-env` ->
  *  the stored token; no provider -> nothing). */
 export interface AuthFacts {
   storedToken: boolean;
@@ -376,7 +376,7 @@ export interface AuthFacts {
    *  is then UNPROVEN, so the check says "could not check", never "gh is unauthenticated" plus
    *  `gh auth login` advice. Optional so hand-built fixtures stay valid. */
   ghAuthUnproven?: true;
-  /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
+  /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token` | `gh-env`), or null. */
   provider: AuthProvider | null;
   /** Named profiles, keyed by validated name. */
   profiles: Record<ProfileName, ProfileAuthFacts>;

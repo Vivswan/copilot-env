@@ -3,6 +3,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { GITHUB_GRAPHQL_URL, setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
 import type { ProfileName } from "../src/copilot_api/profile.ts";
 import { defaultDaemonHome } from "../src/copilot_api/paths.ts";
 import { launchDaemon } from "../src/copilot_api/process.ts";
@@ -13,6 +14,23 @@ import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { pidAlive } from "../src/utils/pid.ts";
 import { denoRunArgs, ROOT, spawnChild } from "./helpers/run.ts";
 import { removeDir, tempDir } from "./helpers/testing.ts";
+
+// --- GitHub login lookups -----------------------------------------------------
+
+/** Every token acquisition asks GitHub whose token it is; this answers offline from `logins`
+ *  (token -> login), 401 for any other token. Reset with `setGithubLoginFetch(null)`. */
+export function stubGithubLogins(logins: Record<string, string>): void {
+  setGithubLoginFetch((input, init) => {
+    if (input !== GITHUB_GRAPHQL_URL) throw new Error(`unexpected fetch of ${input}`);
+    const token = new Headers(init?.headers).get("authorization")?.replace(/^Bearer /, "") ?? "";
+    const login = logins[token];
+    return Promise.resolve(
+      login === undefined
+        ? new Response('{"message":"Bad credentials"}', { status: 401 })
+        : new Response(JSON.stringify({ data: { viewer: { login } } }), { status: 200 }),
+    );
+  });
+}
 
 // --- env snapshot / restore ---------------------------------------------------
 

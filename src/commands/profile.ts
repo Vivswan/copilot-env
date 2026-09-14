@@ -54,7 +54,7 @@ export interface ProfileArgs {
   sync?: boolean;
   mode: RequestedMode;
   provider?: string;
-  set?: string | boolean;
+  set?: string;
   ghUser?: string;
 }
 

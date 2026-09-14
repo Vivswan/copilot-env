@@ -29,11 +29,16 @@ import {
   activeGhLogin,
   GH_COPILOT_HOST,
   GH_LOGIN_RE,
+  type GhEnvToken,
   ghTokenEnvVarsLabel,
   ghTokenEnvVarsList,
-  ghTokenFromEnv,
-  tokenFromSetFlag,
+  ghTokensInEnv,
 } from "../copilot_api/gh_cli.ts";
+import {
+  describeLoginLook,
+  type GithubLoginLook,
+  githubLoginLook,
+} from "../copilot_api/github_login.ts";
 import { CopilotApiPaths, profileHomeNames } from "../copilot_api/paths.ts";
 import {
   copilotApiArgv,
@@ -64,7 +69,7 @@ const PROVIDER_CHOICES = AUTH_PROVIDERS.join("|");
 
 export interface AuthArgs {
   provider?: string;
-  set?: string | boolean;
+  set?: string;
   ghUser?: string;
   get?: boolean;
   del?: boolean;
@@ -80,13 +85,6 @@ function asProvider(provider: string): AuthProvider {
   throw new Error(`--provider must be one of: ${AUTH_PROVIDERS.join(", ")} (got '${provider}')`);
 }
 
-/** `env` (bare `--set`) is headless and never prompts; `env-or-prompt` (no `--set`) falls back to a
- *  TTY prompt. The token itself is read at acquisition time, not here. */
-type GhTokenSource =
-  | { kind: "inline"; token: string }
-  | { kind: "env" }
-  | { kind: "env-or-prompt" };
-
 /** Auto is never a flag value: it is what `choose` may SETTLE to (SettledGhAccount), carrying the
  *  active login so the narration names the account in use when gh reports one. */
 type GhCliAccountChoice =
@@ -100,10 +98,12 @@ type SettledGhAccount =
   | { kind: "auto"; activeLogin: string | null }
   | { kind: "pinned"; login: string };
 
+/** gh-token's null token means "prompt for a paste"; the env read is gh-env's whole job. */
 type ResolvedAcquisition =
   | { kind: "copilot" }
   | { kind: "gh-cli"; account: GhCliAccountChoice }
-  | { kind: "gh-token"; source: GhTokenSource };
+  | { kind: "gh-token"; token: string | null }
+  | { kind: "gh-env" };
 
 /** A `--set` token can only travel inside the gh-token variant, and a `--gh-user` pin inside the
  *  gh-cli one, so `authenticate` cannot receive either under the wrong provider and silently drop
@@ -113,7 +113,9 @@ export type CredentialAcquisition = { kind: "choose" } | ResolvedAcquisition;
 function acquisitionForProvider(provider: AuthProvider): ResolvedAcquisition {
   switch (provider) {
     case "gh-token":
-      return { kind: "gh-token", source: { kind: "env-or-prompt" } };
+      return { kind: "gh-token", token: null };
+    case "gh-env":
+      return { kind: "gh-env" };
     case "gh-cli":
       return { kind: "gh-cli", account: { kind: "choose" } };
     case "copilot":
@@ -129,7 +131,7 @@ function acquisitionForProvider(provider: AuthProvider): ResolvedAcquisition {
  *  --set conflict (`setConflictWins`). */
 export function parseAcquisition(
   provider: string | undefined,
-  set: string | boolean | undefined,
+  set: string | undefined,
   ghUser: string | undefined,
   opts: { setConflictWins?: boolean } = {},
 ): CredentialAcquisition {
@@ -158,15 +160,7 @@ export function parseAcquisition(
     if (!isGhToken) {
       throw new Error("--set only applies to `--provider gh-token`");
     }
-    // Commander's `--set [token]` never produces `false`, but a negatable flag must not silently
-    // turn into "read the env".
-    if (set === false) {
-      throw new Error("`--set` requires a token value");
-    }
-    return {
-      kind: "gh-token",
-      source: typeof set === "string" ? { kind: "inline", token: set } : { kind: "env" },
-    };
+    return { kind: "gh-token", token: set };
   }
   if (provider === undefined) return { kind: "choose" };
   return acquisitionForProvider(asProvider(provider));
@@ -176,13 +170,15 @@ export function parseAcquisition(
 const PROVIDER_PICKER_DETAIL: Record<AuthProvider, string> = {
   "copilot": "device-flow browser login (read:user scope)",
   "gh-cli": "use the machine's `gh auth login`",
-  "gh-token": `store ${ghTokenEnvVarsLabel(" / ")} (headless)`,
+  "gh-token": "paste a GitHub token",
+  "gh-env": `copy a token from ${ghTokenEnvVarsLabel(" / ")} (headless)`,
 };
 
 async function chooseProvider(): Promise<AuthProvider> {
   if (!process.stdin.isTTY) {
     throw new Error(
-      `not a terminal - pass --provider ${PROVIDER_CHOICES} (e.g. \`agent auth --provider gh-token\`)`,
+      `not a terminal - pass --provider ${PROVIDER_CHOICES} (e.g. \`--provider gh-env\`, or ` +
+        "`--set <token>`)",
     );
   }
   const value = await consola.prompt("How should GitHub Copilot authenticate?", {
@@ -382,38 +378,67 @@ function readSecret(query: string): Promise<string> {
 async function promptForGhToken(): Promise<string> {
   if (!process.stdin.isTTY) {
     throw new Error(
-      `no GitHub token found: pass \`--set <token>\` or set one of ${ghTokenEnvVarsList()}`,
+      "no GitHub token given: pass `--set <token>`, or use `--provider gh-env` to copy one of " +
+        ghTokenEnvVarsList(),
     );
   }
-  const token = (await readSecret("Paste your Copilot-enabled GitHub token: ")).trim();
+  return await readSecret("Paste your Copilot-enabled GitHub token: ");
+}
+
+// The account is a LABEL, never a gate: a look that missed says why and the token is used anyway.
+// "Using", never "Stored": persistence is the caller's single store write, which `agent profile
+// --add` commits later, atomically with the profile's mode, and which could still fail after this
+// prints.
+async function loginWithGhToken(inline: string | null): Promise<string> {
+  const token = (inline ?? await promptForGhToken()).trim();
   if (token === "") throw new Error("the provided GitHub token is empty");
+  const look = await githubLoginLook(token);
+  logger.success(`  Using the provided GitHub token (${describeLoginLook(look)}).`);
   return token;
 }
 
-async function loginWithGhToken(source: GhTokenSource): Promise<string> {
-  let token: string;
-  let fromEnv = true;
-  if (source.kind === "env-or-prompt") {
-    const envToken = ghTokenFromEnv();
-    if (envToken) {
-      token = envToken;
-    } else {
-      token = await promptForGhToken();
-      fromEnv = false;
-    }
-  } else {
-    token = tokenFromSetFlag(source.kind === "inline" ? source.token : true);
-    fromEnv = source.kind !== "inline";
+/** Most specific first when nobody can choose: one var set, or no TTY. A TTY with several set gets the
+ *  menu, each var labelled with the account GitHub says it belongs to. */
+async function chooseEnvToken(): Promise<GhEnvToken & { look: GithubLoginLook }> {
+  const found = ghTokensInEnv();
+  const first = found[0];
+  if (first === undefined) {
+    throw new Error(`no GitHub token in the environment: set one of ${ghTokenEnvVarsList()}`);
   }
-  // "Using", never "Stored": persistence is the caller's single store write, which `agent profile
-  // --add` commits later, atomically with the profile's mode, and which could still fail after this
-  // prints.
-  logger.success(
-    fromEnv
-      ? "  Using the GitHub token from the environment."
-      : "  Using the provided GitHub token.",
+  if (found.length === 1 || !process.stdin.isTTY) {
+    if (found.length > 1) {
+      logger.info(
+        `  ${found.length} of ${ghTokenEnvVarsLabel(", ")} are set; taking $${first.name} ` +
+          "(the most specific). Run this in a terminal to pick another.",
+      );
+    }
+    return { ...first, look: await githubLoginLook(first.token) };
+  }
+  const looked = await Promise.all(
+    found.map(async (candidate) => ({
+      ...candidate,
+      look: await githubLoginLook(candidate.token),
+    })),
   );
-  return token;
+  const value = await consola.prompt("Which environment token should GitHub Copilot use?", {
+    type: "select",
+    options: looked.map((candidate) => ({
+      label: `$${candidate.name} - ${describeLoginLook(candidate.look)}`,
+      value: candidate.name,
+    })),
+    cancel: "reject",
+  });
+  const chosen = looked.find((candidate) => candidate.name === String(value));
+  if (chosen === undefined) throw new Error(`no such environment token: ${String(value)}`);
+  return chosen;
+}
+
+async function loginWithGhEnv(): Promise<string> {
+  const chosen = await chooseEnvToken();
+  logger.success(
+    `  Using the GitHub token from $${chosen.name} (${describeLoginLook(chosen.look)}).`,
+  );
+  return chosen.token;
 }
 
 /** `activeLogin` names the account an auto slot follows right now, when the account list was
@@ -467,7 +492,10 @@ export async function acquireCredential(
     ? acquisitionForProvider(await chooseProvider())
     : acquisition;
   if (resolved.kind === "gh-token") {
-    return { kind: "stored", provider: "gh-token", token: await loginWithGhToken(resolved.source) };
+    return { kind: "stored", provider: "gh-token", token: await loginWithGhToken(resolved.token) };
+  }
+  if (resolved.kind === "gh-env") {
+    return { kind: "stored", provider: "gh-env", token: await loginWithGhEnv() };
   }
   if (resolved.kind === "copilot") {
     return { kind: "stored", provider: "copilot", token: loginWithCopilot() };

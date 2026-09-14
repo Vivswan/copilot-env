@@ -23,6 +23,7 @@ import { parseStopAction, runStop } from "../src/commands/stop.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState, partialSlotGap } from "../src/copilot_api/env_state.ts";
+import { setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
 import {
   CopilotApiPaths,
@@ -39,7 +40,13 @@ import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, resetExitCode, stageRefusedStop } from "./helpers.ts";
+import {
+  envSnapshot,
+  isolateAgentHomes,
+  resetExitCode,
+  stageRefusedStop,
+  stubGithubLogins,
+} from "./helpers.ts";
 
 // Branded fixture names: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
@@ -57,10 +64,12 @@ beforeEach(() => {
   setIntegrationProbeFetch(() =>
     Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
   );
+  stubGithubLogins({ ghp_worktoken: "work-bot" });
 });
 
 afterEach(() => {
   setIntegrationProbeFetch(null);
+  setGithubLoginFetch(null);
   restoreEnv();
   // A check test's exit 1/2 must never leak into the whole `deno test` run.
   resetExitCode();

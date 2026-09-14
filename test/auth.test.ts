@@ -289,18 +289,18 @@ test("token acquisition narrates 'Using' + the account, never 'Stored' (persiste
   // atomically with the profile's mode, so a "Stored" claim at this point would
   // be false on that path (and premature even on the plain auth path).
   const inline = await captureStderr(() => runAuth({ set: "ghu_inline_value" }));
-  expect(inline).toContain("Using the provided GitHub token (account octocat).");
+  expect(inline).toContain("Using the provided GitHub token as octocat.");
   expect(inline).not.toContain("Stored");
   process.env.GH_TOKEN = "ghu_env_value";
   const fromEnv = await captureStderr(() => runAuth({ provider: "gh-env" }));
-  expect(fromEnv).toContain("Using the GitHub token from $GH_TOKEN (account octocat).");
+  expect(fromEnv).toContain("Using $GH_TOKEN as octocat.");
   expect(fromEnv).not.toContain("Stored");
-  // A missed look labels, never blocks: the token is still used and GitHub's verdict is shown.
-  const unknown = await captureStderr(() => runAuth({ set: "ghu_unlisted" }));
+  // A missed look labels, never blocks: the token is still used, shown by its ends with GitHub's verdict.
+  const unknown = await captureStderr(() => runAuth({ set: "ghu_unlisted_0123456789" }));
   expect(unknown).toContain(
-    "Using the provided GitHub token (account unknown: GitHub rejected the token (HTTP 401)).",
+    "Using the provided GitHub token = ghu_un...6789, unverified (GitHub rejected it, HTTP 401).",
   );
-  expect(state().read().githubToken).toBe("ghu_unlisted");
+  expect(state().read().githubToken).toBe("ghu_unlisted_0123456789");
 });
 
 test("githubLoginLook asks GraphQL for the viewer and reads a login, a 401, or an unreachable GitHub", async () => {
@@ -317,7 +317,7 @@ test("githubLoginLook asks GraphQL for the viewer and reads a login, a 401, or a
   expect(JSON.parse(String(request?.init?.body))).toEqual({ query: "query { viewer { login } }" });
   expect(await githubLoginLook("ghp_b", answer(401, '{"message":"Bad credentials"}'))).toEqual({
     login: null,
-    detail: "GitHub rejected the token (HTTP 401)",
+    detail: "GitHub rejected it, HTTP 401",
   });
   expect(await githubLoginLook("ghp_c", () => Promise.reject(new Error("ENOTFOUND")))).toEqual({
     login: null,

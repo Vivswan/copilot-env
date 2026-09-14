@@ -361,7 +361,7 @@ agent config --set codex-host true    # false removes the farm again
 - `--provider copilot` - GitHub device flow (`read:user` scope).
 - `--provider gh-cli` - use the machine's existing `gh` login.
 - `--provider gh-token` - paste a GitHub token; `--set <token>` stores one non-interactively.
-- `--provider gh-env` - copy a token from `$COPILOT_GITHUB_TOKEN` / `$GH_TOKEN` / `$GITHUB_TOKEN` (headless servers). Several set: a terminal picks, each var labelled with its GitHub account; headless takes the most specific.
+- `--provider gh-env` - copy a token from `$COPILOT_GITHUB_TOKEN` / `$GH_TOKEN` / `$GITHUB_TOKEN`. A terminal always shows the var and its GitHub account first: one set asks yes/no, several set get a menu. Headless takes the most specific (servers).
 - Every pasted or copied token is labelled with the account GitHub reports for it (GraphQL `viewer`, no `gh` needed); a lookup miss only changes the label.
 - `--get` / `--del` / `--check` - print, clear, or check that a credential resolves.
 

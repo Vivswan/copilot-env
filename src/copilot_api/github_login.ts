@@ -59,7 +59,7 @@ export async function githubLoginLook(
   } catch (e) {
     return { login: null, detail: `GitHub could not be reached: ${errMessage(e)}` };
   }
-  if (res.status === 401) return { login: null, detail: "GitHub rejected the token (HTTP 401)" };
+  if (res.status === 401) return { login: null, detail: "GitHub rejected it, HTTP 401" };
   if (!res.ok) return { login: null, detail: `GitHub answered HTTP ${res.status}` };
   let body: unknown;
   try {
@@ -68,9 +68,4 @@ export async function githubLoginLook(
     return { login: null, detail: `GitHub's answer could not be read: ${errMessage(e)}` };
   }
   return parseViewerLogin(body);
-}
-
-/** The one wording every surface uses next to a token: the picker rows and the "Using ..." line. */
-export function describeLoginLook(look: GithubLoginLook): string {
-  return look.login === null ? `account unknown: ${look.detail}` : `account ${look.login}`;
 }

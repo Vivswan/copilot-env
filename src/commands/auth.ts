@@ -34,11 +34,7 @@ import {
   ghTokenEnvVarsList,
   ghTokensInEnv,
 } from "../copilot_api/gh_cli.ts";
-import {
-  describeLoginLook,
-  type GithubLoginLook,
-  githubLoginLook,
-} from "../copilot_api/github_login.ts";
+import { type GithubLoginLook, githubLoginLook } from "../copilot_api/github_login.ts";
 import { CopilotApiPaths, profileHomeNames } from "../copilot_api/paths.ts";
 import {
   copilotApiArgv,
@@ -54,6 +50,7 @@ import {
   type ProfileName,
 } from "../copilot_api/profile.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
+import { cyan } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { withFileLockSync } from "../utils/file_lock.ts";
@@ -352,19 +349,24 @@ function loginWithCopilot(): string {
   });
 }
 
-/** consola's text prompt echoes input and has no masked variant, so readline runs with a muted
- *  output stream and the query goes to stderr, keeping `--get`'s stdout contract untouched. */
-function readSecret(query: string): Promise<string> {
+/** consola's text prompt echoes input and has no masked variant, and its confirm takes two lines, so
+ *  readline serves both: `secret` mutes the echo. The query goes to stderr, keeping `--get`'s stdout
+ *  contract untouched. */
+function readAnswer(query: string, secret: boolean): Promise<string> {
   return new Promise((resolve, reject) => {
     const muted = new Writable({
       write(_chunk, _encoding, callback) {
         callback();
       },
     });
-    const rl = createInterface({ input: process.stdin, output: muted, terminal: true });
-    process.stderr.write(query);
-    rl.question("", (answer) => {
-      process.stderr.write("\n");
+    const rl = createInterface({
+      input: process.stdin,
+      output: secret ? muted : process.stderr,
+      terminal: true,
+    });
+    if (secret) process.stderr.write(query);
+    rl.question(secret ? "" : query, (answer) => {
+      if (secret) process.stderr.write("\n");
       rl.close();
       resolve(answer);
     });
@@ -375,6 +377,19 @@ function readSecret(query: string): Promise<string> {
   });
 }
 
+async function confirmLine(question: string): Promise<boolean> {
+  const answer = (await readAnswer(`? ${question} [Y/n] `, false)).trim().toLowerCase();
+  return answer === "" || answer === "y" || answer === "yes";
+}
+
+/** `$VAR as login`, or when GitHub could not name the account, a glimpse of the token (its ends) so the
+ *  user can still tell which one it is, plus why. `subject` is the var or the pasted-token label. */
+function tokenLabel(subject: string, token: string, look: GithubLoginLook): string {
+  if (look.login !== null) return `${subject} as ${cyan(look.login)}`;
+  const glimpse = token.length > 12 ? `${token.slice(0, 6)}...${token.slice(-4)}` : token;
+  return `${subject} = ${glimpse}, unverified (${look.detail})`;
+}
+
 async function promptForGhToken(): Promise<string> {
   if (!process.stdin.isTTY) {
     throw new Error(
@@ -382,7 +397,7 @@ async function promptForGhToken(): Promise<string> {
         ghTokenEnvVarsList(),
     );
   }
-  return await readSecret("Paste your Copilot-enabled GitHub token: ");
+  return await readAnswer("Paste your Copilot-enabled GitHub token: ", true);
 }
 
 // The account is a LABEL, never a gate: a look that missed says why and the token is used anyway.
@@ -393,19 +408,19 @@ async function loginWithGhToken(inline: string | null): Promise<string> {
   const token = (inline ?? await promptForGhToken()).trim();
   if (token === "") throw new Error("the provided GitHub token is empty");
   const look = await githubLoginLook(token);
-  logger.success(`  Using the provided GitHub token (${describeLoginLook(look)}).`);
+  logger.success(`  Using ${tokenLabel("the provided GitHub token", token, look)}.`);
   return token;
 }
 
-/** Most specific first when nobody can choose: one var set, or no TTY. A TTY with several set gets the
- *  menu, each var labelled with the account GitHub says it belongs to. */
+/** A terminal sees the var and its account before the token is used; headless cannot ask, so it takes
+ *  the most specific var and says so. */
 async function chooseEnvToken(): Promise<GhEnvToken & { look: GithubLoginLook }> {
   const found = ghTokensInEnv();
   const first = found[0];
   if (first === undefined) {
     throw new Error(`no GitHub token in the environment: set one of ${ghTokenEnvVarsList()}`);
   }
-  if (found.length === 1 || !process.stdin.isTTY) {
+  if (!process.stdin.isTTY) {
     if (found.length > 1) {
       logger.info(
         `  ${found.length} of ${ghTokenEnvVarsLabel(", ")} are set; taking $${first.name} ` +
@@ -420,12 +435,16 @@ async function chooseEnvToken(): Promise<GhEnvToken & { look: GithubLoginLook }>
       look: await githubLoginLook(candidate.token),
     })),
   );
-  const value = await consola.prompt("Which environment token should GitHub Copilot use?", {
+  const row = (candidate: (typeof looked)[number]): string =>
+    tokenLabel(`$${candidate.name}`, candidate.token, candidate.look);
+  const only = looked.length === 1 ? looked[0] : undefined;
+  if (only !== undefined) {
+    if (!(await confirmLine(`Use ${row(only)}?`))) throw new Error("cancelled");
+    return only;
+  }
+  const value = await consola.prompt("Which token should GitHub Copilot use?", {
     type: "select",
-    options: looked.map((candidate) => ({
-      label: `$${candidate.name} - ${describeLoginLook(candidate.look)}`,
-      value: candidate.name,
-    })),
+    options: looked.map((candidate) => ({ label: row(candidate), value: candidate.name })),
     cancel: "reject",
   });
   const chosen = looked.find((candidate) => candidate.name === String(value));
@@ -435,9 +454,7 @@ async function chooseEnvToken(): Promise<GhEnvToken & { look: GithubLoginLook }>
 
 async function loginWithGhEnv(): Promise<string> {
   const chosen = await chooseEnvToken();
-  logger.success(
-    `  Using the GitHub token from $${chosen.name} (${describeLoginLook(chosen.look)}).`,
-  );
+  logger.success(`  Using ${tokenLabel(`$${chosen.name}`, chosen.token, chosen.look)}.`);
   return chosen.token;
 }
 

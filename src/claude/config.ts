@@ -25,12 +25,14 @@ import {
 } from "../agents/provider_mode.ts";
 import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { type EndpointSmoke, smokeDirectEndpoint } from "../copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   CODEX_EXEC_USER_AGENT,
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
 } from "../copilot_api/integration_identity.ts";
+import { parseCatalogModels } from "../copilot_api/models.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import {
   copilotApiResolvePort,
@@ -721,12 +723,21 @@ export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiri
   return { ownedDenyRemains: new OwnershipLedger().owns("webSearchDeny", settingsPath) };
 }
 
+/** Any advertised claude model proves the messages wire; capability order is irrelevant to a
+ *  1-token smoke. The `claude-` prefix is the same family contract discovery filters on. */
+export const CLAUDE_ENDPOINT_SMOKE: EndpointSmoke = {
+  wire: "messages",
+  pickModel: (body) => parseCatalogModels(body).find((m) => m.id.startsWith("claude-"))?.id ?? null,
+};
+
 /** Writes a throwaway direct config and runs `claude -p` against it (src/agents/live_probe.ts);
- *  false means the caller writes proxy. */
+ *  with no claude CLI on the machine the endpoint smoke judges the credential instead. False
+ *  means the caller writes proxy. */
 export function detectClaudeDirect(
   directIntegrationId: string | null,
+  ghToken: string | null,
   deps?: DirectProbeDeps,
-): boolean {
+): Promise<boolean> {
   return probeDirectWorks(
     CLAUDE_PROBE,
     (tmpHome) => {
@@ -736,6 +747,12 @@ export function detectClaudeDirect(
         credential: { kind: "command" },
       });
     },
+    ghToken === null
+      ? null
+      : () =>
+        smokeDirectEndpoint(CLAUDE_ENDPOINT_SMOKE, ghToken, codexUserAgent(), directIntegrationId, {
+          fetchImpl: deps?.fetchImpl,
+        }),
     deps,
   );
 }

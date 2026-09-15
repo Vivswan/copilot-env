@@ -343,7 +343,7 @@ test("runClaude direct/proxy round-trip cleans the other mode", async () => {
   expect(read().providerMode).toBe("direct");
 });
 
-test("detectClaudeDirect: the CLI and a passing smoke prompt decide; gh is optional", () => {
+test("detectClaudeDirect: the CLI and a passing smoke prompt decide; gh is optional", async () => {
   const home = tmpHome();
   // detectClaudeDirect writes a throwaway direct config; tmpHome() keeps it off any real state.
   void home;
@@ -352,21 +352,65 @@ test("detectClaudeDirect: the CLI and a passing smoke prompt decide; gh is optio
     runProbe: () => ({ ok: true }),
     retryDelayMs: 0,
   };
-  expect(detectClaudeDirect(null, ok)).toBe(true);
-  expect(detectClaudeDirect(null, { ...ok, runProbe: () => ({ ok: false }) })).toBe(false);
+  expect(await detectClaudeDirect(null, null, ok)).toBe(true);
+  expect(await detectClaudeDirect(null, null, { ...ok, runProbe: () => ({ ok: false }) })).toBe(
+    false,
+  );
+  // No CLI and no credential leaves nothing to check: the proxy, before any call.
   expect(
-    detectClaudeDirect(null, {
+    await detectClaudeDirect(null, null, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
     }),
   ).toBe(false);
   // A pasted or device-flow token needs no gh on the machine.
   expect(
-    detectClaudeDirect(null, {
+    await detectClaudeDirect(null, null, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
     }),
   ).toBe(true);
+});
+
+test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the credential over the wiring's own headers", async () => {
+  const home = tmpHome();
+  void home;
+  const requests: { url: string; headers: Record<string, string>; body: unknown }[] = [];
+  const fetchImpl = (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      headers: { ...(init?.headers as Record<string, string>) },
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
+    });
+    const catalog = { data: [{ "id": "gpt-6" }, { "id": "claude-fable-5" }] };
+    return Promise.resolve(
+      new Response(requests.length === 1 ? JSON.stringify(catalog) : "{}", { status: 200 }),
+    );
+  };
+  const verdict = await detectClaudeDirect("copilot-developer-cli", "ghu_tok", {
+    findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
+    runProbe: () => ({ ok: false }), // must never run: no CLI was found
+    retryDelayMs: 0,
+    fetchImpl,
+  });
+  expect(verdict).toBe(true);
+  expect(requests.length).toBe(2);
+  const [catalogReq, ping] = requests as [typeof requests[0], typeof requests[0]];
+  // Both requests carry the wiring's exact identity: the same credential under other headers can
+  // be rejected, so a bare fetch would mint a verdict for a request Claude never sends.
+  for (const r of [catalogReq, ping]) {
+    expect(r.headers["Authorization"]).toBe("Bearer ghu_tok");
+    expect(r.headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
+  }
+  expect(catalogReq.url).toBe("https://api.githubcopilot.com/models");
+  expect(ping.url).toBe("https://api.githubcopilot.com/v1/messages");
+  expect(ping.headers["anthropic-version"]).toBe("2023-06-01");
+  // The 1-token ping on the first claude model: gpt-6 is not on Claude's wire.
+  expect(ping.body).toEqual({
+    "model": "claude-fable-5",
+    "max_tokens": 1,
+    "messages": [{ "role": "user", "content": "x" }],
+  });
 });
 
 test("configureClaudeConfig refuses to overwrite a malformed settings.json", () => {

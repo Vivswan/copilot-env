@@ -495,7 +495,7 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
   expect(wiring(proxyHome).credential).toBe("command");
 });
 
-test("detectCodexDirect: the CLI and a passing smoke prompt decide; gh is optional", () => {
+test("detectCodexDirect: the CLI and a passing smoke prompt decide; gh is optional", async () => {
   isolate();
   // A runProbe spy lets us prove the CLI gate short-circuits BEFORE the (here
   // simulated) model call.
@@ -508,15 +508,17 @@ test("detectCodexDirect: the CLI and a passing smoke prompt decide; gh is option
     },
     retryDelayMs: 0,
   };
-  expect(detectCodexDirect(null, ok)).toBe(true);
+  expect(await detectCodexDirect(null, null, ok)).toBe(true);
   expect(probeCalls).toBe(1);
   // The live read-only prompt failed -> proxy.
-  expect(detectCodexDirect(null, { ...ok, runProbe: () => ({ ok: false }) })).toBe(false);
+  expect(await detectCodexDirect(null, null, { ...ok, runProbe: () => ({ ok: false }) })).toBe(
+    false,
+  );
 
-  // A missing CLI returns false WITHOUT calling runProbe.
+  // A missing CLI with no credential returns false WITHOUT calling runProbe.
   probeCalls = 0;
   expect(
-    detectCodexDirect(null, {
+    await detectCodexDirect(null, null, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "codex" ? null : `/bin/${c}` }),
     }),
@@ -525,12 +527,75 @@ test("detectCodexDirect: the CLI and a passing smoke prompt decide; gh is option
 
   // A pasted or device-flow token needs no gh on the machine: the probe still runs.
   expect(
-    detectCodexDirect(null, {
+    await detectCodexDirect(null, null, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
     }),
   ).toBe(true);
   expect(probeCalls).toBe(1);
+});
+
+test("detectCodexDirect: with no codex CLI the endpoint smoke pings the first codex-servable model on /responses", async () => {
+  isolate();
+  const requests: { url: string; body: unknown }[] = [];
+  const fetchImpl = (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
+    });
+    // claude-fable-5 is first but not on the /responses wire; gpt-6-mini is picker-disabled.
+    const catalog = {
+      data: [
+        {
+          "id": "claude-fable-5",
+          "capabilities": {
+            "type": "chat",
+            "limits": { "max_context_window_tokens": 200000, "max_prompt_tokens": 190000 },
+          },
+          "model_picker_enabled": true,
+          "supported_endpoints": ["/v1/messages"],
+        },
+        {
+          "id": "gpt-6-mini",
+          "capabilities": {
+            "type": "chat",
+            "limits": { "max_context_window_tokens": 128000, "max_prompt_tokens": 120000 },
+          },
+          "model_picker_enabled": false,
+          "supported_endpoints": ["/responses"],
+        },
+        {
+          "id": "gpt-6",
+          "capabilities": {
+            "type": "chat",
+            "limits": { "max_context_window_tokens": 272000, "max_prompt_tokens": 260000 },
+          },
+          "model_picker_enabled": true,
+          "supported_endpoints": ["/responses"],
+        },
+      ],
+    };
+    return Promise.resolve(
+      new Response(requests.length === 1 ? JSON.stringify(catalog) : "{}", { status: 200 }),
+    );
+  };
+  const verdict = await detectCodexDirect(null, "ghu_tok", {
+    findCommand: (c: string) => ({ path: c === "codex" ? null : `/bin/${c}` }),
+    runProbe: () => ({ ok: false }), // must never run: no CLI was found
+    retryDelayMs: 0,
+    fetchImpl,
+  });
+  expect(verdict).toBe(true);
+  expect(requests.map((r) => r.url)).toEqual([
+    "https://api.githubcopilot.com/models",
+    "https://api.githubcopilot.com/responses",
+  ]);
+  expect(requests[1]?.body).toEqual({
+    "model": "gpt-6",
+    "input": "x",
+    "stream": false,
+    "max_output_tokens": 16,
+  });
 });
 
 test("proxy mode rejects a base_url containing invalid characters", () => {

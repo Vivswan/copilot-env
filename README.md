@@ -383,7 +383,7 @@ Classic and fine-grained PATs can't perform the proxy's editor token exchange. S
 - Direct bakes the GitHub credential (`gh-cli` is resolved once, at write time); proxy bakes the daemon's own API key.
 - The value does not follow a credential change: re-run `agent init` (or `agent profile --add <name>`) after `agent auth`.
 - Proxy mode loses the resolver's side effects: the daemon is not auto-started and no idle heartbeat is recorded. Start it with `agent start`, or launch through `cl` / `cx`, which do.
-- `agent claude --check`, `agent codex --check`, and `agent health` report the static shape as wired.
+- `agent claude --check`, `agent codex --check`, and `agent health` report the static shape as wired. `agent health` also warns when the baked value no longer matches the store (or the daemon's key), naming the rewire.
 
 ### Profiles
 

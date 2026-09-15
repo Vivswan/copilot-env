@@ -250,11 +250,19 @@ export type LiveProbeFacts =
   | { kind: "ok"; cli: string }
   | { kind: "failed"; cli: string; detail: string };
 
+/** Static wiring only: whether the baked value still equals what the wiring would bake now.
+ *    fresh      -> equal to the store's token (direct) or the daemon's API key (proxy)
+ *    stale      -> differs; the next wiring pass fixes it
+ *    unchecked  -> nothing to compare against: a gh-cli slot (resolved live), no store token or
+ *                  daemon key, or a store that could not be read */
+export type BakedCredentialFreshness = "fresh" | "stale" | "unchecked";
+
 /** Codex wiring facts: the home being inspected plus the wiring contract status. */
 export type CodexFacts = CodexWiringStatus & {
   home: string;
   directAuth: CodexDirectAuthFacts;
-  /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. */
+  /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. Omitted for a
+   *  static wiring, which consults no store. */
   provider?: AuthProvider | null;
   /** Narrowed named runs only: the profile's mode recorded in the store slot (the source of
    *  truth its wiring derives from); a wiring whose managed mode disagrees is an interrupted
@@ -264,6 +272,8 @@ export type CodexFacts = CodexWiringStatus & {
    *  wiring execs it AND the store classifies the credential as a stored token. Distinct from
    *  the wiring's own `directUsesToken` (a pure CONFIG fact); computed by directAuthFor. */
   directNeedsNoGh: boolean;
+  /** Present only for a static wiring. */
+  bakedCredential?: BakedCredentialFreshness;
 };
 
 /** Claude wiring facts: the home + settings.json contract + gh-auth (for direct). */
@@ -271,13 +281,16 @@ export type ClaudeFacts = ClaudeWiringStatus & {
   home: string;
   settingsPath: string;
   directAuth: CodexDirectAuthFacts;
-  /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. */
+  /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. Omitted for a
+   *  static wiring, which consults no store. */
   provider?: AuthProvider | null;
   /** Narrowed named runs only: the profile's recorded mode (see CodexFacts). */
   expectedMode?: ProfileMode | null;
   /** Direct mode only: a GitHub token is provisioned in the store, so the resolver (`agent auth
    *  --get`) needs no `gh` login. Always false outside direct. */
   directUsesToken: boolean;
+  /** Present only for a static wiring. */
+  bakedCredential?: BakedCredentialFreshness;
 };
 
 export interface CodexHostFacts {

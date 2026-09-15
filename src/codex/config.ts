@@ -263,6 +263,28 @@ function isStaticAuthorization(table: unknown): boolean {
 /** Which managed credential shape the table carries; "none" is a foreign or missing one. */
 export type CodexManagedCredential = "command" | "static" | "none";
 
+/** The bearer a static write baked into `profile`'s provider table, for the health freshness
+ *  compare only (the inspector never carries the value). Null unless the file parses and the table
+ *  holds the static shape. */
+export function bakedCodexToken(
+  configToml: TextReadResult,
+  profile: Profile = null,
+): string | null {
+  if (configToml.kind !== "text") return null;
+  let doc: unknown;
+  try {
+    doc = parse(configToml.text);
+  } catch {
+    return null;
+  }
+  const providers = isRecord(doc) ? doc.model_providers : undefined;
+  const table = isRecord(providers) ? providers[codexProviderId(profile)] : undefined;
+  if (!isStaticAuthorization(table) || !isRecord(table) || !isRecord(table.http_headers)) {
+    return null;
+  }
+  return String(table.http_headers[AUTHORIZATION_HEADER]).slice("Bearer ".length);
+}
+
 // === wiring inspection (inverse of the write contract above) ===
 //
 // Lives HERE, next to the managed provider tables, so `agent health` and `agent codex` share one

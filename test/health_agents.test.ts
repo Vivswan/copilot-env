@@ -541,6 +541,14 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
   const codexUnwired = checkCodex({ ...codexDirectStatic, providerWired: false });
   expect(codexUnwired.status).toBe("warn");
   expect(codexUnwired.fix).toBe("agent codex --direct");
+  // A baked value the store has moved past warns with the same rewire; "unchecked" only says so.
+  const codexStale = checkCodex({ ...codexDirectStatic, bakedCredential: "stale" });
+  expect(codexStale.status).toBe("warn");
+  expect(codexStale.detail).toContain("out of step with the store, re-run `agent codex --direct`");
+  expect(codexStale.fix).toBe("agent codex --direct");
+  const codexUnchecked = checkCodex({ ...codexDirectStatic, bakedCredential: "unchecked" });
+  expect(codexUnchecked.status).toBe("ok");
+  expect(codexUnchecked.detail).toContain("freshness not checked");
 
   const codexProxy = checkCodex({
     ...codexDirectStatic,
@@ -597,6 +605,16 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
   expect(claudeProxy.detail).toContain("ANTHROPIC_AUTH_TOKEN");
   expect(claudeProxy.detail).toContain("`agent start`");
   expect(claudeProxy.detail).not.toContain("apiKeyHelper");
+  // A proxy key the daemon has re-minted since the wire warns with the proxy rewire.
+  const claudeProxyStale = checkClaude({
+    ...claudeDirectStatic,
+    providerMode: "proxy",
+    baseUrl: "http://localhost:4141",
+    baseUrlMatches: true,
+    bakedCredential: "stale",
+  });
+  expect(claudeProxyStale.status).toBe("warn");
+  expect(claudeProxyStale.fix).toBe("agent claude --proxy");
   const claudeProxyWork = checkClaude(
     {
       ...claudeDirectStatic,

@@ -202,7 +202,9 @@ export class CopilotApiConfig {
     return isRecord(auth) ? auth : null;
   }
 
-  ensureApiKey(): string {
+  /** The daemon's first API key, or null when none was ever minted. Read-only: health compares a
+   *  baked static key against it without creating one. */
+  apiKey(): string | null {
     const auth = this.readAuth();
     if (auth) {
       const keys = auth.apiKeys;
@@ -210,6 +212,12 @@ export class CopilotApiConfig {
         return String(keys[0]);
       }
     }
+    return null;
+  }
+
+  ensureApiKey(): string {
+    const existing = this.apiKey();
+    if (existing !== null) return existing;
     // Generated INSIDE update() with a re-check, so two concurrent creators that both saw "missing"
     // converge on ONE key - unless update()'s best-effort lock times out and both write unlocked.
     let result = "";

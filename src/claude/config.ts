@@ -193,6 +193,17 @@ function directHeadersShape(customHeaders: string | null): boolean {
     );
 }
 
+/** The baked ANTHROPIC_AUTH_TOKEN of a settings file, for the health freshness compare only: the
+ *  inspector never carries the value, so no status object or report can print it. Null unless the
+ *  file parses and holds a non-empty token. */
+export function bakedClaudeToken(settings: TextReadResult): string | null {
+  if (settings.kind !== "text") return null;
+  const doc = parseJsonRecord(settings.text);
+  const env = doc !== null && isRecord(doc.env) ? doc.env : null;
+  const token = env === null ? null : readStringField(env, AUTH_TOKEN_ENV);
+  return token === null || token === "" ? null : token;
+}
+
 // --- wiring inspection (pure) -----------------------------------------------
 
 /**

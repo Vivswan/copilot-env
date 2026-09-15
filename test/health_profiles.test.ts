@@ -1007,7 +1007,33 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
     expect(staticShape.codex?.credential).toBe("static");
     expect(staticShape.codex?.directNeedsNoGh).toBe(true);
     expect(ghProbes).toBe(1);
+    // The store is not consulted for a static wiring: no provider fact, and a gh-cli slot has no
+    // stored value to compare the baked one against.
+    expect(staticShape.codex?.provider).toBeUndefined();
+    expect(staticShape.codex?.bakedCredential).toBe("unchecked");
     expect(evaluateAll("codex", staticShape)[0]?.status).toBe("ok");
+
+    // Freshness is the ONE store question a static wiring asks: equal to the stored token is
+    // fresh; a rotated store (agent auth after the wire) is stale and names the profile's rewire.
+    store.commitProfile(P, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok-p" },
+      mode: "direct",
+    });
+    const fresh = await gatherFacts("codex", { profile: P }, ghCounting);
+    expect(fresh.codex?.bakedCredential).toBe("fresh");
+    expect(evaluateAll("codex", fresh)[0]?.status).toBe("ok");
+    store.commitProfile(P, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok-rotated" },
+      mode: "direct",
+    });
+    const stale = await gatherFacts("codex", { profile: P }, ghCounting);
+    expect(stale.codex?.bakedCredential).toBe("stale");
+    const staleResult = evaluateAll("codex", stale)[0];
+    expect(staleResult?.status).toBe("warn");
+    expect(staleResult?.detail).toContain("out of step with the store");
+    expect(staleResult?.detail).not.toContain("tok-");
+    expect(staleResult?.fix).toBe(`agent profile --add ${P}`);
+    expect(ghProbes).toBe(1);
   } finally {
     restoreEnv();
     removeDir(home);

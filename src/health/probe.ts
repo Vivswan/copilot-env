@@ -16,12 +16,24 @@ import {
 import { defaultSetupNeedsProxy } from "../agents/wiring.ts";
 import { claudeDesktopStatus } from "../agents/claude_desktop.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
-import { BASE_URL_ENV, type ClaudeWiringStatus, inspectClaudeWiring } from "../claude/config.ts";
+import {
+  bakedClaudeToken,
+  BASE_URL_ENV,
+  type ClaudeWiringStatus,
+  inspectClaudeWiring,
+} from "../claude/config.ts";
 import type { ClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
+import {
+  bakedCodexToken,
+  CODEX_ENV_KEY,
+  type CodexWiringStatus,
+  inspectCodexWiring,
+} from "../codex/config.ts";
 import { type CodexHostFarm, codexHostFarm, effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
+import { CopilotApiConfig } from "../copilot_api/config.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   allProfileNames,
@@ -77,6 +89,7 @@ import { PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";
 import {
   type AutoupdateStatus,
+  type BakedCredentialFreshness,
   classifyPortState,
   type ClaudeFacts,
   type CodexDirectAuthFacts,
@@ -169,6 +182,11 @@ export interface ProbeDeps {
   codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts>;
   /** True when a GitHub token is provisioned in the store (Direct needs no gh then). */
   storedTokenPresent(): boolean;
+  /** The slot's stored token VALUE (null for gh-cli or none), compared against a baked static
+   *  credential and never reported; throws when the store cannot be read. */
+  storedToken(profile: Profile): string | null;
+  /** The profile daemon's minted API key, or null when none exists yet. Read-only. */
+  proxyApiKey(profile: Profile): string | null;
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token` | `gh-env`), or null. */
   authProvider(): AuthProvider | null;
   /** The default slot's gh-cli account pin, or null (= follow gh's active account). */
@@ -459,6 +477,11 @@ export function defaultProbeDeps(): ProbeDeps {
     codexTokenInEnviron: () => Boolean(process.env[CODEX_ENV_KEY]),
     codexDirectAuth,
     storedTokenPresent: () => new CopilotEnvState().read().githubToken !== null,
+    storedToken: (profile) => {
+      const credential = new Credential(undefined, profile).read();
+      return credential.kind === "stored" ? credential.token : null;
+    },
+    proxyApiKey: (profile) => CopilotApiConfig.forProfile(profile).apiKey(),
     authProvider: () => new CopilotEnvState().read().authProvider,
     defaultGhUser: () => new CopilotEnvState().read().ghUser,
     ghActiveLogin: ghActiveLoginProbe,
@@ -840,6 +863,32 @@ export async function gatherFacts(
     }
   };
 
+  // A static wiring holds the credential itself, so the store is consulted for ONE thing only:
+  // whether the baked value is what a rewire would bake now. A store or daemon home that cannot
+  // answer reads "unchecked", never a failure of the agent check (the value in the config is what
+  // the agent uses) and never "fresh".
+  const bakedFreshness = (
+    mode: "direct" | "proxy",
+    baked: string | null,
+  ): BakedCredentialFreshness => {
+    if (baked === null) return "unchecked";
+    try {
+      const expected = mode === "proxy" ? deps.proxyApiKey(profile) : deps.storedToken(profile);
+      if (expected === null) return "unchecked";
+      return expected === baked ? "fresh" : "stale";
+    } catch {
+      return "unchecked";
+    }
+  };
+
+  // The store facts the checks frame a credential miss with. A static wiring omits them: it
+  // resolves nothing at request time, so an unreadable store must not fail its agent check.
+  const storeFacts = (credential: "command" | "static" | "none" | null) =>
+    credential === "static" ? {} : {
+      provider: runCredential().provider,
+      ...(profile === null ? {} : { expectedMode: runCredential().mode }),
+    };
+
   const jobs: Promise<void>[] = [];
 
   if (SCOPE_RUNTIME.includes(scope)) {
@@ -953,8 +1002,15 @@ export async function gatherFacts(
         );
         facts.codex = {
           ...codexFacts,
-          provider: runCredential().provider,
-          ...(profile === null ? {} : { expectedMode: runCredential().mode }),
+          ...storeFacts(wiring.credential),
+          ...(wiring.credential === "static"
+            ? {
+              bakedCredential: bakedFreshness(
+                wiring.providerMode === "direct" ? "direct" : "proxy",
+                bakedCodexToken(configRead, profile),
+              ),
+            }
+            : {}),
         };
       })(),
     );
@@ -975,8 +1031,15 @@ export async function gatherFacts(
         );
         facts.claude = {
           ...evalClaude(home, directAuth, noGhNeeded, wiring, profile),
-          provider: runCredential().provider,
-          ...(profile === null ? {} : { expectedMode: runCredential().mode }),
+          ...storeFacts(wiring.credential),
+          ...(wiring.credential === "static"
+            ? {
+              bakedCredential: bakedFreshness(
+                wiring.providerMode === "direct" ? "direct" : "proxy",
+                bakedClaudeToken(settingsRead),
+              ),
+            }
+            : {}),
         };
         // The Desktop library spans the default AND every profile, so it is judged once, on the
         // whole-environment run only.

@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.0.9](https://github.com/Vivswan/copilot-env/compare/v4.0.8...v4.0.9) (2026-09-15)
+
+
+### Features
+
+* **config:** add static-key to bake the credential into agent configs ([#222](https://github.com/Vivswan/copilot-env/issues/222)) ([4f08be3](https://github.com/Vivswan/copilot-env/commit/4f08be326304730df7f9ba9c2bd8bdf6dd77dfac))
+
+
+### Bug Fixes
+
+* **auth:** every wiring command logs in first, auto probes the stored credential ([#218](https://github.com/Vivswan/copilot-env/issues/218)) ([8444fb7](https://github.com/Vivswan/copilot-env/commit/8444fb750f68ec767651005138b5fd442fe3b719))
+* **claude:** make agent init alone wire a working Claude Desktop ([#221](https://github.com/Vivswan/copilot-env/issues/221)) ([d553ef9](https://github.com/Vivswan/copilot-env/commit/d553ef9c354ce2eeb3fa36b28d6394e205783025))
+
 ## [4.0.8](https://github.com/Vivswan/copilot-env/compare/v4.0.7...v4.0.8) (2026-09-15)
 
 

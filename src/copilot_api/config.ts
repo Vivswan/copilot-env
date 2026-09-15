@@ -37,11 +37,10 @@ const LOAD_RETRY_ATTEMPTS = 5;
 const LOAD_RETRY_MS = 4;
 
 /** V8's JSON.parse message quotes the source around the fault, unescaped, and these stores hold
- *  the GitHub token and the daemon keys: only the error class and the position survive. */
-function redactJsonDiagnostic(e: unknown): string {
-  const position = String(e).match(/ at position \d+/);
-  return `SyntaxError${position === null ? "" : position[0]}`;
-}
+ *  the GitHub token and the daemon keys, so NOTHING of the parser's message is forwarded: even a
+ *  position lifted out of it could be a copy of the file's text. */
+const JSON_PARSE_DIAGNOSTIC =
+  "SyntaxError; the parser's message is withheld, the file may hold keys";
 
 // update()'s read-modify-write takes a best-effort `<file>.lock` (utils/file_lock.ts): the CLI, the daemon
 // shims, and several shells write the SAME store, and BOUNDED_LOCK_POLICY proceeds WITHOUT the lock after
@@ -111,12 +110,12 @@ export class CopilotApiConfig {
           // path: a write-back would discard it.
           if (isRecord(data)) return { kind: "doc", data };
           return { kind: "unparseable", error: "the JSON root is not an object" };
-        } catch (e) {
+        } catch {
           if (retryTorn && !last) {
             sleepSync(LOAD_RETRY_MS);
             continue;
           }
-          return { kind: "unparseable", error: redactJsonDiagnostic(e) };
+          return { kind: "unparseable", error: JSON_PARSE_DIAGNOSTIC };
         }
       }
       // An empty read may be the daemon's truncate window.

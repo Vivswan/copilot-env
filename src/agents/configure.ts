@@ -184,8 +184,10 @@ export interface AgentAdapter {
   check(): void;
   /** Live Direct probe behind "auto": can the stored credential use Direct from this machine?
    *  The scratch config bakes `directIntegrationId` so the smoke call sends the same request the
-   *  real wiring would; without it a PAT that needs `copilot-developer-cli` fails the probe. */
-  detectDirect(directIntegrationId: string | null): boolean;
+   *  real wiring would; without it a PAT that needs `copilot-developer-cli` fails the probe.
+   *  `ghToken` (the credential runAgentConfig already resolved) feeds the CLI-less endpoint smoke
+   *  (src/copilot_api/endpoint_smoke.ts); null disables that fallback, never the CLI probe. */
+  detectDirect(directIntegrationId: string | null, ghToken: string | null): Promise<boolean>;
   /** The DEFAULT credential's direct client identity (config pin, else probe). On the adapter
    *  because this module must not import the per-agent probe machinery. */
   resolveDirectIdentity(ghToken: string | null): Promise<string | null>;
@@ -256,7 +258,7 @@ async function resolveDefaultMode(
     );
     return { mode: "proxy" };
   }
-  return resolveDirectMode(mode, () => adapter.detectDirect(directIntegrationId))
+  return (await resolveDirectMode(mode, () => adapter.detectDirect(directIntegrationId, ghToken)))
     ? { mode: "direct", directIntegrationId }
     : { mode: "proxy" };
 }

@@ -17,6 +17,7 @@ import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import {
   claudeDesktopInstalled,
+  type DesktopAppState,
   desktopConfigPayload,
   desktopEntryName,
   desktopHelperBody,
@@ -28,6 +29,7 @@ import {
   META_FILENAME,
   type OwnedDesktopEntry,
   presentDesktopHelperScripts,
+  readDesktopAppState,
   readFileOrNull,
   readOwnedLibrary,
   recordedModelRows,
@@ -92,6 +94,10 @@ export type ClaudeDesktopStatus =
     /** Ledger claims under the library `_meta.json` no longer lists (interrupted removals),
      *  attributed like the listed entries. */
     unlisted: DesktopClaim[];
+    /** The entry `_meta.json` names as applied: the one the app uses at launch. Null when it names
+     *  none or a missing row. */
+    applied: { path: string; name: string } | null;
+    app: DesktopAppState;
   });
 
 /** Read-only port resolution: nothing is written or reserved. The caller supplies the targets (the
@@ -121,6 +127,7 @@ export function inspectClaudeDesktopWiring(
   } catch (e) {
     return { ...base, kind: "unjudged", reason: errMessage(e) };
   }
+  const appliedRow = library.meta.entries.find((e) => e.id === library.meta.appliedId);
   const status: ClaudeDesktopStatus = {
     ...base,
     kind: "inspected",
@@ -129,6 +136,10 @@ export function inspectClaudeDesktopWiring(
     entries: [],
     orphans: [],
     unlisted,
+    applied: appliedRow === undefined
+      ? null
+      : { path: join(dir, `${appliedRow.id}.json`), name: appliedRow.name },
+    app: readDesktopAppState(),
   };
   if (!base.enabled || !base.installed) return status;
   if (resolution.kind === "unresolvable") {
@@ -347,6 +358,58 @@ export function renderClaudeDesktopStatus(
         break;
       default:
         assertNever(e.verdict);
+    }
+  }
+  if (status.entries.length > 0) {
+    // App-side facts. What a rewire WRITES (deploymentMode, Developer Mode, an empty applied slot)
+    // is reported once an entry exists (wired or stale): a missing entry's own fix writes them. What a rewire
+    // LEAVES ALONE (an unreadable app file, a user's own applied config) is reported whatever the
+    // entries say, since no rewire is the repair. The app files come first in the fixes: the
+    // in-app switch needs the Developer menu they turn on.
+    const hasExistingEntry = status.entries.some((e) => e.verdict.kind !== "missing");
+    if (status.app.kind === "unreadable") {
+      lines.push(`${status.app.path} is ${status.app.reason}; the app's launch mode is unknown`);
+      fixes.add(`repair ${status.app.path}, then re-run \`agent claude\``);
+    } else if (hasExistingEntry) {
+      if (status.app.deploymentMode !== "3p") {
+        lines.push(
+          `the app will show the sign-in chooser at launch (deploymentMode ${
+            status.app.deploymentMode ?? "unset"
+          })`,
+        );
+        fixes.add("agent claude");
+      }
+      if (!status.app.developerMode) {
+        lines.push("Developer Mode is off (no Developer menu)");
+        fixes.add("agent claude");
+      }
+    }
+    const applied = status.applied;
+    if (applied === null) {
+      if (hasExistingEntry) {
+        lines.push("no entry is applied in the app");
+        fixes.add("agent claude");
+      }
+    } else if (status.owned.some((o) => o.path === applied.path)) {
+      if (hasExistingEntry) lines.push(`applied in the app: "${applied.name}"`);
+    } else {
+      // The switch is the user's to make, to an entry a CURRENT target promises (the default's
+      // when promised, else the first profile's), by the name the app shows for it. An entry that
+      // does not exist yet has no name to give: its wire may adopt a same-gateway entry under
+      // THAT entry's name, so the switch is named once the entry is there.
+      lines.push(`the app applies "${applied.name}" (not a copilot-env entry)`);
+      const target = status.entries.find((e) => e.profile === null) ?? status.entries[0];
+      if (target !== undefined && "path" in target.verdict) {
+        fixes.add(
+          `in Claude Desktop (reopened): Developer > Configure Third-Party Inference..., select "${
+            nameAt(target.verdict.path) ?? desktopEntryName(target.profile)
+          }", Save & Restart`,
+        );
+      } else {
+        fixes.add(
+          "after that wire, `agent claude --check` names the entry to select in Claude Desktop",
+        );
+      }
     }
   }
   for (const { path } of status.unlisted) {

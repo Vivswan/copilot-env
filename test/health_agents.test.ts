@@ -659,13 +659,17 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
     owned: [{ name: "copilot-env", path: "/lib/a.json", profile: null }],
     entries: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["entries"],
     orphans: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["orphans"],
+    applied: { path: "/lib/a.json", name: "copilot-env" },
+    app: { kind: "read" as const, developerMode: true, deploymentMode: "3p" as const },
   };
   const wired = checkClaudeDesktop({
     ...inspected,
     entries: [{ profile: null, mode: "direct", verdict: { kind: "wired", path: "/lib/a.json" } }],
   });
   expect(wired.status).toBe("ok");
-  expect(wired.detail).toBe(`"copilot-env" (direct) wired at /lib/a.json`);
+  expect(wired.detail).toBe(
+    `"copilot-env" (direct) wired at /lib/a.json\napplied in the app: "copilot-env"`,
+  );
   expect(wired.fix).toBeUndefined();
   // The `--json` contract: each entry's verdict flattened beside its target.
   expect(wired.value?.entries).toEqual([
@@ -681,7 +685,7 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
   });
   expect(missing.status).toBe("warn");
   expect(missing.detail).toBe(
-    `"copilot-env" (direct) wired at /lib/a.json\n"copilot-env: work" (proxy) missing`,
+    `"copilot-env" (direct) wired at /lib/a.json\n"copilot-env: work" (proxy) missing\napplied in the app: "copilot-env"`,
   );
   expect(missing.fix).toBe("agent profile --add work");
 
@@ -715,6 +719,8 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
     unlisted: [{ path: "/lib/gone.json", profile: old }],
     entries: [],
     orphans: [{ name: "copilot-env: old", path: "/lib/o.json", profile: old }],
+    applied: { path: "/lib/a.json", name: "copilot-env" },
+    app: { kind: "read", developerMode: true, deploymentMode: "3p" },
   });
   const unreadable = checkClaudeDesktop({
     kind: "unreadable",

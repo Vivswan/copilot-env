@@ -5,7 +5,12 @@
 // display name is the user's.
 //   macOS:    ~/Library/Application Support/Claude-3p/configLibrary/<uuid>.json
 //   Windows:  %LOCALAPPDATA%\Claude-3p\configLibrary\<uuid>.json
+//   Linux:    ${XDG_CONFIG_HOME:-~/.config}/Claude-3p/configLibrary/<uuid>.json
 //   index:    _meta.json = {appliedId, entries:[{id,name}]}
+// Two app files beside the library decide what the app does with the entry at launch (both are
+// what the app itself writes when the user clicks through; see wireClaudeDesktopAppFiles):
+//   Claude-3p/claude_desktop_config.json  deploymentMode "3p"  -> boots third-party, no sign-in chooser
+//   Claude/developer_settings.json        allowDevTools true   -> Developer menu (the 3p copy too)
 // Desktop discovers models at `<gateway>/v1/models`, hardcoded: Copilot Direct 404s it, so direct
 // entries carry an explicit inferenceModels list; the proxy serves it, so proxy entries discover.
 import { existsSync, readdirSync, statSync } from "node:fs";
@@ -41,6 +46,7 @@ import {
   WINDOWS_DEVICE_NAME_RE,
 } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
+import { appRunning, type AppScan } from "../utils/app_scan.ts";
 import { entryAbsent, isEnoentOrNotdir, readTextResult } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -58,17 +64,59 @@ const WIN = process.platform === "win32";
  *  so the suite floor points it at a non-created dir and the whole suite sees no Desktop. */
 export const CLAUDE_DESKTOP_DIR_ENV = "COPILOT_ENV_CI_CLAUDE_DESKTOP_DIR";
 
+/** The environment the app's data dirs derive from, one field per platform. */
+export interface DesktopEnv {
+  localAppData?: string;
+  appData?: string;
+  xdgConfigHome?: string;
+}
+
+function desktopEnv(): DesktopEnv {
+  return {
+    localAppData: process.env.LOCALAPPDATA,
+    appData: process.env.APPDATA,
+    xdgConfigHome: process.env.XDG_CONFIG_HOME,
+  };
+}
+
+/** Electron's userData root on Linux. The XDG spec reads an EMPTY variable as unset. */
+function linuxConfigRoot(home: string, env: DesktopEnv): string {
+  return env.xdgConfigHome || join(home, ".config");
+}
+
 /** Platform-parameterized so every branch runs on every CI runner. */
-export function desktopDataDirFor(
-  platform: string,
-  home: string,
-  localAppData: string | undefined,
-): string | null {
+export function desktopDataDirFor(platform: string, home: string, env: DesktopEnv): string | null {
   if (platform === "darwin") return join(home, "Library", "Application Support", "Claude-3p");
   if (platform === "win32") {
-    return localAppData ? join(localAppData, "Claude-3p") : null;
+    return env.localAppData ? join(env.localAppData, "Claude-3p") : null;
   }
+  if (platform === "linux") return join(linuxConfigRoot(home, env), "Claude-3p");
   return null;
+}
+
+/** The app's default (claude.ai) data dir. Developer Mode is read from here even in third-party
+ *  mode: the app resolves developer_settings.json before it switches its data dir to Claude-3p.
+ *  Electron's default userData is the ROAMING AppData on Windows, unlike the Claude-3p dir. */
+export function desktopStandardDataDirFor(
+  platform: string,
+  home: string,
+  env: DesktopEnv,
+): string | null {
+  if (platform === "darwin") return join(home, "Library", "Application Support", "Claude");
+  if (platform === "win32") {
+    return env.appData ? join(env.appData, "Claude") : null;
+  }
+  if (platform === "linux") return join(linuxConfigRoot(home, env), "Claude");
+  return null;
+}
+
+/** Under the seam, the standard dir is the seam's `-1p` sibling. */
+export function resolveDesktopDataDirs(): { data: string; standard: string } | null {
+  const seam = seamDir();
+  if (seam !== null) return { data: seam, standard: `${seam}-1p` };
+  const data = desktopDataDirFor(process.platform, homedir(), desktopEnv());
+  const standard = desktopStandardDataDirFor(process.platform, homedir(), desktopEnv());
+  return data === null || standard === null ? null : { data, standard };
 }
 
 export function desktopLibraryDirUnder(dataDir: string): string {
@@ -89,25 +137,28 @@ function seamDir(): string | null {
 export function resolveDesktopLibraryDir(): string | null {
   const seam = seamDir();
   if (seam !== null) return desktopLibraryDirUnder(seam);
-  const dataDir = desktopDataDirFor(process.platform, homedir(), process.env.LOCALAPPDATA);
+  const dataDir = desktopDataDirFor(process.platform, homedir(), desktopEnv());
   return dataDir === null ? null : desktopLibraryDirUnder(dataDir);
 }
 
-/** The data dir counts as installed too: an app installed somewhere unusual that has run. */
+/** Either data dir counts as installed too: an app installed somewhere unusual that has run. On
+ *  Linux (no fixed install path) that is the only signal. */
 export function desktopAppInstalledFor(
   platform: string,
   exists: (path: string) => boolean,
   home: string,
-  localAppData: string | undefined,
+  env: DesktopEnv,
 ): boolean {
-  const dataDir = desktopDataDirFor(platform, home, localAppData);
-  if (dataDir !== null && exists(dataDir)) return true;
+  for (const dir of [desktopDataDirFor, desktopStandardDataDirFor]) {
+    const dataDir = dir(platform, home, env);
+    if (dataDir !== null && exists(dataDir)) return true;
+  }
   if (platform === "darwin") {
     return exists("/Applications/Claude.app") || exists(join(home, "Applications", "Claude.app"));
   }
   if (platform === "win32") {
-    return localAppData !== undefined &&
-      exists(join(localAppData, "AnthropicClaude", "claude.exe"));
+    return env.localAppData !== undefined &&
+      exists(join(env.localAppData, "AnthropicClaude", "claude.exe"));
   }
   return false;
 }
@@ -115,7 +166,7 @@ export function desktopAppInstalledFor(
 export function claudeDesktopInstalled(): boolean {
   const seam = seamDir();
   if (seam !== null) return existsSync(seam);
-  return desktopAppInstalledFor(process.platform, existsSync, homedir(), process.env.LOCALAPPDATA);
+  return desktopAppInstalledFor(process.platform, existsSync, homedir(), desktopEnv());
 }
 
 // --- entry naming + classification ----------------------------------------------
@@ -263,17 +314,23 @@ export function desktopModelLabel(id: string): string {
 export const DESKTOP_DISPLAY_NAME = "GitHub Copilot";
 
 /** The profile selector rides along so a named profile's web search resolves ITS credential (a
- *  named profile never falls back to the default). The value shape is the app's
- *  claude_desktop_config.json mcpServers vocabulary; if a Desktop release rejects it, the config
- *  window flags the key and the rest of the entry still applies: inference never depends on it. */
-function managedMcpServers(profile: Profile, existing: unknown): Record<string, unknown> {
+ *  named profile never falls back to the default). Rows are Desktop's documented managedMcpServers
+ *  shape (an ARRAY; an object keyed by name is rejected as invalid_type and silently dropped).
+ *  Foreign rows survive by name; a value of any other shape is our own former object and goes. */
+const MCP_SERVER_NAME = "copilot-env";
+function managedMcpServers(profile: Profile, existing: unknown): Record<string, unknown>[] {
   const { command, args } = agentLauncherCommand(
     profile === null ? ["mcp", "--serve"] : ["mcp", "--serve", "--profile", profile],
   );
-  return {
-    ...(isRecord(existing) ? existing : {}),
-    "copilot-env": { "command": command, "args": args },
-  };
+  const foreign = Array.isArray(existing)
+    ? existing.filter((row): row is Record<string, unknown> =>
+      isRecord(row) && row["name"] !== MCP_SERVER_NAME
+    )
+    : [];
+  return [
+    ...foreign,
+    { "name": MCP_SERVER_NAME, "transport": "stdio", "command": command, "args": args },
+  ];
 }
 
 /** The ONE strip both payload branches apply, so a stale managed header survives neither a mode
@@ -300,6 +357,11 @@ export type DesktopPayloadOptions = ManagedWrite & {
  *  rename. */
 export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string, unknown> {
   const doc: Record<string, unknown> = { ...(opts.existing ?? {}) };
+  // inferenceProvider is what activates third-party mode: without it the app treats the entry as
+  // incomplete and boots into claude.ai sign-in. The credential kind pins the helper as the ONLY
+  // source (no static-key fallback).
+  doc["inferenceProvider"] = "gateway";
+  doc["inferenceCredentialKind"] = "helper-script";
   doc["inferenceGatewayBaseUrl"] = opts.baseUrl;
   doc["inferenceCredentialHelper"] = opts.helperPath;
   // The proxy helper may float and launch the daemon on first call, so it gets headroom.
@@ -423,6 +485,105 @@ export function helperExecutable(path: string): boolean {
 export function retireDesktopHelperScript(mode: ProfileMode, profile: Profile): void {
   const other: ProfileMode = mode === "direct" ? "proxy" : "direct";
   removeReported(desktopHelperPath(resolveRootHome(), other, profile));
+}
+
+// --- app files -----------------------------------------------------------------------
+
+/** The app's process name, for the running scan. */
+export const CLAUDE_DESKTOP_PROCESS = "Claude";
+const APP_CONFIG_FILENAME = "claude_desktop_config.json";
+const DEVELOPER_SETTINGS_FILENAME = "developer_settings.json";
+
+export type DesktopDeploymentMode = "3p" | "1p";
+
+/** What the app will do at its next launch, read from the two app files. `deploymentMode` null is
+ *  "unset": the app shows the sign-in chooser. A file that cannot be read or parsed is its own
+ *  kind: a rewire leaves such a file alone (mergeAppFile), so the repair is the file itself. */
+export type DesktopAppState =
+  | { kind: "read"; developerMode: boolean; deploymentMode: DesktopDeploymentMode | null }
+  | { kind: "unreadable"; path: string; reason: string };
+
+/** A merge that keeps the file's other keys (claude_desktop_config.json holds the user's MCP
+ *  servers and preferences). An unparseable file is left alone and reported: rebuilding it would
+ *  destroy those. */
+function mergeAppFile(path: string, patch: Record<string, unknown>, detail: string): void {
+  const existing = readAppFile(path);
+  if (typeof existing === "string") {
+    logger.warn(`  Claude Desktop: ${path} is ${existing}; leaving it alone.`);
+    return;
+  }
+  saveJsonIfChanged(path, { ...existing, ...patch }, detail);
+}
+
+/** The two files the app itself writes when the user clicks "Continue" on the sign-in chooser and
+ *  "Enable Developer Mode": written with every entry wire so `agent init` alone leaves the app
+ *  ready. Never removed: once no applied entry names an inferenceProvider the app boots claude.ai
+ *  regardless, and Developer Mode is the user's. Both files are read at launch only. */
+function wireClaudeDesktopAppFiles(): void {
+  const dirs = resolveDesktopDataDirs();
+  if (dirs === null) return;
+  mergeAppFile(
+    join(dirs.data, APP_CONFIG_FILENAME),
+    { "deploymentMode": "3p" },
+    "Claude Desktop starts in third-party mode, no sign-in chooser",
+  );
+  for (const dir of [dirs.standard, dirs.data]) {
+    mergeAppFile(
+      join(dir, DEVELOPER_SETTINGS_FILENAME),
+      { "allowDevTools": true },
+      "Claude Desktop Developer Mode on",
+    );
+  }
+}
+
+/** The state the writer's merge would read: absent is an empty document; unreadable or malformed
+ *  is the file, named. */
+export function readDesktopAppState(): DesktopAppState {
+  const dirs = resolveDesktopDataDirs();
+  if (dirs === null) return { kind: "read", developerMode: false, deploymentMode: null };
+  const docs: Record<string, unknown>[] = [];
+  for (
+    const path of [
+      join(dirs.data, APP_CONFIG_FILENAME),
+      join(dirs.standard, DEVELOPER_SETTINGS_FILENAME),
+      join(dirs.data, DEVELOPER_SETTINGS_FILENAME),
+    ]
+  ) {
+    const doc = readAppFile(path);
+    if (typeof doc === "string") return { kind: "unreadable", path, reason: doc };
+    docs.push(doc);
+  }
+  const [config, ...developer] = docs;
+  const mode = config?.["deploymentMode"];
+  return {
+    kind: "read",
+    developerMode: developer.every((doc) => doc["allowDevTools"] === true),
+    deploymentMode: mode === "3p" || mode === "1p" ? mode : null,
+  };
+}
+
+/** The document, an empty one when the file is absent, or the reason it could not be one. */
+function readAppFile(path: string): Record<string, unknown> | string {
+  let raw: string | null;
+  try {
+    raw = readFileOrNull(path);
+  } catch (e) {
+    return errMessage(e);
+  }
+  if (raw === null) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return "not valid JSON";
+  }
+  return isRecord(parsed) ? parsed : "not a JSON object";
+}
+
+/** The app reads its files at launch only; a running app also rewrites claude_desktop_config.json
+ *  from memory on any preference save, which can undo deploymentMode. */
+export function claudeDesktopRunning(): Promise<AppScan> {
+  return appRunning(CLAUDE_DESKTOP_PROCESS);
 }
 
 // --- wiring ------------------------------------------------------------------------
@@ -639,11 +800,16 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   if (!configWritten && !opts.quiet) {
     logger.success(`  ${wiring} at ${configPath} already.`);
   }
-  if (meta.appliedId === null) meta.appliedId = entry.id;
+  // An applied slot that is empty, or names a row the library no longer lists, is ours to fill;
+  // a slot naming a live entry (a user's own config) is never displaced.
+  if (!meta.entries.some((e) => e.id === meta.appliedId)) meta.appliedId = entry.id;
   saveDesktopMeta(dir, meta);
   // Only a NEW claim is recorded, so the ledger write is a real change, never a byte-identical one.
   if (!owned) ledger.record("claudeDesktop", configPath);
   retireDesktopHelperScript(opts.mode, opts.profile);
+  // Last: the app files are independent of the entry, so a failure here (an unreadable
+  // developer_settings.json) leaves a complete, owned entry behind.
+  wireClaudeDesktopAppFiles();
 }
 
 /** The entry's recorded inferenceModels rows when they are OUR shape, else null (fetch). */
@@ -1016,16 +1182,25 @@ function removeOwnedEntries(
   const claims = claimsUnder(ledger, dir);
   const removedPaths: string[] = [];
   const kept: DesktopMetaEntry[] = [];
+  let removedApplied = false;
   for (const entry of meta.entries) {
     const configPath = join(dir, `${entry.id}.json`);
     if (claims.has(configPath) && selects({ entry, path: configPath })) {
       removedPaths.push(configPath);
-      if (meta.appliedId === entry.id) meta.appliedId = null;
+      if (meta.appliedId === entry.id) removedApplied = true;
     } else {
       kept.push(entry);
     }
   }
   if (removedPaths.length === 0) return "swept";
+  // The applied slot is handed to a remaining entry of ours (the default's first), never left
+  // empty: an empty slot boots the app into claude.ai sign-in, and only the non-quiet wire could
+  // refill it.
+  if (removedApplied) {
+    const ours = kept.filter((e) => claims.has(join(dir, `${e.id}.json`)));
+    const next = ours.find((e) => entryProfileAt(join(dir, `${e.id}.json`)) === null) ?? ours[0];
+    meta.appliedId = next?.id ?? null;
+  }
   meta.entries = kept;
   saveDesktopMeta(dir, meta);
   for (const path of removedPaths) {

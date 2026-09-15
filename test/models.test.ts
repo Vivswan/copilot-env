@@ -421,10 +421,12 @@ test("parseCatalogModels skips malformed entries and bodies, never throws", () =
   ]);
 });
 
-test("claudeCatalogRows: every Claude model, deduped, newest-first per family, defaults marked", () => {
+test("claudeCatalogRows: every Claude model, deduped, most capable family first then newest, defaults marked", () => {
   // 1m siblings arrive from parseCatalogModels with the SAME id (the display-only
-  // [1m] suffix stripped) and is1m true; the duplicate folds into one row.
+  // [1m] suffix stripped) and is1m true; the duplicate folds into one row. Desktop takes the
+  // first row as its default model, so haiku (alphabetically before opus) lands last.
   const rows = claudeCatalogRows([
+    { id: "claude-haiku-4-5", is1m: false },
     { id: "claude-opus-4-7", is1m: false },
     { id: "claude-opus-4-8", is1m: false },
     { id: "claude-opus-4-8", is1m: true },
@@ -437,6 +439,7 @@ test("claudeCatalogRows: every Claude model, deduped, newest-first per family, d
     { family: "opus", id: "claude-opus-4-8", is1m: true, familyDefault: true },
     { family: "opus", id: "claude-opus-4-7", is1m: false, familyDefault: false },
     { family: "sonnet", id: "claude-sonnet-4-6", is1m: false, familyDefault: true },
+    { family: "haiku", id: "claude-haiku-4-5", is1m: false, familyDefault: true },
   ]);
   expect(claudeCatalogRows([{ id: "gpt-4o", is1m: false }])).toEqual([]);
 });

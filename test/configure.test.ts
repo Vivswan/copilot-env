@@ -42,6 +42,8 @@ test("a proxy ManagedWrite cannot carry a direct integration id", () => {
 type Recorded = {
   identityCalls: number;
   probeIds: (string | null)[];
+  /** The credential detectDirect received: the CLI-less endpoint smoke dies silently without it. */
+  probeTokens: (string | null)[];
   writes: ManagedWrite[];
 };
 
@@ -49,14 +51,15 @@ function fakeAdapter(
   identity: () => Promise<string | null>,
   probeVerdict: boolean,
 ): { adapter: AgentAdapter; recorded: Recorded } {
-  const recorded: Recorded = { identityCalls: 0, probeIds: [], writes: [] };
+  const recorded: Recorded = { identityCalls: 0, probeIds: [], probeTokens: [], writes: [] };
   const adapter: AgentAdapter = {
     id: "claude",
     label: "Claude",
     check: () => {},
-    detectDirect(directIntegrationId) {
+    detectDirect(directIntegrationId, ghToken) {
       recorded.probeIds.push(directIntegrationId);
-      return probeVerdict;
+      recorded.probeTokens.push(ghToken);
+      return Promise.resolve(probeVerdict);
     },
     resolveDirectIdentity() {
       recorded.identityCalls++;
@@ -88,7 +91,12 @@ const CASES: {
     mode: "proxy",
     identity: accepted,
     probe: true,
-    expected: { identityCalls: 0, probeIds: [], writes: [{ mode: "proxy", credential: COMMAND }] },
+    expected: {
+      identityCalls: 0,
+      probeIds: [],
+      probeTokens: [],
+      writes: [{ mode: "proxy", credential: COMMAND }],
+    },
   },
   {
     name: "--direct bakes the identity without probing",
@@ -98,6 +106,7 @@ const CASES: {
     expected: {
       identityCalls: 1,
       probeIds: [],
+      probeTokens: [],
       writes: [{ mode: "direct", directIntegrationId: PAT_ID, credential: COMMAND }],
     },
   },
@@ -109,6 +118,7 @@ const CASES: {
     expected: {
       identityCalls: 1,
       probeIds: [PAT_ID],
+      probeTokens: ["ghp_x"],
       writes: [{ mode: "direct", directIntegrationId: PAT_ID, credential: COMMAND }],
     },
   },
@@ -120,6 +130,7 @@ const CASES: {
     expected: {
       identityCalls: 1,
       probeIds: [PAT_ID],
+      probeTokens: ["ghp_x"],
       writes: [{ mode: "proxy", credential: COMMAND }],
     },
   },
@@ -128,7 +139,12 @@ const CASES: {
     mode: "auto",
     identity: rejected,
     probe: true,
-    expected: { identityCalls: 1, probeIds: [], writes: [{ mode: "proxy", credential: COMMAND }] },
+    expected: {
+      identityCalls: 1,
+      probeIds: [],
+      probeTokens: [],
+      writes: [{ mode: "proxy", credential: COMMAND }],
+    },
   },
 ];
 

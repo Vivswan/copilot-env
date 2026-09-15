@@ -132,9 +132,10 @@ test("ghAuthVerdict: exit 0 proves auth, a completed nonzero disproves it, a dea
 
 // --- probeDirectWorks: a missing or uncheckable CLI ----------------------------
 //
-// Both fall back to the proxy without a model call, and a look that FAILED (the command probe
-// never completed) never borrows the proven arm's "not found" advice.
-test("probeDirectWorks: no CLI means proxy before any smoke call", () => {
+// With no endpoint smoke to consult, both miss arms fall back to the proxy without a model call,
+// and a look that FAILED (the command probe never completed) never borrows the proven arm's
+// "not found" advice.
+test("probeDirectWorks: no CLI and no endpoint smoke means proxy before any smoke call", async () => {
   let probeCalls = 0;
   const deps = {
     runProbe: () => {
@@ -143,24 +144,70 @@ test("probeDirectWorks: no CLI means proxy before any smoke call", () => {
     },
     retryDelayMs: 0,
   };
-  const missing = probeDirectWorks(FAKE_DESCRIPTOR, () => {}, {
+  const missing = await probeDirectWorks(FAKE_DESCRIPTOR, () => {}, null, {
     ...deps,
     findCommand: () => ({ path: null }),
   });
-  const failedLook = probeDirectWorks(FAKE_DESCRIPTOR, () => {}, {
+  const failedLook = await probeDirectWorks(FAKE_DESCRIPTOR, () => {}, null, {
     ...deps,
     findCommand: () => ({ path: null, launchFailed: true as const }),
   });
   expect([missing, failedLook, probeCalls]).toEqual([false, false, 0]);
 });
 
+// --- probeDirectWorks: the endpoint smoke decides when no CLI ran ---------------
+
+test("probeDirectWorks: a missing CLI consults the endpoint smoke, whose verdict decides", async () => {
+  // The uncheckable-look arm consults it too: the smoke needs no binary either way.
+  const cases: { launchFailed: boolean; smokeOk: boolean; expected: boolean }[] = [
+    { launchFailed: false, smokeOk: true, expected: true },
+    { launchFailed: false, smokeOk: false, expected: false },
+    { launchFailed: true, smokeOk: true, expected: true },
+  ];
+  for (const c of cases) {
+    let probeCalls = 0;
+    const verdict = await probeDirectWorks(
+      FAKE_DESCRIPTOR,
+      () => {},
+      () => Promise.resolve(c.smokeOk ? { ok: true } : { ok: false, detail: "401" }),
+      {
+        findCommand: () =>
+          c.launchFailed ? { path: null, launchFailed: true as const } : { path: null },
+        runProbe: () => {
+          probeCalls++;
+          return { ok: true };
+        },
+        retryDelayMs: 0,
+      },
+    );
+    expect({ ...c, verdict, probeCalls }).toEqual({ ...c, verdict: c.expected, probeCalls: 0 });
+  }
+});
+
+test("probeDirectWorks: a CLI that ran and failed is final; the endpoint smoke is never consulted", async () => {
+  // An endpoint that answers cannot prove the CLI's own auth path, so falling to it here would
+  // wire a Direct config the installed CLI just demonstrated it cannot use.
+  let smokeCalls = 0;
+  const ok = await probeDirectWorks(
+    FAKE_DESCRIPTOR,
+    () => {},
+    () => {
+      smokeCalls++;
+      return Promise.resolve({ ok: true });
+    },
+    passingDeps(() => ({ ok: false })),
+  );
+  expect([ok, smokeCalls]).toEqual([false, 0]);
+});
+
 // --- probeDirectWorks: retry on transient failure ---------------------------
 
-test("probeDirectWorks retries the live smoke call and succeeds once it passes", () => {
+test("probeDirectWorks retries the live smoke call and succeeds once it passes", async () => {
   let calls = 0;
-  const ok = probeDirectWorks(
+  const ok = await probeDirectWorks(
     FAKE_DESCRIPTOR,
     () => {}, // no-op writeDirectConfig
+    null,
     passingDeps(() => {
       calls++;
       return { ok: calls >= 3 };
@@ -170,11 +217,12 @@ test("probeDirectWorks retries the live smoke call and succeeds once it passes",
   expect(calls).toBe(3);
 });
 
-test("probeDirectWorks falls back after exhausting retries", () => {
+test("probeDirectWorks falls back after exhausting retries", async () => {
   let calls = 0;
-  const ok = probeDirectWorks(
+  const ok = await probeDirectWorks(
     FAKE_DESCRIPTOR,
     () => {},
+    null,
     passingDeps(() => {
       calls++;
       return { ok: false };
@@ -186,7 +234,7 @@ test("probeDirectWorks falls back after exhausting retries", () => {
 
 // --- probeDirectWorks: env sanitization -------------------------------------
 
-test("probeDirectWorks strips provider/CLI env families but keeps gh auth", () => {
+test("probeDirectWorks strips provider/CLI env families but keeps gh auth", async () => {
   process.env.ANTHROPIC_AUTH_TOKEN = "leaked-token";
   process.env.OPENAI_BASE_URL = "http://proxy.local";
   process.env.CODEX_API_KEY = "leaked-codex";
@@ -196,9 +244,10 @@ test("probeDirectWorks strips provider/CLI env families but keeps gh auth", () =
   process.env.GH_TOKEN = "keep-me"; // a gh-cli credential resolves through gh -- must survive
   try {
     let seen: Record<string, string> | null = null;
-    const ok = probeDirectWorks(
+    const ok = await probeDirectWorks(
       FAKE_DESCRIPTOR,
       () => {},
+      null,
       passingDeps((_cli, _args, env) => {
         seen = env;
         return { ok: true };

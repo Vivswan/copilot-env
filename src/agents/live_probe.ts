@@ -5,6 +5,7 @@
 // stored before this runs, and the temp config resolves it the way the real wiring will.
 //
 //   CLI present -> smoke prompt (retried) -> Direct, else the local proxy
+//   CLI absent  -> the caller's endpoint smoke (src/copilot_api/endpoint_smoke.ts), else the proxy
 //
 //   a provider env var in the shell        -> dropped, so a leaked export cannot hijack auth
 //   a failure past DEFAULT_PROBE_RETRIES   -> the proxy
@@ -13,6 +14,8 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
+import type { EndpointSmokeOutcome } from "../copilot_api/endpoint_smoke.ts";
+import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
@@ -121,6 +124,9 @@ export interface DirectProbeDeps {
   retries?: number;
   /** Base backoff ms between retries (default DEFAULT_PROBE_RETRY_DELAY_MS; 0 in tests). */
   retryDelayMs?: number;
+  /** Threaded by detect* into the endpoint smoke (src/copilot_api/endpoint_smoke.ts), never read
+   *  here, so its tests fetch nothing real. */
+  fetchImpl?: ProbeFetch;
 }
 
 /** Codex's model-catalog dump in probe output is noise, never the failure reason. Both failure
@@ -204,14 +210,19 @@ function defaultRunProbe(
  *  a bare PATH-only command name. gh is looked up only to lead the child PATH: a gh-cli
  *  credential's helper spawns it from inside the temp home, while a stored token needs no gh.
  *
+ *  `endpointSmoke` is the caller's CLI-less Direct check, consulted ONLY when no CLI ran (missing
+ *  or uncheckable); a CLI that ran and failed is the final verdict, since an endpoint that answers
+ *  cannot prove the CLI's own auth path. Null (no credential resolved) keeps the plain proxy fall.
+ *
  *   any failure from tmp home -> caught, false, and the caller wires the proxy
  *   temp-home removal fails   -> best effort; removeScratchDir reports the path left behind
  */
-export function probeDirectWorks(
+export async function probeDirectWorks(
   descriptor: ProbeDescriptor,
   writeDirectConfig: (tmpHome: string) => void,
+  endpointSmoke: (() => Promise<EndpointSmokeOutcome>) | null,
   deps: DirectProbeDeps = {},
-): boolean {
+): Promise<boolean> {
   const find = deps.findCommand ?? findCommand;
   const runProbe = deps.runProbe ?? defaultRunProbe;
   const retries = deps.retries ?? DEFAULT_PROBE_RETRIES;
@@ -220,14 +231,30 @@ export function probeDirectWorks(
   logger.log(`  Probing GitHub Copilot Direct for ${descriptor.cli} ...`);
 
   // A FAILED look never borrows the proven verdict's words: "not found" carries advice that is
-  // wrong when the look itself failed, so that arm says "could not check". Either miss falls
-  // back to the proxy, the safe direction.
+  // wrong when the look itself failed, so that arm says "could not check" and gives no install
+  // advice.
   const cliLook = find(descriptor.cli);
   if (cliLook.path === null) {
+    const look = cliLook.launchFailed
+      ? `could not check for the ${descriptor.cli} CLI (the command probe failed to run)`
+      : `${descriptor.cli} CLI not found`;
+    if (endpointSmoke === null) {
+      const advice = cliLook.launchFailed
+        ? ""
+        : " (install it with `agent shell --clis` and re-run to auto-detect Direct, or pass --direct)";
+      logger.log(`    • ${look} → using the local proxy${advice}`);
+      return false;
+    }
+    logger.log(`    • ${look} → asking the Copilot endpoint itself (1-token call) ...`);
+    const outcome = await endpointSmoke();
+    if (outcome.ok) {
+      logger.success(
+        `    GitHub Copilot Direct is available (endpoint check; no ${descriptor.cli} CLI ran)`,
+      );
+      return true;
+    }
     logger.log(
-      cliLook.launchFailed
-        ? `    • could not check for the ${descriptor.cli} CLI (the command probe failed to run) → using the local proxy`
-        : `    • ${descriptor.cli} CLI not found → using the local proxy (install it with \`agent shell --clis\` and re-run to auto-detect Direct, or pass --direct)`,
+      `    • the endpoint check did not succeed (${outcome.detail}) → using the local proxy`,
     );
     return false;
   }

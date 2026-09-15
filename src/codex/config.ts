@@ -14,6 +14,7 @@ import {
 import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
 import { type AgentProviderMode, providerModeExitCode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { type EndpointSmoke, smokeDirectEndpoint } from "../copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   CODEX_EXEC_USER_AGENT,
@@ -43,6 +44,7 @@ import {
   codexUserAgentVersion,
   generateCodexModelCatalog,
   inspectCatalogFile,
+  parseCopilotModels,
   UNVERIFIED_SUFFIX,
 } from "./catalog.ts";
 import { resolvesToCatalogFile, syncCodexCatalogReference } from "./catalog_reference.ts";
@@ -936,12 +938,26 @@ export function removeCodexDefaultWiring(codexHome: string): void {
   }
 }
 
+/** `codexServable` is the catalog's own "codex can drive it" mark (chat, picker-enabled, served on
+ *  /responses), so the smoke pings a model the generated catalog would offer. */
+export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
+  wire: "responses",
+  pickModel: (body) => {
+    for (const [id, model] of parseCopilotModels(body)) {
+      if (model.codexServable) return id;
+    }
+    return null;
+  },
+};
+
 /** Writes a throwaway direct config and runs `codex exec --sandbox read-only` against it
- *  (src/agents/live_probe.ts); false means the caller writes proxy. */
+ *  (src/agents/live_probe.ts); with no codex CLI on the machine the endpoint smoke judges the
+ *  credential instead. False means the caller writes proxy. */
 export function detectCodexDirect(
   directIntegrationId: string | null,
+  ghToken: string | null,
   deps?: DirectProbeDeps,
-): boolean {
+): Promise<boolean> {
   return probeDirectWorks(
     CODEX_PROBE,
     (tmpHome) => {
@@ -952,6 +968,12 @@ export function detectCodexDirect(
         credential: COMMAND_SHAPE,
       });
     },
+    ghToken === null
+      ? null
+      : () =>
+        smokeDirectEndpoint(CODEX_ENDPOINT_SMOKE, ghToken, codexUserAgent(), directIntegrationId, {
+          fetchImpl: deps?.fetchImpl,
+        }),
     deps,
   );
 }

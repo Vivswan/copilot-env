@@ -364,6 +364,7 @@ agent config --set codex-host true    # false removes the farm again
 - `--provider gh-env` - copy a token from `$COPILOT_GITHUB_TOKEN` / `$GH_TOKEN` / `$GITHUB_TOKEN`. A terminal always shows the var and its GitHub account first: one set asks yes/no, several set get a menu. Headless takes the most specific (servers).
 - Every pasted or copied token is labelled with the account GitHub reports for it (GraphQL `viewer`, no `gh` needed); a lookup miss only changes the label.
 - `--get` / `--del` / `--check` - print, clear, or check that a credential resolves.
+- Every wiring command (`agent init`, `agent codex`, `agent claude`) runs this picker first when nothing is stored, `--proxy` included. With no mode flag it then probes whether that credential can use Direct and falls back to the proxy when it cannot. Headless runs store a token beforehand with `--provider gh-env` or `--set <token>`.
 
 Classic and fine-grained PATs can't perform the proxy's editor token exchange. So `agent start` transparently enables a passthrough shim for PAT-shaped tokens, using the PAT as the bearer directly. Force it either way with `agent config --set passthrough on|off`.
 

@@ -27,7 +27,6 @@ import {
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { runMcp } from "../src/commands/mcp.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
@@ -239,31 +238,30 @@ test("runClaude direct/proxy round-trip cleans the other mode", async () => {
   expect(read().providerMode).toBe("direct");
 });
 
-test("detectClaudeDirect: true only when CLI+gh present, gh authed, and the probe succeeds", () => {
+test("detectClaudeDirect: the CLI and a passing smoke prompt decide; gh is optional", () => {
   const home = tmpHome();
   // detectClaudeDirect writes a throwaway direct config; tmpHome() keeps it off any real state.
   void home;
   const ok = {
     findCommand: (c: string) => ({ path: `/bin/${c}` }),
-    ghAuthOk: () => true as const,
     runProbe: () => ({ ok: true }),
     retryDelayMs: 0,
   };
-  expect(detectClaudeDirect(ok)).toBe(true);
-  expect(detectClaudeDirect({ ...ok, runProbe: () => ({ ok: false }) })).toBe(false);
-  expect(detectClaudeDirect({ ...ok, ghAuthOk: () => false })).toBe(false);
+  expect(detectClaudeDirect(null, ok)).toBe(true);
+  expect(detectClaudeDirect(null, { ...ok, runProbe: () => ({ ok: false }) })).toBe(false);
   expect(
-    detectClaudeDirect({
+    detectClaudeDirect(null, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
     }),
   ).toBe(false);
+  // A pasted or device-flow token needs no gh on the machine.
   expect(
-    detectClaudeDirect({
+    detectClaudeDirect(null, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
     }),
-  ).toBe(false);
+  ).toBe(true);
 });
 
 test("configureClaudeConfig refuses to overwrite a malformed settings.json", () => {
@@ -287,28 +285,6 @@ test("direct helper invokes `agent auth --get` and never bakes a token, still cl
   expect(helperCommand).toContain("auth");
   expect(helperCommand).toContain("--get");
   expect(helperCommand).not.toContain("gh auth token");
-});
-
-test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy still wins", async () => {
-  const home = tmpHome(); // also points COPILOT_API_HOME at an isolated dir
-  const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), 4141);
-
-  // A configured credential selects Direct with NO probe; the helper resolves it at fetch time
-  // (`agent auth --get`), so settings.json never carries the token.
-  new CopilotEnvState().setCredential(null, {
-    kind: "stored",
-    provider: "gh-token",
-    token: "ghu_stored",
-  });
-  await runClaude({ kind: "configure", mode: "auto" });
-  expect(read().providerMode).toBe("direct");
-  const helperCommand = String(readSettings(home).apiKeyHelper);
-  expect(helperCommand).not.toContain("ghu_stored");
-  expect(helperCommand).toContain("--get");
-
-  // --proxy still wins: proxy mode (the stored token is only used by the proxy).
-  await runClaude({ kind: "configure", mode: "proxy" });
-  expect(read().providerMode).toBe("proxy");
 });
 
 // --- the MCP + WebSearch-deny pair (default profile, direct wiring) -----------

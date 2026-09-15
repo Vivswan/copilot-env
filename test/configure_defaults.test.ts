@@ -91,8 +91,8 @@ test("an unmanaged pair (none/none) records null, never a managed mode", () => {
 
 // --- the CLI dispatch hooks, end-to-end (src/cli.ts) -------------------------------
 // Each test hand-wires the OTHER agent first, so the child's rewire is the transition that
-// creates agreement. A forced-proxy wire needs no credential, probe, or network, so the
-// children run offline.
+// creates agreement. A forced-proxy wire needs no probe or network, so the children run offline
+// on a stored token.
 
 function childCliEnv(codexHome: string, claudeHome: string): Record<string, string | undefined> {
   return {
@@ -103,7 +103,7 @@ function childCliEnv(codexHome: string, claudeHome: string): Record<string, stri
     USERPROFILE: dir,
     CODEX_HOME: codexHome,
     CLAUDE_CONFIG_DIR: claudeHome,
-    // No credential may leak in: the children must resolve auth to none.
+    // No credential may leak in from the shell: the store alone decides what the children see.
     COPILOT_GITHUB_TOKEN: undefined,
     GH_TOKEN: undefined,
     GITHUB_TOKEN: undefined,
@@ -119,7 +119,17 @@ function recordedMode(): string | undefined {
   return state.profiles?.default?.mode;
 }
 
+/** The wiring commands log in first; a stored token satisfies the gate headless. */
+function storeCredential(): void {
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_test",
+  });
+}
+
 test("`agent codex --proxy` lands the pair on agreement and records it", () => {
+  storeCredential();
   const claudeHome = makeClaudeHome("proxy");
   const run = runCli(["codex", "--proxy"], { env: childCliEnv(join(dir, ".codex"), claudeHome) });
   expect(run.exitCode).toBe(0);
@@ -127,8 +137,25 @@ test("`agent codex --proxy` lands the pair on agreement and records it", () => {
 });
 
 test("`agent claude --proxy` lands the pair on agreement and records it", () => {
+  storeCredential();
   const codexHome = makeCodexHome("proxy");
   const run = runCli(["claude", "--proxy"], { env: childCliEnv(codexHome, join(dir, ".claude")) });
   expect(run.exitCode).toBe(0);
   expect(recordedMode()).toBe("proxy");
+});
+
+// The gap this pins: `agent claude` on a fresh machine used to write proxy wiring that could
+// serve nothing, and only `agent init` asked for a login (and not for `--proxy`).
+test("a wiring command with no credential refuses headless and writes nothing", () => {
+  const codexHome = join(dir, ".codex");
+  const claudeHome = join(dir, ".claude");
+  const env = childCliEnv(codexHome, claudeHome);
+  for (const argv of [["claude", "--proxy"], ["codex"], ["init", "--proxy"]]) {
+    const run = runCli(argv, { env });
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain("Not authenticated yet");
+  }
+  expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
+  expect(existsSync(join(codexHome, "config.toml"))).toBe(false);
+  expect(recordedMode()).toBeUndefined();
 });

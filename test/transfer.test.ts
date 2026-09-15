@@ -403,8 +403,8 @@ test("a redacted bundle on a fresh machine imports prefs + proxy wiring, but no 
   expect(skipped).toContain("run `agent auth`");
   expect(skipped).toContain("agent profile --add work");
   expect(outcome.wiredProfiles).toEqual([]);
-  // Proxy default wiring is credential-independent (like `agent init --proxy`),
-  // so it re-derived even though no credential resolved.
+  // Proxy default wiring is credential-independent (the daemon logs in itself at
+  // `agent start`), so it re-derived even though no credential resolved.
   expect(outcome.modes).toEqual({ codex: "proxy", claude: "proxy" });
   expect(existsSync(settingsPathFor(machine2.claudeHome))).toBe(true);
   // The profile slot stayed untouched: no artifacts, no placeholder token,
@@ -471,7 +471,7 @@ test("an unresolvable slot leaves the existing store byte-identical", async () =
   expect(readFileSync(stateFile, "utf8")).toBe(before);
 });
 
-test("the credential gate is direct-only: proxy wires without one (like `agent init --proxy`)", async () => {
+test("the import's credential gate is direct-only: proxy wires without one", async () => {
   const machine = isolate();
   const bundle = parseSettingsBundle(
     rawBundle({

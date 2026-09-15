@@ -3,6 +3,7 @@
 // runAgentConfig, so the dependency edge points one way (agent file -> here) and cannot cycle.
 import { Credential } from "../copilot_api/credential.ts";
 import type { ProfileName } from "../copilot_api/profile.ts";
+import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { resolveDirectMode } from "./direct_detect.ts";
 import type { ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
@@ -127,8 +128,10 @@ export interface AgentAdapter {
   /** Prints the configured provider and sets the exit code (providerModeExitCode). Per-agent
    *  because the printed fields are (CODEX_HOME + config.toml vs settings.json + apiKeyHelper). */
   check(): void;
-  /** Live Direct auto-detect probe (the "auto" fallback when no credential is stored). */
-  detectDirect(): boolean;
+  /** Live Direct probe behind "auto": can the stored credential use Direct from this machine?
+   *  The scratch config bakes `directIntegrationId` so the smoke call sends the same request the
+   *  real wiring would; without it a PAT that needs `copilot-developer-cli` fails the probe. */
+  detectDirect(directIntegrationId: string | null): boolean;
   /** The DEFAULT credential's direct client identity (config pin, else probe). On the adapter
    *  because this module must not import the per-agent probe machinery. */
   resolveDirectIdentity(ghToken: string | null): Promise<string | null>;
@@ -157,9 +160,12 @@ export function configuringLine(subject: string, mode: ManagedAgentMode, suffix 
 
 /**
  * The credential and the direct identity are each resolved ONCE here and handed down, so the
- * write and every derived surface bake the same values without re-probing.
+ * probe, the write, and every derived surface bake the same values without re-probing.
  *
- *   explicit flag > stored credential selects Direct > live probe    (resolveDirectMode)
+ *   explicit flag > live probe of the stored credential    (resolveDirectMode)
+ *
+ * The identity comes BEFORE the probe: a credential rejected under every known identity cannot
+ * use Direct, which under "auto" is the proxy verdict, not a failure.
  */
 export async function runAgentConfig(
   adapter: AgentAdapter,
@@ -171,11 +177,28 @@ export async function runAgentConfig(
     return;
   }
   const ghToken = opts.ghToken !== undefined ? opts.ghToken : new Credential().resolve();
-  const direct = resolveDirectMode(action.mode, ghToken, () => adapter.detectDirect());
-  const mode: ManagedAgentMode = direct ? "direct" : "proxy";
-  logger.log(configuringLine(adapter.label, mode));
-  const write: ManagedWrite = mode === "direct"
-    ? { mode, directIntegrationId: await adapter.resolveDirectIdentity(ghToken) }
-    : { mode };
+  const write = await resolveDefaultWrite(adapter, action.mode, ghToken);
+  logger.log(configuringLine(adapter.label, write.mode));
   await adapter.configureDefault(write, ghToken);
+}
+
+async function resolveDefaultWrite(
+  adapter: AgentAdapter,
+  mode: RequestedMode,
+  ghToken: string | null,
+): Promise<ManagedWrite> {
+  if (mode === "proxy") return { mode };
+  let directIntegrationId: string | null;
+  try {
+    directIntegrationId = await adapter.resolveDirectIdentity(ghToken);
+  } catch (e) {
+    if (mode === "direct") throw e;
+    logger.log(
+      `  Copilot Direct rejects this credential → using the local proxy\n${errMessage(e)}`,
+    );
+    return { mode: "proxy" };
+  }
+  return resolveDirectMode(mode, () => adapter.detectDirect(directIntegrationId))
+    ? { mode: "direct", directIntegrationId }
+    : { mode: "proxy" };
 }

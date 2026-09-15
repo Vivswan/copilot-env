@@ -174,8 +174,8 @@ const PROVIDER_PICKER_DETAIL: Record<AuthProvider, string> = {
 async function chooseProvider(): Promise<AuthProvider> {
   if (!process.stdin.isTTY) {
     throw new Error(
-      `not a terminal - pass --provider ${PROVIDER_CHOICES} (e.g. \`--provider gh-env\`, or ` +
-        "`--set <token>`)",
+      `not a terminal - store a credential first with \`agent auth --provider ${PROVIDER_CHOICES}\` ` +
+        "(e.g. `agent auth --provider gh-env`) or `agent auth --set <token>`",
     );
   }
   const value = await consola.prompt("How should GitHub Copilot authenticate?", {

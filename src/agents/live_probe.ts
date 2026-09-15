@@ -1,10 +1,11 @@
-// The live "does Copilot Direct work?" probe behind `agent codex` / `agent claude` auto-detect
-// and `agent shell --clis`. Rather than guess, it writes a throwaway direct config into a temp
-// home and runs the agent CLI's own read-only smoke prompt against it; exit 0 means Direct works.
+// The live "does Copilot Direct work for THIS credential?" probe behind `agent codex` /
+// `agent claude` auto-detect. Not every account or token may use Direct, so rather than guess it
+// writes a throwaway direct config into a temp home and runs the agent CLI's own read-only smoke
+// prompt against it; exit 0 means Direct works. The command boundary ensured a credential is
+// stored before this runs, and the temp config resolves it the way the real wiring will.
 //
-//   CLI present -> gh authenticated -> smoke prompt (retried) -> Direct, else the local proxy
+//   CLI present -> smoke prompt (retried) -> Direct, else the local proxy
 //
-//   gh unauthenticated (the CI case)       -> the proxy, before any model call
 //   a provider env var in the shell        -> dropped, so a leaked export cannot hijack auth
 //   a failure past DEFAULT_PROBE_RETRIES   -> the proxy
 //   a FAILED attempt near PROBE_TIMEOUT_MS -> no further retry; a slow SUCCESS still wins
@@ -12,8 +13,6 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
-import { Credential } from "../copilot_api/credential.ts";
-import { ghAuthTokenSpawnSpec, ghAuthVerdict } from "../copilot_api/gh_cli.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
@@ -57,7 +56,7 @@ export interface ProbeDescriptor {
  *  override) cannot steer the test away from the throwaway config.
  *
  *    OPENAI_ / ANTHROPIC_ / CODEX_ / CLAUDE_ -> dropped; the home var is re-set AFTER the clear
- *    GH_ / GITHUB_                           -> kept: Direct mints its token via `gh auth token`
+ *    GH_ / GITHUB_                           -> kept: a gh-cli credential still resolves through gh
  *
  *  The health probe (src/health/probe.ts) strips none of these; it tests the real environment,
  *  dropping only ANTHROPIC_BASE_URL for a named profile (claudeLiveOmitEnv). */
@@ -116,29 +115,12 @@ export interface ProbeOutcome {
 export interface DirectProbeDeps {
   /** Look for a CLI binary on PATH / via nvm, failure arm kept (see CommandLook). */
   findCommand?: (cmd: string) => CommandLook;
-  /** Whether `gh auth token` succeeds for the DEFAULT credential's account pin
-   *  (null = gh's active account) -- given gh's RESOLVED path (nvm-safe).
-   *  "unproven" = the spawn never completed, so auth was never actually checked. */
-  ghAuthOk?: (ghPath: string, ghUser: string | null) => boolean | "unproven";
   /** Run the agent CLI's read-only smoke prompt at its RESOLVED path (ok = exit 0). */
   runProbe?: (cliPath: string, args: string[], env: Record<string, string>) => ProbeOutcome;
   /** Extra live-call retries on failure (default DEFAULT_PROBE_RETRIES). */
   retries?: number;
   /** Base backoff ms between retries (default DEFAULT_PROBE_RETRY_DELAY_MS; 0 in tests). */
   retryDelayMs?: number;
-}
-
-function defaultGhAuthOk(ghPath: string, ghUser: string | null): boolean | "unproven" {
-  const s = ghAuthTokenSpawnSpec(ghPath, ghUser);
-  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  const result = spawnSync(s.file, s.args, {
-    stdio: "ignore",
-    timeout: s.timeout,
-    windowsHide: true,
-    shell: s.shell,
-    env: s.env,
-  });
-  return ghAuthVerdict(result);
 }
 
 /** Codex's model-catalog dump in probe output is noise, never the failure reason. Both failure
@@ -218,10 +200,10 @@ function defaultRunProbe(
   };
 }
 
-/** The RESOLVED gh and CLI paths are threaded to the spawns, or findCommand's nvm fallback is
- *  defeated by a bare PATH-only command name.
+/** The RESOLVED CLI path is threaded to the spawn, or findCommand's nvm fallback is defeated by
+ *  a bare PATH-only command name. gh is looked up only to lead the child PATH: a gh-cli
+ *  credential's helper spawns it from inside the temp home, while a stored token needs no gh.
  *
- *   store unreadable          -> throws; that read sits before the try below
  *   any failure from tmp home -> caught, false, and the caller wires the proxy
  *   temp-home removal fails   -> best effort; removeScratchDir reports the path left behind
  */
@@ -231,16 +213,15 @@ export function probeDirectWorks(
   deps: DirectProbeDeps = {},
 ): boolean {
   const find = deps.findCommand ?? findCommand;
-  const ghAuthOk = deps.ghAuthOk ?? defaultGhAuthOk;
   const runProbe = deps.runProbe ?? defaultRunProbe;
   const retries = deps.retries ?? DEFAULT_PROBE_RETRIES;
   const retryDelayMs = deps.retryDelayMs ?? DEFAULT_PROBE_RETRY_DELAY_MS;
 
   logger.log(`  Probing GitHub Copilot Direct for ${descriptor.cli} ...`);
 
-  // A FAILED look never borrows a proven verdict's words: "not found" and "not authenticated"
-  // carry advice that is wrong when the look itself failed, so those arms say "could not
-  // check". Every miss still falls back to the proxy, the safe direction either way.
+  // A FAILED look never borrows the proven verdict's words: "not found" carries advice that is
+  // wrong when the look itself failed, so that arm says "could not check". Either miss falls
+  // back to the proxy, the safe direction.
   const cliLook = find(descriptor.cli);
   if (cliLook.path === null) {
     logger.log(
@@ -251,37 +232,7 @@ export function probeDirectWorks(
     return false;
   }
   const cliPath = cliLook.path;
-  const ghLook = find("gh");
-  if (ghLook.path === null) {
-    logger.log(
-      ghLook.launchFailed
-        ? "    • could not check for the GitHub CLI (gh) (the command probe failed to run) → using the local proxy"
-        : "    • GitHub CLI (gh) not found → using the local proxy",
-    );
-    return false;
-  }
-  const ghPath = ghLook.path;
-  logger.log("    • checking gh authentication ...");
-  // The gate checks the DEFAULT credential's own account pin (null = gh's active account): a
-  // pinned account must not read green off whichever account happens to be active. The smoke
-  // prompt below exercises the pin end-to-end regardless.
-  const defaultCredential = new Credential().read();
-  const ghUser = defaultCredential.kind === "gh-cli" ? defaultCredential.ghUser : null;
-  const ghAuth = ghAuthOk(ghPath, ghUser);
-  if (ghAuth === "unproven") {
-    logger.log(
-      "    • could not check gh authentication (`gh auth token` did not run to completion) → using the local proxy",
-    );
-    return false;
-  }
-  if (!ghAuth) {
-    logger.log(
-      ghUser === null
-        ? "    • gh is not authenticated (run `gh auth login`) → using the local proxy"
-        : `    • gh is not authenticated as account '${ghUser}' (run \`gh auth login\`) → using the local proxy`,
-    );
-    return false;
-  }
+  const ghPath = find("gh").path;
   logger.log(
     `    • running a read-only smoke prompt through ${descriptor.cli} (live model call, a few seconds) ...`,
   );
@@ -292,10 +243,13 @@ export function probeDirectWorks(
     writeDirectConfig(tmpHome);
     // Provider families stripped (why: PROVIDER_ENV_PREFIXES); the resolved CLI's and gh's bin
     // dirs lead PATH so an nvm-only toolchain resolves (why: childEnvWithPath).
-    const childEnv = childEnvWithPath([dirname(cliPath), dirname(ghPath)], {
-      extra: { [descriptor.homeEnvVar]: tmpHome },
-      omit: (upper) => PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)),
-    });
+    const childEnv = childEnvWithPath(
+      [dirname(cliPath), ghPath === null ? null : dirname(ghPath)],
+      {
+        extra: { [descriptor.homeEnvVar]: tmpHome },
+        omit: (upper) => PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)),
+      },
+    );
 
     const args = descriptor.args(PROBE_PROMPT, tmpHome);
     let lastDetail: string | undefined;

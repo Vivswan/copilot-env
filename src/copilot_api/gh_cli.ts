@@ -49,8 +49,8 @@ export const GH_COPILOT_HOST = "github.com";
 export const GH_LOGIN_RE = /^[A-Za-z0-9_-]{1,39}$/;
 
 /**
- * One recipe for the token capture, the Direct detect gate, and the health probe, so the command and
- * its timeout never drift.
+ * One recipe for the token capture and the health probe, so the command and its timeout never
+ * drift.
  *
  *   gh's RESOLVED path, its bin dir on PATH  -> an nvm-only or node-shim gh runs
  *   a Windows .cmd/.exe shim                 -> cliSpawn routes it through cmd.exe

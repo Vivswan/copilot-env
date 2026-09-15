@@ -79,9 +79,11 @@ function desktopEnv(): DesktopEnv {
   };
 }
 
-/** Electron's userData root on Linux. The XDG spec reads an EMPTY variable as unset. */
+/** Electron's userData root on Linux. The XDG spec reads an EMPTY or RELATIVE variable as unset
+ *  (a relative one would land the app files in the working directory). */
 function linuxConfigRoot(home: string, env: DesktopEnv): string {
-  return env.xdgConfigHome || join(home, ".config");
+  const xdg = env.xdgConfigHome;
+  return xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".config");
 }
 
 /** Platform-parameterized so every branch runs on every CI runner. */

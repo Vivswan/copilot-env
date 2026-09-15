@@ -1,5 +1,5 @@
-// Codex config writer: Copilot Direct by default, the local proxy as an explicit mode. Neither
-// bakes a credential; `auth.command` resolves it at fetch time.
+// Codex config writer for config.toml (the Claude twin is src/claude/config.ts): Copilot Direct or
+// the local proxy, never a baked credential; `auth.command` resolves it at fetch time.
 import * as fs from "node:fs";
 import { parse } from "smol-toml";
 import {
@@ -833,11 +833,14 @@ export function removeCodexDefaultWiring(codexHome: string): void {
 
 /** Writes a throwaway direct config and runs `codex exec --sandbox read-only` against it
  *  (src/agents/live_probe.ts); false means the caller writes proxy. */
-export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
+export function detectCodexDirect(
+  directIntegrationId: string | null,
+  deps?: DirectProbeDeps,
+): boolean {
   return probeDirectWorks(
     CODEX_PROBE,
     (tmpHome) => {
-      configureCodexConfig(tmpHome, { mode: "direct", quiet: true });
+      configureCodexConfig(tmpHome, { mode: "direct", quiet: true, directIntegrationId });
     },
     deps,
   );

@@ -64,6 +64,9 @@ if (pidAfter === pidForced) failOn("start --force did not relaunch a fresh daemo
 cliOrExit(["health", "--scope", "runtime"]);
 cliOrExit(["config", "--del", "auto-start"]);
 
+// Every wiring command logs in first; the fake proxy never reads the token, so any string
+// satisfies the gate headless.
+cliOrExit(["auth", "--set", "fake-default-token"]);
 cliOrExit(["codex", "--proxy"]);
 cliOrExit(["claude", "--proxy"]);
 cliOrExit(["health", "--scope", "setup"]);

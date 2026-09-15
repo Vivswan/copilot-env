@@ -108,6 +108,8 @@ export async function resolveProxyToken(
   const { profile } = action;
   // Human-facing hints must name the profile's daemon, or they'd point at the default one.
   const startHint = profile === null ? "agent start" : `agent start --profile ${profile}`;
+  // A named profile never falls back to the default credential, so its hint names its own slot.
+  const authHint = profile === null ? "agent auth" : `agent auth --profile ${profile}`;
   let suppressedStart = false;
   if (!(await deps.proxyUp(profile))) {
     if (deps.autoStartEnabled()) {
@@ -131,7 +133,9 @@ export async function resolveProxyToken(
     return 0;
   }
   if (suppressedStart) {
-    deps.notify(`copilot proxy failed to start (run '${startHint}' to see the error).`);
+    deps.notify(
+      `copilot proxy failed to start (run '${startHint}' to see the error; no credential stored? run '${authHint}').`,
+    );
   }
   return 1;
 }

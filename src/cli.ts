@@ -12,7 +12,7 @@ import { reconcileClaudeDesktopWiring } from "./agents/claude_desktop.ts";
 import { printClaudeDesktopCheck } from "./commands/claude.ts";
 import { runCodex } from "./codex/config.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
-import { runAuth } from "./commands/auth.ts";
+import { ensureAuthenticated, runAuth } from "./commands/auth.ts";
 import { configTableOutput, runConfig } from "./commands/config.ts";
 import { runCredits } from "./commands/credits.ts";
 import { runEnv } from "./commands/env.ts";
@@ -609,7 +609,9 @@ program
         return runCodex(action);
       case "configure":
         // A single-agent default rewire stales the default slot's recorded mode.
-        return runCodex(action).then(() => recordDefaultModeFromWiring());
+        return ensureAuthenticated()
+          .then(() => runCodex(action))
+          .then(() => recordDefaultModeFromWiring());
       default:
         return assertNever(action);
     }
@@ -639,7 +641,8 @@ program
       case "configure":
         // The default's Desktop entry rode on the write itself; the reconcile covers the named
         // profiles.
-        return runClaude(action)
+        return ensureAuthenticated()
+          .then(() => runClaude(action))
           .then(() => recordDefaultModeFromWiring())
           .then(() => reconcileClaudeDesktopWiring());
       default:

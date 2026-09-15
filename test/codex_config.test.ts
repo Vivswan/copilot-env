@@ -381,41 +381,42 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
   expect(provider.http_headers).toBeUndefined();
 });
 
-test("detectCodexDirect: true only when CLI+gh present, gh authed, and the probe succeeds", () => {
+test("detectCodexDirect: the CLI and a passing smoke prompt decide; gh is optional", () => {
   isolate();
-  // A runProbe spy lets us prove the cheap gates short-circuit BEFORE the (here
+  // A runProbe spy lets us prove the CLI gate short-circuits BEFORE the (here
   // simulated) model call.
   let probeCalls = 0;
   const ok = {
     findCommand: (c: string) => ({ path: `/bin/${c}` }),
-    ghAuthOk: () => true as const,
     runProbe: () => {
       probeCalls++;
       return { ok: true };
     },
     retryDelayMs: 0,
   };
-  expect(detectCodexDirect(ok)).toBe(true);
+  expect(detectCodexDirect(null, ok)).toBe(true);
   expect(probeCalls).toBe(1);
   // The live read-only prompt failed -> proxy.
-  expect(detectCodexDirect({ ...ok, runProbe: () => ({ ok: false }) })).toBe(false);
+  expect(detectCodexDirect(null, { ...ok, runProbe: () => ({ ok: false }) })).toBe(false);
 
-  // Each cheap gate miss returns false WITHOUT calling runProbe.
+  // A missing CLI returns false WITHOUT calling runProbe.
   probeCalls = 0;
-  expect(detectCodexDirect({ ...ok, ghAuthOk: () => false })).toBe(false);
   expect(
-    detectCodexDirect({
+    detectCodexDirect(null, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "codex" ? null : `/bin/${c}` }),
     }),
   ).toBe(false);
+  expect(probeCalls).toBe(0);
+
+  // A pasted or device-flow token needs no gh on the machine: the probe still runs.
   expect(
-    detectCodexDirect({
+    detectCodexDirect(null, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
     }),
-  ).toBe(false);
-  expect(probeCalls).toBe(0);
+  ).toBe(true);
+  expect(probeCalls).toBe(1);
 });
 
 test("proxy mode rejects a base_url containing invalid characters", () => {

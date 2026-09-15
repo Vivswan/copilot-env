@@ -9,11 +9,9 @@ export interface InitArgs {
 }
 
 export async function runInit(args: InitArgs): Promise<void> {
-  // `--proxy` needs no credential here: the daemon handles its own auth on `agent start`. A failed
-  // login throws, so no agent is configured without a credential.
-  if (args.mode !== "proxy") {
-    await ensureAuthenticated();
-  }
+  // Every mode, proxy included: a failed login throws, so no agent is configured without a
+  // credential. The auto probe below then judges THIS credential's Direct access.
+  await ensureAuthenticated();
 
   const { codex, claude } = await configureBothAgents(args.mode);
 

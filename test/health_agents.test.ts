@@ -537,7 +537,7 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
   expect(codexDirect.status).toBe("ok");
   expect(codexDirect.detail).toContain("static-key");
   expect(codexDirect.detail).not.toContain("gh auth");
-  // A mis-addressed table still warns with the direct re-wire, not a gh fix.
+  // A misaddressed table still warns with the direct re-wire, not a gh fix.
   const codexUnwired = checkCodex({ ...codexDirectStatic, providerWired: false });
   expect(codexUnwired.status).toBe("warn");
   expect(codexUnwired.fix).toBe("agent codex --direct");

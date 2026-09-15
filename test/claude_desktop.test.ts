@@ -138,10 +138,13 @@ test("desktopDataDirFor: the per-platform data dirs, null where no app exists", 
   expect(desktopDataDirFor("linux", "/home/x", { xdgConfigHome: "/xdg" })).toBe(
     join("/xdg", "Claude-3p"),
   );
-  // The XDG spec reads an EMPTY variable as unset (a relative "Claude-3p" would never match).
-  expect(desktopDataDirFor("linux", "/home/x", { xdgConfigHome: "" })).toBe(
-    join("/home/x", ".config", "Claude-3p"),
-  );
+  // The XDG spec reads an EMPTY or RELATIVE variable as unset (a relative "Claude-3p" would
+  // land in the working directory and never match the app's).
+  for (const xdgConfigHome of ["", "relative/dir"]) {
+    expect(desktopDataDirFor("linux", "/home/x", { xdgConfigHome })).toBe(
+      join("/home/x", ".config", "Claude-3p"),
+    );
+  }
   expect(desktopDataDirFor("freebsd", "/home/x", {})).toBeNull();
   // The default (claude.ai) data dir, where Developer Mode is read from: Electron's userData
   // is the ROAMING AppData on Windows.

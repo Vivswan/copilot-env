@@ -4,8 +4,9 @@
 
 ```bash
 curl -fsSL https://github.com/Vivswan/copilot-env/releases/latest/download/install.sh | bash
-agent init      # wire Codex + Claude to GitHub Copilot
-agent start     # run the local proxy
+agent shell --clis   # install the Claude + Codex CLIs (init smoke-tests them to pick Direct)
+agent init           # wire Codex + Claude to GitHub Copilot
+agent start          # run the local proxy (only if init picked it)
 ```
 
 A self-bootstrapping CLI that points the Codex and Claude CLIs at GitHub Copilot. It wires them either through a local [`@jeffreycao/copilot-api`](https://www.npmjs.com/package/@jeffreycao/copilot-api) proxy it manages, or straight to Copilot Direct.

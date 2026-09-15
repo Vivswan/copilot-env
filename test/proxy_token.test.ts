@@ -104,7 +104,7 @@ test("down + managed + start fails: exit 1, no key, and the hidden failure gets 
   expect(rec.heartbeats).toEqual([null]); // the heartbeat is unconditional
   // The auto-start suppressed the daemon's own error, so the pointer must surface it.
   expect(rec.notes).toEqual([
-    "copilot proxy failed to start (run 'agent start' to see the error).",
+    "copilot proxy failed to start (run 'agent start' to see the error; no credential stored? run 'agent auth').",
   ]);
 });
 
@@ -159,7 +159,7 @@ test("--profile routes every daemon-scoped step and names the profile in the hin
   expect(await resolveProxyToken({ assumeYes: true, profile: WORK }, failed.deps)).toBe(1);
   expect(failed.rec.launches).toEqual([{ profile: WORK, output: "suppressed" }]);
   expect(failed.rec.notes).toEqual([
-    "copilot proxy failed to start (run 'agent start --profile work' to see the error).",
+    "copilot proxy failed to start (run 'agent start --profile work' to see the error; no credential stored? run 'agent auth --profile work').",
   ]);
 
   // Happy path: the key print is addressed at the profile's daemon config.

@@ -227,14 +227,14 @@ export function probeDirectWorks(
     logger.log(
       cliLook.launchFailed
         ? `    • could not check for the ${descriptor.cli} CLI (the command probe failed to run) → using the local proxy`
-        : `    • ${descriptor.cli} CLI not found → using the local proxy`,
+        : `    • ${descriptor.cli} CLI not found → using the local proxy (install it with \`agent shell --clis\` and re-run to auto-detect Direct, or pass --direct)`,
     );
     return false;
   }
   const cliPath = cliLook.path;
   const ghPath = find("gh").path;
   logger.log(
-    `    • running a read-only smoke prompt through ${descriptor.cli} (live model call, a few seconds) ...`,
+    `    • running a read-only smoke prompt through ${descriptor.cli} (live model call, a few seconds; pass --direct to skip) ...`,
   );
 
   let tmpHome: ScratchDir | null = null;

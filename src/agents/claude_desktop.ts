@@ -3,6 +3,7 @@
 // comes from settings.json (src/agents/wiring.ts), the profiles' from the store.
 import {
   claudeDesktopInstalled,
+  claudeDesktopRunning,
   profileStoreWellFormed,
   removeClaudeDesktopOrphan,
   removeUnlistedClaudeDesktopClaims,
@@ -117,6 +118,7 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
     if (status.kind !== "inspected") return;
     for (const orphan of status.orphans) removeClaudeDesktopOrphan(orphan);
     if (status.unlisted.length > 0) removeUnlistedClaudeDesktopClaims();
+    if (opts.quiet) return;
     // The default is upserted too: a key flipped back on by a config-only import has no
     // adapter write to ride on. A default already judged wired is skipped: init / `agent
     // claude` just synced it, and re-discovering its models would be a network call for a
@@ -124,13 +126,34 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
     const defaultWired = status.entries.some(
       (e) => e.profile === null && e.verdict.kind === "wired",
     );
-    for (const target of opts.quiet ? [] : resolution.targets) {
+    for (const target of resolution.targets) {
       if (target.profile === null && defaultWired) continue;
       await syncTarget(target);
     }
+    if (resolution.targets.length === 0) return;
+    await reportClaudeDesktopReady(resolution);
   } catch (e) {
     logger.warn(`  Could not reconcile the Claude Desktop wiring: ${errMessage(e)}`);
   }
+}
+
+/** One line, only when the app WILL come up on the default entry at its next launch: the default is
+ *  wired, `_meta.json` applies it, and the app boots third-party. Anything less is left to
+ *  `agent claude --check`, whose lines name the gap. */
+async function reportClaudeDesktopReady(resolution: DesktopTargetResolution): Promise<void> {
+  const status = inspectClaudeDesktopWiring(resolution);
+  if (status.kind !== "inspected") return;
+  const ready =
+    status.entries.some((e) =>
+      e.profile === null && e.verdict.kind === "wired" && status.applied?.path === e.verdict.path
+    ) && status.app.kind === "read" && status.app.deploymentMode === "3p";
+  if (!ready) return;
+  if ((await claudeDesktopRunning()) === "present") {
+    logger.warn(
+      "  Claude Desktop is running; quit it fully and reopen it to pick up the new files.",
+    );
+  }
+  logger.success("  Claude Desktop is ready to use.");
 }
 
 /** Resilient like `agent profile --sync`. The default resolves its credential here for the

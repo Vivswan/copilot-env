@@ -64,6 +64,10 @@ const GPT_ID_PATTERN = /^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/;
 // Upstream id contracts: do not rename.
 const CLAUDE_FAMILY_RANK = ["fable", "opus"];
 
+/** The picker order Claude Desktop shows, most capable first; families outside it follow
+ *  alphabetically. */
+const CLAUDE_PICKER_ORDER = [...CLAUDE_FAMILY_RANK, "sonnet", "haiku"];
+
 // Matched as whole dash-separated qualifier tokens, so `terra-preview` is excluded but a qualifier
 // merely containing `mini` is not. Upstream id contracts: do not rename.
 const REDUCED_GPT_TIERS = new Set(["mini", "nano", "luna", "terra"]);
@@ -198,7 +202,8 @@ export interface ClaudeCatalogRow {
 }
 
 /** The whole picker list (the Claude Desktop model list) rather than an alias map: deduped by id (a
- *  1m sibling folds into `is1m`), family-ascending then newest-first. */
+ *  1m sibling folds into `is1m`). Desktop takes the FIRST row as the default model, so families
+ *  come most capable first (CLAUDE_PICKER_ORDER), newest-first within. */
 export function claudeCatalogRows(catalog: CatalogModel[]): ClaudeCatalogRow[] {
   const byId = new Map<string, ParsedModel>();
   for (const p of parseClaudeModels(catalog)) {
@@ -207,8 +212,13 @@ export function claudeCatalogRows(catalog: CatalogModel[]): ClaudeCatalogRow[] {
     else prev.is1m = prev.is1m || p.is1m;
   }
   const unique = [...byId.values()];
+  const present = new Set(unique.map((p) => p.family));
+  const families = [
+    ...CLAUDE_PICKER_ORDER.filter((f) => present.has(f)),
+    ...[...present].filter((f) => !CLAUDE_PICKER_ORDER.includes(f)).sort(),
+  ];
   const rows: ClaudeCatalogRow[] = [];
-  for (const family of [...new Set(unique.map((p) => p.family))].sort()) {
+  for (const family of families) {
     const pick = newestPreferring1m(unique, family);
     const members = unique
       .filter((p) => p.family === family)

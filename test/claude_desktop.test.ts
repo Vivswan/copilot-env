@@ -1136,7 +1136,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   expect(rendered.lines.slice(2)).toEqual([
     `${
       join(library, "..", "claude_desktop_config.json")
-    } is not valid JSON; the app's launch mode is unknown`,
+    } is not valid JSON; what the app reads from it is unknown`,
     `the app applies "Theirs" (not a copilot-env entry)`,
   ]);
   expect(rendered.fix).toBe(
@@ -1205,7 +1205,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   writeFileSync(appConfig, "{ not json");
   rendered = renderClaudeDesktopStatus(inspectClaudeDesktopWiring(targets));
   expect(rendered.lines[2]).toBe(
-    `${appConfig} is not valid JSON; the app's launch mode is unknown`,
+    `${appConfig} is not valid JSON; what the app reads from it is unknown`,
   );
   expect(rendered.fix).toBe(
     `agent profile --add work, then repair ${appConfig}, then re-run \`agent claude\``,

@@ -27,8 +27,10 @@ import {
   desktopModelsFromPicks,
   desktopStandardDataDirFor,
   type DesktopWireOptions,
+  entryProfileAt,
   listClaudeDesktopOwnedArtifacts,
   parseDesktopMeta,
+  presentDesktopHelperScripts,
   removeAllClaudeDesktopWiring,
   removeClaudeDesktopEntry,
   removeUnmanagedClaudeDesktopWiring,
@@ -71,6 +73,8 @@ import { envSnapshot, isolateAgentHomes, linesNaming, resetExitCode } from "./he
 
 const restoreEnv = envSnapshot();
 const WORK = parseProfileName("work");
+/** The command credential shape every wire in this file uses unless it says otherwise. */
+const COMMAND = { kind: "command" } as const;
 let dir = "";
 
 afterEach(() => {
@@ -223,7 +227,7 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
     mode: "direct",
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
-    helperPath: "/x/helper.sh",
+    credential: { kind: "command", helperPath: "/x/helper.sh" },
     directIntegrationId: "copilot-developer-cli",
     models,
   });
@@ -281,7 +285,7 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
     mode: "proxy",
     profile: null,
     baseUrl: "http://127.0.0.1:4141",
-    helperPath: "/x/helper.sh",
+    credential: { kind: "command", helperPath: "/x/helper.sh" },
     models,
     existing: direct, // mode switch: direct-only keys must be scrubbed
   });
@@ -298,7 +302,7 @@ test("payload: foreign keys in the existing document survive the surgical merge"
     mode: "direct",
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
-    helperPath: "/x/h.sh",
+    credential: { kind: "command", helperPath: "/x/h.sh" },
     existing: {
       "banner": { "enabled": true, "text": "keep me" },
       "userKey": 42,
@@ -320,7 +324,7 @@ test("payload: a rotation to a null integration id drops the stale header; forei
     mode: "direct",
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
-    helperPath: "/x/h.sh",
+    credential: { kind: "command", helperPath: "/x/h.sh" },
     directIntegrationId: "copilot-developer-cli",
     existing: { "inferenceCustomHeaders": { "X-Custom": "keep" } },
   });
@@ -334,7 +338,7 @@ test("payload: a rotation to a null integration id drops the stale header; forei
     mode: "direct",
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
-    helperPath: "/x/h.sh",
+    credential: { kind: "command", helperPath: "/x/h.sh" },
     directIntegrationId: null,
     existing: withId,
   });
@@ -342,6 +346,32 @@ test("payload: a rotation to a null integration id drops the stale header; forei
   expect(headers["Copilot-Integration-Id"]).toBeUndefined();
   expect(headers["X-Custom"]).toBe("keep");
   expect(headers["Openai-Intent"]).toBe("conversation-edits");
+});
+
+test("payload: the static shape bakes the key and drops the helper keys; the command shape undoes it", () => {
+  const base = { mode: "direct" as const, profile: null, baseUrl: DEFAULT_COPILOT_API_BASE };
+  const command = { kind: "command", helperPath: "/x/h.sh" } as const;
+  const viaHelper = desktopConfigPayload({ ...base, credential: command });
+  // A recorded helper always wins in the app, so the static shape must scrub it, not just add.
+  const baked = desktopConfigPayload({
+    ...base,
+    credential: { kind: "static", token: "ghu_x" },
+    existing: viaHelper,
+  });
+  expect(baked["inferenceCredentialKind"]).toBe("static");
+  expect(baked["inferenceGatewayApiKey"]).toBe("ghu_x");
+  expect(baked["inferenceGatewayAuthScheme"]).toBe("bearer");
+  expect(baked["inferenceCredentialHelper"]).toBeUndefined();
+  expect(baked["inferenceCredentialHelperTimeoutSec"]).toBeUndefined();
+  // Back to the command shape: the key must not linger in the document beside the helper, and
+  // the kind names the helper as the app's one source again.
+  const back = desktopConfigPayload({ ...base, credential: command, existing: baked });
+  expect(back["inferenceCredentialHelper"]).toBe("/x/h.sh");
+  expect(back["inferenceCredentialHelperTimeoutSec"]).toBe(30);
+  expect(back["inferenceCredentialKind"]).toBe("helper-script");
+  for (const key of ["inferenceGatewayApiKey", "inferenceGatewayAuthScheme"]) {
+    expect(back[key]).toBeUndefined();
+  }
 });
 
 // --- helper scripts ----------------------------------------------------------------
@@ -380,6 +410,7 @@ test("fresh upsert: config + meta entry + appliedId only when the library had no
     profile: null,
     mode: "direct",
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
     fetchImpl: catalogFetch(CATALOG),
@@ -423,6 +454,7 @@ test("fresh upsert: config + meta entry + appliedId only when the library had no
     profile: null,
     mode: "direct",
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
     fetchImpl: catalogFetch(CATALOG),
@@ -446,6 +478,7 @@ test("offline direct: a FRESH entry is never created; an owned entry keeps its r
     profile: null,
     mode: "direct" as const,
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
     fetchImpl: () => Promise.reject(new Error("offline")),
@@ -483,6 +516,7 @@ test("a quiet wire never discovers: fresh direct entries are skipped outright", 
     profile: null,
     mode: "direct",
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: true,
     fetchImpl: () => Promise.reject(new Error("quiet must not fetch")),
@@ -498,6 +532,7 @@ test("a blocked removal (malformed _meta.json) keeps the helper scripts", async 
     profile: null,
     mode: "direct",
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
     fetchImpl: catalogFetch(CATALOG),
@@ -533,6 +568,7 @@ test("adopt-and-replace: same-gateway foreign entry is taken over in place, name
     profile: null,
     mode: "direct",
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
     fetchImpl: catalogFetch(CATALOG),
@@ -563,6 +599,7 @@ test("never-clobber: a foreign entry carrying our name, or a malformed _meta.jso
     profile: null,
     mode: "direct" as const,
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
     fetchImpl: catalogFetch(CATALOG),
@@ -595,6 +632,7 @@ test.skipIf(process.platform === "win32")(
         profile: null,
         mode: "direct",
         directIntegrationId: null,
+        credential: COMMAND,
         directToken: "ghu_x",
         quiet: false,
         fetchImpl: catalogFetch(CATALOG),
@@ -617,6 +655,7 @@ test.skipIf(process.platform === "win32")(
       profile: null,
       mode: "direct" as const,
       directIntegrationId: null,
+      credential: COMMAND,
       directToken: "ghu_x",
       quiet: false,
       fetchImpl: catalogFetch(CATALOG),
@@ -696,6 +735,7 @@ test("profile entries: named, removed owned-only, appliedId nulled when it was o
     profile: WORK,
     mode: "direct",
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
     fetchImpl: catalogFetch(CATALOG),
@@ -729,6 +769,7 @@ test("removeAllClaudeDesktopWiring sweeps every owned entry via an injected dir"
     profile: null,
     mode: "direct",
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
     fetchImpl: catalogFetch(CATALOG),
@@ -750,7 +791,7 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
     mode: "direct",
     profile: WORK,
     baseUrl: DEFAULT_COPILOT_API_BASE,
-    helperPath: "/x/h.sh",
+    credential: { kind: "command", helperPath: "/x/h.sh" },
     existing: {
       "managedMcpServers": [
         { "name": "their-server", "transport": "stdio", "command": "x" },
@@ -782,7 +823,7 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
     mode: "direct",
     profile: WORK,
     baseUrl: DEFAULT_COPILOT_API_BASE,
-    helperPath: "/x/h.sh",
+    credential: { kind: "command", helperPath: "/x/h.sh" },
     existing: { "managedMcpServers": { "copilot-env": { "command": "old" } } },
   });
   expect((fromObject["managedMcpServers"] as unknown[]).length).toBe(1);
@@ -796,7 +837,7 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
     mode: "proxy",
     profile: WORK,
     baseUrl: "http://127.0.0.1:4141",
-    helperPath: "/x/h.sh",
+    credential: { kind: "command", helperPath: "/x/h.sh" },
     existing: doc,
   });
   expect(proxy["inferenceCustomHeaders"]).toEqual({ "X-Custom": "keep" });
@@ -808,6 +849,7 @@ test("quiet re-wire heals rows recorded without labels (no catalog fetch)", asyn
     profile: null,
     mode: "direct",
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
     fetchImpl: catalogFetch(CATALOG),
@@ -827,6 +869,7 @@ test("quiet re-wire heals rows recorded without labels (no catalog fetch)", asyn
     profile: null,
     mode: "direct",
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: true,
     fetchImpl: () => Promise.reject(new Error("must not fetch on the quiet path")),
@@ -875,10 +918,16 @@ function directWire(profile: Profile = null): DesktopWireOptions {
     profile,
     mode: "direct",
     directIntegrationId: null,
+    credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
     fetchImpl: catalogFetch(CATALOG),
   };
+}
+
+/** The same wire with the value baked instead of the resolver command. */
+function staticWire(profile: Profile = null): DesktopWireOptions {
+  return { ...directWire(profile), credential: { kind: "static", token: "ghu_x" } };
 }
 
 function firstEntryPath(library: string): string {
@@ -1032,7 +1081,12 @@ test.skipIf(NO_CHMOD_FAULTS)(
     let out = "";
     try {
       out = await captureAllWrites(() =>
-        syncClaudeDesktopWiring({ profile: null, mode: "proxy", fetchImpl: catalogFetch(CATALOG) })
+        syncClaudeDesktopWiring({
+          profile: null,
+          mode: "proxy",
+          credential: COMMAND,
+          fetchImpl: catalogFetch(CATALOG),
+        })
       );
     } finally {
       chmodSync(rootHome, 0o755);
@@ -1486,14 +1540,14 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
     .find((p) => p !== blankPath && p !== configPath)!;
   prune();
   const unknown = await captureAllWrites(() => reconcileClaudeDesktopWiring());
-  expect(unknown).toContain(`${blankPath} names no copilot-env credential helper`);
+  expect(unknown).toContain(`${blankPath} carries no copilot-env wiring`);
   expect(unknown).toContain(`deleted -> ${besideBlank} (Claude Desktop entry)`);
   expect(existsSync(blankPath)).toBe(true);
   // `--check` names it as a leftover `agent claude` cannot clear with the key off, and
   // says what does.
   const unknownRendered = renderClaudeDesktopStatus(inspectClaudeDesktopWiring([]));
   expect(unknownRendered.lines).toContain(
-    `${blankPath} (wiring unknown: it names no copilot-env credential helper)`,
+    `${blankPath} (wiring unknown: it carries no copilot-env wiring)`,
   );
   expect(unknownRendered.fix).toBe(
     "for the entries of unknown wiring: set claude-desktop true and re-run `agent claude` (it removes them as orphans), or `agent uninstall`",
@@ -1809,7 +1863,12 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "proxy",
   });
-  await wireClaudeDesktopEntry({ profile: WORK, mode: "proxy", fetchImpl: catalogFetch(CATALOG) });
+  await wireClaudeDesktopEntry({
+    profile: WORK,
+    mode: "proxy",
+    credential: COMMAND,
+    fetchImpl: catalogFetch(CATALOG),
+  });
   expect(names()).toEqual(["copilot-env: work"]);
   await captureAllWrites(async () => {
     await commandDeps().writeClaudeProfileSettings(WORK, "proxy");
@@ -1912,4 +1971,80 @@ test("the sweep and its dry-run listing take every generated helper script and n
   // A not-understood _meta.json blocks the sweep, and the listing says so.
   writeFileSync(join(library, "_meta.json"), "junk\n");
   expect(listClaudeDesktopOwnedArtifacts().blocked).toBe(true);
+});
+
+// --- the `static-key` key: attribution, the static wire, the inspector ---------------------
+
+test("entryProfileAt attributes by the managed MCP server's --profile argument alone", () => {
+  isolateWithDesktop();
+  const docAt = (name: string, doc: Record<string, unknown>): string => {
+    const path = join(dir, name);
+    writeFileSync(path, `${JSON.stringify(doc)}\n`);
+    return path;
+  };
+  // Static entries name no helper script, so the helper can never be what attributes an entry.
+  const payload = (profile: Profile) =>
+    desktopConfigPayload({
+      mode: "direct",
+      profile,
+      baseUrl: DEFAULT_COPILOT_API_BASE,
+      credential: { kind: "static", token: "ghu_x" },
+    });
+  expect(entryProfileAt(docAt("default.json", payload(null)))).toBeNull();
+  expect(entryProfileAt(docAt("work.json", payload(WORK)))).toBe(WORK);
+  // No copilot-env server: a helper path alone is not wiring of ours.
+  expect(entryProfileAt(docAt("theirs.json", { "inferenceCredentialHelper": "/x/h.sh" })))
+    .toBeUndefined();
+});
+
+test("a static wire bakes the key, writes no helper script, and takes a leftover one with it", async () => {
+  const { library } = isolateWithDesktop();
+  const rootHome = resolveRootHome();
+  const helper = writeDesktopHelperScript("direct", null); // what a command wire left behind
+  const out = await captureAllWrites(() => wireClaudeDesktopEntry(staticWire()));
+  const configPath = firstEntryPath(library);
+  const doc = readJson(configPath);
+  expect(doc["inferenceCredentialKind"]).toBe("static");
+  expect(doc["inferenceGatewayApiKey"]).toBe("ghu_x");
+  expect(doc["inferenceCredentialHelper"]).toBeUndefined();
+  expect(presentDesktopHelperScripts(rootHome)).toEqual([]);
+  // The write's line carries the shape; the helper lives in the data home: removed, never named.
+  expect(linesNaming(out, configPath)).toEqual([
+    `created -> ${configPath} (Claude Desktop entry "copilot-env" (direct) wired; static key; restart Claude Desktop to pick it up)`,
+  ]);
+  expect(linesNaming(out, helper)).toEqual([]);
+});
+
+test("the inspector judges against the static-key preference, never the key's value", async () => {
+  const { library } = isolateWithDesktop();
+  const targets: DesktopTarget[] = [{ profile: null, mode: "direct" }];
+  const verdict = () => inspected(inspectClaudeDesktopWiring(targets)).entries[0]?.verdict;
+  await wireClaudeDesktopEntry(staticWire());
+  const configPath = firstEntryPath(library);
+  new CopilotEnvConfig().set({ staticKey: true });
+  expect(verdict()).toEqual({ kind: "wired", path: configPath });
+  // A helper script left behind for this wiring is drift the static rewire removes.
+  const helper = writeDesktopHelperScript("direct", null);
+  expect(verdict()).toEqual({
+    kind: "stale",
+    path: configPath,
+    reason: `credential helper ${helper} left behind (a rewire removes it)`,
+  });
+  rmSync(helper);
+  // Key off: the same entry names none of the helper a command rewire would bake.
+  new CopilotEnvConfig().del("staticKey");
+  expect(verdict()).toEqual({
+    kind: "stale",
+    path: configPath,
+    reason: `credential helper undefined, expected ${helper}`,
+  });
+  // The command shape is wired with the key off, and stale for the mirror reason with it on.
+  await wireClaudeDesktopEntry(directWire());
+  expect(verdict()).toEqual({ kind: "wired", path: configPath });
+  new CopilotEnvConfig().set({ staticKey: true });
+  expect(verdict()).toEqual({
+    kind: "stale",
+    path: configPath,
+    reason: "a credential helper is still recorded, but static-key is on",
+  });
 });

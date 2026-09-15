@@ -17,7 +17,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { codexUserAgent } from "../codex/config.ts";
-import type { ManagedWrite } from "../agents/configure.ts";
+import type { ManagedMode, ManagedWrite } from "../agents/configure.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { atomicWriteFile, chmodReported, removeReported } from "../utils/report_write.ts";
 import { Credential } from "../copilot_api/credential.ts";
@@ -40,6 +40,7 @@ import {
 import { CopilotApiPaths, HELPERS_DIR_NAME, resolveRootHome } from "../copilot_api/paths.ts";
 import { proxyLoopbackOrigin, wiringPortFor } from "../copilot_api/port.ts";
 import {
+  agentStartCommand,
   parseProfileName,
   type Profile,
   profileLabel,
@@ -346,10 +347,16 @@ function foreignCustomHeaders(existing: unknown): Record<string, unknown> {
   return stripped;
 }
 
-export type DesktopPayloadOptions = ManagedWrite & {
+/** How the entry obtains its credential. Desktop's helper is a FILE path (unlike Claude Code's
+ *  inline command), so the command shape carries the script the writer produced. */
+export type DesktopCredential =
+  | { kind: "command"; helperPath: string }
+  | { kind: "static"; token: string };
+
+export type DesktopPayloadOptions = ManagedMode & {
   profile: Profile;
   baseUrl: string;
-  helperPath: string;
+  credential: DesktopCredential;
   models?: readonly DesktopModelSpec[];
   /** The entry's current document; foreign keys survive the merge. */
   existing?: Record<string, unknown>;
@@ -360,14 +367,25 @@ export type DesktopPayloadOptions = ManagedWrite & {
 export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string, unknown> {
   const doc: Record<string, unknown> = { ...(opts.existing ?? {}) };
   // inferenceProvider is what activates third-party mode: without it the app treats the entry as
-  // incomplete and boots into claude.ai sign-in. The credential kind pins the helper as the ONLY
-  // source (no static-key fallback).
+  // incomplete and boots into claude.ai sign-in. The credential kind names the ONE source the app
+  // may use (a recorded helper would otherwise win over static fields), so each shape sets its own
+  // kind and deletes the other's keys.
   doc["inferenceProvider"] = "gateway";
-  doc["inferenceCredentialKind"] = "helper-script";
   doc["inferenceGatewayBaseUrl"] = opts.baseUrl;
-  doc["inferenceCredentialHelper"] = opts.helperPath;
-  // The proxy helper may float and launch the daemon on first call, so it gets headroom.
-  doc["inferenceCredentialHelperTimeoutSec"] = opts.mode === "direct" ? 30 : 120;
+  if (opts.credential.kind === "command") {
+    doc["inferenceCredentialKind"] = "helper-script";
+    doc["inferenceCredentialHelper"] = opts.credential.helperPath;
+    // The proxy helper may float and launch the daemon on first call, so it gets headroom.
+    doc["inferenceCredentialHelperTimeoutSec"] = opts.mode === "direct" ? 30 : 120;
+    delete doc["inferenceGatewayApiKey"];
+    delete doc["inferenceGatewayAuthScheme"];
+  } else {
+    delete doc["inferenceCredentialHelper"];
+    delete doc["inferenceCredentialHelperTimeoutSec"];
+    doc["inferenceCredentialKind"] = "static";
+    doc["inferenceGatewayApiKey"] = opts.credential.token;
+    doc["inferenceGatewayAuthScheme"] = "bearer";
+  }
   doc["deploymentDisplayName"] = DESKTOP_DISPLAY_NAME;
   doc["managedMcpServers"] = managedMcpServers(opts.profile, doc["managedMcpServers"]);
   // Capability switches: everything on (user decision).
@@ -629,6 +647,8 @@ async function wiringModels(
     try {
       const resolved = typeof opts.directToken === "string"
         ? { token: opts.directToken, reason: null }
+        : opts.credential.kind === "static"
+        ? { token: opts.credential.token, reason: null }
         : new Credential(undefined, opts.profile).resolveWithReason();
       if (resolved.token === null) throw new Error(resolved.reason);
       const token = resolved.token;
@@ -771,16 +791,19 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   }
   if (created) meta.entries.push(entry);
 
-  const helperPath = writeDesktopHelperScript(opts.mode, opts.profile);
+  // The helper script exists only for the command shape; a static entry names none.
+  const credential: DesktopCredential = opts.credential.kind === "command"
+    ? { kind: "command", helperPath: writeDesktopHelperScript(opts.mode, opts.profile) }
+    : opts.credential;
   // Re-extracted so the payload receives the identity only alongside a direct mode.
-  const write: ManagedWrite = opts.mode === "direct"
+  const write: ManagedMode = opts.mode === "direct"
     ? { mode: "direct", directIntegrationId: opts.directIntegrationId }
     : { mode: "proxy" };
   const payload = desktopConfigPayload({
     ...write,
     profile: opts.profile,
     baseUrl,
-    helperPath,
+    credential,
     models,
     existing,
   });
@@ -793,7 +816,12 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   //
   // The write's own line announces the wiring; a byte-identical no-op states it instead, unless
   // quiet (the launcher hot path).
-  const wiring = `${ENTRY} "${entry.name}" (${opts.mode}) wired`;
+  const staticClause = credential.kind === "command"
+    ? ""
+    : opts.mode === "direct"
+    ? "; static key"
+    : `; static key, start the proxy yourself (${agentStartCommand(opts.profile)})`;
+  const wiring = `${ENTRY} "${entry.name}" (${opts.mode}) wired${staticClause}`;
   const configWritten = saveJsonIfChanged(
     configPath,
     payload,
@@ -808,7 +836,8 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   saveDesktopMeta(dir, meta);
   // Only a NEW claim is recorded, so the ledger write is a real change, never a byte-identical one.
   if (!owned) ledger.record("claudeDesktop", configPath);
-  retireDesktopHelperScript(opts.mode, opts.profile);
+  if (credential.kind === "command") retireDesktopHelperScript(opts.mode, opts.profile);
+  else removeHelperScripts(opts.profile);
   // Last: the app files are independent of the entry, so a failure here (an unreadable
   // developer_settings.json) leaves a complete, owned entry behind.
   wireClaudeDesktopAppFiles();
@@ -1003,7 +1032,7 @@ export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {
     }
     if (profile === undefined) {
       logger.warn(
-        `  Claude Desktop: ${path} names no copilot-env credential helper, so its wiring is unknown; left alone.`,
+        `  Claude Desktop: ${path} carries no copilot-env wiring, so its profile is unknown; left alone.`,
       );
     }
     return profile !== undefined && profile !== null;
@@ -1082,8 +1111,10 @@ export interface OwnedDesktopEntry {
   path: string;
 }
 
-/** Undefined when the document names no helper of ours (absent or damaged: no target can claim it,
- *  so it is an orphan). An UNREADABLE document throws: a failed look is never "not ours". */
+/** Undefined when the document carries no wiring of ours (absent or damaged: no target can claim
+ *  it, so it is an orphan). Attribution reads the managed MCP server's `--profile` argument, the one
+ *  key both credential shapes write (a static entry names no helper script). An UNREADABLE
+ *  document throws: a failed look is never "not ours". */
 export function entryProfileAt(path: string): Profile | undefined {
   const raw = readFileOrNull(path);
   if (raw === null) return undefined;
@@ -1093,10 +1124,21 @@ export function entryProfileAt(path: string): Profile | undefined {
   } catch {
     return undefined;
   }
-  const helper = isRecord(doc) ? doc["inferenceCredentialHelper"] : undefined;
-  return typeof helper === "string"
-    ? desktopHelperScriptWiring(basename(helper))?.profile
+  const servers = isRecord(doc) ? doc["managedMcpServers"] : undefined;
+  const ours = Array.isArray(servers)
+    ? servers.find((row) => isRecord(row) && row["name"] === MCP_SERVER_NAME)
     : undefined;
+  const args = isRecord(ours) && Array.isArray(ours.args) ? ours.args : null;
+  if (args === null || !args.includes("--serve")) return undefined;
+  const at = args.indexOf("--profile");
+  if (at === -1) return null;
+  const name = args[at + 1];
+  if (typeof name !== "string") return undefined;
+  try {
+    return parseProfileName(name);
+  } catch {
+    return undefined;
+  }
 }
 
 interface OwnedLibrary {

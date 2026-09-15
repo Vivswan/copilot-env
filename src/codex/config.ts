@@ -1,10 +1,13 @@
 // Codex config writer for config.toml (the Claude twin is src/claude/config.ts): Copilot Direct or
-// the local proxy, never a baked credential; `auth.command` resolves it at fetch time.
+// the local proxy. By default no credential is baked (`auth.command` resolves it at fetch time);
+// with `static-key` on the value rides as a static `http_headers.Authorization` and no `auth`
+// table is written.
 import * as fs from "node:fs";
 import { parse } from "smol-toml";
 import {
   type AgentAdapter,
   type AgentRunAction,
+  type CredentialWiring,
   type ManagedWrite,
   runAgentConfig,
 } from "../agents/configure.ts";
@@ -26,7 +29,7 @@ import {
   openaiBaseUrl,
   wiringPortFor,
 } from "../copilot_api/port.ts";
-import { type Profile, type ProfileName } from "../copilot_api/profile.ts";
+import { agentStartCommand, type Profile, type ProfileName } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { readTextResult, type TextReadResult } from "../utils/fs.ts";
@@ -119,10 +122,39 @@ function codexTableMode(table: unknown, expectedPort: number): AgentProviderMode
   return "other";
 }
 
-// Codex re-runs `auth.command` every `refresh_interval_ms`, so the token tracks the current
-// credential without ever being in the file. Re-applied on every direct run: managed keys win,
-// user-added keys in the same table survive the merge.
+/** The header a static write carries; Codex sends `http_headers` verbatim, so the value is the
+ *  full `Bearer <token>` (the one header name Codex would otherwise fill from `auth`/`env_key`). */
+const AUTHORIZATION_HEADER = "Authorization";
+const STATIC_AUTHORIZATION_SHAPE = /^Bearer \S+$/;
+
+/** The `auth` table (command shape) or the static bearer header, never both: Codex would send the
+ *  header AND run the command. */
+function credentialTables(
+  credential: CredentialWiring,
+  auth: { command: string; args: readonly string[]; timeoutMs: number },
+  httpHeaders: Record<string, string> = {},
+): { http_headers?: Record<string, string>; auth?: Record<string, unknown> } {
+  if (credential.kind === "static") {
+    return {
+      "http_headers": { ...httpHeaders, [AUTHORIZATION_HEADER]: `Bearer ${credential.token}` },
+    };
+  }
+  return {
+    ...(Object.keys(httpHeaders).length > 0 ? { "http_headers": httpHeaders } : {}),
+    "auth": {
+      "command": auth.command,
+      "args": [...auth.args],
+      "timeout_ms": auth.timeoutMs,
+      "refresh_interval_ms": 300000,
+    },
+  };
+}
+
+// The command shape re-runs `auth.command` every `refresh_interval_ms`, so the token tracks the
+// current credential; the static shape carries it in the table. Re-applied on every direct run:
+// managed keys win, user-added keys in the same table survive the merge.
 function managedDirectProvider(
+  credential: CredentialWiring,
   codexExecVersion?: string | null,
   profile: Profile = null,
   directIntegrationId?: string | null,
@@ -138,22 +170,24 @@ function managedDirectProvider(
     "wire_api": "responses",
     "supports_websockets": false,
     "requires_openai_auth": false,
-    "http_headers": httpHeaders,
-    "auth": {
-      "command": command,
-      "args": [...args],
-      // The launcher may cold-start deno, and a due (at most daily) catalog refresh runs after the
-      // token prints (AUTH_REFRESH_WORST_CASE_MS, src/codex/catalog.ts); warm calls take well under
-      // a second, and Codex refreshes lazily.
-      "timeout_ms": DIRECT_AUTH_TIMEOUT_MS,
-      "refresh_interval_ms": 300000,
-    },
+    // The launcher may cold-start deno, and a due (at most daily) catalog refresh runs after the
+    // token prints (AUTH_REFRESH_WORST_CASE_MS, src/codex/catalog.ts); warm calls take well under
+    // a second, and Codex refreshes lazily.
+    ...credentialTables(
+      credential,
+      { command, args, timeoutMs: DIRECT_AUTH_TIMEOUT_MS },
+      httpHeaders,
+    ),
   };
 }
 
 // `--yes` is the headless path. Codex forbids `auth` together with `env_key` on one provider, so
 // proxy (like direct) resolves its key via the command, not an env var.
-export function managedProxyProvider(baseUrl: string, profile: Profile = null) {
+export function managedProxyProvider(
+  baseUrl: string,
+  profile: Profile = null,
+  credential: CredentialWiring,
+) {
   const auth = proxyTokenCommand(profile);
   return {
     "name": codexProviderId(profile),
@@ -161,15 +195,10 @@ export function managedProxyProvider(baseUrl: string, profile: Profile = null) {
     "wire_api": "responses",
     "requires_openai_auth": false,
     "supports_websockets": false,
-    "auth": {
-      "command": auth.command,
-      "args": [...auth.args],
-      // Cold-starting the proxy runs a full child `agent start`: runtime startup, the daemon's
-      // readiness wait (up to a ~120s ceiling), THEN model-alias sync and version logging before
-      // the key prints. The first auth attempt must not time out after the proxy is ready.
-      "timeout_ms": 180000,
-      "refresh_interval_ms": 300000,
-    },
+    // Cold-starting the proxy runs a full child `agent start`: runtime startup, the daemon's
+    // readiness wait (up to a ~120s ceiling), THEN model-alias sync and version logging before
+    // the key prints. The first auth attempt must not time out after the proxy is ready.
+    ...credentialTables(credential, { command: auth.command, args: auth.args, timeoutMs: 180000 }),
   };
 }
 
@@ -179,18 +208,25 @@ function managedProviderForMode(
   profile: Profile = null,
 ) {
   if (request.mode === "direct") {
-    return managedDirectProvider(codexExecVersion, profile, request.directIntegrationId);
+    return managedDirectProvider(
+      request.credential,
+      codexExecVersion,
+      profile,
+      request.directIntegrationId,
+    );
   }
-  return managedProxyProvider(request.baseUrl, profile);
+  return managedProxyProvider(request.baseUrl, profile, request.credential);
 }
 
 // Codex rejects `auth` + `env_key` on one provider, so a managed table must never carry an env_key
 // (whoever put it there). Derived from the factories so a new mode-specific managed key can never
 // reintroduce cross-mode bleed on the shared table; the placeholder base URL is only embedded,
-// never fetched.
+// never fetched. The command shape emits every managed key (a static write then strips a stale
+// `auth`, a command write a stale static `http_headers`).
+const COMMAND_SHAPE: CredentialWiring = { kind: "command" };
 const MANAGED_PROVIDER_KEYS: ReadonlySet<string> = new Set([
-  ...Object.keys(managedDirectProvider(null)),
-  ...Object.keys(managedProxyProvider("http://managed-keys.invalid")),
+  ...Object.keys(managedDirectProvider(COMMAND_SHAPE, null)),
+  ...Object.keys(managedProxyProvider("http://managed-keys.invalid", null, COMMAND_SHAPE)),
   "env_key",
 ]);
 
@@ -213,6 +249,40 @@ function isManagedDirectAuth(auth: unknown, profile: Profile = null): boolean {
 
 function isManagedProxyAuth(auth: unknown, profile: Profile = null): boolean {
   return authMatches(auth, proxyTokenCommand(profile));
+}
+
+/** The static shape: a bearer in `http_headers` and NO `auth` table (a table carrying both would
+ *  make Codex run the command as well, which no writer of ours produces). */
+function isStaticAuthorization(table: unknown): boolean {
+  if (!isRecord(table) || table.auth !== undefined) return false;
+  const headers = table.http_headers;
+  return isRecord(headers) && typeof headers[AUTHORIZATION_HEADER] === "string" &&
+    STATIC_AUTHORIZATION_SHAPE.test(headers[AUTHORIZATION_HEADER]);
+}
+
+/** Which managed credential shape the table carries; "none" is a foreign or missing one. */
+export type CodexManagedCredential = "command" | "static" | "none";
+
+/** The bearer a static write baked into `profile`'s provider table, for the health freshness
+ *  compare only (the inspector never carries the value). Null unless the file parses and the table
+ *  holds the static shape. */
+export function bakedCodexToken(
+  configToml: TextReadResult,
+  profile: Profile = null,
+): string | null {
+  if (configToml.kind !== "text") return null;
+  let doc: unknown;
+  try {
+    doc = parse(configToml.text);
+  } catch {
+    return null;
+  }
+  const providers = isRecord(doc) ? doc.model_providers : undefined;
+  const table = isRecord(providers) ? providers[codexProviderId(profile)] : undefined;
+  if (!isStaticAuthorization(table) || !isRecord(table) || !isRecord(table.http_headers)) {
+    return null;
+  }
+  return String(table.http_headers[AUTHORIZATION_HEADER]).slice("Bearer ".length);
 }
 
 // === wiring inspection (inverse of the write contract above) ===
@@ -258,9 +328,11 @@ export type CodexWiringStatus =
       /** Direct carries no env_key contract, so only a named table's forbidden env_key (drift the
        *  writer never emits; Codex rejects `auth` + `env_key`) can make it false. */
       envKeyMatches: boolean;
-      /** A named profile's auth block must be the managed one addressed at THAT profile (never a
-       *  fallback). */
+      /** A named profile's credential shape must be the managed one addressed at THAT profile
+       *  (never a fallback), or the static bearer. */
       providerWired: boolean;
+      /** The managed credential shape the table carries. */
+      credential: CodexManagedCredential;
       /** The table carries the managed `auth.command`. Whether a `gh` login is needed is a STORE
        *  question the health probe answers. */
       directUsesToken: boolean;
@@ -275,6 +347,7 @@ export type CodexWiringStatus =
       baseUrlMatches: boolean;
       envKeyMatches: boolean;
       providerWired: boolean;
+      credential: CodexManagedCredential;
       directUsesToken: false;
       otherReason: null;
     }
@@ -288,6 +361,7 @@ export type CodexWiringStatus =
       baseUrlMatches: false;
       envKeyMatches: false;
       providerWired: false;
+      credential: "none";
       directUsesToken: false;
       otherReason: null;
     }
@@ -300,6 +374,7 @@ export type CodexWiringStatus =
       baseUrlMatches: false;
       envKeyMatches: false;
       providerWired: false;
+      credential: "none";
       directUsesToken: false;
       otherReason: CodexOtherReason;
     }
@@ -349,6 +424,7 @@ export function inspectCodexWiring(
     baseUrlMatches: false,
     envKeyMatches: false,
     providerWired: false,
+    credential: "none",
     directUsesToken: false,
     otherReason: null,
   });
@@ -365,6 +441,7 @@ export function inspectCodexWiring(
     baseUrlMatches: false,
     envKeyMatches: false,
     providerWired: false,
+    credential: "none",
     directUsesToken: false,
     otherReason,
   });
@@ -404,6 +481,11 @@ export function inspectCodexWiring(
     // Positively identify OUR launcher (command + args), not just any auth.command: a stale `gh
     // auth token` block must NOT read as managed.
     const directUsesToken = isRecord(table) && isManagedDirectAuth(table.auth, profile);
+    const credential: CodexManagedCredential = directUsesToken
+      ? "command"
+      : isStaticAuthorization(table)
+      ? "static"
+      : "none";
     return {
       ...tokenFacts,
       providerMode: "direct",
@@ -414,18 +496,24 @@ export function inspectCodexWiring(
       baseUrlMatches: true,
       envKeyMatches,
       // The default direct selection needs no further conjunct (the health probe layers the store
-      // question on top); a named direct profile requires the profile-addressed managed auth, since
-      // default-addressed or foreign auth would resolve the wrong credential.
-      providerWired: envKeyMatches && (profile === null || directUsesToken),
+      // question on top); a named direct profile requires the profile-addressed managed auth or the
+      // static bearer, since default-addressed or foreign auth would resolve the wrong credential.
+      providerWired: envKeyMatches && (profile === null || credential !== "none"),
+      credential,
       directUsesToken,
       otherReason: null,
     };
   }
   // A selected-but-unrecognized table shape (tableMode "other") still counts as ours for messaging,
   // reported as proxy so the wiring facts below flag what's off.
-  const proxyUsesManagedAuth = isRecord(table) && isManagedProxyAuth(table.auth, profile);
+  const credential: CodexManagedCredential =
+    isRecord(table) && isManagedProxyAuth(table.auth, profile)
+      ? "command"
+      : isStaticAuthorization(table)
+      ? "static"
+      : "none";
   const baseUrlMatches = baseUrl !== null && baseUrlMatchesProxy(baseUrl, expectedPort);
-  const envKeyMatches = !namedTableCarriesEnvKey && proxyUsesManagedAuth;
+  const envKeyMatches = !namedTableCarriesEnvKey && credential !== "none";
   return {
     ...tokenFacts,
     providerMode: "proxy",
@@ -436,6 +524,7 @@ export function inspectCodexWiring(
     baseUrlMatches,
     envKeyMatches,
     providerWired: baseUrlMatches && envKeyMatches,
+    credential,
     directUsesToken: false,
     otherReason: null,
   };
@@ -486,14 +575,16 @@ function readConfigForRemoval(configPath: string): Record<string, unknown> | nul
   return read.doc;
 }
 
-function validateProxyOptions(request: { baseUrl: string }): CodexModeRequest {
+function validateProxyOptions(
+  request: { baseUrl: string; credential: CredentialWiring },
+): CodexModeRequest {
   if (!request.baseUrl) {
     throw new Error("base_url not provided for the Codex proxy config");
   }
   if (!/^[A-Za-z0-9:/._-]+$/.test(request.baseUrl)) {
     throw new Error(`base_url contains invalid characters: ${request.baseUrl}`);
   }
-  return { mode: "proxy", baseUrl: request.baseUrl };
+  return { mode: "proxy", baseUrl: request.baseUrl, credential: request.credential };
 }
 
 /**
@@ -627,7 +718,16 @@ export function configureCodexConfig(
   // The write's own line carries what the write means and lands before the fallible ledger
   // bookkeeping. Every profile shares this one file and the seam names a path once per process, so
   // the detail says nothing profile-specific (`agent profile` prints the launch hint).
-  saveCodexToml(hostConfig, doc, ["Codex config", catalogRefLine].filter(Boolean).join("; "));
+  const credentialLine = request.credential.kind === "command"
+    ? null
+    : request.mode === "direct"
+    ? "static key"
+    : `static key, start the proxy yourself (${agentStartCommand(profile)}, or the cx launcher)`;
+  saveCodexToml(
+    hostConfig,
+    doc,
+    ["Codex config", credentialLine, catalogRefLine].filter(Boolean).join("; "),
+  );
   // Ownership lands only AFTER the successful save (the ledger's crash-direction contract), and
   // only for a KNOWN Codex home (the set the cleanup sweep visits), so detectCodexDirect's
   // throwaway probe home never enters the ledger. Recording on every enabled write also ADOPTS a
@@ -653,7 +753,12 @@ export async function applyCodexConfig(
   // wiringPortFor RESERVES the addressed profile's stable port (a write path; read-only checks peek
   // without recording).
   const request: CodexWriteRequest = write.mode === "proxy"
-    ? { mode: "proxy", profile, baseUrl: openaiBaseUrl(wiringPortFor(profile)) }
+    ? {
+      mode: "proxy",
+      profile,
+      baseUrl: openaiBaseUrl(wiringPortFor(profile)),
+      credential: write.credential,
+    }
     : { ...write, profile };
 
   // Seeded (best-effort, unthrottled) BEFORE the config write, so the very first wiring can already
@@ -840,7 +945,12 @@ export function detectCodexDirect(
   return probeDirectWorks(
     CODEX_PROBE,
     (tmpHome) => {
-      configureCodexConfig(tmpHome, { mode: "direct", quiet: true, directIntegrationId });
+      configureCodexConfig(tmpHome, {
+        mode: "direct",
+        quiet: true,
+        directIntegrationId,
+        credential: COMMAND_SHAPE,
+      });
     },
     deps,
   );
@@ -868,6 +978,7 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
           profile: name,
           quiet: options.quiet,
           baseUrl: openaiBaseUrl(wiringPortFor(name)),
+          credential: write.credential,
         }
         : { ...write, profile: name, quiet: options.quiet };
       configureCodexConfig(effectiveCodexHome(), request);

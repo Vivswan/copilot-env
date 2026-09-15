@@ -1,7 +1,7 @@
 // The read-only side of the Claude Desktop wiring; desktop.ts is what writes it. `agent claude
 // --check` and the health engine share these lines and repair commands so the two cannot disagree.
 import { basename, join } from "node:path";
-import type { ManagedWrite } from "../agents/configure.ts";
+import type { CredentialWiring, ManagedMode } from "../agents/configure.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import {
@@ -19,6 +19,7 @@ import {
   claudeDesktopInstalled,
   type DesktopAppState,
   desktopConfigPayload,
+  type DesktopCredential,
   desktopEntryName,
   desktopHelperBody,
   desktopHelperPath,
@@ -52,8 +53,8 @@ export type DesktopEntryVerdict =
 
 export type DesktopEntryStatus = DesktopTarget & { verdict: DesktopEntryVerdict };
 
-/** `profile` is undefined when the document names no helper of ours (see entryProfileAt), which no
- *  target can claim. */
+/** `profile` is undefined when the document carries no copilot-env wiring (see entryProfileAt),
+ *  which no target can claim. */
 export interface DesktopClaim {
   path: string;
   profile: Profile | undefined;
@@ -146,9 +147,13 @@ export function inspectClaudeDesktopWiring(
     return { ...base, kind: "unjudged", reason: resolution.reason };
   }
   const rootHome = resolveRootHome();
+  // Account-wide, so read once for the whole pass: a rewire of any target would bake this shape.
+  const credential: CredentialWiring["kind"] = new CopilotEnvConfig().staticKeyEnabled()
+    ? "static"
+    : "command";
   status.entries = resolution.targets.map((t) => ({
     ...t,
-    verdict: entryVerdict(judged, t, rootHome),
+    verdict: entryVerdict(judged, t, rootHome, credential),
   }));
   const wanted = new Set(resolution.targets.map((t) => t.profile));
   status.orphans = status.owned.filter((e) => e.profile === undefined || !wanted.has(e.profile));
@@ -169,6 +174,7 @@ function entryVerdict(
   owned: JudgedDesktopEntry[],
   target: DesktopTarget,
   rootHome: string,
+  credential: CredentialWiring["kind"],
 ): DesktopEntryVerdict {
   const matches = owned.filter((e) => e.profile === target.profile);
   const found = matches[0];
@@ -202,31 +208,18 @@ function entryVerdict(
   if (!sameBaseUrl(gateway, expectedBase)) {
     return stale(`gateway ${String(gateway)}, expected ${expectedBase}`);
   }
-  const helper = desktopHelperPath(rootHome, target.mode, target.profile);
-  const recorded = doc["inferenceCredentialHelper"];
-  if (recorded !== helper) {
-    return stale(`credential helper ${String(recorded)}, expected ${helper}`);
-  }
-  // The helper must be the body this wiring would write, and runnable; a failed look is stale,
-  // never wired.
-  try {
-    if (readFileOrNull(helper) !== desktopHelperBody(target.mode, target.profile)) {
-      return stale(`credential helper ${helper} is missing or has a stale body`);
-    }
-    if (!helperExecutable(helper)) return stale(`credential helper ${helper} is not executable`);
-  } catch (e) {
-    return stale(`credential helper ${helper} could not be checked: ${errMessage(e)}`);
-  }
+  const recordedCredential = expectedCredential(doc, target, rootHome, credential);
+  if ("stale" in recordedCredential) return stale(recordedCredential.stale);
   // Wired means the QUIET rewire (recorded rows, the replayed identity, the live codex User-Agent,
   // no probe) would be a byte-identical no-op: the same bytes saveJsonIfChanged compares.
-  const write: ManagedWrite = target.mode === "direct"
+  const write: ManagedMode = target.mode === "direct"
     ? { mode: "direct", directIntegrationId: expectedIntegrationId(target.profile, doc) }
     : { mode: "proxy" };
   const rewrite = desktopConfigPayload({
     ...write,
     profile: target.profile,
     baseUrl: expectedBase,
-    helperPath: helper,
+    credential: recordedCredential,
     models: recordedModelRows(doc) ?? undefined,
     existing: doc,
   });
@@ -238,6 +231,50 @@ function entryVerdict(
     return stale("no model rows (re-run `agent claude` online)");
   }
   return { kind: "wired", path };
+}
+
+/** The credential a rewire would bake, judged against what the document records, without resolving
+ *  anything: the command shape needs the helper script this wiring writes, runnable and current;
+ *  the static shape needs the recorded key (its VALUE is never compared) and no helper leftovers. A
+ *  failed look is stale, never wired. */
+function expectedCredential(
+  doc: Record<string, unknown>,
+  target: DesktopTarget,
+  rootHome: string,
+  credential: CredentialWiring["kind"],
+): DesktopCredential | { stale: string } {
+  if (credential === "static") {
+    if (doc["inferenceCredentialHelper"] !== undefined) {
+      return { stale: "a credential helper is still recorded, but static-key is on" };
+    }
+    const key = doc["inferenceGatewayApiKey"];
+    if (doc["inferenceCredentialKind"] !== "static" || typeof key !== "string" || key === "") {
+      return { stale: "no static key recorded, but static-key is on" };
+    }
+    const leftover = presentDesktopHelperScripts(rootHome).find(
+      (p) => desktopHelperScriptWiring(basename(p))?.profile === target.profile,
+    );
+    if (leftover !== undefined) {
+      return { stale: `credential helper ${leftover} left behind (a rewire removes it)` };
+    }
+    return { kind: "static", token: key };
+  }
+  const helper = desktopHelperPath(rootHome, target.mode, target.profile);
+  const recorded = doc["inferenceCredentialHelper"];
+  if (recorded !== helper) {
+    return { stale: `credential helper ${String(recorded)}, expected ${helper}` };
+  }
+  try {
+    if (readFileOrNull(helper) !== desktopHelperBody(target.mode, target.profile)) {
+      return { stale: `credential helper ${helper} is missing or has a stale body` };
+    }
+    if (!helperExecutable(helper)) {
+      return { stale: `credential helper ${helper} is not executable` };
+    }
+  } catch (e) {
+    return { stale: `credential helper ${helper} could not be checked: ${errMessage(e)}` };
+  }
+  return { kind: "command", helperPath: helper };
 }
 
 /** The identity a rewire would bake, without probing:
@@ -322,7 +359,7 @@ export function renderClaudeDesktopStatus(
           total === 1 ? " remains" : "s remain"
         } (files or ownership claims)`,
         ...left,
-        ...unknown.map((p) => `${p} (wiring unknown: it names no copilot-env credential helper)`),
+        ...unknown.map((p) => `${p} (wiring unknown: it carries no copilot-env wiring)`),
       ],
       fix: fixes.join("; "),
     };

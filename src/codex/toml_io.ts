@@ -34,7 +34,12 @@ export function readCodexToml(path: string): CodexTomlRead {
   try {
     return { kind: "ok", doc: parse(text) as Record<string, unknown> };
   } catch (e) {
-    return { kind: "unparseable", error: errMessage(e) };
+    // smol-toml quotes the offending source line in its message, which for a static-key config can
+    // be the bearer itself; callers log this diagnostic.
+    return {
+      kind: "unparseable",
+      error: errMessage(e).replace(/Bearer \S+/g, "Bearer <redacted>"),
+    };
   }
 }
 

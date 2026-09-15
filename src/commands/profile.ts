@@ -7,6 +7,8 @@ import {
   configuringLine,
   type ManagedWrite,
   type RemoveProfileOptions,
+  resolveCredentialWiring,
+  resolvedDirectToken,
 } from "../agents/configure.ts";
 import {
   bothAgents,
@@ -304,9 +306,17 @@ async function runSettingsFor(name: ProfileName): Promise<void> {
   if (slot.kind === "partial") {
     throw new Error(partialSlotGap(name, slot));
   }
+  const credential = resolveCredentialWiring(slot.mode, name);
   const write: ManagedWrite = slot.mode === "direct"
-    ? { mode: "direct", directIntegrationId: await resolveAndPersistDirectIdentity(name) }
-    : { mode: "proxy" };
+    ? {
+      mode: "direct",
+      directIntegrationId: await resolveAndPersistDirectIdentity(
+        name,
+        resolvedDirectToken(slot.mode, credential),
+      ),
+      credential,
+    }
+    : { mode: "proxy", credential };
   await claudeAdapter().configureProfile(name, write, { quiet: true });
   process.stdout.write(`${settingsPathFor(resolveClaudeHome(), name)}\n`);
 }

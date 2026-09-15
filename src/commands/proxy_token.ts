@@ -12,7 +12,7 @@
 import { spawnSync } from "node:child_process";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
+import { agentStartCommand, parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { runPrintProxyToken } from "./auth.ts";
 
@@ -107,7 +107,7 @@ export async function resolveProxyToken(
 ): Promise<0 | 1> {
   const { profile } = action;
   // Human-facing hints must name the profile's daemon, or they'd point at the default one.
-  const startHint = profile === null ? "agent start" : `agent start --profile ${profile}`;
+  const startHint = agentStartCommand(profile);
   // A named profile never falls back to the default credential, so its hint names its own slot.
   const authHint = profile === null ? "agent auth" : `agent auth --profile ${profile}`;
   let suppressedStart = false;

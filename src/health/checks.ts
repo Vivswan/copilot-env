@@ -2,7 +2,7 @@
 // gathered by probe.ts, so each check is independently unit-testable.
 import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
 import { compareDenoVersions, SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
-import type { Profile, ProfileName } from "../copilot_api/profile.ts";
+import { agentStartCommand, type ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../scripts/idle_watchdog.ts";
 import type { CommandLook } from "../utils/command.ts";
@@ -32,11 +32,6 @@ import type {
 } from "./facts.ts";
 import type { CheckOutcome, CheckResult, HealthScope } from "./types.ts";
 import { meta, profileAddFix, SETUP_SCOPES as SETUP } from "./types.ts";
-
-/** The `agent start` fix for a runtime target, addressed at its profile. */
-function startFix(profile: Profile): string {
-  return profile === null ? "agent start" : `agent start --profile ${profile}`;
-}
 
 /** THE predicate shared by checkAuth and checkProfileAuth: a stored token resolves by presence,
  *  gh-cli by the live gh probe, none never. */
@@ -320,7 +315,7 @@ export function checkRuntimePort(f: RuntimeTarget, p: DaemonProbeFacts): CheckRe
     ...base,
     status: "fail",
     detail: `nothing reachable on port ${f.port}`,
-    fix: startFix(f.profile),
+    fix: agentStartCommand(f.profile),
     value,
   };
 }
@@ -373,7 +368,7 @@ export function checkRuntimePid(f: RuntimeTarget, p: DaemonProbeFacts): CheckRes
       value,
     };
   }
-  return { ...base, status: "fail", detail, fix: startFix(f.profile), value };
+  return { ...base, status: "fail", detail, fix: agentStartCommand(f.profile), value };
 }
 
 export function checkRuntimePaths(f: RuntimeTarget): CheckResult {
@@ -476,7 +471,7 @@ export function checkRuntimeIdentity(f: RuntimeTarget, p: DaemonProbeFacts): Che
     status: "warn",
     detail:
       `a non-copilot-api service is listening on port ${f.port} (no x-trace-id); agent requests would misroute to it`,
-    fix: `free the port (stop the foreign process), then ${startFix(f.profile)}`,
+    fix: `free the port (stop the foreign process), then ${agentStartCommand(f.profile)}`,
     value: { reachable: true, confirmed: false },
   };
 }
@@ -544,7 +539,7 @@ export function checkRuntimeOrphan(f: RuntimeTarget, p: DaemonProbeFacts): Check
         status: "warn",
         detail:
           `${what} is on port ${f.port} but is not the tracked daemon (orphaned -- started outside 'agent start', or the run-state was cleared)`,
-        fix: `${stopFix}, then ${startFix(f.profile)} (re-tracks the daemon)`,
+        fix: `${stopFix}, then ${agentStartCommand(f.profile)} (re-tracks the daemon)`,
         value: { orphan: true, trackedPid: p.trackedPid },
       };
     }

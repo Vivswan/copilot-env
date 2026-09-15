@@ -23,7 +23,7 @@ import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import type { ManagedWrite } from "./configure.ts";
+import { type ManagedWrite, resolveCredentialWiring, resolvedDirectToken } from "./configure.ts";
 import { resolveAndPersistDirectIdentity } from "./profile_wiring.ts";
 import { readAgentWirings } from "./wiring.ts";
 
@@ -161,13 +161,17 @@ async function reportClaudeDesktopReady(resolution: DesktopTargetResolution): Pr
 async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
   try {
     const ghToken = profile === null && mode === "direct" ? new Credential().resolve() : undefined;
+    const credential = resolveCredentialWiring(mode, profile, ghToken);
+    // A static credential is already resolved: the identity probe and discovery reuse it.
+    const token = ghToken ?? resolvedDirectToken(mode, credential);
     const write: ManagedWrite = mode === "direct"
       ? {
         mode: "direct",
-        directIntegrationId: await resolveAndPersistDirectIdentity(profile, ghToken),
+        directIntegrationId: await resolveAndPersistDirectIdentity(profile, token),
+        credential,
       }
-      : { mode: "proxy" };
-    await syncClaudeDesktopWiring({ ...write, profile, directToken: ghToken });
+      : { mode: "proxy", credential };
+    await syncClaudeDesktopWiring({ ...write, profile, directToken: token });
   } catch (e) {
     logger.warn(`  Could not refresh ${profileLabel(profile)}'s Desktop entry: ${errMessage(e)}`);
   }

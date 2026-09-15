@@ -24,6 +24,7 @@ import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
+const COMMAND = { kind: "command" } as const;
 
 afterEach(() => {
   restoreEnv();
@@ -56,6 +57,27 @@ test("readCodexToml: a file that exists but is not TOML reads as unparseable", (
   expect(read.kind).toBe("unparseable");
   if (read.kind !== "unparseable") throw new Error("expected unparseable");
   expect(read.error.length).toBeGreaterThan(0);
+});
+
+test("readCodexToml: the parser's diagnostic quotes the offending line, so a static-key bearer is redacted from it", () => {
+  dir = tempDir("codex-toml-io-");
+  const path = join(dir, "config.toml");
+  const token = "REVIEW_SENTINEL_TOKEN";
+  // The typo sits right after the bearer line: smol-toml's message excerpts the source around it.
+  writeFileSync(
+    path,
+    [
+      "[model_providers.copilot-env.http_headers]",
+      `Authorization = "Bearer ${token}"`,
+      "broken = ]",
+      "",
+    ]
+      .join("\n"),
+  );
+  const read = readCodexToml(path);
+  if (read.kind !== "unparseable") throw new Error("expected unparseable");
+  expect(read.error).not.toContain(token);
+  expect(read.error).toContain("Bearer <redacted>");
 });
 
 test("readCodexToml: an empty or whitespace-only file reads as absent", () => {
@@ -147,7 +169,11 @@ test("policy: configureCodexConfig (loadOrCreateConfig) throws on unparseable, f
 
   // The exact wrapped message up to the parser's own text (path included).
   const thrown = capture(() =>
-    configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://localhost:4141/v1" })
+    configureCodexConfig(codexHome, {
+      mode: "proxy",
+      credential: COMMAND,
+      baseUrl: "http://localhost:4141/v1",
+    })
   );
   expect(
     (thrown as Error).message.startsWith(
@@ -161,7 +187,11 @@ test("policy: configureCodexConfig (loadOrCreateConfig) throws on unparseable, f
   rmSync(configPath);
   mkdirSync(configPath);
   const rawError = capture(() =>
-    configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://localhost:4141/v1" })
+    configureCodexConfig(codexHome, {
+      mode: "proxy",
+      credential: COMMAND,
+      baseUrl: "http://localhost:4141/v1",
+    })
   );
   expect((rawError as NodeJS.ErrnoException).code).toBe("EISDIR");
 });

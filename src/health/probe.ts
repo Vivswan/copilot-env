@@ -16,12 +16,24 @@ import {
 import { defaultSetupNeedsProxy } from "../agents/wiring.ts";
 import { claudeDesktopStatus } from "../agents/claude_desktop.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
-import { BASE_URL_ENV, type ClaudeWiringStatus, inspectClaudeWiring } from "../claude/config.ts";
+import {
+  bakedClaudeToken,
+  BASE_URL_ENV,
+  type ClaudeWiringStatus,
+  inspectClaudeWiring,
+} from "../claude/config.ts";
 import type { ClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
+import {
+  bakedCodexToken,
+  CODEX_ENV_KEY,
+  type CodexWiringStatus,
+  inspectCodexWiring,
+} from "../codex/config.ts";
 import { type CodexHostFarm, codexHostFarm, effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
+import { CopilotApiConfig } from "../copilot_api/config.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   allProfileNames,
@@ -77,6 +89,7 @@ import { PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";
 import {
   type AutoupdateStatus,
+  type BakedCredentialFreshness,
   classifyPortState,
   type ClaudeFacts,
   type CodexDirectAuthFacts,
@@ -169,6 +182,11 @@ export interface ProbeDeps {
   codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts>;
   /** True when a GitHub token is provisioned in the store (Direct needs no gh then). */
   storedTokenPresent(): boolean;
+  /** The slot's stored token VALUE (null for gh-cli or none), compared against a baked static
+   *  credential and never reported; throws when the store cannot be read. */
+  storedToken(profile: Profile): string | null;
+  /** The profile daemon's minted API key, or null when none exists yet. Read-only. */
+  proxyApiKey(profile: Profile): string | null;
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token` | `gh-env`), or null. */
   authProvider(): AuthProvider | null;
   /** The default slot's gh-cli account pin, or null (= follow gh's active account). */
@@ -459,6 +477,11 @@ export function defaultProbeDeps(): ProbeDeps {
     codexTokenInEnviron: () => Boolean(process.env[CODEX_ENV_KEY]),
     codexDirectAuth,
     storedTokenPresent: () => new CopilotEnvState().read().githubToken !== null,
+    storedToken: (profile) => {
+      const credential = new Credential(undefined, profile).read();
+      return credential.kind === "stored" ? credential.token : null;
+    },
+    proxyApiKey: (profile) => CopilotApiConfig.forProfile(profile).apiKey(),
     authProvider: () => new CopilotEnvState().read().authProvider,
     defaultGhUser: () => new CopilotEnvState().read().ghUser,
     ghActiveLogin: ghActiveLoginProbe,
@@ -821,12 +844,15 @@ export async function gatherFacts(
   // `managed` (execs `agent auth --get [--profile <name>]`) AND the credential classifies as a
   // stored token; gh-cli means a live gh probe. Classification is storedCredentialKind()
   // (env_state.ts): a leftover token with no provider is "none", so no gh probe (no implicit
-  // fallback) and Direct never reads green. Shared by the Codex and Claude jobs.
+  // fallback) and Direct never reads green. A static shape asks the store nothing: the value is in
+  // the config, so no gh is needed whatever the store says. Shared by the Codex and Claude jobs.
   const directAuthFor = async (
-    managed: boolean,
+    credential: "command" | "static" | "none",
   ): Promise<{ directAuth: CodexDirectAuthFacts; noGhNeeded: boolean }> => {
-    const { provider, storedToken, ghUser } = runCredential();
     const noProbe = { command: null, authenticated: false };
+    if (credential === "static") return { directAuth: noProbe, noGhNeeded: true };
+    const managed = credential === "command";
+    const { provider, storedToken, ghUser } = runCredential();
     switch (storedCredentialKind(provider, storedToken)) {
       case "stored":
         return { directAuth: noProbe, noGhNeeded: managed };
@@ -836,6 +862,41 @@ export async function gatherFacts(
         return { directAuth: noProbe, noGhNeeded: false };
     }
   };
+
+  // A static wiring holds the credential itself, so the store is consulted for ONE thing only:
+  // whether the baked value is what a rewire would bake now. A store or daemon home that cannot
+  // answer reads "unchecked", never a failure of the agent check (the value in the config is what
+  // the agent uses) and never "fresh".
+  const bakedFreshness = (
+    mode: "direct" | "proxy",
+    baked: string | null,
+  ): BakedCredentialFreshness => {
+    if (baked === null) return "unchecked";
+    try {
+      const expected = mode === "proxy" ? deps.proxyApiKey(profile) : deps.storedToken(profile);
+      if (expected === null) return "unchecked";
+      return expected === baked ? "fresh" : "stale";
+    } catch {
+      return "unchecked";
+    }
+  };
+
+  // The store facts the checks frame a credential miss with. A static wiring omits the provider:
+  // it resolves nothing at request time, so an unreadable store must not fail its agent check. A
+  // named profile's recorded mode stays whatever the shape: the slot DEFINES the profile, and an
+  // interrupted `profile --add` (slot flipped, agents not yet rewritten) must never read green.
+  const storeFacts = (credential: "command" | "static" | "none" | null) => ({
+    ...(credential === "static" ? {} : { provider: runCredential().provider }),
+    ...(profile === null ? {} : { expectedMode: runCredential().mode }),
+  });
+
+  // The shape directAuthFor judges: a static wiring in EITHER mode carries its value, so the
+  // store is never asked and no gh probe runs; a proxy command shape keeps the gh probe (the
+  // daemon resolves the same credential).
+  const authShapeOf = (wiring: ClaudeWiringStatus | CodexWiringStatus) =>
+    wiring.credential === "static" || wiring.providerMode === "direct"
+      ? wiring.credential ?? "none"
+      : "none";
 
   const jobs: Promise<void>[] = [];
 
@@ -933,7 +994,9 @@ export async function gatherFacts(
           deps.codexTokenInEnviron(),
           profile,
         );
-        const { directAuth, noGhNeeded } = await directAuthFor(wiring.directUsesToken);
+        const { directAuth, noGhNeeded } = await directAuthFor(
+          authShapeOf(wiring),
+        );
         // The wiring's `directUsesToken` stays a pure CONFIG fact; the store-aware "Direct needs
         // no gh" verdict travels on its own field (`directNeedsNoGh`, what checkCodex consumes).
         const codexFacts = evalCodex(
@@ -943,13 +1006,20 @@ export async function gatherFacts(
           wiringPort(),
           deps.codexTokenInEnviron(),
           directAuth,
-          noGhNeeded,
+          wiring.providerMode === "direct" && noGhNeeded,
           wiring,
         );
         facts.codex = {
           ...codexFacts,
-          provider: runCredential().provider,
-          ...(profile === null ? {} : { expectedMode: runCredential().mode }),
+          ...storeFacts(wiring.credential),
+          ...(wiring.credential === "static"
+            ? {
+              bakedCredential: bakedFreshness(
+                wiring.providerMode === "direct" ? "direct" : "proxy",
+                bakedCodexToken(configRead, profile),
+              ),
+            }
+            : {}),
         };
       })(),
     );
@@ -962,15 +1032,29 @@ export async function gatherFacts(
         // A named profile answers from its own settings-<name>.json, read three-way
         // (deps.readFileResult) so an unreadable file classifies other/read-error, not "none".
         const settingsRead = deps.readFileResult(settingsPathFor(home, profile));
-        // "direct" here means the apiKeyHelper truly invokes `agent auth --get` addressed at
-        // THIS profile (never a stale/foreign/mis-addressed helper); directAuthFor then decides
-        // the gh probe.
+        // "direct" here means the credential shape truly is ours, addressed at THIS profile (never
+        // a stale/foreign/mis-addressed helper); directAuthFor then decides the gh probe.
         const wiring = inspectClaudeWiring(settingsRead, wiringPort(), profile);
-        const { directAuth, noGhNeeded } = await directAuthFor(wiring.providerMode === "direct");
+        const { directAuth, noGhNeeded } = await directAuthFor(
+          authShapeOf(wiring),
+        );
         facts.claude = {
-          ...evalClaude(home, directAuth, noGhNeeded, wiring, profile),
-          provider: runCredential().provider,
-          ...(profile === null ? {} : { expectedMode: runCredential().mode }),
+          ...evalClaude(
+            home,
+            directAuth,
+            wiring.providerMode === "direct" && noGhNeeded,
+            wiring,
+            profile,
+          ),
+          ...storeFacts(wiring.credential),
+          ...(wiring.credential === "static"
+            ? {
+              bakedCredential: bakedFreshness(
+                wiring.providerMode === "direct" ? "direct" : "proxy",
+                bakedClaudeToken(settingsRead),
+              ),
+            }
+            : {}),
         };
         // The Desktop library spans the default AND every profile, so it is judged once, on the
         // whole-environment run only.

@@ -8,9 +8,10 @@ import { type CodexOtherReason, codexProviderId } from "../codex/config.ts";
 import { codexHostDriftFrom, codexHostDriftLine } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
-import type { Profile } from "../copilot_api/profile.ts";
+import { agentStartCommand, type Profile } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import type {
+  BakedCredentialFreshness,
   ClaudeFacts,
   CodexDirectAuthFacts,
   CodexFacts,
@@ -68,14 +69,35 @@ type DirectAuthVerdict =
   | { status: "ok"; authLine: string }
   | { status: "warn"; authLine: string; fix: string };
 
-/** The identical three-way decision (stored token -> gh-cli -> nothing resolves) for checkCodex
- *  and checkClaude. `wiringOk` is each agent's "rest of the wiring is right" signal (Codex:
- *  providerWired; Claude: base URL matches); `directFix` its `agent <cli> --direct` repair. */
+/** How a static wiring's baked value stands against what a rewire would bake; the stale arm names
+ *  the rewire because nothing else refreshes a baked value. */
+function bakedCredentialClause(
+  freshness: BakedCredentialFreshness | undefined,
+  rewire: string,
+): { stale: boolean; clause: string } {
+  switch (freshness) {
+    case "stale":
+      return { stale: true, clause: `; out of step with the store, re-run \`${rewire}\`` };
+    case "unchecked":
+      return { stale: false, clause: "; freshness not checked" };
+    case "fresh":
+    case undefined:
+      return { stale: false, clause: "" };
+    default:
+      return assertNever(freshness);
+  }
+}
+
+/** The identical decision (static value -> stored token -> gh-cli -> nothing resolves) for
+ *  checkCodex and checkClaude. `wiringOk` is each agent's "rest of the wiring is right" signal
+ *  (Codex: providerWired; Claude: base URL matches); `directFix` its `agent <cli> --direct` repair. */
 function directAuthVerdict(
   f: {
     directUsesToken: boolean;
     provider?: AuthProvider | null;
     directAuth: CodexDirectAuthFacts;
+    credential?: "command" | "static" | "none" | null;
+    bakedCredential?: BakedCredentialFreshness;
   },
   wiringOk: boolean,
   directFix: string,
@@ -85,6 +107,13 @@ function directAuthVerdict(
     ? "agent auth --get"
     : `agent auth --get --profile ${profile}`;
   const authFix = profile === null ? "agent auth" : `agent auth --profile ${profile}`;
+  if (f.credential === "static") {
+    const baked = bakedCredentialClause(f.bakedCredential, directFix);
+    const authLine = `auth: GitHub token baked into the config (static-key${baked.clause})`;
+    return wiringOk && !baked.stale
+      ? { status: "ok", authLine }
+      : { status: "warn", authLine, fix: directFix };
+  }
   if (f.directUsesToken) {
     const authLine = `auth: stored GitHub token (${getCommand}, no gh CLI)`;
     return wiringOk ? { status: "ok", authLine } : { status: "warn", authLine, fix: directFix };
@@ -188,7 +217,13 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
     // A stored token means the resolver (`agent auth --get`) needs no `gh`; wiring alone decides.
     // A gh-cli provider is probed live; with no provider at all, nothing resolves and it warns.
     const verdict = directAuthVerdict(
-      { directUsesToken: f.directNeedsNoGh, provider: f.provider, directAuth: f.directAuth },
+      {
+        directUsesToken: f.directNeedsNoGh,
+        provider: f.provider,
+        directAuth: f.directAuth,
+        credential: f.credential,
+        bakedCredential: f.bakedCredential,
+      },
       f.providerWired,
       directFix,
       profile,
@@ -244,15 +279,22 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
   if (detail !== null) {
     return { ...base, status: "warn", detail, fix: proxyFix };
   }
-  // Fully wired: the key resolves at runtime via the managed auth.command, so there is no baked
-  // token to report.
+  // Fully wired. The command shape resolves the key at runtime, so there is no baked value to
+  // report; the static shape has one, and the daemon it addresses must be up on its own.
+  const baked = bakedCredentialClause(f.bakedCredential, proxyFix);
   const detailLines = [
     "provider: proxy",
     `config.toml: ${configPath}`,
     `model_provider ${codexProviderId(profile)} → ${f.baseUrl}`,
-    "auth: local proxy key via the proxy-token resolver",
+    f.credential === "static"
+      ? `auth: local proxy key baked into the config (static-key; the daemon must be running: \`${
+        agentStartCommand(profile)
+      }\`${baked.clause})`
+      : "auth: local proxy key via the proxy-token resolver",
   ];
-  return { ...base, status: "ok", detail: detailLines.join("\n") };
+  return baked.stale
+    ? { ...base, status: "warn", detail: detailLines.join("\n"), fix: proxyFix }
+    : { ...base, status: "ok", detail: detailLines.join("\n") };
 }
 
 /** Any key-vs-disk drift warns with the wiring pass that resolves it (the same verdict `agent
@@ -369,25 +411,34 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
     // (after `config port` changed and the daemon rebound) would send Claude to the wrong port,
     // so it must not read green. Reachability is the proxy check's job. Mirrors the Codex check.
     const baseUrlOk = f.baseUrl !== null && f.baseUrlMatches;
+    const proxyFix = profile === null
+      // --proxy explicitly: the bare commands auto-detect a mode, which is not guaranteed to
+      // re-bake the proxy wiring this fix is repairing.
+      ? "agent claude --proxy"
+      : profileAddFix(profile);
+    const baked = bakedCredentialClause(f.bakedCredential, proxyFix);
     const detail = [
       "provider: proxy",
       `settings.json: ${f.settingsPath}`,
       `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
         baseUrlOk ? "" : " (does not match the resolved proxy port)"
       }`,
-      `apiKeyHelper → ${f.helperPath ?? "(missing)"}`,
+      f.credential === "static"
+        ? `credential → static ANTHROPIC_AUTH_TOKEN (static-key; the daemon must be running: \`${
+          agentStartCommand(profile)
+        }\`${baked.clause})`
+        : `apiKeyHelper → ${f.helperPath ?? "(missing)"}`,
     ].join("\n");
-    return baseUrlOk ? { ...base, status: "ok", detail } : {
+    if (baseUrlOk && !baked.stale) return { ...base, status: "ok", detail };
+    return {
       ...base,
       status: "warn",
       detail,
-      fix: profile === null
-        // --proxy explicitly: the bare commands auto-detect a mode, which is not guaranteed to
-        // re-bake the proxy wiring this fix is repairing.
-        ? "Re-run `agent claude --proxy` to repoint ANTHROPIC_BASE_URL at the current proxy port."
-        : `Re-run \`${
-          profileAddFix(profile)
-        }\` to repoint ANTHROPIC_BASE_URL at the profile's proxy port.`,
+      fix: baked.stale
+        ? proxyFix
+        : `Re-run \`${proxyFix}\` to repoint ANTHROPIC_BASE_URL at the ${
+          profile === null ? "current proxy port" : "profile's proxy port"
+        }.`,
     };
   }
   if (f.providerMode === "other") {

@@ -1,6 +1,7 @@
 // A named profile is selected through `[profiles.<name>].model_provider` pointing at its own
-// `[model_providers.copilot-env-<name>]`, and keyed through the managed auth.command alone. The
-// writer never emits an env_key for a named profile, so the OPENAI_API_KEY facts read false here.
+// `[model_providers.copilot-env-<name>]`, and keyed through the managed auth.command or a static
+// bearer alone. The writer never emits an env_key for a named profile, so the OPENAI_API_KEY facts
+// read false here.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -14,6 +15,8 @@ import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
+// The default credential shape: the config names a copilot-env command that prints the credential.
+const COMMAND = { kind: "command" } as const;
 
 afterEach(() => {
   restoreEnv();
@@ -32,6 +35,7 @@ function isolate(): string {
 function writeProxyProfile(codexHome: string): void {
   configureCodexConfig(codexHome, {
     mode: "proxy",
+    credential: COMMAND,
     profile: WORK,
     baseUrl: openaiBaseUrl(String(PROFILE_PORT)),
   });
@@ -81,6 +85,7 @@ test("a writer-produced proxy profile inspects as wired; token facts stay off", 
   expect(wiring.baseUrlMatches).toBe(true);
   expect(wiring.envKeyMatches).toBe(true);
   expect(wiring.providerWired).toBe(true);
+  expect(wiring.credential).toBe("command");
   expect(wiring.directUsesToken).toBe(false);
   expect(wiring.envFilePresent).toBe(true);
   expect(wiring.envKeyInDotenv).toBe(false);
@@ -174,7 +179,7 @@ test("an env_key alongside intact managed auth still un-wires a named profile", 
   expect(wiring.envKeyMatches).toBe(false);
   expect(wiring.providerWired).toBe(false);
 
-  configureCodexConfig(codexHome, { mode: "direct", profile: WORK });
+  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND, profile: WORK });
   const directText = mutateConfig(codexHome, (doc) => {
     profileProvider(doc).env_key = "OPENAI_API_KEY";
   });
@@ -187,7 +192,7 @@ test("an env_key alongside intact managed auth still un-wires a named profile", 
 
 test("a writer-produced direct profile inspects as wired via its own auth command", () => {
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct", profile: WORK });
+  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND, profile: WORK });
 
   const wiring = inspectCodexWiring(configText(codexHome), null, PROFILE_PORT, false, WORK);
   expect(wiring.modelProvider).toBe("copilot-env-work");
@@ -197,6 +202,7 @@ test("a writer-produced direct profile inspects as wired via its own auth comman
   expect(wiring.baseUrlMatches).toBe(true);
   expect(wiring.envKeyMatches).toBe(true);
   expect(wiring.directUsesToken).toBe(true);
+  expect(wiring.credential).toBe("command");
   expect(wiring.providerWired).toBe(true);
 
   // The DEFAULT direct auth (`agent auth --get` without --profile) resolves the default credential;
@@ -218,9 +224,38 @@ test("a writer-produced direct profile inspects as wired via its own auth comman
   expect(authlessWiring.providerWired).toBe(false);
 });
 
+test("a static named profile inspects as wired through its baked bearer, proxy and direct", () => {
+  const codexHome = isolate();
+  const STATIC = { kind: "static", token: "cpk_baked_token" } as const;
+  configureCodexConfig(codexHome, {
+    mode: "proxy",
+    credential: STATIC,
+    profile: WORK,
+    baseUrl: openaiBaseUrl(String(PROFILE_PORT)),
+  });
+
+  // The profile-addressed table carries the bearer and no resolver command.
+  const table = profileProvider(asRecord(parse(configText(codexHome))));
+  expect(table.auth).toBeUndefined();
+  expect(asRecord(table.http_headers).Authorization).toBe(`Bearer ${STATIC.token}`);
+  const proxyWiring = inspectCodexWiring(configText(codexHome), null, PROFILE_PORT, false, WORK);
+  expect(proxyWiring.modelProvider).toBe("copilot-env-work");
+  expect(proxyWiring.providerMode).toBe("proxy");
+  expect(proxyWiring.credential).toBe("static");
+  expect(proxyWiring.envKeyMatches).toBe(true);
+  expect(proxyWiring.providerWired).toBe(true);
+
+  configureCodexConfig(codexHome, { mode: "direct", credential: STATIC, profile: WORK });
+  const directWiring = inspectCodexWiring(configText(codexHome), null, PROFILE_PORT, false, WORK);
+  expect(directWiring.providerMode).toBe("direct");
+  expect(directWiring.credential).toBe("static");
+  expect(directWiring.directUsesToken).toBe(false);
+  expect(directWiring.providerWired).toBe(true);
+});
+
 test("default and profile wiring coexist; each view reads only its own selection", () => {
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct" });
+  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND });
   writeProxyProfile(codexHome);
 
   const defaultWiring = inspectCodexWiring(configText(codexHome), null, DEFAULT_PORT, false);
@@ -252,7 +287,7 @@ test("a profile-only config leaves the default view unconfigured", () => {
 
 test("profile tables absent entirely read as none for the named view", () => {
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct" });
+  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND });
 
   const wiring = inspectCodexWiring(configText(codexHome), null, PROFILE_PORT, false, WORK);
   expect(wiring.configExists).toBe(true);
@@ -277,6 +312,7 @@ test("a selector for a DIFFERENT profile never selects this one", () => {
   const other = parseProfileName("other");
   configureCodexConfig(codexHome, {
     mode: "proxy",
+    credential: COMMAND,
     profile: other,
     baseUrl: openaiBaseUrl(String(PROFILE_PORT)),
   });

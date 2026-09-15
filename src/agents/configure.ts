@@ -1,8 +1,10 @@
 // The shared `agent codex` / `agent claude` skeleton behind AgentAdapter. This module imports
 // NEITHER src/codex/ nor src/claude/: each agent file builds its own adapter and calls
 // runAgentConfig, so the dependency edge points one way (agent file -> here) and cannot cycle.
+import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import type { ProfileName } from "../copilot_api/profile.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { resolveDirectMode } from "./direct_detect.ts";
@@ -18,13 +20,65 @@ const logger = createStderrLogger();
  *   a named profile  -> wireBothAgents resolves it
  *   mode "proxy"     -> carries no identity field at all, so the pairing is unrepresentable
  */
-export type ManagedWrite =
+export type ManagedMode =
   | {
     mode: "direct";
     /** The probed `Copilot-Integration-Id` to bake, or null/absent to send none. */
     directIntegrationId?: string | null;
   }
   | { mode: "proxy"; directIntegrationId?: never };
+
+/**
+ * How the agents obtain the credential at request time (the `static-key` preference).
+ *
+ *   command -> each config names a copilot-env command that prints the credential (the default)
+ *   static  -> the value itself is written into each config; the agents spawn nothing of ours
+ */
+export type CredentialWiring = { kind: "command" } | { kind: "static"; token: string };
+
+/** `credential` is required, never defaulted: resolveCredentialWiring is its ONE constructor, so a
+ *  writer can never fall back to the command shape when the preference asked for the value. */
+export type ManagedWrite = ManagedMode & { credential: CredentialWiring };
+
+/**
+ * The one place the `static-key` preference is read for a write. Proxy bakes the daemon's own API
+ * key (minted here if absent, like wiringPortFor reserving the port); direct bakes the GitHub
+ * credential, `directToken` when the caller already resolved it. A value that cannot be resolved
+ * throws: an unresolvable static credential is a failed write, never a silent command fallback.
+ */
+export function resolveCredentialWiring(
+  mode: ManagedAgentMode,
+  profile: Profile,
+  directToken?: string | null,
+): CredentialWiring {
+  if (!new CopilotEnvConfig().staticKeyEnabled()) return { kind: "command" };
+  if (mode === "proxy") {
+    return { kind: "static", token: CopilotApiConfig.forProfile(profile).ensureApiKey() };
+  }
+  const resolved = typeof directToken === "string"
+    ? { token: directToken, reason: null }
+    : new Credential(undefined, profile).resolveWithReason();
+  if (resolved.token === null) {
+    const slot = profile === null ? "" : ` --profile ${profile}`;
+    throw new Error(
+      `static-key is on but no credential resolves to bake: ${resolved.reason}. ` +
+        `Run \`agent auth${slot}\`, or \`agent config --set static-key false\` to go back to ` +
+        "the resolver command.",
+    );
+  }
+  return { kind: "static", token: resolved.token };
+}
+
+/** The GitHub token a static DIRECT wiring already resolved, so the identity probe and Desktop's
+ *  discovery reuse it instead of resolving (for gh-cli, spawning) again. Undefined for the command
+ *  shape AND for proxy: a proxy static write holds the daemon's API key, which is no GitHub
+ *  credential and must never be sent upstream as one. */
+export function resolvedDirectToken(
+  mode: ManagedAgentMode,
+  credential: CredentialWiring,
+): string | undefined {
+  return mode === "direct" && credential.kind === "static" ? credential.token : undefined;
+}
 
 /** Contradictory flag pairs (`--check --direct`, `--mobile --check`) are rejected at the
  *  parse below, so no arm carries another arm's knobs and dispatch order never decides. */
@@ -177,16 +231,20 @@ export async function runAgentConfig(
     return;
   }
   const ghToken = opts.ghToken !== undefined ? opts.ghToken : new Credential().resolve();
-  const write = await resolveDefaultWrite(adapter, action.mode, ghToken);
-  logger.log(configuringLine(adapter.label, write.mode));
+  const chosen = await resolveDefaultMode(adapter, action.mode, ghToken);
+  logger.log(configuringLine(adapter.label, chosen.mode));
+  const credential = resolveCredentialWiring(chosen.mode, null, ghToken);
+  const write: ManagedWrite = chosen.mode === "direct"
+    ? { ...chosen, credential }
+    : { mode: "proxy", credential };
   await adapter.configureDefault(write, ghToken);
 }
 
-async function resolveDefaultWrite(
+async function resolveDefaultMode(
   adapter: AgentAdapter,
   mode: RequestedMode,
   ghToken: string | null,
-): Promise<ManagedWrite> {
+): Promise<ManagedMode> {
   if (mode === "proxy") return { mode };
   let directIntegrationId: string | null;
   try {

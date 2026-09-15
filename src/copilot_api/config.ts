@@ -36,6 +36,12 @@ function dataOrDegrade(
 const LOAD_RETRY_ATTEMPTS = 5;
 const LOAD_RETRY_MS = 4;
 
+/** V8's JSON.parse message quotes the source around the fault, unescaped, and these stores hold
+ *  the GitHub token and the daemon keys, so NOTHING of the parser's message is forwarded: even a
+ *  position lifted out of it could be a copy of the file's text. */
+const JSON_PARSE_DIAGNOSTIC =
+  "SyntaxError; the parser's message is withheld, the file may hold keys";
+
 // update()'s read-modify-write takes a best-effort `<file>.lock` (utils/file_lock.ts): the CLI, the daemon
 // shims, and several shells write the SAME store, and BOUNDED_LOCK_POLICY proceeds WITHOUT the lock after
 // its wait rather than deadlock a command.
@@ -104,12 +110,12 @@ export class CopilotApiConfig {
           // path: a write-back would discard it.
           if (isRecord(data)) return { kind: "doc", data };
           return { kind: "unparseable", error: "the JSON root is not an object" };
-        } catch (e) {
+        } catch {
           if (retryTorn && !last) {
             sleepSync(LOAD_RETRY_MS);
             continue;
           }
-          return { kind: "unparseable", error: String(e) };
+          return { kind: "unparseable", error: JSON_PARSE_DIAGNOSTIC };
         }
       }
       // An empty read may be the daemon's truncate window.
@@ -202,14 +208,21 @@ export class CopilotApiConfig {
     return isRecord(auth) ? auth : null;
   }
 
+  /** The daemon's first API key, or null when none was ever minted. Read-only and SILENT: health
+   *  compares a baked static key against it, and load()'s diagnostics would quote this file's
+   *  contents (the key itself) into the log; an unreadable or unparseable file reads null. */
+  apiKey(): string | null {
+    const read = this.read();
+    if (read.kind !== "doc") return null;
+    const auth = read.data.auth;
+    const keys = isRecord(auth) ? auth.apiKeys : undefined;
+    if (Array.isArray(keys) && keys.length > 0 && keys[0]) return String(keys[0]);
+    return null;
+  }
+
   ensureApiKey(): string {
-    const auth = this.readAuth();
-    if (auth) {
-      const keys = auth.apiKeys;
-      if (Array.isArray(keys) && keys.length > 0 && keys[0]) {
-        return String(keys[0]);
-      }
-    }
+    const existing = this.apiKey();
+    if (existing !== null) return existing;
     // Generated INSIDE update() with a re-check, so two concurrent creators that both saw "missing"
     // converge on ONE key - unless update()'s best-effort lock times out and both write unlocked.
     let result = "";

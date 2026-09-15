@@ -706,11 +706,18 @@ export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiri
 
 /** Writes a throwaway direct config and runs `claude -p` against it (src/agents/live_probe.ts);
  *  false means the caller writes proxy. */
-export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
+export function detectClaudeDirect(
+  directIntegrationId: string | null,
+  deps?: DirectProbeDeps,
+): boolean {
   return probeDirectWorks(
     CLAUDE_PROBE,
     (tmpHome) => {
-      configureClaudeConfig(tmpHome, { mode: "direct", credential: { kind: "command" } });
+      configureClaudeConfig(tmpHome, {
+        mode: "direct",
+        directIntegrationId,
+        credential: { kind: "command" },
+      });
     },
     deps,
   );

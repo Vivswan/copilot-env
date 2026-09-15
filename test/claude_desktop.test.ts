@@ -1578,7 +1578,13 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
   const names = () => (metaOf(library).entries as { name: string }[]).map((e) => e.name).sort();
 
   // `agent init --proxy`: the default entry is wired, and an owned entry whose profile
-  // does not exist (an orphan) is removed in the same run.
+  // does not exist (an orphan) is removed in the same run. Every wiring write logs in first,
+  // so the default slot holds a token.
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_test",
+  });
   await wireClaudeDesktopEntry(directWire(WORK));
   await captureAllWrites(() => runInit({ mode: "proxy" }));
   expect(names()).toEqual(["copilot-env"]);

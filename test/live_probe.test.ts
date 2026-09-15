@@ -1,4 +1,3 @@
-import { resolveDirectMode } from "../src/agents/direct_detect.ts";
 import {
   CLAUDE_PROBE,
   CODEX_CATALOG_NOISE_RE,
@@ -52,7 +51,6 @@ type RunProbe = (cliPath: string, args: string[], env: Record<string, string>) =
 function passingDeps(runProbe: RunProbe) {
   return {
     findCommand: (c: string) => ({ path: `/bin/${c}` }),
-    ghAuthOk: () => true as const,
     runProbe,
     retryDelayMs: 0,
   };
@@ -122,22 +120,7 @@ test("ghTokenFromEnv: precedence COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN,
   }
 });
 
-// --- resolveDirectMode (mode + provisioned token) ---------------------------
-
-test("resolveDirectMode: a stored token selects Direct only when no forced mode wins", () => {
-  const probe = () => false; // probe says "not direct" so token-vs-probe is visible
-  expect(resolveDirectMode("proxy", "ghu_x", probe)).toBe(false);
-  expect(resolveDirectMode("direct", null, probe)).toBe(true);
-  expect(resolveDirectMode("auto", "ghu_x", probe)).toBe(true);
-  expect(resolveDirectMode("auto", null, probe)).toBe(false);
-  expect(resolveDirectMode("auto", null, () => true)).toBe(true);
-});
-
-// --- probeDirectWorks: failed cheap looks --------------------------------------
-//
-// A look that FAILED (the command probe or `gh auth token` spawn never completed)
-// must fall back to the proxy like a proven miss -- the safe direction -- but never
-// borrow the proven arms' advice ("not found", "run `gh auth login`").
+// --- gh verdicts (src/copilot_api/gh_cli.ts) ------------------------------------
 
 test("ghAuthVerdict: exit 0 proves auth, a completed nonzero disproves it, a dead spawn proves nothing", () => {
   expect(ghAuthVerdict({ status: 0 })).toBe(true);
@@ -147,32 +130,28 @@ test("ghAuthVerdict: exit 0 proves auth, a completed nonzero disproves it, a dea
   expect(ghAuthVerdict({ status: null })).toBe("unproven");
 });
 
-test("probeDirectWorks: failed cheap looks fall back to proxy without reaching later gates", () => {
+// --- probeDirectWorks: a missing or uncheckable CLI ----------------------------
+//
+// Both fall back to the proxy without a model call, and a look that FAILED (the command probe
+// never completed) never borrows the proven arm's "not found" advice.
+test("probeDirectWorks: no CLI means proxy before any smoke call", () => {
   let probeCalls = 0;
   const deps = {
-    findCommand: (c: string) => ({ path: `/bin/${c}` }),
-    ghAuthOk: () => "unproven" as const,
     runProbe: () => {
       probeCalls++;
       return { ok: true };
     },
     retryDelayMs: 0,
   };
-  expect(probeDirectWorks(FAKE_DESCRIPTOR, () => {}, deps)).toBe(false);
-  expect(probeCalls).toBe(0);
-
-  let ghAuthCalls = 0;
+  const missing = probeDirectWorks(FAKE_DESCRIPTOR, () => {}, {
+    ...deps,
+    findCommand: () => ({ path: null }),
+  });
   const failedLook = probeDirectWorks(FAKE_DESCRIPTOR, () => {}, {
     ...deps,
     findCommand: () => ({ path: null, launchFailed: true as const }),
-    ghAuthOk: () => {
-      ghAuthCalls++;
-      return true as const;
-    },
   });
-  expect(failedLook).toBe(false);
-  expect(ghAuthCalls).toBe(0);
-  expect(probeCalls).toBe(0);
+  expect([missing, failedLook, probeCalls]).toEqual([false, false, 0]);
 });
 
 // --- probeDirectWorks: retry on transient failure ---------------------------
@@ -214,7 +193,7 @@ test("probeDirectWorks strips provider/CLI env families but keeps gh auth", () =
   process.env.CLAUDE_CODE_FOO = "leaked-claude";
   process.env.openai_org = "leaked-lowercase"; // case-insensitive match (Windows)
   process.env.CLAUDE_CONFIG_DIR = "leaked-home"; // the home var: temp must override it
-  process.env.GH_TOKEN = "keep-me"; // Direct authenticates via gh -- must survive
+  process.env.GH_TOKEN = "keep-me"; // a gh-cli credential resolves through gh -- must survive
   try {
     let seen: Record<string, string> | null = null;
     const ok = probeDirectWorks(

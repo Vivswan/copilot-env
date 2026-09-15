@@ -388,6 +388,8 @@ test("agent claude reconciles the Desktop library after its write; --check repor
   expect(check.stdout).toContain(`"copilot-env: old" orphaned at ${join(library, "old.json")}`);
   expect(check.stdout).toContain("fix: agent claude");
 
+  // The wiring write logs in first; a stored token satisfies the gate headless.
+  expect(runCli(["auth", "--set", "ghu_test"], { env }).exitCode).toBe(0);
   const wire = runCli(["claude", "--proxy"], { env });
   expect(wire.exitCode).toBe(0);
   const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
@@ -412,14 +414,15 @@ test("init configures both agents and rejects --direct + --proxy", () => {
   expect(help.output).toContain("--direct");
   expect(help.output).toContain("--proxy");
 
-  // --proxy forces BOTH agents to the proxy (no probe).
+  // --proxy forces BOTH agents to the proxy (no probe). Every wiring write logs in first, so
+  // the headless run needs a stored credential.
   const root = tempDir("copilot-init-");
-  const proc = runCli(["init", "--proxy"], {
-    env: isolatedEnv({
-      CODEX_HOME: join(root, ".codex"),
-      CLAUDE_CONFIG_DIR: join(root, ".claude"),
-    }),
+  const env = isolatedEnv({
+    CODEX_HOME: join(root, ".codex"),
+    CLAUDE_CONFIG_DIR: join(root, ".claude"),
   });
+  expect(runCli(["auth", "--set", "ghu_test"], { env }).exitCode).toBe(0);
+  const proc = runCli(["init", "--proxy"], { env });
   expect(proc.exitCode).toBe(0);
   const out = proc.stdout + proc.stderr;
   expect(out).toContain("local proxy");

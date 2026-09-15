@@ -368,7 +368,9 @@ export function renderClaudeDesktopStatus(
     // in-app switch needs the Developer menu they turn on.
     const hasExistingEntry = status.entries.some((e) => e.verdict.kind !== "missing");
     if (status.app.kind === "unreadable") {
-      lines.push(`${status.app.path} is ${status.app.reason}; the app's launch mode is unknown`);
+      lines.push(
+        `${status.app.path} is ${status.app.reason}; what the app reads from it is unknown`,
+      );
       fixes.add(`repair ${status.app.path}, then re-run \`agent claude\``);
     } else if (hasExistingEntry) {
       if (status.app.deploymentMode !== "3p") {

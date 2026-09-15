@@ -262,15 +262,16 @@ export type CodexFacts = CodexWiringStatus & {
   home: string;
   directAuth: CodexDirectAuthFacts;
   /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. Omitted for a
-   *  static wiring, which consults no store. */
+   *  static wiring: the store is then consulted for `bakedCredential` alone, and only best-effort. */
   provider?: AuthProvider | null;
   /** Narrowed named runs only: the profile's mode recorded in the store slot (the source of
    *  truth its wiring derives from); a wiring whose managed mode disagrees is an interrupted
    *  rewire, never green. */
   expectedMode?: ProfileMode | null;
-  /** Direct mode only: the managed resolver (`agent auth --get`) needs no `gh` login because the
-   *  wiring execs it AND the store classifies the credential as a stored token. Distinct from
-   *  the wiring's own `directUsesToken` (a pure CONFIG fact); computed by directAuthFor. */
+  /** Direct mode only: the resolver needs no `gh` login, because the wiring execs `agent auth
+   *  --get` AND the store classifies the credential as a stored token, or because the wiring is
+   *  static (the value sits in the config, whatever the slot's provider). Distinct from the
+   *  wiring's own `directUsesToken` (a pure CONFIG fact); computed by directAuthFor. */
   directNeedsNoGh: boolean;
   /** Present only for a static wiring. */
   bakedCredential?: BakedCredentialFreshness;
@@ -282,12 +283,13 @@ export type ClaudeFacts = ClaudeWiringStatus & {
   settingsPath: string;
   directAuth: CodexDirectAuthFacts;
   /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. Omitted for a
-   *  static wiring, which consults no store. */
+   *  static wiring: the store is then consulted for `bakedCredential` alone, and only best-effort. */
   provider?: AuthProvider | null;
   /** Narrowed named runs only: the profile's recorded mode (see CodexFacts). */
   expectedMode?: ProfileMode | null;
-  /** Direct mode only: a GitHub token is provisioned in the store, so the resolver (`agent auth
-   *  --get`) needs no `gh` login. Always false outside direct. */
+  /** Direct mode only: no `gh` login is needed, because a GitHub token is provisioned in the store
+   *  for the resolver (`agent auth --get`) or because the wiring is static. Always false outside
+   *  direct. */
   directUsesToken: boolean;
   /** Present only for a static wiring. */
   bakedCredential?: BakedCredentialFreshness;

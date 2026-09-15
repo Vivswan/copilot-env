@@ -202,16 +202,15 @@ export class CopilotApiConfig {
     return isRecord(auth) ? auth : null;
   }
 
-  /** The daemon's first API key, or null when none was ever minted. Read-only: health compares a
-   *  baked static key against it without creating one. */
+  /** The daemon's first API key, or null when none was ever minted. Read-only and SILENT: health
+   *  compares a baked static key against it, and load()'s diagnostics would quote this file's
+   *  contents (the key itself) into the log; an unreadable or unparseable file reads null. */
   apiKey(): string | null {
-    const auth = this.readAuth();
-    if (auth) {
-      const keys = auth.apiKeys;
-      if (Array.isArray(keys) && keys.length > 0 && keys[0]) {
-        return String(keys[0]);
-      }
-    }
+    const read = this.read();
+    if (read.kind !== "doc") return null;
+    const auth = read.data.auth;
+    const keys = isRecord(auth) ? auth.apiKeys : undefined;
+    if (Array.isArray(keys) && keys.length > 0 && keys[0]) return String(keys[0]);
     return null;
   }
 

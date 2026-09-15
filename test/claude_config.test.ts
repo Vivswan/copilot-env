@@ -546,6 +546,33 @@ test("removeClaudeDefaultWiring keeps user keys and drops an emptied permissions
   expect(doc.apiKeyHelper).toBeUndefined();
 });
 
+test("a command-shape NAMED write blanks the baked token so a static default cannot bleed into the profile", () => {
+  // `claude --settings settings-work.json` merges env per key over settings.json, and Claude
+  // prefers ANTHROPIC_AUTH_TOKEN over apiKeyHelper: a static default left visible would hand its
+  // token to the profile session in place of the profile's own helper.
+  const home = tmpHome();
+  new CopilotEnvState().commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "proxy",
+  });
+  configureClaudeConfig(home, { mode: "direct", credential: STATIC });
+  configureClaudeConfig(home, { mode: "proxy", profile: WORK, credential: COMMAND });
+  const named = JSON.parse(readFileSync(join(home, "settings-work.json"), "utf8"));
+  expect(named.apiKeyHelper).toBe(proxyHelperCommand(WORK));
+  expect((named.env as Record<string, unknown>)[AUTH_TOKEN_ENV]).toBe("");
+  // The default keeps its own token; only the profile's view of it is blanked.
+  expect(envOf(home)[AUTH_TOKEN_ENV]).toBe(STATIC.token);
+  // A static named write carries its own token over the default's.
+  configureClaudeConfig(home, {
+    mode: "proxy",
+    profile: WORK,
+    credential: { kind: "static", token: "work_key" },
+  });
+  const namedStatic = JSON.parse(readFileSync(join(home, "settings-work.json"), "utf8"));
+  expect((namedStatic.env as Record<string, unknown>)[AUTH_TOKEN_ENV]).toBe("work_key");
+  expect(namedStatic.apiKeyHelper).toBeUndefined();
+});
+
 test("removeClaudeDefaultWiring strips a static wiring's baked token with the other managed env keys", () => {
   const home = tmpHome();
   configureClaudeConfig(home, { mode: "direct", credential: STATIC });

@@ -349,12 +349,22 @@ agent config --set codex-host true    # false removes the farm again
 
 #### Claude Desktop
 
-`claude-desktop` applies at the next `agent init`, `agent claude`, or `agent profile` wiring. Setting the key writes no Desktop file itself.
+`claude-desktop` applies at the next `agent init`, `agent claude`, or `agent profile` wiring. Setting the key writes no Desktop file itself. After a wiring pass, quit and reopen Claude Desktop: it reads everything below at launch only, and lands on the GitHub Copilot gateway with no sign-in chooser.
 
-- **On:** every managed Claude write keeps a matching entry in Claude Desktop's config library, for the default and every profile, while the app is installed.
-- **Off:** the same writes remove the profile entries and their credential-helper scripts. The default entry stays in place as yours, named once and never rewritten; only `agent uninstall` removes it.
+One exception: a configuration you applied in the app yourself stays applied, since a wire never displaces it. `agent claude --check` names it, and the switch is `Developer > Configure Third-Party Inference...`.
+
+| Written                                | Where                                                                    | Why                                                                                                                                                                                  |
+| -------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| the entry `<uuid>.json` + `_meta.json` | `Claude-3p/configLibrary/`                                               | the gateway config: provider `gateway`, credential from a helper script, the model list (first row = default model, newest of the most capable family), the `copilot-env` MCP server |
+| `"deploymentMode": "3p"`               | `Claude-3p/claude_desktop_config.json`                                   | the app boots third-party instead of asking "Continue with Gateway" or "sign in with Claude.ai"; other keys in the file are kept                                                     |
+| `{"allowDevTools": true}`              | `Claude/developer_settings.json` and `Claude-3p/developer_settings.json` | the Developer menu, where saved entries are switched (`Developer > Configure Third-Party Inference...`)                                                                              |
+
+`Claude-3p` and `Claude` sit in `~/Library/Application Support/` on macOS, in `%LOCALAPPDATA%` and `%APPDATA%` on Windows, and in `$XDG_CONFIG_HOME` (default `~/.config`) on Linux.
+
+- **On:** every managed Claude write keeps a matching entry in Claude Desktop's config library, for the default and every profile, while the app is installed. The pass ends with `Claude Desktop is ready to use.` once the default entry is wired, applied, and the app boots third-party.
+- **Off:** the same writes remove the profile entries and their credential-helper scripts. The default entry stays in place as yours, named once and never rewritten; only `agent uninstall` removes it. The two app files are never removed.
 - **Always:** every file created, rewritten, or removed is printed.
-- **Drift:** `agent claude --check` and `agent health` report an entry missing or stale with the key on, or profile entries left behind after turning it off.
+- **Drift:** `agent claude --check` and `agent health` report an entry missing or stale with the key on, profile entries left behind after turning it off, which entry the app applies, and whether it will show the sign-in chooser or lacks the Developer menu.
 
 ### Authentication
 

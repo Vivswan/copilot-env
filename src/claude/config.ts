@@ -5,7 +5,8 @@
 //   stdout anything but the single credential line -> hard failure, so both resolvers keep their
 //                                                     diagnostics on stderr
 // With `static-key` on, the value rides in env.ANTHROPIC_AUTH_TOKEN instead and no apiKeyHelper is
-// written: Claude prefers that variable over the helper, so a command-shape write must DELETE it.
+// written: Claude prefers that variable over the helper, so a command-shape write takes it out
+// (applyManagedCredential).
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -13,6 +14,7 @@ import {
   type AgentRunAction,
   type CredentialWiring,
   type ManagedWrite,
+  resolvedDirectToken,
   runAgentConfig,
 } from "../agents/configure.ts";
 import { CLAUDE_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
@@ -381,19 +383,23 @@ function applyManagedEnv(
 
 /** The ONE credential carrier per shape, the other's always removed: `apiKeyHelper` for the command,
  *  `env.ANTHROPIC_AUTH_TOKEN` for the value. Claude prefers the variable over the helper, so the
- *  command shape must DELETE it (never blank it: whether "" reads as unset is undocumented). A static
- *  default under a command-shape profile file is transitional: `static-key` is account-wide and
- *  `cl --profile` rewrites the profile file on every launch. Runs after applyManagedEnv, which owns
- *  `doc.env`. */
+ *  command shape must take it out of the layered result:
+ *    default file  -> deleted
+ *    named file    -> blanked to "", like the direct-only keys: `claude --settings` merges env per
+ *                     key, so a static default underneath would otherwise hand its token to the
+ *                     profile session, over the profile's own helper
+ *  Runs after applyManagedEnv, which owns `doc.env`. */
 function applyManagedCredential(
   doc: Record<string, unknown>,
   credential: CredentialWiring,
   helperCommand: string,
+  profile: Profile,
 ): void {
   const env = isRecord(doc.env) ? doc.env : {};
   if (credential.kind === "command") {
     doc.apiKeyHelper = helperCommand;
-    delete env[AUTH_TOKEN_ENV];
+    if (profile === null) delete env[AUTH_TOKEN_ENV];
+    else env[AUTH_TOKEN_ENV] = "";
   } else {
     delete doc.apiKeyHelper;
     env[AUTH_TOKEN_ENV] = credential.token;
@@ -574,7 +580,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
 
   if (request.mode === "direct") {
     applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile, request.directIntegrationId);
-    applyManagedCredential(doc, request.credential, directHelperCommand(profile));
+    applyManagedCredential(doc, request.credential, directHelperCommand(profile), profile);
     // Real Claude home only: the throwaway detect-probe home must not touch the machine-global
     // ~/.claude.json.
     const commit = profile === null && claudeHome === resolveClaudeHome()
@@ -597,7 +603,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
   // No path, no trailing slash: the shape claudeBaseUrlMatchesProxy and env.ts's isLocalProxyUrl
   // expect.
   applyManagedEnv(doc, "proxy", proxyLoopbackOrigin(port), profile);
-  applyManagedCredential(doc, request.credential, proxyHelperCommand(profile));
+  applyManagedCredential(doc, request.credential, proxyHelperCommand(profile), profile);
   const commit = profile === null && claudeHome === resolveClaudeHome()
     ? applyWebSearchPair(doc, "proxy", settingsPath)
     : NO_COMMIT;
@@ -749,7 +755,13 @@ export function claudeAdapter(): AgentAdapter {
     },
     async configureProfile(name, write, options) {
       configureClaudeConfig(resolveClaudeHome(), { ...write, profile: name });
-      await syncClaudeDesktopWiring({ ...write, profile: name, quiet: options.quiet });
+      // A static write already holds the token: Desktop's discovery must not resolve it again.
+      await syncClaudeDesktopWiring({
+        ...write,
+        profile: name,
+        quiet: options.quiet,
+        directToken: resolvedDirectToken(write.credential),
+      });
     },
     removeProfile(name, options) {
       removeClaudeProfile(resolveClaudeHome(), name, options?.claudeArtifacts);

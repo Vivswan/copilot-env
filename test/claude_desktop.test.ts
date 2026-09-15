@@ -25,6 +25,7 @@ import {
   desktopLibraryDirUnder,
   desktopModelLabel,
   desktopModelsFromPicks,
+  desktopStandardDataDirFor,
   type DesktopWireOptions,
   entryProfileAt,
   listClaudeDesktopOwnedArtifacts,
@@ -123,47 +124,68 @@ function metaOf(library: string): Record<string, unknown> {
 
 // --- pure paths + detection ----------------------------------------------------
 
-test("desktopDataDirFor: the per-platform Claude-3p locations, null where no app exists", () => {
-  expect(desktopDataDirFor("darwin", "/Users/x", undefined)).toBe(
+test("desktopDataDirFor: the per-platform data dirs, null where no app exists", () => {
+  expect(desktopDataDirFor("darwin", "/Users/x", {})).toBe(
     join("/Users/x", "Library", "Application Support", "Claude-3p"),
   );
-  expect(desktopDataDirFor("win32", "C:\\Users\\x", "C:\\Users\\x\\AppData\\Local")).toBe(
-    join("C:\\Users\\x\\AppData\\Local", "Claude-3p"),
+  expect(
+    desktopDataDirFor("win32", "C:\\Users\\x", { localAppData: "C:\\Users\\x\\AppData\\Local" }),
+  )
+    .toBe(join("C:\\Users\\x\\AppData\\Local", "Claude-3p"));
+  expect(desktopDataDirFor("win32", "C:\\Users\\x", {})).toBeNull();
+  // Linux: Electron's userData under XDG_CONFIG_HOME, ~/.config when unset.
+  expect(desktopDataDirFor("linux", "/home/x", {})).toBe(join("/home/x", ".config", "Claude-3p"));
+  expect(desktopDataDirFor("linux", "/home/x", { xdgConfigHome: "/xdg" })).toBe(
+    join("/xdg", "Claude-3p"),
   );
-  expect(desktopDataDirFor("win32", "C:\\Users\\x", undefined)).toBeNull();
-  expect(desktopDataDirFor("linux", "/home/x", undefined)).toBeNull();
+  // The XDG spec reads an EMPTY variable as unset (a relative "Claude-3p" would never match).
+  expect(desktopDataDirFor("linux", "/home/x", { xdgConfigHome: "" })).toBe(
+    join("/home/x", ".config", "Claude-3p"),
+  );
+  expect(desktopDataDirFor("freebsd", "/home/x", {})).toBeNull();
+  // The default (claude.ai) data dir, where Developer Mode is read from: Electron's userData
+  // is the ROAMING AppData on Windows.
+  expect(desktopStandardDataDirFor("darwin", "/Users/x", {})).toBe(
+    join("/Users/x", "Library", "Application Support", "Claude"),
+  );
+  expect(
+    desktopStandardDataDirFor("win32", "C:\\Users\\x", {
+      appData: "C:\\Users\\x\\AppData\\Roaming",
+    }),
+  ).toBe(join("C:\\Users\\x\\AppData\\Roaming", "Claude"));
+  expect(desktopStandardDataDirFor("win32", "C:\\Users\\x", {})).toBeNull();
+  expect(desktopStandardDataDirFor("linux", "/home/x", {})).toBe(
+    join("/home/x", ".config", "Claude"),
+  );
 });
 
-test("desktopAppInstalledFor: app locations OR an existing data dir; never on linux", () => {
-  const dataDir = desktopDataDirFor("darwin", "/Users/x", undefined) as string;
+test("desktopAppInstalledFor: app locations OR an existing data dir; linux by data dir only", () => {
+  const dataDir = desktopDataDirFor("darwin", "/Users/x", {}) as string;
   expect(
-    desktopAppInstalledFor(
-      "darwin",
-      (p) => p === "/Applications/Claude.app",
-      "/Users/x",
-      undefined,
-    ),
+    desktopAppInstalledFor("darwin", (p) => p === "/Applications/Claude.app", "/Users/x", {}),
   ).toBe(true);
   expect(
     desktopAppInstalledFor(
       "darwin",
       (p) => p === join("/Users/x", "Applications", "Claude.app"),
       "/Users/x",
-      undefined,
+      {},
     ),
   ).toBe(true);
-  expect(desktopAppInstalledFor("darwin", (p) => p === dataDir, "/Users/x", undefined)).toBe(true);
-  expect(desktopAppInstalledFor("darwin", () => false, "/Users/x", undefined)).toBe(false);
+  expect(desktopAppInstalledFor("darwin", (p) => p === dataDir, "/Users/x", {})).toBe(true);
+  expect(desktopAppInstalledFor("darwin", () => false, "/Users/x", {})).toBe(false);
   const lad = "C:\\Users\\x\\AppData\\Local";
   expect(
     desktopAppInstalledFor(
       "win32",
       (p) => p === join(lad, "AnthropicClaude", "claude.exe"),
       "C:\\Users\\x",
-      lad,
+      { localAppData: lad },
     ),
   ).toBe(true);
-  expect(desktopAppInstalledFor("linux", () => true, "/home/x", undefined)).toBe(false);
+  const linuxStandard = join("/home/x", ".config", "Claude");
+  expect(desktopAppInstalledFor("linux", (p) => p === linuxStandard, "/home/x", {})).toBe(true);
+  expect(desktopAppInstalledFor("linux", () => false, "/home/x", {})).toBe(false);
 });
 
 test("the desktop seam is absolute-or-throw and governs detection; the floor sets it", () => {
@@ -207,6 +229,10 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
     models,
   });
   expect(direct["inferenceGatewayBaseUrl"]).toBe(DEFAULT_COPILOT_API_BASE);
+  // The two keys that make the app treat the entry as a third-party config at all: without
+  // them it boots into claude.ai sign-in (seen on a fresh machine).
+  expect(direct["inferenceProvider"]).toBe("gateway");
+  expect(direct["inferenceCredentialKind"]).toBe("helper-script");
   expect(direct["inferenceCredentialHelper"]).toBe("/x/helper.sh");
   expect(direct["inferenceCredentialHelperTimeoutSec"]).toBe(30);
   expect(direct["deploymentDisplayName"]).toBe(DESKTOP_DISPLAY_NAME);
@@ -243,7 +269,9 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
   ) {
     expect(direct[key]).toBe(true);
   }
-  expect(isRecordLike(direct["managedMcpServers"])).toBe(true);
+  // managedMcpServers is an ARRAY (the object shape is rejected as invalid_type and dropped).
+  const servers = direct["managedMcpServers"] as { name: string; transport: string }[];
+  expect(servers.map((s) => [s.name, s.transport])).toEqual([["copilot-env", "stdio"]]);
   expect(direct["claudeAiImport"]).toEqual({
     "enabled": true,
     "automatic3pImport": true,
@@ -265,10 +293,6 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
   // payload keeps the direct payload's rows, 1m annotations included.
   expect(proxy["inferenceModels"]).toEqual(direct["inferenceModels"]);
 });
-
-function isRecordLike(v: unknown): boolean {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
 
 test("payload: foreign keys in the existing document survive the surgical merge", () => {
   const merged = desktopConfigPayload({
@@ -336,13 +360,13 @@ test("payload: the static shape bakes the key and drops the helper keys; the com
   expect(baked["inferenceGatewayAuthScheme"]).toBe("bearer");
   expect(baked["inferenceCredentialHelper"]).toBeUndefined();
   expect(baked["inferenceCredentialHelperTimeoutSec"]).toBeUndefined();
-  // Back to the command shape: the key must not linger in the document beside the helper.
+  // Back to the command shape: the key must not linger in the document beside the helper, and
+  // the kind names the helper as the app's one source again.
   const back = desktopConfigPayload({ ...base, credential: command, existing: baked });
   expect(back["inferenceCredentialHelper"]).toBe("/x/h.sh");
   expect(back["inferenceCredentialHelperTimeoutSec"]).toBe(30);
-  for (
-    const key of ["inferenceCredentialKind", "inferenceGatewayApiKey", "inferenceGatewayAuthScheme"]
-  ) {
+  expect(back["inferenceCredentialKind"]).toBe("helper-script");
+  for (const key of ["inferenceGatewayApiKey", "inferenceGatewayAuthScheme"]) {
     expect(back[key]).toBeUndefined();
   }
 });
@@ -766,17 +790,40 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
     baseUrl: DEFAULT_COPILOT_API_BASE,
     credential: { kind: "command", helperPath: "/x/h.sh" },
     existing: {
-      "managedMcpServers": { "their-server": { "command": "x" } },
+      "managedMcpServers": [
+        { "name": "their-server", "transport": "stdio", "command": "x" },
+        { "name": "copilot-env", "transport": "stdio", "command": "old", "args": [] },
+      ],
       "inferenceCustomHeaders": { "X-Custom": "keep" },
     },
   });
-  const servers = doc["managedMcpServers"] as Record<string, { command: string; args: string[] }>;
-  expect(Object.keys(servers).sort()).toEqual(["copilot-env", "their-server"]);
+  const servers = doc["managedMcpServers"] as {
+    name: string;
+    transport: string;
+    command: string;
+    args: string[];
+  }[];
   // On Windows the args carry the PowerShell invocation ahead of the subcommand, so the
   // expectation comes from the same launcher-command builder the writer uses.
   const launcher = agentLauncherCommand(["mcp", "--serve", "--profile", "work"]);
-  expect(servers["copilot-env"]?.command).toBe(launcher.command);
-  expect(servers["copilot-env"]?.args).toEqual(launcher.args);
+  expect(servers).toEqual([
+    { "name": "their-server", "transport": "stdio", "command": "x" },
+    {
+      "name": "copilot-env",
+      "transport": "stdio",
+      "command": launcher.command,
+      "args": launcher.args,
+    },
+  ]);
+  // Our former object shape is not foreign rows: it goes.
+  const fromObject = desktopConfigPayload({
+    mode: "direct",
+    profile: WORK,
+    baseUrl: DEFAULT_COPILOT_API_BASE,
+    credential: { kind: "command", helperPath: "/x/h.sh" },
+    existing: { "managedMcpServers": { "copilot-env": { "command": "old" } } },
+  });
+  expect((fromObject["managedMcpServers"] as unknown[]).length).toBe(1);
   // Foreign header names survive; ours are (re)written.
   const headers = doc["inferenceCustomHeaders"] as Record<string, string>;
   expect(headers["X-Custom"]).toBe("keep");
@@ -894,11 +941,31 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   const { library } = isolateWithDesktop();
   const metaPath = join(library, "_meta.json");
   const helper = desktopHelperPath(resolveRootHome(), "direct", null);
+  // The app's own files beside the library: the user's MCP servers in claude_desktop_config.json
+  // must survive the deploymentMode merge.
+  const dataDir = join(library, "..");
+  const appConfig = join(dataDir, "claude_desktop_config.json");
+  const devSettings = [
+    join(`${dataDir}-1p`, "developer_settings.json"),
+    join(dataDir, "developer_settings.json"),
+  ];
+  writeFileSync(appConfig, `${JSON.stringify({ "mcpServers": { "x": {} } })}\n`);
 
   // Key on: the entry lands; the library files are named, the in-home files are not.
   const wired = await captureAllWrites(() => syncClaudeDesktopWiring(directWire()));
   const configPath = firstEntryPath(library);
   expect(existsSync(configPath)).toBe(true);
+  // The app boots third-party (no sign-in chooser) with the Developer menu on, both data dirs.
+  expect(readJson(appConfig)).toEqual({ "mcpServers": { "x": {} }, "deploymentMode": "3p" });
+  expect(linesNaming(wired, appConfig)).toEqual([
+    `rewritten -> ${appConfig} (Claude Desktop starts in third-party mode, no sign-in chooser)`,
+  ]);
+  for (const path of devSettings) {
+    expect(readJson(path)).toEqual({ "allowDevTools": true });
+    expect(linesNaming(wired, path)).toEqual([
+      `created -> ${path} (Claude Desktop Developer Mode on)`,
+    ]);
+  }
   // One line per path, exactly: the meaning rides on the write's line, never beside it.
   // The helper script lives inside the data home: written, never named.
   expect(existsSync(helper)).toBe(true);
@@ -935,6 +1002,10 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   const removed = await captureAllWrites(() => syncClaudeDesktopWiring(directWire(WORK)));
   expect(existsSync(configPath)).toBe(true);
   expect(existsSync(helper)).toBe(true);
+  // The app files are never unwired: Developer Mode is the user's, and third-party start is
+  // moot once no applied entry names a provider.
+  expect(readJson(appConfig)["deploymentMode"]).toBe("3p");
+  for (const path of devSettings) expect(existsSync(path)).toBe(true);
   expect(existsSync(firstWork)).toBe(false);
   expect(existsSync(workHelper)).toBe(false);
   expect((metaOf(library).entries as { name: string }[]).map((e) => e.name)).toEqual([
@@ -1052,6 +1123,34 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
     `"copilot-env: work" (proxy) missing`,
   ]);
   expect(rendered.fix).toBe("agent claude, then agent profile --add work");
+  // ... yet what a rewire cannot repair is reported even now: a user's own applied config
+  // (never displaced) and an unreadable app file (left alone).
+  const strangerId = "00000000-0000-4000-8000-000000000009";
+  mkdirSync(library, { recursive: true });
+  writeFileSync(
+    join(library, "_meta.json"),
+    `${JSON.stringify({ appliedId: strangerId, entries: [{ id: strangerId, name: "Theirs" }] })}\n`,
+  );
+  writeFileSync(join(library, "..", "claude_desktop_config.json"), "{ not json");
+  rendered = renderClaudeDesktopStatus(inspectClaudeDesktopWiring(targets));
+  expect(rendered.lines.slice(2)).toEqual([
+    `${
+      join(library, "..", "claude_desktop_config.json")
+    } is not valid JSON; the app's launch mode is unknown`,
+    `the app applies "Theirs" (not a copilot-env entry)`,
+  ]);
+  expect(rendered.fix).toBe(
+    `agent claude, then agent profile --add work, then repair ${
+      join(library, "..", "claude_desktop_config.json")
+    }, then re-run \`agent claude\`, then after that wire, \`agent claude --check\` names the entry to select in Claude Desktop`,
+  );
+  // The switch is never named for an entry that does not exist yet: its wire may adopt a
+  // same-gateway entry under THAT entry's name (a seed-name prediction would be wrong there).
+  expect(
+    renderClaudeDesktopStatus(inspectClaudeDesktopWiring([{ profile: WORK, mode: "proxy" }])).fix,
+  ).not.toContain("Configure Third-Party Inference");
+  rmSync(join(library, "_meta.json"));
+  rmSync(join(library, "..", "claude_desktop_config.json"));
 
   await wireClaudeDesktopEntry(directWire());
   const configPath = firstEntryPath(library);
@@ -1060,8 +1159,61 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   expect(status.owned).toEqual([{ name: "copilot-env", path: configPath, profile: null }]);
   expect(status.orphans).toEqual([]);
   rendered = renderClaudeDesktopStatus(status);
-  expect(rendered.lines[0]).toBe(`"copilot-env" (direct) wired at ${configPath}`);
+  expect(rendered.lines).toEqual([
+    `"copilot-env" (direct) wired at ${configPath}`,
+    `"copilot-env: work" (proxy) missing`,
+    `applied in the app: "copilot-env"`,
+  ]);
   expect(rendered.fix).toBe("agent profile --add work");
+
+  // The app-side facts, each its own line. A foreign applied entry is the user's to switch (a
+  // wire never displaces it); an unset deploymentMode or Developer Mode off is a rewire away.
+  const metaDoc = metaOf(library);
+  const foreignId = "00000000-0000-4000-8000-000000000001";
+  writeFileSync(
+    join(library, "_meta.json"),
+    `${
+      JSON.stringify({
+        ...metaDoc,
+        "appliedId": foreignId,
+        "entries": [...(metaDoc.entries as unknown[]), { id: foreignId, name: "Stanford" }],
+      })
+    }\n`,
+  );
+  rendered = renderClaudeDesktopStatus(inspectClaudeDesktopWiring(targets));
+  expect(rendered.lines[2]).toBe(`the app applies "Stanford" (not a copilot-env entry)`);
+  expect(rendered.fix).toBe(
+    'agent profile --add work, then in Claude Desktop (reopened): Developer > Configure Third-Party Inference..., select "copilot-env", Save & Restart',
+  );
+  writeFileSync(join(library, "_meta.json"), `${JSON.stringify(metaDoc)}\n`);
+  const dataDir = join(library, "..");
+  writeFileSync(join(dataDir, "claude_desktop_config.json"), "{}\n");
+  rmSync(join(`${dataDir}-1p`, "developer_settings.json"));
+  rendered = renderClaudeDesktopStatus(inspectClaudeDesktopWiring(targets));
+  expect(rendered.lines.slice(2)).toEqual([
+    "the app will show the sign-in chooser at launch (deploymentMode unset)",
+    "Developer Mode is off (no Developer menu)",
+    `applied in the app: "copilot-env"`,
+  ]);
+  expect(rendered.fix).toBe("agent profile --add work, then agent claude");
+  // The rewire heals both files.
+  await wireClaudeDesktopEntry(directWire());
+  expect(renderClaudeDesktopStatus(inspectClaudeDesktopWiring(targets)).lines.length).toBe(3);
+  // An app file that cannot be parsed is named, never read as "unset": a rewire leaves it
+  // alone (the user's MCP servers live in it), so `agent claude` is not the repair.
+  const appConfig = join(dataDir, "claude_desktop_config.json");
+  writeFileSync(appConfig, "{ not json");
+  rendered = renderClaudeDesktopStatus(inspectClaudeDesktopWiring(targets));
+  expect(rendered.lines[2]).toBe(
+    `${appConfig} is not valid JSON; the app's launch mode is unknown`,
+  );
+  expect(rendered.fix).toBe(
+    `agent profile --add work, then repair ${appConfig}, then re-run \`agent claude\``,
+  );
+  const untouched = await captureAllWrites(() => wireClaudeDesktopEntry(directWire()));
+  expect(untouched).toContain(`${appConfig} is not valid JSON; leaving it alone`);
+  expect(readFileSync(appConfig, "utf8")).toBe("{ not json");
+  writeFileSync(appConfig, `${JSON.stringify({ "deploymentMode": "3p" })}\n`);
 
   // Stale: the target's mode moved to proxy while the entry still points at Direct.
   status = inspected(inspectClaudeDesktopWiring([{ profile: null, mode: "proxy" }]));
@@ -1258,6 +1410,23 @@ test("reconcileClaudeDesktopWiring: orphans go when the key is on, the profiles'
   expect(metaOf(library).entries).toEqual([]);
   expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
   expect(renderClaudeDesktopStatus(claudeDesktopStatus()).fix).toBeNull();
+
+  // An orphan holding the applied slot hands it to the default's entry during the QUIET
+  // sweep too (the launcher / `profile --sync` path, which never upserts): an empty slot
+  // would boot the app into claude.ai sign-in until the next non-quiet wire.
+  await wireClaudeDesktopEntry(directWire(WORK)); // first in: takes the applied slot
+  await captureAllWrites(() => runClaude({ kind: "configure", mode: "proxy" }));
+  const handedTo = entryPathNamed(library, "copilot-env");
+  expect(metaOf(library).appliedId).toBe(
+    basename(entryPathNamed(library, "copilot-env: work"), ".json"),
+  );
+  await captureAllWrites(() => reconcileClaudeDesktopWiring({ quiet: true }));
+  expect((metaOf(library).entries as { name: string }[]).map((e) => e.name)).toEqual([
+    "copilot-env",
+  ]);
+  expect(metaOf(library).appliedId).toBe(basename(handedTo, ".json"));
+  removeAllClaudeDesktopWiring();
+  rmSync(join(resolveClaudeHome(), "settings.json"));
 
   // An unreadable settings.json is NOT "the default promises nothing": the entry stays,
   // the status says it was not judged, and the reconcile warns instead of sweeping.
@@ -1459,7 +1628,41 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   // `--check` and health label it by the name the app shows, not the seed name.
   expect(renderClaudeDesktopStatus(inspectClaudeDesktopWiring([target])).lines).toEqual([
     `"Mine now" (direct) wired at ${configPath}`,
+    `applied in the app: "Mine now"`,
   ]);
+  // A foreign applied config: the switch instruction names OUR entry by the name the app
+  // shows for it, not the seed name (which no longer exists in the picker).
+  const foreign = metaOf(library);
+  const foreignId = "00000000-0000-4000-8000-000000000002";
+  writeFileSync(
+    join(library, "_meta.json"),
+    `${
+      JSON.stringify({
+        ...foreign,
+        "appliedId": foreignId,
+        "entries": [...(foreign.entries as unknown[]), { id: foreignId, name: "Theirs" }],
+      })
+    }\n`,
+  );
+  expect(renderClaudeDesktopStatus(inspectClaudeDesktopWiring([target])).fix).toContain(
+    'select "Mine now"',
+  );
+  // With the Developer menu off, its rewire comes BEFORE the in-app switch that needs it.
+  const dataDir = join(library, "..");
+  rmSync(join(dataDir, "developer_settings.json"));
+  expect(renderClaudeDesktopStatus(inspectClaudeDesktopWiring([target])).fix).toMatch(
+    /^agent claude, then in Claude Desktop \(reopened\)/,
+  );
+  // A dangling appliedId (a row the library no longer lists) is an empty slot: the rewire fills
+  // it, where a live foreign one is never displaced.
+  writeFileSync(
+    join(library, "_meta.json"),
+    `${JSON.stringify({ ...foreign, "appliedId": "00000000-0000-4000-8000-000000000003" })}\n`,
+  );
+  expect(inspected(inspectClaudeDesktopWiring([target])).applied).toBeNull();
+  await wireClaudeDesktopEntry(directWire());
+  expect(metaOf(library).appliedId).toBe(basename(configPath, ".json"));
+  writeFileSync(join(library, "_meta.json"), `${JSON.stringify(foreign)}\n`);
   // Renamed to ANOTHER wiring's seed name, it is still the default's and no obstacle to
   // that wiring: the profile gets its own entry (the picker twin is the user's doing).
   const twin = metaOf(library);
@@ -1578,16 +1781,19 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
   const names = () => (metaOf(library).entries as { name: string }[]).map((e) => e.name).sort();
 
   // `agent init --proxy`: the default entry is wired, and an owned entry whose profile
-  // does not exist (an orphan) is removed in the same run. Every wiring write logs in first,
-  // so the default slot holds a token.
+  // does not exist (an orphan) is removed in the same run. That orphan held the applied slot,
+  // so the sweep hands it to the default, and the one closing line says the app is ready.
+  // Every wiring write logs in first, so the default slot holds a token.
   new CopilotEnvState().setCredential(null, {
     kind: "stored",
     provider: "gh-token",
     token: "ghu_test",
   });
   await wireClaudeDesktopEntry(directWire(WORK));
-  await captureAllWrites(() => runInit({ mode: "proxy" }));
+  const init = await captureAllWrites(() => runInit({ mode: "proxy" }));
   expect(names()).toEqual(["copilot-env"]);
+  expect(metaOf(library).appliedId).toBe(basename(firstEntryPath(library), ".json"));
+  expect(count(init, "Claude Desktop is ready to use.")).toBe(1);
   // ... and with the key off, the same command names the default's entry exactly once:
   // the reconcile owns the notice, the default write itself stays silent.
   new CopilotEnvConfig().set({ claudeDesktop: false });
@@ -1618,6 +1824,7 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
     globalThis.fetch = realFetch;
   }
   expect(synced).not.toContain("discovery ran on the hot path");
+  expect(synced).not.toContain("Claude Desktop is ready"); // the quiet pass says nothing
   expect(names()).toEqual(["copilot-env", "copilot-env: work"]);
   new CopilotEnvState().deleteProfile(WORK);
   removeAllClaudeDesktopWiring();

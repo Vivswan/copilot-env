@@ -526,6 +526,8 @@ export function checkClaudeDesktop(f: ClaudeDesktopStatus): CheckResult {
           unlisted: f.unlisted,
           entries: f.entries.map((e) => ({ profile: e.profile, mode: e.mode, ...e.verdict })),
           orphans: f.orphans,
+          applied: f.applied,
+          app: f.app,
         }
         : {}),
     },

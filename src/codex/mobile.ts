@@ -4,6 +4,13 @@
 import * as fs from "node:fs";
 import { consola } from "consola";
 import { parse, stringify } from "smol-toml";
+import {
+  appRunning,
+  type AppScan,
+  appScanFromExit,
+  appScanVerdict,
+  processScanScript,
+} from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -73,31 +80,6 @@ export function restoreModelProvider(
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** "present" and "absent" are PROVEN readings (the scan ran to completion and emitted its verdict);
- *  "unproven" is a look that FAILED (pgrep/open/PowerShell erroring or missing, or the spawn itself
- *  failing) and never reads as a confident absence, as in classifyPidFromScan
- *  (src/copilot_api/process.ts). */
-export type AppScan = "present" | "absent" | "unproven";
-
-/** The exit-0 guard is LOAD-BEARING beside the word check: a scan killed AFTER printing its verdict
- *  (a timeout kill, OOM, a user interrupt) exits nonzero with a valid word already on stdout, and
- *  on the Windows path this guard is the sole protection against minting a proven reading from it.
- */
-export function appScanVerdict(result: { exitCode: number; stdout: string }): AppScan {
-  if (result.exitCode !== 0) return "unproven";
-  const verdict = result.stdout.trim();
-  return verdict === "present" || verdict === "absent" ? verdict : "unproven";
-}
-
-/** For tools that already speak a three-state exit vocabulary (pgrep, `open -Ra`: 0 match, 1
- *  ran-no-match, anything else an error). runCaptured synthesizes the same exit 1 for a look that
- *  never ran, so a proven absence also requires no launch-failure mark. */
-export function appScanFromExit(result: { exitCode: number; launchFailed?: true }): AppScan {
-  if (result.launchFailed) return "unproven";
-  if (result.exitCode === 0) return "present";
-  return result.exitCode === 1 ? "absent" : "unproven";
-}
-
 /** Contract text, shared by the pre-swap close gate and the post-pairing close. */
 const RUNNING_SCAN_UNPROVEN_WARN =
   `The process scan failed, so it could not prove the ${APP_NAME} app is closed.`;
@@ -151,16 +133,13 @@ export function postPairingCloseFromScan(scan: AppScan): { quit: boolean; warn: 
   return { quit: false, warn: RUNNING_SCAN_UNPROVEN_WARN };
 }
 
-/** Shared by the Windows running and installed looks: 'absent' ONLY on the SPECIFIC no-match error
- *  id, a nonzero verdict-less exit for every other failure, so no real Get-Process error can
- *  flatten into a proven reading. */
-const PS_PROCESS_SCAN =
-  `try { $null = Get-Process -Name '${APP_NAME}' -ErrorAction Stop; 'present' } ` +
-  "catch { if ($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenName*') { 'absent' } else { exit 1 } }";
+/** Shared by the Windows running and installed looks. */
+const PS_PROCESS_SCAN = processScanScript(APP_NAME);
 
 /** The graceful-then-force `quit()` poll loop is shared; only the per-platform primitives differ.
  *  The executor, platform, and quit timing are injectable for tests only. */
 export class CodexAppController {
+  private readonly platform: string;
   private readonly windows: boolean;
   private readonly exec: (
     file: string,
@@ -181,6 +160,7 @@ export class CodexAppController {
     },
   ) {
     this.exec = exec;
+    this.platform = platform;
     this.windows = platform === "win32";
     this.quitTimeoutMs = timing.timeoutMs;
     this.quitPollMs = timing.pollMs;
@@ -216,15 +196,8 @@ export class CodexAppController {
   }
 
   /** Three-state look at whether the app is currently running (see AppScan). */
-  async runningState(): Promise<AppScan> {
-    if (this.windows) {
-      // -ErrorAction Stop turns the no-match case into a terminating error whose
-      // FullyQualifiedErrorId (NoProcessFoundForGivenName) is the PROVEN absence.
-      return appScanVerdict(await this.ps(PS_PROCESS_SCAN));
-    }
-    // pgrep's exit vocabulary is already three-state; the launch-failure mark separates a REAL exit
-    // 1 from the one runCaptured synthesizes for a pgrep that never ran.
-    return appScanFromExit(await this.run("pgrep", ["-x", APP_NAME]));
+  runningState(): Promise<AppScan> {
+    return appRunning(APP_NAME, this.exec, this.platform);
   }
 
   /** On Windows, falls back to a manual prompt if it can't launch. */

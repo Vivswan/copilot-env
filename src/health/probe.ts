@@ -881,13 +881,22 @@ export async function gatherFacts(
     }
   };
 
-  // The store facts the checks frame a credential miss with. A static wiring omits them: it
-  // resolves nothing at request time, so an unreadable store must not fail its agent check.
-  const storeFacts = (credential: "command" | "static" | "none" | null) =>
-    credential === "static" ? {} : {
-      provider: runCredential().provider,
-      ...(profile === null ? {} : { expectedMode: runCredential().mode }),
-    };
+  // The store facts the checks frame a credential miss with. A static wiring omits the provider:
+  // it resolves nothing at request time, so an unreadable store must not fail its agent check. A
+  // named profile's recorded mode stays whatever the shape: the slot DEFINES the profile, and an
+  // interrupted `profile --add` (slot flipped, agents not yet rewritten) must never read green.
+  const storeFacts = (credential: "command" | "static" | "none" | null) => ({
+    ...(credential === "static" ? {} : { provider: runCredential().provider }),
+    ...(profile === null ? {} : { expectedMode: runCredential().mode }),
+  });
+
+  // The shape directAuthFor judges: a static wiring in EITHER mode carries its value, so the
+  // store is never asked and no gh probe runs; a proxy command shape keeps the gh probe (the
+  // daemon resolves the same credential).
+  const authShapeOf = (wiring: ClaudeWiringStatus | CodexWiringStatus) =>
+    wiring.credential === "static" || wiring.providerMode === "direct"
+      ? wiring.credential ?? "none"
+      : "none";
 
   const jobs: Promise<void>[] = [];
 
@@ -986,7 +995,7 @@ export async function gatherFacts(
           profile,
         );
         const { directAuth, noGhNeeded } = await directAuthFor(
-          wiring.providerMode === "direct" ? wiring.credential : "none",
+          authShapeOf(wiring),
         );
         // The wiring's `directUsesToken` stays a pure CONFIG fact; the store-aware "Direct needs
         // no gh" verdict travels on its own field (`directNeedsNoGh`, what checkCodex consumes).
@@ -1027,7 +1036,7 @@ export async function gatherFacts(
         // a stale/foreign/mis-addressed helper); directAuthFor then decides the gh probe.
         const wiring = inspectClaudeWiring(settingsRead, wiringPort(), profile);
         const { directAuth, noGhNeeded } = await directAuthFor(
-          wiring.providerMode === "direct" ? wiring.credential : "none",
+          authShapeOf(wiring),
         );
         facts.claude = {
           ...evalClaude(home, directAuth, noGhNeeded, wiring, profile),

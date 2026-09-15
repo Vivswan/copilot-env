@@ -2,8 +2,6 @@ import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import {
-  appScanFromExit,
-  appScanVerdict,
   closeGateFromScan,
   CodexAppController,
   installGateFromScan,
@@ -13,6 +11,7 @@ import {
   restoreModelProvider,
   stripModelProvider,
 } from "../src/codex/mobile.ts";
+import { appScanFromExit, appScanVerdict } from "../src/utils/app_scan.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
 function asRecord(value: unknown): Record<string, unknown> {

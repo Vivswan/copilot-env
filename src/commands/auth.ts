@@ -867,6 +867,7 @@ async function runAuthenticate(
             `with \`agent auth --profile ${profile} --del\`.`,
         );
       }
+      noteStaticKeyStale(profile);
       return;
     }
   }

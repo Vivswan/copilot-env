@@ -52,11 +52,13 @@ test("smokeDirectEndpoint: only a 200 ping is Direct; every other arm reports it
       detail: /POST \/v1\/messages with claude-fable-5 returned 204/,
     },
     {
+      // The rejection body rides in the detail: a gated model and a rejected request shape both
+      // 400, and the status alone cost a live curl to tell apart (the /responses min-16 incident).
       name: "ping rejected",
       responses: [catalog(), new Response("unauthorized", { status: 401 })],
       pings: 1,
       ok: false,
-      detail: /POST \/v1\/messages with claude-fable-5 returned 401/,
+      detail: /POST \/v1\/messages with claude-fable-5 returned 401 \(unauthorized\)/,
     },
     {
       name: "catalog rejected",

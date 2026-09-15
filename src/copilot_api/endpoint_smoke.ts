@@ -4,7 +4,7 @@
 // to run, this smoke asks Copilot itself, under the exact headers the wiring will bake:
 //
 //   GET  /models        -> the agent's pickModel chooses a model the agent could drive
-//   POST <agent's wire> -> a 1-token call; 200 is the Direct verdict, anything else the proxy
+//   POST <agent's wire> -> a minimal capped call; 200 is the Direct verdict, anything else the proxy
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import {
@@ -80,19 +80,25 @@ export async function smokeDirectEndpoint(
       body: JSON.stringify(pingBody(smoke.wire, model)),
       signal: AbortSignal.timeout(PING_TIMEOUT_MS),
     });
-    // Drained so a keep-alive socket is reusable; the verdict is the status alone.
-    await ping.text().catch(() => "");
-    return ping.status === 200
-      ? { ok: true }
-      : { ok: false, detail: `POST ${path} with ${model} returned ${ping.status}` };
+    // Drained so a keep-alive socket is reusable; the body rides into the failure detail because
+    // the status alone cannot say WHY (a gated model and a rejected request shape both 400).
+    const text = await ping.text().catch(() => "");
+    if (ping.status === 200) return { ok: true };
+    const reason = text.replace(/\s+/g, " ").trim().slice(0, 160);
+    return {
+      ok: false,
+      detail: `POST ${path} with ${model} returned ${ping.status}${reason ? ` (${reason})` : ""}`,
+    };
   } catch (e) {
     return { ok: false, detail: errMessage(e) };
   }
 }
 
-/** max tokens 1: Copilot bills per request, so the smoke costs one token at most. */
+/** Copilot bills per REQUEST, so the caps cost nothing extra; they differ because the wires do:
+ *  /v1/messages accepts max_tokens 1, while /responses rejects max_output_tokens below 16
+ *  ("Expected a value >= 16", verified live 2026-09-15). */
 function pingBody(wire: DirectWire, model: string): Record<string, unknown> {
   return wire === "messages"
     ? { "model": model, "max_tokens": 1, "messages": [{ "role": "user", "content": "x" }] }
-    : { "model": model, "input": "x", "stream": false, "max_output_tokens": 1 };
+    : { "model": model, "input": "x", "stream": false, "max_output_tokens": 16 };
 }

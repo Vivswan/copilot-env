@@ -594,7 +594,7 @@ test("detectCodexDirect: with no codex CLI the endpoint smoke pings the first co
     "model": "gpt-6",
     "input": "x",
     "stream": false,
-    "max_output_tokens": 1,
+    "max_output_tokens": 16,
   });
 });
 

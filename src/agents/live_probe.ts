@@ -245,7 +245,7 @@ export async function probeDirectWorks(
       logger.log(`    • ${look} → using the local proxy${advice}`);
       return false;
     }
-    logger.log(`    • ${look} → asking the Copilot endpoint itself (1-token call) ...`);
+    logger.log(`    • ${look} → asking the Copilot endpoint itself (one minimal model call) ...`);
     const outcome = await endpointSmoke();
     if (outcome.ok) {
       logger.success(

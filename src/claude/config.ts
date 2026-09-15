@@ -4,11 +4,14 @@
 //   stdout cached ~5 minutes, re-run on 401
 //   stdout anything but the single credential line -> hard failure, so both resolvers keep their
 //                                                     diagnostics on stderr
+// With `static-key` on, the value rides in env.ANTHROPIC_AUTH_TOKEN instead and no apiKeyHelper is
+// written: Claude prefers that variable over the helper, so a command-shape write must DELETE it.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   type AgentAdapter,
   type AgentRunAction,
+  type CredentialWiring,
   type ManagedWrite,
   runAgentConfig,
 } from "../agents/configure.ts";
@@ -22,6 +25,7 @@ import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
+  CODEX_EXEC_USER_AGENT,
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
 } from "../copilot_api/integration_identity.ts";
@@ -29,10 +33,16 @@ import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import {
   copilotApiResolvePort,
   matchesProxyOrigin,
+  parseLoopbackProxyUrl,
   proxyLoopbackOrigin,
   wiringPortFor,
 } from "../copilot_api/port.ts";
-import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import {
+  agentStartCommand,
+  type Profile,
+  profileLabel,
+  type ProfileName,
+} from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, readTextResult, type TextReadResult } from "../utils/fs.ts";
@@ -62,6 +72,9 @@ export const DISABLE_BETAS_ENV = "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS";
 // extra request headers from this env var as newline-separated `Name: Value` pairs. The proxy
 // speaks native Anthropic and needs none.
 export const CUSTOM_HEADERS_ENV = "ANTHROPIC_CUSTOM_HEADERS";
+// The static-key carrier: Claude sends it as `Authorization: Bearer`, which Copilot Direct and the
+// proxy both accept.
+export const AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN";
 
 /** Body builders live in helper_body.ts (shared with the Desktop wiring); cmdHelperBody stays
  *  re-exported here for its existing test/import surface. */
@@ -120,30 +133,36 @@ export function proxyHelperCommand(profile: Profile = null): string {
  *    "custom"      -> a foreign apiKeyHelper or a custom base URL */
 export type ClaudeOtherReason = "malformed" | "custom" | "read-error";
 
+/** How a managed file obtains the credential: the `static-key` preference at its write time. */
+export type ClaudeManagedCredential =
+  /** The managed inline command: not a secret, safe to print. */
+  | { credential: "command"; helperPath: string }
+  /** `env.ANTHROPIC_AUTH_TOKEN` carries the value; the inspector never surfaces it. */
+  | { credential: "static"; helperPath: null };
+
 /**
  * Discriminated on providerMode so a pair the classifier never mints ("other" without a reason, a
- * managed mode without a helper) is unrepresentable. `wired` is computed here, in the owner, so
- * consumers never re-derive it from the mode.
+ * managed mode without a credential shape) is unrepresentable. `wired` is computed here, in the
+ * owner, so consumers never re-derive it from the mode.
  */
 export type ClaudeWiringStatus =
-  | {
+  | (ClaudeManagedCredential & {
     providerMode: "direct" | "proxy";
     settingsExists: true;
     wired: true;
     otherReason: null;
-    /** The managed inline command: not a secret, safe to print. */
-    helperPath: string;
     baseUrl: string | null;
-    /** The proxy-port check; defaultSetupNeedsProxy keys off it (mode itself keys off apiKeyHelper
-     *  alone). */
+    /** The proxy-port check; defaultSetupNeedsProxy keys off it (mode itself keys off the
+     *  credential shape alone). */
     baseUrlMatches: boolean;
-  }
+  })
   | {
     providerMode: "none";
     /** False = no settings file at all; true = one with no relevant keys. */
     settingsExists: boolean;
     wired: false;
     otherReason: null;
+    credential: null;
     helperPath: null;
     baseUrl: null;
     baseUrlMatches: false;
@@ -153,6 +172,7 @@ export type ClaudeWiringStatus =
     settingsExists: true;
     wired: false;
     otherReason: ClaudeOtherReason;
+    credential: null;
     /** The foreign apiKeyHelper value; null when the file could not be read or parsed at all. */
     helperPath: string | null;
     baseUrl: string | null;
@@ -164,12 +184,23 @@ function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boole
   return matchesProxyOrigin(baseUrl, expectedPort, "");
 }
 
+/** The Direct client headers Claude carries (directCustomHeaders' output), recognized by the one
+ *  line no other wiring writes: the codex_exec User-Agent. */
+function directHeadersShape(customHeaders: string | null): boolean {
+  return customHeaders !== null &&
+    customHeaders.split("\n").some((line) =>
+      line.startsWith(`User-Agent: ${CODEX_EXEC_USER_AGENT}/`)
+    );
+}
+
 // --- wiring inspection (pure) -----------------------------------------------
 
 /**
  * The verdict authorizes `--check`, the uninstall strip, and the profile overwrite guard, so a
  * settings file that exists but cannot be read is "other", never "none": "none" would authorize
- * removal. Mode keys off apiKeyHelper alone; a user's similar-looking helper is never ours.
+ * removal. Mode keys off the credential shape alone: a managed apiKeyHelper, else (with no helper at
+ * all) a baked ANTHROPIC_AUTH_TOKEN beside the env keys only our Direct or proxy write produces. A
+ * user's similar-looking helper is never ours.
  */
 export function inspectClaudeWiring(
   settings: TextReadResult | string | null,
@@ -184,6 +215,7 @@ export function inspectClaudeWiring(
     settingsExists,
     wired: false,
     otherReason: null,
+    credential: null,
     helperPath: null,
     baseUrl: null,
     baseUrlMatches: false,
@@ -194,6 +226,7 @@ export function inspectClaudeWiring(
       settingsExists: true,
       wired: false,
       otherReason: "read-error",
+      credential: null,
       helperPath: null,
       baseUrl: null,
       baseUrlMatches: false,
@@ -208,6 +241,7 @@ export function inspectClaudeWiring(
       settingsExists: true,
       wired: false,
       otherReason: "malformed",
+      credential: null,
       helperPath: null,
       baseUrl: null,
       baseUrlMatches: false,
@@ -220,35 +254,45 @@ export function inspectClaudeWiring(
   const env = isRecord(doc.env) ? doc.env : undefined;
   const baseUrl = env ? readStringField(env, BASE_URL_ENV) : null;
   const baseUrlMatches = baseUrl !== null && claudeBaseUrlMatchesProxy(baseUrl, expectedPort);
+  const wired = (
+    providerMode: "direct" | "proxy",
+    shape: ClaudeManagedCredential,
+  ): ClaudeWiringStatus => ({
+    ...shape,
+    providerMode,
+    settingsExists: true,
+    wired: true,
+    otherReason: null,
+    baseUrl,
+    baseUrlMatches,
+  });
 
   if (helperPath !== null && managedHelperShape(helperPath, agentAuthGetArgs(profile))) {
-    return {
-      providerMode: "direct",
-      settingsExists: true,
-      wired: true,
-      otherReason: null,
-      helperPath,
-      baseUrl,
-      baseUrlMatches,
-    };
+    return wired("direct", { credential: "command", helperPath });
   }
   if (helperPath !== null && managedHelperShape(helperPath, proxyTokenArgs(profile))) {
-    return {
-      providerMode: "proxy",
-      settingsExists: true,
-      wired: true,
-      otherReason: null,
-      helperPath,
-      baseUrl,
-      baseUrlMatches,
-    };
+    return wired("proxy", { credential: "command", helperPath });
   }
-  if (helperPath !== null || baseUrl !== null) {
+  const staticToken = env ? readStringField(env, AUTH_TOKEN_ENV) : null;
+  if (helperPath === null && env !== undefined && staticToken !== null && staticToken !== "") {
+    if (
+      baseUrl === DIRECT_BASE_URL && env[DISABLE_BETAS_ENV] === "1" &&
+      directHeadersShape(readStringField(env, CUSTOM_HEADERS_ENV))
+    ) {
+      return wired("direct", { credential: "static", helperPath: null });
+    }
+    // Any loopback port: the port fact travels as baseUrlMatches, like the command shape.
+    if (baseUrl !== null && parseLoopbackProxyUrl(baseUrl)?.path === "") {
+      return wired("proxy", { credential: "static", helperPath: null });
+    }
+  }
+  if (helperPath !== null || baseUrl !== null || staticToken !== null) {
     return {
       providerMode: "other",
       settingsExists: true,
       wired: false,
       otherReason: "custom",
+      credential: null,
       helperPath,
       baseUrl,
       baseUrlMatches,
@@ -322,6 +366,41 @@ function applyManagedEnv(
     env[CUSTOM_HEADERS_ENV] = "";
   }
   doc.env = env;
+}
+
+/** The ONE credential carrier per shape, the other's always removed: `apiKeyHelper` for the command,
+ *  `env.ANTHROPIC_AUTH_TOKEN` for the value. Claude prefers the variable over the helper, so the
+ *  command shape must DELETE it (never blank it: whether "" reads as unset is undocumented). A static
+ *  default under a command-shape profile file is transitional: `static-key` is account-wide and
+ *  `cl --profile` rewrites the profile file on every launch. Runs after applyManagedEnv, which owns
+ *  `doc.env`. */
+function applyManagedCredential(
+  doc: Record<string, unknown>,
+  credential: CredentialWiring,
+  helperCommand: string,
+): void {
+  const env = isRecord(doc.env) ? doc.env : {};
+  if (credential.kind === "command") {
+    doc.apiKeyHelper = helperCommand;
+    delete env[AUTH_TOKEN_ENV];
+  } else {
+    delete doc.apiKeyHelper;
+    env[AUTH_TOKEN_ENV] = credential.token;
+  }
+  doc.env = env;
+}
+
+/** The write-report clause that says how the credential rides; the proxy static case also says
+ *  what the resolver command used to do for the user. */
+function credentialDetail(
+  credential: CredentialWiring,
+  mode: ManagedAgentMode,
+  profile: Profile,
+): string {
+  if (credential.kind === "command") return "";
+  return mode === "direct"
+    ? "; static key"
+    : `; static key, start the proxy yourself (${agentStartCommand(profile)}, or the cl launcher)`;
 }
 
 /** The builtin tool denied on Direct (Copilot's host 400s it; the MCP tool replaces it). */
@@ -483,14 +562,20 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
   }
 
   if (request.mode === "direct") {
-    doc.apiKeyHelper = directHelperCommand(profile);
     applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile, request.directIntegrationId);
+    applyManagedCredential(doc, request.credential, directHelperCommand(profile));
     // Real Claude home only: the throwaway detect-probe home must not touch the machine-global
     // ~/.claude.json.
     const commit = profile === null && claudeHome === resolveClaudeHome()
       ? applyWebSearchPair(doc, "direct", settingsPath)
       : NO_COMMIT;
-    saveSettings(settingsPath, doc, "Claude config, direct: GitHub Copilot");
+    saveSettings(
+      settingsPath,
+      doc,
+      `Claude config, direct: GitHub Copilot${
+        credentialDetail(request.credential, "direct", profile)
+      }`,
+    );
     commit();
     return;
   }
@@ -498,14 +583,20 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
   // wiringPortFor RESERVES the profile's port (a write path; read-only checks peek without
   // recording), so concurrent profile daemons never share one.
   const port = wiringPortFor(profile);
-  doc.apiKeyHelper = proxyHelperCommand(profile);
   // No path, no trailing slash: the shape claudeBaseUrlMatchesProxy and env.ts's isLocalProxyUrl
   // expect.
   applyManagedEnv(doc, "proxy", proxyLoopbackOrigin(port), profile);
+  applyManagedCredential(doc, request.credential, proxyHelperCommand(profile));
   const commit = profile === null && claudeHome === resolveClaudeHome()
     ? applyWebSearchPair(doc, "proxy", settingsPath)
     : NO_COMMIT;
-  saveSettings(settingsPath, doc, `Claude config, proxy mode via port ${port}`);
+  saveSettings(
+    settingsPath,
+    doc,
+    `Claude config, proxy mode via port ${port}${
+      credentialDetail(request.credential, "proxy", profile)
+    }`,
+  );
   commit();
 }
 
@@ -536,7 +627,11 @@ function checkClaudeConfig(): void {
   );
   console.log(`settings.json: ${settingsPath}`);
   if (status.providerMode === "direct" || status.providerMode === "proxy") {
-    console.log(`apiKeyHelper: ${status.helperPath}`);
+    console.log(
+      status.credential === "command"
+        ? `apiKeyHelper: ${status.helperPath}`
+        : `credential: static ${AUTH_TOKEN_ENV} (static-key; no apiKeyHelper)`,
+    );
     console.log(`${BASE_URL_ENV}: ${status.baseUrl}`);
   }
   process.exitCode = providerModeExitCode(status.providerMode);
@@ -567,8 +662,9 @@ export interface ClaudeDefaultWiringRemoval {
 }
 
 /**
- * The managed keys are ours only while apiKeyHelper is still the managed helper; the owned deny is
- * the exception, since exact-path ownership proves it whatever the rest of the file holds.
+ * The managed keys are ours only while the credential shape is still ours (the managed helper, or
+ * the baked token beside our env keys); the owned deny is the exception, since exact-path ownership
+ * proves it whatever the rest of the file holds.
  *   wired                     -> strip the keys and the owned deny; an emptied doc removes the file
  *   none, or parseable other  -> strip exactly the owned deny (best-effort write)
  *   unreadable or malformed   -> nothing; an owned deny stands, reported as ownedDenyRemains
@@ -584,6 +680,7 @@ export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiri
     delete env[BASE_URL_ENV];
     delete env[DISABLE_BETAS_ENV];
     delete env[CUSTOM_HEADERS_ENV];
+    delete env[AUTH_TOKEN_ENV];
     if (Object.keys(env).length === 0) delete doc.env;
     const commit = stripManagedWebSearchDeny(doc, settingsPath);
     saveOrRemoveSettings(settingsPath, doc);
@@ -613,7 +710,7 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
   return probeDirectWorks(
     CLAUDE_PROBE,
     (tmpHome) => {
-      configureClaudeConfig(tmpHome, { mode: "direct" });
+      configureClaudeConfig(tmpHome, { mode: "direct", credential: { kind: "command" } });
     },
     deps,
   );

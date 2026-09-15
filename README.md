@@ -273,10 +273,11 @@ agent config --del idle-timeout       # revert one to its default
 
 **Credential**
 
-| Key              | Default                       | Effect                                                     |
-| ---------------- | ----------------------------- | ---------------------------------------------------------- |
-| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`) |
-| `passthrough`    | `auto`                        | PAT passthrough: `auto` / `on` / `off` (see below)         |
+| Key              | Default                       | Effect                                                       |
+| ---------------- | ----------------------------- | ------------------------------------------------------------ |
+| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`)   |
+| `passthrough`    | `auto`                        | PAT passthrough: `auto` / `on` / `off` (see below)           |
+| `static-key`     | `false`                       | Bake the credential value into the agent configs (see below) |
 
 **Codex**
 
@@ -356,7 +357,7 @@ agent config --set codex-host true    # false removes the farm again
 
 ### Authentication
 
-`agent auth` is the credential front door: one GitHub Copilot credential, resolved at fetch time. Agent configs never store a copy, and `gh-cli` holds no token of its own.
+`agent auth` is the credential front door: one GitHub Copilot credential, resolved at fetch time. Agent configs never store a copy, and `gh-cli` holds no token of its own. `static-key` (below) is the one opt-out.
 
 - `--provider copilot` - GitHub device flow (`read:user` scope).
 - `--provider gh-cli` - use the machine's existing `gh` login.
@@ -366,6 +367,21 @@ agent config --set codex-host true    # false removes the farm again
 - `--get` / `--del` / `--check` - print, clear, or check that a credential resolves.
 
 Classic and fine-grained PATs can't perform the proxy's editor token exchange. So `agent start` transparently enables a passthrough shim for PAT-shaped tokens, using the PAT as the bearer directly. Force it either way with `agent config --set passthrough on|off`.
+
+#### Static key
+
+`agent config --set static-key true` makes every wiring write the credential value itself. Claude, Codex, and Claude Desktop then run no copilot-env process at request time.
+
+| Host           | Written instead of the resolver command                                           |
+| -------------- | --------------------------------------------------------------------------------- |
+| Claude Code    | `env.ANTHROPIC_AUTH_TOKEN` in `settings.json`; no `apiKeyHelper`                  |
+| Codex          | `http_headers.Authorization = "Bearer ..."` on the managed provider; no `auth`    |
+| Claude Desktop | `inferenceCredentialKind = "static"` + `inferenceGatewayApiKey`; no helper script |
+
+- Direct bakes the GitHub credential (`gh-cli` is resolved once, at write time); proxy bakes the daemon's own API key.
+- The value does not follow a credential change: re-run `agent init` (or `agent profile --add <name>`) after `agent auth`.
+- Proxy mode loses the resolver's side effects: the daemon is not auto-started and no idle heartbeat is recorded. Start it with `agent start`, or launch through `cl` / `cx`, which do.
+- `agent claude --check`, `agent codex --check`, and `agent health` report the static shape as wired.
 
 ### Profiles
 

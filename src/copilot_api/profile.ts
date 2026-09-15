@@ -59,3 +59,9 @@ export function parseProfileFlag(raw: string | undefined): Profile {
 export function profileLabel(profile: Profile): string {
   return profile === null ? "default" : `profile '${profile}'`;
 }
+
+/** The `agent start` command addressed at a profile's own daemon; a bare `agent start` would leave
+ *  a named profile's daemon down. */
+export function agentStartCommand(profile: Profile): string {
+  return profile === null ? "agent start" : `agent start --profile ${profile}`;
+}

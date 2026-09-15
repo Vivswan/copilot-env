@@ -1105,6 +1105,7 @@ test("a config-only import of claude-desktop false sweeps a PROMISED Desktop ent
   await wireClaudeDesktopEntry({
     profile: WORK,
     mode: "proxy",
+    credential: { kind: "command" },
     fetchImpl: () => Promise.reject(new Error("offline")),
   });
   const entryPath = () => {

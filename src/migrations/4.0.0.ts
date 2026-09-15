@@ -225,7 +225,10 @@ export function rewriteLegacyCodexTables(doc: Record<string, unknown>): boolean 
     if (legacyProxy && typeof table.base_url === "string") {
       const userKeys = { ...table };
       delete userKeys.env_key;
-      providers[id] = { ...userKeys, ...managedProxyProvider(table.base_url, profile) };
+      providers[id] = {
+        ...userKeys,
+        ...managedProxyProvider(table.base_url, profile, { kind: "command" }),
+      };
       changed = true;
     } else if (table.env_key !== undefined) {
       delete table.env_key;

@@ -488,6 +488,7 @@ test("checkCodex(named): missing wiring warns with the profile re-add fix", () =
       baseUrlMatches: false,
       envKeyMatches: false,
       providerWired: false,
+      credential: "none",
       envFilePresent: false,
       envKeyInDotenv: false,
       envKeyInEnviron: false,
@@ -515,6 +516,7 @@ test("checkCodex(named): missing wiring warns with the profile re-add fix", () =
       baseUrlMatches: false,
       envKeyMatches: false,
       providerWired: false,
+      credential: "none",
       envFilePresent: false,
       envKeyInDotenv: false,
       envKeyInEnviron: false,
@@ -538,6 +540,7 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
     settingsPath: join("/h/.claude", "settings-p.json"),
     settingsExists: false,
     wired: false,
+    credential: null,
     helperPath: null,
     baseUrl: null,
     baseUrlMatches: false,
@@ -559,6 +562,7 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
       ...base,
       settingsExists: true,
       wired: true,
+      credential: "command",
       helperPath: join("/h/.claude", "copilot-proxy-token-p.sh"),
       baseUrl: "http://127.0.0.1:9999",
       baseUrlMatches: false,
@@ -608,6 +612,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
       baseUrlMatches: true,
       envKeyMatches: true,
       providerWired: true,
+      credential: "command",
       envFilePresent: false,
       envKeyInDotenv: false,
       envKeyInEnviron: false,
@@ -634,6 +639,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
       baseUrlMatches: true,
       envKeyMatches: true,
       providerWired: true,
+      credential: "command",
       envFilePresent: false,
       envKeyInDotenv: false,
       envKeyInEnviron: false,
@@ -654,6 +660,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
       settingsPath: join("/h/.claude", "settings-p.json"),
       settingsExists: true,
       wired: true,
+      credential: "command",
       helperPath: join("/h/.claude", "copilot-proxy-token-p.sh"),
       baseUrl: "http://127.0.0.1:4555",
       baseUrlMatches: true,
@@ -811,6 +818,7 @@ test("--profile narrows gathering to the named target and excludes account-wide 
       mode: "proxy",
       profile: P,
       baseUrl: openaiBaseUrl("4555"),
+      credential: { kind: "command" },
     });
     const claudeHome = join(home, "claude-home");
     mkdirSync(claudeHome, { recursive: true });
@@ -948,7 +956,11 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
     });
 
     const codexHome = join(home, "codex-home");
-    configureCodexConfig(codexHome, { mode: "direct", profile: P });
+    configureCodexConfig(codexHome, {
+      mode: "direct",
+      profile: P,
+      credential: { kind: "command" },
+    });
 
     const facts = await gatherFacts(
       "codex",
@@ -967,6 +979,35 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
     expect(results.map((r) => r.id)).toEqual(["setup.codex"]);
     expect(results[0]?.status).toBe("ok");
     expect(results[0]?.profile).toBe(P);
+
+    // A gh-cli slot makes the command shape probe gh (the control); the static shape carries the
+    // value in the config, so the same slot is never asked and no gh probe runs.
+    store.commitProfile(P, { credential: { kind: "gh-cli", ghUser: null }, mode: "direct" });
+    let ghProbes = 0;
+    const ghCounting = offlineDeps({
+      codexHome: () => codexHome,
+      claudeHome: () => join(home, "no-claude"),
+      codexDirectAuth: () => {
+        ghProbes += 1;
+        return Promise.resolve({ command: null, authenticated: false });
+      },
+    });
+    const commandShape = await gatherFacts("codex", { profile: P }, ghCounting);
+    expect(commandShape.codex?.credential).toBe("command");
+    expect(commandShape.codex?.directNeedsNoGh).toBe(false);
+    expect(ghProbes).toBe(1);
+
+    configureCodexConfig(codexHome, {
+      mode: "direct",
+      profile: P,
+      credential: { kind: "static", token: "tok-p" },
+    });
+    const staticShape = await gatherFacts("codex", { profile: P }, ghCounting);
+    expect(staticShape.codex?.providerMode).toBe("direct");
+    expect(staticShape.codex?.credential).toBe("static");
+    expect(staticShape.codex?.directNeedsNoGh).toBe(true);
+    expect(ghProbes).toBe(1);
+    expect(evaluateAll("codex", staticShape)[0]?.status).toBe("ok");
   } finally {
     restoreEnv();
     removeDir(home);

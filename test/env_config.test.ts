@@ -353,6 +353,7 @@ const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "responses-websearch": "false",
   "responses-websocket": "false",
   "small-model": "gpt-5-mini",
+  "static-key": "true",
   "strict-port": "true",
   "update-cooldown": "7",
   "verify-provenance": "false",

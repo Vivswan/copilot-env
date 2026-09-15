@@ -6,7 +6,11 @@
 // inherited stdio and its exit code (or 128+signal) passes through.
 import { spawnSync } from "node:child_process";
 import { constants } from "node:os";
-import type { ManagedWrite } from "../agents/configure.ts";
+import {
+  type ManagedWrite,
+  resolveCredentialWiring,
+  resolvedDirectToken,
+} from "../agents/configure.ts";
 import { recordDefaultModeFromWiring } from "../agents/configure_defaults.ts";
 import { resolveAndPersistDirectIdentity, wireBothAgents } from "../agents/profile_wiring.ts";
 import type { AgentProviderMode } from "../agents/provider_mode.ts";
@@ -275,9 +279,17 @@ export function commandDeps(): LaunchDeps {
     refreshCodexCatalog: () => refreshCodexCatalogAndSync("direct"),
     profileSlot: (name) => new CopilotEnvState().readProfileSlot(name),
     writeClaudeProfileSettings: async (name, mode) => {
+      const credential = resolveCredentialWiring(mode, name);
       const write: ManagedWrite = mode === "direct"
-        ? { mode, directIntegrationId: await resolveAndPersistDirectIdentity(name) }
-        : { mode };
+        ? {
+          mode,
+          directIntegrationId: await resolveAndPersistDirectIdentity(
+            name,
+            resolvedDirectToken(credential),
+          ),
+          credential,
+        }
+        : { mode, credential };
       // Through the adapter so the profile's Desktop entry follows the `claude-desktop` key, like
       // `--settings-for`.
       await claudeAdapter().configureProfile(name, write, { quiet: true });

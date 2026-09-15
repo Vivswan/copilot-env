@@ -2,7 +2,7 @@
 // gathered by probe.ts, so each check is independently unit-testable.
 import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
 import { compareDenoVersions, SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
-import type { Profile, ProfileName } from "../copilot_api/profile.ts";
+import { agentStartCommand, type Profile, type ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../scripts/idle_watchdog.ts";
 import type { CommandLook } from "../utils/command.ts";
@@ -35,7 +35,7 @@ import { meta, profileAddFix, SETUP_SCOPES as SETUP } from "./types.ts";
 
 /** The `agent start` fix for a runtime target, addressed at its profile. */
 function startFix(profile: Profile): string {
-  return profile === null ? "agent start" : `agent start --profile ${profile}`;
+  return agentStartCommand(profile);
 }
 
 /** THE predicate shared by checkAuth and checkProfileAuth: a stored token resolves by presence,

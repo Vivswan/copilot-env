@@ -821,12 +821,15 @@ export async function gatherFacts(
   // `managed` (execs `agent auth --get [--profile <name>]`) AND the credential classifies as a
   // stored token; gh-cli means a live gh probe. Classification is storedCredentialKind()
   // (env_state.ts): a leftover token with no provider is "none", so no gh probe (no implicit
-  // fallback) and Direct never reads green. Shared by the Codex and Claude jobs.
+  // fallback) and Direct never reads green. A static shape asks the store nothing: the value is in
+  // the config, so no gh is needed whatever the store says. Shared by the Codex and Claude jobs.
   const directAuthFor = async (
-    managed: boolean,
+    credential: "command" | "static" | "none",
   ): Promise<{ directAuth: CodexDirectAuthFacts; noGhNeeded: boolean }> => {
-    const { provider, storedToken, ghUser } = runCredential();
     const noProbe = { command: null, authenticated: false };
+    if (credential === "static") return { directAuth: noProbe, noGhNeeded: true };
+    const managed = credential === "command";
+    const { provider, storedToken, ghUser } = runCredential();
     switch (storedCredentialKind(provider, storedToken)) {
       case "stored":
         return { directAuth: noProbe, noGhNeeded: managed };
@@ -933,7 +936,9 @@ export async function gatherFacts(
           deps.codexTokenInEnviron(),
           profile,
         );
-        const { directAuth, noGhNeeded } = await directAuthFor(wiring.directUsesToken);
+        const { directAuth, noGhNeeded } = await directAuthFor(
+          wiring.providerMode === "direct" ? wiring.credential : "none",
+        );
         // The wiring's `directUsesToken` stays a pure CONFIG fact; the store-aware "Direct needs
         // no gh" verdict travels on its own field (`directNeedsNoGh`, what checkCodex consumes).
         const codexFacts = evalCodex(
@@ -962,11 +967,12 @@ export async function gatherFacts(
         // A named profile answers from its own settings-<name>.json, read three-way
         // (deps.readFileResult) so an unreadable file classifies other/read-error, not "none".
         const settingsRead = deps.readFileResult(settingsPathFor(home, profile));
-        // "direct" here means the apiKeyHelper truly invokes `agent auth --get` addressed at
-        // THIS profile (never a stale/foreign/mis-addressed helper); directAuthFor then decides
-        // the gh probe.
+        // "direct" here means the credential shape truly is ours, addressed at THIS profile (never
+        // a stale/foreign/mis-addressed helper); directAuthFor then decides the gh probe.
         const wiring = inspectClaudeWiring(settingsRead, wiringPort(), profile);
-        const { directAuth, noGhNeeded } = await directAuthFor(wiring.providerMode === "direct");
+        const { directAuth, noGhNeeded } = await directAuthFor(
+          wiring.providerMode === "direct" ? wiring.credential : "none",
+        );
         facts.claude = {
           ...evalClaude(home, directAuth, noGhNeeded, wiring, profile),
           provider: runCredential().provider,

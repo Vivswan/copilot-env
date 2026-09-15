@@ -19,6 +19,7 @@ import {
   type GhTokenLook,
 } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   assertProfileSlot,
   CopilotEnvState,
@@ -618,22 +619,24 @@ async function runDel(profile: Profile): Promise<void> {
       } else {
         logger.success("De-authenticated. Run `agent auth` to log in again.");
       }
-      return;
-    }
-    const again = `\`agent auth --profile ${profile}\``;
-    if (!stopped) {
-      logger.warn(
-        `De-authenticated ${profileLabel(profile)}, but its proxy is still running and may keep ` +
-          `serving the old credential -- stop it with \`agent stop --profile ${profile}\`.`,
-      );
-    } else if (signalled) {
-      logger.success(
-        `De-authenticated ${
-          profileLabel(profile)
-        } and stopped its proxy. Run ${again} to log in again.`,
-      );
     } else {
-      logger.success(`De-authenticated ${profileLabel(profile)}. Run ${again} to log in again.`);
+      const again = `\`agent auth --profile ${profile}\``;
+      if (!stopped) {
+        logger.warn(
+          `De-authenticated ${
+            profileLabel(profile)
+          }, but its proxy is still running and may keep ` +
+            `serving the old credential -- stop it with \`agent stop --profile ${profile}\`.`,
+        );
+      } else if (signalled) {
+        logger.success(
+          `De-authenticated ${
+            profileLabel(profile)
+          } and stopped its proxy. Run ${again} to log in again.`,
+        );
+      } else {
+        logger.success(`De-authenticated ${profileLabel(profile)}. Run ${again} to log in again.`);
+      }
     }
   } else if (profile === null) {
     logger.info("Nothing to clear - not authenticated. Run `agent auth` to log in.");
@@ -645,6 +648,8 @@ async function runDel(profile: Profile): Promise<void> {
         `\`agent auth --profile ${profile}\` to log in.`,
     );
   }
+  // Whatever the store held, a baked copy may still sit in the agent configs.
+  noteStaticKeyStale(profile);
 }
 
 /** BRACKET-FREE by contract: a surface that wants parens adds its own, and `--list` prints it
@@ -872,5 +877,17 @@ async function runAuthenticate(
       ? `Authenticated (${provider}). Run \`agent init\` to configure Codex and Claude.`
       : `Authenticated ${profileLabel(profile)} (${provider}). Wire it into both agents with ` +
         `\`agent profile --add ${profile} --direct|--proxy\`.`,
+  );
+  noteStaticKeyStale(profile);
+}
+
+/** A baked value (static-key) never follows the store, so only the rewire brings it up to date. */
+function noteStaticKeyStale(profile: Profile): void {
+  if (!new CopilotEnvConfig().staticKeyEnabled()) return;
+  const rewire = profile === null
+    ? "agent init"
+    : `agent profile --add ${profile} --direct|--proxy`;
+  logger.info(
+    `static-key is on: the agent configs keep the value they hold until \`${rewire}\` rewrites them.`,
   );
 }

@@ -38,6 +38,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
     baseUrlMatches: true,
     envKeyMatches: true,
     providerWired: true,
+    credential: "command",
     envFilePresent: true,
     envKeyInDotenv: true,
     envKeyInEnviron: false,
@@ -55,6 +56,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
       baseUrlMatches: false,
       envKeyMatches: false,
       providerWired: false,
+      credential: "none",
     }).status,
   ).toBe("ok");
   // Fully wired -> ok; the detail names the wiring, the proxy, and the auth.command resolver.
@@ -76,6 +78,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
     baseUrlMatches: false,
     envKeyMatches: false,
     providerWired: false,
+    credential: "none",
     otherReason: "custom",
   } satisfies CodexFacts;
   expect(checkCodex(foreign).detail).toContain("model_provider");
@@ -247,6 +250,7 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
     baseUrlMatches: true,
     envKeyMatches: false,
     providerWired: true,
+    credential: "command",
     envFilePresent: false,
     envKeyInDotenv: false,
     envKeyInEnviron: false,
@@ -300,6 +304,7 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
     settingsPath: join("/h/.claude", "settings.json"),
     settingsExists: true,
     wired: true,
+    credential: "command",
     helperPath: join("/h/.claude", "copilot-token.sh"),
     baseUrl: "https://api.githubcopilot.com",
     baseUrlMatches: false,
@@ -327,6 +332,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     settingsPath: join("/h/.claude", "settings.json"),
     settingsExists: true,
     wired: true,
+    credential: "command",
     helperPath: join("/h/.claude", "copilot-token.sh"),
     baseUrl: "https://api.githubcopilot.com",
     baseUrlMatches: false,
@@ -404,6 +410,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     ...direct,
     wired: false,
     settingsExists: false,
+    credential: null,
     helperPath: null,
     baseUrl: null,
     providerMode: "none",
@@ -417,6 +424,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   const other = checkClaude({
     ...direct,
     wired: false,
+    credential: null,
     helperPath: "/opt/x/helper.sh",
     baseUrl: null,
     providerMode: "other",
@@ -431,6 +439,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   const malformed = checkClaude({
     ...direct,
     wired: false,
+    credential: null,
     helperPath: null,
     baseUrl: null,
     providerMode: "other",
@@ -442,6 +451,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   const unreadable = checkClaude({
     ...direct,
     wired: false,
+    credential: null,
     helperPath: null,
     baseUrl: null,
     providerMode: "other",
@@ -463,6 +473,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
     baseUrlMatches: true,
     envKeyMatches: true,
     providerWired: true,
+    credential: "command",
     envFilePresent: true,
     envKeyInDotenv: false,
     envKeyInEnviron: false,
@@ -482,6 +493,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
     home: "/h/.claude",
     settingsPath: join("/h/.claude", "settings.json"),
     settingsExists: true,
+    credential: "command",
     helperPath: join("/h/.claude", "copilot-token.sh"),
     baseUrl: "https://api.githubcopilot.com",
     baseUrlMatches: false,
@@ -495,6 +507,107 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
   expect(claudeRes.status).toBe("ok");
   expect(claudeRes.detail).toContain("stored GitHub token");
   expect(claudeRes.detail).not.toContain("GitHub CLI not found");
+});
+
+test("static-key: a baked credential needs no gh; the proxy detail names the daemon", () => {
+  // Direct static: the store is never consulted (no provider, no gh), so the verdict is the
+  // wiring alone. `satisfies` keeps the arm narrow for the spreads below.
+  const codexDirectStatic = {
+    home: "/c",
+    configExists: true,
+    providerSelected: true,
+    providerMode: "direct",
+    modelProvider: "copilot-env",
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: true,
+    envKeyMatches: true,
+    providerWired: true,
+    credential: "static",
+    envFilePresent: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    directAuth: { command: null, authenticated: false },
+    directUsesToken: false,
+    directNeedsNoGh: true,
+    provider: null,
+    otherReason: null,
+  } satisfies CodexFacts;
+  const codexDirect = checkCodex(codexDirectStatic);
+  expect(codexDirect.status).toBe("ok");
+  expect(codexDirect.detail).toContain("static-key");
+  expect(codexDirect.detail).not.toContain("gh auth");
+  // A mis-addressed table still warns with the direct re-wire, not a gh fix.
+  const codexUnwired = checkCodex({ ...codexDirectStatic, providerWired: false });
+  expect(codexUnwired.status).toBe("warn");
+  expect(codexUnwired.fix).toBe("agent codex --direct");
+
+  const codexProxy = checkCodex({
+    ...codexDirectStatic,
+    providerMode: "proxy",
+    baseUrl: "http://localhost:4141/v1",
+    directNeedsNoGh: false,
+  });
+  expect(codexProxy.status).toBe("ok");
+  expect(codexProxy.detail).toContain("`agent start`");
+  expect(codexProxy.detail).not.toContain("proxy-token resolver");
+  // A named profile's daemon is its own: a bare `agent start` would leave it down.
+  const codexProxyWork = checkCodex(
+    {
+      ...codexDirectStatic,
+      providerMode: "proxy",
+      baseUrl: "http://localhost:4555/v1",
+      directNeedsNoGh: false,
+      expectedMode: "proxy",
+    },
+    parseProfileName("work"),
+  );
+  expect(codexProxyWork.detail).toContain("`agent start --profile work`");
+
+  const claudeDirectStatic = {
+    home: "/h/.claude",
+    settingsPath: join("/h/.claude", "settings.json"),
+    settingsExists: true,
+    wired: true,
+    credential: "static",
+    helperPath: null,
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: false,
+    providerMode: "direct",
+    otherReason: null,
+    directAuth: { command: null, authenticated: false },
+    directUsesToken: false,
+    provider: "gh-cli",
+  } satisfies ClaudeFacts;
+  const claudeDirect = checkClaude(claudeDirectStatic);
+  expect(claudeDirect.status).toBe("ok");
+  expect(claudeDirect.detail).toContain("static-key");
+  expect(claudeDirect.detail).not.toContain("gh auth");
+  const claudeStaleBase = checkClaude({ ...claudeDirectStatic, baseUrl: null });
+  expect(claudeStaleBase.status).toBe("warn");
+  expect(claudeStaleBase.fix).toBe("agent claude --direct");
+
+  const claudeProxy = checkClaude({
+    ...claudeDirectStatic,
+    providerMode: "proxy",
+    baseUrl: "http://localhost:4141",
+    baseUrlMatches: true,
+  });
+  expect(claudeProxy.status).toBe("ok");
+  expect(claudeProxy.detail).toContain("ANTHROPIC_AUTH_TOKEN");
+  expect(claudeProxy.detail).toContain("`agent start`");
+  expect(claudeProxy.detail).not.toContain("apiKeyHelper");
+  const claudeProxyWork = checkClaude(
+    {
+      ...claudeDirectStatic,
+      providerMode: "proxy",
+      baseUrl: "http://localhost:4555",
+      baseUrlMatches: true,
+      expectedMode: "proxy",
+    },
+    parseProfileName("work"),
+  );
+  expect(claudeProxyWork.detail).toContain("`agent start --profile work`");
 });
 
 // --- live (--live) checks ---------------------------------------------------

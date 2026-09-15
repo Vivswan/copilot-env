@@ -6,17 +6,21 @@
 import type { ManagedWrite } from "../src/agents/configure.ts";
 import { expect, test } from "./helpers/testing.ts";
 
+// Every literal carries the required credential, so the id is the ONE thing each directive rejects.
+const COMMAND = { kind: "command" } as const;
+
 test("a proxy ManagedWrite cannot carry a direct integration id", () => {
   // Literal path: the discriminant selects the proxy arm and the id is rejected there.
   // @ts-expect-error -- a proxy write never carries directIntegrationId
-  const literal: ManagedWrite = { mode: "proxy", directIntegrationId: "x" };
+  const literal: ManagedWrite = { mode: "proxy", directIntegrationId: "x", credential: COMMAND };
   void literal;
 
   // Widened path: excess-property checking does not apply to a non-literal assignment, so
   // ONLY the never field rejects this one.
-  const widened: { mode: "proxy"; directIntegrationId: string } = {
+  const widened: { mode: "proxy"; directIntegrationId: string; credential: typeof COMMAND } = {
     mode: "proxy",
     directIntegrationId: "x",
+    credential: COMMAND,
   };
   // @ts-expect-error -- string is not assignable to the proxy arm's never field
   const fromWidened: ManagedWrite = widened;
@@ -24,6 +28,6 @@ test("a proxy ManagedWrite cannot carry a direct integration id", () => {
 
   // Control: the direct arm carries the id fine, so the directives above pin the proxy arm
   // specifically, not a wider breakage of the union.
-  const direct: ManagedWrite = { mode: "direct", directIntegrationId: "x" };
+  const direct: ManagedWrite = { mode: "direct", directIntegrationId: "x", credential: COMMAND };
   expect(direct.mode).toBe("direct");
 });

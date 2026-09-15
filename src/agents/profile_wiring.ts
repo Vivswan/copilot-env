@@ -14,7 +14,12 @@ import {
 import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
-import type { AgentAdapter, ManagedWrite } from "./configure.ts";
+import {
+  type AgentAdapter,
+  type ManagedWrite,
+  resolveCredentialWiring,
+  resolvedDirectToken,
+} from "./configure.ts";
 
 /** THE cross-agent adapter list; the both-agent flows iterate it rather than naming agents, and
  *  Claude comes first because per-agent narration and failure lists come out in this order. A
@@ -33,12 +38,15 @@ export async function wireBothAgents(
   quiet: boolean,
   credentialToken?: string | null,
 ): Promise<void> {
+  const credential = resolveCredentialWiring(mode, name, credentialToken);
+  const identityToken = credentialToken ?? resolvedDirectToken(credential);
   const write: ManagedWrite = mode === "direct"
     ? {
       mode,
-      directIntegrationId: await resolveAndPersistDirectIdentity(name, credentialToken),
+      directIntegrationId: await resolveAndPersistDirectIdentity(name, identityToken),
+      credential,
     }
-    : { mode };
+    : { mode, credential };
   const failures: string[] = [];
   for (const agent of bothAgents()) {
     try {

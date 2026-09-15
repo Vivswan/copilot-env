@@ -41,6 +41,7 @@ export interface CopilotEnvConfigData {
   codexHost?: boolean;
   codexModelCatalog?: boolean;
   wireMcp?: boolean;
+  staticKey?: boolean;
 }
 
 /** null and undefined both delete the key. Exported for the settings-bundle import, which rebuilds the whole store. */
@@ -594,6 +595,17 @@ const CONFIG_REGISTRY_LITERAL = [
     proxyDefault: "gpt-5-mini",
   },
   {
+    cli: "static-key",
+    key: "staticKey",
+    section: "Credential",
+    describe: "Write the credential value itself into the agent configs, not a resolver command",
+    ...BOOL_DOMAIN,
+    defaultValue: false,
+    applyHint:
+      "Applies at the next `agent init` / `agent claude` / `agent codex` / `agent profile` wiring. " +
+      "A baked value does not follow a credential change: re-run the wiring after `agent auth`.",
+  },
+  {
     cli: "strict-port",
     key: "strictPort",
     section: "Proxy daemon",
@@ -805,6 +817,12 @@ export class CopilotEnvConfig {
 
   launchersEnabled(): boolean {
     return this.read().launchers ?? configDefaultBoolean("launchers");
+  }
+
+  /** On: every writer bakes the credential value (src/agents/configure.ts resolves it once); the
+   *  agents then run no copilot-env process at request time. */
+  staticKeyEnabled(): boolean {
+    return this.read().staticKey ?? configDefaultBoolean("static-key");
   }
 
   wireMcpEnabled(): boolean {

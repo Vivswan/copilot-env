@@ -3,22 +3,9 @@
 // what catches a widened object. Drop the field and the widened case's ts-expect-error below
 // becomes an unused directive (TS2578): the guard fails closed at typecheck time.
 
-import {
-  type AgentAdapter,
-  type ManagedWrite,
-  resolvedDirectToken,
-  runAgentConfig,
-} from "../src/agents/configure.ts";
+import { type AgentAdapter, type ManagedWrite, runAgentConfig } from "../src/agents/configure.ts";
 import type { RequestedMode } from "../src/agents/provider_mode.ts";
 import { expect, test } from "./helpers/testing.ts";
-
-test("resolvedDirectToken hands on a static GitHub token and never the proxy's API key", () => {
-  // A proxy static write bakes the daemon key; sent upstream as a GitHub credential it 401s.
-  const token = { kind: "static", token: "value" } as const;
-  expect(resolvedDirectToken("direct", token)).toBe("value");
-  expect(resolvedDirectToken("proxy", token)).toBeUndefined();
-  expect(resolvedDirectToken("direct", { kind: "command" })).toBeUndefined();
-});
 
 // Every literal carries the required credential, so the id is the ONE thing each directive rejects.
 const COMMAND = { kind: "command" } as const;

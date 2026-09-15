@@ -36,10 +36,11 @@ function dataOrDegrade(
 const LOAD_RETRY_ATTEMPTS = 5;
 const LOAD_RETRY_MS = 4;
 
-/** V8's JSON.parse message quotes the source around the fault, and these stores hold the GitHub
- *  token and the daemon keys, so every quoted run is dropped before the message reaches a log. */
+/** V8's JSON.parse message quotes the source around the fault, unescaped, and these stores hold
+ *  the GitHub token and the daemon keys: only the error class and the position survive. */
 function redactJsonDiagnostic(e: unknown): string {
-  return String(e).replace(/"(?:[^"\\]|\\.)*"/g, '"<redacted>"');
+  const position = String(e).match(/ at position \d+/);
+  return `SyntaxError${position === null ? "" : position[0]}`;
 }
 
 // update()'s read-modify-write takes a best-effort `<file>.lock` (utils/file_lock.ts): the CLI, the daemon

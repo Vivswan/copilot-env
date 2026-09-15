@@ -760,7 +760,7 @@ export function claudeAdapter(): AgentAdapter {
         ...write,
         profile: name,
         quiet: options.quiet,
-        directToken: resolvedDirectToken(write.credential),
+        directToken: resolvedDirectToken(write.mode, write.credential),
       });
     },
     removeProfile(name, options) {

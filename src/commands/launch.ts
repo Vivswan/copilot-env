@@ -285,7 +285,7 @@ export function commandDeps(): LaunchDeps {
           mode,
           directIntegrationId: await resolveAndPersistDirectIdentity(
             name,
-            resolvedDirectToken(credential),
+            resolvedDirectToken(mode, credential),
           ),
           credential,
         }

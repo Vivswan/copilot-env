@@ -163,7 +163,7 @@ async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
     const ghToken = profile === null && mode === "direct" ? new Credential().resolve() : undefined;
     const credential = resolveCredentialWiring(mode, profile, ghToken);
     // A static credential is already resolved: the identity probe and discovery reuse it.
-    const token = ghToken ?? resolvedDirectToken(credential);
+    const token = ghToken ?? resolvedDirectToken(mode, credential);
     const write: ManagedWrite = mode === "direct"
       ? {
         mode: "direct",

@@ -1034,6 +1034,20 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
     expect(staleResult?.detail).not.toContain("tok-");
     expect(staleResult?.fix).toBe(`agent profile --add ${P}`);
     expect(ghProbes).toBe(1);
+
+    // A PROXY static wiring skips gh the same way, but the direct-only JSON field stays false:
+    // "needs no gh" is a Direct verdict, never a proxy one.
+    configureCodexConfig(codexHome, {
+      mode: "proxy",
+      profile: P,
+      baseUrl: openaiBaseUrl("4555"),
+      credential: { kind: "static", token: "proxy-key" },
+    });
+    const proxyStatic = await gatherFacts("codex", { profile: P }, ghCounting);
+    expect(proxyStatic.codex?.providerMode).toBe("proxy");
+    expect(proxyStatic.codex?.credential).toBe("static");
+    expect(proxyStatic.codex?.directNeedsNoGh).toBe(false);
+    expect(ghProbes).toBe(1);
   } finally {
     restoreEnv();
     removeDir(home);

@@ -344,6 +344,8 @@ test("update REFUSES a store that is present but not valid JSON, preserving its 
     }
     expect(threw).toContain("not valid JSON");
     expect(threw).toContain("refusing to overwrite it");
+    // V8 quotes the source around the fault; the store holds keys, so no quoted run survives.
+    expect(threw).not.toContain("secret-key");
     // THE outcome: the corrupt bytes (a torn write's salvageable half included)
     // are still on disk, byte for byte -- never reset to the mutation alone.
     expect(readFileSync(path, "utf8")).toBe(content);

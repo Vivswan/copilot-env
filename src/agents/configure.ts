@@ -69,10 +69,15 @@ export function resolveCredentialWiring(
   return { kind: "static", token: resolved.token };
 }
 
-/** The token a static wiring already resolved, so a direct write's identity probe reuses it instead
- *  of resolving (for gh-cli, spawning) a second time; undefined for the command shape. */
-export function resolvedDirectToken(credential: CredentialWiring): string | undefined {
-  return credential.kind === "static" ? credential.token : undefined;
+/** The GitHub token a static DIRECT wiring already resolved, so the identity probe and Desktop's
+ *  discovery reuse it instead of resolving (for gh-cli, spawning) again. Undefined for the command
+ *  shape AND for proxy: a proxy static write holds the daemon's API key, which is no GitHub
+ *  credential and must never be sent upstream as one. */
+export function resolvedDirectToken(
+  mode: ManagedAgentMode,
+  credential: CredentialWiring,
+): string | undefined {
+  return mode === "direct" && credential.kind === "static" ? credential.token : undefined;
 }
 
 /** Contradictory flag pairs (`--check --direct`, `--mobile --check`) are rejected at the

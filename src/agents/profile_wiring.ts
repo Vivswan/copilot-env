@@ -39,7 +39,7 @@ export async function wireBothAgents(
   credentialToken?: string | null,
 ): Promise<void> {
   const credential = resolveCredentialWiring(mode, name, credentialToken);
-  const identityToken = credentialToken ?? resolvedDirectToken(credential);
+  const identityToken = credentialToken ?? resolvedDirectToken(mode, credential);
   const write: ManagedWrite = mode === "direct"
     ? {
       mode,

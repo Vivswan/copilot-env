@@ -312,7 +312,7 @@ async function runSettingsFor(name: ProfileName): Promise<void> {
       mode: "direct",
       directIntegrationId: await resolveAndPersistDirectIdentity(
         name,
-        resolvedDirectToken(credential),
+        resolvedDirectToken(slot.mode, credential),
       ),
       credential,
     }

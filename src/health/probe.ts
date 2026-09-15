@@ -1006,7 +1006,7 @@ export async function gatherFacts(
           wiringPort(),
           deps.codexTokenInEnviron(),
           directAuth,
-          noGhNeeded,
+          wiring.providerMode === "direct" && noGhNeeded,
           wiring,
         );
         facts.codex = {
@@ -1039,7 +1039,13 @@ export async function gatherFacts(
           authShapeOf(wiring),
         );
         facts.claude = {
-          ...evalClaude(home, directAuth, noGhNeeded, wiring, profile),
+          ...evalClaude(
+            home,
+            directAuth,
+            wiring.providerMode === "direct" && noGhNeeded,
+            wiring,
+            profile,
+          ),
           ...storeFacts(wiring.credential),
           ...(wiring.credential === "static"
             ? {

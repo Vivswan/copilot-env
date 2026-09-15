@@ -36,6 +36,12 @@ function dataOrDegrade(
 const LOAD_RETRY_ATTEMPTS = 5;
 const LOAD_RETRY_MS = 4;
 
+/** V8's JSON.parse message quotes the source around the fault, and these stores hold the GitHub
+ *  token and the daemon keys, so every quoted run is dropped before the message reaches a log. */
+function redactJsonDiagnostic(e: unknown): string {
+  return String(e).replace(/"(?:[^"\\]|\\.)*"/g, '"<redacted>"');
+}
+
 // update()'s read-modify-write takes a best-effort `<file>.lock` (utils/file_lock.ts): the CLI, the daemon
 // shims, and several shells write the SAME store, and BOUNDED_LOCK_POLICY proceeds WITHOUT the lock after
 // its wait rather than deadlock a command.
@@ -109,7 +115,7 @@ export class CopilotApiConfig {
             sleepSync(LOAD_RETRY_MS);
             continue;
           }
-          return { kind: "unparseable", error: String(e) };
+          return { kind: "unparseable", error: redactJsonDiagnostic(e) };
         }
       }
       // An empty read may be the daemon's truncate window.

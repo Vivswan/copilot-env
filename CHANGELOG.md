@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.8](https://github.com/Vivswan/copilot-env/compare/v4.0.7...v4.0.8) (2026-09-15)
+
+
+### Features
+
+* **auth:** split gh-token into paste and gh-env, label tokens with their GitHub account ([#214](https://github.com/Vivswan/copilot-env/issues/214)) ([6e457fb](https://github.com/Vivswan/copilot-env/commit/6e457fb9be978be2536fd6ce237004436111a75c))
+
 ## [4.0.7](https://github.com/Vivswan/copilot-env/compare/v4.0.6...v4.0.7) (2026-09-12)
 
 

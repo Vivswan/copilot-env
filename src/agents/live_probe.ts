@@ -21,7 +21,6 @@ import { dirname, join, resolve } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
 import type { DirectSmoke } from "../copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
-import type { Profile } from "../copilot_api/profile.ts";
 import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -57,9 +56,8 @@ export interface ProbeDescriptor {
   cli: string;
   homeEnvVar: string;
   /** `home` is the temp config dir the probe points the CLI at; `model` pins the call to the
-   *  catalog pick (null = the CLI's own choice); `profile` selects a named profile's wiring through
-   *  the same knob each launcher uses (null = the default argv). The per-CLI notes below say how. */
-  args: (prompt: string, home: string, model: string | null, profile?: Profile) => string[];
+   *  catalog pick (null = the CLI's own choice). The per-CLI notes below say how. */
+  args: (prompt: string, home: string, model: string | null) => string[];
 }
 
 /** Stripped from the probe child so a stray export (an api key, an org, a base url, a config
@@ -79,11 +77,9 @@ export const CODEX_PROBE: ProbeDescriptor = {
   // codex refuses unless the cwd happens to be a git repo, and Direct detection would depend on
   // where `agent init` was invoked:
   //   "Not inside a trusted directory and --skip-git-repo-check was not specified."
-  // A named profile rides `--profile <name>`, the flag the `cx --profile` launcher passes;
   // `--model` beats the config's model line, so the pinned catalog pick is what runs.
-  args: (prompt, _home, model, profile = null) => [
+  args: (prompt, _home, model) => [
     "exec",
-    ...(profile === null ? [] : ["--profile", profile]),
     ...(model === null ? [] : ["--model", model]),
     "--json",
     "--skip-git-repo-check",
@@ -101,13 +97,12 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
   //
   //   --bare               -> also stops settings.json discovery from CLAUDE_CONFIG_DIR
   //   --settings <path>    -> the only auth path left; without it apiKeySource is "none"
-  //   settings-<name>.json -> a named profile's own file, the one `cl --profile` loads
   //   --model <id>         -> beats the CLI's built-in default (claude-opus-5[1m] at 2.1.x), an id
   //                           Copilot may not serve; the init event then reports exactly this id
-  args: (prompt, home, model, profile = null) => [
+  args: (prompt, home, model) => [
     "--bare",
     "--settings",
-    settingsPathFor(home, profile),
+    settingsPathFor(home),
     ...(model === null ? [] : ["--model", model]),
     "--print",
     "--permission-mode",

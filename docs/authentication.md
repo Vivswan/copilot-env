@@ -6,13 +6,14 @@ This page is about the credential and the profiles that carry one each. The wiri
 
 ## Providers
 
-| `--provider` | Where the credential comes from                                                                                     |
-| ------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `copilot`    | GitHub device flow (`read:user` scope)                                                                              |
-| `gh-cli`     | the machine's existing `gh` login; `--gh-user <login>` pins one logged-in account, otherwise `gh`'s active one wins |
-| `gh-token`   | paste a GitHub token; `--set <token>` stores one non-interactively                                                  |
-| `gh-env`     | copy a token from `$COPILOT_GITHUB_TOKEN` / `$GH_TOKEN` / `$GITHUB_TOKEN`                                           |
+| `--provider` | Where the credential comes from                                               |
+| ------------ | ----------------------------------------------------------------------------- |
+| `copilot`    | GitHub device flow (`read:user` scope)                                        |
+| `gh-cli`     | the machine's existing `gh` login, pinned to one account at auth time (below) |
+| `gh-token`   | paste a GitHub token; `--set <token>` stores one non-interactively            |
+| `gh-env`     | copy a token from `$COPILOT_GITHUB_TOKEN` / `$GH_TOKEN` / `$GITHUB_TOKEN`     |
 
+- `gh-cli` pins an account when you run `agent auth`: `--gh-user <login>` names it; without the flag, a single saved login or a headless run pins the active account, and a terminal asks when there are several logins or the only one comes from a token env var. Only the `auto` choice in that prompt follows a later `gh auth switch`; a pinned account stays until you re-run `agent auth`.
 - `gh-env` in a terminal always shows the var and its GitHub account first: one set asks yes/no, several set get a menu. Headless takes the most specific (servers).
 - Every pasted or copied token is labelled with the account GitHub reports for it (GraphQL `viewer`, no `gh` needed); a lookup miss only changes the label.
 - `--get` / `--del` / `--check` print, clear, or check that a credential resolves.

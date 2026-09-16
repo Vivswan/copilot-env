@@ -58,8 +58,10 @@ On Windows the same commands run via `agent` once the profile is wired, or direc
 
 The installer wires the `agent` wrapper into your shell and exports the proxy env.
 
-- **macOS / Linux:** sources `shell/agents.bashrc` from `~/.bashrc` / `~/.zshrc`.
-- **Windows:** dot-sources `shell/agents.ps1` from your PowerShell `$PROFILE`.
+- **macOS / Linux:** sources `shell/agents.bashrc`.
+- **Windows:** dot-sources `shell/agents.ps1`.
+
+The rc file and profile it edits are in the [wiring write list](getting-started.md#what-a-wiring-pass-writes).
 
 `agent env` defines the launcher functions in each new shell, and `agent shell` reports the state it wired.
 

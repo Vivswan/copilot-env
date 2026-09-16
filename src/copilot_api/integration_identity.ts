@@ -33,7 +33,7 @@ export const DAEMON_INTEGRATION_ID_ENV = "COPILOT_ENV_DAEMON_INTEGRATION_ID";
 
 /** Where the account's designated API base is discovered (best-effort). */
 export const COPILOT_USER_URL = "https://api.github.com/copilot_internal/user";
-/** The generic host, what `copilot-host auto` lands on unless it is blocked for the credential. */
+/** The generic host, what `host auto` lands on unless it is blocked for the credential. */
 export const DEFAULT_COPILOT_API_BASE = "https://api.githubcopilot.com";
 
 /** The copilot-host preload (src/scripts/copilot_host_preload.ts) reads this and rewrites the
@@ -47,7 +47,7 @@ export const DAEMON_COPILOT_HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
 export function isDirectBaseUrl(url: string): boolean {
   if (!URL.canParse(url)) return false;
   const parsed = new URL(url);
-  // The same origin-only shape the `copilot-host` validator enforces: a path, query, or userinfo
+  // The same origin-only shape the `host` validator enforces: a path, query, or userinfo
   // is some other API, and a loopback https origin is nobody's Copilot host.
   return parsed.protocol === "https:" && !isLoopbackHostname(parsed.hostname) &&
     (parsed.pathname === "/" || parsed.pathname === "") && parsed.search === "" &&
@@ -77,7 +77,7 @@ export function setIntegrationProbeFetch(fetchImpl: ProbeFetch | null): void {
 const PROBE_USER_AGENT = "copilot-env";
 
 export interface IntegrationIdentity {
-  /** For passthrough candidates it IS the integration-id value. */
+  /** For passthrough candidates it IS the identity value. */
   name: string;
   /** Authorization is added by callers. */
   headers: Record<string, string>;
@@ -253,7 +253,7 @@ export type IdentityVerdict =
    *  host rule reads `status` (genericHostBlockedBy), so the same probe answers both questions. */
   | { kind: "inconclusive"; detail: string; status: number | null };
 
-/** THE one "blocked host" rule (`copilot-host auto`): a status the credential could never draw for
+/** THE one "blocked host" rule (`host auto`): a status the credential could never draw for
  *  an identity reason. 403, 404, and 5xx mean the account is served elsewhere; 2xx serves, 400 is an
  *  identity rejection and 401 a bad token (identical on every host), and a transient 408 or 429
  *  says nothing about the host. A network-level failure counts as blocked at the call site. */
@@ -374,7 +374,7 @@ export interface IdentityHostSurvey {
 }
 
 export interface IdentitySurvey {
-  /** The generic host, then the account's designated host when it differs, then the `copilot-host`
+  /** The generic host, then the account's designated host when it differs, then the `host`
    *  literal when set and different from both. */
   hosts: IdentityHostSurvey[];
   /** The designated-host lookup failed transiently, so that column is missing, not "the same". */
@@ -382,7 +382,7 @@ export interface IdentitySurvey {
 }
 
 export interface IdentitySurveyDeps extends Omit<IdentityProbeDeps, "apiBase"> {
-  /** The `copilot-host` literal, or null for `auto`. */
+  /** The `host` literal, or null for `auto`. */
   configuredHost?: string | null;
   /** Another survey's columns to reuse verbatim (one account lookup for a second header set), so two
    *  surveys rendered side by side can never differ in their hosts. Skips the lookup. */
@@ -470,7 +470,7 @@ export interface HostNarrator {
 }
 
 interface ResolveHostOptions extends Omit<IdentityProbeDeps, "apiBase"> {
-  /** The `copilot-host` literal: returned as-is, nothing probed. Null = `auto`. */
+  /** The `host` literal: returned as-is, nothing probed. Null = `auto`. */
   literal?: string | null;
   /** Callers whose stdout is a contract pass a stderr logger. */
   narrator?: HostNarrator;
@@ -481,7 +481,7 @@ interface ResolveHostOptions extends Omit<IdentityProbeDeps, "apiBase"> {
 const hostMemo = new Map<string, Promise<string>>();
 
 /**
- * THE `copilot-host auto` rule, for every mode. `headers` is the identity the caller will bake (the
+ * THE `host auto` rule, for every mode. `headers` is the identity the caller will bake (the
  * accepted Direct identity, the daemon's passthrough id, or vscode-chat), resolved BEFORE this.
  * Module-private, like the identity steps below: only the select*IdentityAndHost pair may call it,
  * so no consumer can select an identity on one host and bake another.
@@ -578,7 +578,7 @@ export function identityRejectionHints(): string[] {
 }
 
 export interface ResolveIdentityOptions extends IdentityProbeDeps {
-  /** The `integration-id` config pin, or null to probe. */
+  /** The `identity` config pin, or null to probe. */
   pinned?: string | null;
   /** A cached identity to try FIRST (replayableIdentity `preferred`, env_state.ts): probe order only,
    *  never a verdict. `null` names the default identity, already first. */
@@ -591,7 +591,7 @@ export interface ResolveIdentityOptions extends IdentityProbeDeps {
  * THE single PAT-shape predicate, shared by the passthrough shim and the identity probe gates. A PAT is
  * the only credential the DEFAULT identity was seen to refuse (July 2026: gho_/ghu_ OAuth, device-flow and
  * gh-cli were all accepted), so nothing else is worth a probe's network round.
- * Unprefixed 40-hex classic PATs are NOT detectable by shape: use `config passthrough on` / `config integration-id`.
+ * Unprefixed 40-hex classic PATs are NOT detectable by shape: use the `passthrough` (on) or `identity` config key.
  */
 export function isPatShapedToken(token: string): boolean {
   const t = token.trim();
@@ -717,7 +717,7 @@ export interface IdentityAndHost<Id extends string | null> {
 }
 
 export interface IdentityAndHostOptions extends Omit<ResolveIdentityOptions, "apiBase"> {
-  /** A host every request goes to (a caller's, else the `copilot-host` literal): identity selection
+  /** A host every request goes to (a caller's, else the `host` literal): identity selection
    *  runs there and the host probe is skipped. Null = `auto`. */
   fixedHost?: string | null;
 }

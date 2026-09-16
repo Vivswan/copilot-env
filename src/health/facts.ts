@@ -311,7 +311,7 @@ export interface CodexHostFacts {
   probeError: string | null;
   /** Run state records it as the active CODEX_HOME (set only after a successful write). */
   active: boolean;
-  /** The `codex-host` key (stored else default; always false on Windows). */
+  /** The `codex.host` key (stored else default; always false on Windows). */
   enabled: boolean;
 }
 
@@ -349,7 +349,7 @@ export interface HealthFacts {
   codex?: CodexFacts;
   codexHost?: CodexHostFacts;
   claude?: ClaudeFacts;
-  /** The Claude Desktop library judged against the `claude-desktop` key (root-wide, so never
+  /** The Claude Desktop library judged against the `claude.desktop` key (root-wide, so never
    *  gathered on a narrowed run). */
   claudeDesktop?: ClaudeDesktopStatus;
   codexLive?: LiveProbeFacts;
@@ -386,6 +386,6 @@ export interface AuthFacts {
   provider: AuthProvider | null;
   /** Named profiles, keyed by validated name. */
   profiles: Record<ProfileName, ProfileAuthFacts>;
-  /** The `integration-id` config pin (integration_identity.ts), or null when probing. */
+  /** The `identity` config pin (integration_identity.ts), or null when probing. */
   pinnedIntegrationId: string | null;
 }

@@ -911,9 +911,9 @@ export async function applyCodexConfig(
   if (profile === null) syncCodexCatalogReference(catalogDeps);
 }
 
-/** The Direct facts a write bakes, resolved ONCE on the host in use: the `integration-id` pin, else
+/** The Direct facts a write bakes, resolved ONCE on the host in use: the `identity` pin, else
  *  identity selection on that host (a `preferred` cached identity tried first, never taken on trust;
- *  a definitive 400/401 moves on), then the `copilot-host` literal, else the host probe under that
+ *  a definitive 400/401 moves on), then the `host` literal, else the host probe under that
  *  identity; a host `auto` moves to re-runs the selection there. Throws when the credential is
  *  rejected under every known identity.
  *
@@ -1108,7 +1108,7 @@ export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
 
 /** The throwaway config's selector, NOT the managed id. The table's `auth.command` runs `agent auth
  *  --get` in the child, and with neither Codex-home key set (the default) that child's Codex home is
- *  $CODEX_HOME = the throwaway home (defaultCodexHome; codex-home or a codex-host farm wins over it).
+ *  $CODEX_HOME = the throwaway home (defaultCodexHome; codex.home or a codex.host farm wins over it).
  *  Its catalog self-heal (src/codex/catalog_reference.ts) adds `model_catalog_json` to, and ledgers,
  *  any config there that selects the managed provider: the next attempt would then run under the
  *  user's catalog, and the ledger would keep a path removeScratchDir deletes. A foreign selector is

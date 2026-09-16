@@ -183,12 +183,12 @@ export interface ProbeDeps {
   ghActiveLogin(): Promise<string | null>;
   /** Named profiles: name -> recorded provider + mode + baked direct identity (never tokens). */
   authProfiles(): Record<ProfileName, ProfileAuthFacts>;
-  /** The `integration-id` config pin, or null when unset/`auto`. */
+  /** The `identity` config pin, or null when unset/`auto`. */
   pinnedIntegrationId(): string | null;
   claudeHome(): string;
   /** The per-host farm on disk (path, present, wired), from its one predicate. */
   codexHostFarm(): CodexHostFarm;
-  /** The `codex-host` key read (CopilotEnvConfig.codexHostEnabled). */
+  /** The `codex.host` key read (CopilotEnvConfig.codexHostEnabled). */
   codexHostEnabled(): boolean;
   /** The Claude Desktop wiring status (read-only; see claudeDesktopStatus). */
   claudeDesktop(): ClaudeDesktopStatus;
@@ -507,7 +507,7 @@ export function defaultProbeDeps(): ProbeDeps {
 
 // --- pure sub-evaluators (no I/O) -------------------------------------------
 
-/** launchersWired is the `launchers` config key (see ShellFacts). */
+/** launchersWired is the `shell.launchers` config key (see ShellFacts). */
 export function evalShellFiles(
   contents: { path: string; content: string | null }[],
   launchersEnabled: boolean,
@@ -707,7 +707,7 @@ async function gatherNamedTarget(
 
 /** `opts.profile` narrows the run to ONE named profile: its runtime target, its credential slot,
  *  and its per-agent wiring. The account-wide fact groups (bootstrap, proxy package,
- *  shell/CLI/tool setup, autoupdate, codex-host) are not gathered at all, so they cannot leak
+ *  shell/CLI/tool setup, autoupdate, codex.host) are not gathered at all, so they cannot leak
  *  into a narrowed report. */
 export async function gatherFacts(
   scope: HealthScope,

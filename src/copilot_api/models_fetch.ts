@@ -1,8 +1,8 @@
 // THE owner of the GET <host>/models request. Every consumer (the raw catalog fetch, model
 // discovery, the endpoint smoke, the identity probe and survey, the host probe) goes through it,
 // so the URL, the bearer, the timeout, the body drain, and the parse are decided once. The
-// identity headers ride in from THE header builders (directClientHeaders, passthroughIdentity):
-// this module never chooses a client identity, so each consumer's bytes stay its own.
+// identity headers ride in from THE header builder (directClientHeaders): this module never
+// chooses a client identity, so each consumer's bytes stay its own.
 import { defaultFetch } from "../utils/fetch.ts";
 import type { ProbeFetch } from "./integration_identity.ts";
 import { type ModelListEntry, parseModelList } from "./models.ts";

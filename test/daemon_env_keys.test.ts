@@ -1,8 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import {
+  DAEMON_CLIENT_HEADERS_ENV,
   DAEMON_COPILOT_HOST_ENV,
-  DAEMON_INTEGRATION_ID_ENV,
 } from "../src/copilot_api/integration_identity.ts";
 import { DAEMON_GH_TOKEN_ENV } from "../src/copilot_api/process.ts";
 import { ROOT } from "./helpers/run.ts";
@@ -11,7 +11,7 @@ import shimImportsPlugin, { SHIM_FILES } from "./lint/no_shim_imports.ts";
 
 // Some `--preload` shims run import-free inside the proxy daemon (a CLI import would drag that
 // layer into the daemon), so each env-var contract between launchDaemon and such a shim is spelled
-// twice, and a drift fails silently at launch (a token-less daemon, a skipped integration-id rewrite).
+// twice, and a drift fails silently at launch (a token-less daemon, a daemon under the proxy's own identity).
 //   the shim's literal, read as text  -> must equal the CLI constant (importing the shim would defeat the design)
 //   the shim's runtime imports        -> none for these shims; once one may import, the copy becomes an import
 
@@ -28,10 +28,10 @@ const PINNED_PAIRS = [
     localConst: "ENV_KEY",
   },
   {
-    key: DAEMON_INTEGRATION_ID_ENV,
-    keyName: "DAEMON_INTEGRATION_ID_ENV",
-    shim: "pat_passthrough_preload.ts",
-    localConst: "INTEGRATION_ID_ENV",
+    key: DAEMON_CLIENT_HEADERS_ENV,
+    keyName: "DAEMON_CLIENT_HEADERS_ENV",
+    shim: "client_headers_preload.ts",
+    localConst: "CLIENT_HEADERS_ENV",
   },
   {
     key: DAEMON_COPILOT_HOST_ENV,
@@ -42,7 +42,7 @@ const PINNED_PAIRS = [
   {
     key: DAEMON_COPILOT_HOST_ENV,
     keyName: "DAEMON_COPILOT_HOST_ENV",
-    shim: "pat_passthrough_preload.ts",
+    shim: "client_headers_preload.ts",
     localConst: "COPILOT_HOST_ENV",
   },
 ] as const;

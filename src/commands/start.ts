@@ -24,6 +24,7 @@ import { daemonPolicy } from "../copilot_api/port.ts";
 import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
+import { codexUserAgent } from "../codex/user_agent.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
@@ -361,6 +362,8 @@ async function launchUnderLock(
   const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);
   const { credential, copilotHost } = await resolveLaunchCredential(profile, ctx.envConfig, {
     interactiveLogin: ensureAuthenticated,
+    // The daemon sends the codex User-Agent the agent configs bake, so it is probed under it.
+    userAgent: codexUserAgent(),
   });
   const spawned = spawnConfiguredDaemon({
     port,

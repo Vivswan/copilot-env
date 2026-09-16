@@ -32,7 +32,7 @@ flowchart TD
   claudew["src/claude/config.ts<br>configureClaudeConfig()"]
   codexfile[("~/.codex/config.toml")]
   claudefile[("~/.claude/settings.json")]
-  daemonenv[["the daemon's env: COPILOT_ENV_DAEMON_GH_TOKEN, COPILOT_ENV_DAEMON_INTEGRATION_ID, COPILOT_ENV_DAEMON_COPILOT_HOST"]]
+  daemonenv[["the daemon's env: COPILOT_ENV_DAEMON_GH_TOKEN, COPILOT_ENV_DAEMON_CLIENT_HEADERS, COPILOT_ENV_DAEMON_COPILOT_HOST"]]
   credfile -->|"reads the slot: gh-cli, a stored token, or none"| store
   prefs -->|"reads static-key"| wiring
   proxycfg -->|"static-key on a proxy write: ensureApiKey() reads a key"| wiring
@@ -71,7 +71,8 @@ flowchart TD
   state["src/copilot_api/env_state.ts<br>CopilotEnvState StoredDirectPair"]
   wire["src/agents/profile_wiring.ts<br>wireBothAgents() DirectResolution resolveDirectWiring()"]
   probe["src/codex/config.ts<br>probeDirectWiring() landDirectWiring()"]
-  select["src/copilot_api/integration_identity.ts<br>selectDirectIdentityAndHost() selectPassthroughIdentityAndHost() IdentityAndHost probeIntegrationIdentityCached()"]
+  select["src/copilot_api/integration_identity.ts<br>selectDirectIdentityAndHost() IdentityAndHost probeIntegrationIdentityCached()"]
+  pair["src/copilot_api/direct_pair.ts<br>directOverlay() renderDirectPair() landDirectPair()"]
   launch["src/copilot_api/launch.ts<br>resolveLaunchCredential()"]
   slotout[("~/.local/share/copilot-env/credentials.json<br>the profile slot, its pair rewritten")]
   codexfile[("~/.codex/config.toml<br>base_url https://{host}, http_headers")]
@@ -88,7 +89,11 @@ flowchart TD
   probe -->|"landDirectWiring() for a profile, commitDefaultWiring() for the default: setProfileDirectPair() writes the halves the probe answered, the pair's only writers"| slotout
   wire -->|"both agents, the same pair"| codexfile
   wire -->|"both agents, the same pair"| claudefile
-  select -->|"the passthrough twin: the daemon's host pin, no slot write"| launch
+  state -->|"readProfileDirectPair(): the stored halves"| pair
+  config -->|"directOverlay(): the pin and the literal"| pair
+  pair -->|"renderDirectPair(): pin ?? identity, literal ?? host; no request"| launch
+  pair -->|"landDirectPair(): a half unknown, the same selection at daemon start"| select
+  pair -->|"setProfileDirectPair(): the probe's own halves, the one copilot_api write"| slotout
 ```
 
 - **The probe memo is process-lifetime and never invalidated** (`probeIntegrationIdentityCached()`): a CLI run ends in seconds, and the MCP server keeps its verdict until the transport closes. Injected I/O and a caller deadline bypass it.
@@ -138,7 +143,7 @@ flowchart LR
   float["src/proxy_float.ts<br>floatProxy() selectProxyVersion() writeResolvedVersionRecord() readResolvedVersionRecord()"]
   shims["src/copilot_api/shims.ts<br>DAEMON_SHIM_FILES shimPath() allShimPaths()"]
   spawn["src/copilot_api/process.ts<br>DaemonSpec daemonArgv() daemonEnvironment() launchDaemon()"]
-  preloads["src/scripts/node_compat_preload.ts<br>src/scripts/daemon_lock_preload.ts<br>src/scripts/token_argv_preload.ts<br>src/scripts/daemon_runtime_preload.ts<br>src/scripts/copilot_host_preload.ts<br>src/scripts/pat_passthrough_preload.ts<br>src/scripts/idle_watchdog_preload.ts<br>src/scripts/log_mute_preload.ts"]
+  preloads["src/scripts/node_compat_preload.ts<br>src/scripts/daemon_lock_preload.ts<br>src/scripts/token_argv_preload.ts<br>src/scripts/daemon_runtime_preload.ts<br>src/scripts/copilot_host_preload.ts<br>src/scripts/client_headers_preload.ts<br>src/scripts/pat_passthrough_preload.ts<br>src/scripts/idle_watchdog_preload.ts<br>src/scripts/log_mute_preload.ts"]
   cache[("~/.local/share/copilot-env/deno/cache<br>the daemon's DENO_DIR")]
   record[("~/.local/share/copilot-env/proxy/resolved-version.json")]
   pcfg[("copilot-env.config and deno.json, embedded in the binary: PROXY_MIN_VERSION, PROXY_MAX_VERSION, the import map")]
@@ -159,7 +164,7 @@ flowchart LR
   preloads -->|"run inside it before the package's entry"| daemonproc
 ```
 
-- **We never patch the package:** every shim wraps a runtime seam (`globalThis.fetch`, `fs.createWriteStream`, `process.argv`) and touches none of copilot-api's files, so none of them pins the floated version.
+- **We never patch the package:** every shim wraps a runtime seam (`globalThis.fetch`, undici's global dispatcher, `fs.createWriteStream`, `process.argv`) and touches none of copilot-api's files, so none of them pins the floated version.
 - **`--cached-only` at spawn gives no second chance,** which is why the float warms the cache; the spawn's subset means a credential-less daemon carries no token shim.
 - **The secret-carrying shims stay import-free** (`test/lint/no_shim_imports.ts`): a runtime import would drag CLI modules into the daemon process.
 

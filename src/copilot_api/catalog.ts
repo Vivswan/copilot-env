@@ -6,14 +6,14 @@
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig } from "./config.ts";
 import { Credential } from "./credential.ts";
-import { CopilotEnvConfig } from "./env_config.ts";
+import { directOverlay, renderDirectPair } from "./direct_pair.ts";
 import {
+  CODEX_EXEC_USER_AGENT,
   directClientHeaders,
-  type IdentityAndHostOptions,
-  INTEGRATION_ID_HEADER,
+  type HostNarrator,
+  type IdentityAndHost,
   type ProbeFetch,
   selectDirectIdentityAndHost,
-  selectPassthroughIdentityAndHost,
 } from "./integration_identity.ts";
 import { fetchModelCatalog } from "./models_fetch.ts";
 import { copilotApiResolvePort } from "./port.ts";
@@ -24,13 +24,10 @@ import { createStderrLogger } from "../utils/logger.ts";
 export type CatalogSource = "direct" | "proxy";
 
 /**
- * Copilot gates the catalog per client identity (identity-exact, discovery.ts), so WHOSE header set
- * a direct fetch carries is the consumer's choice, never inferred from the source:
- *
- *   passthrough -> the proxy daemon's (vscode-chat first, the id header alone); what feeds the
- *                  daemon's own listing, Desktop's proxy fallback included
- *   agents      -> a Direct agent's exact set (directClientHeaders under `userAgent`); what feeds
- *                  that agent's own requests: the Codex catalog seed, the web-search aliases
+ * Which User-Agent the one header set (directClientHeaders) carries on a direct fetch: `agents`
+ * names a Direct agent's own (the Codex catalog seed, the web-search aliases); `passthrough` is
+ * the version-free codex UA for consumers that feed no agent's requests (Desktop's fallback) and
+ * must not resolve the versioned one, whose lookup can spawn `codex --version` and `npm view`.
  */
 export type DirectCatalogIdentity =
   | { kind: "passthrough" }
@@ -39,8 +36,9 @@ export type DirectCatalogIdentity =
 export interface FetchRawModelsOptions {
   /** Skips re-resolving, which for a gh-cli provider re-runs `gh auth token` (up to 5s). */
   directToken?: string;
-  /** The Copilot host a caller already selected (select*IdentityAndHost); absent, this fetch selects it. */
-  apiBase?: string;
+  /** The identity and host a caller already resolved for this profile (directRequestIdentity),
+   *  so one selection serves its every request; absent, this fetch resolves them. */
+  pair?: IdentityAndHost;
   /** Callers that just probed liveness pass that port so the fetch cannot race a restart onto another. */
   port?: number;
   /** null/absent = the default profile. A named profile never falls back to the default credential (credential.ts). */
@@ -51,6 +49,35 @@ export interface FetchRawModelsOptions {
   signal?: AbortSignal;
   /** Direct source only; absent = passthrough (see DirectCatalogIdentity). */
   identity?: DirectCatalogIdentity;
+}
+
+export interface DirectRequestIdentityOptions {
+  fetchImpl?: ProbeFetch;
+  signal?: AbortSignal;
+  narrator?: HostNarrator;
+}
+
+/**
+ * THE identity and host a request made on `profile`'s behalf sends: the rendered pair every
+ * re-render bakes and the daemon sends (renderDirectPair), so the catalog and web-search requests
+ * carry the same identity. A half never probed selects on the host in use and stores nothing
+ * (direct_pair.ts: listings never write).
+ */
+export async function directRequestIdentity(
+  profile: Profile,
+  token: string,
+  userAgent: string,
+  opts: DirectRequestIdentityOptions = {},
+): Promise<IdentityAndHost> {
+  const overlay = directOverlay(profile);
+  return renderDirectPair(profile, overlay) ??
+    await selectDirectIdentityAndHost(token, userAgent, {
+      pinned: overlay.pinned,
+      fixedHost: overlay.literal,
+      fetchImpl: opts.fetchImpl,
+      signal: opts.signal,
+      narrator: opts.narrator,
+    });
 }
 
 export async function fetchRawModels(
@@ -72,33 +99,19 @@ export async function fetchRawModels(
     : new Credential(undefined, profile).resolveWithReason();
   if (resolved.token === null) throw new Error(resolved.reason);
   const token = resolved.token;
-  // Either selector pairs the CONSUMER's identity with the one host it was accepted on
-  // (select*IdentityAndHost): a configured pin wins, a non-PAT token takes its default unprobed,
-  // only a PAT is probed; a caller's host or the `host` literal fixes the host, else `auto`
-  // resolves it under the consumer's exact header set. Narration goes to stderr: `agent auth --get`
-  // runs this fetch and its stdout is the token.
-  const config = new CopilotEnvConfig();
-  const selectOpts: IdentityAndHostOptions = {
-    pinned: config.pinnedIntegrationId(profile),
-    fixedHost: opts.apiBase ?? config.copilotHost(profile),
-    fetchImpl: opts.fetchImpl,
-    signal: opts.signal,
-    narrator: createStderrLogger(),
-  };
   const identity = opts.identity ?? { kind: "passthrough" };
-  const { headers, apiBase } = identity.kind === "agents"
-    ? await selectDirectIdentityAndHost(token, identity.userAgent, selectOpts).then((s) => ({
-      headers: directClientHeaders(identity.userAgent, s.integrationId),
-      apiBase: s.apiBase,
-    }))
-    : await selectPassthroughIdentityAndHost(token, selectOpts).then((s) => ({
-      headers: { [INTEGRATION_ID_HEADER]: s.integrationId },
-      apiBase: s.apiBase,
-    }));
+  const userAgent = identity.kind === "agents" ? identity.userAgent : CODEX_EXEC_USER_AGENT;
+  // Narration goes to stderr: `agent auth --get` runs this fetch and its stdout is the token.
+  const { integrationId, apiBase } = opts.pair ??
+    await directRequestIdentity(profile, token, userAgent, {
+      fetchImpl: opts.fetchImpl,
+      signal: opts.signal,
+      narrator: createStderrLogger(),
+    });
   const got = await fetchModelCatalog({
     host: apiBase,
     token,
-    headers,
+    headers: directClientHeaders(userAgent, integrationId),
     fetchImpl: opts.fetchImpl,
     signal: opts.signal,
   });

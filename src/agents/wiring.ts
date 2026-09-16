@@ -1,23 +1,14 @@
 // The single place both agents' effective wiring is read together; every "are the agents
 // direct?" consumer goes through here so the answer cannot drift. The two predicates at the
 // bottom answer two DIFFERENT questions: pick by question, not by name.
-import {
-  bakedClaudeDirectIntegrationId,
-  type ClaudeWiringStatus,
-  inspectClaudeWiring,
-} from "../claude/config.ts";
+import { type ClaudeWiringStatus, inspectClaudeWiring } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import {
-  bakedCodexDirectIntegrationId,
-  type CodexWiringStatus,
-  inspectCodexWiring,
-} from "../codex/config.ts";
+import { type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
-import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
-import { type BakedDirectIdentity, isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
+import { codexConfigPath } from "../codex/paths.ts";
+import { isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
-import type { Profile } from "../copilot_api/profile.ts";
 import { readTextResult } from "../utils/fs.ts";
 
 /** Overrides for tests and callers that already resolved the homes/port; the defaults are the
@@ -47,32 +38,6 @@ export function readAgentWirings(opts: AgentWiringOptions = {}): {
   const claudeHome = opts.claudeHome ?? resolveClaudeHome();
   const claude = inspectClaudeWiring(readTextResult(settingsPathFor(claudeHome)), expectedPort);
   return { codex, claude };
-}
-
-/** What each agent's Direct wiring for `profile` sends today (a named profile's tables and
- *  settings-<name>.json live in the same homes), read from the effective homes. */
-export function readBakedDirectIdentities(
-  profile: Profile,
-  opts: AgentWiringOptions = {},
-): { codex: BakedDirectIdentity; claude: BakedDirectIdentity } {
-  const expectedPort = opts.expectedPort ?? Number(copilotApiResolvePort(profile));
-  const codexHome = opts.codexHome ?? effectiveCodexHome();
-  const claudeHome = opts.claudeHome ?? resolveClaudeHome();
-  return {
-    codex: bakedCodexDirectIntegrationId(
-      readTextResult(codexConfigPath(codexHome)),
-      expectedPort,
-      profile === null ? { profile } : {
-        profile,
-        profileToml: readTextResult(codexProfileConfigPath(codexHome, profile)),
-      },
-    ),
-    claude: bakedClaudeDirectIntegrationId(
-      readTextResult(settingsPathFor(claudeHome, profile)),
-      expectedPort,
-      profile,
-    ),
-  };
 }
 
 /**

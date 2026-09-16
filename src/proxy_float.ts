@@ -18,7 +18,11 @@ import { createConsola } from "consola";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
 import { atomicWriteFile, removeTreeReported } from "./utils/report_write.ts";
-import { configDefaultNumber, CopilotEnvConfig } from "./copilot_api/env_config.ts";
+import {
+  configDefaultNumber,
+  configSetCommand,
+  CopilotEnvConfig,
+} from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
 import { resolveDenoBin } from "./copilot_api/sidecar.ts";
@@ -235,7 +239,9 @@ function refusalMessage(sel: Extract<ProxySelection, { kind: "refused" }>): stri
       sel.lifecycleScripts.join(", ")
     }), ` +
     `which never run for global-cache execution and would misbehave silently; refusing it. ` +
-    `Review the release, then pin it (${PROXY_VERSION_ENV} or \`agent config --set daemon.version\`) ` +
+    `Review the release, then pin it (${PROXY_VERSION_ENV} or \`${
+      configSetCommand("daemon.version", "<version>")
+    }\`) ` +
     `or cap PROXY_MAX_VERSION in copilot-env.config below it.`
   );
 }

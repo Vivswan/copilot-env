@@ -48,7 +48,7 @@ cliOrExit(["health", "--scope", "runtime"]);
 // Managed mode (auto-start on): a redundant `start` must keep the SAME pid, so it never
 // disrupts a connected agent; `--force` relaunches. The gate is the "[start:noop]" machine
 // marker, an external contract of src/commands/start.ts, so the human wording is free to change.
-cliOrExit(["config", "--set", "auto-start", "true"]);
+cliOrExit(["config", "--set", "daemon.auto-start", "true"]);
 const pidBefore = readPid();
 const redundantStart = cliOrExit(["start"], { stdout: "piped" });
 Deno.stdout.writeSync(new TextEncoder().encode(redundantStart));
@@ -62,7 +62,7 @@ cliOrExit(["start", "--force"]);
 const pidForced = readPid();
 if (pidAfter === pidForced) failOn("start --force did not relaunch a fresh daemon");
 cliOrExit(["health", "--scope", "runtime"]);
-cliOrExit(["config", "--del", "auto-start"]);
+cliOrExit(["config", "--del", "daemon.auto-start"]);
 
 // Every wiring command logs in first; the fake proxy never reads the token, so any string
 // satisfies the gate headless.

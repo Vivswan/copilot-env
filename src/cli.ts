@@ -29,9 +29,10 @@ import { parseStartAction, runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUninstall } from "./commands/uninstall.ts";
 import { runUpdate } from "./commands/update.ts";
-import { OPENROUTER_MODELS_URL } from "./copilot_api/env_config.ts";
+import { configSetCommand, OPENROUTER_MODELS_URL } from "./copilot_api/env_config.ts";
 import { AUTH_PROVIDERS, type AuthProvider } from "./copilot_api/env_state.ts";
 import { ghTokenEnvVarsLabel } from "./copilot_api/gh_cli.ts";
+import { parseProfileFlag } from "./copilot_api/profile.ts";
 import { runInstall } from "./install/installer.ts";
 import { runMigrations } from "./migrations/index.ts";
 import { runCost } from "./usage/cost.ts";
@@ -228,7 +229,9 @@ program
   )
   .option(
     "--identity [id|auto]",
-    "Pin the Copilot client identity (same store as `agent config --set identity`); " +
+    `Pin the Copilot client identity (same store as \`${
+      configSetCommand("identity", "<id>")
+    }\`); ` +
       "`auto` restores probing; no value => interactive choice from the probe.",
   )
   .action((opts: Opts) =>
@@ -387,8 +390,18 @@ program
     "--profile <name>",
     "The profile a profile-scoped key (identity, host, passthrough, static-key, proxy.*) is set, deleted, or read for; default: the default profile.",
   )
-  // A function, not a string baked at startup, so the values are the store's at help-render time.
-  .addHelpText("after", () => `\n${configTableOutput()}`)
+  // A function, not a string baked at startup, so the values are the store's at help-render time,
+  // for the profile a `--profile` before `--help` named.
+  .addHelpText(
+    "after",
+    ({ command }) =>
+      `\n${
+        configTableOutput(
+          process.platform,
+          parseProfileFlag(command.opts().profile as string | undefined),
+        )
+      }`,
+  )
   .action((opts: Opts) =>
     runConfig({
       set: opts.set as string[] | undefined,

@@ -22,8 +22,14 @@ import {
   CopilotEnvConfig,
   PROFILE_SETTINGS_DEFAULT_KEY,
 } from "../copilot_api/env_config.ts";
+import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { isValidProfileName, parseProfileName } from "../copilot_api/profile.ts";
+import {
+  isValidProfileName,
+  parseProfileName,
+  type Profile,
+  profileLabel,
+} from "../copilot_api/profile.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
 import { readTextResult } from "../utils/fs.ts";
@@ -194,9 +200,14 @@ const PREFERENCE_RENAMES: ReadonlyArray<readonly [string, ConfigKey]> = [
 
 /** Pure over the raw document, so the fixture test can see the whole before/after. Values move
  *  verbatim (the other 4.0.9 steps still judge them at their new place); an old key whose new key
- *  already holds a value is dropped, since the new one is what readers use. Idempotent: a document
+ *  already holds a value is dropped, since the new one is what readers use. A profile key was read
+ *  by EVERY profile before, so it lands in the default's section and in each named profile's
+ *  (`namedProfiles`, the credential store's), a section's own value winning. Idempotent: a document
  *  without old keys is returned unchanged. */
-export function regroupPreferences(doc: Record<string, unknown>): Record<string, unknown> {
+export function regroupPreferences(
+  doc: Record<string, unknown>,
+  namedProfiles: readonly string[],
+): Record<string, unknown> {
   const out = structuredClone(doc);
   let moved = false;
   for (const [oldKey, key] of PREFERENCE_RENAMES) {
@@ -204,10 +215,14 @@ export function regroupPreferences(doc: Record<string, unknown>): Record<string,
     const value = out[oldKey];
     delete out[oldKey];
     moved = true;
-    const map = configScope(key) === "profile"
-      ? ensureDict(ensureDict(out, "profiles"), PROFILE_SETTINGS_DEFAULT_KEY)
-      : ensureDict(out, "global");
-    if (!Object.hasOwn(map, key)) map[key] = value;
+    const targets = configScope(key) === "profile"
+      ? [PROFILE_SETTINGS_DEFAULT_KEY, ...namedProfiles].map((name) =>
+        ensureDict(ensureDict(out, "profiles"), name)
+      )
+      : [ensureDict(out, "global")];
+    for (const map of targets) {
+      if (!Object.hasOwn(map, key)) map[key] = value;
+    }
   }
   return moved ? out : doc;
 }
@@ -216,17 +231,19 @@ export function regroupPreferences(doc: Record<string, unknown>): Record<string,
 export function regroupPreferenceStore(): void {
   const paths = new CopilotApiPaths();
   const store = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock);
+  const named = new CopilotEnvState().profileNames();
   const before = store.loadStrict();
-  const after = regroupPreferences(before);
+  const after = regroupPreferences(before, named);
   if (after === before) return;
   store.update((d) => {
-    const next = regroupPreferences(d);
+    const next = regroupPreferences(d, named);
     for (const key of Object.keys(d)) delete d[key];
     Object.assign(d, next);
   });
   consola.info(
     "  preferences.json: keys grouped (daemon.*, proxy.*, codex.*, claude.*, shell.*, update.*, " +
-      "cost.*) and identity/host/passthrough/static-key moved into the default profile's section",
+      "cost.*) and identity/host/passthrough/static-key moved into the profile sections " +
+      `(default${named.map((name) => `, ${name}`).join("")})`,
   );
 }
 
@@ -241,15 +258,21 @@ export const v409PreferenceGroups: Migration = {
   run: regroupPreferenceStore,
 };
 
-/** The default profile's RAW section, since the typed reader already folds an invalid value to
- *  unset; null when there is none. */
-function rawDefaultProfileSection(): Record<string, unknown> | null {
+/** Every profile's RAW section (the default's and each named one's), since the typed reader already
+ *  folds an invalid value to unset. The regrouping wrote the same value into all of them, so a
+ *  fix-up that judged the default alone would leave the named profiles on the unfixed value. */
+function rawProfileSections(): Array<[Profile, Record<string, unknown>]> {
   const paths = new CopilotApiPaths();
   const doc = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock).loadStrict();
   const profiles = doc.profiles;
-  if (!isRecord(profiles)) return null;
-  const section = profiles[PROFILE_SETTINGS_DEFAULT_KEY];
-  return isRecord(section) ? section : null;
+  if (!isRecord(profiles)) return [];
+  const out: Array<[Profile, Record<string, unknown>]> = [];
+  for (const [name, section] of Object.entries(profiles)) {
+    if (!isRecord(section)) continue;
+    if (name === PROFILE_SETTINGS_DEFAULT_KEY) out.push([null, section]);
+    else if (isValidProfileName(name)) out.push([parseProfileName(name), section]);
+  }
+  return out;
 }
 
 // --- the `codex` identity pin --------------------------------------------------------------
@@ -258,17 +281,22 @@ function rawDefaultProfileSection(): Record<string, unknown> | null {
 // regex). The domain now refuses it (Direct's default identity sends no header, so nothing can pin
 // it) and the reader folds the stored value to unset, but the key stays in preferences.json and
 // the agent configs may still bake `Copilot-Integration-Id: codex` until the next rewire. Runs
-// after the regrouping, so the pin is judged at its new place, the default profile's `identity`.
+// after the regrouping, so the pin is judged at its new place, each profile section's `identity`.
 
 /** Only the key goes; the agent configs are the wiring pass's to rebake. Exported for the migration test. */
 export function dropCodexIdentityPin(): void {
-  const stored = rawDefaultProfileSection()?.identity;
-  if (typeof stored !== "string" || stored.trim().toLowerCase() !== CODEX_IDENTITY_NAME) return;
-  new CopilotEnvConfig().delProfile(null, "identity");
-  consola.info(
-    `  dropped the identity pin \`${stored}\` (Direct's default identity cannot be pinned; ` +
-      "the identity now reads as auto, and Direct wiring rebakes at the next `agent init`)",
-  );
+  for (const [profile, section] of rawProfileSections()) {
+    const stored = section.identity;
+    if (typeof stored !== "string" || stored.trim().toLowerCase() !== CODEX_IDENTITY_NAME) continue;
+    new CopilotEnvConfig().delProfile(profile, "identity");
+    consola.info(
+      `  dropped ${
+        profileLabel(profile)
+      }'s identity pin \`${stored}\` (Direct's default identity ` +
+        "cannot be pinned; the identity now reads as auto, and Direct wiring rebakes at the next " +
+        "`agent init` / `agent profile --add`)",
+    );
+  }
 }
 
 export const v409IntegrationIdPin: Migration = {
@@ -282,22 +310,30 @@ export const v409IntegrationIdPin: Migration = {
 // Away from 4.0.9: `static-key` was a boolean (bake the value into both agent configs, or into
 // neither). It is now the scope `none | claude | codex | all`, and a stored boolean fails that
 // domain and reads as `none`: an install that baked both would go back to the resolver command at
-// its next wiring without being told. Judged at the key's new place, the default profile's section.
+// its next wiring without being told. Judged at the key's new place, each profile section.
 
 /** `true` becomes `all` (what the boolean baked); `false` was the default and goes. Exported for
  *  the migration test. */
 export function scopeStaticKeyBoolean(): void {
-  const stored = rawDefaultProfileSection()?.["static-key"];
-  if (typeof stored !== "boolean") return;
-  const config = new CopilotEnvConfig();
-  if (stored) {
-    config.setProfile(null, { "static-key": "all" });
-    consola.info(
-      "  static-key `true` is now the scope `all` (both agent configs keep the baked value)",
-    );
-  } else {
-    config.delProfile(null, "static-key");
-    consola.info("  dropped static-key `false` (the default, now spelled `none`)");
+  for (const [profile, section] of rawProfileSections()) {
+    const stored = section["static-key"];
+    if (typeof stored !== "boolean") continue;
+    const config = new CopilotEnvConfig();
+    if (stored) {
+      config.setProfile(profile, { "static-key": "all" });
+      consola.info(
+        `  ${
+          profileLabel(profile)
+        }: static-key \`true\` is now the scope \`all\` (both agent configs keep the baked value)`,
+      );
+    } else {
+      config.delProfile(profile, "static-key");
+      consola.info(
+        `  ${
+          profileLabel(profile)
+        }: dropped static-key \`false\` (the default, now spelled \`none\`)`,
+      );
+    }
   }
 }
 

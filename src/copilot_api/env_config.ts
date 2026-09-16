@@ -690,7 +690,7 @@ const CONFIG_REGISTRY_LITERAL = [
     proxyProjected: true,
     proxyPath: ["messageApiWebSearchModel"],
     applyHint:
-      "Proxy surface applies on the next `agent start`; the MCP web_search tool reads it on every call.",
+      "The MCP web_search tool reads it on every call; the proxy surface at its next start.",
   },
   {
     key: "proxy.messages-api",
@@ -821,6 +821,25 @@ export const PROFILE_SETTINGS_DEFAULT_KEY = "default";
 
 export function profileSettingsKey(profile: Profile): string {
   return profile ?? PROFILE_SETTINGS_DEFAULT_KEY;
+}
+
+// The `agent config` commands a message may point at, spelled ONCE. The key is typed, so a renamed
+// key cannot leave a stale hint behind, and test/config_key_lint.test.ts refuses a hand-spelled one.
+
+function profileFlag(profile: Profile): string {
+  return profile === null ? "" : ` --profile ${profile}`;
+}
+
+export function configSetCommand(key: ConfigKey, value: string, profile: Profile = null): string {
+  return `agent config --set ${key} ${value}${profileFlag(profile)}`;
+}
+
+export function configDelCommand(key: ConfigKey, profile: Profile = null): string {
+  return `agent config --del ${key}${profileFlag(profile)}`;
+}
+
+export function configGetCommand(key: ConfigKey, profile: Profile = null): string {
+  return `agent config --get ${key}${profileFlag(profile)}`;
 }
 
 /** A bad stored value falls back to undefined (unset) instead of throwing, so a hand-mangled file still reads. */

@@ -10,6 +10,7 @@
 // Two failure classes, told apart because the right next step differs:
 //   "cannot verify"        -> the bundle or trust root could not be fetched; names the opt-outs
 //   "verification FAILED"  -> the bytes are not attested or the signer is wrong; never names them
+import { configSetCommand } from "../copilot_api/env_config.ts";
 
 /** The release asset carrying the Sigstore bundle (uploaded by the release workflow's publish
  *  stage). */
@@ -106,7 +107,7 @@ export interface ProvenanceStatement {
 export function cannotVerifyMessage(tag: string, cause: string): string {
   return `cannot verify the build provenance of ${tag}: ${cause}. ` +
     "To update without provenance verification, re-run with --no-verify, or persist the " +
-    "opt-out with 'agent config --set update.verify-provenance false'.";
+    `opt-out with '${configSetCommand("update.verify-provenance", "false")}'.`;
 }
 
 /** The mismatch wording: the check ran and the download is not what our release

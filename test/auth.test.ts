@@ -443,7 +443,7 @@ test("auth: --provider cannot combine with a sub-action (never silently dropped)
 /** A PAT the CLI identity accepts on both hosts (a 5-model generic catalog under the agents' header
  *  set, 11 under the daemon's id-only set, 37 on the account host), that the sandbox accepts on the
  *  generic host only (2 models), and that vscode-chat and the default Direct identity reject. A
- *  `copilot-host` literal host accepts every identity (9 models). */
+ *  `host` literal host accepts every identity (9 models). */
 const CONFIGURED_HOST = "https://copilot.example";
 
 /** The stub the identities tests install (stubIdentitySurvey), kept so a test can wrap it. */
@@ -517,7 +517,7 @@ test("auth --identities: one column per host, marks what the configs bake and a 
     expect(requests.get("https://api.github.com/copilot_internal/user - agents")).toBe(1);
     setIntegrationProbeFetch(stubbedSurveyFetch);
     expect(out).toContain("identity: auto");
-    expect(out).toContain("copilot-host: auto (api.githubcopilot.com in use)");
+    expect(out).toContain("host: auto (api.githubcopilot.com in use)");
     expect(out).toMatch(
       /^identity\s+api\.githubcopilot\.com \(in use\)\s+api\.enterprise\.githubcopilot\.com \(account\)\s+note$/m,
     );
@@ -659,9 +659,9 @@ test("auth --identities: columns are the generic host, the account's when it dif
     );
     stubIdentitySurvey();
     const three = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
-    expect(three).toContain(`copilot-host: ${CONFIGURED_HOST}`);
+    expect(three).toContain(`host: ${CONFIGURED_HOST}`);
     expect(three).toMatch(
-      /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account\)\s+copilot\.example \(copilot-host, in use\)\s+note$/m,
+      /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account\)\s+copilot\.example \(host, in use\)\s+note$/m,
     );
     expect(three).toMatch(
       /^codex\s+rejected \(400\) \*\s+rejected \(400\)\s+accepted \(9 models\)\s+Direct default/m,
@@ -697,7 +697,7 @@ test("auth --identities: columns are the generic host, the account's when it dif
       );
     });
     const refused = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
-    expect(refused).toContain("copilot-host: auto (api.enterprise.githubcopilot.com in use)");
+    expect(refused).toContain("host: auto (api.enterprise.githubcopilot.com in use)");
     expect(refused).toContain(
       "Direct: the wiring sends codex until `agent init` rebakes it to nothing (every identity rejects this credential).",
     );
@@ -708,7 +708,7 @@ test("auth --identities: columns are the generic host, the account's when it dif
     expect(merged).toMatch(
       /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account, in use\)\s+note$/m,
     );
-    expect(merged).not.toContain("copilot-host, in use");
+    expect(merged).not.toContain("host, in use");
   } finally {
     setIntegrationProbeFetch(null);
     if (columns === undefined) delete process.env.COLUMNS;
@@ -776,7 +776,7 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
       .toThrow(
         "api.enterprise.githubcopilot.com (account, in use) rejects this credential under " +
           `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the ` +
-          `copilot-host in use: ${PAT_REJECTION}`,
+          `host in use: ${PAT_REJECTION}`,
       );
     expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
 

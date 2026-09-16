@@ -819,7 +819,7 @@ function verdictCell(verdict: IdentityVerdict | undefined, marks = ""): string {
 function hostLabel(column: IdentityHostSurvey, inUse = false): string {
   const tags: string[] = [];
   if (column.role === "designated") tags.push("account");
-  if (column.role === "configured") tags.push("copilot-host");
+  if (column.role === "configured") tags.push("host");
   if (inUse) tags.push("in use");
   const host = new URL(column.apiBase).host;
   return tags.length === 0 ? host : `${host} (${tags.join(", ")})`;
@@ -837,7 +837,7 @@ interface IdentityTableInput {
    *  differ; the `+` cell renders this one. */
   passthrough: IdentitySurvey;
   pinned: string | null;
-  /** The `copilot-host` literal, or null for `auto`. */
+  /** The `host` literal, or null for `auto`. */
   configuredHost: string | null;
   /** What the key resolves to for this credential (selectDirectIdentityAndHost): the host the next Direct
    *  wiring bakes. */
@@ -1018,9 +1018,7 @@ function identityTableLines(input: IdentityTableInput): string[] {
       "  ",
     ),
     ...wrapLine(
-      configuredHost === null
-        ? `copilot-host: auto (${inUseHost} in use)`
-        : `copilot-host: ${configuredHost}`,
+      configuredHost === null ? `host: auto (${inUseHost} in use)` : `host: ${configuredHost}`,
       width,
       "",
       "  ",
@@ -1229,7 +1227,7 @@ function noteIdentityApplies(): void {
   if (hint !== undefined) logger.info(hint);
 }
 
-/** Pins `id` unless the host its requests would go to rejects it definitively (the `copilot-host`
+/** Pins `id` unless the host its requests would go to rejects it definitively (the `host`
  *  literal, else what `auto` selects for it), or every surveyed host does. Otherwise the other
  *  hosts' verdicts are narrated, and with no acceptance at all (an unresolvable credential, every
  *  probe inconclusive, the account's host unknown) the pin lands unverified and says so. */
@@ -1284,7 +1282,7 @@ async function pinIdentity(
     if (inUse?.verdict?.kind === "rejected") {
       const why = configuredHost === null
         ? "the host auto selects for this identity"
-        : "the copilot-host in use";
+        : "the host in use";
       throw new Error(
         `${inUse.label} rejects this credential under \`${id}\`; not pinned, every request ` +
           `goes to ${why}: ${inUse.verdict.detail}`,

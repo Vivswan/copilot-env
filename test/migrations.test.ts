@@ -864,7 +864,22 @@ test("4.0.9 preferences: the flat camelCase store becomes grouped keys, the four
       staticKey: true,
     }),
   );
+  // Two named profiles read the global profile keys before: each keeps reading them, from its own
+  // section; a section that already holds its own value keeps it.
+  const state = new CopilotEnvState();
+  for (const name of ["work", "home"]) {
+    state.commitProfile(parseProfileName(name), {
+      credential: { kind: "stored", provider: "gh-token", token: `ghp_${name}` },
+      mode: "direct",
+    });
+  }
   expect(warningsDuring(regroupPreferenceStore, "info")).toHaveLength(1);
+  const moved = {
+    identity: "copilot-developer-cli",
+    host: "https://copilot-api.ghe.example",
+    passthrough: "on",
+    "static-key": true,
+  };
   const after = {
     global: {
       "daemon.auto-start": true,
@@ -874,14 +889,7 @@ test("4.0.9 preferences: the flat camelCase store becomes grouped keys, the four
       "codex.home": "/srv/codex",
       "claude.wire-mcp": false,
     },
-    profiles: {
-      default: {
-        identity: "copilot-developer-cli",
-        host: "https://copilot-api.ghe.example",
-        passthrough: "on",
-        "static-key": true,
-      },
-    },
+    profiles: { default: moved, work: moved, home: moved },
   };
   expect(JSON.parse(readFileSync(prefs, "utf8"))).toEqual(after);
   // The readers see the moved values through the precedence rule.
@@ -889,9 +897,16 @@ test("4.0.9 preferences: the flat camelCase store becomes grouped keys, the four
   expect(config.defaultPort()).toBe(4199);
   expect(config.pinnedIntegrationId(null)).toBe("copilot-developer-cli");
   expect(config.copilotHost(null)).toBe("https://copilot-api.ghe.example");
+  expect(config.copilotHost(parseProfileName("work"))).toBe("https://copilot-api.ghe.example");
   // Idempotent: a second run moves nothing and says nothing.
   expect(warningsDuring(regroupPreferenceStore, "info")).toEqual([]);
   expect(JSON.parse(readFileSync(prefs, "utf8"))).toEqual(after);
+  // The value fix-up that follows judges EVERY section the copy wrote, not the default's alone:
+  // the boolean becomes the scope for all three profiles.
+  expect(warningsDuring(scopeStaticKeyBoolean, "info")).toHaveLength(3);
+  for (const profile of [null, parseProfileName("work"), parseProfileName("home")]) {
+    expect(config.staticKeyScope(profile)).toBe("all");
+  }
 });
 
 test("4.0.9 identity: a stored `codex` pin is dropped and said so; any other value stays", () => {

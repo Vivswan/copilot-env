@@ -3,7 +3,7 @@
 // runAgentConfig, so the dependency edge points one way (agent file -> here) and cannot cycle.
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { wiringPortFor } from "../copilot_api/port.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
@@ -73,7 +73,9 @@ export function resolveCredentialWiring(
     const slot = profile === null ? "" : ` --profile ${profile}`;
     throw new Error(
       `static-key is ${config.staticKeyScope(profile)} but no credential resolves to bake: ` +
-        `${resolved.reason}. Run \`agent auth${slot}\`, or \`agent config --set static-key none${slot}\` ` +
+        `${resolved.reason}. Run \`agent auth${slot}\`, or \`${
+          configSetCommand("static-key", "none", profile)
+        }\` ` +
         "to go back to the resolver command.",
     );
   }

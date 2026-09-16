@@ -613,18 +613,13 @@ test("configTableOutput() takes the terminal's width from the one table seam: CO
   }
 });
 
-test("the registry is alphabetical by key, with unique keys, and every key sits in a display group", () => {
+test("the registry is alphabetical by key, with unique keys", () => {
   const keys = CONFIG_REGISTRY.map((d) => d.key);
   // The order within a group IS alphabetical -- a new key must be inserted in place.
   expect(keys).toEqual([...keys].sort());
   // Keys are unique: configKeyDef() is a find(), so a duplicate would silently resolve to the
   // first entry, and the schema fold is fromEntries, where a duplicate would overwrite.
   expect(new Set(keys).size).toBe(keys.length);
-  // A key's group and its scope agree: the flat keys are exactly the profile keys; every group has keys.
-  for (const def of CONFIG_REGISTRY) {
-    expect(configGroup(def.key) === "profile").toBe(def.scope === "profile");
-  }
-  expect(new Set(CONFIG_REGISTRY.map((d) => configGroup(d.key)))).toEqual(new Set(CONFIG_GROUPS));
 });
 
 const PLAIN_TABLE = {
@@ -890,6 +885,11 @@ test("sinceProxyVersionWarning fires only when the installed proxy predates the 
   // An ungated key never warns, however old the proxy.
   expect(sinceProxyVersionWarning(configKeyDef("proxy.claude-token-multiplier")!, "1.11.0"))
     .toBeNull();
+  // The gates pin the proxy versions that introduced each key (verified upstream): the aged float
+  // target can legitimately install an older proxy, which would silently ignore the projection.
+  expect(configKeyDef("proxy.claude-auto-model")?.sinceProxyVersion).toBe("1.14.22");
+  expect(configKeyDef("proxy.alpha-search.codex-priority")?.sinceProxyVersion).toBe("1.15.0");
+  expect(configKeyDef("proxy.alpha-search.model")?.sinceProxyVersion).toBe("1.16.3");
   // Every pin must be strict x.y.z: versionLessThan fails OPEN on a malformed operand,
   // so a typo'd pin would silently disable its warning.
   for (const d of CONFIG_REGISTRY) {

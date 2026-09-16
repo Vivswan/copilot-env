@@ -28,7 +28,7 @@ import {
 import { type AgentProviderMode, providerModeExitCode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { isReducedGpt } from "../copilot_api/models.ts";
 import {
   type BakedDirectIdentity,
@@ -767,7 +767,7 @@ export function planCodexConfig(
       logger.warn(
         `  ! the installed codex rejects ${catalogFile}; leaving it out of the config ` +
           "(regenerate with `agent codex`, or disable with " +
-          "`agent config --set codex.model-catalog false`)",
+          `\`${configSetCommand("codex.model-catalog", "false")}\`)`,
       );
     }
     if (verdict === "accepted" || verdict === "unverifiable") {

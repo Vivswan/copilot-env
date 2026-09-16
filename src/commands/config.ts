@@ -57,12 +57,10 @@ export const PROXY_RESTART_HINT_ALL =
   "`agent start` (add `--profile <name>` for a profile's daemon).";
 
 /** A global-map write (a global key, or a profile-default key's shared value) reaches every daemon
- *  that reads it at launch; a profile section's write reaches that profile's daemon alone. */
+ *  that reads it at launch; a profile section's write reaches that profile's daemon alone. A key's
+ *  own applyHint covers its other surfaces; the restart line is the target's, never the hint's. */
 function noteHowItApplies(def: ConfigKeyDef, target: SettingTarget): void {
-  if (def.applyHint !== undefined) {
-    consola.info(def.applyHint);
-    return;
-  }
+  if (def.applyHint !== undefined) consola.info(def.applyHint);
   if (!isProxyProjected(def) && def.restartToApply !== true) return;
   consola.info(
     target.kind === "global" ? PROXY_RESTART_HINT_ALL : proxyRestartHint(target.profile),

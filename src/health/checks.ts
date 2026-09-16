@@ -1,6 +1,7 @@
 // Pure evaluators: HealthFacts -> CheckResult[]. No I/O -- every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
 import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
+import { configGetCommand, configSetCommand } from "../copilot_api/env_config.ts";
 import { compareDenoVersions, SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
 import { agentStartCommand, type ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
@@ -767,7 +768,7 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
       ...base,
       status: "warn",
       detail: "not enabled (optional)",
-      fix: "agent config --set shell.launchers true",
+      fix: configSetCommand("shell.launchers", "true"),
     };
 }
 
@@ -834,7 +835,9 @@ export function checkAuth(f: AuthFacts): CheckResult {
   // A pin overrides the per-credential identity probe: the knob a fine-grained PAT needs
   // (copilot-developer-cli) when auto-detection is off.
   const identityLine = f.pinnedIntegrationId === null ? [] : [
-    `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`agent config --set identity\`)`,
+    `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`${
+      configGetCommand("identity")
+    }\`)`,
   ];
   const base = {
     ...meta("setup.auth"),

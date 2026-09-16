@@ -208,12 +208,12 @@ function verifyLauncherWiring(launcher: string): void {
   if (!envBool("SETUP_LAUNCHERS")) {
     return;
   }
-  // The launchers are `agent env` emissions gated on the `launchers` key, not an rc block,
+  // The launchers are `agent env` emissions gated on the `shell.launchers` key, not an rc block,
   // so both halves of that contract are asserted.
-  const stored = launcherOutput(launcher, ["config", "--get", "launchers"]);
+  const stored = launcherOutput(launcher, ["config", "--get", "shell.launchers"]);
   if (stored !== "true") {
     console.error(
-      `::error::expected the launchers config key to read true after agent config --set launchers true (got ${
+      `::error::expected the shell.launchers config key to read true after agent config --set shell.launchers true (got ${
         stored ?? "a failing read"
       })`,
     );

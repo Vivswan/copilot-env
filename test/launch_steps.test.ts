@@ -1052,7 +1052,8 @@ test("resolveStartPort: an inverted range (min > max) is a clear error", async (
   await expect(
     resolveStartPort(undefined, false, null, false, new CopilotEnvConfig()),
   ).rejects.toThrow(
-    "invalid port range: daemon.min-port (5000) is greater than daemon.max-port (4000); fix it with `agent config --set daemon.min-port <n>` / `--set daemon.max-port <n>`.",
+    "invalid port range: daemon.min-port (5000) is greater than daemon.max-port (4000); fix it with " +
+      "`agent config --set daemon.min-port <n>` / `agent config --set daemon.max-port <n>`.",
   );
 });
 
@@ -1060,7 +1061,8 @@ test("resolveStartPort: a pinned out-of-range port fails with the range message"
   tmpHome();
   new CopilotEnvConfig().set({ "daemon.min-port": 4000, "daemon.max-port": 5000 });
   await expect(resolveStartPort(3999, false, null, false, new CopilotEnvConfig())).rejects.toThrow(
-    "requested port 3999 is out of range; the proxy port must be between 4000 and 5000 (`agent config --set daemon.min-port/daemon.max-port` to change the range).",
+    "requested port 3999 is out of range; the proxy port must be between 4000 and 5000 " +
+      "(`agent config --set daemon.min-port <n>` / `agent config --set daemon.max-port <n>` change the range).",
   );
 });
 
@@ -1113,7 +1115,8 @@ test("resolveStartPort: a configured default port outside the range is a clear e
   await expect(
     resolveStartPort(undefined, false, null, false, new CopilotEnvConfig()),
   ).rejects.toThrow(
-    "configured port 1500 is outside the allowed range 2000-3000; run `agent config --set daemon.port <n>` within the range, or adjust daemon.min-port/daemon.max-port.",
+    "configured port 1500 is outside the allowed range 2000-3000; run " +
+      "`agent config --set daemon.port <n>` within the range, or adjust daemon.min-port/daemon.max-port.",
   );
 });
 

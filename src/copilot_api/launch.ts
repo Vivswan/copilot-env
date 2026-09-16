@@ -15,6 +15,7 @@ import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig, ensureDict } from "./config.ts";
 import { Credential } from "./credential.ts";
 import {
+  configSetCommand,
   type ConfigValue,
   CopilotEnvConfig,
   optInProxyConfigPaths,
@@ -205,14 +206,20 @@ export async function resolveStartPort(
   const max = config.maxPort();
   if (min > max) {
     throw new Error(
-      `invalid port range: daemon.min-port (${min}) is greater than daemon.max-port (${max}); fix it with \`agent config --set daemon.min-port <n>\` / \`--set daemon.max-port <n>\`.`,
+      `invalid port range: daemon.min-port (${min}) is greater than daemon.max-port (${max}); ` +
+        `fix it with \`${configSetCommand("daemon.min-port", "<n>")}\` / \`${
+          configSetCommand("daemon.max-port", "<n>")
+        }\`.`,
     );
   }
   if (pinned !== undefined) {
     switch (await checkProxyPort(pinned)) {
       case "out-of-range":
         throw new Error(
-          `requested port ${pinned} is out of range; the proxy port must be between ${min} and ${max} (\`agent config --set daemon.min-port/daemon.max-port\` to change the range).`,
+          `requested port ${pinned} is out of range; the proxy port must be between ${min} and ${max} ` +
+            `(\`${configSetCommand("daemon.min-port", "<n>")}\` / \`${
+              configSetCommand("daemon.max-port", "<n>")
+            }\` change the range).`,
         );
       case "busy":
         throw new Error(
@@ -245,14 +252,18 @@ export async function resolveStartPort(
         break; // a busy reservation auto-increments back inside the range
       }
       throw new Error(
-        `configured port ${def} is outside the allowed range ${min}-${max}; run \`agent config --set daemon.port <n>\` within the range, or adjust daemon.min-port/daemon.max-port.`,
+        `configured port ${def} is outside the allowed range ${min}-${max}; run ` +
+          `\`${
+            configSetCommand("daemon.port", "<n>")
+          }\` within the range, or adjust daemon.min-port/daemon.max-port.`,
       );
     case "busy":
       break;
   }
   if (policy.strictPortEligible && config.strictPortEnabled()) {
     throw new Error(
-      `port ${def} is busy and auto-increment is disabled (\`daemon.strict-port\`); free it, pick another \`--port\`, or set \`agent config --set daemon.strict-port false\`.`,
+      `port ${def} is busy and auto-increment is disabled (\`daemon.strict-port\`); free it, pick another ` +
+        `\`--port\`, or set \`${configSetCommand("daemon.strict-port", "false")}\`.`,
     );
   }
   if (announce) consola.warn(`Port ${def} is busy (held by another process/user).`);
@@ -760,7 +771,9 @@ function copilotTokenFailureHint(log: string, profile: Profile): string | null {
   const flag = daemonPolicy(profile).flagSuffix;
   return (
     "The credential was not accepted by Copilot's token exchange. For a gh-cli or PAT credential, " +
-    "enable passthrough (`agent config --set passthrough on`); otherwise re-authenticate with a " +
+    `enable passthrough (\`${
+      configSetCommand("passthrough", "on")
+    }\`); otherwise re-authenticate with a ` +
     `Copilot-capable login (\`agent auth${flag} --provider copilot\`).`
   );
 }

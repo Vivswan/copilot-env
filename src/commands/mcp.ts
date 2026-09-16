@@ -93,7 +93,7 @@ export async function runMcp(args: McpArgs): Promise<void> {
     await runMcpServer({ profile: action.profile, model: action.model });
     return;
   }
-  // `wire-mcp false` is stored first so a later direct write respects it; the deny and the
+  // `claude.wire-mcp false` is stored first so a later direct write respects it; the deny and the
   // registration then go together, since lifting the deny alone would leave a direct-wired machine
   // with no search path. The registration is machine-global, so it goes even when settings.json is
   // foreign and the sync leaves that file's deny alone.
@@ -103,11 +103,11 @@ export async function runMcp(args: McpArgs): Promise<void> {
   if (unregistered) {
     logger.log(
       "Removed the copilot-env MCP registration (and the managed WebSearch deny where " +
-        "copilot-env manages settings.json); stored `wire-mcp false` so direct rewires stay opted out.",
+        "copilot-env manages settings.json); stored `claude.wire-mcp false` so direct rewires stay opted out.",
     );
   } else {
     logger.warn(
-      "Stored `wire-mcp false`, but the 'copilot-env' entry in Claude's .claude.json was not " +
+      "Stored `claude.wire-mcp false`, but the 'copilot-env' entry in Claude's .claude.json was not " +
         "removed (not ours, or the file could not be written) - remove it by hand if needed.",
     );
   }

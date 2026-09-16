@@ -2,7 +2,7 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { dirname } from "node:path";
 import { consola } from "consola";
 import { AGENT_CLIS } from "../agents/clis.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { runShellIntegration } from "../shell/integration.ts";
 import { pickAgedVersion } from "../utils/aged_version.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -497,6 +497,8 @@ export function runShell(args: ShellArgs): void {
   consola.info(
     new CopilotEnvConfig().launchersEnabled()
       ? "Launchers: enabled (the shell.launchers config key) - cl / co / cx (+ clx / cox / cxx) load via `agent env`."
-      : "Launchers: disabled (the shell.launchers config key) - `agent config --set shell.launchers true` defines cl / co / cx.",
+      : `Launchers: disabled (the shell.launchers config key) - \`${
+        configSetCommand("shell.launchers", "true")
+      }\` defines cl / co / cx.`,
   );
 }

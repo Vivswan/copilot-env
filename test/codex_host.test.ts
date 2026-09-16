@@ -244,7 +244,7 @@ test("isManagedFarmExport is true only for the exact farm spelling, built or not
 
 skipWin(
   "removing codex-home retires its farm: the export the shell still carries is skipped for ~/.codex and cleared, not adopted as the home",
-  () => {
+  async () => {
     const { sharedRoot } = isolate();
     const root = join(dir, "explicit-root");
     const retired = join(root, "hosts", getSanitizedHostname());
@@ -253,9 +253,17 @@ skipWin(
     // name the old root's farm, and no farm exists under ~/.codex yet.
     fs.mkdirSync(retired, { recursive: true });
     writeRunState({ codexHome: retired });
-    new CopilotEnvConfig().set({ codexHost: true });
     process.env.CODEX_HOME = retired;
+    new CopilotEnvConfig().set({ codexHost: true });
     expect(resolveCodexHome()).toEqual({ home: sharedRoot, by: "default", staleExport: null });
+    expect(managedCodexHome()).toEqual({ unset: true });
+    // With the farm off as well (a settings import with no keys), the pass writes ~/.codex and keeps
+    // the record: without it the export would read as the user's own home on the very next command.
+    new CopilotEnvConfig().set({ codexHost: false });
+    await configureCodex();
+    expect(fs.existsSync(join(sharedRoot, "config.toml"))).toBe(true);
+    expect(fs.existsSync(join(retired, "config.toml"))).toBe(false);
+    expect(new CopilotEnvRunState().read().codexHome).toBe(retired);
     expect(managedCodexHome()).toEqual({ unset: true });
   },
 );

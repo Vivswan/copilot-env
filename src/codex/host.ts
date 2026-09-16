@@ -672,7 +672,7 @@ function buildCodexSymlinkFarm(codexHome: string): void {
 
 /** ONE default Codex config write with the farm derived from the `codex-host` key around it
  *  (planCodexHostFarm decides). The activation record lands only AFTER a successful write and is
- *  cleared BEFORE a rebuild, so it never outlives a proven farm. */
+ *  cleared BEFORE a rebuild, so it never outlives a proven farm under this root. */
 export async function withCodexHostFarm(
   write: (codexHome: string) => Promise<void>,
 ): Promise<void> {
@@ -718,10 +718,13 @@ export async function withCodexHostFarm(
     case "none":
       break;
   }
-  if (state.read().codexHome !== undefined) {
-    state.set({ codexHome: null });
-  }
-  await write(narrateCodexHome(resolveCodexHome(prefs)));
+  // Resolved while the record still stands: a farm built under a previous root is ours only by that
+  // record, so the export naming it is skipped (unmanagedCodexHome) before anything changes.
+  const home = narrateCodexHome(resolveCodexHome(prefs));
+  // Only this root's record is retired here. One naming a previous root's farm stays until the next
+  // build overwrites it: it is the one proof that the shell's export of that farm is ours to clear.
+  if (state.read().codexHome === farm.hostHome) state.set({ codexHome: null });
+  await write(home);
 }
 
 /** The active home (run state / CODEX_HOME env), the default ~/.codex, and each per-host farm home,

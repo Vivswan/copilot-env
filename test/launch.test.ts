@@ -5,6 +5,17 @@ import { join, sep } from "node:path";
 import type { AgentProviderMode } from "../src/agents/provider_mode.ts";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
 import {
+  type CatalogFetch,
+  type CatalogTarget,
+  fetchLaunchCatalog,
+} from "../src/claude/launch_catalog.ts";
+import {
+  claudeModelChoice,
+  claudeSettingsLayers,
+  sessionCredential,
+  sessionEnv,
+} from "../src/claude/model_check.ts";
+import {
   type LaunchAction,
   type LaunchDeps,
   parseLaunchAction,
@@ -133,6 +144,8 @@ interface DepsScript {
   syncThrows?: boolean;
   /** What `claude --settings` gets for a profile launch. */
   settingsPath?: string;
+  /** Where the REAL layer builder reads; absent = no settings file anywhere. */
+  layers?: { claudeHome: string; projectDir: string; managedPath: string };
   /** Absent = the fetch failed. */
   catalog?: CatalogModel[];
 }
@@ -141,9 +154,11 @@ function scriptedDeps(script: DepsScript = {}): {
   deps: LaunchDeps;
   calls: string[];
   notes: string[];
+  targets: CatalogTarget[];
 } {
   const calls: string[] = [];
   const notes: string[] = [];
+  const targets: CatalogTarget[] = [];
   const deps: LaunchDeps = {
     agentMode: (agent) => {
       calls.push(`mode:${agent}`);
@@ -182,13 +197,19 @@ function scriptedDeps(script: DepsScript = {}): {
       }
       return script.codexHome ?? null;
     },
-    claudeCatalog: (mode, profile) => {
-      calls.push(`catalog:${mode}:${profile ?? "(default)"}`);
+    claudeSettingsLayers: (args) =>
+      script.layers === undefined ? [] : claudeSettingsLayers(args, script.layers),
+    claudeCatalog: (target) => {
+      const who = target.credential.kind === "token"
+        ? "token"
+        : target.credential.profile ?? "(default)";
+      calls.push(`catalog:${target.mode}:${who}`);
+      targets.push(target);
       return Promise.resolve(script.catalog ?? null);
     },
     notify: (line) => notes.push(line),
   };
-  return { deps, calls, notes };
+  return { deps, calls, notes, targets };
 }
 
 const claudeDefault = (relaxed = false, args: string[] = []): LaunchAction => ({
@@ -207,7 +228,7 @@ test("claude direct: no proxy work, managed flags + env, stale local URL scrubbe
     env: { CLAUDE_CODE_NO_FLICKER: "1" },
     scrub: ["ANTHROPIC_BASE_URL"],
   });
-  expect(calls).toEqual(["mode:claude", "catalog:direct:(default)"]);
+  expect(calls).toEqual(["mode:claude"]);
   expect(notes).toEqual([]);
 });
 
@@ -219,12 +240,7 @@ test("claude proxy/none: ensure THEN re-wire, fresh proxy URL exported", async (
     });
     const plan = await prepareLaunch(claudeDefault(), deps);
     // Ensure precedes the re-wire: a cold start may move the port the wiring bakes.
-    expect(calls).toEqual([
-      "mode:claude",
-      "ensure:(default)",
-      "wire:claude",
-      "catalog:proxy:(default)",
-    ]);
+    expect(calls).toEqual(["mode:claude", "ensure:(default)", "wire:claude"]);
     expect(plan?.env).toEqual({
       CLAUDE_CODE_NO_FLICKER: "1",
       ANTHROPIC_BASE_URL: "http://127.0.0.1:4242",
@@ -274,7 +290,7 @@ test("claude --profile: settings synced, base URL scrubbed unconditionally", asy
     { kind: "claude", profile: WORK, relaxed: false, args: ["--resume"] },
     deps,
   );
-  expect(calls).toEqual(["slot:work", "ensure:work", "settings:work:proxy", "catalog:proxy:work"]);
+  expect(calls).toEqual(["slot:work", "ensure:work", "settings:work:proxy"]);
   expect(plan).toEqual({
     command: "claude",
     args: [
@@ -293,7 +309,7 @@ test("claude --profile: settings synced, base URL scrubbed unconditionally", asy
 test("a direct profile never touches the proxy; missing/credential-less ones hard-fail", async () => {
   const direct = scriptedDeps({ slot: completeSlot("direct", "copilot") });
   await prepareLaunch({ kind: "claude", profile: WORK, relaxed: false, args: [] }, direct.deps);
-  expect(direct.calls).toEqual(["slot:work", "settings:work:direct", "catalog:direct:work"]);
+  expect(direct.calls).toEqual(["slot:work", "settings:work:direct"]);
 
   const missing = scriptedDeps({ slot: partialSlot() });
   await expect(
@@ -383,44 +399,152 @@ const CATALOG: CatalogModel[] = [
   { id: "gpt-5", is1m: false },
 ];
 
-test("claude launch warns once when the session's model is outside the Copilot catalog, and only then", async () => {
-  const root = e2eRoot();
-  const claudeHome = join(root, ".claude");
-  mkdirSync(claudeHome);
-  const settingsPath = join(claudeHome, "settings-work.json");
-  const userSettingsPath = join(claudeHome, "settings.json");
-  const previous = {
-    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-    ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
-  };
-  process.env.CLAUDE_CONFIG_DIR = claudeHome;
-  delete process.env.ANTHROPIC_MODEL;
-  try {
-    await savedModelCases(settingsPath, userSettingsPath);
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-});
-
 /** The warning shows a home-relative path, and a temp root may sit under the home (Windows). */
 function shown(path: string): string {
   const home = homedir();
   return path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path;
 }
 
-/** A settings document: `env` is the file's env block, a blank entry included (Claude Code merges
- *  the files per key, so a blank in the winning file masks the value below it). */
-function settingsDoc(model: string | null, env?: string): string {
+/** A settings document as the wiring writes it: `env` carries the base URL, the baked headers, and
+ *  an ANTHROPIC_MODEL entry when given, a blank one included (a blank in a winning layer masks the
+ *  value below it). */
+function settingsDoc(
+  model: string | null,
+  env: Record<string, string> = {},
+  baseUrl: string = DIRECT_BASE,
+): string {
   return JSON.stringify({
     ...(model === null ? {} : { model }),
-    ...(env === undefined ? {} : { env: { ANTHROPIC_MODEL: env } }),
+    apiKeyHelper: "agent auth --get",
+    env: {
+      ANTHROPIC_BASE_URL: baseUrl,
+      ANTHROPIC_CUSTOM_HEADERS:
+        "User-Agent: codex_cli_rs/0.1\nCopilot-Integration-Id: copilot-developer-cli",
+      ...env,
+    },
   });
 }
 
-async function savedModelCases(settingsPath: string, userSettingsPath: string): Promise<void> {
+/** A staged Claude home, project dir, and managed path, all empty; the caller writes the files. */
+function stagedLayers(root: string) {
+  const claudeHome = join(root, ".claude");
+  const projectDir = join(root, "project");
+  mkdirSync(join(projectDir, ".claude"), { recursive: true });
+  mkdirSync(claudeHome);
+  return { claudeHome, projectDir, managedPath: join(root, "managed-settings.json") };
+}
+
+test("the model resolver follows Claude Code's layer and env precedence (verified against 2.1.258)", () => {
+  const root = e2eRoot();
+  const layers = stagedLayers(root);
+  const flagFile = join(root, "flag.json");
+  const write = (path: string, doc: Record<string, unknown>) =>
+    writeFileSync(path, JSON.stringify(doc));
+  write(join(layers.claudeHome, "settings.json"), { model: "user" });
+  write(join(layers.projectDir, ".claude", "settings.json"), { model: "project" });
+  write(join(layers.projectDir, ".claude", "settings.local.json"), { model: "local" });
+  write(flagFile, { model: "flag" });
+  write(layers.managedPath, { model: "managed" });
+  const choice = (args: string[], processEnv: Record<string, string> = {}) => {
+    const built = claudeSettingsLayers(args, layers);
+    return claudeModelChoice(args, built, sessionEnv(built, processEnv));
+  };
+  const known = (model: string, source: string) => ({ kind: "known", model, source });
+
+  // user < project < local < --settings (file or inline, LAST flag wins) < managed
+  expect(claudeSettingsLayers(["--settings", flagFile], layers).map((l) => l.label)).toEqual([
+    shown(join(layers.claudeHome, "settings.json")),
+    shown(join(layers.projectDir, ".claude", "settings.json")),
+    shown(join(layers.projectDir, ".claude", "settings.local.json")),
+    shown(flagFile),
+    shown(layers.managedPath),
+  ]);
+  expect(choice(["--settings", flagFile])).toEqual(known("managed", shown(layers.managedPath)));
+  rmSync(layers.managedPath);
+  expect(choice(["--settings", flagFile])).toEqual(known("flag", shown(flagFile)));
+  expect(choice(["--settings", flagFile, '--settings={"model":"inline"}'])).toEqual(
+    known("inline", "--settings"),
+  );
+  // An inline `--settings` without a model overrides nothing: the layers below still apply.
+  expect(choice(["--settings", "{}"])).toEqual(
+    known("local", shown(join(layers.projectDir, ".claude", "settings.local.json"))),
+  );
+  expect(choice([])).toEqual(
+    known("local", shown(join(layers.projectDir, ".claude", "settings.local.json"))),
+  );
+  // ANTHROPIC_MODEL beats every `model` key; a settings env block beats the process env; a blank
+  // entry in a higher layer masks the lower one and reads as unset.
+  expect(choice([], { ANTHROPIC_MODEL: "proc" })).toEqual(known("proc", "$ANTHROPIC_MODEL"));
+  write(join(layers.claudeHome, "settings.json"), {
+    model: "user",
+    env: { ANTHROPIC_MODEL: "user-env" },
+  });
+  expect(choice([], { ANTHROPIC_MODEL: "proc" })).toEqual(
+    known("user-env", `env.ANTHROPIC_MODEL in ${shown(join(layers.claudeHome, "settings.json"))}`),
+  );
+  expect(choice(['--settings={"env":{"ANTHROPIC_MODEL":""}}'], { ANTHROPIC_MODEL: "proc" }))
+    .toEqual(
+      known("local", shown(join(layers.projectDir, ".claude", "settings.local.json"))),
+    );
+  // --setting-sources keeps only the named file layers; the flag and policy layers always apply.
+  expect(choice(["--setting-sources", "user"])).toEqual(
+    known("user-env", `env.ANTHROPIC_MODEL in ${shown(join(layers.claudeHome, "settings.json"))}`),
+  );
+  expect(choice(["--setting-sources", "project", "--settings", flagFile])).toEqual(
+    known("flag", shown(flagFile)),
+  );
+  // --model is the user's call, whatever else is set.
+  expect(choice(["--model", "x"], { ANTHROPIC_MODEL: "proc" })).toEqual({ kind: "user-supplied" });
+  // Like Claude Code's parser, nothing after `--` is a flag; the control shows the same token
+  // honored when it stands alone. (A flag-shaped VALUE of an unrelated option is the accepted
+  // limitation: telling it apart needs Claude's option table.)
+  write(join(layers.claudeHome, "settings.json"), { apiKeyHelper: "agent auth --get" });
+  const local = known("local", shown(join(layers.projectDir, ".claude", "settings.local.json")));
+  expect(choice(["--", '--settings={"model":"prompt-text"}', "--model", "y"])).toEqual(local);
+  expect(choice(['--settings={"model":"prompt-text"}'])).toEqual(
+    known("prompt-text", "--settings"),
+  );
+  // The session's credential: an env token as-is (it beats the helper); otherwise the helper must
+  // come from the launch's own file, whose credential is the store's; an x-api-key is not ours.
+  const own = join(layers.claudeHome, "settings.json");
+  const credential = (args: string[], processEnv: Record<string, string> = {}) => {
+    const built = claudeSettingsLayers(args, layers);
+    return sessionCredential(built, sessionEnv(built, processEnv), own, null);
+  };
+  expect(credential([])).toEqual({ kind: "store", profile: null });
+  expect(credential(['--settings={"apiKeyHelper":"other"}'])).toBeNull();
+  expect(credential([], { ANTHROPIC_AUTH_TOKEN: "baked" })).toEqual({
+    kind: "token",
+    token: "baked",
+  });
+  expect(credential(['--settings={"env":{"ANTHROPIC_API_KEY":"k"}}'])).toBeNull();
+  // Nothing sets a model: the built-in default, unknown to us.
+  for (
+    const path of [
+      flagFile,
+      join(layers.projectDir, ".claude", "settings.json"),
+      join(layers.projectDir, ".claude", "settings.local.json"),
+    ]
+  ) rmSync(path);
+  write(join(layers.claudeHome, "settings.json"), {});
+  expect(choice([])).toEqual({ kind: "builtin" });
+});
+
+test("claude launch warns once when the session's model is outside the Copilot catalog, and only then", async () => {
+  const root = e2eRoot();
+  const layers = stagedLayers(root);
+  const settingsPath = join(layers.claudeHome, "settings-work.json");
+  const userSettingsPath = join(layers.claudeHome, "settings.json");
+  const previous = {
+    ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+  };
+  const setProcessEnv = (env: Record<string, string>) => {
+    for (const key of Object.keys(previous)) {
+      if (env[key] === undefined) delete process.env[key];
+      else process.env[key] = env[key];
+    }
+  };
   // Warn only: whatever the verdict, the argv never gains a model.
   const argvFor = (args: string[]) => [
     "--settings",
@@ -434,28 +558,42 @@ async function savedModelCases(settingsPath: string, userSettingsPath: string): 
     `WARN Claude model '${model}' (from ${source}) is not in the Copilot catalog; ` +
     "try /model claude-sonnet-4.5";
   const cases: {
+    /** The profile file's `model` (the `--settings` layer) and its own env block entry. */
     saved: string | null;
-    /** The profile file's own env block entry. */
     savedEnv?: string;
-    /** The `model` (and env block entry) of the user settings.json the profile file merges over. */
+    /** The user settings.json the profile file merges over. */
     user?: string;
     userEnv?: string;
-    env?: string;
+    processEnv?: Record<string, string>;
     mode?: ProfileMode;
     catalog?: CatalogModel[];
     notes: string[];
   }[] = [
     { saved: "claude-sonnet-4.5", notes: [] },
-    // Claude Code strips `[1m]` before the request; the family shorthand is its own alias.
+    // Claude Code strips `[1m]` before the request.
     { saved: "claude-opus-4.1[1m]", notes: [] },
-    { saved: "opus", notes: [] },
-    // A fresh install's built-in default, which Copilot does not serve.
+    // A fresh install's built-in default, which this catalog does not serve.
     { saved: "claude-opus-5[1m]", notes: [notInCatalog("claude-opus-5[1m]")] },
     // The proxy's alias map resolves the dash form; Direct sends it as-is.
     { saved: "claude-opus-4-1", mode: "proxy", notes: [] },
     { saved: "claude-opus-4-1", notes: [notInCatalog("claude-opus-4-1")] },
-    // Claude Code resolves the rest of the chain: `--settings` merges over settings.json, and
-    // $ANTHROPIC_MODEL beats every `model` key.
+    // Aliases are trimmed and lowercased; opusplan runs as Sonnet; ANTHROPIC_DEFAULT_<FAMILY>_MODEL
+    // repoints an alias at an exact id.
+    { saved: " Opusplan ", notes: [] },
+    {
+      saved: "opusplan",
+      catalog: [{ id: "claude-opus-4.1", is1m: false }],
+      notes: [
+        "WARN Claude model 'opusplan' (from " + shown(settingsPath) +
+        ") is not in the Copilot catalog; try /model claude-opus-4.1",
+      ],
+    },
+    {
+      saved: "sonnet",
+      processEnv: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5" },
+      notes: [notInCatalog("sonnet")],
+    },
+    // The layers below the profile file still apply, and the env chain beats every `model` key.
     {
       saved: null,
       user: "claude-opus-5[1m]",
@@ -464,7 +602,7 @@ async function savedModelCases(settingsPath: string, userSettingsPath: string): 
     { saved: "claude-sonnet-4.5", user: "claude-opus-5[1m]", notes: [] },
     {
       saved: "claude-sonnet-4.5",
-      env: "claude-opus-5[1m]",
+      processEnv: { ANTHROPIC_MODEL: "claude-opus-5[1m]" },
       notes: [notInCatalog("claude-opus-5[1m]", "$ANTHROPIC_MODEL")],
     },
     {
@@ -474,9 +612,10 @@ async function savedModelCases(settingsPath: string, userSettingsPath: string): 
         notInCatalog("claude-opus-5[1m]", `env.ANTHROPIC_MODEL in ${shown(userSettingsPath)}`),
       ],
     },
-    // A blank entry in the winning file masks the user's; Claude Code then reads it as unset.
     { saved: "claude-sonnet-4.5", savedEnv: "", userEnv: "claude-opus-5[1m]", notes: [] },
-    // No model saved: the built-in default is unknown to us, so only an empty Claude catalog warns.
+    // One ASCII line whatever the file held.
+    { saved: "claude-é\nx", notes: [notInCatalog("claude-? x")] },
+    // No model anywhere: the built-in default is unknown to us, so only an empty Claude catalog warns.
     { saved: null, notes: [] },
     {
       saved: null,
@@ -486,77 +625,218 @@ async function savedModelCases(settingsPath: string, userSettingsPath: string): 
       ],
     },
   ];
-  for (const c of cases) {
-    writeFileSync(settingsPath, settingsDoc(c.saved, c.savedEnv));
-    writeFileSync(userSettingsPath, settingsDoc(c.user ?? null, c.userEnv));
-    if (c.env === undefined) delete process.env.ANTHROPIC_MODEL;
-    else process.env.ANTHROPIC_MODEL = c.env;
-    const mode = c.mode ?? "direct";
-    const { deps, notes } = scriptedDeps({
-      slot: completeSlot(mode),
-      settingsPath,
-      catalog: c.catalog ?? CATALOG,
-    });
-    const plan = await prepareLaunch(
-      { kind: "claude", profile: WORK, relaxed: false, args: [] },
-      deps,
-    );
-    expect(plan?.args).toEqual(argvFor([]));
-    expect(notes).toEqual(c.notes);
+  try {
+    for (const c of cases) {
+      const mode = c.mode ?? "direct";
+      const baseUrl = mode === "proxy" ? "http://127.0.0.1:4141" : DIRECT_BASE;
+      writeFileSync(
+        settingsPath,
+        settingsDoc(
+          c.saved,
+          c.savedEnv === undefined ? {} : { ANTHROPIC_MODEL: c.savedEnv },
+          baseUrl,
+        ),
+      );
+      writeFileSync(
+        userSettingsPath,
+        settingsDoc(c.user ?? null, c.userEnv === undefined ? {} : { ANTHROPIC_MODEL: c.userEnv }),
+      );
+      setProcessEnv(c.processEnv ?? {});
+      const { deps, notes, targets } = scriptedDeps({
+        slot: completeSlot(mode),
+        settingsPath,
+        layers,
+        catalog: c.catalog ?? CATALOG,
+      });
+      const plan = await prepareLaunch(
+        { kind: "claude", profile: WORK, relaxed: false, args: [] },
+        deps,
+      );
+      expect(plan?.args).toEqual(argvFor([]));
+      expect(notes).toEqual(c.notes);
+      // The session's own baked headers ride on the Direct fetch: no identity probe at launch. The
+      // proxy port is the one the session's base URL names; the credential is the profile's store.
+      const credential = { kind: "store", profile: WORK };
+      expect(targets).toEqual([
+        mode === "proxy" ? { mode, credential, port: "4141" } : {
+          mode,
+          credential,
+          headers: {
+            "User-Agent": "codex_cli_rs/0.1",
+            "Copilot-Integration-Id": "copilot-developer-cli",
+          },
+        },
+      ]);
+    }
+    setProcessEnv({});
+
+    // A baked token (static-key) is the session's credential even when the store moved on, so
+    // the fetch carries it; an x-api-key is not one copilot-env can fetch with.
+    writeFileSync(userSettingsPath, settingsDoc(null));
+    for (
+      const [env, expected] of [
+        [{ ANTHROPIC_AUTH_TOKEN: "baked" }, [{ kind: "token", token: "baked" }]],
+        [{ ANTHROPIC_API_KEY: "k" }, []],
+      ] as const
+    ) {
+      writeFileSync(settingsPath, settingsDoc("claude-sonnet-4.5", env));
+      const baked = scriptedDeps({
+        slot: completeSlot("direct"),
+        settingsPath,
+        layers,
+        catalog: CATALOG,
+      });
+      await prepareLaunch({ kind: "claude", profile: WORK, relaxed: false, args: [] }, baked.deps);
+      expect(baked.targets.map((t) => t.credential)).toEqual(expected);
+      expect(baked.notes).toEqual([]);
+    }
+
+    // An explicit --model is the user's choice: no fetch, no warning. A user `--settings` on a
+    // profile launch is the LAST flag, so Claude Code drops the profile file and its credential:
+    // the profile's catalog would judge a session running under another credential, so no fetch.
+    writeFileSync(settingsPath, settingsDoc("claude-opus-5[1m]"));
+    writeFileSync(userSettingsPath, settingsDoc("claude-opus-5[1m]"));
+    for (
+      const args of [
+        ["--model", "claude-opus-5"],
+        ["--model=opus", "--resume"],
+        ["--settings", '{"model":"claude-sonnet-4.5"}'],
+        ["--settings", "{}"],
+      ]
+    ) {
+      const flagged = scriptedDeps({
+        slot: completeSlot("direct"),
+        settingsPath,
+        layers,
+        catalog: CATALOG,
+      });
+      const plan = await prepareLaunch(
+        { kind: "claude", profile: WORK, relaxed: false, args },
+        flagged.deps,
+      );
+      expect(plan?.args).toEqual(argvFor(args));
+      expect(flagged.calls).not.toContain("catalog:direct:work");
+      expect(flagged.notes).toEqual([]);
+    }
+    // On a DEFAULT launch a user `--settings` layers over settings.json, whose credential stays
+    // the session's: its model, or the layers below, are judged; one naming a credential is not.
+    // The default launch's own file is the one under CLAUDE_CONFIG_DIR.
+    const previousHome = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = layers.claudeHome;
+    try {
+      for (
+        const [args, fetched, notes] of [
+          [["--settings", '{"model":"claude-sonnet-4.5"}'], true, []],
+          [["--settings", "{}"], true, [
+            notInCatalog("claude-opus-5[1m]", shown(userSettingsPath)),
+          ]],
+          [["--settings", '{"apiKeyHelper":"my-helper"}'], false, []],
+        ] as const
+      ) {
+        const own = scriptedDeps({ mode: "direct", layers, catalog: CATALOG });
+        const plan = await prepareLaunch(claudeDefault(false, [...args]), own.deps);
+        expect(plan?.args).toEqual(["--permission-mode", "auto", "--enable-auto-mode", ...args]);
+        expect(own.calls.includes("catalog:direct:(default)")).toBe(fetched);
+        expect(own.notes).toEqual(notes);
+      }
+    } finally {
+      process.env.CLAUDE_CONFIG_DIR = previousHome;
+    }
+
+    // A failed, rejecting, or hanging look is silent and the launch proceeds within the budget:
+    // the check is best effort.
+    const looks: [string, LaunchDeps["claudeCatalog"] | undefined][] = [
+      ["null", undefined],
+      ["rejects", () => Promise.reject(new Error("EACCES"))],
+      ["hangs", () => new Promise(() => {})],
+    ];
+    for (const [name, look] of looks) {
+      const failing = scriptedDeps({ slot: completeSlot("direct"), settingsPath, layers });
+      if (look !== undefined) failing.deps.claudeCatalog = look;
+      const start = Date.now();
+      const plan = await prepareLaunch(
+        { kind: "claude", profile: WORK, relaxed: false, args: [] },
+        failing.deps,
+      );
+      expect([name, plan?.args]).toEqual([name, argvFor([])]);
+      expect([name, failing.notes]).toEqual([name, []]);
+      expect(Date.now() - start).toBeLessThan(2000);
+    }
+  } finally {
+    setProcessEnv(Object.fromEntries(
+      Object.entries(previous).filter((e): e is [string, string] => e[1] !== undefined),
+    ));
   }
+});
 
-  // An explicit --model, or a --settings of the user's own, is their choice: no fetch, no warning,
-  // whatever is saved.
-  delete process.env.ANTHROPIC_MODEL;
-  writeFileSync(settingsPath, JSON.stringify({ model: "claude-opus-5[1m]" }));
-  for (
-    const args of [
-      ["--model", "claude-opus-5"],
-      ["--model=opus", "--resume"],
-      ["--settings", '{"model":"claude-sonnet-4.5"}'],
-    ]
-  ) {
-    const flagged = scriptedDeps({ slot: completeSlot("direct"), settingsPath, catalog: CATALOG });
-    const plan = await prepareLaunch(
-      { kind: "claude", profile: WORK, relaxed: false, args },
-      flagged.deps,
-    );
-    expect(plan?.args).toEqual(argvFor(args));
-    expect(flagged.calls).not.toContain("catalog:direct:work");
-    expect(flagged.notes).toEqual([]);
-  }
-
-  // A failed fetch is silent and the launch proceeds: the check is best effort.
-  const unreachable = scriptedDeps({ slot: completeSlot("direct"), settingsPath });
-  const plan = await prepareLaunch(
-    { kind: "claude", profile: WORK, relaxed: false, args: [] },
-    unreachable.deps,
-  );
-  expect(plan?.args).toEqual(argvFor([]));
-  expect(unreachable.notes).toEqual([]);
-}
-
-test("claude direct: a foreign ANTHROPIC_BASE_URL the launch keeps is never judged against Copilot", async () => {
-  // The child inherits the shell's URL when the plan neither sets nor scrubs it (the --relaxed e2e
-  // below pins that it is kept), so the session talks to that gateway, not to Copilot.
+test("the session's effective ANTHROPIC_BASE_URL decides whether the Copilot catalog is consulted", async () => {
+  // Settings env blocks override the process env inside Claude Code, so a foreign URL in the shell
+  // still sends a Direct-wired session to Copilot, while a foreign URL in a settings file sends it
+  // to that gateway, which the Copilot catalog says nothing about.
+  const root = e2eRoot();
+  const layers = stagedLayers(root);
+  const settingsPath = join(layers.claudeHome, "settings-work.json");
   const previous = process.env.ANTHROPIC_BASE_URL;
   try {
     for (
-      const [url, fetched] of [
-        ["https://my-gateway.example", false],
-        [DIRECT_BASE, true],
+      const [fileUrl, shellUrl, fetched] of [
+        [DIRECT_BASE, "https://my-gateway.example", true],
+        ["https://my-gateway.example", DIRECT_BASE, false],
+        ["http://127.0.0.1:4141", DIRECT_BASE, false],
       ] as const
     ) {
-      process.env.ANTHROPIC_BASE_URL = url;
-      const { deps, calls } = scriptedDeps({ mode: "direct", catalog: CATALOG });
-      const plan = await prepareLaunch(claudeDefault(), deps);
-      expect(plan?.scrub).toEqual([]);
-      expect(calls.includes("catalog:direct:(default)")).toBe(fetched);
+      writeFileSync(settingsPath, settingsDoc("claude-opus-5[1m]", {}, fileUrl));
+      process.env.ANTHROPIC_BASE_URL = shellUrl;
+      const { deps, calls } = scriptedDeps({
+        slot: completeSlot("direct"),
+        settingsPath,
+        layers,
+        catalog: CATALOG,
+      });
+      await prepareLaunch({ kind: "claude", profile: WORK, relaxed: false, args: [] }, deps);
+      expect(calls.includes("catalog:direct:work")).toBe(fetched);
     }
   } finally {
     if (previous === undefined) delete process.env.ANTHROPIC_BASE_URL;
     else process.env.ANTHROPIC_BASE_URL = previous;
   }
+});
+
+test("the launch catalog fetch is silent and null on every failure, and honors its budget", async () => {
+  const request = { url: "https://api.githubcopilot.com/models", headers: {} };
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const hanging: CatalogFetch = (_url, init) =>
+    new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+  const attempts: [string, CatalogFetch, CatalogModel[] | null][] = [
+    ["network error", () => Promise.reject(new Error("ECONNREFUSED")), null],
+    ["budget spent", hanging, null],
+    ["rejected", () => Promise.resolve(json({ error: "bad token" }, 401)), null],
+    // No `data` array is unknown, never an empty catalog.
+    ["unrecognized body", () => Promise.resolve(json({ error: "upstream unavailable" })), null],
+    ["catalog", () => Promise.resolve(json({ data: [{ id: "claude-sonnet-4.5" }] })), [
+      { id: "claude-sonnet-4.5", is1m: false },
+    ]],
+  ];
+  const write = process.stderr.write;
+  let stderrWrites = 0;
+  process.stderr.write = ((...args: Parameters<typeof write>) => {
+    stderrWrites++;
+    return write.apply(process.stderr, args);
+  }) as typeof write;
+  try {
+    for (const [name, fetchImpl, expected] of attempts) {
+      const start = Date.now();
+      const got = await fetchLaunchCatalog(request, AbortSignal.timeout(50), fetchImpl);
+      expect([name, got]).toEqual([name, expected]);
+      expect(Date.now() - start).toBeLessThan(1000);
+    }
+  } finally {
+    process.stderr.write = write;
+  }
+  expect(stderrWrites).toBe(0);
 });
 
 // --- POSIX end-to-end against fake agent CLIs -------------------------------------

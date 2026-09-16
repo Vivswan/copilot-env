@@ -15,13 +15,26 @@ import { recordDefaultModeFromWiring } from "../agents/configure_defaults.ts";
 import { resolveAndPersistDirectIdentity, wireBothAgents } from "../agents/profile_wiring.ts";
 import type { AgentProviderMode, ManagedAgentMode } from "../agents/provider_mode.ts";
 import { readAgentModes } from "../agents/wiring.ts";
-import { BASE_URL_ENV, claudeAdapter, DIRECT_BASE_URL, runClaude } from "../claude/config.ts";
-import { claudeModelChoice, unservableClaudeModelWarning } from "../claude/model_check.ts";
+import { BASE_URL_ENV, claudeAdapter, runClaude } from "../claude/config.ts";
+import {
+  type CatalogTarget,
+  fetchLaunchCatalog,
+  launchCatalogRequest,
+} from "../claude/launch_catalog.ts";
+import {
+  claudeModelChoice,
+  claudeSettingsLayers,
+  managedSettingsPath,
+  sessionCredential,
+  sessionEndpoint,
+  sessionEnv,
+  sessionHeaders,
+  type SettingsLayer,
+  unservableClaudeModelWarning,
+} from "../claude/model_check.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { runCodex } from "../codex/config.ts";
-import { fetchRawModels } from "../copilot_api/catalog.ts";
-import { Credential } from "../copilot_api/credential.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
@@ -36,10 +49,9 @@ import {
   type Profile,
   type ProfileName,
 } from "../copilot_api/profile.ts";
-import { type CatalogModel, parseCatalogModels } from "../copilot_api/models.ts";
+import type { CatalogModel } from "../copilot_api/models.ts";
 import { childEnvWithPath, findCommand, verbatimCliSpawn } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
-import { isRecord } from "../utils/json.ts";
 import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
 import { managedClaudeBaseUrl, managedCodexHome, type ManagedEnvValue } from "./env.ts";
 import {
@@ -113,9 +125,11 @@ export interface LaunchDeps {
   syncProfileWiring(name: ProfileName, mode: ProfileMode): Promise<void>;
   managedClaudeBaseUrl(profile: Profile): ManagedEnvValue;
   managedCodexHome(): ManagedEnvValue;
-  /** Best effort, never blocking: null = no credential or a failed fetch, and the model check is
-   *  skipped. */
-  claudeCatalog(mode: ManagedAgentMode, profile: Profile): Promise<CatalogModel[] | null>;
+  /** The settings files the session will merge, for the model check. */
+  claudeSettingsLayers(args: readonly string[]): SettingsLayer[];
+  /** Best effort and SILENT under `signal`: null = no credential, a failed look, or the budget
+   *  spent, and the model check is skipped. The caller drops it at the budget whatever it does. */
+  claudeCatalog(target: CatalogTarget, signal: AbortSignal): Promise<CatalogModel[] | null>;
   /** stderr: stdout belongs to the launched agent. */
   notify(line: string): void;
 }
@@ -162,29 +176,50 @@ async function wireDefaultProvider(
   return mode;
 }
 
-/** The child inherits the parent's ANTHROPIC_BASE_URL unless the plan sets or scrubs it (spawnAgentCli
- *  merges). The Copilot host itself is ours to judge; anything else is another provider. */
-function inheritsForeignBaseUrl(plan: LaunchPlan): boolean {
-  if (plan.env[BASE_URL_ENV] !== undefined || plan.scrub.includes(BASE_URL_ENV)) return false;
-  const inherited = process.env[BASE_URL_ENV];
-  return inherited !== undefined && inherited !== "" && inherited !== DIRECT_BASE_URL;
-}
+/** The most the model check may add to a launch; past it the fetch is dropped and nothing prints. */
+const CATALOG_BUDGET_MS = 1000;
 
-/** After the wiring, so a proxy fetch hits the port the launch just ensured. An explicit --model
- *  skips the fetch: the user chose. */
+/** After the wiring, so a proxy fetch hits the port the launch just ensured, and over the FINAL
+ *  argv, so a user `--settings` or `--model` counts. The merged settings decide the rest: the
+ *  credential must be the launch's own file's (that is whose catalog is fetched), and the base URL
+ *  must be the mode's endpoint (a gateway of the user's own is not ours to judge). */
 async function warnUnservableClaudeModel(
   mode: ManagedAgentMode,
   profile: Profile,
-  settingsPaths: readonly string[],
-  args: readonly string[],
+  ownSettings: string,
+  plan: LaunchPlan,
   deps: LaunchDeps,
 ): Promise<void> {
-  const choice = claudeModelChoice(args, settingsPaths);
+  const layers = deps.claudeSettingsLayers(plan.args);
+  // The spawn's own composition, so a scrubbed key reads absent here exactly as it will there.
+  const env = sessionEnv(
+    layers,
+    childEnvWithPath([], { extra: plan.env, omit: (upper) => plan.scrub.includes(upper) }),
+  );
+  const credential = sessionCredential(layers, env, ownSettings, profile);
+  const endpoint = sessionEndpoint(env, mode);
+  if (credential === null || endpoint === null) return;
+  const choice = claudeModelChoice(plan.args, layers, env);
   if (choice.kind === "user-supplied") return;
-  const catalog = await deps.claudeCatalog(mode, profile);
+  const target: CatalogTarget = endpoint.mode === "direct"
+    ? { mode: "direct", credential, headers: sessionHeaders(env) }
+    : { mode: "proxy", credential, port: endpoint.port };
+  const catalog = await withinBudget(deps.claudeCatalog.bind(deps, target));
   if (catalog === null) return;
-  const warning = unservableClaudeModelWarning(choice, catalog, mode);
+  const warning = unservableClaudeModelWarning(choice, catalog, mode, env);
   if (warning !== null) deps.notify(warning);
+}
+
+/** The look is dropped at the budget and a rejection reads as no catalog, so nothing it does can
+ *  hold or fail the launch. */
+function withinBudget(
+  look: (signal: AbortSignal) => Promise<CatalogModel[] | null>,
+): Promise<CatalogModel[] | null> {
+  const signal = AbortSignal.timeout(CATALOG_BUDGET_MS);
+  return Promise.race([
+    look(signal).catch(() => null),
+    new Promise<null>((resolve) => signal.addEventListener("abort", () => resolve(null))),
+  ]);
 }
 
 /** Null = abort with exit 1; the failing step already narrated on stderr. */
@@ -215,14 +250,7 @@ export async function prepareLaunch(
         // profile's own env block.
         plan.scrub.push(BASE_URL_ENV);
         plan.args = ["--settings", settings, ...flags, ...action.args];
-        // Claude Code merges `--settings` over settings.json, so a model saved there still applies.
-        await warnUnservableClaudeModel(
-          mode,
-          action.profile,
-          [settings, settingsPathFor(resolveClaudeHome())],
-          action.args,
-          deps,
-        );
+        await warnUnservableClaudeModel(mode, action.profile, settings, plan, deps);
         return plan;
       }
       const mode = await wireDefaultProvider("claude", "Claude", deps);
@@ -230,15 +258,13 @@ export async function prepareLaunch(
       // Read AFTER the wiring step so a fresh proxy port is what gets exported.
       applyManagedEnv(plan, BASE_URL_ENV, deps.managedClaudeBaseUrl(null));
       plan.args = [...flags, ...action.args];
-      // "none" was just wired to the proxy; "other" is a provider we cannot judge; a foreign
-      // ANTHROPIC_BASE_URL the launch leaves in place (a user's own gateway) is where the session
-      // really goes, and the Copilot catalog says nothing about it.
-      if (mode !== "other" && !inheritsForeignBaseUrl(plan)) {
+      // "none" was just wired to the proxy; "other" is a provider we cannot judge.
+      if (mode !== "other") {
         await warnUnservableClaudeModel(
           mode === "direct" ? "direct" : "proxy",
           null,
-          [settingsPathFor(resolveClaudeHome())],
-          action.args,
+          settingsPathFor(resolveClaudeHome()),
+          plan,
           deps,
         );
       }
@@ -352,24 +378,15 @@ export function commandDeps(): LaunchDeps {
     syncProfileWiring: (name, mode) => wireBothAgents(name, mode, true),
     managedClaudeBaseUrl,
     managedCodexHome,
-    claudeCatalog: async (mode, profile) => {
-      try {
-        let body: unknown;
-        if (mode === "proxy") {
-          body = await fetchRawModels("proxy", { profile });
-        } else {
-          // Resolved here so an unconfigured credential skips the fetch instead of failing it.
-          const directToken = new Credential(undefined, profile).resolve();
-          if (directToken === null) return null;
-          body = await fetchRawModels("direct", { directToken, profile });
-        }
-        // parseCatalogModels reads a body with no `data` array as an EMPTY catalog, which the check
-        // would report as "no Claude model"; an unrecognized shape is unknown, not proven empty.
-        if (!isRecord(body) || !Array.isArray(body.data)) return null;
-        return parseCatalogModels(body);
-      } catch {
-        return null;
-      }
+    claudeSettingsLayers: (args) =>
+      claudeSettingsLayers(args, {
+        claudeHome: resolveClaudeHome(),
+        projectDir: process.cwd(),
+        managedPath: managedSettingsPath(),
+      }),
+    claudeCatalog: async (target, signal) => {
+      const request = await launchCatalogRequest(target, signal);
+      return request === null ? null : fetchLaunchCatalog(request, signal);
     },
     notify: (line) => {
       process.stderr.write(`${line}\n`);

@@ -2,14 +2,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CODEX_IDENTITY_NAME } from "../src/copilot_api/env_config.ts";
 import {
-  autoIdentityFor,
+  autoIdentity,
   bakedIntegrationId,
   COPILOT_CLI_INTEGRATION_ID,
   COPILOT_SANDBOX_INTEGRATION_ID,
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   directIdentityCandidates,
-  type IdentityHostSurvey,
   type IdentitySurvey,
   type IdentityVerdict,
   INTEGRATION_ID_HEADER,
@@ -55,7 +54,10 @@ test("probeIntegrationIdentity: first accepted candidate wins, in order", async 
   const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
     fetchImpl: stubFetch({ accept: (id) => id === COPILOT_CLI_INTEGRATION_ID, seen }),
   });
-  expect(res.identity?.name).toBe(COPILOT_CLI_INTEGRATION_ID);
+  expect(res.verdicts.map((v) => [v.candidate.name, v.verdict.kind])).toEqual([
+    [VSCODE_CHAT_INTEGRATION_ID, "rejected"],
+    [COPILOT_CLI_INTEGRATION_ID, "accepted"],
+  ]);
   expect(res.conclusive).toBe(true);
   // The sandbox candidate is never reached once the CLI id is accepted.
   expect(seen).toEqual([VSCODE_CHAT_INTEGRATION_ID, COPILOT_CLI_INTEGRATION_ID]);
@@ -194,27 +196,24 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
   expect(
     seen.filter((s) => s.host === new URL(DEFAULT_COPILOT_API_BASE).host).map((s) => s.headers),
   ).toEqual(SURVEY_ROWS.map((c) => lowercaseKeys(c.headers)));
-  // The marks `agent auth --identities` draws off a column are what a LAUNCH sends: fed the same
-  // stub, each mode's resolver lands where autoIdentityFor says over ITS candidates on the host
-  // (the codex name is Direct's null header; a non-PAT credential is never probed by either).
+  // The pick `agent auth --identities` shows off a column is what a LAUNCH bakes: fed the same
+  // stub, each mode's resolver lands where autoIdentity says over ITS candidates on the host (the
+  // codex name is Direct's null header; a non-PAT credential is never probed by either).
   const generic = survey.hosts[0]!;
-  const direct = autoIdentityFor("ghp_x", {
-    ...generic,
-    verdicts: generic.verdicts.slice(0, directIdentityCandidates("codex_exec/1").length),
-  });
+  const direct = autoIdentity(
+    "ghp_x",
+    generic.verdicts.slice(0, directIdentityCandidates("codex_exec/1").length),
+  )?.name ?? null;
   expect(await resolveDirectIntegrationId("ghp_x", "codex_exec/1", { fetchImpl })).toBe(
     direct === CODEX_IDENTITY_NAME ? null : direct,
   );
   const designated = survey.hosts[1]!;
-  const passthroughView = {
-    ...designated,
-    verdicts: PASSTHROUGH_IDENTITY_CANDIDATES.flatMap((c) =>
-      designated.verdicts.filter((v) => v.name === c.name)
-    ),
-  };
+  const passthroughRows = PASSTHROUGH_IDENTITY_CANDIDATES.flatMap((c) =>
+    designated.verdicts.filter((v) => v.name === c.name)
+  );
   for (const token of ["ghp_x", "gho_x"]) {
     expect(await resolvePassthroughIntegrationId(token, { fetchImpl })).toBe(
-      autoIdentityFor(token, passthroughView),
+      autoIdentity(token, passthroughRows)?.name ?? null,
     );
   }
 });
@@ -254,24 +253,18 @@ test("surveyIntegrationIdentities: the designated and configured columns appear 
   ]);
 });
 
-test("autoIdentityFor: a preferred first row never wins by the transient fallback; the built-in default does", () => {
-  const rejected = { kind: "rejected" as const, detail: "400 PATs not supported" };
-  const unclear = { kind: "inconclusive" as const, detail: "503 upstream", blocked: true };
-  const column: IdentityHostSurvey = {
-    apiBase: DEFAULT_COPILOT_API_BASE,
-    role: "generic",
-    verdicts: [
-      { name: COPILOT_CLI_INTEGRATION_ID, verdict: rejected },
-      { name: CODEX_IDENTITY_NAME, verdict: unclear },
-      { name: COPILOT_SANDBOX_INTEGRATION_ID, verdict: unclear },
-    ],
-  };
+test("autoIdentity: a preferred first row never wins by the transient fallback; the built-in default does", () => {
+  const rejected: IdentityVerdict = { kind: "rejected", detail: "400 PATs not supported" };
+  const unclear: IdentityVerdict = { kind: "inconclusive", detail: "503 upstream", blocked: true };
+  const rows = [
+    { name: COPILOT_CLI_INTEGRATION_ID, verdict: rejected },
+    { name: CODEX_IDENTITY_NAME, verdict: unclear },
+    { name: COPILOT_SANDBOX_INTEGRATION_ID, verdict: unclear },
+  ];
   // The writer's selection (resolveDirectIntegrationId) falls back to the built-in default here.
-  expect(autoIdentityFor("ghp_x", column, CODEX_IDENTITY_NAME)).toBe(CODEX_IDENTITY_NAME);
+  expect(autoIdentity("ghp_x", rows, { dflt: rows[1] })?.name).toBe(CODEX_IDENTITY_NAME);
   // Without the explicit default the first row is the default: the pre-existing, un-reordered case.
-  expect(autoIdentityFor("ghp_x", { ...column, verdicts: column.verdicts.slice(1) })).toBe(
-    CODEX_IDENTITY_NAME,
-  );
+  expect(autoIdentity("ghp_x", rows.slice(1))?.name).toBe(CODEX_IDENTITY_NAME);
 });
 
 test("resolveCopilotHost: 2xx/400/401 keep the generic host; 403/404/5xx/network move to the account's host; a failed lookup stays", async () => {
@@ -345,7 +338,9 @@ test("probeIntegrationIdentity: a network error is inconclusive, not a rejection
   const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
     fetchImpl: () => Promise.reject(new Error("offline")),
   });
-  expect(res.identity).toBeNull();
+  expect(res.verdicts.map((v) => v.verdict.kind)).toEqual(
+    PASSTHROUGH_IDENTITY_CANDIDATES.map(() => "inconclusive"),
+  );
   expect(res.conclusive).toBe(false);
 });
 
@@ -395,7 +390,7 @@ test("probeIntegrationIdentity: a transient host-discovery failure makes an all-
       return Promise.resolve(new Response("PATs not supported", { status: 400 }));
     },
   });
-  expect(res.identity).toBeNull();
+  expect(res.verdicts.every((v) => v.verdict.kind === "rejected")).toBe(true);
   expect(res.conclusive).toBe(false);
 });
 

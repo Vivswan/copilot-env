@@ -45,7 +45,7 @@ import {
 } from "../copilot_api/gh_cli.ts";
 import { type GithubLoginLook, githubLoginLook } from "../copilot_api/github_login.ts";
 import {
-  autoIdentityFor,
+  autoIdentity,
   type BakedDirectIdentity,
   COPILOT_CLI_INTEGRATION_ID,
   directClientHeaders,
@@ -1088,12 +1088,10 @@ async function surveyAndTable(
     const preferredVerdict = isPatShapedToken(token)
       ? column.verdicts.find((v) => v.name === preferredName)
       : undefined;
-    return autoIdentityFor(token, {
-      ...column,
-      verdicts: preferredVerdict === undefined
-        ? ranked
-        : [preferredVerdict, ...ranked.filter((v) => v.name !== preferredName)],
-    }, ranked[0]?.name ?? null);
+    const rows = preferredVerdict === undefined
+      ? ranked
+      : [preferredVerdict, ...ranked.filter((v) => v.name !== preferredName)];
+    return autoIdentity(token, rows, { dflt: ranked[0] ?? null })?.name ?? null;
   };
   const fresh = selectionOn(probeColumn);
   const firstPick = pinned ??
@@ -1101,12 +1099,12 @@ async function surveyAndTable(
   // The proxy's pick is the launch resolver's: its own candidates, in their order, on the same
   // host (resolveLaunchCredential), before the host is chosen.
   const proxyNext = proxyPassthrough
-    ? pinned ?? autoIdentityFor(token, {
-      ...probeColumn,
-      verdicts: PASSTHROUGH_IDENTITY_CANDIDATES.flatMap((c) =>
+    ? pinned ?? autoIdentity(
+      token,
+      PASSTHROUGH_IDENTITY_CANDIDATES.flatMap((c) =>
         probeColumn.verdicts.filter((v) => v.name === c.name)
       ),
-    })
+    )?.name ?? null
     : VSCODE_CHAT_INTEGRATION_ID;
   // Each mode's host follows ITS identity: Direct's the one the next wiring bakes (a named profile
   // replays its slot's cached host first, as its writer does), the daemon's the one it will send

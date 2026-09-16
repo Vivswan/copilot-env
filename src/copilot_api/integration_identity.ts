@@ -157,21 +157,20 @@ export function bakedIntegrationId(identity: IntegrationIdentity): string | null
   return identity.headers[INTEGRATION_ID_HEADER] ?? null;
 }
 
-export interface IdentityProbeOutcome {
-  name: string;
-  /** "ok", an HTTP rejection ("400 <body snippet>"), or a network error message. */
-  detail: string;
+/** One candidate's verdict, in probe order: the row shape autoIdentity ranks. */
+export interface CandidateVerdict {
+  candidate: IntegrationIdentity;
+  verdict: IdentityVerdict;
 }
 
 export interface IdentityProbeResult {
-  identity: IntegrationIdentity | null;
   /** false when a network error or an ambiguous status made the run inconclusive, so callers keep the
    *  default rather than failing hard on a flaky network. */
   conclusive: boolean;
   /** The API base actually probed (the account's designated host when readable). */
   apiBase: string;
-  /** In probe order. */
-  outcomes: IdentityProbeOutcome[];
+  /** In probe order, ending at the first acceptance; autoIdentity ranks it. */
+  verdicts: CandidateVerdict[];
 }
 
 export interface IdentityProbeDeps {
@@ -310,9 +309,9 @@ async function probeCandidate(
 
 /** Never throws; `conclusive` marks a verdict worth acting on, and it has two shapes.
  *
- *  a candidate accepted                                            -> identity set, conclusive
- *  base lookup OK or 400/401, every candidate rejected 400/401     -> identity null, conclusive
- *  base lookup or a candidate 403/404/408/429/5xx/network error    -> identity null, inconclusive
+ *  a candidate accepted                                            -> its row last, conclusive
+ *  base lookup OK or 400/401, every candidate rejected 400/401     -> no accepted row, conclusive
+ *  base lookup or a candidate 403/404/408/429/5xx/network error    -> no accepted row, inconclusive
  */
 export async function probeIntegrationIdentity(
   token: string,
@@ -324,7 +323,7 @@ export async function probeIntegrationIdentity(
   const { apiBase, inconclusive: baseInconclusive } = deps.apiBase
     ? { apiBase: deps.apiBase, inconclusive: false }
     : await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
-  const outcomes: IdentityProbeOutcome[] = [];
+  const verdicts: CandidateVerdict[] = [];
   let sawInconclusive = baseInconclusive;
   for (const candidate of candidates) {
     const verdict = await probeCandidate(
@@ -335,14 +334,11 @@ export async function probeIntegrationIdentity(
       timeoutMs,
       deps.signal,
     );
-    if (verdict.kind === "accepted") {
-      outcomes.push({ name: candidate.name, detail: "ok" });
-      return { identity: candidate, conclusive: true, apiBase, outcomes };
-    }
+    verdicts.push({ candidate, verdict });
+    if (verdict.kind === "accepted") return { conclusive: true, apiBase, verdicts };
     if (verdict.kind === "inconclusive") sawInconclusive = true;
-    outcomes.push({ name: candidate.name, detail: verdict.detail });
   }
-  return { identity: null, conclusive: !sawInconclusive, apiBase, outcomes };
+  return { conclusive: !sawInconclusive, apiBase, verdicts };
 }
 
 /** Why a host is a survey column. */
@@ -514,25 +510,26 @@ async function resolveAutoHost(
 }
 
 /**
- * What `auto` settles on for this credential, read off a survey column; mirrors resolve*IntegrationId
- * and acceptedIdentity so `agent auth --identities` marks the row a launch would use.
+ * THE auto rule: the row a launch bakes and the survey shows as the next pick, from one candidate
+ * list's verdicts in candidate order (a list cut at the first acceptance decides the same). `blip`
+ * is a transient failure outside the rows (the account-host lookup); `dflt` is the mode's built-in
+ * default when the first row is a preferred cached identity, which must never win by fallback.
  *
  *   non-PAT credential            -> the default (no probe is run for it)
  *   PAT, a candidate accepted     -> the first accepted, in candidate order
  *   PAT, none accepted, a blip    -> the default
  *   PAT, every candidate rejected -> null: the mode refuses this credential
  */
-export function autoIdentityFor(
+export function autoIdentity<T extends { verdict: IdentityVerdict }>(
   token: string,
-  column: IdentityHostSurvey,
-  // The mode's built-in default, the transient fallback: passed when the column's first row is a
-  // preferred cached identity (auth.ts selectionOn), which must never win by fallback.
-  defaultName: string | null = column.verdicts[0]?.name ?? null,
-): string | null {
-  if (!isPatShapedToken(token)) return defaultName;
-  const accepted = column.verdicts.find((v) => v.verdict.kind === "accepted");
-  if (accepted !== undefined) return accepted.name;
-  return column.verdicts.some((v) => v.verdict.kind === "inconclusive") ? defaultName : null;
+  rows: readonly T[],
+  opts: { blip?: boolean; dflt?: T | null } = {},
+): T | null {
+  const dflt = opts.dflt === undefined ? rows[0] ?? null : opts.dflt;
+  if (!isPatShapedToken(token)) return dflt;
+  const accepted = rows.find((r) => r.verdict.kind === "accepted");
+  if (accepted !== undefined) return accepted;
+  return opts.blip || rows.some((r) => r.verdict.kind === "inconclusive") ? dflt : null;
 }
 
 // Memoized so the probe sites in one process (both agents at init, start narration + launch, catalog
@@ -629,20 +626,27 @@ async function acceptedIdentity(
   fallback: IntegrationIdentity = candidates[0],
 ): Promise<IntegrationIdentity> {
   const probe = await probeIntegrationIdentityCached(token, candidates, deps);
-  if (probe.identity !== null) return probe.identity;
-  if (!probe.conclusive) {
+  const pick = autoIdentity(token, probe.verdicts, {
+    blip: !probe.conclusive,
+    dflt: probe.verdicts.find((v) => v.candidate.name === fallback.name) ?? null,
+  });
+  if (pick === null) {
+    throw new Error(
+      [
+        `${probe.apiBase} rejects this credential under every known client identity:`,
+        ...probe.verdicts.map((v) =>
+          `  - ${v.candidate.name}: ${v.verdict.kind === "accepted" ? "ok" : v.verdict.detail}`
+        ),
+        ...identityRejectionHints().map((h) => `  ${h}`),
+      ].join("\n"),
+    );
+  }
+  if (pick.verdict.kind !== "accepted") {
     consola.warn(
       "Could not verify the Copilot integration identity (transient error); using the default.",
     );
-    return fallback;
   }
-  throw new Error(
-    [
-      `${probe.apiBase} rejects this credential under every known client identity:`,
-      ...probe.outcomes.map((o) => `  - ${o.name}: ${o.detail}`),
-      ...identityRejectionHints().map((h) => `  ${h}`),
-    ].join("\n"),
-  );
+  return pick.candidate;
 }
 
 /** Narrated once, so `agent start`/`init` explain a surprising id. A preferred (cached) identity

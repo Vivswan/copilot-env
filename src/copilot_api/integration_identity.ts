@@ -8,7 +8,7 @@
 //   fine-grained PAT under `copilot-developer-cli`  -> accepted
 //   `gho_` OAuth token under either                 -> accepted
 //   any PAT at the editor token exchange            -> 403, so a passthrough token lives or dies by this header alone
-import { consola, type ConsolaInstance } from "consola";
+import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { CODEX_IDENTITY_NAME, isLoopbackHostname } from "./env_config.ts";
@@ -469,7 +469,7 @@ export interface HostNarrator {
   info: (message: string) => void;
 }
 
-export interface ResolveHostOptions extends Omit<IdentityProbeDeps, "apiBase"> {
+interface ResolveHostOptions extends Omit<IdentityProbeDeps, "apiBase"> {
   /** The `copilot-host` literal: returned as-is, nothing probed. Null = `auto`. */
   literal?: string | null;
   /** Callers whose stdout is a contract pass a stderr logger. */
@@ -483,6 +483,8 @@ const hostMemo = new Map<string, Promise<string>>();
 /**
  * THE `copilot-host auto` rule, for every mode. `headers` is the identity the caller will bake (the
  * accepted Direct identity, the daemon's passthrough id, or vscode-chat), resolved BEFORE this.
+ * Module-private, like the identity steps below: only the select*IdentityAndHost pair may call it,
+ * so no consumer can select an identity on one host and bake another.
  *
  *   literal set                     -> the literal
  *   no token                        -> the generic host, nothing probed
@@ -491,7 +493,7 @@ const hostMemo = new Map<string, Promise<string>>();
  *   ... and that lookup fails       -> the generic host
  *   any other answer                -> the generic host
  */
-export function resolveCopilotHost(
+function resolveCopilotHost(
   token: string | null,
   headers: Record<string, string>,
   opts: ResolveHostOptions = {},
@@ -582,7 +584,7 @@ export interface ResolveIdentityOptions extends IdentityProbeDeps {
    *  never a verdict. `null` names the default identity, already first. */
   preferred?: string | null;
   /** Callers whose stdout is a contract (`agent auth --get`) pass a stderr logger. */
-  narrator?: Pick<ConsolaInstance, "info">;
+  narrator?: HostNarrator;
 }
 
 /**
@@ -661,7 +663,7 @@ function narrateIdentity(
   chosen: string,
   defaultName: string,
   pinned: boolean,
-  narrator: Pick<ConsolaInstance, "info"> = consola,
+  narrator: HostNarrator = consola,
   preferred: string | null = null,
 ): void {
   if (pinned) {
@@ -685,7 +687,7 @@ function narrateIdentity(
  * null = the default Codex identity, which every gho_/device credential accepts. A null token (nothing
  * resolved) cannot be probed, so the pin (or null) is returned as-is.
  */
-export async function resolveDirectIntegrationId(
+async function resolveDirectIntegrationId(
   token: string | null,
   userAgent: string,
   opts: ResolveIdentityOptions = {},
@@ -787,7 +789,7 @@ function preferredFirst(
 
 /** Always returns an id (the proxy sends one); `agent start` only overrides the daemon default when it
  *  differs from vscode-chat. */
-export async function resolvePassthroughIntegrationId(
+async function resolvePassthroughIntegrationId(
   token: string,
   opts: ResolveIdentityOptions = {},
 ): Promise<string> {

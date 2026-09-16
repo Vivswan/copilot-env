@@ -432,14 +432,15 @@ export function defaultProbeDeps(): ProbeDeps {
     paths: (profile) => runtimePathsView(new CopilotApiPaths(profile)),
     profileNames: allProfileNames,
     profileSlot: (name) => {
-      const { exists, slot } = new CopilotEnvState().profileSlotStatus(name);
+      const store = new CopilotEnvState();
+      const { exists, slot } = store.profileSlotStatus(name);
       return {
         exists,
         provider: credentialProvider(slot.credential),
         mode: slot.mode,
         storedToken: slot.credential.kind === "stored",
         ghUser: slot.credential.kind === "gh-cli" ? slot.credential.ghUser : null,
-        integrationIdentity: slot.integrationIdentity,
+        integrationIdentity: store.slotIdentityForDisplay(name),
       };
     },
     profileHomeExists,
@@ -479,7 +480,7 @@ export function defaultProbeDeps(): ProbeDeps {
         profiles[name] = {
           provider: credentialProvider(slot.credential),
           mode: slot.mode,
-          integrationIdentity: slot.integrationIdentity,
+          integrationIdentity: store.slotIdentityForDisplay(name),
         };
       }
       return profiles;

@@ -130,7 +130,8 @@ function storedPrefs(withCredentials: boolean): CopilotEnvConfigData {
 /** Redaction is the default so a casually shared bundle never leaks a credential. */
 export function buildExportBundle(options: { withCredentials?: boolean } = {}): SettingsBundle {
   const withCredentials = options.withCredentials ?? false;
-  const state = new CopilotEnvState().read();
+  const store = new CopilotEnvState();
+  const state = store.read();
   const redact = (token: string | null): string | null =>
     token !== null && !withCredentials ? REDACTED_TOKEN : token;
   const profiles: Record<string, ProfileSlotData> = {};
@@ -138,7 +139,11 @@ export function buildExportBundle(options: { withCredentials?: boolean } = {}): 
     // Same trust boundary as CopilotEnvState.profileNames: a hand-edited key
     // that is not a valid profile name never travels.
     if (!isValidProfileName(name)) continue;
-    profiles[name] = { ...slot, githubToken: redact(slot.githubToken) };
+    profiles[name] = {
+      ...slot,
+      githubToken: redact(slot.githubToken),
+      integrationIdentity: store.slotIdentityForDisplay(parseProfileName(name)),
+    };
   }
   return {
     formatVersion: SETTINGS_BUNDLE_FORMAT_VERSION,

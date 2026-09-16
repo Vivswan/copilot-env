@@ -110,7 +110,6 @@ function completeSlot(mode: ProfileMode, provider: TokenProvider = "gh-token"): 
     kind: "complete",
     credential: { kind: "stored", provider, token: "tok" },
     mode,
-    integrationIdentity: null,
   };
 }
 
@@ -119,7 +118,6 @@ function partialSlot(mode: ProfileMode | null = null): ProfileSlot {
     kind: "partial",
     credential: { kind: "none", provider: null },
     mode,
-    integrationIdentity: null,
   };
 }
 

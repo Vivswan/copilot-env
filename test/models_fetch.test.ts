@@ -13,7 +13,7 @@ import {
   passthroughIdentity,
   type ProbeFetch,
   probeIntegrationIdentity,
-  resolveCopilotHost,
+  selectDirectIdentityAndHost,
   surveyIntegrationIdentities,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
@@ -128,8 +128,10 @@ test("every consumer's GET /models carries its own identity pair and the bearer,
   expect(
     await pairsDuring(
       "ghp_x",
+      // Pinned: the identity step sends nothing, so the one round is the host rule's.
       () =>
-        resolveCopilotHost("ghp_x", directClientHeaders(ua, COPILOT_CLI_INTEGRATION_ID), {
+        selectDirectIdentityAndHost("ghp_x", ua, {
+          pinned: COPILOT_CLI_INTEGRATION_ID,
           fetchImpl,
           narrator: { info: () => {} },
         }),

@@ -102,7 +102,7 @@ export async function resolveAndPersistDirectWiring(
     const verdict = probed.directIntegrationId ?? CODEX_IDENTITY_NAME;
     state.setProfileIntegrationIdentity(
       profile,
-      pin === null ? verdict : slot.integrationIdentity,
+      pin === null ? verdict : undefined,
       keyCredential,
       {
         host: probed.directBaseUrl,

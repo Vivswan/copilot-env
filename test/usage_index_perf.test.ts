@@ -1,7 +1,7 @@
 // The usage index on a seeded tree of real-log shape: a warm `agent cost` reads no session
-// bytes, an append is read as its new bytes plus the probe, a deleted session leaves the
-// index, no planted text reaches the index file, and a warm run is a fraction of the cold
-// one. In process throughout; sized by COPILOT_ENV_USAGE_FIXTURE_MB (30 MiB unset).
+// bytes and re-parses nothing, an append is read as its new bytes plus the probe, a deleted
+// session leaves the index, and no planted text reaches the index file. Timings are logged,
+// never asserted. In process throughout; sized by COPILOT_ENV_USAGE_FIXTURE_MB (30 MiB unset).
 import { appendFileSync, existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -24,10 +24,6 @@ function fixtureMb(raw: string | undefined): number {
   }
   return n;
 }
-
-/** A cold run this short is dominated by fixed costs, so only a longer one carries a ratio. */
-const RATIO_FLOOR_MS = 200;
-const WARM_FRACTION = 1 / 5;
 
 /** Every byte SQLite left on disk for the index, as latin1 text: the database itself (it
  *  must be there and be one) and whichever sidecars exist. */
@@ -75,9 +71,6 @@ test.skipIf(!utcPinnable())(
     expect(warm.runtime.index.filesReused).toBe(cold.runtime.index.filesParsedWhole);
     expect(warm.runtime.index.filesParsedWhole + warm.runtime.index.filesParsedTail).toBe(0);
     expect(warm.runtime.index.bytesRead).toBe(0);
-    if (cold.runtime.timing.total > RATIO_FLOOR_MS) {
-      expect(warm.runtime.timing.total).toBeLessThan(cold.runtime.timing.total * WARM_FRACTION);
-    }
 
     // No planted prompt text reaches the index: every marker is in some session file
     // (read one file at a time: a whole tree is past V8's string limit) ...

@@ -5,6 +5,7 @@ import type { AutoupdateData } from "../autoupdate/state.ts";
 import type { ClaudeWiringStatus } from "../claude/config.ts";
 import type { ClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import type { CodexWiringStatus } from "../codex/config.ts";
+import type { CodexSandboxMode } from "../codex/sandbox.ts";
 import type { AuthProvider, ProfileMode } from "../copilot_api/env_state.ts";
 import type { CopilotApiPaths } from "../copilot_api/paths.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
@@ -277,6 +278,17 @@ export type CodexFacts = CodexWiringStatus & {
   bakedCredential?: BakedCredentialFreshness;
 };
 
+/** One launch's effective sandbox (codexSandboxReading), gathered only where Codex starts and the
+ *  launch's wiring runs the sandboxed proxy auth command: a refused file, Direct, a static bearer,
+ *  and an unwired table have no row. The default sweep carries plain `codex` and every `--profile`
+ *  launch; a narrowed run its target. */
+export interface CodexSandboxFacts {
+  /** The launch: null is plain `codex`. */
+  profile: Profile;
+  configFile: string;
+  sandbox: CodexSandboxMode;
+}
+
 /** Claude wiring facts: the home + settings.json contract + gh-auth (for direct). */
 export type ClaudeFacts = ClaudeWiringStatus & {
   home: string;
@@ -354,6 +366,7 @@ export interface HealthFacts {
     ghAuthUnproven?: true;
   };
   codex?: CodexFacts;
+  codexSandbox?: CodexSandboxFacts[];
   codexHost?: CodexHostFacts;
   claude?: ClaudeFacts;
   /** The Claude Desktop library judged against the `claude-desktop` key (root-wide, so never

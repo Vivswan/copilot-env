@@ -1,5 +1,6 @@
 // Pure evaluators: HealthFacts -> CheckResult[]. No I/O -- every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
+import { describeCodexSandboxMode, proxyAuthBlockedBySandbox } from "../codex/sandbox.ts";
 import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
 import { compareDenoVersions, SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
 import { agentStartCommand, type ProfileName } from "../copilot_api/profile.ts";
@@ -21,6 +22,7 @@ import type {
   AutoupdateStatus,
   BootstrapFacts,
   CliFacts,
+  CodexSandboxFacts,
   DaemonProbeFacts,
   DefaultHomeMigrationFacts,
   HealthFacts,
@@ -939,6 +941,31 @@ export function checkAuth(f: AuthFacts): CheckResult {
   };
 }
 
+/** The same verdict `agent codex --check` prints for the default selection; the facts carry only
+ *  selections that run the sandboxed auth command, so every entry earns a row. */
+export function checkCodexSandbox(f: CodexSandboxFacts): CheckResult {
+  const base = {
+    ...meta("setup.codex-sandbox"),
+    profile: f.profile,
+    value: {
+      configFile: f.configFile,
+      proxyAuthReaches: f.sandbox.proxyAuthReaches,
+      sandboxKey: f.sandbox.kind === "set" ? f.sandbox.key : null,
+      sandboxValue: f.sandbox.kind === "set" ? f.sandbox.value : null,
+      line: f.sandbox.kind === "set" ? f.sandbox.line : null,
+    },
+  };
+  const blocked = proxyAuthBlockedBySandbox(f.sandbox, f.configFile, f.profile);
+  if (blocked !== null) return { ...base, status: "warn", ...blocked };
+  return {
+    ...base,
+    status: "ok",
+    detail: `${
+      describeCodexSandboxMode(f.sandbox, f.configFile)
+    }; the proxy auth command can reach the proxy`,
+  };
+}
+
 /** Report opt-in autoupdate status (mirrors `agent update --auto-status`). */
 export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
   const base = {
@@ -1013,6 +1040,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
     out.push(checkProfileAuth(facts.profileAuth.name, facts.profileAuth.slot, facts.profileAuth));
   }
   if (facts.codex) out.push(checkCodex(facts.codex, runProfile));
+  for (const selection of facts.codexSandbox ?? []) out.push(checkCodexSandbox(selection));
   if (facts.codexLive) out.push(checkCodexLive(facts.codexLive, runProfile));
   if (facts.codexHost) out.push(checkCodexHost(facts.codexHost));
   if (facts.claude) out.push(checkClaude(facts.claude, runProfile));

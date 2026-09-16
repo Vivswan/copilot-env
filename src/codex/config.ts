@@ -59,6 +59,13 @@ import {
   withCodexHostFarm,
 } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome } from "./paths.ts";
+import {
+  codexRefusesLaunch,
+  type CodexSandboxMode,
+  proxyAuthBlockedBySandbox,
+  readCodexSandboxMode,
+  runsSandboxedProxyAuth,
+} from "./sandbox.ts";
 import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
 
 const logger = createStderrLogger();
@@ -558,6 +565,23 @@ export function inspectCodexWiring(
   };
 }
 
+/** What the sandbox report judges for a `codex [--profile <launch>]` launch: nothing when Codex
+ *  refuses the file for that launch, else the launch's wiring, and only when it runs the sandboxed
+ *  proxy auth command its effective sandbox. The proxy-and-command classification is
+ *  port-independent (only baseUrlMatches uses the port), so callers pass the run's own port and
+ *  never derive a named profile's. */
+export function codexSandboxReading(
+  configToml: TextReadResult,
+  launch: Profile,
+  port: number,
+): CodexSandboxMode | null {
+  if (codexRefusesLaunch(configToml, launch)) return null;
+  const wiring = inspectCodexWiring(configToml, null, port, false, launch);
+  if (!runsSandboxedProxyAuth(wiring)) return null;
+  // The command-shape classification proves the text parsed, so the reader is non-null.
+  return readCodexSandboxMode(configToml);
+}
+
 // Seeded when config.toml is absent OR empty (readCodexToml reads a whitespace-only file as
 // absent). Provider tables and the managed top-level keys
 // (web_search) are absent on purpose: the merge injects the former and the writer force-writes the
@@ -864,6 +888,10 @@ function checkCodexConfig(): void {
         `service_tier: ${serviceTierDetail(parse(read.text) as Record<string, unknown>)}`,
       );
     }
+    // Same verdict as health's setup.codex-sandbox row, for what plain `codex` runs here.
+    const sandbox = codexSandboxReading(read, null, Number(copilotApiResolvePort()));
+    const blocked = sandbox === null ? null : proxyAuthBlockedBySandbox(sandbox, configPath, null);
+    if (blocked !== null) logger.warn(`  ! ${blocked.detail}; ${blocked.fix}`);
     process.exitCode = providerModeExitCode(status.providerMode);
   } catch (e) {
     logger.error(`Codex provider check failed: ${errMessage(e)}`);

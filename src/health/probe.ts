@@ -20,6 +20,7 @@ import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import {
   bakedCodexToken,
   CODEX_ENV_KEY,
+  codexSandboxReading,
   type CodexWiringStatus,
   inspectCodexWiring,
 } from "../codex/config.ts";
@@ -991,6 +992,19 @@ export async function gatherFacts(
             }
             : {}),
         };
+        // One row per launch that Codex starts and whose wiring runs the sandboxed auth command:
+        // the default sweep judges plain `codex` AND each `--profile` launch; a narrowed run its
+        // target. The run's own resolved port stands in for every launch (codexSandboxReading):
+        // deriving a named profile's candidate port (resolvePort, fallbackPort) throws on an
+        // exhausted range and would take the whole report down for a Direct profile that needs no
+        // port at all.
+        const launches: Profile[] = profile === null ? [null, ...deps.profileNames()] : [profile];
+        facts.codexSandbox = launches.flatMap((launch) => {
+          const sandbox = codexSandboxReading(configRead, launch, wiringPort());
+          return sandbox === null
+            ? []
+            : [{ profile: launch, configFile: codexConfigPath(home), sandbox }];
+        });
       })(),
     );
   }

@@ -19,6 +19,7 @@ import { bold, COLOR_ENABLED, cyan, dim, green } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { versionLessThan } from "../utils/semver.ts";
+import { terminalWidth } from "../utils/table.ts";
 
 export interface ConfigArgs {
   /** A Commander variadic; exactly two strings when well-formed. */
@@ -169,9 +170,6 @@ function runGet(get: string | undefined, platform: NodeJS.Platform): void {
   process.stdout.write(`${configTableOutput(platform)}\n`);
 }
 
-/** `process.stdout.columns` is undefined off a TTY and 0 on a size-less pty; the same fallback
- *  Commander's help uses. */
-const TABLE_WIDTH_FALLBACK = 80;
 /** Below this the right column stops wrapping: a narrower ribbon reads worse than the terminal's
  *  own breaking. */
 const MIN_RIGHT_COLUMNS = 30;
@@ -314,7 +312,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
 export function configTableOutput(platform: NodeJS.Platform = process.platform): string {
   return configTable(new CopilotEnvConfig().read(), {
     platform,
-    width: process.stdout.columns || TABLE_WIDTH_FALLBACK,
+    width: terminalWidth() ?? Number.POSITIVE_INFINITY,
     daemonUp: anyTrackedDaemonAlive(),
     proxyVersion: nextProxyVersion(),
     color: COLOR_ENABLED,

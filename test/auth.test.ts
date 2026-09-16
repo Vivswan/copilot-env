@@ -471,6 +471,9 @@ test("auth --identities stars what the agent configs bake, probes the pin, and n
   const { claudeHome, codexHome } = isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
   stubIdentitySurvey();
+  // The table is pinned at its natural width whatever terminal runs the tests.
+  const columns = process.env.COLUMNS;
+  process.env.COLUMNS = "200";
   try {
     // No agent wired Direct: nothing to star there; the Proxy star is what the next start sends.
     const out = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
@@ -587,6 +590,8 @@ test("auth --identities stars what the agent configs bake, probes the pin, and n
     expect(unknown).not.toMatch(/^codex\s+rejected \(400\) \*/m);
   } finally {
     setIntegrationProbeFetch(null);
+    if (columns === undefined) delete process.env.COLUMNS;
+    else process.env.COLUMNS = columns;
   }
 });
 

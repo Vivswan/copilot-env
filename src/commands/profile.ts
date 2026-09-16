@@ -37,6 +37,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { removeTreeReported } from "../utils/report_write.ts";
+import { formatTable, terminalWidth } from "../utils/table.ts";
 import {
   acquireCredential,
   type CredentialAcquisition,
@@ -218,42 +219,31 @@ export interface ProfileListRow {
   daemon: ProxyStatus | null;
 }
 
-/** Columns are padded before coloring so ANSI codes never skew the alignment. */
-export function renderProfileTable(rows: ProfileListRow[]): string {
-  const GAP = "    ";
-  const modeText = (r: ProfileListRow): string => r.mode ?? "incomplete";
-  const providerText = (r: ProfileListRow): string => r.provider ?? "no credential";
-  const nameWidth = rows.reduce((m, r) => Math.max(m, r.name.length), "NAME".length);
-  const modeWidth = rows.reduce((m, r) => Math.max(m, modeText(r).length), "MODE".length);
-  const providerWidth = rows.reduce(
-    (m, r) => Math.max(m, providerText(r).length),
-    "PROVIDER".length,
-  );
-  // DAEMON is last and unpadded, so no invisible spaces are baked into the gray span.
-  const header = [
-    `     ${"NAME".padEnd(nameWidth)}`,
-    "MODE".padEnd(modeWidth),
-    "PROVIDER".padEnd(providerWidth),
-    "DAEMON",
-  ];
-  const lines: string[] = [gray(header.join(GAP))];
-  for (const r of rows) {
-    const modeCell = modeText(r).padEnd(modeWidth);
-    const providerCell = providerText(r).padEnd(providerWidth);
-    const daemonCell = r.daemon === null
+export function renderProfileTable(
+  rows: ProfileListRow[],
+  width: number | null = terminalWidth(),
+): string {
+  const cells = rows.map((r) => {
+    const mode = r.mode ?? "incomplete";
+    const provider = r.provider ?? "no credential";
+    // A direct profile has no daemon: "-", never a blank that reads as missing data.
+    const daemon = r.daemon === null
       ? gray("-")
       : r.daemon.up
       ? green(`up (port ${r.daemon.port})`)
       : gray("down");
-    const cells = [
-      `     ${cyan(r.name.padEnd(nameWidth))}`,
-      r.mode === null ? yellow(modeCell) : modeCell,
-      r.provider === null ? yellow(providerCell) : providerCell,
-      daemonCell,
+    return [
+      cyan(r.name),
+      r.mode === null ? yellow(mode) : mode,
+      r.provider === null ? yellow(provider) : provider,
+      daemon,
     ];
-    lines.push(cells.join(GAP).trimEnd());
-  }
-  return lines.join("\n");
+  });
+  return formatTable(cells, {
+    header: ["NAME", "MODE", "PROVIDER", "DAEMON"].map(gray),
+    indent: "     ",
+    width,
+  }).join("\n");
 }
 
 async function runList(): Promise<void> {

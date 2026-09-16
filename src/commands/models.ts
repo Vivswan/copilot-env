@@ -9,6 +9,7 @@ import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { bold, cyan, gray } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
+import { formatTable, type TableRow, terminalWidth } from "../utils/table.ts";
 import { mergeUnlistedModels, type ModelListEntry, parseModelList } from "../copilot_api/models.ts";
 
 export interface ModelsArgs {
@@ -43,9 +44,11 @@ function entryDetail(entry: ModelListEntry): string {
   return parts.filter((p) => p !== null).join(", ");
 }
 
-/** Chat models come first within a vendor because they are the ones the wired agents can run.
- *  Columns are padded before coloring so ANSI codes never skew the alignment. */
-export function renderModelTable(models: ModelListEntry[]): string {
+/** Chat models come first within a vendor because they are the ones the wired agents can run. */
+export function renderModelTable(
+  models: ModelListEntry[],
+  width: number | null = terminalWidth(),
+): string {
   const byVendor = new Map<string, ModelListEntry[]>();
   for (const model of models) {
     const vendor = model.vendor ?? "Other";
@@ -53,30 +56,23 @@ export function renderModelTable(models: ModelListEntry[]): string {
     group.push(model);
     byVendor.set(vendor, group);
   }
-  const idWidth = models.reduce((m, e) => Math.max(m, e.id.length), 0);
-  const nameWidth = models.reduce((m, e) => Math.max(m, (e.name ?? "").length), 0);
   const chatFirst = (e: ModelListEntry): number => (e.type === null || e.type === "chat" ? 0 : 1);
   const vendors = [...byVendor.keys()].sort(
     (a, b) => Number(a === "Other") - Number(b === "Other") || a.localeCompare(b),
   );
-  const lines: string[] = [];
+  const rows: TableRow[] = [];
   for (const vendor of vendors) {
-    lines.push(`   ${bold(vendor)}`);
+    rows.push({ heading: bold(vendor) });
     const ordered = [...(byVendor.get(vendor) ?? [])].sort(
       (a, b) => chatFirst(a) - chatFirst(b) || a.id.localeCompare(b.id),
     );
     for (const entry of ordered) {
-      // gray("") would append ANSI codes after the padding and defeat the trailing-space trim.
+      // gray("") would leave ANSI codes in an empty cell and defeat the trailing-space trim.
       const detail = entryDetail(entry);
-      const row = [
-        `     ${cyan(entry.id.padEnd(idWidth))}`,
-        (entry.name ?? "").padEnd(nameWidth),
-        detail === "" ? "" : gray(detail),
-      ];
-      lines.push(row.join("  ").trimEnd());
+      rows.push([cyan(entry.id), entry.name ?? "", detail === "" ? "" : gray(detail)]);
     }
   }
-  return lines.join("\n");
+  return formatTable(rows, { indent: "   ", wrap: [false, false, true], width }).join("\n");
 }
 
 type ResolvedSource = { source: "direct" } | { source: "proxy"; port: number };

@@ -39,7 +39,9 @@
     "consola": "npm:consola@^3.4.2",
     "semver": "jsr:@std/semver@^1.0.8",
     "smol-toml": "npm:smol-toml@^1.8.0",
-    "valibot": "npm:valibot@^1.4.2"
+    "string-width": "npm:string-width@^8.2.2",
+    "valibot": "npm:valibot@^1.4.2",
+    "wrap-ansi": "npm:wrap-ansi@^10.0.1"
   },
   "tasks": {
     "test": "deno test -P=test test/",

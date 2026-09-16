@@ -81,7 +81,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { withFileLockSync } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { formatTable, printTable } from "../utils/table.ts";
+import { formatTable, printTable, terminalWidth, wrapLine } from "../utils/table.ts";
 import { removeReported } from "../utils/report_write.ts";
 
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
@@ -769,7 +769,7 @@ function runList(): void {
       describe(liveCredentialSourceLabel(cred.read(), look), cred.isAuthenticated()),
     ]);
   }
-  printTable(rows, { indent: "" });
+  printTable(rows, { indent: "", wrap: [false, true] });
 }
 
 // --- integration identities -------------------------------------------------
@@ -846,6 +846,7 @@ function bakedDirectSenders(
 /** The `*` marks what is in effect today per host: Direct as the agent configs bake it (a pin
  *  lands there only at the next rewire), Proxy as a fresh daemon launch sends it. */
 function identityTableLines(input: IdentityTableInput): string[] {
+  const width = terminalWidth();
   const { token, survey, pinned, baked, nextDirect, rewire, proxyPassthrough, daemonRunning } =
     input;
   const senders = bakedDirectSenders(baked);
@@ -878,7 +879,7 @@ function identityTableLines(input: IdentityTableInput): string[] {
       const verdict = verdictOf(c.survey, name);
       return verdict === undefined || verdict.kind === "accepted"
         ? []
-        : [`  ${name} on ${c.label}: ${verdict.detail}`];
+        : wrapLine(`${name} on ${c.label}: ${verdict.detail}`, width, "  ", "    ");
     })
   );
   const next = nextDirect ?? "nothing (every identity rejects this credential)";
@@ -917,17 +918,29 @@ function identityTableLines(input: IdentityTableInput): string[] {
       : []),
   ];
   return [
-    pinned === null ? "integration-id: auto" : `integration-id: pinned to ${pinned}`,
-    "* = in effect today: Direct as the agent configs bake it, Proxy as a fresh daemon launch sends it",
+    ...wrapLine(
+      pinned === null ? "integration-id: auto" : `integration-id: pinned to ${pinned}`,
+      width,
+      "",
+      "  ",
+    ),
+    ...wrapLine(
+      "* = in effect today: Direct as the agent configs bake it, Proxy as a fresh daemon launch sends it",
+      width,
+      "",
+      "  ",
+    ),
     ...formatTable(rows, {
       header: [
         "identity",
         ...columns.map((c) => `${c.label} (${new URL(c.survey.apiBase).host})`),
         "note",
       ],
+      wrap: [false, ...columns.map(() => false), true],
       indent: "",
+      width,
     }),
-    ...notes,
+    ...notes.flatMap((note) => wrapLine(note, width, "", "  ")),
     ...reasons,
   ];
 }

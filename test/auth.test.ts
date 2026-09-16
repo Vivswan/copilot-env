@@ -32,6 +32,7 @@ import {
   COPILOT_CLI_INTEGRATION_ID,
   COPILOT_SANDBOX_INTEGRATION_ID,
   INTEGRATION_ID_HEADER,
+  type ProbeFetch,
   setIntegrationProbeFetch,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
@@ -439,13 +440,17 @@ test("auth: --provider cannot combine with a sub-action (never silently dropped)
 
 // --- integration identities -------------------------------------------------
 
-/** A PAT the CLI identity accepts on both hosts (a 5-model generic catalog, 37 on the account host),
- *  that the sandbox accepts on the generic host only (2 models), and that vscode-chat and the
- *  default Direct identity reject. A `copilot-host` literal host accepts every identity (9 models). */
+/** A PAT the CLI identity accepts on both hosts (a 5-model generic catalog under the agents' header
+ *  set, 11 under the daemon's id-only set, 37 on the account host), that the sandbox accepts on the
+ *  generic host only (2 models), and that vscode-chat and the default Direct identity reject. A
+ *  `copilot-host` literal host accepts every identity (9 models). */
 const CONFIGURED_HOST = "https://copilot.example";
 
+/** The stub the identities tests install (stubIdentitySurvey), kept so a test can wrap it. */
+let stubbedSurveyFetch: ProbeFetch = () => Promise.reject(new Error("no survey stub installed"));
+
 function stubIdentitySurvey(designated = "https://api.enterprise.githubcopilot.com"): void {
-  setIntegrationProbeFetch((input, init) => {
+  stubbedSurveyFetch = (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(
@@ -458,13 +463,20 @@ function stubIdentitySurvey(designated = "https://api.enterprise.githubcopilot.c
       });
     if (new URL(url).origin === CONFIGURED_HOST) return Promise.resolve(catalog(9));
     const enterprise = url.startsWith("https://api.enterprise.");
-    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
-    if (id === COPILOT_CLI_INTEGRATION_ID) return Promise.resolve(catalog(enterprise ? 37 : 5));
+    const headers = new Headers(init?.headers);
+    const id = headers.get(INTEGRATION_ID_HEADER);
+    // The daemon's header set carries the id alone (no User-Agent): Copilot gates the catalog per
+    // header set, so the same id lists a different catalog for it.
+    const daemon = !headers.has("User-Agent");
+    if (id === COPILOT_CLI_INTEGRATION_ID) {
+      return Promise.resolve(catalog(enterprise ? 37 : daemon ? 11 : 5));
+    }
     if (id === COPILOT_SANDBOX_INTEGRATION_ID && !enterprise) return Promise.resolve(catalog(2));
     return Promise.resolve(
       new Response("Personal Access Tokens are not supported for this endpoint", { status: 400 }),
     );
-  });
+  };
+  setIntegrationProbeFetch(stubbedSurveyFetch);
 }
 
 const PAT_REJECTION = "400 Personal Access Tokens are not supported for this endpoint";
@@ -478,8 +490,18 @@ test("auth --identities: one column per host, marks what the configs bake and a 
   process.env.COLUMNS = "200";
   try {
     // No agent wired Direct: nothing to star; `+` is what the next start sends on the host in use,
-    // which for this PAT (accepted under the CLI id on the generic host) is the generic host.
+    // which for this PAT (accepted under the CLI id on the generic host) is the generic host. The
+    // daemon's header set is surveyed against the SAME columns: one account lookup for both.
+    let lookups = 0;
+    const surveyFetch = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/copilot_internal/user")) lookups += 1;
+      return stubbedSurveyFetch(input, init);
+    };
+    setIntegrationProbeFetch(surveyFetch);
     const out = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(lookups).toBe(1);
+    setIntegrationProbeFetch(stubbedSurveyFetch);
     expect(out).toContain("integration-id: auto");
     expect(out).toContain("copilot-host: auto (api.githubcopilot.com in use)");
     expect(out).toMatch(
@@ -487,7 +509,7 @@ test("auth --identities: one column per host, marks what the configs bake and a 
     );
     expect(out).toMatch(/^codex\s+rejected \(400\)\s+rejected \(400\)\s+Direct default/m);
     expect(out).toMatch(
-      /^copilot-developer-cli\s+accepted \(5 models\) \+\s+accepted \(37 models\)\s+GitHub Copilot CLI/m,
+      /^copilot-developer-cli\s+accepted \(11 models\) \+\s+accepted \(37 models\)\s+GitHub Copilot CLI/m,
     );
     expect(out).toMatch(/^copilot-developer-sandbox\s+accepted \(2 models\)\s+rejected \(400\)$/m);
     expect(out).toMatch(/^vscode-chat\s+rejected \(400\)\s+rejected \(400\)\s+proxy default/m);

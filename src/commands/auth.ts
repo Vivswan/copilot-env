@@ -830,14 +830,19 @@ function sameOrigin(a: string, b: string): boolean {
 }
 
 interface IdentityTableInput {
+  /** Every row under the AGENTS' header set (directClientHeaders): what a Direct wiring sends. */
   survey: IdentitySurvey;
+  /** The daemon's candidates under ITS header set (the id header alone): what a passthrough launch
+   *  sends. Copilot gates the catalog per header set, so the two verdicts for one identity can
+   *  differ; the `+` cell renders this one. */
+  passthrough: IdentitySurvey;
   pinned: string | null;
   /** The `copilot-host` literal, or null for `auto`. */
   configuredHost: string | null;
   /** What the key resolves to for this credential (resolveCopilotHost): the host the next Direct
    *  wiring bakes. */
   hostInUse: string;
-  /** The host a fresh daemon launch is pinned to (resolveDaemonHost), resolved under ITS identity. */
+  /** The host a fresh daemon launch is pinned to (resolveLaunchCredential), judged under ITS identity. */
   proxyHost: string;
   /** What each agent's Direct wiring sends today, and to which host: the `*` marks' source of truth. */
   baked: { codex: BakedDirectIdentity; claude: BakedDirectIdentity };
@@ -877,6 +882,7 @@ function identityTableLines(input: IdentityTableInput): string[] {
   const width = terminalWidth();
   const {
     survey,
+    passthrough,
     pinned,
     configuredHost,
     hostInUse,
@@ -898,25 +904,54 @@ function identityTableLines(input: IdentityTableInput): string[] {
   );
   const inUse = survey.hosts.find((h) => sameOrigin(h.apiBase, hostInUse)) ?? null;
   const proxyColumn = survey.hosts.find((h) => sameOrigin(h.apiBase, proxyHost)) ?? null;
-  const names = [...new Set(survey.hosts.flatMap((h) => h.verdicts.map((v) => v.name)))];
+  const names = [
+    ...new Set(
+      [...survey.hosts, ...passthrough.hosts].flatMap((h) => h.verdicts.map((v) => v.name)),
+    ),
+  ];
   const verdictOf = (column: IdentityHostSurvey, name: string): IdentityVerdict | undefined =>
     column.verdicts.find((v) => v.name === name)?.verdict;
-  const marksFor = (column: IdentityHostSurvey, name: string): string => {
+  const daemonVerdictOf = (
+    column: IdentityHostSurvey,
+    name: string,
+  ): IdentityVerdict | undefined => {
+    const daemonColumn = passthrough.hosts.find((h) => sameOrigin(h.apiBase, column.apiBase));
+    return daemonColumn === undefined ? undefined : verdictOf(daemonColumn, name);
+  };
+  // A cell renders the verdict of the header set its mark refers to: `*` the agents', `+` the
+  // daemon's; both marks, both verdicts. An unmarked row shows the agents' set, else the daemon's
+  // (an identity only the daemon sends, vscode-chat).
+  const cell = (column: IdentityHostSurvey, name: string): string => {
     const direct = senders.some((s) => s.name === name && sameOrigin(s.baseUrl, column.apiBase));
     const proxy = column === proxyColumn && proxyNext === name;
-    return `${direct ? "*" : ""}${proxy ? "+" : ""}`;
+    const agents = verdictOf(column, name);
+    const daemon = daemonVerdictOf(column, name);
+    if (direct && proxy) return `${verdictCell(agents, "*")} / ${verdictCell(daemon, "+")}`;
+    if (proxy) return verdictCell(daemon, "+");
+    return verdictCell(agents ?? daemon, direct ? "*" : "");
   };
   const rows = names.map((name) => [
     name,
-    ...survey.hosts.map((c) => verdictCell(verdictOf(c, name), marksFor(c, name))),
+    ...survey.hosts.map((c) => cell(c, name)),
     IDENTITY_NOTES[name] ?? "",
   ]);
+  // Every rejection behind a rendered cell, the daemon's tagged as such where it differs in kind.
   const reasons = names.flatMap((name) =>
     survey.hosts.flatMap((c) => {
-      const verdict = verdictOf(c, name);
-      return verdict === undefined || verdict.kind === "accepted"
-        ? []
-        : wrapLine(`${name} on ${hostLabel(c)}: ${verdict.detail}`, width, "  ", "    ");
+      const agents = verdictOf(c, name);
+      const daemon = daemonVerdictOf(c, name);
+      const lines: string[] = [];
+      const shown = agents ?? daemon;
+      if (shown !== undefined && shown.kind !== "accepted") {
+        lines.push(`${name} on ${hostLabel(c)}: ${shown.detail}`);
+      }
+      if (
+        agents !== undefined && daemon !== undefined && daemon.kind !== "accepted" &&
+        daemon.kind !== agents.kind
+      ) {
+        lines.push(`${name} on ${hostLabel(c)}, as the daemon sends it: ${daemon.detail}`);
+      }
+      return lines.flatMap((line) => wrapLine(line, width, "  ", "    "));
     })
   );
   const next = nextDirect ?? "nothing (every identity rejects this credential)";
@@ -1059,12 +1094,19 @@ async function surveyAndTable(
     [pinned, ...bakedDirectSenders(baked).map((s) => s.name), preferredName],
     (id) => directIdentity(userAgent, id),
   );
-  const candidates = withExtraCandidates(
-    directRows,
-    PASSTHROUGH_IDENTITY_CANDIDATES.map((c) => c.name),
+  // The daemon's rows under ITS header set (the id header alone), surveyed apart: one identity's
+  // verdict can differ between the two header sets, and the `+` cell must show the daemon's.
+  const passthroughRows = withExtraCandidates(
+    PASSTHROUGH_IDENTITY_CANDIDATES,
+    [pinned],
     passthroughIdentity,
   );
-  const survey = await surveyIntegrationIdentities(token, candidates, { configuredHost });
+  const survey = await surveyIntegrationIdentities(token, directRows, { configuredHost });
+  // The same columns, one account lookup: a lookup answering differently for the second survey
+  // could otherwise leave a `+` cell with no daemon verdict to show.
+  const passthroughSurvey = await surveyIntegrationIdentities(token, passthroughRows, {
+    hosts: survey,
+  });
   const generic = survey.hosts.find((h) => h.role === "generic") ?? survey.hosts[0];
   if (generic === undefined) throw new Error("the identity survey returned no host");
   const credential = new Credential(undefined, profile);
@@ -1103,6 +1145,7 @@ async function surveyAndTable(
   for (
     const line of identityTableLines({
       survey,
+      passthrough: passthroughSurvey,
       pinned,
       configuredHost,
       hostInUse,
@@ -1196,11 +1239,6 @@ async function pinIdentity(
   if (token === null) {
     logger.warn(`Pinning \`${id}\` unverified: ${reason}.`);
   } else {
-    // The host the pin's requests go to: the literal; else the slot's cached host while it reads
-    // back under this id (what the writer replays without probing); else what `auto` selects under
-    // the pin's headers (resolveCopilotHost's rule read off the generic column: a blocked host moves
-    // to the account's, any other answer keeps it). A known host is surveyed as the configured
-    // column, so it always has a row whatever the account lookup answers.
     const configuredHost = new CopilotEnvConfig().copilotHost();
     const rule = replayableIdentity(profile, id, configuredHost);
     // The host the pin's requests go to: the writer's replayed pair, else the pin's own selection

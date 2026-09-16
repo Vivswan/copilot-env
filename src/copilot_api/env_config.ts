@@ -401,6 +401,26 @@ const ABSOLUTE_PATH_DOMAIN: ConfigDomain<string> = domain(
  *  origin alone: a path, query, or userinfo is a typo, not a host. */
 export const COPILOT_HOST_AUTO = "auto";
 
+/** THE one loopback test for a URL's hostname (as `new URL().hostname` spells it): the whole
+ *  127.0.0.0/8 block, `::1` and its IPv4-mapped forms (bracketed), and `localhost` with or without
+ *  the trailing dot. Owned here, beside the `copilot-host` validator, so isDirectBaseUrl
+ *  (integration_identity.ts) and the validator can never disagree on what a Copilot host is not. */
+export function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, "");
+  if (host === "localhost") return true;
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (bare === "::1") return true;
+  // An IPv4-mapped address arrives as the URL parser serialises it: two hex groups (`::ffff:7f00:1`),
+  // or dotted when hand-spelled elsewhere.
+  const mapped = bare.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  const v4 = mapped !== null
+    ? `${Number.parseInt(mapped[1] ?? "0", 16) >> 8}.0.0.0`
+    : bare.startsWith("::ffff:")
+    ? bare.slice("::ffff:".length)
+    : bare;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4);
+}
+
 function copilotHostRejection(raw: string): string | null {
   const expected = "expected `auto` or an https:// origin";
   if (!URL.canParse(raw)) return expected;
@@ -410,9 +430,7 @@ function copilotHostRejection(raw: string): string | null {
     return "expected an https:// origin without a path or query";
   }
   // A loopback origin is the proxy's shape, never a Copilot host (isDirectBaseUrl agrees).
-  if (["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)) {
-    return "expected an https:// origin that is not loopback";
-  }
+  if (isLoopbackHostname(url.hostname)) return "expected an https:// origin that is not loopback";
   return null;
 }
 

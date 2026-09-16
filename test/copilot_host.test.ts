@@ -97,9 +97,18 @@ test("agent config: copilot-host takes `auto` or an https origin, refuses anythi
   expect(() => runConfig({ set: ["copilot-host", `${ENTERPRISE}/models`] })).toThrow(
     /without a path or query/,
   );
-  expect(() => runConfig({ set: ["copilot-host", "https://localhost:8443"] })).toThrow(
-    /not loopback/,
-  );
+  // Every loopback spelling, not three: the whole 127/8 block, IPv4-mapped ::1, a trailing dot.
+  for (
+    const loopback of [
+      "https://localhost:8443",
+      "https://127.0.0.2",
+      "https://localhost.",
+      "https://[::ffff:127.0.0.1]",
+      "https://[::1]:8443",
+    ]
+  ) {
+    expect(() => runConfig({ set: ["copilot-host", loopback] })).toThrow(/not loopback/);
+  }
   expect(new CopilotEnvConfig().copilotHost()).toBeNull();
   runConfig({ set: ["copilot-host", GHE] });
   expect(new CopilotEnvConfig().copilotHost()).toBe(GHE);
@@ -173,9 +182,11 @@ test("a Direct wiring bakes the copilot-host into both agents' base URLs; detect
     )
       .providerMode,
   ).toBe("direct");
-  // Only the shape gates: an http base that is not the proxy, or an https base with a path (some
-  // other API), is the inspector's UNWIRED proxy.
-  for (const baseUrl of ["http://elsewhere.example", "https://api.openai.com/v1"]) {
+  // Only the shape gates: an http base that is not the proxy, an https base with a path (some other
+  // API), or an https loopback the validator also refuses, is the inspector's UNWIRED proxy.
+  for (
+    const baseUrl of ["http://elsewhere.example", "https://api.openai.com/v1", "https://127.0.0.2"]
+  ) {
     const foreign = inspectCodexWiring(codexConfigToml({ baseUrl }), null, 4141, false);
     expect([foreign.providerMode, foreign.providerWired]).toEqual(["proxy", false]);
   }
@@ -612,7 +623,7 @@ test("a daemon launch resolves its identity and host as one pair: re-selected wh
     copilotHost: ENTERPRISE,
   });
   expect(seen.map((s) => s.id)).toEqual([VSCODE_CHAT_INTEGRATION_ID]);
-  // A literal pins every kind, probing nothing.
+  // A literal pins every kind; the PAT's identity selection probes the literal and nothing else.
   new CopilotEnvConfig().set({ copilotHost: GHE });
   seen.length = 0;
   expect((await launch()).copilotHost).toBe(GHE);

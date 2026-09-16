@@ -711,7 +711,7 @@ export function spawnConfiguredDaemon(opts: {
   profile: Profile;
   paths: CopilotApiPaths;
   credential: DaemonCredential;
-  /** resolveDaemonHost's answer for `credential`, so the spawn never re-probes. */
+  /** resolveLaunchCredential's host for `credential` (one pair), so the spawn never re-probes. */
   copilotHost: string | null;
   /** Only ensureProxyFloor mints one, so a spawn without the gate does not compile; every bind-race
    *  relaunch runs exactly what the floor check judged. */

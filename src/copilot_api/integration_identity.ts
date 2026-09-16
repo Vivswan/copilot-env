@@ -11,7 +11,7 @@
 import { consola, type ConsolaInstance } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
-import { CODEX_IDENTITY_NAME } from "./env_config.ts";
+import { CODEX_IDENTITY_NAME, isLoopbackHostname } from "./env_config.ts";
 import type { AuthProvider } from "./env_state.ts";
 
 /** The gating header. Its VALUES below are external contracts: never rename. */
@@ -48,12 +48,10 @@ export function isDirectBaseUrl(url: string): boolean {
   const parsed = new URL(url);
   // The same origin-only shape the `copilot-host` validator enforces: a path, query, or userinfo
   // is some other API, and a loopback https origin is nobody's Copilot host.
-  return parsed.protocol === "https:" && !LOOPBACK_HOSTS.has(parsed.hostname) &&
+  return parsed.protocol === "https:" && !isLoopbackHostname(parsed.hostname) &&
     (parsed.pathname === "/" || parsed.pathname === "") && parsed.search === "" &&
     parsed.hash === "" && parsed.username === "" && parsed.password === "";
 }
-
-const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "[::1]", "localhost"]);
 
 const PROBE_TIMEOUT_MS = 5000;
 
@@ -70,6 +68,7 @@ export function setIntegrationProbeFetch(fetchImpl: ProbeFetch | null): void {
   defaultProbeFetch = fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   probeMemo.clear();
   hostMemo.clear();
+  verdictMemo.clear();
 }
 
 /** Version-free on purpose so nothing here drifts against a client release; never sent by an agent
@@ -257,35 +256,52 @@ function genericHostBlockedBy(status: number): boolean {
   return status === 403 || status === 404 || status >= 500;
 }
 
-/** One GET /models under one identity; never throws. The catalog size is read only when asked for:
- *  the first-accepted probe returns on the status alone, as it always has. */
-async function probeCandidate(
+// One verdict per (token, host, header set) in a process, shared by the survey and the selectors: the
+// table `agent auth --identities` prints and the picks it marks come from the SAME responses, so a
+// status that flips between two request rounds cannot show an accepted cell beside a refusal.
+// Process-lifetime like probeMemo; injected I/O bypasses it (see probeIntegrationIdentityCached).
+const verdictMemo = new Map<string, Promise<IdentityVerdict>>();
+
+/** Whether a probe's deps are the production ones, so its verdicts may be memoized. */
+function memoizable(deps: Pick<IdentityProbeDeps, "fetchImpl" | "timeoutMs" | "signal">): boolean {
+  return deps.fetchImpl === undefined && deps.timeoutMs === undefined && deps.signal === undefined;
+}
+
+/** One GET /models under one identity; never throws. The catalog size rides on an acceptance. */
+function probeCandidate(
   token: string,
   apiBase: string,
   candidate: IntegrationIdentity,
   fetchImpl: ProbeFetch,
   timeoutMs: number,
   signal: AbortSignal | undefined,
-  countModels: boolean,
+  memoize: boolean,
 ): Promise<IdentityVerdict> {
-  try {
-    const res = await fetchImpl(`${apiBase}/models`, {
-      headers: { Authorization: `Bearer ${token}`, ...candidate.headers },
-      signal: requestSignal(timeoutMs, signal),
-    });
-    if (res.ok) {
-      return {
-        kind: "accepted",
-        models: countModels ? catalogSize(await res.text().catch(() => "")) : null,
-      };
+  const request = async (): Promise<IdentityVerdict> => {
+    try {
+      const res = await fetchImpl(`${apiBase}/models`, {
+        headers: { Authorization: `Bearer ${token}`, ...candidate.headers },
+        signal: requestSignal(timeoutMs, signal),
+      });
+      if (res.ok) {
+        return { kind: "accepted", models: catalogSize(await res.text().catch(() => "")) };
+      }
+      const detail = truncate(`${res.status} ${await res.text().catch(() => "")}`);
+      return isDefinitiveRejection(res.status)
+        ? { kind: "rejected", detail }
+        : { kind: "inconclusive", detail };
+    } catch (e) {
+      return { kind: "inconclusive", detail: truncate(`network error: ${errMessage(e)}`) };
     }
-    const detail = truncate(`${res.status} ${await res.text().catch(() => "")}`);
-    return isDefinitiveRejection(res.status)
-      ? { kind: "rejected", detail }
-      : { kind: "inconclusive", detail };
-  } catch (e) {
-    return { kind: "inconclusive", detail: truncate(`network error: ${errMessage(e)}`) };
+  };
+  if (!memoize) return request();
+  const key = JSON.stringify([token, apiBase, candidate.headers]);
+  let pending = verdictMemo.get(key);
+  if (pending === undefined) {
+    pending = request();
+    verdictMemo.set(key, pending);
   }
+  return pending;
 }
 
 function catalogSize(body: string): number | null {
@@ -324,7 +340,7 @@ export async function probeIntegrationIdentity(
       fetchImpl,
       timeoutMs,
       deps.signal,
-      false,
+      memoizable(deps),
     );
     if (verdict.kind === "accepted") {
       outcomes.push({ name: candidate.name, detail: "ok" });
@@ -358,6 +374,9 @@ export interface IdentitySurvey {
 export interface IdentitySurveyDeps extends Omit<IdentityProbeDeps, "apiBase"> {
   /** The `copilot-host` literal, or null for `auto`. */
   configuredHost?: string | null;
+  /** Another survey's columns to reuse verbatim (one account lookup for a second header set), so two
+   *  surveys rendered side by side can never differ in their hosts. Skips the lookup. */
+  hosts?: IdentitySurvey;
 }
 
 /** The full picture behind the first-accepted probe: every candidate on every host that matters,
@@ -382,11 +401,17 @@ export async function surveyIntegrationIdentities(
         fetchImpl,
         timeoutMs,
         deps.signal,
-        true,
+        memoizable(deps),
       ),
     })));
     return { apiBase, role, verdicts };
   };
+  if (deps.hosts !== undefined) {
+    return {
+      hosts: await Promise.all(deps.hosts.hosts.map((h) => surveyHost(h.apiBase, h.role))),
+      designatedUnknown: deps.hosts.designatedUnknown,
+    };
+  }
   const designated = await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
   const hosts: { apiBase: string; role: SurveyHostRole }[] = [
     { apiBase: DEFAULT_COPILOT_API_BASE, role: "generic" },
@@ -528,6 +553,7 @@ export async function probeIntegrationIdentityCached(
 export function resetIntegrationIdentityCache(): void {
   probeMemo.clear();
   hostMemo.clear();
+  verdictMemo.clear();
 }
 
 export function identityRejectionHints(): string[] {

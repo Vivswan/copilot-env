@@ -489,7 +489,7 @@ export interface DaemonSpec {
   /** Extra daemon environment the launch pipeline assembles (sqlite path, root home). */
   env: Record<string, string>;
   credential: DaemonCredential;
-  /** The Copilot host the daemon is pinned to (`copilot-host`, resolveDaemonHost in launch.ts); the
+  /** The Copilot host the daemon is pinned to (`copilot-host`, resolveLaunchCredential in launch.ts); the
    *  copilot-host preload rewrites the `endpoints.api` GitHub names. Null = unpinned: a credential-less
    *  daemon has nothing to probe with, so the proxy keeps the host GitHub names for its login. */
   copilotHost: string | null;

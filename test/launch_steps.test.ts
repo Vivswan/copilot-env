@@ -107,7 +107,7 @@ async function loginMustNotRun(): Promise<void> {
   throw new Error("interactive login must not run for this case");
 }
 
-function probeSpy(id: string): {
+function probeSpy(id: string, apiBase = DEFAULT_COPILOT_API_BASE): {
   calls: Array<{ token: string; pinned: string | null }>;
   resolve: typeof selectPassthroughIdentityAndHost;
 } {
@@ -116,7 +116,7 @@ function probeSpy(id: string): {
     calls,
     resolve: (token, opts = {}) => {
       calls.push({ token, pinned: opts.pinned ?? null });
-      return Promise.resolve({ integrationId: id, apiBase: DEFAULT_COPILOT_API_BASE });
+      return Promise.resolve({ integrationId: id, apiBase });
     },
   };
 }
@@ -174,13 +174,15 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
     integrationId: COPILOT_CLI_INTEGRATION_ID,
   });
   expect(probe.calls).toEqual([{ token: "ghp_stored_pat", pinned: null }]);
-  // The daemon's host is the selection's own: the host its identity was accepted on.
+  // The daemon's host is the selection's own: the host its identity was accepted on, forwarded,
+  // not assumed (the spy names a host the launch would never pick on its own).
+  const moved = probeSpy(COPILOT_CLI_INTEGRATION_ID, "https://api.enterprise.githubcopilot.com");
   const { copilotHost } = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
     interactiveLogin: loginMustNotRun,
     isTTY: true,
-    selectIdentity: probe.resolve,
+    selectIdentity: moved.resolve,
   });
-  expect(copilotHost).toBe(DEFAULT_COPILOT_API_BASE);
+  expect(copilotHost).toBe("https://api.enterprise.githubcopilot.com");
 });
 
 test("resolveLaunchCredential: the copilot device-flow token skips passthrough AND the probe", async () => {

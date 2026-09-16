@@ -128,7 +128,8 @@ interface DepsScript {
   proxyUp?: boolean;
   slot?: ProfileSlot;
   claudeUrl?: ManagedEnvValue;
-  /** The home the child is pinned to (the farm once built, else the unmanaged home). */
+  /** The home the child is pinned to (the farm with codex-host on, else the codex-home path or the
+   *  unmanaged home). */
   codexHome?: string;
   /** The farm exists only AFTER a wire/sync ran (a pass built and recorded it). */
   codexHomeOnceWired?: boolean;
@@ -600,16 +601,15 @@ skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success recor
   }
 }, 60_000);
 
-/** codex-host on with the farm built and recorded, as `agent config --set codex-host true` followed
- *  by `agent codex` leaves it; the stores live under root/api-home, where the launched CLI reads. */
-function stageRecordedFarm(root: string): string {
+/** codex-host on with the farm's config in place (a direct one, so the launch probes no proxy);
+ *  the preference store lives under root/api-home, where the launched CLI reads. */
+function stageFarm(root: string): string {
   const farm = join(root, ".codex", "hosts", getSanitizedHostname());
   writeCodexConfigToml(farm, { baseUrl: DIRECT_BASE });
   const previousHome = process.env.COPILOT_API_HOME;
-  process.env.COPILOT_API_HOME = join(root, "api-home"); // the stores resolve from env
+  process.env.COPILOT_API_HOME = join(root, "api-home"); // the store resolves from env
   try {
     new CopilotEnvConfig().set({ codexHost: true });
-    writeRunState({ codexHome: farm });
   } finally {
     process.env.COPILOT_API_HOME = previousHome;
   }
@@ -639,11 +639,11 @@ skipWin(
 );
 
 skipWin(
-  "e2e: codex-host on, the child is pinned to the recorded farm and a differing shell export is named exactly once",
+  "e2e: codex-host on, the child is pinned to the farm and a differing shell export is named exactly once",
   () => {
     const root = e2eRoot();
     const bin = fakeCliBin(root, "codex", 3);
-    const farm = stageRecordedFarm(root);
+    const farm = stageFarm(root);
     const staleExport = join(root, "old-farm");
     const line = staleCodexHomeExportLine({ home: farm, by: "farm", staleExport });
     if (line === null) throw new Error("a differing export must produce the note");

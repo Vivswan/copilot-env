@@ -86,63 +86,49 @@ export function probeCodexFarm(
   }
 }
 
-// The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent env` may clear it):
-// this root's farm path, or the farm the record still names after a `codex-home` change moved the
-// root (retired, not yet rebuilt) while that path is gone or still carries our config. A genuine
-// home the user placed at the recorded path since is theirs, as for `agent uninstall`. Exact
-// spelling on purpose: a trailing-slash variant is not ours. Never on Windows: no farm is built
-// there, so a farm-shaped export is a shared home of the user's own.
+// The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent env` may clear it).
+// Exact spelling on purpose: a trailing-slash variant is not ours. Never on Windows: no farm is
+// built there, so a farm-shaped export is a shared home of the user's own.
 export function isManagedFarmExport(
   envHome: string | undefined,
   prefs: CodexHomePrefs = codexHomePrefsOrDerived(),
 ): boolean {
-  if (process.platform === "win32" || !envHome) return false;
-  if (envHome === getHostLocalCodexHome(prefs.explicit)) return true;
-  if (envHome !== new CopilotEnvRunState().read().codexHome) return false;
-  // Proven absence only, as planCodexHostFarm: a path that could not be probed may be the user's.
-  const probe = probeCodexFarm(envHome);
-  return (!probe.present && probe.probeError === null) || probe.wired;
+  if (process.platform === "win32") return false;
+  return Boolean(envHome && envHome === getHostLocalCodexHome(prefs.explicit));
 }
 
-/** The home every Codex write, `agent codex --check`, and launch pin agree on, plus the one note
- *  those three print (the other readers stay silent). */
+/** The home every Codex write, `agent codex --check`, `agent env`, and the launch pin agree on, plus
+ *  the one note the writer, `--check`, and the launcher print (the other readers stay silent). */
 export interface CodexHomeResolution {
   home: string;
-  /** What decided the home: the live farm, the `codex-home` root, or the shell/default convention
-   *  (which is never stale). The note's wording follows it. */
+  /** What decided the home: the `codex-host` farm, the `codex-home` root, or the shell/default
+   *  convention (which is never stale). The note's wording follows it. */
   by: "farm" | "codex-home" | "default";
-  /** The shell's CODEX_HOME when copilot-env decided the home (the `codex-home` root, or the farm)
+  /** The shell's CODEX_HOME when copilot-env decided the home (the farm, or the `codex-home` root)
    *  and the export names another directory: an rc file, a shell `agent env` never refreshed. Null
    *  when the shell is silent or agrees; with neither key the export IS the home, so never stale. */
   staleExport: string | null;
 }
 
 /**
- * The ONE precedence, over the folded keys (codexHomePrefsFor):
+ * The ONE precedence, over the folded keys (codexHomePrefsFor). The keys alone decide: neither the
+ * run-state record nor the disk steers the home, so a farm not built yet (or hand-edited) is still
+ * the home the user asked for, and the next `agent codex` builds or repairs it there.
  *
- *   codex-host on, farm recorded and on disk -> the farm (<root>/hosts/<hostname>); a differing
- *                                               export is noted, not honoured
- *   codex-home set                           -> that path (the farm's root while the farm is not
- *                                               live); a differing export is noted
- *   neither key, or no live farm             -> $CODEX_HOME (Codex's own convention) unless it is
- *                                               OUR farm export, built or not, else ~/.codex;
- *                                               never stale
+ *   codex-host on   -> the farm, <root>/hosts/<hostname>; a differing export is noted, not honoured
+ *   codex-home set  -> that path; a differing export is noted, not honoured
+ *   neither         -> $CODEX_HOME (Codex's own convention) unless it is OUR farm export, built or
+ *                      not (a write through it would resurrect the removed farm as a plain dir),
+ *                      else ~/.codex; never stale
  *
- * The record counts only when it IS this root's farm path: a farm recorded under the previous
- * `codex-home` root (or HOME) is not the home the keys describe now. A dead record and our farm
- * export are both skipped because a write through either would resurrect the removed farm as a
- * plain dir. The settings-import plan calls this with the BUNDLE's prefs before the store is
- * replaced.
+ * The settings-import plan calls this with the BUNDLE's prefs before the store is replaced.
  */
 export function resolveCodexHome(
   prefs: CodexHomePrefs = codexHomePrefsOrDerived(),
 ): CodexHomeResolution {
   if (prefs.hostFarm) {
     const hostHome = getHostLocalCodexHome(prefs.explicit);
-    const recorded = new CopilotEnvRunState().read().codexHome;
-    if (recorded === hostHome && fs.existsSync(hostHome)) {
-      return { home: hostHome, by: "farm", staleExport: staleExportAgainst(hostHome) };
-    }
+    return { home: hostHome, by: "farm", staleExport: staleExportAgainst(hostHome) };
   }
   if (prefs.explicit !== null) {
     return {
@@ -258,7 +244,7 @@ export function codexHostDriftLine(drift: CodexHostDrift): string {
     case "missing":
       return `codex-host is on but the per-host CODEX_HOME farm is missing at ${drift.hostHome}; run \`agent codex\` to rebuild it`;
     case "inactive":
-      return `codex-host is on but ${drift.hostHome} is not the active CODEX_HOME; run \`agent codex\` to activate it`;
+      return `codex-host is on but no wiring pass has completed the per-host CODEX_HOME farm at ${drift.hostHome}; run \`agent codex\` to complete it`;
     case "disabled":
       return `codex-host is off but a per-host CODEX_HOME farm is still present at ${drift.hostHome}; run \`agent codex\` to remove it`;
   }
@@ -680,7 +666,7 @@ function buildCodexSymlinkFarm(codexHome: string): void {
 
 /** ONE default Codex config write with the farm derived from the `codex-host` key around it
  *  (planCodexHostFarm decides). The activation record lands only AFTER a successful write and is
- *  cleared BEFORE a rebuild, so it never outlives a proven farm under this root. */
+ *  cleared BEFORE a rebuild, so it never outlives a proven farm; `agent uninstall` deletes by it. */
 export async function withCodexHostFarm(
   write: (codexHome: string) => Promise<void>,
 ): Promise<void> {
@@ -726,21 +712,13 @@ export async function withCodexHostFarm(
     case "none":
       break;
   }
-  // Resolved while the record still stands: a farm built under a previous root is ours only by that
-  // record, so the export naming it is skipped (unmanagedCodexHome) before anything changes.
-  const home = narrateCodexHome(resolveCodexHome(prefs));
-  // Retired here: this root's record, and one naming the very home this pass writes as a plain home
-  // (the user's own, honoured from the shell), since the config it is about to carry would otherwise
-  // read as our farm's on the next command. One naming a previous root's farm stays until the next
-  // build overwrites it: it is the one proof that the shell's export of that farm is ours to clear.
-  // A shell never refreshed across that rebuild keeps exporting the old farm, which then reads as
-  // the user's own home: a working Codex there, not a loss.
-  const recorded = state.read().codexHome;
-  if (recorded === farm.hostHome || recorded === home) state.set({ codexHome: null });
-  await write(home);
+  if (state.read().codexHome !== undefined) {
+    state.set({ codexHome: null });
+  }
+  await write(narrateCodexHome(resolveCodexHome(prefs)));
 }
 
-/** The active home (run state / CODEX_HOME env), the default ~/.codex, and each per-host farm home,
+/** The effective home (resolveCodexHome), the default ~/.codex, and each per-host farm home,
  *  enumerated through the layout's owner (codexFarmHostsDir, src/utils/hostname.ts). `complete` is
  *  false when the farm directory exists but cannot be enumerated: unseen homes may still hold
  *  state. */

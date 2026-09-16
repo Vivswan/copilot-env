@@ -1044,12 +1044,12 @@ export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
 };
 
 /** The throwaway config's selector, NOT the managed id. The table's `auth.command` runs `agent auth
- *  --get` in the child, and with codex-host off (the default) that child's Codex home is $CODEX_HOME =
- *  the throwaway home (defaultCodexHome; a live farm record wins over it). Its catalog self-heal
- *  (src/codex/catalog_reference.ts) adds `model_catalog_json` to, and ledgers, any config there that
- *  selects the managed provider: the next attempt would then run under the user's catalog, and the
- *  ledger would keep a path removeScratchDir deletes. A foreign selector is left alone by that
- *  self-heal's own contract. */
+ *  --get` in the child, and with neither Codex-home key set (the default) that child's Codex home is
+ *  $CODEX_HOME = the throwaway home (defaultCodexHome; codex-home or a codex-host farm wins over it).
+ *  Its catalog self-heal (src/codex/catalog_reference.ts) adds `model_catalog_json` to, and ledgers,
+ *  any config there that selects the managed provider: the next attempt would then run under the
+ *  user's catalog, and the ledger would keep a path removeScratchDir deletes. A foreign selector is
+ *  left alone by that self-heal's own contract. */
 const CODEX_PROBE_PROVIDER_ID = `${CODEX_PROVIDER_ID}-probe`;
 
 /** The detect probe's throwaway config: the Direct provider table and its selector, nothing else.

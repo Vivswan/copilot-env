@@ -15,6 +15,7 @@ import {
   codexHostDriftLine,
   codexHostFarm,
   isManagedFarmExport,
+  resolveCodexHome,
 } from "../codex/host.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
@@ -43,20 +44,17 @@ function isLocalProxyUrl(url: string): boolean {
   return parseLoopbackProxyUrl(url) !== null;
 }
 
-/** The shell-side mirror of effectiveCodexHome (src/codex/host.ts). They part on drift: with the
- *  farm on and recorded, effectiveCodexHomeFor takes its directory's existence, while this wants
- *  farm.wired and otherwise clears the export. A `codex-home` path with no farm is exported as is:
- *  the write creates it. */
+/** The same resolution the writer and the launch pin use (resolveCodexHome): with `codex-host` on
+ *  the farm is exported built or not (the next `agent codex` builds it), so a drift between the key
+ *  and the disk is warned about beside it, never hidden by an empty export. */
 export function managedCodexHome(): ManagedEnvValue {
   const prefs = new CopilotEnvConfig().codexHomePrefs();
+  const resolution = resolveCodexHome(prefs);
   if (prefs.hostFarm) {
-    const farm = codexHostFarm(prefs);
-    if (farm.wired && farm.active) return { value: farm.hostHome };
-    const drift = codexHostDriftFrom(true, farm);
+    const drift = codexHostDriftFrom(true, codexHostFarm(prefs));
     if (drift !== null) logger.warn(codexHostDriftLine(drift));
-  } else if (prefs.explicit !== null) {
-    return { value: prefs.explicit };
   }
+  if (resolution.by !== "default") return { value: resolution.home };
   if (isManagedFarmExport(process.env.CODEX_HOME, prefs)) return { unset: true };
   return null;
 }

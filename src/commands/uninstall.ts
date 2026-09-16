@@ -60,8 +60,8 @@ export interface UninstallDeps {
 
 /** The narration and the removal share this one resolver, so the dry run cannot drift from what
  *  gets deleted. The record proves only that we built a farm there once: the user may have replaced
- *  it since, and a farm under a retired `codex-home` root stays recorded until the next build
- *  (src/codex/host.ts). Only a path still carrying our managed config.toml is deleted. */
+ *  it since (a `codex-home` change leaves the old farm recorded until the next wiring pass). Only a
+ *  path still carrying our managed config.toml is deleted. */
 function recordedCodexHostFarm(): string | null {
   if (process.platform === "win32") return null;
   const recorded = new CopilotEnvRunState().read().codexHome;

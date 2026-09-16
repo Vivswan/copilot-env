@@ -113,7 +113,7 @@ skipWin(
   async () => {
     const { codexHome } = tmpHomes();
     // A farm under a `codex-home` root the user has since removed stays recorded until the next
-    // build; the only difference between ours and a replacement is the config inside.
+    // wiring pass; the only difference between ours and a replacement is the config inside.
     const recorded = join(dir, "old-root", "hosts", "box");
     for (const ours of [true, false]) {
       // Fresh deps per pass: the install-root sandbox is deleted by each apply.

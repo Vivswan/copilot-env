@@ -18,7 +18,6 @@ import {
   isolateProxyHome,
   writeClaudeSettings,
   writeCodexConfigToml,
-  writeRunState,
 } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
@@ -236,19 +235,16 @@ test("unreadable configs read as 'other', never as unconfigured 'none'", () => {
 });
 
 describe("default home resolution", () => {
-  // The farm (and so its run-state record) is POSIX-only: the `codex-host` key always
-  // reads off on Windows, so the record is never honored there.
+  // The farm is POSIX-only: the `codex-host` key always reads off on Windows.
   test.skipIf(process.platform === "win32")(
-    "codex follows the run-state codexHome override; claude follows $CLAUDE_CONFIG_DIR",
+    "codex follows the farm the keys derive; claude follows $CLAUDE_CONFIG_DIR",
     () => {
-      // HOME stays real here, so the farm is rooted under the fixture through `codex-home`: the
-      // record is honoured only as the farm path the keys derive now (src/codex/host.ts).
+      // HOME stays real here, so the farm is rooted under the fixture through `codex-home`.
       new CopilotEnvConfig().set({ codexHome: join(dir, "codex-root"), codexHost: true });
       const farmHome = getHostLocalCodexHome();
       expect(farmHome.startsWith(dir)).toBe(true);
       writeCodexConfigToml(farmHome, { baseUrl: DIRECT_BASE });
-      process.env.CODEX_HOME = join(dir, "empty-codex"); // must lose to run state
-      writeRunState({ codexHome: farmHome });
+      process.env.CODEX_HOME = join(dir, "empty-codex"); // must lose to the keys
 
       const claudeHome = join(dir, "claude-env-home");
       writeClaudeSettings(claudeHome, {

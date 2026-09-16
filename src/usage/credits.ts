@@ -8,6 +8,7 @@ import { configKeyDef, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { COPILOT_USER_URL } from "../copilot_api/integration_identity.ts";
 import { blue, cyan, green, red } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
+import { MILLISECONDS_PER_DAY as DAY_MS } from "../utils/time.ts";
 
 export interface CopilotCredits {
   /** The login the endpoint reports, when it does. */
@@ -20,7 +21,6 @@ export interface CopilotCredits {
   resetDate: string;
 }
 
-const DAY_MS = 86_400_000;
 const FETCH_TIMEOUT_MS = 5000;
 
 /** Validated field by field: a rename in the undocumented endpoint must surface by

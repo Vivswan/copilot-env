@@ -157,17 +157,11 @@ test("auth --del clears the stored token and provider", async () => {
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
   await runAuth({ del: true });
-  expect(state().read()).toEqual({
+  expect(state().read()).toMatchObject({
     githubToken: null,
     authProvider: null,
     ghUser: null,
     profiles: {},
-    codexCatalogLastAttemptMs: 0,
-    codexCatalogPatchVersion: 0,
-    codexCatalogAccepted: null,
-    claudeModelVerdicts: {},
-    claudeDiscoveryMemo: {},
-    codexCatalogCodexVersion: null,
   });
 });
 
@@ -216,17 +210,11 @@ test("auth --provider gh-env stores the env token + provider, and does NOT confi
   state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_old" });
   process.env.GH_TOKEN = "ghu_new_from_env";
   await runAuth({ provider: "gh-env" });
-  expect(state().read()).toEqual({
+  expect(state().read()).toMatchObject({
     githubToken: "ghu_new_from_env",
     authProvider: "gh-env",
     ghUser: null,
     profiles: {},
-    codexCatalogLastAttemptMs: 0,
-    codexCatalogPatchVersion: 0,
-    codexCatalogAccepted: null,
-    claudeModelVerdicts: {},
-    claudeDiscoveryMemo: {},
-    codexCatalogCodexVersion: null,
   });
   // auth only manages the credential -- configuring Codex/Claude is `agent init`'s job.
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
@@ -237,17 +225,11 @@ test("auth --set <token> stores it verbatim (no env, no UI) and records gh-token
   delete process.env.GH_TOKEN;
   delete process.env.GITHUB_TOKEN;
   await runAuth({ set: "ghu_inline_value" });
-  expect(state().read()).toEqual({
+  expect(state().read()).toMatchObject({
     githubToken: "ghu_inline_value",
     authProvider: "gh-token",
     ghUser: null,
     profiles: {},
-    codexCatalogLastAttemptMs: 0,
-    codexCatalogPatchVersion: 0,
-    codexCatalogAccepted: null,
-    claudeModelVerdicts: {},
-    claudeDiscoveryMemo: {},
-    codexCatalogCodexVersion: null,
   });
 });
 

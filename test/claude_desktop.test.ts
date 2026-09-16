@@ -566,6 +566,52 @@ test("the quiet wire derives the rows from the catalog too: a hand-edited row in
   expect(derived.find((m) => m.name === "claude-fable-5")).toEqual(
     rows.find((m) => m["name"] === "claude-fable-5"),
   );
+  // A catalog that ANSWERS with no Claude model is that answer, not an outage: the list empties
+  // rather than keeping models Copilot retired.
+  await quiet(catalogFetch([{ id: "gpt-5.6-sol" }]), t0 + 2 * day + 1000);
+  expect(readJson(configPath)["inferenceModels"]).toEqual([]);
+});
+
+test("an empty recorded model list is a list: a proxy entry carrying one is wired, not drifted", async () => {
+  const { library } = isolateWithDesktop();
+  // The proxy branch takes the first source that answers; a gpt-only catalog answers with no
+  // Claude model, so the entry records `[]`, and the inspector's offline rewrite must rebuild
+  // exactly that (a rewire cannot repair a drift the same catalog would write again).
+  await wireClaudeDesktopEntry({
+    profile: null,
+    mode: "proxy",
+    credential: COMMAND,
+    directToken: "ghu_x",
+    fetchImpl: catalogFetch([{ id: "gpt-5.6-sol" }]),
+  });
+  const configPath = firstEntryPath(library);
+  expect(readJson(configPath)["inferenceModels"]).toEqual([]);
+  const status = inspectClaudeDesktopWiring([{ profile: null, mode: "proxy" }]);
+  expect(status.kind === "inspected" ? status.entries[0]?.verdict : status).toEqual({
+    kind: "wired",
+    path: configPath,
+  });
+  // A daemon answering 200 WITHOUT a model list is a failed source, not an empty catalog: the
+  // direct source answers instead, and its Claude rows land.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.resolve(Response.json({}));
+  try {
+    await wireClaudeDesktopEntry({
+      profile: null,
+      mode: "proxy",
+      credential: COMMAND,
+      directToken: "ghu_x",
+      fetchImpl: catalogFetch(CATALOG),
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const rows = readJson(configPath)["inferenceModels"] as { name: string }[];
+  expect(rows.map((m) => m.name).sort()).toEqual([
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-opus-5",
+  ]);
 });
 
 test("a blocked removal (malformed _meta.json) keeps the helper scripts", async () => {

@@ -210,9 +210,10 @@ function entryVerdict(
   }
   const recordedCredential = expectedCredential(doc, target, rootHome, credential);
   if ("stale" in recordedCredential) return stale(recordedCredential.stale);
-  // An empty picker is judged before the byte compare, whose offline rewrite would drop the key.
+  // Direct has no discovery (Copilot 404s /v1/models), so an absent or empty picker is unusable
+  // whatever the bytes say: judged first, so it can never read as wired.
   const rows = recordedModelRows(doc);
-  if (target.mode === "direct" && rows === null) {
+  if (target.mode === "direct" && (rows === null || rows.length === 0)) {
     return stale("no model rows (re-run `agent claude` online)");
   }
   // Wired means the OFFLINE rewire (recorded rows, the replayed identity, the live codex

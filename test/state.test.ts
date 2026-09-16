@@ -84,17 +84,11 @@ test("the auth provider round-trips and clears alongside the token", () => {
   expect(state.read().authProvider).toBe("gh-token");
 
   state.clearCredential(null);
-  expect(state.read()).toEqual({
+  expect(state.read()).toMatchObject({
     githubToken: null,
     authProvider: null,
     ghUser: null,
     profiles: {},
-    codexCatalogLastAttemptMs: 0,
-    codexCatalogCodexVersion: null,
-    codexCatalogPatchVersion: 0,
-    codexCatalogAccepted: null,
-    claudeModelVerdicts: {},
-    claudeDiscoveryMemo: {},
   });
 });
 

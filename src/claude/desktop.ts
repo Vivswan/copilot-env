@@ -638,8 +638,9 @@ function labelLookup(body: unknown): (id: string) => string | null {
 }
 
 /**
- * Undefined when no live data exists (each failed source warned already); the caller decides what
- * stands in. Each mode shows what its own backend will actually serve.
+ * Undefined only when no source ANSWERED (each failure warned already); the caller decides what
+ * stands in. A catalog that answers with no Claude model is that answer: an empty list, so a
+ * retired model does not outlive its catalog. Each mode shows what its own backend will serve.
  *   direct -> the full discovery pipeline (src/copilot_api/discovery.ts) under the wiring's own
  *             identity, so unadvertised-but-servable models get a PROBED 1m verdict
  *   proxy  -> what the daemon's /v1/models will discover: its catalog first, Copilot when down
@@ -662,10 +663,10 @@ async function wiringModels(
         opts.directIntegrationId ?? null,
         { fetchImpl: opts.fetchImpl, nowMs: opts.nowMs },
       );
-      const rows = claudeCatalogRows(discovered.models);
-      if (rows.length > 0) {
-        return desktopModelsFromPicks(rows, labelLookup(discovered.catalogBody));
-      }
+      return desktopModelsFromPicks(
+        claudeCatalogRows(discovered.models),
+        labelLookup(discovered.catalogBody),
+      );
     } catch (e) {
       logger.warn(`  Claude Desktop: model discovery failed (${errMessage(e)}).`);
     }
@@ -677,8 +678,15 @@ async function wiringModels(
           profile: opts.profile,
           fetchImpl: opts.fetchImpl,
         });
-        const rows = claudeCatalogRows(parseCatalogModels(body));
-        if (rows.length > 0) return desktopModelsFromPicks(rows, labelLookup(body));
+        // parseCatalogModels reads a 200 without a model list as an empty catalog, which would then
+        // stand as this source's answer; such a body is a failed source like any other.
+        if (!isRecord(body) || !Array.isArray(body.data)) {
+          throw new Error("the response carries no model list");
+        }
+        return desktopModelsFromPicks(
+          claudeCatalogRows(parseCatalogModels(body)),
+          labelLookup(body),
+        );
       } catch (e) {
         logger.warn(
           `  Claude Desktop: could not fetch the ${source} model catalog (${errMessage(e)}).`,
@@ -851,11 +859,12 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   wireClaudeDesktopAppFiles();
 }
 
-/** The rows an entry recorded when they are OUR shape, else null: the offline stand-in for an owned
- *  entry, and the inspector's picture of what such a rewire would write. */
+/** The rows an entry recorded when they are OUR shape (an empty list included: a catalog with no
+ *  Claude model writes one), else null: the offline stand-in for an owned entry, and the inspector's
+ *  picture of what such a rewire would write. */
 export function recordedModelRows(existing: Record<string, unknown>): DesktopModelSpec[] | null {
   const rows = existing["inferenceModels"];
-  if (!Array.isArray(rows) || rows.length === 0) return null;
+  if (!Array.isArray(rows)) return null;
   const parsed: DesktopModelSpec[] = [];
   for (const row of rows) {
     if (!isRecord(row) || typeof row.name !== "string") return null;

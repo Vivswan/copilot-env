@@ -274,7 +274,9 @@ const STATE_SCHEMA = v.object({
     v.record(
       v.string(),
       v.object({
-        catalogBody: v.unknown(),
+        // The shape fetchCatalog accepted; a hand-mangled body reads as no memo, so it refetches
+        // instead of standing as an empty catalog for a day.
+        catalogBody: v.looseObject({ data: v.array(v.unknown()) }),
         extras: v.array(v.string()),
         atMs: v.pipe(v.number(), v.finite(), v.minValue(0)),
       }),

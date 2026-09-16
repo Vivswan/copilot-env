@@ -6,10 +6,13 @@
 //   codexCatalog   -> Codex config.toml files WE wrote the `model_catalog_json` reference into (src/codex/config.ts)
 // Ordering doctrine for every kind, so a crash or a bad read lands on the safe side of a claim:
 //   record AFTER the write                      -> a crash leaves the entry we wrote UNCLAIMED, never a false claim
-//   release AFTER the take-back                 -> a crash leaves a claim on an entry already gone; a take-back that selects it finds nothing to strip and releases the claim
-//   one exception, the Codex catalog reference  -> claims BEFORE its write (record(), src/codex/catalog_reference.ts), so a crash there claims an unwritten path
+//   release AFTER the take-back                 -> a crash leaves a claim on an entry already gone; a take-back
+//                                                  that selects it finds nothing to strip and releases the claim
+//   one exception, the Codex catalog reference  -> claims BEFORE its write (record(), src/codex/catalog_reference.ts),
+//                                                  so a crash there claims an unwritten path
 //   unreadable store                            -> loadStrict THROWS; "owns nothing" is a verdict, never a default
-//   mutations on ONE ops lock, reads on none    -> read-only commands write nothing; the lock covers the ledger write alone, never a take-back's owns() decision
+//   mutations on ONE ops lock, reads on none    -> read-only commands write nothing; the lock covers the ledger
+//                                                  write alone, never a take-back's owns() decision
 import * as v from "valibot";
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
 import { CopilotApiConfig } from "./config.ts";

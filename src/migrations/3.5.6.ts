@@ -210,11 +210,10 @@ const DEFAULT_HOME_MOVE_LOCK_POLICY: LockPolicy = {
 };
 
 /**
- * Refuses rather than yank files from a daemon or launch it can SEE, with a warning naming the
- * re-run after `agent stop`. Two gaps stay, each noted at its guard below: a start that begins
- * after the start-lock probe, and a pre-lock daemon on another host (flatTrackedPid reads this
- * one). defaultDaemonHome counts the staging dir as the flat layout, so a crash mid-move still
- * resolves flat and a re-run resumes.
+ * Refuses rather than yank files from a daemon or launch it can SEE. Two gaps stay, noted at their
+ * guards below: a start that begins after the start-lock probe, and a pre-lock daemon on another host
+ * (flatTrackedPid reads this one). defaultDaemonHome counts the staging dir as the flat layout, so a
+ * crash mid-move still resolves flat and a re-run resumes.
  *
  *   busy start lock / held root daemon.lock / pre-lock pid not CONFIDENTLY foreign -> refuse
  *   no profiles/default      -> stage into profiles/.default.migrating -> ONE rename creates it

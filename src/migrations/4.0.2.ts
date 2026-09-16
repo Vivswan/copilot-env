@@ -98,12 +98,9 @@ export const v402GhAccountPin: Migration = {
 // Away from 4.0.2: the root home wore dot-prefixed `.copilot-env-*` stores, their lock sidecars,
 // and loose Desktop helper scripts from the era when the root doubled as the flat daemon home.
 // Readers know ONLY the new paths, so these two fix-ups are the single place the old names exist.
-// They sit at opposite ends of the run:
 //
-//   store renames -> a `layout` step, right after the 3.5.6 home move, which may carry old-name
-//                    stores in
-//   helper move   -> LAST: its wiring pass reads agent configs the v356/v400 rewrites normalize
-//                    first
+//   store renames -> a `layout` step, right after the 3.5.6 home move, which may carry old-name stores in
+//   helper move   -> LAST: its wiring pass reads agent configs the v356/v400 rewrites normalize first
 
 /** The three store renames, old basename -> new basename. */
 const STORE_RENAMES: ReadonlyArray<readonly [string, string]> = [

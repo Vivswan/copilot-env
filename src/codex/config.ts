@@ -58,12 +58,7 @@ import {
   resolveCodexHome,
   withCodexHostFarm,
 } from "./host.ts";
-import {
-  CODEX_PROVIDER_ID,
-  codexConfigPath,
-  codexProfileConfigPath,
-  defaultCodexHome,
-} from "./paths.ts";
+import { CODEX_PROVIDER_ID, codexConfigPath, codexProfileConfigPath } from "./paths.ts";
 import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
 import { codexUserAgent } from "./user_agent.ts";
 
@@ -688,11 +683,10 @@ function validateProxyOptions(
  *                    needs
  */
 export function configureCodexConfig(
-  codexHome: string | null | undefined,
+  codexHome: string,
   request: CodexWriteRequest,
   catalogDeps: CodexCatalogDeps = {},
 ): void {
-  codexHome = codexHome || defaultCodexHome();
   const profile = request.profile ?? null;
   const providerId = codexProviderId(profile);
   // The union guarantees a base URL exists; this rejects an empty or malformed one before anything

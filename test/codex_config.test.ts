@@ -691,10 +691,6 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
     runProbe: (_cli: string, _args: string[], env: Record<string, string>, cwd: string) => {
       const home = env.CODEX_HOME ?? "";
       spawn = { cwd, home };
-      // The table's auth.command runs `agent auth --get` with this env, and its catalog self-heal
-      // targets $CODEX_HOME: it must neither add the reference here nor ledger this path.
-      process.env.CODEX_HOME = home;
-      syncCodexCatalogReference();
       probeDoc = asRecord(parse(readFileSync(join(home, "config.toml"), "utf8")));
       return { ok: true };
     },
@@ -702,11 +698,9 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
     fetchImpl: () =>
       Promise.resolve(new Response(JSON.stringify({ data: [catalog] }), { status: 200 })),
   });
-  delete process.env.CODEX_HOME;
   expect(verdict).toBe(true);
   const seen = spawn as unknown as { cwd: string; home: string };
   expect(seen.cwd).toBe(seen.home);
-  expect(new OwnershipLedger().ownedPaths("codexCatalog")).toEqual([]);
 
   const realHome = join(dir, ".codex");
   configureCodexConfig(realHome, {
@@ -719,11 +713,8 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
   expect(Object.keys(probe).sort()).toEqual(
     ["analytics", "feedback", "model_provider", "model_providers"],
   );
-  // Selected under a non-managed id (what keeps the self-heal off), the table itself the real one.
-  expect(probe.model_provider).toBe("copilot-env-probe");
-  expect(probe.model_providers).toEqual({
-    "copilot-env-probe": asRecord(realDoc.model_providers)["copilot-env"],
-  });
+  expect(probe.model_provider).toBe(realDoc.model_provider);
+  expect(probe.model_providers).toEqual(realDoc.model_providers);
   expect([realDoc.web_search, realDoc.model_catalog_json]).toEqual(["live", catalogFile]);
 });
 

@@ -82,15 +82,18 @@ function probeFarm(hostHome: string): Pick<CodexHostFarm, "present" | "wired" | 
   }
 }
 
-// The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent env` may clear it).
-// Exact spelling on purpose: a trailing-slash variant is not ours. Never on Windows: no farm is
-// built there, so a farm-shaped export is a shared home of the user's own.
+// The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent env` may clear it):
+// this root's farm path, or the farm the record still names after a `codex-home` change moved the
+// root (retired, not yet rebuilt). Exact spelling on purpose: a trailing-slash variant is not ours.
+// Never on Windows: no farm is built there, so a farm-shaped export is a shared home of the user's
+// own.
 export function isManagedFarmExport(
   envHome: string | undefined,
   prefs: CodexHomePrefs = codexHomePrefsOrDerived(),
 ): boolean {
-  if (process.platform === "win32") return false;
-  return Boolean(envHome && envHome === getHostLocalCodexHome(prefs.explicit));
+  if (process.platform === "win32" || !envHome) return false;
+  return envHome === getHostLocalCodexHome(prefs.explicit) ||
+    envHome === new CopilotEnvRunState().read().codexHome;
 }
 
 /** The home every Codex write, `agent codex --check`, and launch pin agree on, plus the one note

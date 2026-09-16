@@ -16,7 +16,7 @@
 //   profile absent from the bundle      -> untouched
 //   bundle mode "none"                  -> that agent left alone
 import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import * as v from "valibot";
 import { claudeJsonPath } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
@@ -90,6 +90,9 @@ export interface SettingsBundle {
   profiles: Record<string, ProfileSlotData>;
   /** Both agents' DEFAULT wiring at export time; import re-derives it. */
   modes: { codex: AgentProviderMode; claude: AgentProviderMode };
+  /** Set by parseSettingsBundle alone, never serialized: the `config` values that cannot apply on
+   *  this OS, each as the warning the import prints for leaving it out. */
+  skippedConfig?: readonly string[];
 }
 
 /** Generic so the per-key value type survives the assignment. */
@@ -267,10 +270,23 @@ function parseCredentialFields(doc: Record<string, unknown>, path: string): Prof
 const CREDENTIAL_KEYS = ["githubToken", "authProvider", "ghUser"] as const;
 const PROFILE_SLOT_KEYS = [...CREDENTIAL_KEYS, "mode", "integrationIdentity"] as const;
 
+/** A bundle travels between OS families, and `codex-home` is the one preference whose value is a
+ *  machine path: an absolute path of the OTHER family (a Linux export read on Windows, or the
+ *  reverse) is left out with a warning instead of failing the whole import. Anything else the
+ *  domain rejects (a relative path, `~`) is still a rejection. */
+function codexHomeFromOtherOs(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  return process.platform === "win32"
+    ? posix.isAbsolute(value)
+    : win32.isAbsolute(value) && win32.parse(value).root.length > 1;
+}
+
 /** Values are validated by CONFIG_SCHEMA itself (env_config owns every value shape, so new keys
  *  are accepted here automatically); its lenient fallback is made strict by rejecting any
  *  present key the schema turned into undefined. */
-function parseConfigSection(raw: unknown): CopilotEnvConfigData {
+function parseConfigSection(
+  raw: unknown,
+): { config: CopilotEnvConfigData; skipped: string[] } {
   const doc = requireRecord(raw, "config");
   rejectUnknownKeys(
     doc,
@@ -287,13 +303,21 @@ function parseConfigSection(raw: unknown): CopilotEnvConfigData {
       delete values[key];
     }
   }
-  const parsed = v.parse(CONFIG_SCHEMA, values);
+  const skipped: string[] = [];
+  let parsed = v.parse(CONFIG_SCHEMA, values);
+  if (parsed.codexHome === undefined && codexHomeFromOtherOs(values.codexHome)) {
+    skipped.push(
+      `codex-home "${values.codexHome}" is not a path on this OS; skipped, set it here with agent config`,
+    );
+    delete values.codexHome;
+    parsed = v.parse(CONFIG_SCHEMA, values);
+  }
   for (const def of CONFIG_REGISTRY) {
     if (values[def.key] !== undefined && parsed[def.key] === undefined) {
       throw bundleError(`config.${def.key} is invalid (expected: ${def.describe})`);
     }
   }
-  return { ...parsed, ...redacted };
+  return { config: { ...parsed, ...redacted }, skipped };
 }
 
 function parseCredentialSection(raw: unknown): ProfileCredentialData {
@@ -358,12 +382,14 @@ export function parseSettingsBundle(raw: unknown): SettingsBundle {
     );
   }
   rejectUnknownKeys(raw, BUNDLE_KEYS, "the bundle root");
+  const config = parseConfigSection(raw.config);
   return {
     formatVersion: SETTINGS_BUNDLE_FORMAT_VERSION,
-    config: parseConfigSection(raw.config),
+    config: config.config,
     credential: parseCredentialSection(raw.credential),
     profiles: parseProfilesSection(raw.profiles),
     modes: parseModesSection(raw.modes),
+    skippedConfig: config.skipped,
   };
 }
 
@@ -604,7 +630,7 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
     }
     return token;
   };
-  const skipped: string[] = [];
+  const skipped: string[] = [...(bundle.skippedConfig ?? [])];
   const defaultSlot = planSlotCredential(bundle.credential, null, gh);
   if (defaultSlot.action === "skip" && bundle.credential.authProvider !== null) {
     // Only a slot the bundle carried is an event; skipped wiring gets its own importableMode

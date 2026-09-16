@@ -176,6 +176,21 @@ test("export carries the stores + modes and never the machine-local state keys",
 
 // --- validation (strict parse boundary) ---------------------------------------
 
+test("a bundle's codex-home from the other OS is left out with a warning; the rest imports, and a non-path is still a rejection", () => {
+  isolate();
+  // The one preference whose value is a machine path: a Linux export read on Windows, or the reverse.
+  const foreign = process.platform === "win32" ? "/srv/codex" : "C:\\Codex";
+  const line =
+    `codex-home "${foreign}" is not a path on this OS; skipped, set it here with agent config`;
+  const bundle = parseSettingsBundle(rawBundle({ config: { codexHome: foreign, port: 4242 } }));
+  expect(bundle.config).toEqual({ port: 4242 });
+  expect(bundle.skippedConfig).toEqual([line]);
+  expect(planImport(bundle, { catalogDeps: NOOP_CATALOG_DEPS }).skipped).toEqual([line]);
+  expect(() => parseSettingsBundle(rawBundle({ config: { codexHome: "relative/dir" } }))).toThrow(
+    /config\.codexHome is invalid/,
+  );
+});
+
 test("parseSettingsBundle rejects non-objects, unknown formatVersion, and missing sections", () => {
   expect(() => parseSettingsBundle("nope")).toThrow(/JSON object/);
   expect(() => parseSettingsBundle({})).toThrow(/formatVersion/);

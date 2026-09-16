@@ -105,9 +105,9 @@ export type CodexWriteRequest =
 // so load-merge-stringify is the best the writer can do. Every managed field is ENFORCED on each
 // run, so a renamed or added key propagates even into a pre-existing config.
 
-/** The unified table doesn't encode mode in its name, so mode is read from base_url; anything but
- *  a Copilot host (isDirectBaseUrl) or a localhost proxy on `expectedPort` is "other" (a
- *  half-written table). */
+/** The unified table doesn't encode mode in its name, so mode is read from base_url's SHAPE: an https
+ *  origin is Direct whatever the host (isDirectBaseUrl), a localhost proxy on `expectedPort` is proxy,
+ *  anything else is "other" (a half-written table). */
 function codexTableMode(table: unknown, expectedPort: number): AgentProviderMode {
   if (!isRecord(table)) return "other";
   const baseUrl = typeof table.base_url === "string" ? table.base_url : null;
@@ -888,12 +888,14 @@ export async function probeDirectWiring(
   const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
   const config = new CopilotEnvConfig();
   const userAgent = codexUserAgent();
+  // A literal skips the HOST probe, never the identity probe, which runs on the one host in use.
+  const literal = config.copilotHost();
   const directIntegrationId = known !== undefined
     ? known.directIntegrationId
     : await resolveDirectIntegrationId(resolved, userAgent, {
       pinned: config.pinnedIntegrationId(),
+      apiBase: literal ?? DEFAULT_COPILOT_API_BASE,
     });
-  const literal = config.copilotHost();
   const directBaseUrl = await resolveCopilotHost(
     resolved,
     directClientHeaders(userAgent, directIntegrationId),

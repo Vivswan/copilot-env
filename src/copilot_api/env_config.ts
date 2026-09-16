@@ -409,6 +409,10 @@ function copilotHostRejection(raw: string): string | null {
   if ((url.pathname !== "/" && url.pathname !== "") || url.search !== "" || url.hash !== "") {
     return "expected an https:// origin without a path or query";
   }
+  // A loopback origin is the proxy's shape, never a Copilot host (isDirectBaseUrl agrees).
+  if (["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)) {
+    return "expected an https:// origin that is not loopback";
+  }
   return null;
 }
 

@@ -653,10 +653,11 @@ export async function resolveLaunchCredential(
   // PAT needs `copilot-developer-cli`; copilot-api sends `vscode-chat`). Resolved BEFORE launching, so
   // an unusable credential fails here with the real reason instead of an opaque daemon-side
   // "Failed to get models"; the passthrough preload rewrites the header on the daemon's upstream calls.
-  // Probed on the generic host: the host comes after the identity (resolveDaemonHost).
+  // Probed on the one host in use: the literal, else the generic host (the host probe comes after
+  // the identity, resolveDaemonHost).
   const integrationId = await resolveIntegrationId(githubToken, {
     pinned: config.pinnedIntegrationId(),
-    apiBase: DEFAULT_COPILOT_API_BASE,
+    apiBase: config.copilotHost() ?? DEFAULT_COPILOT_API_BASE,
   });
   return { kind: "pat", token: githubToken, integrationId };
 }

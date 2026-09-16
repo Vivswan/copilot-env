@@ -8,11 +8,7 @@ import { type CodexOtherReason, codexProviderId } from "../codex/config.ts";
 import { codexHostDriftFrom, codexHostDriftLine } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
-import {
-  directBaseUrl,
-  directHostDrift,
-  isDirectBaseUrl,
-} from "../copilot_api/integration_identity.ts";
+import { DEFAULT_COPILOT_API_BASE, isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { agentStartCommand, type Profile } from "../copilot_api/profile.ts";
 import { v409CodexProfileFiles } from "../migrations/4.0.9.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -202,6 +198,15 @@ export function legacyTableRepair(
     : byHand;
 }
 
+/** A Direct config baked on another Copilot host than the one a rewire would bake stays Direct and
+ *  green; its host line says where the next rewire moves it. Empty when nothing says otherwise. */
+function hostDriftNote(baked: string | null, expected: string | null | undefined): string {
+  if (baked === null || expected === null || expected === undefined || !URL.canParse(baked)) {
+    return "";
+  }
+  return new URL(baked).origin === expected ? "" : ` (the next rewire moves it to ${expected})`;
+}
+
 export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult {
   const configPath = codexConfigPath(f.home);
   // A named profile's selector lives in its own file, named on every row beside config.toml.
@@ -309,7 +314,7 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
       "provider: direct",
       ...fileLines,
       `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}${
-        f.baseUrl === null ? "" : directHostDrift(f.baseUrl)
+        hostDriftNote(f.baseUrl, f.expectedDirectHost)
       }`,
       verdict.authLine,
     ].join("\n");
@@ -458,7 +463,9 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
     // must be right. A gh-cli provider is probed live; with no provider at all, nothing resolves.
     const verdict = directAuthVerdict(f, baseOk, directFix, profile);
     const baseUrlLine = `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
-      baseOk ? directHostDrift(f.baseUrl ?? "") : ` (expected ${directBaseUrl()})`
+      baseOk
+        ? hostDriftNote(f.baseUrl, f.expectedDirectHost)
+        : ` (expected ${f.expectedDirectHost ?? DEFAULT_COPILOT_API_BASE})`
     }`;
     const detail = [
       "provider: direct",

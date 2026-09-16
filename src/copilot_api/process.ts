@@ -563,13 +563,14 @@ export function daemonEnvironment(spec: DaemonSpec, base: NodeJS.ProcessEnv): No
   env.COPILOT_API_HOME = spec.home;
   applyCredentialEnv(env, spec.credential);
   // Set-or-delete like the credential keys: an inherited pin must not outlive the spec that set it.
-  // copilot-api's own host override (COPILOT_API_ENTERPRISE_URL) would beat the rewritten state, so
-  // a pinned daemon never inherits one.
+  // copilot-api's own host selectors (COPILOT_API_ENTERPRISE_URL, COPILOT_API_OAUTH_APP=opencode)
+  // answer before the rewritten state, so a pinned daemon never inherits either.
   if (spec.copilotHost === null) {
     delete env[DAEMON_COPILOT_HOST_ENV];
   } else {
     env[DAEMON_COPILOT_HOST_ENV] = spec.copilotHost;
     delete env.COPILOT_API_ENTERPRISE_URL;
+    delete env.COPILOT_API_OAUTH_APP;
   }
   // Both spellings are written so the exemption holds whichever name the HTTP client consults first.
   const noProxy = noProxyWithLoopback(env.NO_PROXY ?? env.no_proxy);

@@ -46,7 +46,7 @@ export const DAEMON_COPILOT_HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
 export function isDirectBaseUrl(url: string): boolean {
   if (!URL.canParse(url)) return false;
   const parsed = new URL(url);
-  // A loopback https origin is nobody's Copilot host: it stays a (mis-shaped) proxy contract.
+  // A loopback https origin is nobody's Copilot host: it stays a malformed proxy contract.
   return parsed.protocol === "https:" && !LOOPBACK_HOSTS.has(parsed.hostname);
 }
 

@@ -29,7 +29,7 @@ import {
   type ProjectedProxyEntry,
   type TotalOverConfigKeys,
 } from "../src/copilot_api/env_config.ts";
-import { anyTrackedDaemonAlive } from "../src/copilot_api/daemon.ts";
+import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../src/copilot_api/daemon.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
@@ -590,6 +590,7 @@ test("configTableOutput() takes the terminal's width from the one table seam: CO
       width,
       profile: null,
       daemonUp: anyTrackedDaemonAlive(),
+      profileDaemonUp: trackedDaemonAlive(null),
       proxyVersion: nextProxyVersion(),
       color: COLOR_ENABLED,
     });
@@ -627,6 +628,7 @@ const PLAIN_TABLE = {
   width: 80,
   profile: null,
   daemonUp: false,
+  profileDaemonUp: false,
   proxyVersion: "1.16.3",
   color: false,
 } as const;
@@ -745,6 +747,22 @@ test("configTable() renders the header, the groups, and key=value rows with type
   expect(restartLineFor("1.14.21", "proxy.alpha-search.model")).toBe(false);
   expect(restartLineFor("1.16.3", "proxy.alpha-search.model")).toBe(true);
   expect(restartLineFor(null, "daemon.strict-port")).toBe(false);
+  // A value from the selected profile's section is read by THAT daemon: another daemon being up
+  // earns it no restart line, its own does; a global-map value still follows any daemon.
+  const overridden = stored(global, { work: { "proxy.small-model": "gpt-5-codex" } });
+  const lineFor = (profileDaemonUp: boolean, key: string): boolean => {
+    const out = configTable(overridden, {
+      ...PLAIN_TABLE,
+      profile: WORK,
+      daemonUp: true,
+      profileDaemonUp,
+    }).split("\n");
+    const at = out.findIndex((l) => rowRe.exec(l)?.[2] === key);
+    return out[at + 1] === " ".repeat(column) + "restart the proxy to apply";
+  };
+  expect(lineFor(false, "proxy.small-model")).toBe(false);
+  expect(lineFor(true, "proxy.small-model")).toBe(true);
+  expect(lineFor(false, "daemon.strict-port")).toBe(true);
 });
 
 test("configTable() at width 60 packs the header onto two lines and keeps every row within the width", () => {

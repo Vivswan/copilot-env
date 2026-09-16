@@ -587,6 +587,10 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   expect(existsSync(profileHome(WORK))).toBe(false);
   // ... and the settings section, so a later profile of the same name inherits nothing.
   expect(new CopilotEnvConfig().read().profiles).not.toHaveProperty("work");
+  // A profile that exists ONLY as a settings section (a settings-only import) is still deletable.
+  new CopilotEnvConfig().setProfile(WORK, { host: "https://copilot-api.ghe.example" });
+  await runProfile({ del: "work", mode: "auto" });
+  expect(new CopilotEnvConfig().read().profiles).not.toHaveProperty("work");
 });
 
 test("a wiring failure after the atomic commit leaves a complete slot that --sync heals", async () => {

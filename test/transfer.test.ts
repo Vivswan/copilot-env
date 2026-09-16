@@ -310,6 +310,18 @@ test("junk config keys and malformed values are rejections, never dropped or coe
   expect(() =>
     parseSettingsBundle(rawBundle({ config: configOf({}, { work: { "daemon.port": 4242 } }) }))
   ).toThrow(/unknown key under config\.profiles\.work/);
+  // The default's proxy knobs live in the global map (no command writes or removes them in its
+  // section), so a default-section override is refused; a named section takes it.
+  expect(() =>
+    parseSettingsBundle(
+      rawBundle({ config: configOf({}, { default: { "proxy.small-model": "gpt-5" } }) }),
+    )
+  ).toThrow(/unknown key under config\.profiles\.default/);
+  expect(
+    parseSettingsBundle(
+      rawBundle({ config: configOf({}, { work: { "proxy.small-model": "gpt-5" } }) }),
+    ).config.profiles,
+  ).toEqual({ work: { "proxy.small-model": "gpt-5" } });
   expect(message).not.toContain("evil");
 });
 

@@ -288,6 +288,11 @@ function codexHomeFromOtherOs(value: unknown): value is string {
 
 const GLOBAL_MAP_KEYS = CONFIG_REGISTRY.filter((def) => def.scope !== "profile").map((d) => d.key);
 const PROFILE_MAP_KEYS = CONFIG_REGISTRY.filter((def) => def.scope !== "global").map((d) => d.key);
+/** The default profile's proxy knobs are the global map (what `--set` writes without `--profile`),
+ *  so its section admits the profile keys alone: an override there could be removed by no command. */
+const DEFAULT_SECTION_KEYS = CONFIG_REGISTRY.filter((def) => def.scope === "profile").map((d) =>
+  d.key
+);
 
 /** A present key the lenient schema turned into undefined is a rejection here. */
 function rejectInvalidValues(
@@ -349,7 +354,11 @@ function parseProfileSettingsSection(raw: unknown): Record<string, ProfileConfig
     }
     const path = `config.profiles.${name}`;
     const section = requireRecord(sectionRaw, path);
-    rejectUnknownKeys(section, PROFILE_MAP_KEYS, path);
+    rejectUnknownKeys(
+      section,
+      name === PROFILE_SETTINGS_DEFAULT_KEY ? DEFAULT_SECTION_KEYS : PROFILE_MAP_KEYS,
+      path,
+    );
     const parsed = v.parse(PROFILE_CONFIG_SCHEMA, section);
     rejectInvalidValues(section, parsed, path);
     out[name] = parsed;

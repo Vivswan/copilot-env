@@ -1,7 +1,7 @@
 // configTable() is the one table both `agent config` and its `--help` print; the key registry is
 // src/copilot_api/env_config.ts.
 import { consola } from "consola";
-import { anyTrackedDaemonAlive } from "../copilot_api/daemon.ts";
+import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../copilot_api/daemon.ts";
 import {
   CONFIG_GROUPS,
   CONFIG_REGISTRY,
@@ -185,8 +185,17 @@ export function unreadProjectedKeyWarnings(
 function runDel(key: string, profile: Profile | undefined): void {
   const def = configKeyDef(key);
   if (def === undefined) throw unknownKeyError(key);
-  const target = new CopilotEnvConfig().assign(def, null, profile);
-  consola.success(`deleted ${def.key}${targetSuffix(target)} (reverted to default)`);
+  const config = new CopilotEnvConfig();
+  const target = config.assign(def, null, profile);
+  // What the key resolves to NOW, and from where: a deleted profile override may fall back to the
+  // global value, not the built-in default.
+  const now = config.resolve(def.key, {
+    profile: target.kind === "global" ? null : target.profile,
+  });
+  const reads = now.value === undefined
+    ? "unset"
+    : `${formatConfigValue(now.value)} (${now.source})`;
+  consola.success(`deleted ${def.key}${targetSuffix(target)}; now ${reads}`);
   noteHowItApplies(def, target);
 }
 
@@ -254,8 +263,10 @@ export interface ConfigTableOptions {
   width: number;
   /** Whose values the profile-scoped rows show; null is the default profile. */
   profile: Profile;
-  /** A stored key the live daemon read at launch earns the restart line. */
+  /** A stored key a live daemon read at launch earns the restart line: any daemon for a value
+   *  from the global map, the selected profile's own daemon for a value from its section. */
   daemonUp: boolean;
+  profileDaemonUp: boolean;
   /** A stored projected key the next proxy is too old to read earns no restart line, since no
    *  restart makes it read. Null means the version cannot be known, and then NO row earns the line:
    *  a missing hint is cheaper than a wrong one. */
@@ -308,8 +319,9 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     const right = packToWidth(cells, (cell) => cell.text.length, rightWidth)
       .map((line) => line.map((cell) => cell.paint(cell.text)).join(" "));
     const daemonReads = isProxyProjected(def) || def.restartToApply === true;
+    const up = row.resolved.source === "profile" ? opts.profileDaemonUp : opts.daemonUp;
     if (
-      row.stored && opts.daemonUp && daemonReads && opts.proxyVersion !== null &&
+      row.stored && up && daemonReads && opts.proxyVersion !== null &&
       sinceProxyVersionWarning(def, opts.proxyVersion) === null
     ) {
       right.push(paint.dim(paint.green(RESTART_LINE)));
@@ -364,6 +376,7 @@ export function configTableOutput(
     width: terminalWidth() ?? Number.POSITIVE_INFINITY,
     profile,
     daemonUp: anyTrackedDaemonAlive(),
+    profileDaemonUp: trackedDaemonAlive(profile),
     proxyVersion: nextProxyVersion(),
     color: COLOR_ENABLED,
   });

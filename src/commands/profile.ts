@@ -203,7 +203,8 @@ async function runDel(name: ProfileName): Promise<void> {
   // A foreign same-named settings-<name>.json or a hand-made [model_providers.copilot-env-<name>]
   // is not ours to delete unless the store or home says the profile was real.
   const existed = new CopilotEnvState().profileSlotStatus(name).exists ||
-    profileHomeNames().includes(name);
+    profileHomeNames().includes(name) ||
+    Object.hasOwn(new CopilotEnvConfig().read().profiles, name);
   if (!existed) {
     consola.info(`${profileLabel(name)} does not exist - nothing to delete.`);
     process.exitCode = 1;

@@ -161,7 +161,7 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
           { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 5 } },
           {
             name: COPILOT_SANDBOX_INTEGRATION_ID,
-            verdict: { kind: "inconclusive", detail: "503 upstream" },
+            verdict: { kind: "inconclusive", detail: "503 upstream", blocked: true },
           },
           { name: VSCODE_CHAT_INTEGRATION_ID, verdict: rejected },
         ],
@@ -174,7 +174,7 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
           { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 37 } },
           {
             name: COPILOT_SANDBOX_INTEGRATION_ID,
-            verdict: { kind: "inconclusive", detail: "network error: offline" },
+            verdict: { kind: "inconclusive", detail: "network error: offline", blocked: true },
           },
           { name: VSCODE_CHAT_INTEGRATION_ID, verdict: rejected },
         ],

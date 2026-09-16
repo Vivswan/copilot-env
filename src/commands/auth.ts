@@ -1184,15 +1184,6 @@ async function chooseIdentity(
   return parseIdentityChoice(String(value));
 }
 
-/** resolveCopilotHost's "blocked" reading of a generic-host verdict: 403, 404, 5xx, or a network
- *  failure move `auto` to the account's host; 2xx, 400, 401, and transient statuses keep it. */
-function autoMovesOff(verdict: IdentityVerdict | undefined): boolean {
-  if (verdict === undefined || verdict.kind !== "inconclusive") return false;
-  if (verdict.detail.startsWith("network error")) return true;
-  const status = Number.parseInt(verdict.detail.split(" ")[0] ?? "", 10);
-  return status === 403 || status === 404 || status >= 500;
-}
-
 function noteIdentityApplies(): void {
   const hint = configKeyDef("integration-id")?.applyHint;
   if (hint !== undefined) logger.info(hint);
@@ -1211,32 +1202,35 @@ async function pinIdentity(
   if (token === null) {
     logger.warn(`Pinning \`${id}\` unverified: ${reason}.`);
   } else {
-    const configuredHost = new CopilotEnvConfig().copilotHost();
-    const survey = await surveyIntegrationIdentities(
-      token,
-      pinnedIdentityCandidates(id, codexUserAgent()),
-      { configuredHost },
-    );
     // The host the pin's requests go to: the literal; else the slot's cached host while it reads
     // back under this id (what the writer replays without probing); else what `auto` selects under
     // the pin's headers (resolveCopilotHost's rule read off the generic column: a blocked host moves
-    // to the account's, any other answer keeps it).
-    const genericIndex = survey.hosts.findIndex((h) => h.role === "generic");
-    const designatedIndex = survey.hosts.findIndex((h) => h.role === "designated");
-    const autoIndex = autoMovesOff(survey.hosts[genericIndex]?.verdicts[0]?.verdict) &&
-        designatedIndex >= 0
-      ? designatedIndex
-      : genericIndex;
+    // to the account's, any other answer keeps it). A known host is surveyed as the configured
+    // column, so it always has a row whatever the account lookup answers.
+    const configuredHost = new CopilotEnvConfig().copilotHost();
     const cached = configuredHost === null
       ? new CopilotEnvState().readProfileCopilotHostCache(profile, id, null)
       : { kind: "none" as const };
-    const inUseIndex = configuredHost !== null
-      ? survey.hosts.findIndex((h) => sameOrigin(h.apiBase, configuredHost))
-      : cached.kind === "valid"
-      ? survey.hosts.findIndex((h) => sameOrigin(h.apiBase, cached.host))
+    const knownHost = configuredHost ?? (cached.kind === "valid" ? cached.host : null);
+    const survey = await surveyIntegrationIdentities(
+      token,
+      pinnedIdentityCandidates(id, codexUserAgent()),
+      { configuredHost: knownHost },
+    );
+    const genericIndex = survey.hosts.findIndex((h) => h.role === "generic");
+    const designatedIndex = survey.hosts.findIndex((h) => h.role === "designated");
+    const generic = survey.hosts[genericIndex]?.verdicts[0]?.verdict;
+    const autoIndex = generic?.kind === "inconclusive" && generic.blocked && designatedIndex >= 0
+      ? designatedIndex
+      : genericIndex;
+    const inUseIndex = knownHost !== null
+      ? survey.hosts.findIndex((h) => sameOrigin(h.apiBase, knownHost))
       : autoIndex;
     const hosts = survey.hosts.map((column, i) => ({
-      label: hostLabel(column, configuredHost !== null && i === inUseIndex),
+      // A cached host rides in as the configured column; its label says so, not "copilot-host".
+      label: configuredHost === null && column.role === "configured"
+        ? `${new URL(column.apiBase).host} (cached for this identity)`
+        : hostLabel(column, configuredHost !== null && i === inUseIndex),
       verdict: column.verdicts[0]?.verdict,
     }));
     // "Every host" needs the account's host to be known: a transient lookup failure hides that

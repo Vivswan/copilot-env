@@ -120,8 +120,9 @@ test("health: the sandbox that blocks proxy auth is named with its line; open or
       expected: [{
         status: "warn",
         at: `${CONFIG}:2`,
-        fix: `set sandbox_mode = "workspace-write" and ${toggleFixBare} in ${CONFIG}, or switch` +
-          " Codex to Direct with `agent codex --direct`",
+        fix: `set sandbox_mode = "workspace-write" and ${toggleFixBare} in ${CONFIG}, or bake` +
+          " the credential with `agent config --set static-key true` (no token command runs" +
+          " inside the sandbox), or switch Codex to Direct with `agent codex --direct`",
       }],
     },
     {
@@ -130,7 +131,7 @@ test("health: the sandbox that blocks proxy auth is named with its line; open or
       expected: [{
         status: "warn",
         at: `${CONFIG}:2`,
-        fix: `set sandbox_mode = "workspace-write" in ${CONFIG}, or switch`,
+        fix: `set sandbox_mode = "workspace-write" in ${CONFIG}, or bake`,
       }],
     },
     // The proxy writer's `[sandbox_workspace_write] network_access = true` is the ONLY switch that
@@ -488,8 +489,10 @@ test("agent codex --check says where a read-only sandbox blocks proxy auth, and 
   );
   // The logger renders markdown, so the command's backticks are asserted apart from the text.
   expect(said).toContain(
-    `set sandbox_mode = "workspace-write" in ${configPath}, or switch Codex to Direct with`,
+    `set sandbox_mode = "workspace-write" in ${configPath}, or bake the credential with`,
   );
+  // Sandbox repair, static-key route, Direct switch: the owner's order, all three on the one line.
+  expect(said).toMatch(/set sandbox_mode.*static-key true.*or switch Codex to Direct with/);
   expect(said).toContain("agent codex --direct");
   // A rewire never touches the user's setting.
   write();

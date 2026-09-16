@@ -899,10 +899,11 @@ export async function probeDirectWiring(
     directClientHeaders(userAgent, directIntegrationId),
     { literal },
   );
-  // Under `auto`, a blocked generic host leaves the identity probe inconclusive (its default), so a
-  // PAT is probed again where the account is served: that host is where the identity must be accepted.
+  // Under `auto`, a blocked generic host leaves the identity probe inconclusive (its default) and a
+  // replayed slot verdict was probed there too, so a PAT is probed again where the account is served:
+  // that host is where the identity must be accepted.
   if (
-    known === undefined && literal === null && config.pinnedIntegrationId() === null &&
+    literal === null && config.pinnedIntegrationId() === null &&
     directBaseUrl !== DEFAULT_COPILOT_API_BASE
   ) {
     return {

@@ -1070,7 +1070,7 @@ async function surveyAndTable(
     verdicts: generic.verdicts.slice(0, directBuiltins.length),
   });
   const slot = new CopilotEnvState().readProfileSlot(profile).integrationIdentity;
-  const nextDirect = pinned ?? (profile === null ? fresh : slot ?? fresh);
+  const firstPick = pinned ?? (profile === null ? fresh : slot ?? fresh);
   // The proxy's pick is the launch resolver's: its own candidates, in their order, on the generic
   // host (resolveLaunchCredential), before the host is chosen.
   const proxyNext = proxyPassthrough
@@ -1084,9 +1084,9 @@ async function surveyAndTable(
   // Each mode's host follows ITS identity: Direct's the one the next wiring bakes (a named profile
   // replays its slot's cached host first, as its writer does), the daemon's the one it will send
   // (resolveDaemonHost). With no Direct pick, the daemon's identity stands in for Direct too.
-  const inUseHeaders = nextDirect === null
+  const inUseHeaders = firstPick === null
     ? passthroughIdentity(VSCODE_CHAT_INTEGRATION_ID).headers
-    : directClientHeaders(userAgent, nextDirect === CODEX_IDENTITY_NAME ? null : nextDirect);
+    : directClientHeaders(userAgent, firstPick === CODEX_IDENTITY_NAME ? null : firstPick);
   const cachedHost = profile === null
     ? null
     : new CopilotEnvState().readProfileCopilotHost(profile, pinned);
@@ -1097,6 +1097,18 @@ async function surveyAndTable(
     passthroughIdentity(proxyNext ?? VSCODE_CHAT_INTEGRATION_ID).headers,
     { narrator: logger },
   );
+  // The wiring probes a PAT again on the host `auto` moved it to (probeDirectWiring), so the pick
+  // shown is the built-ins ranked on THAT column. Not when the wiring would not probe: a pin or a
+  // literal, a profile replaying its cached pair, or a first pick of "nothing" (the wiring throws on
+  // the generic host before any move).
+  const inUseColumn = survey.hosts.find((h) => sameOrigin(h.apiBase, hostInUse));
+  const nextDirect = pinned === null && configuredHost === null && cachedHost === null &&
+      firstPick !== null && inUseColumn !== undefined && inUseColumn !== generic
+    ? autoIdentityFor(token, {
+      ...inUseColumn,
+      verdicts: inUseColumn.verdicts.slice(0, directBuiltins.length),
+    })
+    : firstPick;
   const rewire = profile === null ? "agent init" : `agent profile --add ${profile} --direct`;
   for (
     const line of identityTableLines({

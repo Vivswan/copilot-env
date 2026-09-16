@@ -701,7 +701,7 @@ const launcherDeps: LaunchDeps = {
   writeClaudeProfileSettings: (name) => Promise.resolve(join("/h", `settings-${name}.json`)),
   syncProfileWiring: () => Promise.resolve(),
   managedClaudeBaseUrl: () => null,
-  managedCodexHome: () => null,
+  codexHome: () => "/h/.codex",
   notify: () => {},
 };
 

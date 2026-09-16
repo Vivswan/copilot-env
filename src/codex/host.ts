@@ -84,20 +84,47 @@ export function isManagedFarmExport(envHome: string | undefined): boolean {
   return Boolean(envHome && envHome === getHostLocalCodexHome());
 }
 
-/** The recorded farm while its directory exists, else `$CODEX_HOME`, else `~/.codex`. A dead record
- *  and OUR dead farm export are skipped: a write through either would resurrect the removed farm as
- *  a plain dir. */
+/** The home every Codex write, `agent codex --check`, and launch pin agree on, plus the one note
+ *  those three print (the other readers stay silent). An explicit-home key is a new arm of
+ *  resolveCodexHome, never a second derivation. */
+export interface CodexHomeResolution {
+  home: string;
+  /** With codex-host on the farm is the home whatever the shell says, so a differing CODEX_HOME
+   *  export is stale (an rc file, a shell `agent env` never refreshed). Null when the shell is silent
+   *  or agrees; with the key off the export IS the home, so never stale. */
+  staleExport: string | null;
+}
+
+/**
+ *   codex-host off, CODEX_HOME exported      -> the export (Codex's own convention), unless it is
+ *                                               OUR dead farm export
+ *   codex-host off, nothing exported         -> ~/.codex
+ *   codex-host on, farm recorded and on disk -> the farm; a differing export is noted, not honoured
+ *   codex-host on, no live record            -> as off (the next `agent codex` builds and records)
+ * A dead record is skipped: a write through it would resurrect the removed farm as a plain dir.
+ */
+export function resolveCodexHome(enabled: boolean = codexHostEnabledOrOff()): CodexHomeResolution {
+  const recorded = new CopilotEnvRunState().read().codexHome;
+  // The key off (or unset) retires the record at once; the next pass removes the farm.
+  if (enabled && recorded !== undefined && fs.existsSync(recorded)) {
+    return { home: recorded, staleExport: staleExportAgainst(recorded) };
+  }
+  return { home: unmanagedCodexHome(), staleExport: null };
+}
+
+function staleExportAgainst(farmHome: string): string | null {
+  const exported = process.env.CODEX_HOME;
+  return exported && exported !== farmHome ? exported : null;
+}
+
 export function effectiveCodexHome(): string {
-  return effectiveCodexHomeFor(codexHostEnabledOrOff());
+  return resolveCodexHome().home;
 }
 
 /** The settings-import plan resolves the POST-import home with the bundle's value before the store
  *  is replaced. */
 export function effectiveCodexHomeFor(enabled: boolean): string {
-  const recorded = new CopilotEnvRunState().read().codexHome;
-  // The key off (or unset) retires the record at once; the next pass removes the farm.
-  if (enabled && recorded !== undefined && fs.existsSync(recorded)) return recorded;
-  return unmanagedCodexHome();
+  return resolveCodexHome(enabled).home;
 }
 
 /** `$CODEX_HOME` unless it is OUR farm export (POSIX only; Windows never has a farm), else
@@ -107,6 +134,24 @@ export function unmanagedCodexHome(): string {
     return path.join(homedir(), ".codex");
   }
   return defaultCodexHome();
+}
+
+export function staleCodexHomeExportLine(resolution: CodexHomeResolution): string | null {
+  if (resolution.staleExport === null) return null;
+  return `Ignoring the shell's CODEX_HOME=${resolution.staleExport}: codex-host is on, so Codex is wired at the per-host farm ${resolution.home}`;
+}
+
+const narratedStaleExports = new Set<string>();
+
+/** Prints the stale-export note once per process and hands the home back. A launch that re-wires
+ *  Codex resolves the home twice (the write, then the child's pin) and must not say it twice. */
+export function narrateCodexHome(resolution: CodexHomeResolution): string {
+  const line = staleCodexHomeExportLine(resolution);
+  if (line !== null && !narratedStaleExports.has(line)) {
+    narratedStaleExports.add(line);
+    logger.warn(line);
+  }
+  return resolution.home;
 }
 
 /** The single decision the derivation (withCodexHostFarm) and the settings-import plan share.
@@ -620,6 +665,7 @@ export async function withCodexHostFarm(
       }
       await write(farm.hostHome);
       state.set({ codexHome: farm.hostHome });
+      narrateCodexHome(resolveCodexHome(true));
       return;
     }
     case "remove":

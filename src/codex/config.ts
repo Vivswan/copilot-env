@@ -56,6 +56,8 @@ import {
   codexHostDriftLine,
   effectiveCodexHome,
   knownCodexHomes,
+  narrateCodexHome,
+  resolveCodexHome,
   withCodexHostFarm,
 } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome } from "./paths.ts";
@@ -849,7 +851,7 @@ function providerModeDetail(status: CodexWiringStatus): string {
 
 function checkCodexConfig(): void {
   try {
-    const codexHome = effectiveCodexHome();
+    const codexHome = narrateCodexHome(resolveCodexHome());
     const configPath = codexConfigPath(codexHome);
     const read = readTextResult(configPath);
     const status = inspectCodexWiring(read, null, Number(copilotApiResolvePort()), false);

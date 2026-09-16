@@ -6,7 +6,8 @@ import * as path from "node:path";
 import * as v from "valibot";
 import { CopilotApiConfig, ensureDict } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
-import type { Profile } from "./profile.ts";
+import type { Profile, ProfileName } from "./profile.ts";
+import { isRecord } from "../utils/json.ts";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
 
 export type PassthroughPref = "auto" | "on" | "off";
@@ -1283,6 +1284,15 @@ export class CopilotEnvConfig {
 
   delProfile(profile: Profile, key: ProfileMapKey): void {
     this.setProfile(profile, { [key]: undefined });
+  }
+
+  /** The whole section goes with the profile (`agent profile --del`): a deleted profile leaves no
+   *  values behind for a later profile of the same name to inherit. */
+  deleteProfile(name: ProfileName): void {
+    this.store.update((d) => {
+      const profiles = d.profiles;
+      if (isRecord(profiles)) delete profiles[name];
+    });
   }
 
   /** The `agent config --set`/`--del` write: the key's scope decides the map (settingTarget), so the

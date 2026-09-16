@@ -559,6 +559,10 @@ test("profile --add wires both agents atomically; --del removes everything", asy
     codexProviderId(WORK),
   );
 
+  // A profile-scoped setting lives in the profile's section of the preference store.
+  new CopilotEnvConfig().setProfile(WORK, { identity: "copilot-developer-cli" });
+  expect(new CopilotEnvConfig().pinnedIntegrationId(WORK)).toBe("copilot-developer-cli");
+
   // Mode switch: re-add with the other flag flips BOTH agents (one mode, never both).
   await runProfile({ add: "work", mode: "direct" });
   expect(state.readProfileSlot(WORK).mode).toBe("direct");
@@ -581,6 +585,8 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   ).toBeUndefined();
   expect(existsSync(codexProfileConfigPath(codexHome, WORK))).toBe(false);
   expect(existsSync(profileHome(WORK))).toBe(false);
+  // ... and the settings section, so a later profile of the same name inherits nothing.
+  expect(new CopilotEnvConfig().read().profiles).not.toHaveProperty("work");
 });
 
 test("a wiring failure after the atomic commit leaves a complete slot that --sync heals", async () => {

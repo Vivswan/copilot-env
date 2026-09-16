@@ -20,6 +20,7 @@ import { claudeAdapter } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { ghAuthToken } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   allProfileNames,
   CopilotEnvState,
@@ -194,6 +195,7 @@ export async function deleteProfileEverywhere(
   }
   for (const agent of bothAgents()) agent.removeProfile(name, options);
   new CopilotEnvState().deleteProfile(name);
+  new CopilotEnvConfig().deleteProfile(name);
   removeTreeReported(profileHome(name));
 }
 

@@ -280,6 +280,13 @@ skipWin(
     fs.writeFileSync(join(retired, "config.toml"), 'model_provider = "openai"\n');
     expect(resolveCodexHome()).toEqual({ home: retired, by: "default", staleExport: null });
     expect(managedCodexHome()).toBeNull();
+    // A pass now wires THAT home (the export is the home with the farm off) and drops the record:
+    // our config inside a home the user chose must not turn it back into our farm.
+    await configureCodex();
+    expect(fs.readFileSync(retiredConfig, "utf8")).toContain('model_provider = "copilot-env"');
+    expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
+    expect(resolveCodexHome()).toEqual({ home: retired, by: "default", staleExport: null });
+    expect(managedCodexHome()).toBeNull();
   },
 );
 

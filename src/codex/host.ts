@@ -728,11 +728,14 @@ export async function withCodexHostFarm(
   // Resolved while the record still stands: a farm built under a previous root is ours only by that
   // record, so the export naming it is skipped (unmanagedCodexHome) before anything changes.
   const home = narrateCodexHome(resolveCodexHome(prefs));
-  // Only this root's record is retired here. One naming a previous root's farm stays until the next
+  // Retired here: this root's record, and one naming the very home this pass writes as a plain home
+  // (the user's own, honoured from the shell), since the config it is about to carry would otherwise
+  // read as our farm's on the next command. One naming a previous root's farm stays until the next
   // build overwrites it: it is the one proof that the shell's export of that farm is ours to clear.
   // A shell never refreshed across that rebuild keeps exporting the old farm, which then reads as
   // the user's own home: a working Codex there, not a loss.
-  if (state.read().codexHome === farm.hostHome) state.set({ codexHome: null });
+  const recorded = state.read().codexHome;
+  if (recorded === farm.hostHome || recorded === home) state.set({ codexHome: null });
   await write(home);
 }
 

@@ -3,7 +3,6 @@
 // idempotent, and a converted install reads back unchanged.
 //
 //   rc block with no end marker          -> fenced in place, body kept
-//   rc launchers block                   -> removed (the launchers are `agent env` emissions)
 //   `src/scripts/proxy-token.{sh,ps1}`   -> `agent proxy-token`
 //   Claude apiKeyHelper as a helper FILE -> the inline command
 //   autoupdate state's `enabled` field   -> the `auto-update` config key
@@ -41,10 +40,10 @@ function failIfAny(failed: readonly string[]): void {
 // --- the shell rc block ----------------------------------------------------------
 
 /** The launchers block every pre-4.0.0 release wrote, frozen here: the launchers are `agent env`
- *  emissions now (the `launchers` config key), so a leftover block would source a file that no
- *  longer ships. Fenced like the main block below, then removed whole. */
-const LAUNCHERS_MARKER = "# copilot-env launchers";
-const LAUNCHERS_MARKER_END = `${LAUNCHERS_MARKER} end`;
+ *  emissions now (the `launchers` config key). Fenced like the main block below; the 4.0.9 step
+ *  removes it. */
+export const LAUNCHERS_MARKER = "# copilot-env launchers";
+export const LAUNCHERS_MARKER_END = `${LAUNCHERS_MARKER} end`;
 
 /** The [assignment, guard] pair every 3.5.6-or-older release (and the pre-TS installers) wrote
  *  under each rc marker, frozen here: how an UNFENCED block is bounded without eating user
@@ -73,7 +72,13 @@ const UNFENCED_BLOCKS: Record<
     ],
   },
 };
-const FENCE_LINES: readonly string[] = [MARKER, MARKER_END, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END];
+/** Every marker and end-marker line the rc blocks ever used: an extent search stops at any of them. */
+export const FENCE_LINES: readonly string[] = [
+  MARKER,
+  MARKER_END,
+  LAUNCHERS_MARKER,
+  LAUNCHERS_MARKER_END,
+];
 
 /** An unfenced marker block whose two body lines are its release's pair gets the end fence
  *  inserted after the guard, so the current writer (fenced blocks only) refreshes or strips it
@@ -110,39 +115,6 @@ export function fenceUnfencedBlocks(content: string): string {
   return out.join("\n");
 }
 
-/** Every FENCED launchers block goes whole, with the blank line its writer put before it. An
- *  unfenced one that fenceUnfencedBlocks did not recognize is not ours to bound and stays: its
- *  extent search stops at any other fence line, so it can never borrow a later block's fence or
- *  swallow the main block. */
-function stripLaunchersBlocks(content: string): string {
-  const lines = content.split("\n");
-  const bare = (line: string | undefined): string => (line ?? "").replace(/\r$/, "");
-  const fenceEnd = (start: number): number => {
-    for (let j = start + 1; j < lines.length; j++) {
-      const line = bare(lines[j]);
-      if (line === LAUNCHERS_MARKER_END) return j;
-      if (FENCE_LINES.includes(line)) return -1;
-    }
-    return -1;
-  };
-  const out: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const end = bare(lines[i]) === LAUNCHERS_MARKER ? fenceEnd(i) : -1;
-    if (end === -1) {
-      out.push(lines[i] ?? "");
-      continue;
-    }
-    if (out.length > 0 && bare(out[out.length - 1]) === "") out.pop();
-    i = end;
-  }
-  return out.join("\n");
-}
-
-/** The whole rc conversion: fence what 3.5.6 left unfenced, then drop the launchers block. */
-export function convertShellBlocks(content: string): string {
-  return stripLaunchersBlocks(fenceUnfencedBlocks(content));
-}
-
 /** Shared with the 3.5.6 step (v356ShellFence). */
 export function fenceShellBlocks(): void {
   const failed: string[] = [];
@@ -151,9 +123,9 @@ export function fenceShellBlocks(): void {
       const read = readTextResult(file);
       if (read.kind === "absent") continue;
       if (read.kind === "unreadable") throw new Error(read.error);
-      const converted = convertShellBlocks(read.text);
-      if (converted === read.text) continue;
-      writeFileReported(file, converted, { detail: "copilot-env shell block fenced" });
+      const fenced = fenceUnfencedBlocks(read.text);
+      if (fenced === read.text) continue;
+      writeFileReported(file, fenced, { detail: "copilot-env shell block fenced" });
     } catch (e) {
       consola.warn(`  could not fence ${file}: ${errMessage(e)}`);
       failed.push(file);
@@ -162,12 +134,10 @@ export function fenceShellBlocks(): void {
   failIfAny(failed);
 }
 
-/** The rc blocks 3.5.6 wrote carry no end fence; fenced in place, body kept. The launchers block
- *  they wrote is removed. */
+/** The rc blocks 3.5.6 wrote carry no end fence; fenced in place, body kept. */
 export const v400ShellFence: Migration = {
   version: "4.0.0",
-  description:
-    "fence the shell rc blocks written without an end marker; remove the launchers block",
+  description: "fence the shell rc blocks written without an end marker",
   run: fenceShellBlocks,
 };
 

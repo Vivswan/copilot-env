@@ -18,8 +18,12 @@ import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { isValidProfileName, parseProfileName } from "../copilot_api/profile.ts";
+import { shellTargetFiles } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
+import { readTextResult } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
+import { writeFileReported } from "../utils/report_write.ts";
+import { FENCE_LINES, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
 import type { Migration } from "./index.ts";
 
 /** A parsed TOML table is a plain object; smol-toml's date-time scalar is a class instance with no
@@ -194,4 +198,86 @@ export const v409StaticKeyScope: Migration = {
   version: "4.0.9",
   description: "turn the static-key boolean into its scope (`true` -> `all`, `false` -> unset)",
   run: scopeStaticKeyBoolean,
+};
+
+// --- the launchers rc block ------------------------------------------------------------------
+//
+// Away from 4.0.9: `agent shell` stripped the launchers block every pre-4.0.0 release wrote on
+// every wire. The strip is a migration now, so an rc still carrying the block loses it once here.
+
+/** A line equals `marker` ignoring a trailing CR (rc/profile files may be CRLF). */
+const lineIs = (line: string | undefined, marker: string): boolean =>
+  (line ?? "").replace(/\r$/, "") === marker;
+
+/**
+ * Every launchers block, bounded as the shell writer bounded its blocks: the marker through its
+ * end fence (any other fence line first means the block was never closed and the marker line
+ * alone is owned), plus the blank line before it and the ONE blank after its end fence (never the
+ * file terminator). `leftBehind` is the user line directly under an unclosed marker, for the
+ * caller to warn about. Exported for the migration test.
+ */
+export function stripLaunchersBlocks(
+  content: string,
+): { content: string; leftBehind: string[] } {
+  const lines = content.split("\n");
+  const skip = new Set<number>();
+  const leftBehind: string[] = [];
+  lines.forEach((line, idx) => {
+    if (!lineIs(line, LAUNCHERS_MARKER)) return;
+    let end = idx;
+    for (let j = idx + 1; j < lines.length; j++) {
+      const later = (lines[j] ?? "").replace(/\r$/, "");
+      if (later === LAUNCHERS_MARKER_END) {
+        end = j;
+        break;
+      }
+      if (FENCE_LINES.includes(later)) break;
+    }
+    if (end === idx) {
+      const next = idx + 1 < lines.length ? (lines[idx + 1] ?? "").replace(/\r$/, "") : null;
+      if (next !== null && next !== "" && !FENCE_LINES.includes(next)) leftBehind.push(next);
+    }
+    if (idx > 0 && lineIs(lines[idx - 1], "")) skip.add(idx - 1);
+    for (let i = idx; i <= end; i++) skip.add(i);
+    const after = end + 1;
+    if (
+      after < lines.length && lineIs(lines[after], "") &&
+      !(after === lines.length - 1 && lines[after] === "")
+    ) skip.add(after);
+  });
+  if (skip.size === 0) return { content, leftBehind };
+  return { content: lines.filter((_, idx) => !skip.has(idx)).join("\n"), leftBehind };
+}
+
+/** Every rc/profile file; a file that cannot be read fails the step after the others ran. */
+export function stripLaunchersRcBlocks(): void {
+  const failed: string[] = [];
+  for (const file of shellTargetFiles()) {
+    try {
+      const read = readTextResult(file);
+      if (read.kind === "absent") continue;
+      if (read.kind === "unreadable") throw new Error(read.error);
+      const stripped = stripLaunchersBlocks(read.text);
+      for (const line of stripped.leftBehind) {
+        consola.warn(
+          `Unrecognized line under a copilot-env marker in ${file} -- ` +
+            `not written by copilot-env, so it (and everything after it) was left in place: ${line}`,
+        );
+      }
+      if (stripped.content === read.text) continue;
+      writeFileReported(file, stripped.content, { detail: "copilot-env launchers block removed" });
+    } catch (e) {
+      consola.warn(`  could not strip ${file}: ${errMessage(e)}`);
+      failed.push(file);
+    }
+  }
+  if (failed.length > 0) {
+    throw new Error(`${failed.length} file(s) were not converted: ${failed.join(", ")}`);
+  }
+}
+
+export const v409LaunchersBlock: Migration = {
+  version: "4.0.9",
+  description: "remove the launchers rc block (the launchers are `agent env` emissions)",
+  run: stripLaunchersRcBlocks,
 };

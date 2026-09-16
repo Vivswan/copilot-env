@@ -11,7 +11,12 @@ import { type SemverString, stripV, toSemverString, versionLessThan } from "../u
 import { v356, v356ClaudeWiring, v356CodexWiring, v356ShellFence } from "./3.5.6.ts";
 import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence } from "./4.0.0.ts";
 import { v402DesktopHelpers, v402GhAccountPin, v402RootLayout } from "./4.0.2.ts";
-import { v409CodexProfileFiles, v409IntegrationIdPin, v409StaticKeyScope } from "./4.0.9.ts";
+import {
+  v409CodexProfileFiles,
+  v409IntegrationIdPin,
+  v409LaunchersBlock,
+  v409StaticKeyScope,
+} from "./4.0.9.ts";
 
 /** One step, named for the release it migrates AWAY FROM (authored against the current release,
  *  with no future number to predict). It runs when an update leaves that version behind:
@@ -48,6 +53,7 @@ const MIGRATIONS: Migration[] = [
   v409CodexProfileFiles,
   v409IntegrationIdPin,
   v409StaticKeyScope,
+  v409LaunchersBlock,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a

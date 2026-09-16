@@ -13,9 +13,10 @@ import {
   v356ShellFence,
 } from "../src/migrations/3.5.6.ts";
 import {
-  convertShellBlocks,
   dropLegacyAutoupdateFlag,
   fenceUnfencedBlocks,
+  LAUNCHERS_MARKER,
+  LAUNCHERS_MARKER_END,
   removeEnvKey,
   rewriteClaudeWiring,
   rewriteLegacyClaudeHelper,
@@ -37,8 +38,10 @@ import {
   dropCodexIdentityPin,
   moveCodexProfileTables,
   scopeStaticKeyBoolean,
+  stripLaunchersBlocks,
   v409CodexProfileFiles,
   v409IntegrationIdPin,
+  v409LaunchersBlock,
   v409StaticKeyScope,
 } from "../src/migrations/4.0.9.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
@@ -109,6 +112,7 @@ test("the shipped registry holds exactly the named fix-ups in order, home move f
     v409CodexProfileFiles,
     v409IntegrationIdPin,
     v409StaticKeyScope,
+    v409LaunchersBlock,
   ]);
   // An install already on 4.0.0 (whose readers tolerated the 3.5.6 shapes) still gets
   // every wiring rewrite on its way to the next release.
@@ -291,38 +295,57 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
 
 // --- the 4.0.0 wiring rewrites (pure cores; no real home touched) -----------------
 
-test("convertShellBlocks fences the 3.5.6 rc block, drops the launchers block, and leaves everything else alone", () => {
+test("fenceUnfencedBlocks fences the 3.5.6 rc blocks and leaves everything else alone", () => {
   const main = `${MARKER}\nAGENTS_BASHRC="/x/shell/agents.bashrc"\n` +
     `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`;
-  // The launchers block as 3.5.6 wrote it: unfenced, with the blank its writer put before it.
-  const launchers = `# copilot-env launchers\nAGENTS_LAUNCHERS="/x/l.bashrc"\n` +
+  const launchers = `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS="/x/l.bashrc"\n` +
     `[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"`;
   const rc = `export KEEP=1\n\n${main}\n\n${launchers}\nexport AFTER=1\n`;
   expect(fenceUnfencedBlocks(rc)).toBe(
-    `export KEEP=1\n\n${main}\n${MARKER_END}\n\n${launchers}\n# copilot-env launchers end\nexport AFTER=1\n`,
+    `export KEEP=1\n\n${main}\n${MARKER_END}\n\n${launchers}\n${LAUNCHERS_MARKER_END}\nexport AFTER=1\n`,
   );
-  expect(convertShellBlocks(rc)).toBe(`export KEEP=1\n\n${main}\n${MARKER_END}\nexport AFTER=1\n`);
-  expect(convertShellBlocks(convertShellBlocks(rc))).toBe(convertShellBlocks(rc));
+  expect(fenceUnfencedBlocks(fenceUnfencedBlocks(rc))).toBe(fenceUnfencedBlocks(rc));
   // A lookalike in the guard position (the user's own assignment) is not the pair:
   // nothing is fenced, nothing is touched.
   const lookalike = `${MARKER}\nAGENTS_BASHRC="/x/agents.bashrc"\nAGENTS_BASHRC=/user-owned\n`;
-  expect(convertShellBlocks(lookalike)).toBe(lookalike);
-  // An unfenced launchers lookalike ahead of a real block never borrows that block's end fence:
-  // the user line between them survives.
-  const borrowed = `# copilot-env launchers\nexport KEEP=1\n\n${launchers}\nexport AFTER=1\n`;
-  expect(convertShellBlocks(borrowed)).toBe(
-    `# copilot-env launchers\nexport KEEP=1\nexport AFTER=1\n`,
-  );
-  // Nor does it reach across the MAIN block to a stray launchers end fence behind it.
-  const crossing = `# copilot-env launchers\n${main}\n${MARKER_END}\n# copilot-env launchers end\n`;
-  expect(convertShellBlocks(crossing)).toBe(crossing);
+  expect(fenceUnfencedBlocks(lookalike)).toBe(lookalike);
   // The PowerShell pair, CRLF: the fence adopts the file's line ending.
   const ps = `${MARKER}\r\n$AgentsPs1 = "C:\\x\\agents.ps1"\r\n` +
     `if (Test-Path $AgentsPs1) { . $AgentsPs1 }\r\nWrite-Host after\r\n`;
-  expect(convertShellBlocks(ps)).toBe(
+  expect(fenceUnfencedBlocks(ps)).toBe(
     `${MARKER}\r\n$AgentsPs1 = "C:\\x\\agents.ps1"\r\n` +
       `if (Test-Path $AgentsPs1) { . $AgentsPs1 }\r\n${MARKER_END}\r\nWrite-Host after\r\n`,
   );
+});
+
+test("4.0.9 launchers block: stripped whole with its blanks, bounded like the shell writer's blocks", () => {
+  const main = `${MARKER}\nAGENTS_BASHRC="/x/shell/agents.bashrc"\n` +
+    `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n${MARKER_END}`;
+  const block = `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS="/x/l.bashrc"\n` +
+    `[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\n${LAUNCHERS_MARKER_END}`;
+  // The shipped adjacency (main block, launchers block, the user's line): the block goes with the
+  // blank before it and the ONE blank after its end fence; the main block and the user line stay.
+  const rc = `export A=1\n\n${main}\n\n${block}\n\nexport B=1\n`;
+  const once = stripLaunchersBlocks(rc);
+  expect(once).toEqual({ content: `export A=1\n\n${main}\nexport B=1\n`, leftBehind: [] });
+  expect(stripLaunchersBlocks(once.content)).toEqual(once);
+  // The lone final "" is the file terminator, never the owned blank: the final newline survives.
+  expect(stripLaunchersBlocks(`before\n${block}\n`).content).toBe("before\n");
+  // An unclosed marker owns only its own line; the user line under it is reported, not eaten,
+  // and the search never borrows the end fence of a later block or crosses the main block.
+  const unclosed = `${LAUNCHERS_MARKER}\nexport KEEP=1\n\n${block}\nexport AFTER=1\n`;
+  expect(stripLaunchersBlocks(unclosed)).toEqual({
+    content: "export KEEP=1\nexport AFTER=1\n",
+    leftBehind: ["export KEEP=1"],
+  });
+  const crossing = `${LAUNCHERS_MARKER}\n${main}\n${LAUNCHERS_MARKER_END}\n`;
+  expect(stripLaunchersBlocks(crossing)).toEqual({
+    content: `${main}\n${LAUNCHERS_MARKER_END}\n`,
+    leftBehind: [],
+  });
+  // CRLF: the CR rides along with each stripped line; nothing else changes.
+  const crlf = `Write-Host before\r\n\r\n${block.replaceAll("\n", "\r\n")}\r\n`;
+  expect(stripLaunchersBlocks(crlf).content).toBe("Write-Host before\r\n");
 });
 
 test("rewriteLegacyCodexTables moves the 3.5.6 tables to the managed auth block", () => {

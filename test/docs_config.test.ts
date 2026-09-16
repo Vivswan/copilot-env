@@ -18,6 +18,6 @@ test("every CONFIG_REGISTRY key has a docs/configuration.md table row", () => {
     .map((line) => line.split("|")[1] ?? "")
     .join("\n");
   for (const def of CONFIG_REGISTRY) {
-    expect(keyCells).toContain(`\`${def.cli}\``);
+    expect(keyCells).toContain(`\`${def.key}\``);
   }
 });

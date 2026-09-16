@@ -214,11 +214,11 @@ test("nextProxyVersion: the override is unknowable, a record wins, else the chec
 test("nextProxyVersion: an exact pin the record does not match IS the next version; a tag pin is unknowable", () => {
   seedFloat("1.16.3", NOW_MS);
   const config = new CopilotEnvConfig();
-  config.set({ proxyVersion: "1.14.21" });
+  config.set({ "daemon.version": "1.14.21" });
   expect(nextProxyVersion(dir)).toBe("1.14.21");
-  config.set({ proxyVersion: "legacy" });
+  config.set({ "daemon.version": "legacy" });
   expect(nextProxyVersion(dir)).toBeNull();
-  config.set({ proxyVersion: "1.16.3" });
+  config.set({ "daemon.version": "1.16.3" });
   expect(nextProxyVersion(dir)).toBe("1.16.3");
 });
 
@@ -345,7 +345,7 @@ describe("resolveMinimumReleaseAgeSeconds", () => {
   });
 
   test("config releaseCooldown overrides the default, env overrides the config", () => {
-    new CopilotEnvConfig().set({ releaseCooldown: 172800 });
+    new CopilotEnvConfig().set({ "daemon.release-cooldown": 172800 });
     expect(resolveMinimumReleaseAgeSeconds()).toBe(172800);
     process.env[MIN_RELEASE_AGE_ENV] = "100";
     expect(resolveMinimumReleaseAgeSeconds()).toBe(100);
@@ -365,7 +365,7 @@ describe("resolveMinimumReleaseAgeSeconds", () => {
   test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     "an unreadable prefs store fails the version-pin and cooldown reads; the env override still wins first",
     () => {
-      new CopilotEnvConfig().set({ releaseCooldown: 60, proxyVersion: "1.2.3" });
+      new CopilotEnvConfig().set({ "daemon.release-cooldown": 60, "daemon.version": "1.2.3" });
       const file = new CopilotApiPaths().envConfigFile;
       chmodSync(file, 0o000);
       try {
@@ -679,7 +679,7 @@ describe("floatProxy", () => {
   });
 
   test("a stored proxy-version config pin applies; the env pin wins over it", async () => {
-    new CopilotEnvConfig().set({ proxyVersion: "1.10.29" });
+    new CopilotEnvConfig().set({ "daemon.version": "1.10.29" });
     const deno = fakeDeno();
     await floatProxy(deps(offlineFetch().fetchLike, deno.runner));
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.29");
@@ -1128,7 +1128,7 @@ describe("proxyInstallAssertStatus", () => {
   });
 
   test("a stored proxy-version config pin is asserted like the env pin", async () => {
-    new CopilotEnvConfig().set({ proxyVersion: "1.10.30" });
+    new CopilotEnvConfig().set({ "daemon.version": "1.10.30" });
     seedFloat("1.10.30", NOW_MS);
     const d = deps(offlineFetch().fetchLike, fakeDeno(["1.10.30", "1.10.29"]).runner);
     expect((await proxyInstallAssertStatus(d)).ok).toBe(true);

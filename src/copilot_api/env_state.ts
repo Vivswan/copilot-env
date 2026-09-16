@@ -700,8 +700,12 @@ export class CopilotEnvState {
  */
 export function expectedDirectHost(profile: Profile): string | null {
   const config = new CopilotEnvConfig();
-  return config.copilotHost() ??
-    new CopilotEnvState().readProfileCopilotHost(profile, config.pinnedIntegrationId(), null);
+  return config.copilotHost(profile) ??
+    new CopilotEnvState().readProfileCopilotHost(
+      profile,
+      config.pinnedIntegrationId(profile),
+      null,
+    );
 }
 
 /**

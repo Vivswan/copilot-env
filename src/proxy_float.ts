@@ -43,7 +43,7 @@ const PROXY_VERSION_ENV = "COPILOT_API_VERSION";
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
-export const DEFAULT_RELEASE_COOLDOWN_SECONDS = configDefaultNumber("release-cooldown");
+export const DEFAULT_RELEASE_COOLDOWN_SECONDS = configDefaultNumber("daemon.release-cooldown");
 
 /** The full document: its `time` map carries the publish times the cooldown needs; the abbreviated
  *  install doc lacks it. */
@@ -54,7 +54,7 @@ export const PROXY_REGISTRY_URL = `https://registry.npmjs.org/${PROXY_PKG.replac
  *  exists to prevent. An env pin short-circuits before the store is consulted, so it keeps working
  *  even then. */
 export function resolveProxyVersionOverride(): string | undefined {
-  return process.env[PROXY_VERSION_ENV]?.trim() || new CopilotEnvConfig().read().proxyVersion;
+  return process.env[PROXY_VERSION_ENV]?.trim() || new CopilotEnvConfig().proxyVersionPin();
 }
 
 type ProxyConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
@@ -80,7 +80,7 @@ export function resolveMinimumReleaseAgeSeconds(): number {
   }
   // Strict config read, like the version pin: a stored cooldown must not be shortened to the
   // default by an unreadable store.
-  return new CopilotEnvConfig().read().releaseCooldown ?? DEFAULT_RELEASE_COOLDOWN_SECONDS;
+  return new CopilotEnvConfig().releaseCooldownSeconds();
 }
 
 function formatReleaseAge(seconds: number): string {
@@ -235,7 +235,7 @@ function refusalMessage(sel: Extract<ProxySelection, { kind: "refused" }>): stri
       sel.lifecycleScripts.join(", ")
     }), ` +
     `which never run for global-cache execution and would misbehave silently; refusing it. ` +
-    `Review the release, then pin it (${PROXY_VERSION_ENV} or \`agent config --set proxy-version\`) ` +
+    `Review the release, then pin it (${PROXY_VERSION_ENV} or \`agent config --set daemon.version\`) ` +
     `or cap PROXY_MAX_VERSION in copilot-env.config below it.`
   );
 }
@@ -1055,7 +1055,7 @@ export async function proxyInstallAssertStatus(
     return {
       "ok": false,
       "message":
-        `recorded ${PROXY_PKG} ${record.version} does not match the pinned ${override} (${PROXY_VERSION_ENV} or the proxy-version config) - the proxy float failed to apply the pin.`,
+        `recorded ${PROXY_PKG} ${record.version} does not match the pinned ${override} (${PROXY_VERSION_ENV} or the daemon.version config) - the proxy float failed to apply the pin.`,
     };
   }
 

@@ -166,8 +166,8 @@ export function unmanagedCodexHome(prefs: CodexHomePrefs = codexHomePrefsOrDeriv
 export function staleCodexHomeExportLine(resolution: CodexHomeResolution): string | null {
   if (resolution.staleExport === null) return null;
   const wired = resolution.by === "farm"
-    ? `codex-host is on, so Codex is wired at the per-host farm ${resolution.home}`
-    : `codex-home is set, so Codex is wired at ${resolution.home}`;
+    ? `codex.host is on, so Codex is wired at the per-host farm ${resolution.home}`
+    : `codex.home is set, so Codex is wired at ${resolution.home}`;
   return `Ignoring the shell's CODEX_HOME=${resolution.staleExport}: ${wired}`;
 }
 
@@ -242,14 +242,14 @@ export function codexHostDriftFrom(enabled: boolean, farm: CodexHostFarm): Codex
 export function codexHostDriftLine(drift: CodexHostDrift): string {
   switch (drift.kind) {
     case "missing":
-      return `codex-host is on but the per-host CODEX_HOME farm is missing at ${drift.hostHome}; run \`agent codex\` to rebuild it`;
+      return `codex.host is on but the per-host CODEX_HOME farm is missing at ${drift.hostHome}; run \`agent codex\` to rebuild it`;
     case "inactive":
       // A farm built under another root (or before a rebuild) is wired but unrecorded: `agent
       // uninstall` would not delete it until a pass records it again.
-      return `codex-host is on but no completed wiring pass is recorded for the per-host CODEX_HOME ` +
+      return `codex.host is on but no completed wiring pass is recorded for the per-host CODEX_HOME ` +
         `farm at ${drift.hostHome}; run \`agent codex\` to record it`;
     case "disabled":
-      return `codex-host is off but a per-host CODEX_HOME farm is still present at ${drift.hostHome}; run \`agent codex\` to remove it`;
+      return `codex.host is off but a per-host CODEX_HOME farm is still present at ${drift.hostHome}; run \`agent codex\` to remove it`;
   }
 }
 

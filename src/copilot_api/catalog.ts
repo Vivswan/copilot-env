@@ -79,8 +79,8 @@ export async function fetchRawModels(
   // runs this fetch and its stdout is the token.
   const config = new CopilotEnvConfig();
   const selectOpts: IdentityAndHostOptions = {
-    pinned: config.pinnedIntegrationId(),
-    fixedHost: opts.apiBase ?? config.copilotHost(),
+    pinned: config.pinnedIntegrationId(profile),
+    fixedHost: opts.apiBase ?? config.copilotHost(profile),
     fetchImpl: opts.fetchImpl,
     signal: opts.signal,
     narrator: createStderrLogger(),

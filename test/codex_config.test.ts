@@ -58,7 +58,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 // The catalog key defaults to false, so the enabled paths need this first.
 function enableCatalog(): void {
-  new CopilotEnvConfig().set({ codexModelCatalog: true });
+  new CopilotEnvConfig().set({ "codex.model-catalog": true });
 }
 
 test("enforces every managed field while preserving unknown user keys", () => {
@@ -725,7 +725,7 @@ test("the catalog reference is ledger-recorded on write and released on the disa
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(true);
 
   // Disabling scrubs the key on the next full write and drops our claim with it.
-  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  new CopilotEnvConfig().set({ "codex.model-catalog": false });
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
@@ -1406,7 +1406,7 @@ test("the config write's one line carries the model_catalog_json change it makes
   // Through the TOML writer, never a hand-quoted string: on Windows the path's backslashes
   // would read as escapes in a basic string, and the reference would never match.
   writeFileSync(otherConfig, stringify({ "model_catalog_json": catalogFile }));
-  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  new CopilotEnvConfig().set({ "codex.model-catalog": false });
   expect(linesNaming(stderrOfSync(() => write(otherHome)), otherConfig)).toEqual([
     `rewritten -> ${otherConfig} (Codex config; model_catalog_json removed, was "${catalogFile}")`,
   ]);
@@ -1433,7 +1433,7 @@ test("the disabled sync names the file it deletes and every reference it strips;
   mkdirSync(join(dir, "retired-home"), { recursive: true });
   writeFileSync(outside, stringify({ "model_catalog_json": catalogFile }));
   new OwnershipLedger().record("codexCatalog", outside);
-  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  new CopilotEnvConfig().set({ "codex.model-catalog": false });
   const cleaned = stderrOfSync(() => syncCodexCatalogReference());
   expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBeUndefined();
   expect(cleaned).toContain(`rewritten -> ${outside} (Codex config; model_catalog_json removed)`);
@@ -1464,7 +1464,7 @@ test("a reference whose ownership cannot be recorded is not added; the disabled 
   );
   // The disabled sweep reads the ledger FIRST (recorded claims extend it), so a
   // broken ledger stops it before any write: nothing changes, and nothing is claimed.
-  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  new CopilotEnvConfig().set({ "codex.model-catalog": false });
   const before = readFileSync(configPath, "utf8");
   const cleaned = stderrOfSync(() => syncCodexCatalogReference());
   expect(readFileSync(configPath, "utf8")).toBe(before);
@@ -1496,7 +1496,7 @@ test("the writer reports its config changes even when the ownership ledger canno
   expect(set).toContain(
     `created -> ${configPath} (Codex config; model_catalog_json = "${catalogFile}" set)`,
   );
-  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  new CopilotEnvConfig().set({ "codex.model-catalog": false });
   narratedUntilThrow();
   expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBeUndefined();
 });

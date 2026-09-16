@@ -28,13 +28,17 @@ import { GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
 import {
   codexHomePrefsFor,
   CONFIG_REGISTRY,
-  CONFIG_SCHEMA,
   configDefaultBoolean,
-  type ConfigKey,
-  type ConfigPatch,
+  configKeyDef,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
+  GLOBAL_CONFIG_SCHEMA,
+  type GlobalConfigData,
+  type GlobalMapKey,
   INTEGRATION_ID_RE,
+  PROFILE_CONFIG_SCHEMA,
+  PROFILE_SETTINGS_DEFAULT_KEY,
+  type ProfileConfigData,
 } from "../copilot_api/env_config.ts";
 import {
   AUTH_PROVIDERS,
@@ -72,7 +76,7 @@ import { readAgentModesSafe } from "./wiring.ts";
 
 /** The bundle format this copilot-env writes and reads; any other version is
  *  rejected outright (external contract). */
-export const SETTINGS_BUNDLE_FORMAT_VERSION = 1;
+export const SETTINGS_BUNDLE_FORMAT_VERSION = 2;
 
 /** Placeholder replacing every token in a credential-less export (the default).
  *  An external contract: import recognizes exactly this value as "not a token". */
@@ -81,8 +85,9 @@ export const REDACTED_TOKEN = "<redacted>";
 /** One exported settings bundle (the `agent settings --export` JSON document). */
 export interface SettingsBundle {
   formatVersion: typeof SETTINGS_BUNDLE_FORMAT_VERSION;
-  /** Every STORED preference (unset keys are omitted; defaults never travel); a
-   *  credential-bearing one reads REDACTED_TOKEN unless exported `withCredentials`. */
+  /** The preference store as stored: the global map and every profile's section (unset keys are
+   *  omitted; defaults never travel); a credential-bearing key reads REDACTED_TOKEN unless exported
+   *  `withCredentials`. */
   config: CopilotEnvConfigData;
   /** The default credential slot (token redacted unless `withCredentials`). */
   credential: ProfileCredentialData;
@@ -95,36 +100,30 @@ export interface SettingsBundle {
   skippedConfig?: readonly string[];
 }
 
-/** Generic so the per-key value type survives the assignment. */
-function copyStoredPref<K extends ConfigKey>(
-  from: CopilotEnvConfigData,
-  to: CopilotEnvConfigData,
-  key: K,
-): void {
-  const value = from[key];
-  if (value !== undefined) to[key] = value;
-}
-
 /** Preferences whose VALUE may carry a credential (a price-list URL can hold a token in its
  *  query): exported as REDACTED_TOKEN by default and, on import, treated like a redacted token
  *  (the local value stays). Absence still means unset, as for every other preference. */
-const CREDENTIAL_BEARING_PREFS = ["pricingUrl"] as const satisfies readonly ConfigKey[];
+const CREDENTIAL_BEARING_PREFS = ["cost.pricing-url"] as const satisfies readonly GlobalMapKey[];
 
 /** Whether the bundle carries the redaction marker for `key` instead of a value. */
-function isRedactedPref(config: CopilotEnvConfigData, key: ConfigKey): boolean {
-  return CREDENTIAL_BEARING_PREFS.some((k) => k === key) && config[key] === REDACTED_TOKEN;
+function isRedactedPref(config: CopilotEnvConfigData, key: GlobalMapKey): boolean {
+  return CREDENTIAL_BEARING_PREFS.some((k) => k === key) && config.global[key] === REDACTED_TOKEN;
+}
+
+/** The keys with a value: a lenient read leaves absent keys undefined, and undefined is "unset". */
+function setKeys(section: Record<string, unknown>): string[] {
+  return Object.keys(section).filter((key) => section[key] !== undefined);
 }
 
 function storedPrefs(withCredentials: boolean): CopilotEnvConfigData {
   const data = new CopilotEnvConfig().read();
-  const out: CopilotEnvConfigData = {};
-  for (const def of CONFIG_REGISTRY) copyStoredPref(data, out, def.key);
+  const global: GlobalConfigData = { ...data.global };
   if (!withCredentials) {
     for (const key of CREDENTIAL_BEARING_PREFS) {
-      if (out[key] !== undefined) out[key] = REDACTED_TOKEN;
+      if (global[key] !== undefined) global[key] = REDACTED_TOKEN;
     }
   }
-  return out;
+  return { global, profiles: data.profiles };
 }
 
 /** Redaction is the default so a casually shared bundle never leaks a credential. */
@@ -168,7 +167,8 @@ export function serializeSettingsBundle(bundle: SettingsBundle): string {
  *  confirmation (checked separately) but not to a backup (nothing to roll back). */
 export function bundleIsEmpty(bundle: SettingsBundle): boolean {
   return (
-    CONFIG_REGISTRY.every((def) => bundle.config[def.key] === undefined) &&
+    setKeys(bundle.config.global).length === 0 &&
+    Object.values(bundle.config.profiles).every((section) => setKeys(section).length === 0) &&
     bundle.credential.githubToken === null &&
     bundle.credential.authProvider === null &&
     Object.keys(bundle.profiles).length === 0
@@ -286,21 +286,34 @@ function codexHomeFromOtherOs(value: unknown): value is string {
     : win32.isAbsolute(value) && win32.parse(value).root.length > 1;
 }
 
-/** Values are validated by CONFIG_SCHEMA itself (env_config owns every value shape, so new keys
- *  are accepted here automatically); its lenient fallback is made strict by rejecting any
- *  present key the schema turned into undefined. */
-function parseConfigSection(
-  raw: unknown,
-): { config: CopilotEnvConfigData; skipped: string[] } {
-  const doc = requireRecord(raw, "config");
-  rejectUnknownKeys(
-    doc,
-    CONFIG_REGISTRY.map((def) => def.key),
-    "config",
-  );
+const GLOBAL_MAP_KEYS = CONFIG_REGISTRY.filter((def) => def.scope !== "profile").map((d) => d.key);
+const PROFILE_MAP_KEYS = CONFIG_REGISTRY.filter((def) => def.scope !== "global").map((d) => d.key);
+
+/** A present key the lenient schema turned into undefined is a rejection here. */
+function rejectInvalidValues(
+  values: Record<string, unknown>,
+  parsed: Record<string, unknown>,
+  path: string,
+): void {
+  for (const key of Object.keys(values)) {
+    if (values[key] !== undefined && parsed[key] === undefined) {
+      const def = configKeyDef(key);
+      throw bundleError(
+        `${path}.${key} is invalid (expected: ${def?.describe ?? "a valid value"})`,
+      );
+    }
+  }
+}
+
+/** Values are validated by the store's own schemas (env_config owns every value shape, so new keys
+ *  are accepted here automatically); their lenient fallback is made strict by rejecting any
+ *  present key a schema turned into undefined. */
+function parseGlobalSection(raw: unknown): { global: GlobalConfigData; skipped: string[] } {
+  const doc = requireRecord(raw, "config.global");
+  rejectUnknownKeys(doc, GLOBAL_MAP_KEYS, "config.global");
   // The redaction marker is admitted ONLY on the credential-bearing keys, and kept
   // aside: the store's domain would (rightly) reject it as a value.
-  const redacted: CopilotEnvConfigData = {};
+  const redacted: GlobalConfigData = {};
   const values = { ...doc };
   for (const key of CREDENTIAL_BEARING_PREFS) {
     if (values[key] === REDACTED_TOKEN) {
@@ -309,20 +322,48 @@ function parseConfigSection(
     }
   }
   const skipped: string[] = [];
-  let parsed = v.parse(CONFIG_SCHEMA, values);
-  if (parsed.codexHome === undefined && codexHomeFromOtherOs(values.codexHome)) {
+  let parsed = v.parse(GLOBAL_CONFIG_SCHEMA, values);
+  if (parsed["codex.home"] === undefined && codexHomeFromOtherOs(values["codex.home"])) {
     skipped.push(
-      `codex-home "${values.codexHome}" is not a path on this OS; skipped, set it here with agent config`,
+      `codex.home "${
+        values["codex.home"]
+      }" is not a path on this OS; skipped, set it here with agent config`,
     );
-    delete values.codexHome;
-    parsed = v.parse(CONFIG_SCHEMA, values);
+    delete values["codex.home"];
+    parsed = v.parse(GLOBAL_CONFIG_SCHEMA, values);
   }
-  for (const def of CONFIG_REGISTRY) {
-    if (values[def.key] !== undefined && parsed[def.key] === undefined) {
-      throw bundleError(`config.${def.key} is invalid (expected: ${def.describe})`);
+  rejectInvalidValues(values, parsed, "config.global");
+  return { global: { ...parsed, ...redacted }, skipped };
+}
+
+/** Section names are the default's own key or a valid profile name; the name itself is untrusted
+ *  input, so an invalid one is not echoed. */
+function parseProfileSettingsSection(raw: unknown): Record<string, ProfileConfigData> {
+  const doc = requireRecord(raw, "config.profiles");
+  const out: Record<string, ProfileConfigData> = {};
+  for (const [name, sectionRaw] of Object.entries(doc)) {
+    if (name !== PROFILE_SETTINGS_DEFAULT_KEY && !isValidProfileName(name)) {
+      throw bundleError(
+        "config.profiles carries an invalid profile name (want `default` or 1-32 chars of [a-z0-9-], non-reserved)",
+      );
     }
+    const path = `config.profiles.${name}`;
+    const section = requireRecord(sectionRaw, path);
+    rejectUnknownKeys(section, PROFILE_MAP_KEYS, path);
+    const parsed = v.parse(PROFILE_CONFIG_SCHEMA, section);
+    rejectInvalidValues(section, parsed, path);
+    out[name] = parsed;
   }
-  return { config: { ...parsed, ...redacted }, skipped };
+  return out;
+}
+
+function parseConfigSection(
+  raw: unknown,
+): { config: CopilotEnvConfigData; skipped: string[] } {
+  const doc = requireRecord(raw, "config");
+  rejectUnknownKeys(doc, ["global", "profiles"], "config");
+  const { global, skipped } = parseGlobalSection(doc.global);
+  return { config: { global, profiles: parseProfileSettingsSection(doc.profiles) }, skipped };
 }
 
 function parseCredentialSection(raw: unknown): ProfileCredentialData {
@@ -557,13 +598,18 @@ function planWrites(
 ): string[] {
   const lines: string[] = [];
   const prefs = new CopilotEnvConfig().read();
-  // Preferences are full-replace: every locally stored key is rewritten or reset, except one
-  // the bundle redacted, which keeps the local value like a redacted token.
-  const storedPrefKeys = CONFIG_REGISTRY.filter(
-    (def) => prefs[def.key] !== undefined && !isRedactedPref(bundle.config, def.key),
-  );
+  // Preferences are full-replace: every locally stored key, global or per profile, is rewritten or
+  // reset, except one the bundle redacted, which keeps the local value like a redacted token.
+  const storedPrefKeys = [
+    ...GLOBAL_MAP_KEYS.filter(
+      (key) => prefs.global[key] !== undefined && !isRedactedPref(bundle.config, key),
+    ),
+    ...Object.entries(prefs.profiles).flatMap(([name, section]) =>
+      setKeys(section).map((key) => `${key} [${name}]`)
+    ),
+  ];
   if (storedPrefKeys.length > 0) {
-    lines.push(`preferences (${storedPrefKeys.map((def) => def.cli).join(", ")})`);
+    lines.push(`preferences (${storedPrefKeys.join(", ")})`);
   }
   const local = new CopilotEnvState().read();
   if (
@@ -583,7 +629,7 @@ function planWrites(
   // `<name>.config.toml` of the effective home. The apply replaces the preference store before it
   // wires, so the home is resolved under the BUNDLE's codex-home and codex-host values, not the
   // local ones.
-  const homePrefs = codexHomePrefsFor(bundle.config);
+  const homePrefs = codexHomePrefsFor(bundle.config.global);
   const profileCodexHome = effectiveCodexHomeFor(homePrefs);
   if (modes.codex !== null) {
     // Post-import resolution (the plan-input rule): the farm decision is the SAME one the apply
@@ -609,9 +655,10 @@ function planWrites(
   const claudeHome = resolveClaudeHome();
   if (modes.claude !== null) {
     lines.push(`Claude settings: ${settingsPathFor(claudeHome)}`);
-    // Post-import resolution: the bundle's wire-mcp (else the default) decides, the same
+    // Post-import resolution: the bundle's claude.wire-mcp (else the default) decides, the same
     // stored-else-default precedence wireMcpResolved applies to the store this import creates.
-    const wireMcp = bundle.config.wireMcp ?? configDefaultBoolean("wire-mcp");
+    const wireMcp = bundle.config.global["claude.wire-mcp"] ??
+      configDefaultBoolean("claude.wire-mcp");
     if (modes.claude === "direct" && wireMcp) {
       lines.push(`Claude MCP registration (+ WebSearch deny): ${claudeJsonPath()}`);
     }
@@ -686,24 +733,16 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
 
 // --- import apply -------------------------------------------------------------
 
-/** Generic so the per-key value type survives the assignment. */
-function restorePref<K extends ConfigKey>(
-  patch: ConfigPatch,
-  config: CopilotEnvConfigData,
-  key: K,
-): void {
-  patch[key] = config[key] ?? null;
-}
-
-/** Restore, not merge: keys absent from the bundle revert to their defaults, which is safe only
- *  because the strict parse rejected junk instead of dropping it. A redacted key is left out of
- *  the patch, so the local value stays, as a redacted token keeps the local credential. */
+/** Restore, not merge: keys absent from the bundle revert to their defaults, per profile section
+ *  too, which is safe only because the strict parse rejected junk instead of dropping it. A
+ *  redacted key keeps the local value, as a redacted token keeps the local credential. */
 function importPreferences(config: CopilotEnvConfigData): void {
-  const patch: ConfigPatch = {};
-  for (const def of CONFIG_REGISTRY) {
-    if (!isRedactedPref(config, def.key)) restorePref(patch, config, def.key);
+  const store = new CopilotEnvConfig();
+  const global: GlobalConfigData = { ...config.global };
+  for (const key of CREDENTIAL_BEARING_PREFS) {
+    if (isRedactedPref(config, key)) global[key] = store.read().global[key];
   }
-  new CopilotEnvConfig().set(patch);
+  store.replace({ global, profiles: config.profiles });
 }
 
 /**

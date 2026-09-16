@@ -18,6 +18,7 @@ import {
   planImport,
   REDACTED_TOKEN,
   rollbackCommand,
+  serializeSettingsBundle,
   SETTINGS_BACKUP_KEEP,
   settingsBackupDir,
 } from "../src/agents/transfer.ts";
@@ -98,7 +99,11 @@ async function captureStderr(fn: () => Promise<void>): Promise<string> {
 /** claudeTokenMultiplier is a registry key newer than the bundle feature, so its round trip
  *  proves the schema reuse tracks the registry. */
 async function seedStores(): Promise<void> {
-  new CopilotEnvConfig().set({ autoStart: true, port: 5050, claudeTokenMultiplier: 2.5 });
+  new CopilotEnvConfig().set({
+    "daemon.auto-start": true,
+    "daemon.port": 5050,
+    "proxy.claude-token-multiplier": 2.5,
+  });
   const state = new CopilotEnvState();
   new Credential(state).store("gh-token", "ghp_default");
   state.commitProfile(WORK, {
@@ -111,11 +116,19 @@ async function seedStores(): Promise<void> {
   await runClaude({ kind: "configure", mode: "proxy" });
 }
 
+/** The bundle's config section: the global map and the per-profile sections. */
+function configOf(
+  global: Record<string, unknown>,
+  profiles: Record<string, Record<string, unknown>> = {},
+): Record<string, unknown> {
+  return { global, profiles };
+}
+
 /** A minimal VALID raw bundle; tests override sections to probe the parser. */
 function rawBundle(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    formatVersion: 1,
-    config: {},
+    formatVersion: 2,
+    config: configOf({}),
     credential: { githubToken: null, authProvider: null },
     profiles: {},
     modes: { codex: "none", claude: "none" },
@@ -131,30 +144,62 @@ test("export redacts every token by default; withCredentials includes them", asy
   // A stored price-list URL may carry a credential in its query: without the tokens
   // it travels as the tokens' own redaction marker, never as its value.
   const secretUrl = "https://pricing.example/models?token=SECRET-PRICING-TOKEN";
-  new CopilotEnvConfig().set({ pricingUrl: secretUrl });
+  new CopilotEnvConfig().set({ "cost.pricing-url": secretUrl });
 
   const redacted = buildExportBundle();
   expect(redacted.credential.githubToken).toBe(REDACTED_TOKEN);
   expect(redacted.profiles.work?.githubToken).toBe(REDACTED_TOKEN);
-  expect(redacted.config.pricingUrl).toBe(REDACTED_TOKEN);
-  expect(redacted.config.port).toBe(5050);
+  expect(redacted.config.global["cost.pricing-url"]).toBe(REDACTED_TOKEN);
+  expect(redacted.config.global["daemon.port"]).toBe(5050);
   const redactedText = JSON.stringify(redacted);
   expect(redactedText).not.toContain("ghp_");
   expect(redactedText).not.toContain("SECRET-PRICING-TOKEN");
   expect(redactedText).not.toContain("pricing.example");
   // The parser admits the marker on this key alone; every other key keeps its own
   // domain, so a string is fine where the key takes one and junk where it does not.
-  expect(parseSettingsBundle(JSON.parse(redactedText)).config.pricingUrl).toBe(REDACTED_TOKEN);
-  expect(() => parseSettingsBundle(rawBundle({ config: { proxyVersion: REDACTED_TOKEN } })))
-    .not.toThrow();
-  expect(() => parseSettingsBundle(rawBundle({ config: { port: REDACTED_TOKEN } }))).toThrow(
-    /config\.port is invalid/,
+  expect(parseSettingsBundle(JSON.parse(redactedText)).config.global["cost.pricing-url"]).toBe(
+    REDACTED_TOKEN,
   );
+  expect(() =>
+    parseSettingsBundle(rawBundle({ config: configOf({ "daemon.version": REDACTED_TOKEN }) }))
+  )
+    .not.toThrow();
+  expect(() =>
+    parseSettingsBundle(rawBundle({ config: configOf({ "daemon.port": REDACTED_TOKEN }) }))
+  )
+    .toThrow(/config\.global\.daemon\.port is invalid/);
 
   const full = buildExportBundle({ withCredentials: true });
   expect(full.credential.githubToken).toBe("ghp_default");
   expect(full.profiles.work?.githubToken).toBe("ghp_work");
-  expect(full.config.pricingUrl).toBe(secretUrl);
+  expect(full.config.global["cost.pricing-url"]).toBe(secretUrl);
+});
+
+test("the per-profile settings section travels: export, then import on a fresh machine, restores it verbatim", async () => {
+  isolate();
+  await seedStores();
+  const config = new CopilotEnvConfig();
+  config.setProfile(null, { identity: "copilot-developer-cli" });
+  config.setProfile(WORK, {
+    host: "https://copilot-api.ghe.example",
+    "proxy.small-model": "gpt-5",
+  });
+  const exported = buildExportBundle();
+  expect(exported.config.profiles).toEqual({
+    default: { identity: "copilot-developer-cli" },
+    work: { host: "https://copilot-api.ghe.example", "proxy.small-model": "gpt-5" },
+  });
+  const bundle = parseSettingsBundle(JSON.parse(serializeSettingsBundle(exported)));
+
+  isolate();
+  await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+  const imported = new CopilotEnvConfig();
+  expect(imported.read().profiles).toEqual(exported.config.profiles);
+  expect(imported.read().global).not.toHaveProperty("identity");
+  // The readers see the section through the one precedence rule.
+  expect(imported.pinnedIntegrationId(null)).toBe("copilot-developer-cli");
+  expect(imported.pinnedIntegrationId(WORK)).toBeNull();
+  expect(imported.copilotHost(WORK)).toBe("https://copilot-api.ghe.example");
 });
 
 test("export carries the stores + modes and never the machine-local state keys", async () => {
@@ -162,8 +207,15 @@ test("export carries the stores + modes and never the machine-local state keys",
   await seedStores();
 
   const bundle = buildExportBundle({ withCredentials: true });
-  expect(bundle.formatVersion).toBe(1);
-  expect(bundle.config).toEqual({ autoStart: true, port: 5050, claudeTokenMultiplier: 2.5 });
+  expect(bundle.formatVersion).toBe(2);
+  expect(bundle.config).toEqual({
+    global: {
+      "daemon.auto-start": true,
+      "daemon.port": 5050,
+      "proxy.claude-token-multiplier": 2.5,
+    },
+    profiles: {},
+  });
   expect(bundle.modes).toEqual({ codex: "proxy", claude: "proxy" });
   expect(bundle.profiles.work?.mode).toBe("proxy");
   // The reserved default slot travels as the `credential` section, never as a
@@ -181,25 +233,28 @@ test("a bundle's codex-home from the other OS is left out with a warning; the re
   // The one preference whose value is a machine path: a Linux export read on Windows, or the reverse.
   const foreign = process.platform === "win32" ? "/srv/codex" : "C:\\Codex";
   const line =
-    `codex-home "${foreign}" is not a path on this OS; skipped, set it here with agent config`;
-  const bundle = parseSettingsBundle(rawBundle({ config: { codexHome: foreign, port: 4242 } }));
-  expect(bundle.config).toEqual({ port: 4242 });
+    `codex.home "${foreign}" is not a path on this OS; skipped, set it here with agent config`;
+  const bundle = parseSettingsBundle(
+    rawBundle({ config: configOf({ "codex.home": foreign, "daemon.port": 4242 }) }),
+  );
+  expect(bundle.config).toEqual({ global: { "daemon.port": 4242 }, profiles: {} });
   expect(bundle.skippedConfig).toEqual([line]);
   expect(planImport(bundle, { catalogDeps: NOOP_CATALOG_DEPS }).skipped).toEqual([line]);
-  expect(() => parseSettingsBundle(rawBundle({ config: { codexHome: "relative/dir" } }))).toThrow(
-    /config\.codexHome is invalid/,
-  );
+  expect(() =>
+    parseSettingsBundle(rawBundle({ config: configOf({ "codex.home": "relative/dir" }) }))
+  )
+    .toThrow(/config\.global\.codex\.home is invalid/);
 });
 
 test("parseSettingsBundle rejects non-objects, unknown formatVersion, and missing sections", () => {
   expect(() => parseSettingsBundle("nope")).toThrow(/JSON object/);
   expect(() => parseSettingsBundle({})).toThrow(/formatVersion/);
   // The version value is not echoed (a mangled bundle can hold anything there).
-  expect(() => parseSettingsBundle({ formatVersion: 2 })).toThrow(
+  expect(() => parseSettingsBundle({ formatVersion: 3 })).toThrow(
     /unsupported settings bundle formatVersion - /,
   );
   // Right version, missing sections: rejected, never imported as empty stores.
-  expect(() => parseSettingsBundle({ formatVersion: 1 })).toThrow(/invalid settings bundle/);
+  expect(() => parseSettingsBundle({ formatVersion: 2 })).toThrow(/invalid settings bundle/);
   expect(() => parseSettingsBundle(rawBundle({ extra: 1 }))).toThrow(
     /unknown key under the bundle root/,
   );
@@ -210,36 +265,51 @@ test("junk config keys and malformed values are rejections, never dropped or coe
   // untrusted (a token can land as a key in a mangled bundle).
   let message = "";
   try {
-    parseSettingsBundle(rawBundle({ config: { "ghp_leaked_as_key": true } }));
+    parseSettingsBundle(rawBundle({ config: configOf({ "ghp_leaked_as_key": true }) }));
   } catch (e) {
     message = (e as Error).message;
   }
-  expect(message).toContain("unknown key under config");
+  expect(message).toContain("unknown key under config.global");
   expect(message).not.toContain("ghp_leaked_as_key");
   // The store's lenient read schema would coerce these to "unset"; the bundle
   // parser must reject them instead (full-replace would silently reset a local
   // pref), naming the key but never echoing the received value.
-  for (const bad of [{ claudeTokenMultiplier: "2" }, { autoStart: "yes" }, { port: 0 }]) {
+  for (
+    const bad of [
+      { "proxy.claude-token-multiplier": "2" },
+      { "daemon.auto-start": "yes" },
+      { "daemon.port": 0 },
+    ]
+  ) {
     message = "";
     try {
-      parseSettingsBundle(rawBundle({ config: bad }));
+      parseSettingsBundle(rawBundle({ config: configOf(bad) }));
     } catch (e) {
       message = (e as Error).message;
     }
-    expect(message).toContain(`config.${Object.keys(bad)[0]} is invalid`);
+    expect(message).toContain(`config.global.${Object.keys(bad)[0]} is invalid`);
     expect(message).not.toContain("yes");
     expect(message).not.toContain('"2"');
   }
-  // The integration-id pin WINS over probed identities and lands in HTTP
-  // headers, so a header-splitting value is rejected by the shared shape
-  // (INTEGRATION_ID_RE in env_config.ts) -- and never echoed.
+  // The identity pin WINS over probed identities and lands in HTTP headers, so a
+  // header-splitting value is rejected by the shared shape (INTEGRATION_ID_RE in
+  // env_config.ts) -- and never echoed. It lives in a profile's section.
   message = "";
   try {
-    parseSettingsBundle(rawBundle({ config: { integrationId: "evil\r\nX-Injected: 1" } }));
+    parseSettingsBundle(
+      rawBundle({ config: configOf({}, { default: { identity: "evil\r\nX-Injected: 1" } }) }),
+    );
   } catch (e) {
     message = (e as Error).message;
   }
-  expect(message).toContain("config.integrationId is invalid");
+  expect(message).toContain("config.profiles.default.identity is invalid");
+  // A profile key in the global map, or a global key in a section, is an unknown key there.
+  expect(() => parseSettingsBundle(rawBundle({ config: configOf({ identity: "x" }) }))).toThrow(
+    /unknown key under config\.global/,
+  );
+  expect(() =>
+    parseSettingsBundle(rawBundle({ config: configOf({}, { work: { "daemon.port": 4242 } }) }))
+  ).toThrow(/unknown key under config\.profiles\.work/);
   expect(message).not.toContain("evil");
 });
 
@@ -347,9 +417,9 @@ test("round trip: export -> wipe -> import restores stores and re-derives wiring
   expect(outcome.modes).toEqual({ codex: "proxy", claude: "proxy" });
   expect(outcome.wiredProfiles).toEqual([WORK]);
 
-  expect(new CopilotEnvConfig().read().autoStart).toBe(true);
-  expect(new CopilotEnvConfig().read().port).toBe(5050);
-  expect(new CopilotEnvConfig().read().claudeTokenMultiplier).toBe(2.5);
+  expect(new CopilotEnvConfig().read().global["daemon.auto-start"]).toBe(true);
+  expect(new CopilotEnvConfig().read().global["daemon.port"]).toBe(5050);
+  expect(new CopilotEnvConfig().read().global["proxy.claude-token-multiplier"]).toBe(2.5);
   const state = new CopilotEnvState().read();
   expect(state.githubToken).toBe("ghp_default");
   expect(state.authProvider).toBe("gh-token");
@@ -385,24 +455,30 @@ for (
 ) {
   test(`importing a bundle whose pricing-url is ${name} over a stored one`, async () => {
     isolate();
-    new CopilotEnvConfig().set({ pricingUrl: "https://local.example/models", port: 5050 });
+    new CopilotEnvConfig().set({
+      "cost.pricing-url": "https://local.example/models",
+      "daemon.port": 5050,
+    });
     const bundle = parseSettingsBundle(
       rawBundle({
-        config: { autoStart: true, ...(bundleUrl === undefined ? {} : { pricingUrl: bundleUrl }) },
+        config: configOf({
+          "daemon.auto-start": true,
+          ...(bundleUrl === undefined ? {} : { "cost.pricing-url": bundleUrl }),
+        }),
       }),
     );
     const plan = planImport(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
     // The confirmation names the local keys the import rewrites: the redacted one is kept.
     const prefsLine = plan.writes.find((line) => line.startsWith("preferences (")) ?? "";
-    expect(prefsLine).toContain("port");
+    expect(prefsLine).toContain("daemon.port");
     expect(prefsLine.includes("pricing-url")).toBe(name !== "redacted");
 
     await applyImportPlan(plan, { catalogDeps: NOOP_CATALOG_DEPS });
     const after = new CopilotEnvConfig().read();
-    expect(after.pricingUrl).toBe(expected);
+    expect(after.global["cost.pricing-url"]).toBe(expected);
     // Every other preference still follows full-replace.
-    expect(after.autoStart).toBe(true);
-    expect(after.port).toBeUndefined();
+    expect(after.global["daemon.auto-start"]).toBe(true);
+    expect(after.global["daemon.port"]).toBeUndefined();
   });
 }
 
@@ -425,7 +501,7 @@ test("a redacted bundle on a fresh machine imports prefs + proxy wiring, but no 
   // The profile slot stayed untouched: no artifacts, no placeholder token,
   // no mode-only slot.
   expect(existsSync(settingsPathFor(machine2.claudeHome, WORK))).toBe(false);
-  expect(new CopilotEnvConfig().read().autoStart).toBe(true);
+  expect(new CopilotEnvConfig().read().global["daemon.auto-start"]).toBe(true);
   const state = new CopilotEnvState().read();
   expect(state.githubToken).toBeNull();
   expect(state.authProvider).toBeNull();
@@ -806,24 +882,26 @@ async function runSettingsCaptured(
 test("bare --export writes the redacted bundle to stdout; --with-credentials warns and includes the pricing-url", async () => {
   isolate();
   await seedStores();
-  new CopilotEnvConfig().set({ pricingUrl: "https://pricing.example/models?token=SECRET-URL" });
+  new CopilotEnvConfig().set({
+    "cost.pricing-url": "https://pricing.example/models?token=SECRET-URL",
+  });
 
   const redacted = await runSettingsCaptured({ exportTo: true });
   const doc = JSON.parse(redacted.stdout) as {
     formatVersion: number;
     credential: Record<string, unknown>;
-    config: Record<string, unknown>;
+    config: { global: Record<string, unknown> };
   };
-  expect(doc.formatVersion).toBe(1);
+  expect(doc.formatVersion).toBe(2);
   expect(doc.credential.githubToken).toBe(REDACTED_TOKEN);
-  expect(doc.config.pricingUrl).toBe(REDACTED_TOKEN);
+  expect(doc.config.global["cost.pricing-url"]).toBe(REDACTED_TOKEN);
   expect(redacted.stdout).not.toContain("SECRET-URL");
   expect(redacted.stderr).not.toContain("REAL tokens");
 
   const full = await runSettingsCaptured({ exportTo: true, withCredentials: true });
   expect(full.stderr).toContain("REAL tokens (and any stored pricing-url)");
   expect(full.stderr).not.toContain("SECRET-URL");
-  expect(JSON.parse(full.stdout).config.pricingUrl).toBe(
+  expect(JSON.parse(full.stdout).config.global["cost.pricing-url"]).toBe(
     "https://pricing.example/models?token=SECRET-URL",
   );
 });
@@ -894,14 +972,14 @@ test("import confirms only for actual overwrites: stores with content, or wiring
     storesOnly,
     JSON.stringify(
       rawBundle({
-        config: { autoStart: true },
+        config: configOf({ "daemon.auto-start": true }),
         credential: { githubToken: "ghp_new", authProvider: "gh-token" },
       }),
     ),
   );
   await runSettings({ importFrom: storesOnly }, { catalogDeps: NOOP_CATALOG_DEPS });
   expect(new Credential().resolve()).toBe("ghp_new");
-  expect(new CopilotEnvConfig().read().autoStart).toBe(true);
+  expect(new CopilotEnvConfig().read().global["daemon.auto-start"]).toBe(true);
   expect(existsSync(settingsBackupDir())).toBe(false);
 
   // A redacted profile WITH a mode plans as a skip on a fresh target, so it
@@ -927,7 +1005,7 @@ test("the MCP registration write line reflects the POST-import wire-mcp value", 
   new Credential().store("gh-token", "ghp_default");
   const directBundle = (config: Record<string, unknown>): Record<string, unknown> =>
     rawBundle({
-      config,
+      config: configOf(config),
       credential: { githubToken: "ghp_default", authProvider: "gh-token" },
       modes: { codex: "none", claude: "direct" },
     });
@@ -935,13 +1013,13 @@ test("the MCP registration write line reflects the POST-import wire-mcp value", 
   // Local false, bundle silent (-> built-in default true): the apply replaces
   // the store before the Claude writer reads the flag, so the write HAPPENS
   // and must be listed.
-  new CopilotEnvConfig().set({ wireMcp: false });
+  new CopilotEnvConfig().set({ "claude.wire-mcp": false });
   const listed = planImport(parseSettingsBundle(directBundle({})));
   expect(listed.writes.join("\n")).toContain("MCP registration");
 
   // Local true, bundle false: the write will NOT happen, so no line.
-  new CopilotEnvConfig().set({ wireMcp: true });
-  const unlisted = planImport(parseSettingsBundle(directBundle({ wireMcp: false })));
+  new CopilotEnvConfig().set({ "claude.wire-mcp": true });
+  const unlisted = planImport(parseSettingsBundle(directBundle({ "claude.wire-mcp": false })));
   expect(unlisted.writes.join("\n")).not.toContain("MCP registration");
 });
 
@@ -952,7 +1030,7 @@ test.skipIf(process.platform === "win32")(
     new Credential().store("gh-token", "ghp_default");
     const proxyBundle = (config: Record<string, unknown>): Record<string, unknown> =>
       rawBundle({
-        config,
+        config: configOf(config),
         credential: { githubToken: "ghp_default", authProvider: "gh-token" },
         modes: { codex: "proxy", claude: "none" },
       });
@@ -964,7 +1042,7 @@ test.skipIf(process.platform === "win32")(
 
     // The bundle turns the farm on where none exists: the apply builds it and the
     // config lands there, not at the current effective home.
-    const on = writesOf({ codexHost: true });
+    const on = writesOf({ "codex.host": true });
     expect(on).toContain(`Per-host CODEX_HOME farm (built): ${hostHome}`);
     expect(on).toContain(`Codex config: ${farmConfig}`);
     expect(on).not.toContain(join(homes.codexHome, "config.toml"));
@@ -976,7 +1054,7 @@ test.skipIf(process.platform === "win32")(
     writeFileSync(farmConfig, 'model_provider = "copilot-env"\n');
     process.env.CODEX_HOME = hostHome;
     writeRunState({ codexHome: hostHome });
-    for (const config of [{ codexHost: false }, {}]) {
+    for (const config of [{ "codex.host": false }, {}]) {
       const off = writesOf(config);
       expect(off).toContain(`Per-host CODEX_HOME farm (removed): ${hostHome}`);
       expect(off).toContain(`Codex config: ${join(homes.codexHome, "config.toml")}`);
@@ -985,18 +1063,18 @@ test.skipIf(process.platform === "win32")(
 
     // Profile-only wiring resolves the home under the BUNDLE's value, not the current
     // store: locally off (record retired), bundle on -> the record is live again.
-    new CopilotEnvConfig().set({ codexHost: false });
+    new CopilotEnvConfig().set({ "codex.host": false });
     const profileOnly = (config: Record<string, unknown>): string =>
       planImport(
         parseSettingsBundle(rawBundle({
-          config,
+          config: configOf(config),
           credential: { githubToken: "ghp_default", authProvider: "gh-token" },
           profiles: { work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" } },
         })),
         { catalogDeps: NOOP_CATALOG_DEPS },
       ).writes.join("\n");
     // Both Codex files the profile write touches are named, under the same home.
-    expect(profileOnly({ codexHost: true })).toContain(
+    expect(profileOnly({ "codex.host": true })).toContain(
       `Codex config: ${farmConfig}\nCodex profile config: ${join(hostHome, "work.config.toml")}`,
     );
     expect(profileOnly({})).toContain(
@@ -1008,19 +1086,21 @@ test.skipIf(process.platform === "win32")(
     // path is not the subject), and without the farm the path's own config.toml is the landing.
     const root = join(homes.dir, "bundle-root");
     const rootFarm = getHostLocalCodexHome(root);
-    const rooted = writesOf({ codexHome: root, codexHost: true });
+    const rooted = writesOf({ "codex.home": root, "codex.host": true });
     expect(rooted).toContain(`Per-host CODEX_HOME farm (built): ${rootFarm}`);
     expect(rooted).toContain(`Codex config: ${join(rootFarm, "config.toml")}`);
     expect(rooted).not.toContain(hostHome);
-    expect(writesOf({ codexHome: root })).toContain(`Codex config: ${join(root, "config.toml")}`);
-    expect(profileOnly({ codexHome: root })).toContain(
+    expect(writesOf({ "codex.home": root })).toContain(
+      `Codex config: ${join(root, "config.toml")}`,
+    );
+    expect(profileOnly({ "codex.home": root })).toContain(
       `Codex config: ${join(root, "config.toml")}`,
     );
 
     // The shell's export is judged against the BUNDLE's root, as the apply will judge it: locally
     // rooted at `root` with its farm exported, a bundle with neither key honours that export
     // (it is not the default root's farm), so the line names it, not ~/.codex.
-    new CopilotEnvConfig().set({ codexHome: root, codexHost: true });
+    new CopilotEnvConfig().set({ "codex.home": root, "codex.host": true });
     process.env.CODEX_HOME = rootFarm;
     expect(writesOf({})).toContain(`Codex config: ${join(rootFarm, "config.toml")}`);
   },
@@ -1030,14 +1110,27 @@ test("import surfaces the proxy restart hint when a projected key is set OR rese
   isolate();
   // small-model projects into the proxy's config.json at `agent start`, which a
   // running daemon will not re-read -- the import must say so.
-  const hints = importRestartHints({ smallModel: "gpt-5-mini" }, {});
+  const prefs = (
+    global: Record<string, unknown>,
+    profiles: Record<string, Record<string, unknown>> = {},
+  ) => parseSettingsBundle(rawBundle({ config: configOf(global, profiles) })).config;
+  const hints = importRestartHints(prefs({ "proxy.small-model": "gpt-5-mini" }), prefs({}));
   expect(hints[0]).toContain("next proxy start");
   // Prefs are full-replace: a bundle that DROPS a stored projected key resets
   // it to default, which the daemon equally misses until a restart.
-  const resetHints = importRestartHints({ autoStart: true }, { smallModel: "gpt-5-codex" });
+  const resetHints = importRestartHints(
+    prefs({ "daemon.auto-start": true }),
+    prefs({ "proxy.small-model": "gpt-5-codex" }),
+  );
   expect(resetHints[0]).toContain("next proxy start");
+  // A projected key set for ONE profile counts the same: that profile's daemon reads it.
+  expect(
+    importRestartHints(prefs({}, { work: { "proxy.small-model": "gpt-5" } }), prefs({}))[0],
+  ).toContain("next proxy start");
   // A prefs-only bundle with no projected keys on either side stays silent.
-  expect(importRestartHints({ autoStart: true }, { idleTimeout: 60 })).toEqual([]);
+  expect(
+    importRestartHints(prefs({ "daemon.auto-start": true }), prefs({ "daemon.idle-timeout": 60 })),
+  ).toEqual([]);
 });
 
 // --- pre-import backups -----------------------------------------------------------
@@ -1049,13 +1142,13 @@ test("import backs up the previous settings with credentials intact, and the bac
   await runSettings({ exportTo: exported, withCredentials: true });
 
   // Diverge the machine from the exported state, so the import overwrites it.
-  new CopilotEnvConfig().set({ autoStart: false, port: 6060 });
+  new CopilotEnvConfig().set({ "daemon.auto-start": false, "daemon.port": 6060 });
   new Credential().store("gh-token", "ghp_before_import");
 
   const imported = await captureStderr(() =>
     runSettings({ importFrom: exported, force: true }, { catalogDeps: NOOP_CATALOG_DEPS })
   );
-  expect(new CopilotEnvConfig().read().port).toBe(5050);
+  expect(new CopilotEnvConfig().read().global["daemon.port"]).toBe(5050);
   expect(new Credential().resolve()).toBe("ghp_default");
 
   // The backup captured the PRE-import state, tokens included, dir 700 / file 600.
@@ -1067,7 +1160,14 @@ test("import backs up the previous settings with credentials intact, and the bac
   expect(imported).toContain(`Roll back with: ${rollbackCommand(backupFile)}`);
   const backupDoc = JSON.parse(readFileSync(backupFile, "utf8"));
   expect(backupDoc.credential.githubToken).toBe("ghp_before_import");
-  expect(backupDoc.config).toEqual({ autoStart: false, port: 6060, claudeTokenMultiplier: 2.5 });
+  expect(backupDoc.config).toEqual({
+    global: {
+      "daemon.auto-start": false,
+      "daemon.port": 6060,
+      "proxy.claude-token-multiplier": 2.5,
+    },
+    profiles: {},
+  });
   if (!WIN) {
     expect(statSync(settingsBackupDir()).mode & 0o777).toBe(0o700);
     expect(statSync(backupFile).mode & 0o777).toBe(0o600);
@@ -1078,8 +1178,8 @@ test("import backs up the previous settings with credentials intact, and the bac
     { importFrom: backupFile, force: true, noBackup: true },
     { catalogDeps: NOOP_CATALOG_DEPS },
   );
-  expect(new CopilotEnvConfig().read().port).toBe(6060);
-  expect(new CopilotEnvConfig().read().autoStart).toBe(false);
+  expect(new CopilotEnvConfig().read().global["daemon.port"]).toBe(6060);
+  expect(new CopilotEnvConfig().read().global["daemon.auto-start"]).toBe(false);
   expect(new Credential().resolve()).toBe("ghp_before_import");
   // --no-backup left the pile untouched.
   expect(readdirSync(settingsBackupDir()).length).toBe(1);
@@ -1174,7 +1274,7 @@ test("a config-only import of claude-desktop false sweeps a PROMISED Desktop ent
 
   // The import carries only the preference (no profiles, no modes): the imported false
   // must be what removes the entry, so the reconcile has to run AFTER the prefs land.
-  const bundle = parseSettingsBundle(rawBundle({ config: { claudeDesktop: false } }));
+  const bundle = parseSettingsBundle(rawBundle({ config: configOf({ "claude.desktop": false }) }));
   await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
   expect(new CopilotEnvConfig().claudeDesktopEnabled()).toBe(false);
   expect(entryPath()).toBeNull();
@@ -1195,7 +1295,7 @@ test("a config-only import of claude-desktop true restores the DEFAULT Desktop e
       }).entries.map((e) => e.name)
       : [];
   // A managed proxy default (settings.json) written while the key was off: no entry.
-  new CopilotEnvConfig().set({ claudeDesktop: false });
+  new CopilotEnvConfig().set({ "claude.desktop": false });
   await runClaude({ kind: "configure", mode: "proxy" });
   expect(names()).toEqual([]);
 
@@ -1204,7 +1304,7 @@ test("a config-only import of claude-desktop true restores the DEFAULT Desktop e
   const realFetch = globalThis.fetch;
   globalThis.fetch = () => Promise.reject(new Error("offline"));
   try {
-    const bundle = parseSettingsBundle(rawBundle({ config: { claudeDesktop: true } }));
+    const bundle = parseSettingsBundle(rawBundle({ config: configOf({ "claude.desktop": true }) }));
     await captureStderr(async () => {
       await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
     });

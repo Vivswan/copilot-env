@@ -90,7 +90,7 @@ live(
     const homes = isolateAgentHomes("copilot-catalog-live-", { mkdirs: true });
     dir = homes.dir;
     delete process.env[CI_NO_LIVE_LOOKUPS_ENV]; // the real probe, the real version look
-    new CopilotEnvConfig().set({ codexModelCatalog: true });
+    new CopilotEnvConfig().set({ "codex.model-catalog": true });
     const scratchHome = join(dir, "codex-home");
     mkdirSync(scratchHome, { recursive: true });
     const codexPath = resolveCommand("codex");

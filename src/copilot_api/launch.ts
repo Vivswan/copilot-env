@@ -205,14 +205,14 @@ export async function resolveStartPort(
   const max = config.maxPort();
   if (min > max) {
     throw new Error(
-      `invalid port range: min-port (${min}) is greater than max-port (${max}); fix it with \`agent config --set min-port <n>\` / \`--set max-port <n>\`.`,
+      `invalid port range: daemon.min-port (${min}) is greater than daemon.max-port (${max}); fix it with \`agent config --set daemon.min-port <n>\` / \`--set daemon.max-port <n>\`.`,
     );
   }
   if (pinned !== undefined) {
     switch (await checkProxyPort(pinned)) {
       case "out-of-range":
         throw new Error(
-          `requested port ${pinned} is out of range; the proxy port must be between ${min} and ${max} (\`agent config --set min-port/max-port\` to change the range).`,
+          `requested port ${pinned} is out of range; the proxy port must be between ${min} and ${max} (\`agent config --set daemon.min-port/daemon.max-port\` to change the range).`,
         );
       case "busy":
         throw new Error(
@@ -245,14 +245,14 @@ export async function resolveStartPort(
         break; // a busy reservation auto-increments back inside the range
       }
       throw new Error(
-        `configured port ${def} is outside the allowed range ${min}-${max}; run \`agent config --set port <n>\` within the range, or adjust min-port/max-port.`,
+        `configured port ${def} is outside the allowed range ${min}-${max}; run \`agent config --set daemon.port <n>\` within the range, or adjust daemon.min-port/daemon.max-port.`,
       );
     case "busy":
       break;
   }
   if (policy.strictPortEligible && config.strictPortEnabled()) {
     throw new Error(
-      `port ${def} is busy and auto-increment is disabled (\`strict-port\`); free it, pick another \`--port\`, or set \`agent config --set strict-port false\`.`,
+      `port ${def} is busy and auto-increment is disabled (\`daemon.strict-port\`); free it, pick another \`--port\`, or set \`agent config --set daemon.strict-port false\`.`,
     );
   }
   if (announce) consola.warn(`Port ${def} is busy (held by another process/user).`);
@@ -628,7 +628,7 @@ export async function resolveLaunchCredential(
   const credential = deps.credential ?? new Credential(undefined, profile);
   const isTTY = deps.isTTY ?? Boolean(process.stdin.isTTY);
   const selectIdentity = deps.selectIdentity ?? selectPassthroughIdentityAndHost;
-  const literal = config.copilotHost();
+  const literal = config.copilotHost(profile);
   // Passed as `--github-token`, copilot-api holds the token in memory and writes no github_token file
   // of its own, so the proxy stays on our single source of truth.
   let githubToken = credential.resolve() ?? undefined;
@@ -640,7 +640,7 @@ export async function resolveLaunchCredential(
   }
   // A gh-cli OAuth token or a PAT cannot perform copilot-api's editor token exchange, so the
   // passthrough shim fakes it and hands the token straight through as the Copilot bearer.
-  const forcePassthrough = config.passthroughOverride();
+  const forcePassthrough = config.passthroughOverride(profile);
   const patPassthrough = usePatPassthrough({
     force: forcePassthrough,
     token: githubToken,
@@ -670,7 +670,7 @@ export async function resolveLaunchCredential(
   // Identity and host come as one pair (selectPassthroughIdentityAndHost): the host in use, and the
   // identity that host accepts.
   const { integrationId, apiBase } = await selectIdentity(githubToken, {
-    pinned: config.pinnedIntegrationId(),
+    pinned: config.pinnedIntegrationId(profile),
     fixedHost: literal,
   });
   return { credential: { kind: "pat", token: githubToken, integrationId }, copilotHost: apiBase };
@@ -729,7 +729,7 @@ export function spawnConfiguredDaemon(opts: {
   // requests, not log files.
   const muteProxyLogs = !config.proxyLogsEnabled();
   if (muteProxyLogs) {
-    consola.info("Proxy request logs off: discarding writes under <home>/logs (`proxy-logs`).");
+    consola.info("Proxy request logs off: discarding writes under <home>/logs (`daemon.logs`).");
   }
   const relaunch = (p: number): number => {
     // Blanked only HERE, at spawn time: a failure BEFORE launch (a login error, an identity-probe
@@ -805,7 +805,7 @@ export async function awaitReadiness(opts: {
           `port ${port} was taken by another process just before launch` +
             `${
               strictPort && pinnedPort === undefined
-                ? " (strict-port is on, so no auto-increment)"
+                ? " (daemon.strict-port is on, so no auto-increment)"
                 : ""
             }. See ${logFile}`,
         );
@@ -921,15 +921,17 @@ function deleteProxyConfigValue(doc: Record<string, unknown>, path: ProxyConfigP
 }
 
 export function applyDefaultConfig(
+  profile: Profile,
   paths: CopilotApiPaths,
   envConfig: CopilotEnvConfig = new CopilotEnvConfig(),
 ): void {
   // The projected preferences are static defaults the daemon reads at startup with no admin REST
-  // endpoint, so they go into config.json before launch (model aliases are pushed live instead). An
-  // unset OPT-IN key a previous start wrote (recorded in ProxyProjectionState) is cleared, so
-  // `agent config --del` truly reverts to the proxy's default without deleting a value we never projected.
+  // endpoint, so they go into config.json before launch (model aliases are pushed live instead),
+  // resolved for THIS daemon's profile. An unset OPT-IN key a previous start wrote (recorded in
+  // ProxyProjectionState) is cleared, so `agent config --del` truly reverts to the proxy's default
+  // without deleting a value we never projected.
   const config = new CopilotApiConfig(paths.configFile);
-  const projection = projectedProxyConfig(envConfig);
+  const projection = projectedProxyConfig(profile, envConfig);
   const projectedKeys = new Set(projection.map((e) => JSON.stringify(e.path)));
   const registryOptInKeys = new Set(optInProxyConfigPaths().map((p) => JSON.stringify(p)));
   const ownership = new ProxyProjectionState(paths);

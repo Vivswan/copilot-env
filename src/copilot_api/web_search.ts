@@ -171,15 +171,15 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   const config = new CopilotEnvConfig();
   const { integrationId, apiBase } = await raceWithAbort(
     selectDirectIdentityAndHost(token, CODEX_EXEC_USER_AGENT, {
-      pinned: config.pinnedIntegrationId(),
-      fixedHost: config.copilotHost(),
+      pinned: config.pinnedIntegrationId(profile),
+      fixedHost: config.copilotHost(profile),
       fetchImpl: opts.fetchImpl,
       narrator: logger,
     }),
     opts.signal,
   );
   const clientHeaders = directClientHeaders(CODEX_EXEC_USER_AGENT, integrationId);
-  const configured = opts.model ?? config.messageApiWebSearchModel();
+  const configured = opts.model ?? config.messageApiWebSearchModel(profile);
   // Only a configured value can be an alias; the built-in default is a raw catalog id, so the default
   // path stays catalog-free.
   const model = configured === null ? DEFAULT_WEB_SEARCH_MODEL : await raceWithAbort(

@@ -496,7 +496,7 @@ export function runShell(args: ShellArgs): void {
   runShellIntegration({ kind: "wire", allHosts: action.allHosts });
   consola.info(
     new CopilotEnvConfig().launchersEnabled()
-      ? "Launchers: enabled (the launchers config key) - cl / co / cx (+ clx / cox / cxx) load via `agent env`."
-      : "Launchers: disabled (the launchers config key) - `agent config --set launchers true` defines cl / co / cx.",
+      ? "Launchers: enabled (the shell.launchers config key) - cl / co / cx (+ clx / cox / cxx) load via `agent env`."
+      : "Launchers: disabled (the shell.launchers config key) - `agent config --set shell.launchers true` defines cl / co / cx.",
   );
 }

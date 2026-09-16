@@ -76,10 +76,10 @@ function printStatus(): void {
   logger.log(`  (${path})`);
   // One accessor, so value and provenance come from the same config read.
   const wireMcp = new CopilotEnvConfig().wireMcpResolved();
-  logger.log(`wire-mcp: ${wireMcp.value} (${wireMcp.source})`);
+  logger.log(`claude.wire-mcp: ${wireMcp.value} (${wireMcp.source})`);
   logger.log("");
   logger.log("agent mcp --serve   run the MCP stdio server (what registered clients spawn)");
-  logger.log("agent mcp --remove  unregister from Claude Code and opt out (wire-mcp false)");
+  logger.log("agent mcp --remove  unregister from Claude Code and opt out (claude.wire-mcp false)");
   logger.log("rewire: `agent claude --direct` or `agent init`");
 }
 
@@ -97,7 +97,7 @@ export async function runMcp(args: McpArgs): Promise<void> {
   // registration then go together, since lifting the deny alone would leave a direct-wired machine
   // with no search path. The registration is machine-global, so it goes even when settings.json is
   // foreign and the sync leaves that file's deny alone.
-  new CopilotEnvConfig().set({ wireMcp: false });
+  new CopilotEnvConfig().set({ "claude.wire-mcp": false });
   syncDefaultWebSearchWiring(resolveClaudeHome());
   const unregistered = removeClaudeMcpRegistration();
   if (unregistered) {

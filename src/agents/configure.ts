@@ -62,7 +62,7 @@ export function resolveCredentialWiring(
   directToken?: string | null,
 ): CredentialWiring {
   const config = new CopilotEnvConfig();
-  if (!config.staticKeyFor(agent)) return { kind: "command" };
+  if (!config.staticKeyFor(agent, profile)) return { kind: "command" };
   if (mode === "proxy") {
     return { kind: "static", token: CopilotApiConfig.forProfile(profile).ensureApiKey() };
   }
@@ -72,8 +72,8 @@ export function resolveCredentialWiring(
   if (resolved.token === null) {
     const slot = profile === null ? "" : ` --profile ${profile}`;
     throw new Error(
-      `static-key is ${config.staticKeyScope()} but no credential resolves to bake: ` +
-        `${resolved.reason}. Run \`agent auth${slot}\`, or \`agent config --set static-key none\` ` +
+      `static-key is ${config.staticKeyScope(profile)} but no credential resolves to bake: ` +
+        `${resolved.reason}. Run \`agent auth${slot}\`, or \`agent config --set static-key none${slot}\` ` +
         "to go back to the resolver command.",
     );
   }

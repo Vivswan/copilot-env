@@ -329,7 +329,7 @@ test(
       writeRunState({ pid: daemonPid, port });
       process.env.COPILOT_API_ENTRY = join(ROOT, "test", "copilot-api-fake.mjs");
       const config = new CopilotEnvConfig();
-      config.set({ autoStart: true, updateCooldown: 0 });
+      config.set({ "daemon.auto-start": true, "update.cooldown": 0 });
       const launch = {
         kind: "launch",
         dryRun: false,
@@ -350,7 +350,7 @@ test(
       });
 
       // Key on, still due: the release check runs and its result is recorded.
-      config.set({ autoUpdate: true });
+      config.set({ "update.auto": true });
       const { stdout, stderr } = await streamsOf(() => runStart(launch, preflight), onStdout);
       expect(events).toEqual(["noop", "preflight", "noop", "preflight"]);
       // Stream routing: the preflight's shared-consola line is the ONLY stderr output (its

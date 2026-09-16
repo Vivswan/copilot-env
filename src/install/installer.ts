@@ -732,7 +732,7 @@ function printEpilogue(options: InstallOptions): void {
   // CLIs first: `agent init` auto-detects Direct by smoke-testing the installed CLI, so a
   // machine without one lands on the proxy.
   console.log(
-    "  1. Run 'agent shell --clis' to install the Claude and Codex CLIs ('agent config --set launchers true' adds the cl/co/cx shortcuts).",
+    "  1. Run 'agent shell --clis' to install the Claude and Codex CLIs ('agent config --set shell.launchers true' adds the cl/co/cx shortcuts).",
   );
   console.log(
     "  2. Run 'agent init' to set up Codex + Claude (it picks GitHub Copilot Direct or the local proxy), then tells you whether you need 'agent start' (only for the proxy).",

@@ -188,7 +188,7 @@ skipWin("shell wires NO launchers block and reports the launchers key without wr
   // rc file carries only the integration block, and `--launchers` is no flag.
   const wired = run();
   expect(wired.code).toBe(0);
-  expect(wired.out).toContain("Launchers: disabled (the launchers config key)");
+  expect(wired.out).toContain("Launchers: disabled (the shell.launchers config key)");
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(MARKER);
   expect(markerLines(rc, MARKER)).toBe(1);

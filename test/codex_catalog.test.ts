@@ -49,7 +49,7 @@ afterEach(() => {
 function isolate(): void {
   dir = isolateProxyHome("copilot-catalog-");
   // The catalog is opt-in (default false); the disabled-gate tests at the end turn it back off.
-  new CopilotEnvConfig().set({ codexModelCatalog: true });
+  new CopilotEnvConfig().set({ "codex.model-catalog": true });
 }
 
 type Model = Record<string, unknown>;
@@ -1188,7 +1188,7 @@ test("a failed post-upgrade regeneration does not retry on the next same-version
 
 test("generate is a no-op when the catalog is not opted in", async () => {
   isolate();
-  new CopilotEnvConfig().del("codexModelCatalog");
+  new CopilotEnvConfig().del("codex.model-catalog");
   const ok = await generateCodexModelCatalog("direct", {
     bundledCatalog: () => {
       throw new Error("must not be called");
@@ -1203,7 +1203,7 @@ test("generate is a no-op when the catalog is not opted in", async () => {
 
 test("refresh is a no-op when disabled: no throttle state write", async () => {
   isolate();
-  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  new CopilotEnvConfig().set({ "codex.model-catalog": false });
   const ok = await refreshCodexModelCatalogIfStale("direct", {
     nowMs: () => 1_000_000,
     codexVersion: () => "1.0.0",

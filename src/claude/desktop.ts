@@ -1270,7 +1270,7 @@ function announceUnmanagedDefault(): void {
     } catch {
       continue;
     }
-    logger.info(`  Claude Desktop: ${label} left in place, unmanaged (claude-desktop false).`);
+    logger.info(`  Claude Desktop: ${label} left in place, unmanaged (claude.desktop false).`);
   }
 }
 

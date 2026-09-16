@@ -95,7 +95,7 @@ function runAutoStatus(config: CopilotEnvConfig): void {
   consola.info(
     `Autoupdate: ${
       config.autoUpdateEnabled() ? "enabled" : "disabled"
-    } (the auto-update config key) | cooldown ${cooldown}d | ` +
+    } (the update.auto config key) | cooldown ${cooldown}d | ` +
       `last check ${last} | last result: ${s.lastResult || "(none)"}`,
   );
 }

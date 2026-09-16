@@ -19,13 +19,17 @@ import {
   CONFIG_REGISTRY,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
+  type GlobalMapKey,
+  isGlobalMapKey,
+  isProfileMapKey,
   isProxyProjected,
+  type ProfileMapKey,
 } from "../copilot_api/env_config.ts";
 import { profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { atomicWriteFile, writeFileReported } from "../utils/report_write.ts";
-import { PROXY_RESTART_HINT, unreadProjectedKeyWarnings } from "./config.ts";
+import { PROXY_RESTART_HINT_ALL, unreadProjectedKeyWarnings } from "./config.ts";
 
 // Narration to stderr so `--export`'s stdout stays a clean machine-readable bundle.
 const logger = createStderrLogger();
@@ -84,14 +88,17 @@ export function importRestartHints(
   preImportPrefs: CopilotEnvConfigData,
 ): string[] {
   // Prefs are full-replace, so a projected key changes when the bundle carries it OR when the
-  // bundle drops one the store had.
+  // bundle drops one the store had, in the global map or any profile's section.
+  const carries = (data: CopilotEnvConfigData, key: GlobalMapKey & ProfileMapKey): boolean =>
+    data.global[key] !== undefined ||
+    Object.values(data.profiles).some((section) => section[key] !== undefined);
   const projectedChanges = CONFIG_REGISTRY.some(
     (def) =>
-      isProxyProjected(def) &&
-      (config[def.key] !== undefined || preImportPrefs[def.key] !== undefined),
+      isProxyProjected(def) && isGlobalMapKey(def.key) && isProfileMapKey(def.key) &&
+      (carries(config, def.key) || carries(preImportPrefs, def.key)),
   );
   if (!projectedChanges) return [];
-  return [PROXY_RESTART_HINT, ...unreadProjectedKeyWarnings()];
+  return [PROXY_RESTART_HINT_ALL, ...unreadProjectedKeyWarnings()];
 }
 
 function runExport(target: string | boolean, withCredentials: boolean): void {

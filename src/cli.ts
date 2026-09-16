@@ -228,7 +228,7 @@ program
   )
   .option(
     "--identity [id|auto]",
-    "Pin the Copilot client identity (same store as `agent config --set integration-id`); " +
+    "Pin the Copilot client identity (same store as `agent config --set identity`); " +
       "`auto` restores probing; no value => interactive choice from the probe.",
   )
   .action((opts: Opts) =>
@@ -355,12 +355,12 @@ program
   .helpGroup("Daemon:")
   .description(
     "Print the local proxy's API key, auto-starting the proxy when the managed " +
-      "lifecycle (`auto-start`) is on - the resolver behind the proxy-mode " +
+      "lifecycle (`daemon.auto-start`) is on - the resolver behind the proxy-mode " +
       "Codex/Claude wiring and the cl/cx launchers. Only the key touches stdout.",
   )
   .option(
     "--yes",
-    "Never prompt (headless): when the proxy is down and auto-start is off, exit 1 " +
+    "Never prompt (headless): when the proxy is down and daemon.auto-start is off, exit 1 " +
       "instead of offering to start it.",
   )
   .option(
@@ -377,10 +377,16 @@ program
 program
   .command("config")
   .helpGroup("Settings:")
-  .description("Get/set copilot-env preferences (auto-start, passthrough, idle-timeout, ...).")
+  .description(
+    "Get/set copilot-env preferences (daemon.auto-start, passthrough, daemon.idle-timeout, ...).",
+  )
   .option("--set <key...>", "Set a preference: --set <key> <value>.")
   .option("--get [key]", "Print all preferences, or just one key's value.")
   .option("--del <key>", "Delete a preference (revert to its default).")
+  .option(
+    "--profile <name>",
+    "The profile a profile-scoped key (identity, host, passthrough, static-key, proxy.*) is set, deleted, or read for; default: the default profile.",
+  )
   // A function, not a string baked at startup, so the values are the store's at help-render time.
   .addHelpText("after", () => `\n${configTableOutput()}`)
   .action((opts: Opts) =>
@@ -388,6 +394,7 @@ program
       set: opts.set as string[] | undefined,
       get: opts.get as string | boolean | undefined,
       del: opts.del as string | undefined,
+      profile: opts.profile as string | undefined,
     })
   );
 
@@ -529,7 +536,7 @@ program
   .option(
     "--pricing-url <url>",
     "OpenRouter models API URL for the public price list (cached for a day), overriding the " +
-      `pricing-url config key for this run (built-in: ${OPENROUTER_MODELS_URL}).`,
+      `cost.pricing-url config key for this run (built-in: ${OPENROUTER_MODELS_URL}).`,
   )
   .option(
     "--no-index",
@@ -584,7 +591,7 @@ program
   .option("--json", "Emit a JSON object instead of the block.")
   .option(
     "--target <credits>",
-    "Credits to stay under this month, overriding COPILOT_CREDITS_TARGET and the credits-target " +
+    "Credits to stay under this month, overriding COPILOT_CREDITS_TARGET and the cost.credits-target " +
       "config key for this run.",
   )
   .action((opts: Opts) =>
@@ -676,7 +683,7 @@ program
   )
   .option(
     "--model <id>",
-    "With --serve: web-search model for this process (overrides message-websearch-model).",
+    "With --serve: web-search model for this process (overrides proxy.message-websearch-model).",
   )
   .action((opts: Opts) =>
     runMcp({
@@ -701,12 +708,12 @@ program
   )
   .option(
     "--auto-status",
-    "Report autoupdate status and exit (the auto-update config key, cooldown, last check, last result).",
+    "Report autoupdate status and exit (the update.auto config key, cooldown, last check, last result).",
   )
   .option(
     "--verify",
     "Verify the download against the release's Sigstore build-provenance attestation " +
-      "(the default; the verify-provenance config key persists a choice).",
+      "(the default; the update.verify-provenance config key persists a choice).",
   )
   .option(
     "--no-verify",

@@ -476,7 +476,7 @@ export function defaultProbeDeps(): ProbeDeps {
       }
       return profiles;
     },
-    pinnedIntegrationId: () => new CopilotEnvConfig().pinnedIntegrationId(),
+    pinnedIntegrationId: () => new CopilotEnvConfig().pinnedIntegrationId(null),
     claudeHome: () => resolveClaudeHome(),
     codexHostFarm,
     codexHostEnabled: () => new CopilotEnvConfig().codexHostEnabled(),

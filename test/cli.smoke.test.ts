@@ -120,7 +120,7 @@ test("cli.ts config --set writes only inside the data home, so it names no file"
   const env = isolatedEnv({ COPILOT_API_HOME: home, HOME: home, USERPROFILE: home });
   const store = join(home, "preferences.json");
 
-  const set = runCli(["config", "--set", "port", "4199"], { env });
+  const set = runCli(["config", "--set", "daemon.port", "4199"], { env });
   expect(set.exitCode).toBe(0);
   expect(existsSync(store)).toBe(true);
   expect(set.stderr).not.toContain(" -> ");
@@ -129,12 +129,12 @@ test("cli.ts config --set writes only inside the data home, so it names no file"
 
 test("cli.ts config --help renders the store's CURRENT values: the same table bare config prints", () => {
   const env = isolatedEnv({ NO_COLOR: "1" });
-  expect(runCli(["config", "--set", "strict-port", "true"], { env }).exitCode).toBe(0);
+  expect(runCli(["config", "--set", "daemon.strict-port", "true"], { env }).exitCode).toBe(0);
   const table = runCli(["config"], { env });
   const help = runCli(["config", "--help"], { env });
   expect(table.exitCode).toBe(0);
   expect(help.exitCode).toBe(0);
-  expect(table.stdout).toMatch(/^\* strict-port=true +\[bool\] default false$/m);
+  expect(table.stdout).toMatch(/^\* daemon.strict-port=true +\[bool\] default false$/m);
   expect(help.stdout.slice(-table.stdout.length)).toBe(table.stdout);
 });
 
@@ -930,14 +930,14 @@ test("update --auto-status reports the auto-update key honestly, on and off (off
     const home = tempDir("copilot-autostatus-");
     writeFileSync(
       join(home, "preferences.json"),
-      JSON.stringify({ autoUpdate, updateCooldown: 3 }),
+      JSON.stringify({ global: { "update.auto": autoUpdate, "update.cooldown": 3 } }),
     );
     const proc = runCli(["update", "--auto-status"], {
       env: isolatedEnv({ COPILOT_API_HOME: home }),
     });
     expect(proc.exitCode, word).toBe(0);
     expect(proc.stdout + proc.stderr, word).toContain(
-      `Autoupdate: ${word} (the auto-update config key) | cooldown 3d | last check `,
+      `Autoupdate: ${word} (the update.auto config key) | cooldown 3d | last check `,
     );
   }
 });
@@ -1007,7 +1007,7 @@ test("cli.ts cost prices at the stored pricing-url when the flag is omitted and 
   const home = env.COPILOT_API_HOME ?? "";
   writeFileSync(
     join(home, "preferences.json"),
-    JSON.stringify({ port: 4199, pricingUrl: storedUrl }),
+    JSON.stringify({ global: { "daemon.port": 4199, "cost.pricing-url": storedUrl } }),
   );
   // Two days old: expired, so the run refreshes (fails at 127.0.0.1:9) and falls back
   // to the cached copy; the two URLs carry different prompt rates.

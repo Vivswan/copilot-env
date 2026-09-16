@@ -245,7 +245,7 @@ test("named target down + auto-start on reads ok (starts on demand)", () => {
   down.watchdog = { ...down.watchdog, autoStart: true };
   const port = runPort(down);
   expect(port.status).toBe("ok");
-  expect(port.detail).toContain("starts on demand (auto-start on)");
+  expect(port.detail).toContain("starts on demand (daemon.auto-start on)");
   expect(port.fix).toBeUndefined();
   expect(runPid(down).status).toBe("ok");
 });

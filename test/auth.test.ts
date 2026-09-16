@@ -79,7 +79,7 @@ function state(): CopilotEnvState {
 
 // The catalog is opt-in (default false); without this the auth-time refresh never runs.
 function enableCatalog(): void {
-  new CopilotEnvConfig().set({ codexModelCatalog: true });
+  new CopilotEnvConfig().set({ "codex.model-catalog": true });
 }
 
 async function captureStdout(fn: () => Promise<void>): Promise<string> {
@@ -516,7 +516,7 @@ test("auth --identities: one column per host, marks what the configs bake and a 
     // The account lookup (no id, copilot-env's own User-Agent) happened exactly once.
     expect(requests.get("https://api.github.com/copilot_internal/user - agents")).toBe(1);
     setIntegrationProbeFetch(stubbedSurveyFetch);
-    expect(out).toContain("integration-id: auto");
+    expect(out).toContain("identity: auto");
     expect(out).toContain("copilot-host: auto (api.githubcopilot.com in use)");
     expect(out).toMatch(
       /^identity\s+api\.githubcopilot\.com \(in use\)\s+api\.enterprise\.githubcopilot\.com \(account\)\s+note$/m,
@@ -548,7 +548,7 @@ test("auth --identities: one column per host, marks what the configs bake and a 
     });
     await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
     const pinned = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
-    expect(pinned).toContain(`integration-id: pinned to ${COPILOT_SANDBOX_INTEGRATION_ID}`);
+    expect(pinned).toContain(`identity: pinned to ${COPILOT_SANDBOX_INTEGRATION_ID}`);
     expect(pinned).toMatch(
       /^copilot-developer-cli\s+accepted \(5 models\) \*\s+accepted \(37 models\)\s/m,
     );
@@ -575,14 +575,14 @@ test("auth --identities: one column per host, marks what the configs bake and a 
     );
 
     // A pin that is not a built-in Direct candidate is still probed and marked, never a bare `-`.
-    new CopilotEnvConfig().set({ integrationId: VSCODE_CHAT_INTEGRATION_ID });
+    new CopilotEnvConfig().setProfile(null, { identity: VSCODE_CHAT_INTEGRATION_ID });
     const foreign = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
     expect(foreign).toMatch(/^vscode-chat\s+rejected \(400\) \+\s+rejected \(400\)/m);
     expect(foreign).toContain(`  vscode-chat on api.githubcopilot.com: ${PAT_REJECTION}`);
 
     // A credential the proxy exchanges itself (device-flow, passthrough off) never sees the pin
     // on the proxy path: the daemon's own vscode-chat is what is in effect there.
-    new CopilotEnvConfig().set({ integrationId: "auto" });
+    new CopilotEnvConfig().setProfile(null, { identity: "auto" });
     state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_device" });
     const exchanged = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
     expect(exchanged).toMatch(/^vscode-chat\s+rejected \(400\) \+\s+rejected \(400\)/m);
@@ -651,7 +651,7 @@ test("auth --identities: columns are the generic host, the account's when it dif
     // host keeps its star THERE, the host note names the move the next rewire makes, and both
     // picks are ranked on the literal's column, where every identity is accepted: the Direct
     // default (codex) and the proxy default (vscode-chat, `+`).
-    new CopilotEnvConfig().set({ copilotHost: CONFIGURED_HOST });
+    new CopilotEnvConfig().setProfile(null, { host: CONFIGURED_HOST });
     configureCodexConfig(
       codexHome,
       { mode: "direct", credential: { kind: "command" } },
@@ -677,7 +677,7 @@ test("auth --identities: columns are the generic host, the account's when it dif
     // A refusal names the host it happened on: with the generic host blocked (403) and the account
     // host rejecting every identity (400), the wiring re-selects on the account host and throws
     // THERE, so the table shows nothing in use there, not on the generic host.
-    new CopilotEnvConfig().del("copilotHost");
+    new CopilotEnvConfig().delProfile(null, "host");
     setIntegrationProbeFetch((input) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/copilot_internal/user")) {
@@ -703,7 +703,7 @@ test("auth --identities: columns are the generic host, the account's when it dif
     );
 
     // A literal equal to the account's host is one column, in its account role.
-    new CopilotEnvConfig().set({ copilotHost: "https://api.enterprise.githubcopilot.com" });
+    new CopilotEnvConfig().setProfile(null, { host: "https://api.enterprise.githubcopilot.com" });
     const merged = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
     expect(merged).toMatch(
       /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account, in use\)\s+note$/m,
@@ -729,14 +729,14 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
           `  - api.enterprise.githubcopilot.com (account): ${PAT_REJECTION}`,
         ].join("\n"),
       );
-    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
 
     // Accepted on the generic host, rejected on the account's: pinned, and the warning names what
     // carried it.
     const narrated = await captureStderr(() =>
       runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)
     );
-    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
+    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
     // consola's fancy reporter strips the backticks around the id; the CI reporter keeps them.
     expect(narrated).toMatch(
       new RegExp(
@@ -746,7 +746,7 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
     );
 
     await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
-    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
 
     // A transient account-host lookup leaves that host unknown and a blocked generic host (403)
     // is inconclusive: nothing definitive stands against the pin, so it lands unverified and
@@ -762,7 +762,7 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
     const unknown = await captureStderr(() =>
       runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)
     );
-    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
+    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
     expect(unknown).toContain(
       "The account's designated host could not be looked up (transient); pinning unverified.",
     );
@@ -771,19 +771,19 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
     // another host accepts the identity (the enterprise host rejects the sandbox id in this stub).
     await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
     stubIdentitySurvey();
-    new CopilotEnvConfig().set({ copilotHost: "https://api.enterprise.githubcopilot.com" });
+    new CopilotEnvConfig().setProfile(null, { host: "https://api.enterprise.githubcopilot.com" });
     await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
       .toThrow(
         "api.enterprise.githubcopilot.com (account, in use) rejects this credential under " +
           `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the ` +
           `copilot-host in use: ${PAT_REJECTION}`,
       );
-    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
 
     // Under `auto` the same rule reads the host auto WOULD select for the pin: the generic host
     // answers 400 for the sandbox id (kept: 400 is an identity answer), so its rejection refuses
     // the pin even though the account's host accepts that id; the CLI id, accepted there, pins.
-    new CopilotEnvConfig().del("copilotHost");
+    new CopilotEnvConfig().delProfile(null, "host");
     setIntegrationProbeFetch((input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/copilot_internal/user")) {
@@ -812,9 +812,9 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
           `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
           `selects for this identity: ${PAT_REJECTION}`,
       );
-    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
     await runAuth({ identity: COPILOT_CLI_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
-    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe(COPILOT_CLI_INTEGRATION_ID);
+    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_CLI_INTEGRATION_ID);
     // A slot whose cached pair already carries this id on the account's host (an earlier `auto`
     // wiring) replays THAT host without probing, so the pin's requests go there: it lands.
     await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
@@ -829,7 +829,7 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
       },
     );
     await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
-    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
+    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
     // The cached host is surveyed in its own right: with the account lookup failing (no account
     // column) and the generic host accepting the id, the cached host's rejection still refuses
     // the pin, because that is where the writer sends it.
@@ -855,7 +855,7 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
           `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
           `selects for this identity: ${PAT_REJECTION}`,
       );
-    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
   } finally {
     setIntegrationProbeFetch(null);
   }

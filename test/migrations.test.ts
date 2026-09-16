@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join } from "node:path";
 import { parse, stringify, TomlDate } from "smol-toml";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
@@ -37,11 +38,13 @@ import {
 import {
   dropCodexIdentityPin,
   moveCodexProfileTables,
+  regroupPreferenceStore,
   scopeStaticKeyBoolean,
   stripLaunchersBlocks,
   v409CodexProfileFiles,
   v409IntegrationIdPin,
   v409LaunchersBlock,
+  v409PreferenceGroups,
   v409StaticKeyScope,
 } from "../src/migrations/4.0.9.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
@@ -95,11 +98,14 @@ test("dueMigrations selects [from, to) in ascending order over the registry", ()
 test("the shipped registry holds exactly the named fix-ups in order, home move first", () => {
   // Pinned BY IDENTITY and in order: a count or a list of version strings could stay green while a
   // same-version fix-up was dropped in a merge. Each position has a reason:
-  //   layout steps first (home move, then store rename) -> later steps read stores at the new paths
+  //   layout steps first (home move, store rename, then the preference regrouping)
+  //                                                      -> later steps read stores at the new paths and
+  //                                                         through the new preference shape
   //   Desktop helper move, then the Codex profile files  -> each needs the 4.0.0 rewrites done
   expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
     v356,
     v402RootLayout,
+    v409PreferenceGroups,
     v356ShellFence,
     v356CodexWiring,
     v356ClaudeWiring,
@@ -837,7 +843,58 @@ function warningsDuring(run: () => void, level: "warn" | "info" = "warn"): strin
   return lines;
 }
 
-test("4.0.9 integration-id: a stored `codex` pin is dropped and said so; any other value stays", () => {
+test("4.0.9 preferences: the flat camelCase store becomes grouped keys, the four profile keys under profiles.default", () => {
+  // Readers know only the new shape, so an un-migrated store would read as empty: every key
+  // moves verbatim, and the two 4.0.9 value fix-ups that follow judge it at the new place.
+  const home = isolateProxyHome("copilot-mig-prefs-groups-");
+  dir = home;
+  const prefs = join(home, "preferences.json");
+  writeFileSync(
+    prefs,
+    JSON.stringify({
+      autoStart: true,
+      port: 4199,
+      smallModel: "gpt-5",
+      useResponsesApiContextManagement: true,
+      codexHome: "/srv/codex",
+      wireMcp: false,
+      integrationId: "copilot-developer-cli",
+      copilotHost: "https://copilot-api.ghe.example",
+      passthrough: "on",
+      staticKey: true,
+    }),
+  );
+  expect(warningsDuring(regroupPreferenceStore, "info")).toHaveLength(1);
+  const after = {
+    global: {
+      "daemon.auto-start": true,
+      "daemon.port": 4199,
+      "proxy.small-model": "gpt-5",
+      "proxy.responses.context-management": true,
+      "codex.home": "/srv/codex",
+      "claude.wire-mcp": false,
+    },
+    profiles: {
+      default: {
+        identity: "copilot-developer-cli",
+        host: "https://copilot-api.ghe.example",
+        passthrough: "on",
+        "static-key": true,
+      },
+    },
+  };
+  expect(JSON.parse(readFileSync(prefs, "utf8"))).toEqual(after);
+  // The readers see the moved values through the precedence rule.
+  const config = new CopilotEnvConfig();
+  expect(config.defaultPort()).toBe(4199);
+  expect(config.pinnedIntegrationId(null)).toBe("copilot-developer-cli");
+  expect(config.copilotHost(null)).toBe("https://copilot-api.ghe.example");
+  // Idempotent: a second run moves nothing and says nothing.
+  expect(warningsDuring(regroupPreferenceStore, "info")).toEqual([]);
+  expect(JSON.parse(readFileSync(prefs, "utf8"))).toEqual(after);
+});
+
+test("4.0.9 identity: a stored `codex` pin is dropped and said so; any other value stays", () => {
   // The domain refused `codex` only from #228 on; a pin stored before then reads as unset but
   // would sit in preferences.json forever, and its baked header outlives it until a rewire.
   const home = isolateProxyHome("copilot-mig-identity-pin-");
@@ -849,13 +906,17 @@ test("4.0.9 integration-id: a stored `codex` pin is dropped and said so; any oth
     { stored: "copilot-developer-cli", after: "copilot-developer-cli", said: false },
     { stored: undefined, after: undefined, said: false },
   ];
+  const shape = (identity: string | undefined) => ({
+    global: { "daemon.port": 4199 },
+    profiles: identity === undefined ? {} : { default: { identity } },
+  });
   for (const { stored, after, said } of cases) {
-    writeFileSync(prefs, `${JSON.stringify({ port: 4199, integrationId: stored })}\n`);
+    writeFileSync(prefs, `${JSON.stringify(shape(stored))}\n`);
     const lines = warningsDuring(dropCodexIdentityPin, "info");
     const raw = JSON.parse(readFileSync(prefs, "utf8")) as Record<string, unknown>;
     expect({ stored, raw, said: lines.length }).toEqual({
       stored,
-      raw: { port: 4199, ...(after === undefined ? {} : { integrationId: after }) },
+      raw: shape(after),
       said: said ? 1 : 0,
     });
     if (said) expect(lines[0]).toContain("agent init");
@@ -874,13 +935,17 @@ test("4.0.9 static-key: a stored boolean becomes the scope it meant, said once; 
     { stored: "claude", after: "claude", said: false },
     { stored: undefined, after: undefined, said: false },
   ];
+  const shape = (staticKey: unknown) => ({
+    global: { "daemon.port": 4199 },
+    profiles: staticKey === undefined ? {} : { default: { "static-key": staticKey } },
+  });
   for (const { stored, after, said } of cases) {
-    writeFileSync(prefs, `${JSON.stringify({ port: 4199, staticKey: stored })}\n`);
+    writeFileSync(prefs, `${JSON.stringify(shape(stored))}\n`);
     const lines = warningsDuring(scopeStaticKeyBoolean, "info");
     const raw = JSON.parse(readFileSync(prefs, "utf8")) as Record<string, unknown>;
     expect({ stored, raw, said: lines.length }).toEqual({
       stored,
-      raw: { port: 4199, ...(after === undefined ? {} : { staticKey: after }) },
+      raw: shape(after),
       said: said ? 1 : 0,
     });
     // Idempotent: the mapped store is a scope or absent, so a re-run has nothing to say.

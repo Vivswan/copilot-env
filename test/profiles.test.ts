@@ -901,7 +901,7 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
 
   // Key off: the launcher-style --settings-for (the Claude adapter's profile write, the
   // same path `cl --profile` takes) sweeps the entry -- no --sync or re-add needed.
-  new CopilotEnvConfig().set({ claudeDesktop: false });
+  new CopilotEnvConfig().set({ "claude.desktop": false });
   await captureAllWrites(() => runProfile({ settingsFor: "work", mode: "auto" }));
   expect(entryNames()).toEqual([]);
   expect(existsSync(helper)).toBe(false);
@@ -911,7 +911,7 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
 
   await runProfile({ add: "work", mode: "auto" });
   expect(entryNames()).toEqual([]);
-  new CopilotEnvConfig().del("claudeDesktop");
+  new CopilotEnvConfig().del("claude.desktop");
   await runProfile({ sync: true, mode: "auto" });
   expect(entryNames()).toEqual(["copilot-env: work"]);
   expect(existsSync(helper)).toBe(true);

@@ -82,18 +82,18 @@ function claudeBaseUrl(claudeHome: string): unknown {
 
 test("agent config: copilot-host takes `auto` or an https origin and refuses anything else", () => {
   dir = isolateAgentHomes("copilot-host-config-").dir;
-  const def = configKeyDef("copilot-host");
+  const def = configKeyDef("host");
   expect(def?.parse("AUTO")).toBe("auto");
   // Canonical origin: scheme and host lowercased, the trailing slash dropped.
   expect(def?.parse("HTTPS://API.Business.githubcopilot.com/")).toBe(
     "https://api.business.githubcopilot.com",
   );
   for (const bad of ["http://api.githubcopilot.com", "api.githubcopilot.com", "", "ftp://x"]) {
-    expect(() => runConfig({ set: ["copilot-host", bad] })).toThrow(
+    expect(() => runConfig({ set: ["host", bad] })).toThrow(
       /expected `auto` or an https:\/\/ origin/,
     );
   }
-  expect(() => runConfig({ set: ["copilot-host", `${ENTERPRISE}/models`] })).toThrow(
+  expect(() => runConfig({ set: ["host", `${ENTERPRISE}/models`] })).toThrow(
     /without a path or query/,
   );
   // Every loopback spelling, not three: the whole 127/8 block, IPv4-mapped ::1, a trailing dot.
@@ -106,13 +106,13 @@ test("agent config: copilot-host takes `auto` or an https origin and refuses any
       "https://[::1]:8443",
     ]
   ) {
-    expect(() => runConfig({ set: ["copilot-host", loopback] })).toThrow(/not loopback/);
+    expect(() => runConfig({ set: ["host", loopback] })).toThrow(/not loopback/);
   }
-  expect(new CopilotEnvConfig().copilotHost()).toBeNull();
-  runConfig({ set: ["copilot-host", GHE] });
-  expect(new CopilotEnvConfig().copilotHost()).toBe(GHE);
-  runConfig({ set: ["copilot-host", "auto"] });
-  expect(new CopilotEnvConfig().copilotHost()).toBeNull();
+  expect(new CopilotEnvConfig().copilotHost(null)).toBeNull();
+  runConfig({ set: ["host", GHE] });
+  expect(new CopilotEnvConfig().copilotHost(null)).toBe(GHE);
+  runConfig({ set: ["host", "auto"] });
+  expect(new CopilotEnvConfig().copilotHost(null)).toBeNull();
 });
 
 test("a Direct wiring bakes the copilot-host into both agents' base URLs; detection keys on our markers, not the host", async () => {
@@ -127,7 +127,7 @@ test("a Direct wiring bakes the copilot-host into both agents' base URLs; detect
   };
 
   // A literal: nothing probed, both configs carry it.
-  new CopilotEnvConfig().set({ copilotHost: GHE });
+  new CopilotEnvConfig().setProfile(null, { host: GHE });
   await wire();
   expect(seen).toEqual([]);
   expect(codexBaseUrl(homes.codexHome)).toBe(GHE);
@@ -137,7 +137,7 @@ test("a Direct wiring bakes the copilot-host into both agents' base URLs; detect
   const codexToml = readFileSync(join(homes.codexHome, "config.toml"), "utf8");
   const claudeJson = readFileSync(join(homes.claudeHome, "settings.json"), "utf8");
   for (const literal of [GHE, null]) {
-    new CopilotEnvConfig().set({ copilotHost: literal });
+    new CopilotEnvConfig().setProfile(null, { host: literal });
     expect(inspectCodexWiring(codexToml, null, 4141, false).providerMode).toBe("direct");
     expect(bakedClaudeDirectIntegrationId({ kind: "text", text: claudeJson }, 4141)).toEqual({
       kind: "direct",
@@ -208,7 +208,7 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
 
   // Under a literal the identity is probed (a PAT) ON THE LITERAL and the pair is cached as the
   // literal's: it replays under that literal alone, not under `auto`.
-  new CopilotEnvConfig().set({ copilotHost: GHE });
+  new CopilotEnvConfig().setProfile(null, { host: GHE });
   expect(await resolveAndPersistDirectWiring(null)).toEqual({
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
     directBaseUrl: GHE,
@@ -224,7 +224,7 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
 
   // Dropping the literal re-probes BOTH (an identity accepted on the literal says nothing about
   // the generic host), persists the `auto` pair, and replays it offline from then on.
-  new CopilotEnvConfig().del("copilotHost");
+  new CopilotEnvConfig().delProfile(null, "host");
   seen.length = 0;
   expect(await resolveAndPersistDirectWiring(null)).toEqual({
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
@@ -239,7 +239,7 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
 
   // A pin naming another identity invalidates the cached host: it was resolved under the CLI id,
   // and under the sandbox id the generic host is blocked.
-  new CopilotEnvConfig().set({ integrationId: "copilot-developer-sandbox" });
+  new CopilotEnvConfig().setProfile(null, { identity: "copilot-developer-sandbox" });
   expect(await resolveAndPersistDirectWiring(null)).toEqual({
     directIntegrationId: "copilot-developer-sandbox",
     directBaseUrl: ENTERPRISE,
@@ -251,7 +251,7 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
   expect(state.slotIdentityForDisplay(null)).toBe(COPILOT_CLI_INTEGRATION_ID);
   expect(state.readProfileCopilotHost(null, "copilot-developer-sandbox", null)).toBe(ENTERPRISE);
   expect(state.readProfileCopilotHost(null, null, null)).toBeNull();
-  new CopilotEnvConfig().set({ integrationId: "auto" });
+  new CopilotEnvConfig().setProfile(null, { identity: "auto" });
   expect(await resolveAndPersistDirectWiring(null)).toEqual({
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
     directBaseUrl: DEFAULT_COPILOT_API_BASE,
@@ -267,7 +267,7 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
 
   // A fresh slot under a pin caches the host resolved under the pin WITHOUT writing the pin as its
   // verdict, so the launcher hot path replays offline and `--identity auto` still probes afresh.
-  new CopilotEnvConfig().set({ integrationId: COPILOT_CLI_INTEGRATION_ID });
+  new CopilotEnvConfig().setProfile(null, { identity: COPILOT_CLI_INTEGRATION_ID });
   seen.length = 0;
   expect(await resolveAndPersistDirectWiring(null)).toEqual({
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
@@ -299,7 +299,8 @@ test("a wiring baked for one host stays ours after the copilot-host literal chan
     directBaseUrl: GHE,
     credential: { kind: "command" },
   });
-  new CopilotEnvConfig().set({ copilotHost: other });
+  // The host follows the credential: the literal is the PROFILE's, not the default's.
+  new CopilotEnvConfig().setProfile(work, { host: other });
   // The named-profile guard refuses only a FOREIGN file; ours, on a past host, is rewired.
   configureClaudeConfig(homes.claudeHome, {
     mode: "direct",
@@ -366,7 +367,7 @@ test("a literal change re-probes a cached identity: a verdict from one host is n
   });
   // The literal changes the host in use: the cached (generic, sandbox) pair is not this host's, so
   // the identity is probed again on the literal, where sandbox 400s and the CLI id is accepted.
-  new CopilotEnvConfig().set({ copilotHost: GHE });
+  new CopilotEnvConfig().setProfile(null, { host: GHE });
   seen.length = 0;
   expect(await resolveAndPersistDirectWiring(null)).toEqual({
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
@@ -423,8 +424,8 @@ test("the replay rule, one table: a cached identity is baked as a valid pair or 
               },
           );
         }
-        if (host === "literal") new CopilotEnvConfig().set({ copilotHost: GHE });
-        else new CopilotEnvConfig().del("copilotHost");
+        if (host === "literal") new CopilotEnvConfig().setProfile(null, { host: GHE });
+        else new CopilotEnvConfig().delProfile(null, "host");
         const seen: string[] = [];
         // OTHER is accepted everywhere; the default (no header) is rejected everywhere; CACHED
         // per `accepts`. `auto-moved`: the generic host is blocked (403) for every identity.
@@ -488,7 +489,7 @@ test("a preferred identity the host rejects never returns through the transient 
   dir = isolateAgentHomes("copilot-host-preferred-fallback-").dir;
   // The literal 400s the cached sandbox id and 503s every other candidate: nothing is accepted, the
   // run is inconclusive, and the fallback is the built-in default, not the rejected preference.
-  new CopilotEnvConfig().set({ copilotHost: GHE });
+  new CopilotEnvConfig().setProfile(null, { host: GHE });
   setIntegrationProbeFetch((_input, init) => {
     const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
     return Promise.resolve(
@@ -537,7 +538,7 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
   ]);
   // A literal skips the HOST probe only: the identity is probed on the literal host, and nothing
   // reaches the generic host (whose 403 would leave the probe inconclusive, baking the default).
-  new CopilotEnvConfig().set({ copilotHost: GHE });
+  new CopilotEnvConfig().setProfile(null, { host: GHE });
   seen.length = 0;
   expect(await probeDirectWiring(null, "github_pat_y")).toEqual({
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
@@ -545,7 +546,7 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
   });
   expect(seen.length).toBeGreaterThan(0);
   expect(seen.every((s) => s.host === GHE)).toBe(true);
-  new CopilotEnvConfig().del("copilotHost");
+  new CopilotEnvConfig().delProfile(null, "host");
   // A replayed slot verdict was probed on the generic host too: it is re-checked the same way (the
   // process memo answers the second pass here, so no request is counted).
   expect(
@@ -603,7 +604,7 @@ test("a daemon launch resolves its identity and host as one pair: re-selected wh
   });
   expect(seen.map((s) => s.id)).toEqual([VSCODE_CHAT_INTEGRATION_ID]);
   // A literal pins every kind; the PAT's identity selection probes the literal and nothing else.
-  new CopilotEnvConfig().set({ copilotHost: GHE });
+  new CopilotEnvConfig().setProfile(null, { host: GHE });
   seen.length = 0;
   expect((await launch()).copilotHost).toBe(GHE);
   new Credential(state).store("gh-token", "github_pat_x");

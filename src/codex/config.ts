@@ -767,7 +767,7 @@ export function planCodexConfig(
       logger.warn(
         `  ! the installed codex rejects ${catalogFile}; leaving it out of the config ` +
           "(regenerate with `agent codex`, or disable with " +
-          "`agent config --set codex-model-catalog false`)",
+          "`agent config --set codex.model-catalog false`)",
       );
     }
     if (verdict === "accepted" || verdict === "unverifiable") {
@@ -931,9 +931,9 @@ export async function probeDirectWiring(
   // The one identity-then-host rule (selectDirectIdentityAndHost): a literal skips the HOST probe,
   // never the identity selection, and a host `auto` moved to re-runs the selection there.
   const { integrationId, apiBase } = await selectDirectIdentityAndHost(resolved, userAgent, {
-    pinned: config.pinnedIntegrationId(),
+    pinned: config.pinnedIntegrationId(profile),
     preferred,
-    fixedHost: config.copilotHost(),
+    fixedHost: config.copilotHost(profile),
   });
   return { directIntegrationId: integrationId, directBaseUrl: apiBase };
 }
@@ -1010,7 +1010,7 @@ function serviceTierDetail(doc: Record<string, unknown>): string {
   const tier = doc.service_tier;
   if (tier === undefined) return "not pinned";
   if (tier === COPILOT_REJECTED_SERVICE_TIER) {
-    return `"${tier}" (Copilot Direct rejects it; the opt-in codex-model-catalog stops Codex from ` +
+    return `"${tier}" (Copilot Direct rejects it; the opt-in codex.model-catalog stops Codex from ` +
       `sending any tier, else set service_tier = "default" or "flex" in config.toml)`;
   }
   if (typeof tier === "string" && COPILOT_ACCEPTED_SERVICE_TIERS.has(tier)) {

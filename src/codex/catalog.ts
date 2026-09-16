@@ -9,7 +9,7 @@
 //                                                    writes and references it, unverified
 //   one ATTEMPT per day, not one success          -> a broken upstream never retries inside every
 //                                                    300s Codex auth refresh
-//   `agent config --set codex-model-catalog true` -> opt-in; off, config.ts and
+//   `agent config --set codex.model-catalog true` -> opt-in; off, config.ts and
 //                                                    catalog_reference.ts remove it
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";

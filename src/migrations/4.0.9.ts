@@ -14,8 +14,14 @@ import { codexProviderId } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
-import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotApiConfig, ensureDict } from "../copilot_api/config.ts";
+import {
+  CODEX_IDENTITY_NAME,
+  type ConfigKey,
+  configScope,
+  CopilotEnvConfig,
+  PROFILE_SETTINGS_DEFAULT_KEY,
+} from "../copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { isValidProfileName, parseProfileName } from "../copilot_api/profile.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
@@ -141,30 +147,133 @@ export const v409CodexProfileFiles: Migration = {
   run: moveCodexProfileTablesEverywhere,
 };
 
-// --- the `codex` integration-id pin ------------------------------------------------------
+// --- the preference store's shape: scoped, grouped keys -----------------------------------
+//
+// Away from 4.0.9: preferences.json was one flat map of camelCase keys. It is now a `global` map
+// of dotted, grouped keys plus a `profiles` section (one map per profile), and the four keys that
+// follow the credential (identity, host, passthrough, static-key) live only in a profile's
+// section. A reader knows only the new shape, so this is the one place the old names exist.
+
+/** Old flat key -> new key. Every old key moves; the four profile keys land in `profiles.default`. */
+const PREFERENCE_RENAMES: ReadonlyArray<readonly [string, ConfigKey]> = [
+  ["alphaSearchCodexPriority", "proxy.alpha-search.codex-priority"],
+  ["alphaSearchModel", "proxy.alpha-search.model"],
+  ["autoStart", "daemon.auto-start"],
+  ["autoUpdate", "update.auto"],
+  ["claudeAutoModel", "proxy.claude-auto-model"],
+  ["claudeDesktop", "claude.desktop"],
+  ["claudeTokenMultiplier", "proxy.claude-token-multiplier"],
+  ["codexHome", "codex.home"],
+  ["codexHost", "codex.host"],
+  ["codexModelCatalog", "codex.model-catalog"],
+  ["copilotHost", "host"],
+  ["creditsTarget", "cost.credits-target"],
+  ["idleTimeout", "daemon.idle-timeout"],
+  ["integrationId", "identity"],
+  ["launchers", "shell.launchers"],
+  ["maxPort", "daemon.max-port"],
+  ["messageApiWebSearchModel", "proxy.message-websearch-model"],
+  ["minPort", "daemon.min-port"],
+  ["passthrough", "passthrough"],
+  ["port", "daemon.port"],
+  ["pricingUrl", "cost.pricing-url"],
+  ["proxyLogs", "daemon.logs"],
+  ["proxyVersion", "daemon.version"],
+  ["releaseCooldown", "daemon.release-cooldown"],
+  ["smallModel", "proxy.small-model"],
+  ["staticKey", "static-key"],
+  ["strictPort", "daemon.strict-port"],
+  ["updateCooldown", "update.cooldown"],
+  ["useMessagesApi", "proxy.messages-api"],
+  ["useResponsesApiContextManagement", "proxy.responses.context-management"],
+  ["useResponsesApiWebSearch", "proxy.responses.websearch"],
+  ["useResponsesApiWebSocket", "proxy.responses.websocket"],
+  ["verifyProvenance", "update.verify-provenance"],
+  ["wireMcp", "claude.wire-mcp"],
+];
+
+/** Pure over the raw document, so the fixture test can see the whole before/after. Values move
+ *  verbatim (the other 4.0.9 steps still judge them at their new place); an old key whose new key
+ *  already holds a value is dropped, since the new one is what readers use. Idempotent: a document
+ *  without old keys is returned unchanged. */
+export function regroupPreferences(doc: Record<string, unknown>): Record<string, unknown> {
+  const out = structuredClone(doc);
+  let moved = false;
+  for (const [oldKey, key] of PREFERENCE_RENAMES) {
+    if (!Object.hasOwn(out, oldKey)) continue;
+    const value = out[oldKey];
+    delete out[oldKey];
+    moved = true;
+    const map = configScope(key) === "profile"
+      ? ensureDict(ensureDict(out, "profiles"), PROFILE_SETTINGS_DEFAULT_KEY)
+      : ensureDict(out, "global");
+    if (!Object.hasOwn(map, key)) map[key] = value;
+  }
+  return moved ? out : doc;
+}
+
+/** Exported for the migration test. */
+export function regroupPreferenceStore(): void {
+  const paths = new CopilotApiPaths();
+  const store = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock);
+  const before = store.loadStrict();
+  const after = regroupPreferences(before);
+  if (after === before) return;
+  store.update((d) => {
+    const next = regroupPreferences(d);
+    for (const key of Object.keys(d)) delete d[key];
+    Object.assign(d, next);
+  });
+  consola.info(
+    "  preferences.json: keys grouped (daemon.*, proxy.*, codex.*, claude.*, shell.*, update.*, " +
+      "cost.*) and identity/host/passthrough/static-key moved into the default profile's section",
+  );
+}
+
+/** A `layout` step: every other step reads preferences.json through the new reader, which knows
+ *  only the grouped shape, so the regrouping runs ahead of them all (after the 4.0.2 store rename,
+ *  by version order among the layout steps). */
+export const v409PreferenceGroups: Migration = {
+  version: "4.0.9",
+  layout: true,
+  description:
+    "group preferences.json by dotted key and move the profile keys into profiles.default",
+  run: regroupPreferenceStore,
+};
+
+/** The default profile's RAW section, since the typed reader already folds an invalid value to
+ *  unset; null when there is none. */
+function rawDefaultProfileSection(): Record<string, unknown> | null {
+  const paths = new CopilotApiPaths();
+  const doc = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock).loadStrict();
+  const profiles = doc.profiles;
+  if (!isRecord(profiles)) return null;
+  const section = profiles[PROFILE_SETTINGS_DEFAULT_KEY];
+  return isRecord(section) ? section : null;
+}
+
+// --- the `codex` identity pin --------------------------------------------------------------
 //
 // Away from 4.0.9: `agent config --set integration-id codex` was accepted (the domain was a bare
 // regex). The domain now refuses it (Direct's default identity sends no header, so nothing can pin
 // it) and the reader folds the stored value to unset, but the key stays in preferences.json and
-// the agent configs may still bake `Copilot-Integration-Id: codex` until the next rewire.
+// the agent configs may still bake `Copilot-Integration-Id: codex` until the next rewire. Runs
+// after the regrouping, so the pin is judged at its new place, the default profile's `identity`.
 
-/** The RAW stored value, since the typed reader already folds `codex` to unset. Only the key goes;
- *  the agent configs are the wiring pass's to rebake. Exported for the migration test. */
+/** Only the key goes; the agent configs are the wiring pass's to rebake. Exported for the migration test. */
 export function dropCodexIdentityPin(): void {
-  const paths = new CopilotApiPaths();
-  const stored = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock).loadStrict()
-    .integrationId;
+  const stored = rawDefaultProfileSection()?.identity;
   if (typeof stored !== "string" || stored.trim().toLowerCase() !== CODEX_IDENTITY_NAME) return;
-  new CopilotEnvConfig().del("integrationId");
+  new CopilotEnvConfig().delProfile(null, "identity");
   consola.info(
-    `  dropped the integration-id pin \`${stored}\` (Direct's default identity cannot be pinned; ` +
+    `  dropped the identity pin \`${stored}\` (Direct's default identity cannot be pinned; ` +
       "the identity now reads as auto, and Direct wiring rebakes at the next `agent init`)",
   );
 }
 
 export const v409IntegrationIdPin: Migration = {
   version: "4.0.9",
-  description: "drop a stored integration-id pin of `codex` (Direct's default, no longer pinnable)",
+  description: "drop a stored identity pin of `codex` (Direct's default, no longer pinnable)",
   run: dropCodexIdentityPin,
 };
 
@@ -173,23 +282,21 @@ export const v409IntegrationIdPin: Migration = {
 // Away from 4.0.9: `static-key` was a boolean (bake the value into both agent configs, or into
 // neither). It is now the scope `none | claude | codex | all`, and a stored boolean fails that
 // domain and reads as `none`: an install that baked both would go back to the resolver command at
-// its next wiring without being told.
+// its next wiring without being told. Judged at the key's new place, the default profile's section.
 
-/** The RAW stored value, since the typed reader already folds a boolean to unset. `true` becomes
- *  `all` (what the boolean baked); `false` was the default and goes. Exported for the migration test. */
+/** `true` becomes `all` (what the boolean baked); `false` was the default and goes. Exported for
+ *  the migration test. */
 export function scopeStaticKeyBoolean(): void {
-  const paths = new CopilotApiPaths();
-  const stored = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock).loadStrict()
-    .staticKey;
+  const stored = rawDefaultProfileSection()?.["static-key"];
   if (typeof stored !== "boolean") return;
   const config = new CopilotEnvConfig();
   if (stored) {
-    config.set({ staticKey: "all" });
+    config.setProfile(null, { "static-key": "all" });
     consola.info(
       "  static-key `true` is now the scope `all` (both agent configs keep the baked value)",
     );
   } else {
-    config.del("staticKey");
+    config.delProfile(null, "static-key");
     consola.info("  dropped static-key `false` (the default, now spelled `none`)");
   }
 }

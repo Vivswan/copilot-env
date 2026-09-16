@@ -106,7 +106,7 @@ export interface ProvenanceStatement {
 export function cannotVerifyMessage(tag: string, cause: string): string {
   return `cannot verify the build provenance of ${tag}: ${cause}. ` +
     "To update without provenance verification, re-run with --no-verify, or persist the " +
-    "opt-out with 'agent config --set verify-provenance false'.";
+    "opt-out with 'agent config --set update.verify-provenance false'.";
 }
 
 /** The mismatch wording: the check ran and the download is not what our release

@@ -37,7 +37,7 @@ test("idleCheck: recent observed inference keeps a long-started daemon alive", (
   tmpHome();
   // Managed lifecycle ON, started long ago, tiny timeout -- WOULD exit if idle. A fresh
   // in-memory inference mark (what the observer records on a real model call) must hold it up.
-  new CopilotEnvConfig().set({ autoStart: true });
+  new CopilotEnvConfig().set({ "daemon.auto-start": true });
   writeRunState({ pid: process.pid, port: 4141 });
   markInference(Date.now());
   // Stub the process-exit primitive the shared shutdown path calls, so a wrong
@@ -56,7 +56,7 @@ test("idleCheck: recent observed inference keeps a long-started daemon alive", (
 
 test("idleCheck: with no activity past the window, clears run state and exits", () => {
   tmpHome();
-  new CopilotEnvConfig().set({ autoStart: true });
+  new CopilotEnvConfig().set({ "daemon.auto-start": true });
   const state = new CopilotEnvRunState();
   state.set({ pid: process.pid, port: 4141, lastEnsureAt: 1 });
   const realExit = Deno.exit;
@@ -82,7 +82,7 @@ test("idleCheck: with no activity past the window, clears run state and exits", 
 
 test("idleCheck: the spawn's keep-port value preserves a profile reservation across auto-stop", () => {
   tmpHome();
-  new CopilotEnvConfig().set({ autoStart: true });
+  new CopilotEnvConfig().set({ "daemon.auto-start": true });
   const state = new CopilotEnvRunState();
   state.set({ pid: process.pid, port: 4242, lastEnsureAt: 1 });
   // A named profile's daemon is spawned with keep-port "1": auto-stop clears the pid, but the
@@ -106,7 +106,7 @@ test("idleCheck: the spawn's keep-port value preserves a profile reservation acr
 test("idleTimeoutMs: default is 1 hour; the env knob overrides in whole seconds", () => {
   tmpHome();
   delete process.env[IDLE_TIMEOUT_ENV];
-  expect(idleTimeoutMs()).toBe(configDefaultNumber("idle-timeout") * 1000);
+  expect(idleTimeoutMs()).toBe(configDefaultNumber("daemon.idle-timeout") * 1000);
   expect(idleTimeoutMs()).toBe(3600 * 1000);
 
   process.env[IDLE_TIMEOUT_ENV] = "5";
@@ -116,7 +116,7 @@ test("idleTimeoutMs: default is 1 hour; the env knob overrides in whole seconds"
 test("idleTimeoutMs: precedence env > config > default", () => {
   tmpHome();
   delete process.env[IDLE_TIMEOUT_ENV];
-  new CopilotEnvConfig().set({ idleTimeout: 90 });
+  new CopilotEnvConfig().set({ "daemon.idle-timeout": 90 });
   expect(idleTimeoutMs()).toBe(90_000);
   process.env[IDLE_TIMEOUT_ENV] = "7";
   expect(idleTimeoutMs()).toBe(7000);
@@ -134,7 +134,7 @@ test("idleTimeoutMs: 0 disables (<=0 means no watchdog); a malformed value falls
 
   // Non-numeric env -> falls through to config/default (a bad env must not crash the watchdog).
   process.env[IDLE_TIMEOUT_ENV] = "notanumber";
-  expect(idleTimeoutMs()).toBe(configDefaultNumber("idle-timeout") * 1000);
+  expect(idleTimeoutMs()).toBe(configDefaultNumber("daemon.idle-timeout") * 1000);
 });
 
 test("defaultCheckIntervalMs: a quarter of the window, clamped to [1s, 60s]", () => {

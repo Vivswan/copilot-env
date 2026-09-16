@@ -78,8 +78,8 @@ export function resolveCreditsTarget(
     ? { raw: env[CREDITS_TARGET_ENV] as string, source: CREDITS_TARGET_ENV }
     : null;
   if (explicit === null) return config.creditsTarget();
-  const parse = configKeyDef("credits-target")?.parse;
-  if (parse === undefined) throw new Error("config key 'credits-target' is not registered");
+  const parse = configKeyDef("cost.credits-target")?.parse;
+  if (parse === undefined) throw new Error("config key 'cost.credits-target' is not registered");
   try {
     return parse(explicit.raw) as number;
   } catch (e) {

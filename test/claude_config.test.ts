@@ -471,7 +471,7 @@ test("direct helper invokes `agent auth --get` and never bakes a token, still cl
 
 test("runClaude --direct with static-key covering Claude fails closed without a credential, and bakes a stored one", async () => {
   const home = tmpHome();
-  new CopilotEnvConfig().set({ staticKey: "claude" });
+  new CopilotEnvConfig().setProfile(null, { "static-key": "claude" });
 
   // Nothing resolves: the write is refused outright (never a silent fall back to the command shape).
   await expect(runClaude({ kind: "configure", mode: "direct" })).rejects.toThrow(
@@ -590,7 +590,7 @@ test("wire-mcp false: a direct write wires nothing and clears prior managed arti
   configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
 
-  new CopilotEnvConfig().set({ wireMcp: false });
+  new CopilotEnvConfig().set({ "claude.wire-mcp": false });
   configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
   const doc = readSettings(home);
   expect(doc.permissions).toBeUndefined();
@@ -855,7 +855,7 @@ test("runMcp --remove takes back the pair and stores a durable wire-mcp opt-out"
   await runMcp({ remove: true });
   expect(denyOf(readSettings(home))).toBeUndefined();
   expect(readClaudeJson().mcpServers).toBeUndefined();
-  expect(new CopilotEnvConfig().read().wireMcp).toBe(false);
+  expect(new CopilotEnvConfig().read().global["claude.wire-mcp"]).toBe(false);
 
   // A later direct write respects the stored opt-out.
   configureClaudeConfig(home, { mode: "direct", credential: COMMAND });

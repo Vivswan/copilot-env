@@ -2,13 +2,22 @@
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { recordDefaultModeFromWiring } from "../src/agents/configure_defaults.ts";
-import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
+import { parse } from "smol-toml";
+import {
+  configureDefaultAgents,
+  recordDefaultModeFromWiring,
+} from "../src/agents/configure_defaults.ts";
+import { AUTH_TOKEN_ENV, directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
+import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
+import { CopilotApiConfig } from "../src/copilot_api/config.ts";
+import { CopilotEnvConfig, type StaticKeyScope } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { proxyTokenCommand } from "../src/utils/root.ts";
 import { runCli } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
+  isolateAgentHomes,
   isolateProxyHome,
   writeClaudeSettings,
   writeCodexConfigToml,
@@ -142,6 +151,64 @@ test("`agent claude --proxy` lands the pair on agreement and records it", () => 
   const run = runCli(["claude", "--proxy"], { env: childCliEnv(codexHome, join(dir, ".claude")) });
   expect(run.exitCode).toBe(0);
   expect(recordedMode()).toBe("proxy");
+});
+
+// --- the `static-key` scope: WHICH agent's config carries the value -----------------------------
+
+type Shape = "static" | "command";
+const SCOPE_CASES: { scope: StaticKeyScope; claude: Shape; codex: Shape }[] = [
+  { scope: "none", claude: "command", codex: "command" },
+  { scope: "claude", claude: "static", codex: "command" },
+  { scope: "codex", claude: "command", codex: "static" },
+  { scope: "all", claude: "static", codex: "static" },
+];
+
+test("static-key scopes the baked value to the named agent; the other keeps its resolver command", async () => {
+  // A proxy wire needs no probe: the daemon's own API key is what a static shape bakes.
+  dir = removeDir(dir);
+  const homes = isolateAgentHomes("copilot-static-scope-", { mkdirs: true });
+  dir = homes.dir;
+  storeCredential();
+  const apiKey = CopilotApiConfig.forProfile(null).ensureApiKey();
+  const record = (v: unknown) => v as Record<string, unknown>;
+  for (const c of SCOPE_CASES) {
+    new CopilotEnvConfig().set({ staticKey: c.scope });
+    const out = await configureDefaultAgents(
+      { codex: "proxy", claude: "proxy", ghToken: "ghu_test" },
+      NOOP_CATALOG_DEPS,
+    );
+    const settings = record(
+      JSON.parse(readFileSync(join(homes.claudeHome, "settings.json"), "utf8")),
+    );
+    const provider = record(
+      record(
+        record(parse(readFileSync(join(homes.codexHome, "config.toml"), "utf8")).model_providers)[
+          "copilot-env"
+        ],
+      ),
+    );
+    expect({
+      scope: c.scope,
+      failures: out.failures,
+      claude: {
+        token: record(settings.env)[AUTH_TOKEN_ENV],
+        apiKeyHelper: settings.apiKeyHelper,
+      },
+      codex: {
+        authorization: record(provider.http_headers ?? {})["Authorization"],
+        authCommand: record(provider.auth ?? {}).command,
+      },
+    }).toEqual({
+      scope: c.scope,
+      failures: [],
+      claude: c.claude === "static"
+        ? { token: apiKey, apiKeyHelper: undefined }
+        : { token: undefined, apiKeyHelper: proxyHelperCommand() },
+      codex: c.codex === "static"
+        ? { authorization: `Bearer ${apiKey}`, authCommand: undefined }
+        : { authorization: undefined, authCommand: proxyTokenCommand().command },
+    });
+  }
 });
 
 // The gap this pins: `agent claude` on a fresh machine used to write proxy wiring that could

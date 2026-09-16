@@ -146,8 +146,9 @@ export function inspectClaudeDesktopWiring(
     return { ...base, kind: "unjudged", reason: resolution.reason };
   }
   const rootHome = resolveRootHome();
-  // Account-wide, so read once for the whole pass: a rewire of any target would bake this shape.
-  const credential: CredentialWiring["kind"] = new CopilotEnvConfig().staticKeyEnabled()
+  // Desktop follows Claude's scope, read once for the whole pass: a rewire of any target would
+  // bake this shape.
+  const credential: CredentialWiring["kind"] = new CopilotEnvConfig().staticKeyFor("claude")
     ? "static"
     : "command";
   status.entries = resolution.targets.map((t) => ({
@@ -244,11 +245,11 @@ function expectedCredential(
 ): DesktopCredential | { stale: string } {
   if (credential === "static") {
     if (doc["inferenceCredentialHelper"] !== undefined) {
-      return { stale: "a credential helper is still recorded, but static-key is on" };
+      return { stale: "a credential helper is still recorded, but static-key covers Claude" };
     }
     const key = doc["inferenceGatewayApiKey"];
     if (doc["inferenceCredentialKind"] !== "static" || typeof key !== "string" || key === "") {
-      return { stale: "no static key recorded, but static-key is on" };
+      return { stale: "no static key recorded, but static-key covers Claude" };
     }
     const leftover = presentDesktopHelperScripts(rootHome).find(
       (p) => desktopHelperScriptWiring(basename(p))?.profile === target.profile,

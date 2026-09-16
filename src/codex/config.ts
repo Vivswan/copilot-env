@@ -1,7 +1,7 @@
 // Codex config writer for config.toml (the Claude twin is src/claude/config.ts): Copilot Direct or
 // the local proxy. By default no credential is baked (`auth.command` resolves it at fetch time);
-// with `static-key` on the value rides as a static `http_headers.Authorization` and no `auth`
-// table is written.
+// with `static-key` covering Codex the value rides as a static `http_headers.Authorization` and
+// no `auth` table is written.
 import * as fs from "node:fs";
 import { parse } from "smol-toml";
 import {

@@ -460,13 +460,13 @@ test("direct helper invokes `agent auth --get` and never bakes a token, still cl
   expect(helperCommand).not.toContain("gh auth token");
 });
 
-test("runClaude --direct with static-key on fails closed without a credential, and bakes a stored one", async () => {
+test("runClaude --direct with static-key covering Claude fails closed without a credential, and bakes a stored one", async () => {
   const home = tmpHome();
-  new CopilotEnvConfig().set({ staticKey: true });
+  new CopilotEnvConfig().set({ staticKey: "claude" });
 
   // Nothing resolves: the write is refused outright (never a silent fall back to the command shape).
   await expect(runClaude({ kind: "configure", mode: "direct" })).rejects.toThrow(
-    /static-key is on but no credential resolves[\s\S]*agent auth/,
+    /static-key is claude but no credential resolves[\s\S]*agent auth/,
   );
   expect(existsSync(join(home, "settings.json"))).toBe(false);
 

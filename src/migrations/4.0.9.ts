@@ -163,3 +163,35 @@ export const v409IntegrationIdPin: Migration = {
   description: "drop a stored integration-id pin of `codex` (Direct's default, no longer pinnable)",
   run: dropCodexIdentityPin,
 };
+
+// --- the `static-key` boolean --------------------------------------------------------------
+//
+// Away from 4.0.9: `static-key` was a boolean (bake the value into both agent configs, or into
+// neither). It is now the scope `none | claude | codex | all`, and a stored boolean fails that
+// domain and reads as `none`: an install that baked both would go back to the resolver command at
+// its next wiring without being told.
+
+/** The RAW stored value, since the typed reader already folds a boolean to unset. `true` becomes
+ *  `all` (what the boolean baked); `false` was the default and goes. Exported for the migration test. */
+export function scopeStaticKeyBoolean(): void {
+  const paths = new CopilotApiPaths();
+  const stored = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock).loadStrict()
+    .staticKey;
+  if (typeof stored !== "boolean") return;
+  const config = new CopilotEnvConfig();
+  if (stored) {
+    config.set({ staticKey: "all" });
+    consola.info(
+      "  static-key `true` is now the scope `all` (both agent configs keep the baked value)",
+    );
+  } else {
+    config.del("staticKey");
+    consola.info("  dropped static-key `false` (the default, now spelled `none`)");
+  }
+}
+
+export const v409StaticKeyScope: Migration = {
+  version: "4.0.9",
+  description: "turn the static-key boolean into its scope (`true` -> `all`, `false` -> unset)",
+  run: scopeStaticKeyBoolean,
+};

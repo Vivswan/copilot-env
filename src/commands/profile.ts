@@ -296,7 +296,7 @@ async function runSettingsFor(name: ProfileName): Promise<void> {
   if (slot.kind === "partial") {
     throw new Error(partialSlotGap(name, slot));
   }
-  const credential = resolveCredentialWiring(slot.mode, name);
+  const credential = resolveCredentialWiring("claude", slot.mode, name);
   const write: ManagedWrite = slot.mode === "direct"
     ? {
       mode: "direct",

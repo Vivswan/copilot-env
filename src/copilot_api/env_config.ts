@@ -7,6 +7,13 @@ import { SECONDS_PER_DAY } from "../utils/time.ts";
 
 export type PassthroughPref = "auto" | "on" | "off";
 
+/** Which agents' configs carry the credential VALUE (`static-key`); the rest name the resolver command. */
+export const STATIC_KEY_SCOPES = ["none", "claude", "codex", "all"] as const;
+export type StaticKeyScope = (typeof STATIC_KEY_SCOPES)[number];
+/** An agent a scope can single out; the same ids as src/agents/configure.ts's ManagedAgentId. */
+export type StaticKeyAgent = Exclude<StaticKeyScope, "none" | "all">;
+const STATIC_KEY_DEFAULT: StaticKeyScope = "none";
+
 /** Each key's meaning is its registry entry's `describe` below; an absent or ill-typed field reads back
  *  as `undefined`, which every read site treats as "apply the default". */
 export interface CopilotEnvConfigData {
@@ -41,7 +48,7 @@ export interface CopilotEnvConfigData {
   codexHost?: boolean;
   codexModelCatalog?: boolean;
   wireMcp?: boolean;
-  staticKey?: boolean;
+  staticKey?: StaticKeyScope;
 }
 
 /** null and undefined both delete the key. Exported for the settings-bundle import, which rebuilds the whole store. */
@@ -265,19 +272,24 @@ function positiveDecimalDomain(max: number): ConfigDomain<number> {
   );
 }
 
-const PASSTHROUGH_DOMAIN: ConfigDomain<PassthroughPref> = domain(
-  v.picklist(PASSTHROUGH_VALUES),
-  // Membership is checked in the coercion so the rejection echoes the ORIGINAL input, not the
-  // lowercased form the schema would see.
-  (raw) => {
-    const t = raw.trim().toLowerCase();
-    if (!PASSTHROUGH_VALUES.some((a) => a === t)) {
-      throw new Error(`expected one of ${PASSTHROUGH_VALUES.join("|")}, got '${raw}'`);
-    }
-    return t;
-  },
-  PASSTHROUGH_VALUES.join("|"),
-);
+/** A closed word list. Membership is checked in the coercion so the rejection echoes the ORIGINAL
+ *  input, not the lowercased form the schema would see. */
+function picklistDomain<const T extends string>(values: readonly T[]): ConfigDomain<T> {
+  return domain(
+    v.picklist(values),
+    (raw) => {
+      const t = raw.trim().toLowerCase();
+      if (!values.some((a) => a === t)) {
+        throw new Error(`expected one of ${values.join("|")}, got '${raw}'`);
+      }
+      return t;
+    },
+    values.join("|"),
+  );
+}
+
+const PASSTHROUGH_DOMAIN = picklistDomain(PASSTHROUGH_VALUES);
+const STATIC_KEY_DOMAIN = picklistDomain(STATIC_KEY_SCOPES);
 
 function nonEmptyDomain(type: string): ConfigDomain<string> {
   return domain(
@@ -617,9 +629,9 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "static-key",
     key: "staticKey",
     section: "Credential",
-    describe: "Write the credential value itself into the agent configs, not a resolver command",
-    ...BOOL_DOMAIN,
-    defaultValue: false,
+    describe: "Whose config carries the credential value itself, not a resolver command",
+    ...STATIC_KEY_DOMAIN,
+    defaultValue: STATIC_KEY_DEFAULT,
     applyHint:
       "Applies at the next `agent init` / `agent claude` / `agent codex` / `agent profile` wiring. " +
       "A baked value does not follow a credential change: re-run the wiring after `agent auth`.",
@@ -838,10 +850,16 @@ export class CopilotEnvConfig {
     return this.read().launchers ?? configDefaultBoolean("launchers");
   }
 
-  /** On: every writer bakes the credential value (src/agents/configure.ts resolves it once); the
-   *  agents then run no copilot-env process at request time. */
-  staticKeyEnabled(): boolean {
-    return this.read().staticKey ?? configDefaultBoolean("static-key");
+  /** The agents in scope get the credential value baked by their writer (src/agents/configure.ts
+   *  resolves it once per write) and run no copilot-env process at request time. */
+  staticKeyScope(): StaticKeyScope {
+    return this.read().staticKey ?? STATIC_KEY_DEFAULT;
+  }
+
+  /** The per-agent question every writer asks, so no call site compares scope strings. */
+  staticKeyFor(agent: StaticKeyAgent): boolean {
+    const scope = this.staticKeyScope();
+    return scope === "all" || scope === agent;
   }
 
   wireMcpEnabled(): boolean {

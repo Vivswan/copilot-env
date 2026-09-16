@@ -2021,7 +2021,7 @@ test("the inspector judges against the static-key preference, never the key's va
   const verdict = () => inspected(inspectClaudeDesktopWiring(targets)).entries[0]?.verdict;
   await wireClaudeDesktopEntry(staticWire());
   const configPath = firstEntryPath(library);
-  new CopilotEnvConfig().set({ staticKey: true });
+  new CopilotEnvConfig().set({ staticKey: "claude" });
   expect(verdict()).toEqual({ kind: "wired", path: configPath });
   // A helper script left behind for this wiring is drift the static rewire removes.
   const helper = writeDesktopHelperScript("direct", null);
@@ -2038,13 +2038,16 @@ test("the inspector judges against the static-key preference, never the key's va
     path: configPath,
     reason: `credential helper undefined, expected ${helper}`,
   });
-  // The command shape is wired with the key off, and stale for the mirror reason with it on.
+  // The command shape is wired while Claude is out of scope (Desktop follows Claude's scope, so a
+  // Codex-only scope changes nothing here), and stale for the mirror reason once it is in.
   await wireClaudeDesktopEntry(directWire());
   expect(verdict()).toEqual({ kind: "wired", path: configPath });
-  new CopilotEnvConfig().set({ staticKey: true });
+  new CopilotEnvConfig().set({ staticKey: "codex" });
+  expect(verdict()).toEqual({ kind: "wired", path: configPath });
+  new CopilotEnvConfig().set({ staticKey: "all" });
   expect(verdict()).toEqual({
     kind: "stale",
     path: configPath,
-    reason: "a credential helper is still recorded, but static-key is on",
+    reason: "a credential helper is still recorded, but static-key covers Claude",
   });
 });

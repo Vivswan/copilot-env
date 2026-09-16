@@ -129,9 +129,14 @@ export interface ProfileSlotData extends ProfileCredentialData {
    * The probed direct-mode IntegrationIdentity NAME (integration_identity.ts), null when never probed.
    * The name, not the header value, distinguishes "probed, the default won" from "unknown", so the
    * launcher hot path replays instead of re-probing. Derived from the credential: setCredential clears it.
+   * Off disk it reaches code two ways only: replayableIdentity (the one bake/predict/rank rule) and
+   * slotIdentityForDisplay (diagnostics and the export bundle). No read view carries it.
    */
   integrationIdentity: string | null;
 }
+
+/** The slot fields a read view projects: the cached identity beside them on disk stays out. */
+type ProfileSlotView = Omit<ProfileSlotData, "integrationIdentity">;
 
 /**
  * "complete" is the atomic unit `agent profile` commits and the only kind the launch/wiring paths act
@@ -139,35 +144,15 @@ export interface ProfileSlotData extends ProfileCredentialData {
  * de-authed half, a never-created name); consumers render its gaps for repair via partialSlotGap.
  */
 export type ProfileSlot =
-  | {
-    kind: "complete";
-    credential: ProvisionedCredential;
-    mode: ProfileMode;
-    integrationIdentity: string | null;
-  }
-  | {
-    kind: "partial";
-    credential: StoredCredential;
-    mode: ProfileMode | null;
-    integrationIdentity: string | null;
-  };
+  | { kind: "complete"; credential: ProvisionedCredential; mode: ProfileMode }
+  | { kind: "partial"; credential: StoredCredential; mode: ProfileMode | null };
 
-function parseProfileSlot(data: ProfileSlotData): ProfileSlot {
+function parseProfileSlot(data: ProfileSlotView): ProfileSlot {
   const credential = parseStoredCredential(data.githubToken, data.authProvider, data.ghUser);
   if (credential.kind !== "none" && data.mode !== null) {
-    return {
-      kind: "complete",
-      credential,
-      mode: data.mode,
-      integrationIdentity: data.integrationIdentity,
-    };
+    return { kind: "complete", credential, mode: data.mode };
   }
-  return {
-    kind: "partial",
-    credential,
-    mode: data.mode,
-    integrationIdentity: data.integrationIdentity,
-  };
+  return { kind: "partial", credential, mode: data.mode };
 }
 
 /** The ONE spelling of a partial slot's repair line, shared by `agent profile` and `agent launch`.
@@ -189,7 +174,7 @@ export interface CopilotEnvStateData {
   githubToken: string | null;
   authProvider: AuthProvider | null;
   ghUser: string | null;
-  profiles: Record<string, ProfileSlotData>;
+  profiles: Record<string, ProfileSlotView>;
   /** Epoch ms of the last catalog generation ATTEMPT, 0 if never (src/codex/catalog.ts). */
   codexCatalogLastAttemptMs: number;
   codexCatalogCodexVersion: string | null;
@@ -382,12 +367,16 @@ export class CopilotEnvState {
   read(): CopilotEnvStateData {
     const data = this.rawRead();
     const { [DEFAULT_PROFILE_KEY]: slot = emptyProfile(), ...named } = data.profiles;
+    const profiles: Record<string, ProfileSlotView> = {};
+    for (const [name, { integrationIdentity: _identity, ...view }] of Object.entries(named)) {
+      profiles[name] = view;
+    }
     return {
       ...data,
       githubToken: slot.githubToken,
       authProvider: slot.authProvider,
       ghUser: slot.ghUser,
-      profiles: named,
+      profiles,
     };
   }
 
@@ -431,6 +420,15 @@ export class CopilotEnvState {
     // Own-property check: a name like "constructor" would otherwise resolve up the prototype chain.
     const slot = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
     return { exists: slot !== undefined, slot: parseProfileSlot(slot ?? emptyProfile()) };
+  }
+
+  /**
+   * The slot's cached identity NAME for diagnostics (health facts) and the export bundle, schema-
+   * validated like every read. NEVER an input to what gets baked, predicted, or ranked: those take
+   * replayableIdentity's answer, the only reader that turns the stored name into a header.
+   */
+  slotIdentityForDisplay(profile: Profile): string | null {
+    return this.rawRead().profiles[slotKey(profile)]?.integrationIdentity ?? null;
   }
 
   /** The keys are a trust boundary (user-editable file): an invalid name is skipped so it can never
@@ -610,11 +608,12 @@ export class CopilotEnvState {
   /** Lands only while the slot still holds `forCredential`, compared inside the same update, so a probe
    *  result outlives no rotation that raced it under update()'s best-effort lock; past its bounded wait
    *  both writers proceed unlocked. Never creates a slot: a deletion race just loses the cache.
-   *  `copilotHost`: the resolved host with the identity name it was resolved under and how; null
-   *  clears the pair, undefined leaves it. */
+   *  `integrationIdentity`: the verdict to record; undefined keeps what the slot holds (a pin is
+   *  configuration, never written as the verdict). `copilotHost`: the resolved host with the identity
+   *  name it was resolved under and how; null clears the pair, undefined leaves it. */
   setProfileIntegrationIdentity(
     profile: Profile,
-    integrationIdentity: string | null,
+    integrationIdentity: string | undefined,
     forCredential: ProvisionedCredential,
     copilotHost?: CachedCopilotHost | null,
   ): void {
@@ -631,10 +630,13 @@ export class CopilotEnvState {
       ) {
         return;
       }
-      if (integrationIdentity === null || integrationIdentity.trim() === "") {
+      // A kept name is re-written as the schema reads it (trimmed; an invalid one dropped), so the
+      // pinned re-wire lands the same bytes recording the held verdict would.
+      const next = integrationIdentity ?? v.parse(PROFILE_SCHEMA, raw).integrationIdentity;
+      if (next === null || next.trim() === "") {
         delete raw.integrationIdentity;
       } else {
-        raw.integrationIdentity = integrationIdentity.trim();
+        raw.integrationIdentity = next.trim();
       }
       if (copilotHost === null) {
         delete raw.copilotHost;
@@ -725,7 +727,7 @@ export function replayableIdentity(
 ): ReplayableIdentity {
   const state = new CopilotEnvState();
   const cache = state.readProfileCopilotHostCache(profile, pin, literal);
-  const inForce = pin ?? state.readProfileSlot(profile).integrationIdentity;
+  const inForce = pin ?? state.slotIdentityForDisplay(profile);
   if (inForce === null) return { kind: "probe" };
   // The slot stores the identity NAME: the default identity's name means "probed, no header won".
   const directIntegrationId = inForce === CODEX_IDENTITY_NAME ? null : inForce;

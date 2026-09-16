@@ -234,7 +234,7 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
     directBaseUrl: GHE,
   });
-  expect(state.readProfileSlot(null).integrationIdentity).toBe(COPILOT_CLI_INTEGRATION_ID);
+  expect(state.slotIdentityForDisplay(null)).toBe(COPILOT_CLI_INTEGRATION_ID);
   expect(state.readProfileCopilotHost(null, null, GHE)).toBe(GHE);
   expect(state.readProfileCopilotHost(null, null, null)).toBeNull();
   expect(seen.length).toBeGreaterThan(0);
@@ -269,7 +269,7 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
   // The pin is configuration: the slot keeps its own verdict, and the pair now cached is the pin's
   // (readable under it, not under the verdict). `--identity auto` then finds a STALE pair and
   // re-probes both identity and host (the memo answers them here, so no request is counted).
-  expect(state.readProfileSlot(null).integrationIdentity).toBe(COPILOT_CLI_INTEGRATION_ID);
+  expect(state.slotIdentityForDisplay(null)).toBe(COPILOT_CLI_INTEGRATION_ID);
   expect(state.readProfileCopilotHost(null, "copilot-developer-sandbox", null)).toBe(ENTERPRISE);
   expect(state.readProfileCopilotHost(null, null, null)).toBeNull();
   new CopilotEnvConfig().set({ integrationId: "auto" });
@@ -283,7 +283,7 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
 
   // A credential change clears both halves.
   new Credential(state).store("gh-token", "ghp_rotated");
-  expect(state.readProfileSlot(null).integrationIdentity).toBeNull();
+  expect(state.slotIdentityForDisplay(null)).toBeNull();
   expect(state.readProfileCopilotHost(null, null, null)).toBeNull();
 
   // A fresh slot under a pin caches the host resolved under the pin WITHOUT writing the pin as its
@@ -295,7 +295,7 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
     directBaseUrl: DEFAULT_COPILOT_API_BASE,
   });
   expect(seen).toEqual([{ host: DEFAULT_COPILOT_API_BASE, id: COPILOT_CLI_INTEGRATION_ID }]);
-  expect(state.readProfileSlot(null).integrationIdentity).toBeNull();
+  expect(state.slotIdentityForDisplay(null)).toBeNull();
   expect(state.readProfileCopilotHost(null, COPILOT_CLI_INTEGRATION_ID, null)).toBe(
     DEFAULT_COPILOT_API_BASE,
   );
@@ -483,7 +483,7 @@ test("the replay rule, one table: a cached identity is baked as a valid pair or 
           host: result.directBaseUrl,
           probed: seen.length > 0,
           slot: {
-            identity: state.readProfileSlot(null).integrationIdentity,
+            identity: state.slotIdentityForDisplay(null),
             pair: state.readProfileCopilotHostCache(null, null, literal).kind,
           },
         });

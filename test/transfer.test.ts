@@ -462,7 +462,7 @@ test("a redacted bundle over resolvable LOCAL credentials wires normally (result
   expect(new Credential(undefined, WORK).resolve()).toBe("ghp_local_work");
   const slot = new CopilotEnvState().readProfileSlot(WORK);
   expect(slot.mode).toBe("proxy");
-  expect(slot.integrationIdentity).toBeNull();
+  expect(new CopilotEnvState().slotIdentityForDisplay(WORK)).toBeNull();
   expect(JSON.stringify(new CopilotEnvState().read())).not.toContain(REDACTED_TOKEN);
 });
 
@@ -571,7 +571,7 @@ test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the id
     kind: "gh-cli",
     ghUser: null,
   });
-  expect(new CopilotEnvState().readProfileSlot(WORK).integrationIdentity).toBe("codex");
+  expect(new CopilotEnvState().slotIdentityForDisplay(WORK)).toBe("codex");
   expect(new CopilotEnvState().profileNames()).toEqual([WORK]); // alt never landed
 });
 
@@ -658,7 +658,7 @@ test("a direct profile with a persisted identity wires with that identity FIRST:
   expect(settings.env.ANTHROPIC_CUSTOM_HEADERS).toContain(
     "Copilot-Integration-Id: copilot-developer-cli",
   );
-  expect(new CopilotEnvState().readProfileSlot(WORK).integrationIdentity).toBe(
+  expect(new CopilotEnvState().slotIdentityForDisplay(WORK)).toBe(
     "copilot-developer-cli",
   );
 });
@@ -696,7 +696,6 @@ test("a profile wiring failure lands in failures and the command exits non-zero"
     kind: "complete",
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "proxy",
-    integrationIdentity: null,
   });
 });
 

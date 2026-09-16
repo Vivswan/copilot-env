@@ -16,9 +16,8 @@ import {
   type ProbeFetch,
   probeIntegrationIdentity,
   resetIntegrationIdentityCache,
-  resolveCopilotHost,
-  resolveDirectIntegrationId,
-  resolvePassthroughIntegrationId,
+  selectDirectIdentityAndHost,
+  selectPassthroughIdentityAndHost,
   setIntegrationProbeFetch,
   surveyIntegrationIdentities,
   VSCODE_CHAT_INTEGRATION_ID,
@@ -193,16 +192,21 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
   expect(
     seen.filter((s) => s.host === new URL(DEFAULT_COPILOT_API_BASE).host).map((s) => s.headers),
   ).toEqual(SURVEY_ROWS.map((c) => lowercaseKeys(c.headers)));
-  // Fed the same stub, each mode's resolver lands on its column's first accepted candidate: Direct's
+  // Fed the same stub, each mode's selector lands on its column's first accepted candidate: Direct's
   // default (no header, 3 models) and the daemon's CLI id (vscode-chat is rejected); a non-PAT
-  // credential is never probed and keeps the daemon's default.
-  expect(await resolveDirectIntegrationId("ghp_x", "codex_exec/1", { fetchImpl })).toBeNull();
-  expect(await resolvePassthroughIntegrationId("ghp_x", { fetchImpl })).toBe(
-    COPILOT_CLI_INTEGRATION_ID,
-  );
-  expect(await resolvePassthroughIntegrationId("gho_x", { fetchImpl })).toBe(
-    VSCODE_CHAT_INTEGRATION_ID,
-  );
+  // credential is never probed and keeps the daemon's default. Every answer keeps the generic host.
+  expect(await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", { fetchImpl })).toEqual({
+    integrationId: null,
+    apiBase: DEFAULT_COPILOT_API_BASE,
+  });
+  expect(await selectPassthroughIdentityAndHost("ghp_x", { fetchImpl })).toEqual({
+    integrationId: COPILOT_CLI_INTEGRATION_ID,
+    apiBase: DEFAULT_COPILOT_API_BASE,
+  });
+  expect(await selectPassthroughIdentityAndHost("gho_x", { fetchImpl })).toEqual({
+    integrationId: VSCODE_CHAT_INTEGRATION_ID,
+    apiBase: DEFAULT_COPILOT_API_BASE,
+  });
 });
 
 test("surveyIntegrationIdentities: the designated and configured columns appear only when they add a host", async () => {
@@ -240,8 +244,9 @@ test("surveyIntegrationIdentities: the designated and configured columns appear 
   ]);
 });
 
-test("resolveCopilotHost: 2xx/400/401 keep the generic host; 403/404/5xx/network move to the account's host; a failed lookup stays", async () => {
-  const headers = directClientHeaders("codex_exec/1", COPILOT_CLI_INTEGRATION_ID);
+test("host rule: 2xx/400/401 keep the generic host; 403/404/5xx/network move to the account's host; a failed lookup stays", async () => {
+  // Pinned, so the identity step probes nothing and every /models round below is the host rule's.
+  const pinned = COPILOT_CLI_INTEGRATION_ID;
   const rule = async (
     status: number | "network",
     lookup: "ok" | "fail",
@@ -265,11 +270,12 @@ test("resolveCopilotHost: 2xx/400/401 keep the generic host; 403/404/5xx/network
       if (status === "network") return Promise.reject(new Error("offline"));
       return Promise.resolve(new Response("body", { status }));
     };
-    const host = await resolveCopilotHost("ghp_x", headers, {
+    const { apiBase } = await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
+      pinned,
       fetchImpl,
       narrator: { info: () => {} },
     });
-    return { host, lookedUp, probedAs };
+    return { host: apiBase, lookedUp, probedAs };
   };
   // Kept: a 2xx serves the credential; 400 is an identity rejection and 401 a bad token, both
   // identical on every host; a transient 408/429 says nothing about the host either.
@@ -299,11 +305,15 @@ test("resolveCopilotHost: 2xx/400/401 keep the generic host; 403/404/5xx/network
     return Promise.reject(new Error("should not be called"));
   };
   expect(
-    await resolveCopilotHost("ghp_x", headers, { literal: CONFIGURED_API_BASE, fetchImpl: never }),
-  ).toBe(CONFIGURED_API_BASE);
-  expect(await resolveCopilotHost(null, headers, { fetchImpl: never })).toBe(
-    DEFAULT_COPILOT_API_BASE,
-  );
+    await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
+      pinned,
+      fixedHost: CONFIGURED_API_BASE,
+      fetchImpl: never,
+    }),
+  ).toEqual({ integrationId: pinned, apiBase: CONFIGURED_API_BASE });
+  expect(
+    await selectDirectIdentityAndHost(null, "codex_exec/1", { pinned, fetchImpl: never }),
+  ).toEqual({ integrationId: pinned, apiBase: DEFAULT_COPILOT_API_BASE });
   expect(called).toBe(false);
 });
 
@@ -365,11 +375,11 @@ test("probeIntegrationIdentity: a transient host-discovery failure makes an all-
   expect(res.conclusive).toBe(false);
 });
 
-test("resolveDirectIntegrationId: probes the host it BAKES, with no account-host lookup", async () => {
+test("selectDirectIdentityAndHost: selects on the host it BAKES, with no account-host lookup", async () => {
   resetIntegrationIdentityCache();
   const probed: string[] = [];
   await expect(
-    resolveDirectIntegrationId("ghp_x", "codex_exec/1", {
+    selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
       fetchImpl: (input) => {
         const url = typeof input === "string"
           ? input
@@ -387,25 +397,23 @@ test("resolveDirectIntegrationId: probes the host it BAKES, with no account-host
   expect(probed.some((u) => u.includes("/copilot_internal/user"))).toBe(false);
 });
 
-test("resolvePassthroughIntegrationId: a transient discovery failure degrades to default, never throws", async () => {
+test("selectPassthroughIdentityAndHost: a transient probe and a failed account lookup degrade to the default, never throw", async () => {
   resetIntegrationIdentityCache();
-  // Passthrough DOES discover the account host (matching what the daemon resolves), so a
-  // transient lookup failure + an all-reject on the fallback must not hard-fail the launch.
-  const id = await resolvePassthroughIntegrationId("ghp_x", {
-    fetchImpl: (input) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("/copilot_internal/user")) {
-        return Promise.resolve(new Response("upstream", { status: 503 }));
-      }
-      return Promise.resolve(new Response("PATs not supported", { status: 400 }));
-    },
+  // The daemon launch rides this: a 5xx on the generic host is inconclusive for every candidate
+  // (the default stands) and moves the host rule to the account lookup, whose failure stays put.
+  const result = await selectPassthroughIdentityAndHost("ghp_x", {
+    fetchImpl: () => Promise.resolve(new Response("upstream", { status: 503 })),
+    narrator: { info: () => {} },
   });
-  expect(id).toBe(VSCODE_CHAT_INTEGRATION_ID);
+  expect(result).toEqual({
+    integrationId: VSCODE_CHAT_INTEGRATION_ID,
+    apiBase: DEFAULT_COPILOT_API_BASE,
+  });
 });
 
-test("resolveDirectIntegrationId: a transient failure degrades to the default, never throws", async () => {
+test("selectDirectIdentityAndHost: a transient failure degrades to the default, never throws", async () => {
   resetIntegrationIdentityCache();
-  const id = await resolveDirectIntegrationId("ghp_x", "codex_exec/1", {
+  const { integrationId } = await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
     fetchImpl: (input) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/copilot_internal/user")) {
@@ -413,73 +421,77 @@ test("resolveDirectIntegrationId: a transient failure degrades to the default, n
       }
       return Promise.resolve(new Response("upstream", { status: 503 }));
     },
+    narrator: { info: () => {} },
   });
-  expect(id).toBeNull();
+  expect(integrationId).toBeNull();
 });
 
-test("resolveDirectIntegrationId: a non-PAT credential uses the default (no fetch)", async () => {
+test("selectDirectIdentityAndHost: a non-PAT credential uses the default (no fetch)", async () => {
   resetIntegrationIdentityCache();
   let called = false;
-  const id = await resolveDirectIntegrationId("gho_oauth", "codex_exec/1", {
+  const { integrationId } = await selectDirectIdentityAndHost("gho_oauth", "codex_exec/1", {
+    fixedHost: DEFAULT_COPILOT_API_BASE,
     fetchImpl: () => {
       called = true;
       return Promise.reject(new Error("should not be called"));
     },
   });
-  expect(id).toBeNull();
+  expect(integrationId).toBeNull();
   expect(called).toBe(false);
 });
 
-test("resolveDirectIntegrationId: a PAT probes and bakes the accepted id", async () => {
+test("selectDirectIdentityAndHost: a PAT probes and bakes the accepted id", async () => {
   resetIntegrationIdentityCache();
-  const id = await resolveDirectIntegrationId("github_pat_x", "codex_exec/1", {
+  const { integrationId } = await selectDirectIdentityAndHost("github_pat_x", "codex_exec/1", {
     fetchImpl: stubFetch({ accept: (i) => i === COPILOT_CLI_INTEGRATION_ID }),
   });
-  expect(id).toBe(COPILOT_CLI_INTEGRATION_ID);
+  expect(integrationId).toBe(COPILOT_CLI_INTEGRATION_ID);
 });
 
-test("resolveDirectIntegrationId: the config pin wins without any probe", async () => {
+test("selectDirectIdentityAndHost: the config pin wins without any identity probe", async () => {
   resetIntegrationIdentityCache();
   let called = false;
-  const id = await resolveDirectIntegrationId("ghp_x", "codex_exec/1", {
+  const { integrationId } = await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
     pinned: "my-custom-id",
+    fixedHost: DEFAULT_COPILOT_API_BASE,
     fetchImpl: () => {
       called = true;
       return Promise.reject(new Error("should not be called"));
     },
   });
-  expect(id).toBe("my-custom-id");
+  expect(integrationId).toBe("my-custom-id");
   expect(called).toBe(false);
 });
 
-test("resolveDirectIntegrationId: a PAT rejected everywhere throws with the reason", async () => {
+test("selectDirectIdentityAndHost: a PAT rejected everywhere throws with the reason", async () => {
   resetIntegrationIdentityCache();
   await expect(
-    resolveDirectIntegrationId("ghp_bad", "codex_exec/1", {
+    selectDirectIdentityAndHost("ghp_bad", "codex_exec/1", {
       fetchImpl: stubFetch({ accept: () => false }),
     }),
   ).rejects.toThrow(/rejects this credential under every known client identity/);
 });
 
-test("resolvePassthroughIntegrationId: non-PAT stays on vscode-chat (no fetch)", async () => {
+test("selectPassthroughIdentityAndHost: non-PAT stays on vscode-chat (no fetch)", async () => {
   resetIntegrationIdentityCache();
   let called = false;
-  const id = await resolvePassthroughIntegrationId("gho_oauth", {
+  const { integrationId } = await selectPassthroughIdentityAndHost("gho_oauth", {
+    fixedHost: DEFAULT_COPILOT_API_BASE,
     fetchImpl: () => {
       called = true;
       return Promise.reject(new Error("should not be called"));
     },
   });
-  expect(id).toBe(VSCODE_CHAT_INTEGRATION_ID);
+  expect(integrationId).toBe(VSCODE_CHAT_INTEGRATION_ID);
   expect(called).toBe(false);
 });
 
-test("resolvePassthroughIntegrationId: a PAT resolves to the accepted id", async () => {
+test("selectPassthroughIdentityAndHost: a PAT resolves to the accepted id", async () => {
   resetIntegrationIdentityCache();
-  const id = await resolvePassthroughIntegrationId("ghp_x", {
+  const { integrationId } = await selectPassthroughIdentityAndHost("ghp_x", {
     fetchImpl: stubFetch({ accept: (i) => i === COPILOT_CLI_INTEGRATION_ID }),
   });
-  expect(id).toBe(COPILOT_CLI_INTEGRATION_ID);
+  expect(integrationId).toBe(COPILOT_CLI_INTEGRATION_ID);
 });
 
 test("directIdentityCandidates: the default candidate carries the detected UA and no id", () => {

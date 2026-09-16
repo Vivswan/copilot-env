@@ -498,7 +498,6 @@ test("partialSlotGap: the ONE spelling of a partial slot's repair line (output c
       kind: "partial",
       credential: { kind: "none", provider: null },
       mode: null,
-      integrationIdentity: null,
     }),
   ).toBe(
     "profile 'work' does not exist - create it with `agent profile --add work --direct|--proxy`",
@@ -508,7 +507,6 @@ test("partialSlotGap: the ONE spelling of a partial slot's repair line (output c
       kind: "partial",
       credential: { kind: "none", provider: null },
       mode: "proxy",
-      integrationIdentity: null,
     }),
   ).toBe(
     "profile 'work' has no credential - repair it with `agent auth --profile work` " +
@@ -552,7 +550,6 @@ test("profile --add wires both agents atomically; --del removes everything", asy
     kind: "complete",
     credential: { kind: "stored", provider: "gh-token", token: "ghp_worktoken" },
     mode: "proxy",
-    integrationIdentity: null,
   });
   expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(true);
   const doc = readToml(join(codexHome, "config.toml"));
@@ -576,7 +573,6 @@ test("profile --add wires both agents atomically; --del removes everything", asy
     kind: "partial",
     credential: { kind: "none", provider: null },
     mode: null,
-    integrationIdentity: null,
   });
   expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(false);
   const after = readToml(join(codexHome, "config.toml"));
@@ -609,7 +605,6 @@ test("a wiring failure after the atomic commit leaves a complete slot that --syn
     kind: "complete",
     credential: { kind: "stored", provider: "gh-token", token: "ghp_worktoken" },
     mode: "proxy",
-    integrationIdentity: null,
   });
 
   rmSync(settingsPathFor(claudeHome, WORK));
@@ -770,7 +765,7 @@ test("the DEFAULT slot's identity cache replays without a probe and re-arms on r
   // First resolution probes and persists the verdict (the identity NAME, so
   // "probed, the default won" is distinguishable from "never probed").
   expect((await resolveAndPersistDirectWiring(null)).directIntegrationId).toBeNull();
-  expect(state.readProfileSlot(null).integrationIdentity).toBe("codex");
+  expect(state.slotIdentityForDisplay(null)).toBe("codex");
   const afterFirst = probes;
   expect(afterFirst).toBeGreaterThan(0);
 
@@ -780,7 +775,7 @@ test("the DEFAULT slot's identity cache replays without a probe and re-arms on r
 
   // A credential change invalidates the cached verdict, re-arming the probe.
   new Credential(state).store("gh-token", "ghp_rotated");
-  expect(state.readProfileSlot(null).integrationIdentity).toBeNull();
+  expect(state.slotIdentityForDisplay(null)).toBeNull();
   await resolveAndPersistDirectWiring(null);
   expect(probes).toBeGreaterThan(afterFirst);
 });
@@ -805,7 +800,7 @@ test("a direct profile probes the client identity ONCE, persisting the verdict f
   const state = new CopilotEnvState();
   // The DEFAULT identity won, and that verdict is persisted (as the identity NAME) so it
   // is distinguishable from "never probed" -- the launcher hot path must not re-probe.
-  expect(state.readProfileSlot(WORK).integrationIdentity).toBe("codex");
+  expect(state.slotIdentityForDisplay(WORK)).toBe("codex");
   const afterAdd = probes;
   expect(afterAdd).toBeGreaterThan(0);
 
@@ -817,7 +812,7 @@ test("a direct profile probes the client identity ONCE, persisting the verdict f
 
   // A credential change invalidates the cached verdict, re-arming the probe.
   new Credential(state, WORK).store("gh-token", "ghp_rotated");
-  expect(state.readProfileSlot(WORK).integrationIdentity).toBeNull();
+  expect(state.slotIdentityForDisplay(WORK)).toBeNull();
   await runProfile({ sync: true, mode: "auto" });
   expect(probes).toBeGreaterThan(afterAdd);
 });
@@ -841,7 +836,7 @@ test("a direct profile bakes a non-default probed identity into BOTH agents", as
   });
 
   await runProfile({ add: "work", mode: "direct", set: "github_pat_worktoken" });
-  expect(new CopilotEnvState().readProfileSlot(WORK).integrationIdentity).toBe(
+  expect(new CopilotEnvState().slotIdentityForDisplay(WORK)).toBe(
     "copilot-developer-cli",
   );
   const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, WORK), "utf8"));

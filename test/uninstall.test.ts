@@ -105,6 +105,33 @@ function tmpDeps(codexHome: string): UninstallDeps & { calls: string[]; installR
   };
 }
 
+// The record is POSIX only (Windows builds no farm), so the deletion proof is too.
+const skipWin = test.skipIf(process.platform === "win32");
+
+skipWin(
+  "the recorded farm is named and deleted only while it still carries our config.toml; a foreign directory at the recorded path is left alone",
+  async () => {
+    const { codexHome } = tmpHomes();
+    // A farm under a `codex-home` root the user has since removed stays recorded until the next
+    // build; the only difference between ours and a replacement is the config inside.
+    const recorded = join(dir, "old-root", "hosts", "box");
+    for (const ours of [true, false]) {
+      // Fresh deps per pass: the install-root sandbox is deleted by each apply.
+      const { removeCodexHostFarm: _real, ...deps } = tmpDeps(codexHome);
+      mkdirSync(recorded, { recursive: true });
+      if (ours) configureCodexConfig(recorded, { credential: COMMAND, mode: "direct" });
+      else writeFileSync(join(recorded, "config.toml"), 'model_provider = "openai"\n');
+      new CopilotEnvRunState().set({ codexHome: recorded });
+      const ctx = resolveUninstallContext({ yes: true }, deps);
+      expect(ctx.targets.codexHostFarm).toBe(ours ? recorded : null);
+      const line = `Would delete the CODEX_HOME host farm: ${recorded}`;
+      expect(describeUninstall(ctx).includes(line)).toBe(ours);
+      await applyUninstall(ctx);
+      expect(existsSync(recorded)).toBe(!ours);
+    }
+  },
+);
+
 function readToml(codexHome: string): Record<string, unknown> {
   return parse(readFileSync(join(codexHome, "config.toml"), "utf8")) as Record<string, unknown>;
 }
@@ -425,7 +452,8 @@ test.skipIf(process.platform === "win32")(
     const { codexHome } = tmpHomes();
     const farm = join(dir, "farm");
     const untracked = join(dir, "untracked-farm");
-    mkdirSync(farm, { recursive: true });
+    // The recorded farm carries our config, as a wiring pass leaves it.
+    configureCodexConfig(farm, { credential: COMMAND, mode: "direct" });
     mkdirSync(untracked, { recursive: true });
     new CopilotEnvRunState().set({ codexHome: farm });
 
@@ -445,7 +473,7 @@ test.skipIf(process.platform === "win32")(
   async () => {
     const { codexHome } = tmpHomes();
     const farm = join(dir, "farm");
-    mkdirSync(farm, { recursive: true });
+    configureCodexConfig(farm, { credential: COMMAND, mode: "direct" });
     new CopilotEnvRunState().set({ codexHome: farm });
 
     // No farm seam, so the narration reflects the REAL removal it describes.

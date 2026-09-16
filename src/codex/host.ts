@@ -55,12 +55,16 @@ export function codexHostFarm(prefs: CodexHomePrefs = codexHomePrefsOrDerived())
   const hostHome = getHostLocalCodexHome(prefs.explicit);
   return {
     hostHome,
-    ...probeFarm(hostHome),
+    ...probeCodexFarm(hostHome),
     active: new CopilotEnvRunState().read().codexHome === hostHome,
   };
 }
 
-function probeFarm(hostHome: string): Pick<CodexHostFarm, "present" | "wired" | "probeError"> {
+/** The farm facts for any path, ours or not: `agent uninstall` asks it about the recorded farm before
+ *  deleting, since the record alone never authorizes a delete (see isOurFarm). */
+export function probeCodexFarm(
+  hostHome: string,
+): Pick<CodexHostFarm, "present" | "wired" | "probeError"> {
   let viaLink: boolean;
   try {
     viaLink = fs.lstatSync(hostHome).isSymbolicLink();

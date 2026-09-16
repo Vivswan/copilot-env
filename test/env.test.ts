@@ -165,6 +165,32 @@ test("env does not unset a CODEX_HOME the user pointed elsewhere", () => {
   expect(lines.some((l) => l.includes("CODEX_HOME"))).toBe(false);
 });
 
+test("env exports a `codex-home` path on every platform, quietly", () => {
+  isolate();
+  const root = join(dir, "explicit-root");
+  new CopilotEnvConfig().set({ codexHome: root });
+  expect(stderrDuring(() => expect(envLines()).toEqual([`export CODEX_HOME='${root}'`]))).toBe("");
+});
+
+skipWin(
+  "env with codex-home and codex-host: the farm under the path is the export's subject",
+  () => {
+    isolate();
+    const root = join(dir, "explicit-root");
+    new CopilotEnvConfig().set({ codexHome: root, codexHost: true });
+    const hostHome = getHostLocalCodexHome();
+    expect(hostHome.startsWith(`${root}/`)).toBe(true);
+    // Not built yet: nothing exported (Codex would open an empty home), the drift names the farm.
+    expect(stderrDuring(() => expect(envLines()).toEqual([]))).toContain(
+      `farm is missing at ${hostHome}`,
+    );
+    mkdirSync(hostHome, { recursive: true });
+    writeFileSync(join(hostHome, "config.toml"), 'model_provider = "copilot-env"\n');
+    writeRunState({ codexHome: hostHome });
+    expect(envLines()).toEqual([`export CODEX_HOME='${hostHome}'`]);
+  },
+);
+
 // --- CODEX_HOME: the `codex-host` key against the farm on disk -------------------
 
 // The run-state record is what a successful wiring pass leaves; without it the farm is not active.

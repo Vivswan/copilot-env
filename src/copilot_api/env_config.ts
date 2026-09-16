@@ -1,5 +1,6 @@
 // The account-wide preference store behind `agent config`. Each read site applies the precedence
 // itself: explicit flag/env > this stored config > built-in default.
+import * as path from "node:path";
 import * as v from "valibot";
 import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
@@ -45,6 +46,7 @@ export interface CopilotEnvConfigData {
   releaseCooldown?: number;
   updateCooldown?: number;
   verifyProvenance?: boolean;
+  codexHome?: string;
   codexHost?: boolean;
   codexModelCatalog?: boolean;
   wireMcp?: boolean;
@@ -371,6 +373,28 @@ const HTTPS_URL_DOMAIN: ConfigDomain<string> = domain(
   "url",
 );
 
+/** `auto` = the derived home. The path is used as typed: `~` is the shell's expansion and never
+ *  happens here, so `~/x` is refused rather than written as a directory named `~` under the cwd. On
+ *  Windows a rooted-but-driveless `\Codex` is refused too: path.isAbsolute accepts it, yet it lands on
+ *  whichever drive the process runs from. */
+const CODEX_HOME_AUTO = "auto";
+function isFullyQualifiedPath(p: string): boolean {
+  if (!path.isAbsolute(p)) return false;
+  return process.platform !== "win32" || path.parse(p).root.length > 1;
+}
+const ABSOLUTE_PATH_DOMAIN: ConfigDomain<string> = domain(
+  v.pipe(
+    v.string(),
+    v.trim(),
+    v.check(
+      (p) => p.toLowerCase() === CODEX_HOME_AUTO || isFullyQualifiedPath(p),
+      "expected an absolute path or `auto` (`~` is not expanded; on Windows the drive is required)",
+    ),
+  ),
+  (raw) => raw,
+  "path|auto",
+);
+
 /** Ordered ALPHABETICALLY by CLI name: that is the `--get` and `--help` display order, and a test pins
  *  it, so insert new keys in place. */
 const CONFIG_REGISTRY_LITERAL = [
@@ -441,10 +465,22 @@ const CONFIG_REGISTRY_LITERAL = [
     proxyProjected: true,
   },
   {
+    cli: "codex-home",
+    key: "codexHome",
+    section: "Codex",
+    describe:
+      "Root of the Codex home copilot-env writes and exports; auto derives it (~/.codex), codex-host farms under it",
+    ...ABSOLUTE_PATH_DOMAIN,
+    defaultValue: CODEX_HOME_AUTO,
+    applyHint:
+      "Applies at the next `agent codex`/`agent init` wiring (the config write lands there) and to the " +
+      "shell on the next `agent` command, whose wrapper re-evals `agent env`; a removal reaches new shells only.",
+  },
+  {
     cli: "codex-host",
     key: "codexHost",
     section: "Codex",
-    describe: "Per-host CODEX_HOME at ~/.codex/hosts/<hostname> via `agent env` (Linux/macOS)",
+    describe: "Per-host CODEX_HOME at <codex-home>/hosts/<hostname> via `agent env` (Linux/macOS)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     posixOnly: true,
@@ -703,14 +739,25 @@ export const CONFIG_SCHEMA = v.object(
   Object.fromEntries(CONFIG_REGISTRY.map((def) => [def.key, lenientField(def.schema)])),
 ) as v.GenericSchema<unknown, CopilotEnvConfigData>;
 
-/** Always false on Windows whatever a bundle imported: no farm without POSIX symlinks. Shared by the
- *  accessor and the settings-import plan. */
-export function codexHostEnabledFor(
-  stored: boolean | undefined,
+/** The two Codex-home keys, folded ONCE for the derivation (src/codex/host.ts) and the
+ *  settings-import plan, which resolves them from the bundle before the store is replaced. */
+export interface CodexHomePrefs {
+  /** The `codex-home` path; null for `auto` or unset, when the derivation starts at ~/.codex. */
+  explicit: string | null;
+  /** The `codex-host` farm is in effect. Always false on Windows whatever a bundle imported: no farm
+   *  without POSIX symlinks. */
+  hostFarm: boolean;
+}
+
+export function codexHomePrefsFor(
+  stored: Pick<CopilotEnvConfigData, "codexHome" | "codexHost">,
   platform: NodeJS.Platform = process.platform,
-): boolean {
-  if (platform === "win32") return false;
-  return stored ?? configDefaultBoolean("codex-host");
+): CodexHomePrefs {
+  const home = stored.codexHome;
+  return {
+    explicit: home === undefined || home.toLowerCase() === CODEX_HOME_AUTO ? null : home,
+    hostFarm: platform !== "win32" && (stored.codexHost ?? configDefaultBoolean("codex-host")),
+  };
 }
 
 export function configKeyDef(cli: string): ConfigKeyDef | undefined {
@@ -838,8 +885,12 @@ export class CopilotEnvConfig {
     return this.read().claudeDesktop ?? configDefaultBoolean("claude-desktop");
   }
 
+  codexHomePrefs(platform: NodeJS.Platform = process.platform): CodexHomePrefs {
+    return codexHomePrefsFor(this.read(), platform);
+  }
+
   codexHostEnabled(platform: NodeJS.Platform = process.platform): boolean {
-    return codexHostEnabledFor(this.read().codexHost, platform);
+    return this.codexHomePrefs(platform).hostFarm;
   }
 
   codexModelCatalogEnabled(): boolean {

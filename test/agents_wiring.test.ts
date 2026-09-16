@@ -10,6 +10,7 @@ import {
   readAgentModes,
 } from "../src/agents/wiring.ts";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
+import { getHostLocalCodexHome } from "../src/codex/host.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
 import {
@@ -240,10 +241,13 @@ describe("default home resolution", () => {
   test.skipIf(process.platform === "win32")(
     "codex follows the run-state codexHome override; claude follows $CLAUDE_CONFIG_DIR",
     () => {
-      const farmHome = join(dir, "farm-codex");
+      // HOME stays real here, so the farm is rooted under the fixture through `codex-home`: the
+      // record is honoured only as the farm path the keys derive now (src/codex/host.ts).
+      new CopilotEnvConfig().set({ codexHome: join(dir, "codex-root"), codexHost: true });
+      const farmHome = getHostLocalCodexHome();
+      expect(farmHome.startsWith(dir)).toBe(true);
       writeCodexConfigToml(farmHome, { baseUrl: DIRECT_BASE });
       process.env.CODEX_HOME = join(dir, "empty-codex"); // must lose to run state
-      new CopilotEnvConfig().set({ codexHost: true });
       writeRunState({ codexHome: farmHome });
 
       const claudeHome = join(dir, "claude-env-home");

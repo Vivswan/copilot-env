@@ -55,10 +55,11 @@ agent config --del idle-timeout       # revert one to its default
 
 ## Codex
 
-| Key                   | Default | Effect                                                                    |
-| --------------------- | ------- | ------------------------------------------------------------------------- |
-| `codex-host`          | `false` | Per-host `CODEX_HOME` symlink farm, exported by `agent env` (Linux/macOS) |
-| `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows        |
+| Key                   | Default | Effect                                                                                            |
+| --------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `codex-home`          | `auto`  | Root of the Codex home copilot-env writes and `agent env` exports; `auto` derives it (`~/.codex`) |
+| `codex-host`          | `false` | Per-host `CODEX_HOME` symlink farm under it, exported by `agent env` (Linux/macOS)                |
+| `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows                                |
 
 ### Codex model catalog
 

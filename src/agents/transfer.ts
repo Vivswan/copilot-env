@@ -31,7 +31,7 @@ import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
 import { GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
 import {
-  codexHostEnabledFor,
+  codexHomePrefsFor,
   CONFIG_REGISTRY,
   CONFIG_SCHEMA,
   configDefaultBoolean,
@@ -555,14 +555,15 @@ function planWrites(
   const wired = profiles.filter((p) => p.landing.action !== "skip" && p.slot.mode !== null);
   // Named-profile wiring writes its provider table into config.toml and its selector into
   // `<name>.config.toml` of the effective home. The apply replaces the preference store before it
-  // wires, so the home is resolved under the BUNDLE's codex-host value, not the local one.
-  const codexHost = codexHostEnabledFor(bundle.config.codexHost);
-  let profileCodexHome = effectiveCodexHomeFor(codexHost);
+  // wires, so the home is resolved under the BUNDLE's codex-home and codex-host values, not the
+  // local ones.
+  const homePrefs = codexHomePrefsFor(bundle.config);
+  let profileCodexHome = effectiveCodexHomeFor(homePrefs);
   if (modes.codex !== null) {
     // Post-import resolution (the plan-input rule): the farm decision is the SAME one the apply
     // takes, so its action and landing can be named.
-    const farm = codexHostFarm();
-    const plan = planCodexHostFarm(codexHost, farm);
+    const farm = codexHostFarm(homePrefs);
+    const plan = planCodexHostFarm(homePrefs.hostFarm, farm);
     if (plan.action === "build") lines.push(`Per-host CODEX_HOME farm (built): ${farm.hostHome}`);
     if (plan.action === "remove") {
       lines.push(`Per-host CODEX_HOME farm (removed): ${farm.hostHome}`);
@@ -572,7 +573,7 @@ function planWrites(
     }
     profileCodexHome = plan.action === "build" || plan.action === "verify"
       ? farm.hostHome
-      : unmanagedCodexHome();
+      : homePrefs.explicit ?? unmanagedCodexHome(homePrefs);
     // The catalog sync may rewrite other host configs and the generated catalog file; the set is
     // dynamic, so one honest line beats an enumeration that would go stale.
     lines.push(

@@ -9,13 +9,17 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
-import { CATALOG_PATCH_VERSION, NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
+import {
+  CATALOG_PATCH_VERSION,
+  CI_NO_LIVE_LOOKUPS_ENV,
+  NOOP_CATALOG_DEPS,
+  resetCodexVersionMemo,
+} from "../src/codex/catalog.ts";
 import {
   refreshCodexCatalogAndSync,
   syncCodexCatalogReference,
 } from "../src/codex/catalog_reference.ts";
 import {
-  codexUserAgent,
   configureCodexConfig,
   detectCodexDirect,
   FALLBACK_CODEX_UA_VERSION,
@@ -31,7 +35,7 @@ import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, linesNaming } from "./helpers.ts";
 
-const restoreEnv = envSnapshot();
+const restoreEnv = envSnapshot(["PATH", CI_NO_LIVE_LOOKUPS_ENV]);
 let dir = "";
 // The default credential shape: the config names a copilot-env command that prints the credential.
 const COMMAND = { kind: "command" } as const;
@@ -89,7 +93,6 @@ test("enforces every managed field while preserving unknown user keys", () => {
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.139.0",
   });
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
@@ -111,7 +114,7 @@ test("enforces every managed field while preserving unknown user keys", () => {
 
   const headers = asRecord(provider.http_headers);
   expect(headers["Openai-Intent"]).toBe("conversation-edits");
-  expect(headers["User-Agent"]).toBe("codex_exec/0.139.0");
+  expect(headers["User-Agent"]).toBe(`codex_exec/${FALLBACK_CODEX_UA_VERSION}`);
   // No probed identity passed -> no Copilot-Integration-Id header (default identity).
   expect(headers["Copilot-Integration-Id"]).toBeUndefined();
 
@@ -141,13 +144,12 @@ test("direct bakes a probed Copilot-Integration-Id into http_headers when passed
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.139.0",
     directIntegrationId: "copilot-developer-cli",
   });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   const headers = asRecord(asRecord(asRecord(doc.model_providers)["copilot-env"]).http_headers);
   expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
-  expect(headers["User-Agent"]).toBe("codex_exec/0.139.0");
+  expect(headers["User-Agent"]).toBe(`codex_exec/${FALLBACK_CODEX_UA_VERSION}`);
 });
 
 test("direct uses the launcher auth.command (no env_key, no token at rest), classified direct", () => {
@@ -157,7 +159,6 @@ test("direct uses the launcher auth.command (no env_key, no token at rest), clas
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.139.0",
   });
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
@@ -289,7 +290,6 @@ test("writes the managed direct default config when no provider section exists",
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.139.0",
   });
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
@@ -302,13 +302,62 @@ test("writes the managed direct default config when no provider section exists",
   expect(existsSync(join(codexHome, ".env"))).toBe(false);
 });
 
-test("formats Codex user-agent with dynamic version fallback", () => {
-  expect(codexUserAgent("0.139.0")).toBe("codex_exec/0.139.0");
-  // Never version-less: Copilot rejects some models for a bare codex_exec UA
-  // (the gate is the versioned SHAPE), so the null fallback pins a real release.
-  expect(codexUserAgent(null)).toBe(`codex_exec/${FALLBACK_CODEX_UA_VERSION}`);
-  expect(FALLBACK_CODEX_UA_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
-});
+// The live-lookup seam is OFF here, so the real `codex --version` and `npm view` roads run, against
+// fakes that shadow any real codex or npm (the fake bin dir leads PATH in every arm, an exit-1 fake
+// included; /usr/bin and /bin stay for `sh`).
+test.skipIf(process.platform === "win32")(
+  "the Direct User-Agent version chain: the installed codex, else npm's current release, else the baked fallback; one spawn per road per process, failures included",
+  () => {
+    isolate();
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const spawns = join(dir, "spawns");
+    const fake = (command: string, output: string | null): void => {
+      const answer = output === null ? "exit 1" : `echo '${output}'`;
+      writeFileSync(join(bin, command), `#!/bin/sh\necho ${command} >> "${spawns}"\n${answer}\n`);
+      chmodSync(join(bin, command), 0o755);
+    };
+    process.env.PATH = `${bin}:/usr/bin:/bin`;
+    delete process.env[CI_NO_LIVE_LOOKUPS_ENV];
+    const codexHome = join(dir, ".codex");
+    const userAgent = (): unknown => {
+      configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND });
+      const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+      return asRecord(asRecord(asRecord(doc.model_providers)["copilot-env"]).http_headers)[
+        "User-Agent"
+      ];
+    };
+    // Two writes per arm: the second must reuse the memo, a memoized failure included.
+    const arm = (
+      codex: string | null,
+      npm: string | null,
+    ): { agent: unknown; spawned: string[] } => {
+      resetCodexVersionMemo();
+      rmSync(spawns, { force: true });
+      fake("codex", codex);
+      fake("npm", npm);
+      const agent = userAgent();
+      expect(userAgent()).toBe(agent);
+      return { agent, spawned: readFileSync(spawns, "utf8").trim().split("\n") };
+    };
+
+    expect(arm("codex-cli 9.9.9", "8.8.8")).toEqual({
+      agent: "codex_exec/9.9.9", // the installed codex wins; npm is never asked
+      spawned: ["codex"],
+    });
+    expect(arm(null, "8.8.8")).toEqual({
+      agent: "codex_exec/8.8.8", // no codex: npm's current release
+      spawned: ["codex", "npm"],
+    });
+    expect(arm(null, null)).toEqual({
+      agent: `codex_exec/${FALLBACK_CODEX_UA_VERSION}`, // offline: the fallback
+      spawned: ["codex", "npm"],
+    });
+    // Copilot rejects some models for a version-LESS codex_exec UA (the gate is the versioned
+    // SHAPE), so the fallback must stay a real X.Y.Z release.
+    expect(FALLBACK_CODEX_UA_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+  },
+);
 
 test("runCodex --proxy writes the proxy provider at CODEX_HOME", async () => {
   isolate();
@@ -379,7 +428,6 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.139.0",
   });
   let provider = asRecord(
     asRecord(asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8"))).model_providers)[
@@ -424,7 +472,6 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
     configureCodexConfig(directHome, {
       mode: "direct",
       credential: STATIC,
-      codexExecVersion: "0.139.0",
     })
   );
   expect(linesNaming(said, directHome)).toEqual([
@@ -437,7 +484,7 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
   expect(table.requires_openai_auth).toBe(false);
   expect(asRecord(table.http_headers)).toEqual({
     "Openai-Intent": "conversation-edits",
-    "User-Agent": "codex_exec/0.139.0",
+    "User-Agent": `codex_exec/${FALLBACK_CODEX_UA_VERSION}`,
     "Authorization": `Bearer ${STATIC.token}`,
   });
   let seen = wiring(directHome);
@@ -450,11 +497,12 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
   configureCodexConfig(directHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.139.0",
   });
   table = provider(directHome);
   expect(asRecord(table.http_headers)["Authorization"]).toBeUndefined();
-  expect(asRecord(table.http_headers)["User-Agent"]).toBe("codex_exec/0.139.0");
+  expect(asRecord(table.http_headers)["User-Agent"]).toBe(
+    `codex_exec/${FALLBACK_CODEX_UA_VERSION}`,
+  );
   expect(asRecord(table.auth).args).toEqual(agentLauncherCommand(["auth", "--get"]).args);
   expect(wiring(directHome).credential).toBe("command");
 
@@ -641,7 +689,6 @@ test("model_catalog_json is written when enabled and the catalog file exists (bo
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
   });
   let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBe(catalogFile);
@@ -650,7 +697,6 @@ test("model_catalog_json is written when enabled and the catalog file exists (bo
     mode: "proxy",
     credential: COMMAND,
     baseUrl: "http://127.0.0.1:4141/v1",
-    codexExecVersion: "0.144.0",
   });
   doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBe(catalogFile);
@@ -667,7 +713,6 @@ test("the catalog reference is ledger-recorded on write and released on the disa
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
   });
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(true);
 
@@ -676,7 +721,6 @@ test("the catalog reference is ledger-recorded on write and released on the disa
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
   });
   expect(
     asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json,
@@ -697,7 +741,6 @@ test("a write to an unknown home (the probe's throwaway dir) never enters the le
   configureCodexConfig(probeHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
   });
   const doc = asRecord(parse(readFileSync(join(probeHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBe(catalogFile);
@@ -719,7 +762,6 @@ test("a stale model_catalog_json is scrubbed when the catalog file is absent", (
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
   });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBeUndefined();
@@ -737,7 +779,6 @@ test("a corrupt or empty catalog file is scrubbed like a missing one", () => {
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
   });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBeUndefined();
@@ -826,7 +867,6 @@ test("disabled: configureCodexConfig scrubs model_catalog_json even when the fil
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
   });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBeUndefined();
@@ -1121,7 +1161,6 @@ test("a catalog the installed codex rejects is left out of the config and its cl
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
   }, {
     acceptsCatalog: () => true,
   });
@@ -1134,7 +1173,6 @@ test("a catalog the installed codex rejects is left out of the config and its cl
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
   }, {
     acceptsCatalog: () => false,
   });
@@ -1146,7 +1184,6 @@ test("a catalog the installed codex rejects is left out of the config and its cl
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
   }, {
     acceptsCatalog: () => null,
   });
@@ -1158,7 +1195,6 @@ test("a catalog the installed codex rejects is left out of the config and its cl
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
   }, {
     acceptsCatalog: () => true,
   });
@@ -1345,7 +1381,7 @@ test("the config write's one line carries the model_catalog_json change it makes
   const write = (home: string) =>
     configureCodexConfig(
       home,
-      { mode: "direct", credential: COMMAND, codexExecVersion: "0.144.0" },
+      { mode: "direct", credential: COMMAND },
       {
         acceptsCatalog: () => true,
       },
@@ -1443,7 +1479,6 @@ test("the writer reports its config changes even when the ownership ledger canno
     configureCodexConfig(codexHome, {
       mode: "direct",
       credential: COMMAND,
-      codexExecVersion: "0.144.0",
     }, {
       acceptsCatalog: () => true,
     });
@@ -1510,7 +1545,6 @@ test("agent codex --check reports a Direct config's service_tier line and never 
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    codexExecVersion: "0.144.0",
     quiet: true,
   });
   const checkLine = async (): Promise<string | undefined> => {
@@ -1545,7 +1579,6 @@ test("agent codex --check reports a Direct config's service_tier line and never 
     configureCodexConfig(codexHome, {
       mode: "direct",
       credential: COMMAND,
-      codexExecVersion: "0.144.0",
       quiet: true,
     });
     expect(asRecord(parse(readFileSync(configPath, "utf8"))).service_tier).toBe(tier);

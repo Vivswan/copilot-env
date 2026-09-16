@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { consola } from "consola";
 import { readBakedDirectIdentities } from "../agents/wiring.ts";
-import { type CodexCatalogDeps, codexUserAgentVersion } from "../codex/catalog.ts";
+import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { codexUserAgent } from "../codex/config.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
@@ -932,15 +932,6 @@ function identityTableLines(input: IdentityTableInput): string[] {
   ];
 }
 
-/** The Direct probe must send the agents' own user agent (directClientHeaders); `codexVersion` is
- *  the catalog deps' test seam, spawned by default. */
-function surveyUserAgent(catalogDeps: CodexCatalogDeps | undefined): string {
-  const version = catalogDeps?.codexVersion === undefined
-    ? codexUserAgentVersion()
-    : catalogDeps.codexVersion();
-  return codexUserAgent(version);
-}
-
 /** Null when nothing resolves; the reason has already been reported and the exit code set. */
 function resolveForProbe(profile: Profile): string | null {
   const { token, reason } = new Credential(undefined, profile).resolveWithReason();
@@ -974,9 +965,8 @@ async function surveyAndTable(
   profile: Profile,
   token: string,
   pinned: string | null,
-  catalogDeps: CodexCatalogDeps | undefined,
 ): Promise<IdentitySurvey> {
-  const userAgent = surveyUserAgent(catalogDeps);
+  const userAgent = codexUserAgent();
   const baked = readBakedDirectIdentities(profile);
   const directBuiltins = directIdentityCandidates(userAgent);
   const survey = await surveyIntegrationIdentities(token, {
@@ -1024,10 +1014,10 @@ async function surveyAndTable(
   return survey;
 }
 
-async function runIdentities(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise<void> {
+async function runIdentities(profile: Profile): Promise<void> {
   const token = resolveForProbe(profile);
   if (token === null) return;
-  await surveyAndTable(profile, token, new CopilotEnvConfig().pinnedIntegrationId(), catalogDeps);
+  await surveyAndTable(profile, token, new CopilotEnvConfig().pinnedIntegrationId());
 }
 
 /** The survey shows the rows; the picker offers every identity at least one host accepted, plus
@@ -1080,7 +1070,6 @@ function noteIdentityApplies(): void {
 async function pinIdentity(
   id: string,
   credential: Credential,
-  catalogDeps: CodexCatalogDeps | undefined,
 ): Promise<void> {
   const { token, reason } = credential.resolveWithReason();
   if (token === null) {
@@ -1088,7 +1077,7 @@ async function pinIdentity(
   } else {
     const survey = await surveyIntegrationIdentities(
       token,
-      pinnedIdentityCandidates(id, surveyUserAgent(catalogDeps)),
+      pinnedIdentityCandidates(id, codexUserAgent()),
     );
     const hosts = [
       { label: "Direct", column: survey.direct },
@@ -1126,7 +1115,6 @@ async function pinIdentity(
 async function runIdentity(
   profile: Profile,
   choice: IdentityChoice,
-  catalogDeps?: CodexCatalogDeps,
 ): Promise<void> {
   switch (choice.kind) {
     case "auto":
@@ -1136,7 +1124,7 @@ async function runIdentity(
       noteIdentityApplies();
       return;
     case "pin":
-      await pinIdentity(choice.id, new Credential(undefined, profile), catalogDeps);
+      await pinIdentity(choice.id, new Credential(undefined, profile));
       return;
     case "choose": {
       if (!process.stdin.isTTY) {
@@ -1148,8 +1136,8 @@ async function runIdentity(
       const token = resolveForProbe(profile);
       if (token === null) return;
       const pinned = new CopilotEnvConfig().pinnedIntegrationId();
-      const survey = await surveyAndTable(profile, token, pinned, catalogDeps);
-      await runIdentity(profile, await chooseIdentity(survey, pinned), catalogDeps);
+      const survey = await surveyAndTable(profile, token, pinned);
+      await runIdentity(profile, await chooseIdentity(survey, pinned));
       return;
     }
     default:
@@ -1262,10 +1250,10 @@ export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): P
       runCheck(action.profile);
       return;
     case "identities":
-      await runIdentities(action.profile, catalogDeps);
+      await runIdentities(action.profile);
       return;
     case "identity":
-      await runIdentity(action.profile, action.choice, catalogDeps);
+      await runIdentity(action.profile, action.choice);
       return;
     case "authenticate":
       await runAuthenticate(action.profile, action.acquisition);

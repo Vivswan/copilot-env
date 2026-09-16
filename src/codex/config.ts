@@ -900,8 +900,8 @@ export async function probeDirectWiring(
     directClientHeaders(userAgent, directIntegrationId),
     { literal },
   );
-  // Under `auto`, a blocked generic host leaves the selection inconclusive (its first candidate), so
-  // a PAT is selected again where the account is served: that host is where it must be accepted.
+  // Under `auto`, a blocked generic host leaves the selection inconclusive (the built-in default),
+  // so a PAT is selected again where the account is served: that host is where it must be accepted.
   if (literal === null && pinned === null && directBaseUrl !== DEFAULT_COPILOT_API_BASE) {
     return { directIntegrationId: await identityOn(directBaseUrl), directBaseUrl };
   }

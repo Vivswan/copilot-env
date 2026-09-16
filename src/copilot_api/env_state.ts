@@ -583,7 +583,8 @@ export class CopilotEnvState {
 
   /** The cached pair's standing for the pin and literal in force: `valid` (replay it), `stale` (a
    *  pair exists for another identity or host, so the identity verdict is another host's too:
-   *  re-probe both), `none` (nothing cached: an imported or pre-host slot, whose identity stands). */
+   *  re-probe both), `none` (no pair: an imported or pre-host slot, whose identity is then only a
+   *  probe-order preference, replayableIdentity). */
   readProfileCopilotHostCache(
     profile: Profile,
     pin: string | null,

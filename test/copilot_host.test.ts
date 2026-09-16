@@ -398,7 +398,15 @@ test("the replay rule, one table: a cached identity is baked as a valid pair or 
   };
   type Host = keyof typeof hostInUse;
   type Cache = "none" | "hostless" | "stale" | "valid";
-  const table: { cell: string; identity: string; host: string; probed: boolean }[] = [];
+  type Row = {
+    cell: string;
+    identity: string;
+    host: string;
+    probed: boolean;
+    /** The persisted half of the rule: the slot's identity and pair standing after the call. */
+    slot: { identity: string | null; pair: "none" | "stale" | "valid" };
+  };
+  const table: Row[] = [];
   const expected: typeof table = [];
   let n = 0;
   for (const cache of ["none", "hostless", "stale", "valid"] as Cache[]) {
@@ -456,18 +464,27 @@ test("the replay rule, one table: a cached identity is baked as a valid pair or 
           );
         });
         const result = await resolveAndPersistDirectWiring(null);
+        const literal = host === "literal" ? GHE : null;
+        const identity = cache === "valid" ? CACHED : cache !== "none" && accepts ? CACHED : OTHER;
         table.push({
           cell,
           identity: result.directIntegrationId ?? "codex",
           host: result.directBaseUrl,
           probed: seen.length > 0,
+          slot: {
+            identity: state.readProfileSlot(null).integrationIdentity,
+            pair: state.readProfileCopilotHostCache(null, null, literal).kind,
+          },
         });
         expected.push({
           cell,
           // A valid pair replays; anything else selects on the host in use, the cached id first.
-          identity: cache === "valid" ? CACHED : cache !== "none" && accepts ? CACHED : OTHER,
+          identity,
           host: hostInUse[host],
           probed: cache !== "valid",
+          // The accepted identity replaces the slot's, and its pair is written for the host in use,
+          // so the next call replays it: the persisted half of the rule.
+          slot: { identity, pair: "valid" },
         });
         // Under a literal nothing reaches any other host.
         if (host === "literal") expect(seen.every((o) => o === GHE)).toBe(true);

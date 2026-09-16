@@ -111,8 +111,9 @@ export function fenceUnfencedBlocks(content: string): string {
 }
 
 /** Every FENCED launchers block goes whole, with the blank line its writer put before it. An
- *  unfenced one that fenceUnfencedBlocks did not recognize is not ours to bound and stays; its
- *  extent search stops at the next opening marker so it can never borrow a later block's fence. */
+ *  unfenced one that fenceUnfencedBlocks did not recognize is not ours to bound and stays: its
+ *  extent search stops at any other fence line, so it can never borrow a later block's fence or
+ *  swallow the main block. */
 function stripLaunchersBlocks(content: string): string {
   const lines = content.split("\n");
   const bare = (line: string | undefined): string => (line ?? "").replace(/\r$/, "");
@@ -120,7 +121,7 @@ function stripLaunchersBlocks(content: string): string {
     for (let j = start + 1; j < lines.length; j++) {
       const line = bare(lines[j]);
       if (line === LAUNCHERS_MARKER_END) return j;
-      if (line === LAUNCHERS_MARKER) return -1;
+      if (FENCE_LINES.includes(line)) return -1;
     }
     return -1;
   };

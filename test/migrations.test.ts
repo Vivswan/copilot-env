@@ -313,6 +313,9 @@ test("convertShellBlocks fences the 3.5.6 rc block, drops the launchers block, a
   expect(convertShellBlocks(borrowed)).toBe(
     `# copilot-env launchers\nexport KEEP=1\nexport AFTER=1\n`,
   );
+  // Nor does it reach across the MAIN block to a stray launchers end fence behind it.
+  const crossing = `# copilot-env launchers\n${main}\n${MARKER_END}\n# copilot-env launchers end\n`;
+  expect(convertShellBlocks(crossing)).toBe(crossing);
   // The PowerShell pair, CRLF: the fence adopts the file's line ending.
   const ps = `${MARKER}\r\n$AgentsPs1 = "C:\\x\\agents.ps1"\r\n` +
     `if (Test-Path $AgentsPs1) { . $AgentsPs1 }\r\nWrite-Host after\r\n`;

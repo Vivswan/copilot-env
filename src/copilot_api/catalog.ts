@@ -2,16 +2,17 @@
 // discovery.ts runs its own under each identity it probes.
 // Failures THROW with actionable messages; best-effort callers catch.
 //   proxy  -> the running local daemon's GET /models
-//   direct -> api.githubcopilot.com under the identity the credential is accepted by (integration_identity.ts)
+//   direct -> api.githubcopilot.com under the identity the Direct agents bake (integration_identity.ts)
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig } from "./config.ts";
 import { Credential } from "./credential.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
 import {
+  CODEX_EXEC_USER_AGENT,
   DEFAULT_COPILOT_API_BASE,
-  INTEGRATION_ID_HEADER,
+  directClientHeaders,
   type ProbeFetch,
-  resolvePassthroughIntegrationId,
+  resolveDirectIntegrationId,
 } from "./integration_identity.ts";
 import { copilotApiResolvePort } from "./port.ts";
 import type { Profile } from "./profile.ts";
@@ -56,12 +57,14 @@ export async function fetchRawModels(
     : new Credential(undefined, profile).resolveWithReason();
   if (resolved.token === null) throw new Error(resolved.reason);
   const token = resolved.token;
-  // The catalog endpoint gates on the same client identity as inference, so the fetch resolves one: a
-  // configured pin wins, a non-PAT token takes vscode-chat unprobed, and only a PAT is probed.
-  //   a fine-grained PAT     -> rejected under the default identity; it needs copilot-developer-cli
+  // Copilot gates the catalog per client identity, so this fetch carries the header set the Direct
+  // agents send (directClientHeaders) under the id they bake: a configured pin wins, a non-PAT token
+  // takes the default Codex identity unprobed, and only a PAT is probed. Anything else lists models
+  // the agents' own requests may not be served. The User-Agent is version-free like web_search.ts's:
+  // the versioned codexUserAgent lives in the codex layer, which this module must not import.
   //   the probe's apiBase    -> the host this fetch uses, so its verdict is never rendered against a different host
   //   the probe's narration  -> stderr: `agent auth --get` runs this fetch and its stdout is the token
-  const integrationId = await resolvePassthroughIntegrationId(token, {
+  const integrationId = await resolveDirectIntegrationId(token, CODEX_EXEC_USER_AGENT, {
     pinned: new CopilotEnvConfig().pinnedIntegrationId(),
     apiBase: DEFAULT_COPILOT_API_BASE,
     fetchImpl: opts.fetchImpl,
@@ -71,8 +74,8 @@ export async function fetchRawModels(
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   const res = await fetchImpl(DIRECT_MODELS_URL, {
     headers: {
+      ...directClientHeaders(CODEX_EXEC_USER_AGENT, integrationId),
       Authorization: `Bearer ${token}`,
-      [INTEGRATION_ID_HEADER]: integrationId,
     },
     signal: opts.signal === undefined
       ? AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS)

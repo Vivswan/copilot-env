@@ -4,6 +4,7 @@ import { CODEX_IDENTITY_NAME } from "../src/copilot_api/env_config.ts";
 import {
   autoIdentityFor,
   bakedIntegrationId,
+  CODEX_EXEC_USER_AGENT,
   COPILOT_CLI_INTEGRATION_ID,
   COPILOT_SANDBOX_INTEGRATION_ID,
   DEFAULT_COPILOT_API_BASE,
@@ -403,6 +404,17 @@ test("the preload's copied header literal stays in step with the module's (drift
   expect(shim).toContain(`const INTEGRATION_ID_HEADER = "${INTEGRATION_ID_HEADER}"`);
 });
 
+/** The exact header set a Direct agent's request carries (this layer's version-free UA), lower-cased
+ *  the way `Headers` reports names. */
+function agentWireHeaders(id: string | null, token: string): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries({
+      ...directClientHeaders(CODEX_EXEC_USER_AGENT, id),
+      Authorization: `Bearer ${token}`,
+    }).map(([name, value]) => [name.toLowerCase(), value]),
+  );
+}
+
 test("fetchRawModels(direct): a caller deadline aborts the identity probe chain itself", async () => {
   // The Codex catalog refresh runs inside `agent auth --get`'s bounded budget: its
   // deadline must end the pending REQUESTS (a PAT chains identity probes before the
@@ -437,18 +449,23 @@ test("fetchRawModels(direct): a caller deadline aborts the identity probe chain 
   expect(abortReasons).toContain(sentinel);
 });
 
-test("fetchRawModels(direct) probes and fetches ONE host, with the resolved identity", async () => {
+test("fetchRawModels(direct) probes and fetches ONE host under the Direct agents' identity", async () => {
   // A PAT's identity must be probed against the SAME host the catalog request then hits;
   // probing a discovered account host while fetching the public one renders the verdict
-  // against a host this request never touches.
+  // against a host this request never touches. And the candidates are the DIRECT agents'
+  // (the id-less Codex identity first), never the proxy daemon's vscode-chat family: Copilot
+  // gates the catalog per identity, so a list fetched as the daemon is not what Codex is served.
   const { fetchRawModels, DIRECT_MODELS_URL } = await import("../src/copilot_api/catalog.ts");
 
   const seen: string[] = [];
+  const sent: Record<string, string>[] = [];
   const accepted: string[] = [];
   const respond = (input: string | URL | Request, init?: RequestInit): Response => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     seen.push(url);
-    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+    const headers = new Headers(init?.headers);
+    sent.push(Object.fromEntries(headers.entries()));
+    const id = headers.get(INTEGRATION_ID_HEADER);
     // Only the CLI identity is accepted -- the PAT case, which forces a real probe.
     if (id !== COPILOT_CLI_INTEGRATION_ID) {
       return new Response("PATs not supported", { status: 400 });
@@ -475,4 +492,26 @@ test("fetchRawModels(direct) probes and fetches ONE host, with the resolved iden
   // The winning probe and the catalog GET both carried the settled identity.
   expect(accepted.length).toBe(2);
   expect(accepted.every((id) => id === COPILOT_CLI_INTEGRATION_ID)).toBe(true);
+  // The first candidate is the id-less Codex default; the GET carries exactly what Codex bakes.
+  expect(sent[0]).toEqual(agentWireHeaders(null, "github_pat_x"));
+  expect(sent[sent.length - 1]).toEqual(
+    agentWireHeaders(COPILOT_CLI_INTEGRATION_ID, "github_pat_x"),
+  );
+});
+
+test("fetchRawModels(direct): a non-PAT credential fetches once, under the default Codex identity", async () => {
+  // gho_/device tokens are never probed (the default identity accepts them), so the one GET must
+  // already carry the agents' header set: no Copilot-Integration-Id, and the codex_exec User-Agent
+  // instead of the runtime's own.
+  const { fetchRawModels } = await import("../src/copilot_api/catalog.ts");
+  const sent: Record<string, string>[] = [];
+  const body = await fetchRawModels("direct", {
+    directToken: "gho_x",
+    fetchImpl: (_input, init) => {
+      sent.push(Object.fromEntries(new Headers(init?.headers).entries()));
+      return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    },
+  });
+  expect(body).toEqual({ data: [] });
+  expect(sent).toEqual([agentWireHeaders(null, "gho_x")]);
 });

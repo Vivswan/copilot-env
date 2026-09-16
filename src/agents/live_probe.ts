@@ -11,11 +11,13 @@
 //   CLI absent   -> one minimal call to the wire with that model, else the proxy
 //
 //   a provider env var in the shell        -> dropped, so a leaked export cannot hijack auth
+//   the caller's cwd                       -> replaced by the temp home, so a project's own
+//                                             .claude/settings.json or codex trust never colours it
 //   a failure past DEFAULT_PROBE_RETRIES   -> the proxy
 //   a FAILED attempt near PROBE_TIMEOUT_MS -> no further retry; a slow SUCCESS still wins
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
 import type { DirectSmoke } from "../copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
@@ -128,8 +130,14 @@ export interface ProbeOutcome {
 export interface DirectProbeDeps {
   /** Look for a CLI binary on PATH / via nvm, failure arm kept (see CommandLook). */
   findCommand?: (cmd: string) => CommandLook;
-  /** Run the agent CLI's read-only smoke prompt at its RESOLVED path (ok = exit 0). */
-  runProbe?: (cliPath: string, args: string[], env: Record<string, string>) => ProbeOutcome;
+  /** Run the agent CLI's read-only smoke prompt at its RESOLVED path (ok = exit 0), with `cwd`
+   *  the throwaway home the probe spawns from. */
+  runProbe?: (
+    cliPath: string,
+    args: string[],
+    env: Record<string, string>,
+    cwd: string,
+  ) => ProbeOutcome;
   /** Extra live-call retries on failure (default DEFAULT_PROBE_RETRIES). */
   retries?: number;
   /** Base backoff ms between retries (default DEFAULT_PROBE_RETRY_DELAY_MS; 0 in tests). */
@@ -185,16 +193,20 @@ function defaultRunProbe(
   cliPath: string,
   args: string[],
   env: Record<string, string>,
+  cwd: string,
 ): ProbeOutcome {
   const s = cliSpawn(cliPath, args);
   // `env` is the COMPLETE child environment probeDirectWorks built; re-merging process.env here
-  // would bring the cleared provider vars back.
+  // would bring the cleared provider vars back. `cwd` is the throwaway home, never the caller's:
+  // both CLIs read project-level config from the working directory (src/codex/catalog.ts pins
+  // its catalog probe the same way).
   //
   //   stdout/stderr piped -> a failure carries a reason (summarizeProbeFailure)
   //   maxBuffer 16 MB     -> codex prints tens of KB of model catalog, and the 1 MB default sets
   //                          result.error (ENOBUFS) on a probe that exited 0
   // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
   const result = spawnSync(s.file, s.args, {
+    cwd,
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
@@ -214,6 +226,19 @@ function defaultRunProbe(
       result.stderr ?? "",
     ),
   };
+}
+
+/** POSIX `command -v` answers with a path that can be RELATIVE (dash, a relative or empty PATH
+ *  entry), which the child could not follow once it has moved into the temp home; it is anchored to
+ *  the caller's cwd here. Windows findCommand answers with the bare name, left for PATH to resolve. */
+function anchorToCallerCwd(found: string): string {
+  return process.platform === "win32" ? found : resolve(found);
+}
+
+/** The bin dir a found command contributes to the child PATH; a bare name has none. */
+function binDir(found: string): string | null {
+  const dir = dirname(found);
+  return dir === "." ? null : dir;
 }
 
 /** The RESOLVED CLI path is threaded to the spawn, or findCommand's nvm fallback is defeated by
@@ -276,8 +301,9 @@ export async function probeDirectWorks(
     logger.log(`    • ${picked.detail} → using the local proxy`);
     return false;
   }
-  const cliPath = cliLook.path;
-  const ghPath = find("gh").path;
+  const cliPath = anchorToCallerCwd(cliLook.path);
+  const ghLook = find("gh").path;
+  const ghPath = ghLook === null ? null : anchorToCallerCwd(ghLook);
   logger.log(
     `    • running a read-only smoke prompt through ${descriptor.cli} with ${picked.model} (live model call, a few seconds; pass --direct to skip) ...`,
   );
@@ -289,7 +315,7 @@ export async function probeDirectWorks(
     // Provider families stripped (why: PROVIDER_ENV_PREFIXES); the resolved CLI's and gh's bin
     // dirs lead PATH so an nvm-only toolchain resolves (why: childEnvWithPath).
     const childEnv = childEnvWithPath(
-      [dirname(cliPath), ghPath === null ? null : dirname(ghPath)],
+      [binDir(cliPath), ghPath === null ? null : binDir(ghPath)],
       {
         extra: { [descriptor.homeEnvVar]: tmpHome },
         omit: (upper) => PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)),
@@ -308,7 +334,7 @@ export async function probeDirectWorks(
         sleepSync(retryDelayMs * attempt);
       }
       const startedAt = Date.now();
-      const outcome = runProbe(cliPath, args, childEnv);
+      const outcome = runProbe(cliPath, args, childEnv, tmpHome);
       if (outcome.ok) {
         logger.success("    GitHub Copilot Direct is available");
         return true;

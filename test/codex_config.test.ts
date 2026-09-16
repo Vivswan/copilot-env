@@ -667,6 +667,66 @@ test("detectCodexDirect: with no codex CLI the endpoint smoke pings the first co
   });
 });
 
+test("detectCodexDirect: the probe home carries the Direct provider table alone, spawned from inside it", async () => {
+  isolate();
+  // The user's real wiring adds web_search and the generated catalog reference; the probe must
+  // judge Direct without them, since a catalog produced under another credential (or a stale one)
+  // would colour the verdict. The provider table itself is the real write's, byte for byte.
+  enableCatalog();
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
+  const catalog = {
+    "id": "gpt-6",
+    "capabilities": {
+      "type": "chat",
+      "limits": { "max_context_window_tokens": 272000, "max_prompt_tokens": 260000 },
+    },
+    "model_picker_enabled": true,
+    "supported_endpoints": ["/responses"],
+  };
+  let probeDoc: Record<string, unknown> | null = null;
+  let spawn: { cwd: string; home: string } | null = null;
+  const verdict = await detectCodexDirect("copilot-developer-cli", "ghu_tok", {
+    findCommand: (c: string) => ({ path: `/bin/${c}` }),
+    runProbe: (_cli: string, _args: string[], env: Record<string, string>, cwd: string) => {
+      const home = env.CODEX_HOME ?? "";
+      spawn = { cwd, home };
+      // The table's auth.command runs `agent auth --get` with this env, and its catalog self-heal
+      // targets $CODEX_HOME: it must neither add the reference here nor ledger this path.
+      process.env.CODEX_HOME = home;
+      syncCodexCatalogReference();
+      probeDoc = asRecord(parse(readFileSync(join(home, "config.toml"), "utf8")));
+      return { ok: true };
+    },
+    retryDelayMs: 0,
+    fetchImpl: () =>
+      Promise.resolve(new Response(JSON.stringify({ data: [catalog] }), { status: 200 })),
+  });
+  delete process.env.CODEX_HOME;
+  expect(verdict).toBe(true);
+  const seen = spawn as unknown as { cwd: string; home: string };
+  expect(seen.cwd).toBe(seen.home);
+  expect(new OwnershipLedger().ownedPaths("codexCatalog")).toEqual([]);
+
+  const realHome = join(dir, ".codex");
+  configureCodexConfig(realHome, {
+    mode: "direct",
+    credential: COMMAND,
+    directIntegrationId: "copilot-developer-cli",
+  });
+  const realDoc = asRecord(parse(readFileSync(join(realHome, "config.toml"), "utf8")));
+  const probe = probeDoc as unknown as Record<string, unknown>;
+  expect(Object.keys(probe).sort()).toEqual(
+    ["analytics", "feedback", "model_provider", "model_providers"],
+  );
+  // Selected under a non-managed id (what keeps the self-heal off), the table itself the real one.
+  expect(probe.model_provider).toBe("copilot-env-probe");
+  expect(probe.model_providers).toEqual({
+    "copilot-env-probe": asRecord(realDoc.model_providers)["copilot-env"],
+  });
+  expect([realDoc.web_search, realDoc.model_catalog_json]).toEqual(["live", catalogFile]);
+});
+
 test("proxy mode rejects a base_url containing invalid characters", () => {
   isolate();
 
@@ -728,15 +788,14 @@ test("the catalog reference is ledger-recorded on write and released on the disa
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(false);
 });
 
-test("a write to an unknown home (the probe's throwaway dir) never enters the ledger", () => {
+test("a write to an unknown home never enters the ledger", () => {
   isolate();
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
   enableCatalog();
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
 
-  // detectCodexDirect writes a temp-home config exactly like this: the key is
-  // still written (inert in a throwaway config), but a home outside the cleanup
-  // sweep must never be claimed -- the ledger would accumulate dead tmp paths.
+  // A write to a home outside the cleanup sweep (a test dir, a hand-passed one) still writes the
+  // key (inert there), but must never be claimed -- the ledger would accumulate dead paths.
   const probeHome = join(dir, "probe-home");
   configureCodexConfig(probeHome, {
     mode: "direct",
@@ -1545,7 +1604,6 @@ test("agent codex --check reports a Direct config's service_tier line and never 
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    quiet: true,
   });
   const checkLine = async (): Promise<string | undefined> => {
     const lines: string[] = [];
@@ -1579,7 +1637,6 @@ test("agent codex --check reports a Direct config's service_tier line and never 
     configureCodexConfig(codexHome, {
       mode: "direct",
       credential: COMMAND,
-      quiet: true,
     });
     expect(asRecord(parse(readFileSync(configPath, "utf8"))).service_tier).toBe(tier);
   }

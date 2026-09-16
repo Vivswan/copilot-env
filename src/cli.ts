@@ -529,8 +529,7 @@ program
   .option(
     "--pricing-url <url>",
     "OpenRouter models API URL for the public price list (cached for a day), overriding the " +
-      `pricing-url config key for this run (built-in: ${OPENROUTER_MODELS_URL}); the host must ` +
-      "be one the CLI's network policy permits.",
+      `pricing-url config key for this run (built-in: ${OPENROUTER_MODELS_URL}).`,
   )
   .option(
     "--no-index",

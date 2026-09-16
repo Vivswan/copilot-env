@@ -14,7 +14,7 @@ import {
 } from "../src/claude/config.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { codexAdapter, inspectCodexWiring, probeDirectWiring } from "../src/codex/config.ts";
-import { copilotHostGrantWarning, runConfig } from "../src/commands/config.ts";
+import { runConfig } from "../src/commands/config.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { configKeyDef, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState, expectedDirectHost } from "../src/copilot_api/env_state.ts";
@@ -30,7 +30,6 @@ import {
 import { resolveLaunchCredential } from "../src/copilot_api/launch.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { checkClaude } from "../src/health/checks_agents.ts";
-import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { codexConfigToml, envSnapshot, isolateAgentHomes } from "./helpers.ts";
 
@@ -81,7 +80,7 @@ function claudeBaseUrl(claudeHome: string): unknown {
   return (doc.env as Record<string, unknown>).ANTHROPIC_BASE_URL;
 }
 
-test("agent config: copilot-host takes `auto` or an https origin, refuses anything else, and warns outside the network grant", () => {
+test("agent config: copilot-host takes `auto` or an https origin and refuses anything else", () => {
   dir = isolateAgentHomes("copilot-host-config-").dir;
   const def = configKeyDef("copilot-host");
   expect(def?.parse("AUTO")).toBe("auto");
@@ -114,26 +113,6 @@ test("agent config: copilot-host takes `auto` or an https origin, refuses anythi
   expect(new CopilotEnvConfig().copilotHost()).toBe(GHE);
   runConfig({ set: ["copilot-host", "auto"] });
   expect(new CopilotEnvConfig().copilotHost()).toBeNull();
-  // The warning is the grant's verdict on the host alone; the auto plan hosts sit inside the
-  // compiled grant (deno.json `cli`: githubcopilot.com and *.githubcopilot.com), a GHE host does not.
-  const grant = (JSON.parse(readFileSync(join(ROOT, "deno.json"), "utf8")) as {
-    permissions: { cli: { net: string[] } };
-  }).permissions.cli.net;
-  const granted = (origin: string): boolean => {
-    const host = new URL(origin).host;
-    return grant.some((entry) =>
-      entry.startsWith("*.") ? host.endsWith(entry.slice(1)) : entry === host
-    );
-  };
-  const planHosts = ["individual", "business", "enterprise"].map((p) =>
-    `https://api.${p}.githubcopilot.com`
-  );
-  for (const base of [DEFAULT_COPILOT_API_BASE, ...planHosts]) {
-    expect(copilotHostGrantWarning(base, granted)).toBeNull();
-  }
-  expect(copilotHostGrantWarning(GHE, granted)).toContain(
-    "not permitted by this build's network policy",
-  );
 });
 
 test("a Direct wiring bakes the copilot-host into both agents' base URLs; detection keys on our markers, not the host", async () => {

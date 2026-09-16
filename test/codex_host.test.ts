@@ -951,7 +951,7 @@ skipWin(
 // --- the effective home and the shell's export ---------------------------------
 
 skipWin(
-  "resolveCodexHome: the key off honours a CODEX_HOME export (never OUR dead farm export); the key on makes the live record the home and notes a differing export",
+  "resolveCodexHome: key off honours a CODEX_HOME export (never OUR farm export); key on makes the live record the home and notes a differing export",
   () => {
     const { sharedRoot, hostHome } = isolate();
     const own = join(dir, "my-own-codex");

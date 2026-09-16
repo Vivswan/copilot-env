@@ -97,7 +97,8 @@ export interface CodexHomeResolution {
 
 /**
  *   codex-host off, CODEX_HOME exported      -> the export (Codex's own convention), unless it is
- *                                               OUR dead farm export
+ *                                               OUR farm export, built or not: a write through it
+ *                                               would resurrect the removed farm as a plain dir
  *   codex-host off, nothing exported         -> ~/.codex
  *   codex-host on, farm recorded and on disk -> the farm; a differing export is noted, not honoured
  *   codex-host on, no live record            -> as off (the next `agent codex` builds and records)

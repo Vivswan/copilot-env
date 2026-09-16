@@ -456,7 +456,7 @@ function stubIdentitySurvey(designated = "https://api.enterprise.githubcopilot.c
       new Response(JSON.stringify({ data: Array.from({ length: size }, () => ({})) }), {
         status: 200,
       });
-    if (url.startsWith(CONFIGURED_HOST)) return Promise.resolve(catalog(9));
+    if (new URL(url).origin === CONFIGURED_HOST) return Promise.resolve(catalog(9));
     const enterprise = url.startsWith("https://api.enterprise.");
     const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
     if (id === COPILOT_CLI_INTEGRATION_ID) return Promise.resolve(catalog(enterprise ? 37 : 5));

@@ -58,9 +58,9 @@ agent config --del idle-timeout       # revert one to its default
 
 `auto` resolves the host per credential. The client identity is settled first (`integration-id`, probed on `https://api.githubcopilot.com` as before), then one `GET /models` under that identity's headers decides:
 
-- `https://api.githubcopilot.com` when it answers 2xx, 400 (an identity rejection), or 401 (a bad token);
-- the account's designated host (`endpoints.api` of `api.github.com/copilot_internal/user`, one of `api.individual.` / `api.business.` / `api.enterprise.githubcopilot.com`) when it answers 403, 404, 5xx, or fails at the network level;
-- `https://api.githubcopilot.com` again when that lookup fails too.
+- the account's designated host (`endpoints.api` of `api.github.com/copilot_internal/user`, one of `api.individual.` / `api.business.` / `api.enterprise.githubcopilot.com`) when it answers 403, 404, 5xx, or fails at the network level; a PAT's identity is then probed again on that host;
+- `https://api.githubcopilot.com` again when that lookup fails too;
+- `https://api.githubcopilot.com` on any other answer: 2xx serves, 400 is an identity rejection and 401 a bad token (identical on every host), a transient 408 or 429 says nothing about the host.
 
 A literal `https://` origin skips the probe (a GitHub Enterprise Server serves Copilot at `https://copilot-api.<ghe-domain>`). Either way one host serves everything after the identity probe:
 

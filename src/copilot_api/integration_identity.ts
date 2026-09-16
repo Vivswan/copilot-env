@@ -61,6 +61,17 @@ export function directBaseUrl(): string {
   return new CopilotEnvConfig().copilotHost() ?? DEFAULT_COPILOT_API_BASE;
 }
 
+/** Health's note for a Direct config baked on a Copilot host other than the `copilot-host` literal:
+ *  still Direct, still green, but the next rewire moves it. Empty under `auto` (that host is only
+ *  known by probing) and when the bake matches. */
+export function directHostDrift(bakedBaseUrl: string): string {
+  const literal = new CopilotEnvConfig().copilotHost();
+  if (literal === null || !URL.canParse(bakedBaseUrl)) return "";
+  return new URL(bakedBaseUrl).origin === literal
+    ? ""
+    : ` (the next rewire moves it to ${literal}: copilot-host)`;
+}
+
 const PROBE_TIMEOUT_MS = 5000;
 
 /** Just the call signature, so a plain stub (or globalThis.fetch, which also has `.preconnect`) is
@@ -402,9 +413,10 @@ export async function surveyIntegrationIdentities(
   };
 }
 
-/** A blocked generic host is a status the credential could never draw for an identity reason: 2xx,
- *  400 (identity rejection), and 401 (bad token, identical everywhere) keep it; 403, 404, 5xx, and a
- *  network-level failure mean the account is served elsewhere. */
+/** A blocked generic host is a status the credential could never draw for an identity reason: 403,
+ *  404, 5xx, and a network-level failure mean the account is served elsewhere. Everything else
+ *  keeps it: 2xx serves, 400 is an identity rejection and 401 a bad token (identical on every host),
+ *  and a transient status (408, 429, ...) says nothing about the host. */
 type HostProbe = { kind: "kept" } | { kind: "blocked"; detail: string };
 
 async function probeGenericHost(
@@ -420,8 +432,10 @@ async function probeGenericHost(
       signal: requestSignal(timeoutMs, signal),
     });
     const body = await res.text().catch(() => "");
-    if (res.ok || res.status === 400 || res.status === 401) return { kind: "kept" };
-    return { kind: "blocked", detail: truncate(`${res.status} ${body}`) };
+    const blocked = res.status === 403 || res.status === 404 || res.status >= 500;
+    return blocked
+      ? { kind: "blocked", detail: truncate(`${res.status} ${body}`) }
+      : { kind: "kept" };
   } catch (e) {
     return { kind: "blocked", detail: truncate(`network error: ${errMessage(e)}`) };
   }
@@ -449,9 +463,10 @@ const hostMemo = new Map<string, Promise<string>>();
  *
  *   literal set                     -> the literal
  *   no token                        -> the generic host, nothing probed
- *   generic /models 2xx, 400, 401   -> the generic host
- *   anything else                   -> the account's designated host (COPILOT_USER_URL endpoints.api)
+ *   generic /models 403, 404, 5xx, or a network failure
+ *                                   -> the account's designated host (COPILOT_USER_URL endpoints.api)
  *   ... and that lookup fails       -> the generic host
+ *   any other answer                -> the generic host
  */
 export function resolveCopilotHost(
   token: string | null,

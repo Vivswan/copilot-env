@@ -286,8 +286,8 @@ test("resolveCopilotHost: 2xx/400/401 keep the generic host; 403/404/5xx/network
     return { host, lookedUp, probedAs };
   };
   // Kept: a 2xx serves the credential; 400 is an identity rejection and 401 a bad token, both
-  // identical on every host, so neither says anything about the host.
-  for (const status of [200, 400, 401]) {
+  // identical on every host; a transient 408/429 says nothing about the host either.
+  for (const status of [200, 400, 401, 408, 429]) {
     expect(await rule(status, "ok")).toEqual({
       host: DEFAULT_COPILOT_API_BASE,
       lookedUp: false,

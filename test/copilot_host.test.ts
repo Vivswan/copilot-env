@@ -9,7 +9,7 @@ import { runAgentConfig } from "../src/agents/configure.ts";
 import { resolveAndPersistDirectWiring } from "../src/agents/profile_wiring.ts";
 import { bakedClaudeDirectIntegrationId, claudeAdapter } from "../src/claude/config.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
-import { codexAdapter, inspectCodexWiring } from "../src/codex/config.ts";
+import { codexAdapter, inspectCodexWiring, probeDirectWiring } from "../src/codex/config.ts";
 import { copilotHostGrantWarning, runConfig } from "../src/commands/config.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { configKeyDef, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -243,6 +243,40 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
   new Credential(state).store("gh-token", "ghp_rotated");
   expect(state.readProfileSlot(null).integrationIdentity).toBeNull();
   expect(state.readProfileCopilotHost(null, null)).toBeNull();
+});
+
+test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is probed again on the host that serves it", async () => {
+  dir = isolateAgentHomes("copilot-host-reprobe-").dir;
+  const seen: { host: string; id: string | null }[] = [];
+  // The generic host is blocked for every identity (403 -> inconclusive, so the identity probe
+  // keeps its default); the account's host accepts the CLI id alone.
+  setIntegrationProbeFetch((input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/copilot_internal/user")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ endpoints: { api: ENTERPRISE } }), { status: 200 }),
+      );
+    }
+    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+    seen.push({ host: new URL(url).origin, id });
+    if (new URL(url).origin === DEFAULT_COPILOT_API_BASE) {
+      return Promise.resolve(new Response("forbidden", { status: 403 }));
+    }
+    return Promise.resolve(
+      id === COPILOT_CLI_INTEGRATION_ID
+        ? new Response(JSON.stringify({ data: [] }), { status: 200 })
+        : new Response("Personal Access Tokens are not supported", { status: 400 }),
+    );
+  });
+  expect(await probeDirectWiring(null, "github_pat_x")).toEqual({
+    directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
+    directBaseUrl: ENTERPRISE,
+  });
+  // Without the second pass the default identity (no header) would be baked for a host that 400s it.
+  expect(seen.filter((s) => s.host === ENTERPRISE).map((s) => s.id)).toEqual([
+    null,
+    COPILOT_CLI_INTEGRATION_ID,
+  ]);
 });
 
 test("resolveDaemonHost: the daemon is pinned under the identity it will send; a credential-less daemon is pinned only by a literal", async () => {

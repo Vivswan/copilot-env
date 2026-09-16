@@ -893,11 +893,25 @@ export async function probeDirectWiring(
     : await resolveDirectIntegrationId(resolved, userAgent, {
       pinned: config.pinnedIntegrationId(),
     });
+  const literal = config.copilotHost();
   const directBaseUrl = await resolveCopilotHost(
     resolved,
     directClientHeaders(userAgent, directIntegrationId),
-    { literal: config.copilotHost() },
+    { literal },
   );
+  // Under `auto`, a blocked generic host leaves the identity probe inconclusive (its default), so a
+  // PAT is probed again where the account is served: that host is where the identity must be accepted.
+  if (
+    known === undefined && literal === null && config.pinnedIntegrationId() === null &&
+    directBaseUrl !== DEFAULT_COPILOT_API_BASE
+  ) {
+    return {
+      directIntegrationId: await resolveDirectIntegrationId(resolved, userAgent, {
+        apiBase: directBaseUrl,
+      }),
+      directBaseUrl,
+    };
+  }
   return { directIntegrationId, directBaseUrl };
 }
 

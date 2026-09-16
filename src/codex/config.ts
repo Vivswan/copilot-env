@@ -96,7 +96,6 @@ type CodexModeRequest =
   | (Extract<ManagedWrite, { mode: "proxy" }> & { baseUrl: string });
 
 interface CodexWriteCommon {
-  codexExecVersion?: string | null;
   /** Suppress the catalog-verdict warning (the direct probe's throwaway write). */
   quiet?: boolean;
   /** Wire a NAMED profile's tables instead of the default selection. */
@@ -116,12 +115,13 @@ export type CodexWriteRequest =
 
 /** Copilot's Anthropic surface REJECTS some models (claude-fable-5, verified live) for a
  *  version-LESS `codex_exec` UA while accepting any versioned form (the gate is the shape, not the
- *  value), so the managed identity must never go bare. A real release (npm-latest at pin time)
- *  keeps it plausible. */
+ *  value), so the managed identity must never go bare: the last resort when neither the installed
+ *  codex nor npm answers (codexUserAgentVersion). A real release keeps it plausible. */
 export const FALLBACK_CODEX_UA_VERSION = "0.152.0";
 
-export function codexUserAgent(version: string | null = codexUserAgentVersion()): string {
-  return `${CODEX_EXEC_USER_AGENT}/${version ?? FALLBACK_CODEX_UA_VERSION}`;
+/** Both agents' Direct headers carry this; resolved once per process (the catalog module's memo). */
+export function codexUserAgent(): string {
+  return `${CODEX_EXEC_USER_AGENT}/${codexUserAgentVersion() ?? FALLBACK_CODEX_UA_VERSION}`;
 }
 
 /** The unified table doesn't encode mode in its name, so mode is read from base_url; anything but
@@ -167,15 +167,17 @@ function credentialTables(
 // managed keys win, user-added keys in the same table survive the merge.
 function managedDirectProvider(
   credential: CredentialWiring,
-  codexExecVersion?: string | null,
   profile: Profile = null,
   directIntegrationId?: string | null,
+  // Resolved per WRITE (a default parameter runs at the call), so importing this module spawns
+  // nothing; MANAGED_PROVIDER_KEYS below passes a placeholder for the same reason.
+  userAgent: string = codexUserAgent(),
 ) {
   const { command, args } = agentLauncherCommand(agentAuthGetArgs(profile));
   // Most credentials carry no integration id (the Codex UA suffices; the builder omits it when
   // null, keeping the default byte-identical), but a fine-grained PAT is only accepted under
   // `copilot-developer-cli`.
-  const httpHeaders = directClientHeaders(codexUserAgent(codexExecVersion), directIntegrationId);
+  const httpHeaders = directClientHeaders(userAgent, directIntegrationId);
   return {
     "name": codexProviderId(profile),
     "base_url": DIRECT_BASE_URL,
@@ -214,18 +216,9 @@ export function managedProxyProvider(
   };
 }
 
-function managedProviderForMode(
-  request: CodexModeRequest,
-  codexExecVersion?: string | null,
-  profile: Profile = null,
-) {
+function managedProviderForMode(request: CodexModeRequest, profile: Profile = null) {
   if (request.mode === "direct") {
-    return managedDirectProvider(
-      request.credential,
-      codexExecVersion,
-      profile,
-      request.directIntegrationId,
-    );
+    return managedDirectProvider(request.credential, profile, request.directIntegrationId);
   }
   return managedProxyProvider(request.baseUrl, profile, request.credential);
 }
@@ -237,7 +230,7 @@ function managedProviderForMode(
 // `auth`, a command write a stale static `http_headers`).
 const COMMAND_SHAPE: CredentialWiring = { kind: "command" };
 const MANAGED_PROVIDER_KEYS: ReadonlySet<string> = new Set([
-  ...Object.keys(managedDirectProvider(COMMAND_SHAPE, null)),
+  ...Object.keys(managedDirectProvider(COMMAND_SHAPE, null, undefined, "codex_exec/0")),
   ...Object.keys(managedProxyProvider("http://managed-keys.invalid", null, COMMAND_SHAPE)),
   "env_key",
 ]);
@@ -753,7 +746,7 @@ export function configureCodexConfig(
   );
   providers[providerId] = {
     ...userKeys,
-    ...managedProviderForMode(modeRequest, request.codexExecVersion, profile),
+    ...managedProviderForMode(modeRequest, profile),
   };
   doc.model_providers = providers;
 

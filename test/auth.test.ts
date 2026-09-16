@@ -522,7 +522,7 @@ test("auth --identities stars what the agent configs bake, probes the pin, and n
     // and the disagreement said.
     configureCodexConfig(
       codexHome,
-      { mode: "direct", credential: { kind: "command" }, codexExecVersion: "1.0.0" },
+      { mode: "direct", credential: { kind: "command" } },
       NOOP_CATALOG_DEPS,
     );
     const split = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));

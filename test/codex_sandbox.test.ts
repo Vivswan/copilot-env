@@ -344,8 +344,9 @@ test("health: a launch Codex refuses to start gets no row, whatever the sandbox 
     ["a misspelled built-in parent", [
       'default_permissions = "child"',
       "[permissions.child]",
-      'extends = ":workspce"',
+      'extends = ":nope"',
     ], false],
+    ["a misspelled built-in as the selected profile", ['default_permissions = ":nope"'], false],
   ];
   for (const [name, top, legacyProfile] of refusedForAll) {
     expect(await sandboxRows(configToml("proxy", top, { legacyProfile })), name).toEqual([]);

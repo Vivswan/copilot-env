@@ -56,10 +56,13 @@ export function codexRefusesLaunch(configToml: TextReadResult | string, launch: 
   if (doc[PROFILE_KEY] !== undefined) return true;
   const permissions = doc[PERMISSIONS_KEY];
   if (permissions !== undefined && typeof permissions !== "string") return true;
-  if (
-    typeof permissions === "string" && !permissions.startsWith(":") &&
-    customProfileNetwork(doc, permissions) === "rejected"
-  ) return true;
+  if (typeof permissions === "string" && permissions.startsWith(":")) {
+    if (!BUILTIN_PARENTS.has(permissions) && permissions !== BUILTIN_FULL_ACCESS) return true;
+  } else if (
+    typeof permissions === "string" && customProfileNetwork(doc, permissions) === "rejected"
+  ) {
+    return true;
+  }
   const profiles = doc.profiles;
   if (launch !== null && isRecord(profiles) && profiles[launch] !== undefined) return true;
   const modes = [

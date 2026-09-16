@@ -1,6 +1,6 @@
-// The shared raw `/models` fetch (`agent models`, src/codex/catalog.ts, Desktop, web_search.ts);
-// discovery.ts runs its own under each identity it probes.
-// Failures THROW with actionable messages; best-effort callers catch.
+// The shared raw `/models` body (`agent models`, src/codex/catalog.ts, Desktop, web_search.ts);
+// discovery.ts fetches its own under each identity it probes. The request itself is
+// models_fetch.ts's. Failures THROW with actionable messages; best-effort callers catch.
 //   proxy  -> the running local daemon's GET /models
 //   direct -> the resolved Copilot host under the identity the CONSUMER names (DirectCatalogIdentity)
 import { CopilotAdminClient } from "./admin.ts";
@@ -15,14 +15,13 @@ import {
   selectDirectIdentityAndHost,
   selectPassthroughIdentityAndHost,
 } from "./integration_identity.ts";
+import { fetchModelCatalog } from "./models_fetch.ts";
 import { copilotApiResolvePort } from "./port.ts";
 import type { Profile } from "./profile.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
 /** Where the catalog comes from: upstream Copilot (direct) or the running local proxy. */
 export type CatalogSource = "direct" | "proxy";
-
-const DIRECT_FETCH_TIMEOUT_MS = 5000;
 
 /**
  * Copilot gates the catalog per client identity (identity-exact, discovery.ts), so WHOSE header set
@@ -96,16 +95,19 @@ export async function fetchRawModels(
       headers: { [INTEGRATION_ID_HEADER]: s.integrationId },
       apiBase: s.apiBase,
     }));
-  const url = `${apiBase}/models`;
-  const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
-  const res = await fetchImpl(url, {
-    headers: { ...headers, Authorization: `Bearer ${token}` },
-    signal: opts.signal === undefined
-      ? AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS)
-      : AbortSignal.any([opts.signal, AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS)]),
+  const got = await fetchModelCatalog({
+    host: apiBase,
+    token,
+    headers,
+    fetchImpl: opts.fetchImpl,
+    signal: opts.signal,
   });
-  if (!res.ok) {
-    throw new Error(`GET ${url} returned ${res.status} ${res.statusText}`);
+  switch (got.kind) {
+    case "ok":
+      return got.body;
+    case "http":
+      throw new Error(`GET ${apiBase}/models returned ${got.status} ${got.statusText}`);
+    default:
+      throw got.error;
   }
-  return res.json();
 }

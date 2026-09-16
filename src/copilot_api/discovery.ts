@@ -16,6 +16,7 @@ import {
   VSCODE_CHAT_INTEGRATION_ID,
 } from "./integration_identity.ts";
 import { type CatalogModel, ONE_M_SUFFIX, parseCatalogModels } from "./models.ts";
+import { fetchModelCatalog } from "./models_fetch.ts";
 import { CopilotEnvState } from "./env_state.ts";
 import { isDue } from "../autoupdate/due.ts";
 import { errMessage } from "../utils/error.ts";
@@ -23,7 +24,6 @@ import { createStderrLogger } from "../utils/logger.ts";
 
 const logger = createStderrLogger();
 
-const CATALOG_TIMEOUT_MS = 5000;
 const PING_TIMEOUT_MS = 20_000;
 /** Above every 200k window, comfortably below the 1M prompt caps. */
 const ONE_M_PROBE_TOKENS = 230_000;
@@ -67,12 +67,14 @@ export async function discoverServableClaudeModels(
   opts: DiscoveryOptions = {},
 ): Promise<DiscoveredClaudeModels> {
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
-  const headers = (id: string | null): Record<string, string> => ({
-    ...directClientHeaders(userAgent, id),
-    "Authorization": `Bearer ${token}`,
-  });
+  const own = wireHeaders(token, userAgent, integrationId);
 
-  const catalogBody = await fetchCatalog(fetchImpl, apiBase, headers(integrationId));
+  const catalogBody = await fetchCatalog(
+    fetchImpl,
+    apiBase,
+    token,
+    directClientHeaders(userAgent, integrationId),
+  );
   const advertised = parseCatalogModels(catalogBody);
   const models = [...advertised];
   const unlisted: string[] = [];
@@ -81,7 +83,8 @@ export async function discoverServableClaudeModels(
     const extras = await unadvertisedClaudeIds(
       fetchImpl,
       apiBase,
-      headers,
+      token,
+      userAgent,
       integrationId,
       advertised,
     );
@@ -97,12 +100,12 @@ export async function discoverServableClaudeModels(
       const key = `${credential}|${integrationId ?? "default"}|${id}`;
       let verdict = state.readModelVerdict(key);
       if (verdict === null || isDue(verdict.atMs, now)) {
-        const servable = await pingModel(fetchImpl, apiBase, headers(integrationId), id, "x");
+        const servable = await pingModel(fetchImpl, apiBase, own, id, "x");
         const is1m = servable === "yes"
           ? await pingModel(
             fetchImpl,
             apiBase,
-            headers(integrationId),
+            own,
             id,
             "x ".repeat(ONE_M_PROBE_TOKENS),
           )
@@ -141,29 +144,37 @@ async function credentialDigest(hostAndToken: string): Promise<string> {
   ).join("");
 }
 
-/** The body is drained before throwing so a keep-alive socket stays reusable. */
+/** The raw body; a failure throws with the status (an unusable 2xx body or a network error rethrows
+ *  its own error). */
 async function fetchCatalog(
   fetchImpl: ProbeFetch,
   apiBase: string,
+  token: string,
   headers: Record<string, string>,
 ): Promise<unknown> {
-  const url = `${apiBase}/models`;
-  const res = await fetchImpl(url, {
-    headers,
-    signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    await res.text().catch(() => "");
-    throw new Error(`GET ${url} returned ${res.status}`);
+  const got = await fetchModelCatalog({ host: apiBase, token, headers, fetchImpl });
+  switch (got.kind) {
+    case "ok":
+      return got.body;
+    case "http":
+      throw new Error(`GET ${apiBase}/models returned ${got.status}`);
+    default:
+      throw got.error;
   }
-  return await res.json();
+}
+
+/** The wiring's exact bytes plus the credential, for the POSTs; the GETs go through
+ *  fetchModelCatalog, which adds the bearer itself. */
+function wireHeaders(token: string, userAgent: string, id: string | null): Record<string, string> {
+  return { ...directClientHeaders(userAgent, id), "Authorization": `Bearer ${token}` };
 }
 
 /** Empty when no gated trigger id exists or the oracle's error shape is not understood: never a guess. */
 async function unadvertisedClaudeIds(
   fetchImpl: ProbeFetch,
   apiBase: string,
-  headers: (id: string | null) => Record<string, string>,
+  token: string,
+  userAgent: string,
   integrationId: string | null,
   advertised: CatalogModel[],
 ): Promise<string[]> {
@@ -173,7 +184,12 @@ async function unadvertisedClaudeIds(
   for (const id of KNOWN_IDENTITY_IDS) {
     if (id === integrationId) continue;
     try {
-      const body = await fetchCatalog(fetchImpl, apiBase, headers(id));
+      const body = await fetchCatalog(
+        fetchImpl,
+        apiBase,
+        token,
+        directClientHeaders(userAgent, id),
+      );
       for (const model of parseCatalogModels(body)) {
         if (!ownIds.has(model.id) && !candidates.includes(model.id)) candidates.push(model.id);
       }
@@ -182,8 +198,9 @@ async function unadvertisedClaudeIds(
     }
   }
 
+  const own = wireHeaders(token, userAgent, integrationId);
   for (const candidate of candidates.slice(0, ORACLE_ATTEMPTS)) {
-    const allowlist = await oracleAllowlist(fetchImpl, apiBase, headers(integrationId), candidate);
+    const allowlist = await oracleAllowlist(fetchImpl, apiBase, own, candidate);
     if (allowlist === null) continue;
     return allowlist.filter(
       (id) => id.startsWith("claude-") && !id.endsWith(ONE_M_SUFFIX) && !ownIds.has(id),

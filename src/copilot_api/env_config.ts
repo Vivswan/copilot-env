@@ -474,8 +474,9 @@ const CONFIG_REGISTRY_LITERAL = [
     describe: "Copilot-Integration-Id header to send; auto probes it per credential",
     ...INTEGRATION_ID_DOMAIN,
     defaultValue: "auto",
-    applyHint:
-      "Applies at the next `agent start` (proxy) and `agent init`/`agent profile --add` (direct wiring).",
+    applyHint: "Applies to Direct at the next `agent init`/`agent profile --add` (rewires the " +
+      "agent configs) and to the proxy at its next daemon launch (a running daemon keeps its " +
+      "identity: `agent stop`, then `agent start`).",
   },
   {
     cli: "launchers",

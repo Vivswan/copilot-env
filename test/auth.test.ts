@@ -478,11 +478,15 @@ test("auth --identities stars what the agent configs bake, probes the pin, and n
       "integration-id: auto",
       "* = in effect today: Direct as the agent configs bake it, Proxy as a fresh daemon launch sends it",
       "identity                   Direct (api.githubcopilot.com)  Proxy (api.enterprise.githubcopilot.com)  note",
-      "-------------------------  ------------------------------  ----------------------------------------  ------------------------------------------------------------",
-      "codex                      rejected (400)                  -                                         Direct default: no Copilot-Integration-Id header (auto only)",
-      "copilot-developer-cli      accepted (5 models)             accepted (37 models) *                    GitHub Copilot CLI; accepts fine-grained PATs",
+      "-------------------------  ------------------------------  ----------------------------------------  " +
+      "------------------------------------------------------------",
+      "codex                      rejected (400)                  -                                         " +
+      "Direct default: no Copilot-Integration-Id header (auto only)",
+      "copilot-developer-cli      accepted (5 models)             accepted (37 models) *                    " +
+      "GitHub Copilot CLI; accepts fine-grained PATs",
       "copilot-developer-sandbox  accepted (2 models)             rejected (400)",
-      "vscode-chat                -                               rejected (400)                            proxy default (copilot-api's own identity)",
+      "vscode-chat                -                               rejected (400)                            " +
+      "proxy default (copilot-api's own identity)",
       "Direct: no agent is wired Direct; `agent init` would bake copilot-developer-cli.",
       "  codex on Direct: 400 Personal Access Tokens are not supported for this endpoint",
       "  copilot-developer-sandbox on Proxy: 400 Personal Access Tokens are not supported for this endpoint",
@@ -570,7 +574,7 @@ test("auth --identities stars what the agent configs bake, probes the pin, and n
   }
 });
 
-test("auth --identity <id>: refused only when BOTH hosts reject it; one acceptance pins with the other host's verdict named; auto clears", async () => {
+test("auth --identity <id>: refused only when BOTH hosts reject; one acceptance pins and names the other verdict; auto clears", async () => {
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
   stubIdentitySurvey();

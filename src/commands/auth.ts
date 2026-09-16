@@ -935,7 +935,8 @@ function identityTableLines(input: IdentityTableInput): string[] {
     ...survey.hosts.map((c) => cell(c, name)),
     IDENTITY_NOTES[name] ?? "",
   ]);
-  // Every rejection behind a rendered cell, the daemon's tagged as such where it differs in kind.
+  // Every rejection behind a rendered cell; the daemon's tagged as such where its detail differs, or
+  // the agents' set accepted.
   const reasons = names.flatMap((name) =>
     survey.hosts.flatMap((c) => {
       const agents = verdictOf(c, name);

@@ -15,10 +15,22 @@ import {
   type CredentialWiring,
   type DirectWiring,
   type ManagedWrite,
+  reservePlannedPort,
   resolvedDirectToken,
   runAgentConfig,
 } from "../agents/configure.ts";
 import { CLAUDE_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
+import {
+  applyPatch,
+  dottedKey,
+  type FilePlan,
+  type PatchOp,
+  planPatch,
+  remove,
+  set,
+  textVerdict,
+  type WritePlan,
+} from "../agents/write_plan.ts";
 import {
   type AgentProviderMode,
   type ManagedAgentMode,
@@ -44,7 +56,6 @@ import {
   matchesProxyOrigin,
   parseLoopbackProxyUrl,
   proxyLoopbackOrigin,
-  wiringPortFor,
 } from "../copilot_api/port.ts";
 import {
   agentStartCommand,
@@ -66,7 +77,7 @@ import {
 } from "../utils/root.ts";
 import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
 import { cmdHelperBody, shQuote, winQuote } from "./helper_body.ts";
-import { registerClaudeMcpServer, removeClaudeMcpRegistration } from "./mcp_registration.ts";
+import { planClaudeMcpRegistration, planClaudeMcpRemoval } from "./mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor, WIN } from "./paths.ts";
 
 const logger = createStderrLogger();
@@ -400,26 +411,24 @@ function directCustomHeaders(integrationId?: string | null): string {
 /** `claude --settings` layers a named profile's file over settings.json with a shallow env merge,
  *  so a named proxy profile must BLANK the direct-only keys where the default proxy write simply
  *  deletes them: a direct default underneath would otherwise bleed its headers through. */
-function applyManagedEnv(
-  doc: Record<string, unknown>,
+function managedEnvOps(
   mode: ManagedAgentMode,
   baseUrl: string,
   profile: Profile = null,
   directIntegrationId?: string | null,
-) {
-  const env = isRecord(doc.env) ? doc.env : {};
-  env[BASE_URL_ENV] = baseUrl;
+): PatchOp[] {
+  const ops = [set(["env", BASE_URL_ENV], baseUrl)];
   if (mode === "direct") {
-    env[DISABLE_BETAS_ENV] = "1";
-    env[CUSTOM_HEADERS_ENV] = directCustomHeaders(directIntegrationId);
+    ops.push(set(["env", DISABLE_BETAS_ENV], "1"));
+    ops.push(set(["env", CUSTOM_HEADERS_ENV], directCustomHeaders(directIntegrationId)));
   } else if (profile === null) {
-    delete env[DISABLE_BETAS_ENV];
-    delete env[CUSTOM_HEADERS_ENV];
+    ops.push(remove(["env", DISABLE_BETAS_ENV]));
+    ops.push(remove(["env", CUSTOM_HEADERS_ENV]));
   } else {
-    env[DISABLE_BETAS_ENV] = "";
-    env[CUSTOM_HEADERS_ENV] = "";
+    ops.push(set(["env", DISABLE_BETAS_ENV], ""));
+    ops.push(set(["env", CUSTOM_HEADERS_ENV], ""));
   }
-  doc.env = env;
+  return ops;
 }
 
 /** The ONE credential carrier per shape, the other's always removed: `apiKeyHelper` for the command,
@@ -429,24 +438,23 @@ function applyManagedEnv(
  *    named file    -> blanked to "", like the direct-only keys: `claude --settings` merges env per
  *                     key, so a static default underneath would otherwise hand its token to the
  *                     profile session, over the profile's own helper
- *  Runs after applyManagedEnv, which owns `doc.env`. */
-function applyManagedCredential(
-  doc: Record<string, unknown>,
+ *  Follows managedEnvOps, which owns `env`. */
+function managedCredentialOps(
   credential: CredentialWiring,
   helperCommand: string,
   profile: Profile,
-): void {
-  const env = isRecord(doc.env) ? doc.env : {};
+): PatchOp[] {
   if (credential.kind === "command") {
-    doc.apiKeyHelper = helperCommand;
-    if (profile === null) delete env[AUTH_TOKEN_ENV];
-    else env[AUTH_TOKEN_ENV] = "";
-  } else {
-    delete doc.apiKeyHelper;
-    env[AUTH_TOKEN_ENV] = credential.token;
+    return [
+      set(["apiKeyHelper"], helperCommand),
+      profile === null ? remove(["env", AUTH_TOKEN_ENV]) : set(["env", AUTH_TOKEN_ENV], ""),
+    ];
   }
-  doc.env = env;
+  return [remove(["apiKeyHelper"]), set(["env", AUTH_TOKEN_ENV], credential.token)];
 }
+
+/** The one Claude value a preview must redact. */
+const SETTINGS_SECRETS: ReadonlySet<string> = new Set([dottedKey(["env", AUTH_TOKEN_ENV])]);
 
 /** The write-report clause that says how the credential rides; the proxy static case also says
  *  what the resolver command used to do for the user. */
@@ -465,58 +473,66 @@ function credentialDetail(
 export const WEBSEARCH_DENY_RULE = "WebSearch";
 
 /**
- * Document mutations happen eagerly; the ledger record (and the registration removal on take-back)
- * runs in the returned commit AFTER a successful save, so a failed write leaves ledger and file
- * consistent and a retry can still recover.
+ * The pair as a patch plus a commit: the ledger record (and the registration removal on take-back)
+ * runs in the commit AFTER a successful save, so a failed write leaves ledger and file consistent
+ * and a retry can still recover.
  */
 type WebSearchPairCommit = () => void;
 const NO_COMMIT: WebSearchPairCommit = () => {};
+interface WebSearchPairPatch {
+  ops: PatchOp[];
+  commit: WebSearchPairCommit;
+}
+const NO_PAIR: WebSearchPairPatch = { ops: [], commit: NO_COMMIT };
 
 /**
  * Ownership is the exact settings PATH the entry was added to: a deny the user already had, or one
  * in a different CLAUDE_CONFIG_DIR, is never claimed, so removal can only take back ours. A
  * malformed `permissions`/`deny` is warned about and left alone.
  */
-function addManagedWebSearchDeny(
+function managedWebSearchDenyPatch(
   doc: Record<string, unknown>,
   settingsPath: string,
-): WebSearchPairCommit {
+): WebSearchPairPatch {
   if (doc.permissions !== undefined && !isRecord(doc.permissions)) {
     logger.warn("settings.json permissions is not an object; leaving it alone (no WebSearch deny)");
-    return NO_COMMIT;
+    return NO_PAIR;
   }
   const permissions = isRecord(doc.permissions) ? doc.permissions : {};
   if (permissions.deny !== undefined && !Array.isArray(permissions.deny)) {
     logger.warn("settings.json permissions.deny is not an array; leaving permissions alone");
-    return NO_COMMIT;
+    return NO_PAIR;
   }
   const deny: unknown[] = Array.isArray(permissions.deny) ? permissions.deny : [];
   // Present already: the user's own (never claimed) or ours from an earlier write (already
   // recorded).
-  if (deny.includes(WEBSEARCH_DENY_RULE)) return NO_COMMIT;
-  deny.push(WEBSEARCH_DENY_RULE);
-  permissions.deny = deny;
-  doc.permissions = permissions;
-  // Post-save on purpose: a record without a saved deny would make a deny the USER adds later ours
-  // to delete. The inverse (saved, record failed) merely orphans our one line: the acceptable
-  // direction.
-  return () => new OwnershipLedger().record("webSearchDeny", settingsPath);
+  if (deny.includes(WEBSEARCH_DENY_RULE)) return NO_PAIR;
+  return {
+    ops: [set(["permissions", "deny"], [...deny, WEBSEARCH_DENY_RULE])],
+    // Post-save on purpose: a record without a saved deny would make a deny the USER adds later
+    // ours to delete. The inverse (saved, record failed) merely orphans our one line: the
+    // acceptable direction.
+    commit: () => new OwnershipLedger().record("webSearchDeny", settingsPath),
+  };
 }
 
-function stripManagedWebSearchDeny(
+function stripManagedWebSearchDenyPatch(
   doc: Record<string, unknown>,
   settingsPath: string,
-): WebSearchPairCommit {
+): WebSearchPairPatch {
   const ledger = new OwnershipLedger();
-  if (!ledger.owns("webSearchDeny", settingsPath)) return NO_COMMIT;
+  if (!ledger.owns("webSearchDeny", settingsPath)) return NO_PAIR;
+  const ops: PatchOp[] = [];
   const permissions = isRecord(doc.permissions) ? doc.permissions : null;
   if (permissions !== null && Array.isArray(permissions.deny)) {
     const filtered = permissions.deny.filter((rule) => rule !== WEBSEARCH_DENY_RULE);
-    if (filtered.length > 0) permissions.deny = filtered;
-    else delete permissions.deny;
-    if (Object.keys(permissions).length === 0) delete doc.permissions;
+    if (filtered.length > 0) ops.push(set(["permissions", "deny"], filtered));
+    else ops.push(remove(["permissions", "deny"]));
+    if (filtered.length === 0 && Object.keys(permissions).every((k) => k === "deny")) {
+      ops.push(remove(["permissions"]));
+    }
   }
-  return () => ledger.release("webSearchDeny", settingsPath);
+  return { ops, commit: () => ledger.release("webSearchDeny", settingsPath) };
 }
 
 /**
@@ -526,30 +542,55 @@ function stripManagedWebSearchDeny(
  *   `~/.claude.json` is global, deny rules UNION across layers -> default profile only; a named
  *                                                                proxy profile could never un-deny
  *                                                                a direct default's rule
+ * The `.claude.json` half is planned here; `land()` performs it and returns the settings half for
+ * what the registration actually answered (`predicted` is that half for the answer the plan
+ * expects: the entry lands unless the write itself fails).
  */
-function applyWebSearchPair(
+interface WebSearchPairPlan {
+  /** The `.claude.json` files the pair touches, either way. */
+  files: FilePlan[];
+  predicted: WebSearchPairPatch;
+  land(): WebSearchPairPatch;
+}
+
+function planWebSearchPair(
   doc: Record<string, unknown>,
   mode: ManagedAgentMode,
   settingsPath: string,
-): WebSearchPairCommit {
+): WebSearchPairPlan {
   if (mode === "direct" && new CopilotEnvConfig().wireMcpEnabled()) {
-    if (registerClaudeMcpServer()) {
-      return addManagedWebSearchDeny(doc, settingsPath);
-    }
-    logger.warn(
-      "copilot-env MCP registration failed; removing the managed WebSearch deny so the " +
-        "builtin stays reachable (it will 400 on Copilot Direct) - fix ~/.claude.json, " +
-        "then rewire with `agent claude --direct`",
-    );
-    return stripManagedWebSearchDeny(doc, settingsPath);
+    const registration = planClaudeMcpRegistration();
+    const patch = (registered: boolean): WebSearchPairPatch => {
+      if (registered) return managedWebSearchDenyPatch(doc, settingsPath);
+      logger.warn(
+        "copilot-env MCP registration failed; removing the managed WebSearch deny so the " +
+          "builtin stays reachable (it will 400 on Copilot Direct) - fix ~/.claude.json, " +
+          "then rewire with `agent claude --direct`",
+      );
+      return stripManagedWebSearchDenyPatch(doc, settingsPath);
+    };
+    const predicted = patch(registration.inPlace);
+    return {
+      files: registration.files,
+      predicted,
+      land() {
+        const registered = registration.apply();
+        return registered === registration.inPlace ? predicted : patch(registered);
+      },
+    };
   }
-  const commit = stripManagedWebSearchDeny(doc, settingsPath);
-  // Post-save too: a failed settings write keeps the consistent old state (deny + server) instead
-  // of losing only the server half.
-  return () => {
-    commit();
-    removeClaudeMcpRegistration();
+  const removal = planClaudeMcpRemoval();
+  const strip = stripManagedWebSearchDenyPatch(doc, settingsPath);
+  // Post-save too: a failed settings write keeps the consistent old state (deny + server)
+  // instead of losing only the server half.
+  const predicted: WebSearchPairPatch = {
+    ops: strip.ops,
+    commit: () => {
+      strip.commit();
+      removal.apply();
+    },
   };
+  return { files: removal.files, predicted, land: () => predicted };
 }
 
 /**
@@ -563,15 +604,16 @@ export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): vo
   if (status.providerMode === "other") return;
   const doc = loadSettings(settingsPath);
   const before = JSON.stringify(doc);
-  const commit = applyWebSearchPair(
+  const pair = planWebSearchPair(
     doc,
     status.providerMode === "direct" ? "direct" : "proxy",
     settingsPath,
-  );
+  ).land();
+  applyPatch(doc, pair.ops);
   if (JSON.stringify(doc) !== before) {
     saveOrRemoveSettings(settingsPath, doc);
   }
-  commit();
+  pair.commit();
 }
 
 export type ClaudeWriteRequest = ManagedWrite & {
@@ -580,10 +622,13 @@ export type ClaudeWriteRequest = ManagedWrite & {
 };
 
 /**
- * A named profile's file is launched via `claude --settings`. Throws on an unwritable home,
- * malformed settings, or an unresolvable proxy port.
+ * The write, computed but not performed: the managed env, credential carrier, and web-search pair
+ * as one patch over the settings file, folded into the plan's rows and applied by the returned
+ * step, so no key can be written without appearing in the plan. A named profile's file is launched
+ * via `claude --settings`. Throws on malformed settings or an unresolvable proxy port; an
+ * unwritable home throws from the apply.
  */
-export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): void {
+export function planClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): WritePlan {
   const profile = request.profile ?? null;
   // read(), not resolve(): no `gh` spawn (runClaude already resolved and fail-fasted; this
   // backstops direct callers like --settings-for). read() is fail-closed, so a recorded provider
@@ -598,13 +643,9 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
         `to the default credential) - run \`agent auth --profile ${profile}\` first.`,
     );
   }
-  try {
-    mkdirReported(claudeHome);
-  } catch (e) {
-    throw new Error(`could not create Claude config directory ${claudeHome}: ${errMessage(e)}`);
-  }
 
   const settingsPath = settingsPathFor(claudeHome, profile);
+  const currentText = readTextResult(settingsPath);
   const doc = loadSettings(settingsPath);
   // A named profile never takes over a pre-existing settings-<name>.json wired to something we do
   // not manage; the default settings.json keeps its contract that an explicit write reclaims even a
@@ -619,49 +660,78 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     }
   }
 
+  let ops: PatchOp[];
+  let detail: string;
+  // The plan PEEKS the profile's port; the apply RESERVES it (reservePlannedPort), so the baked base
+  // URL is the planned one.
+  let plannedPort: string | null = null;
   if (request.mode === "direct") {
-    applyManagedEnv(
-      doc,
-      "direct",
-      request.directBaseUrl ?? DEFAULT_COPILOT_API_BASE,
-      profile,
-      request.directIntegrationId,
-    );
-    applyManagedCredential(doc, request.credential, directHelperCommand(profile), profile);
-    // Real Claude home only: the throwaway detect-probe home must not touch the machine-global
-    // ~/.claude.json.
-    const commit = profile === null && claudeHome === resolveClaudeHome()
-      ? applyWebSearchPair(doc, "direct", settingsPath)
-      : NO_COMMIT;
-    saveSettings(
-      settingsPath,
-      doc,
-      `Claude config, direct: GitHub Copilot${
-        credentialDetail(request.credential, "direct", profile)
-      }`,
-    );
-    commit();
-    return;
-  }
-
-  // wiringPortFor RESERVES the profile's port (a write path; read-only checks peek without
-  // recording), so concurrent profile daemons never share one.
-  const port = wiringPortFor(profile);
-  // No path, no trailing slash: the shape claudeBaseUrlMatchesProxy and env.ts's isLocalProxyUrl
-  // expect.
-  applyManagedEnv(doc, "proxy", proxyLoopbackOrigin(port), profile);
-  applyManagedCredential(doc, request.credential, proxyHelperCommand(profile), profile);
-  const commit = profile === null && claudeHome === resolveClaudeHome()
-    ? applyWebSearchPair(doc, "proxy", settingsPath)
-    : NO_COMMIT;
-  saveSettings(
-    settingsPath,
-    doc,
-    `Claude config, proxy mode via port ${port}${
+    ops = [
+      ...managedEnvOps(
+        "direct",
+        request.directBaseUrl ?? DEFAULT_COPILOT_API_BASE,
+        profile,
+        request.directIntegrationId,
+      ),
+      ...managedCredentialOps(request.credential, directHelperCommand(profile), profile),
+    ];
+    detail = `Claude config, direct: GitHub Copilot${
+      credentialDetail(request.credential, "direct", profile)
+    }`;
+  } else {
+    plannedPort = copilotApiResolvePort(profile);
+    // No path, no trailing slash: the shape claudeBaseUrlMatchesProxy and env.ts's isLocalProxyUrl
+    // expect.
+    ops = [
+      ...managedEnvOps("proxy", proxyLoopbackOrigin(plannedPort), profile),
+      ...managedCredentialOps(request.credential, proxyHelperCommand(profile), profile),
+    ];
+    detail = `Claude config, proxy mode via port ${plannedPort}${
       credentialDetail(request.credential, "proxy", profile)
-    }`,
-  );
-  commit();
+    }`;
+  }
+  // Real Claude home only: the throwaway detect-probe home must not touch the machine-global
+  // ~/.claude.json.
+  const pair = profile === null && claudeHome === resolveClaudeHome()
+    ? planWebSearchPair(doc, request.mode, settingsPath)
+    : null;
+  const predicted = pair === null ? NO_PAIR : pair.predicted;
+  const settingsText = (pairOps: PatchOp[]): string =>
+    `${JSON.stringify(applyPatch(structuredClone(doc), [...ops, ...pairOps]), null, 2)}\n`;
+
+  return {
+    files: [
+      {
+        path: settingsPath,
+        verdict: textVerdict(
+          currentText.kind === "text" ? currentText.text : null,
+          settingsText(predicted.ops),
+        ),
+        attributes: planPatch(
+          currentText.kind === "text" ? doc : null,
+          [...ops, ...predicted.ops],
+          SETTINGS_SECRETS,
+        ),
+      },
+      ...(pair?.files ?? []),
+    ],
+    apply() {
+      try {
+        mkdirReported(claudeHome);
+      } catch (e) {
+        throw new Error(`could not create Claude config directory ${claudeHome}: ${errMessage(e)}`);
+      }
+      if (plannedPort !== null) reservePlannedPort(profile, plannedPort);
+      const landed = pair === null ? NO_PAIR : pair.land();
+      writeFileReported(settingsPath, settingsText(landed.ops), { detail });
+      landed.commit();
+    },
+  };
+}
+
+/** planClaudeConfig, performed. */
+export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): void {
+  planClaudeConfig(claudeHome, request).apply();
 }
 
 // --- the `--check` provider report ------------------------------------------
@@ -746,15 +816,17 @@ export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiri
     delete env[CUSTOM_HEADERS_ENV];
     delete env[AUTH_TOKEN_ENV];
     if (Object.keys(env).length === 0) delete doc.env;
-    const commit = stripManagedWebSearchDeny(doc, settingsPath);
+    const strip = stripManagedWebSearchDenyPatch(doc, settingsPath);
+    applyPatch(doc, strip.ops);
     saveOrRemoveSettings(settingsPath, doc);
-    commit();
+    strip.commit();
   } else if (parseable) {
     // An untouched doc is not rewritten, but the commit still releases a stale marker. An
     // unwritable file keeps its ownership record: never released while the entry may still stand.
     const doc = loadSettings(settingsPath);
     const before = JSON.stringify(doc);
-    const commit = stripManagedWebSearchDeny(doc, settingsPath);
+    const strip = stripManagedWebSearchDenyPatch(doc, settingsPath);
+    applyPatch(doc, strip.ops);
     let saved = true;
     if (JSON.stringify(doc) !== before) {
       try {
@@ -763,7 +835,7 @@ export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiri
         saved = false;
       }
     }
-    if (saved) commit();
+    if (saved) strip.commit();
   }
   return { ownedDenyRemains: new OwnershipLedger().owns("webSearchDeny", settingsPath) };
 }

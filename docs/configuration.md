@@ -55,11 +55,11 @@ agent config --del idle-timeout       # revert one to its default
 
 ## Codex
 
-| Key                   | Default | Effect                                                                                            |
-| --------------------- | ------- | ------------------------------------------------------------------------------------------------- |
-| `codex-home`          | `auto`  | Root of the Codex home copilot-env writes and `agent env` exports; `auto` derives it (`~/.codex`) |
-| `codex-host`          | `false` | Per-host `CODEX_HOME` symlink farm under it, exported by `agent env` (Linux/macOS)                |
-| `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows                                |
+| Key                   | Default | Effect                                                                                                                                                  |
+| --------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `codex-home`          | `auto`  | Root of the Codex home copilot-env writes and `agent env` exports; `auto` is `~/.codex`, or the shell's `CODEX_HOME` while no `codex-host` farm is live |
+| `codex-host`          | `false` | Per-host `CODEX_HOME` symlink farm under it, exported by `agent env` (Linux/macOS)                                                                      |
+| `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows                                                                                      |
 
 ### Codex model catalog
 
@@ -85,7 +85,7 @@ agent config --set codex-host true    # false removes the farm again
 ```
 
 - What builds the farm, what it holds, and what removes it are in the [write list](getting-started.md#what-a-wiring-pass-writes).
-- `agent env` exports `CODEX_HOME` only while a wiring pass has built and activated the farm and the key is not off.
+- `agent env` exports `CODEX_HOME` while a wiring pass has built and activated the farm and the key is not off, or, with `codex-host` off, whenever `codex-home` is set (the path itself; the next wiring pass creates it).
 - `agent codex --check` / `agent health` report any drift between the key and the disk.
 
 ## Claude

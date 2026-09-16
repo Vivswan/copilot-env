@@ -11,8 +11,8 @@ import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
 import { agentStartCommand, type Profile } from "../copilot_api/profile.ts";
 import { v409CodexProfileFiles } from "../migrations/4.0.9.ts";
-import { dueMigrations } from "../migrations/index.ts";
 import { assertNever } from "../utils/assert.ts";
+import { versionLessThan } from "../utils/semver.ts";
 import { packageVersion } from "../utils/version.ts";
 import type {
   BakedCredentialFreshness,
@@ -184,15 +184,16 @@ function codexOtherLine(
 }
 
 /** A binary built from a checkout still at the step's own version renders an EMPTY [from, to)
- *  range (the runner's selection rule, src/migrations/index.ts), so that install gets no command to
- *  run. `agent update` is not the route: an already-updated install runs no migration. */
+ *  range (the runner's selection rule, src/migrations/index.ts; its module is not imported here
+ *  because it loads the install-state .env at import), so that install gets no command to run.
+ *  `agent update` is not the route: an already-updated install runs no migration. */
 export function legacyTableRepair(
   profileFile: string,
   installed: string = packageVersion(),
 ): string {
   const from = v409CodexProfileFiles.version;
   const byHand = `move the table into ${profileFile} by hand`;
-  return dueMigrations(from, installed).includes(v409CodexProfileFiles)
+  return versionLessThan(from, installed)
     ? `run \`agent migrate ${from} ${installed}\` (moves the table into ${profileFile}), or ${byHand}`
     : byHand;
 }

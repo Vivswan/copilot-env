@@ -680,16 +680,15 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
     await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
     expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
 
-    // A transient account-host lookup leaves that host unknown: the generic host's rejection alone
-    // is never "every host rejects", so the pin lands unverified and says so.
+    // A transient account-host lookup leaves that host unknown and a blocked generic host (403)
+    // is inconclusive: nothing definitive stands against the pin, so it lands unverified and
+    // says so.
     setIntegrationProbeFetch((input) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       return Promise.resolve(
         url.includes("/copilot_internal/user")
           ? new Response("upstream", { status: 503 })
-          : new Response("Personal Access Tokens are not supported for this endpoint", {
-            status: 400,
-          }),
+          : new Response("forbidden", { status: 403 }),
       );
     });
     const unknown = await captureStderr(() =>
@@ -712,6 +711,57 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
           `copilot-host in use: ${PAT_REJECTION}`,
       );
     expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+
+    // Under `auto` the same rule reads the host auto WOULD select for the pin: the generic host
+    // answers 400 for the sandbox id (kept: 400 is an identity answer), so its rejection refuses
+    // the pin even though the account's host accepts that id; the CLI id, accepted there, pins.
+    new CopilotEnvConfig().del("copilotHost");
+    setIntegrationProbeFetch((input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/copilot_internal/user")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ endpoints: { api: "https://api.enterprise.githubcopilot.com" } }),
+            { status: 200 },
+          ),
+        );
+      }
+      const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+      const enterprise = url.startsWith("https://api.enterprise.");
+      const accepted = id === COPILOT_CLI_INTEGRATION_ID ||
+        (id === COPILOT_SANDBOX_INTEGRATION_ID && enterprise);
+      return Promise.resolve(
+        accepted
+          ? new Response(JSON.stringify({ data: [{}] }), { status: 200 })
+          : new Response("Personal Access Tokens are not supported for this endpoint", {
+            status: 400,
+          }),
+      );
+    });
+    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
+      .toThrow(
+        "api.githubcopilot.com rejects this credential under " +
+          `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
+          `selects for this identity: ${PAT_REJECTION}`,
+      );
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+    await runAuth({ identity: COPILOT_CLI_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe(COPILOT_CLI_INTEGRATION_ID);
+    // A slot whose cached pair already carries this id on the account's host (an earlier `auto`
+    // wiring) replays THAT host without probing, so the pin's requests go there: it lands.
+    await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
+    state().setProfileIntegrationIdentity(
+      null,
+      COPILOT_SANDBOX_INTEGRATION_ID,
+      { kind: "stored", provider: "gh-token", token: "github_pat_x" },
+      {
+        host: "https://api.enterprise.githubcopilot.com",
+        identity: COPILOT_SANDBOX_INTEGRATION_ID,
+        source: "auto",
+      },
+    );
+    await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
   } finally {
     setIntegrationProbeFetch(null);
   }

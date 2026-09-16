@@ -6,19 +6,12 @@ import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AGENT_CLIS } from "../agents/clis.ts";
-import {
-  CLAUDE_PROBE,
-  CODEX_CATALOG_NOISE_RE,
-  CODEX_PROBE,
-  PROBE_PROMPT,
-  PROBE_TIMEOUT_MS,
-} from "../agents/live_probe.ts";
+import { CODEX_CATALOG_NOISE_RE, PROBE_TIMEOUT_MS } from "../agents/live_probe.ts";
 import { defaultSetupNeedsProxy } from "../agents/wiring.ts";
 import { claudeDesktopStatus } from "../agents/claude_desktop.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import {
   bakedClaudeToken,
-  BASE_URL_ENV,
   type ClaudeWiringStatus,
   inspectClaudeWiring,
 } from "../claude/config.ts";
@@ -110,6 +103,7 @@ import {
   type ShellFacts,
   type ShellFileFact,
 } from "./facts.ts";
+import { claudeLiveLaunch, codexLiveLaunch, type LiveLaunch } from "./live_launch.ts";
 import type { HealthScope } from "./types.ts";
 import {
   AUTH_SCOPES as SCOPE_AUTH,
@@ -346,22 +340,18 @@ function formatLiveFailure(
 
 /**
  * Unlike the init probe, the environment is NOT sanitized (`--live` tests the real, fully
- * resolved setup), except `omitEnvVars` (upper-case names): the narrow scrub a NAMED profile
+ * resolved setup), except `launch.omitEnv` (upper-case names): the narrow scrub a NAMED profile
  * needs so a shell export of the DEFAULT wiring cannot override the profile's own and
  * misattribute the answer. Spawns the RESOLVED path so the nvm fallback is not defeated. Exported
  * for the scrub's test.
  */
 export function runLiveCli(
-  cli: string,
-  args: string[],
-  home: string,
-  homeEnvVar: string,
-  omitEnvVars: readonly string[] = [],
+  launch: LiveLaunch,
   find: (command: string) => CommandLook = findCommand,
 ): Promise<LiveProbeFacts> {
   // `find` is a test seam; the real look keeps its failure arm (see CommandLook) because the
   // skip renders a "CLI not installed" verdict.
-  const look = find(cli);
+  const look = find(launch.cli);
   if (look.path === null) {
     return Promise.resolve(
       look.launchFailed ? { kind: "skipped", lookFailed: true } : { kind: "skipped" },
@@ -370,7 +360,7 @@ export function runLiveCli(
   const resolved = look.path;
   const ghPath = resolveCommand("gh");
   return new Promise((resolve) => {
-    const s = cliSpawn(resolved, args);
+    const s = cliSpawn(resolved, launch.args);
     // Output is captured so a failure reports the FULL reason. The 64 MB cap is effectively
     // unbounded (a smoke prompt's output is tiny) and only guards a pathologically chatty CLI.
     // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
@@ -383,8 +373,8 @@ export function runLiveCli(
       // node-shim CLI, the config's bare `gh` call) is reachable even when the parent never
       // sourced nvm.
       env: childEnvWithPath([dirname(resolved), ghPath ? dirname(ghPath) : null], {
-        extra: { [homeEnvVar]: home },
-        omit: (upper) => omitEnvVars.includes(upper),
+        extra: launch.env,
+        omit: (upper) => launch.omitEnv.includes(upper),
       }),
     });
     const CAP = 64 * 1024 * 1024;
@@ -403,25 +393,18 @@ export function runLiveCli(
         detail: formatLiveFailure(null, null, e.message, out, err),
       }));
     child.on("close", (code, signal) => {
-      if (code === 0) {
+      if (code === 0 && launch.answered(out)) {
         resolve({ kind: "ok", cli: resolved });
       } else {
+        const reason = formatLiveFailure(code, signal, undefined, out, err);
         resolve({
           kind: "failed",
           cli: resolved,
-          detail: formatLiveFailure(code, signal, undefined, out, err),
+          detail: code === 0 ? `exit 0 without a model answer\n${reason}` : reason,
         });
       }
     });
   });
-}
-
-/** A NAMED profile drops a shell-exported ANTHROPIC_BASE_URL: env beats the profile's settings
- *  file, so a default-proxy export would silently answer for the profile and misattribute the
- *  result (the same scrub the `cl --profile` launcher performs). The default probe scrubs
- *  nothing: `--live` tests the real environment. */
-export function claudeLiveOmitEnv(profile: Profile): readonly string[] {
-  return profile === null ? [] : [BASE_URL_ENV];
 }
 
 export function defaultProbeDeps(): ProbeDeps {
@@ -530,21 +513,8 @@ export function defaultProbeDeps(): ProbeDeps {
     },
     denoVersion: () => Deno.version.deno,
     cliVersion: packageVersion,
-    codexLive: (home, profile) =>
-      runLiveCli(
-        CODEX_PROBE.cli,
-        CODEX_PROBE.args(PROBE_PROMPT, home, null, profile),
-        home,
-        CODEX_PROBE.homeEnvVar,
-      ),
-    claudeLive: (home, profile) =>
-      runLiveCli(
-        CLAUDE_PROBE.cli,
-        CLAUDE_PROBE.args(PROBE_PROMPT, home, null, profile),
-        home,
-        CLAUDE_PROBE.homeEnvVar,
-        claudeLiveOmitEnv(profile),
-      ),
+    codexLive: (home, profile) => runLiveCli(codexLiveLaunch(home, profile)),
+    claudeLive: (home, profile) => runLiveCli(claudeLiveLaunch(home, profile)),
   };
 }
 

@@ -1,7 +1,6 @@
 import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
-import { CLAUDE_PROBE, CODEX_PROBE } from "../src/agents/live_probe.ts";
 import { proxyHelperCommand } from "../src/claude/config.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -28,7 +27,14 @@ import {
   type RuntimeTarget,
   type WatchdogFacts,
 } from "../src/health/facts.ts";
-import { claudeLiveOmitEnv, gatherFacts, type ProbeDeps, runLiveCli } from "../src/health/probe.ts";
+import {
+  claudeLiveLaunch,
+  claudeLiveOmitEnv,
+  codexLiveLaunch,
+  type LiveLaunch,
+} from "../src/health/live_launch.ts";
+import { gatherFacts, type ProbeDeps, runLiveCli } from "../src/health/probe.ts";
+import { type LaunchDeps, prepareLaunch } from "../src/commands/launch.ts";
 import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, writeRunState } from "./helpers.ts";
 
@@ -679,29 +685,93 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
 
 // --- --live argv + env scrub -----------------------------------------------------
 
-test("--live --profile argv matches the launchers' profile selection exactly", () => {
-  // Codex rides its native selector in the launcher's spelling; the default argv stays byte-identical.
-  expect(CODEX_PROBE.args("hi", "/h", null, P)).toEqual([
-    "exec",
-    "--profile",
-    "p",
-    "--json",
-    "--skip-git-repo-check",
-    "--sandbox",
-    "read-only",
-    "hi",
-  ]);
-  expect(CODEX_PROBE.args("hi", "/h", null)).toEqual([
-    "exec",
-    "--json",
-    "--skip-git-repo-check",
-    "--sandbox",
-    "read-only",
-    "hi",
-  ]);
-  // Claude loads the profile's own settings file (what `cl --profile` passes).
-  expect(CLAUDE_PROBE.args("hi", "/h", null, P)).toContain(join("/h", "settings-p.json"));
-  expect(CLAUDE_PROBE.args("hi", "/h", null)).toContain(join("/h", "settings.json"));
+/** Only the arms a launch plan reads for the selector and the scrub; every step is scripted so no
+ *  proxy, wiring, or settings write happens. */
+const launcherDeps: LaunchDeps = {
+  agentMode: () => "direct",
+  ensureProxy: () => Promise.resolve(true),
+  wireProxyDefault: () => Promise.resolve(),
+  refreshCodexCatalog: () => Promise.resolve(),
+  profileSlot: () => ({
+    kind: "complete",
+    credential: { kind: "stored", provider: "gh-token", token: "tok" },
+    mode: "direct",
+    integrationIdentity: null,
+  }),
+  writeClaudeProfileSettings: (name) => Promise.resolve(join("/h", `settings-${name}.json`)),
+  syncProfileWiring: () => Promise.resolve(),
+  managedClaudeBaseUrl: () => null,
+  managedCodexHome: () => null,
+  notify: () => {},
+};
+
+test("the --live launch is the launcher's start minus interactivity, never the Direct-detect argv", async () => {
+  // What would drift silently: health borrowing `--bare` (auth through the apiKeyHelper alone, no
+  // settings discovery) or `--model` from the detect descriptor, which no `cl`/`cx` session passes.
+  for (const profile of [null, P] as Profile[]) {
+    const claude = claudeLiveLaunch("/h", profile);
+    const codex = codexLiveLaunch("/h", profile);
+    for (const launch of [claude, codex]) {
+      expect(launch.args).not.toContain("--bare");
+      expect(launch.args).not.toContain("--model");
+    }
+    // The selector and the scrub are the launcher's own, read off its plan for the same profile.
+    const claudePlan = await prepareLaunch(
+      { kind: "claude", profile, relaxed: false, args: [] },
+      launcherDeps,
+    );
+    const codexPlan = await prepareLaunch(
+      { kind: "codex", profile, relaxed: false, args: [] },
+      launcherDeps,
+    );
+    const selector = (args: string[], flag: string) => {
+      const i = args.indexOf(flag);
+      return i === -1 ? [] : args.slice(i, i + 2);
+    };
+    expect(selector(claude.args, "--settings")).toEqual(selector(claudePlan!.args, "--settings"));
+    expect(selector(codex.args, "--profile")).toEqual(selector(codexPlan!.args, "--profile"));
+    expect(claude.omitEnv).toEqual(claudePlan!.scrub);
+    expect(codex.omitEnv).toEqual(codexPlan!.scrub);
+    // External fact: Claude namespaces its keychain entry by CLAUDE_CONFIG_DIR, so exporting even
+    // the default dir hides a keychain-held key from the probe that a real session reads.
+    expect(claude.env).toEqual({});
+  }
+});
+
+test("a --live exit 0 counts only when the stream carries the model's answer", async () => {
+  // External fact neither CLI enforces for us: with the user's real hooks running, a
+  // UserPromptSubmit hook that stops the prompt makes claude exit 0 after zero model turns, and
+  // health must not read that as "responded". The event shapes are the CLIs' own JSON-lines output.
+  const CLAUDE_ANSWER = '{"type":"system","subtype":"init"}\n' +
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"OK"}]}}\n' +
+    '{"type":"result","num_turns":1,"is_error":false}';
+  const CLAUDE_HOOK_STOP =
+    '{"type":"system","subtype":"init"}\n{"type":"result","num_turns":0,"is_error":false}';
+  const CODEX_ANSWER =
+    '{"type":"turn.started"}\n{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}\n{"type":"turn.completed"}';
+  const CODEX_NO_ANSWER =
+    '{"type":"item.completed","item":{"type":"error","message":"hooks bypassed"}}\n{"type":"turn.completed"}';
+  const cases: [LiveLaunch, string, boolean][] = [
+    [claudeLiveLaunch("/h", null), CLAUDE_ANSWER, true],
+    [claudeLiveLaunch("/h", null), CLAUDE_HOOK_STOP, false],
+    [codexLiveLaunch("/h", null), CODEX_ANSWER, true],
+    [codexLiveLaunch("/h", null), CODEX_NO_ANSWER, false],
+  ];
+  for (const [launch, stdout, answered] of cases) {
+    expect(launch.answered(stdout)).toBe(answered);
+  }
+  // The mechanism: runLiveCli turns an exit 0 without an answer into a failed probe that shows why.
+  // The stream rides an env var: on Windows the argv crosses cmd.exe, where its quotes would break.
+  const hookStopped = await runLiveCli({
+    ...claudeLiveLaunch("/h", null),
+    cli: Deno.execPath(),
+    args: ["eval", "console.log(process.env.HOOK_STOP_STREAM)"],
+    env: { HOOK_STOP_STREAM: CLAUDE_HOOK_STOP },
+  });
+  expect(hookStopped.kind).toBe("failed");
+  expect(hookStopped.kind === "failed" ? hookStopped.detail : "").toContain(
+    'exit 0 without a model answer\n{"type":"system","subtype":"init"}',
+  );
 });
 
 test("a named Claude live probe scrubs ANTHROPIC_BASE_URL; the default scrubs nothing", async () => {
@@ -711,14 +781,16 @@ test("a named Claude live probe scrubs ANTHROPIC_BASE_URL; the default scrubs no
   // The mechanism: runLiveCli really drops the requested vars from the child env.
   process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:9999";
   try {
-    const probe = (omit: readonly string[]) =>
-      runLiveCli(
-        Deno.execPath(),
-        ["eval", "process.exit(process.env.ANTHROPIC_BASE_URL ? 1 : 0)"],
-        tempDir("copilot-health-profiles-"),
-        "CLAUDE_CONFIG_DIR",
-        omit,
-      );
+    const probe = (omitEnv: readonly string[]) => {
+      const launch: LiveLaunch = {
+        cli: Deno.execPath(),
+        args: ["eval", "process.exit(process.env.ANTHROPIC_BASE_URL ? 1 : 0)"],
+        env: { CLAUDE_CONFIG_DIR: tempDir("copilot-health-profiles-") },
+        omitEnv,
+        answered: () => true,
+      };
+      return runLiveCli(launch);
+    };
     expect((await probe(claudeLiveOmitEnv(P))).kind).toBe("ok");
     expect((await probe(claudeLiveOmitEnv(null))).kind).toBe("failed");
   } finally {

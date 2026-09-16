@@ -34,6 +34,7 @@ import {
   evaluateAll,
 } from "../src/health/checks.ts";
 import { checkClaude, checkCodex } from "../src/health/checks_agents.ts";
+import { codexLiveLaunch } from "../src/health/live_launch.ts";
 import {
   type BootstrapFacts,
   classifyPortState,
@@ -1594,15 +1595,12 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
 // --- live (--live) checks ---------------------------------------------------
 
 test("runLiveCli: a FAILED CLI look skips MARKED; a proven absence skips unmarked", async () => {
-  expect(
-    await runLiveCli("codex", [], "/tmp", "CODEX_HOME", [], () => ({
-      path: null,
-      launchFailed: true,
-    })),
-  ).toEqual({ kind: "skipped", lookFailed: true });
-  expect(await runLiveCli("codex", [], "/tmp", "CODEX_HOME", [], () => ({ path: null }))).toEqual({
+  const launch = codexLiveLaunch("/tmp", null);
+  expect(await runLiveCli(launch, () => ({ path: null, launchFailed: true }))).toEqual({
     kind: "skipped",
+    lookFailed: true,
   });
+  expect(await runLiveCli(launch, () => ({ path: null }))).toEqual({ kind: "skipped" });
 });
 
 test("evaluateAll(full) includes the live checks only when their facts are present", () => {

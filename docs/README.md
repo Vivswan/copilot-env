@@ -30,6 +30,7 @@ copilot-env points the Codex and Claude CLIs at GitHub Copilot, either through a
 | Bake the credential into one agent's config, or both                        | [Authentication: static key](authentication.md#static-key)                               |
 | Run several sessions under different credentials or modes                   | [Authentication: profiles](authentication.md#profiles)                                   |
 | Run the CLI from a checkout                                                 | [Development](development.md)                                                            |
+| See how the code is layered, and which module imports which                 | [Architecture](architecture.md)                                                          |
 
 ## The pages
 
@@ -40,3 +41,4 @@ In reading order:
 3. [Configuration](configuration.md) - every `agent config` key with its default, the proxy-side keys, the Codex model catalog, per-host `CODEX_HOME`, Claude Desktop, environment overrides.
 4. [Authentication](authentication.md) - the credential providers, PAT passthrough, client identity, static key, profiles.
 5. [Development](development.md) - running from a checkout, the tasks, the env init, where the rules live.
+6. [Architecture](architecture.md) - the decisions as diagrams over real files, and the layer map the lint keeps equal to the import graph.

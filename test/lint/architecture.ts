@@ -23,7 +23,8 @@ export interface Architecture {
   readonly edges: Readonly<Record<string, readonly string[]>>;
 }
 
-/** Repo-relative posix source file -> the repo-relative files it imports (in-repo targets only). */
+/** Repo-relative posix source file -> the src/ files it imports. A target outside src/ (package.json,
+ *  a bare or npm specifier) belongs to no layer and is not an edge. */
 export type ImportGraph = ReadonlyMap<string, readonly string[]>;
 
 function isStringList(value: unknown): value is string[] {

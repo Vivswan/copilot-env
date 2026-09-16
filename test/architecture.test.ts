@@ -43,7 +43,8 @@ function importGraph(): ImportGraph {
     );
     const result = runSync(
       Deno.execPath(),
-      ["info", "--json", "--config", join(ROOT, "deno.json"), entry],
+      // As a URL: a bare Windows path (`c:\...`) is not read as a file by every deno.
+      ["info", "--json", "--config", join(ROOT, "deno.json"), pathToFileURL(entry).href],
       { cwd: ROOT },
     );
     if (result.exitCode !== 0) throw new Error(`deno info failed: ${result.stderr}`);
@@ -64,7 +65,7 @@ function importGraph(): ImportGraph {
     if (resolved.size !== files.length) {
       throw new Error(
         `deno info resolved ${resolved.size} of ${files.length} source files (${modules.length} modules; ` +
-          `first: ${modules.slice(0, 3).map((mod) => mod.specifier).join(", ")})`,
+          `first: ${JSON.stringify(modules[0]).slice(0, 600)})`,
       );
     }
     const graph = new Map<string, string[]>();

@@ -45,13 +45,13 @@ agent config --del idle-timeout       # revert one to its default
 
 ## Credential
 
-| Key              | Default                       | Effect                                                     |
-| ---------------- | ----------------------------- | ---------------------------------------------------------- |
-| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`) |
-| `passthrough`    | `auto`                        | PAT passthrough: `auto` / `on` / `off`                     |
-| `static-key`     | `false`                       | Bake the credential value into the agent configs           |
+| Key              | Default                       | Effect                                                                                |
+| ---------------- | ----------------------------- | ------------------------------------------------------------------------------------- |
+| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`)                            |
+| `passthrough`    | `auto`                        | PAT passthrough: `auto` / `on` / `off`                                                |
+| `static-key`     | `none`                        | Whose config carries the credential value itself: `none` / `claude` / `codex` / `all` |
 
-`passthrough` is explained under [PAT passthrough](authentication.md#pat-passthrough) and `static-key` under [static key](authentication.md#static-key).
+`integration-id` is surveyed and pinned by `agent auth --identities` / `--identity` ([client identity](authentication.md#client-identity)); `passthrough` is explained under [PAT passthrough](authentication.md#pat-passthrough) and `static-key` under [static key](authentication.md#static-key).
 
 ## Codex
 

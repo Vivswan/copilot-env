@@ -13,6 +13,7 @@ copilot-env points the Codex and Claude CLIs at GitHub Copilot, either through a
 | Verify a downloaded binary against the release attestation                  | [Getting started: verifying a download](getting-started.md#verifying-a-download-by-hand) |
 | Remove copilot-env from a machine                                           | [Getting started: uninstall](getting-started.md#uninstall)                               |
 | Look up a command and its flags                                             | [Usage: commands](usage.md#commands)                                                     |
+| Check a real launch end-to-end with `agent health --live`                   | [Usage: health checks](usage.md#health-checks)                                           |
 | Get the `cl` / `co` / `cx` launchers, or their permissive variants          | [Usage: launchers](usage.md#launchers)                                                   |
 | Let the proxy start on demand and stop when idle                            | [Usage: managed proxy lifecycle](usage.md#managed-proxy-lifecycle-auto-start)            |
 | Give Claude Code web search on Direct, or register the MCP server elsewhere | [Usage: web search for Claude Code](usage.md#web-search-for-claude-code)                 |
@@ -25,7 +26,8 @@ copilot-env points the Codex and Claude CLIs at GitHub Copilot, either through a
 | Pin the proxy version or the cooldown with an env var                       | [Configuration: environment overrides](configuration.md#environment-overrides)           |
 | Store the GitHub Copilot credential, or switch how it is obtained           | [Authentication: providers](authentication.md#providers)                                 |
 | Use a personal access token with the proxy                                  | [Authentication: PAT passthrough](authentication.md#pat-passthrough)                     |
-| Bake the credential into the agent configs                                  | [Authentication: static key](authentication.md#static-key)                               |
+| See which Copilot client identity each host accepts, or pin one             | [Authentication: client identity](authentication.md#client-identity)                     |
+| Bake the credential into one agent's config, or both                        | [Authentication: static key](authentication.md#static-key)                               |
 | Run several sessions under different credentials or modes                   | [Authentication: profiles](authentication.md#profiles)                                   |
 | Run the CLI from a checkout                                                 | [Development](development.md)                                                            |
 
@@ -34,7 +36,7 @@ copilot-env points the Codex and Claude CLIs at GitHub Copilot, either through a
 In reading order:
 
 1. [Getting started](getting-started.md) - install and its flags, the first `agent init` and the two modes, updating, verifying a download, uninstall.
-2. [Usage](usage.md) - every command, shell integration and the launchers, the managed proxy lifecycle, web search for Claude Code, cost reporting.
+2. [Usage](usage.md) - every command, shell integration and the launchers, the managed proxy lifecycle, health checks, web search for Claude Code, cost reporting.
 3. [Configuration](configuration.md) - every `agent config` key with its default, the proxy-side keys, the Codex model catalog, per-host `CODEX_HOME`, Claude Desktop, environment overrides.
-4. [Authentication](authentication.md) - the credential providers, PAT passthrough, static key, profiles.
+4. [Authentication](authentication.md) - the credential providers, PAT passthrough, client identity, static key, profiles.
 5. [Development](development.md) - running from a checkout, the tasks, the env init, where the rules live.

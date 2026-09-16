@@ -13,6 +13,7 @@ agent auth                 # manage the GitHub Copilot credential
                            #   --provider copilot|gh-cli|gh-token|gh-env, --set <token>, --get, --del, --check
                            #   --gh-user <login> pins gh-cli to one logged-in account
                            #   --profile <name> addresses one profile's slot, --list shows every slot
+                           #   --identities surveys the Copilot client identities, --identity <id|auto> pins one
 agent profile              # manage named profiles: one credential + one mode, both agents
                            #   --add <name> --direct|--proxy, --del <name>, --list, --check <name>
 agent config               # get/set preferences (see the configuration page)
@@ -53,6 +54,22 @@ agent --full-help          # help for agent and every subcommand, every flag inc
 `agent settings --import` is non-destructive: preferences are full-replace, credentials are preserve-if-absent, and the stores are backed up first. A rollback re-imports the backup but never deletes profiles.
 
 On Windows the same commands run via `agent` once the profile is wired, or directly: `powershell -ExecutionPolicy Bypass -File bin\agent.ps1 <cmd>`.
+
+### Terminal width
+
+Every table (`agent auth --identities`, `agent auth --list`, `agent models`, `agent profile --list`, the `agent cost` tables) fits the terminal:
+
+```text
+width = COLUMNS if set -> the TTY's size (80 on a size-less pty) -> a pipe: unbounded, never wraps
+fits             -> the natural layout
+too wide         -> the widest column shrinks first, never below its floor; a free-text column
+                    (the identities `note`, the `--list` description, the models detail) wraps at
+                    word boundaries, a header wraps between its words; a word longer than its
+                    column overflows rather than splits
+floors too wide  -> one block per record: "identity: codex", then "  header: cell" per non-empty cell
+```
+
+The lines under the identities table wrap the same way, with a hanging indent. With `COLUMNS` unset, `agent auth --identities | cat` prints the full-width lines.
 
 ## Shell integration
 
@@ -104,6 +121,23 @@ With `auto-start` on:
 - **Window:** `agent config --set idle-timeout <seconds>` ([default and the `0` case](configuration.md#proxy-daemon)) or the [`COPILOT_API_IDLE_TIMEOUT`](configuration.md#environment-overrides) env var.
 
 With `auto-start` off, the launchers prompt before starting a downed proxy. Headless callers, such as the Codex and Claude config hooks, never start it implicitly.
+
+## Health checks
+
+`agent health` diagnoses the environment by scope ([commands](#commands)); one flag needs more than a line.
+
+### `--live`
+
+`--live` runs one read-only prompt through each CLI as its launcher starts it, minus interactivity: the real settings discovery, hooks, and saved model, with nothing pinned. One difference from `cx`: Codex runs in its read-only sandbox.
+
+| CLI    | What `--live` runs                                                                                                                                                                                                        |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude | `claude --print --permission-mode plan --verbose --output-format stream-json "<prompt>"`; a named profile adds `--settings ~/.claude/settings-<name>.json` and drops a shell `ANTHROPIC_BASE_URL`, as `cl --profile` does |
+| Codex  | `codex exec --json --skip-git-repo-check --sandbox read-only "<prompt>"`; a named profile adds `--profile <name>`                                                                                                         |
+
+- Exit 0 alone is not a pass: a `UserPromptSubmit` hook that stops the prompt exits 0 after zero model turns. The check passes only when the stream carries the model's answer (an `assistant` event from Claude, an `item.completed` `agent_message` from Codex); otherwise it reports `exit 0 without a model answer` with the stream.
+- `CLAUDE_CONFIG_DIR` is never added to the child's env (a value your shell already exports is inherited like the rest): Claude namespaces its keychain entry by that variable, and adding even the default dir hid a keychain-held key a real session reads.
+- The `agent init` Direct probe is the other intent: an isolated throwaway config (`--bare`), and it is unchanged.
 
 ## Web search for Claude Code
 

@@ -11,7 +11,7 @@ import {
   type ProvisionedCredential,
   type StoredCredential,
 } from "../copilot_api/env_state.ts";
-import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
+import { CODEX_IDENTITY_NAME } from "../copilot_api/env_config.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import {

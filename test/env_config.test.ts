@@ -277,6 +277,11 @@ test("integration-id is header-safe end to end: --set rejects without echoing, s
   runConfig({ set: ["integration-id", "copilot-developer-cli"] });
   expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe("copilot-developer-cli");
 
+  // `codex` is the ABSENCE of the header, so a pin (always sent as the header's value) cannot mean
+  // it; the store refuses it and keeps the previous pin.
+  expect(() => runConfig({ set: ["integration-id", "codex"] })).toThrow(/cannot be pinned/);
+  expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe("copilot-developer-cli");
+
   // A hand-mangled STORED value degrades to unset (= probe per credential),
   // never a baked header-splitting pin.
   new CopilotEnvConfig().set({ integrationId: "evil\nX-Injected: 1" });

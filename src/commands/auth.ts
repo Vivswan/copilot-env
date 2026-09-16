@@ -6,8 +6,10 @@ import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { consola } from "consola";
-import type { CodexCatalogDeps } from "../codex/catalog.ts";
+import { readBakedDirectIdentities } from "../agents/wiring.ts";
+import { type CodexCatalogDeps, codexUserAgentVersion } from "../codex/catalog.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
+import { codexUserAgent } from "../codex/config.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {
   AUTH_PROVIDERS,
@@ -18,8 +20,13 @@ import {
   ghAuthTokenLook,
   type GhTokenLook,
 } from "../copilot_api/credential.ts";
-import { stopTrackedProxy } from "../copilot_api/daemon.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { stopTrackedProxy, trackedDaemonAlive } from "../copilot_api/daemon.ts";
+import {
+  CODEX_IDENTITY_NAME,
+  configKeyDef,
+  CopilotEnvConfig,
+  parseIntegrationIdPin,
+} from "../copilot_api/env_config.ts";
 import {
   assertProfileSlot,
   CopilotEnvState,
@@ -36,6 +43,24 @@ import {
   ghTokensInEnv,
 } from "../copilot_api/gh_cli.ts";
 import { type GithubLoginLook, githubLoginLook } from "../copilot_api/github_login.ts";
+import {
+  autoIdentityFor,
+  type BakedDirectIdentity,
+  COPILOT_CLI_INTEGRATION_ID,
+  directIdentity,
+  directIdentityCandidates,
+  type IdentityHostSurvey,
+  type IdentitySurvey,
+  type IdentityVerdict,
+  INTEGRATION_ID_HEADER,
+  type IntegrationIdentity,
+  PASSTHROUGH_IDENTITY_CANDIDATES,
+  passthroughIdentity,
+  pinnedIdentityCandidates,
+  surveyIntegrationIdentities,
+  usePatPassthrough,
+  VSCODE_CHAT_INTEGRATION_ID,
+} from "../copilot_api/integration_identity.ts";
 import { CopilotApiPaths, profileHomeNames } from "../copilot_api/paths.ts";
 import {
   copilotApiArgv,
@@ -56,7 +81,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { withFileLockSync } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { printTable } from "../utils/table.ts";
+import { formatTable, printTable } from "../utils/table.ts";
 import { removeReported } from "../utils/report_write.ts";
 
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
@@ -75,6 +100,9 @@ export interface AuthArgs {
   printProxyToken?: boolean;
   profile?: string;
   list?: boolean;
+  identities?: boolean;
+  /** `true` is the bare flag (interactive choice); a string is the id to pin, or `auto`. */
+  identity?: string | boolean;
 }
 
 function asProvider(provider: string): AuthProvider {
@@ -744,6 +772,391 @@ function runList(): void {
   printTable(rows, { indent: "" });
 }
 
+// --- integration identities -------------------------------------------------
+
+/** `auto` has its own variant so clearing the pin never depends on a credential resolving; `pin`
+ *  carries a domain-validated id; `choose` is the bare `--identity` in a terminal. */
+export type IdentityChoice = { kind: "pin"; id: string } | { kind: "auto" } | { kind: "choose" };
+
+export function parseIdentityChoice(raw: string): IdentityChoice {
+  const id = parseIntegrationIdPin(raw);
+  return id.toLowerCase() === "auto" ? { kind: "auto" } : { kind: "pin", id };
+}
+
+const IDENTITY_NOTES: Record<string, string> = {
+  [CODEX_IDENTITY_NAME]: `Direct default: no ${INTEGRATION_ID_HEADER} header (auto only)`,
+  [VSCODE_CHAT_INTEGRATION_ID]: "proxy default (copilot-api's own identity)",
+  [COPILOT_CLI_INTEGRATION_ID]: "GitHub Copilot CLI; accepts fine-grained PATs",
+};
+
+/** The cell carries the verdict and a tag (status or "network error"); the full reason follows the
+ *  table, so a 160-char rejection body never widens it. */
+function verdictCell(verdict: IdentityVerdict | undefined, inEffect: boolean): string {
+  if (verdict === undefined) return "-";
+  const mark = inEffect ? " *" : "";
+  const tag = (detail: string): string =>
+    detail.startsWith("network error") ? "network error" : detail.split(" ")[0] ?? "";
+  switch (verdict.kind) {
+    case "accepted":
+      return `accepted${
+        verdict.models === null
+          ? ""
+          : ` (${verdict.models} ${verdict.models === 1 ? "model" : "models"})`
+      }${mark}`;
+    case "rejected":
+      return `rejected (${tag(verdict.detail)})${mark}`;
+    case "inconclusive":
+      return `unclear (${tag(verdict.detail)})${mark}`;
+    default:
+      return assertNever(verdict);
+  }
+}
+
+interface IdentityTableInput {
+  token: string;
+  survey: IdentitySurvey;
+  pinned: string | null;
+  /** What each agent's Direct wiring sends today: the star's source of truth for Direct. */
+  baked: { codex: BakedDirectIdentity; claude: BakedDirectIdentity };
+  /** What the next Direct wiring pass bakes: the pin, else (named profile) the slot's replayed
+   *  verdict, else a fresh probe's pick; null = every candidate rejects the credential. */
+  nextDirect: string | null;
+  /** The command that rebakes this profile's Direct wiring. */
+  rewire: string;
+  /** Whether a proxy launch would run the passthrough shim for this credential; without it the
+   *  daemon exchanges the token itself and always sends vscode-chat, pin or not. */
+  proxyPassthrough: boolean;
+  /** A running daemon keeps the identity it launched with, so the Proxy star (a fresh launch's)
+   *  is not what is being sent right now. */
+  daemonRunning: boolean;
+  profile: Profile;
+}
+
+/** The identity NAME each Direct-wired agent sends: its header value, or the codex identity when
+ *  it sends none. Agents not wired Direct, or whose config could not be read, are absent. */
+function bakedDirectSenders(
+  baked: IdentityTableInput["baked"],
+): { agent: string; name: string }[] {
+  return [{ agent: "Codex", baked: baked.codex }, { agent: "Claude", baked: baked.claude }]
+    .flatMap(({ agent, baked }) =>
+      baked.kind === "direct" ? [{ agent, name: baked.integrationId ?? CODEX_IDENTITY_NAME }] : []
+    );
+}
+
+/** The `*` marks what is in effect today per host: Direct as the agent configs bake it (a pin
+ *  lands there only at the next rewire), Proxy as a fresh daemon launch sends it. */
+function identityTableLines(input: IdentityTableInput): string[] {
+  const { token, survey, pinned, baked, nextDirect, rewire, proxyPassthrough, daemonRunning } =
+    input;
+  const senders = bakedDirectSenders(baked);
+  const directSends = [...new Set(senders.map((s) => s.name))];
+  const unreadable = [{ agent: "Codex", baked: baked.codex }, {
+    agent: "Claude",
+    baked: baked.claude,
+  }].flatMap(({ agent, baked }) =>
+    baked.kind === "unreadable" ? [{ agent, reason: baked.reason }] : []
+  );
+  const proxyNext = proxyPassthrough
+    ? pinned ?? autoIdentityFor(token, survey.passthrough)
+    : VSCODE_CHAT_INTEGRATION_ID;
+  const columns = [
+    { label: "Direct", survey: survey.direct, stars: directSends },
+    { label: "Proxy", survey: survey.passthrough, stars: proxyNext === null ? [] : [proxyNext] },
+  ];
+  const names = [
+    ...new Set([...survey.direct.verdicts, ...survey.passthrough.verdicts].map((v) => v.name)),
+  ];
+  const verdictOf = (column: IdentityHostSurvey, name: string): IdentityVerdict | undefined =>
+    column.verdicts.find((v) => v.name === name)?.verdict;
+  const rows = names.map((name) => [
+    name,
+    ...columns.map((c) => verdictCell(verdictOf(c.survey, name), c.stars.includes(name))),
+    IDENTITY_NOTES[name] ?? "",
+  ]);
+  const reasons = names.flatMap((name) =>
+    columns.flatMap((c) => {
+      const verdict = verdictOf(c.survey, name);
+      return verdict === undefined || verdict.kind === "accepted"
+        ? []
+        : [`  ${name} on ${c.label}: ${verdict.detail}`];
+    })
+  );
+  const next = nextDirect ?? "nothing (every identity rejects this credential)";
+  // An unreadable config is reported as unknown; only a fully readable "nobody is Direct" says so.
+  const directNote = directSends.length === 0
+    ? unreadable.length === 0
+      ? `Direct: no agent is wired Direct; \`${rewire}\` would bake ${next}.`
+      : null
+    : directSends.length > 1
+    ? `Direct: the agents disagree (${
+      senders.map((s) => `${s.agent} sends ${s.name}`).join(", ")
+    }); \`${rewire}\` rebakes both to ${next}.`
+    : directSends[0] === nextDirect
+    ? null
+    : `Direct: the wiring sends ${directSends[0]} until \`${rewire}\` rebakes it to ${next}` +
+      `${pinned === null ? "" : " (the pin)"}.`;
+  const flag = input.profile === null ? "" : ` --profile ${input.profile}`;
+  const restart = `\`agent stop${flag}\`, then \`agent start${flag}\``;
+  const notes = [
+    ...unreadable.map((u) =>
+      `Direct: ${u.agent}'s config could not be read (${u.reason}); what it sends is unknown.`
+    ),
+    ...(directNote === null ? [] : [directNote]),
+    ...(proxyPassthrough ? [] : [
+      "Proxy: passthrough is off for this credential, so the proxy exchanges the token itself " +
+      `and always sends ${VSCODE_CHAT_INTEGRATION_ID}; the pin applies to Direct only.`,
+    ]),
+    ...(proxyNext === null
+      ? ["Proxy: no identity accepts this credential; a daemon launch refuses it."]
+      : []),
+    ...(daemonRunning
+      ? [
+        "Proxy: a daemon is running and keeps the identity it launched with; restart it to " +
+        `apply a change: ${restart}.`,
+      ]
+      : []),
+  ];
+  return [
+    pinned === null ? "integration-id: auto" : `integration-id: pinned to ${pinned}`,
+    "* = in effect today: Direct as the agent configs bake it, Proxy as a fresh daemon launch sends it",
+    ...formatTable(rows, {
+      header: [
+        "identity",
+        ...columns.map((c) => `${c.label} (${new URL(c.survey.apiBase).host})`),
+        "note",
+      ],
+      indent: "",
+    }),
+    ...notes,
+    ...reasons,
+  ];
+}
+
+/** The Direct probe must send the agents' own user agent (directClientHeaders); `codexVersion` is
+ *  the catalog deps' test seam, spawned by default. */
+function surveyUserAgent(catalogDeps: CodexCatalogDeps | undefined): string {
+  const version = catalogDeps?.codexVersion === undefined
+    ? codexUserAgentVersion()
+    : catalogDeps.codexVersion();
+  return codexUserAgent(version);
+}
+
+/** Null when nothing resolves; the reason has already been reported and the exit code set. */
+function resolveForProbe(profile: Profile): string | null {
+  const { token, reason } = new Credential(undefined, profile).resolveWithReason();
+  if (token === null) {
+    logger.error(
+      profile !== null && profileSlotMissing(profile) ? noSuchProfileHint(profile) : reason,
+    );
+    process.exitCode = 1;
+  }
+  return token;
+}
+
+/** `ids` not already among `builtins` are appended, so a row the star or the pin lands on always
+ *  carries a probed verdict, whether or not it is a built-in candidate on that host. */
+function withExtraCandidates(
+  builtins: readonly IntegrationIdentity[],
+  ids: readonly (string | null)[],
+  build: (id: string) => IntegrationIdentity,
+): IntegrationIdentity[] {
+  const seen = new Set(builtins.map((c) => c.name));
+  const extras: IntegrationIdentity[] = [];
+  for (const id of ids) {
+    if (id === null || seen.has(id)) continue;
+    seen.add(id);
+    extras.push(build(id));
+  }
+  return [...builtins, ...extras];
+}
+
+async function surveyAndTable(
+  profile: Profile,
+  token: string,
+  pinned: string | null,
+  catalogDeps: CodexCatalogDeps | undefined,
+): Promise<IdentitySurvey> {
+  const userAgent = surveyUserAgent(catalogDeps);
+  const baked = readBakedDirectIdentities(profile);
+  const directBuiltins = directIdentityCandidates(userAgent);
+  const survey = await surveyIntegrationIdentities(token, {
+    direct: withExtraCandidates(
+      directBuiltins,
+      [pinned, ...bakedDirectSenders(baked).map((s) => s.name)],
+      (id) => directIdentity(userAgent, id),
+    ),
+    passthrough: withExtraCandidates(
+      PASSTHROUGH_IDENTITY_CANDIDATES,
+      [pinned],
+      passthroughIdentity,
+    ),
+  });
+  const credential = new Credential(undefined, profile);
+  const proxyPassthrough = usePatPassthrough({
+    force: new CopilotEnvConfig().passthroughOverride(),
+    token,
+    provider: credential.provider(),
+  });
+  // A fresh probe (resolveDirectIntegrationId) ranks the built-ins only, so the extras are
+  // excluded from auto's pick; a named profile's launch replays the slot's verdict before probing.
+  const fresh = autoIdentityFor(token, {
+    ...survey.direct,
+    verdicts: survey.direct.verdicts.slice(0, directBuiltins.length),
+  });
+  const slot = new CopilotEnvState().readProfileSlot(profile).integrationIdentity;
+  const nextDirect = pinned ?? (profile === null ? fresh : slot ?? fresh);
+  const rewire = profile === null ? "agent init" : `agent profile --add ${profile} --direct`;
+  for (
+    const line of identityTableLines({
+      token,
+      survey,
+      pinned,
+      baked,
+      nextDirect,
+      rewire,
+      proxyPassthrough,
+      daemonRunning: trackedDaemonAlive(profile),
+      profile,
+    })
+  ) {
+    console.log(line);
+  }
+  return survey;
+}
+
+async function runIdentities(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise<void> {
+  const token = resolveForProbe(profile);
+  if (token === null) return;
+  await surveyAndTable(profile, token, new CopilotEnvConfig().pinnedIntegrationId(), catalogDeps);
+}
+
+/** The survey shows the rows; the picker offers every identity at least one host accepted, plus
+ *  auto, each labelled with the same verdicts the table showed. `codex` is never offered: it is
+ *  not a pin (see INTEGRATION_ID_DOMAIN), auto yields it. */
+async function chooseIdentity(
+  survey: IdentitySurvey,
+  pinned: string | null,
+): Promise<IdentityChoice> {
+  const verdictOn = (column: IdentityHostSurvey, name: string): IdentityVerdict | undefined =>
+    column.verdicts.find((v) => v.name === name)?.verdict;
+  const names = [
+    ...new Set([...survey.direct.verdicts, ...survey.passthrough.verdicts].map((v) => v.name)),
+  ].filter((name) =>
+    name !== CODEX_IDENTITY_NAME &&
+    [survey.direct, survey.passthrough].some((c) => verdictOn(c, name)?.kind === "accepted")
+  );
+  const cell = (column: IdentityHostSurvey, name: string): string => {
+    const verdict = verdictOn(column, name);
+    return verdict === undefined ? "not probed" : verdictCell(verdict, false);
+  };
+  const current = (name: string): string => name === pinned ? " (current pin)" : "";
+  const value = await consola.prompt("Which Copilot client identity should be pinned?", {
+    type: "select",
+    options: [
+      {
+        label: `auto - probe per credential${pinned === null ? " (current)" : ""}`,
+        value: "auto",
+      },
+      ...names.map((name) => ({
+        label: `${name} - Direct ${cell(survey.direct, name)}, Proxy ${
+          cell(survey.passthrough, name)
+        }${current(name)}`,
+        value: name,
+      })),
+    ],
+    cancel: "reject",
+  });
+  return parseIdentityChoice(String(value));
+}
+
+function noteIdentityApplies(): void {
+  const hint = configKeyDef("integration-id")?.applyHint;
+  if (hint !== undefined) logger.info(hint);
+}
+
+/** Pins `id` unless both hosts reject it definitively. With one acceptance the other host's verdict
+ *  is narrated; with none (an unresolvable credential, or every probe inconclusive) the pin lands
+ *  unverified, and says so. */
+async function pinIdentity(
+  id: string,
+  credential: Credential,
+  catalogDeps: CodexCatalogDeps | undefined,
+): Promise<void> {
+  const { token, reason } = credential.resolveWithReason();
+  if (token === null) {
+    logger.warn(`Pinning \`${id}\` unverified: ${reason}.`);
+  } else {
+    const survey = await surveyIntegrationIdentities(
+      token,
+      pinnedIdentityCandidates(id, surveyUserAgent(catalogDeps)),
+    );
+    const hosts = [
+      { label: "Direct", column: survey.direct },
+      { label: "Proxy", column: survey.passthrough },
+    ].map((h) => ({ ...h, verdict: h.column.verdicts[0]?.verdict }));
+    if (hosts.every((h) => h.verdict?.kind === "rejected")) {
+      throw new Error(
+        [
+          `both hosts reject this credential under \`${id}\`; not pinned:`,
+          ...hosts.map((h) =>
+            `  - ${h.label} (${new URL(h.column.apiBase).host}): ${
+              h.verdict?.kind === "rejected" ? h.verdict.detail : ""
+            }`
+          ),
+        ].join("\n"),
+      );
+    }
+    const accepted = hosts.filter((h) => h.verdict?.kind === "accepted").map((h) => h.label);
+    for (const h of hosts) {
+      if (h.verdict === undefined || h.verdict.kind === "accepted") continue;
+      const outcome = h.verdict.kind === "rejected" ? "rejects" : "could not verify";
+      const ground = accepted.length === 0
+        ? "pinning unverified"
+        : `pinning on ${accepted.join(" and ")} accepting it`;
+      logger.warn(`${h.label}: ${outcome} \`${id}\` (${h.verdict.detail}); ${ground}.`);
+    }
+  }
+  new CopilotEnvConfig().set({ integrationId: id });
+  logger.success(
+    `integration-id = ${id} (pinned; \`agent auth --identity auto\` restores probing).`,
+  );
+  noteIdentityApplies();
+}
+
+async function runIdentity(
+  profile: Profile,
+  choice: IdentityChoice,
+  catalogDeps?: CodexCatalogDeps,
+): Promise<void> {
+  switch (choice.kind) {
+    case "auto":
+      // The same literal `agent config --set integration-id auto` stores; the store reads it as no pin.
+      new CopilotEnvConfig().set({ integrationId: "auto" });
+      logger.success("integration-id = auto: the identity is probed per credential again.");
+      noteIdentityApplies();
+      return;
+    case "pin":
+      await pinIdentity(choice.id, new Credential(undefined, profile), catalogDeps);
+      return;
+    case "choose": {
+      if (!process.stdin.isTTY) {
+        throw new Error(
+          "not a terminal - pass the identity: `agent auth --identity <id|auto>` " +
+            "(see `agent auth --identities`)",
+        );
+      }
+      const token = resolveForProbe(profile);
+      if (token === null) return;
+      const pinned = new CopilotEnvConfig().pinnedIntegrationId();
+      const survey = await surveyAndTable(profile, token, pinned, catalogDeps);
+      await runIdentity(profile, await chooseIdentity(survey, pinned), catalogDeps);
+      return;
+    }
+    default:
+      assertNever(choice);
+  }
+}
+
 /** Throws if acquisition fails, so `agent init` and `agent start` error out rather than proceed
  *  unauthenticated. */
 export async function ensureAuthenticated(profile: Profile = null): Promise<void> {
@@ -762,35 +1175,41 @@ export type AuthAction =
   | { kind: "check"; profile: Profile }
   | { kind: "print-proxy-token"; profile: Profile }
   | { kind: "list" }
+  | { kind: "identities"; profile: Profile }
+  | { kind: "identity"; profile: Profile; choice: IdentityChoice }
   | { kind: "authenticate"; profile: Profile; acquisition: CredentialAcquisition };
+
+const SUB_ACTION_FLAGS = "--get/--del/--check/--list/--identities/--identity/--print-proxy-token";
 
 function providerConflictError(): Error {
   return new Error(
-    "--provider selects how to authenticate and cannot combine with " +
-      "--get/--del/--check/--list/--print-proxy-token",
+    `--provider selects how to authenticate and cannot combine with ${SUB_ACTION_FLAGS}`,
   );
 }
 
 function ghUserConflictError(): Error {
   return new Error(
-    "--gh-user pins the gh account for authentication and cannot combine with " +
-      "--get/--del/--check/--list/--print-proxy-token",
+    `--gh-user pins the gh account for authentication and cannot combine with ${SUB_ACTION_FLAGS}`,
   );
 }
 
 export function parseAuthAction(args: AuthArgs): AuthAction {
-  const subActions = [args.get, args.del, args.check, args.printProxyToken, args.list].filter(
-    Boolean,
-  ).length;
+  const subActions = [
+    args.get,
+    args.del,
+    args.check,
+    args.printProxyToken,
+    args.list,
+    args.identities,
+    args.identity !== undefined,
+  ].filter(Boolean).length;
   if (subActions > 1) {
     throw new Error(
-      "--get, --del, --check, --list, and --print-proxy-token are mutually exclusive",
+      "--get, --del, --check, --list, --identities, --identity, and --print-proxy-token are mutually exclusive",
     );
   }
   if (args.set !== undefined && subActions > 0) {
-    throw new Error(
-      "--set provisions a token and cannot combine with --get/--del/--check/--list/--print-proxy-token",
-    );
+    throw new Error(`--set provisions a token and cannot combine with ${SUB_ACTION_FLAGS}`);
   }
   if (args.list) {
     if (args.profile !== undefined) {
@@ -809,6 +1228,14 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
   if (args.get) return { kind: "get", profile };
   if (args.del) return { kind: "del", profile };
   if (args.check) return { kind: "check", profile };
+  if (args.identities) return { kind: "identities", profile };
+  if (args.identity !== undefined) {
+    // Validated here, like --provider, so a bad id fails before any probe or prompt.
+    const choice: IdentityChoice = args.identity === true
+      ? { kind: "choose" }
+      : parseIdentityChoice(String(args.identity));
+    return { kind: "identity", profile, choice };
+  }
   return {
     kind: "authenticate",
     profile,
@@ -833,6 +1260,12 @@ export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): P
       return;
     case "check":
       runCheck(action.profile);
+      return;
+    case "identities":
+      await runIdentities(action.profile, catalogDeps);
+      return;
+    case "identity":
+      await runIdentity(action.profile, action.choice, catalogDeps);
       return;
     case "authenticate":
       await runAuthenticate(action.profile, action.acquisition);

@@ -1,7 +1,9 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
+import { configureClaudeConfig } from "../src/claude/config.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
+import { configureCodexConfig } from "../src/codex/config.ts";
 import {
   chooseGhAccount,
   credentialSourceLabel,
@@ -16,7 +18,7 @@ import {
   ghAccountsLookFromSpawn,
   ghTokenLookFromSpawn,
 } from "../src/copilot_api/credential.ts";
-import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { assertProfileSlot, CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import {
   activeGhLogin,
@@ -28,8 +30,10 @@ import {
 import { githubLoginLook, setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
+  COPILOT_SANDBOX_INTEGRATION_ID,
   INTEGRATION_ID_HEADER,
   setIntegrationProbeFetch,
+  VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
 import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
@@ -41,6 +45,7 @@ import {
   resetExitCode,
   stageRefusedStop,
   stubGithubLogins,
+  writeRunState,
 } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
@@ -54,7 +59,7 @@ afterEach(() => {
 });
 
 /** Every token this file provisions reads as octocat's; a test that cares stubs its own. */
-function isolate(): { claudeHome: string } {
+function isolate(): { claudeHome: string; codexHome: string } {
   const homes = isolateAgentHomes("copilot-auth-");
   dir = homes.dir;
   stubGithubLogins({
@@ -64,7 +69,7 @@ function isolate(): { claudeHome: string } {
     ghu_x: "octocat",
     ghu_new: "octocat",
   });
-  return { claudeHome: homes.claudeHome };
+  return { claudeHome: homes.claudeHome, codexHome: homes.codexHome };
 }
 
 function state(): CopilotEnvState {
@@ -413,11 +418,13 @@ test("auth: --provider cannot combine with a sub-action (never silently dropped)
       { check: true, provider: "gh-cli" },
       { printProxyToken: true, provider: "gh-token" },
       { list: true, provider: "copilot" },
+      { identities: true, provider: "copilot" },
+      { identity: "copilot-developer-cli", provider: "copilot" },
     ]
   ) {
     await expect(runAuth(args)).rejects.toThrow(
       "--provider selects how to authenticate and cannot combine with " +
-        "--get/--del/--check/--list/--print-proxy-token",
+        "--get/--del/--check/--list/--identities/--identity/--print-proxy-token",
     );
   }
   // Other rejections keep precedence over the conflict: --list/--profile and an invalid name still
@@ -428,6 +435,201 @@ test("auth: --provider cannot combine with a sub-action (never silently dropped)
   await expect(runAuth({ get: true, profile: "NOT valid", provider: "copilot" })).rejects.toThrow(
     /invalid profile name/,
   );
+});
+
+// --- integration identities -------------------------------------------------
+
+/** A PAT the CLI identity accepts on both hosts (a 5-model Direct catalog, 37 on the account host),
+ *  that the sandbox accepts on Direct only (2 models), and that vscode-chat and the default Direct
+ *  identity reject. */
+function stubIdentitySurvey(): void {
+  setIntegrationProbeFetch((input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/copilot_internal/user")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ endpoints: { api: "https://api.enterprise.githubcopilot.com" } }),
+          { status: 200 },
+        ),
+      );
+    }
+    const enterprise = url.startsWith("https://api.enterprise.");
+    const catalog = (size: number): Response =>
+      new Response(JSON.stringify({ data: Array.from({ length: size }, () => ({})) }), {
+        status: 200,
+      });
+    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+    if (id === COPILOT_CLI_INTEGRATION_ID) return Promise.resolve(catalog(enterprise ? 37 : 5));
+    if (id === COPILOT_SANDBOX_INTEGRATION_ID && !enterprise) return Promise.resolve(catalog(2));
+    return Promise.resolve(
+      new Response("Personal Access Tokens are not supported for this endpoint", { status: 400 }),
+    );
+  });
+}
+
+test("auth --identities stars what the agent configs bake, probes the pin, and names the gap to the next rewire", async () => {
+  const { claudeHome, codexHome } = isolate();
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
+  stubIdentitySurvey();
+  try {
+    // No agent wired Direct: nothing to star there; the Proxy star is what the next start sends.
+    const out = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(out.split("\n")).toEqual([
+      "integration-id: auto",
+      "* = in effect today: Direct as the agent configs bake it, Proxy as a fresh daemon launch sends it",
+      "identity                   Direct (api.githubcopilot.com)  Proxy (api.enterprise.githubcopilot.com)  note",
+      "-------------------------  ------------------------------  ----------------------------------------  " +
+      "------------------------------------------------------------",
+      "codex                      rejected (400)                  -                                         " +
+      "Direct default: no Copilot-Integration-Id header (auto only)",
+      "copilot-developer-cli      accepted (5 models)             accepted (37 models) *                    " +
+      "GitHub Copilot CLI; accepts fine-grained PATs",
+      "copilot-developer-sandbox  accepted (2 models)             rejected (400)",
+      "vscode-chat                -                               rejected (400)                            " +
+      "proxy default (copilot-api's own identity)",
+      "Direct: no agent is wired Direct; `agent init` would bake copilot-developer-cli.",
+      "  codex on Direct: 400 Personal Access Tokens are not supported for this endpoint",
+      "  copilot-developer-sandbox on Proxy: 400 Personal Access Tokens are not supported for this endpoint",
+      "  vscode-chat on Proxy: 400 Personal Access Tokens are not supported for this endpoint",
+      "",
+    ]);
+
+    // The Direct star follows the header Claude's Direct settings bake; a pin lands there only at
+    // the next rewire, and the note names the gap.
+    configureClaudeConfig(claudeHome, {
+      mode: "direct",
+      credential: { kind: "command" },
+      directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
+    });
+    await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
+    const pinned = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(pinned).toContain(`integration-id: pinned to ${COPILOT_SANDBOX_INTEGRATION_ID}`);
+    expect(pinned).toMatch(
+      /^copilot-developer-cli\s+accepted \(5 models\) \*\s+accepted \(37 models\)\s/m,
+    );
+    expect(pinned).toMatch(
+      /^copilot-developer-sandbox\s+accepted \(2 models\)\s+rejected \(400\) \*/m,
+    );
+    expect(pinned).toContain(
+      "Direct: the wiring sends copilot-developer-cli until `agent init` rebakes it to " +
+        "copilot-developer-sandbox (the pin).",
+    );
+
+    // Codex baked with no header (the codex identity) beside Claude's CLI id: both rows starred,
+    // and the disagreement said.
+    configureCodexConfig(
+      codexHome,
+      { mode: "direct", credential: { kind: "command" }, codexExecVersion: "1.0.0" },
+      NOOP_CATALOG_DEPS,
+    );
+    const split = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(split).toMatch(/^codex\s+rejected \(400\) \*/m);
+    expect(split).toContain(
+      "Direct: the agents disagree (Codex sends codex, Claude sends copilot-developer-cli); " +
+        "`agent init` rebakes both to copilot-developer-sandbox.",
+    );
+
+    // A pin that is not a built-in Direct candidate is still probed and marked, never a bare `-`.
+    new CopilotEnvConfig().set({ integrationId: VSCODE_CHAT_INTEGRATION_ID });
+    const foreign = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(foreign).toMatch(/^vscode-chat\s+rejected \(400\)\s+rejected \(400\) \*/m);
+    expect(foreign).toContain(
+      "  vscode-chat on Direct: 400 Personal Access Tokens are not supported for this endpoint",
+    );
+
+    // A credential the proxy exchanges itself (device-flow, passthrough off) never sees the pin
+    // on the proxy path: the daemon's own vscode-chat is what is in effect there.
+    new CopilotEnvConfig().set({ integrationId: "auto" });
+    state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_device" });
+    const exchanged = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(exchanged).toMatch(/^vscode-chat\s+-\s+rejected \(400\) \*/m);
+    expect(exchanged).toContain("Proxy: passthrough is off for this credential");
+
+    // A running daemon keeps the identity it launched with: the Proxy star is a fresh launch's,
+    // and the table says so.
+    writeRunState({ pid: process.pid, port: 4141 });
+    const running = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(running).toContain(
+      "Proxy: a daemon is running and keeps the identity it launched with; restart it to apply " +
+        "a change: `agent stop`, then `agent start`.",
+    );
+
+    // Negative control: a Direct helper routed at the proxy sends its baked header to the daemon,
+    // not to api.githubcopilot.com, so Claude drops out of the Direct star (Codex keeps it). Only
+    // the base URL changes; the CLI-id header the writer baked stays, so this fails without the
+    // base-URL gate in bakedClaudeDirectIntegrationId.
+    const settingsPath = join(claudeHome, "settings.json");
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      env: Record<string, string>;
+    };
+    expect(settings.env.ANTHROPIC_CUSTOM_HEADERS).toContain(COPILOT_CLI_INTEGRATION_ID);
+    settings.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
+    writeFileSync(settingsPath, JSON.stringify(settings));
+    const rerouted = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(rerouted).toMatch(/^codex\s+rejected \(400\) \*/m);
+    expect(rerouted).not.toMatch(/^copilot-developer-cli\s+accepted \(5 models\) \*/m);
+    expect(rerouted).not.toContain("the agents disagree");
+
+    // Negative control: configs that cannot be parsed read as UNKNOWN, never as "no agent is
+    // wired Direct" and never as a starred identity.
+    writeFileSync(join(claudeHome, "settings.json"), "{");
+    writeFileSync(join(codexHome, "config.toml"), "= [");
+    const unknown = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(unknown).toContain(
+      "Direct: Codex's config could not be read (config.toml is present but not valid TOML); " +
+        "what it sends is unknown.",
+    );
+    expect(unknown).toContain(
+      "Direct: Claude's config could not be read (the settings file is not a JSON object); " +
+        "what it sends is unknown.",
+    );
+    expect(unknown).not.toContain("no agent is wired Direct");
+    expect(unknown).not.toMatch(/^codex\s+rejected \(400\) \*/m);
+  } finally {
+    setIntegrationProbeFetch(null);
+  }
+});
+
+test("auth --identity <id>: refused only when BOTH hosts reject; one acceptance pins and names the other verdict; auto clears", async () => {
+  isolate();
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
+  stubIdentitySurvey();
+  try {
+    await expect(runAuth({ identity: VSCODE_CHAT_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
+      .toThrow(
+        [
+          `both hosts reject this credential under \`${VSCODE_CHAT_INTEGRATION_ID}\`; not pinned:`,
+          "  - Direct (api.githubcopilot.com): 400 Personal Access Tokens are not supported for this endpoint",
+          "  - Proxy (api.enterprise.githubcopilot.com): 400 Personal Access Tokens are not supported for this endpoint",
+        ].join("\n"),
+      );
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+
+    // Accepted on Direct, rejected on Proxy: pinned, and the warning names what carried it.
+    const narrated = await captureStderr(() =>
+      runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)
+    );
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
+    // consola's fancy reporter strips the backticks around the id; the CI reporter keeps them.
+    expect(narrated).toMatch(
+      new RegExp(
+        `Proxy: rejects \`?${COPILOT_SANDBOX_INTEGRATION_ID}\`? \\(400 Personal Access Tokens ` +
+          "are not supported for this endpoint\\); pinning on Direct accepting it\\.",
+      ),
+    );
+
+    await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+  } finally {
+    setIntegrationProbeFetch(null);
+  }
+});
+
+test("auth --identity <id> validates the id at the flag like --provider, before any probe", async () => {
+  isolate();
+  await expect(runAuth({ identity: CODEX_IDENTITY_NAME })).rejects.toThrow(/cannot be pinned/);
+  await expect(runAuth({ identity: "evil\nX: 1" })).rejects.toThrow(/header-safe/);
+  await expect(runAuth({ identity: true, list: true })).rejects.toThrow("mutually exclusive");
 });
 
 test("auth --get stdout stays EXACTLY the token even when the catalog refresh runs", async () => {

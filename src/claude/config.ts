@@ -28,9 +28,11 @@ import { Credential } from "../copilot_api/credential.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
+  type BakedDirectIdentity,
   CODEX_EXEC_USER_AGENT,
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
+  INTEGRATION_ID_HEADER,
 } from "../copilot_api/integration_identity.ts";
 import { cheapestClaudeModel, parseCatalogModels } from "../copilot_api/models.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
@@ -206,6 +208,38 @@ export function bakedClaudeToken(settings: TextReadResult): string | null {
   const env = doc !== null && isRecord(doc.env) ? doc.env : null;
   const token = env === null ? null : readStringField(env, AUTH_TOKEN_ENV);
   return token === null || token === "" ? null : token;
+}
+
+/** The Copilot-Integration-Id a Direct settings file bakes in ANTHROPIC_CUSTOM_HEADERS (one
+ *  `Name: value` per line, directCustomHeaders' shape), for `agent auth --identities`. A side
+ *  reader like bakedClaudeToken: the inspector classifies, the status type never carries it. */
+export function bakedClaudeDirectIntegrationId(
+  settings: TextReadResult,
+  expectedPort: number,
+  profile: Profile = null,
+): BakedDirectIdentity {
+  if (settings.kind === "absent") return { kind: "not-direct" };
+  if (settings.kind === "unreadable") return { kind: "unreadable", reason: settings.error };
+  const wiring = inspectClaudeWiring(settings, expectedPort, profile);
+  if (wiring.providerMode === "other" && wiring.otherReason === "malformed") {
+    return { kind: "unreadable", reason: "the settings file is not a JSON object" };
+  }
+  // Mode keys off the helper alone, so a Direct helper with a proxy ANTHROPIC_BASE_URL still
+  // classifies "direct" while its traffic (and the baked header) goes to the daemon: only the
+  // exact Direct base URL puts the header on api.githubcopilot.com.
+  if (wiring.providerMode !== "direct" || wiring.baseUrl !== DIRECT_BASE_URL) {
+    return { kind: "not-direct" };
+  }
+  const doc = parseJsonRecord(settings.text);
+  const env = doc !== null && isRecord(doc.env) ? doc.env : null;
+  const prefix = `${INTEGRATION_ID_HEADER}: `;
+  const line = (env === null ? null : readStringField(env, CUSTOM_HEADERS_ENV))
+    ?.split("\n")
+    .find((l) => l.startsWith(prefix));
+  return {
+    kind: "direct",
+    integrationId: line === undefined ? null : line.slice(prefix.length),
+  };
 }
 
 // --- wiring inspection (pure) -----------------------------------------------

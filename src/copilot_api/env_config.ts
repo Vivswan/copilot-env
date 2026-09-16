@@ -62,6 +62,11 @@ const PASSTHROUGH_VALUES = ["auto", "on", "off"] as const;
  */
 export const INTEGRATION_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
+/** Direct's default identity (integration_identity.ts): Codex CLI impersonation with NO id header.
+ *  Owned here, beside the pin domain that refuses it, because this module sits in the daemon shims'
+ *  import closure and the identity module does not. */
+export const CODEX_IDENTITY_NAME = "codex";
+
 export type ConfigKey = keyof CopilotEnvConfigData;
 export type ConfigValue = boolean | number | string;
 
@@ -285,7 +290,10 @@ const MODEL_ID_DOMAIN = nonEmptyDomain("model id");
 const PROXY_VERSION_DOMAIN = nonEmptyDomain("version|tag");
 
 /** The rejection never echoes the value: junk pasted here can be a token. An invalid stored pin reads
- *  as unset, so reads fall back to the probe rather than baking a header-splitting value. */
+ *  as unset, so reads fall back to the probe rather than baking a header-splitting value.
+ *  `codex` is refused because that identity IS the absence of the header: a pin is always sent as
+ *  the header's value, so no pin can express it, and `auto` already selects it whenever Direct
+ *  accepts the credential under it. */
 const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
   v.pipe(
     v.string(),
@@ -294,10 +302,20 @@ const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
       INTEGRATION_ID_RE,
       "expected a header-safe identity token (1-64 chars of [A-Za-z0-9._-]) or `auto`",
     ),
+    v.check(
+      (id) => id.toLowerCase() !== CODEX_IDENTITY_NAME,
+      `\`${CODEX_IDENTITY_NAME}\` is Direct's default identity (it sends no integration-id header) ` +
+        "and cannot be pinned; `auto` already selects it when the credential accepts it",
+    ),
   ),
   (raw) => raw,
   "id|auto",
 );
+
+/** The one validator behind `agent config --set integration-id` and `agent auth --identity`. */
+export function parseIntegrationIdPin(raw: string): string {
+  return INTEGRATION_ID_DOMAIN.parse(raw);
+}
 
 /** Lives here rather than in src/usage/pricing.ts because this module sits in the daemon shims' import
  *  closure and the usage layer must not (test/installer_pinning.test.ts). */
@@ -456,8 +474,9 @@ const CONFIG_REGISTRY_LITERAL = [
     describe: "Copilot-Integration-Id header to send; auto probes it per credential",
     ...INTEGRATION_ID_DOMAIN,
     defaultValue: "auto",
-    applyHint:
-      "Applies at the next `agent start` (proxy) and `agent init`/`agent profile --add` (direct wiring).",
+    applyHint: "Applies to Direct at the next `agent init`/`agent profile --add` (rewires the " +
+      "agent configs) and to the proxy at its next daemon launch (a running daemon keeps its " +
+      "identity: `agent stop`, then `agent start`).",
   },
   {
     cli: "launchers",

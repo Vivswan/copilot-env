@@ -458,7 +458,7 @@ test("codex-host: stored else default, POSIX-only set, and Windows always reads 
   );
 });
 
-test("configTableOutput() takes the terminal's width; off a TTY or on a size-less pty it uses 80", () => {
+test("configTableOutput() takes the terminal's width from the one table seam: COLUMNS when set, unbounded off a TTY", () => {
   tmpHome();
   const tableAt = (width: number): string =>
     configTable(new CopilotEnvConfig().read(), {
@@ -468,24 +468,23 @@ test("configTableOutput() takes the terminal's width; off a TTY or on a size-les
       proxyVersion: nextProxyVersion(),
       color: COLOR_ENABLED,
     });
-  const setColumns = (value: number): void => {
-    Object.defineProperty(process.stdout, "columns", { value, configurable: true, writable: true });
+  const stdout = process.stdout as unknown as Record<string, unknown>;
+  const orig = {
+    isTTY: Object.getOwnPropertyDescriptor(stdout, "isTTY"),
+    env: process.env.COLUMNS,
   };
-  // The test runner's stdout is no TTY: `columns` is absent here, as it is off any TTY.
-  const orig = Object.getOwnPropertyDescriptor(process.stdout, "columns");
-  expect(process.stdout.columns).toBeUndefined();
-  expect(configTableOutput("linux")).toBe(tableAt(80));
+  Object.defineProperty(stdout, "isTTY", { value: false, configurable: true, writable: true });
   try {
-    setColumns(140);
-    expect(tableAt(140)).not.toBe(tableAt(80));
-    expect(configTableOutput("linux")).toBe(tableAt(140));
-    // A size-less pty reports 0 columns: the fallback again, not a zero-width table.
-    setColumns(0);
-    expect(process.stdout.columns).toBe(0);
+    delete process.env.COLUMNS;
+    expect(tableAt(Number.POSITIVE_INFINITY)).not.toBe(tableAt(80));
+    expect(configTableOutput("linux")).toBe(tableAt(Number.POSITIVE_INFINITY));
+    process.env.COLUMNS = "80";
     expect(configTableOutput("linux")).toBe(tableAt(80));
   } finally {
-    if (orig === undefined) Reflect.deleteProperty(process.stdout, "columns");
-    else Object.defineProperty(process.stdout, "columns", orig);
+    if (orig.isTTY === undefined) Reflect.deleteProperty(stdout, "isTTY");
+    else Object.defineProperty(stdout, "isTTY", orig.isTTY);
+    if (orig.env === undefined) delete process.env.COLUMNS;
+    else process.env.COLUMNS = orig.env;
   }
 });
 

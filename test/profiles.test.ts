@@ -519,19 +519,22 @@ test("renderProfileTable aligns columns under a header and flags incomplete slot
     { name: parseProfileName("idle"), provider: "gh-cli", mode: "proxy", daemon: { up: false } },
     { name: WORK, provider: "gh-token", mode: "direct", daemon: null },
     { name: parseProfileName("broken"), provider: null, mode: null, daemon: null },
-  ]);
+  ], null);
   // Strip ANSI styling (the local run may have color enabled) so the
   // plain-text assertions hold everywhere. The escape byte is built with
   // fromCharCode: a literal control character in a regex is a lint error.
   const ansi = new RegExp(`${String.fromCharCode(27)}\\[\\d+m`, "g");
   const lines = table.split("\n").map((l) => l.replace(ansi, ""));
-  expect(lines[0]).toBe("     NAME      MODE          PROVIDER         DAEMON");
-  expect(lines[1]).toBe("     fast      proxy         gh-cli           up (port 4142)");
-  expect(lines[2]).toBe("     idle      proxy         gh-cli           down");
-  // A direct profile has no daemon: "-", never a blank that reads as missing data.
-  expect(lines[3]).toBe("     work      direct        gh-token         -");
-  // Missing mode/credential surface as repairable gaps, not blanks.
-  expect(lines[4]).toBe("     broken    incomplete    no credential    -");
+  expect(lines).toEqual([
+    "     NAME    MODE        PROVIDER       DAEMON",
+    "     ------  ----------  -------------  --------------",
+    "     fast    proxy       gh-cli         up (port 4142)",
+    "     idle    proxy       gh-cli         down",
+    // A direct profile has no daemon: "-", never a blank that reads as missing data.
+    "     work    direct      gh-token       -",
+    // Missing mode/credential surface as repairable gaps, not blanks.
+    "     broken  incomplete  no credential  -",
+  ]);
 });
 
 test("profile --add wires both agents atomically; --del removes everything", async () => {

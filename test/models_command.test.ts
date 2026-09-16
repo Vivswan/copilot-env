@@ -141,7 +141,7 @@ test("renderModelTable groups by vendor, chat first, unknown vendor last", () =>
       preview: true,
     }),
     entry({ id: "claude-opus-4.8", vendor: "Anthropic", maxOutput: 32000 }),
-  ]);
+  ], null);
   // Strip ANSI styling (the local run may have color enabled) so the
   // plain-text assertions hold everywhere. The escape byte is built with
   // fromCharCode: a literal control character in a regex is a lint error.

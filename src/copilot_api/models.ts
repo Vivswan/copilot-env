@@ -150,6 +150,28 @@ export function generateAliases(catalog: CatalogModel[]): Record<string, string>
   return aliases;
 }
 
+/** The Direct smoke's pick: the cheapest family present, newest version within it. A 1-token probe
+ *  needs any model the account can drive, and the reduced families are the ones least often gated
+ *  per plan, so this is the pick most likely to answer when Direct works at all. */
+export function cheapestClaudeModel(catalog: CatalogModel[]): string | null {
+  const parsed = parseClaudeModels(catalog);
+  const present = new Set(parsed.map((p) => p.family));
+  const families = [
+    ...[...CLAUDE_PICKER_ORDER].reverse().filter((f) => present.has(f)),
+    ...[...present].filter((f) => !CLAUDE_PICKER_ORDER.includes(f)).sort(),
+  ];
+  const family = families[0];
+  if (family === undefined) return null;
+  return newest(parsed, family, () => true)?.id ?? null;
+}
+
+/** A reduced GPT tier (`gpt-6-mini`, `gpt-6-nano`): cheaper, and rarely gated. The same token
+ *  match `gpt-latest` uses to skip them. */
+export function isReducedGpt(id: string): boolean {
+  const qualifier = GPT_ID_PATTERN.exec(id)?.[2];
+  return qualifier?.split("-").some((t) => REDUCED_GPT_TIERS.has(t)) ?? false;
+}
+
 /** On a version tie the bare id wins, so `gpt-6` beats `gpt-6-<qualifier>`. */
 function newestGpt(catalog: CatalogModel[]): string | undefined {
   let best: { id: string; version: string; bare: boolean } | undefined;
@@ -162,7 +184,7 @@ function newestGpt(catalog: CatalogModel[]): string | undefined {
     if (version === undefined) {
       continue;
     }
-    if (qualifier?.split("-").some((t) => REDUCED_GPT_TIERS.has(t))) {
+    if (isReducedGpt(model.id)) {
       continue;
     }
     const bare = qualifier === undefined;

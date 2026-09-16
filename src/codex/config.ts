@@ -14,8 +14,9 @@ import {
 import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
 import { type AgentProviderMode, providerModeExitCode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { type EndpointSmoke, smokeDirectEndpoint } from "../copilot_api/endpoint_smoke.ts";
+import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { isReducedGpt } from "../copilot_api/models.ts";
 import {
   CODEX_EXEC_USER_AGENT,
   DEFAULT_COPILOT_API_BASE,
@@ -939,20 +940,21 @@ export function removeCodexDefaultWiring(codexHome: string): void {
 }
 
 /** `codexServable` is the catalog's own "codex can drive it" mark (chat, picker-enabled, served on
- *  /responses), so the smoke pings a model the generated catalog would offer. */
+ *  /responses), so the smoke pings a model the generated catalog would offer; a reduced tier first,
+ *  for the same reason cheapestClaudeModel gives. */
 export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
   wire: "responses",
   pickModel: (body) => {
-    for (const [id, model] of parseCopilotModels(body)) {
-      if (model.codexServable) return id;
-    }
-    return null;
+    const servable = [...parseCopilotModels(body)]
+      .filter(([, model]) => model.codexServable)
+      .map(([id]) => id);
+    return servable.find(isReducedGpt) ?? servable[0] ?? null;
   },
 };
 
-/** Writes a throwaway direct config and runs `codex exec --sandbox read-only` against it
- *  (src/agents/live_probe.ts); with no codex CLI on the machine the endpoint smoke judges the
- *  credential instead. False means the caller writes proxy. */
+/** Writes a throwaway direct config and runs `codex exec --model <catalog pick> --sandbox
+ *  read-only` against it (src/agents/live_probe.ts); with no codex CLI on the machine the endpoint
+ *  smoke judges the credential instead. False means the caller writes proxy. */
 export function detectCodexDirect(
   directIntegrationId: string | null,
   ghToken: string | null,
@@ -970,10 +972,9 @@ export function detectCodexDirect(
     },
     ghToken === null
       ? null
-      : () =>
-        smokeDirectEndpoint(CODEX_ENDPOINT_SMOKE, ghToken, codexUserAgent(), directIntegrationId, {
-          fetchImpl: deps?.fetchImpl,
-        }),
+      : directSmoke(CODEX_ENDPOINT_SMOKE, ghToken, codexUserAgent(), directIntegrationId, {
+        fetchImpl: deps?.fetchImpl,
+      }),
     deps,
   );
 }

@@ -1,8 +1,9 @@
-// smokeDirectEndpoint's verdict arms. The happy paths (headers, model pick, ping body) are pinned
-// end to end in claude_config.test.ts / codex_config.test.ts through detect*Direct; here every
-// arm must land on the right verdict, and a failure must carry its reason, because the live probe
-// prints that detail as the one explanation of a fall to the proxy.
-import { smokeDirectEndpoint } from "../src/copilot_api/endpoint_smoke.ts";
+// directSmoke's verdict arms, composed the way the CLI-less probe arm composes them (pick, then
+// ping). The happy paths (headers, model pick, ping body) are pinned end to end in
+// claude_config.test.ts / codex_config.test.ts through detect*Direct; here every arm must land on
+// the right verdict, and a failure must carry its reason, because the live probe prints that
+// detail as the one explanation of a fall to the proxy.
+import { directSmoke } from "../src/copilot_api/endpoint_smoke.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 const SMOKE = {
@@ -27,7 +28,7 @@ function fetchStub(responses: (Response | Error)[]): { calls: string[]; impl: ty
 const catalog = () =>
   new Response(JSON.stringify({ data: [{ "id": "claude-fable-5" }] }), { status: 200 });
 
-test("smokeDirectEndpoint: only a 200 ping is Direct; every other arm reports its own reason", async () => {
+test("directSmoke: only a 200 ping is Direct; every other arm reports its own reason", async () => {
   const cases: {
     name: string;
     responses: (Response | Error)[];
@@ -92,9 +93,9 @@ test("smokeDirectEndpoint: only a 200 ping is Direct; every other arm reports it
   ];
   for (const c of cases) {
     const { calls, impl } = fetchStub(c.responses);
-    const outcome = await smokeDirectEndpoint(SMOKE, "tok", "codex_exec/1.0.0", null, {
-      fetchImpl: impl,
-    });
+    const smoke = directSmoke(SMOKE, "tok", "codex_exec/1.0.0", null, { fetchImpl: impl });
+    const picked = await smoke.pickModel();
+    const outcome = picked.ok ? await smoke.ping(picked.model) : picked;
     expect({ name: c.name, ok: outcome.ok, pings: Math.max(0, calls.length - 1) }).toEqual({
       name: c.name,
       ok: c.ok,

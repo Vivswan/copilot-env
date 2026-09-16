@@ -495,28 +495,49 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
   expect(wiring(proxyHome).credential).toBe("command");
 });
 
-test("detectCodexDirect: the CLI and a passing smoke prompt decide; gh is optional", async () => {
+test("detectCodexDirect: the CLI runs the catalog's codex-servable model and its verdict decides; gh is optional", async () => {
   isolate();
   // A runProbe spy lets us prove the CLI gate short-circuits BEFORE the (here
-  // simulated) model call.
+  // simulated) model call, and that the call is pinned to the catalog pick.
   let probeCalls = 0;
+  let seenArgs: string[] | null = null;
+  // Two servable models: the reduced tier is pinned over the full one.
+  const servable = (id: string) => ({
+    "id": id,
+    "capabilities": {
+      "type": "chat",
+      "limits": { "max_context_window_tokens": 272000, "max_prompt_tokens": 260000 },
+    },
+    "model_picker_enabled": true,
+    "supported_endpoints": ["/responses"],
+  });
+  const fetchImpl = () =>
+    Promise.resolve(
+      new Response(JSON.stringify({ data: [servable("gpt-6"), servable("gpt-6-nano")] }), {
+        status: 200,
+      }),
+    );
   const ok = {
     findCommand: (c: string) => ({ path: `/bin/${c}` }),
-    runProbe: () => {
+    runProbe: (_cli: string, args: string[]) => {
       probeCalls++;
+      seenArgs = args;
       return { ok: true };
     },
     retryDelayMs: 0,
+    fetchImpl,
   };
-  expect(await detectCodexDirect(null, null, ok)).toBe(true);
+  expect(await detectCodexDirect(null, "ghu_tok", ok)).toBe(true);
   expect(probeCalls).toBe(1);
+  const args = seenArgs as unknown as string[];
+  expect(args[args.indexOf("--model") + 1]).toBe("gpt-6-nano");
   // The live read-only prompt failed -> proxy.
-  expect(await detectCodexDirect(null, null, { ...ok, runProbe: () => ({ ok: false }) })).toBe(
-    false,
-  );
+  expect(await detectCodexDirect(null, "ghu_tok", { ...ok, runProbe: () => ({ ok: false }) }))
+    .toBe(false);
 
-  // A missing CLI with no credential returns false WITHOUT calling runProbe.
+  // No credential returns false WITHOUT calling runProbe, with or without a CLI.
   probeCalls = 0;
+  expect(await detectCodexDirect(null, null, ok)).toBe(false);
   expect(
     await detectCodexDirect(null, null, {
       ...ok,
@@ -527,7 +548,7 @@ test("detectCodexDirect: the CLI and a passing smoke prompt decide; gh is option
 
   // A pasted or device-flow token needs no gh on the machine: the probe still runs.
   expect(
-    await detectCodexDirect(null, null, {
+    await detectCodexDirect(null, "ghu_tok", {
       ...ok,
       findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
     }),

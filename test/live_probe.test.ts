@@ -8,6 +8,7 @@ import {
   type ProbeOutcome,
   summarizeProbeFailure,
 } from "../src/agents/live_probe.ts";
+import type { DirectSmoke } from "../src/copilot_api/endpoint_smoke.ts";
 import { ghAuthVerdict, ghTokenFromEnv } from "../src/copilot_api/gh_cli.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -25,14 +26,14 @@ test("CODEX_CATALOG_NOISE_RE matches catalog dump lines and not real errors", ()
 test("CODEX_PROBE passes --skip-git-repo-check so a non-git cwd can't fail the probe", () => {
   // codex refuses to run outside a git repo / trusted dir, and the probe's
   // throwaway home has no trust list -- so the flag is mandatory.
-  expect(CODEX_PROBE.args("hi", "/tmp/home")).toContain("--skip-git-repo-check");
+  expect(CODEX_PROBE.args("hi", "/tmp/home", null)).toContain("--skip-git-repo-check");
 });
 
 test("CLAUDE_PROBE pairs --bare with --settings so the apiKeyHelper is loaded", () => {
   // --bare disables settings.json auto-discovery and reads auth ONLY via
   // --settings, so without the explicit path the managed apiKeyHelper never
   // runs and the probe has no auth path (always fails).
-  const args = CLAUDE_PROBE.args("hi", "/tmp/home");
+  const args = CLAUDE_PROBE.args("hi", "/tmp/home", null);
   expect(args).toContain("--bare");
   const i = args.indexOf("--settings");
   expect(i).toBeGreaterThanOrEqual(0);
@@ -42,7 +43,7 @@ test("CLAUDE_PROBE pairs --bare with --settings so the apiKeyHelper is loaded", 
 const FAKE_DESCRIPTOR: ProbeDescriptor = {
   cli: "claude",
   homeEnvVar: "CLAUDE_CONFIG_DIR",
-  args: (prompt) => ["-p", prompt],
+  args: (prompt, _home, model) => ["-p", prompt, ...(model === null ? [] : ["--model", model])],
 };
 
 type RunProbe = (cliPath: string, args: string[], env: Record<string, string>) => ProbeOutcome;
@@ -54,6 +55,27 @@ function passingDeps(runProbe: RunProbe) {
     runProbe,
     retryDelayMs: 0,
   };
+}
+
+/** A bound Copilot smoke with a scripted catalog pick and ping; `pings` counts the wire calls. */
+function fakeSmoke(
+  pick: { ok: true; model: string } | { ok: false; detail: string } = {
+    ok: true,
+    model: "claude-fable-5",
+  },
+  pingOk = true,
+): DirectSmoke & { pings: number } {
+  const smoke = {
+    pings: 0,
+    pickModel: () => Promise.resolve(pick),
+    ping: () => {
+      smoke.pings++;
+      return Promise.resolve(
+        pingOk ? { ok: true as const } : { ok: false as const, detail: "401" },
+      );
+    },
+  };
+  return smoke;
 }
 
 // --- summarizeProbeFailure: the reason surfaced on fallback --------------------
@@ -169,7 +191,7 @@ test("probeDirectWorks: a missing CLI consults the endpoint smoke, whose verdict
     const verdict = await probeDirectWorks(
       FAKE_DESCRIPTOR,
       () => {},
-      () => Promise.resolve(c.smokeOk ? { ok: true } : { ok: false, detail: "401" }),
+      fakeSmoke(undefined, c.smokeOk),
       {
         findCommand: () =>
           c.launchFailed ? { path: null, launchFailed: true as const } : { path: null },
@@ -184,20 +206,35 @@ test("probeDirectWorks: a missing CLI consults the endpoint smoke, whose verdict
   }
 });
 
-test("probeDirectWorks: a CLI that ran and failed is final; the endpoint smoke is never consulted", async () => {
+test("probeDirectWorks: a CLI that ran and failed is final; the endpoint ping is never consulted", async () => {
   // An endpoint that answers cannot prove the CLI's own auth path, so falling to it here would
   // wire a Direct config the installed CLI just demonstrated it cannot use.
-  let smokeCalls = 0;
+  const smoke = fakeSmoke();
   const ok = await probeDirectWorks(
     FAKE_DESCRIPTOR,
     () => {},
-    () => {
-      smokeCalls++;
-      return Promise.resolve({ ok: true });
-    },
+    smoke,
     passingDeps(() => ({ ok: false })),
   );
-  expect([ok, smokeCalls]).toEqual([false, 0]);
+  expect([ok, smoke.pings]).toEqual([false, 0]);
+});
+
+// --- probeDirectWorks: no drivable model means no CLI run ----------------------
+
+test("probeDirectWorks: a catalog with no drivable model is the proxy before the CLI runs", async () => {
+  // Spawning the CLI without a pin would hand the verdict back to the model it picks itself, the
+  // exact fall this probe exists to avoid; the null-credential arm is pinned through detect*Direct.
+  let probeCalls = 0;
+  const verdict = await probeDirectWorks(
+    FAKE_DESCRIPTOR,
+    () => {},
+    fakeSmoke({ ok: false, detail: "no model on the messages wire in the catalog" }),
+    passingDeps(() => {
+      probeCalls++;
+      return { ok: true };
+    }),
+  );
+  expect([verdict, probeCalls]).toEqual([false, 0]);
 });
 
 // --- probeDirectWorks: retry on transient failure ---------------------------
@@ -207,7 +244,7 @@ test("probeDirectWorks retries the live smoke call and succeeds once it passes",
   const ok = await probeDirectWorks(
     FAKE_DESCRIPTOR,
     () => {}, // no-op writeDirectConfig
-    null,
+    fakeSmoke(),
     passingDeps(() => {
       calls++;
       return { ok: calls >= 3 };
@@ -222,7 +259,7 @@ test("probeDirectWorks falls back after exhausting retries", async () => {
   const ok = await probeDirectWorks(
     FAKE_DESCRIPTOR,
     () => {},
-    null,
+    fakeSmoke(),
     passingDeps(() => {
       calls++;
       return { ok: false };
@@ -247,7 +284,7 @@ test("probeDirectWorks strips provider/CLI env families but keeps gh auth", asyn
     const ok = await probeDirectWorks(
       FAKE_DESCRIPTOR,
       () => {},
-      null,
+      fakeSmoke(),
       passingDeps((_cli, _args, env) => {
         seen = env;
         return { ok: true };

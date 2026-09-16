@@ -681,7 +681,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
 
 test("--live --profile argv matches the launchers' profile selection exactly", () => {
   // Codex rides its native selector in the launcher's spelling; the default argv stays byte-identical.
-  expect(CODEX_PROBE.args("hi", "/h", P)).toEqual([
+  expect(CODEX_PROBE.args("hi", "/h", null, P)).toEqual([
     "exec",
     "--profile",
     "p",
@@ -691,7 +691,7 @@ test("--live --profile argv matches the launchers' profile selection exactly", (
     "read-only",
     "hi",
   ]);
-  expect(CODEX_PROBE.args("hi", "/h")).toEqual([
+  expect(CODEX_PROBE.args("hi", "/h", null)).toEqual([
     "exec",
     "--json",
     "--skip-git-repo-check",
@@ -700,8 +700,8 @@ test("--live --profile argv matches the launchers' profile selection exactly", (
     "hi",
   ]);
   // Claude loads the profile's own settings file (what `cl --profile` passes).
-  expect(CLAUDE_PROBE.args("hi", "/h", P)).toContain(join("/h", "settings-p.json"));
-  expect(CLAUDE_PROBE.args("hi", "/h")).toContain(join("/h", "settings.json"));
+  expect(CLAUDE_PROBE.args("hi", "/h", null, P)).toContain(join("/h", "settings-p.json"));
+  expect(CLAUDE_PROBE.args("hi", "/h", null)).toContain(join("/h", "settings.json"));
 });
 
 test("a named Claude live probe scrubs ANTHROPIC_BASE_URL; the default scrubs nothing", async () => {

@@ -185,8 +185,9 @@ export interface AgentAdapter {
   /** Live Direct probe behind "auto": can the stored credential use Direct from this machine?
    *  The scratch config bakes `directIntegrationId` so the smoke call sends the same request the
    *  real wiring would; without it a PAT that needs `copilot-developer-cli` fails the probe.
-   *  `ghToken` (the credential runAgentConfig already resolved) feeds the CLI-less endpoint smoke
-   *  (src/copilot_api/endpoint_smoke.ts); null disables that fallback, never the CLI probe. */
+   *  `ghToken` (the credential runAgentConfig already resolved) feeds the Copilot smoke
+   *  (src/copilot_api/endpoint_smoke.ts) that picks the probe's model and, with no CLI on the
+   *  machine, pings the wire itself; null (nothing stored) is the proxy verdict. */
   detectDirect(directIntegrationId: string | null, ghToken: string | null): Promise<boolean>;
   /** The DEFAULT credential's direct client identity (config pin, else probe). On the adapter
    *  because this module must not import the per-agent probe machinery. */

@@ -57,9 +57,8 @@ import {
 } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome } from "./paths.ts";
 import {
+  codexRefusesLaunch,
   type CodexSandboxMode,
-  type CodexSelection,
-  effectiveCodexProfile,
   proxyAuthBlockedBySandbox,
   readCodexSandboxMode,
   runsSandboxedProxyAuth,
@@ -540,23 +539,21 @@ export function inspectCodexWiring(
   };
 }
 
-/** What the sandbox report judges for a `codex [--profile <launch>]` launch: the selection Codex
- *  runs (effectiveCodexProfile), inspected, and only when that wiring runs the sandboxed proxy auth
- *  command its effective sandbox_mode. Null = nothing to report. The proxy-and-command
- *  classification is port-independent (only baseUrlMatches uses the port), so callers pass the
- *  run's own port and never derive the selected profile's. */
+/** What the sandbox report judges for a `codex [--profile <launch>]` launch: nothing when Codex
+ *  refuses the file for that launch, else the launch's wiring, and only when it runs the sandboxed
+ *  proxy auth command its effective sandbox. The proxy-and-command classification is
+ *  port-independent (only baseUrlMatches uses the port), so callers pass the run's own port and
+ *  never derive a named profile's. */
 export function codexSandboxReading(
   configToml: TextReadResult,
   launch: Profile,
   port: number,
-): { selection: CodexSelection; sandbox: CodexSandboxMode } | null {
-  const selection = effectiveCodexProfile(configToml, launch);
-  if (selection === null) return null;
-  const wiring = inspectCodexWiring(configToml, null, port, false, selection.profile);
+): CodexSandboxMode | null {
+  if (codexRefusesLaunch(configToml, launch)) return null;
+  const wiring = inspectCodexWiring(configToml, null, port, false, launch);
   if (!runsSandboxedProxyAuth(wiring)) return null;
   // The command-shape classification proves the text parsed, so the reader is non-null.
-  const sandbox = readCodexSandboxMode(configToml, selection);
-  return sandbox === null ? null : { selection, sandbox };
+  return readCodexSandboxMode(configToml);
 }
 
 // Seeded when config.toml is absent OR empty (readCodexToml reads a whitespace-only file as
@@ -866,10 +863,8 @@ function checkCodexConfig(): void {
       );
     }
     // Same verdict as health's setup.codex-sandbox row, for what plain `codex` runs here.
-    const reading = codexSandboxReading(read, null, Number(copilotApiResolvePort()));
-    const blocked = reading === null
-      ? null
-      : proxyAuthBlockedBySandbox(reading.sandbox, configPath, reading.selection);
+    const sandbox = codexSandboxReading(read, null, Number(copilotApiResolvePort()));
+    const blocked = sandbox === null ? null : proxyAuthBlockedBySandbox(sandbox, configPath, null);
     if (blocked !== null) logger.warn(`  ! ${blocked.detail}; ${blocked.fix}`);
     process.exitCode = providerModeExitCode(status.providerMode);
   } catch (e) {

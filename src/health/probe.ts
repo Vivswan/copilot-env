@@ -1022,18 +1022,18 @@ export async function gatherFacts(
             }
             : {}),
         };
-        // One row per launch whose selected wiring runs the sandboxed auth command: the default
-        // sweep judges plain `codex` (which runs the config's `profile` key when set) AND each
-        // `--profile` launch; a narrowed run its target. The run's own resolved port stands in
-        // for every launch (codexSandboxReading): deriving a named profile's candidate port
-        // (resolvePort, fallbackPort) throws on an exhausted range and would take the whole
-        // report down for a Direct profile that needs no port at all.
+        // One row per launch that Codex starts and whose wiring runs the sandboxed auth command:
+        // the default sweep judges plain `codex` AND each `--profile` launch; a narrowed run its
+        // target. The run's own resolved port stands in for every launch (codexSandboxReading):
+        // deriving a named profile's candidate port (resolvePort, fallbackPort) throws on an
+        // exhausted range and would take the whole report down for a Direct profile that needs no
+        // port at all.
         const launches: Profile[] = profile === null ? [null, ...deps.profileNames()] : [profile];
         facts.codexSandbox = launches.flatMap((launch) => {
-          const reading = codexSandboxReading(configRead, launch, wiringPort());
-          return reading === null
+          const sandbox = codexSandboxReading(configRead, launch, wiringPort());
+          return sandbox === null
             ? []
-            : [{ profile: launch, configFile: codexConfigPath(home), ...reading }];
+            : [{ profile: launch, configFile: codexConfigPath(home), sandbox }];
         });
       })(),
     );

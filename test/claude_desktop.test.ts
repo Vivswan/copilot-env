@@ -480,12 +480,19 @@ test("no live model data: a fresh or foreign direct entry is never written; an o
     quiet: false,
     fetchImpl: () => Promise.reject(new Error("offline")),
   };
-  // No rows to derive: a direct entry would have neither discovery nor a picker, so no fresh one
-  // is created and the user's applied entry is not displaced.
-  await wireClaudeDesktopEntry(offline);
-  expect(metaOf(library)).toEqual(userOnly);
+  // No Claude model to list, whether no source answered or the catalog holds none: a direct entry
+  // would have neither discovery nor a picker, so no fresh one is created and the user's applied
+  // entry is not displaced. The clock steps a day per call so the discovery memo never answers
+  // for an earlier call's catalog.
+  const day = 24 * 60 * 60 * 1000;
+  const at = (days: number) => () => Date.now() + days * day;
+  const noClaude = [offline.fetchImpl, catalogFetch([{ id: "gpt-5.6-sol" }])];
+  for (const [i, fetchImpl] of noClaude.entries()) {
+    await wireClaudeDesktopEntry({ ...offline, fetchImpl, nowMs: at(i) });
+    expect(metaOf(library)).toEqual(userOnly);
+  }
 
-  // A foreign entry at OUR gateway carrying hand rows: adoptable, yet not offline either.
+  // A foreign entry at OUR gateway carrying hand rows: adoptable, yet not without a Claude model.
   const handDoc = {
     "inferenceGatewayBaseUrl": DEFAULT_COPILOT_API_BASE,
     "inferenceModels": [{ "name": "claude-hand-1", "labelOverride": "Hand" }],
@@ -494,13 +501,15 @@ test("no live model data: a fresh or foreign direct entry is never written; an o
   writeFileSync(handPath, `${JSON.stringify(handDoc)}\n`);
   const meta = { ...userOnly, entries: [...userOnly.entries, { id: "hand-1", name: "Hand" }] };
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify(meta)}\n`);
-  await wireClaudeDesktopEntry(offline);
-  expect(metaOf(library)).toEqual(meta);
-  expect(readJson(handPath)).toEqual(handDoc);
-  expect(new OwnershipLedger().owns("claudeDesktop", handPath)).toBe(false);
+  for (const [i, fetchImpl] of noClaude.entries()) {
+    await wireClaudeDesktopEntry({ ...offline, fetchImpl, nowMs: at(2 + i) });
+    expect(metaOf(library)).toEqual(meta);
+    expect(readJson(handPath)).toEqual(handDoc);
+    expect(new OwnershipLedger().owns("claudeDesktop", handPath)).toBe(false);
+  }
 
   // Online: the same-gateway entry is adopted and its hand rows give way to the catalog's.
-  await wireClaudeDesktopEntry({ ...offline, fetchImpl: catalogFetch(CATALOG) });
+  await wireClaudeDesktopEntry({ ...offline, fetchImpl: catalogFetch(CATALOG), nowMs: at(4) });
   const wired = readJson(handPath)["inferenceModels"] as { name: string }[];
   expect(wired.map((m) => m.name).sort()).toEqual([
     "claude-fable-5",
@@ -516,7 +525,7 @@ test("no live model data: a fresh or foreign direct entry is never written; an o
     m.name === "claude-fable-5" ? { ...m, "labelOverride": "" } : m
   );
   writeFileSync(handPath, `${JSON.stringify(blanked, null, 2)}\n`);
-  await wireClaudeDesktopEntry({ ...offline, nowMs: () => Date.now() + 2 * 24 * 60 * 60 * 1000 });
+  await wireClaudeDesktopEntry({ ...offline, nowMs: at(5) });
   expect(readJson(handPath)["inferenceModels"]).toEqual(wired);
   // The entry at another gateway is untouched throughout (not adoptable).
   expect(readJson(join(library, "user-1.json"))).toEqual(elsewhere);

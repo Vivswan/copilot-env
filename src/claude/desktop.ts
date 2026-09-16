@@ -797,11 +797,12 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     );
   }
 
-  // A direct entry without model data would have neither discovery (Copilot 404s /v1/models) nor a
-  // picker, so a fresh or adoptable one is not written at all; an owned one stays current.
-  if (!owned && opts.mode === "direct" && models === undefined) {
+  // A direct entry without a model row would have neither discovery (Copilot 404s /v1/models) nor a
+  // picker, so a fresh or adoptable one is not written at all, whether no source answered or the
+  // catalog holds no Claude model; an owned one stays current, an empty list included.
+  if (!owned && opts.mode === "direct" && (models === undefined || models.length === 0)) {
     logger.warn(
-      "  Claude Desktop: no model data available; not writing an unusable direct entry (re-run online).",
+      "  Claude Desktop: no Claude model to list; not writing an unusable direct entry (re-run online).",
     );
     return;
   }

@@ -221,6 +221,16 @@ program
       "fall back to the default credential).",
   )
   .option("--list", "List the default + named credential profiles (providers only, never tokens).")
+  .option(
+    "--identities",
+    "Probe every Copilot client identity (Copilot-Integration-Id) for the credential on both the " +
+      "Direct and the proxy host and table which accept it; * marks the one in effect.",
+  )
+  .option(
+    "--identity [id|auto]",
+    "Pin the Copilot client identity (same store as `agent config --set integration-id`); " +
+      "`auto` restores probing; no value => interactive choice from the probe.",
+  )
   .action((opts: Opts) =>
     runAuth({
       provider: opts.provider as string | undefined,
@@ -232,6 +242,8 @@ program
       printProxyToken: Boolean(opts.printProxyToken),
       profile: opts.profile as string | undefined,
       list: Boolean(opts.list),
+      identities: Boolean(opts.identities),
+      identity: opts.identity as string | boolean | undefined,
     })
   );
 

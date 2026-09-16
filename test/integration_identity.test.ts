@@ -1,9 +1,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CODEX_IDENTITY_NAME } from "../src/copilot_api/env_config.ts";
 import {
+  autoIdentityFor,
   bakedIntegrationId,
   COPILOT_CLI_INTEGRATION_ID,
+  COPILOT_SANDBOX_INTEGRATION_ID,
   DEFAULT_COPILOT_API_BASE,
+  directClientHeaders,
   directIdentityCandidates,
   INTEGRATION_ID_HEADER,
   PASSTHROUGH_IDENTITY_CANDIDATES,
@@ -13,6 +17,7 @@ import {
   resolveDirectIntegrationId,
   resolvePassthroughIntegrationId,
   setIntegrationProbeFetch,
+  surveyIntegrationIdentities,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
 import { ROOT } from "./helpers/run.ts";
@@ -73,6 +78,129 @@ test("probeIntegrationIdentity: probes the account's designated API base", async
   });
   expect(res.apiBase).toBe("https://api.enterprise.githubcopilot.com");
   expect(probedUrl).toBe("https://api.enterprise.githubcopilot.com/models");
+});
+
+const ENTERPRISE_API_BASE = "https://api.enterprise.githubcopilot.com";
+
+/** Headers as the server sees them (lowercased keys), minus the bearer the probe adds. */
+function sentIdentityHeaders(init: RequestInit | undefined): Record<string, string> {
+  return Object.fromEntries(
+    [...new Headers(init?.headers)].filter(([name]) => name !== "authorization"),
+  );
+}
+
+function lowercaseKeys(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+}
+
+test("surveyIntegrationIdentities: every candidate on both hosts, no early stop, the agents' exact headers", async () => {
+  const seen: { host: string; headers: Record<string, string> }[] = [];
+  const catalog = (size: number): Response =>
+    new Response(
+      JSON.stringify({ data: Array.from({ length: size }, (_, i) => ({ id: `m${i}` })) }),
+      {
+        status: 200,
+      },
+    );
+  const fetchImpl: ProbeFetch = (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/copilot_internal/user")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ endpoints: { api: ENTERPRISE_API_BASE } }), { status: 200 }),
+      );
+    }
+    const host = new URL(url).host;
+    const headers = sentIdentityHeaders(init);
+    seen.push({ host, headers });
+    const enterprise = host === new URL(ENTERPRISE_API_BASE).host;
+    switch (headers[INTEGRATION_ID_HEADER.toLowerCase()]) {
+      case undefined:
+        return Promise.resolve(catalog(3));
+      case COPILOT_CLI_INTEGRATION_ID:
+        return Promise.resolve(catalog(enterprise ? 37 : 5));
+      case VSCODE_CHAT_INTEGRATION_ID:
+        return Promise.resolve(
+          new Response("Personal Access Tokens are not supported", { status: 400 }),
+        );
+      default:
+        return enterprise
+          ? Promise.reject(new Error("offline"))
+          : Promise.resolve(new Response("upstream", { status: 503 }));
+    }
+  };
+  const survey = await surveyIntegrationIdentities("ghp_x", {
+    direct: directIdentityCandidates("codex_exec/1"),
+    passthrough: PASSTHROUGH_IDENTITY_CANDIDATES,
+  }, { fetchImpl });
+  expect(survey).toEqual({
+    direct: {
+      apiBase: DEFAULT_COPILOT_API_BASE,
+      verdicts: [
+        { name: CODEX_IDENTITY_NAME, verdict: { kind: "accepted", models: 3 } },
+        { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 5 } },
+        {
+          name: COPILOT_SANDBOX_INTEGRATION_ID,
+          verdict: { kind: "inconclusive", detail: "503 upstream" },
+        },
+      ],
+    },
+    passthrough: {
+      apiBase: ENTERPRISE_API_BASE,
+      verdicts: [
+        {
+          name: VSCODE_CHAT_INTEGRATION_ID,
+          verdict: { kind: "rejected", detail: "400 Personal Access Tokens are not supported" },
+        },
+        { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 37 } },
+        {
+          name: COPILOT_SANDBOX_INTEGRATION_ID,
+          verdict: { kind: "inconclusive", detail: "network error: offline" },
+        },
+      ],
+    },
+  });
+  // The Direct column sends byte-for-byte what the agents bake (directClientHeaders), with the
+  // default identity carrying NO id header.
+  expect(
+    seen.filter((s) => s.host === new URL(DEFAULT_COPILOT_API_BASE).host).map((s) => s.headers),
+  ).toEqual(
+    [null, COPILOT_CLI_INTEGRATION_ID, COPILOT_SANDBOX_INTEGRATION_ID].map((id) =>
+      lowercaseKeys(directClientHeaders("codex_exec/1", id))
+    ),
+  );
+  // What `auto` settles on per column: a PAT takes the first accepted, a non-PAT never probes.
+  expect([
+    autoIdentityFor("ghp_x", survey.direct),
+    autoIdentityFor("ghp_x", survey.passthrough),
+    autoIdentityFor("gho_x", survey.passthrough),
+  ]).toEqual([CODEX_IDENTITY_NAME, COPILOT_CLI_INTEGRATION_ID, VSCODE_CHAT_INTEGRATION_ID]);
+});
+
+test("surveyIntegrationIdentities: a transient account-host lookup downgrades the fallback host's rejections", async () => {
+  const survey = await surveyIntegrationIdentities("ghp_x", {
+    direct: directIdentityCandidates("codex_exec/1").slice(0, 1),
+    passthrough: PASSTHROUGH_IDENTITY_CANDIDATES.slice(0, 1),
+  }, {
+    fetchImpl: (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      return Promise.resolve(
+        url.includes("/copilot_internal/user")
+          ? new Response("upstream", { status: 503 })
+          : new Response("PATs not supported", { status: 400 }),
+      );
+    },
+  });
+  // Direct never looks the host up, so its 400 stays definitive; the fallback host may not be
+  // where this credential is served, so the proxy column's 400 must not read as a verdict.
+  expect(survey.direct.verdicts[0]?.verdict).toEqual({
+    kind: "rejected",
+    detail: "400 PATs not supported",
+  });
+  expect(survey.passthrough.verdicts[0]?.verdict).toEqual({
+    kind: "inconclusive",
+    detail: "400 PATs not supported (account host lookup failed; probed the fallback host)",
+  });
+  expect(autoIdentityFor("ghp_x", survey.direct)).toBeNull();
 });
 
 test("probeIntegrationIdentity: a network error is inconclusive, not a rejection", async () => {

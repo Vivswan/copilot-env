@@ -2,10 +2,9 @@
 // --check` and the health engine share these lines and repair commands so the two cannot disagree.
 import { basename, join } from "node:path";
 import type { CredentialWiring, ManagedMode } from "../agents/configure.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import {
-  CODEX_IDENTITY_NAME,
   DEFAULT_COPILOT_API_BASE,
   INTEGRATION_ID_HEADER,
 } from "../copilot_api/integration_identity.ts";

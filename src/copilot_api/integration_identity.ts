@@ -11,6 +11,7 @@
 import { consola, type ConsolaInstance } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
+import { CODEX_IDENTITY_NAME } from "./env_config.ts";
 import type { AuthProvider } from "./env_state.ts";
 
 /** The gating header. Its VALUES below are external contracts: never rename. */
@@ -21,8 +22,6 @@ export const VSCODE_CHAT_INTEGRATION_ID = "vscode-chat";
 export const COPILOT_CLI_INTEGRATION_ID = "copilot-developer-cli";
 /** Tried after the CLI one; accepts PATs on some plans. */
 export const COPILOT_SANDBOX_INTEGRATION_ID = "copilot-developer-sandbox";
-/** Direct mode's default identity: Codex CLI impersonation, no id header. */
-export const CODEX_IDENTITY_NAME = "codex";
 /** Owned here, the layer-neutral home, so codexUserAgent (codex layer, appends `/<version>`) and the
  *  /responses web-search client (this layer, version-free) derive from ONE spelling. */
 export const CODEX_EXEC_USER_AGENT = "codex_exec";
@@ -72,19 +71,15 @@ export const PASSTHROUGH_IDENTITY_CANDIDATES: readonly [
   IntegrationIdentity,
   ...IntegrationIdentity[],
 ] = [
-  {
-    name: VSCODE_CHAT_INTEGRATION_ID,
-    headers: { [INTEGRATION_ID_HEADER]: VSCODE_CHAT_INTEGRATION_ID },
-  },
-  {
-    name: COPILOT_CLI_INTEGRATION_ID,
-    headers: { [INTEGRATION_ID_HEADER]: COPILOT_CLI_INTEGRATION_ID },
-  },
-  {
-    name: COPILOT_SANDBOX_INTEGRATION_ID,
-    headers: { [INTEGRATION_ID_HEADER]: COPILOT_SANDBOX_INTEGRATION_ID },
-  },
+  passthroughIdentity(VSCODE_CHAT_INTEGRATION_ID),
+  passthroughIdentity(COPILOT_CLI_INTEGRATION_ID),
+  passthroughIdentity(COPILOT_SANDBOX_INTEGRATION_ID),
 ];
+
+/** The header set the daemon rewrite sends for `id` (src/scripts/pat_passthrough_preload.ts). */
+function passthroughIdentity(id: string): IntegrationIdentity {
+  return { name: id, headers: { [INTEGRATION_ID_HEADER]: id } };
+}
 
 /**
  * THE single builder: the DIRECT probe candidates and every writer that bakes the result (Codex `http_headers`,
@@ -120,6 +115,18 @@ export function directIdentityCandidates(
       headers: directClientHeaders(userAgent, COPILOT_SANDBOX_INTEGRATION_ID),
     },
   ];
+}
+
+/** What a pin of `id` sends on each host, so the pin's pre-check probes exactly the bytes the agents
+ *  and the daemon will send. */
+export function pinnedIdentityCandidates(
+  id: string,
+  userAgent: string,
+): IdentitySurveyCandidates {
+  return {
+    direct: [{ name: id, headers: directClientHeaders(userAgent, id) }],
+    passthrough: [passthroughIdentity(id)],
+  };
 }
 
 export function bakedIntegrationId(identity: IntegrationIdentity): string | null {
@@ -210,6 +217,56 @@ function isDefinitiveRejection(status: number): boolean {
   return status === 400 || status === 401;
 }
 
+export type IdentityVerdict =
+  /** `models` is the /models catalog size under this identity, null when the 2xx body was not the
+   *  catalog shape. */
+  | { kind: "accepted"; models: number | null }
+  /** A definitive 400/401, as `<status> <body snippet>`. */
+  | { kind: "rejected"; detail: string }
+  /** A network error or a non-definitive status: the identity may still work. */
+  | { kind: "inconclusive"; detail: string };
+
+/** One GET /models under one identity; never throws. The catalog size is read only when asked for:
+ *  the first-accepted probe returns on the status alone, as it always has. */
+async function probeCandidate(
+  token: string,
+  apiBase: string,
+  candidate: IntegrationIdentity,
+  fetchImpl: ProbeFetch,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+  countModels: boolean,
+): Promise<IdentityVerdict> {
+  try {
+    const res = await fetchImpl(`${apiBase}/models`, {
+      headers: { Authorization: `Bearer ${token}`, ...candidate.headers },
+      signal: requestSignal(timeoutMs, signal),
+    });
+    if (res.ok) {
+      return {
+        kind: "accepted",
+        models: countModels ? catalogSize(await res.text().catch(() => "")) : null,
+      };
+    }
+    const detail = truncate(`${res.status} ${await res.text().catch(() => "")}`);
+    return isDefinitiveRejection(res.status)
+      ? { kind: "rejected", detail }
+      : { kind: "inconclusive", detail };
+  } catch (e) {
+    return { kind: "inconclusive", detail: truncate(`network error: ${errMessage(e)}`) };
+  }
+}
+
+function catalogSize(body: string): number | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    const data = isRecord(parsed) ? parsed.data : undefined;
+    return Array.isArray(data) ? data.length : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Never throws; `conclusive` marks a verdict worth acting on, and it has two shapes.
  *
  *  a candidate accepted                                            -> identity set, conclusive
@@ -229,32 +286,105 @@ export async function probeIntegrationIdentity(
   const outcomes: IdentityProbeOutcome[] = [];
   let sawInconclusive = baseInconclusive;
   for (const candidate of candidates) {
-    try {
-      const res = await fetchImpl(`${apiBase}/models`, {
-        headers: { Authorization: `Bearer ${token}`, ...candidate.headers },
-        signal: requestSignal(timeoutMs, deps.signal),
-      });
-      if (res.ok) {
-        outcomes.push({ name: candidate.name, detail: "ok" });
-        return { identity: candidate, conclusive: true, apiBase, outcomes };
-      }
-      let body = "";
-      try {
-        body = await res.text();
-      } catch {
-        body = "";
-      }
-      if (!isDefinitiveRejection(res.status)) sawInconclusive = true;
-      outcomes.push({ name: candidate.name, detail: truncate(`${res.status} ${body}`) });
-    } catch (e) {
-      sawInconclusive = true;
-      outcomes.push({
-        name: candidate.name,
-        detail: truncate(`network error: ${errMessage(e)}`),
-      });
+    const verdict = await probeCandidate(
+      token,
+      apiBase,
+      candidate,
+      fetchImpl,
+      timeoutMs,
+      deps.signal,
+      false,
+    );
+    if (verdict.kind === "accepted") {
+      outcomes.push({ name: candidate.name, detail: "ok" });
+      return { identity: candidate, conclusive: true, apiBase, outcomes };
     }
+    if (verdict.kind === "inconclusive") sawInconclusive = true;
+    outcomes.push({ name: candidate.name, detail: verdict.detail });
   }
   return { identity: null, conclusive: !sawInconclusive, apiBase, outcomes };
+}
+
+export interface IdentitySurveyCandidates {
+  /** Probed against DEFAULT_COPILOT_API_BASE, the host Direct bakes. */
+  direct: readonly IntegrationIdentity[];
+  /** Probed against the account's designated host, the one the daemon talks to. */
+  passthrough: readonly IntegrationIdentity[];
+}
+
+export interface IdentityHostSurvey {
+  /** The API base actually probed. */
+  apiBase: string;
+  /** In candidate order; every candidate is probed, an acceptance stops nothing. */
+  verdicts: { name: string; verdict: IdentityVerdict }[];
+}
+
+export interface IdentitySurvey {
+  direct: IdentityHostSurvey;
+  passthrough: IdentityHostSurvey;
+}
+
+/** The full picture behind the first-accepted probe: every candidate, both hosts, concurrently. A
+ *  transient account-host lookup failure downgrades the fallback host's rejections to inconclusive,
+ *  as probeIntegrationIdentity's `conclusive` does. Never throws. */
+export async function surveyIntegrationIdentities(
+  token: string,
+  candidates: IdentitySurveyCandidates,
+  deps: Omit<IdentityProbeDeps, "apiBase"> = {},
+): Promise<IdentitySurvey> {
+  const fetchImpl = deps.fetchImpl ?? defaultProbeFetch;
+  const timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const surveyHost = async (
+    apiBase: string,
+    list: readonly IntegrationIdentity[],
+    hostUnverified: boolean,
+  ): Promise<IdentityHostSurvey> => {
+    const verdicts = await Promise.all(list.map(async (candidate) => {
+      const verdict = await probeCandidate(
+        token,
+        apiBase,
+        candidate,
+        fetchImpl,
+        timeoutMs,
+        deps.signal,
+        true,
+      );
+      return {
+        name: candidate.name,
+        verdict: verdict.kind === "rejected" && hostUnverified
+          ? {
+            kind: "inconclusive" as const,
+            detail: `${verdict.detail} (account host lookup failed; probed the fallback host)`,
+          }
+          : verdict,
+      };
+    }));
+    return { apiBase, verdicts };
+  };
+  const [direct, passthrough] = await Promise.all([
+    surveyHost(DEFAULT_COPILOT_API_BASE, candidates.direct, false),
+    accountApiBase(token, fetchImpl, timeoutMs, deps.signal).then((base) =>
+      surveyHost(base.apiBase, candidates.passthrough, base.inconclusive)
+    ),
+  ]);
+  return { direct, passthrough };
+}
+
+/**
+ * What `auto` settles on for this credential, read off a survey column; mirrors resolve*IntegrationId
+ * and acceptedIdentity so `agent auth --identities` marks the row a launch would use.
+ *
+ *   non-PAT credential            -> the default (no probe is run for it)
+ *   PAT, a candidate accepted     -> the first accepted, in candidate order
+ *   PAT, none accepted, a blip    -> the default
+ *   PAT, every candidate rejected -> null: the mode refuses this credential
+ */
+export function autoIdentityFor(token: string, column: IdentityHostSurvey): string | null {
+  const defaultName = column.verdicts[0]?.name ?? null;
+  if (!isPatShapedToken(token)) return defaultName;
+  const accepted = column.verdicts.find((v) => v.verdict.kind === "accepted");
+  if (accepted !== undefined) return accepted.name;
+  return column.verdicts.some((v) => v.verdict.kind === "inconclusive") ? defaultName : null;
 }
 
 // Memoized so the probe sites in one process (both agents at init, start narration + launch, catalog

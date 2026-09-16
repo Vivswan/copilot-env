@@ -236,10 +236,15 @@ test("isManagedFarmExport is true only for the exact farm spelling, built or not
   expect(isManagedFarmExport("")).toBe(false); // empty spelling
   fs.mkdirSync(hostHome, { recursive: true });
   expect(isManagedFarmExport(hostHome)).toBe(ours); // still ours once built: the record decides
-  // The farm the record names is ours too, once a `codex-home` change moved the root away from it.
+  // The farm the record names is ours too, once a `codex-home` change moved the root away from it,
+  // while the path is gone or still carries our config; a home the user placed there since is theirs.
   const retired = join(dir, "old-root", "hosts", getSanitizedHostname());
   writeRunState({ codexHome: retired });
-  expect(isManagedFarmExport(retired)).toBe(ours);
+  expect(isManagedFarmExport(retired)).toBe(ours); // gone
+  writeCodexConfigToml(retired, { baseUrl: "https://api.githubcopilot.com" });
+  expect(isManagedFarmExport(retired)).toBe(ours); // still our config
+  fs.writeFileSync(join(retired, "config.toml"), 'model_provider = "openai"\n');
+  expect(isManagedFarmExport(retired)).toBe(false); // replaced by the user's own home
 });
 
 skipWin(
@@ -250,8 +255,11 @@ skipWin(
     const retired = join(root, "hosts", getSanitizedHostname());
     // What `agent config --set codex-home <root>`, `codex-host true`, and a wiring pass left behind,
     // then `agent config --del codex-home` with no pass since: the record and the shell both still
-    // name the old root's farm, and no farm exists under ~/.codex yet.
-    fs.mkdirSync(retired, { recursive: true });
+    // name the old root's farm (still carrying our config), and no farm exists under ~/.codex yet.
+    const retiredConfig = writeCodexConfigToml(retired, {
+      baseUrl: "https://api.githubcopilot.com",
+    });
+    const retiredBytes = fs.readFileSync(retiredConfig, "utf8");
     writeRunState({ codexHome: retired });
     process.env.CODEX_HOME = retired;
     new CopilotEnvConfig().set({ codexHost: true });
@@ -262,9 +270,16 @@ skipWin(
     new CopilotEnvConfig().set({ codexHost: false });
     await configureCodex();
     expect(fs.existsSync(join(sharedRoot, "config.toml"))).toBe(true);
-    expect(fs.existsSync(join(retired, "config.toml"))).toBe(false);
+    expect(fs.readFileSync(retiredConfig, "utf8")).toBe(retiredBytes); // untouched
     expect(new CopilotEnvRunState().read().codexHome).toBe(retired);
     expect(managedCodexHome()).toEqual({ unset: true });
+    // The user deletes the retired farm and puts a genuine home at its path: the record is no
+    // longer proof of anything, so the export is theirs, honoured and left in the shell.
+    fs.rmSync(retired, { recursive: true, force: true });
+    fs.mkdirSync(retired, { recursive: true });
+    fs.writeFileSync(join(retired, "config.toml"), 'model_provider = "openai"\n');
+    expect(resolveCodexHome()).toEqual({ home: retired, by: "default", staleExport: null });
+    expect(managedCodexHome()).toBeNull();
   },
 );
 

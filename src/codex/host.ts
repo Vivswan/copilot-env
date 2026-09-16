@@ -88,16 +88,19 @@ export function probeCodexFarm(
 
 // The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent env` may clear it):
 // this root's farm path, or the farm the record still names after a `codex-home` change moved the
-// root (retired, not yet rebuilt). Exact spelling on purpose: a trailing-slash variant is not ours.
-// Never on Windows: no farm is built there, so a farm-shaped export is a shared home of the user's
-// own.
+// root (retired, not yet rebuilt) while that path is gone or still carries our config. A genuine
+// home the user placed at the recorded path since is theirs, as for `agent uninstall`. Exact
+// spelling on purpose: a trailing-slash variant is not ours. Never on Windows: no farm is built
+// there, so a farm-shaped export is a shared home of the user's own.
 export function isManagedFarmExport(
   envHome: string | undefined,
   prefs: CodexHomePrefs = codexHomePrefsOrDerived(),
 ): boolean {
   if (process.platform === "win32" || !envHome) return false;
-  return envHome === getHostLocalCodexHome(prefs.explicit) ||
-    envHome === new CopilotEnvRunState().read().codexHome;
+  if (envHome === getHostLocalCodexHome(prefs.explicit)) return true;
+  if (envHome !== new CopilotEnvRunState().read().codexHome) return false;
+  const probe = probeCodexFarm(envHome);
+  return !probe.present || probe.wired;
 }
 
 /** The home every Codex write, `agent codex --check`, and launch pin agree on, plus the one note
@@ -727,6 +730,8 @@ export async function withCodexHostFarm(
   const home = narrateCodexHome(resolveCodexHome(prefs));
   // Only this root's record is retired here. One naming a previous root's farm stays until the next
   // build overwrites it: it is the one proof that the shell's export of that farm is ours to clear.
+  // A shell never refreshed across that rebuild keeps exporting the old farm, which then reads as
+  // the user's own home: a working Codex there, not a loss.
   if (state.read().codexHome === farm.hostHome) state.set({ codexHome: null });
   await write(home);
 }

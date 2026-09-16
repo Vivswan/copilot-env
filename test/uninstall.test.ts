@@ -452,9 +452,9 @@ test.skipIf(process.platform === "win32")(
     const { codexHome } = tmpHomes();
     const farm = join(dir, "farm");
     const untracked = join(dir, "untracked-farm");
-    // The recorded farm carries our config, as a wiring pass leaves it.
+    // Both carry our config, as a wiring pass leaves a farm; the record alone separates them.
     configureCodexConfig(farm, { credential: COMMAND, mode: "direct" });
-    mkdirSync(untracked, { recursive: true });
+    configureCodexConfig(untracked, { credential: COMMAND, mode: "direct" });
     new CopilotEnvRunState().set({ codexHome: farm });
 
     // No farm seam: exercise the real implementation (it reads the redirected

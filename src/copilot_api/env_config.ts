@@ -468,8 +468,9 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "codex-home",
     key: "codexHome",
     section: "Codex",
-    describe:
-      "Root of the Codex home copilot-env writes and exports; auto is ~/.codex, or the shell's CODEX_HOME (never our own farm export) while no codex-host farm is live; codex-host farms under it",
+    describe: "Root of the Codex home copilot-env writes and exports; auto is ~/.codex, or the " +
+      "shell's CODEX_HOME (never our own farm export) while no codex-host farm is live; " +
+      "codex-host farms under it",
     ...ABSOLUTE_PATH_DOMAIN,
     defaultValue: CODEX_HOME_AUTO,
     applyHint:

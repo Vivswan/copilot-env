@@ -83,8 +83,11 @@ function leavesOf(value: unknown, prefix: readonly string[]): [readonly string[]
   return Object.entries(value).flatMap(([k, v]) => leavesOf(v, [...prefix, k]));
 }
 
+/** A TOML datetime and its ISO string serialize alike, yet the file changes shape: the kind
+ *  compares too. */
 function sameValue(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return (a instanceof Date) === (b instanceof Date) && typeof a === typeof b &&
+    JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** Mutates `doc` in place: intermediate levels are created (a leaf in the way is replaced, as the
@@ -149,6 +152,9 @@ export function planPatch(
       const parent = op.path.slice(0, depth);
       const inTheWay = leafAt(current, parent);
       if (inTheWay !== undefined && !isDoc(inTheWay)) drop(parent);
+      // A scalar an earlier op set at this level goes the same way when a leaf lands under it.
+      const planned = pending.get(dottedKey(parent));
+      if (planned !== undefined && planned.next !== undefined && !isDoc(planned.next)) drop(parent);
     }
     if (isDoc(op.value)) dropUnder(op.path);
     for (const [leaf, value] of leavesOf(op.value, op.path)) {

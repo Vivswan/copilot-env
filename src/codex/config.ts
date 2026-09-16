@@ -9,6 +9,7 @@ import {
   type CredentialWiring,
   type DirectWiring,
   type ManagedWrite,
+  reservePlannedPort,
   runAgentConfig,
 } from "../agents/configure.ts";
 import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
@@ -39,12 +40,7 @@ import {
 } from "../copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import {
-  copilotApiResolvePort,
-  matchesProxyOrigin,
-  openaiBaseUrl,
-  wiringPortFor,
-} from "../copilot_api/port.ts";
+import { copilotApiResolvePort, matchesProxyOrigin, openaiBaseUrl } from "../copilot_api/port.ts";
 import { agentStartCommand, type Profile, type ProfileName } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
@@ -871,6 +867,20 @@ export function configureCodexConfig(
   planCodexConfig(codexHome, request, catalogDeps).apply();
 }
 
+/** The request for `profile`'s write. A proxy write PEEKS the profile's port (copilotApiResolvePort)
+ *  so planning writes nothing; the caller reserves it (reservePlannedPort) right before the apply. */
+function codexWriteRequest(
+  write: ManagedWrite,
+  profile: Profile,
+): { port: string | null; request: CodexWriteRequest } {
+  if (write.mode !== "proxy") return { port: null, request: { ...write, profile } };
+  const port = copilotApiResolvePort(profile);
+  return {
+    port,
+    request: { mode: "proxy", profile, baseUrl: openaiBaseUrl(port), credential: write.credential },
+  };
+}
+
 /**
  * The caller persists CODEX_HOME to state and, for direct, has already resolved the client identity
  * carried in the write (this function never probes). Throws with the cause when the write cannot
@@ -882,23 +892,18 @@ export async function applyCodexConfig(
   catalogDeps?: CodexCatalogDeps,
   profile: Profile = null,
 ): Promise<void> {
-  // wiringPortFor RESERVES the addressed profile's stable port (a write path; read-only checks peek
-  // without recording).
-  const request: CodexWriteRequest = write.mode === "proxy"
-    ? {
-      mode: "proxy",
-      profile,
-      baseUrl: openaiBaseUrl(wiringPortFor(profile)),
-      credential: write.credential,
-    }
-    : { ...write, profile };
+  // The plan PEEKS the profile's port; the reservation (a write path) lands with the apply
+  // (reservePlannedPort), so a plan that throws leaves no reservation behind.
+  const { port, request } = codexWriteRequest(write, profile);
 
   // Seeded (best-effort, unthrottled) BEFORE the config write, so the very first wiring can already
   // reference the file; the auth-time refresh (src/commands/auth.ts) keeps it fresh afterwards.
   // Account-wide, keyed to the default credential, so named-profile writes never touch it.
   if (profile === null) await generateCodexModelCatalog(write.mode, catalogDeps);
 
-  configureCodexConfig(codexHome, request, catalogDeps);
+  const plan = planCodexConfig(codexHome, request, catalogDeps);
+  if (port !== null) reservePlannedPort(profile, port);
+  plan.apply();
 
   // When the catalog is disabled the write above only stripped the key in THIS home; the sync also
   // deletes the generated file and clears the throttle state, so a wiring pass finishes the
@@ -1169,15 +1174,10 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
       await withCodexHostFarm((codexHome) => applyCodexConfig(codexHome, write, seedDeps, null));
     },
     configureProfile(name, write) {
-      const request: CodexWriteRequest = write.mode === "proxy"
-        ? {
-          mode: "proxy",
-          profile: name,
-          baseUrl: openaiBaseUrl(wiringPortFor(name)),
-          credential: write.credential,
-        }
-        : { ...write, profile: name };
-      configureCodexConfig(effectiveCodexHome(), request);
+      const { port, request } = codexWriteRequest(write, name);
+      const plan = planCodexConfig(effectiveCodexHome(), request);
+      if (port !== null) reservePlannedPort(name, port);
+      plan.apply();
     },
     removeProfile(name) {
       removeCodexProfile(effectiveCodexHome(), name);

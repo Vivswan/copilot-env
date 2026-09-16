@@ -55,11 +55,11 @@ agent config --del idle-timeout       # revert one to its default
 
 ## Codex
 
-| Key                   | Default | Effect                                                                                                                                                  |
-| --------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `codex-home`          | `auto`  | Root of the Codex home copilot-env writes and `agent env` exports; `auto` is `~/.codex`, or the shell's `CODEX_HOME` while no `codex-host` farm is live |
-| `codex-host`          | `false` | Per-host `CODEX_HOME` symlink farm under it, exported by `agent env` (Linux/macOS)                                                                      |
-| `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows                                                                                      |
+| Key                   | Default | Effect                                                                                                                                                                                        |
+| --------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `codex-home`          | `auto`  | Root of the Codex home copilot-env writes and `agent env` exports; `auto` is `~/.codex`, or the shell's `CODEX_HOME` while no `codex-host` farm is live (never copilot-env's own farm export) |
+| `codex-host`          | `false` | Per-host `CODEX_HOME` symlink farm under it, exported by `agent env` (Linux/macOS)                                                                                                            |
+| `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows                                                                                                                            |
 
 ### Codex model catalog
 

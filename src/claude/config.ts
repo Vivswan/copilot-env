@@ -224,7 +224,12 @@ export function bakedClaudeDirectIntegrationId(
   if (wiring.providerMode === "other" && wiring.otherReason === "malformed") {
     return { kind: "unreadable", reason: "the settings file is not a JSON object" };
   }
-  if (wiring.providerMode !== "direct") return { kind: "not-direct" };
+  // Mode keys off the helper alone, so a Direct helper with a proxy ANTHROPIC_BASE_URL still
+  // classifies "direct" while its traffic (and the baked header) goes to the daemon: only the
+  // exact Direct base URL puts the header on api.githubcopilot.com.
+  if (wiring.providerMode !== "direct" || wiring.baseUrl !== DIRECT_BASE_URL) {
+    return { kind: "not-direct" };
+  }
   const doc = parseJsonRecord(settings.text);
   const env = doc !== null && isRecord(doc.env) ? doc.env : null;
   const prefix = `${INTEGRATION_ID_HEADER}: `;

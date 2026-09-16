@@ -554,6 +554,22 @@ test("auth --identities stars what the agent configs bake, probes the pin, and n
         "a change: `agent stop`, then `agent start`.",
     );
 
+    // Negative control: a Direct helper routed at the proxy sends its baked header to the daemon,
+    // not to api.githubcopilot.com, so Claude drops out of the Direct star (Codex keeps it). Only
+    // the base URL changes; the CLI-id header the writer baked stays, so this fails without the
+    // base-URL gate in bakedClaudeDirectIntegrationId.
+    const settingsPath = join(claudeHome, "settings.json");
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      env: Record<string, string>;
+    };
+    expect(settings.env.ANTHROPIC_CUSTOM_HEADERS).toContain(COPILOT_CLI_INTEGRATION_ID);
+    settings.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
+    writeFileSync(settingsPath, JSON.stringify(settings));
+    const rerouted = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(rerouted).toMatch(/^codex\s+rejected \(400\) \*/m);
+    expect(rerouted).not.toMatch(/^copilot-developer-cli\s+accepted \(5 models\) \*/m);
+    expect(rerouted).not.toContain("the agents disagree");
+
     // Negative control: configs that cannot be parsed read as UNKNOWN, never as "no agent is
     // wired Direct" and never as a starred identity.
     writeFileSync(join(claudeHome, "settings.json"), "{");

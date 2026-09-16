@@ -1,10 +1,13 @@
-// The CLI-less half of Direct detection: Direct capability is a property of the credential,
+// The Copilot-side half of Direct detection: Direct capability is a property of the credential,
 // identity, and endpoint, not of an installed binary, and a wiring written on a CLI-less machine
-// sits dormant until the CLI arrives. So when the live probe (src/agents/live_probe.ts) has no CLI
-// to run, this smoke asks Copilot itself, under the exact headers the wiring will bake:
+// sits dormant until the CLI arrives. So the live probe (src/agents/live_probe.ts) asks Copilot
+// itself, under the exact headers the wiring will bake:
 //
-//   GET  /models        -> the agent's pickModel chooses a model the agent could drive
-//   POST <agent's wire> -> a minimal capped call; 200 is the Direct verdict, anything else the proxy
+//   GET  /models        -> the agent's pickModel chooses the smoke model; with a CLI on the machine
+//                          the CLI's smoke prompt is pinned to it, so the verdict never rides on the
+//                          model the CLI would have chosen on its own
+//   POST <agent's wire> -> a minimal capped call when no CLI ran; 200 is the Direct verdict,
+//                          anything else the proxy
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import {
@@ -35,63 +38,87 @@ export interface EndpointSmoke {
 /** A failure always carries its one-line reason, so a fall to the proxy is never silent. */
 export type EndpointSmokeOutcome = { ok: true } | { ok: false; detail: string };
 
+export type SmokeModelOutcome = { ok: true; model: string } | { ok: false; detail: string };
+
+/** An EndpointSmoke bound to one credential and identity: the two steps the live probe composes. */
+export interface DirectSmoke {
+  /** GET /models under the wiring's headers, then the agent's own pick. */
+  pickModel(): Promise<SmokeModelOutcome>;
+  /** One minimal capped call to the wire with that model; 200 alone is Direct. */
+  ping(model: string): Promise<EndpointSmokeOutcome>;
+}
+
 /**
- * Never throws: any failure is a `false` outcome carrying its reason, and the caller wires the
- * proxy. The verdict is 200 alone, the same bar as discovery's pingModel (src/copilot_api/
+ * Neither step throws: any failure is a `false` outcome carrying its reason, and the caller wires
+ * the proxy. The ping verdict is 200 alone, the same bar as discovery's pingModel (src/copilot_api/
  * discovery.ts); no retry, matching every other raw fetch in this layer.
  */
-export async function smokeDirectEndpoint(
+export function directSmoke(
   smoke: EndpointSmoke,
   token: string,
   userAgent: string,
   integrationId: string | null,
   opts: { fetchImpl?: ProbeFetch } = {},
-): Promise<EndpointSmokeOutcome> {
+): DirectSmoke {
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   const headers = {
     ...directClientHeaders(userAgent, integrationId),
     "Authorization": `Bearer ${token}`,
   };
-  try {
-    const catalog = await fetchImpl(`${DEFAULT_COPILOT_API_BASE}/models`, {
-      headers,
-      signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
-    });
-    if (!catalog.ok) {
-      await catalog.text().catch(() => "");
-      return { ok: false, detail: `GET /models returned ${catalog.status}` };
-    }
-    // Envelope-checked here so a body the parsers cannot read reports as a failed look, never as
-    // a proven "no compatible model" (both pickModel filters return empty for either).
-    const body: unknown = await catalog.json();
-    if (!isRecord(body) || !Array.isArray(body.data)) {
-      return { ok: false, detail: "unrecognized /models response shape" };
-    }
-    const model = smoke.pickModel(body);
-    if (model === null) {
-      return { ok: false, detail: `no model on the ${smoke.wire} wire in the catalog` };
-    }
-    const path = WIRE_PATHS[smoke.wire];
-    const ping = await fetchImpl(`${DEFAULT_COPILOT_API_BASE}${path}`, {
-      method: "POST",
-      headers: smoke.wire === "messages"
-        ? { ...headers, "Content-Type": "application/json", "anthropic-version": "2023-06-01" }
-        : { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify(pingBody(smoke.wire, model)),
-      signal: AbortSignal.timeout(PING_TIMEOUT_MS),
-    });
-    // Drained so a keep-alive socket is reusable; the body rides into the failure detail because
-    // the status alone cannot say WHY (a gated model and a rejected request shape both 400).
-    const text = await ping.text().catch(() => "");
-    if (ping.status === 200) return { ok: true };
-    const reason = text.replace(/\s+/g, " ").trim().slice(0, 160);
-    return {
-      ok: false,
-      detail: `POST ${path} with ${model} returned ${ping.status}${reason ? ` (${reason})` : ""}`,
-    };
-  } catch (e) {
-    return { ok: false, detail: errMessage(e) };
-  }
+  return {
+    async pickModel() {
+      try {
+        const catalog = await fetchImpl(`${DEFAULT_COPILOT_API_BASE}/models`, {
+          headers,
+          signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
+        });
+        if (!catalog.ok) {
+          await catalog.text().catch(() => "");
+          return { ok: false, detail: `GET /models returned ${catalog.status}` };
+        }
+        // Envelope-checked here so a body the parsers cannot read reports as a failed look, never
+        // as a proven "no compatible model" (both pickModel filters return empty for either).
+        const body: unknown = await catalog.json();
+        if (!isRecord(body) || !Array.isArray(body.data)) {
+          return { ok: false, detail: "unrecognized /models response shape" };
+        }
+        const model = smoke.pickModel(body);
+        if (model === null) {
+          return { ok: false, detail: `no model on the ${smoke.wire} wire in the catalog` };
+        }
+        return { ok: true, model };
+      } catch (e) {
+        return { ok: false, detail: errMessage(e) };
+      }
+    },
+    async ping(model) {
+      const path = WIRE_PATHS[smoke.wire];
+      try {
+        const ping = await fetchImpl(`${DEFAULT_COPILOT_API_BASE}${path}`, {
+          method: "POST",
+          headers: smoke.wire === "messages"
+            ? { ...headers, "Content-Type": "application/json", "anthropic-version": "2023-06-01" }
+            : { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify(pingBody(smoke.wire, model)),
+          signal: AbortSignal.timeout(PING_TIMEOUT_MS),
+        });
+        // Drained so a keep-alive socket is reusable; the body rides into the failure detail
+        // because the status alone cannot say WHY (a gated model and a rejected request shape
+        // both 400).
+        const text = await ping.text().catch(() => "");
+        if (ping.status === 200) return { ok: true };
+        const reason = text.replace(/\s+/g, " ").trim().slice(0, 160);
+        return {
+          ok: false,
+          detail: `POST ${path} with ${model} returned ${ping.status}${
+            reason ? ` (${reason})` : ""
+          }`,
+        };
+      } catch (e) {
+        return { ok: false, detail: errMessage(e) };
+      }
+    },
+  };
 }
 
 /** Copilot bills per REQUEST, so the caps cost nothing extra; they differ because the wires do:

@@ -4,8 +4,11 @@
 // prompt against it; exit 0 means Direct works. The command boundary ensured a credential is
 // stored before this runs, and the temp config resolves it the way the real wiring will.
 //
-//   CLI present -> smoke prompt (retried) -> Direct, else the local proxy
-//   CLI absent  -> the caller's endpoint smoke (src/copilot_api/endpoint_smoke.ts), else the proxy
+//   catalog pick -> the smoke model comes from Copilot's /models (src/copilot_api/endpoint_smoke.ts),
+//                   never from the model the CLI would choose on its own: a saved default the
+//                   account cannot use must not decide the verdict
+//   CLI present  -> smoke prompt pinned to that model (retried) -> Direct, else the local proxy
+//   CLI absent   -> one minimal call to the wire with that model, else the proxy
 //
 //   a provider env var in the shell        -> dropped, so a leaked export cannot hijack auth
 //   a failure past DEFAULT_PROBE_RETRIES   -> the proxy
@@ -14,7 +17,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
-import type { EndpointSmokeOutcome } from "../copilot_api/endpoint_smoke.ts";
+import type { DirectSmoke } from "../copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../utils/command.ts";
@@ -50,9 +53,11 @@ export interface ProbeDescriptor {
   cli: string;
   homeEnvVar: string;
   /** `home` is the config dir the probe points the CLI at (the temp dir for detect, the real
-   *  home for health); `profile` selects a named profile's wiring through the same knob each
-   *  launcher uses (null = the default argv). The per-CLI notes below say how. */
-  args: (prompt: string, home: string, profile?: Profile) => string[];
+   *  home for health); `model` pins the call (detect passes the catalog pick; health passes null
+   *  and lets the user's own wiring choose, since that wiring is what it tests); `profile` selects
+   *  a named profile's wiring through the same knob each launcher uses (null = the default argv).
+   *  The per-CLI notes below say how. */
+  args: (prompt: string, home: string, model: string | null, profile?: Profile) => string[];
 }
 
 /** Stripped from the probe child so a stray export (an api key, an org, a base url, a config
@@ -72,10 +77,12 @@ export const CODEX_PROBE: ProbeDescriptor = {
   // codex refuses unless the cwd happens to be a git repo, and Direct detection would depend on
   // where `agent init` was invoked:
   //   "Not inside a trusted directory and --skip-git-repo-check was not specified."
-  // A named profile rides `--profile <name>`, the flag the `cx --profile` launcher passes.
-  args: (prompt, _home, profile = null) => [
+  // A named profile rides `--profile <name>`, the flag the `cx --profile` launcher passes;
+  // `--model` beats the config's model line, so the pinned catalog pick is what runs.
+  args: (prompt, _home, model, profile = null) => [
     "exec",
     ...(profile === null ? [] : ["--profile", profile]),
+    ...(model === null ? [] : ["--model", model]),
     "--json",
     "--skip-git-repo-check",
     "--sandbox",
@@ -93,10 +100,13 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
   //   --bare               -> also stops settings.json discovery from CLAUDE_CONFIG_DIR
   //   --settings <path>    -> the only auth path left; without it apiKeySource is "none"
   //   settings-<name>.json -> a named profile's own file, the one `cl --profile` loads
-  args: (prompt, home, profile = null) => [
+  //   --model <id>         -> beats the CLI's built-in default (claude-opus-5[1m] at 2.1.x), an id
+  //                           Copilot may not serve; the init event then reports exactly this id
+  args: (prompt, home, model, profile = null) => [
     "--bare",
     "--settings",
     settingsPathFor(home, profile),
+    ...(model === null ? [] : ["--model", model]),
     "--print",
     "--permission-mode",
     "plan",
@@ -124,7 +134,7 @@ export interface DirectProbeDeps {
   retries?: number;
   /** Base backoff ms between retries (default DEFAULT_PROBE_RETRY_DELAY_MS; 0 in tests). */
   retryDelayMs?: number;
-  /** Threaded by detect* into the endpoint smoke (src/copilot_api/endpoint_smoke.ts), never read
+  /** Threaded by detect* into the Copilot smoke (src/copilot_api/endpoint_smoke.ts), never read
    *  here, so its tests fetch nothing real. */
   fetchImpl?: ProbeFetch;
 }
@@ -210,17 +220,15 @@ function defaultRunProbe(
  *  a bare PATH-only command name. gh is looked up only to lead the child PATH: a gh-cli
  *  credential's helper spawns it from inside the temp home, while a stored token needs no gh.
  *
- *  `endpointSmoke` is the caller's CLI-less Direct check, consulted ONLY when no CLI ran (missing
- *  or uncheckable); a CLI that ran and failed is the final verdict, since an endpoint that answers
- *  cannot prove the CLI's own auth path. Null (no credential resolved) keeps the plain proxy fall.
- *
- *   any failure from tmp home -> caught, false, and the caller wires the proxy
- *   temp-home removal fails   -> best effort; removeScratchDir reports the path left behind
- */
+ *  `smoke` is the caller's credential bound to Copilot's own endpoint. Its catalog pick names the
+ *  model for BOTH arms; its ping decides ONLY when no CLI ran, since a CLI that ran and failed is
+ *  the final verdict (an endpoint that answers cannot prove the CLI's own auth path). Null (no
+ *  credential) leaves nothing to smoke with, so it is the proxy. Any failure inside the temp home
+ *  is caught as false; its removal is best effort (removeScratchDir reports a path left behind). */
 export async function probeDirectWorks(
   descriptor: ProbeDescriptor,
   writeDirectConfig: (tmpHome: string) => void,
-  endpointSmoke: (() => Promise<EndpointSmokeOutcome>) | null,
+  smoke: DirectSmoke | null,
   deps: DirectProbeDeps = {},
 ): Promise<boolean> {
   const find = deps.findCommand ?? findCommand;
@@ -238,7 +246,7 @@ export async function probeDirectWorks(
     const look = cliLook.launchFailed
       ? `could not check for the ${descriptor.cli} CLI (the command probe failed to run)`
       : `${descriptor.cli} CLI not found`;
-    if (endpointSmoke === null) {
+    if (smoke === null) {
       const advice = cliLook.launchFailed
         ? ""
         : " (install it with `agent shell --clis` and re-run to auto-detect Direct, or pass --direct)";
@@ -246,7 +254,8 @@ export async function probeDirectWorks(
       return false;
     }
     logger.log(`    • ${look} → asking the Copilot endpoint itself (one minimal model call) ...`);
-    const outcome = await endpointSmoke();
+    const picked = await smoke.pickModel();
+    const outcome = picked.ok ? await smoke.ping(picked.model) : picked;
     if (outcome.ok) {
       logger.success(
         `    GitHub Copilot Direct is available (endpoint check; no ${descriptor.cli} CLI ran)`,
@@ -258,10 +267,19 @@ export async function probeDirectWorks(
     );
     return false;
   }
+  if (smoke === null) {
+    logger.log("    • no stored credential to smoke with → using the local proxy");
+    return false;
+  }
+  const picked = await smoke.pickModel();
+  if (!picked.ok) {
+    logger.log(`    • ${picked.detail} → using the local proxy`);
+    return false;
+  }
   const cliPath = cliLook.path;
   const ghPath = find("gh").path;
   logger.log(
-    `    • running a read-only smoke prompt through ${descriptor.cli} (live model call, a few seconds; pass --direct to skip) ...`,
+    `    • running a read-only smoke prompt through ${descriptor.cli} with ${picked.model} (live model call, a few seconds; pass --direct to skip) ...`,
   );
 
   let tmpHome: ScratchDir | null = null;
@@ -278,7 +296,7 @@ export async function probeDirectWorks(
       },
     );
 
-    const args = descriptor.args(PROBE_PROMPT, tmpHome);
+    const args = descriptor.args(PROBE_PROMPT, tmpHome, picked.model);
     let lastDetail: string | undefined;
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (attempt > 0) {

@@ -343,29 +343,51 @@ test("runClaude direct/proxy round-trip cleans the other mode", async () => {
   expect(read().providerMode).toBe("direct");
 });
 
-test("detectClaudeDirect: the CLI and a passing smoke prompt decide; gh is optional", async () => {
+test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdict decides; gh is optional", async () => {
   const home = tmpHome();
   // detectClaudeDirect writes a throwaway direct config; tmpHome() keeps it off any real state.
   void home;
+  // The catalog GET is the only fetch: with a CLI on the machine the endpoint is never pinged.
+  // The pin is the CHEAPEST claude family present, not the first or the most capable.
+  const urls: string[] = [];
+  const fetchImpl = (input: string | URL | Request) => {
+    urls.push(String(input));
+    const catalog = {
+      data: [{ "id": "gpt-6" }, { "id": "claude-fable-5" }, { "id": "claude-haiku-4.5" }],
+    };
+    return Promise.resolve(new Response(JSON.stringify(catalog), { status: 200 }));
+  };
+  let seenArgs: string[] | null = null;
   const ok = {
     findCommand: (c: string) => ({ path: `/bin/${c}` }),
-    runProbe: () => ({ ok: true }),
+    runProbe: (_cli: string, args: string[]) => {
+      seenArgs = args;
+      return { ok: true };
+    },
     retryDelayMs: 0,
+    fetchImpl,
   };
-  expect(await detectClaudeDirect(null, null, ok)).toBe(true);
-  expect(await detectClaudeDirect(null, null, { ...ok, runProbe: () => ({ ok: false }) })).toBe(
-    false,
-  );
-  // No CLI and no credential leaves nothing to check: the proxy, before any call.
+  expect(await detectClaudeDirect(null, "ghu_tok", ok)).toBe(true);
+  expect(urls).toEqual(["https://api.githubcopilot.com/models"]);
+  const args = seenArgs as unknown as string[];
+  expect(args[args.indexOf("--model") + 1]).toBe("claude-haiku-4.5");
+  expect(await detectClaudeDirect(null, "ghu_tok", { ...ok, runProbe: () => ({ ok: false }) }))
+    .toBe(false);
+  // No credential leaves nothing to smoke with: the proxy, before any call, CLI or not.
+  urls.length = 0;
+  let probeCalls = 0;
+  const spy = { ...ok, runProbe: () => ({ ok: ++probeCalls > 0 }) };
+  expect(await detectClaudeDirect(null, null, spy)).toBe(false);
   expect(
     await detectClaudeDirect(null, null, {
-      ...ok,
+      ...spy,
       findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
     }),
   ).toBe(false);
+  expect([probeCalls, urls]).toEqual([0, []]);
   // A pasted or device-flow token needs no gh on the machine.
   expect(
-    await detectClaudeDirect(null, null, {
+    await detectClaudeDirect(null, "ghu_tok", {
       ...ok,
       findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
     }),

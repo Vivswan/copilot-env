@@ -533,14 +533,14 @@ export function defaultProbeDeps(): ProbeDeps {
     codexLive: (home, profile) =>
       runLiveCli(
         CODEX_PROBE.cli,
-        CODEX_PROBE.args(PROBE_PROMPT, home, profile),
+        CODEX_PROBE.args(PROBE_PROMPT, home, null, profile),
         home,
         CODEX_PROBE.homeEnvVar,
       ),
     claudeLive: (home, profile) =>
       runLiveCli(
         CLAUDE_PROBE.cli,
-        CLAUDE_PROBE.args(PROBE_PROMPT, home, profile),
+        CLAUDE_PROBE.args(PROBE_PROMPT, home, null, profile),
         home,
         CLAUDE_PROBE.homeEnvVar,
         claudeLiveOmitEnv(profile),

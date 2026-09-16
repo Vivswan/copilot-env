@@ -458,9 +458,12 @@ function stubIdentitySurvey(designated = "https://api.enterprise.githubcopilot.c
       );
     }
     const catalog = (size: number): Response =>
-      new Response(JSON.stringify({ data: Array.from({ length: size }, () => ({})) }), {
-        status: 200,
-      });
+      new Response(
+        JSON.stringify({ data: Array.from({ length: size }, (_, i) => ({ id: `m${i}` })) }),
+        {
+          status: 200,
+        },
+      );
     if (new URL(url).origin === CONFIGURED_HOST) return Promise.resolve(catalog(9));
     const enterprise = url.startsWith("https://api.enterprise.");
     const headers = new Headers(init?.headers);

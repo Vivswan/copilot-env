@@ -13,6 +13,7 @@ import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { CODEX_IDENTITY_NAME, isLoopbackHostname } from "./env_config.ts";
 import type { AuthProvider } from "./env_state.ts";
+import { fetchModelCatalog, type ModelCatalogOutcome } from "./models_fetch.ts";
 
 /** The gating header. Its VALUES below are external contracts: never rename. */
 export const INTEGRATION_ID_HEADER = "Copilot-Integration-Id";
@@ -240,8 +241,9 @@ function isDefinitiveRejection(status: number): boolean {
 }
 
 export type IdentityVerdict =
-  /** `models` is the /models catalog size under this identity, null when the 2xx body was not the
-   *  catalog shape. */
+  /** `models` is the /models catalog size under this identity, counted by the same parse `agent
+   *  models` lists (parseModelList: id-less entries dropped, duplicate ids merged), null when the
+   *  2xx body was not the catalog shape. */
   | { kind: "accepted"; models: number | null }
   /** A definitive 400/401, as `<status> <body snippet>`. */
   | { kind: "rejected"; detail: string }
@@ -268,7 +270,19 @@ function memoizable(deps: Pick<IdentityProbeDeps, "fetchImpl" | "timeoutMs" | "s
   return deps.fetchImpl === undefined && deps.timeoutMs === undefined && deps.signal === undefined;
 }
 
-/** One GET /models under one identity; never throws. The catalog size rides on an acceptance. */
+/** `<status> <body snippet>` for a rejection, `network error: <reason>` otherwise. */
+function failureDetail(
+  outcome: Exclude<ModelCatalogOutcome, { kind: "ok" | "unparsable" }>,
+): string {
+  return truncate(
+    outcome.kind === "http"
+      ? `${outcome.status} ${outcome.body}`
+      : `network error: ${errMessage(outcome.error)}`,
+  );
+}
+
+/** One GET /models under one identity; never throws. Acceptance is the status alone, as it always
+ *  has been: a 2xx whose body is not the catalog counts as accepted with no size. */
 function probeCandidate(
   token: string,
   apiBase: string,
@@ -279,24 +293,25 @@ function probeCandidate(
   memoize: boolean,
 ): Promise<IdentityVerdict> {
   const request = async (): Promise<IdentityVerdict> => {
-    try {
-      const res = await fetchImpl(`${apiBase}/models`, {
-        headers: { Authorization: `Bearer ${token}`, ...candidate.headers },
-        signal: requestSignal(timeoutMs, signal),
-      });
-      if (res.ok) {
-        return { kind: "accepted", models: catalogSize(await res.text().catch(() => "")) };
-      }
-      const detail = truncate(`${res.status} ${await res.text().catch(() => "")}`);
-      return isDefinitiveRejection(res.status)
-        ? { kind: "rejected", detail }
-        : { kind: "inconclusive", detail, status: res.status };
-    } catch (e) {
-      return {
-        kind: "inconclusive",
-        detail: truncate(`network error: ${errMessage(e)}`),
-        status: null,
-      };
+    const got = await fetchModelCatalog({
+      host: apiBase,
+      token,
+      headers: candidate.headers,
+      fetchImpl,
+      timeoutMs,
+      signal,
+    });
+    switch (got.kind) {
+      case "ok":
+        return { kind: "accepted", models: got.models === null ? null : got.models.length };
+      case "unparsable":
+        return { kind: "accepted", models: null };
+      case "http":
+        return isDefinitiveRejection(got.status)
+          ? { kind: "rejected", detail: failureDetail(got) }
+          : { kind: "inconclusive", detail: failureDetail(got), status: got.status };
+      case "network":
+        return { kind: "inconclusive", detail: failureDetail(got), status: null };
     }
   };
   if (!memoize) return request();
@@ -307,16 +322,6 @@ function probeCandidate(
     verdictMemo.set(key, pending);
   }
   return pending;
-}
-
-function catalogSize(body: string): number | null {
-  try {
-    const parsed: unknown = JSON.parse(body);
-    const data = isRecord(parsed) ? parsed.data : undefined;
-    return Array.isArray(data) ? data.length : null;
-  } catch {
-    return null;
-  }
 }
 
 /** Never throws; `conclusive` marks a verdict worth acting on, and it has two shapes.

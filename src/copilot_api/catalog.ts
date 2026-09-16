@@ -8,14 +8,12 @@ import { CopilotApiConfig } from "./config.ts";
 import { Credential } from "./credential.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
 import {
-  DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
+  type IdentityAndHostOptions,
   INTEGRATION_ID_HEADER,
   type ProbeFetch,
-  resolveCopilotHost,
-  resolveDirectIntegrationId,
-  type ResolveIdentityOptions,
-  resolvePassthroughIntegrationId,
+  selectDirectIdentityAndHost,
+  selectPassthroughIdentityAndHost,
 } from "./integration_identity.ts";
 import { copilotApiResolvePort } from "./port.ts";
 import type { Profile } from "./profile.ts";
@@ -75,37 +73,29 @@ export async function fetchRawModels(
     : new Credential(undefined, profile).resolveWithReason();
   if (resolved.token === null) throw new Error(resolved.reason);
   const token = resolved.token;
-  // Either resolver: a configured pin wins, a non-PAT token takes its default unprobed, only a PAT
-  // is probed (a fine-grained PAT is rejected under both defaults; it needs copilot-developer-cli).
-  //   the probe's apiBase    -> the host in use (a caller's, else the `copilot-host` literal, else
-  //                             the generic host), so the identity verdict is never rendered against
-  //                             a host this fetch does not use
-  //   the host               -> a caller's, else resolveCopilotHost under the CONSUMER's exact header
-  //                             set, so the host verdict is the consumer's too
-  //   the probes' narration  -> stderr: `agent auth --get` runs this fetch and its stdout is the token
+  // Either selector pairs the CONSUMER's identity with the one host it was accepted on
+  // (select*IdentityAndHost): a configured pin wins, a non-PAT token takes its default unprobed,
+  // only a PAT is probed; a caller's host or the `copilot-host` literal fixes the host, else `auto`
+  // resolves it under the consumer's exact header set. Narration goes to stderr: `agent auth --get`
+  // runs this fetch and its stdout is the token.
   const config = new CopilotEnvConfig();
-  const literal = config.copilotHost();
-  const narrator = createStderrLogger();
-  const resolveOpts: ResolveIdentityOptions = {
+  const selectOpts: IdentityAndHostOptions = {
     pinned: config.pinnedIntegrationId(),
-    apiBase: opts.apiBase ?? literal ?? DEFAULT_COPILOT_API_BASE,
+    fixedHost: opts.apiBase ?? config.copilotHost(),
     fetchImpl: opts.fetchImpl,
     signal: opts.signal,
-    narrator,
+    narrator: createStderrLogger(),
   };
   const identity = opts.identity ?? { kind: "passthrough" };
-  const headers: Record<string, string> = identity.kind === "agents"
-    ? directClientHeaders(
-      identity.userAgent,
-      await resolveDirectIntegrationId(token, identity.userAgent, resolveOpts),
-    )
-    : { [INTEGRATION_ID_HEADER]: await resolvePassthroughIntegrationId(token, resolveOpts) };
-  const apiBase = opts.apiBase ?? await resolveCopilotHost(token, headers, {
-    literal,
-    fetchImpl: opts.fetchImpl,
-    signal: opts.signal,
-    narrator,
-  });
+  const { headers, apiBase } = identity.kind === "agents"
+    ? await selectDirectIdentityAndHost(token, identity.userAgent, selectOpts).then((s) => ({
+      headers: directClientHeaders(identity.userAgent, s.integrationId),
+      apiBase: s.apiBase,
+    }))
+    : await selectPassthroughIdentityAndHost(token, selectOpts).then((s) => ({
+      headers: { [INTEGRATION_ID_HEADER]: s.integrationId },
+      apiBase: s.apiBase,
+    }));
   const url = `${apiBase}/models`;
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   const res = await fetchImpl(url, {

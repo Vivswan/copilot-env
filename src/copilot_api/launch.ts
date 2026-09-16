@@ -22,11 +22,7 @@ import {
   type ProxyConfigPath,
 } from "./env_config.ts";
 import {
-  DEFAULT_COPILOT_API_BASE,
-  passthroughIdentity,
-  type ProbeFetch,
-  resolveCopilotHost,
-  resolvePassthroughIntegrationId,
+  selectPassthroughIdentityAndHost,
   usePatPassthrough,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "./integration_identity.ts";
@@ -607,7 +603,16 @@ export interface LaunchCredentialDeps {
   credential?: Credential;
   /** Default: process.stdin.isTTY. */
   isTTY?: boolean;
-  resolveIntegrationId?: typeof resolvePassthroughIntegrationId;
+  selectIdentity?: typeof selectPassthroughIdentityAndHost;
+}
+
+/** What a daemon launch resolved: the credential it runs with and the Copilot host it is pinned
+ *  to, one pair, so the daemon never sends an identity to a host that was not judged under it. Null
+ *  host = unpinned: a credential-less daemon logs in inside the proxy, and with `auto` there is
+ *  nothing to probe with, so GitHub's answer for that login stands. */
+export interface DaemonLaunchAuth {
+  credential: DaemonCredential;
+  copilotHost: string | null;
 }
 
 /**
@@ -619,10 +624,11 @@ export async function resolveLaunchCredential(
   profile: Profile,
   config: CopilotEnvConfig = new CopilotEnvConfig(),
   deps: LaunchCredentialDeps,
-): Promise<DaemonCredential> {
+): Promise<DaemonLaunchAuth> {
   const credential = deps.credential ?? new Credential(undefined, profile);
   const isTTY = deps.isTTY ?? Boolean(process.stdin.isTTY);
-  const resolveIntegrationId = deps.resolveIntegrationId ?? resolvePassthroughIntegrationId;
+  const selectIdentity = deps.selectIdentity ?? selectPassthroughIdentityAndHost;
+  const literal = config.copilotHost();
   // Passed as `--github-token`, copilot-api holds the token in memory and writes no github_token file
   // of its own, so the proxy stays on our single source of truth.
   let githubToken = credential.resolve() ?? undefined;
@@ -647,39 +653,27 @@ export async function resolveLaunchCredential(
   } else if (forcePassthrough === false) {
     consola.info("Token passthrough off: using the standard editor token exchange.");
   }
-  if (githubToken === undefined) return { kind: "none" };
-  if (!patPassthrough) return { kind: "token", token: githubToken };
+  if (githubToken === undefined) return { credential: { kind: "none" }, copilotHost: literal };
+  if (!patPassthrough) {
+    // The daemon exchanges the token itself and sends its own vscode-chat whatever the pin, so the
+    // host is judged under that identity alone (the pin is the daemon's default: no selection).
+    const { apiBase } = await selectIdentity(githubToken, {
+      pinned: VSCODE_CHAT_INTEGRATION_ID,
+      fixedHost: literal,
+    });
+    return { credential: { kind: "token", token: githubToken }, copilotHost: apiBase };
+  }
   // A passthrough bearer is accepted only under an identity matching its token class (a fine-grained
-  // PAT needs `copilot-developer-cli`; copilot-api sends `vscode-chat`). Resolved BEFORE launching, so
+  // PAT needs `copilot-developer-cli`; copilot-api sends `vscode-chat`). Selected BEFORE launching, so
   // an unusable credential fails here with the real reason instead of an opaque daemon-side
   // "Failed to get models"; the passthrough preload rewrites the header on the daemon's upstream calls.
-  // Probed on the one host in use: the literal, else the generic host (the host probe comes after
-  // the identity, resolveDaemonHost).
-  const integrationId = await resolveIntegrationId(githubToken, {
+  // Identity and host come as one pair (selectPassthroughIdentityAndHost): the host in use, and the
+  // identity that host accepts.
+  const { integrationId, apiBase } = await selectIdentity(githubToken, {
     pinned: config.pinnedIntegrationId(),
-    apiBase: config.copilotHost() ?? DEFAULT_COPILOT_API_BASE,
+    fixedHost: literal,
   });
-  return { kind: "pat", token: githubToken, integrationId };
-}
-
-/**
- * The Copilot host the daemon is pinned to, under the identity it will send: the passthrough id
- * for a PAT-shaped launch, copilot-api's own vscode-chat otherwise (the `copilot-host` rule,
- * resolveCopilotHost). A credential-less daemon logs in inside the proxy, so with `auto` there is
- * nothing to probe with: null leaves the host to GitHub's answer for that login.
- */
-export function resolveDaemonHost(
-  credential: DaemonCredential,
-  config: CopilotEnvConfig = new CopilotEnvConfig(),
-  deps: { fetchImpl?: ProbeFetch } = {},
-): Promise<string | null> {
-  const literal = config.copilotHost();
-  if (credential.kind === "none") return Promise.resolve(literal);
-  const id = credential.kind === "pat" ? credential.integrationId : VSCODE_CHAT_INTEGRATION_ID;
-  return resolveCopilotHost(credential.token, passthroughIdentity(id).headers, {
-    literal,
-    fetchImpl: deps.fetchImpl,
-  });
+  return { credential: { kind: "pat", token: githubToken, integrationId }, copilotHost: apiBase };
 }
 
 // --- the configured daemon spawn ------------------------------------------------------

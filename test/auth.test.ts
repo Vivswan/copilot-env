@@ -634,6 +634,34 @@ test("auth --identities: columns are the generic host, the account's when it dif
       "Host: Codex sends to api.githubcopilot.com; `agent init` moves it to copilot.example.",
     );
 
+    // A refusal names the host it happened on: with the generic host blocked (403) and the account
+    // host rejecting every identity (400), the wiring re-selects on the account host and throws
+    // THERE, so the table shows nothing in use there, not on the generic host.
+    new CopilotEnvConfig().del("copilotHost");
+    setIntegrationProbeFetch((input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/copilot_internal/user")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ endpoints: { api: "https://api.enterprise.githubcopilot.com" } }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(
+        url.startsWith("https://api.enterprise.")
+          ? new Response("Personal Access Tokens are not supported for this endpoint", {
+            status: 400,
+          })
+          : new Response("forbidden", { status: 403 }),
+      );
+    });
+    const refused = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(refused).toContain("copilot-host: auto (api.enterprise.githubcopilot.com in use)");
+    expect(refused).toContain(
+      "Direct: the wiring sends codex until `agent init` rebakes it to nothing (every identity rejects this credential).",
+    );
+
     // A literal equal to the account's host is one column, in its account role.
     new CopilotEnvConfig().set({ copilotHost: "https://api.enterprise.githubcopilot.com" });
     const merged = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
@@ -783,7 +811,7 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
     });
     await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
       .toThrow(
-        "api.enterprise.githubcopilot.com (cached for this identity) rejects this credential under " +
+        "api.enterprise.githubcopilot.com (in use for this identity) rejects this credential under " +
           `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
           `selects for this identity: ${PAT_REJECTION}`,
       );

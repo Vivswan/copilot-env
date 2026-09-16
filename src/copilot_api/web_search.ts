@@ -12,11 +12,9 @@ import { CopilotEnvConfig } from "./env_config.ts";
 import { ghTokenEnvVarsList, ghTokenFromEnv } from "./gh_cli.ts";
 import {
   CODEX_EXEC_USER_AGENT,
-  DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   type ProbeFetch,
-  resolveCopilotHost,
-  resolveDirectIntegrationId,
+  selectDirectIdentityAndHost,
 } from "./integration_identity.ts";
 import { generateAliases, parseCatalogModels } from "./models.ts";
 import type { Profile } from "./profile.ts";
@@ -167,26 +165,20 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   // No fetch is injected in production, so the probes stay MEMOIZED: a cancelled tool call stops
   // WAITING for a cold PAT probe while the probe runs on and fills its memo for the next call.
   // The User-Agent is deliberately VERSION-FREE: the versioned codexUserAgent lives in the codex
-  // layer, which this module must not import. The host follows the identity (resolveCopilotHost)
-  // and the catalog fetch below reuses it, so one host serves every request here.
+  // layer, which this module must not import. Identity and host come as one pair
+  // (selectDirectIdentityAndHost), and the catalog fetch below reuses the host, so one host and one
+  // identity serve every request here.
   const config = new CopilotEnvConfig();
-  const integrationId = await raceWithAbort(
-    resolveDirectIntegrationId(token, CODEX_EXEC_USER_AGENT, {
+  const { integrationId, apiBase } = await raceWithAbort(
+    selectDirectIdentityAndHost(token, CODEX_EXEC_USER_AGENT, {
       pinned: config.pinnedIntegrationId(),
-      apiBase: config.copilotHost() ?? DEFAULT_COPILOT_API_BASE,
-      fetchImpl: opts.fetchImpl,
-    }),
-    opts.signal,
-  );
-  const clientHeaders = directClientHeaders(CODEX_EXEC_USER_AGENT, integrationId);
-  const apiBase = await raceWithAbort(
-    resolveCopilotHost(token, clientHeaders, {
-      literal: config.copilotHost(),
+      fixedHost: config.copilotHost(),
       fetchImpl: opts.fetchImpl,
       narrator: logger,
     }),
     opts.signal,
   );
+  const clientHeaders = directClientHeaders(CODEX_EXEC_USER_AGENT, integrationId);
   const configured = opts.model ?? config.messageApiWebSearchModel();
   // Only a configured value can be an alias; the built-in default is a raw catalog id, so the default
   // path stays catalog-free.

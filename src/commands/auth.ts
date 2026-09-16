@@ -45,22 +45,21 @@ import {
 } from "../copilot_api/gh_cli.ts";
 import { type GithubLoginLook, githubLoginLook } from "../copilot_api/github_login.ts";
 import {
-  autoIdentityFor,
   type BakedDirectIdentity,
   COPILOT_CLI_INTEGRATION_ID,
-  directClientHeaders,
   directIdentity,
   directIdentityCandidates,
   type IdentityHostSurvey,
+  IdentityRejectedError,
   type IdentitySurvey,
   type IdentityVerdict,
   INTEGRATION_ID_HEADER,
   type IntegrationIdentity,
-  isPatShapedToken,
   PASSTHROUGH_IDENTITY_CANDIDATES,
   passthroughIdentity,
   pinnedIdentityCandidates,
-  resolveCopilotHost,
+  selectDirectIdentityAndHost,
+  selectPassthroughIdentityAndHost,
   surveyIntegrationIdentities,
   usePatPassthrough,
   VSCODE_CHAT_INTEGRATION_ID,
@@ -1074,62 +1073,32 @@ async function surveyAndTable(
     token,
     provider: credential.provider(),
   });
-  // A fresh probe (resolveDirectIntegrationId) ranks the built-ins only, on the host it runs on
-  // (the literal, else the generic host), so the extras are excluded from auto's pick; a named
-  // profile's launch replays the slot's verdict.
-  const probeColumn = configuredHost === null
-    ? generic
-    : survey.hosts.find((h) => sameOrigin(h.apiBase, configuredHost)) ?? generic;
-  // What the wiring's selection on `column` picks: the built-ins in order, a preferred cached
-  // identity first (resolveDirectIntegrationId's candidate order). A non-PAT credential is never
-  // probed and takes the default whatever the slot cached, so no preference applies to it.
-  const selectionOn = (column: IdentityHostSurvey): string | null => {
-    const ranked = column.verdicts.slice(0, directBuiltins.length);
-    const preferredVerdict = isPatShapedToken(token)
-      ? column.verdicts.find((v) => v.name === preferredName)
-      : undefined;
-    return autoIdentityFor(token, {
-      ...column,
-      verdicts: preferredVerdict === undefined
-        ? ranked
-        : [preferredVerdict, ...ranked.filter((v) => v.name !== preferredName)],
-    }, ranked[0]?.name ?? null);
-  };
-  const fresh = selectionOn(probeColumn);
-  const firstPick = pinned ??
-    (rule.kind === "replay" ? rule.directIntegrationId ?? CODEX_IDENTITY_NAME : fresh);
-  // The proxy's pick is the launch resolver's: its own candidates, in their order, on the same
-  // host (resolveLaunchCredential), before the host is chosen.
-  const proxyNext = proxyPassthrough
-    ? pinned ?? autoIdentityFor(token, {
-      ...probeColumn,
-      verdicts: PASSTHROUGH_IDENTITY_CANDIDATES.flatMap((c) =>
-        probeColumn.verdicts.filter((v) => v.name === c.name)
-      ),
-    })
-    : VSCODE_CHAT_INTEGRATION_ID;
-  // Each mode's host follows ITS identity: Direct's the one the next wiring bakes (a named profile
-  // replays its slot's cached host first, as its writer does), the daemon's the one it will send
-  // (resolveDaemonHost). With no Direct pick, the daemon's identity stands in for Direct too.
-  const inUseHeaders = firstPick === null
-    ? passthroughIdentity(VSCODE_CHAT_INTEGRATION_ID).headers
-    : directClientHeaders(userAgent, firstPick === CODEX_IDENTITY_NAME ? null : firstPick);
-  const hostInUse = configuredHost ?? (rule.kind === "replay" ? rule.directBaseUrl : null) ??
-    await resolveCopilotHost(token, inUseHeaders, { narrator: logger });
-  const proxyHost = configuredHost ?? await resolveCopilotHost(
-    token,
-    passthroughIdentity(proxyNext ?? VSCODE_CHAT_INTEGRATION_ID).headers,
-    { narrator: logger },
+  // What the next Direct wiring bakes and where: the writer's own selection (probeDirectWiring's
+  // rule, selectDirectIdentityAndHost) or its replayed pair; a refusal (every identity rejected on
+  // the host in use) is "nothing", and the wiring throws before any host move.
+  const direct = rule.kind === "replay"
+    ? { name: rule.directIntegrationId ?? CODEX_IDENTITY_NAME, host: rule.directBaseUrl }
+    : await pickOrRefusal(
+      selectDirectIdentityAndHost(token, userAgent, {
+        pinned,
+        preferred: rule.kind === "preferred" ? rule.directIntegrationId : null,
+        fixedHost: configuredHost,
+        narrator: logger,
+      }).then((s) => ({ name: s.integrationId ?? CODEX_IDENTITY_NAME, host: s.apiBase })),
+    );
+  // What a fresh daemon launch sends and where (resolveLaunchCredential): its own selection under
+  // passthrough, else the daemon's fixed vscode-chat, whose host is still judged.
+  const proxy = await pickOrRefusal(
+    selectPassthroughIdentityAndHost(token, {
+      pinned: proxyPassthrough ? pinned : VSCODE_CHAT_INTEGRATION_ID,
+      fixedHost: configuredHost,
+      narrator: logger,
+    }).then((s) => ({ name: s.integrationId, host: s.apiBase })),
   );
-  // The wiring probes a PAT again on the host `auto` moved it to (probeDirectWiring), so the pick
-  // shown is the built-ins ranked on THAT column. Not when the wiring would not probe: a pin or a
-  // literal, a profile replaying its cached pair, or a first pick of "nothing" (the wiring throws on
-  // the generic host before any move).
-  const inUseColumn = survey.hosts.find((h) => sameOrigin(h.apiBase, hostInUse));
-  const nextDirect = pinned === null && configuredHost === null && rule.kind !== "replay" &&
-      firstPick !== null && inUseColumn !== undefined && inUseColumn !== generic
-    ? selectionOn(inUseColumn)
-    : firstPick;
+  const hostInUse = direct.host;
+  const proxyHost = proxy.host;
+  const nextDirect = direct.name;
+  const proxyNext = proxy.name;
   const rewire = profile === null ? "agent init" : `agent profile --add ${profile} --direct`;
   for (
     const line of identityTableLines({
@@ -1150,6 +1119,19 @@ async function surveyAndTable(
     console.log(line);
   }
   return survey;
+}
+
+/** A selection, or the refusal every consumer renders as "nothing" on the host it happened on (the
+ *  literal, the generic host, or the host `auto` had moved to before re-selecting there). */
+async function pickOrRefusal(
+  selection: Promise<{ name: string | null; host: string }>,
+): Promise<{ name: string | null; host: string }> {
+  try {
+    return await selection;
+  } catch (e) {
+    if (e instanceof IdentityRejectedError) return { name: null, host: e.apiBase };
+    throw e;
+  }
 }
 
 async function runIdentities(profile: Profile): Promise<void> {
@@ -1221,25 +1203,26 @@ async function pinIdentity(
     // column, so it always has a row whatever the account lookup answers.
     const configuredHost = new CopilotEnvConfig().copilotHost();
     const rule = replayableIdentity(profile, id, configuredHost);
-    const knownHost = configuredHost ?? (rule.kind === "replay" ? rule.directBaseUrl : null);
+    // The host the pin's requests go to: the writer's replayed pair, else the pin's own selection
+    // (a pin never re-selects; the host is judged under its headers). Surveyed as the configured
+    // column, so it always has a row whatever the account lookup answers.
+    const inUseHost = rule.kind === "replay"
+      ? rule.directBaseUrl
+      : (await selectDirectIdentityAndHost(token, codexUserAgent(), {
+        pinned: id,
+        fixedHost: configuredHost,
+        narrator: logger,
+      })).apiBase;
     const survey = await surveyIntegrationIdentities(
       token,
       pinnedIdentityCandidates(id, codexUserAgent()),
-      { configuredHost: knownHost },
+      { configuredHost: inUseHost },
     );
-    const genericIndex = survey.hosts.findIndex((h) => h.role === "generic");
-    const designatedIndex = survey.hosts.findIndex((h) => h.role === "designated");
-    const generic = survey.hosts[genericIndex]?.verdicts[0]?.verdict;
-    const autoIndex = generic?.kind === "inconclusive" && generic.blocked && designatedIndex >= 0
-      ? designatedIndex
-      : genericIndex;
-    const inUseIndex = knownHost !== null
-      ? survey.hosts.findIndex((h) => sameOrigin(h.apiBase, knownHost))
-      : autoIndex;
+    const inUseIndex = survey.hosts.findIndex((h) => sameOrigin(h.apiBase, inUseHost));
     const hosts = survey.hosts.map((column, i) => ({
-      // A cached host rides in as the configured column; its label says so, not "copilot-host".
+      // Under `auto` the selection's host rides in as the configured column; its label says so.
       label: configuredHost === null && column.role === "configured"
-        ? `${new URL(column.apiBase).host} (cached for this identity)`
+        ? `${new URL(column.apiBase).host} (in use for this identity)`
         : hostLabel(column, configuredHost !== null && i === inUseIndex),
       verdict: column.verdicts[0]?.verdict,
     }));

@@ -153,6 +153,38 @@ test("webSearch POSTs the verified request shape, no integration id for a gho_ t
   expect(String(body.instructions)).toContain("cite");
 });
 
+test("webSearch: a host `auto` moved to re-selects the identity there before the POST", async () => {
+  tmpHome();
+  new Credential(undefined, null).store("gh-token", "github_pat_x");
+  // The generic host 403s everything; the account's host accepts the CLI id alone. The POST must
+  // go to the moved host under the id it accepts, never the generic host's default answer.
+  const enterprise = "https://api.enterprise.githubcopilot.com";
+  const posts: { url: string; id: string | null }[] = [];
+  const answer = await webSearch("q", {
+    fetchImpl: (input, init) => {
+      const url = String(input);
+      if (url.includes("/copilot_internal/user")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ endpoints: { api: enterprise } }), { status: 200 }),
+        );
+      }
+      if (new URL(url).origin !== enterprise) {
+        return Promise.resolve(new Response("forbidden", { status: 403 }));
+      }
+      const id = new Headers(init?.headers).get("Copilot-Integration-Id");
+      if (init?.method === "POST") posts.push({ url, id });
+      if (id !== "copilot-developer-cli") {
+        return Promise.resolve(new Response("PATs not supported", { status: 400 }));
+      }
+      return Promise.resolve(
+        init?.method === "POST" ? okJson(responsesFixture()) : okJson({ data: [] }),
+      );
+    },
+  });
+  expect(answer).toContain("Bun 1.3 shipped.");
+  expect(posts).toEqual([{ url: `${enterprise}/responses`, id: "copilot-developer-cli" }]);
+});
+
 test("webSearch sends the pinned integration id without probing", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");

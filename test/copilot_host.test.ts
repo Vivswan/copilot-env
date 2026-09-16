@@ -27,7 +27,7 @@ import {
   setIntegrationProbeFetch,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
-import { resolveDaemonHost } from "../src/copilot_api/launch.ts";
+import { resolveLaunchCredential } from "../src/copilot_api/launch.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { checkClaude } from "../src/health/checks_agents.ts";
 import { ROOT } from "./helpers/run.ts";
@@ -563,27 +563,63 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
   ).toEqual({ directIntegrationId: COPILOT_CLI_INTEGRATION_ID, directBaseUrl: ENTERPRISE });
 });
 
-test("resolveDaemonHost: the daemon is pinned under the identity it will send; a credential-less daemon is pinned only by a literal", async () => {
+test("a daemon launch resolves its identity and host as one pair: re-selected where auto moves, judged under vscode-chat without passthrough, unpinned without a credential", async () => {
   dir = isolateAgentHomes("copilot-host-daemon-").dir;
+  const state = new CopilotEnvState();
   const seen: { host: string; id: string | null }[] = [];
-  stubHosts(403, seen);
-  const config = new CopilotEnvConfig();
-  expect(await resolveDaemonHost({ kind: "none" }, config)).toBeNull();
-  expect(
-    await resolveDaemonHost({
-      kind: "pat",
-      token: "ghp_x",
-      integrationId: "copilot-developer-cli",
-    }),
-  ).toBe(ENTERPRISE);
-  expect(await resolveDaemonHost({ kind: "token", token: "gho_x" }, config)).toBe(ENTERPRISE);
-  expect(seen).toEqual([
-    { host: DEFAULT_COPILOT_API_BASE, id: "copilot-developer-cli" },
-    { host: DEFAULT_COPILOT_API_BASE, id: VSCODE_CHAT_INTEGRATION_ID },
+  const launch = () =>
+    resolveLaunchCredential(null, new CopilotEnvConfig(), {
+      interactiveLogin: () => Promise.reject(new Error("no login in this test")),
+      isTTY: false,
+    });
+  // No credential: nothing to probe with, so the daemon is not pinned (GitHub's login answer stands).
+  expect(await launch()).toEqual({ credential: { kind: "none" }, copilotHost: null });
+  // A PAT with the generic host blocked: identity and host are one pair, selected again where the
+  // account is served, so the daemon sends the id THAT host accepts.
+  new Credential(state).store("gh-token", "github_pat_x");
+  setIntegrationProbeFetch((input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/copilot_internal/user")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ endpoints: { api: ENTERPRISE } }), { status: 200 }),
+      );
+    }
+    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+    seen.push({ host: new URL(url).origin, id });
+    if (new URL(url).origin === DEFAULT_COPILOT_API_BASE) {
+      return Promise.resolve(new Response("forbidden", { status: 403 }));
+    }
+    return Promise.resolve(
+      id === COPILOT_CLI_INTEGRATION_ID
+        ? new Response(JSON.stringify({ data: [] }), { status: 200 })
+        : new Response("Personal Access Tokens are not supported", { status: 400 }),
+    );
+  });
+  expect(await launch()).toEqual({
+    credential: { kind: "pat", token: "github_pat_x", integrationId: COPILOT_CLI_INTEGRATION_ID },
+    copilotHost: ENTERPRISE,
+  });
+  expect(seen.filter((s) => s.host === ENTERPRISE).map((s) => s.id)).toEqual([
+    VSCODE_CHAT_INTEGRATION_ID,
+    COPILOT_CLI_INTEGRATION_ID,
   ]);
-  config.set({ copilotHost: GHE });
+  // Passthrough off: the daemon sends its own vscode-chat whatever the pin, so only the host is
+  // judged, under that identity.
   seen.length = 0;
-  expect(await resolveDaemonHost({ kind: "none" }, config)).toBe(GHE);
-  expect(await resolveDaemonHost({ kind: "token", token: "gho_x" }, config)).toBe(GHE);
-  expect(seen).toEqual([]);
+  new Credential(state).store("copilot", "gho_x");
+  expect(await launch()).toEqual({
+    credential: { kind: "token", token: "gho_x" },
+    copilotHost: ENTERPRISE,
+  });
+  expect(seen.map((s) => s.id)).toEqual([VSCODE_CHAT_INTEGRATION_ID]);
+  // A literal pins every kind, probing nothing.
+  new CopilotEnvConfig().set({ copilotHost: GHE });
+  seen.length = 0;
+  expect((await launch()).copilotHost).toBe(GHE);
+  new Credential(state).store("gh-token", "github_pat_x");
+  expect(await launch()).toEqual({
+    credential: { kind: "pat", token: "github_pat_x", integrationId: COPILOT_CLI_INTEGRATION_ID },
+    copilotHost: GHE,
+  });
+  expect(seen.every((s) => s.host === GHE)).toBe(true);
 });

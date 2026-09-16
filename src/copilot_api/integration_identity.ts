@@ -246,16 +246,14 @@ export type IdentityVerdict =
   | { kind: "accepted"; models: number | null }
   /** A definitive 400/401, as `<status> <body snippet>`. */
   | { kind: "rejected"; detail: string }
-  /** A network error or a non-definitive status: the identity may still work. `blocked` is
-   *  resolveCopilotHost's reading of the same answer (genericHostBlockedBy): whether it moves `auto`
-   *  off the probed host. */
-  | { kind: "inconclusive"; detail: string; blocked: boolean };
+  /** A network error or a non-definitive status: the identity may still work. */
+  | { kind: "inconclusive"; detail: string };
 
 /** THE one "blocked host" rule (`copilot-host auto`): a status the credential could never draw for
  *  an identity reason. 403, 404, and 5xx mean the account is served elsewhere; 2xx serves, 400 is an
  *  identity rejection and 401 a bad token (identical on every host), and a transient 408 or 429
  *  says nothing about the host. A network-level failure counts as blocked at the call site. */
-export function genericHostBlockedBy(status: number): boolean {
+function genericHostBlockedBy(status: number): boolean {
   return status === 403 || status === 404 || status >= 500;
 }
 
@@ -284,13 +282,9 @@ async function probeCandidate(
     const detail = truncate(`${res.status} ${await res.text().catch(() => "")}`);
     return isDefinitiveRejection(res.status)
       ? { kind: "rejected", detail }
-      : { kind: "inconclusive", detail, blocked: genericHostBlockedBy(res.status) };
+      : { kind: "inconclusive", detail };
   } catch (e) {
-    return {
-      kind: "inconclusive",
-      detail: truncate(`network error: ${errMessage(e)}`),
-      blocked: true,
-    };
+    return { kind: "inconclusive", detail: truncate(`network error: ${errMessage(e)}`) };
   }
 }
 
@@ -504,28 +498,6 @@ async function resolveAutoHost(
   return designated.apiBase;
 }
 
-/**
- * What `auto` settles on for this credential, read off a survey column; mirrors resolve*IntegrationId
- * and acceptedIdentity so `agent auth --identities` marks the row a launch would use.
- *
- *   non-PAT credential            -> the default (no probe is run for it)
- *   PAT, a candidate accepted     -> the first accepted, in candidate order
- *   PAT, none accepted, a blip    -> the default
- *   PAT, every candidate rejected -> null: the mode refuses this credential
- */
-export function autoIdentityFor(
-  token: string,
-  column: IdentityHostSurvey,
-  // The mode's built-in default, the transient fallback: passed when the column's first row is a
-  // preferred cached identity (auth.ts selectionOn), which must never win by fallback.
-  defaultName: string | null = column.verdicts[0]?.name ?? null,
-): string | null {
-  if (!isPatShapedToken(token)) return defaultName;
-  const accepted = column.verdicts.find((v) => v.verdict.kind === "accepted");
-  if (accepted !== undefined) return accepted.name;
-  return column.verdicts.some((v) => v.verdict.kind === "inconclusive") ? defaultName : null;
-}
-
 // Memoized so the probe sites in one process (both agents at init, start narration + launch, catalog
 // fetches) share one network round. Process-lifetime and never invalidated: a CLI invocation ends in
 // seconds, while the MCP server (src/mcp/server.ts, reached through web_search.ts) keeps its verdict
@@ -627,13 +599,23 @@ async function acceptedIdentity(
     );
     return fallback;
   }
-  throw new Error(
+  throw new IdentityRejectedError(
+    probe.apiBase,
     [
       `${probe.apiBase} rejects this credential under every known client identity:`,
       ...probe.outcomes.map((o) => `  - ${o.name}: ${o.detail}`),
       ...identityRejectionHints().map((h) => `  ${h}`),
     ].join("\n"),
   );
+}
+
+/** Every known identity was definitively rejected on `apiBase`, the host in use at that point (the
+ *  generic host, a literal, or the host `auto` moved to): the mode refuses this credential. A launch
+ *  fails with the message; the survey renders it as "nothing" on that host instead. */
+export class IdentityRejectedError extends Error {
+  constructor(readonly apiBase: string, message: string) {
+    super(message);
+  }
 }
 
 /** Narrated once, so `agent start`/`init` explain a surprising id. A preferred (cached) identity
@@ -646,6 +628,8 @@ function narrateIdentity(
   preferred: string | null = null,
 ): void {
   if (pinned) {
+    // Pinning the mode's own default (the daemon's fixed vscode-chat) is nothing to explain.
+    if (chosen === defaultName) return;
     narrator.info(
       `Copilot integration identity: ${chosen} (pinned via \`agent config integration-id\`).`,
     );
@@ -687,6 +671,66 @@ export async function resolveDirectIntegrationId(
   }, builtins[0]);
   narrateIdentity(identity.name, CODEX_IDENTITY_NAME, false, narrator, preferred);
   return bakedIntegrationId(identity);
+}
+
+/** One identity and the one host it was accepted on: what every Direct or passthrough consumer
+ *  bakes, fetches with, or pins to. */
+export interface IdentityAndHost<Id extends string | null> {
+  integrationId: Id;
+  apiBase: string;
+}
+
+export interface IdentityAndHostOptions extends Omit<ResolveIdentityOptions, "apiBase"> {
+  /** A host every request goes to (a caller's, else the `copilot-host` literal): identity selection
+   *  runs there and the host probe is skipped. Null = `auto`. */
+  fixedHost?: string | null;
+}
+
+/**
+ * THE one rule for pairing an identity with a host, so no consumer selects on one host and sends
+ * to another: identity selection on the host in use (`fixedHost`, else the generic host), then the
+ * host under that identity's exact headers (resolveCopilotHost), then, when `auto` moved the host,
+ * selection AGAIN there: the first run's answer was the generic host's (a blocked host leaves it at
+ * the default), and the moved host is where the identity must be accepted. A pin never re-selects.
+ */
+export async function selectDirectIdentityAndHost(
+  token: string | null,
+  userAgent: string,
+  opts: IdentityAndHostOptions = {},
+): Promise<IdentityAndHost<string | null>> {
+  const { fixedHost = null, ...identityOpts } = opts;
+  const identityOn = (apiBase: string): Promise<string | null> =>
+    resolveDirectIntegrationId(token, userAgent, { ...identityOpts, apiBase });
+  const first = await identityOn(fixedHost ?? DEFAULT_COPILOT_API_BASE);
+  const apiBase = await resolveCopilotHost(token, directClientHeaders(userAgent, first), {
+    literal: fixedHost,
+    fetchImpl: identityOpts.fetchImpl,
+    signal: identityOpts.signal,
+    narrator: identityOpts.narrator,
+  });
+  const moved = fixedHost === null && (identityOpts.pinned ?? null) === null &&
+    apiBase !== DEFAULT_COPILOT_API_BASE;
+  return { integrationId: moved ? await identityOn(apiBase) : first, apiBase };
+}
+
+/** The passthrough twin of selectDirectIdentityAndHost (the daemon's id-header-alone set). */
+export async function selectPassthroughIdentityAndHost(
+  token: string,
+  opts: IdentityAndHostOptions = {},
+): Promise<IdentityAndHost<string>> {
+  const { fixedHost = null, ...identityOpts } = opts;
+  const identityOn = (apiBase: string): Promise<string> =>
+    resolvePassthroughIntegrationId(token, { ...identityOpts, apiBase });
+  const first = await identityOn(fixedHost ?? DEFAULT_COPILOT_API_BASE);
+  const apiBase = await resolveCopilotHost(token, passthroughIdentity(first).headers, {
+    literal: fixedHost,
+    fetchImpl: identityOpts.fetchImpl,
+    signal: identityOpts.signal,
+    narrator: identityOpts.narrator,
+  });
+  const moved = fixedHost === null && (identityOpts.pinned ?? null) === null &&
+    apiBase !== DEFAULT_COPILOT_API_BASE;
+  return { integrationId: moved ? await identityOn(apiBase) : first, apiBase };
 }
 
 /** `preferred` moved to the front (added when it is not a built-in); the default identity is

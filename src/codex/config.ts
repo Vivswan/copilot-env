@@ -24,8 +24,7 @@ import {
   directClientHeaders,
   INTEGRATION_ID_HEADER,
   isDirectBaseUrl,
-  resolveCopilotHost,
-  resolveDirectIntegrationId,
+  selectDirectIdentityAndHost,
 } from "../copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
@@ -889,23 +888,14 @@ export async function probeDirectWiring(
   const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
   const config = new CopilotEnvConfig();
   const userAgent = codexUserAgent();
-  const literal = config.copilotHost();
-  const pinned = config.pinnedIntegrationId();
-  const identityOn = (apiBase: string): Promise<string | null> =>
-    resolveDirectIntegrationId(resolved, userAgent, { pinned, preferred, apiBase });
-  // A literal skips the HOST probe, never the identity selection, which runs on the host in use.
-  const directIntegrationId = await identityOn(literal ?? DEFAULT_COPILOT_API_BASE);
-  const directBaseUrl = await resolveCopilotHost(
-    resolved,
-    directClientHeaders(userAgent, directIntegrationId),
-    { literal },
-  );
-  // Under `auto`, a blocked generic host leaves the selection inconclusive (the built-in default),
-  // so a PAT is selected again where the account is served: that host is where it must be accepted.
-  if (literal === null && pinned === null && directBaseUrl !== DEFAULT_COPILOT_API_BASE) {
-    return { directIntegrationId: await identityOn(directBaseUrl), directBaseUrl };
-  }
-  return { directIntegrationId, directBaseUrl };
+  // The one identity-then-host rule (selectDirectIdentityAndHost): a literal skips the HOST probe,
+  // never the identity selection, and a host `auto` moved to re-runs the selection there.
+  const { integrationId, apiBase } = await selectDirectIdentityAndHost(resolved, userAgent, {
+    pinned: config.pinnedIntegrationId(),
+    preferred,
+    fixedHost: config.copilotHost(),
+  });
+  return { directIntegrationId: integrationId, directBaseUrl: apiBase };
 }
 
 function codexOtherDetail(otherReason: CodexOtherReason): string {

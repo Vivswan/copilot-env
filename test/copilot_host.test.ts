@@ -251,8 +251,8 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
     directBaseUrl: DEFAULT_COPILOT_API_BASE,
   });
-  expect(seen.map((s) => s.host).every((h) => h === DEFAULT_COPILOT_API_BASE)).toBe(true);
-  expect(seen.length).toBeGreaterThan(1);
+  // One request: the identity probe under the CLI id, whose memoized verdict the host rule reads too.
+  expect(seen).toEqual([{ host: DEFAULT_COPILOT_API_BASE, id: COPILOT_CLI_INTEGRATION_ID }]);
   expect(state.readProfileCopilotHost(null, null, null)).toBe(DEFAULT_COPILOT_API_BASE);
   seen.length = 0;
   await resolveAndPersistDirectWiring(null);

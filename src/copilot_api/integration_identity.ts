@@ -245,8 +245,9 @@ export type IdentityVerdict =
   | { kind: "accepted"; models: number | null }
   /** A definitive 400/401, as `<status> <body snippet>`. */
   | { kind: "rejected"; detail: string }
-  /** A network error or a non-definitive status: the identity may still work. */
-  | { kind: "inconclusive"; detail: string };
+  /** A network error (`status` null) or a non-definitive status: the identity may still work. The
+   *  host rule reads `status` (genericHostBlockedBy), so the same probe answers both questions. */
+  | { kind: "inconclusive"; detail: string; status: number | null };
 
 /** THE one "blocked host" rule (`copilot-host auto`): a status the credential could never draw for
  *  an identity reason. 403, 404, and 5xx mean the account is served elsewhere; 2xx serves, 400 is an
@@ -289,9 +290,13 @@ function probeCandidate(
       const detail = truncate(`${res.status} ${await res.text().catch(() => "")}`);
       return isDefinitiveRejection(res.status)
         ? { kind: "rejected", detail }
-        : { kind: "inconclusive", detail };
+        : { kind: "inconclusive", detail, status: res.status };
     } catch (e) {
-      return { kind: "inconclusive", detail: truncate(`network error: ${errMessage(e)}`) };
+      return {
+        kind: "inconclusive",
+        detail: truncate(`network error: ${errMessage(e)}`),
+        status: null,
+      };
     }
   };
   if (!memoize) return request();
@@ -432,25 +437,26 @@ export async function surveyIntegrationIdentities(
 /** The generic host's answer under the caller's identity, read by genericHostBlockedBy. */
 type HostProbe = { kind: "kept" } | { kind: "blocked"; detail: string };
 
+/** The SAME memoized probe the survey and the identity selection use (probeCandidate), read as the
+ *  host rule: one request per (token, host, header set) in a process, so the table and the host
+ *  verdict can never come from different answers. */
 async function probeGenericHost(
   token: string,
   headers: Record<string, string>,
-  fetchImpl: ProbeFetch,
-  timeoutMs: number,
-  signal: AbortSignal | undefined,
+  deps: Omit<IdentityProbeDeps, "apiBase">,
 ): Promise<HostProbe> {
-  try {
-    const res = await fetchImpl(`${DEFAULT_COPILOT_API_BASE}/models`, {
-      headers: { Authorization: `Bearer ${token}`, ...headers },
-      signal: requestSignal(timeoutMs, signal),
-    });
-    const body = await res.text().catch(() => "");
-    return genericHostBlockedBy(res.status)
-      ? { kind: "blocked", detail: truncate(`${res.status} ${body}`) }
-      : { kind: "kept" };
-  } catch (e) {
-    return { kind: "blocked", detail: truncate(`network error: ${errMessage(e)}`) };
-  }
+  const verdict = await probeCandidate(
+    token,
+    DEFAULT_COPILOT_API_BASE,
+    { name: headers[INTEGRATION_ID_HEADER] ?? CODEX_IDENTITY_NAME, headers },
+    deps.fetchImpl ?? defaultProbeFetch,
+    deps.timeoutMs ?? PROBE_TIMEOUT_MS,
+    deps.signal,
+    memoizable(deps),
+  );
+  if (verdict.kind !== "inconclusive") return { kind: "kept" };
+  const blocked = verdict.status === null || genericHostBlockedBy(verdict.status);
+  return blocked ? { kind: "blocked", detail: verdict.detail } : { kind: "kept" };
 }
 
 /** Where the host resolver narrates a non-default answer; consola instances and stderr loggers fit. */
@@ -506,7 +512,7 @@ async function resolveAutoHost(
 ): Promise<string> {
   const fetchImpl = deps.fetchImpl ?? defaultProbeFetch;
   const timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
-  const generic = await probeGenericHost(token, headers, fetchImpl, timeoutMs, deps.signal);
+  const generic = await probeGenericHost(token, headers, deps);
   if (generic.kind === "kept") return DEFAULT_COPILOT_API_BASE;
   const designated = await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
   const genericHost = new URL(DEFAULT_COPILOT_API_BASE).host;

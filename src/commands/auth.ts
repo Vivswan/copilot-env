@@ -945,9 +945,11 @@ function identityTableLines(input: IdentityTableInput): string[] {
       if (shown !== undefined && shown.kind !== "accepted") {
         lines.push(`${name} on ${hostLabel(c)}: ${shown.detail}`);
       }
+      // The daemon's answer gets its own line whenever it is a rejection the shown line does not
+      // already carry (same kind, another body included).
       if (
         agents !== undefined && daemon !== undefined && daemon.kind !== "accepted" &&
-        daemon.kind !== agents.kind
+        (agents.kind === "accepted" || daemon.detail !== agents.detail)
       ) {
         lines.push(`${name} on ${hostLabel(c)}, as the daemon sends it: ${daemon.detail}`);
       }

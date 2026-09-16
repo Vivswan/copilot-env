@@ -472,9 +472,12 @@ function stubIdentitySurvey(designated = "https://api.enterprise.githubcopilot.c
       return Promise.resolve(catalog(enterprise ? 37 : daemon ? 11 : 5));
     }
     if (id === COPILOT_SANDBOX_INTEGRATION_ID && !enterprise) return Promise.resolve(catalog(2));
-    return Promise.resolve(
-      new Response("Personal Access Tokens are not supported for this endpoint", { status: 400 }),
-    );
+    // The daemon's set draws a differently worded 400 for the sandbox id on the account host: same
+    // kind as the agents' rejection, another body, so the reasons list must carry both.
+    const body = daemon && id === COPILOT_SANDBOX_INTEGRATION_ID && enterprise
+      ? "Personal Access Tokens are not supported by this client"
+      : "Personal Access Tokens are not supported for this endpoint";
+    return Promise.resolve(new Response(body, { status: 400 }));
   };
   setIntegrationProbeFetch(stubbedSurveyFetch);
 }
@@ -491,16 +494,24 @@ test("auth --identities: one column per host, marks what the configs bake and a 
   try {
     // No agent wired Direct: nothing to star; `+` is what the next start sends on the host in use,
     // which for this PAT (accepted under the CLI id on the generic host) is the generic host. The
-    // daemon's header set is surveyed against the SAME columns: one account lookup for both.
-    let lookups = 0;
+    // daemon's header set is surveyed against the SAME columns: one account lookup for both, and
+    // every (host, header set) is asked ONCE across the survey and the picks' selection, so the
+    // table and the marks can never come from different answers.
+    const requests = new Map<string, number>();
     const surveyFetch = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("/copilot_internal/user")) lookups += 1;
+      const headers = new Headers(init?.headers);
+      const key = `${url} ${headers.get(INTEGRATION_ID_HEADER) ?? "-"} ${
+        headers.has("User-Agent") ? "agents" : "daemon"
+      }`;
+      requests.set(key, (requests.get(key) ?? 0) + 1);
       return stubbedSurveyFetch(input, init);
     };
     setIntegrationProbeFetch(surveyFetch);
     const out = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
-    expect(lookups).toBe(1);
+    expect([...requests.entries()].filter(([, n]) => n !== 1)).toEqual([]);
+    // The account lookup (no id, copilot-env's own User-Agent) happened exactly once.
+    expect(requests.get("https://api.github.com/copilot_internal/user - agents")).toBe(1);
     setIntegrationProbeFetch(stubbedSurveyFetch);
     expect(out).toContain("integration-id: auto");
     expect(out).toContain("copilot-host: auto (api.githubcopilot.com in use)");
@@ -519,6 +530,10 @@ test("auth --identities: one column per host, marks what the configs bake and a 
     expect(out).toContain(`  codex on api.githubcopilot.com: ${PAT_REJECTION}`);
     expect(out).toContain(
       `  copilot-developer-sandbox on api.enterprise.githubcopilot.com (account): ${PAT_REJECTION}`,
+    );
+    expect(out).toContain(
+      "  copilot-developer-sandbox on api.enterprise.githubcopilot.com (account), as the daemon " +
+        "sends it: 400 Personal Access Tokens are not supported by this client",
     );
 
     // The Direct star follows the header Claude's Direct settings bake, on the host they bake it

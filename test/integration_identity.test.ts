@@ -161,7 +161,7 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
           { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 5 } },
           {
             name: COPILOT_SANDBOX_INTEGRATION_ID,
-            verdict: { kind: "inconclusive", detail: "503 upstream" },
+            verdict: { kind: "inconclusive", detail: "503 upstream", status: 503 },
           },
           { name: VSCODE_CHAT_INTEGRATION_ID, verdict: rejected },
         ],
@@ -174,7 +174,7 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
           { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 37 } },
           {
             name: COPILOT_SANDBOX_INTEGRATION_ID,
-            verdict: { kind: "inconclusive", detail: "network error: offline" },
+            verdict: { kind: "inconclusive", detail: "network error: offline", status: null },
           },
           { name: VSCODE_CHAT_INTEGRATION_ID, verdict: rejected },
         ],
@@ -581,9 +581,9 @@ test("fetchRawModels(direct) probes and fetches ONE host; by default it asks as 
   expect(seen.length).toBeGreaterThan(1); // a probe happened, then the real fetch
   expect(seen.every((u) => u === modelsUrl)).toBe(true);
   expect(seen.some((u) => u.includes("/copilot_internal/user"))).toBe(false);
-  // The winning identity probe, the host probe under it, and the catalog GET all carried the
-  // settled identity.
-  expect(accepted.length).toBe(3);
+  // The winning identity probe (whose memoized verdict the host rule reads) and the catalog GET
+  // both carried the settled identity.
+  expect(accepted.length).toBe(2);
   expect(accepted.every((id) => id === COPILOT_CLI_INTEGRATION_ID)).toBe(true);
   const passthrough = (id: string) => wireHeaders({ [INTEGRATION_ID_HEADER]: id }, "github_pat_x");
   expect(sent[0]).toEqual(passthrough(VSCODE_CHAT_INTEGRATION_ID));

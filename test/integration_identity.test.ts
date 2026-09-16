@@ -169,14 +169,17 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
   expect(await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", { fetchImpl })).toEqual({
     integrationId: null,
     apiBase: DEFAULT_COPILOT_API_BASE,
+    conclusive: true,
   });
   expect(await selectPassthroughIdentityAndHost("ghp_x", { fetchImpl })).toEqual({
     integrationId: COPILOT_CLI_INTEGRATION_ID,
     apiBase: DEFAULT_COPILOT_API_BASE,
+    conclusive: true,
   });
   expect(await selectPassthroughIdentityAndHost("gho_x", { fetchImpl })).toEqual({
     integrationId: VSCODE_CHAT_INTEGRATION_ID,
     apiBase: DEFAULT_COPILOT_API_BASE,
+    conclusive: true,
   });
 });
 
@@ -221,7 +224,7 @@ test("host rule: 2xx/400/401 keep the generic host; 403/404/5xx/network move to 
   const rule = async (
     status: number | "network",
     lookup: "ok" | "fail",
-  ): Promise<{ host: string; lookedUp: boolean; probedAs: string | null }> => {
+  ): Promise<{ host: string; lookedUp: boolean; probedAs: string | null; conclusive: boolean }> => {
     let lookedUp = false;
     let probedAs: string | null = null;
     const fetchImpl: ProbeFetch = (input, init) => {
@@ -241,20 +244,31 @@ test("host rule: 2xx/400/401 keep the generic host; 403/404/5xx/network move to 
       if (status === "network") return Promise.reject(new Error("offline"));
       return Promise.resolve(new Response("body", { status }));
     };
-    const { apiBase } = await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
+    const { apiBase, conclusive } = await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
       pinned,
       fetchImpl,
       narrator: { info: () => {} },
     });
-    return { host: apiBase, lookedUp, probedAs };
+    return { host: apiBase, lookedUp, probedAs, conclusive };
   };
   // Kept: a 2xx serves the credential; 400 is an identity rejection and 401 a bad token, both
-  // identical on every host; a transient 408/429 says nothing about the host either.
-  for (const status of [200, 400, 401, 408, 429]) {
+  // identical on every host.
+  for (const status of [200, 400, 401]) {
     expect(await rule(status, "ok")).toEqual({
       host: DEFAULT_COPILOT_API_BASE,
       lookedUp: false,
       probedAs: COPILOT_CLI_INTEGRATION_ID,
+      conclusive: true,
+    });
+  }
+  // Kept for this run only: a transient 408/429 says nothing about the host, so the generic host
+  // stands but is no verdict to cache.
+  for (const status of [408, 429]) {
+    expect(await rule(status, "ok")).toEqual({
+      host: DEFAULT_COPILOT_API_BASE,
+      lookedUp: false,
+      probedAs: COPILOT_CLI_INTEGRATION_ID,
+      conclusive: false,
     });
   }
   for (const status of [403, 404, 500, 503, "network"] as const) {
@@ -262,14 +276,18 @@ test("host rule: 2xx/400/401 keep the generic host; 403/404/5xx/network move to 
       host: ENTERPRISE_API_BASE,
       lookedUp: true,
       probedAs: COPILOT_CLI_INTEGRATION_ID,
+      conclusive: true,
     });
   }
+  // The generic host by fallback, not by verdict: the pair is for this run only, never cached.
   expect(await rule(403, "fail")).toEqual({
     host: DEFAULT_COPILOT_API_BASE,
     lookedUp: true,
     probedAs: COPILOT_CLI_INTEGRATION_ID,
+    conclusive: false,
   });
-  // A literal and a missing token both skip every probe.
+  // A literal and a missing token both skip every probe; only the literal is a verdict (a missing
+  // token judged nothing, so its generic host must not be cached for the credential once it resolves).
   let called = false;
   const never: ProbeFetch = () => {
     called = true;
@@ -281,10 +299,10 @@ test("host rule: 2xx/400/401 keep the generic host; 403/404/5xx/network move to 
       fixedHost: CONFIGURED_API_BASE,
       fetchImpl: never,
     }),
-  ).toEqual({ integrationId: pinned, apiBase: CONFIGURED_API_BASE });
+  ).toEqual({ integrationId: pinned, apiBase: CONFIGURED_API_BASE, conclusive: true });
   expect(
     await selectDirectIdentityAndHost(null, "codex_exec/1", { pinned, fetchImpl: never }),
-  ).toEqual({ integrationId: pinned, apiBase: DEFAULT_COPILOT_API_BASE });
+  ).toEqual({ integrationId: pinned, apiBase: DEFAULT_COPILOT_API_BASE, conclusive: false });
   expect(called).toBe(false);
 });
 
@@ -356,6 +374,7 @@ test("selectPassthroughIdentityAndHost: a transient probe and a failed account l
   expect(result).toEqual({
     integrationId: VSCODE_CHAT_INTEGRATION_ID,
     apiBase: DEFAULT_COPILOT_API_BASE,
+    conclusive: false,
   });
 });
 

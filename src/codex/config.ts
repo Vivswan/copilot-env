@@ -10,6 +10,7 @@ import {
   type CredentialWiring,
   type DirectWiring,
   type ManagedWrite,
+  type ProbedDirectWiring,
   runAgentConfig,
 } from "../agents/configure.ts";
 import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
@@ -884,18 +885,22 @@ export async function probeDirectWiring(
   profile: Profile = null,
   token?: string | null,
   preferred: string | null = null,
-): Promise<DirectWiring> {
+): Promise<ProbedDirectWiring> {
   const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
   const config = new CopilotEnvConfig();
   const userAgent = codexUserAgent();
   // The one identity-then-host rule (selectDirectIdentityAndHost): a literal skips the HOST probe,
   // never the identity selection, and a host `auto` moved to re-runs the selection there.
-  const { integrationId, apiBase } = await selectDirectIdentityAndHost(resolved, userAgent, {
-    pinned: config.pinnedIntegrationId(),
-    preferred,
-    fixedHost: config.copilotHost(),
-  });
-  return { directIntegrationId: integrationId, directBaseUrl: apiBase };
+  const { integrationId, apiBase, conclusive } = await selectDirectIdentityAndHost(
+    resolved,
+    userAgent,
+    {
+      pinned: config.pinnedIntegrationId(),
+      preferred,
+      fixedHost: config.copilotHost(),
+    },
+  );
+  return { directIntegrationId: integrationId, directBaseUrl: apiBase, conclusive };
 }
 
 function codexOtherDetail(otherReason: CodexOtherReason): string {

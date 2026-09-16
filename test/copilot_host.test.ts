@@ -521,6 +521,7 @@ test("a preferred identity the host rejects never returns through the transient 
   expect(await probeDirectWiring(null, "github_pat_z", COPILOT_SANDBOX_INTEGRATION_ID)).toEqual({
     directIntegrationId: null,
     directBaseUrl: GHE,
+    conclusive: false,
   });
 });
 
@@ -550,6 +551,7 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
   expect(await probeDirectWiring(null, "github_pat_x")).toEqual({
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
     directBaseUrl: ENTERPRISE,
+    conclusive: true,
   });
   // Without the second pass the default identity (no header) would be baked for a host that 400s it.
   expect(seen.filter((s) => s.host === ENTERPRISE).map((s) => s.id)).toEqual([
@@ -563,6 +565,7 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
   expect(await probeDirectWiring(null, "github_pat_y")).toEqual({
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
     directBaseUrl: GHE,
+    conclusive: true,
   });
   expect(seen.length).toBeGreaterThan(0);
   expect(seen.every((s) => s.host === GHE)).toBe(true);
@@ -571,7 +574,11 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
   // process memo answers the second pass here, so no request is counted).
   expect(
     await probeDirectWiring(null, "github_pat_x", "copilot-developer-sandbox"),
-  ).toEqual({ directIntegrationId: COPILOT_CLI_INTEGRATION_ID, directBaseUrl: ENTERPRISE });
+  ).toEqual({
+    directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
+    directBaseUrl: ENTERPRISE,
+    conclusive: true,
+  });
 });
 
 test("a daemon launch resolves its identity and host as one pair: re-selected where auto moves, judged under vscode-chat without passthrough, unpinned without a credential", async () => {
@@ -633,4 +640,131 @@ test("a daemon launch resolves its identity and host as one pair: re-selected wh
     copilotHost: GHE,
   });
   expect(seen.every((s) => s.host === GHE)).toBe(true);
+});
+
+test("a transient probe persists no verdict: this run bakes the fallback, the next run probes again", async () => {
+  dir = isolateAgentHomes("copilot-host-transient-").dir;
+  const state = new CopilotEnvState();
+  const url = (input: string | URL | Request): string =>
+    typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+  // The host half: a gho_ token (no identity probe) 403s on the generic host while the account
+  // lookup is down, so the generic host is this run's fallback, not the account's answer.
+  new Credential(state).store("gh-token", "gho_enterprise");
+  let lookupUp = false;
+  setIntegrationProbeFetch((input) => {
+    if (url(input).includes("/copilot_internal/user")) {
+      return Promise.resolve(
+        lookupUp
+          ? new Response(JSON.stringify({ endpoints: { api: ENTERPRISE } }), { status: 200 })
+          : new Response("upstream", { status: 503 }),
+      );
+    }
+    return Promise.resolve(
+      new URL(url(input)).origin === DEFAULT_COPILOT_API_BASE
+        ? new Response("forbidden", { status: 403 })
+        : new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
+  });
+  expect(await resolveAndPersistDirectWiring(null)).toEqual({
+    directIntegrationId: null,
+    directBaseUrl: DEFAULT_COPILOT_API_BASE,
+  });
+  expect(state.slotIdentityForDisplay(null)).toBeNull();
+  expect(state.readProfileCopilotHostCache(null, null, null).kind).toBe("none");
+  // Control: once the lookup answers, the same slot lands on the account's host and caches it.
+  lookupUp = true;
+  resetIntegrationIdentityCache();
+  expect(await resolveAndPersistDirectWiring(null)).toEqual({
+    directIntegrationId: null,
+    directBaseUrl: ENTERPRISE,
+  });
+  expect(state.readProfileCopilotHost(null, null, null)).toBe(ENTERPRISE);
+
+  // The identity half: a PAT's candidates all 503 while the lookup names no other host, so the
+  // default identity is this run's fallback and the slot stays empty.
+  new Credential(state).store("gh-token", "ghp_x");
+  let modelsUp = false;
+  setIntegrationProbeFetch((input, init) => {
+    if (url(input).includes("/copilot_internal/user")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ endpoints: { api: DEFAULT_COPILOT_API_BASE } }), {
+          status: 200,
+        }),
+      );
+    }
+    if (!modelsUp) return Promise.resolve(new Response("upstream", { status: 503 }));
+    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+    return Promise.resolve(
+      id === COPILOT_CLI_INTEGRATION_ID
+        ? new Response(JSON.stringify({ data: [] }), { status: 200 })
+        : new Response("Personal Access Tokens are not supported", { status: 400 }),
+    );
+  });
+  resetIntegrationIdentityCache();
+  expect(await resolveAndPersistDirectWiring(null)).toEqual({
+    directIntegrationId: null,
+    directBaseUrl: DEFAULT_COPILOT_API_BASE,
+  });
+  expect(state.slotIdentityForDisplay(null)).toBeNull();
+  modelsUp = true;
+  resetIntegrationIdentityCache();
+  expect(await resolveAndPersistDirectWiring(null)).toEqual({
+    directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
+    directBaseUrl: DEFAULT_COPILOT_API_BASE,
+  });
+  expect(state.slotIdentityForDisplay(null)).toBe(COPILOT_CLI_INTEGRATION_ID);
+  expect(state.readProfileCopilotHost(null, null, null)).toBe(DEFAULT_COPILOT_API_BASE);
+});
+
+test("a gh-cli slot with no pinned account caches no host pair: an account switch re-probes, a pinned account replays", async () => {
+  dir = isolateAgentHomes("copilot-host-gh-cli-").dir;
+  const state = new CopilotEnvState();
+  const floating = parseProfileName("floating");
+  const pinned = parseProfileName("pinned");
+  state.commitProfile(floating, { credential: { kind: "gh-cli", ghUser: null }, mode: "direct" });
+  state.commitProfile(pinned, { credential: { kind: "gh-cli", ghUser: "alice" }, mode: "direct" });
+  // gh-cli holds no token, so the resolved one rides in: the personal account is served on the
+  // generic host, the enterprise account 403s there and the lookup names its host.
+  const seen: string[] = [];
+  setIntegrationProbeFetch((input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    seen.push(new URL(url).origin);
+    if (url.includes("/copilot_internal/user")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ endpoints: { api: ENTERPRISE } }), { status: 200 }),
+      );
+    }
+    const enterprise = (new Headers(init?.headers).get("authorization") ?? "").includes(
+      "gho_enterprise",
+    );
+    return Promise.resolve(
+      enterprise && new URL(url).origin === DEFAULT_COPILOT_API_BASE
+        ? new Response("forbidden", { status: 403 })
+        : new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
+  });
+  expect((await resolveAndPersistDirectWiring(floating, "gho_personal")).directBaseUrl).toBe(
+    DEFAULT_COPILOT_API_BASE,
+  );
+  expect(state.slotIdentityForDisplay(floating)).toBe("codex");
+  expect(state.readProfileCopilotHostCache(floating, null, null).kind).toBe("none");
+  // `gh auth switch`: the slot is unchanged, the token is another account's, and the next run
+  // lands on that account's host instead of replaying the first one's.
+  resetIntegrationIdentityCache();
+  expect((await resolveAndPersistDirectWiring(floating, "gho_enterprise")).directBaseUrl).toBe(
+    ENTERPRISE,
+  );
+  // Control: a pinned account is one credential, so its pair is cached and replays offline.
+  expect((await resolveAndPersistDirectWiring(pinned, "gho_personal")).directBaseUrl).toBe(
+    DEFAULT_COPILOT_API_BASE,
+  );
+  expect(state.readProfileCopilotHost(pinned, null, null)).toBe(DEFAULT_COPILOT_API_BASE);
+  // The memo is cleared so the zero requests below come from the slot's pair, not the process.
+  resetIntegrationIdentityCache();
+  seen.length = 0;
+  expect((await resolveAndPersistDirectWiring(pinned, "gho_personal")).directBaseUrl).toBe(
+    DEFAULT_COPILOT_API_BASE,
+  );
+  expect(seen).toEqual([]);
 });

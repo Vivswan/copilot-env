@@ -21,6 +21,12 @@ export interface DirectWiring {
   directBaseUrl: string;
 }
 
+/** A fresh probe's DirectWiring with the selection's own standing (IdentityAndHost.conclusive):
+ *  the persist owner (resolveAndPersistDirectWiring) caches a conclusive pair and nothing else. */
+export interface ProbedDirectWiring extends DirectWiring {
+  conclusive: boolean;
+}
+
 /**
  * The mode-dependent half of one managed wiring write, shared by every adapter and the Claude
  * Desktop wiring. Both Direct facts are optional in the type (absent = no header, the generic

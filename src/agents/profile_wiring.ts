@@ -71,9 +71,11 @@ export async function wireBothAgents(
  * Copilot host, through THE replay rule (replayableIdentity, env_state.ts): a valid cached pair is
  * baked offline (the launcher hot path, `--sync` on every `cl --profile`); anything else is a probe
  * on the host in use, with a cached identity as the first candidate only. The result is persisted
- * when it can be keyed to the credential it ran under (identityCacheKey); a credential change
- * clears the slot (CopilotEnvState.setCredential). Throws when the credential is rejected under
- * every identity.
+ * when it is a verdict (the selected identity and the final host both answered definitively,
+ * IdentityAndHost.conclusive) AND can be keyed to the credential it ran under (identityCacheKey);
+ * a fallback answer is baked for this run and persisted as nothing, so the next run probes again.
+ * A credential change clears the slot (CopilotEnvState.setCredential).
+ * Throws when the credential is rejected under every identity.
  */
 export async function resolveAndPersistDirectWiring(
   profile: Profile,
@@ -88,7 +90,7 @@ export async function resolveAndPersistDirectWiring(
   if (rule.kind === "replay") {
     return { directIntegrationId: rule.directIntegrationId, directBaseUrl: rule.directBaseUrl };
   }
-  const probed = await probeDirectWiring(
+  const { conclusive, ...probed } = await probeDirectWiring(
     profile,
     credentialToken,
     rule.kind === "preferred" ? rule.directIntegrationId : null,
@@ -98,7 +100,7 @@ export async function resolveAndPersistDirectWiring(
   // auto` returns to it); the pair is cached with the identity it was resolved under, pin or
   // verdict, and how, so it replays exactly while both stay in force.
   const keyCredential = identityCacheKey(slot.credential, credentialToken);
-  if (keyCredential !== null) {
+  if (conclusive && keyCredential !== null) {
     const verdict = probed.directIntegrationId ?? CODEX_IDENTITY_NAME;
     state.setProfileIntegrationIdentity(
       profile,

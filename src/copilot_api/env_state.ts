@@ -610,7 +610,10 @@ export class CopilotEnvState {
    *  both writers proceed unlocked. Never creates a slot: a deletion race just loses the cache.
    *  `integrationIdentity`: the verdict to record; undefined keeps what the slot holds (a pin is
    *  configuration, never written as the verdict). `copilotHost`: the resolved host with the identity
-   *  name it was resolved under and how; null clears the pair, undefined leaves it. */
+   *  name it was resolved under and how; null clears the pair, undefined leaves it. A gh-cli slot
+   *  with no pinned account follows gh's ACTIVE account, so a host judged under one login must not
+   *  replay under the next (`gh auth switch` changes nothing in the slot): that slot never holds a
+   *  pair, and its cached identity stays a probe-order preference (replayableIdentity). */
   setProfileIntegrationIdentity(
     profile: Profile,
     integrationIdentity: string | undefined,
@@ -618,6 +621,9 @@ export class CopilotEnvState {
     copilotHost?: CachedCopilotHost | null,
   ): void {
     const expected = rawCredentialPatch(forCredential);
+    const pair = forCredential.kind === "gh-cli" && forCredential.ghUser === null
+      ? null
+      : copilotHost;
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
       const key = slotKey(profile);
@@ -638,14 +644,14 @@ export class CopilotEnvState {
       } else {
         raw.integrationIdentity = next.trim();
       }
-      if (copilotHost === null) {
+      if (pair === null) {
         delete raw.copilotHost;
         delete raw.copilotHostIdentity;
         delete raw.copilotHostSource;
-      } else if (copilotHost !== undefined) {
-        raw.copilotHost = copilotHost.host;
-        raw.copilotHostIdentity = copilotHost.identity;
-        raw.copilotHostSource = copilotHost.source;
+      } else if (pair !== undefined) {
+        raw.copilotHost = pair.host;
+        raw.copilotHostIdentity = pair.identity;
+        raw.copilotHostSource = pair.source;
       }
     });
   }

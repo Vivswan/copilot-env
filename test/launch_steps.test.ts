@@ -116,7 +116,7 @@ function probeSpy(id: string, apiBase = DEFAULT_COPILOT_API_BASE): {
     calls,
     resolve: (token, opts = {}) => {
       calls.push({ token, pinned: opts.pinned ?? null });
-      return Promise.resolve({ integrationId: id, apiBase });
+      return Promise.resolve({ integrationId: id, apiBase, conclusive: true });
     },
   };
 }

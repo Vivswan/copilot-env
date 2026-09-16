@@ -22,8 +22,9 @@ import {
   resetCatalogProbeState,
   withCatalogRefreshDeadline,
 } from "../src/codex/catalog.ts";
-import { DIRECT_AUTH_TIMEOUT_MS } from "../src/codex/config.ts";
+import { codexUserAgent, DIRECT_AUTH_TIMEOUT_MS } from "../src/codex/config.ts";
 import { GH_AUTH_TIMEOUT_MS } from "../src/copilot_api/gh_cli.ts";
+import { directClientHeaders } from "../src/copilot_api/integration_identity.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
@@ -632,6 +633,35 @@ const BUNDLED = JSON.stringify({
   models: [{ slug: "gpt-5.5", context_window: 272_000, effective_context_window_percent: 95 }],
 });
 const GPT55_ONLY = modelsOf([["gpt-5.5", copilotModel(GPT55_LIMITS)]]);
+
+test("the Copilot seed asks the direct catalog as Codex itself, not as the proxy daemon", async () => {
+  // The generated catalog is what Codex's OWN requests are then pinned to, and Copilot gates the
+  // list per identity: a list fetched as the daemon (vscode-chat) can advertise models Codex is
+  // refused, or miss ones it is served. So the seed's GET carries the exact header set the baked
+  // config sends: the versioned codex_exec UA, Openai-Intent, no id for the default identity.
+  isolate();
+  const sent: unknown[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    sent.push(init?.headers);
+    const body = { data: [{ "id": "gpt-5.5", "capabilities": { "type": "chat" } }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  }) as typeof fetch;
+  try {
+    // The fetch comes first; no bundled catalog then ends the run without a spawn.
+    await generateCodexModelCatalog("direct", {
+      directToken: "gho_x",
+      bundledCatalog: () => null,
+      acceptsCatalog: () => null,
+      codexVersion: () => null,
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  expect(sent).toEqual([
+    { ...directClientHeaders(codexUserAgent()), Authorization: "Bearer gho_x" },
+  ]);
+});
 
 test("generateCodexModelCatalog writes the patched catalog file", async () => {
   isolate();

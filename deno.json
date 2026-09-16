@@ -79,21 +79,7 @@
       "write": true,
       "run": true,
       "sys": true,
-      "net": [
-        "127.0.0.1",
-        "localhost",
-        "[::1]",
-        "api.github.com",
-        "dl.deno.land",
-        "github.com",
-        "objects.githubusercontent.com",
-        "release-assets.githubusercontent.com",
-        "registry.npmjs.org",
-        "tuf-repo-cdn.sigstore.dev",
-        "openrouter.ai",
-        "githubcopilot.com",
-        "*.githubcopilot.com"
-      ]
+      "net": true
     }
   },
   "compile": {

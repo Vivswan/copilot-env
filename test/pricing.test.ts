@@ -871,23 +871,17 @@ test("estimateCost prices the same list identically across calls and sees a chan
   expect(estimateCost(usage, pricing).perModel["opus"]?.inputCostUsd).toBe(30);
 });
 
-test("fetchPricing ranks a cancel above the host-policy refusal, and the refusal above a plain failure", async () => {
-  // A host outside the CLI's network policy: the runtime throws NotCapable before any
-  // request leaves, whatever the signal says. Whether the caller had already cancelled
-  // is read from the signal alone and decides what is reported.
-  const refusing = (() => Promise.reject(new Deno.errors.NotCapable("net access"))) as typeof fetch;
+test("fetchPricing reports a cancel over the transport's failure, and names no URL in either", async () => {
+  // Whether the caller had already cancelled is read from the signal alone and decides what is
+  // reported; the transport's own text never surfaces (a custom --pricing-url may carry credentials).
+  const failing = (() => Promise.reject(new TypeError("error sending request"))) as typeof fetch;
   const cancelled = new AbortController();
   cancelled.abort();
-  await expect(fetchPricing(PRICE_URL, refusing, cancelled.signal)).rejects.toThrow(
+  await expect(fetchPricing(PRICE_URL, failing, cancelled.signal)).rejects.toThrow(
     "pricing request was cancelled",
   );
-  await expect(fetchPricing(PRICE_URL, refusing)).rejects.toThrow(
-    /^the pricing-url host is not permitted by the CLI's network policy/,
-  );
-  await expect(fetchPricing(PRICE_URL, refusing)).rejects.not.toThrow("pricing.example");
-  // Any other transport failure keeps the generic text.
-  const failing = (() => Promise.reject(new TypeError("error sending request"))) as typeof fetch;
   await expect(fetchPricing(PRICE_URL, failing)).rejects.toThrow(/^pricing request failed$/);
+  await expect(fetchPricing(PRICE_URL, failing)).rejects.not.toThrow("pricing.example");
 });
 
 test("fetchPricing reports a cancel that lands while the body streams as cancelled, not bad JSON", async () => {

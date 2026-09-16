@@ -49,10 +49,6 @@ export interface CostEstimate {
   unpriced: string[];
 }
 
-/** Fixed text, no URL: a custom --pricing-url may carry credentials. */
-const HOST_NOT_PERMITTED =
-  "the pricing-url host is not permitted by the CLI's network policy (only the hosts the CLI may reach, openrouter.ai among them); change the pricing-url config key or --pricing-url";
-
 /** Keyed by lowercased OpenRouter id. Errors are fixed text (plus a numeric HTTP status), never the
  *  transport's, because a custom --pricing-url may carry credentials. */
 export async function fetchPricing(
@@ -68,12 +64,9 @@ export async function fetchPricing(
       headers: { Accept: "application/json", "User-Agent": "copilot-env-cost" },
       signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]),
     });
-  } catch (e) {
-    // A host outside the CLI's pinned permission set (deno.json `cli`) is refused by the runtime
-    // before any request leaves, and must read as the policy it is, never as a network failure.
+  } catch {
     const aborted = abortError(timeout, signal);
     if (aborted !== null) throw aborted;
-    if (e instanceof Deno.errors.NotCapable) throw new Error(HOST_NOT_PERMITTED);
     throw new Error("pricing request failed");
   }
   if (!res.ok) {

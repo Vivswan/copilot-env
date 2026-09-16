@@ -39,7 +39,7 @@ export type DirectCatalogIdentity =
 export interface FetchRawModelsOptions {
   /** Skips re-resolving, which for a gh-cli provider re-runs `gh auth token` (up to 5s). */
   directToken?: string;
-  /** The Copilot host a caller already resolved (resolveCopilotHost); absent, this fetch resolves it. */
+  /** The Copilot host a caller already selected (select*IdentityAndHost); absent, this fetch selects it. */
   apiBase?: string;
   /** Callers that just probed liveness pass that port so the fetch cannot race a restart onto another. */
   port?: number;

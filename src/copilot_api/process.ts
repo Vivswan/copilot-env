@@ -470,7 +470,7 @@ export const DAEMON_GH_TOKEN_ENV = "COPILOT_ENV_DAEMON_GH_TOKEN";
 /**
  * `pat` is a variant, not a boolean beside an optional token: the shim reads the token back from argv,
  * so passthrough-without-a-token would load a shim that can do nothing. It always carries an
- * `integrationId` too, since resolvePassthroughIntegrationId falls back to the daemon's own vscode-chat
+ * `integrationId` too, since selectPassthroughIdentityAndHost falls back to the daemon's own vscode-chat
  * default rather than returning nothing.
  */
 export type DaemonCredential =

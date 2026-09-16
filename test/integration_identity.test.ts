@@ -28,15 +28,9 @@ import { expect, test } from "./helpers/testing.ts";
 
 function stubFetch(opts: {
   accept: (id: string | null) => boolean;
-  apiBase?: string;
   seen?: string[];
 }): ProbeFetch {
-  return (input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.includes("/copilot_internal/user")) {
-      const body = opts.apiBase ? { endpoints: { api: opts.apiBase } } : {};
-      return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
-    }
+  return (_input, init) => {
     const headers = new Headers(init?.headers);
     const id = headers.get(INTEGRATION_ID_HEADER);
     opts.seen?.push(id ?? "<none>");
@@ -52,35 +46,12 @@ test("probeIntegrationIdentity: first accepted candidate wins, in order", async 
   const seen: string[] = [];
   const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
     fetchImpl: stubFetch({ accept: (id) => id === COPILOT_CLI_INTEGRATION_ID, seen }),
+    apiBase: DEFAULT_COPILOT_API_BASE,
   });
   expect(res.identity?.name).toBe(COPILOT_CLI_INTEGRATION_ID);
   expect(res.conclusive).toBe(true);
   // The sandbox candidate is never reached once the CLI id is accepted.
   expect(seen).toEqual([VSCODE_CHAT_INTEGRATION_ID, COPILOT_CLI_INTEGRATION_ID]);
-});
-
-test("probeIntegrationIdentity: probes the account's designated API base", async () => {
-  let probedUrl = "";
-  const fetchImpl: ProbeFetch = (input) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.includes("/copilot_internal/user")) {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({ endpoints: { api: "https://api.enterprise.githubcopilot.com" } }),
-          {
-            status: 200,
-          },
-        ),
-      );
-    }
-    probedUrl = url;
-    return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
-  };
-  const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
-    fetchImpl,
-  });
-  expect(res.apiBase).toBe("https://api.enterprise.githubcopilot.com");
-  expect(probedUrl).toBe("https://api.enterprise.githubcopilot.com/models");
 });
 
 const ENTERPRISE_API_BASE = "https://api.enterprise.githubcopilot.com";
@@ -320,58 +291,35 @@ test("host rule: 2xx/400/401 keep the generic host; 403/404/5xx/network move to 
 test("probeIntegrationIdentity: a network error is inconclusive, not a rejection", async () => {
   const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
     fetchImpl: () => Promise.reject(new Error("offline")),
+    apiBase: DEFAULT_COPILOT_API_BASE,
   });
   expect(res.identity).toBeNull();
   expect(res.conclusive).toBe(false);
 });
 
 test("probeIntegrationIdentity: a transient 5xx/429 is inconclusive, a 400 is definitive", async () => {
-  const status = (code: number): ProbeFetch => (input) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.includes("/copilot_internal/user")) {
-      return Promise.resolve(new Response("{}", { status: 200 }));
-    }
-    return Promise.resolve(new Response("nope", { status: code }));
-  };
+  const status = (code: number): ProbeFetch => () =>
+    Promise.resolve(new Response("nope", { status: code }));
   for (const code of [500, 429, 503, 408, 404]) {
     const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
       fetchImpl: status(code),
+      apiBase: DEFAULT_COPILOT_API_BASE,
     });
     expect(res.conclusive).toBe(false);
   }
   // 400 is the verified "PATs not supported" identity rejection.
   const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
     fetchImpl: status(400),
+    apiBase: DEFAULT_COPILOT_API_BASE,
   });
   expect(res.conclusive).toBe(true);
 });
 
 test("probeIntegrationIdentity: a 403 on a candidate is inconclusive (policy/seat, not identity)", async () => {
   const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
-    fetchImpl: (input) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("/copilot_internal/user")) {
-        return Promise.resolve(new Response("{}", { status: 200 }));
-      }
-      return Promise.resolve(new Response("forbidden", { status: 403 }));
-    },
+    fetchImpl: () => Promise.resolve(new Response("forbidden", { status: 403 })),
+    apiBase: DEFAULT_COPILOT_API_BASE,
   });
-  expect(res.conclusive).toBe(false);
-});
-
-test("probeIntegrationIdentity: a transient host-discovery failure makes an all-reject inconclusive", async () => {
-  // /copilot_internal/user 503s (real host unknown), then the fallback host 400s every
-  // candidate. Because discovery was transient, this must NOT read as definitive.
-  const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
-    fetchImpl: (input) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("/copilot_internal/user")) {
-        return Promise.resolve(new Response("upstream", { status: 503 }));
-      }
-      return Promise.resolve(new Response("PATs not supported", { status: 400 }));
-    },
-  });
-  expect(res.identity).toBeNull();
   expect(res.conclusive).toBe(false);
 });
 

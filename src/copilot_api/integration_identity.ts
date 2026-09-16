@@ -167,7 +167,7 @@ export interface IdentityProbeResult {
   /** false when a network error or an ambiguous status made the run inconclusive, so callers keep the
    *  default rather than failing hard on a flaky network. */
   conclusive: boolean;
-  /** The API base actually probed (the account's designated host when readable). */
+  /** The host probed (`IdentityProbeDeps.apiBase`), echoed so a refusal names it. */
   apiBase: string;
   /** In probe order. */
   outcomes: IdentityProbeOutcome[];
@@ -178,8 +178,9 @@ export interface IdentityProbeDeps {
   timeoutMs?: number;
   /** A caller deadline over the WHOLE probe chain, combined with each request's own timeout. */
   signal?: AbortSignal;
-  /** The host the verdict is used on. Omitted, the probe discovers the account's designated host. */
-  apiBase?: string;
+  /** The host the verdict is used on: always the caller's, never discovered here (the
+   *  select*IdentityAndHost pair owns the host question). */
+  apiBase: string;
 }
 
 function requestSignal(timeoutMs: number, deadline: AbortSignal | undefined): AbortSignal {
@@ -194,9 +195,10 @@ function truncate(text: string, max = 160): string {
 }
 
 /**
- * Probing the REAL host matters: acceptance rules can differ per plan host, and the daemon talks to this
- * host, not the fallback. `inconclusive` marks a TRANSIENT lookup failure: the fallback host may not be
- * where this credential is served, so an all-reject on it must not read as a definitive verdict.
+ * The account's designated host, read by the survey (its "designated" column) and by the `auto` host
+ * rule once the generic host is blocked. `inconclusive` marks a TRANSIENT lookup failure: the survey
+ * shows that column as unknown rather than "the same", since the fallback returned here may not be
+ * where this credential is served.
  */
 async function accountApiBase(
   token: string,
@@ -326,22 +328,20 @@ function probeCandidate(
 
 /** Never throws; `conclusive` marks a verdict worth acting on, and it has two shapes.
  *
- *  a candidate accepted                                            -> identity set, conclusive
- *  base lookup OK or 400/401, every candidate rejected 400/401     -> identity null, conclusive
- *  base lookup or a candidate 403/404/408/429/5xx/network error    -> identity null, inconclusive
+ *  a candidate accepted                                        -> identity set, conclusive
+ *  every candidate rejected 400/401                            -> identity null, conclusive
+ *  a candidate 403/404/408/429/5xx/network error               -> identity null, inconclusive
  */
 export async function probeIntegrationIdentity(
   token: string,
   candidates: readonly IntegrationIdentity[],
-  deps: IdentityProbeDeps = {},
+  deps: IdentityProbeDeps,
 ): Promise<IdentityProbeResult> {
   const fetchImpl = deps.fetchImpl ?? defaultProbeFetch;
   const timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
-  const { apiBase, inconclusive: baseInconclusive } = deps.apiBase
-    ? { apiBase: deps.apiBase, inconclusive: false }
-    : await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
+  const { apiBase } = deps;
   const outcomes: IdentityProbeOutcome[] = [];
-  let sawInconclusive = baseInconclusive;
+  let sawInconclusive = false;
   for (const candidate of candidates) {
     const verdict = await probeCandidate(
       token,
@@ -545,7 +545,7 @@ const probeMemo = new Map<string, Promise<IdentityProbeResult>>();
 export async function probeIntegrationIdentityCached(
   token: string,
   candidates: readonly IntegrationIdentity[],
-  deps: IdentityProbeDeps = {},
+  deps: IdentityProbeDeps,
 ): Promise<IdentityProbeResult> {
   // Injected I/O bypasses the memo: it is keyed on inputs only, so two stubs sharing a (token, candidates)
   // pair would collide. So does a caller deadline: an aborted probe must not be memoized as this
@@ -553,7 +553,7 @@ export async function probeIntegrationIdentityCached(
   if (deps.fetchImpl !== undefined || deps.timeoutMs !== undefined || deps.signal !== undefined) {
     return probeIntegrationIdentity(token, candidates, deps);
   }
-  const key = JSON.stringify([token, candidates, deps.apiBase ?? null]);
+  const key = JSON.stringify([token, candidates, deps.apiBase]);
   let pending = probeMemo.get(key);
   if (pending === undefined) {
     pending = probeIntegrationIdentity(token, candidates, deps);
@@ -690,7 +690,7 @@ function narrateIdentity(
 async function resolveDirectIntegrationId(
   token: string | null,
   userAgent: string,
-  opts: ResolveIdentityOptions = {},
+  opts: ResolveIdentityOptions,
 ): Promise<string | null> {
   const { pinned = null, preferred = null, narrator, ...deps } = opts;
   if (pinned !== null) {
@@ -704,10 +704,7 @@ async function resolveDirectIntegrationId(
   // Probed on the host the caller passes (the host in use); the first accepted candidate wins, so a
   // preferred identity the host rejects definitively gives way to the next, and a transient run
   // falls back to the built-in default, never to the preferred candidate.
-  const identity = await acceptedIdentity(token, candidates, {
-    ...deps,
-    apiBase: deps.apiBase ?? DEFAULT_COPILOT_API_BASE,
-  }, builtins[0]);
+  const identity = await acceptedIdentity(token, candidates, deps, builtins[0]);
   narrateIdentity(identity.name, CODEX_IDENTITY_NAME, false, narrator, preferred);
   return bakedIntegrationId(identity);
 }
@@ -791,7 +788,7 @@ function preferredFirst(
  *  differs from vscode-chat. */
 async function resolvePassthroughIntegrationId(
   token: string,
-  opts: ResolveIdentityOptions = {},
+  opts: ResolveIdentityOptions,
 ): Promise<string> {
   const { pinned = null, narrator, ...deps } = opts;
   if (pinned !== null) {

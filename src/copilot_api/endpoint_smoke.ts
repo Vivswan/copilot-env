@@ -45,7 +45,7 @@ export interface DirectSmoke {
 
 /**
  * Neither step throws: any failure is a `false` outcome carrying its reason, and the caller wires
- * the proxy. `apiBase` is the host the wiring bakes (resolveCopilotHost). The ping verdict is 200
+ * the proxy. `apiBase` is the host the wiring bakes (selectDirectIdentityAndHost). The ping verdict is 200
  * alone, the same bar as discovery's pingModel (src/copilot_api/discovery.ts); no retry, matching
  * every other raw fetch in this layer.
  */

@@ -2,7 +2,7 @@
 // body (logUser) and in every /copilot_internal/v2/token exchange body (re-applied on each refresh)
 // both land in copilot-api's state.copilotApiUrl, which copilotBaseUrl(state) serves for HTTP and
 // WebSocket requests alike. launchDaemon (src/copilot_api/process.ts) loads this with the host
-// copilot-env resolved (`copilot-host`, resolveCopilotHost), so one fetch wrap rewrites that field:
+// copilot-env selected (`copilot-host`, selectPassthroughIdentityAndHost), so one fetch wrap rewrites that field:
 //   a /copilot_internal/ JSON response with endpoints.api -> endpoints.api = COPILOT_ENV_DAEMON_COPILOT_HOST
 //   anything else                                        -> untouched
 //

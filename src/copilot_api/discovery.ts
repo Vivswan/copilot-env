@@ -55,7 +55,7 @@ export interface DiscoveredClaudeModels {
 
 /**
  * `userAgent` MUST be the versioned codexUserAgent, `integrationId` the baked id (null = default), and
- * `apiBase` the host the wiring bakes (resolveCopilotHost): every request below goes there.
+ * `apiBase` the host the wiring bakes (selectDirectIdentityAndHost): every request below goes there.
  * Throws only when the OWN-identity catalog fetch fails; a failing enrichment step keeps the catalog plus
  * every extra already verified under it.
  */

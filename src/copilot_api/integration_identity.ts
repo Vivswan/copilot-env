@@ -246,8 +246,18 @@ export type IdentityVerdict =
   | { kind: "accepted"; models: number | null }
   /** A definitive 400/401, as `<status> <body snippet>`. */
   | { kind: "rejected"; detail: string }
-  /** A network error or a non-definitive status: the identity may still work. */
-  | { kind: "inconclusive"; detail: string };
+  /** A network error or a non-definitive status: the identity may still work. `blocked` is
+   *  resolveCopilotHost's reading of the same answer (genericHostBlockedBy): whether it moves `auto`
+   *  off the probed host. */
+  | { kind: "inconclusive"; detail: string; blocked: boolean };
+
+/** THE one "blocked host" rule (`copilot-host auto`): a status the credential could never draw for
+ *  an identity reason. 403, 404, and 5xx mean the account is served elsewhere; 2xx serves, 400 is an
+ *  identity rejection and 401 a bad token (identical on every host), and a transient 408 or 429
+ *  says nothing about the host. A network-level failure counts as blocked at the call site. */
+export function genericHostBlockedBy(status: number): boolean {
+  return status === 403 || status === 404 || status >= 500;
+}
 
 /** One GET /models under one identity; never throws. The catalog size is read only when asked for:
  *  the first-accepted probe returns on the status alone, as it always has. */
@@ -274,9 +284,13 @@ async function probeCandidate(
     const detail = truncate(`${res.status} ${await res.text().catch(() => "")}`);
     return isDefinitiveRejection(res.status)
       ? { kind: "rejected", detail }
-      : { kind: "inconclusive", detail };
+      : { kind: "inconclusive", detail, blocked: genericHostBlockedBy(res.status) };
   } catch (e) {
-    return { kind: "inconclusive", detail: truncate(`network error: ${errMessage(e)}`) };
+    return {
+      kind: "inconclusive",
+      detail: truncate(`network error: ${errMessage(e)}`),
+      blocked: true,
+    };
   }
 }
 
@@ -396,10 +410,7 @@ export async function surveyIntegrationIdentities(
   };
 }
 
-/** A blocked generic host is a status the credential could never draw for an identity reason: 403,
- *  404, 5xx, and a network-level failure mean the account is served elsewhere. Everything else
- *  keeps it: 2xx serves, 400 is an identity rejection and 401 a bad token (identical on every host),
- *  and a transient status (408, 429, ...) says nothing about the host. */
+/** The generic host's answer under the caller's identity, read by genericHostBlockedBy. */
 type HostProbe = { kind: "kept" } | { kind: "blocked"; detail: string };
 
 async function probeGenericHost(
@@ -415,8 +426,7 @@ async function probeGenericHost(
       signal: requestSignal(timeoutMs, signal),
     });
     const body = await res.text().catch(() => "");
-    const blocked = res.status === 403 || res.status === 404 || res.status >= 500;
-    return blocked
+    return genericHostBlockedBy(res.status)
       ? { kind: "blocked", detail: truncate(`${res.status} ${body}`) }
       : { kind: "kept" };
   } catch (e) {

@@ -762,6 +762,32 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
     );
     await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
     expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
+    // The cached host is surveyed in its own right: with the account lookup failing (no account
+    // column) and the generic host accepting the id, the cached host's rejection still refuses
+    // the pin, because that is where the writer sends it.
+    await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
+    setIntegrationProbeFetch((input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/copilot_internal/user")) {
+        return Promise.resolve(new Response("upstream", { status: 503 }));
+      }
+      const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+      const enterprise = url.startsWith("https://api.enterprise.");
+      return Promise.resolve(
+        id === COPILOT_SANDBOX_INTEGRATION_ID && !enterprise
+          ? new Response(JSON.stringify({ data: [{}] }), { status: 200 })
+          : new Response("Personal Access Tokens are not supported for this endpoint", {
+            status: 400,
+          }),
+      );
+    });
+    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
+      .toThrow(
+        "api.enterprise.githubcopilot.com (cached for this identity) rejects this credential under " +
+          `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
+          `selects for this identity: ${PAT_REJECTION}`,
+      );
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
   } finally {
     setIntegrationProbeFetch(null);
   }

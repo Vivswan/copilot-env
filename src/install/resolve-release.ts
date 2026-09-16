@@ -3,6 +3,10 @@
 // resolve a prerelease because the user asked for it by name. Callers: `agent update` and the
 // autoupdate preflight. install.sh / install.ps1 resolve `latest` themselves: they run before
 // anything of ours is on disk.
+//
+// The lookup is anonymous on purpose: the stored credential exists to reach Copilot, and a token
+// exported in the shell may belong to another account. The anonymous limit (60/hour/IP) covers a
+// lookup that runs once per `--check` or per autoupdate cooldown.
 const SECONDS_PER_DAY = 24 * 60 * 60;
 // per_page=100 reads every release in one page (this repo will not exceed that for years), so
 // cooldown selection sees the whole eligible set, not just the first 30.
@@ -89,15 +93,12 @@ const sleep = (ms: number): Promise<void> =>
 
 /** The body text, or null after exhausting attempts. A non-retryable response (401/404) gives up
  *  immediately: retrying would not fix it. */
-async function fetchReleasesText(
-  url: string,
-  headers: Record<string, string>,
-): Promise<string | null> {
+async function fetchReleasesText(url: string): Promise<string | null> {
   const base = retryBaseMs();
   for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
     let retryable = true;
     try {
-      const res = await fetch(url, { headers });
+      const res = await fetch(url, { headers: GH });
       if (res.ok) return await res.text();
       retryable = RETRYABLE_STATUSES.has(res.status);
     } catch {
@@ -114,10 +115,7 @@ export async function resolveTarget(
   cooldownDays: number | null,
   exactTag: string | null = null,
 ): Promise<Release | null> {
-  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
-  const headers: Record<string, string> = { ...GH };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const text = await fetchReleasesText(RELEASES_API, headers);
+  const text = await fetchReleasesText(RELEASES_API);
   if (text === null) return null; // offline / API errored after retries
   const releases = parseReleasesJson(text, exactTag !== null);
   if (releases.length === 0) return null;

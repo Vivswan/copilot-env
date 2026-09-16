@@ -133,6 +133,11 @@ jobs:
           COPILOT_ENV_LIVE_CODEX: "1"
         run: deno test -P=test test/codex_catalog_live.test.ts
 
+      # The named-profile layout is Codex's contract too (profile v1 was removed in 0.134): the
+      # installed CLI must start `--profile <name>` on what the writer produces.
+      - name: Prove the installed Codex starts a writer-produced named profile
+        run: deno test -P=test test/codex_profile_wiring.test.ts
+
   # The one job that floats the REAL proxy against the live registry and runs the daemon to auth.
   # It asserts up to auth, not through a lifecycle: there is no credential here.
   #

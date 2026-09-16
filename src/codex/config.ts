@@ -294,17 +294,22 @@ export function bakedCodexToken(
 // contract instead of shell/TOML copies.
 
 /** Minted with providerMode by inspectCodexWiring (mirrors ClaudeOtherReason). The profile-
- *  prefixed pair names `<name>.config.toml`, so a named repair points at the right file.
- *    "malformed"           -> config.toml is present but not valid TOML
- *    "read-error"          -> config.toml exists but could not be read
- *    "profile-malformed"   -> `<name>.config.toml` is present but not valid TOML
- *    "profile-read-error"  -> `<name>.config.toml` exists but could not be read
- *    "custom"              -> a foreign `model_provider` is selected */
+ *  prefixed pair names `<name>.config.toml`, so a named repair points at the right file; the
+ *  legacy pair is Codex (>= 0.134) refusing the launch outright, whatever the wiring says.
+ *    "malformed"             -> config.toml is present but not valid TOML
+ *    "read-error"            -> config.toml exists but could not be read
+ *    "profile-malformed"     -> `<name>.config.toml` is present but not valid TOML
+ *    "profile-read-error"    -> `<name>.config.toml` exists but could not be read
+ *    "legacy-profile-key"    -> config.toml carries a top-level `profile`: every launch refuses
+ *    "legacy-profile-table"  -> config.toml carries `[profiles.<name>]`: `--profile <name>` refuses
+ *    "custom"                -> a foreign `model_provider` is selected */
 export type CodexOtherReason =
   | "malformed"
   | "read-error"
   | "profile-malformed"
   | "profile-read-error"
+  | "legacy-profile-key"
+  | "legacy-profile-table"
   | "custom";
 
 /** What selects the inspected wiring: config.toml's top-level key for the default, and for a
@@ -524,10 +529,20 @@ export function inspectCodexWiring(
         return other("profile-malformed", null, configExists);
       }
     }
-    if (read.kind === "absent") return none(false);
-    if (profileRead.kind === "absent") return none(true);
   }
   if (read.kind === "absent") return none(false);
+  // Codex refuses the launch on the profile-v1 shapes before any provider is read (verified on
+  // 0.153.4), so a layout that still carries them must never read as wired, nor as "none" (whose
+  // repair, a re-add, writes the profile file and leaves the shape in place). hasOwn: a profile
+  // named like an Object.prototype property must not find the prototype's.
+  if (isRecord(doc) && doc.profile !== undefined) return other("legacy-profile-key", null);
+  if (
+    selection.profile !== null && isRecord(doc) && isRecord(doc.profiles) &&
+    Object.hasOwn(doc.profiles, selection.profile)
+  ) {
+    return other("legacy-profile-table", null);
+  }
+  if (selection.profile !== null && selection.profileToml.kind === "absent") return none(true);
   const modelProvider = isRecord(selector) && typeof selector.model_provider === "string"
     ? selector.model_provider
     : null;
@@ -889,6 +904,10 @@ function codexOtherDetail(otherReason: CodexOtherReason): string {
       return "the profile's config.toml is present but not valid TOML";
     case "profile-read-error":
       return "the profile's config.toml exists but could not be read";
+    case "legacy-profile-key":
+      return "config.toml carries a legacy top-level `profile` key (Codex refuses every launch)";
+    case "legacy-profile-table":
+      return "config.toml carries a legacy [profiles.<name>] table (Codex refuses the profile)";
     case "custom":
       return "custom or unsupported provider";
     default:

@@ -2,7 +2,7 @@
 // stand against the facts probe.ts gathered, plus the `--live` end-to-end
 // checks. No I/O, like checks.ts, whose evaluateAll registers these alongside
 // the environment and runtime checks.
-import { basename } from "node:path";
+import { basename, dirname } from "node:path";
 import { DIRECT_BASE_URL } from "../claude/config.ts";
 import { type ClaudeDesktopStatus, renderClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import { type CodexOtherReason, codexProviderId } from "../codex/config.ts";
@@ -133,24 +133,48 @@ function directAuthVerdict(
 }
 
 /** Keyed off the reason the classifier minted (exhaustive, so a new reason forces a verdict), with
- *  the file to repair: config.toml, or a named profile's own `<name>.config.toml`. Null = "custom":
- *  a foreign selection is re-wirable, so checkCodex's generic model_provider reporting owns it. */
+ *  the repair: `repair <file>` for a broken one, or the one step that lifts a profile-v1 shape (a
+ *  rewire never removes it, so `agent profile --add` alone would leave Codex refusing). Null =
+ *  "custom": a foreign selection is re-wirable, so checkCodex's generic model_provider reporting
+ *  owns it. */
 function codexOtherLine(
   reason: CodexOtherReason,
   configPath: string,
-  profileConfigPath: string | null,
-): { line: string; file: string } | null {
+  profile: Profile,
+): { line: string; repair: string } | null {
   // The inspector mints a profile reason only for a named inspection, so the fallback is unreached.
-  const profileFile = profileConfigPath ?? configPath;
+  const profileFile = profile === null
+    ? configPath
+    : codexProfileConfigPath(dirname(configPath), profile);
   switch (reason) {
     case "malformed":
-      return { line: "config.toml is present but not valid TOML", file: configPath };
+      return { line: "config.toml is present but not valid TOML", repair: `repair ${configPath}` };
     case "read-error":
-      return { line: "config.toml exists but could not be read", file: configPath };
+      return { line: "config.toml exists but could not be read", repair: `repair ${configPath}` };
     case "profile-malformed":
-      return { line: `${basename(profileFile)} is present but not valid TOML`, file: profileFile };
+      return {
+        line: `${basename(profileFile)} is present but not valid TOML`,
+        repair: `repair ${profileFile}`,
+      };
     case "profile-read-error":
-      return { line: `${basename(profileFile)} exists but could not be read`, file: profileFile };
+      return {
+        line: `${basename(profileFile)} exists but could not be read`,
+        repair: `repair ${profileFile}`,
+      };
+    case "legacy-profile-key":
+      return {
+        line:
+          "config.toml carries a top-level `profile` key, which Codex no longer supports (every launch refuses to start)",
+        repair: `delete the \`profile\` line from ${configPath}`,
+      };
+    case "legacy-profile-table":
+      return {
+        line:
+          `config.toml carries a [profiles.${profile}] table, which Codex no longer supports (\`codex --profile ${profile}\` refuses to start)`,
+        repair: `run \`agent update\` (its migration moves the table into ${
+          basename(profileFile)
+        }), or move it by hand`,
+      };
     case "custom":
       return null;
     default:
@@ -197,14 +221,14 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
   // codexOtherLine's null sends a foreign "custom" selection to the re-wire path below). Judged
   // before "no config": a named profile's broken file needs repairing whether config.toml exists.
   if (f.providerMode === "other") {
-    const other = codexOtherLine(f.otherReason, configPath, profileConfigPath);
+    const other = codexOtherLine(f.otherReason, configPath, profile);
     if (other !== null) {
       const rewire = profile === null ? "agent codex" : profileAddFix(profile);
       return {
         ...base,
         status: "warn",
         detail: ["provider: other", ...fileLines, other.line].join("\n"),
-        fix: `repair ${other.file}, then re-run \`${rewire}\``,
+        fix: `${other.repair}, then re-run \`${rewire}\``,
       };
     }
   }

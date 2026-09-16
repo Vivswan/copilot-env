@@ -497,6 +497,55 @@ test("a script-shaped auth on a named profile's table never reads wired", () => 
   expect(wiring.providerWired).toBe(false);
 });
 
+test("a leftover [profiles.<name>] table or top-level profile key reads other (launch refused), never wired", () => {
+  // Codex 0.153 refuses `--profile work` on a [profiles.work] table and every launch on a
+  // top-level `profile` key, whatever the v2 file says; a re-add writes work.config.toml but
+  // never removes either, so a wired-looking mixed layout must not read green.
+  const codexHome = isolate();
+  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND });
+  writeProxyProfile(codexHome);
+  const mixed = mutateConfig(codexHome, (doc) => {
+    doc.profiles = { work: { "model_provider": "copilot-env-work" }, other: { "model": "x" } };
+  });
+  expect(inspectWork(codexHome, { config: mixed })).toMatchObject({
+    providerMode: "other",
+    otherReason: "legacy-profile-table",
+    providerWired: false,
+  });
+  // Another profile's table refuses only that profile; the default launch still runs.
+  expect(inspectCodexWiring(mixed, null, DEFAULT_PORT, false)).toMatchObject({
+    providerMode: "direct",
+    providerWired: true,
+  });
+  // With NO profile file (the unmigrated install) the table still wins over "none": a re-add
+  // would write the file and leave the table, so Codex would go on refusing.
+  expect(inspectCodexWiring(mixed, null, PROFILE_PORT, false, {
+    profile: WORK,
+    profileToml: { kind: "absent" },
+  })).toMatchObject({ providerMode: "other", otherReason: "legacy-profile-table" });
+  // A table is found by its own key only, never through Object.prototype.
+  expect(inspectCodexWiring(mixed, null, PROFILE_PORT, false, {
+    profile: parseProfileName("constructor"),
+    profileToml: { kind: "absent" },
+  })).toMatchObject({ providerMode: "none" });
+  const keyed = mutateConfig(codexHome, (doc) => {
+    delete doc.profiles;
+    doc.profile = "work";
+  });
+  for (
+    const view of [
+      inspectWork(codexHome, { config: keyed }),
+      inspectCodexWiring(keyed, null, DEFAULT_PORT, false),
+    ]
+  ) {
+    expect(view).toMatchObject({
+      providerMode: "other",
+      otherReason: "legacy-profile-key",
+      providerWired: false,
+    });
+  }
+});
+
 // --- the installed Codex -----------------------------------------------------------
 
 /** Skips where no codex is installed; `codex --profile <name> mcp list` loads the config (and the
@@ -506,29 +555,38 @@ test("a script-shaped auth on a named profile's table never reads wired", () => 
 const CODEX_PATH = resolveCommand("codex");
 const liveCodex = test.skipIf(CODEX_PATH === null);
 
-liveCodex("the installed Codex starts `--profile work` on a writer-produced named profile", () => {
-  const codexHome = isolate();
-  writeProxyProfile(codexHome);
-  const codexPath = CODEX_PATH ?? "";
-  const run = (home: string) => {
-    const s = cliSpawn(codexPath, ["--profile", WORK, "mcp", "list"]);
-    const cliDir = dirname(codexPath);
-    return runSync(s.file, s.args, {
-      cwd: home,
-      env: childEnvWithPath([cliDir === "." ? null : cliDir], { extra: { CODEX_HOME: home } }),
-      timeoutMs: 60_000,
-      shell: s.shell,
+liveCodex(
+  "the installed Codex starts `--profile work` on a writer-produced named profile and reads its file",
+  () => {
+    const codexHome = isolate();
+    writeProxyProfile(codexHome);
+    // An MCP entry the profile file alone carries: listed under `--profile work` only if Codex
+    // applied the file's keys, which is what the writer relies on for the selector.
+    mutateToml(codexProfileConfigPath(codexHome, WORK), (doc) => {
+      doc.mcp_servers = { "profile-only": { "command": "true" } };
     });
-  };
-  const accepted = run(codexHome);
-  expect(accepted.exitCode, accepted.stderr).toBe(0);
+    const codexPath = CODEX_PATH ?? "";
+    const run = (home: string) => {
+      const s = cliSpawn(codexPath, ["--profile", WORK, "mcp", "list"]);
+      const cliDir = dirname(codexPath);
+      return runSync(s.file, s.args, {
+        cwd: home,
+        env: childEnvWithPath([cliDir === "." ? null : cliDir], { extra: { CODEX_HOME: home } }),
+        timeoutMs: 60_000,
+        shell: s.shell,
+      });
+    };
+    const accepted = run(codexHome);
+    expect(accepted.exitCode, accepted.stderr).toBe(0);
+    expect(accepted.stdout).toContain("profile-only");
 
-  // Negative control: the same selector as a [profiles.work] table is what Codex refuses, so a
-  // Codex that accepted both would make the positive run prove nothing.
-  mutateConfig(codexHome, (doc) => {
-    doc.profiles = { work: { "model_provider": "copilot-env-work" } };
-  });
-  const refused = run(codexHome);
-  expect(refused.exitCode).not.toBe(0);
-  expect(refused.stderr).toContain("work.config.toml");
-});
+    // Negative control: the same selector as a [profiles.work] table is what Codex refuses, so a
+    // Codex that accepted both would make the positive run prove nothing.
+    mutateConfig(codexHome, (doc) => {
+      doc.profiles = { work: { "model_provider": "copilot-env-work" } };
+    });
+    const refused = run(codexHome);
+    expect(refused.exitCode).not.toBe(0);
+    expect(refused.stderr).toContain("work.config.toml");
+  },
+);

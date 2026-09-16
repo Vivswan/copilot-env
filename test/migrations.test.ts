@@ -108,8 +108,7 @@ test("the shipped registry holds exactly the named fix-ups in order, home move f
   //   Codex/Claude rewrites before the layout adoption   -> the adoption removes the flat src/scripts
   //                                                         the old wiring pointed at
   //   layout adoption last among the 3.5.6 steps         -> it relocates the install they fixed up
-  //   Desktop helper move last of the 4.0.2 steps        -> its wiring pass needs the rewrites done
-  //   Codex profile files after the 4.0.0 table rewrite  -> the tables they select were normalized
+  //   Desktop helper move, then the Codex profile files  -> each needs the 4.0.0 rewrites done
   expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
     v356,
     v402RootLayout,

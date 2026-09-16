@@ -949,11 +949,13 @@ export function checkCodexSandbox(f: CodexSandboxFacts): CheckResult {
     profile: f.profile,
     value: {
       configFile: f.configFile,
+      effectiveProfile: f.selection.profile,
+      selectedVia: f.selection.via,
       sandboxMode: f.sandbox.kind === "set" ? f.sandbox.mode : null,
       line: f.sandbox.kind === "set" ? f.sandbox.line : null,
     },
   };
-  const blocked = proxyAuthBlockedBySandbox(f.sandbox, f.configFile, f.profile);
+  const blocked = proxyAuthBlockedBySandbox(f.sandbox, f.configFile, f.selection);
   if (blocked !== null) return { ...base, status: "warn", ...blocked };
   return {
     ...base,

@@ -27,12 +27,12 @@ import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import {
   bakedCodexToken,
   CODEX_ENV_KEY,
+  codexSandboxReading,
   type CodexWiringStatus,
   inspectCodexWiring,
 } from "../codex/config.ts";
 import { type CodexHostFarm, codexHostFarm, effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
-import { readCodexSandboxMode, runsSandboxedProxyAuth } from "../codex/sandbox.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -1022,24 +1022,18 @@ export async function gatherFacts(
             }
             : {}),
         };
-        // Every selection whose wiring runs the sandboxed auth command gets a row: the default
-        // sweep judges the default AND each named profile, a narrowed run its target. The
-        // proxy-and-command classification does not depend on the port (only baseUrlMatches
-        // does), so the run's own resolved port stands in for a named profile: deriving ITS
-        // candidate port (resolvePort, fallbackPort) throws on an exhausted port range and would
-        // take the whole report down for a Direct profile that needs no port at all. That
-        // classification proves the text parsed, so the reader cannot come back null.
-        const selections: Profile[] = profile === null ? [null, ...deps.profileNames()] : [profile];
-        facts.codexSandbox = selections.flatMap((selection) => {
-          const selectionWiring = selection === profile
-            ? wiring
-            : inspectCodexWiring(configRead, null, wiringPort(), false, selection);
-          const sandbox = runsSandboxedProxyAuth(selectionWiring)
-            ? readCodexSandboxMode(configRead, selection)
-            : null;
-          return sandbox === null
+        // One row per launch whose selected wiring runs the sandboxed auth command: the default
+        // sweep judges plain `codex` (which runs the config's `profile` key when set) AND each
+        // `--profile` launch; a narrowed run its target. The run's own resolved port stands in
+        // for every launch (codexSandboxReading): deriving a named profile's candidate port
+        // (resolvePort, fallbackPort) throws on an exhausted range and would take the whole
+        // report down for a Direct profile that needs no port at all.
+        const launches: Profile[] = profile === null ? [null, ...deps.profileNames()] : [profile];
+        facts.codexSandbox = launches.flatMap((launch) => {
+          const reading = codexSandboxReading(configRead, launch, wiringPort());
+          return reading === null
             ? []
-            : [{ profile: selection, configFile: codexConfigPath(home), sandbox }];
+            : [{ profile: launch, configFile: codexConfigPath(home), ...reading }];
         });
       })(),
     );

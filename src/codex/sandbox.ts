@@ -7,13 +7,51 @@
 // default); Codex documents no network switch for read-only, so a read-only selection's proxy
 // auth exits 1 with no hint. danger-full-access has the network open.
 import { parse } from "smol-toml";
-import type { Profile } from "../copilot_api/profile.ts";
+import { isValidProfileName, parseProfileName, type Profile } from "../copilot_api/profile.ts";
 import type { TextReadResult } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import type { CodexWiringStatus } from "./config.ts";
 
 const PROXY_BLOCKING_SANDBOX_MODE = "read-only";
 const SANDBOX_MODE_KEY = "sandbox_mode";
+
+/** Which profile a `codex [--profile <launch>]` launch runs. Codex's rule: `profile` in config.toml
+ *  is the default profile when --profile is absent, so plain `codex` under `profile = "work"` runs
+ *  `[profiles.work]`, and the default selection's sandbox and wiring are that profile's. */
+export type CodexSelection =
+  | { profile: null; via: "none" }
+  | { profile: Exclude<Profile, null>; via: "launch" | "config-key" };
+
+/** Null when nothing copilot-env can judge runs: a non-string `profile` value is a config Codex
+ *  rejects at startup for EVERY launch (--profile included), and a key naming a profile copilot-env
+ *  cannot spell (isValidProfileName) has no managed wiring addressed at it. Unparseable text
+ *  resolves to the launch alone (the wiring check owns that verdict). */
+export function effectiveCodexProfile(
+  configToml: TextReadResult | string,
+  launch: Profile,
+): CodexSelection | null {
+  const doc = parseToml(configToml);
+  const key = isRecord(doc) ? doc.profile : undefined;
+  if (key !== undefined && typeof key !== "string") return null;
+  if (launch !== null) return { profile: launch, via: "launch" };
+  if (key === undefined) return { profile: null, via: "none" };
+  if (!isValidProfileName(key)) return null;
+  return { profile: parseProfileName(key), via: "config-key" };
+}
+
+function parseToml(configToml: TextReadResult | string): unknown {
+  const text = typeof configToml === "string"
+    ? configToml
+    : configToml.kind === "text"
+    ? configToml.text
+    : null;
+  if (text === null) return null;
+  try {
+    return parse(text);
+  } catch {
+    return null;
+  }
+}
 
 /** Only the command shape runs anything inside the sandbox: a static bearer rides in the table, a
  *  foreign or missing table has no command of ours, and Direct never talks to the proxy. */
@@ -30,12 +68,12 @@ export type CodexSandboxMode =
   | { kind: "unset" }
   | { kind: "set"; mode: string; table: "top-level" | "profile"; line: number | null };
 
-/** The effective `sandbox_mode` the way Codex layers it: the `[profiles.<name>]` value for a
- *  `--profile` launch, else the top level. Null when the file is not readable TOML (the wiring
- *  check owns that verdict). */
+/** The effective `sandbox_mode` the way Codex layers it: the selected profile's table
+ *  (effectiveCodexProfile) over the top level. Null when the file is not readable TOML (the
+ *  wiring check owns that verdict). */
 export function readCodexSandboxMode(
   configToml: TextReadResult | string,
-  profile: Profile,
+  selection: CodexSelection,
 ): CodexSandboxMode | null {
   const text = typeof configToml === "string"
     ? configToml
@@ -43,12 +81,9 @@ export function readCodexSandboxMode(
     ? configToml.text
     : null;
   if (text === null) return null;
-  let doc: unknown;
-  try {
-    doc = parse(text);
-  } catch {
-    return null;
-  }
+  const doc = parseToml(text);
+  if (doc === null) return null;
+  const profile = selection.profile;
   if (profile !== null) {
     const path = ["profiles", profile, SANDBOX_MODE_KEY];
     const mode = valueAt(doc, path);
@@ -108,20 +143,25 @@ export function describeCodexSandboxMode(reading: CodexSandboxMode, configPath: 
 }
 
 /** The warning both surfaces print for a selection that runsSandboxedProxyAuth and whose sandbox
- *  blocks that command; null when the network is open to it. */
+ *  blocks that command; null when the network is open to it. The Direct switch addresses the
+ *  profile Codex actually runs: under a `profile` key, `agent codex --direct` would rewire a table
+ *  plain `codex` no longer selects. */
 export function proxyAuthBlockedBySandbox(
   reading: CodexSandboxMode,
   configPath: string,
-  profile: Profile,
+  selection: CodexSelection,
 ): { detail: string; fix: string } | null {
   if (reading.kind !== "set" || reading.mode !== PROXY_BLOCKING_SANDBOX_MODE) return null;
-  const directSwitch = profile === null
+  const directSwitch = selection.profile === null
     ? "agent codex --direct"
-    : `agent profile --add ${profile} --direct`;
+    : `agent profile --add ${selection.profile} --direct`;
+  const selectedBy = selection.via === "config-key"
+    ? `; the config's profile = "${selection.profile}" key selects that profile for plain codex`
+    : "";
   return {
     detail: `${
       describeCodexSandboxMode(reading, configPath)
-    } blocks the proxy auth command (Codex runs it inside the sandbox, and read-only has no network switch)`,
+    } blocks the proxy auth command (Codex runs it inside the sandbox, and read-only has no network switch)${selectedBy}`,
     fix:
       `set ${SANDBOX_MODE_KEY} = "workspace-write" in ${configPath}, or switch Codex to Direct with \`${directSwitch}\``,
   };

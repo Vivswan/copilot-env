@@ -5,7 +5,7 @@ import type { AutoupdateData } from "../autoupdate/state.ts";
 import type { ClaudeWiringStatus } from "../claude/config.ts";
 import type { ClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import type { CodexWiringStatus } from "../codex/config.ts";
-import type { CodexSandboxMode } from "../codex/sandbox.ts";
+import type { CodexSandboxMode, CodexSelection } from "../codex/sandbox.ts";
 import type { AuthProvider, ProfileMode } from "../copilot_api/env_state.ts";
 import type { CopilotApiPaths } from "../copilot_api/paths.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
@@ -278,13 +278,15 @@ export type CodexFacts = CodexWiringStatus & {
   bakedCredential?: BakedCredentialFreshness;
 };
 
-/** One Codex selection's effective `sandbox_mode` (src/codex/sandbox.ts), gathered only where the
- *  wiring runs the sandboxed proxy auth command (runsSandboxedProxyAuth): Direct, a static bearer,
- *  and an unwired table have no row. The default sweep carries the default and every named
- *  profile; a narrowed run its target. */
+/** One launch's effective `sandbox_mode` (codexSandboxReading), gathered only where the wiring
+ *  Codex selects runs the sandboxed proxy auth command: Direct, a static bearer, and an unwired
+ *  table have no row. The default sweep carries plain `codex` and every `--profile` launch; a
+ *  narrowed run its target. */
 export interface CodexSandboxFacts {
+  /** The launch: null is plain `codex`, whose effective profile is `selection`. */
   profile: Profile;
   configFile: string;
+  selection: CodexSelection;
   sandbox: CodexSandboxMode;
 }
 

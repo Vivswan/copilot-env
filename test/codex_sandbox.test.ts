@@ -154,6 +154,48 @@ test("health: a read-only sandbox warns per proxy selection, naming the line; Di
         { profile: P, status: "warn", at: `${CONFIG}:10 (in the profile table)` },
       ],
     },
+    {
+      // Codex's rule: `profile` in config.toml is the default profile when --profile is absent, so
+      // plain `codex` runs [profiles.work] and its read-only, and the fix must address that profile.
+      name: "the config's profile key selects a read-only profile for plain codex",
+      toml: configToml(bothProxy, {
+        top: ['profile = "work"', 'sandbox_mode = "workspace-write"'],
+        profile: readOnly,
+      }),
+      expected: [
+        {
+          profile: null,
+          status: "warn",
+          at: `${CONFIG}:7 (in the profile table)`,
+          fix: "agent profile --add work --direct",
+        },
+        { profile: P, status: "warn", at: `${CONFIG}:7 (in the profile table)` },
+      ],
+    },
+    {
+      name: "the config's profile key selects a workspace-write profile over a read-only top level",
+      toml: configToml(bothProxy, {
+        top: ['profile = "work"', readOnly],
+        profile: 'sandbox_mode = "workspace-write"',
+      }),
+      expected: [{ profile: null, status: "ok" }, { profile: P, status: "ok" }],
+    },
+    {
+      name:
+        "the config's profile key selects a Direct profile: no row despite a read-only top level",
+      toml: configToml({ default: "proxy", profile: "direct" }, {
+        top: ['profile = "work"', readOnly],
+      }),
+      expected: [],
+    },
+    {
+      // Codex rejects the file at startup ("expected a string") for every launch, --profile
+      // included (verified against codex 0.153.4), so nothing of ours runs and no selection is
+      // judged in its place.
+      name: "a non-string profile key is a config Codex rejects: no row for any launch",
+      toml: configToml(bothProxy, { top: ["profile = 1", readOnly] }),
+      expected: [],
+    },
   ];
   for (const c of cases) {
     const rows = await sandboxRows(c.toml);
@@ -165,6 +207,19 @@ test("health: a read-only sandbox warns per proxy selection, naming the line; Di
       if (e.fix) expect(rows[i]?.fix, c.name).toContain(e.fix);
     }
   }
+});
+
+test("health: the config's profile key names the selected profile in the default row's detail", async () => {
+  const [row] = await sandboxRows(
+    configToml({ default: "proxy", profile: "proxy" }, {
+      top: ['profile = "work"'],
+      profile: 'sandbox_mode = "read-only"',
+    }),
+  );
+  expect(row?.detail).toContain(
+    'the config\'s profile = "work" key selects that profile for plain codex',
+  );
+  expect(row?.value).toMatchObject({ effectiveProfile: "work", selectedVia: "config-key" });
 });
 
 test("agent codex --check says where a read-only sandbox blocks proxy auth, and leaves the line alone", async () => {

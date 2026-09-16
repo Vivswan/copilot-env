@@ -2,7 +2,7 @@
 
 How to drive the CLI from a checkout and where the repository's own rules live. Users install a release instead ([getting started](getting-started.md#install)); `agent update` refuses to overwrite a checkout unless you pass `--force`.
 
-Deps and the proxy install in place, with no separate cache.
+Deps install into the checkout (`deno install --frozen`); the proxy floats into the copilot-env data home on the first `agent start`, the same as a release.
 
 ```bash
 git clone https://github.com/Vivswan/copilot-env.git

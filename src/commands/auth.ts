@@ -839,7 +839,7 @@ interface IdentityTableInput {
   pinned: string | null;
   /** The `copilot-host` literal, or null for `auto`. */
   configuredHost: string | null;
-  /** What the key resolves to for this credential (resolveCopilotHost): the host the next Direct
+  /** What the key resolves to for this credential (selectDirectIdentityAndHost): the host the next Direct
    *  wiring bakes. */
   hostInUse: string;
   /** The host a fresh daemon launch is pinned to (resolveLaunchCredential), judged under ITS identity. */

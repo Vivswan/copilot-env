@@ -742,7 +742,7 @@ export type CachedCopilotHostRead =
   | { kind: "stale" }
   | { kind: "valid"; host: string };
 
-/** A resolved host beside the identity it was resolved under and how: `auto` (resolveCopilotHost)
+/** A resolved host beside the identity it was resolved under and how: `auto` (select*IdentityAndHost)
  *  or `literal` (the `copilot-host` value of the time). */
 export interface CachedCopilotHost {
   host: string;

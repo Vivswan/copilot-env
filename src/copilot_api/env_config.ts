@@ -396,7 +396,7 @@ const ABSOLUTE_PATH_DOMAIN: ConfigDomain<string> = domain(
   "path|auto",
 );
 
-/** `auto` (probe per credential, integration_identity.ts resolveCopilotHost) or an https origin
+/** `auto` (probed per credential by the select*IdentityAndHost pair, integration_identity.ts) or an https origin
  *  (a GitHub Enterprise Server serves Copilot at `https://copilot-api.<ghe-domain>`). Stored as the
  *  origin alone: a path, query, or userinfo is a typo, not a host. */
 export const COPILOT_HOST_AUTO = "auto";
@@ -1000,7 +1000,7 @@ export class CopilotEnvConfig {
   }
 
   /** The `copilot-host` literal, or null for `auto`: the caller then resolves the host per credential
-   *  (resolveCopilotHost in integration_identity.ts). */
+   *  (the select*IdentityAndHost pair, integration_identity.ts). */
   copilotHost(): string | null {
     const value = this.read().copilotHost;
     return value === undefined || value === COPILOT_HOST_AUTO ? null : value;

@@ -17,7 +17,7 @@ const logger = createStderrLogger();
 export interface DirectWiring {
   /** The probed `Copilot-Integration-Id` to bake, or null to send none. */
   directIntegrationId: string | null;
-  /** The Copilot host to bake as the base URL (resolveCopilotHost). */
+  /** The Copilot host to bake as the base URL (selectDirectIdentityAndHost). */
   directBaseUrl: string;
 }
 

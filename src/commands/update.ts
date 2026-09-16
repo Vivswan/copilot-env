@@ -112,7 +112,9 @@ async function runManualUpdate(
   const current = `v${packageVersion()}`;
   const target = await resolveTarget(args.cooldown);
   if (!target) {
-    consola.warn("No copilot-env release found upstream (or the network is unavailable).");
+    consola.warn(
+      "Could not resolve a copilot-env release upstream (none eligible, GitHub API refused, or network unreachable).",
+    );
     process.exitCode = 2; // distinct from "update available" (1) and "up to date" (0)
     return;
   }

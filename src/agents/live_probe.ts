@@ -221,13 +221,10 @@ function defaultRunProbe(
  *  credential's helper spawns it from inside the temp home, while a stored token needs no gh.
  *
  *  `smoke` is the caller's credential bound to Copilot's own endpoint. Its catalog pick names the
- *  model for BOTH arms; its ping decides ONLY when no CLI ran (missing or uncheckable), since a CLI
- *  that ran and failed is the final verdict: an endpoint that answers cannot prove the CLI's own
- *  auth path. Null (no credential resolved) leaves nothing to smoke with, so it is the proxy.
- *
- *   any failure from tmp home -> caught, false, and the caller wires the proxy
- *   temp-home removal fails   -> best effort; removeScratchDir reports the path left behind
- */
+ *  model for BOTH arms; its ping decides ONLY when no CLI ran, since a CLI that ran and failed is
+ *  the final verdict (an endpoint that answers cannot prove the CLI's own auth path). Null (no
+ *  credential) leaves nothing to smoke with, so it is the proxy. Any failure inside the temp home
+ *  is caught as false; its removal is best effort (removeScratchDir reports a path left behind). */
 export async function probeDirectWorks(
   descriptor: ProbeDescriptor,
   writeDirectConfig: (tmpHome: string) => void,

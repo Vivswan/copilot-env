@@ -358,7 +358,7 @@ async function launchUnderLock(
   await cleanupExistingProxies(lock, profile, ctx.state);
 
   const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);
-  const credential = await resolveLaunchCredential(profile, ctx.envConfig, {
+  const { credential, copilotHost } = await resolveLaunchCredential(profile, ctx.envConfig, {
     interactiveLogin: ensureAuthenticated,
   });
   const spawned = spawnConfiguredDaemon({
@@ -367,6 +367,7 @@ async function launchUnderLock(
     profile,
     paths,
     credential,
+    copilotHost,
     entry,
     config: ctx.envConfig,
   });

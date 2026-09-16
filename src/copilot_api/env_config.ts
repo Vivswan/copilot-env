@@ -51,6 +51,7 @@ export interface CopilotEnvConfigData {
   codexModelCatalog?: boolean;
   wireMcp?: boolean;
   staticKey?: StaticKeyScope;
+  copilotHost?: string;
 }
 
 /** null and undefined both delete the key. Exported for the settings-bundle import, which rebuilds the whole store. */
@@ -395,6 +396,62 @@ const ABSOLUTE_PATH_DOMAIN: ConfigDomain<string> = domain(
   "path|auto",
 );
 
+/** `auto` (probe per credential, integration_identity.ts resolveCopilotHost) or an https origin
+ *  (a GitHub Enterprise Server serves Copilot at `https://copilot-api.<ghe-domain>`). Stored as the
+ *  origin alone: a path, query, or userinfo is a typo, not a host. */
+export const COPILOT_HOST_AUTO = "auto";
+
+/** THE one loopback test for a URL's hostname (as `new URL().hostname` spells it): the whole
+ *  127.0.0.0/8 block, `::1` and its IPv4-mapped forms (bracketed), and `localhost` with or without
+ *  the trailing dot. Owned here, beside the `copilot-host` validator, so isDirectBaseUrl
+ *  (integration_identity.ts) and the validator can never disagree on what a Copilot host is not. */
+export function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, "");
+  if (host === "localhost") return true;
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (bare === "::1") return true;
+  // An IPv4-mapped address arrives as the URL parser serialises it: two hex groups (`::ffff:7f00:1`),
+  // or dotted when hand-spelled elsewhere.
+  const mapped = bare.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  const v4 = mapped !== null
+    ? `${Number.parseInt(mapped[1] ?? "0", 16) >> 8}.0.0.0`
+    : bare.startsWith("::ffff:")
+    ? bare.slice("::ffff:".length)
+    : bare;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4);
+}
+
+function copilotHostRejection(raw: string): string | null {
+  const expected = "expected `auto` or an https:// origin";
+  if (!URL.canParse(raw)) return expected;
+  const url = new URL(raw);
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "") return expected;
+  if ((url.pathname !== "/" && url.pathname !== "") || url.search !== "" || url.hash !== "") {
+    return "expected an https:// origin without a path or query";
+  }
+  // A loopback origin is the proxy's shape, never a Copilot host (isDirectBaseUrl agrees).
+  if (isLoopbackHostname(url.hostname)) return "expected an https:// origin that is not loopback";
+  return null;
+}
+
+const COPILOT_HOST_DOMAIN: ConfigDomain<string> = domain(
+  v.pipe(
+    v.string(),
+    v.trim(),
+    v.rawTransform(({ dataset, addIssue, NEVER }) => {
+      if (dataset.value.toLowerCase() === COPILOT_HOST_AUTO) return COPILOT_HOST_AUTO;
+      const rejection = copilotHostRejection(dataset.value);
+      if (rejection !== null) {
+        addIssue({ message: rejection });
+        return NEVER;
+      }
+      return new URL(dataset.value).origin;
+    }),
+  ),
+  (raw) => raw,
+  "url|auto",
+);
+
 /** Ordered ALPHABETICALLY by CLI name: that is the `--get` and `--help` display order, and a test pins
  *  it, so insert new keys in place. */
 const CONFIG_REGISTRY_LITERAL = [
@@ -497,6 +554,17 @@ const CONFIG_REGISTRY_LITERAL = [
     defaultValue: false,
     applyHint:
       "Applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring.",
+  },
+  {
+    cli: "copilot-host",
+    key: "copilotHost",
+    section: "Credential",
+    describe:
+      "Copilot API host for every mode: `auto` probes api.githubcopilot.com and falls back to the account's designated host, or an https origin",
+    ...COPILOT_HOST_DOMAIN,
+    defaultValue: COPILOT_HOST_AUTO,
+    applyHint:
+      "Applies at the next `agent init`/`agent codex`/`agent claude` wiring and the next proxy start.",
   },
   {
     cli: "credits-target",
@@ -929,6 +997,13 @@ export class CopilotEnvConfig {
   /** On the STRICT read on purpose: an unreadable store fails the update rather than reading as "off". */
   verifyProvenanceEnabled(): boolean {
     return this.read().verifyProvenance ?? configDefaultBoolean("verify-provenance");
+  }
+
+  /** The `copilot-host` literal, or null for `auto`: the caller then resolves the host per credential
+   *  (resolveCopilotHost in integration_identity.ts). */
+  copilotHost(): string | null {
+    const value = this.read().copilotHost;
+    return value === undefined || value === COPILOT_HOST_AUTO ? null : value;
   }
 
   /** `auto` reads as null so `--set integration-id auto` restores probing without a separate `--del`. */

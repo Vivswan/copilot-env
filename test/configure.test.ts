@@ -9,6 +9,7 @@ import { expect, test } from "./helpers/testing.ts";
 
 // Every literal carries the required credential, so the id is the ONE thing each directive rejects.
 const COMMAND = { kind: "command" } as const;
+const HOST = "https://api.githubcopilot.com";
 
 test("a proxy ManagedWrite cannot carry a direct integration id", () => {
   // Literal path: the discriminant selects the proxy arm and the id is rejected there.
@@ -56,14 +57,14 @@ function fakeAdapter(
     id: "claude",
     label: "Claude",
     check: () => {},
-    detectDirect(directIntegrationId, ghToken) {
-      recorded.probeIds.push(directIntegrationId);
+    detectDirect(direct, ghToken) {
+      recorded.probeIds.push(direct.directIntegrationId);
       recorded.probeTokens.push(ghToken);
       return Promise.resolve(probeVerdict);
     },
-    resolveDirectIdentity() {
+    resolveDirectWiring() {
       recorded.identityCalls++;
-      return identity();
+      return identity().then((id) => ({ directIntegrationId: id, directBaseUrl: HOST }));
     },
     configureDefault(write) {
       recorded.writes.push(write);
@@ -107,7 +108,9 @@ const CASES: {
       identityCalls: 1,
       probeIds: [],
       probeTokens: [],
-      writes: [{ mode: "direct", directIntegrationId: PAT_ID, credential: COMMAND }],
+      writes: [
+        { mode: "direct", directIntegrationId: PAT_ID, directBaseUrl: HOST, credential: COMMAND },
+      ],
     },
   },
   {
@@ -119,7 +122,9 @@ const CASES: {
       identityCalls: 1,
       probeIds: [PAT_ID],
       probeTokens: ["ghp_x"],
-      writes: [{ mode: "direct", directIntegrationId: PAT_ID, credential: COMMAND }],
+      writes: [
+        { mode: "direct", directIntegrationId: PAT_ID, directBaseUrl: HOST, credential: COMMAND },
+      ],
     },
   },
   {

@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
-import { resolveAndPersistDirectIdentity } from "../src/agents/profile_wiring.ts";
+import { resolveAndPersistDirectWiring } from "../src/agents/profile_wiring.ts";
 import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
 import {
   CLAUDE_DESKTOP_DIR_ENV,
@@ -769,19 +769,19 @@ test("the DEFAULT slot's identity cache replays without a probe and re-arms on r
 
   // First resolution probes and persists the verdict (the identity NAME, so
   // "probed, the default won" is distinguishable from "never probed").
-  expect(await resolveAndPersistDirectIdentity(null)).toBeNull();
+  expect((await resolveAndPersistDirectWiring(null)).directIntegrationId).toBeNull();
   expect(state.readProfileSlot(null).integrationIdentity).toBe("codex");
   const afterFirst = probes;
   expect(afterFirst).toBeGreaterThan(0);
 
   // The replay path: no further network (same contract as a named profile).
-  expect(await resolveAndPersistDirectIdentity(null)).toBeNull();
+  expect((await resolveAndPersistDirectWiring(null)).directIntegrationId).toBeNull();
   expect(probes).toBe(afterFirst);
 
   // A credential change invalidates the cached verdict, re-arming the probe.
   new Credential(state).store("gh-token", "ghp_rotated");
   expect(state.readProfileSlot(null).integrationIdentity).toBeNull();
-  await resolveAndPersistDirectIdentity(null);
+  await resolveAndPersistDirectWiring(null);
   expect(probes).toBeGreaterThan(afterFirst);
 });
 

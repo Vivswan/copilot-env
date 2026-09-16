@@ -22,6 +22,7 @@ import {
 } from "../src/codex/config.ts";
 import { FALLBACK_CODEX_UA_VERSION } from "../src/codex/user_agent.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
@@ -29,6 +30,9 @@ import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.
 import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, linesNaming } from "./helpers.ts";
+
+/** A scratch Direct wiring with no identity header on the generic host: today's default bytes. */
+const DIRECT_NONE = { directIntegrationId: null, directBaseUrl: DEFAULT_COPILOT_API_BASE };
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -513,19 +517,21 @@ test("detectCodexDirect: the CLI runs the catalog's codex-servable model and its
     retryDelayMs: 0,
     fetchImpl,
   };
-  expect(await detectCodexDirect(null, "ghu_tok", ok)).toBe(true);
+  expect(await detectCodexDirect(DIRECT_NONE, "ghu_tok", ok)).toBe(true);
   expect(probeCalls).toBe(1);
   const args = seenArgs as unknown as string[];
   expect(args[args.indexOf("--model") + 1]).toBe("gpt-6-nano");
   // The live read-only prompt failed -> proxy.
-  expect(await detectCodexDirect(null, "ghu_tok", { ...ok, runProbe: () => ({ ok: false }) }))
+  expect(
+    await detectCodexDirect(DIRECT_NONE, "ghu_tok", { ...ok, runProbe: () => ({ ok: false }) }),
+  )
     .toBe(false);
 
   // No credential returns false WITHOUT calling runProbe, with or without a CLI.
   probeCalls = 0;
-  expect(await detectCodexDirect(null, null, ok)).toBe(false);
+  expect(await detectCodexDirect(DIRECT_NONE, null, ok)).toBe(false);
   expect(
-    await detectCodexDirect(null, null, {
+    await detectCodexDirect(DIRECT_NONE, null, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "codex" ? null : `/bin/${c}` }),
     }),
@@ -534,7 +540,7 @@ test("detectCodexDirect: the CLI runs the catalog's codex-servable model and its
 
   // A pasted or device-flow token needs no gh on the machine: the probe still runs.
   expect(
-    await detectCodexDirect(null, "ghu_tok", {
+    await detectCodexDirect(DIRECT_NONE, "ghu_tok", {
       ...ok,
       findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
     }),
@@ -586,7 +592,7 @@ test("detectCodexDirect: with no codex CLI the endpoint smoke pings the first co
       new Response(requests.length === 1 ? JSON.stringify(catalog) : "{}", { status: 200 }),
     );
   };
-  const verdict = await detectCodexDirect(null, "ghu_tok", {
+  const verdict = await detectCodexDirect(DIRECT_NONE, "ghu_tok", {
     findCommand: (c: string) => ({ path: c === "codex" ? null : `/bin/${c}` }),
     runProbe: () => ({ ok: false }), // must never run: no CLI was found
     retryDelayMs: 0,
@@ -624,22 +630,26 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
   };
   let probeDoc: Record<string, unknown> | null = null;
   let spawn: { cwd: string; home: string } | null = null;
-  const verdict = await detectCodexDirect("copilot-developer-cli", "ghu_tok", {
-    findCommand: (c: string) => ({ path: `/bin/${c}` }),
-    runProbe: (_cli: string, _args: string[], env: Record<string, string>, cwd: string) => {
-      const home = env.CODEX_HOME ?? "";
-      spawn = { cwd, home };
-      // The table's auth.command runs `agent auth --get` with this env, and its catalog self-heal
-      // writes the home $CODEX_HOME names: it must neither add the reference here nor ledger it.
-      process.env.CODEX_HOME = home;
-      syncCodexCatalogReference();
-      probeDoc = asRecord(parse(readFileSync(join(home, "config.toml"), "utf8")));
-      return { ok: true };
+  const verdict = await detectCodexDirect(
+    { ...DIRECT_NONE, directIntegrationId: "copilot-developer-cli" },
+    "ghu_tok",
+    {
+      findCommand: (c: string) => ({ path: `/bin/${c}` }),
+      runProbe: (_cli: string, _args: string[], env: Record<string, string>, cwd: string) => {
+        const home = env.CODEX_HOME ?? "";
+        spawn = { cwd, home };
+        // The table's auth.command runs `agent auth --get` with this env, and its catalog self-heal
+        // writes the home $CODEX_HOME names: it must neither add the reference here nor ledger it.
+        process.env.CODEX_HOME = home;
+        syncCodexCatalogReference();
+        probeDoc = asRecord(parse(readFileSync(join(home, "config.toml"), "utf8")));
+        return { ok: true };
+      },
+      retryDelayMs: 0,
+      fetchImpl: () =>
+        Promise.resolve(new Response(JSON.stringify({ data: [catalog] }), { status: 200 })),
     },
-    retryDelayMs: 0,
-    fetchImpl: () =>
-      Promise.resolve(new Response(JSON.stringify({ data: [catalog] }), { status: 200 })),
-  });
+  );
   delete process.env.CODEX_HOME;
   expect(verdict).toBe(true);
   const seen = spawn as unknown as { cwd: string; home: string };

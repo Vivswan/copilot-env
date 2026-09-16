@@ -14,6 +14,7 @@ export const DAEMON_SHIM_FILES = [
   "daemon_lock_preload.ts",
   "token_argv_preload.ts",
   "daemon_runtime_preload.ts",
+  "copilot_host_preload.ts",
   "pat_passthrough_preload.ts",
   "idle_watchdog_preload.ts",
   "log_mute_preload.ts",

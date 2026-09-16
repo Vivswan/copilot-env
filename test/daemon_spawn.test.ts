@@ -26,7 +26,10 @@ import {
   resolveCopilotApiEntry,
 } from "../src/copilot_api/process.ts";
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
-import { DAEMON_INTEGRATION_ID_ENV } from "../src/copilot_api/integration_identity.ts";
+import {
+  DAEMON_COPILOT_HOST_ENV,
+  DAEMON_INTEGRATION_ID_ENV,
+} from "../src/copilot_api/integration_identity.ts";
 import { DRAIN_DEADLINE_MS } from "../src/scripts/daemon_shutdown.ts";
 import { PROXY_PACKAGE_NAME } from "../src/copilot_api/version.ts";
 import {
@@ -71,6 +74,7 @@ const BASE: DaemonSpec = {
   credential: { kind: "none" },
   idleWatchdog: false,
   muteProxyLogs: false,
+  copilotHost: null,
   entry: {
     kind: "package",
     specifier: PROXY_PACKAGE_NAME,
@@ -137,6 +141,45 @@ test("the watchdog and log-mute shims load only when their config knob is on", (
     "idle_watchdog_preload.ts",
     "log_mute_preload.ts",
   ]);
+});
+
+test("a pinned Copilot host loads the copilot-host shim (before the PAT shim) and rides in its env var; unpinned deletes an inherited one", () => {
+  const host = "https://api.business.githubcopilot.com";
+  const pinned: DaemonSpec = { ...BASE, copilotHost: host };
+  expect(preloads(pinned)).toEqual([
+    "node_compat_preload.ts",
+    "daemon_lock_preload.ts",
+    "daemon_runtime_preload.ts",
+    "copilot_host_preload.ts",
+  ]);
+  expect(
+    preloads({
+      ...pinned,
+      credential: { kind: "pat", token: "ghp_x", integrationId: "copilot-developer-cli" },
+    }),
+  ).toEqual([
+    "node_compat_preload.ts",
+    "daemon_lock_preload.ts",
+    "token_argv_preload.ts",
+    "daemon_runtime_preload.ts",
+    "copilot_host_preload.ts",
+    "pat_passthrough_preload.ts",
+  ]);
+  expect(daemonEnvironment(pinned, {})[DAEMON_COPILOT_HOST_ENV]).toBe(host);
+  // copilot-api's own host override would beat the rewritten state: a pinned daemon drops it.
+  const enterprise = {
+    COPILOT_API_ENTERPRISE_URL: "ghe.example",
+    COPILOT_API_OAUTH_APP: "opencode",
+  };
+  expect(daemonEnvironment(pinned, enterprise).COPILOT_API_ENTERPRISE_URL).toBeUndefined();
+  // ... and the opencode app selector, which answers generic before the rewritten state.
+  expect(daemonEnvironment(pinned, enterprise).COPILOT_API_OAUTH_APP).toBeUndefined();
+  expect(daemonEnvironment(BASE, enterprise).COPILOT_API_ENTERPRISE_URL).toBe("ghe.example");
+  expect(daemonEnvironment(BASE, enterprise).COPILOT_API_OAUTH_APP).toBe("opencode");
+  // Set-or-delete: a pin left in the parent's environment must not outlive the spec that set it.
+  const inherited = { [DAEMON_COPILOT_HOST_ENV]: "https://stale.example" };
+  expect(daemonEnvironment(BASE, inherited)[DAEMON_COPILOT_HOST_ENV]).toBeUndefined();
+  expect(preloads(BASE)).not.toContain("copilot_host_preload.ts");
 });
 
 test("with no float record the argv runs the mapped package, offline-only, ending in start", () => {

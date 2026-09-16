@@ -45,13 +45,32 @@ agent config --del idle-timeout       # revert one to its default
 
 ## Credential
 
-| Key              | Default                       | Effect                                                                                |
-| ---------------- | ----------------------------- | ------------------------------------------------------------------------------------- |
-| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`)                            |
-| `passthrough`    | `auto`                        | PAT passthrough: `auto` / `on` / `off`                                                |
-| `static-key`     | `none`                        | Whose config carries the credential value itself: `none` / `claude` / `codex` / `all` |
+| Key              | Default                       | Effect                                                                                                                                                                                                                                                                               |
+| ---------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `copilot-host`   | `auto`                        | The Copilot API host every mode uses (Direct configs, Claude Desktop, the proxy, every probe): `auto` probes per credential (a proxy with no stored credential is not pinned), or an `https://` origin (one outside githubcopilot.com needs a build whose network grant includes it) |
+| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`)                                                                                                                                                                                                                           |
+| `passthrough`    | `auto`                        | PAT passthrough: `auto` / `on` / `off`                                                                                                                                                                                                                                               |
+| `static-key`     | `none`                        | Whose config carries the credential value itself: `none` / `claude` / `codex` / `all`                                                                                                                                                                                                |
 
 `integration-id` is surveyed and pinned by `agent auth --identities` / `--identity` ([client identity](authentication.md#client-identity)); `passthrough` is explained under [PAT passthrough](authentication.md#pat-passthrough) and `static-key` under [static key](authentication.md#static-key).
+
+### Copilot host
+
+`auto` resolves the host per credential. The client identity is settled first (`integration-id`, probed on `https://api.githubcopilot.com` as before), then one `GET /models` under that identity's headers decides:
+
+- the account's designated host (`endpoints.api` of `api.github.com/copilot_internal/user`, one of `api.individual.` / `api.business.` / `api.enterprise.githubcopilot.com`) when it answers 403, 404, 5xx, or fails at the network level; a PAT's identity is then probed again on that host;
+- `https://api.githubcopilot.com` again when that lookup fails too;
+- `https://api.githubcopilot.com` on any other answer: 2xx serves, 400 is an identity rejection and 401 a bad token (identical on every host), a transient 408 or 429 says nothing about the host.
+
+A literal `https://` origin skips the probe (a GitHub Enterprise Server serves Copilot at `https://copilot-api.<ghe-domain>`). Either way one host serves everything after the identity probe:
+
+- the Direct `base_url` / `ANTHROPIC_BASE_URL` and the Claude Desktop gateway;
+- the proxy daemon's upstream (a pinned daemon ignores an inherited `COPILOT_API_ENTERPRISE_URL`);
+- every catalog, discovery, smoke, and web-search request.
+
+A named profile caches the resolved host beside its identity verdict and replays it offline until its credential changes. `agent auth --identities` shows the hosts as columns and marks the one in use.
+
+Applies at the next wiring pass (`agent init`, `agent codex`, `agent claude`, `agent profile`) and the next proxy start. A proxy started with no stored credential (it logs in itself) keeps the host GitHub names for that login unless a literal is set.
 
 ## Codex
 

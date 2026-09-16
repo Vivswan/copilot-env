@@ -752,11 +752,12 @@ function keptCredential(state: CopilotEnvState, name: ProfileName): ProvisionedC
   return credential.kind === "none" ? null : credential;
 }
 
-/** The bundled identity was derived under the bundle's own credential, so it is replayed only
- *  when that exact token landed (a direct profile then wires without a network probe), keyed to
- *  that credential so a concurrent rotation drops it rather than misattaching it. gh-cli and
- *  kept slots hold a DIFFERENT credential, so nothing is replayed for them: a kept slot wires off
- *  whatever verdict it already cached (commitProfile keeps it while the credential is unchanged),
+/** The bundled identity was derived under the bundle's own credential, so it is carried over only
+ *  when that exact token landed, keyed to that credential so a concurrent rotation drops it rather
+ *  than misattaching it. It arrives without a host pair, so a direct profile tries it FIRST on the
+ *  host in use and bakes it once accepted there (replayableIdentity `preferred`), never on trust.
+ *  gh-cli and kept slots hold a DIFFERENT credential, so nothing is carried for them: a kept slot
+ *  wires off the pair it already cached (commitProfile keeps it while the credential is unchanged),
  *  and only an uncached one costs a wire-time probe. */
 function replayBundledIdentity(
   state: CopilotEnvState,

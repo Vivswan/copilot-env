@@ -11,9 +11,10 @@
 
 const TOKEN_FLAG = "--github-token";
 const EXCHANGE_PATH = "/copilot_internal/v2/token";
-// Duplicates DAEMON_INTEGRATION_ID_ENV (integration_identity.ts): this preload stays import-free
-// so it drags no CLI module into the daemon.
+// Duplicates DAEMON_INTEGRATION_ID_ENV and DAEMON_COPILOT_HOST_ENV (integration_identity.ts): this
+// preload stays import-free so it drags no CLI module into the daemon.
 const INTEGRATION_ID_ENV = "COPILOT_ENV_DAEMON_INTEGRATION_ID";
+const COPILOT_HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
 const INTEGRATION_ID_HEADER = "Copilot-Integration-Id";
 // A PAT never expires the way a minted token does; a six-hour refresh leaves copilot-api's refresh
 // loop re-running rarely, and each re-run only hits this interceptor again.
@@ -24,12 +25,15 @@ function tokenFromArgv(): string | null {
   return i >= 0 && i + 1 < process.argv.length ? (process.argv[i + 1] ?? null) : null;
 }
 
-/** The hosts that gate on the integration id: api., api.business., api.enterprise. Exported for
- *  tests; importing without `--github-token` in argv installs nothing. */
-export function isCopilotApiHost(url: string): boolean {
+/** The hosts that gate on the integration id: api., api.business., api.enterprise., plus the
+ *  `copilot-host` origin the daemon is pinned to (a GHE Copilot host lives off githubcopilot.com).
+ *  Exported for tests; importing without `--github-token` in argv installs nothing. */
+export function isCopilotApiHost(url: string, configuredHost: string | null = null): boolean {
   try {
-    const host = new URL(url).hostname;
-    return host === "githubcopilot.com" || host.endsWith(".githubcopilot.com");
+    const parsed = new URL(url);
+    return parsed.hostname === "githubcopilot.com" ||
+      parsed.hostname.endsWith(".githubcopilot.com") ||
+      (configuredHost !== null && parsed.origin === configuredHost);
   } catch {
     return false;
   }
@@ -52,6 +56,7 @@ export function headersWithIntegrationId(
 const token = tokenFromArgv();
 if (token !== null) {
   const integrationId = process.env[INTEGRATION_ID_ENV]?.trim() || null;
+  const configuredHost = process.env[COPILOT_HOST_ENV]?.trim() || null;
   const originalFetch = globalThis.fetch;
   const wrapped = (
     input: Parameters<typeof fetch>[0],
@@ -67,7 +72,7 @@ if (token !== null) {
         }),
       );
     }
-    if (integrationId !== null && isCopilotApiHost(url)) {
+    if (integrationId !== null && isCopilotApiHost(url, configuredHost)) {
       return originalFetch(input, {
         ...init,
         headers: headersWithIntegrationId(input, init, integrationId),

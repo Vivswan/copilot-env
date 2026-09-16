@@ -218,6 +218,7 @@ export function launchFakeDaemon(home: string, port: number): number {
     credential: { kind: "none" },
     idleWatchdog: false,
     muteProxyLogs: false,
+    copilotHost: null,
     entry: {
       kind: "file",
       path: join(ROOT, "test", "copilot-api-fake.mjs"),

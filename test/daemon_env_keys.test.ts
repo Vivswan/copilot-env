@@ -1,6 +1,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { DAEMON_INTEGRATION_ID_ENV } from "../src/copilot_api/integration_identity.ts";
+import {
+  DAEMON_COPILOT_HOST_ENV,
+  DAEMON_INTEGRATION_ID_ENV,
+} from "../src/copilot_api/integration_identity.ts";
 import { DAEMON_GH_TOKEN_ENV } from "../src/copilot_api/process.ts";
 import { ROOT } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
@@ -29,6 +32,18 @@ const PINNED_PAIRS = [
     keyName: "DAEMON_INTEGRATION_ID_ENV",
     shim: "pat_passthrough_preload.ts",
     localConst: "INTEGRATION_ID_ENV",
+  },
+  {
+    key: DAEMON_COPILOT_HOST_ENV,
+    keyName: "DAEMON_COPILOT_HOST_ENV",
+    shim: "copilot_host_preload.ts",
+    localConst: "COPILOT_HOST_ENV",
+  },
+  {
+    key: DAEMON_COPILOT_HOST_ENV,
+    keyName: "DAEMON_COPILOT_HOST_ENV",
+    shim: "pat_passthrough_preload.ts",
+    localConst: "COPILOT_HOST_ENV",
   },
 ] as const;
 

@@ -8,7 +8,7 @@
 // The launcher functions ride here rather than in an rc block, so enabling `launchers` takes effect
 // on the next `agent` command, whose wrapper evals this output; redefining a function is
 // idempotent. Disabling emits nothing, so functions a shell already defined live until it exits.
-import { BASE_URL_ENV, DIRECT_BASE_URL, inspectClaudeWiring } from "../claude/config.ts";
+import { BASE_URL_ENV, inspectClaudeWiring } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import {
   codexHostDriftFrom,
@@ -19,6 +19,7 @@ import {
 } from "../codex/host.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
+import { isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { readTextResult } from "../utils/fs.ts";
@@ -73,7 +74,7 @@ export function managedClaudeBaseUrl(profile: Profile): ManagedEnvValue {
   if (claude.otherReason === "read-error") return null;
   const proxyUrl = claude.providerMode === "proxy" &&
       claude.baseUrl &&
-      claude.baseUrl !== DIRECT_BASE_URL &&
+      !isDirectBaseUrl(claude.baseUrl) &&
       isLocalProxyUrl(claude.baseUrl)
     ? claude.baseUrl
     : null;

@@ -6,9 +6,11 @@ import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
+  DEFAULT_COPILOT_API_BASE,
   INTEGRATION_ID_HEADER,
   type ProbeFetch,
   resetIntegrationIdentityCache,
+  selectPassthroughIdentityAndHost,
   setIntegrationProbeFetch,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
@@ -105,16 +107,16 @@ async function loginMustNotRun(): Promise<void> {
   throw new Error("interactive login must not run for this case");
 }
 
-function probeSpy(id: string): {
+function probeSpy(id: string, apiBase = DEFAULT_COPILOT_API_BASE): {
   calls: Array<{ token: string; pinned: string | null }>;
-  resolve: (token: string, opts?: { pinned?: string | null }) => Promise<string>;
+  resolve: typeof selectPassthroughIdentityAndHost;
 } {
   const calls: Array<{ token: string; pinned: string | null }> = [];
   return {
     calls,
     resolve: (token, opts = {}) => {
       calls.push({ token, pinned: opts.pinned ?? null });
-      return Promise.resolve(id);
+      return Promise.resolve({ integrationId: id, apiBase });
     },
   };
 }
@@ -160,11 +162,11 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
   new Credential().store("gh-token", "ghp_stored_pat");
   const probe = probeSpy(COPILOT_CLI_INTEGRATION_ID);
 
-  const result = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
     interactiveLogin: loginMustNotRun,
     isTTY: true, // a resolved token never prompts, even on a TTY
-    resolveIntegrationId: probe.resolve,
-  });
+    selectIdentity: probe.resolve,
+  })).credential;
 
   expect(result).toEqual({
     kind: "pat",
@@ -172,6 +174,15 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
     integrationId: COPILOT_CLI_INTEGRATION_ID,
   });
   expect(probe.calls).toEqual([{ token: "ghp_stored_pat", pinned: null }]);
+  // The daemon's host is the selection's own: the host its identity was accepted on, forwarded,
+  // not assumed (the spy names a host the launch would never pick on its own).
+  const moved = probeSpy(COPILOT_CLI_INTEGRATION_ID, "https://api.enterprise.githubcopilot.com");
+  const { copilotHost } = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+    interactiveLogin: loginMustNotRun,
+    isTTY: true,
+    selectIdentity: moved.resolve,
+  });
+  expect(copilotHost).toBe("https://api.enterprise.githubcopilot.com");
 });
 
 test("resolveLaunchCredential: the copilot device-flow token skips passthrough AND the probe", async () => {
@@ -179,14 +190,16 @@ test("resolveLaunchCredential: the copilot device-flow token skips passthrough A
   new Credential().store("copilot", "gho_device_flow");
   const probe = probeSpy(COPILOT_CLI_INTEGRATION_ID);
 
-  const result = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
     interactiveLogin: loginMustNotRun,
     isTTY: false,
-    resolveIntegrationId: probe.resolve,
-  });
+    selectIdentity: probe.resolve,
+  })).credential;
 
   expect(result).toEqual({ kind: "token", token: "gho_device_flow" });
-  expect(probe.calls).toEqual([]);
+  // No identity probe: the daemon sends its own vscode-chat, so the selector is only asked for the
+  // host, with that identity pinned.
+  expect(probe.calls).toEqual([{ token: "gho_device_flow", pinned: VSCODE_CHAT_INTEGRATION_ID }]);
 });
 
 test("resolveLaunchCredential: `passthrough off` overrides even a PAT (and skips the probe)", async () => {
@@ -195,14 +208,16 @@ test("resolveLaunchCredential: `passthrough off` overrides even a PAT (and skips
   new CopilotEnvConfig().set({ passthrough: "off" });
   const probe = probeSpy(COPILOT_CLI_INTEGRATION_ID);
 
-  const result = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
     interactiveLogin: loginMustNotRun,
     isTTY: false,
-    resolveIntegrationId: probe.resolve,
-  });
+    selectIdentity: probe.resolve,
+  })).credential;
 
   expect(result).toEqual({ kind: "token", token: "ghp_forced_off" });
-  expect(probe.calls).toEqual([]);
+  // No identity probe: the daemon sends its own vscode-chat, so the selector is only asked for the
+  // host, with that identity pinned.
+  expect(probe.calls).toEqual([{ token: "ghp_forced_off", pinned: VSCODE_CHAT_INTEGRATION_ID }]);
 });
 
 test("resolveLaunchCredential: `passthrough on` forces the shim for a non-PAT token; the probe skips non-PATs without network", async () => {
@@ -211,10 +226,10 @@ test("resolveLaunchCredential: `passthrough on` forces the shim for a non-PAT to
   new CopilotEnvConfig().set({ passthrough: "on" });
 
   // No resolver injected: the real one skips non-PAT shapes without a fetch and returns the daemon default.
-  const result = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
     interactiveLogin: loginMustNotRun,
     isTTY: false,
-  });
+  })).credential;
 
   expect(result).toEqual({
     kind: "pat",
@@ -229,11 +244,11 @@ test("resolveLaunchCredential: a pinned integration-id reaches the probe as the 
   new CopilotEnvConfig().set({ integrationId: "copilot-developer-sandbox" });
   const probe = probeSpy("copilot-developer-sandbox");
 
-  const result = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
     interactiveLogin: loginMustNotRun,
     isTTY: false,
-    resolveIntegrationId: probe.resolve,
-  });
+    selectIdentity: probe.resolve,
+  })).credential;
 
   expect(result).toEqual({
     kind: "pat",
@@ -261,10 +276,10 @@ test("resolveLaunchCredential: PAT + real probe -- the injected fetch's accepted
   };
   setIntegrationProbeFetch(stub);
 
-  const result = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
     interactiveLogin: loginMustNotRun,
     isTTY: false,
-  });
+  })).credential;
 
   expect(result).toEqual({
     kind: "pat",
@@ -277,12 +292,12 @@ test("resolveLaunchCredential: nothing resolved + no TTY -> no login, no token, 
   tmpHome();
   let loginCalls = 0;
 
-  const result = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
     interactiveLogin: async () => {
       loginCalls++;
     },
     isTTY: false,
-  });
+  })).credential;
 
   expect(loginCalls).toBe(0);
   expect(result).toEqual({ kind: "none" });
@@ -292,13 +307,13 @@ test("resolveLaunchCredential: nothing resolved + TTY -> logs in, then resolves 
   tmpHome();
   const loggedInto: Profile[] = [];
 
-  const result = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
     interactiveLogin: async (profile) => {
       loggedInto.push(profile);
       new Credential().store("copilot", "gho_after_login");
     },
     isTTY: true,
-  });
+  })).credential;
 
   expect(loggedInto).toEqual([null]);
   // copilot provider: exchange-capable, so a plain token and no passthrough shim.
@@ -310,12 +325,12 @@ test("resolveLaunchCredential: a named profile NEVER falls back to the default c
   new Credential().store("gh-token", "ghp_default_only");
   let loginCalls = 0;
 
-  const result = await resolveLaunchCredential(WORK, new CopilotEnvConfig(), {
+  const result = (await resolveLaunchCredential(WORK, new CopilotEnvConfig(), {
     interactiveLogin: async () => {
       loginCalls++;
     },
     isTTY: false,
-  });
+  })).credential;
 
   expect(result).toEqual({ kind: "none" }); // hard-empty, not the default token
   expect(loginCalls).toBe(0);

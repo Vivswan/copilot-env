@@ -2,11 +2,16 @@
 // --check` and the health engine share these lines and repair commands so the two cannot disagree.
 import { basename, join } from "node:path";
 import type { CredentialWiring, ManagedMode } from "../agents/configure.ts";
-import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import {
+  expectedDirectHost,
+  type ProfileMode,
+  replayableIdentity,
+} from "../copilot_api/env_state.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
   INTEGRATION_ID_HEADER,
+  isDirectBaseUrl,
 } from "../copilot_api/integration_identity.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
@@ -201,10 +206,10 @@ function entryVerdict(
     return stale("the config file could not be read or parsed");
   }
   if (!isRecord(doc)) return stale("the config file is not a JSON object");
-  const expectedBase = target.mode === "direct"
-    ? DEFAULT_COPILOT_API_BASE
-    : proxyLoopbackOrigin(copilotApiResolvePort(target.profile));
   const gateway = doc["inferenceGatewayBaseUrl"];
+  const expectedBase = target.mode === "direct"
+    ? expectedDirectGateway(target.profile, gateway)
+    : proxyLoopbackOrigin(copilotApiResolvePort(target.profile));
   if (!sameBaseUrl(gateway, expectedBase)) {
     return stale(`gateway ${String(gateway)}, expected ${expectedBase}`);
   }
@@ -213,7 +218,11 @@ function entryVerdict(
   // Wired means the QUIET rewire (recorded rows, the replayed identity, the live codex User-Agent,
   // no probe) would be a byte-identical no-op: the same bytes saveJsonIfChanged compares.
   const write: ManagedMode = target.mode === "direct"
-    ? { mode: "direct", directIntegrationId: expectedIntegrationId(target.profile, doc) }
+    ? {
+      mode: "direct",
+      directIntegrationId: expectedIntegrationId(target.profile, doc),
+      directBaseUrl: expectedBase,
+    }
     : { mode: "proxy" };
   const rewrite = desktopConfigPayload({
     ...write,
@@ -277,15 +286,26 @@ function expectedCredential(
   return { kind: "command", helperPath: helper };
 }
 
-/** The identity a rewire would bake, without probing:
- *    config pin -> the slot's persisted verdict (the replay every rewire uses)
- *    -> the header the document already carries (never probed yet) */
+/** The gateway a rewire would bake without probing (expectedDirectHost), else the recorded host
+ *  while it has the Direct shape (nothing cached: a rewire would probe, and this read path does not). */
+function expectedDirectGateway(profile: Profile, gateway: unknown): string {
+  return expectedDirectHost(profile) ??
+    (typeof gateway === "string" && isDirectBaseUrl(gateway)
+      ? new URL(gateway).origin
+      : DEFAULT_COPILOT_API_BASE);
+}
+
+/** The identity a rewire would bake without probing (replayableIdentity): the config pin, else the
+ *  slot's valid cached pair; anything else a rewire probes, so the header the document already
+ *  carries stands as expected. */
 function expectedIntegrationId(profile: Profile, doc: Record<string, unknown>): string | null {
-  const pin = new CopilotEnvConfig().pinnedIntegrationId();
+  const config = new CopilotEnvConfig();
+  const pin = config.pinnedIntegrationId();
   if (pin !== null) return pin;
-  const slot = new CopilotEnvState().readProfileSlot(profile).integrationIdentity;
-  if (slot !== null) return slot === CODEX_IDENTITY_NAME ? null : slot;
-  return recordedHeader(doc, INTEGRATION_ID_HEADER);
+  const rule = replayableIdentity(profile, null, config.copilotHost());
+  return rule.kind === "replay"
+    ? rule.directIntegrationId
+    : recordedHeader(doc, INTEGRATION_ID_HEADER);
 }
 
 function recordedHeader(doc: Record<string, unknown>, name: string): string | null {

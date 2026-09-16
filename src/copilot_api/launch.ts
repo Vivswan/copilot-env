@@ -21,7 +21,11 @@ import {
   projectedProxyConfig,
   type ProxyConfigPath,
 } from "./env_config.ts";
-import { resolvePassthroughIntegrationId, usePatPassthrough } from "./integration_identity.ts";
+import {
+  selectPassthroughIdentityAndHost,
+  usePatPassthrough,
+  VSCODE_CHAT_INTEGRATION_ID,
+} from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
 import {
   allDaemonHomes,
@@ -599,7 +603,16 @@ export interface LaunchCredentialDeps {
   credential?: Credential;
   /** Default: process.stdin.isTTY. */
   isTTY?: boolean;
-  resolveIntegrationId?: typeof resolvePassthroughIntegrationId;
+  selectIdentity?: typeof selectPassthroughIdentityAndHost;
+}
+
+/** What a daemon launch resolved: the credential it runs with and the Copilot host it is pinned
+ *  to, one pair, so the daemon never sends an identity to a host that was not judged under it. Null
+ *  host = unpinned: a credential-less daemon logs in inside the proxy, and with `auto` there is
+ *  nothing to probe with, so GitHub's answer for that login stands. */
+export interface DaemonLaunchAuth {
+  credential: DaemonCredential;
+  copilotHost: string | null;
 }
 
 /**
@@ -611,10 +624,11 @@ export async function resolveLaunchCredential(
   profile: Profile,
   config: CopilotEnvConfig = new CopilotEnvConfig(),
   deps: LaunchCredentialDeps,
-): Promise<DaemonCredential> {
+): Promise<DaemonLaunchAuth> {
   const credential = deps.credential ?? new Credential(undefined, profile);
   const isTTY = deps.isTTY ?? Boolean(process.stdin.isTTY);
-  const resolveIntegrationId = deps.resolveIntegrationId ?? resolvePassthroughIntegrationId;
+  const selectIdentity = deps.selectIdentity ?? selectPassthroughIdentityAndHost;
+  const literal = config.copilotHost();
   // Passed as `--github-token`, copilot-api holds the token in memory and writes no github_token file
   // of its own, so the proxy stays on our single source of truth.
   let githubToken = credential.resolve() ?? undefined;
@@ -639,16 +653,27 @@ export async function resolveLaunchCredential(
   } else if (forcePassthrough === false) {
     consola.info("Token passthrough off: using the standard editor token exchange.");
   }
-  if (githubToken === undefined) return { kind: "none" };
-  if (!patPassthrough) return { kind: "token", token: githubToken };
+  if (githubToken === undefined) return { credential: { kind: "none" }, copilotHost: literal };
+  if (!patPassthrough) {
+    // The daemon exchanges the token itself and sends its own vscode-chat whatever the pin, so the
+    // host is judged under that identity alone (the pin is the daemon's default: no selection).
+    const { apiBase } = await selectIdentity(githubToken, {
+      pinned: VSCODE_CHAT_INTEGRATION_ID,
+      fixedHost: literal,
+    });
+    return { credential: { kind: "token", token: githubToken }, copilotHost: apiBase };
+  }
   // A passthrough bearer is accepted only under an identity matching its token class (a fine-grained
-  // PAT needs `copilot-developer-cli`; copilot-api sends `vscode-chat`). Resolved BEFORE launching, so
+  // PAT needs `copilot-developer-cli`; copilot-api sends `vscode-chat`). Selected BEFORE launching, so
   // an unusable credential fails here with the real reason instead of an opaque daemon-side
   // "Failed to get models"; the passthrough preload rewrites the header on the daemon's upstream calls.
-  const integrationId = await resolveIntegrationId(githubToken, {
+  // Identity and host come as one pair (selectPassthroughIdentityAndHost): the host in use, and the
+  // identity that host accepts.
+  const { integrationId, apiBase } = await selectIdentity(githubToken, {
     pinned: config.pinnedIntegrationId(),
+    fixedHost: literal,
   });
-  return { kind: "pat", token: githubToken, integrationId };
+  return { credential: { kind: "pat", token: githubToken, integrationId }, copilotHost: apiBase };
 }
 
 // --- the configured daemon spawn ------------------------------------------------------
@@ -686,12 +711,14 @@ export function spawnConfiguredDaemon(opts: {
   profile: Profile;
   paths: CopilotApiPaths;
   credential: DaemonCredential;
+  /** resolveLaunchCredential's host for `credential` (one pair), so the spawn never re-probes. */
+  copilotHost: string | null;
   /** Only ensureProxyFloor mints one, so a spawn without the gate does not compile; every bind-race
    *  relaunch runs exactly what the floor check judged. */
   entry: FloorCheckedEntry;
   config?: CopilotEnvConfig;
 }): SpawnedDaemon {
-  const { port, logFile, profile, paths, credential, entry } = opts;
+  const { port, logFile, profile, paths, credential, copilotHost, entry } = opts;
   const config = opts.config ?? new CopilotEnvConfig();
   const denoBin = resolveDenoBin();
   const daemonEnv = daemonLifecycleEnv(profile, paths);
@@ -714,6 +741,7 @@ export function spawnConfiguredDaemon(opts: {
       home: paths.home,
       env: daemonEnv,
       credential,
+      copilotHost,
       idleWatchdog,
       muteProxyLogs,
       entry,

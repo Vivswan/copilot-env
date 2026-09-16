@@ -638,7 +638,8 @@ test("the Copilot seed asks the direct catalog as Codex itself, not as the proxy
   // The generated catalog is what Codex's OWN requests are then pinned to, and Copilot gates the
   // list per identity: a list fetched as the daemon (vscode-chat) can advertise models Codex is
   // refused, or miss ones it is served. So the seed's GET carries the exact header set the baked
-  // config sends: the versioned codex_exec UA, Openai-Intent, no id for the default identity.
+  // config sends: the versioned codex_exec UA, Openai-Intent, no id for the default identity; the
+  // `copilot-host auto` probe before it sends the same set (the host is judged as Codex too).
   isolate();
   const sent: unknown[] = [];
   const realFetch = globalThis.fetch;
@@ -658,9 +659,8 @@ test("the Copilot seed asks the direct catalog as Codex itself, not as the proxy
   } finally {
     globalThis.fetch = realFetch;
   }
-  expect(sent).toEqual([
-    { ...directClientHeaders(codexUserAgent()), Authorization: "Bearer gho_x" },
-  ]);
+  const asCodex = { ...directClientHeaders(codexUserAgent()), Authorization: "Bearer gho_x" };
+  expect(sent).toEqual([asCodex, asCodex]);
 });
 
 test("generateCodexModelCatalog writes the patched catalog file", async () => {

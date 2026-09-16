@@ -275,6 +275,9 @@ export type CodexFacts = CodexWiringStatus & {
   directNeedsNoGh: boolean;
   /** Present only for a static wiring. */
   bakedCredential?: BakedCredentialFreshness;
+  /** Direct only: the host a rewire would bake without probing (expectedDirectHost, env_state.ts);
+   *  null = the baked host stands. Optional so hand-built fixtures stay valid. */
+  expectedDirectHost?: string | null;
 };
 
 /** Claude wiring facts: the home + settings.json contract + gh-auth (for direct). */
@@ -293,6 +296,8 @@ export type ClaudeFacts = ClaudeWiringStatus & {
   directUsesToken: boolean;
   /** Present only for a static wiring. */
   bakedCredential?: BakedCredentialFreshness;
+  /** Direct only: the host a rewire would bake without probing (see CodexFacts). */
+  expectedDirectHost?: string | null;
 };
 
 export interface CodexHostFacts {

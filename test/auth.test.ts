@@ -32,6 +32,7 @@ import {
   COPILOT_CLI_INTEGRATION_ID,
   COPILOT_SANDBOX_INTEGRATION_ID,
   INTEGRATION_ID_HEADER,
+  type ProbeFetch,
   setIntegrationProbeFetch,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
@@ -439,35 +440,51 @@ test("auth: --provider cannot combine with a sub-action (never silently dropped)
 
 // --- integration identities -------------------------------------------------
 
-/** A PAT the CLI identity accepts on both hosts (a 5-model Direct catalog, 37 on the account host),
- *  that the sandbox accepts on Direct only (2 models), and that vscode-chat and the default Direct
- *  identity reject. */
-function stubIdentitySurvey(): void {
-  setIntegrationProbeFetch((input, init) => {
+/** A PAT the CLI identity accepts on both hosts (a 5-model generic catalog under the agents' header
+ *  set, 11 under the daemon's id-only set, 37 on the account host), that the sandbox accepts on the
+ *  generic host only (2 models), and that vscode-chat and the default Direct identity reject. A
+ *  `copilot-host` literal host accepts every identity (9 models). */
+const CONFIGURED_HOST = "https://copilot.example";
+
+/** The stub the identities tests install (stubIdentitySurvey), kept so a test can wrap it. */
+let stubbedSurveyFetch: ProbeFetch = () => Promise.reject(new Error("no survey stub installed"));
+
+function stubIdentitySurvey(designated = "https://api.enterprise.githubcopilot.com"): void {
+  stubbedSurveyFetch = (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(
-        new Response(
-          JSON.stringify({ endpoints: { api: "https://api.enterprise.githubcopilot.com" } }),
-          { status: 200 },
-        ),
+        new Response(JSON.stringify({ endpoints: { api: designated } }), { status: 200 }),
       );
     }
-    const enterprise = url.startsWith("https://api.enterprise.");
     const catalog = (size: number): Response =>
       new Response(JSON.stringify({ data: Array.from({ length: size }, () => ({})) }), {
         status: 200,
       });
-    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
-    if (id === COPILOT_CLI_INTEGRATION_ID) return Promise.resolve(catalog(enterprise ? 37 : 5));
+    if (new URL(url).origin === CONFIGURED_HOST) return Promise.resolve(catalog(9));
+    const enterprise = url.startsWith("https://api.enterprise.");
+    const headers = new Headers(init?.headers);
+    const id = headers.get(INTEGRATION_ID_HEADER);
+    // The daemon's header set carries the id alone (no User-Agent): Copilot gates the catalog per
+    // header set, so the same id lists a different catalog for it.
+    const daemon = !headers.has("User-Agent");
+    if (id === COPILOT_CLI_INTEGRATION_ID) {
+      return Promise.resolve(catalog(enterprise ? 37 : daemon ? 11 : 5));
+    }
     if (id === COPILOT_SANDBOX_INTEGRATION_ID && !enterprise) return Promise.resolve(catalog(2));
-    return Promise.resolve(
-      new Response("Personal Access Tokens are not supported for this endpoint", { status: 400 }),
-    );
-  });
+    // The daemon's set draws a differently worded 400 for the sandbox id on the account host: same
+    // kind as the agents' rejection, another body, so the reasons list must carry both.
+    const body = daemon && id === COPILOT_SANDBOX_INTEGRATION_ID && enterprise
+      ? "Personal Access Tokens are not supported by this client"
+      : "Personal Access Tokens are not supported for this endpoint";
+    return Promise.resolve(new Response(body, { status: 400 }));
+  };
+  setIntegrationProbeFetch(stubbedSurveyFetch);
 }
 
-test("auth --identities stars what the agent configs bake, probes the pin, and names the gap to the next rewire", async () => {
+const PAT_REJECTION = "400 Personal Access Tokens are not supported for this endpoint";
+
+test("auth --identities: one column per host, marks what the configs bake and a launch sends, and names the gap to the next rewire", async () => {
   const { claudeHome, codexHome } = isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
   stubIdentitySurvey();
@@ -475,30 +492,52 @@ test("auth --identities stars what the agent configs bake, probes the pin, and n
   const columns = process.env.COLUMNS;
   process.env.COLUMNS = "200";
   try {
-    // No agent wired Direct: nothing to star there; the Proxy star is what the next start sends.
+    // No agent wired Direct: nothing to star; `+` is what the next start sends on the host in use,
+    // which for this PAT (accepted under the CLI id on the generic host) is the generic host. The
+    // daemon's header set is surveyed against the SAME columns: one account lookup for both, and
+    // every (host, header set) is asked ONCE across the survey and the picks' selection, so the
+    // table and the marks can never come from different answers.
+    const requests = new Map<string, number>();
+    const surveyFetch = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const headers = new Headers(init?.headers);
+      const key = `${url} ${headers.get(INTEGRATION_ID_HEADER) ?? "-"} ${
+        headers.has("User-Agent") ? "agents" : "daemon"
+      }`;
+      requests.set(key, (requests.get(key) ?? 0) + 1);
+      return stubbedSurveyFetch(input, init);
+    };
+    setIntegrationProbeFetch(surveyFetch);
     const out = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
-    expect(out.split("\n")).toEqual([
-      "integration-id: auto",
-      "* = in effect today: Direct as the agent configs bake it, Proxy as a fresh daemon launch sends it",
-      "identity                   Direct (api.githubcopilot.com)  Proxy (api.enterprise.githubcopilot.com)  note",
-      "-------------------------  ------------------------------  ----------------------------------------  " +
-      "------------------------------------------------------------",
-      "codex                      rejected (400)                  -                                         " +
-      "Direct default: no Copilot-Integration-Id header (auto only)",
-      "copilot-developer-cli      accepted (5 models)             accepted (37 models) *                    " +
-      "GitHub Copilot CLI; accepts fine-grained PATs",
-      "copilot-developer-sandbox  accepted (2 models)             rejected (400)",
-      "vscode-chat                -                               rejected (400)                            " +
-      "proxy default (copilot-api's own identity)",
+    expect([...requests.entries()].filter(([, n]) => n !== 1)).toEqual([]);
+    // The account lookup (no id, copilot-env's own User-Agent) happened exactly once.
+    expect(requests.get("https://api.github.com/copilot_internal/user - agents")).toBe(1);
+    setIntegrationProbeFetch(stubbedSurveyFetch);
+    expect(out).toContain("integration-id: auto");
+    expect(out).toContain("copilot-host: auto (api.githubcopilot.com in use)");
+    expect(out).toMatch(
+      /^identity\s+api\.githubcopilot\.com \(in use\)\s+api\.enterprise\.githubcopilot\.com \(account\)\s+note$/m,
+    );
+    expect(out).toMatch(/^codex\s+rejected \(400\)\s+rejected \(400\)\s+Direct default/m);
+    expect(out).toMatch(
+      /^copilot-developer-cli\s+accepted \(11 models\) \+\s+accepted \(37 models\)\s+GitHub Copilot CLI/m,
+    );
+    expect(out).toMatch(/^copilot-developer-sandbox\s+accepted \(2 models\)\s+rejected \(400\)$/m);
+    expect(out).toMatch(/^vscode-chat\s+rejected \(400\)\s+rejected \(400\)\s+proxy default/m);
+    expect(out).toContain(
       "Direct: no agent is wired Direct; `agent init` would bake copilot-developer-cli.",
-      "  codex on Direct: 400 Personal Access Tokens are not supported for this endpoint",
-      "  copilot-developer-sandbox on Proxy: 400 Personal Access Tokens are not supported for this endpoint",
-      "  vscode-chat on Proxy: 400 Personal Access Tokens are not supported for this endpoint",
-      "",
-    ]);
+    );
+    expect(out).toContain(`  codex on api.githubcopilot.com: ${PAT_REJECTION}`);
+    expect(out).toContain(
+      `  copilot-developer-sandbox on api.enterprise.githubcopilot.com (account): ${PAT_REJECTION}`,
+    );
+    expect(out).toContain(
+      "  copilot-developer-sandbox on api.enterprise.githubcopilot.com (account), as the daemon " +
+        "sends it: 400 Personal Access Tokens are not supported by this client",
+    );
 
-    // The Direct star follows the header Claude's Direct settings bake; a pin lands there only at
-    // the next rewire, and the note names the gap.
+    // The Direct star follows the header Claude's Direct settings bake, on the host they bake it
+    // for; a pin lands there only at the next rewire, and the note names the gap.
     configureClaudeConfig(claudeHome, {
       mode: "direct",
       credential: { kind: "command" },
@@ -511,7 +550,7 @@ test("auth --identities stars what the agent configs bake, probes the pin, and n
       /^copilot-developer-cli\s+accepted \(5 models\) \*\s+accepted \(37 models\)\s/m,
     );
     expect(pinned).toMatch(
-      /^copilot-developer-sandbox\s+accepted \(2 models\)\s+rejected \(400\) \*/m,
+      /^copilot-developer-sandbox\s+accepted \(2 models\) \+\s+rejected \(400\)$/m,
     );
     expect(pinned).toContain(
       "Direct: the wiring sends copilot-developer-cli until `agent init` rebakes it to " +
@@ -535,32 +574,30 @@ test("auth --identities stars what the agent configs bake, probes the pin, and n
     // A pin that is not a built-in Direct candidate is still probed and marked, never a bare `-`.
     new CopilotEnvConfig().set({ integrationId: VSCODE_CHAT_INTEGRATION_ID });
     const foreign = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
-    expect(foreign).toMatch(/^vscode-chat\s+rejected \(400\)\s+rejected \(400\) \*/m);
-    expect(foreign).toContain(
-      "  vscode-chat on Direct: 400 Personal Access Tokens are not supported for this endpoint",
-    );
+    expect(foreign).toMatch(/^vscode-chat\s+rejected \(400\) \+\s+rejected \(400\)/m);
+    expect(foreign).toContain(`  vscode-chat on api.githubcopilot.com: ${PAT_REJECTION}`);
 
     // A credential the proxy exchanges itself (device-flow, passthrough off) never sees the pin
     // on the proxy path: the daemon's own vscode-chat is what is in effect there.
     new CopilotEnvConfig().set({ integrationId: "auto" });
     state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_device" });
     const exchanged = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
-    expect(exchanged).toMatch(/^vscode-chat\s+-\s+rejected \(400\) \*/m);
+    expect(exchanged).toMatch(/^vscode-chat\s+rejected \(400\) \+\s+rejected \(400\)/m);
     expect(exchanged).toContain("Proxy: passthrough is off for this credential");
 
-    // A running daemon keeps the identity it launched with: the Proxy star is a fresh launch's,
+    // A running daemon keeps the identity and host it launched with: `+` is a fresh launch's,
     // and the table says so.
     writeRunState({ pid: process.pid, port: 4141 });
     const running = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
     expect(running).toContain(
-      "Proxy: a daemon is running and keeps the identity it launched with; restart it to apply " +
-        "a change: `agent stop`, then `agent start`.",
+      "Proxy: a daemon is running and keeps the identity and host it launched with; restart it " +
+        "to apply a change: `agent stop`, then `agent start`.",
     );
 
     // Negative control: a Direct helper routed at the proxy sends its baked header to the daemon,
-    // not to api.githubcopilot.com, so Claude drops out of the Direct star (Codex keeps it). Only
-    // the base URL changes; the CLI-id header the writer baked stays, so this fails without the
-    // base-URL gate in bakedClaudeDirectIntegrationId.
+    // not to Copilot, so Claude drops out of the Direct star (Codex keeps it). Only the base URL
+    // changes; the CLI-id header the writer baked stays, so this fails without the host gate in
+    // bakedClaudeDirectIntegrationId.
     const settingsPath = join(claudeHome, "settings.json");
     const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
       env: Record<string, string>;
@@ -595,7 +632,88 @@ test("auth --identities stars what the agent configs bake, probes the pin, and n
   }
 });
 
-test("auth --identity <id>: refused only when BOTH hosts reject; one acceptance pins and names the other verdict; auto clears", async () => {
+test("auth --identities: columns are the generic host, the account's when it differs, the literal when set and different", async () => {
+  const { codexHome } = isolate();
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
+  const columns = process.env.COLUMNS;
+  process.env.COLUMNS = "200";
+  try {
+    // The account is served on the generic host: one column, marked in use.
+    stubIdentitySurvey("https://api.githubcopilot.com");
+    const one = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(one).toMatch(/^identity\s+api\.githubcopilot\.com \(in use\)\s+note$/m);
+    expect(one).not.toContain("(account)");
+
+    // A literal adds its column and takes the in-use mark; a Codex config baked for the generic
+    // host keeps its star THERE, the host note names the move the next rewire makes, and both
+    // picks are ranked on the literal's column, where every identity is accepted: the Direct
+    // default (codex) and the proxy default (vscode-chat, `+`).
+    new CopilotEnvConfig().set({ copilotHost: CONFIGURED_HOST });
+    configureCodexConfig(
+      codexHome,
+      { mode: "direct", credential: { kind: "command" } },
+      NOOP_CATALOG_DEPS,
+    );
+    stubIdentitySurvey();
+    const three = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(three).toContain(`copilot-host: ${CONFIGURED_HOST}`);
+    expect(three).toMatch(
+      /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account\)\s+copilot\.example \(copilot-host, in use\)\s+note$/m,
+    );
+    expect(three).toMatch(
+      /^codex\s+rejected \(400\) \*\s+rejected \(400\)\s+accepted \(9 models\)\s+Direct default/m,
+    );
+    expect(three).toMatch(
+      /^vscode-chat\s+rejected \(400\)\s+rejected \(400\)\s+accepted \(9 models\) \+\s+proxy default/m,
+    );
+    expect(three).not.toContain("Direct: the wiring sends codex until");
+    expect(three).toContain(
+      "Host: Codex sends to api.githubcopilot.com; `agent init` moves it to copilot.example.",
+    );
+
+    // A refusal names the host it happened on: with the generic host blocked (403) and the account
+    // host rejecting every identity (400), the wiring re-selects on the account host and throws
+    // THERE, so the table shows nothing in use there, not on the generic host.
+    new CopilotEnvConfig().del("copilotHost");
+    setIntegrationProbeFetch((input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/copilot_internal/user")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ endpoints: { api: "https://api.enterprise.githubcopilot.com" } }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(
+        url.startsWith("https://api.enterprise.")
+          ? new Response("Personal Access Tokens are not supported for this endpoint", {
+            status: 400,
+          })
+          : new Response("forbidden", { status: 403 }),
+      );
+    });
+    const refused = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(refused).toContain("copilot-host: auto (api.enterprise.githubcopilot.com in use)");
+    expect(refused).toContain(
+      "Direct: the wiring sends codex until `agent init` rebakes it to nothing (every identity rejects this credential).",
+    );
+
+    // A literal equal to the account's host is one column, in its account role.
+    new CopilotEnvConfig().set({ copilotHost: "https://api.enterprise.githubcopilot.com" });
+    const merged = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    expect(merged).toMatch(
+      /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account, in use\)\s+note$/m,
+    );
+    expect(merged).not.toContain("copilot-host, in use");
+  } finally {
+    setIntegrationProbeFetch(null);
+    if (columns === undefined) delete process.env.COLUMNS;
+    else process.env.COLUMNS = columns;
+  }
+});
+
+test("auth --identity <id>: refused only when EVERY host rejects; one acceptance pins and names the other verdicts; auto clears", async () => {
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
   stubIdentitySurvey();
@@ -603,14 +721,15 @@ test("auth --identity <id>: refused only when BOTH hosts reject; one acceptance 
     await expect(runAuth({ identity: VSCODE_CHAT_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
       .toThrow(
         [
-          `both hosts reject this credential under \`${VSCODE_CHAT_INTEGRATION_ID}\`; not pinned:`,
-          "  - Direct (api.githubcopilot.com): 400 Personal Access Tokens are not supported for this endpoint",
-          "  - Proxy (api.enterprise.githubcopilot.com): 400 Personal Access Tokens are not supported for this endpoint",
+          `every host rejects this credential under \`${VSCODE_CHAT_INTEGRATION_ID}\`; not pinned:`,
+          `  - api.githubcopilot.com: ${PAT_REJECTION}`,
+          `  - api.enterprise.githubcopilot.com (account): ${PAT_REJECTION}`,
         ].join("\n"),
       );
     expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
 
-    // Accepted on Direct, rejected on Proxy: pinned, and the warning names what carried it.
+    // Accepted on the generic host, rejected on the account's: pinned, and the warning names what
+    // carried it.
     const narrated = await captureStderr(() =>
       runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)
     );
@@ -618,12 +737,121 @@ test("auth --identity <id>: refused only when BOTH hosts reject; one acceptance 
     // consola's fancy reporter strips the backticks around the id; the CI reporter keeps them.
     expect(narrated).toMatch(
       new RegExp(
-        `Proxy: rejects \`?${COPILOT_SANDBOX_INTEGRATION_ID}\`? \\(400 Personal Access Tokens ` +
-          "are not supported for this endpoint\\); pinning on Direct accepting it\\.",
+        `api\\.enterprise\\.githubcopilot\\.com \\(account\\): rejects \`?${COPILOT_SANDBOX_INTEGRATION_ID}\`? ` +
+          `\\(${PAT_REJECTION}\\); pinning on api\\.githubcopilot\\.com accepting it\\.`,
       ),
     );
 
     await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+
+    // A transient account-host lookup leaves that host unknown and a blocked generic host (403)
+    // is inconclusive: nothing definitive stands against the pin, so it lands unverified and
+    // says so.
+    setIntegrationProbeFetch((input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      return Promise.resolve(
+        url.includes("/copilot_internal/user")
+          ? new Response("upstream", { status: 503 })
+          : new Response("forbidden", { status: 403 }),
+      );
+    });
+    const unknown = await captureStderr(() =>
+      runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)
+    );
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
+    expect(unknown).toContain(
+      "The account's designated host could not be looked up (transient); pinning unverified.",
+    );
+
+    // Under a literal every request goes there, so its rejection alone refuses the pin even though
+    // another host accepts the identity (the enterprise host rejects the sandbox id in this stub).
+    await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
+    stubIdentitySurvey();
+    new CopilotEnvConfig().set({ copilotHost: "https://api.enterprise.githubcopilot.com" });
+    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
+      .toThrow(
+        "api.enterprise.githubcopilot.com (account, in use) rejects this credential under " +
+          `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the ` +
+          `copilot-host in use: ${PAT_REJECTION}`,
+      );
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+
+    // Under `auto` the same rule reads the host auto WOULD select for the pin: the generic host
+    // answers 400 for the sandbox id (kept: 400 is an identity answer), so its rejection refuses
+    // the pin even though the account's host accepts that id; the CLI id, accepted there, pins.
+    new CopilotEnvConfig().del("copilotHost");
+    setIntegrationProbeFetch((input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/copilot_internal/user")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ endpoints: { api: "https://api.enterprise.githubcopilot.com" } }),
+            { status: 200 },
+          ),
+        );
+      }
+      const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+      const enterprise = url.startsWith("https://api.enterprise.");
+      const accepted = id === COPILOT_CLI_INTEGRATION_ID ||
+        (id === COPILOT_SANDBOX_INTEGRATION_ID && enterprise);
+      return Promise.resolve(
+        accepted
+          ? new Response(JSON.stringify({ data: [{}] }), { status: 200 })
+          : new Response("Personal Access Tokens are not supported for this endpoint", {
+            status: 400,
+          }),
+      );
+    });
+    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
+      .toThrow(
+        "api.githubcopilot.com rejects this credential under " +
+          `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
+          `selects for this identity: ${PAT_REJECTION}`,
+      );
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+    await runAuth({ identity: COPILOT_CLI_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe(COPILOT_CLI_INTEGRATION_ID);
+    // A slot whose cached pair already carries this id on the account's host (an earlier `auto`
+    // wiring) replays THAT host without probing, so the pin's requests go there: it lands.
+    await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
+    state().setProfileIntegrationIdentity(
+      null,
+      COPILOT_SANDBOX_INTEGRATION_ID,
+      { kind: "stored", provider: "gh-token", token: "github_pat_x" },
+      {
+        host: "https://api.enterprise.githubcopilot.com",
+        identity: COPILOT_SANDBOX_INTEGRATION_ID,
+        source: "auto",
+      },
+    );
+    await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
+    // The cached host is surveyed in its own right: with the account lookup failing (no account
+    // column) and the generic host accepting the id, the cached host's rejection still refuses
+    // the pin, because that is where the writer sends it.
+    await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
+    setIntegrationProbeFetch((input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/copilot_internal/user")) {
+        return Promise.resolve(new Response("upstream", { status: 503 }));
+      }
+      const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+      const enterprise = url.startsWith("https://api.enterprise.");
+      return Promise.resolve(
+        id === COPILOT_SANDBOX_INTEGRATION_ID && !enterprise
+          ? new Response(JSON.stringify({ data: [{}] }), { status: 200 })
+          : new Response("Personal Access Tokens are not supported for this endpoint", {
+            status: 400,
+          }),
+      );
+    });
+    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
+      .toThrow(
+        "api.enterprise.githubcopilot.com (in use for this identity) rejects this credential under " +
+          `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
+          `selects for this identity: ${PAT_REJECTION}`,
+      );
     expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
   } finally {
     setIntegrationProbeFetch(null);

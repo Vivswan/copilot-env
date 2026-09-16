@@ -5,7 +5,7 @@
 import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
 import { CopilotApiConfig } from "./config.ts";
-import { INTEGRATION_ID_RE } from "./env_config.ts";
+import { CODEX_IDENTITY_NAME, CopilotEnvConfig, INTEGRATION_ID_RE } from "./env_config.ts";
 import { GH_LOGIN_RE } from "./gh_cli.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import {
@@ -476,6 +476,9 @@ export class CopilotEnvState {
       }
       raw.authProvider = patch.authProvider;
       delete raw.integrationIdentity;
+      delete raw.copilotHost;
+      delete raw.copilotHostIdentity;
+      delete raw.copilotHostSource;
       profiles[key] = raw;
       d.profiles = profiles;
     });
@@ -498,6 +501,9 @@ export class CopilotEnvState {
       delete raw.authProvider;
       delete raw.ghUser;
       delete raw.integrationIdentity;
+      delete raw.copilotHost;
+      delete raw.copilotHostIdentity;
+      delete raw.copilotHostSource;
       tidyEmptySlot(d, profiles, key);
     });
     return had;
@@ -534,7 +540,12 @@ export class CopilotEnvState {
       }
       committed.authProvider = next.authProvider;
       committed.mode = slot.mode;
-      if (!credentialUnchanged) delete committed.integrationIdentity;
+      if (!credentialUnchanged) {
+        delete committed.integrationIdentity;
+        delete committed.copilotHost;
+        delete committed.copilotHostIdentity;
+        delete committed.copilotHostSource;
+      }
       profiles[name] = committed;
       d.profiles = profiles;
     });
@@ -552,13 +563,60 @@ export class CopilotEnvState {
     });
   }
 
+  /**
+   * The Copilot host the slot's Direct wiring resolved, cached with the identity NAME it was
+   * resolved under and how (`auto` probe or the `copilot-host` literal of the time), cleared on every
+   * credential change. It reads back only while BOTH still hold: the identity in force (the
+   * `integration-id` pin, else the slot's own verdict) is the cached one, and the host in force is
+   * the cached one (under a literal, the literal itself; under `auto`, an `auto` answer). A pin is
+   * configuration, never written into the verdict, so `--identity auto` returns to the probed
+   * identity. Read off the raw slot: a derived cache, never part of the exported slot shape.
+   */
+  readProfileCopilotHost(
+    profile: Profile,
+    pin: string | null,
+    literal: string | null,
+  ): string | null {
+    const cache = this.readProfileCopilotHostCache(profile, pin, literal);
+    return cache.kind === "valid" ? cache.host : null;
+  }
+
+  /** The cached pair's standing for the pin and literal in force: `valid` (replay it), `stale` (a
+   *  pair exists for another identity or host, so the identity verdict is another host's too:
+   *  re-probe both), `none` (no pair: an imported or pre-host slot, whose identity is then only a
+   *  probe-order preference, replayableIdentity). */
+  readProfileCopilotHostCache(
+    profile: Profile,
+    pin: string | null,
+    literal: string | null,
+  ): CachedCopilotHostRead {
+    const raw = this.rawProfileSlot(profile);
+    const host = raw?.copilotHost;
+    if (raw === null || typeof host !== "string" || !URL.canParse(host)) return { kind: "none" };
+    const inForce = pin ?? raw.integrationIdentity;
+    const url = new URL(host);
+    const valid = typeof inForce === "string" && raw.copilotHostIdentity === inForce &&
+      url.protocol === "https:" && url.origin === host &&
+      (literal === null ? raw.copilotHostSource === "auto" : host === literal);
+    return valid ? { kind: "valid", host } : { kind: "stale" };
+  }
+
+  private rawProfileSlot(profile: Profile): Record<string, unknown> | null {
+    const profiles = this.store.loadStrict().profiles;
+    const raw = isRecord(profiles) ? profiles[slotKey(profile)] : undefined;
+    return isRecord(raw) ? raw : null;
+  }
+
   /** Lands only while the slot still holds `forCredential`, compared inside the same update, so a probe
    *  result outlives no rotation that raced it under update()'s best-effort lock; past its bounded wait
-   *  both writers proceed unlocked. Never creates a slot: a deletion race just loses the cache. */
+   *  both writers proceed unlocked. Never creates a slot: a deletion race just loses the cache.
+   *  `copilotHost`: the resolved host with the identity name it was resolved under and how; null
+   *  clears the pair, undefined leaves it. */
   setProfileIntegrationIdentity(
     profile: Profile,
     integrationIdentity: string | null,
     forCredential: ProvisionedCredential,
+    copilotHost?: CachedCopilotHost | null,
   ): void {
     const expected = rawCredentialPatch(forCredential);
     this.store.update((d) => {
@@ -577,6 +635,15 @@ export class CopilotEnvState {
         delete raw.integrationIdentity;
       } else {
         raw.integrationIdentity = integrationIdentity.trim();
+      }
+      if (copilotHost === null) {
+        delete raw.copilotHost;
+        delete raw.copilotHostIdentity;
+        delete raw.copilotHostSource;
+      } else if (copilotHost !== undefined) {
+        raw.copilotHost = copilotHost.host;
+        raw.copilotHostIdentity = copilotHost.identity;
+        raw.copilotHostSource = copilotHost.source;
       }
     });
   }
@@ -621,4 +688,62 @@ export class CopilotEnvState {
       d.claudeModelVerdicts = { ...verdicts, [key]: verdict };
     });
   }
+}
+
+/**
+ * The Copilot host a Direct rewire of `profile` would bake WITHOUT probing: the `copilot-host`
+ * literal, else the slot's cached host under the pin in force. Null = only a probe can say (`auto`,
+ * nothing cached): read paths (health, Desktop status) then take the baked host as expected. The
+ * one rule for every "expected host" question, so no reader derives its own.
+ */
+export function expectedDirectHost(profile: Profile): string | null {
+  const config = new CopilotEnvConfig();
+  return config.copilotHost() ??
+    new CopilotEnvState().readProfileCopilotHost(profile, config.pinnedIntegrationId(), null);
+}
+
+/**
+ * THE replay rule for a slot's cached Direct identity, the one answer every reader that bakes,
+ * predicts, or ranks an identity takes (profile_wiring.ts, desktop_status.ts, auth.ts):
+ *
+ *   replay     -> the cached pair names the identity AND the host in force: bake both, no request
+ *   preferred  -> an identity is cached but no pair reads back (imported, cached before hosts were,
+ *                 or the host in force changed): never a verdict, only the FIRST candidate of the
+ *                 selection probeDirectWiring runs on the host in use; a definitive 400/401 there
+ *                 moves on to the next candidate
+ *   probe      -> nothing cached (or a pin with no pair: the pin is configuration, the host is probed)
+ */
+export type ReplayableIdentity =
+  | { kind: "replay"; directIntegrationId: string | null; directBaseUrl: string }
+  | { kind: "preferred"; directIntegrationId: string | null }
+  | { kind: "probe" };
+
+export function replayableIdentity(
+  profile: Profile,
+  pin: string | null,
+  literal: string | null,
+): ReplayableIdentity {
+  const state = new CopilotEnvState();
+  const cache = state.readProfileCopilotHostCache(profile, pin, literal);
+  const inForce = pin ?? state.readProfileSlot(profile).integrationIdentity;
+  if (inForce === null) return { kind: "probe" };
+  // The slot stores the identity NAME: the default identity's name means "probed, no header won".
+  const directIntegrationId = inForce === CODEX_IDENTITY_NAME ? null : inForce;
+  if (cache.kind === "valid") {
+    return { kind: "replay", directIntegrationId, directBaseUrl: cache.host };
+  }
+  return pin === null ? { kind: "preferred", directIntegrationId } : { kind: "probe" };
+}
+
+export type CachedCopilotHostRead =
+  | { kind: "none" }
+  | { kind: "stale" }
+  | { kind: "valid"; host: string };
+
+/** A resolved host beside the identity it was resolved under and how: `auto` (resolveCopilotHost)
+ *  or `literal` (the `copilot-host` value of the time). */
+export interface CachedCopilotHost {
+  host: string;
+  identity: string;
+  source: "auto" | "literal";
 }

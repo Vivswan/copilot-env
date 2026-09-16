@@ -117,6 +117,13 @@ export interface LaunchDeps {
 
 const CLAUDE_MANAGED_FLAGS = ["--permission-mode", "auto", "--enable-auto-mode"] as const;
 
+/** Every inherited casing is scrubbed first: on Windows `Codex_Home` and `CODEX_HOME` would both
+ *  reach the child and which one it reads is undefined (childEnvWithPath). */
+function pinCodexHome(plan: LaunchPlan, home: string): void {
+  plan.scrub.push("CODEX_HOME");
+  plan.env.CODEX_HOME = home;
+}
+
 function applyManagedEnv(plan: LaunchPlan, key: string, value: ManagedEnvValue): void {
   if (value === null) return;
   if ("unset" in value) plan.scrub.push(key);
@@ -211,14 +218,14 @@ export async function prepareLaunch(
           );
         }
         // Read AFTER the sync: the home its write resolved is the one the child must open.
-        plan.env.CODEX_HOME = deps.codexHome();
+        pinCodexHome(plan, deps.codexHome());
         plan.args = ["--profile", action.profile, ...flags, ...action.args];
         return plan;
       }
       const mode = await wireDefaultProvider("codex", "Codex", deps);
       if (mode === null) return null;
-      // Read AFTER the wiring step: a proxy re-wire may have just built and recorded the farm.
-      plan.env.CODEX_HOME = deps.codexHome();
+      // Read AFTER the wiring step: a proxy re-wire may have just built the farm.
+      pinCodexHome(plan, deps.codexHome());
       // Codex parses `model_catalog_json` at startup, BEFORE the auth refresh that would regenerate
       // a catalog an upgraded codex rejects, so a direct launch refreshes here first.
       if (mode === "direct") await deps.refreshCodexCatalog();

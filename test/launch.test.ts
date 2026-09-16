@@ -316,7 +316,7 @@ test("codex default: managed CODEX_HOME applied; proxy mode ensures then re-wire
     command: "codex",
     args: ["--sandbox", "danger-full-access", "exec", "ls"],
     env: { CODEX_HOME: "/fake/codex-farm" },
-    scrub: [],
+    scrub: ["CODEX_HOME"], // every inherited casing goes before the pin lands
   });
 });
 

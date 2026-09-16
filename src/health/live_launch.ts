@@ -92,8 +92,10 @@ export function codexLiveLaunch(home: string, profile: Profile): LiveLaunch {
       "read-only",
       PROBE_PROMPT,
     ],
+    // The launcher's own pin: every inherited casing goes first (a Windows `Codex_Home` would
+    // otherwise race the pinned value), then the home the writer resolved.
     env: { CODEX_HOME: home },
-    omitEnv: [],
+    omitEnv: ["CODEX_HOME"],
     // `exec --json` emits the answer as an `item.completed` event whose item is an `agent_message`.
     answered: (stdout) =>
       jsonEvents(stdout).some((e) => {

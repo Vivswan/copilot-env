@@ -306,7 +306,7 @@ test("writes the managed direct default config when no provider section exists",
 // fakes that shadow any real codex or npm (the fake bin dir leads PATH in every arm, an exit-1 fake
 // included; /usr/bin and /bin stay for `sh`).
 test.skipIf(process.platform === "win32")(
-  "the Direct User-Agent version chain: the installed codex, else npm's current release, else the baked fallback; one spawn per road per process, failures included",
+  "Direct UA version chain: installed codex, else npm's release, else the baked fallback; one spawn per road per process, failures included",
   () => {
     isolate();
     const bin = join(dir, "bin");

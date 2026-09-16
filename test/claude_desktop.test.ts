@@ -510,6 +510,27 @@ test("offline direct: a FRESH entry is never created; an owned entry keeps its r
   });
 });
 
+test("a direct entry's gateway is the write's Copilot host, the generic host when the write names none", async () => {
+  const { library } = isolateWithDesktop();
+  await wireClaudeDesktopEntry({
+    profile: null,
+    mode: "direct",
+    directIntegrationId: null,
+    directBaseUrl: "https://api.business.githubcopilot.com",
+    credential: COMMAND,
+    directToken: "ghu_x",
+    quiet: false,
+    fetchImpl: catalogFetch(CATALOG),
+  });
+  expect(readJson(firstEntryPath(library))["inferenceGatewayBaseUrl"]).toBe(
+    "https://api.business.githubcopilot.com",
+  );
+  await wireClaudeDesktopEntry(directWire());
+  expect(readJson(firstEntryPath(library))["inferenceGatewayBaseUrl"]).toBe(
+    DEFAULT_COPILOT_API_BASE,
+  );
+});
+
 test("a quiet wire never discovers: fresh direct entries are skipped outright", async () => {
   const { library } = isolateWithDesktop();
   await wireClaudeDesktopEntry({

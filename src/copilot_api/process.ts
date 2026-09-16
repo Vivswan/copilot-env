@@ -8,7 +8,7 @@ import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "
 import { runCaptured } from "../utils/command.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { type RootMode, rootMode } from "../utils/root.ts";
-import { DAEMON_INTEGRATION_ID_ENV } from "./integration_identity.ts";
+import { DAEMON_COPILOT_HOST_ENV, DAEMON_INTEGRATION_ID_ENV } from "./integration_identity.ts";
 import { resolveRootHome } from "./paths.ts";
 import { type DaemonShimFile, NODE_COMPAT_SHIM, shimPath } from "./shims.ts";
 import type { AbsolutePath } from "./sidecar.ts";
@@ -489,6 +489,10 @@ export interface DaemonSpec {
   /** Extra daemon environment the launch pipeline assembles (sqlite path, root home). */
   env: Record<string, string>;
   credential: DaemonCredential;
+  /** The Copilot host the daemon is pinned to (`copilot-host`, resolveDaemonHost in launch.ts); the
+   *  copilot-host preload rewrites the `endpoints.api` GitHub names. Null = unpinned: a credential-less
+   *  daemon has nothing to probe with, so the proxy keeps the host GitHub names for its login. */
+  copilotHost: string | null;
   /** The `auto-start` config key. */
   idleWatchdog: boolean;
   /** The `proxy-logs` config key. */
@@ -510,6 +514,7 @@ function daemonPreloadFlags(spec: DaemonSpec): string[] {
   // Must precede the PAT shim, which reads the spliced token back from argv.
   if (spec.credential.kind !== "none") shims.push("token_argv_preload.ts");
   shims.push("daemon_runtime_preload.ts");
+  if (spec.copilotHost !== null) shims.push("copilot_host_preload.ts");
   if (spec.credential.kind === "pat") shims.push("pat_passthrough_preload.ts");
   if (spec.idleWatchdog) shims.push("idle_watchdog_preload.ts");
   if (spec.muteProxyLogs) shims.push("log_mute_preload.ts");
@@ -557,6 +562,15 @@ export function daemonEnvironment(spec: DaemonSpec, base: NodeJS.ProcessEnv): No
   const env: NodeJS.ProcessEnv = { ...base, ...copilotApiEnv(spec.entry), ...spec.env };
   env.COPILOT_API_HOME = spec.home;
   applyCredentialEnv(env, spec.credential);
+  // Set-or-delete like the credential keys: an inherited pin must not outlive the spec that set it.
+  // copilot-api's own host override (COPILOT_API_ENTERPRISE_URL) would beat the rewritten state, so
+  // a pinned daemon never inherits one.
+  if (spec.copilotHost === null) {
+    delete env[DAEMON_COPILOT_HOST_ENV];
+  } else {
+    env[DAEMON_COPILOT_HOST_ENV] = spec.copilotHost;
+    delete env.COPILOT_API_ENTERPRISE_URL;
+  }
   // Both spellings are written so the exemption holds whichever name the HTTP client consults first.
   const noProxy = noProxyWithLoopback(env.NO_PROXY ?? env.no_proxy);
   env.NO_PROXY = noProxy;

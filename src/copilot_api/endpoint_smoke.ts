@@ -10,11 +10,7 @@
 //                          anything else the proxy
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
-import {
-  DEFAULT_COPILOT_API_BASE,
-  directClientHeaders,
-  type ProbeFetch,
-} from "./integration_identity.ts";
+import { directClientHeaders, type ProbeFetch } from "./integration_identity.ts";
 
 /** The two Copilot wires the managed agents speak (Claude: Anthropic messages, Codex: responses). */
 export type DirectWire = "messages" | "responses";
@@ -50,14 +46,16 @@ export interface DirectSmoke {
 
 /**
  * Neither step throws: any failure is a `false` outcome carrying its reason, and the caller wires
- * the proxy. The ping verdict is 200 alone, the same bar as discovery's pingModel (src/copilot_api/
- * discovery.ts); no retry, matching every other raw fetch in this layer.
+ * the proxy. `apiBase` is the host the wiring bakes (resolveCopilotHost). The ping verdict is 200
+ * alone, the same bar as discovery's pingModel (src/copilot_api/discovery.ts); no retry, matching
+ * every other raw fetch in this layer.
  */
 export function directSmoke(
   smoke: EndpointSmoke,
   token: string,
   userAgent: string,
   integrationId: string | null,
+  apiBase: string,
   opts: { fetchImpl?: ProbeFetch } = {},
 ): DirectSmoke {
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
@@ -68,7 +66,7 @@ export function directSmoke(
   return {
     async pickModel() {
       try {
-        const catalog = await fetchImpl(`${DEFAULT_COPILOT_API_BASE}/models`, {
+        const catalog = await fetchImpl(`${apiBase}/models`, {
           headers,
           signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
         });
@@ -94,7 +92,7 @@ export function directSmoke(
     async ping(model) {
       const path = WIRE_PATHS[smoke.wire];
       try {
-        const ping = await fetchImpl(`${DEFAULT_COPILOT_API_BASE}${path}`, {
+        const ping = await fetchImpl(`${apiBase}${path}`, {
           method: "POST",
           headers: smoke.wire === "messages"
             ? { ...headers, "Content-Type": "application/json", "anthropic-version": "2023-06-01" }

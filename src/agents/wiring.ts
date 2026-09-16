@@ -4,7 +4,6 @@
 import {
   bakedClaudeDirectIntegrationId,
   type ClaudeWiringStatus,
-  DIRECT_BASE_URL as CLAUDE_DIRECT_BASE_URL,
   inspectClaudeWiring,
 } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
@@ -15,7 +14,7 @@ import {
 } from "../codex/config.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
-import type { BakedDirectIdentity } from "../copilot_api/integration_identity.ts";
+import { type BakedDirectIdentity, isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import type { Profile } from "../copilot_api/profile.ts";
@@ -135,7 +134,7 @@ export function proxyUnusedEverywhere(opts: AgentWiringOptions = {}): boolean {
     return (
       codex.providerMode === "direct" &&
       claude.providerMode === "direct" &&
-      claude.baseUrl === CLAUDE_DIRECT_BASE_URL
+      claude.baseUrl !== null && isDirectBaseUrl(claude.baseUrl)
     );
   } catch {
     return false;

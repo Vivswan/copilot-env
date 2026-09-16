@@ -12,7 +12,7 @@ import {
 } from "../agents/configure.ts";
 import {
   bothAgents,
-  resolveAndPersistDirectIdentity,
+  resolveAndPersistDirectWiring,
   wireBothAgents,
 } from "../agents/profile_wiring.ts";
 import { providerModeExitCode, type RequestedMode } from "../agents/provider_mode.ts";
@@ -300,10 +300,10 @@ async function runSettingsFor(name: ProfileName): Promise<void> {
   const write: ManagedWrite = slot.mode === "direct"
     ? {
       mode: "direct",
-      directIntegrationId: await resolveAndPersistDirectIdentity(
+      ...(await resolveAndPersistDirectWiring(
         name,
         resolvedDirectToken(slot.mode, credential),
-      ),
+      )),
       credential,
     }
     : { mode: "proxy", credential };

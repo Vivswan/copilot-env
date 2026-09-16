@@ -622,11 +622,14 @@ test("a gh-cli default over a working local token falls through to the kept slot
   expect(new Credential().resolve()).toBe("github_pat_local");
 });
 
-test("a direct profile with a persisted identity wires offline (no re-probe)", async () => {
+test("a direct profile with a persisted identity wires offline (no identity re-probe; one host probe)", async () => {
   const machine = isolate();
-  let probes = 0;
-  setIntegrationProbeFetch(() => {
-    probes++;
+  const probes: { url: string; id: string | null }[] = [];
+  setIntegrationProbeFetch((input, init) => {
+    probes.push({
+      url: String(input),
+      id: new Headers(init?.headers).get("Copilot-Integration-Id"),
+    });
     return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
   });
   const bundle = parseSettingsBundle(
@@ -645,7 +648,11 @@ test("a direct profile with a persisted identity wires offline (no re-probe)", a
   const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
 
   expect(outcome.wiredProfiles).toEqual([WORK]);
-  expect(probes).toBe(0);
+  // The replayed identity is never re-probed; a bundle carries no host, so `copilot-host auto`
+  // costs exactly one GET /models, under that identity, on the generic host.
+  expect(probes).toEqual([
+    { url: "https://api.githubcopilot.com/models", id: "copilot-developer-cli" },
+  ]);
   const settings = JSON.parse(readFileSync(settingsPathFor(machine.claudeHome, WORK), "utf8"));
   expect(settings.env.ANTHROPIC_CUSTOM_HEADERS).toContain(
     "Copilot-Integration-Id: copilot-developer-cli",

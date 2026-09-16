@@ -11,7 +11,6 @@
 import {
   COPILOT_CLI_INTEGRATION_ID,
   COPILOT_SANDBOX_INTEGRATION_ID,
-  DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   type ProbeFetch,
   VSCODE_CHAT_INTEGRATION_ID,
@@ -23,10 +22,6 @@ import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
 const logger = createStderrLogger();
-
-const MODELS_URL = `${DEFAULT_COPILOT_API_BASE}/models`;
-const RESPONSES_URL = `${DEFAULT_COPILOT_API_BASE}/responses`;
-const MESSAGES_URL = `${DEFAULT_COPILOT_API_BASE}/v1/messages`;
 
 const CATALOG_TIMEOUT_MS = 5000;
 const PING_TIMEOUT_MS = 20_000;
@@ -59,7 +54,8 @@ export interface DiscoveredClaudeModels {
 }
 
 /**
- * `userAgent` MUST be the versioned codexUserAgent and `integrationId` the baked id (null = default).
+ * `userAgent` MUST be the versioned codexUserAgent, `integrationId` the baked id (null = default), and
+ * `apiBase` the host the wiring bakes (resolveCopilotHost): every request below goes there.
  * Throws only when the OWN-identity catalog fetch fails; a failing enrichment step keeps the catalog plus
  * every extra already verified under it.
  */
@@ -67,6 +63,7 @@ export async function discoverServableClaudeModels(
   token: string,
   userAgent: string,
   integrationId: string | null,
+  apiBase: string,
   opts: DiscoveryOptions = {},
 ): Promise<DiscoveredClaudeModels> {
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
@@ -75,18 +72,24 @@ export async function discoverServableClaudeModels(
     "Authorization": `Bearer ${token}`,
   });
 
-  const catalogBody = await fetchCatalog(fetchImpl, headers(integrationId));
+  const catalogBody = await fetchCatalog(fetchImpl, apiBase, headers(integrationId));
   const advertised = parseCatalogModels(catalogBody);
   const models = [...advertised];
   const unlisted: string[] = [];
 
   try {
-    const extras = await unadvertisedClaudeIds(fetchImpl, headers, integrationId, advertised);
+    const extras = await unadvertisedClaudeIds(
+      fetchImpl,
+      apiBase,
+      headers,
+      integrationId,
+      advertised,
+    );
     const state = new CopilotEnvState();
     const now = opts.nowMs?.() ?? Date.now();
-    // Verdicts are keyed per credential: a profile's must never answer for the default's, since
-    // entitlements differ per account.
-    const credential = await credentialDigest(token);
+    // Verdicts are keyed per host and credential: a profile's must never answer for the default's
+    // (entitlements differ per account), nor one host's for another's.
+    const credential = await credentialDigest(`${apiBase}|${token}`);
     for (const id of extras) {
       // `agent models` and the Desktop wiring share the persisted verdicts, so a DEFINITIVE one costs its
       // billed ping once per model+identity+credential per day for sequential runs; overlapping runs each
@@ -94,9 +97,15 @@ export async function discoverServableClaudeModels(
       const key = `${credential}|${integrationId ?? "default"}|${id}`;
       let verdict = state.readModelVerdict(key);
       if (verdict === null || isDue(verdict.atMs, now)) {
-        const servable = await pingModel(fetchImpl, headers(integrationId), id, "x");
+        const servable = await pingModel(fetchImpl, apiBase, headers(integrationId), id, "x");
         const is1m = servable === "yes"
-          ? await pingModel(fetchImpl, headers(integrationId), id, "x ".repeat(ONE_M_PROBE_TOKENS))
+          ? await pingModel(
+            fetchImpl,
+            apiBase,
+            headers(integrationId),
+            id,
+            "x ".repeat(ONE_M_PROBE_TOKENS),
+          )
           : "no";
         // Only DEFINITIVE outcomes are cached: a timeout / 429 / 5xx must not wedge
         // a servable model out (or in) for a whole TTL window.
@@ -123,9 +132,9 @@ export async function discoverServableClaudeModels(
   return { catalogBody, models, unlisted };
 }
 
-/** A short non-reversible token digest for the verdict-cache key (never the token). */
-async function credentialDigest(token: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+/** A short non-reversible digest of the host and token for the verdict-cache key (never the token). */
+async function credentialDigest(hostAndToken: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(hostAndToken));
   return Array.from(
     new Uint8Array(digest).slice(0, 6),
     (b) => b.toString(16).padStart(2, "0"),
@@ -135,15 +144,17 @@ async function credentialDigest(token: string): Promise<string> {
 /** The body is drained before throwing so a keep-alive socket stays reusable. */
 async function fetchCatalog(
   fetchImpl: ProbeFetch,
+  apiBase: string,
   headers: Record<string, string>,
 ): Promise<unknown> {
-  const res = await fetchImpl(MODELS_URL, {
+  const url = `${apiBase}/models`;
+  const res = await fetchImpl(url, {
     headers,
     signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
   });
   if (!res.ok) {
     await res.text().catch(() => "");
-    throw new Error(`GET ${MODELS_URL} returned ${res.status}`);
+    throw new Error(`GET ${url} returned ${res.status}`);
   }
   return await res.json();
 }
@@ -151,6 +162,7 @@ async function fetchCatalog(
 /** Empty when no gated trigger id exists or the oracle's error shape is not understood: never a guess. */
 async function unadvertisedClaudeIds(
   fetchImpl: ProbeFetch,
+  apiBase: string,
   headers: (id: string | null) => Record<string, string>,
   integrationId: string | null,
   advertised: CatalogModel[],
@@ -161,7 +173,7 @@ async function unadvertisedClaudeIds(
   for (const id of KNOWN_IDENTITY_IDS) {
     if (id === integrationId) continue;
     try {
-      const body = await fetchCatalog(fetchImpl, headers(id));
+      const body = await fetchCatalog(fetchImpl, apiBase, headers(id));
       for (const model of parseCatalogModels(body)) {
         if (!ownIds.has(model.id) && !candidates.includes(model.id)) candidates.push(model.id);
       }
@@ -171,7 +183,7 @@ async function unadvertisedClaudeIds(
   }
 
   for (const candidate of candidates.slice(0, ORACLE_ATTEMPTS)) {
-    const allowlist = await oracleAllowlist(fetchImpl, headers(integrationId), candidate);
+    const allowlist = await oracleAllowlist(fetchImpl, apiBase, headers(integrationId), candidate);
     if (allowlist === null) continue;
     return allowlist.filter(
       (id) => id.startsWith("claude-") && !id.endsWith(ONE_M_SUFFIX) && !ownIds.has(id),
@@ -184,10 +196,11 @@ async function unadvertisedClaudeIds(
  *  unrecognized error shape yields null. */
 async function oracleAllowlist(
   fetchImpl: ProbeFetch,
+  apiBase: string,
   headers: Record<string, string>,
   gatedId: string,
 ): Promise<string[] | null> {
-  const res = await fetchImpl(RESPONSES_URL, {
+  const res = await fetchImpl(`${apiBase}/responses`, {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -214,12 +227,13 @@ type ProbeOutcome = "yes" | "no" | "unknown";
 
 async function pingModel(
   fetchImpl: ProbeFetch,
+  apiBase: string,
   headers: Record<string, string>,
   model: string,
   content: string,
 ): Promise<ProbeOutcome> {
   try {
-    const res = await fetchImpl(MESSAGES_URL, {
+    const res = await fetchImpl(`${apiBase}/v1/messages`, {
       method: "POST",
       headers: {
         ...headers,

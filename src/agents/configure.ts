@@ -12,21 +12,27 @@ import type { ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
 
 const logger = createStderrLogger();
 
+/** The two Direct facts a wiring bakes, resolved ONCE above the writers (probeDirectWiring in
+ *  src/codex/config.ts) and handed down, so no writer probes. */
+export interface DirectWiring {
+  /** The probed `Copilot-Integration-Id` to bake, or null to send none. */
+  directIntegrationId: string | null;
+  /** The Copilot host to bake as the base URL (resolveCopilotHost). */
+  directBaseUrl: string;
+}
+
 /**
  * The mode-dependent half of one managed wiring write, shared by every adapter and the Claude
- * Desktop wiring. The identity is resolved above the writers and passed down, so no writer probes.
+ * Desktop wiring. Both Direct facts are optional in the type (absent = no header, the generic
+ * host, today's bytes), so a scratch or replayed write needs no probe.
  *
- *   the default slot -> runAgentConfig resolves it
- *   a named profile  -> wireBothAgents resolves it
- *   mode "proxy"     -> carries no identity field at all, so the pairing is unrepresentable
+ *   the default slot -> runAgentConfig resolves them
+ *   a named profile  -> wireBothAgents resolves them
+ *   mode "proxy"     -> carries neither field at all, so the pairing is unrepresentable
  */
 export type ManagedMode =
-  | {
-    mode: "direct";
-    /** The probed `Copilot-Integration-Id` to bake, or null/absent to send none. */
-    directIntegrationId?: string | null;
-  }
-  | { mode: "proxy"; directIntegrationId?: never };
+  | ({ mode: "direct" } & Partial<DirectWiring>)
+  | { mode: "proxy"; directIntegrationId?: never; directBaseUrl?: never };
 
 /**
  * How one agent obtains the credential at request time (the `static-key` scope names the agents
@@ -187,15 +193,16 @@ export interface AgentAdapter {
    *  because the printed fields are (CODEX_HOME + config.toml vs settings.json + apiKeyHelper). */
   check(): void;
   /** Live Direct probe behind "auto": can the stored credential use Direct from this machine?
-   *  The scratch config bakes `directIntegrationId` so the smoke call sends the same request the
-   *  real wiring would; without it a PAT that needs `copilot-developer-cli` fails the probe.
+   *  The scratch config bakes `direct` (identity and host) so the smoke call sends the same request
+   *  the real wiring would; without it a PAT that needs `copilot-developer-cli` fails the probe.
    *  `ghToken` (the credential runAgentConfig already resolved) feeds the Copilot smoke
    *  (src/copilot_api/endpoint_smoke.ts) that picks the probe's model and, with no CLI on the
    *  machine, pings the wire itself; null (nothing stored) is the proxy verdict. */
-  detectDirect(directIntegrationId: string | null, ghToken: string | null): Promise<boolean>;
-  /** The DEFAULT credential's direct client identity (config pin, else probe). On the adapter
-   *  because this module must not import the per-agent probe machinery. */
-  resolveDirectIdentity(ghToken: string | null): Promise<string | null>;
+  detectDirect(direct: DirectWiring, ghToken: string | null): Promise<boolean>;
+  /** The DEFAULT credential's Direct client identity (config pin, else probe) and host
+   *  (`copilot-host` literal, else probe). On the adapter because this module must not import the
+   *  per-agent probe machinery. */
+  resolveDirectWiring(ghToken: string | null): Promise<DirectWiring>;
   /** `ghToken` is the credential runAgentConfig already resolved (null = none stored). Only
    *  Claude Desktop's model discovery resolves again, and only from null (src/claude/desktop.ts). */
   configureDefault(write: ManagedWrite, ghToken: string | null): Promise<void>;
@@ -220,13 +227,13 @@ export function configuringLine(subject: string, mode: ManagedAgentMode, suffix 
 }
 
 /**
- * The credential and the direct identity are each resolved ONCE here and handed down, so the
- * probe, the write, and every derived surface bake the same values without re-probing.
+ * The credential, the direct identity, and the Copilot host are each resolved ONCE here and handed
+ * down, so the probe, the write, and every derived surface bake the same values without re-probing.
  *
  *   explicit flag > live probe of the stored credential    (resolveDirectMode)
  *
- * The identity comes BEFORE the probe: a credential rejected under every known identity cannot
- * use Direct, which under "auto" is the proxy verdict, not a failure.
+ * The identity and host come BEFORE the probe: a credential rejected under every known identity
+ * cannot use Direct, which under "auto" is the proxy verdict, not a failure.
  */
 export async function runAgentConfig(
   adapter: AgentAdapter,
@@ -253,9 +260,9 @@ async function resolveDefaultMode(
   ghToken: string | null,
 ): Promise<ManagedMode> {
   if (mode === "proxy") return { mode };
-  let directIntegrationId: string | null;
+  let direct: DirectWiring;
   try {
-    directIntegrationId = await adapter.resolveDirectIdentity(ghToken);
+    direct = await adapter.resolveDirectWiring(ghToken);
   } catch (e) {
     if (mode === "direct") throw e;
     logger.log(
@@ -263,7 +270,7 @@ async function resolveDefaultMode(
     );
     return { mode: "proxy" };
   }
-  return (await resolveDirectMode(mode, () => adapter.detectDirect(directIntegrationId, ghToken)))
-    ? { mode: "direct", directIntegrationId }
+  return (await resolveDirectMode(mode, () => adapter.detectDirect(direct, ghToken)))
+    ? { mode: "direct", ...direct }
     : { mode: "proxy" };
 }

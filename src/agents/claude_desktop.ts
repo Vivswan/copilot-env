@@ -24,7 +24,7 @@ import { profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { type ManagedWrite, resolveCredentialWiring, resolvedDirectToken } from "./configure.ts";
-import { resolveAndPersistDirectIdentity } from "./profile_wiring.ts";
+import { resolveAndPersistDirectWiring } from "./profile_wiring.ts";
 import { readAgentWirings } from "./wiring.ts";
 
 const logger = createStderrLogger();
@@ -167,7 +167,7 @@ async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
     const write: ManagedWrite = mode === "direct"
       ? {
         mode: "direct",
-        directIntegrationId: await resolveAndPersistDirectIdentity(profile, token),
+        ...(await resolveAndPersistDirectWiring(profile, token)),
         credential,
       }
       : { mode: "proxy", credential };

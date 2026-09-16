@@ -12,7 +12,7 @@ import {
   resolvedDirectToken,
 } from "../agents/configure.ts";
 import { recordDefaultModeFromWiring } from "../agents/configure_defaults.ts";
-import { resolveAndPersistDirectIdentity, wireBothAgents } from "../agents/profile_wiring.ts";
+import { resolveAndPersistDirectWiring, wireBothAgents } from "../agents/profile_wiring.ts";
 import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { readAgentModes } from "../agents/wiring.ts";
 import { BASE_URL_ENV, claudeAdapter, runClaude } from "../claude/config.ts";
@@ -293,10 +293,10 @@ export function commandDeps(): LaunchDeps {
       const write: ManagedWrite = mode === "direct"
         ? {
           mode,
-          directIntegrationId: await resolveAndPersistDirectIdentity(
+          ...(await resolveAndPersistDirectWiring(
             name,
             resolvedDirectToken(mode, credential),
-          ),
+          )),
           credential,
         }
         : { mode, credential };

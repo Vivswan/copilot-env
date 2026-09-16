@@ -476,6 +476,7 @@ export class CopilotEnvState {
       }
       raw.authProvider = patch.authProvider;
       delete raw.integrationIdentity;
+      delete raw.copilotHost;
       profiles[key] = raw;
       d.profiles = profiles;
     });
@@ -498,6 +499,7 @@ export class CopilotEnvState {
       delete raw.authProvider;
       delete raw.ghUser;
       delete raw.integrationIdentity;
+      delete raw.copilotHost;
       tidyEmptySlot(d, profiles, key);
     });
     return had;
@@ -534,7 +536,10 @@ export class CopilotEnvState {
       }
       committed.authProvider = next.authProvider;
       committed.mode = slot.mode;
-      if (!credentialUnchanged) delete committed.integrationIdentity;
+      if (!credentialUnchanged) {
+        delete committed.integrationIdentity;
+        delete committed.copilotHost;
+      }
       profiles[name] = committed;
       d.profiles = profiles;
     });
@@ -555,10 +560,29 @@ export class CopilotEnvState {
   /** Lands only while the slot still holds `forCredential`, compared inside the same update, so a probe
    *  result outlives no rotation that raced it under update()'s best-effort lock; past its bounded wait
    *  both writers proceed unlocked. Never creates a slot: a deletion race just loses the cache. */
+  /**
+   * The Copilot host the slot's Direct wiring resolved (`copilot-host auto`, resolveCopilotHost),
+   * cached beside `integrationIdentity` under the SAME identity and cleared with it on every
+   * credential change. `pin` is the `integration-id` pin in force: one naming another identity
+   * makes the cached host moot, so it reads null. Read off the raw slot: a derived cache, never part
+   * of the exported slot shape (a bundle re-resolves on the importing machine's network).
+   */
+  readProfileCopilotHost(profile: Profile, pin: string | null): string | null {
+    const profiles = this.store.loadStrict().profiles;
+    const raw = isRecord(profiles) ? profiles[slotKey(profile)] : undefined;
+    if (!isRecord(raw)) return null;
+    if (pin !== null && pin !== raw.integrationIdentity) return null;
+    const host = raw.copilotHost;
+    if (typeof host !== "string" || !URL.canParse(host)) return null;
+    const url = new URL(host);
+    return url.protocol === "https:" && url.origin === host ? host : null;
+  }
+
   setProfileIntegrationIdentity(
     profile: Profile,
     integrationIdentity: string | null,
     forCredential: ProvisionedCredential,
+    copilotHost: string | null = null,
   ): void {
     const expected = rawCredentialPatch(forCredential);
     this.store.update((d) => {
@@ -578,6 +602,8 @@ export class CopilotEnvState {
       } else {
         raw.integrationIdentity = integrationIdentity.trim();
       }
+      if (copilotHost === null) delete raw.copilotHost;
+      else raw.copilotHost = copilotHost;
     });
   }
 

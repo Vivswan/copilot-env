@@ -13,6 +13,7 @@ import {
   type AgentAdapter,
   type AgentRunAction,
   type CredentialWiring,
+  type DirectWiring,
   type ManagedWrite,
   resolvedDirectToken,
   runAgentConfig,
@@ -23,7 +24,7 @@ import {
   type ManagedAgentMode,
   providerModeExitCode,
 } from "../agents/provider_mode.ts";
-import { probeDirectIntegrationId } from "../codex/config.ts";
+import { probeDirectWiring } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
@@ -34,6 +35,7 @@ import {
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   INTEGRATION_ID_HEADER,
+  isDirectBaseUrl,
 } from "../copilot_api/integration_identity.ts";
 import { cheapestClaudeModel, parseCatalogModels } from "../copilot_api/models.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
@@ -70,9 +72,8 @@ import { resolveClaudeHome, settingsPathFor, WIN } from "./paths.ts";
 const logger = createStderrLogger();
 
 // Copilot serving Claude is undocumented; CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS is a knob proven
-// by test, not by docs. The base URL literal lives in integration_identity.ts so the identity probe
+// by test, not by docs. The Copilot hosts live in integration_identity.ts so the identity probe
 // judges the same host the agents bake.
-export const DIRECT_BASE_URL = DEFAULT_COPILOT_API_BASE;
 export const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
 export const DISABLE_BETAS_ENV = "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS";
 // Copilot Direct gates on an editor-client identity, and Claude has no http_headers knob: it reads
@@ -226,9 +227,11 @@ export function bakedClaudeDirectIntegrationId(
     return { kind: "unreadable", reason: "the settings file is not a JSON object" };
   }
   // Mode keys off the helper alone, so a Direct helper with a proxy ANTHROPIC_BASE_URL still
-  // classifies "direct" while its traffic (and the baked header) goes to the daemon: only the
-  // exact Direct base URL puts the header on api.githubcopilot.com.
-  if (wiring.providerMode !== "direct" || wiring.baseUrl !== DIRECT_BASE_URL) {
+  // classifies "direct" while its traffic (and the baked header) goes to the daemon: only a
+  // Copilot host puts the header on Copilot.
+  if (
+    wiring.providerMode !== "direct" || wiring.baseUrl === null || !isDirectBaseUrl(wiring.baseUrl)
+  ) {
     return { kind: "not-direct" };
   }
   const doc = parseJsonRecord(settings.text);
@@ -240,6 +243,7 @@ export function bakedClaudeDirectIntegrationId(
   return {
     kind: "direct",
     integrationId: line === undefined ? null : line.slice(prefix.length),
+    baseUrl: wiring.baseUrl,
   };
 }
 
@@ -326,7 +330,7 @@ export function inspectClaudeWiring(
   const staticToken = env ? readStringField(env, AUTH_TOKEN_ENV) : null;
   if (helperPath === null && env !== undefined && staticToken !== null && staticToken !== "") {
     if (
-      baseUrl === DIRECT_BASE_URL && env[DISABLE_BETAS_ENV] === "1" &&
+      baseUrl !== null && isDirectBaseUrl(baseUrl) && env[DISABLE_BETAS_ENV] === "1" &&
       directHeadersShape(readStringField(env, CUSTOM_HEADERS_ENV))
     ) {
       return wired("direct", { credential: "static", helperPath: null });
@@ -616,7 +620,13 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
   }
 
   if (request.mode === "direct") {
-    applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile, request.directIntegrationId);
+    applyManagedEnv(
+      doc,
+      "direct",
+      request.directBaseUrl ?? DEFAULT_COPILOT_API_BASE,
+      profile,
+      request.directIntegrationId,
+    );
     applyManagedCredential(doc, request.credential, directHelperCommand(profile), profile);
     // Real Claude home only: the throwaway detect-probe home must not touch the machine-global
     // ~/.claude.json.
@@ -768,7 +778,7 @@ export const CLAUDE_ENDPOINT_SMOKE: EndpointSmoke = {
  *  (src/agents/live_probe.ts); with no claude CLI on the machine the endpoint smoke judges the
  *  credential instead. False means the caller writes proxy. */
 export function detectClaudeDirect(
-  directIntegrationId: string | null,
+  direct: DirectWiring,
   ghToken: string | null,
   deps?: DirectProbeDeps,
 ): Promise<boolean> {
@@ -777,15 +787,18 @@ export function detectClaudeDirect(
     (tmpHome) => {
       configureClaudeConfig(tmpHome, {
         mode: "direct",
-        directIntegrationId,
+        ...direct,
         credential: { kind: "command" },
       });
     },
-    ghToken === null
-      ? null
-      : directSmoke(CLAUDE_ENDPOINT_SMOKE, ghToken, codexUserAgent(), directIntegrationId, {
-        fetchImpl: deps?.fetchImpl,
-      }),
+    ghToken === null ? null : directSmoke(
+      CLAUDE_ENDPOINT_SMOKE,
+      ghToken,
+      codexUserAgent(),
+      direct.directIntegrationId,
+      direct.directBaseUrl,
+      { fetchImpl: deps?.fetchImpl },
+    ),
     deps,
   );
 }
@@ -797,7 +810,7 @@ export function claudeAdapter(): AgentAdapter {
     check: checkClaudeConfig,
     detectDirect: detectClaudeDirect,
     // The skeleton passes the token it already resolved so gh-cli is not spawned twice.
-    resolveDirectIdentity: (ghToken) => probeDirectIntegrationId(null, ghToken),
+    resolveDirectWiring: (ghToken) => probeDirectWiring(null, ghToken),
     async configureDefault(write, ghToken) {
       configureClaudeConfig(resolveClaudeHome(), write);
       // Desktop reads its own config library, not settings.json, so every rewire reconciles it.

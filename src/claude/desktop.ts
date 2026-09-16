@@ -656,6 +656,7 @@ async function wiringModels(
         token,
         codexUserAgent(),
         opts.directIntegrationId ?? null,
+        opts.directBaseUrl ?? DEFAULT_COPILOT_API_BASE,
         { fetchImpl: opts.fetchImpl },
       );
       const rows = claudeCatalogRows(discovered.models);
@@ -701,7 +702,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   if (dir === null || !claudeDesktopInstalled()) return;
 
   const baseUrl = opts.mode === "direct"
-    ? DEFAULT_COPILOT_API_BASE
+    ? opts.directBaseUrl ?? DEFAULT_COPILOT_API_BASE
     : proxyLoopbackOrigin(wiringPortFor(opts.profile));
 
   const meta = parseDesktopMeta(readFileOrNull(join(dir, META_FILENAME)));
@@ -795,9 +796,13 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   const credential: DesktopCredential = opts.credential.kind === "command"
     ? { kind: "command", helperPath: writeDesktopHelperScript(opts.mode, opts.profile) }
     : opts.credential;
-  // Re-extracted so the payload receives the identity only alongside a direct mode.
+  // Re-extracted so the payload receives the Direct facts only alongside a direct mode.
   const write: ManagedMode = opts.mode === "direct"
-    ? { mode: "direct", directIntegrationId: opts.directIntegrationId }
+    ? {
+      mode: "direct",
+      directIntegrationId: opts.directIntegrationId,
+      directBaseUrl: opts.directBaseUrl,
+    }
     : { mode: "proxy" };
   const payload = desktopConfigPayload({
     ...write,

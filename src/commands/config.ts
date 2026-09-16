@@ -8,6 +8,7 @@ import {
   configDefaultValue,
   type ConfigKeyDef,
   configKeyDef,
+  COPILOT_HOST_AUTO,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   formatConfigValue,
@@ -120,11 +121,37 @@ function runSet(cli: string, raw: string, platform: NodeJS.Platform): void {
   }
   new CopilotEnvConfig().set({ [def.key]: value });
   consola.success(`set ${def.cli} = ${formatConfigValue(value)}`);
+  if (def.cli === "copilot-host" && value !== COPILOT_HOST_AUTO) {
+    const grant = copilotHostGrantWarning(String(value), netGranted);
+    if (grant !== null) consola.warn(grant);
+  }
   const warning = sinceProxyVersionWarning(def, nextProxyVersion());
   if (warning !== null) consola.warn(warning);
   // The warning supersedes only the generic restart hint (a restart cannot make an old proxy read
   // the key); a bespoke applyHint often covers a non-proxy surface and still applies.
   if (def.applyHint !== undefined || warning === null) noteHowItApplies(def);
+}
+
+/** The CLI reaches a fixed host list (deno.json `cli` permissions; a compiled binary cannot widen
+ *  it). A literal outside it is stored, since a build whose grant includes it honours it, but every
+ *  request to it from THIS build fails with a permission error, so `--set` says so once. */
+export function copilotHostGrantWarning(
+  origin: string,
+  granted: (origin: string) => boolean,
+): string | null {
+  if (granted(origin)) return null;
+  return `copilot-host ${origin} is not permitted by this build's network policy (deno.json \`cli\` ` +
+    "permissions; githubcopilot.com hosts are); requests to it fail until a build whose grant " +
+    "includes it runs them.";
+}
+
+/** A grant entry may carry the port (`host:443`), so both spellings are asked. */
+function netGranted(origin: string): boolean {
+  const url = new URL(origin);
+  const port = url.port === "" ? "443" : url.port;
+  return [url.hostname, `${url.hostname}:${port}`].some(
+    (host) => Deno.permissions.querySync({ name: "net", host }).state === "granted",
+  );
 }
 
 /** `agent start` prints these after projecting, passing the version its resolved entry runs, so a

@@ -9,11 +9,15 @@ import {
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   directIdentityCandidates,
+  type IdentitySurvey,
+  type IdentityVerdict,
   INTEGRATION_ID_HEADER,
   PASSTHROUGH_IDENTITY_CANDIDATES,
+  passthroughIdentity,
   type ProbeFetch,
   probeIntegrationIdentity,
   resetIntegrationIdentityCache,
+  resolveCopilotHost,
   resolveDirectIntegrationId,
   resolvePassthroughIntegrationId,
   setIntegrationProbeFetch,
@@ -94,7 +98,16 @@ function lowercaseKeys(headers: Record<string, string>): Record<string, string> 
   return Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
 }
 
-test("surveyIntegrationIdentities: every candidate on both hosts, no early stop, the agents' exact headers", async () => {
+/** The survey's row shape (`agent auth --identities`): the Direct candidates in the agents' exact
+ *  bytes, then the proxy's own vscode-chat in the daemon's bytes (the id header alone). */
+const SURVEY_ROWS = [
+  ...directIdentityCandidates("codex_exec/1"),
+  passthroughIdentity(VSCODE_CHAT_INTEGRATION_ID),
+];
+
+const CONFIGURED_API_BASE = "https://copilot.example";
+
+test("surveyIntegrationIdentities: every candidate on every host that matters, no early stop, the agents' exact headers", async () => {
   const seen: { host: string; headers: Record<string, string> }[] = [];
   const catalog = (size: number): Response =>
     new Response(
@@ -113,6 +126,7 @@ test("surveyIntegrationIdentities: every candidate on both hosts, no early stop,
     const host = new URL(url).host;
     const headers = sentIdentityHeaders(init);
     seen.push({ host, headers });
+    if (host === new URL(CONFIGURED_API_BASE).host) return Promise.resolve(catalog(9));
     const enterprise = host === new URL(ENTERPRISE_API_BASE).host;
     switch (headers[INTEGRATION_ID_HEADER.toLowerCase()]) {
       case undefined:
@@ -129,87 +143,182 @@ test("surveyIntegrationIdentities: every candidate on both hosts, no early stop,
           : Promise.resolve(new Response("upstream", { status: 503 }));
     }
   };
-  const survey = await surveyIntegrationIdentities("ghp_x", {
-    direct: directIdentityCandidates("codex_exec/1"),
-    passthrough: PASSTHROUGH_IDENTITY_CANDIDATES,
-  }, { fetchImpl });
-  expect(survey).toEqual({
-    direct: {
-      apiBase: DEFAULT_COPILOT_API_BASE,
-      verdicts: [
-        { name: CODEX_IDENTITY_NAME, verdict: { kind: "accepted", models: 3 } },
-        { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 5 } },
-        {
-          name: COPILOT_SANDBOX_INTEGRATION_ID,
-          verdict: { kind: "inconclusive", detail: "503 upstream" },
-        },
-      ],
-    },
-    passthrough: {
-      apiBase: ENTERPRISE_API_BASE,
-      verdicts: [
-        {
-          name: VSCODE_CHAT_INTEGRATION_ID,
-          verdict: { kind: "rejected", detail: "400 Personal Access Tokens are not supported" },
-        },
-        { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 37 } },
-        {
-          name: COPILOT_SANDBOX_INTEGRATION_ID,
-          verdict: { kind: "inconclusive", detail: "network error: offline" },
-        },
-      ],
-    },
+  const survey = await surveyIntegrationIdentities("ghp_x", SURVEY_ROWS, {
+    fetchImpl,
+    configuredHost: CONFIGURED_API_BASE,
   });
-  // The Direct column sends byte-for-byte what the agents bake (directClientHeaders), with the
-  // default identity carrying NO id header.
+  const rejected: IdentityVerdict = {
+    kind: "rejected",
+    detail: "400 Personal Access Tokens are not supported",
+  };
+  const accepted9: IdentityVerdict = { kind: "accepted", models: 9 };
+  const expected: IdentitySurvey = {
+    hosts: [
+      {
+        apiBase: DEFAULT_COPILOT_API_BASE,
+        role: "generic",
+        verdicts: [
+          { name: CODEX_IDENTITY_NAME, verdict: { kind: "accepted", models: 3 } },
+          { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 5 } },
+          {
+            name: COPILOT_SANDBOX_INTEGRATION_ID,
+            verdict: { kind: "inconclusive", detail: "503 upstream" },
+          },
+          { name: VSCODE_CHAT_INTEGRATION_ID, verdict: rejected },
+        ],
+      },
+      {
+        apiBase: ENTERPRISE_API_BASE,
+        role: "designated",
+        verdicts: [
+          { name: CODEX_IDENTITY_NAME, verdict: { kind: "accepted", models: 3 } },
+          { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 37 } },
+          {
+            name: COPILOT_SANDBOX_INTEGRATION_ID,
+            verdict: { kind: "inconclusive", detail: "network error: offline" },
+          },
+          { name: VSCODE_CHAT_INTEGRATION_ID, verdict: rejected },
+        ],
+      },
+      {
+        apiBase: CONFIGURED_API_BASE,
+        role: "configured",
+        verdicts: SURVEY_ROWS.map((c) => ({ name: c.name, verdict: accepted9 })),
+      },
+    ],
+    designatedUnknown: false,
+  };
+  expect(survey).toEqual(expected);
+  // Each host sees byte-for-byte what the agents (directClientHeaders, the default identity with
+  // NO id header) and the daemon (the id alone) send.
   expect(
     seen.filter((s) => s.host === new URL(DEFAULT_COPILOT_API_BASE).host).map((s) => s.headers),
-  ).toEqual(
-    [null, COPILOT_CLI_INTEGRATION_ID, COPILOT_SANDBOX_INTEGRATION_ID].map((id) =>
-      lowercaseKeys(directClientHeaders("codex_exec/1", id))
-    ),
-  );
-  // The star `agent auth --identities` draws off a column is the identity a LAUNCH sends: fed the
-  // same stub, each mode's resolver lands where autoIdentityFor says (the codex name is Direct's
-  // null header; a non-PAT credential is never probed by either).
-  const direct = autoIdentityFor("ghp_x", survey.direct);
+  ).toEqual(SURVEY_ROWS.map((c) => lowercaseKeys(c.headers)));
+  // The marks `agent auth --identities` draws off a column are what a LAUNCH sends: fed the same
+  // stub, each mode's resolver lands where autoIdentityFor says over ITS candidates on the host
+  // (the codex name is Direct's null header; a non-PAT credential is never probed by either).
+  const generic = survey.hosts[0]!;
+  const direct = autoIdentityFor("ghp_x", {
+    ...generic,
+    verdicts: generic.verdicts.slice(0, directIdentityCandidates("codex_exec/1").length),
+  });
   expect(await resolveDirectIntegrationId("ghp_x", "codex_exec/1", { fetchImpl })).toBe(
     direct === CODEX_IDENTITY_NAME ? null : direct,
   );
+  const designated = survey.hosts[1]!;
+  const passthroughView = {
+    ...designated,
+    verdicts: PASSTHROUGH_IDENTITY_CANDIDATES.flatMap((c) =>
+      designated.verdicts.filter((v) => v.name === c.name)
+    ),
+  };
   for (const token of ["ghp_x", "gho_x"]) {
     expect(await resolvePassthroughIntegrationId(token, { fetchImpl })).toBe(
-      autoIdentityFor(token, survey.passthrough),
+      autoIdentityFor(token, passthroughView),
     );
   }
 });
 
-test("surveyIntegrationIdentities: a transient account-host lookup downgrades the fallback host's rejections", async () => {
-  const fetchImpl: ProbeFetch = (input) => {
+test("surveyIntegrationIdentities: the designated and configured columns appear only when they add a host", async () => {
+  const stub = (lookup: Response): ProbeFetch => (input) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     return Promise.resolve(
       url.includes("/copilot_internal/user")
-        ? new Response("upstream", { status: 503 })
-        : new Response("PATs not supported", { status: 400 }),
+        ? lookup
+        : new Response(JSON.stringify({ data: [] }), { status: 200 }),
     );
   };
-  const survey = await surveyIntegrationIdentities("ghp_x", {
-    direct: directIdentityCandidates("codex_exec/1").slice(0, 1),
-    passthrough: PASSTHROUGH_IDENTITY_CANDIDATES.slice(0, 1),
-  }, { fetchImpl });
-  // Direct never looks the host up, so its 400 stays definitive; the fallback host may not be
-  // where this credential is served, so the proxy column's 400 must not read as a verdict.
-  expect(survey.direct.verdicts[0]?.verdict).toEqual({
-    kind: "rejected",
-    detail: "400 PATs not supported",
+  const rows = SURVEY_ROWS.slice(0, 1);
+  const designated = (api: string): Response =>
+    new Response(JSON.stringify({ endpoints: { api } }), { status: 200 });
+  // The account is served on the generic host: one column, and nothing unknown.
+  const same = await surveyIntegrationIdentities("ghp_x", rows, {
+    fetchImpl: stub(designated(DEFAULT_COPILOT_API_BASE)),
   });
-  expect(survey.passthrough.verdicts[0]?.verdict).toEqual({
-    kind: "inconclusive",
-    detail: "400 PATs not supported (account host lookup failed; probed the fallback host)",
+  expect(same.hosts.map((h) => h.role)).toEqual(["generic"]);
+  expect(same.designatedUnknown).toBe(false);
+  // A transient lookup failure hides the column and says so, rather than guessing "the same".
+  const unknown = await surveyIntegrationIdentities("ghp_x", rows, {
+    fetchImpl: stub(new Response("upstream", { status: 503 })),
   });
-  // "No pick" on Direct is the launch's refusal: the resolver throws on the same stub.
-  expect(autoIdentityFor("ghp_x", survey.direct)).toBeNull();
-  await expect(resolveDirectIntegrationId("ghp_x", "codex_exec/1", { fetchImpl })).rejects
-    .toThrow(/rejects this credential/);
+  expect(unknown.hosts.map((h) => h.role)).toEqual(["generic"]);
+  expect(unknown.designatedUnknown).toBe(true);
+  // A literal equal to the designated host is one column, in its account role.
+  const merged = await surveyIntegrationIdentities("ghp_x", rows, {
+    fetchImpl: stub(designated(ENTERPRISE_API_BASE)),
+    configuredHost: ENTERPRISE_API_BASE,
+  });
+  expect(merged.hosts.map((h) => [h.role, h.apiBase])).toEqual([
+    ["generic", DEFAULT_COPILOT_API_BASE],
+    ["designated", ENTERPRISE_API_BASE],
+  ]);
+});
+
+test("resolveCopilotHost: 2xx/400/401 keep the generic host; 403/404/5xx/network move to the account's host; a failed lookup stays", async () => {
+  const headers = directClientHeaders("codex_exec/1", COPILOT_CLI_INTEGRATION_ID);
+  const rule = async (
+    status: number | "network",
+    lookup: "ok" | "fail",
+  ): Promise<{ host: string; lookedUp: boolean; probedAs: string | null }> => {
+    let lookedUp = false;
+    let probedAs: string | null = null;
+    const fetchImpl: ProbeFetch = (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/copilot_internal/user")) {
+        lookedUp = true;
+        return Promise.resolve(
+          lookup === "ok"
+            ? new Response(JSON.stringify({ endpoints: { api: ENTERPRISE_API_BASE } }), {
+              status: 200,
+            })
+            : new Response("upstream", { status: 503 }),
+        );
+      }
+      expect(url).toBe(`${DEFAULT_COPILOT_API_BASE}/models`);
+      probedAs = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+      if (status === "network") return Promise.reject(new Error("offline"));
+      return Promise.resolve(new Response("body", { status }));
+    };
+    const host = await resolveCopilotHost("ghp_x", headers, {
+      fetchImpl,
+      narrator: { info: () => {} },
+    });
+    return { host, lookedUp, probedAs };
+  };
+  // Kept: a 2xx serves the credential; 400 is an identity rejection and 401 a bad token, both
+  // identical on every host, so neither says anything about the host.
+  for (const status of [200, 400, 401]) {
+    expect(await rule(status, "ok")).toEqual({
+      host: DEFAULT_COPILOT_API_BASE,
+      lookedUp: false,
+      probedAs: COPILOT_CLI_INTEGRATION_ID,
+    });
+  }
+  for (const status of [403, 404, 500, 503, "network"] as const) {
+    expect(await rule(status, "ok")).toEqual({
+      host: ENTERPRISE_API_BASE,
+      lookedUp: true,
+      probedAs: COPILOT_CLI_INTEGRATION_ID,
+    });
+  }
+  expect(await rule(403, "fail")).toEqual({
+    host: DEFAULT_COPILOT_API_BASE,
+    lookedUp: true,
+    probedAs: COPILOT_CLI_INTEGRATION_ID,
+  });
+  // A literal and a missing token both skip every probe.
+  let called = false;
+  const never: ProbeFetch = () => {
+    called = true;
+    return Promise.reject(new Error("should not be called"));
+  };
+  expect(
+    await resolveCopilotHost("ghp_x", headers, { literal: CONFIGURED_API_BASE, fetchImpl: never }),
+  ).toBe(CONFIGURED_API_BASE);
+  expect(await resolveCopilotHost(null, headers, { fetchImpl: never })).toBe(
+    DEFAULT_COPILOT_API_BASE,
+  );
+  expect(called).toBe(false);
 });
 
 test("probeIntegrationIdentity: a network error is inconclusive, not a rejection", async () => {
@@ -451,7 +560,8 @@ test("fetchRawModels(direct) probes and fetches ONE host; by default it asks as 
   // probing a discovered account host while fetching the public one renders the verdict
   // against a host this request never touches. With no identity named, the header set is the
   // daemon's (vscode-chat first, the id header alone): what feeds the proxy's own listing.
-  const { fetchRawModels, DIRECT_MODELS_URL } = await import("../src/copilot_api/catalog.ts");
+  const { fetchRawModels } = await import("../src/copilot_api/catalog.ts");
+  const modelsUrl = `${DEFAULT_COPILOT_API_BASE}/models`;
 
   const seen: string[] = [];
   const sent: Record<string, string>[] = [];
@@ -483,10 +593,11 @@ test("fetchRawModels(direct) probes and fetches ONE host; by default it asks as 
   }
 
   expect(seen.length).toBeGreaterThan(1); // a probe happened, then the real fetch
-  expect(seen.every((u) => u === DIRECT_MODELS_URL)).toBe(true);
+  expect(seen.every((u) => u === modelsUrl)).toBe(true);
   expect(seen.some((u) => u.includes("/copilot_internal/user"))).toBe(false);
-  // The winning probe and the catalog GET both carried the settled identity.
-  expect(accepted.length).toBe(2);
+  // The winning identity probe, the host probe under it, and the catalog GET all carried the
+  // settled identity.
+  expect(accepted.length).toBe(3);
   expect(accepted.every((id) => id === COPILOT_CLI_INTEGRATION_ID)).toBe(true);
   const passthrough = (id: string) => wireHeaders({ [INTEGRATION_ID_HEADER]: id }, "github_pat_x");
   expect(sent[0]).toEqual(passthrough(VSCODE_CHAT_INTEGRATION_ID));
@@ -498,7 +609,7 @@ test("fetchRawModels(direct) under the agents' identity sends the exact header s
   // agent is served; a consumer feeding an agent names that agent's identity and gets its header
   // set byte for byte: the versioned codex_exec UA, Openai-Intent, and the baked id (none for the
   // default). A PAT is probed through the DIRECT candidates (the id-less Codex one first); a
-  // gho_/device token goes unprobed, one GET.
+  // gho_/device token goes unprobed. Then the host probe under the settled set, then the GET.
   const { fetchRawModels } = await import("../src/copilot_api/catalog.ts");
   const agents = (id: string | null, token: string) =>
     wireHeaders(directClientHeaders(codexUserAgent(), id), token);
@@ -509,9 +620,10 @@ test("fetchRawModels(direct) under the agents' identity sends the exact header s
         agents(null, "github_pat_x"),
         agents(COPILOT_CLI_INTEGRATION_ID, "github_pat_x"),
         agents(COPILOT_CLI_INTEGRATION_ID, "github_pat_x"),
+        agents(COPILOT_CLI_INTEGRATION_ID, "github_pat_x"),
       ],
     },
-    { token: "gho_x", expected: [agents(null, "gho_x")] },
+    { token: "gho_x", expected: [agents(null, "gho_x"), agents(null, "gho_x")] },
   ];
   for (const c of cases) {
     const sent: Record<string, string>[] = [];

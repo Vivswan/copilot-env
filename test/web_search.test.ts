@@ -3,6 +3,7 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
   CODEX_EXEC_USER_AGENT,
   directClientHeaders,
+  resetIntegrationIdentityCache,
 } from "../src/copilot_api/integration_identity.ts";
 import { generateAliases, parseCatalogModels } from "../src/copilot_api/models.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
@@ -86,6 +87,12 @@ function okJson(body: unknown): Response {
   });
 }
 
+/** What `copilot-host auto` sees first: GET /models on the generic host under the identity the
+ *  request will carry; a 2xx keeps that host. */
+function hostProbeOk(): Response {
+  return okJson({ data: [] });
+}
+
 // --- parseResponsesOutput ----------------------------------------------------
 
 test("parseResponsesOutput concatenates message text and appends deduped sources", () => {
@@ -117,15 +124,15 @@ test("parseResponsesOutput throws when no message item carries text", () => {
 test("webSearch POSTs the verified request shape, no integration id for a gho_ token", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
-  const stub = fetchStub([okJson(responsesFixture())]);
+  const stub = fetchStub([hostProbeOk(), okJson(responsesFixture())]);
 
   const answer = await webSearch("bun release", { fetchImpl: stub.fetchImpl });
 
   expect(answer).toContain("Bun 1.3 shipped.");
-  expect(stub.calls).toHaveLength(1);
-  const call = stub.calls[0];
+  // The host probe (the same headers, the generic host) precedes the one POST.
+  expect(stub.calls.map((c) => c.url)).toEqual([MODELS_URL, RESPONSES_URL]);
+  const call = stub.calls[1];
   if (call === undefined) throw new Error("unreachable");
-  expect(call.url).toBe("https://api.githubcopilot.com/responses");
   expect(call.init.method).toBe("POST");
   const headers = call.init.headers as Record<string, string>;
   expect(headers.Authorization).toBe("Bearer gho_stored");
@@ -150,14 +157,16 @@ test("webSearch sends the pinned integration id without probing", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
   new CopilotEnvConfig().set({ integrationId: "copilot-developer-cli" });
-  const stub = fetchStub([okJson(responsesFixture())]);
+  const stub = fetchStub([hostProbeOk(), okJson(responsesFixture())]);
 
   await webSearch("q", { fetchImpl: stub.fetchImpl });
 
-  // Exactly one call: the pin skips the probe entirely.
-  expect(stub.calls).toHaveLength(1);
-  const headers = stub.calls[0]?.init.headers as Record<string, string>;
-  expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
+  // The pin skips the identity probe; the host probe stays, and it already carries the pin.
+  expect(stub.calls.map((c) => c.url)).toEqual([MODELS_URL, RESPONSES_URL]);
+  for (const call of stub.calls) {
+    const headers = call.init.headers as Record<string, string>;
+    expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
+  }
 });
 
 /** A raw direct-catalog body for the alias-resolution tests. */
@@ -168,6 +177,7 @@ function catalogFixture(): unknown {
 }
 
 const MODELS_URL = "https://api.githubcopilot.com/models";
+const RESPONSES_URL = "https://api.githubcopilot.com/responses";
 
 test("webSearch model precedence: explicit beats stored beats built-in default", async () => {
   tmpHome();
@@ -176,42 +186,47 @@ test("webSearch model precedence: explicit beats stored beats built-in default",
 
   // A configured model consults the live catalog first (alias resolution); an
   // unknown value passes through to the POST unchanged.
-  const stored = fetchStub([okJson(catalogFixture()), okJson(responsesFixture())]);
+  const stored = fetchStub([hostProbeOk(), okJson(catalogFixture()), okJson(responsesFixture())]);
   await webSearch("q", { fetchImpl: stored.fetchImpl });
-  expect(stored.calls[0]?.url).toBe(MODELS_URL);
-  expect(JSON.parse(String(stored.calls[1]?.init.body)).model).toBe("stored-model");
+  expect(stored.calls.map((c) => c.url)).toEqual([MODELS_URL, MODELS_URL, RESPONSES_URL]);
+  expect(JSON.parse(String(stored.calls[2]?.init.body)).model).toBe("stored-model");
 
-  const explicit = fetchStub([okJson(catalogFixture()), okJson(responsesFixture())]);
+  const explicit = fetchStub([
+    hostProbeOk(),
+    okJson(catalogFixture()),
+    okJson(responsesFixture()),
+  ]);
   await webSearch("q", { fetchImpl: explicit.fetchImpl, model: "flag-model" });
-  expect(JSON.parse(String(explicit.calls[1]?.init.body)).model).toBe("flag-model");
+  expect(JSON.parse(String(explicit.calls[2]?.init.body)).model).toBe("flag-model");
 });
 
 test("webSearch resolves catalog aliases for the stored model (the proxy's semantics)", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
   new CopilotEnvConfig().set({ messageApiWebSearchModel: "gpt-latest" });
-  const stub = fetchStub([okJson(catalogFixture()), okJson(responsesFixture())]);
+  const stub = fetchStub([hostProbeOk(), okJson(catalogFixture()), okJson(responsesFixture())]);
 
   await webSearch("q", { fetchImpl: stub.fetchImpl });
 
-  expect(stub.calls[0]?.url).toBe(MODELS_URL);
-  // The catalog is asked under the SAME identity the /responses call sends: Copilot gates the
-  // list per identity, so a list fetched as the proxy daemon could name a model this POST cannot use.
-  expect(stub.calls[0]?.init.headers).toEqual({
+  // After the host probe: the catalog GET, asked under the SAME identity the /responses call
+  // sends (Copilot gates the list per identity, so a list fetched as the proxy daemon could name a
+  // model this POST cannot use), then the POST.
+  expect(stub.calls[1]?.url).toBe(MODELS_URL);
+  expect(stub.calls[1]?.init.headers).toEqual({
     ...directClientHeaders(CODEX_EXEC_USER_AGENT),
     Authorization: "Bearer gho_stored",
   });
-  expect(JSON.parse(String(stub.calls[1]?.init.body)).model).toBe("gpt-6");
+  expect(JSON.parse(String(stub.calls[2]?.init.body)).model).toBe("gpt-6");
 });
 
 test("webSearch resolves aliases for the explicit --model flag too", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
-  const stub = fetchStub([okJson(catalogFixture()), okJson(responsesFixture())]);
+  const stub = fetchStub([hostProbeOk(), okJson(catalogFixture()), okJson(responsesFixture())]);
 
   await webSearch("q", { fetchImpl: stub.fetchImpl, model: "claude-latest" });
 
-  expect(JSON.parse(String(stub.calls[1]?.init.body)).model).toBe("claude-fable-5");
+  expect(JSON.parse(String(stub.calls[2]?.init.body)).model).toBe("claude-fable-5");
 });
 
 test("webSearch sends the raw value when the catalog fetch fails (best-effort)", async () => {
@@ -219,6 +234,7 @@ test("webSearch sends the raw value when the catalog fetch fails (best-effort)",
   new Credential(undefined, null).store("gh-token", "gho_stored");
   new CopilotEnvConfig().set({ messageApiWebSearchModel: "gpt-latest" });
   const stub = fetchStub([
+    hostProbeOk(),
     new Response("nope", { status: 500, statusText: "Internal Server Error" }),
     okJson(responsesFixture()),
   ]);
@@ -226,17 +242,17 @@ test("webSearch sends the raw value when the catalog fetch fails (best-effort)",
   const answer = await webSearch("q", { fetchImpl: stub.fetchImpl });
 
   expect(answer).toContain("Bun 1.3 shipped.");
-  expect(JSON.parse(String(stub.calls[1]?.init.body)).model).toBe("gpt-latest");
+  expect(JSON.parse(String(stub.calls[2]?.init.body)).model).toBe("gpt-latest");
 });
 
 test("webSearch passes an exact catalog id through unchanged", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
-  const stub = fetchStub([okJson(catalogFixture()), okJson(responsesFixture())]);
+  const stub = fetchStub([hostProbeOk(), okJson(catalogFixture()), okJson(responsesFixture())]);
 
   await webSearch("q", { fetchImpl: stub.fetchImpl, model: "gpt-6" });
 
-  expect(JSON.parse(String(stub.calls[1]?.init.body)).model).toBe("gpt-6");
+  expect(JSON.parse(String(stub.calls[2]?.init.body)).model).toBe("gpt-6");
 });
 
 test("the alias catalog is memoized per token, and a failed fetch is retried", async () => {
@@ -247,6 +263,7 @@ test("the alias catalog is memoized per token, and a failed fetch is retried", a
   new Credential(undefined, null).store("gh-token", "gho_stored");
   new CopilotEnvConfig().set({ messageApiWebSearchModel: "gpt-latest" });
   const responses = [
+    hostProbeOk(), // the host probe, memoized for the two calls after
     new Response("nope", { status: 500, statusText: "Internal Server Error" }), // catalog: fails
     okJson(responsesFixture()), // POST 1 (raw pass-through)
     okJson(catalogFixture()), // catalog: retried after eviction
@@ -256,6 +273,7 @@ test("the alias catalog is memoized per token, and a failed fetch is retried", a
   const calls: CapturedRequest[] = [];
   const realFetch = globalThis.fetch;
   resetWebSearchAliasCache();
+  resetIntegrationIdentityCache();
   try {
     globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
       calls.push({ url: String(input), init: init ?? {} });
@@ -269,9 +287,10 @@ test("the alias catalog is memoized per token, and a failed fetch is retried", a
   } finally {
     globalThis.fetch = realFetch;
     resetWebSearchAliasCache();
+    resetIntegrationIdentityCache();
   }
-  expect(calls.filter((c) => c.url === MODELS_URL)).toHaveLength(2);
-  const posts = calls.filter((c) => c.url === "https://api.githubcopilot.com/responses");
+  expect(calls.filter((c) => c.url === MODELS_URL)).toHaveLength(3);
+  const posts = calls.filter((c) => c.url === RESPONSES_URL);
   expect(posts.map((c) => JSON.parse(String(c.init.body)).model)).toEqual([
     "gpt-latest",
     "gpt-6",
@@ -283,6 +302,7 @@ test("webSearch surfaces non-2xx as a legible error", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
   const stub = fetchStub([
+    hostProbeOk(),
     new Response("model unsupported", { status: 400, statusText: "Bad Request" }),
   ]);
 
@@ -326,6 +346,7 @@ test("a huge upstream error body is capped before it reaches the tool error", as
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
   const stub = fetchStub([
+    hostProbeOk(),
     new Response("x".repeat(5000), { status: 502, statusText: "Bad Gateway" }),
   ]);
 

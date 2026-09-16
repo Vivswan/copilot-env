@@ -2,7 +2,7 @@
 // discovery.ts runs its own under each identity it probes.
 // Failures THROW with actionable messages; best-effort callers catch.
 //   proxy  -> the running local daemon's GET /models
-//   direct -> api.githubcopilot.com under the identity the CONSUMER names (DirectCatalogIdentity)
+//   direct -> the resolved Copilot host under the identity the CONSUMER names (DirectCatalogIdentity)
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig } from "./config.ts";
 import { Credential } from "./credential.ts";
@@ -12,6 +12,7 @@ import {
   directClientHeaders,
   INTEGRATION_ID_HEADER,
   type ProbeFetch,
+  resolveCopilotHost,
   resolveDirectIntegrationId,
   type ResolveIdentityOptions,
   resolvePassthroughIntegrationId,
@@ -23,8 +24,6 @@ import { createStderrLogger } from "../utils/logger.ts";
 /** Where the catalog comes from: upstream Copilot (direct) or the running local proxy. */
 export type CatalogSource = "direct" | "proxy";
 
-/** Derived from the shared base so this fetch and the identity probe can never target different hosts. */
-export const DIRECT_MODELS_URL = `${DEFAULT_COPILOT_API_BASE}/models`;
 const DIRECT_FETCH_TIMEOUT_MS = 5000;
 
 /**
@@ -43,6 +42,8 @@ export type DirectCatalogIdentity =
 export interface FetchRawModelsOptions {
   /** Skips re-resolving, which for a gh-cli provider re-runs `gh auth token` (up to 5s). */
   directToken?: string;
+  /** The Copilot host a caller already resolved (resolveCopilotHost); absent, this fetch resolves it. */
+  apiBase?: string;
   /** Callers that just probed liveness pass that port so the fetch cannot race a restart onto another. */
   port?: number;
   /** null/absent = the default profile. A named profile never falls back to the default credential (credential.ts). */
@@ -76,14 +77,21 @@ export async function fetchRawModels(
   const token = resolved.token;
   // Either resolver: a configured pin wins, a non-PAT token takes its default unprobed, only a PAT
   // is probed (a fine-grained PAT is rejected under both defaults; it needs copilot-developer-cli).
-  //   the probe's apiBase    -> the host this fetch uses, so its verdict is never rendered against a different host
-  //   the probe's narration  -> stderr: `agent auth --get` runs this fetch and its stdout is the token
+  //   the probe's apiBase    -> the host in use (a caller's, else the `copilot-host` literal, else
+  //                             the generic host), so the identity verdict is never rendered against
+  //                             a host this fetch does not use
+  //   the host               -> a caller's, else resolveCopilotHost under the CONSUMER's exact header
+  //                             set, so the host verdict is the consumer's too
+  //   the probes' narration  -> stderr: `agent auth --get` runs this fetch and its stdout is the token
+  const config = new CopilotEnvConfig();
+  const literal = config.copilotHost();
+  const narrator = createStderrLogger();
   const resolveOpts: ResolveIdentityOptions = {
-    pinned: new CopilotEnvConfig().pinnedIntegrationId(),
-    apiBase: DEFAULT_COPILOT_API_BASE,
+    pinned: config.pinnedIntegrationId(),
+    apiBase: opts.apiBase ?? literal ?? DEFAULT_COPILOT_API_BASE,
     fetchImpl: opts.fetchImpl,
     signal: opts.signal,
-    narrator: createStderrLogger(),
+    narrator,
   };
   const identity = opts.identity ?? { kind: "passthrough" };
   const headers: Record<string, string> = identity.kind === "agents"
@@ -92,15 +100,22 @@ export async function fetchRawModels(
       await resolveDirectIntegrationId(token, identity.userAgent, resolveOpts),
     )
     : { [INTEGRATION_ID_HEADER]: await resolvePassthroughIntegrationId(token, resolveOpts) };
+  const apiBase = opts.apiBase ?? await resolveCopilotHost(token, headers, {
+    literal,
+    fetchImpl: opts.fetchImpl,
+    signal: opts.signal,
+    narrator,
+  });
+  const url = `${apiBase}/models`;
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
-  const res = await fetchImpl(DIRECT_MODELS_URL, {
+  const res = await fetchImpl(url, {
     headers: { ...headers, Authorization: `Bearer ${token}` },
     signal: opts.signal === undefined
       ? AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS)
       : AbortSignal.any([opts.signal, AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS)]),
   });
   if (!res.ok) {
-    throw new Error(`GET ${DIRECT_MODELS_URL} returned ${res.status} ${res.statusText}`);
+    throw new Error(`GET ${url} returned ${res.status} ${res.statusText}`);
   }
   return res.json();
 }

@@ -40,11 +40,11 @@ agent uninstall            # remove copilot-env entirely (--yes headless, --dry-
 agent codex                # configure Codex; no flag auto-detects the backend
 agent codex --direct       # force GitHub Copilot Direct (no auto-detect probe)
 agent codex --check        # print provider mode + a Direct config's service_tier line
-                           #   exits 0 direct, 2 proxy, 1 other
+                           #   exits 0 direct, 2 proxy or unconfigured, 1 other
 agent codex --mobile       # pair the Codex desktop app with the phone remote-control flow
 agent claude               # configure Claude; no flag auto-detects the backend
 agent claude --direct      # force GitHub Copilot Direct for Claude (no auto-detect probe)
-agent claude --check       # print Claude provider mode; exits 0 direct, 2 proxy, 1 other
+agent claude --check       # print Claude provider mode; exits 0 direct, 2 proxy or unconfigured, 1 other
 agent --full-help          # help for agent and every subcommand, every flag included
 ```
 

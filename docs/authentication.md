@@ -54,4 +54,4 @@ agent profile --del work # stop its daemon, clear its credential, strip both age
 - **Own daemon:** a proxy-mode profile runs in an isolated home (`<copilot-api home>/profiles/<name>`) on a stable reserved port, managed via `agent start/stop --profile <name>`.
 - **Switch mode:** re-run `--add` with the other mode flag.
 - **Web-search caveat:** a DIRECT profile over a PROXY default has no search path in Claude. The builtin 400s on Direct, and the machine-global MCP server is only registered while the default wiring is direct ([web search](usage.md#web-search-for-claude-code)).
-- **Workaround:** register the server by hand there, under a name other than `copilot-env`, which wiring writes reclaim.
+- **Workaround:** register the server by hand there, under a name other than `copilot-env`. A hand-written entry under that name reads as foreign, so a later default wiring leaves it alone and cannot register its own.

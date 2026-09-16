@@ -7,6 +7,8 @@
 //   oracle    -> POST /responses with it; parse `Available models: [...]` from the 400 body
 //   verify    -> a 1-token /v1/messages ping per extra under the EXACT headers the wiring bakes
 //   1m probe  -> a >200k-token prompt; Copilot bills per REQUEST, so it costs the same as the ping
+//   memo      -> the catalog and the oracle's extras persist per credential+identity for a day, so a
+//                warm rerun (the Claude Desktop wire on every launch) makes no request at all
 // Verdicts are identity-exact: meaningful only for the header set the consumer will actually send.
 import {
   COPILOT_CLI_INTEGRATION_ID,
@@ -17,9 +19,10 @@ import {
   VSCODE_CHAT_INTEGRATION_ID,
 } from "./integration_identity.ts";
 import { type CatalogModel, ONE_M_SUFFIX, parseCatalogModels } from "./models.ts";
-import { CopilotEnvState } from "./env_state.ts";
+import { CopilotEnvState, type DiscoveryMemo } from "./env_state.ts";
 import { isDue } from "../autoupdate/due.ts";
 import { errMessage } from "../utils/error.ts";
+import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
 const logger = createStderrLogger();
@@ -74,19 +77,30 @@ export async function discoverServableClaudeModels(
     ...directClientHeaders(userAgent, id),
     "Authorization": `Bearer ${token}`,
   });
+  const state = new CopilotEnvState();
+  const now = opts.nowMs?.() ?? Date.now();
+  // Keyed per credential like the verdicts: a profile's catalog must never answer for the default's,
+  // since entitlements differ per account.
+  const credential = await credentialDigest(token);
+  const memoKey = `${credential}|${integrationId ?? "default"}`;
+  const memo = freshDiscoveryMemo(state, memoKey, now);
 
-  const catalogBody = await fetchCatalog(fetchImpl, headers(integrationId));
+  const catalogBody = memo === null
+    ? await fetchCatalog(fetchImpl, headers(integrationId))
+    : memo.catalogBody;
   const advertised = parseCatalogModels(catalogBody);
   const models = [...advertised];
   const unlisted: string[] = [];
 
   try {
-    const extras = await unadvertisedClaudeIds(fetchImpl, headers, integrationId, advertised);
-    const state = new CopilotEnvState();
-    const now = opts.nowMs?.() ?? Date.now();
-    // Verdicts are keyed per credential: a profile's must never answer for the default's, since
-    // entitlements differ per account.
-    const credential = await credentialDigest(token);
+    let extras: string[];
+    if (memo === null) {
+      const learned = await unadvertisedClaudeIds(fetchImpl, headers, integrationId, advertised);
+      extras = learned ?? [];
+      if (learned !== null) recordDiscoveryMemo(state, memoKey, { catalogBody, extras, atMs: now });
+    } else {
+      extras = memo.extras;
+    }
     for (const id of extras) {
       // `agent models` and the Desktop wiring share the persisted verdicts, so a DEFINITIVE one costs its
       // billed ping once per model+identity+credential per day for sequential runs; overlapping runs each
@@ -132,7 +146,32 @@ async function credentialDigest(token: string): Promise<string> {
   ).join("");
 }
 
-/** The body is drained before throwing so a keep-alive socket stays reusable. */
+/** Null on a miss, a lapsed entry, or an unreadable store: each is a refetch, so a broken store
+ *  costs requests, never a stale answer. */
+function freshDiscoveryMemo(
+  state: CopilotEnvState,
+  key: string,
+  nowMs: number,
+): DiscoveryMemo | null {
+  try {
+    const memo = state.readDiscoveryMemo(key);
+    return memo !== null && !isDue(memo.atMs, nowMs) ? memo : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A memo that cannot be written costs the next run its requests, never this run its extras. */
+function recordDiscoveryMemo(state: CopilotEnvState, key: string, memo: DiscoveryMemo): void {
+  try {
+    state.setDiscoveryMemo(key, memo);
+  } catch (e) {
+    logger.warn(`  model discovery: catalog memo not recorded (${errMessage(e)}).`);
+  }
+}
+
+/** The body is drained before throwing so a keep-alive socket stays reusable. A 200 without a model
+ *  list throws too: read as an empty catalog it would memoize "nothing gated" for a day. */
 async function fetchCatalog(
   fetchImpl: ProbeFetch,
   headers: Record<string, string>,
@@ -145,19 +184,26 @@ async function fetchCatalog(
     await res.text().catch(() => "");
     throw new Error(`GET ${MODELS_URL} returned ${res.status}`);
   }
-  return await res.json();
+  const body: unknown = await res.json();
+  if (!isRecord(body) || !Array.isArray(body.data)) {
+    throw new Error(`GET ${MODELS_URL} returned no model list`);
+  }
+  return body;
 }
 
-/** Empty when no gated trigger id exists or the oracle's error shape is not understood: never a guess. */
+/** Null when the answer is INCONCLUSIVE (a sibling catalog unreachable with no candidate left to ask
+ *  about, or no candidate drew a readable allowlist), so it is never memoized; an empty list is the
+ *  definitive "nothing gated". Never a guess. */
 async function unadvertisedClaudeIds(
   fetchImpl: ProbeFetch,
   headers: (id: string | null) => Record<string, string>,
   integrationId: string | null,
   advertised: CatalogModel[],
-): Promise<string[]> {
+): Promise<string[] | null> {
   const ownIds = new Set(advertised.map((m) => m.id));
 
   const candidates: string[] = [];
+  let siblingUnreachable = false;
   for (const id of KNOWN_IDENTITY_IDS) {
     if (id === integrationId) continue;
     try {
@@ -167,8 +213,10 @@ async function unadvertisedClaudeIds(
       }
     } catch {
       // One identity's catalog failing must not sink the others.
+      siblingUnreachable = true;
     }
   }
+  if (candidates.length === 0) return siblingUnreachable ? null : [];
 
   for (const candidate of candidates.slice(0, ORACLE_ATTEMPTS)) {
     const allowlist = await oracleAllowlist(fetchImpl, headers(integrationId), candidate);
@@ -177,7 +225,7 @@ async function unadvertisedClaudeIds(
       (id) => id.startsWith("claude-") && !id.endsWith(ONE_M_SUFFIX) && !ownIds.has(id),
     );
   }
-  return [];
+  return null;
 }
 
 /** A 2xx (the id turned out servable; max_output_tokens caps the accident at one token) or an

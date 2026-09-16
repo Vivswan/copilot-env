@@ -202,11 +202,20 @@ export interface CopilotEnvStateData {
   /** Keyed `<credentialDigest>|<integrationId|default>|<modelId>` (src/copilot_api/discovery.ts). The
    *  verification pings are billed requests, so this cache is shared by every consumer. Never exported. */
   claudeModelVerdicts: Record<string, ModelVerdict>;
+  /** Keyed `<credentialDigest>|<integrationId|default>` (src/copilot_api/discovery.ts): the raw
+   *  /models body and the oracle's extra ids, so a warm rerun makes no request. Never exported. */
+  claudeDiscoveryMemo: Record<string, DiscoveryMemo>;
 }
 
 export interface ModelVerdict {
   servable: boolean;
   is1m: boolean;
+  atMs: number;
+}
+
+export interface DiscoveryMemo {
+  catalogBody: unknown;
+  extras: string[];
   atMs: number;
 }
 
@@ -256,6 +265,17 @@ const STATE_SCHEMA = v.object({
       v.object({
         servable: v.boolean(),
         is1m: v.boolean(),
+        atMs: v.pipe(v.number(), v.finite(), v.minValue(0)),
+      }),
+    ),
+    {},
+  ),
+  claudeDiscoveryMemo: v.fallback(
+    v.record(
+      v.string(),
+      v.object({
+        catalogBody: v.unknown(),
+        extras: v.array(v.string()),
         atMs: v.pipe(v.number(), v.finite(), v.minValue(0)),
       }),
     ),
@@ -619,6 +639,17 @@ export class CopilotEnvState {
     this.store.update((d) => {
       const verdicts = isRecord(d.claudeModelVerdicts) ? d.claudeModelVerdicts : {};
       d.claudeModelVerdicts = { ...verdicts, [key]: verdict };
+    });
+  }
+
+  readDiscoveryMemo(key: string): DiscoveryMemo | null {
+    return this.read().claudeDiscoveryMemo[key] ?? null;
+  }
+
+  setDiscoveryMemo(key: string, memo: DiscoveryMemo): void {
+    this.store.update((d) => {
+      const memos = isRecord(d.claudeDiscoveryMemo) ? d.claudeDiscoveryMemo : {};
+      d.claudeDiscoveryMemo = { ...memos, [key]: memo };
     });
   }
 }

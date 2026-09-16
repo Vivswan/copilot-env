@@ -166,6 +166,7 @@ test("auth --del clears the stored token and provider", async () => {
     codexCatalogPatchVersion: 0,
     codexCatalogAccepted: null,
     claudeModelVerdicts: {},
+    claudeDiscoveryMemo: {},
     codexCatalogCodexVersion: null,
   });
 });
@@ -224,6 +225,7 @@ test("auth --provider gh-env stores the env token + provider, and does NOT confi
     codexCatalogPatchVersion: 0,
     codexCatalogAccepted: null,
     claudeModelVerdicts: {},
+    claudeDiscoveryMemo: {},
     codexCatalogCodexVersion: null,
   });
   // auth only manages the credential -- configuring Codex/Claude is `agent init`'s job.
@@ -244,6 +246,7 @@ test("auth --set <token> stores it verbatim (no env, no UI) and records gh-token
     codexCatalogPatchVersion: 0,
     codexCatalogAccepted: null,
     claudeModelVerdicts: {},
+    claudeDiscoveryMemo: {},
     codexCatalogCodexVersion: null,
   });
 });

@@ -19,6 +19,8 @@ function isolate(): void {
 interface StubOptions {
   /** /models ids per identity; key "none" = no Copilot-Integration-Id header. */
   catalogs: Record<string, string[]>;
+  /** Identities whose /models answers 200 with a body that is no model list. */
+  malformed?: string[];
   /** The oracle 400's allowlist (absent = the oracle errors unrecognizably). */
   allowlist?: string[];
   /** Models whose 1-token /v1/messages ping returns 200. */
@@ -41,6 +43,7 @@ function stubFetch(opts: StubOptions): ProbeFetch {
     const headers = new Headers(init?.headers as HeadersInit | undefined);
     if (url.endsWith("/models")) {
       const identity = headers.get("Copilot-Integration-Id") ?? "none";
+      if (opts.malformed?.includes(identity)) return Promise.resolve(Response.json({}));
       const ids = opts.catalogs[identity];
       if (ids === undefined) return Promise.resolve(new Response("{}", { status: 403 }));
       return Promise.resolve(
@@ -349,4 +352,92 @@ test("verdicts are credential-exact: a different token probes for itself", async
     nowMs: () => t0 + 1000,
   });
   expect(calls).toContain("ping:claude-fable-5");
+});
+
+test("the catalog and the oracle's extras are memoized: a warm rerun makes zero requests until the TTL lapses", async () => {
+  isolate();
+  const opts = {
+    catalogs: {
+      "none": ["claude-haiku-4.5"],
+      "vscode-chat": ["claude-haiku-4.5"],
+      "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
+      "copilot-developer-sandbox": ["claude-haiku-4.5"],
+    },
+    allowlist: ["claude-fable-5"],
+    servable: ["claude-fable-5"],
+    oneM: ["claude-fable-5"],
+  };
+  const day = 24 * 60 * 60 * 1000;
+  const t0 = 1_700_000_000_000;
+  /** Every request, catalog GETs included (the stub's own spy log skips those). */
+  const counting = (stub: ProbeFetch, requests: string[]): ProbeFetch => (input, init) => {
+    requests.push(String(input));
+    return stub(input, init);
+  };
+  const first = await discoverServableClaudeModels("ghu_x", UA, null, {
+    fetchImpl: counting(stubFetch(opts), []),
+    nowMs: () => t0,
+  });
+
+  // Same day: the catalog, the oracle, and the verdicts all answer from the store, so the
+  // launcher's per-launch wire costs nothing; the result is the first run's, extras included.
+  const warm: string[] = [];
+  const second = await discoverServableClaudeModels("ghu_x", UA, null, {
+    fetchImpl: counting(stubFetch(opts), warm),
+    nowMs: () => t0 + 1000,
+  });
+  expect(warm).toEqual([]);
+  expect(second).toEqual(first);
+
+  // TTL lapsed: the catalog is fetched again and a model it dropped meanwhile is gone.
+  const lapsed: string[] = [];
+  const third = await discoverServableClaudeModels("ghu_x", UA, null, {
+    fetchImpl: counting(
+      stubFetch({ ...opts, catalogs: { ...opts.catalogs, "none": [] } }),
+      lapsed,
+    ),
+    nowMs: () => t0 + day + 1000,
+  });
+  expect(lapsed.some((url) => url.endsWith("/models"))).toBe(true);
+  expect(third.models.map((m) => m.id)).toEqual(["claude-fable-5"]);
+});
+
+test("an inconclusive enrichment is never memoized: the next run asks again and its extras land", async () => {
+  isolate();
+  const catalogs = {
+    "none": ["claude-haiku-4.5"],
+    "vscode-chat": ["claude-haiku-4.5"],
+    "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
+    "copilot-developer-sandbox": ["claude-haiku-4.5"],
+  };
+  const t0 = 1_700_000_000_000;
+  // Two inconclusive shapes, catalog-only THIS run and nothing remembered, or a one-off upstream
+  // hiccup would hide a servable model for a day:
+  //   the trigger identity's /models answers 200 with no model list -> no candidate to ask about
+  //   the oracle's 400 carries no allowlist                          -> the candidate taught nothing
+  const inconclusive = [
+    stubFetch({ catalogs, malformed: ["copilot-developer-cli"] }),
+    stubFetch({ catalogs }),
+  ];
+  for (const [i, fetchImpl] of inconclusive.entries()) {
+    const run = await discoverServableClaudeModels("ghu_x", UA, null, {
+      fetchImpl,
+      nowMs: () => t0 + i,
+    });
+    expect(run.models.map((m) => m.id)).toEqual(["claude-haiku-4.5"]);
+    expect(run.unlisted).toEqual([]);
+  }
+  const calls: string[] = [];
+  const healthy = await discoverServableClaudeModels("ghu_x", UA, null, {
+    fetchImpl: stubFetch({
+      catalogs,
+      allowlist: ["claude-fable-5"],
+      servable: ["claude-fable-5"],
+      oneM: ["claude-fable-5"],
+      calls,
+    }),
+    nowMs: () => t0 + 1000,
+  });
+  expect(calls[0]).toBe("oracle:claude-sonnet-4.6");
+  expect(healthy.models).toContainEqual({ id: "claude-fable-5", is1m: true });
 });

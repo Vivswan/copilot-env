@@ -53,7 +53,7 @@ import {
 } from "../src/agents/claude_desktop.ts";
 import { printClaudeDesktopCheck } from "../src/commands/claude.ts";
 import { runInit } from "../src/commands/init.ts";
-import { runClaude } from "../src/claude/config.ts";
+import { configureClaudeConfig, runClaude } from "../src/claude/config.ts";
 import { commandDeps } from "../src/commands/launch.ts";
 import { runProfile } from "../src/commands/profile.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
@@ -508,14 +508,15 @@ test("no live model data: a fresh or foreign direct entry is never written; an o
     "claude-opus-5",
   ]);
 
-  // Offline again, now OWNED: the recorded rows stand in WHOLE (names, labels, 1m flags), a
-  // hand-blanked label healing from its id (the app would show a blank Display name).
+  // Offline again, now OWNED and with the discovery memo lapsed (a warm memo would have answered
+  // without a request): the recorded rows stand in WHOLE (names, labels, 1m flags), a hand-blanked
+  // label healing from its id (the app would show a blank Display name).
   const blanked = readJson(handPath);
   blanked["inferenceModels"] = wired.map((m) =>
     m.name === "claude-fable-5" ? { ...m, "labelOverride": "" } : m
   );
   writeFileSync(handPath, `${JSON.stringify(blanked, null, 2)}\n`);
-  await wireClaudeDesktopEntry(offline);
+  await wireClaudeDesktopEntry({ ...offline, nowMs: () => Date.now() + 2 * 24 * 60 * 60 * 1000 });
   expect(readJson(handPath)["inferenceModels"]).toEqual(wired);
   // The entry at another gateway is untouched throughout (not adoptable).
   expect(readJson(join(library, "user-1.json"))).toEqual(elsewhere);
@@ -523,42 +524,48 @@ test("no live model data: a fresh or foreign direct entry is never written; an o
 
 test("the quiet wire derives the rows from the catalog too: a hand-edited row in an owned entry gives way", async () => {
   const { library } = isolateWithDesktop();
-  const quiet = (catalog: typeof CATALOG) =>
-    wireClaudeDesktopEntry({ ...directWire(), quiet: true, fetchImpl: catalogFetch(catalog) });
+  const day = 24 * 60 * 60 * 1000;
+  const t0 = 1_700_000_000_000;
+  const quiet = (fetchImpl: typeof fetch, atMs: number) =>
+    wireClaudeDesktopEntry({ ...directWire(), quiet: true, fetchImpl, nowMs: () => atMs });
   // A fresh direct entry lands on the quiet path: it pays the same derivation as init.
-  await quiet(CATALOG);
+  await quiet(catalogFetch(CATALOG), t0);
   const configPath = firstEntryPath(library);
   const doc = readJson(configPath);
   const rows = doc["inferenceModels"] as Record<string, unknown>[];
   // Hand edits in Desktop's config editor: a renamed label, a 1m flag turned off, a row added.
-  doc["inferenceModels"] = [
-    ...rows.map((m) =>
-      m["name"] === "claude-fable-5" ? { ...m, "labelOverride": "Mine", "supports1m": false } : m
-    ),
-    {
-      "name": "claude-hand-9",
-      "labelOverride": "Hand",
-      "supports1m": true,
-      "prefer1m": true,
-      "anthropicFamilyTier": "hand",
-      "isFamilyDefault": true,
-    },
-  ];
-  writeFileSync(configPath, `${JSON.stringify(doc, null, 2)}\n`);
-  // The catalog moved on meanwhile (opus-4-8 retired): the quiet pass writes the catalog's list,
-  // not the file's, so every hand edit is gone and the retired model with it.
-  await quiet(CATALOG.filter((m) => m.id !== "claude-opus-4-8"));
-  const derived = readJson(configPath)["inferenceModels"] as {
-    name: string;
-    labelOverride: string;
-    supports1m: boolean;
-  }[];
+  const handEdit = () => {
+    const edited = readJson(configPath);
+    edited["inferenceModels"] = [
+      ...rows.map((m) =>
+        m["name"] === "claude-fable-5" ? { ...m, "labelOverride": "Mine", "supports1m": false } : m
+      ),
+      {
+        "name": "claude-hand-9",
+        "labelOverride": "Hand",
+        "supports1m": true,
+        "prefer1m": true,
+        "anthropicFamilyTier": "hand",
+        "isFamilyDefault": true,
+      },
+    ];
+    writeFileSync(configPath, `${JSON.stringify(edited, null, 2)}\n`);
+  };
+  // Same day (every `cl --profile` launch): the discovery memo answers, so the quiet pass makes no
+  // request at all (a fetch would throw, and the fallback would have KEPT the hand edits) and still
+  // writes the catalog's list.
+  handEdit();
+  await quiet(() => Promise.reject(new Error("a warm launch must not fetch")), t0 + 1000);
+  expect(readJson(configPath)["inferenceModels"]).toEqual(rows);
+  // Memo lapsed, and the catalog moved on meanwhile (opus-4-8 retired): the quiet pass writes the
+  // catalog's list, not the file's, so every hand edit is gone and the retired model with it.
+  handEdit();
+  await quiet(catalogFetch(CATALOG.filter((m) => m.id !== "claude-opus-4-8")), t0 + day + 1000);
+  const derived = readJson(configPath)["inferenceModels"] as { name: string }[];
   expect(derived.map((m) => m.name).sort()).toEqual(["claude-fable-5", "claude-opus-5"]);
-  expect(derived.find((m) => m.name === "claude-fable-5")).toEqual({
-    ...rows.find((m) => m["name"] === "claude-fable-5"),
-    "labelOverride": "Claude Fable 5",
-    "supports1m": true,
-  });
+  expect(derived.find((m) => m.name === "claude-fable-5")).toEqual(
+    rows.find((m) => m["name"] === "claude-fable-5"),
+  );
 });
 
 test("a blocked removal (malformed _meta.json) keeps the helper scripts", async () => {
@@ -1881,32 +1888,64 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
   expect(names()).toEqual(["copilot-env: work"]);
 });
 
-test("the reconcile re-discovers the default entry only when it is missing or stale", async () => {
+test("the reconcile re-syncs the default entry on every pass: hand-edited rows give way, a missing entry returns", async () => {
   const { library } = isolateWithDesktop();
   const names = () => (metaOf(library).entries as { name: string }[]).map((e) => e.name);
-  // A managed proxy default: the adapter write wires the entry (offline: no model rows).
+  // A managed direct default with a stored credential: the reconcile resolves it without a spawn.
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_test",
+  });
+  configureClaudeConfig(resolveClaudeHome(), {
+    mode: "direct",
+    directIntegrationId: null,
+    credential: COMMAND,
+  });
+  setIntegrationProbeFetch(() =>
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+  );
   const realFetch = globalThis.fetch;
   let modelFetches = 0;
-  globalThis.fetch = () => {
+  globalThis.fetch = (input, init) => {
     modelFetches++;
-    return Promise.reject(new Error("offline"));
+    return catalogFetch(CATALOG)(input, init);
   };
   try {
-    await captureAllWrites(() => runClaude({ kind: "configure", mode: "proxy" }));
+    await captureAllWrites(() => reconcileClaudeDesktopWiring());
     expect(names()).toEqual(["copilot-env"]);
-    // Already wired: the reconcile (what init / `agent claude` run next) fetches nothing.
+    const configPath = firstEntryPath(library);
+    const rows = readJson(configPath)["inferenceModels"] as Record<string, unknown>[];
+    expect(rows).toHaveLength(3);
+    // Well-formed hand edits (a relabelled row, an appended complete row) read as our shape, so the
+    // inspector judges the entry wired; the reconcile rewrites it regardless, and with a warm memo
+    // does so without a request.
+    const edited = readJson(configPath);
+    edited["inferenceModels"] = [
+      ...rows.map((m) => m["name"] === "claude-fable-5" ? { ...m, "labelOverride": "Mine" } : m),
+      {
+        "name": "claude-hand-9",
+        "labelOverride": "Hand",
+        "supports1m": true,
+        "prefer1m": true,
+        "anthropicFamilyTier": "hand",
+        "isFamilyDefault": true,
+      },
+    ];
+    writeFileSync(configPath, `${JSON.stringify(edited, null, 2)}\n`);
     modelFetches = 0;
     await captureAllWrites(() => reconcileClaudeDesktopWiring());
+    expect(readJson(configPath)["inferenceModels"]).toEqual(rows);
     expect(modelFetches).toBe(0);
-    expect(names()).toEqual(["copilot-env"]);
-    // Missing (the config-only import path): the reconcile discovers and restores it.
+    // Missing (the config-only import path): the reconcile restores it.
     removeClaudeDesktopEntry(null);
     expect(names()).toEqual([]);
     await captureAllWrites(() => reconcileClaudeDesktopWiring());
-    expect(modelFetches).toBeGreaterThan(0);
     expect(names()).toEqual(["copilot-env"]);
+    expect(readJson(firstEntryPath(library))["inferenceModels"]).toEqual(rows);
   } finally {
     globalThis.fetch = realFetch;
+    setIntegrationProbeFetch(null);
   }
 });
 

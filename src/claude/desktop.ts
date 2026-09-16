@@ -617,6 +617,8 @@ export type DesktopWireOptions = ManagedWrite & {
   quiet?: boolean;
   /** Test seam, threaded to fetchRawModels. */
   fetchImpl?: ProbeFetch;
+  /** Test seam, threaded to discovery's memo clock. */
+  nowMs?: () => number;
 };
 
 /** The same parse `agent models` renders: one pipeline for both surfaces. */
@@ -658,7 +660,7 @@ async function wiringModels(
         token,
         codexUserAgent(),
         opts.directIntegrationId ?? null,
-        { fetchImpl: opts.fetchImpl },
+        { fetchImpl: opts.fetchImpl, nowMs: opts.nowMs },
       );
       const rows = claudeCatalogRows(discovered.models);
       if (rows.length > 0) {

@@ -94,6 +94,7 @@ test("the auth provider round-trips and clears alongside the token", () => {
     codexCatalogPatchVersion: 0,
     codexCatalogAccepted: null,
     claudeModelVerdicts: {},
+    claudeDiscoveryMemo: {},
   });
 });
 

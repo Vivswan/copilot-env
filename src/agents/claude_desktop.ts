@@ -119,17 +119,11 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
     for (const orphan of status.orphans) removeClaudeDesktopOrphan(orphan);
     if (status.unlisted.length > 0) removeUnlistedClaudeDesktopClaims();
     if (opts.quiet) return;
-    // The default is upserted too: a key flipped back on by a config-only import has no
-    // adapter write to ride on. A default already judged wired is skipped: init / `agent
-    // claude` just synced it, and re-discovering its models would be a network call for a
-    // byte-identical no-op.
-    const defaultWired = status.entries.some(
-      (e) => e.profile === null && e.verdict.kind === "wired",
-    );
-    for (const target of resolution.targets) {
-      if (target.profile === null && defaultWired) continue;
-      await syncTarget(target);
-    }
+    // Every target is upserted, the default included: a key flipped back on by a config-only
+    // import has no adapter write to ride on, and a wired verdict says nothing about the model rows
+    // (the read-only inspector cannot derive them), so a hand-edited row goes here. A warm
+    // discovery memo makes the re-derivation request-free.
+    for (const target of resolution.targets) await syncTarget(target);
     if (resolution.targets.length === 0) return;
     await reportClaudeDesktopReady(resolution);
   } catch (e) {

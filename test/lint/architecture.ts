@@ -165,18 +165,22 @@ export function renderArchitectureMap(arch: Architecture): string {
 }
 
 /** `page` with the body between the two markers replaced by a mermaid fence of `map` (blank
- *  lines around it, as `deno fmt` lays out a fence); exactly one marker pair, or a throw naming
- *  the counts, since a second pair would be spliced blind. */
+ *  lines around it, as `deno fmt` lays out a fence), in the page's own line ending, so a CRLF
+ *  checkout compares equal to itself; exactly one marker pair, or a throw naming the counts,
+ *  since a second pair would be spliced blind. */
 export function spliceGeneratedRegion(page: string, map: string): string {
-  const begins = page.split(GENERATED_BEGIN).length - 1;
-  const ends = page.split(GENERATED_END).length - 1;
+  const crlf = page.includes("\r\n");
+  const text = crlf ? page.replaceAll("\r\n", "\n") : page;
+  const begins = text.split(GENERATED_BEGIN).length - 1;
+  const ends = text.split(GENERATED_END).length - 1;
   if (begins !== 1 || ends !== 1) {
     throw new Error(
       `the page needs exactly one BEGIN and one END architecture-map marker, found ${begins} and ${ends}`,
     );
   }
-  const start = page.indexOf(GENERATED_BEGIN) + GENERATED_BEGIN.length;
-  const end = page.indexOf(GENERATED_END);
+  const start = text.indexOf(GENERATED_BEGIN) + GENERATED_BEGIN.length;
+  const end = text.indexOf(GENERATED_END);
   if (end < start) throw new Error("the END architecture-map marker sits before the BEGIN marker");
-  return `${page.slice(0, start)}\n\n\`\`\`mermaid\n${map}\n\`\`\`\n\n${page.slice(end)}`;
+  const next = `${text.slice(0, start)}\n\n\`\`\`mermaid\n${map}\n\`\`\`\n\n${text.slice(end)}`;
+  return crlf ? next.replaceAll("\n", "\r\n") : next;
 }

@@ -68,7 +68,7 @@ flowchart LR
   adapter --> codex
 ```
 
-- **A named profile never falls back to the default credential:** `Credential.resolveWithReason()` says so in its reason, and a launch on a partial slot reports `partialSlotGap()` instead of guessing.
+- **No fallback** ([authentication: profiles](authentication.md#profiles) owns the rule): `Credential.resolveWithReason()` names the profile in its reason, and a launch on a partial slot reports `partialSlotGap()` instead of guessing.
 - **The default is a profile too,** under the reserved `default` key. For a named profile `mode` is the truth its artifacts derive from; for the default, `mode` records what the wiring last wrote (`recordDefaultModeFromWiring()` in `src/agents/configure_defaults.ts`) and the artifacts stay the live truth.
 
 Demonstrated by: [test/profiles.test.ts](../test/profiles.test.ts), [test/codex_profile_wiring.test.ts](../test/codex_profile_wiring.test.ts).
@@ -90,7 +90,7 @@ flowchart LR
 ```
 
 - **We never patch the package:** every shim wraps a runtime seam (`globalThis.fetch`, `fs.createWriteStream`, `process.argv`) and touches none of copilot-api's files, so none of them pins the floated version.
-- **The float warms every shim** because `--cached-only` at spawn gives no second chance; the spawn loads only the subset the `DaemonSpec` derives, so a credential-less daemon carries no token shim.
+- **`--cached-only` at spawn gives no second chance,** so the warm-up happens in the float; the spawn's subset means a credential-less daemon carries no token shim.
 - **The secret-carrying shims stay import-free** (`test/lint/no_shim_imports.ts`): a runtime import would drag CLI modules into the daemon process.
 
 Demonstrated by: [test/proxy_float.test.ts](../test/proxy_float.test.ts), [test/daemon_spawn.test.ts](../test/daemon_spawn.test.ts), [test/daemon_env_keys.test.ts](../test/daemon_env_keys.test.ts).
@@ -180,6 +180,7 @@ Each node is one layer, labelled with the paths it owns; an arrow means the laye
 | `forbidden import a -> b: src/a/x.ts -> src/b/y.ts; move it or declare the edge` | Move the import, or add `b` under `edges.a` when the dependency is right   |
 | `stale allowance a -> b: no file draws it; remove it from architecture.json`     | Delete `b` from `edges.a`; the declaration lists only edges the code draws |
 | `src/z.ts belongs to no layer in architecture.json`                              | Add the file to a layer or to `exclude`; nothing is dropped silently       |
+| `layer a names src/a/, which owns no file of the graph`                          | Fix the path, or delete it from `layers`                                   |
 
 An edge is any relative import: runtime, type-only, re-export, side-effect, or a string-literal `import()`. Imports inside one layer are not edges, and a layer absent from `edges` imports nothing outside itself.
 

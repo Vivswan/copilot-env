@@ -3,60 +3,85 @@
 // layer owns is never dropped silently.
 
 import { readdirSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { type ImportGraph, lintArchitecture, readArchitecture } from "./lint/architecture.ts";
-import { importSpecifier, ROOT, runSync } from "./helpers/run.ts";
+import { ROOT, runSync } from "./helpers/run.ts";
 import { expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
 const arch = readArchitecture(ROOT);
 
-interface DenoInfo {
-  modules: {
-    specifier: string;
-    error?: string;
-    dependencies?: { code?: { specifier?: string }; type?: { specifier?: string } }[];
-  }[];
+interface DenoDependency {
+  /** The import text as written. */
+  specifier: string;
+  code?: { specifier?: string };
+  type?: { specifier?: string };
 }
 
-/** A file URL deno resolved -> its repo-relative posix path, or null outside src/. */
-function sourcePath(specifier: string | undefined): string | null {
-  if (specifier === undefined || !specifier.startsWith("file:")) return null;
-  const rel = relative(ROOT, fileURLToPath(specifier)).replaceAll("\\", "/");
-  return rel.startsWith("src/") ? rel : null;
+interface DenoInfo {
+  modules: { specifier: string; error?: string; dependencies?: DenoDependency[] }[];
 }
 
 /**
  * The import graph under src/ as deno resolves it (`deno info --json`): one synthetic entry
- * imports every source file, so a file nothing imports is a module of the graph too. Exact for
- * static, type-only, re-export, and string-literal dynamic imports, with no parser of our own.
+ * imports every source file by file URL, so a file nothing imports is a module of the graph too.
+ * Exact for static, type-only, re-export, and string-literal dynamic imports, with no parser of
+ * our own. Deno's own spelling of each file URL is learned from the entry's resolved
+ * dependencies, so no path is re-derived here (Windows spells the drive its own way).
  */
 function importGraph(): ImportGraph {
   const files = readdirSync(join(ROOT, "src"), { recursive: true, encoding: "utf8" })
     .filter((entry) => entry.endsWith(".ts"))
-    .map((entry) => join(ROOT, "src", entry));
+    .map((entry) => `src/${entry.replaceAll("\\", "/")}`);
+  const hrefs = new Map(files.map((file) => [pathToFileURL(join(ROOT, file)).href, file]));
   const dir = tempDir("arch-graph-");
   try {
     const entry = join(dir, "entry.ts");
-    writeFileSync(entry, files.map((file) => `import ${importSpecifier(file)};`).join("\n"));
+    writeFileSync(
+      entry,
+      [...hrefs.keys()].map((href) => `import ${JSON.stringify(href)};`).join("\n"),
+    );
     const result = runSync(
       Deno.execPath(),
       ["info", "--json", "--config", join(ROOT, "deno.json"), entry],
       { cwd: ROOT },
     );
     if (result.exitCode !== 0) throw new Error(`deno info failed: ${result.stderr}`);
-    const graph = new Map<string, string[]>();
-    for (const mod of (JSON.parse(result.stdout) as DenoInfo).modules) {
+    const { modules } = JSON.parse(result.stdout) as DenoInfo;
+    for (const mod of modules) {
       if (mod.error !== undefined) throw new Error(`${mod.specifier}: ${mod.error}`);
-      const file = sourcePath(mod.specifier);
-      if (file === null) continue;
+    }
+    // Deno's spelling of each source file's URL -> its repo path, read off the entry's edges.
+    const resolved = new Map<string, string>();
+    for (const mod of modules) {
+      for (const dep of mod.dependencies ?? []) {
+        const file = hrefs.get(dep.specifier);
+        if (file !== undefined && dep.code?.specifier !== undefined) {
+          resolved.set(dep.code.specifier, file);
+        }
+      }
+    }
+    if (resolved.size !== files.length) {
+      throw new Error(
+        `deno info resolved ${resolved.size} of ${files.length} source files (${modules.length} modules; ` +
+          `first: ${modules.slice(0, 3).map((mod) => mod.specifier).join(", ")})`,
+      );
+    }
+    const graph = new Map<string, string[]>();
+    for (const mod of modules) {
+      const file = resolved.get(mod.specifier);
+      if (file === undefined) continue;
       const targets = new Set<string>();
       for (const dep of mod.dependencies ?? []) {
-        for (const target of [sourcePath(dep.code?.specifier), sourcePath(dep.type?.specifier)]) {
-          if (target !== null) targets.add(target);
+        for (const spec of [dep.code?.specifier, dep.type?.specifier]) {
+          const target = spec === undefined ? undefined : resolved.get(spec);
+          if (target !== undefined) targets.add(target);
         }
       }
       graph.set(file, [...targets].sort());
+    }
+    if (graph.size !== files.length) {
+      throw new Error(`the graph lists ${graph.size} of ${files.length} source files as modules`);
     }
     return graph;
   } finally {

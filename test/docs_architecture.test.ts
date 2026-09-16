@@ -233,7 +233,9 @@ test(`the page carries exactly ${CONCEPT_DIAGRAMS} concept diagrams`, () => {
 
 test("the generated module map equals a fresh render of architecture.json", () => {
   const current = page.join("\n");
-  expect(spliceGeneratedRegion(current, renderArchitectureMap(readArchitecture(ROOT)))).toBe(
-    current,
-  );
+  const map = renderArchitectureMap(readArchitecture(ROOT));
+  expect(spliceGeneratedRegion(current, map)).toBe(current);
+  // A CRLF checkout renders back in CRLF, so `docs:arch --check` reports no drift there.
+  const crlf = current.replaceAll("\n", "\r\n");
+  expect(spliceGeneratedRegion(crlf, map)).toBe(crlf);
 });

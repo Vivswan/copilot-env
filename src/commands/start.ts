@@ -13,6 +13,7 @@ import {
   type FloorCheckedEntry,
   type HeldStartLock,
   planCleanup,
+  resolveDaemonHost,
   resolveLaunchCredential,
   resolveStartPort,
   spawnConfiguredDaemon,
@@ -361,12 +362,14 @@ async function launchUnderLock(
   const credential = await resolveLaunchCredential(profile, ctx.envConfig, {
     interactiveLogin: ensureAuthenticated,
   });
+  const copilotHost = await resolveDaemonHost(credential, ctx.envConfig);
   const spawned = spawnConfiguredDaemon({
     port,
     logFile: ctx.logFile,
     profile,
     paths,
     credential,
+    copilotHost,
     entry,
     config: ctx.envConfig,
   });

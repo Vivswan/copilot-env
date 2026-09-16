@@ -6,6 +6,8 @@
 import { directSmoke } from "../src/copilot_api/endpoint_smoke.ts";
 import { expect, test } from "./helpers/testing.ts";
 
+const HOST = "https://api.githubcopilot.com";
+
 const SMOKE = {
   wire: "messages" as const,
   pickModel: (body: unknown) => {
@@ -93,7 +95,7 @@ test("directSmoke: only a 200 ping is Direct; every other arm reports its own re
   ];
   for (const c of cases) {
     const { calls, impl } = fetchStub(c.responses);
-    const smoke = directSmoke(SMOKE, "tok", "codex_exec/1.0.0", null, { fetchImpl: impl });
+    const smoke = directSmoke(SMOKE, "tok", "codex_exec/1.0.0", null, HOST, { fetchImpl: impl });
     const picked = await smoke.pickModel();
     const outcome = picked.ok ? await smoke.ping(picked.model) : picked;
     expect({ name: c.name, ok: outcome.ok, pings: Math.max(0, calls.length - 1) }).toEqual({

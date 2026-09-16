@@ -42,6 +42,7 @@ export interface CopilotEnvConfigData {
   codexModelCatalog?: boolean;
   wireMcp?: boolean;
   staticKey?: boolean;
+  copilotHost?: string;
 }
 
 /** null and undefined both delete the key. Exported for the settings-bundle import, which rebuilds the whole store. */
@@ -359,6 +360,40 @@ const HTTPS_URL_DOMAIN: ConfigDomain<string> = domain(
   "url",
 );
 
+/** `auto` (probe per credential, integration_identity.ts resolveCopilotHost) or an https origin
+ *  (a GitHub Enterprise Server serves Copilot at `https://copilot-api.<ghe-domain>`). Stored as the
+ *  origin alone: a path, query, or userinfo is a typo, not a host. */
+export const COPILOT_HOST_AUTO = "auto";
+
+function copilotHostRejection(raw: string): string | null {
+  const expected = "expected `auto` or an https:// origin";
+  if (!URL.canParse(raw)) return expected;
+  const url = new URL(raw);
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "") return expected;
+  if ((url.pathname !== "/" && url.pathname !== "") || url.search !== "" || url.hash !== "") {
+    return "expected an https:// origin without a path or query";
+  }
+  return null;
+}
+
+const COPILOT_HOST_DOMAIN: ConfigDomain<string> = domain(
+  v.pipe(
+    v.string(),
+    v.trim(),
+    v.rawTransform(({ dataset, addIssue, NEVER }) => {
+      if (dataset.value.toLowerCase() === COPILOT_HOST_AUTO) return COPILOT_HOST_AUTO;
+      const rejection = copilotHostRejection(dataset.value);
+      if (rejection !== null) {
+        addIssue({ message: rejection });
+        return NEVER;
+      }
+      return new URL(dataset.value).origin;
+    }),
+  ),
+  (raw) => raw,
+  "url|auto",
+);
+
 /** Ordered ALPHABETICALLY by CLI name: that is the `--get` and `--help` display order, and a test pins
  *  it, so insert new keys in place. */
 const CONFIG_REGISTRY_LITERAL = [
@@ -448,6 +483,17 @@ const CONFIG_REGISTRY_LITERAL = [
     defaultValue: false,
     applyHint:
       "Applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring.",
+  },
+  {
+    cli: "copilot-host",
+    key: "copilotHost",
+    section: "Credential",
+    describe:
+      "Copilot API host for every mode: `auto` probes api.githubcopilot.com and falls back to the account's designated host, or an https origin",
+    ...COPILOT_HOST_DOMAIN,
+    defaultValue: COPILOT_HOST_AUTO,
+    applyHint:
+      "Applies at the next `agent init`/`agent codex`/`agent claude` wiring and the next proxy start.",
   },
   {
     cli: "credits-target",
@@ -859,6 +905,13 @@ export class CopilotEnvConfig {
   /** On the STRICT read on purpose: an unreadable store fails the update rather than reading as "off". */
   verifyProvenanceEnabled(): boolean {
     return this.read().verifyProvenance ?? configDefaultBoolean("verify-provenance");
+  }
+
+  /** The `copilot-host` literal, or null for `auto`: the caller then resolves the host per credential
+   *  (resolveCopilotHost in integration_identity.ts). */
+  copilotHost(): string | null {
+    const value = this.read().copilotHost;
+    return value === undefined || value === COPILOT_HOST_AUTO ? null : value;
   }
 
   /** `auto` reads as null so `--set integration-id auto` restores probing without a separate `--del`. */

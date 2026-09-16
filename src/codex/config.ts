@@ -8,6 +8,7 @@ import {
   type AgentAdapter,
   type AgentRunAction,
   type CredentialWiring,
+  type DirectWiring,
   type ManagedWrite,
   runAgentConfig,
 } from "../agents/configure.ts";
@@ -23,6 +24,8 @@ import {
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   INTEGRATION_ID_HEADER,
+  isDirectBaseUrl,
+  resolveCopilotHost,
   resolveDirectIntegrationId,
 } from "../copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
@@ -73,9 +76,6 @@ const logger = createStderrLogger();
 // `env.ts` exports; the inspector reports whether the user's `.env` or environment carries it as a
 // fact about the home (no managed wiring needs it).
 export const CODEX_ENV_KEY = "OPENAI_API_KEY";
-// integration_identity.ts owns the literal: the identity probe's verdict must be rendered against
-// the host the agents actually bake.
-const DIRECT_BASE_URL = DEFAULT_COPILOT_API_BASE;
 /** What one `agent auth --get` (the `gh` look, the token print, a due catalog refresh) has before
  *  Codex gives up. It sits in every install's config, so the refresh budgets bend to it (pinned by
  *  test). */
@@ -123,11 +123,12 @@ export function codexUserAgent(): string {
 }
 
 /** The unified table doesn't encode mode in its name, so mode is read from base_url; anything but
- *  the Direct host or a localhost proxy on `expectedPort` is "other" (a half-written table). */
+ *  a Copilot host (isDirectBaseUrl) or a localhost proxy on `expectedPort` is "other" (a
+ *  half-written table). */
 function codexTableMode(table: unknown, expectedPort: number): AgentProviderMode {
   if (!isRecord(table)) return "other";
-  if (table.base_url === DIRECT_BASE_URL) return "direct";
   const baseUrl = typeof table.base_url === "string" ? table.base_url : null;
+  if (baseUrl !== null && isDirectBaseUrl(baseUrl)) return "direct";
   if (baseUrl !== null && baseUrlMatchesProxy(baseUrl, expectedPort)) return "proxy";
   return "other";
 }
@@ -170,6 +171,7 @@ function managedDirectProvider(
   // Resolved per WRITE (a default parameter runs at the call), so importing this module spawns
   // nothing; MANAGED_PROVIDER_KEYS below passes a placeholder for the same reason.
   userAgent: string = codexUserAgent(),
+  directBaseUrl: string = DEFAULT_COPILOT_API_BASE,
 ) {
   const { command, args } = agentLauncherCommand(agentAuthGetArgs(profile));
   // Most credentials carry no integration id (the Codex UA suffices; the builder omits it when
@@ -178,7 +180,7 @@ function managedDirectProvider(
   const httpHeaders = directClientHeaders(userAgent, directIntegrationId);
   return {
     "name": codexProviderId(profile),
-    "base_url": DIRECT_BASE_URL,
+    "base_url": directBaseUrl,
     "wire_api": "responses",
     "supports_websockets": false,
     "requires_openai_auth": false,
@@ -216,7 +218,13 @@ export function managedProxyProvider(
 
 function managedProviderForMode(request: CodexModeRequest, profile: Profile = null) {
   if (request.mode === "direct") {
-    return managedDirectProvider(request.credential, profile, request.directIntegrationId);
+    return managedDirectProvider(
+      request.credential,
+      profile,
+      request.directIntegrationId,
+      codexUserAgent(),
+      request.directBaseUrl,
+    );
   }
   return managedProxyProvider(request.baseUrl, profile, request.credential);
 }
@@ -344,9 +352,9 @@ export type CodexWiringStatus =
        *  unknowable. */
       modelProvider: string;
       providerSelected: true;
-      /** Direct classification requires the exact Direct base URL, so both facts are pinned at the
-       *  type. */
-      baseUrl: typeof DIRECT_BASE_URL;
+      /** Direct classification requires a Copilot host (isDirectBaseUrl), so the match is pinned
+       *  at the type and the host itself rides along. */
+      baseUrl: string;
       baseUrlMatches: true;
       /** Direct carries no env_key contract, so only a named table's forbidden env_key (drift the
        *  writer never emits; Codex rejects `auth` + `env_key`) can make it false. */
@@ -436,7 +444,11 @@ export function bakedCodexDirectIntegrationId(
   const table = isRecord(providers) ? providers[codexProviderId(selection.profile)] : undefined;
   const headers = isRecord(table) ? table.http_headers : undefined;
   const id = isRecord(headers) ? headers[INTEGRATION_ID_HEADER] : undefined;
-  return { kind: "direct", integrationId: typeof id === "string" ? id : null };
+  return {
+    kind: "direct",
+    integrationId: typeof id === "string" ? id : null,
+    baseUrl: wiring.baseUrl,
+  };
 }
 
 /**
@@ -574,7 +586,8 @@ export function inspectCodexWiring(
       configExists: true,
       modelProvider,
       providerSelected: true,
-      baseUrl: DIRECT_BASE_URL,
+      // A direct table always carries a string base_url (codexTableMode); the fallback is unreachable.
+      baseUrl: baseUrl ?? DEFAULT_COPILOT_API_BASE,
       baseUrlMatches: true,
       envKeyMatches,
       // The default direct selection needs no further conjunct (the health probe layers the store
@@ -878,20 +891,33 @@ export async function applyCodexConfig(
   if (profile === null) syncCodexCatalogReference(catalogDeps);
 }
 
-/** The `integration-id` config pin, else a live probe (integration_identity.ts). Throws when the
- *  credential is rejected under every known identity.
+/** The Direct facts a write bakes, resolved ONCE: the `integration-id` pin, else a live probe, then
+ *  the `copilot-host` literal, else the host probe under that identity (integration_identity.ts).
+ *  Throws when the credential is rejected under every known identity.
  *
- *  Claude           -> the result rides in ANTHROPIC_CUSTOM_HEADERS
- *  Codex            -> the same result rides in http_headers
- *  `token` supplied -> skips a redundant credential resolve */
-export function probeDirectIntegrationId(
+ *  Claude           -> the result rides in ANTHROPIC_BASE_URL + ANTHROPIC_CUSTOM_HEADERS
+ *  Codex            -> the same result rides in base_url + http_headers
+ *  `token` supplied -> skips a redundant credential resolve
+ *  `known` supplied -> the identity a slot replays (profile_wiring.ts): only the host is probed */
+export async function probeDirectWiring(
   profile: Profile = null,
   token?: string | null,
-): Promise<string | null> {
+  known?: { directIntegrationId: string | null },
+): Promise<DirectWiring> {
   const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
-  return resolveDirectIntegrationId(resolved, codexUserAgent(), {
-    pinned: new CopilotEnvConfig().pinnedIntegrationId(),
-  });
+  const config = new CopilotEnvConfig();
+  const userAgent = codexUserAgent();
+  const directIntegrationId = known !== undefined
+    ? known.directIntegrationId
+    : await resolveDirectIntegrationId(resolved, userAgent, {
+      pinned: config.pinnedIntegrationId(),
+    });
+  const directBaseUrl = await resolveCopilotHost(
+    resolved,
+    directClientHeaders(userAgent, directIntegrationId),
+    { literal: config.copilotHost() },
+  );
+  return { directIntegrationId, directBaseUrl };
 }
 
 function codexOtherDetail(otherReason: CodexOtherReason): string {
@@ -1066,7 +1092,7 @@ export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
  *  read-only` against it (src/agents/live_probe.ts); with no codex CLI on the machine the endpoint
  *  smoke judges the credential instead. False means the caller writes proxy. */
 export function detectCodexDirect(
-  directIntegrationId: string | null,
+  direct: DirectWiring,
   ghToken: string | null,
   deps?: DirectProbeDeps,
 ): Promise<boolean> {
@@ -1076,15 +1102,18 @@ export function detectCodexDirect(
       configureCodexConfig(tmpHome, {
         mode: "direct",
         quiet: true,
-        directIntegrationId,
+        ...direct,
         credential: COMMAND_SHAPE,
       });
     },
-    ghToken === null
-      ? null
-      : directSmoke(CODEX_ENDPOINT_SMOKE, ghToken, codexUserAgent(), directIntegrationId, {
-        fetchImpl: deps?.fetchImpl,
-      }),
+    ghToken === null ? null : directSmoke(
+      CODEX_ENDPOINT_SMOKE,
+      ghToken,
+      codexUserAgent(),
+      direct.directIntegrationId,
+      direct.directBaseUrl,
+      { fetchImpl: deps?.fetchImpl },
+    ),
     deps,
   );
 }
@@ -1096,7 +1125,7 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
     label: "Codex",
     check: checkCodexConfig,
     detectDirect: detectCodexDirect,
-    resolveDirectIdentity: (ghToken) => probeDirectIntegrationId(null, ghToken),
+    resolveDirectWiring: (ghToken) => probeDirectWiring(null, ghToken),
     async configureDefault(write, ghToken) {
       // The already-resolved credential feeds the catalog seed's direct fetch, so the gh-cli
       // provider isn't shelled out to a second time.

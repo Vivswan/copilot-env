@@ -219,6 +219,7 @@ test("a launched daemon holds its home's lock for life, released by SIGKILL", as
     credential: { kind: "none" },
     idleWatchdog: false,
     muteProxyLogs: false,
+    copilotHost: null,
     entry: {
       kind: "file",
       path: join(ROOT, "test", "copilot-api-fake.mjs"),

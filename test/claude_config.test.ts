@@ -14,7 +14,6 @@ import {
   configureClaudeConfig,
   CUSTOM_HEADERS_ENV,
   detectClaudeDirect,
-  DIRECT_BASE_URL,
   directHelperCommand,
   inspectClaudeWiring,
   managedHelperShape,
@@ -29,6 +28,7 @@ import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { runMcp } from "../src/commands/mcp.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
@@ -36,6 +36,9 @@ import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, linesNaming, writeClaudeSettings } from "./helpers.ts";
+
+/** A scratch Direct wiring with no identity header on the generic host: today's default bytes. */
+const DIRECT_NONE = { directIntegrationId: null, directBaseUrl: DEFAULT_COPILOT_API_BASE };
 
 const WIN = process.platform === "win32";
 const WORK = parseProfileName("work");
@@ -96,7 +99,7 @@ test("direct mode writes the inline apiKeyHelper command + env, preserving user 
   const doc = readSettings(home);
   expect(doc.apiKeyHelper).toBe(directHelperCommand());
   const env = doc.env as Record<string, unknown>;
-  expect(env.ANTHROPIC_BASE_URL).toBe(DIRECT_BASE_URL);
+  expect(env.ANTHROPIC_BASE_URL).toBe(DEFAULT_COPILOT_API_BASE);
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1");
   // The codex_exec User-Agent derives from the installed codex binary; the suite's live-lookup
   // seam turns the npm-latest lookup off, so here it carries FALLBACK_CODEX_UA_VERSION.
@@ -182,7 +185,7 @@ test("a static direct write bakes ANTHROPIC_AUTH_TOKEN beside the direct env and
   expect(doc.apiKeyHelper).toBeUndefined();
   const env = envOf(home);
   expect(env[AUTH_TOKEN_ENV]).toBe(STATIC.token);
-  expect(env.ANTHROPIC_BASE_URL).toBe(DIRECT_BASE_URL);
+  expect(env.ANTHROPIC_BASE_URL).toBe(DEFAULT_COPILOT_API_BASE);
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1");
   expect(env[CUSTOM_HEADERS_ENV]).toMatch(/(^|\n)User-Agent: codex_exec/);
   expect(inspectHome(home)).toMatchObject({
@@ -367,19 +370,21 @@ test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdic
     retryDelayMs: 0,
     fetchImpl,
   };
-  expect(await detectClaudeDirect(null, "ghu_tok", ok)).toBe(true);
+  expect(await detectClaudeDirect(DIRECT_NONE, "ghu_tok", ok)).toBe(true);
   expect(urls).toEqual(["https://api.githubcopilot.com/models"]);
   const args = seenArgs as unknown as string[];
   expect(args[args.indexOf("--model") + 1]).toBe("claude-haiku-4.5");
-  expect(await detectClaudeDirect(null, "ghu_tok", { ...ok, runProbe: () => ({ ok: false }) }))
+  expect(
+    await detectClaudeDirect(DIRECT_NONE, "ghu_tok", { ...ok, runProbe: () => ({ ok: false }) }),
+  )
     .toBe(false);
   // No credential leaves nothing to smoke with: the proxy, before any call, CLI or not.
   urls.length = 0;
   let probeCalls = 0;
   const spy = { ...ok, runProbe: () => ({ ok: ++probeCalls > 0 }) };
-  expect(await detectClaudeDirect(null, null, spy)).toBe(false);
+  expect(await detectClaudeDirect(DIRECT_NONE, null, spy)).toBe(false);
   expect(
-    await detectClaudeDirect(null, null, {
+    await detectClaudeDirect(DIRECT_NONE, null, {
       ...spy,
       findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
     }),
@@ -387,7 +392,7 @@ test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdic
   expect([probeCalls, urls]).toEqual([0, []]);
   // A pasted or device-flow token needs no gh on the machine.
   expect(
-    await detectClaudeDirect(null, "ghu_tok", {
+    await detectClaudeDirect(DIRECT_NONE, "ghu_tok", {
       ...ok,
       findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
     }),
@@ -409,12 +414,16 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
       new Response(requests.length === 1 ? JSON.stringify(catalog) : "{}", { status: 200 }),
     );
   };
-  const verdict = await detectClaudeDirect("copilot-developer-cli", "ghu_tok", {
-    findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
-    runProbe: () => ({ ok: false }), // must never run: no CLI was found
-    retryDelayMs: 0,
-    fetchImpl,
-  });
+  const verdict = await detectClaudeDirect(
+    { ...DIRECT_NONE, directIntegrationId: "copilot-developer-cli" },
+    "ghu_tok",
+    {
+      findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
+      runProbe: () => ({ ok: false }), // must never run: no CLI was found
+      retryDelayMs: 0,
+      fetchImpl,
+    },
+  );
   expect(verdict).toBe(true);
   expect(requests.length).toBe(2);
   const [catalogReq, ping] = requests as [typeof requests[0], typeof requests[0]];

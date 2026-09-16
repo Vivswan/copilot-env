@@ -81,13 +81,19 @@ import {
   isCopilotApiHost,
 } from "../src/scripts/pat_passthrough_preload.ts";
 
-test("isCopilotApiHost: only the Copilot inference hosts match", () => {
+test("isCopilotApiHost: the Copilot inference hosts match, plus the daemon's pinned origin when given", () => {
   expect(isCopilotApiHost("https://api.githubcopilot.com/models")).toBe(true);
   expect(isCopilotApiHost("https://api.enterprise.githubcopilot.com/v1/messages")).toBe(true);
   expect(isCopilotApiHost("https://api.business.githubcopilot.com/responses")).toBe(true);
   expect(isCopilotApiHost("https://api.github.com/copilot_internal/user")).toBe(false);
   expect(isCopilotApiHost("http://127.0.0.1:4141/models")).toBe(false);
   expect(isCopilotApiHost("not a url")).toBe(false);
+  // A `copilot-host` literal off githubcopilot.com (a GHE Copilot host) gates on the id too, but
+  // only the exact pinned origin does.
+  const ghe = "https://copilot-api.ghe.example";
+  expect(isCopilotApiHost(`${ghe}/models`, ghe)).toBe(true);
+  expect(isCopilotApiHost(`${ghe}/models`)).toBe(false);
+  expect(isCopilotApiHost("https://other.ghe.example/models", ghe)).toBe(false);
 });
 
 test("headersWithIntegrationId: overrides the id across every fetch input shape", () => {

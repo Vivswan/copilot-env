@@ -340,6 +340,7 @@ const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "claude-token-multiplier": "1.3",
   "codex-host": "true",
   "codex-model-catalog": "true",
+  "copilot-host": "https://copilot.example",
   "idle-timeout": "120",
   "integration-id": "copilot-developer-cli",
   "launchers": "true",

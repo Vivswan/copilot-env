@@ -7,6 +7,7 @@ import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
   INTEGRATION_ID_HEADER,
+  isDirectBaseUrl,
 } from "../copilot_api/integration_identity.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
@@ -200,10 +201,10 @@ function entryVerdict(
     return stale("the config file could not be read or parsed");
   }
   if (!isRecord(doc)) return stale("the config file is not a JSON object");
-  const expectedBase = target.mode === "direct"
-    ? DEFAULT_COPILOT_API_BASE
-    : proxyLoopbackOrigin(copilotApiResolvePort(target.profile));
   const gateway = doc["inferenceGatewayBaseUrl"];
+  const expectedBase = target.mode === "direct"
+    ? expectedDirectGateway(target.profile, gateway)
+    : proxyLoopbackOrigin(copilotApiResolvePort(target.profile));
   if (!sameBaseUrl(gateway, expectedBase)) {
     return stale(`gateway ${String(gateway)}, expected ${expectedBase}`);
   }
@@ -279,6 +280,23 @@ function expectedCredential(
 /** The identity a rewire would bake, without probing:
  *    config pin -> the slot's persisted verdict (the replay every rewire uses)
  *    -> the header the document already carries (never probed yet) */
+/** The gateway a rewire would bake: the `copilot-host` literal, else the slot's cached host (what
+ *  the quiet rewire replays, profile_wiring.ts), else the recorded host while it is a Copilot host
+ *  (nothing cached: a rewire would probe, and this read path does not). */
+function expectedDirectGateway(profile: Profile, gateway: unknown): string {
+  const config = new CopilotEnvConfig();
+  const literal = config.copilotHost();
+  if (literal !== null) return literal;
+  const cached = new CopilotEnvState().readProfileCopilotHost(
+    profile,
+    config.pinnedIntegrationId(),
+  );
+  if (cached !== null) return cached;
+  return typeof gateway === "string" && isDirectBaseUrl(gateway)
+    ? new URL(gateway).origin
+    : DEFAULT_COPILOT_API_BASE;
+}
+
 function expectedIntegrationId(profile: Profile, doc: Record<string, unknown>): string | null {
   const pin = new CopilotEnvConfig().pinnedIntegrationId();
   if (pin !== null) return pin;

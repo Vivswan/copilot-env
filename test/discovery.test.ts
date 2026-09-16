@@ -1,5 +1,8 @@
 import { discoverServableClaudeModels } from "../src/copilot_api/discovery.ts";
-import type { ProbeFetch } from "../src/copilot_api/integration_identity.ts";
+import {
+  DEFAULT_COPILOT_API_BASE,
+  type ProbeFetch,
+} from "../src/copilot_api/integration_identity.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
@@ -86,7 +89,7 @@ test("identical catalogs across identities: advertised only, zero oracle/ping tr
   isolate();
   const calls: string[] = [];
   const same = ["claude-haiku-4.5", "gpt-5.6-sol"];
-  const result = await discoverServableClaudeModels("ghu_x", UA, null, {
+  const result = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({
       catalogs: {
         "none": same,
@@ -104,7 +107,7 @@ test("identical catalogs across identities: advertised only, zero oracle/ping tr
 test("full pipeline: oracle extras verified one by one, 1m probed, failures excluded", async () => {
   isolate();
   const calls: string[] = [];
-  const result = await discoverServableClaudeModels("ghu_x", UA, null, {
+  const result = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({
       catalogs: {
         "none": ["claude-haiku-4.5"],
@@ -140,7 +143,7 @@ test("full pipeline: oracle extras verified one by one, 1m probed, failures excl
 test("an unrecognizable oracle error degrades to catalog-only, never a guess", async () => {
   isolate();
   const calls: string[] = [];
-  const result = await discoverServableClaudeModels("ghu_x", UA, null, {
+  const result = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({
       catalogs: {
         "none": ["claude-haiku-4.5"],
@@ -159,7 +162,7 @@ test("an unrecognizable oracle error degrades to catalog-only, never a guess", a
 test("the own-identity catalog failing is a hard throw (the caller falls back)", async () => {
   isolate();
   await expect(
-    discoverServableClaudeModels("ghu_x", UA, null, {
+    discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
       fetchImpl: () => Promise.resolve(new Response("{}", { status: 500 })),
     }),
   ).rejects.toThrow("returned 500");
@@ -167,12 +170,18 @@ test("the own-identity catalog failing is a hard throw (the caller falls back)",
 
 test("sibling-identity catalog failures do not sink discovery", async () => {
   isolate();
-  const result = await discoverServableClaudeModels("ghu_x", UA, "vscode-chat", {
-    fetchImpl: stubFetch({
-      // Only the own identity's catalog answers; the rest 403 (absent from the map).
-      catalogs: { "vscode-chat": ["claude-haiku-4.5"] },
-    }),
-  });
+  const result = await discoverServableClaudeModels(
+    "ghu_x",
+    UA,
+    "vscode-chat",
+    DEFAULT_COPILOT_API_BASE,
+    {
+      fetchImpl: stubFetch({
+        // Only the own identity's catalog answers; the rest 403 (absent from the map).
+        catalogs: { "vscode-chat": ["claude-haiku-4.5"] },
+      }),
+    },
+  );
   expect(result.models.map((m) => m.id)).toEqual(["claude-haiku-4.5"]);
 });
 
@@ -192,7 +201,7 @@ test("verification verdicts are cached: a rerun pays zero pings until the TTL la
   const day = 24 * 60 * 60 * 1000;
   const t0 = 1_700_000_000_000;
   const first: string[] = [];
-  await discoverServableClaudeModels("ghu_x", UA, null, {
+  await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({ ...opts, calls: first }),
     nowMs: () => t0,
   });
@@ -203,7 +212,7 @@ test("verification verdicts are cached: a rerun pays zero pings until the TTL la
 
   // Same day: the cached verdict answers; only the oracle re-runs.
   const second: string[] = [];
-  const result = await discoverServableClaudeModels("ghu_x", UA, null, {
+  const result = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({ ...opts, calls: second }),
     nowMs: () => t0 + 1000,
   });
@@ -213,7 +222,7 @@ test("verification verdicts are cached: a rerun pays zero pings until the TTL la
 
   // TTL lapsed: the probes re-run (a revoked model heals within a day).
   const third: string[] = [];
-  await discoverServableClaudeModels("ghu_x", UA, null, {
+  await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({ ...opts, calls: third }),
     nowMs: () => t0 + day + 1000,
   });
@@ -234,7 +243,7 @@ test("transient probe trouble is never cached: the next run probes again", async
   const t0 = 1_700_000_000_000;
   // A 503 ping is "unknown": the model is excluded THIS run, but no verdict is
   // written -- a wedged-out-for-a-day servable model is the failure mode this stops.
-  const first = await discoverServableClaudeModels("ghu_x", UA, null, {
+  const first = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({ ...opts, transient: ["claude-fable-5"] }),
     nowMs: () => t0,
   });
@@ -242,7 +251,7 @@ test("transient probe trouble is never cached: the next run probes again", async
 
   // Seconds later (same TTL window) the probes run again and the verdict lands.
   const calls: string[] = [];
-  const second = await discoverServableClaudeModels("ghu_x", UA, null, {
+  const second = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({
       ...opts,
       servable: ["claude-fable-5"],
@@ -269,7 +278,7 @@ test("a non-200 2xx ping is unknown: never servable, never cached", async () => 
   const t0 = 1_700_000_000_000;
   // Only the exact 200 is a "yes": a 201 is an unrecognized shape, so the model is
   // excluded this run and NO verdict is written.
-  const first = await discoverServableClaudeModels("ghu_x", UA, null, {
+  const first = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({ ...opts, odd: ["claude-fable-5"] }),
     nowMs: () => t0,
   });
@@ -277,7 +286,7 @@ test("a non-200 2xx ping is unknown: never servable, never cached", async () => 
 
   // Same TTL window: nothing was cached, so the ping runs again and can land.
   const calls: string[] = [];
-  const second = await discoverServableClaudeModels("ghu_x", UA, null, {
+  const second = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({
       ...opts,
       servable: ["claude-fable-5"],
@@ -306,7 +315,7 @@ test("servable-yes with a transient 1m probe: listed without 1m, verdict uncache
   const t0 = 1_700_000_000_000;
   // The ping said yes but the 1m probe 503'd: the model is listed THIS run (without
   // the 1m window), and no verdict is cached -- a 503 must not deny 1m for a day.
-  const first = await discoverServableClaudeModels("ghu_x", UA, null, {
+  const first = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({ ...opts, transient1m: ["claude-fable-5"] }),
     nowMs: () => t0,
   });
@@ -315,7 +324,7 @@ test("servable-yes with a transient 1m probe: listed without 1m, verdict uncache
 
   // Same TTL window: both probes re-run and the full verdict lands.
   const calls: string[] = [];
-  const second = await discoverServableClaudeModels("ghu_x", UA, null, {
+  const second = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({ ...opts, calls }),
     nowMs: () => t0 + 1000,
   });
@@ -337,16 +346,26 @@ test("verdicts are credential-exact: a different token probes for itself", async
     oneM: ["claude-fable-5"],
   };
   const t0 = 1_700_000_000_000;
-  await discoverServableClaudeModels("ghu_a", UA, null, {
+  await discoverServableClaudeModels("ghu_a", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({ ...opts }),
     nowMs: () => t0,
   });
   // A profile's credential must never inherit the default credential's verdicts:
   // entitlements differ per account, so token B pays its own probes.
   const calls: string[] = [];
-  await discoverServableClaudeModels("ghu_b", UA, null, {
+  await discoverServableClaudeModels("ghu_b", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({ ...opts, calls }),
     nowMs: () => t0 + 1000,
   });
   expect(calls).toContain("ping:claude-fable-5");
+  // Nor one host's verdicts for another's: the same token on the account's host probes again.
+  const elsewhere: string[] = [];
+  await discoverServableClaudeModels(
+    "ghu_a",
+    UA,
+    null,
+    "https://api.enterprise.githubcopilot.com",
+    { fetchImpl: stubFetch({ ...opts, calls: elsewhere }), nowMs: () => t0 + 2000 },
+  );
+  expect(elsewhere).toContain("ping:claude-fable-5");
 });

@@ -3,7 +3,7 @@ import type { RequestedMode } from "../agents/provider_mode.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { discoverServableClaudeModels } from "../copilot_api/discovery.ts";
-import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
+import { codexUserAgent, probeDirectWiring } from "../codex/config.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
@@ -120,10 +120,12 @@ export async function runModels(args: ModelsArgs): Promise<void> {
       const resolved = new Credential(undefined, profile).resolveWithReason();
       if (resolved.token === null) throw new Error(resolved.reason);
       const token = resolved.token;
+      const direct = await probeDirectWiring(profile, token);
       const discovered = await discoverServableClaudeModels(
         token,
         codexUserAgent(),
-        await probeDirectIntegrationId(profile, token),
+        direct.directIntegrationId,
+        direct.directBaseUrl,
         {},
       );
       models = mergeUnlistedModels(parseModelList(discovered.catalogBody), discovered);

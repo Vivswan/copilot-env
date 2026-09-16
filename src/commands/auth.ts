@@ -47,6 +47,7 @@ import {
   autoIdentityFor,
   type BakedDirectIdentity,
   COPILOT_CLI_INTEGRATION_ID,
+  directClientHeaders,
   directIdentity,
   directIdentityCandidates,
   type IdentityHostSurvey,
@@ -57,6 +58,7 @@ import {
   PASSTHROUGH_IDENTITY_CANDIDATES,
   passthroughIdentity,
   pinnedIdentityCandidates,
+  resolveCopilotHost,
   surveyIntegrationIdentities,
   usePatPassthrough,
   VSCODE_CHAT_INTEGRATION_ID,
@@ -790,10 +792,10 @@ const IDENTITY_NOTES: Record<string, string> = {
 };
 
 /** The cell carries the verdict and a tag (status or "network error"); the full reason follows the
- *  table, so a 160-char rejection body never widens it. */
-function verdictCell(verdict: IdentityVerdict | undefined, inEffect: boolean): string {
+ *  table, so a 160-char rejection body never widens it. `marks` (`*`, `+`) say what is in effect. */
+function verdictCell(verdict: IdentityVerdict | undefined, marks = ""): string {
   if (verdict === undefined) return "-";
-  const mark = inEffect ? " *" : "";
+  const mark = marks === "" ? "" : ` ${marks}`;
   const tag = (detail: string): string =>
     detail.startsWith("network error") ? "network error" : detail.split(" ")[0] ?? "";
   switch (verdict.kind) {
@@ -812,43 +814,79 @@ function verdictCell(verdict: IdentityVerdict | undefined, inEffect: boolean): s
   }
 }
 
+/** A column's header: the host, tagged with why it is shown (and whether it is the host in use). */
+function hostLabel(column: IdentityHostSurvey, inUse = false): string {
+  const tags: string[] = [];
+  if (column.role === "designated") tags.push("account");
+  if (column.role === "configured") tags.push("copilot-host");
+  if (inUse) tags.push("in use");
+  const host = new URL(column.apiBase).host;
+  return tags.length === 0 ? host : `${host} (${tags.join(", ")})`;
+}
+
+function sameOrigin(a: string, b: string): boolean {
+  return URL.canParse(a) && URL.canParse(b) && new URL(a).origin === new URL(b).origin;
+}
+
 interface IdentityTableInput {
-  token: string;
   survey: IdentitySurvey;
   pinned: string | null;
-  /** What each agent's Direct wiring sends today: the star's source of truth for Direct. */
+  /** The `copilot-host` literal, or null for `auto`. */
+  configuredHost: string | null;
+  /** What the key resolves to for this credential (resolveCopilotHost): the host the next Direct
+   *  wiring bakes. */
+  hostInUse: string;
+  /** The host a fresh daemon launch is pinned to (resolveDaemonHost), resolved under ITS identity. */
+  proxyHost: string;
+  /** What each agent's Direct wiring sends today, and to which host: the `*` marks' source of truth. */
   baked: { codex: BakedDirectIdentity; claude: BakedDirectIdentity };
   /** What the next Direct wiring pass bakes: the pin, else (named profile) the slot's replayed
    *  verdict, else a fresh probe's pick; null = every candidate rejects the credential. */
   nextDirect: string | null;
+  /** What a fresh daemon launch sends on the host in use; null = no identity accepts the credential. */
+  proxyNext: string | null;
   /** The command that rebakes this profile's Direct wiring. */
   rewire: string;
   /** Whether a proxy launch would run the passthrough shim for this credential; without it the
    *  daemon exchanges the token itself and always sends vscode-chat, pin or not. */
   proxyPassthrough: boolean;
-  /** A running daemon keeps the identity it launched with, so the Proxy star (a fresh launch's)
+  /** A running daemon keeps the identity and host it launched with, so the `+` (a fresh launch's)
    *  is not what is being sent right now. */
   daemonRunning: boolean;
   profile: Profile;
 }
 
-/** The identity NAME each Direct-wired agent sends: its header value, or the codex identity when
- *  it sends none. Agents not wired Direct, or whose config could not be read, are absent. */
+/** The identity NAME each Direct-wired agent sends and the host it sends it to: its header value,
+ *  or the codex identity when it sends none. Agents not wired Direct, or whose config could not be
+ *  read, are absent. */
 function bakedDirectSenders(
   baked: IdentityTableInput["baked"],
-): { agent: string; name: string }[] {
+): { agent: string; name: string; baseUrl: string }[] {
   return [{ agent: "Codex", baked: baked.codex }, { agent: "Claude", baked: baked.claude }]
     .flatMap(({ agent, baked }) =>
-      baked.kind === "direct" ? [{ agent, name: baked.integrationId ?? CODEX_IDENTITY_NAME }] : []
+      baked.kind === "direct"
+        ? [{ agent, name: baked.integrationId ?? CODEX_IDENTITY_NAME, baseUrl: baked.baseUrl }]
+        : []
     );
 }
 
-/** The `*` marks what is in effect today per host: Direct as the agent configs bake it (a pin
- *  lands there only at the next rewire), Proxy as a fresh daemon launch sends it. */
+/** One column per host, one row per identity. `*` marks what the agent configs bake today, on the
+ *  host they bake it for; `+` marks what a fresh daemon launch sends, on the host in use. */
 function identityTableLines(input: IdentityTableInput): string[] {
   const width = terminalWidth();
-  const { token, survey, pinned, baked, nextDirect, rewire, proxyPassthrough, daemonRunning } =
-    input;
+  const {
+    survey,
+    pinned,
+    configuredHost,
+    hostInUse,
+    proxyHost,
+    baked,
+    nextDirect,
+    proxyNext,
+    rewire,
+    proxyPassthrough,
+    daemonRunning,
+  } = input;
   const senders = bakedDirectSenders(baked);
   const directSends = [...new Set(senders.map((s) => s.name))];
   const unreadable = [{ agent: "Codex", baked: baked.codex }, {
@@ -857,29 +895,27 @@ function identityTableLines(input: IdentityTableInput): string[] {
   }].flatMap(({ agent, baked }) =>
     baked.kind === "unreadable" ? [{ agent, reason: baked.reason }] : []
   );
-  const proxyNext = proxyPassthrough
-    ? pinned ?? autoIdentityFor(token, survey.passthrough)
-    : VSCODE_CHAT_INTEGRATION_ID;
-  const columns = [
-    { label: "Direct", survey: survey.direct, stars: directSends },
-    { label: "Proxy", survey: survey.passthrough, stars: proxyNext === null ? [] : [proxyNext] },
-  ];
-  const names = [
-    ...new Set([...survey.direct.verdicts, ...survey.passthrough.verdicts].map((v) => v.name)),
-  ];
+  const inUse = survey.hosts.find((h) => sameOrigin(h.apiBase, hostInUse)) ?? null;
+  const proxyColumn = survey.hosts.find((h) => sameOrigin(h.apiBase, proxyHost)) ?? null;
+  const names = [...new Set(survey.hosts.flatMap((h) => h.verdicts.map((v) => v.name)))];
   const verdictOf = (column: IdentityHostSurvey, name: string): IdentityVerdict | undefined =>
     column.verdicts.find((v) => v.name === name)?.verdict;
+  const marksFor = (column: IdentityHostSurvey, name: string): string => {
+    const direct = senders.some((s) => s.name === name && sameOrigin(s.baseUrl, column.apiBase));
+    const proxy = column === proxyColumn && proxyNext === name;
+    return `${direct ? "*" : ""}${proxy ? "+" : ""}`;
+  };
   const rows = names.map((name) => [
     name,
-    ...columns.map((c) => verdictCell(verdictOf(c.survey, name), c.stars.includes(name))),
+    ...survey.hosts.map((c) => verdictCell(verdictOf(c, name), marksFor(c, name))),
     IDENTITY_NOTES[name] ?? "",
   ]);
   const reasons = names.flatMap((name) =>
-    columns.flatMap((c) => {
-      const verdict = verdictOf(c.survey, name);
+    survey.hosts.flatMap((c) => {
+      const verdict = verdictOf(c, name);
       return verdict === undefined || verdict.kind === "accepted"
         ? []
-        : wrapLine(`${name} on ${c.label}: ${verdict.detail}`, width, "  ", "    ");
+        : wrapLine(`${name} on ${hostLabel(c)}: ${verdict.detail}`, width, "  ", "    ");
     })
   );
   const next = nextDirect ?? "nothing (every identity rejects this credential)";
@@ -896,9 +932,23 @@ function identityTableLines(input: IdentityTableInput): string[] {
     ? null
     : `Direct: the wiring sends ${directSends[0]} until \`${rewire}\` rebakes it to ${next}` +
       `${pinned === null ? "" : " (the pin)"}.`;
+  const inUseHost = new URL(hostInUse).host;
   const flag = input.profile === null ? "" : ` --profile ${input.profile}`;
   const restart = `\`agent stop${flag}\`, then \`agent start${flag}\``;
   const notes = [
+    ...(survey.designatedUnknown
+      ? [
+        "Host: the account's designated host could not be looked up (transient); only the hosts " +
+        "above were surveyed.",
+      ]
+      : []),
+    ...senders
+      .filter((s) => !sameOrigin(s.baseUrl, hostInUse))
+      .map((s) =>
+        `Host: ${s.agent} sends to ${
+          new URL(s.baseUrl).host
+        }; \`${rewire}\` moves it to ${inUseHost}.`
+      ),
     ...unreadable.map((u) =>
       `Direct: ${u.agent}'s config could not be read (${u.reason}); what it sends is unknown.`
     ),
@@ -910,10 +960,14 @@ function identityTableLines(input: IdentityTableInput): string[] {
     ...(proxyNext === null
       ? ["Proxy: no identity accepts this credential; a daemon launch refuses it."]
       : []),
+    ...(sameOrigin(proxyHost, hostInUse) ? [] : [
+      `Proxy: a fresh daemon launch is pinned to ${new URL(proxyHost).host}, where its identity ` +
+      `${proxyNext ?? VSCODE_CHAT_INTEGRATION_ID} resolves; Direct bakes ${inUseHost}.`,
+    ]),
     ...(daemonRunning
       ? [
-        "Proxy: a daemon is running and keeps the identity it launched with; restart it to " +
-        `apply a change: ${restart}.`,
+        "Proxy: a daemon is running and keeps the identity and host it launched with; restart it " +
+        `to apply a change: ${restart}.`,
       ]
       : []),
   ];
@@ -925,18 +979,22 @@ function identityTableLines(input: IdentityTableInput): string[] {
       "  ",
     ),
     ...wrapLine(
-      "* = in effect today: Direct as the agent configs bake it, Proxy as a fresh daemon launch sends it",
+      configuredHost === null
+        ? `copilot-host: auto (${inUseHost} in use)`
+        : `copilot-host: ${configuredHost}`,
+      width,
+      "",
+      "  ",
+    ),
+    ...wrapLine(
+      "* = what the agent configs bake today (Direct); + = what a fresh daemon launch sends (Proxy), on its host",
       width,
       "",
       "  ",
     ),
     ...formatTable(rows, {
-      header: [
-        "identity",
-        ...columns.map((c) => `${c.label} (${new URL(c.survey.apiBase).host})`),
-        "note",
-      ],
-      wrap: [false, ...columns.map(() => false), true],
+      header: ["identity", ...survey.hosts.map((c) => hostLabel(c, c === inUse)), "note"],
+      wrap: [false, ...survey.hosts.map(() => false), true],
       indent: "",
       width,
     }),
@@ -982,40 +1040,74 @@ async function surveyAndTable(
   const userAgent = codexUserAgent();
   const baked = readBakedDirectIdentities(profile);
   const directBuiltins = directIdentityCandidates(userAgent);
-  const survey = await surveyIntegrationIdentities(token, {
-    direct: withExtraCandidates(
-      directBuiltins,
-      [pinned, ...bakedDirectSenders(baked).map((s) => s.name)],
-      (id) => directIdentity(userAgent, id),
-    ),
-    passthrough: withExtraCandidates(
-      PASSTHROUGH_IDENTITY_CANDIDATES,
-      [pinned],
-      passthroughIdentity,
-    ),
-  });
+  const config = new CopilotEnvConfig();
+  const configuredHost = config.copilotHost();
+  // Rows: the Direct candidates (the agents' exact bytes) plus the pin and every baked id, then the
+  // proxy's own candidates not already named (the daemon's bytes: the id header alone).
+  const directRows = withExtraCandidates(
+    directBuiltins,
+    [pinned, ...bakedDirectSenders(baked).map((s) => s.name)],
+    (id) => directIdentity(userAgent, id),
+  );
+  const candidates = withExtraCandidates(
+    directRows,
+    PASSTHROUGH_IDENTITY_CANDIDATES.map((c) => c.name),
+    passthroughIdentity,
+  );
+  const survey = await surveyIntegrationIdentities(token, candidates, { configuredHost });
+  const generic = survey.hosts.find((h) => h.role === "generic") ?? survey.hosts[0];
+  if (generic === undefined) throw new Error("the identity survey returned no host");
   const credential = new Credential(undefined, profile);
   const proxyPassthrough = usePatPassthrough({
-    force: new CopilotEnvConfig().passthroughOverride(),
+    force: config.passthroughOverride(),
     token,
     provider: credential.provider(),
   });
-  // A fresh probe (resolveDirectIntegrationId) ranks the built-ins only, so the extras are
-  // excluded from auto's pick; a named profile's launch replays the slot's verdict before probing.
+  // A fresh probe (resolveDirectIntegrationId) ranks the built-ins only, on the generic host, so
+  // the extras are excluded from auto's pick; a named profile's launch replays the slot's verdict.
   const fresh = autoIdentityFor(token, {
-    ...survey.direct,
-    verdicts: survey.direct.verdicts.slice(0, directBuiltins.length),
+    ...generic,
+    verdicts: generic.verdicts.slice(0, directBuiltins.length),
   });
   const slot = new CopilotEnvState().readProfileSlot(profile).integrationIdentity;
   const nextDirect = pinned ?? (profile === null ? fresh : slot ?? fresh);
+  // The proxy's pick is the launch resolver's: its own candidates, in their order, on the generic
+  // host (resolveLaunchCredential), before the host is chosen.
+  const proxyNext = proxyPassthrough
+    ? pinned ?? autoIdentityFor(token, {
+      ...generic,
+      verdicts: PASSTHROUGH_IDENTITY_CANDIDATES.flatMap((c) =>
+        generic.verdicts.filter((v) => v.name === c.name)
+      ),
+    })
+    : VSCODE_CHAT_INTEGRATION_ID;
+  // Each mode's host follows ITS identity: Direct's the one the next wiring bakes (a named profile
+  // replays its slot's cached host first, as its writer does), the daemon's the one it will send
+  // (resolveDaemonHost). With no Direct pick, the daemon's identity stands in for Direct too.
+  const inUseHeaders = nextDirect === null
+    ? passthroughIdentity(VSCODE_CHAT_INTEGRATION_ID).headers
+    : directClientHeaders(userAgent, nextDirect === CODEX_IDENTITY_NAME ? null : nextDirect);
+  const cachedHost = profile === null
+    ? null
+    : new CopilotEnvState().readProfileCopilotHost(profile, pinned);
+  const hostInUse = configuredHost ?? cachedHost ??
+    await resolveCopilotHost(token, inUseHeaders, { narrator: logger });
+  const proxyHost = configuredHost ?? await resolveCopilotHost(
+    token,
+    passthroughIdentity(proxyNext ?? VSCODE_CHAT_INTEGRATION_ID).headers,
+    { narrator: logger },
+  );
   const rewire = profile === null ? "agent init" : `agent profile --add ${profile} --direct`;
   for (
     const line of identityTableLines({
-      token,
       survey,
       pinned,
+      configuredHost,
+      hostInUse,
+      proxyHost,
       baked,
       nextDirect,
+      proxyNext,
       rewire,
       proxyPassthrough,
       daemonRunning: trackedDaemonAlive(profile),
@@ -1042,15 +1134,14 @@ async function chooseIdentity(
 ): Promise<IdentityChoice> {
   const verdictOn = (column: IdentityHostSurvey, name: string): IdentityVerdict | undefined =>
     column.verdicts.find((v) => v.name === name)?.verdict;
-  const names = [
-    ...new Set([...survey.direct.verdicts, ...survey.passthrough.verdicts].map((v) => v.name)),
-  ].filter((name) =>
-    name !== CODEX_IDENTITY_NAME &&
-    [survey.direct, survey.passthrough].some((c) => verdictOn(c, name)?.kind === "accepted")
-  );
+  const names = [...new Set(survey.hosts.flatMap((h) => h.verdicts.map((v) => v.name)))]
+    .filter((name) =>
+      name !== CODEX_IDENTITY_NAME &&
+      survey.hosts.some((c) => verdictOn(c, name)?.kind === "accepted")
+    );
   const cell = (column: IdentityHostSurvey, name: string): string => {
     const verdict = verdictOn(column, name);
-    return verdict === undefined ? "not probed" : verdictCell(verdict, false);
+    return verdict === undefined ? "not probed" : verdictCell(verdict);
   };
   const current = (name: string): string => name === pinned ? " (current pin)" : "";
   const value = await consola.prompt("Which Copilot client identity should be pinned?", {
@@ -1061,8 +1152,8 @@ async function chooseIdentity(
         value: "auto",
       },
       ...names.map((name) => ({
-        label: `${name} - Direct ${cell(survey.direct, name)}, Proxy ${
-          cell(survey.passthrough, name)
+        label: `${name} - ${
+          survey.hosts.map((c) => `${hostLabel(c)} ${cell(c, name)}`).join(", ")
         }${current(name)}`,
         value: name,
       })),
@@ -1077,9 +1168,9 @@ function noteIdentityApplies(): void {
   if (hint !== undefined) logger.info(hint);
 }
 
-/** Pins `id` unless both hosts reject it definitively. With one acceptance the other host's verdict
- *  is narrated; with none (an unresolvable credential, or every probe inconclusive) the pin lands
- *  unverified, and says so. */
+/** Pins `id` unless every host rejects it definitively. With one acceptance the other hosts'
+ *  verdicts are narrated; with none (an unresolvable credential, or every probe inconclusive) the
+ *  pin lands unverified, and says so. */
 async function pinIdentity(
   id: string,
   credential: Credential,
@@ -1091,30 +1182,34 @@ async function pinIdentity(
     const survey = await surveyIntegrationIdentities(
       token,
       pinnedIdentityCandidates(id, codexUserAgent()),
+      { configuredHost: new CopilotEnvConfig().copilotHost() },
     );
-    const hosts = [
-      { label: "Direct", column: survey.direct },
-      { label: "Proxy", column: survey.passthrough },
-    ].map((h) => ({ ...h, verdict: h.column.verdicts[0]?.verdict }));
-    if (hosts.every((h) => h.verdict?.kind === "rejected")) {
+    const hosts = survey.hosts.map((column) => ({
+      label: hostLabel(column),
+      verdict: column.verdicts[0]?.verdict,
+    }));
+    // "Every host" needs the account's host to be known: a transient lookup failure hides that
+    // column, so the surveyed hosts' rejections alone cannot refuse the pin.
+    if (!survey.designatedUnknown && hosts.every((h) => h.verdict?.kind === "rejected")) {
       throw new Error(
         [
-          `both hosts reject this credential under \`${id}\`; not pinned:`,
+          `every host rejects this credential under \`${id}\`; not pinned:`,
           ...hosts.map((h) =>
-            `  - ${h.label} (${new URL(h.column.apiBase).host}): ${
-              h.verdict?.kind === "rejected" ? h.verdict.detail : ""
-            }`
+            `  - ${h.label}: ${h.verdict?.kind === "rejected" ? h.verdict.detail : ""}`
           ),
         ].join("\n"),
       );
     }
     const accepted = hosts.filter((h) => h.verdict?.kind === "accepted").map((h) => h.label);
+    const ground = accepted.length === 0
+      ? "pinning unverified"
+      : `pinning on ${accepted.join(" and ")} accepting it`;
+    if (survey.designatedUnknown) {
+      logger.warn(`The account's designated host could not be looked up (transient); ${ground}.`);
+    }
     for (const h of hosts) {
       if (h.verdict === undefined || h.verdict.kind === "accepted") continue;
       const outcome = h.verdict.kind === "rejected" ? "rejects" : "could not verify";
-      const ground = accepted.length === 0
-        ? "pinning unverified"
-        : `pinning on ${accepted.join(" and ")} accepting it`;
       logger.warn(`${h.label}: ${outcome} \`${id}\` (${h.verdict.detail}); ${ground}.`);
     }
   }

@@ -11,7 +11,7 @@
 import { consola, type ConsolaInstance } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
-import { CODEX_IDENTITY_NAME } from "./env_config.ts";
+import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "./env_config.ts";
 import type { AuthProvider } from "./env_state.ts";
 
 /** The gating header. Its VALUES below are external contracts: never rename. */
@@ -32,8 +32,34 @@ export const DAEMON_INTEGRATION_ID_ENV = "COPILOT_ENV_DAEMON_INTEGRATION_ID";
 
 /** Where the account's designated API base is discovered (best-effort). */
 export const COPILOT_USER_URL = "https://api.github.com/copilot_internal/user";
-/** The individual-plan host; the fallback when the account lookup fails. */
+/** The generic host, what `copilot-host auto` lands on unless it is blocked for the credential. */
 export const DEFAULT_COPILOT_API_BASE = "https://api.githubcopilot.com";
+/** The per-plan hosts `endpoints.api` of COPILOT_USER_URL names; with the generic one, the set a
+ *  Direct config is recognised by. */
+export const COPILOT_PLAN_API_BASES: readonly string[] = [
+  "https://api.individual.githubcopilot.com",
+  "https://api.business.githubcopilot.com",
+  "https://api.enterprise.githubcopilot.com",
+];
+
+/** The copilot-host preload (src/scripts/copilot_host_preload.ts) reads this and rewrites the
+ *  `endpoints.api` the daemon learns from GitHub, so the proxy talks to the same host as Direct. */
+export const DAEMON_COPILOT_HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
+
+/** What a Direct config may carry as its base URL: the generic host, a plan host, or the
+ *  `copilot-host` literal. Origins compare, so a trailing slash never fails the match. */
+export function isDirectBaseUrl(url: string): boolean {
+  if (!URL.canParse(url)) return false;
+  const origin = new URL(url).origin;
+  return origin === DEFAULT_COPILOT_API_BASE || COPILOT_PLAN_API_BASES.includes(origin) ||
+    origin === new CopilotEnvConfig().copilotHost();
+}
+
+/** The host a Direct write bakes when nothing is probed: the `copilot-host` literal, else the
+ *  generic host. Read paths (health, Desktop status) render it as the expected host. */
+export function directBaseUrl(): string {
+  return new CopilotEnvConfig().copilotHost() ?? DEFAULT_COPILOT_API_BASE;
+}
 
 const PROBE_TIMEOUT_MS = 5000;
 
@@ -49,6 +75,7 @@ let defaultProbeFetch: ProbeFetch = (input, init) => globalThis.fetch(input, ini
 export function setIntegrationProbeFetch(fetchImpl: ProbeFetch | null): void {
   defaultProbeFetch = fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   probeMemo.clear();
+  hostMemo.clear();
 }
 
 /** Version-free on purpose so nothing here drifts against a client release; never sent by an agent
@@ -91,7 +118,7 @@ export function directIdentity(userAgent: string, id: string): IntegrationIdenti
  *  header is absent, the codex identity. A config that cannot be read or parsed is `unreadable`,
  *  never `not-direct`: "failed to look" must not read as "not wired". */
 export type BakedDirectIdentity =
-  | { kind: "direct"; integrationId: string | null }
+  | { kind: "direct"; integrationId: string | null; baseUrl: string }
   | { kind: "not-direct" }
   | { kind: "unreadable"; reason: string };
 
@@ -125,13 +152,10 @@ export function directIdentityCandidates(
   ];
 }
 
-/** What a pin of `id` sends on each host, so the pin's pre-check probes exactly the bytes the agents
- *  and the daemon will send. */
-export function pinnedIdentityCandidates(
-  id: string,
-  userAgent: string,
-): IdentitySurveyCandidates {
-  return { direct: [directIdentity(userAgent, id)], passthrough: [passthroughIdentity(id)] };
+/** What a pin of `id` sends, for the pin's pre-check: the Direct bytes, since acceptance is gated on
+ *  the id alone (PASSTHROUGH_IDENTITY_CANDIDATES) and the daemon's rewrite carries the same id. */
+export function pinnedIdentityCandidates(id: string, userAgent: string): IntegrationIdentity[] {
+  return [directIdentity(userAgent, id)];
 }
 
 export function bakedIntegrationId(identity: IntegrationIdentity): string | null {
@@ -160,8 +184,7 @@ export interface IdentityProbeDeps {
   timeoutMs?: number;
   /** A caller deadline over the WHOLE probe chain, combined with each request's own timeout. */
   signal?: AbortSignal;
-  /** The verdict must reflect where the result is used: direct mode bakes DEFAULT_COPILOT_API_BASE and
-   *  passes it here; passthrough omits it so the probe hits the host the daemon resolves for itself. */
+  /** The host the verdict is used on. Omitted, the probe discovers the account's designated host. */
   apiBase?: string;
 }
 
@@ -206,8 +229,9 @@ async function accountApiBase(
     const body: unknown = await res.json();
     const endpoints = isRecord(body) ? body.endpoints : undefined;
     const api = isRecord(endpoints) ? endpoints.api : undefined;
-    const apiBase = typeof api === "string" && api.startsWith("https://")
-      ? api
+    // The origin alone, so the value compares with the stored literal and the cached slot host.
+    const apiBase = typeof api === "string" && api.startsWith("https://") && URL.canParse(api)
+      ? new URL(api).origin
       : DEFAULT_COPILOT_API_BASE;
     return { apiBase, inconclusive: false };
   } catch {
@@ -310,42 +334,46 @@ export async function probeIntegrationIdentity(
   return { identity: null, conclusive: !sawInconclusive, apiBase, outcomes };
 }
 
-export interface IdentitySurveyCandidates {
-  /** Probed against DEFAULT_COPILOT_API_BASE, the host Direct bakes. */
-  direct: readonly IntegrationIdentity[];
-  /** Probed against the account's designated host, the one the daemon talks to. */
-  passthrough: readonly IntegrationIdentity[];
-}
+/** Why a host is a survey column. */
+export type SurveyHostRole = "generic" | "designated" | "configured";
 
 export interface IdentityHostSurvey {
   /** The API base actually probed. */
   apiBase: string;
+  role: SurveyHostRole;
   /** In candidate order; every candidate is probed, an acceptance stops nothing. */
   verdicts: { name: string; verdict: IdentityVerdict }[];
 }
 
 export interface IdentitySurvey {
-  direct: IdentityHostSurvey;
-  passthrough: IdentityHostSurvey;
+  /** The generic host, then the account's designated host when it differs, then the `copilot-host`
+   *  literal when set and different from both. */
+  hosts: IdentityHostSurvey[];
+  /** The designated-host lookup failed transiently, so that column is missing, not "the same". */
+  designatedUnknown: boolean;
 }
 
-/** The full picture behind the first-accepted probe: every candidate, both hosts, concurrently. A
- *  transient account-host lookup failure downgrades the fallback host's rejections to inconclusive,
- *  as probeIntegrationIdentity's `conclusive` does. Never throws. */
+export interface IdentitySurveyDeps extends Omit<IdentityProbeDeps, "apiBase"> {
+  /** The `copilot-host` literal, or null for `auto`. */
+  configuredHost?: string | null;
+}
+
+/** The full picture behind the first-accepted probe: every candidate on every host that matters,
+ *  concurrently. Never throws. */
 export async function surveyIntegrationIdentities(
   token: string,
-  candidates: IdentitySurveyCandidates,
-  deps: Omit<IdentityProbeDeps, "apiBase"> = {},
+  candidates: readonly IntegrationIdentity[],
+  deps: IdentitySurveyDeps = {},
 ): Promise<IdentitySurvey> {
   const fetchImpl = deps.fetchImpl ?? defaultProbeFetch;
   const timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
   const surveyHost = async (
     apiBase: string,
-    list: readonly IntegrationIdentity[],
-    hostUnverified: boolean,
+    role: SurveyHostRole,
   ): Promise<IdentityHostSurvey> => {
-    const verdicts = await Promise.all(list.map(async (candidate) => {
-      const verdict = await probeCandidate(
+    const verdicts = await Promise.all(candidates.map(async (candidate) => ({
+      name: candidate.name,
+      verdict: await probeCandidate(
         token,
         apiBase,
         candidate,
@@ -353,26 +381,119 @@ export async function surveyIntegrationIdentities(
         timeoutMs,
         deps.signal,
         true,
-      );
-      return {
-        name: candidate.name,
-        verdict: verdict.kind === "rejected" && hostUnverified
-          ? {
-            kind: "inconclusive" as const,
-            detail: `${verdict.detail} (account host lookup failed; probed the fallback host)`,
-          }
-          : verdict,
-      };
-    }));
-    return { apiBase, verdicts };
+      ),
+    })));
+    return { apiBase, role, verdicts };
   };
-  const [direct, passthrough] = await Promise.all([
-    surveyHost(DEFAULT_COPILOT_API_BASE, candidates.direct, false),
-    accountApiBase(token, fetchImpl, timeoutMs, deps.signal).then((base) =>
-      surveyHost(base.apiBase, candidates.passthrough, base.inconclusive)
-    ),
-  ]);
-  return { direct, passthrough };
+  const designated = await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
+  const hosts: { apiBase: string; role: SurveyHostRole }[] = [
+    { apiBase: DEFAULT_COPILOT_API_BASE, role: "generic" },
+  ];
+  if (designated.apiBase !== DEFAULT_COPILOT_API_BASE) {
+    hosts.push({ apiBase: designated.apiBase, role: "designated" });
+  }
+  const configured = deps.configuredHost ?? null;
+  if (configured !== null && !hosts.some((h) => h.apiBase === configured)) {
+    hosts.push({ apiBase: configured, role: "configured" });
+  }
+  return {
+    hosts: await Promise.all(hosts.map((h) => surveyHost(h.apiBase, h.role))),
+    designatedUnknown: designated.inconclusive,
+  };
+}
+
+/** A blocked generic host is a status the credential could never draw for an identity reason: 2xx,
+ *  400 (identity rejection), and 401 (bad token, identical everywhere) keep it; 403, 404, 5xx, and a
+ *  network-level failure mean the account is served elsewhere. */
+type HostProbe = { kind: "kept" } | { kind: "blocked"; detail: string };
+
+async function probeGenericHost(
+  token: string,
+  headers: Record<string, string>,
+  fetchImpl: ProbeFetch,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<HostProbe> {
+  try {
+    const res = await fetchImpl(`${DEFAULT_COPILOT_API_BASE}/models`, {
+      headers: { Authorization: `Bearer ${token}`, ...headers },
+      signal: requestSignal(timeoutMs, signal),
+    });
+    const body = await res.text().catch(() => "");
+    if (res.ok || res.status === 400 || res.status === 401) return { kind: "kept" };
+    return { kind: "blocked", detail: truncate(`${res.status} ${body}`) };
+  } catch (e) {
+    return { kind: "blocked", detail: truncate(`network error: ${errMessage(e)}`) };
+  }
+}
+
+/** Where the host resolver narrates a non-default answer; consola instances and stderr loggers fit. */
+export interface HostNarrator {
+  info: (message: string) => void;
+}
+
+export interface ResolveHostOptions extends Omit<IdentityProbeDeps, "apiBase"> {
+  /** The `copilot-host` literal: returned as-is, nothing probed. Null = `auto`. */
+  literal?: string | null;
+  /** Callers whose stdout is a contract pass a stderr logger. */
+  narrator?: HostNarrator;
+}
+
+// The same memo discipline as probeMemo: one network round per (token, identity) in a process,
+// injected I/O or a caller deadline bypasses it.
+const hostMemo = new Map<string, Promise<string>>();
+
+/**
+ * THE `copilot-host auto` rule, for every mode. `headers` is the identity the caller will bake (the
+ * accepted Direct identity, the daemon's passthrough id, or vscode-chat), resolved BEFORE this.
+ *
+ *   literal set                     -> the literal
+ *   no token                        -> the generic host, nothing probed
+ *   generic /models 2xx, 400, 401   -> the generic host
+ *   anything else                   -> the account's designated host (COPILOT_USER_URL endpoints.api)
+ *   ... and that lookup fails       -> the generic host
+ */
+export function resolveCopilotHost(
+  token: string | null,
+  headers: Record<string, string>,
+  opts: ResolveHostOptions = {},
+): Promise<string> {
+  const { literal = null, narrator = consola, ...deps } = opts;
+  if (literal !== null) return Promise.resolve(literal);
+  if (token === null) return Promise.resolve(DEFAULT_COPILOT_API_BASE);
+  const injected = deps.fetchImpl !== undefined || deps.timeoutMs !== undefined ||
+    deps.signal !== undefined;
+  const key = JSON.stringify([token, headers]);
+  const cached = injected ? undefined : hostMemo.get(key);
+  if (cached !== undefined) return cached;
+  const pending = resolveAutoHost(token, headers, deps, narrator);
+  if (!injected) hostMemo.set(key, pending);
+  return pending;
+}
+
+async function resolveAutoHost(
+  token: string,
+  headers: Record<string, string>,
+  deps: Omit<IdentityProbeDeps, "apiBase">,
+  narrator: HostNarrator,
+): Promise<string> {
+  const fetchImpl = deps.fetchImpl ?? defaultProbeFetch;
+  const timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const generic = await probeGenericHost(token, headers, fetchImpl, timeoutMs, deps.signal);
+  if (generic.kind === "kept") return DEFAULT_COPILOT_API_BASE;
+  const designated = await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
+  const genericHost = new URL(DEFAULT_COPILOT_API_BASE).host;
+  if (designated.apiBase === DEFAULT_COPILOT_API_BASE) {
+    narrator.info(
+      `Copilot API host: ${genericHost} answered ${generic.detail} and the account host lookup ` +
+        "gave no other host; staying on it.",
+    );
+  } else {
+    narrator.info(
+      `Copilot API host: ${designated.apiBase} (${genericHost} answered ${generic.detail}).`,
+    );
+  }
+  return designated.apiBase;
 }
 
 /**
@@ -421,6 +542,7 @@ export async function probeIntegrationIdentityCached(
 /** Test hook. */
 export function resetIntegrationIdentityCache(): void {
   probeMemo.clear();
+  hostMemo.clear();
 }
 
 export function identityRejectionHints(): string[] {
@@ -531,8 +653,8 @@ export async function resolveDirectIntegrationId(
   // Only PATs are rejected by the default identity, so only they justify a probe's network round.
   if (token === null || !isPatShapedToken(token)) return null;
   const candidates = directIdentityCandidates(userAgent);
-  // Direct mode bakes DEFAULT_COPILOT_API_BASE as the agents' base_url, so THAT host is probed: the
-  // verdict must reflect where the agents will actually send traffic.
+  // Probed on the generic host: the identity comes first, then resolveCopilotHost judges the host
+  // under the accepted identity's headers, so a blocked host never reads as an identity rejection.
   const identity = await acceptedIdentity(token, candidates, {
     ...deps,
     apiBase: deps.apiBase ?? DEFAULT_COPILOT_API_BASE,

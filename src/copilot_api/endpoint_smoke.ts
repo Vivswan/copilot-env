@@ -9,8 +9,8 @@
 //   POST <agent's wire> -> a minimal capped call when no CLI ran; 200 is the Direct verdict,
 //                          anything else the proxy
 import { errMessage } from "../utils/error.ts";
-import { isRecord } from "../utils/json.ts";
 import { directClientHeaders, type ProbeFetch } from "./integration_identity.ts";
+import { fetchModelCatalog } from "./models_fetch.ts";
 
 /** The two Copilot wires the managed agents speak (Claude: Anthropic messages, Codex: responses). */
 export type DirectWire = "messages" | "responses";
@@ -20,7 +20,6 @@ const WIRE_PATHS: Record<DirectWire, string> = {
   "responses": "/responses",
 };
 
-const CATALOG_TIMEOUT_MS = 5000;
 const PING_TIMEOUT_MS = 20_000;
 
 /** One agent's endpoint smoke: its wire plus its own "can I drive this model" filter. */
@@ -59,35 +58,28 @@ export function directSmoke(
   opts: { fetchImpl?: ProbeFetch } = {},
 ): DirectSmoke {
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
-  const headers = {
-    ...directClientHeaders(userAgent, integrationId),
-    "Authorization": `Bearer ${token}`,
-  };
+  const identity = directClientHeaders(userAgent, integrationId);
+  const headers = { ...identity, "Authorization": `Bearer ${token}` };
   return {
     async pickModel() {
-      try {
-        const catalog = await fetchImpl(`${apiBase}/models`, {
-          headers,
-          signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
-        });
-        if (!catalog.ok) {
-          await catalog.text().catch(() => "");
-          return { ok: false, detail: `GET /models returned ${catalog.status}` };
-        }
-        // Envelope-checked here so a body the parsers cannot read reports as a failed look, never
-        // as a proven "no compatible model" (both pickModel filters return empty for either).
-        const body: unknown = await catalog.json();
-        if (!isRecord(body) || !Array.isArray(body.data)) {
-          return { ok: false, detail: "unrecognized /models response shape" };
-        }
-        const model = smoke.pickModel(body);
-        if (model === null) {
-          return { ok: false, detail: `no model on the ${smoke.wire} wire in the catalog` };
-        }
-        return { ok: true, model };
-      } catch (e) {
-        return { ok: false, detail: errMessage(e) };
+      const got = await fetchModelCatalog({ host: apiBase, token, headers: identity, fetchImpl });
+      switch (got.kind) {
+        case "http":
+          return { ok: false, detail: `GET /models returned ${got.status}` };
+        case "unparsable":
+        case "network":
+          return { ok: false, detail: errMessage(got.error) };
       }
+      // A body the parsers cannot read reports as a failed look, never as a proven "no compatible
+      // model" (both pickModel filters return empty for either).
+      if (got.models === null) {
+        return { ok: false, detail: "unrecognized /models response shape" };
+      }
+      const model = smoke.pickModel(got.body);
+      if (model === null) {
+        return { ok: false, detail: `no model on the ${smoke.wire} wire in the catalog` };
+      }
+      return { ok: true, model };
     },
     async ping(model) {
       const path = WIRE_PATHS[smoke.wire];

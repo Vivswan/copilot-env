@@ -7,7 +7,9 @@ import {
   type Release,
   resolveTarget,
 } from "../src/install/resolve-release.ts";
-import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
 
 // resolve-release.ts is the single source of truth for which release `agent
 // update` and the autoupdate preflight move to. The network side is thin; the
@@ -202,6 +204,35 @@ describe("resolveTarget retry (de-flakes the release lookup)", () => {
     }) as unknown as typeof fetch;
     expect(await resolveTarget(null)).toBeNull();
     expect(calls).toBe(4); // MAX_FETCH_ATTEMPTS
+  });
+
+  // The lookup is anonymous: a shell GH_TOKEN for another account or the stored Copilot
+  // credential would otherwise turn `agent update --check` into that token's 401.
+  test("sends no Authorization header with GH_TOKEN exported and a credential stored", async () => {
+    const restoreEnv = envSnapshot();
+    let home = "";
+    let sent: Headers | null = null;
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      sent = new Headers(init?.headers);
+      return new Response(releasesJson, { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      home = isolateProxyHome("copilot-update-anon-");
+      process.env.GH_TOKEN = "ghp_someone_elses";
+      process.env.GITHUB_TOKEN = "ghp_someone_elses";
+      new CopilotEnvState().setCredential(null, {
+        kind: "stored",
+        provider: "gh-token",
+        token: "ghu_stored",
+      });
+      expect((await resolveTarget(null))?.tag).toBe("v1.0.0");
+      expect(sent).not.toBeNull();
+      expect(sent!.has("authorization")).toBe(false);
+      expect(sent!.get("accept")).toBe("application/vnd.github+json");
+    } finally {
+      restoreEnv();
+      removeDir(home);
+    }
   });
 });
 

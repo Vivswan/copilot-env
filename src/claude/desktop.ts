@@ -62,7 +62,7 @@ import {
 import { errMessage } from "../utils/error.ts";
 import { appRunning, type AppScan } from "../utils/app_scan.ts";
 import { entryAbsent, isEnoentOrNotdir, readTextResult } from "../utils/fs.ts";
-import { isRecord } from "../utils/json.ts";
+import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenArgs } from "../utils/root.ts";
 import type { DesktopOwnedEntry } from "./desktop_status.ts";
@@ -289,13 +289,7 @@ interface JsonWritePlan {
 }
 
 function parsedRecord(raw: string | null): Doc | null {
-  if (raw === null) return null;
-  try {
-    const doc: unknown = JSON.parse(raw);
-    return isRecord(doc) ? doc : null;
-  } catch {
-    return null;
-  }
+  return raw === null ? null : parseJsonRecord(raw);
 }
 
 /** `ops` over `base` (the document the save starts from) yield the bytes; the rows compare against

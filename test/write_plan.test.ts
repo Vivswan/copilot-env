@@ -47,9 +47,9 @@ function expectParity(rows: AttributeRow[], before: unknown, after: unknown): vo
 }
 
 test("planPatch names only what the apply changes: a re-populated table is no removal, a scalar in a table's way is one", () => {
-  // Both shapes came out of review as plan/apply drift: the Codex provider write removes then
-  // re-sets its table (so an empty `auth` table read as `remove` while the apply kept it), and a
-  // TOML datetime sitting where the provider table goes was patched in place instead of replaced.
+  // A table removed then re-set is no removal (an empty `auth` table would otherwise read as
+  // `remove` while the apply keeps it); a TOML datetime where a table goes is replaced, not
+  // patched in place.
   const current = { auth: {}, table: new Date("2025-01-01T00:00:00Z") };
   const rows = planPatch(current, [
     remove(["auth"]),

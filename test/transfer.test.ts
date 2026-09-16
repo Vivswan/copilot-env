@@ -176,6 +176,21 @@ test("export carries the stores + modes and never the machine-local state keys",
 
 // --- validation (strict parse boundary) ---------------------------------------
 
+test("a bundle's codex-home from the other OS is left out with a warning; the rest imports, and a non-path is still a rejection", () => {
+  isolate();
+  // The one preference whose value is a machine path: a Linux export read on Windows, or the reverse.
+  const foreign = process.platform === "win32" ? "/srv/codex" : "C:\\Codex";
+  const line =
+    `codex-home "${foreign}" is not a path on this OS; skipped, set it here with agent config`;
+  const bundle = parseSettingsBundle(rawBundle({ config: { codexHome: foreign, port: 4242 } }));
+  expect(bundle.config).toEqual({ port: 4242 });
+  expect(bundle.skippedConfig).toEqual([line]);
+  expect(planImport(bundle, { catalogDeps: NOOP_CATALOG_DEPS }).skipped).toEqual([line]);
+  expect(() => parseSettingsBundle(rawBundle({ config: { codexHome: "relative/dir" } }))).toThrow(
+    /config\.codexHome is invalid/,
+  );
+});
+
 test("parseSettingsBundle rejects non-objects, unknown formatVersion, and missing sections", () => {
   expect(() => parseSettingsBundle("nope")).toThrow(/JSON object/);
   expect(() => parseSettingsBundle({})).toThrow(/formatVersion/);
@@ -981,6 +996,26 @@ test.skipIf(process.platform === "win32")(
       `Codex config: ${join(homes.codexHome, "config.toml")}\n` +
         `Codex profile config: ${join(homes.codexHome, "work.config.toml")}`,
     );
+
+    // A bundle codex-home is the root of it all: the farm builds under the path (the default farm
+    // path is not the subject), and without the farm the path's own config.toml is the landing.
+    const root = join(homes.dir, "bundle-root");
+    const rootFarm = getHostLocalCodexHome(root);
+    const rooted = writesOf({ codexHome: root, codexHost: true });
+    expect(rooted).toContain(`Per-host CODEX_HOME farm (built): ${rootFarm}`);
+    expect(rooted).toContain(`Codex config: ${join(rootFarm, "config.toml")}`);
+    expect(rooted).not.toContain(hostHome);
+    expect(writesOf({ codexHome: root })).toContain(`Codex config: ${join(root, "config.toml")}`);
+    expect(profileOnly({ codexHome: root })).toContain(
+      `Codex config: ${join(root, "config.toml")}`,
+    );
+
+    // The shell's export is judged against the BUNDLE's root, as the apply will judge it: locally
+    // rooted at `root` with its farm exported, a bundle with neither key honours that export
+    // (it is not the default root's farm), so the line names it, not ~/.codex.
+    new CopilotEnvConfig().set({ codexHome: root, codexHost: true });
+    process.env.CODEX_HOME = rootFarm;
+    expect(writesOf({})).toContain(`Codex config: ${join(rootFarm, "config.toml")}`);
   },
 );
 

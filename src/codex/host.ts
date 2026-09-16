@@ -1,10 +1,11 @@
-// The per-host CODEX_HOME symlink farm (Linux/macOS), DERIVED from the `codex-host` config key by
+// The Codex home derivation (the `codex-home` root, the per-host farm under it, else ~/.codex) and
+// the per-host CODEX_HOME symlink farm (Linux/macOS), DERIVED from the `codex-host` config key by
 // every default Codex wiring pass.
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { type CodexHomePrefs, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
@@ -28,9 +29,12 @@ import { readCodexToml } from "./toml_io.ts";
 const logger = createStderrLogger();
 
 // Resolved absolute at its one source: it is recorded, exported into shells, and removed by this
-// path, so a relative HOME must never make it cwd-dependent.
-export function getHostLocalCodexHome(): string {
-  return path.resolve(codexFarmHostsDir(), getSanitizedHostname());
+// path, so a relative HOME must never make it cwd-dependent. The farm lives under the `codex-home`
+// root when that key is set (`<codex-home>/hosts/<hostname>`), else under ~/.codex.
+export function getHostLocalCodexHome(
+  root: string | null = codexHomePrefsOrDerived().explicit,
+): string {
+  return path.resolve(codexFarmHostsDir(root ?? undefined), getSanitizedHostname());
 }
 
 /** `active` is recorded in run state AFTER the config write succeeded. */
@@ -47,16 +51,20 @@ export interface CodexHostFarm {
   active: boolean;
 }
 
-export function codexHostFarm(): CodexHostFarm {
-  const hostHome = getHostLocalCodexHome();
+export function codexHostFarm(prefs: CodexHomePrefs = codexHomePrefsOrDerived()): CodexHostFarm {
+  const hostHome = getHostLocalCodexHome(prefs.explicit);
   return {
     hostHome,
-    ...probeFarm(hostHome),
+    ...probeCodexFarm(hostHome),
     active: new CopilotEnvRunState().read().codexHome === hostHome,
   };
 }
 
-function probeFarm(hostHome: string): Pick<CodexHostFarm, "present" | "wired" | "probeError"> {
+/** The farm facts for any path, ours or not: `agent uninstall` asks it about the recorded farm before
+ *  deleting, since the record alone never authorizes a delete (see isOurFarm). */
+export function probeCodexFarm(
+  hostHome: string,
+): Pick<CodexHostFarm, "present" | "wired" | "probeError"> {
   let viaLink: boolean;
   try {
     viaLink = fs.lstatSync(hostHome).isSymbolicLink();
@@ -79,34 +87,101 @@ function probeFarm(hostHome: string): Pick<CodexHostFarm, "present" | "wired" | 
 }
 
 // The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent env` may clear it).
-// Exact spelling on purpose: a trailing-slash variant is not ours.
-export function isManagedFarmExport(envHome: string | undefined): boolean {
-  return Boolean(envHome && envHome === getHostLocalCodexHome());
+// Exact spelling on purpose: a trailing-slash variant is not ours. Never on Windows: no farm is
+// built there, so a farm-shaped export is a shared home of the user's own.
+export function isManagedFarmExport(
+  envHome: string | undefined,
+  prefs: CodexHomePrefs = codexHomePrefsOrDerived(),
+): boolean {
+  if (process.platform === "win32") return false;
+  return Boolean(envHome && envHome === getHostLocalCodexHome(prefs.explicit));
 }
 
-/** The recorded farm while its directory exists, else `$CODEX_HOME`, else `~/.codex`. A dead record
- *  and OUR dead farm export are skipped: a write through either would resurrect the removed farm as
- *  a plain dir. */
+/** The home every Codex write, `agent codex --check`, `agent env`, and the launch pin agree on, plus
+ *  the one note the writer, `--check`, and the launcher print (the other readers stay silent). */
+export interface CodexHomeResolution {
+  home: string;
+  /** What decided the home: the `codex-host` farm, the `codex-home` root, or the shell/default
+   *  convention (which is never stale). The note's wording follows it. */
+  by: "farm" | "codex-home" | "default";
+  /** The shell's CODEX_HOME when copilot-env decided the home (the farm, or the `codex-home` root)
+   *  and the export names another directory: an rc file, a shell `agent env` never refreshed. Null
+   *  when the shell is silent or agrees; with neither key the export IS the home, so never stale. */
+  staleExport: string | null;
+}
+
+/**
+ * The ONE precedence, over the folded keys (codexHomePrefsFor). The keys alone decide: neither the
+ * run-state record nor the disk steers the home, so a farm not built yet (or hand-edited) is still
+ * the home the user asked for, and the next `agent codex` builds or repairs it there.
+ *
+ *   codex-host on   -> the farm, <root>/hosts/<hostname>; a differing export is noted, not honoured
+ *   codex-home set  -> that path; a differing export is noted, not honoured
+ *   neither         -> $CODEX_HOME (Codex's own convention) unless it is OUR farm export, built or
+ *                      not (a write through it would resurrect the removed farm as a plain dir),
+ *                      else ~/.codex; never stale
+ *
+ * The settings-import plan calls this with the BUNDLE's prefs before the store is replaced.
+ */
+export function resolveCodexHome(
+  prefs: CodexHomePrefs = codexHomePrefsOrDerived(),
+): CodexHomeResolution {
+  if (prefs.hostFarm) {
+    const hostHome = getHostLocalCodexHome(prefs.explicit);
+    return { home: hostHome, by: "farm", staleExport: staleExportAgainst(hostHome) };
+  }
+  if (prefs.explicit !== null) {
+    return {
+      home: prefs.explicit,
+      by: "codex-home",
+      staleExport: staleExportAgainst(prefs.explicit),
+    };
+  }
+  return { home: unmanagedCodexHome(prefs), by: "default", staleExport: null };
+}
+
+function staleExportAgainst(home: string): string | null {
+  const exported = process.env.CODEX_HOME;
+  return exported && exported !== home ? exported : null;
+}
+
 export function effectiveCodexHome(): string {
-  return effectiveCodexHomeFor(codexHostEnabledOrOff());
+  return resolveCodexHome().home;
 }
 
-/** The settings-import plan resolves the POST-import home with the bundle's value before the store
- *  is replaced. */
-export function effectiveCodexHomeFor(enabled: boolean): string {
-  const recorded = new CopilotEnvRunState().read().codexHome;
-  // The key off (or unset) retires the record at once; the next pass removes the farm.
-  if (enabled && recorded !== undefined && fs.existsSync(recorded)) return recorded;
-  return unmanagedCodexHome();
+export function effectiveCodexHomeFor(prefs: CodexHomePrefs): string {
+  return resolveCodexHome(prefs).home;
 }
 
 /** `$CODEX_HOME` unless it is OUR farm export (POSIX only; Windows never has a farm), else
- *  `~/.codex`. */
-export function unmanagedCodexHome(): string {
-  if (process.platform !== "win32" && isManagedFarmExport(process.env.CODEX_HOME)) {
+ *  `~/.codex`. `prefs` names the root the farm export is judged against: the settings-import plan
+ *  passes the bundle's, so its line and the apply's write agree. */
+export function unmanagedCodexHome(prefs: CodexHomePrefs = codexHomePrefsOrDerived()): string {
+  if (isManagedFarmExport(process.env.CODEX_HOME, prefs)) {
     return path.join(homedir(), ".codex");
   }
   return defaultCodexHome();
+}
+
+export function staleCodexHomeExportLine(resolution: CodexHomeResolution): string | null {
+  if (resolution.staleExport === null) return null;
+  const wired = resolution.by === "farm"
+    ? `codex-host is on, so Codex is wired at the per-host farm ${resolution.home}`
+    : `codex-home is set, so Codex is wired at ${resolution.home}`;
+  return `Ignoring the shell's CODEX_HOME=${resolution.staleExport}: ${wired}`;
+}
+
+const narratedStaleExports = new Set<string>();
+
+/** Prints the stale-export note once per process and hands the home back. A launch that re-wires
+ *  Codex resolves the home twice (the write, then the child's pin) and must not say it twice. */
+export function narrateCodexHome(resolution: CodexHomeResolution): string {
+  const line = staleCodexHomeExportLine(resolution);
+  if (line !== null && !narratedStaleExports.has(line)) {
+    narratedStaleExports.add(line);
+    logger.warn(line);
+  }
+  return resolution.home;
 }
 
 /** The single decision the derivation (withCodexHostFarm) and the settings-import plan share.
@@ -134,12 +209,12 @@ export function planCodexHostFarm(
 }
 
 /** Runs on every read path (`--check`, health, the wiring read-back), where an unreadable store
- *  must not throw. */
-function codexHostEnabledOrOff(): boolean {
+ *  must not throw: it reads as the built-in derivation (no path, farm off). */
+function codexHomePrefsOrDerived(): CodexHomePrefs {
   try {
-    return new CopilotEnvConfig().codexHostEnabled();
+    return new CopilotEnvConfig().codexHomePrefs();
   } catch {
-    return false;
+    return { explicit: null, hostFarm: false };
   }
 }
 
@@ -152,10 +227,11 @@ export function codexHostDrift(
 ): CodexHostDrift | null {
   // No farm can exist on Windows, so a farm-shaped path there (a shared home) is not ours.
   if (process.platform === "win32") return null;
-  return codexHostDriftFrom(config.codexHostEnabled(), codexHostFarm());
+  const prefs = config.codexHomePrefs();
+  return codexHostDriftFrom(prefs.hostFarm, codexHostFarm(prefs));
 }
 
-/** Over already-gathered facts: health probes them through its own seams. */
+/** Over already-gathered farm facts: health probes them through its own seams. */
 export function codexHostDriftFrom(enabled: boolean, farm: CodexHostFarm): CodexHostDrift | null {
   if (!enabled) return isOurFarm(farm) ? { kind: "disabled", hostHome: farm.hostHome } : null;
   if (!farm.wired) return { kind: "missing", hostHome: farm.hostHome };
@@ -168,7 +244,10 @@ export function codexHostDriftLine(drift: CodexHostDrift): string {
     case "missing":
       return `codex-host is on but the per-host CODEX_HOME farm is missing at ${drift.hostHome}; run \`agent codex\` to rebuild it`;
     case "inactive":
-      return `codex-host is on but ${drift.hostHome} is not the active CODEX_HOME; run \`agent codex\` to activate it`;
+      // A farm built under another root (or before a rebuild) is wired but unrecorded: `agent
+      // uninstall` would not delete it until a pass records it again.
+      return `codex-host is on but no completed wiring pass is recorded for the per-host CODEX_HOME ` +
+        `farm at ${drift.hostHome}; run \`agent codex\` to record it`;
     case "disabled":
       return `codex-host is off but a per-host CODEX_HOME farm is still present at ${drift.hostHome}; run \`agent codex\` to remove it`;
   }
@@ -590,15 +669,16 @@ function buildCodexSymlinkFarm(codexHome: string): void {
 
 /** ONE default Codex config write with the farm derived from the `codex-host` key around it
  *  (planCodexHostFarm decides). The activation record lands only AFTER a successful write and is
- *  cleared BEFORE a rebuild, so it never outlives a proven farm. */
+ *  cleared BEFORE a rebuild, so it never outlives a proven farm; `agent uninstall` deletes by it. */
 export async function withCodexHostFarm(
   write: (codexHome: string) => Promise<void>,
 ): Promise<void> {
-  // Windows has no farm (POSIX symlinks): nothing to derive, nothing recorded.
-  if (process.platform === "win32") return write(effectiveCodexHome());
-  const farm = codexHostFarm();
   // ONE key read drives the whole pass, so a concurrent `agent config` cannot split it.
-  const plan = planCodexHostFarm(new CopilotEnvConfig().codexHostEnabled(), farm);
+  const prefs = new CopilotEnvConfig().codexHomePrefs();
+  // Windows has no farm (POSIX symlinks): nothing to derive, nothing recorded.
+  if (process.platform === "win32") return write(narrateCodexHome(resolveCodexHome(prefs)));
+  const farm = codexHostFarm(prefs);
+  const plan = planCodexHostFarm(prefs.hostFarm, farm);
   const state = new CopilotEnvRunState();
   switch (plan.action) {
     case "build":
@@ -620,6 +700,7 @@ export async function withCodexHostFarm(
       }
       await write(farm.hostHome);
       state.set({ codexHome: farm.hostHome });
+      narrateCodexHome(resolveCodexHome(prefs));
       return;
     }
     case "remove":
@@ -637,30 +718,45 @@ export async function withCodexHostFarm(
   if (state.read().codexHome !== undefined) {
     state.set({ codexHome: null });
   }
-  await write(effectiveCodexHome());
+  await write(narrateCodexHome(resolveCodexHome(prefs)));
 }
 
-/** The active home (run state / CODEX_HOME env), the default ~/.codex, and each per-host farm home,
+/** The effective home (resolveCodexHome), the default ~/.codex, and each per-host farm home,
  *  enumerated through the layout's owner (codexFarmHostsDir, src/utils/hostname.ts). `complete` is
  *  false when the farm directory exists but cannot be enumerated: unseen homes may still hold
  *  state. */
 export function knownCodexHomes(): { homes: string[]; complete: boolean } {
-  const homes = new Set<string>([effectiveCodexHome()]);
-  // The default home resolves via homedir(); the farm root via its creator's contract
-  // (codexFarmHostsDir on homeDir, process.env.HOME first). They can differ (HOME set on Windows),
-  // so BOTH are swept; the Set dedupes the common case.
-  homes.add(path.join(homedir(), ".codex"));
-  const hostsDir = codexFarmHostsDir();
-  homes.add(path.dirname(hostsDir));
+  // An unreadable store hides a `codex-home` root and its farms, so the sweep says so rather than
+  // reporting the default homes as the whole set.
+  let prefs: CodexHomePrefs = { explicit: null, hostFarm: false };
   let complete = true;
   try {
-    for (const entry of fs.readdirSync(hostsDir, { withFileTypes: true })) {
-      if (entry.isDirectory()) homes.add(path.join(hostsDir, entry.name));
+    prefs = new CopilotEnvConfig().codexHomePrefs();
+  } catch {
+    complete = false;
+  }
+  const homes = new Set<string>([effectiveCodexHomeFor(prefs)]);
+  // The default home resolves via homedir(); the farm root via its creator's contract
+  // (codexFarmHostsDir on homeDir, process.env.HOME first). They can differ (HOME set on Windows),
+  // so BOTH are swept; the Set dedupes the common case. A `codex-home` root is a third: its own
+  // farm hosts dir is swept beside the default one, since a key change leaves the other behind.
+  homes.add(path.join(homedir(), ".codex"));
+  const hostsDirs = [codexFarmHostsDir()];
+  if (prefs.explicit !== null) {
+    homes.add(prefs.explicit);
+    hostsDirs.push(codexFarmHostsDir(prefs.explicit));
+  }
+  for (const hostsDir of hostsDirs) {
+    homes.add(path.dirname(hostsDir));
+    try {
+      for (const entry of fs.readdirSync(hostsDir, { withFileTypes: true })) {
+        if (entry.isDirectory()) homes.add(path.join(hostsDir, entry.name));
+      }
+    } catch (e) {
+      // No farm directory: the base homes cover everything. Any OTHER failure (EACCES, I/O) hides
+      // farm homes that may hold state.
+      if (isRecord(e) && !isEnoentOrNotdir(e)) complete = false;
     }
-  } catch (e) {
-    // No farm directory: the two base homes cover everything. Any OTHER failure (EACCES, I/O) hides
-    // farm homes that may hold state.
-    if (isRecord(e) && !isEnoentOrNotdir(e)) complete = false;
   }
   return { homes: [...homes], complete };
 }

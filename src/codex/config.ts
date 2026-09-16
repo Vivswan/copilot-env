@@ -54,14 +54,11 @@ import {
   codexHostDriftLine,
   effectiveCodexHome,
   knownCodexHomes,
+  narrateCodexHome,
+  resolveCodexHome,
   withCodexHostFarm,
 } from "./host.ts";
-import {
-  CODEX_PROVIDER_ID,
-  codexConfigPath,
-  codexProfileConfigPath,
-  defaultCodexHome,
-} from "./paths.ts";
+import { CODEX_PROVIDER_ID, codexConfigPath, codexProfileConfigPath } from "./paths.ts";
 import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
 import { codexUserAgent } from "./user_agent.ts";
 
@@ -686,11 +683,10 @@ function validateProxyOptions(
  *                    needs
  */
 export function configureCodexConfig(
-  codexHome: string | null | undefined,
+  codexHome: string,
   request: CodexWriteRequest,
   catalogDeps: CodexCatalogDeps = {},
 ): void {
-  codexHome = codexHome || defaultCodexHome();
   const profile = request.profile ?? null;
   const providerId = codexProviderId(profile);
   // The union guarantees a base URL exists; this rejects an empty or malformed one before anything
@@ -918,7 +914,7 @@ function providerModeDetail(status: CodexWiringStatus): string {
 
 function checkCodexConfig(): void {
   try {
-    const codexHome = effectiveCodexHome();
+    const codexHome = narrateCodexHome(resolveCodexHome());
     const configPath = codexConfigPath(codexHome);
     const read = readTextResult(configPath);
     const status = inspectCodexWiring(read, null, Number(copilotApiResolvePort()), false);
@@ -1048,12 +1044,12 @@ export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
 };
 
 /** The throwaway config's selector, NOT the managed id. The table's `auth.command` runs `agent auth
- *  --get` in the child, and with codex-host off (the default) that child's Codex home is $CODEX_HOME =
- *  the throwaway home (defaultCodexHome; a live farm record wins over it). Its catalog self-heal
- *  (src/codex/catalog_reference.ts) adds `model_catalog_json` to, and ledgers, any config there that
- *  selects the managed provider: the next attempt would then run under the user's catalog, and the
- *  ledger would keep a path removeScratchDir deletes. A foreign selector is left alone by that
- *  self-heal's own contract. */
+ *  --get` in the child, and with neither Codex-home key set (the default) that child's Codex home is
+ *  $CODEX_HOME = the throwaway home (defaultCodexHome; codex-home or a codex-host farm wins over it).
+ *  Its catalog self-heal (src/codex/catalog_reference.ts) adds `model_catalog_json` to, and ledgers,
+ *  any config there that selects the managed provider: the next attempt would then run under the
+ *  user's catalog, and the ledger would keep a path removeScratchDir deletes. A foreign selector is
+ *  left alone by that self-heal's own contract. */
 const CODEX_PROBE_PROVIDER_ID = `${CODEX_PROVIDER_ID}-probe`;
 
 /** The detect probe's throwaway config: the Direct provider table and its selector, nothing else.

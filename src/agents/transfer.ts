@@ -16,22 +16,17 @@
 //   profile absent from the bundle      -> untouched
 //   bundle mode "none"                  -> that agent left alone
 import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import * as v from "valibot";
 import { claudeJsonPath } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
-import {
-  codexHostFarm,
-  effectiveCodexHomeFor,
-  planCodexHostFarm,
-  unmanagedCodexHome,
-} from "../codex/host.ts";
+import { codexHostFarm, effectiveCodexHomeFor, planCodexHostFarm } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
 import { GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
 import {
-  codexHostEnabledFor,
+  codexHomePrefsFor,
   CONFIG_REGISTRY,
   CONFIG_SCHEMA,
   configDefaultBoolean,
@@ -95,6 +90,9 @@ export interface SettingsBundle {
   profiles: Record<string, ProfileSlotData>;
   /** Both agents' DEFAULT wiring at export time; import re-derives it. */
   modes: { codex: AgentProviderMode; claude: AgentProviderMode };
+  /** Set by parseSettingsBundle alone, never serialized: the `config` values that cannot apply on
+   *  this OS, each as the warning the import prints for leaving it out. */
+  skippedConfig?: readonly string[];
 }
 
 /** Generic so the per-key value type survives the assignment. */
@@ -272,10 +270,23 @@ function parseCredentialFields(doc: Record<string, unknown>, path: string): Prof
 const CREDENTIAL_KEYS = ["githubToken", "authProvider", "ghUser"] as const;
 const PROFILE_SLOT_KEYS = [...CREDENTIAL_KEYS, "mode", "integrationIdentity"] as const;
 
+/** A bundle travels between OS families, and `codex-home` is the one preference whose value is a
+ *  machine path: an absolute path of the OTHER family (a Linux export read on Windows, or the
+ *  reverse) is left out with a warning instead of failing the whole import. Anything else the
+ *  domain rejects (a relative path, `~`) is still a rejection. */
+function codexHomeFromOtherOs(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  return process.platform === "win32"
+    ? posix.isAbsolute(value)
+    : win32.isAbsolute(value) && win32.parse(value).root.length > 1;
+}
+
 /** Values are validated by CONFIG_SCHEMA itself (env_config owns every value shape, so new keys
  *  are accepted here automatically); its lenient fallback is made strict by rejecting any
  *  present key the schema turned into undefined. */
-function parseConfigSection(raw: unknown): CopilotEnvConfigData {
+function parseConfigSection(
+  raw: unknown,
+): { config: CopilotEnvConfigData; skipped: string[] } {
   const doc = requireRecord(raw, "config");
   rejectUnknownKeys(
     doc,
@@ -292,13 +303,21 @@ function parseConfigSection(raw: unknown): CopilotEnvConfigData {
       delete values[key];
     }
   }
-  const parsed = v.parse(CONFIG_SCHEMA, values);
+  const skipped: string[] = [];
+  let parsed = v.parse(CONFIG_SCHEMA, values);
+  if (parsed.codexHome === undefined && codexHomeFromOtherOs(values.codexHome)) {
+    skipped.push(
+      `codex-home "${values.codexHome}" is not a path on this OS; skipped, set it here with agent config`,
+    );
+    delete values.codexHome;
+    parsed = v.parse(CONFIG_SCHEMA, values);
+  }
   for (const def of CONFIG_REGISTRY) {
     if (values[def.key] !== undefined && parsed[def.key] === undefined) {
       throw bundleError(`config.${def.key} is invalid (expected: ${def.describe})`);
     }
   }
-  return { ...parsed, ...redacted };
+  return { config: { ...parsed, ...redacted }, skipped };
 }
 
 function parseCredentialSection(raw: unknown): ProfileCredentialData {
@@ -363,12 +382,14 @@ export function parseSettingsBundle(raw: unknown): SettingsBundle {
     );
   }
   rejectUnknownKeys(raw, BUNDLE_KEYS, "the bundle root");
+  const config = parseConfigSection(raw.config);
   return {
     formatVersion: SETTINGS_BUNDLE_FORMAT_VERSION,
-    config: parseConfigSection(raw.config),
+    config: config.config,
     credential: parseCredentialSection(raw.credential),
     profiles: parseProfilesSection(raw.profiles),
     modes: parseModesSection(raw.modes),
+    skippedConfig: config.skipped,
   };
 }
 
@@ -555,14 +576,15 @@ function planWrites(
   const wired = profiles.filter((p) => p.landing.action !== "skip" && p.slot.mode !== null);
   // Named-profile wiring writes its provider table into config.toml and its selector into
   // `<name>.config.toml` of the effective home. The apply replaces the preference store before it
-  // wires, so the home is resolved under the BUNDLE's codex-host value, not the local one.
-  const codexHost = codexHostEnabledFor(bundle.config.codexHost);
-  let profileCodexHome = effectiveCodexHomeFor(codexHost);
+  // wires, so the home is resolved under the BUNDLE's codex-home and codex-host values, not the
+  // local ones.
+  const homePrefs = codexHomePrefsFor(bundle.config);
+  const profileCodexHome = effectiveCodexHomeFor(homePrefs);
   if (modes.codex !== null) {
     // Post-import resolution (the plan-input rule): the farm decision is the SAME one the apply
     // takes, so its action and landing can be named.
-    const farm = codexHostFarm();
-    const plan = planCodexHostFarm(codexHost, farm);
+    const farm = codexHostFarm(homePrefs);
+    const plan = planCodexHostFarm(homePrefs.hostFarm, farm);
     if (plan.action === "build") lines.push(`Per-host CODEX_HOME farm (built): ${farm.hostHome}`);
     if (plan.action === "remove") {
       lines.push(`Per-host CODEX_HOME farm (removed): ${farm.hostHome}`);
@@ -570,9 +592,6 @@ function planWrites(
     if (plan.action === "leave") {
       lines.push(`Per-host CODEX_HOME farm path (left alone, not proven ours): ${farm.hostHome}`);
     }
-    profileCodexHome = plan.action === "build" || plan.action === "verify"
-      ? farm.hostHome
-      : unmanagedCodexHome();
     // The catalog sync may rewrite other host configs and the generated catalog file; the set is
     // dynamic, so one honest line beats an enumeration that would go stale.
     lines.push(
@@ -611,7 +630,7 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
     }
     return token;
   };
-  const skipped: string[] = [];
+  const skipped: string[] = [...(bundle.skippedConfig ?? [])];
   const defaultSlot = planSlotCredential(bundle.credential, null, gh);
   if (defaultSlot.action === "skip" && bundle.credential.authProvider !== null) {
     // Only a slot the bundle carried is an event; skipped wiring gets its own importableMode

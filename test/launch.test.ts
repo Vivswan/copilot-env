@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import type { AgentProviderMode } from "../src/agents/provider_mode.ts";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
+import { staleCodexHomeExportLine } from "../src/codex/host.ts";
 import {
   type LaunchAction,
   type LaunchDeps,
@@ -10,9 +11,11 @@ import {
   prepareLaunch,
 } from "../src/commands/launch.ts";
 import type { ManagedEnvValue } from "../src/commands/env.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import type { ProfileMode, ProfileSlot, TokenProvider } from "../src/copilot_api/env_state.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
+import { getSanitizedHostname } from "../src/utils/hostname.ts";
 import { runCli, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "./helpers.ts";
@@ -125,8 +128,10 @@ interface DepsScript {
   proxyUp?: boolean;
   slot?: ProfileSlot;
   claudeUrl?: ManagedEnvValue;
-  codexHome?: ManagedEnvValue;
-  /** The managed CODEX_HOME exists only AFTER a wire/sync ran (a pass built the farm). */
+  /** The home the child is pinned to (the farm with codex-host on, else the codex-home path or the
+   *  unmanaged home). */
+  codexHome?: string;
+  /** The farm exists only AFTER a wire/sync ran (a pass built and recorded it). */
   codexHomeOnceWired?: boolean;
   syncThrows?: boolean;
 }
@@ -168,13 +173,13 @@ function scriptedDeps(script: DepsScript = {}): {
       return script.syncThrows ? Promise.reject(new Error("boom")) : Promise.resolve();
     },
     managedClaudeBaseUrl: () => script.claudeUrl ?? null,
-    managedCodexHome: () => {
+    codexHome: () => {
       const wired = calls.some((c) => c.startsWith("wire:") || c.startsWith("sync:"));
-      // Throw, not null: an early read followed by a correct one must fail too.
+      // Throw, not a fallback: an early read followed by a correct one must fail too.
       if (script.codexHomeOnceWired && !wired) {
-        throw new Error("managedCodexHome read before the wiring step");
+        throw new Error("codexHome read before the wiring step");
       }
-      return script.codexHome ?? null;
+      return script.codexHome ?? "/fake/.codex";
     },
     notify: (line) => notes.push(line),
   };
@@ -299,7 +304,7 @@ test("a direct profile never touches the proxy; missing/credential-less ones har
 test("codex default: managed CODEX_HOME applied; proxy mode ensures then re-wires", async () => {
   const { deps, calls } = scriptedDeps({
     mode: "proxy",
-    codexHome: { value: "/fake/codex-farm" },
+    codexHome: "/fake/codex-farm",
     codexHomeOnceWired: true, // the farm the re-wire just built must reach the child env
   });
   const plan = await prepareLaunch(
@@ -311,14 +316,14 @@ test("codex default: managed CODEX_HOME applied; proxy mode ensures then re-wire
     command: "codex",
     args: ["--sandbox", "danger-full-access", "exec", "ls"],
     env: { CODEX_HOME: "/fake/codex-farm" },
-    scrub: [],
+    scrub: ["CODEX_HOME"], // every inherited casing goes before the pin lands
   });
 });
 
 test("codex --profile: ensure daemon FIRST, then sync; a failed sync warns and launches", async () => {
   const ok = scriptedDeps({
     slot: completeSlot("proxy"),
-    codexHome: { value: "/fake/codex-farm" },
+    codexHome: "/fake/codex-farm",
     codexHomeOnceWired: true, // the farm the sync just made wired must reach the child env
   });
   const plan = await prepareLaunch(
@@ -372,6 +377,7 @@ function fakeCliBin(root: string, command: string, exitCode = 0): string {
     'echo "BASE=${ANTHROPIC_BASE_URL-unset}"',
     'echo "FLICKER=${CLAUDE_CODE_NO_FLICKER-unset}"',
     'echo "SANDBOX=${IS_SANDBOX-unset}"',
+    'echo "CODEX_HOME=${CODEX_HOME-unset}"',
     `exit ${exitCode}`,
     "",
   ].join("\n");
@@ -595,16 +601,66 @@ skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success recor
   }
 }, 60_000);
 
-skipWin("e2e: a direct Codex launch passes args through untouched", () => {
-  const root = e2eRoot();
-  const bin = fakeCliBin(root, "codex", 3);
-  writeCodexConfigToml(join(root, ".codex"), { baseUrl: DIRECT_BASE });
-  const res = runCli(["launch", "codex", "--", "exec", "--json", "ls"], {
-    env: launchEnv(root, bin),
-  });
-  expect(res.stdout).toContain("ARGS=exec --json ls");
-  expect(res.exitCode).toBe(3);
-});
+/** codex-host on with the farm's config in place (a direct one, so the launch probes no proxy);
+ *  the preference store lives under root/api-home, where the launched CLI reads. */
+function stageFarm(root: string): string {
+  const farm = join(root, ".codex", "hosts", getSanitizedHostname());
+  writeCodexConfigToml(farm, { baseUrl: DIRECT_BASE });
+  const previousHome = process.env.COPILOT_API_HOME;
+  process.env.COPILOT_API_HOME = join(root, "api-home"); // the store resolves from env
+  try {
+    new CopilotEnvConfig().set({ codexHost: true });
+  } finally {
+    process.env.COPILOT_API_HOME = previousHome;
+  }
+  return farm;
+}
+
+function occurrences(text: string, needle: string): number {
+  return text.split(needle).length - 1;
+}
+
+skipWin(
+  "e2e: codex-host off, a direct Codex launch passes args through untouched and pins CODEX_HOME to the shell's export, which is the home",
+  () => {
+    const root = e2eRoot();
+    const bin = fakeCliBin(root, "codex", 3);
+    // Codex's own convention: the export is where the config lives, so it is what the child gets.
+    const exported = join(root, "my-own-codex");
+    writeCodexConfigToml(exported, { baseUrl: DIRECT_BASE });
+    const res = runCli(["launch", "codex", "--", "exec", "--json", "ls"], {
+      env: { ...launchEnv(root, bin), CODEX_HOME: exported },
+    });
+    expect(res.stdout).toContain("ARGS=exec --json ls");
+    expect(res.stdout).toContain(`CODEX_HOME=${exported}`);
+    expect(res.stderr).not.toContain("Ignoring the shell's CODEX_HOME");
+    expect(res.exitCode).toBe(3);
+  },
+);
+
+skipWin(
+  "e2e: codex-host on, the child is pinned to the farm and a differing shell export is named exactly once",
+  () => {
+    const root = e2eRoot();
+    const bin = fakeCliBin(root, "codex", 3);
+    const farm = stageFarm(root);
+    const staleExport = join(root, "old-farm");
+    const line = staleCodexHomeExportLine({ home: farm, by: "farm", staleExport });
+    if (line === null) throw new Error("a differing export must produce the note");
+    const stale = runCli(["launch", "codex", "--", "exec", "ls"], {
+      env: { ...launchEnv(root, bin), CODEX_HOME: staleExport },
+    });
+    expect(stale.stdout).toContain(`CODEX_HOME=${farm}`);
+    expect(occurrences(stale.stderr, line)).toBe(1);
+    expect(stale.exitCode).toBe(3);
+    // The shell agreeing (what the wrapper's `agent env` refresh leaves behind): nothing to say.
+    const agreed = runCli(["launch", "codex", "--", "exec", "ls"], {
+      env: { ...launchEnv(root, bin), CODEX_HOME: farm },
+    });
+    expect(agreed.stdout).toContain(`CODEX_HOME=${farm}`);
+    expect(agreed.stderr).not.toContain("Ignoring the shell's CODEX_HOME");
+  },
+);
 
 skipWin("e2e: copilot gets the managed flag set and no provider wiring", () => {
   const root = e2eRoot();

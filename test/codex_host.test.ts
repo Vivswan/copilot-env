@@ -12,12 +12,14 @@ import {
   codexHostFarm,
   effectiveCodexHome,
   getHostLocalCodexHome,
-  isManagedFarmExport,
   planCodexHostFarm,
+  resolveCodexHome,
+  staleCodexHomeExportLine,
   withCodexHostFarm,
 } from "../src/codex/host.ts";
 import { runConfig } from "../src/commands/config.ts";
 import { managedCodexHome } from "../src/commands/env.ts";
+import { commandDeps } from "../src/commands/launch.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
@@ -86,6 +88,10 @@ interface Farm {
 function isolate(): Farm {
   const homes = isolateAgentHomes("copilot-codex-host-");
   dir = homes.dir;
+  // The suite's CODEX_HOME floor would read as a shell export the farm overrides (one warning per
+  // build); HOME alone lands the unmanaged home at <dir>/.codex, and the tests about the export set
+  // it themselves.
+  delete process.env.CODEX_HOME;
   const emptyBin = join(dir, "empty-bin");
   fs.mkdirSync(emptyBin, { recursive: true });
   process.env.PATH = emptyBin;
@@ -209,20 +215,10 @@ test("getHostLocalCodexHome is <home>/.codex/hosts/<sanitized hostname>, resolve
   // HOME is read per call (the farm's contract), so retargeting it moves the farm.
   process.env.HOME = join(dir, "other-home");
   expect(getHostLocalCodexHome()).toBe(join(dir, "other-home", ".codex", "hosts", host));
-});
-
-// The predicate gates both managedCodexHome's CODEX_HOME clear and the unmanaged-home skip, so its
-// exact-spelling contract must never loosen.
-test("isManagedFarmExport is true only for the exact farm spelling, built or not", () => {
-  dir = isolateAgentHomes("copilot-codex-host-").dir;
-  const hostHome = getHostLocalCodexHome();
-  expect(isManagedFarmExport(hostHome)).toBe(true); // our export, farm absent
-  expect(isManagedFarmExport(`${hostHome}/`)).toBe(false); // trailing slash: not our exact spelling
-  expect(isManagedFarmExport(join(dir, "my-own-codex"))).toBe(false); // foreign path
-  expect(isManagedFarmExport(undefined)).toBe(false); // no inherited CODEX_HOME
-  expect(isManagedFarmExport("")).toBe(false); // empty spelling
-  fs.mkdirSync(hostHome, { recursive: true });
-  expect(isManagedFarmExport(hostHome)).toBe(true); // still ours once built: the record decides
+  // A `codex-home` root replaces ~/.codex, HOME notwithstanding.
+  expect(getHostLocalCodexHome(join(dir, "root"))).toBe(join(dir, "root", "hosts", host));
+  new CopilotEnvConfig().set({ codexHome: join(dir, "root") });
+  expect(getHostLocalCodexHome()).toBe(join(dir, "root", "hosts", host));
 });
 
 // The one farm decision the derivation and the settings-import plan share.
@@ -277,6 +273,11 @@ onlyWin("Windows: the key cannot be set, reads off, and the derivation is inert"
   fs.mkdirSync(hostHome, { recursive: true });
   fs.writeFileSync(join(hostHome, "config.toml"), "x = 1\n");
   expect(codexHostDrift()).toBeNull();
+  // A farm-shaped export is the user's own home here: honoured, and left in the shell.
+  process.env.CODEX_HOME = hostHome;
+  expect(resolveCodexHome()).toEqual({ home: hostHome, by: "default", staleExport: null });
+  expect(managedCodexHome()).toBeNull();
+  delete process.env.CODEX_HOME;
   const written: string[] = [];
   await withCodexHostFarm((home) => {
     written.push(home);
@@ -285,6 +286,16 @@ onlyWin("Windows: the key cannot be set, reads off, and the derivation is inert"
   expect(written).toEqual([sharedRoot]);
   expect(lexists(join(hostHome, "config.toml"))).toBe(true);
   expect(new CopilotEnvRunState().read().codexHome).toBe(sharedRoot);
+  // `codex-home` has no symlink in it, so it works here: the write and the export follow the path.
+  const root = join(dir, "explicit-root");
+  new CopilotEnvConfig().set({ codexHome: root });
+  written.length = 0;
+  await withCodexHostFarm((home) => {
+    written.push(home);
+    return Promise.resolve();
+  });
+  expect(written).toEqual([root]);
+  expect(managedCodexHome()).toEqual({ value: root });
 });
 
 // --- farm build from scratch -------------------------------------------------
@@ -729,7 +740,7 @@ skipWin("a shared dir slot occupied by a file fails the build with the farm erro
 });
 
 skipWin(
-  "a failed config write never activates the farm: no record, still the default home",
+  "a failed config write never activates the farm: no record, yet the farm stays the home the key names",
   async () => {
     const { sharedRoot, hostHome } = isolate();
     // The build seeds the farm's config.toml from ~/.codex's; an unparseable one makes the
@@ -740,36 +751,39 @@ skipWin(
     await expect(build()).rejects.toThrow();
     expect(isRealDir(hostHome)).toBe(true); // built ...
     expect(new CopilotEnvRunState().read().codexHome).toBeUndefined(); // ... but not activated
-    expect(effectiveCodexHome()).toBe(sharedRoot);
+    expect(effectiveCodexHome()).toBe(hostHome);
   },
 );
 
-skipWin("an empty seeded config.toml is not wired: nothing to export until the write lands", () => {
-  const { hostHome } = isolate();
-  fs.mkdirSync(hostHome, { recursive: true });
-  fs.writeFileSync(join(hostHome, "config.toml"), "");
-  expect(codexHostFarm()).toEqual({
-    hostHome,
-    present: true,
-    wired: false,
-    probeError: null,
-    active: false,
-  });
-  fs.writeFileSync(join(hostHome, "config.toml"), 'model_provider = "copilot-env"\n');
-  expect(codexHostFarm()).toEqual({
-    hostHome,
-    present: true,
-    wired: true,
-    probeError: null,
-    active: false,
-  });
-  // Wired but never activated (no successful managed write recorded) is its own drift.
-  new CopilotEnvConfig().set({ codexHost: true });
-  expect(codexHostDrift()).toEqual({ kind: "inactive", hostHome });
-  writeRunState({ codexHome: hostHome });
-  expect(codexHostFarm().active).toBe(true);
-  expect(codexHostDrift()).toBeNull();
-});
+skipWin(
+  "an empty seeded config.toml is not wired; a wired farm is active only once a write is recorded",
+  () => {
+    const { hostHome } = isolate();
+    fs.mkdirSync(hostHome, { recursive: true });
+    fs.writeFileSync(join(hostHome, "config.toml"), "");
+    expect(codexHostFarm()).toEqual({
+      hostHome,
+      present: true,
+      wired: false,
+      probeError: null,
+      active: false,
+    });
+    fs.writeFileSync(join(hostHome, "config.toml"), 'model_provider = "copilot-env"\n');
+    expect(codexHostFarm()).toEqual({
+      hostHome,
+      present: true,
+      wired: true,
+      probeError: null,
+      active: false,
+    });
+    // Wired but never activated (no successful managed write recorded) is its own drift.
+    new CopilotEnvConfig().set({ codexHost: true });
+    expect(codexHostDrift()).toEqual({ kind: "inactive", hostHome });
+    writeRunState({ codexHome: hostHome });
+    expect(codexHostFarm().active).toBe(true);
+    expect(codexHostDrift()).toBeNull();
+  },
+);
 
 // --- key off (what `--delete-host` did) ---------------------------------------
 
@@ -875,7 +889,7 @@ skipWin(
 );
 
 skipWin(
-  "a rebuild whose managed write fails leaves no activation record, so nothing exports the farm",
+  "a rebuild whose managed write fails leaves no activation record; the farm stays exported with the drift named beside it",
   async () => {
     const { hostHome } = isolate();
     await build();
@@ -886,12 +900,13 @@ skipWin(
     fs.writeFileSync(join(hostHome, "config.toml"), "this = is = not toml\n");
     expect(codexHostFarm().wired).toBe(false);
     await expect(configureCodex()).rejects.toThrow();
-    // The record was cleared BEFORE the rebuild and never re-set: the farm is not active ...
+    // The record was cleared BEFORE the rebuild and never re-set: the farm is not active, yet the
+    // key still names it as the home ...
     expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
-    expect(effectiveCodexHome()).not.toBe(hostHome);
-    // ... so `agent env` exports nothing and names the drift instead.
+    expect(effectiveCodexHome()).toBe(hostHome);
+    // ... so `agent env` exports it and names the drift beside it.
     const warned = await stderrDuring(() => {
-      expect(managedCodexHome()).toBeNull();
+      expect(managedCodexHome()).toEqual({ value: hostHome });
       return Promise.resolve();
     });
     expect(warned).toContain("farm is missing");
@@ -903,7 +918,7 @@ skipWin(
 skipWin(
   "codexHostDrift and `agent codex --check` report every key-vs-disk disagreement",
   async () => {
-    const { sharedRoot, hostHome } = isolate();
+    const { hostHome } = isolate();
     const missingLine =
       `codex-host is on but the per-host CODEX_HOME farm is missing at ${hostHome}; run \`agent codex\` to rebuild it`;
     const check = () => stdoutLinesDuring(() => runCodex({ kind: "check" }));
@@ -913,8 +928,8 @@ skipWin(
     const unbuilt = await check();
     expect(unbuilt[0]).toMatch(/^Codex provider mode: none /);
     expect(unbuilt.slice(1)).toEqual([
-      `CODEX_HOME: ${sharedRoot}`,
-      `config.toml: ${join(sharedRoot, "config.toml")}`,
+      `CODEX_HOME: ${hostHome}`,
+      `config.toml: ${join(hostHome, "config.toml")}`,
       missingLine,
     ]);
 
@@ -942,36 +957,214 @@ skipWin(
   },
 );
 
-// --- the effective home and the dead export ------------------------------------
+// --- the effective home and the shell's export ---------------------------------
 
 skipWin(
-  "effectiveCodexHome: the record wins, then $CODEX_HOME unless it is OUR dead farm export",
+  "resolveCodexHome: with neither key the shell's CODEX_HOME export is the home, except OUR farm export, built or not",
   () => {
     const { sharedRoot, hostHome } = isolate();
-    // A dead farm export (exact spelling, nothing on disk) is skipped for ~/.codex ...
+    const own = join(dir, "my-own-codex");
+    const shell = { by: "default", staleExport: null } as const;
+    // Codex's own convention: the export is the home ...
+    process.env.CODEX_HOME = own;
+    expect(resolveCodexHome()).toEqual({ home: own, ...shell });
+    process.env.CODEX_HOME = `${hostHome}/`; // a variant spelling is the user's, not ours
+    expect(resolveCodexHome()).toEqual({ home: `${hostHome}/`, ...shell });
+    // ... except our own farm export, built or not: a write through it would resurrect the removed
+    // farm as a plain dir.
     process.env.CODEX_HOME = hostHome;
-    expect(effectiveCodexHome()).toBe(sharedRoot);
-    // ... while any other spelling is the user's and stays the truth.
-    process.env.CODEX_HOME = `${hostHome}/`;
-    expect(effectiveCodexHome()).toBe(`${hostHome}/`);
-    process.env.CODEX_HOME = join(dir, "my-own-codex");
-    expect(effectiveCodexHome()).toBe(join(dir, "my-own-codex"));
-    // OUR export is never the user's choice, built or not: the record, not the shell, makes the farm the home.
+    expect(resolveCodexHome()).toEqual({ home: sharedRoot, ...shell });
     fs.mkdirSync(hostHome, { recursive: true });
+    expect(resolveCodexHome()).toEqual({ home: sharedRoot, ...shell });
+    delete process.env.CODEX_HOME;
+    expect(resolveCodexHome()).toEqual({ home: sharedRoot, ...shell });
+  },
+);
+
+function occurrences(text: string, needle: string): number {
+  return text.split(needle).length - 1;
+}
+
+skipWin(
+  "the default write names a shell export the farm overrides once per process, and never with the key off or an agreeing shell",
+  async () => {
+    const { hostHome } = isolate();
+    const own = join(dir, "my-own-codex");
+    // The user-facing line, pinned as a literal: it must name both the export and the farm in use.
+    const line =
+      `Ignoring the shell's CODEX_HOME=${own}: codex-host is on, so Codex is wired at the per-host farm ${hostHome}`;
+    // Key off: the export IS the home, so the write lands there and nothing is stale.
+    process.env.CODEX_HOME = own;
+    const unmanaged = await stderrDuring(configureCodex);
+    expect(fs.existsSync(join(own, "config.toml"))).toBe(true);
+    expect(unmanaged).not.toContain("Ignoring the shell's CODEX_HOME");
+    // Key on: the farm is written and recorded; the export the launcher's pin would otherwise
+    // have inherited is named exactly once ...
+    const narrated = await stderrDuring(build);
+    expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
+    expect(occurrences(narrated, line)).toBe(1);
+    // ... and a second resolution in the same process (a launch re-wires, then pins) stays quiet.
+    expect(await stderrDuring(() => runCodex({ kind: "check" }))).not.toContain(line);
+    // A shell that agrees (the wrapper's `agent env` refresh) has nothing to be told.
     process.env.CODEX_HOME = hostHome;
-    expect(effectiveCodexHome()).toBe(sharedRoot);
-    // With the key on the record wins over every env value while its directory exists; a record for a
-    // hand-deleted farm is dead.
+    expect(await stderrDuring(configureCodex)).not.toContain("Ignoring the shell's CODEX_HOME");
+  },
+);
+
+skipWin(
+  "`agent codex --check` reports the farm as CODEX_HOME and names a differing export",
+  async () => {
+    const { hostHome } = isolate();
+    process.env.CODEX_HOME = hostHome;
+    await build();
+    process.env.CODEX_HOME = join(dir, "elsewhere");
+    const line = staleCodexHomeExportLine({
+      home: hostHome,
+      by: "farm",
+      staleExport: join(dir, "elsewhere"),
+    });
+    if (line === null) throw new Error("a differing export must produce the note");
+    let stdout: string[] = [];
+    const stderr = await stderrDuring(async () => {
+      stdout = await stdoutLinesDuring(() => runCodex({ kind: "check" }));
+    });
+    expect(stdout).toContain(`CODEX_HOME: ${hostHome}`);
+    expect(occurrences(stderr, line)).toBe(1);
+  },
+);
+
+// --- the `codex-home` root -------------------------------------------------------
+
+skipWin(
+  "resolveCodexHome: the four key states against the shell's export and the farm on disk (the home, and the note only where copilot-env decided it)",
+  () => {
+    const { sharedRoot, hostHome } = isolate();
+    const root = join(dir, "explicit-root");
+    const rootFarm = join(root, "hosts", getSanitizedHostname());
+    const other = join(dir, "elsewhere");
+    const cases = [
+      // neither key: the shell's export IS the home, so it is never stale
+      { codexHome: null, codexHost: false, home: sharedRoot, by: "default" },
+      { codexHome: null, codexHost: true, home: hostHome, by: "farm" },
+      { codexHome: root, codexHost: false, home: root, by: "codex-home" },
+      { codexHome: root, codexHost: true, home: rootFarm, by: "farm" },
+    ] as const;
+    // The keys alone decide: the farm rows hold with the farm missing, holding a foreign config, or
+    // ours (the next `agent codex` builds or repairs it there).
+    const farmStates: Record<string, (farm: string) => void> = {
+      missing: (farm) => fs.rmSync(farm, { recursive: true, force: true }),
+      foreign: (farm) => {
+        fs.mkdirSync(farm, { recursive: true });
+        fs.writeFileSync(join(farm, "config.toml"), 'model_provider = "openai"\n');
+      },
+      ours: (farm) => {
+        writeCodexConfigToml(farm, { baseUrl: "https://api.githubcopilot.com" });
+      },
+    };
+    for (const c of cases) {
+      const farm = c.codexHome === null ? hostHome : rootFarm;
+      for (const [state, stage] of Object.entries(farmStates)) {
+        const name = `codex-home=${c.codexHome} codex-host=${c.codexHost} farm=${state}`;
+        stage(farm);
+        new CopilotEnvConfig().set({ codexHome: c.codexHome, codexHost: c.codexHost });
+        delete process.env.CODEX_HOME;
+        expect(resolveCodexHome(), name).toEqual({ home: c.home, by: c.by, staleExport: null });
+        process.env.CODEX_HOME = c.home;
+        expect(resolveCodexHome(), name).toEqual({ home: c.home, by: c.by, staleExport: null });
+        process.env.CODEX_HOME = other;
+        expect(resolveCodexHome(), name).toEqual(
+          c.by === "default"
+            ? { home: other, by: c.by, staleExport: null }
+            : { home: c.home, by: c.by, staleExport: other },
+        );
+      }
+      // The farm path follows the root whether or not the farm is on.
+      expect(getHostLocalCodexHome(), c.by).toBe(farm);
+    }
+  },
+);
+
+skipWin(
+  "codex-home roots the write, the farm, `--check`, `agent env`, and the launch pin; a stale export is narrated once",
+  async () => {
+    const { hostHome } = isolate();
+    const root = join(dir, "explicit-root");
+    const rootFarm = join(root, "hosts", getSanitizedHostname());
+    const other = join(dir, "elsewhere");
+    const note = (staleExport: string, home: string, by: "farm" | "codex-home"): string => {
+      const line = staleCodexHomeExportLine({ home, by, staleExport });
+      if (line === null) throw new Error("a differing export must produce the note");
+      return line;
+    };
+    /** `agent codex --check`: its report (stdout) and what it narrates (stderr). */
+    const check = async (): Promise<{ lines: string[]; narrated: string }> => {
+      let lines: string[] = [];
+      const narrated = await stderrDuring(async () => {
+        lines = await stdoutLinesDuring(() => runCodex({ kind: "check" }));
+      });
+      return { lines, narrated };
+    };
+
+    // The path alone, while the shell exports another directory. A proxy launch runs the writer
+    // and then reads the home for the child through the launcher's own dependency: one process,
+    // one line.
+    const exported = join(dir, "shell-export");
+    process.env.CODEX_HOME = exported;
+    new CopilotEnvConfig().set({ codexHome: root });
+    let pinned = "";
+    let narrated = await stderrDuring(async () => {
+      await configureCodex();
+      pinned = commandDeps().codexHome();
+    });
+    expect(fs.readFileSync(join(root, "config.toml"), "utf8")).toContain(
+      'model_provider = "copilot-env"',
+    );
+    expect(occurrences(narrated, note(exported, root, "codex-home"))).toBe(1);
+    expect(pinned).toBe(root); // what `agent launch codex` pins into the child
+    expect(lexists(hostHome)).toBe(false);
+    expect(effectiveCodexHome()).toBe(root);
+    expect(managedCodexHome()).toEqual({ value: root }); // what `agent env` exports
+    expect(codexHostDrift()).toBeNull();
+    // A shell pointing elsewhere: the report names the home in use and narrates the export once.
+    process.env.CODEX_HOME = other;
+    const checked = await check();
+    expect(checked.lines[0]).toMatch(/^Codex provider mode: proxy /);
+    expect(checked.lines.slice(1)).toEqual([
+      `CODEX_HOME: ${root}`,
+      `config.toml: ${join(root, "config.toml")}`,
+    ]);
+    expect(occurrences(checked.narrated, note(other, root, "codex-home"))).toBe(1);
+    process.env.CODEX_HOME = root; // the shell re-evaled `agent env`
+    expect((await check()).narrated).toBe("");
+
+    // The farm on too: it roots under the path, never at the default farm path.
     new CopilotEnvConfig().set({ codexHost: true });
-    writeRunState({ codexHome: join(dir, "recorded") });
-    expect(effectiveCodexHome()).toBe(sharedRoot);
-    fs.mkdirSync(join(dir, "recorded"));
-    expect(effectiveCodexHome()).toBe(join(dir, "recorded"));
-    // The key off (or unset) retires the record at once.
-    new CopilotEnvConfig().set({ codexHost: false });
-    expect(effectiveCodexHome()).toBe(sharedRoot);
-    new CopilotEnvConfig().del("codexHost");
-    expect(effectiveCodexHome()).toBe(sharedRoot);
+    await stderrDuring(configureCodex);
+    expect(new CopilotEnvRunState().read().codexHome).toBe(rootFarm);
+    expect(fs.readFileSync(join(rootFarm, "config.toml"), "utf8")).toContain(
+      'model_provider = "copilot-env"',
+    );
+    expect(linkTarget(join(rootFarm, "sessions"))).toBe(join(root, "sessions"));
+    expect(lexists(hostHome)).toBe(false);
+    expect(effectiveCodexHome()).toBe(rootFarm);
+    expect(managedCodexHome()).toEqual({ value: rootFarm });
+    expect(codexHostDrift()).toBeNull();
+    // A shell pointing elsewhere again: stale against the farm under the root. (The writer above
+    // already narrated the root itself as the stale export, once per process.)
+    process.env.CODEX_HOME = other;
+    const farmChecked = await check();
+    expect(farmChecked.lines[1]).toBe(`CODEX_HOME: ${rootFarm}`);
+    expect(occurrences(farmChecked.narrated, note(other, rootFarm, "farm"))).toBe(1);
+
+    // The path removed: the farm moves back under ~/.codex. The one under the user's path is left
+    // where it is (the sweep knows only the current root), and the shell's export is now stale.
+    new CopilotEnvConfig().del("codexHome");
+    process.env.CODEX_HOME = rootFarm;
+    narrated = await stderrDuring(configureCodex);
+    expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
+    expect(effectiveCodexHome()).toBe(hostHome);
+    expect(lexists(rootFarm)).toBe(true);
+    expect(occurrences(narrated, note(rootFarm, hostHome, "farm"))).toBe(1);
   },
 );
 
@@ -991,10 +1184,11 @@ skipWin(
       baseUrl: PROXY_CLAUDE_BASE,
     });
 
+    // The shell still points elsewhere; the read-back resolves Codex through the key's farm.
+    process.env.CODEX_HOME = join(dir, "elsewhere");
     await build();
     recordDefaultModeFromWiring();
     expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
-    // The inherited CODEX_HOME still points elsewhere; the read-back resolves Codex through the record.
     expect(new CopilotEnvState().readProfileSlot(null).mode).toBe("proxy");
   },
 );

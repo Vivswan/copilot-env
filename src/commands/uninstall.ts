@@ -15,7 +15,7 @@ import {
 } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
-import { knownCodexHomes } from "../codex/host.ts";
+import { knownCodexHomes, probeCodexFarm } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
@@ -59,11 +59,14 @@ export interface UninstallDeps {
 }
 
 /** The narration and the removal share this one resolver, so the dry run cannot drift from what
- *  gets deleted. */
+ *  gets deleted. The record proves only that we built a farm there once: the user may have replaced
+ *  it since (a `codex-home` change leaves the old farm recorded until the next wiring pass). Only a
+ *  path still carrying our managed config.toml is deleted. */
 function recordedCodexHostFarm(): string | null {
   if (process.platform === "win32") return null;
   const recorded = new CopilotEnvRunState().read().codexHome;
-  return recorded ? recorded : null;
+  if (!recorded) return null;
+  return probeCodexFarm(recorded).wired ? recorded : null;
 }
 
 /** Ownership AND the path come from run state, so an untracked ~/.codex/hosts/<hostname> someone

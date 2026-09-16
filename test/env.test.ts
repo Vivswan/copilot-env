@@ -165,6 +165,34 @@ test("env does not unset a CODEX_HOME the user pointed elsewhere", () => {
   expect(lines.some((l) => l.includes("CODEX_HOME"))).toBe(false);
 });
 
+test("env exports a `codex-home` path on every platform, quietly", () => {
+  isolate();
+  const root = join(dir, "explicit-root");
+  new CopilotEnvConfig().set({ codexHome: root });
+  expect(stderrDuring(() => expect(envLines()).toEqual([`export CODEX_HOME='${root}'`]))).toBe("");
+});
+
+skipWin(
+  "env with codex-home and codex-host: the farm under the path is the export's subject",
+  () => {
+    isolate();
+    const root = join(dir, "explicit-root");
+    new CopilotEnvConfig().set({ codexHome: root, codexHost: true });
+    const hostHome = getHostLocalCodexHome();
+    expect(hostHome.startsWith(`${root}/`)).toBe(true);
+    // Not built yet: the farm is exported all the same (the next `agent codex` builds it), and the
+    // drift names it beside the export.
+    const exported = [`export CODEX_HOME='${hostHome}'`];
+    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toContain(
+      `farm is missing at ${hostHome}`,
+    );
+    mkdirSync(hostHome, { recursive: true });
+    writeFileSync(join(hostHome, "config.toml"), 'model_provider = "copilot-env"\n');
+    writeRunState({ codexHome: hostHome });
+    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toBe("");
+  },
+);
+
 // --- CODEX_HOME: the `codex-host` key against the farm on disk -------------------
 
 // The run-state record is what a successful wiring pass leaves; without it the farm is not active.
@@ -177,7 +205,7 @@ function wireFarm(): string {
 }
 
 skipWin(
-  "env exports CODEX_HOME only while codex-host is on AND a wiring pass activated the farm",
+  "env exports the farm whenever codex-host is on, built or not, and names any drift beside it",
   () => {
     isolate();
     const hostHome = wireFarm();
@@ -187,23 +215,24 @@ skipWin(
     expect(envLines()).toEqual(["unset CODEX_HOME"]);
     delete process.env.CODEX_HOME;
     new CopilotEnvConfig().set({ codexHost: true });
-    expect(envLines()).toEqual([`export CODEX_HOME='${hostHome}'`]);
-    // Wired but not recorded: no managed write succeeded there yet.
+    const exported = [`export CODEX_HOME='${hostHome}'`];
+    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toBe("");
+    // Wired but not recorded (no managed write succeeded there yet), half-built, or gone: still the
+    // home the key names, so the export stays and the drift is warned about, never swallowed.
     writeRunState({ codexHome: null });
-    expect(stderrDuring(() => expect(envLines()).toEqual([]))).toContain(
-      `${hostHome} is not the active CODEX_HOME`,
+    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toContain(
+      `no completed wiring pass is recorded for the per-host CODEX_HOME farm at ${hostHome}`,
     );
     writeRunState({ codexHome: hostHome });
-    // A half-built farm (an EMPTY seeded config.toml, or none) is not a home Codex can use.
     writeFileSync(join(hostHome, "config.toml"), "");
-    expect(stderrDuring(() => expect(envLines()).toEqual([]))).toContain("farm is missing");
+    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toContain("farm is missing");
     rmSync(join(hostHome, "config.toml"));
-    expect(stderrDuring(() => expect(envLines()).toEqual([]))).toContain("farm is missing");
+    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toContain("farm is missing");
   },
 );
 
 skipWin(
-  "env with codex-host on but no farm: clean stdout, one stderr warning naming `agent codex`",
+  "env with codex-host on but no farm: the farm exported, one stderr warning naming `agent codex`",
   () => {
     isolate();
     const hostHome = getHostLocalCodexHome();
@@ -213,22 +242,21 @@ skipWin(
       stdout = envLines();
     });
     // consola drops the backticks when it renders inline code, so both sides are compared without them.
-    expect(stdout).toEqual([]);
+    expect(stdout).toEqual([`export CODEX_HOME='${hostHome}'`]);
     expect(stderr.replaceAll("`", "")).toContain(
       codexHostDriftLine({ kind: "missing", hostHome }).replaceAll("`", ""),
     );
-    // A shell still carrying OUR dead export gets it cleared, whatever the key says.
+    // A shell already carrying that export is told the same; with the key off OUR dead export is
+    // cleared at once, quietly.
     process.env.CODEX_HOME = hostHome;
-    expect(stderrDuring(() => expect(envLines()).toEqual(["unset CODEX_HOME"]))).toContain(
-      "farm is missing",
-    );
+    expect(stderrDuring(() => expect(envLines()).toEqual(stdout))).toContain("farm is missing");
     new CopilotEnvConfig().set({ codexHost: false });
     expect(stderrDuring(() => expect(envLines()).toEqual(["unset CODEX_HOME"]))).toBe("");
   },
 );
 
 skipWin(
-  "cli env with codex-host on but no farm exits 0 with an EMPTY stdout (the eval contract)",
+  "cli env with codex-host on but no farm exits 0 with ONLY the export on stdout (the eval contract); the warning rides on stderr",
   () => {
     isolate();
     new CopilotEnvConfig().set({ codexHost: true });
@@ -236,7 +264,7 @@ skipWin(
       env: { ...process.env, ...childBaseEnv(), CONSOLA_LEVEL: "5" },
     });
     expect(proc.exitCode).toBe(0);
-    expect(proc.stdout).toBe("");
+    expect(proc.stdout).toBe(`export CODEX_HOME='${getHostLocalCodexHome()}'\n`);
     expect(proc.stderr).toContain("codex-host is on but the per-host CODEX_HOME farm is missing");
   },
 );

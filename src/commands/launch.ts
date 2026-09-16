@@ -19,6 +19,7 @@ import { BASE_URL_ENV, claudeAdapter, runClaude } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { runCodex } from "../codex/config.ts";
+import { narrateCodexHome, resolveCodexHome } from "../codex/host.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
@@ -36,7 +37,7 @@ import {
 import { childEnvWithPath, findCommand, verbatimCliSpawn } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
-import { managedClaudeBaseUrl, managedCodexHome, type ManagedEnvValue } from "./env.ts";
+import { managedClaudeBaseUrl, type ManagedEnvValue } from "./env.ts";
 import {
   launchProxy,
   type ProxyTokenDeps,
@@ -107,12 +108,21 @@ export interface LaunchDeps {
   writeClaudeProfileSettings(name: ProfileName, mode: ProfileMode): Promise<string>;
   syncProfileWiring(name: ProfileName, mode: ProfileMode): Promise<void>;
   managedClaudeBaseUrl(profile: Profile): ManagedEnvValue;
-  managedCodexHome(): ManagedEnvValue;
+  /** The home the wiring step just wrote (resolveCodexHome): pinned into the child so a shell
+   *  CODEX_HOME can never send Codex to a config other than the one copilot-env wrote. */
+  codexHome(): string;
   /** stderr: stdout belongs to the launched agent. */
   notify(line: string): void;
 }
 
 const CLAUDE_MANAGED_FLAGS = ["--permission-mode", "auto", "--enable-auto-mode"] as const;
+
+/** Every inherited casing is scrubbed first: on Windows `Codex_Home` and `CODEX_HOME` would both
+ *  reach the child and which one it reads is undefined (childEnvWithPath). */
+function pinCodexHome(plan: LaunchPlan, home: string): void {
+  plan.scrub.push("CODEX_HOME");
+  plan.env.CODEX_HOME = home;
+}
 
 function applyManagedEnv(plan: LaunchPlan, key: string, value: ManagedEnvValue): void {
   if (value === null) return;
@@ -207,15 +217,15 @@ export async function prepareLaunch(
               `existing config (${errMessage(e)}).`,
           );
         }
-        // Read AFTER the sync: its write into the farm home may have just made it wired.
-        applyManagedEnv(plan, "CODEX_HOME", deps.managedCodexHome());
+        // Read AFTER the sync: the home its write resolved is the one the child must open.
+        pinCodexHome(plan, deps.codexHome());
         plan.args = ["--profile", action.profile, ...flags, ...action.args];
         return plan;
       }
       const mode = await wireDefaultProvider("codex", "Codex", deps);
       if (mode === null) return null;
       // Read AFTER the wiring step: a proxy re-wire may have just built the farm.
-      applyManagedEnv(plan, "CODEX_HOME", deps.managedCodexHome());
+      pinCodexHome(plan, deps.codexHome());
       // Codex parses `model_catalog_json` at startup, BEFORE the auth refresh that would regenerate
       // a catalog an upgraded codex rejects, so a direct launch refreshes here first.
       if (mode === "direct") await deps.refreshCodexCatalog();
@@ -297,7 +307,7 @@ export function commandDeps(): LaunchDeps {
     },
     syncProfileWiring: (name, mode) => wireBothAgents(name, mode, true),
     managedClaudeBaseUrl,
-    managedCodexHome,
+    codexHome: () => narrateCodexHome(resolveCodexHome()),
     notify: (line) => {
       process.stderr.write(`${line}\n`);
     },

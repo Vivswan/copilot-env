@@ -277,6 +277,13 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
     null,
     COPILOT_CLI_INTEGRATION_ID,
   ]);
+  // A replayed slot verdict was probed on the generic host too: it is re-checked the same way (the
+  // process memo answers the second pass here, so no request is counted).
+  expect(
+    await probeDirectWiring(null, "github_pat_x", {
+      directIntegrationId: "copilot-developer-sandbox",
+    }),
+  ).toEqual({ directIntegrationId: COPILOT_CLI_INTEGRATION_ID, directBaseUrl: ENTERPRISE });
 });
 
 test("resolveDaemonHost: the daemon is pinned under the identity it will send; a credential-less daemon is pinned only by a literal", async () => {

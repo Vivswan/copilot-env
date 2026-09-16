@@ -61,6 +61,12 @@ export function codexRefusesLaunch(configToml: TextReadResult | string, launch: 
   if (toggle !== undefined && typeof toggle !== "boolean") return true;
   const permissions = doc[PERMISSIONS_KEY];
   if (permissions !== undefined && typeof permissions !== "string") return true;
+  // "config defines `[permissions]` profiles but does not set `default_permissions`": refused only
+  // while no legacy sandbox_mode takes over (codex 0.153.4, both arms verified).
+  if (
+    permissions === undefined && doc[SANDBOX_MODE_KEY] === undefined &&
+    isRecord(doc.permissions) && Object.keys(doc.permissions).length > 0
+  ) return true;
   if (typeof permissions === "string" && permissions.startsWith(":")) {
     if (!BUILTIN_PARENTS.has(permissions) && permissions !== BUILTIN_FULL_ACCESS) return true;
   } else if (
@@ -129,6 +135,10 @@ export type CodexSandboxMode =
     /** The legacy `sandbox_mode` the profile overrides (null = none set): what removing the
      *  profile key would expose, so the fix can say whether that alone opens the network. */
     overrides: string | null;
+    /** `[permissions]` holds profiles: with the key removed and no legacy mode set, Codex refuses
+     *  the file ("defines [permissions] profiles but does not set default_permissions"), so that
+     *  repair must set a `sandbox_mode` too. */
+    tableDefined: boolean;
   });
 
 interface SandboxNetwork {
@@ -171,6 +181,7 @@ export function readCodexSandboxMode(configToml: TextReadResult | string): Codex
       value: permissions,
       line: assignmentLine(text, [PERMISSIONS_KEY], permissions),
       networkToggle: toggleOn,
+      tableDefined: isRecord(doc.permissions) && Object.keys(doc.permissions).length > 0,
       proxyAuthReaches: permissions === BUILTIN_FULL_ACCESS ||
         (!permissions.startsWith(":") && customProfileNetwork(doc, permissions) === true),
       overrides: typeof mode === "string" ? mode : null,
@@ -239,11 +250,17 @@ function tomlKey(name: string): string {
 }
 
 /** The settings that make the legacy sandbox `mode` (null = Codex's workspace-write default) reach
- *  the network: the mode itself when read-only, and the toggle when the result is workspace-write. */
-function legacyRepairs(mode: string | null, networkToggle: boolean): string[] {
+ *  the network: the mode line when read-only, or when `modeRequired` says the default alone would
+ *  not load, and the toggle when the result is workspace-write. */
+function legacyRepairs(
+  mode: string | null,
+  networkToggle: boolean,
+  modeRequired = false,
+): string[] {
   if (mode === LEGACY_FULL_ACCESS) return [];
+  const setMode = mode === LEGACY_READ_ONLY || (mode === null && modeRequired);
   return [
-    ...(mode === LEGACY_READ_ONLY ? [`${SANDBOX_MODE_KEY} = "${LEGACY_WORKSPACE_WRITE}"`] : []),
+    ...(setMode ? [`${SANDBOX_MODE_KEY} = "${LEGACY_WORKSPACE_WRITE}"`] : []),
     ...(networkToggle ? [] : ["network_access = true under [sandbox_workspace_write]"]),
   ];
 }
@@ -274,7 +291,9 @@ export function proxyAuthBlockedBySandbox(
     : reading.key === SANDBOX_MODE_KEY
     ? reading.value
     : reading.overrides;
-  const repairs = legacyRepairs(legacyMode, reading.networkToggle).join(" and ");
+  const modeRequired = reading.kind === "set" && reading.key === PERMISSIONS_KEY &&
+    reading.tableDefined;
+  const repairs = legacyRepairs(legacyMode, reading.networkToggle, modeRequired).join(" and ");
   const setting = legacy
     ? `set ${repairs} in ${configPath}`
     : reading.value.startsWith(":")

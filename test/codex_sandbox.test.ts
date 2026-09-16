@@ -166,6 +166,17 @@ test("health: the sandbox that blocks proxy auth is named with its line; open or
       expected: [{ status: "ok" }],
     },
     {
+      // Without a sandbox_mode the same table is a file Codex refuses (pinned below).
+      name: "a selector-less [permissions] table is harmless once a legacy sandbox_mode is set",
+      toml: configToml("proxy", [
+        workspace,
+        ...toggle(true),
+        "[permissions.net.network]",
+        "enabled = true",
+      ]),
+      expected: [{ status: "ok" }],
+    },
+    {
       name: "direct + read-only: nothing to report",
       toml: configToml("direct", [readOnly]),
       expected: [],
@@ -201,6 +212,22 @@ test("health: the sandbox that blocks proxy auth is named with its line; open or
         fix: `remove default_permissions from ${CONFIG} (it overrides sandbox_mode) or select`,
       }],
     })),
+    {
+      // Removing the key alone would leave the selector-less [permissions] table Codex refuses.
+      name: "a built-in profile over a [permissions] table names sandbox_mode as the second repair",
+      toml: configToml("proxy", [
+        'default_permissions = ":workspace"',
+        ...toggle(true),
+        "[permissions.net.network]",
+        "enabled = true",
+      ]),
+      expected: [{
+        status: "warn",
+        cites: 'default_permissions = ":workspace"',
+        at: `${CONFIG}:2`,
+        fix: '(it overrides sandbox_mode) and set sandbox_mode = "workspace-write" or select',
+      }],
+    },
     {
       // Removing the profile key lands on workspace-write, which the missing toggle keeps closed.
       name: "a built-in profile without the toggle names the toggle as the second repair",
@@ -416,6 +443,14 @@ test("health: a launch Codex refuses to start gets no row, whatever the sandbox 
       'sandbox_mode = "workspace-write"',
       "[sandbox_workspace_write]",
       "network_access = 1",
+    ], false],
+    // "config defines `[permissions]` profiles but does not set `default_permissions`" (codex
+    // 0.153.4); a legacy sandbox_mode beside the table lifts the refusal (pinned above).
+    ["a [permissions] table with no selector and no sandbox_mode", [
+      "[sandbox_workspace_write]",
+      "network_access = true",
+      "[permissions.net.network]",
+      "enabled = true",
     ], false],
   ];
   for (const [name, top, legacyProfile] of refusedForAll) {

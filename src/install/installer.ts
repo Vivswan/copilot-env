@@ -892,7 +892,6 @@ export interface AdoptVersionedLayoutDeps {
  *
  *   a failure before the flip -> the flat install is still live
  *   after the flip            -> POSIX unlinks the flat binary, Windows leaves it to a later sweep
- *   an already versioned root -> re-runs from the shims on, each step converging
  */
 export function adoptVersionedLayout(deps: AdoptVersionedLayoutDeps = {}): void {
   const mode = deps.mode ?? rootMode();

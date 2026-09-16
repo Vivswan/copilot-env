@@ -28,15 +28,14 @@ import { readCodexToml, saveCodexToml } from "./toml_io.ts";
 const logger = createStderrLogger();
 
 /**
- * Runs on every auth resolution. ENABLED, it is an ADD-only self-heal for a config that predates
- * a usable catalog: the wiring-time seed failed, or the file appeared while mobile pairing had the
- * provider stripped.
+ * Runs on every auth resolution. ENABLED, it is an ADD-only self-heal for a config that predates a
+ * usable catalog (the wiring-time seed failed, or the file appeared while mobile pairing had the
+ * provider stripped).
  *
- * config selects OUR provider -> the reference is added
- * any other provider          -> left alone; `agent codex --mobile` runs OpenAI's default, whose
- *                                limits the patched catalog would misstate
- * a key already present       -> never rewritten, ours or a user-pinned custom path; enforcing OUR
- *                                path is configureCodexConfig's
+ * any other provider    -> left alone; `agent codex --mobile` runs OpenAI's default, whose limits
+ *                          the patched catalog would misstate
+ * a key already present -> never rewritten, ours or a user-pinned custom path; enforcing OUR path
+ *                          is configureCodexConfig's
  */
 export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): void {
   try {

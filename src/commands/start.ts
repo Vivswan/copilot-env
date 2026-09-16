@@ -263,16 +263,14 @@ async function reportCheckProbe(profile: Profile): Promise<void> {
 export type PreflightRunner = (opts: PreflightOptions) => Promise<void>;
 
 /**
- * The last step of every live `start`, still inside the start lock, because PROJECT_ROOT names the
- * `current` link (src/utils/root.ts): a daemon spawned after the flip would run the new release's
- * preloads under this binary's launch logic. Best-effort by contract: a failed check or update is a
- * stderr warning, never a failed `start`, and consola rides stderr for this scope so the installer's
- * narration cannot reach stdout.
+ * Runs inside the start lock because PROJECT_ROOT names the `current` link (src/utils/root.ts): a
+ * daemon spawned after the flip would run the new release's preloads under this binary's launch
+ * logic. Best-effort by contract: a failed check or update is a stderr warning, never a failed
+ * `start`, and consola rides stderr for this scope so the installer's narration cannot reach stdout.
  *
  *   spawn this turn's daemon -> preflight may flip `current` -> lock released -> waiting starts spawn
  *
- * A waiter that already loaded the OLD binary spawns through the NEW `current`: an accepted
- * one-launch skew.
+ * A waiter that already loaded the OLD binary spawns through the NEW `current`: an accepted one-launch skew.
  */
 async function selfUpdatePreflight(preflight: PreflightRunner): Promise<void> {
   await withConsolaOnStderr(async () => {

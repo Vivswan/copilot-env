@@ -484,14 +484,13 @@ function warnUnprovenTrackedPid(pid: number): void {
 
 /**
  * The plan only authorizes: every signal re-derives its target's identity at its own boundary, so a
- * pid that exited or now reads as a different process is spared. Demands the held start lock, since
- * the snapshot and the sweep are race-free only when serialized against starts.
+ * pid that exited or now reads as a different process is spared.
  *
  *   plan -> stop the tracked pid -> clear tracking -> holder and orphan sweeps
  *
- * Tracking is unbound before the sweeps, so a throw there leaves no port pointing at a dead daemon.
- * The residual window is terminatePid's SIGKILL gate, which signals on an UNREADABLE identity scan:
- * a pid recycled inside the grace is still killed when that scan fails.
+ * The snapshot and sweeps are race-free only under the held start lock. Tracking is unbound before the
+ * sweeps, so a throw there leaves no port pointing at a dead daemon. The residual is terminatePid's
+ * SIGKILL gate: it signals on an UNREADABLE identity scan, so a pid recycled inside the grace still dies.
  */
 export async function cleanupExistingProxies(
   _lock: HeldStartLock,

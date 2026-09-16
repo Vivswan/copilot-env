@@ -99,8 +99,9 @@ export function isManagedFarmExport(
   if (process.platform === "win32" || !envHome) return false;
   if (envHome === getHostLocalCodexHome(prefs.explicit)) return true;
   if (envHome !== new CopilotEnvRunState().read().codexHome) return false;
+  // Proven absence only, as planCodexHostFarm: a path that could not be probed may be the user's.
   const probe = probeCodexFarm(envHome);
-  return !probe.present || probe.wired;
+  return (!probe.present && probe.probeError === null) || probe.wired;
 }
 
 /** The home every Codex write, `agent codex --check`, and launch pin agree on, plus the one note

@@ -5,7 +5,7 @@
 import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
 import { CopilotApiConfig } from "./config.ts";
-import { CopilotEnvConfig, INTEGRATION_ID_RE } from "./env_config.ts";
+import { CODEX_IDENTITY_NAME, CopilotEnvConfig, INTEGRATION_ID_RE } from "./env_config.ts";
 import { GH_LOGIN_RE } from "./gh_cli.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import {
@@ -699,6 +699,39 @@ export function expectedDirectHost(profile: Profile): string | null {
   const config = new CopilotEnvConfig();
   return config.copilotHost() ??
     new CopilotEnvState().readProfileCopilotHost(profile, config.pinnedIntegrationId(), null);
+}
+
+/**
+ * THE replay rule for a slot's cached Direct identity, the one answer every reader that bakes,
+ * predicts, or ranks an identity takes (profile_wiring.ts, desktop_status.ts, auth.ts):
+ *
+ *   replay     -> the cached pair names the identity AND the host in force: bake both, no request
+ *   preferred  -> an identity is cached but no pair reads back (imported, cached before hosts were,
+ *                 or the host in force changed): never a verdict, only the FIRST candidate of the
+ *                 selection probeDirectWiring runs on the host in use; a definitive 400/401 there
+ *                 moves on to the next candidate
+ *   probe      -> nothing cached (or a pin with no pair: the pin is configuration, the host is probed)
+ */
+export type ReplayableIdentity =
+  | { kind: "replay"; directIntegrationId: string | null; directBaseUrl: string }
+  | { kind: "preferred"; directIntegrationId: string | null }
+  | { kind: "probe" };
+
+export function replayableIdentity(
+  profile: Profile,
+  pin: string | null,
+  literal: string | null,
+): ReplayableIdentity {
+  const state = new CopilotEnvState();
+  const cache = state.readProfileCopilotHostCache(profile, pin, literal);
+  const inForce = pin ?? state.readProfileSlot(profile).integrationIdentity;
+  if (inForce === null) return { kind: "probe" };
+  // The slot stores the identity NAME: the default identity's name means "probed, no header won".
+  const directIntegrationId = inForce === CODEX_IDENTITY_NAME ? null : inForce;
+  if (cache.kind === "valid") {
+    return { kind: "replay", directIntegrationId, directBaseUrl: cache.host };
+  }
+  return pin === null ? { kind: "preferred", directIntegrationId } : { kind: "probe" };
 }
 
 export type CachedCopilotHostRead =

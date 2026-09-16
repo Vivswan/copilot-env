@@ -20,8 +20,10 @@ import { configKeyDef, CopilotEnvConfig } from "../src/copilot_api/env_config.ts
 import { CopilotEnvState, expectedDirectHost } from "../src/copilot_api/env_state.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
+  COPILOT_SANDBOX_INTEGRATION_ID,
   DEFAULT_COPILOT_API_BASE,
   INTEGRATION_ID_HEADER,
+  resetIntegrationIdentityCache,
   setIntegrationProbeFetch,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
@@ -384,6 +386,116 @@ test("a literal change re-probes a cached identity: a verdict from one host is n
   expect(seen.some((s) => s.id === COPILOT_CLI_INTEGRATION_ID)).toBe(true);
 });
 
+test("the replay rule, one table: a cached identity is baked as a valid pair or once accepted on the host in use, never on trust", async () => {
+  dir = isolateAgentHomes("copilot-host-replay-rule-").dir;
+  const state = new CopilotEnvState();
+  const CACHED = COPILOT_SANDBOX_INTEGRATION_ID;
+  const OTHER = COPILOT_CLI_INTEGRATION_ID;
+  const hostInUse = {
+    "auto-generic": DEFAULT_COPILOT_API_BASE,
+    "auto-moved": ENTERPRISE,
+    literal: GHE,
+  };
+  type Host = keyof typeof hostInUse;
+  type Cache = "none" | "hostless" | "stale" | "valid";
+  const table: { cell: string; identity: string; host: string; probed: boolean }[] = [];
+  const expected: typeof table = [];
+  let n = 0;
+  for (const cache of ["none", "hostless", "stale", "valid"] as Cache[]) {
+    for (const host of Object.keys(hostInUse) as Host[]) {
+      for (const accepts of [true, false]) {
+        n += 1;
+        const cell = `${cache} / ${host} / host ${accepts ? "accepts" : "400s"} the cached id`;
+        const token = `ghp_cell${n}`;
+        resetIntegrationIdentityCache();
+        new Credential(state).store("gh-token", token);
+        const credential = { kind: "stored", provider: "gh-token", token } as const;
+        if (cache !== "none") {
+          state.setProfileIntegrationIdentity(
+            null,
+            CACHED,
+            credential,
+            cache === "hostless" ? undefined : cache === "stale"
+              // A pair for another identity never reads back for CACHED, whatever the host.
+              ? { host: hostInUse[host], identity: VSCODE_CHAT_INTEGRATION_ID, source: "auto" }
+              : {
+                host: hostInUse[host],
+                identity: CACHED,
+                source: host === "literal" ? "literal" : "auto",
+              },
+          );
+        }
+        if (host === "literal") new CopilotEnvConfig().set({ copilotHost: GHE });
+        else new CopilotEnvConfig().del("copilotHost");
+        const seen: string[] = [];
+        // OTHER is accepted everywhere; the default (no header) is rejected everywhere; CACHED
+        // per `accepts`. `auto-moved`: the generic host is blocked (403) for every identity.
+        setIntegrationProbeFetch((input, init) => {
+          const url = typeof input === "string"
+            ? input
+            : input instanceof URL
+            ? input.href
+            : input.url;
+          // Every request counts, the account lookup included: a valid pair makes none, and a
+          // literal makes none off the literal (the lookup lives on api.github.com).
+          const origin = new URL(url).origin;
+          seen.push(origin);
+          if (url.includes("/copilot_internal/user")) {
+            return Promise.resolve(
+              new Response(JSON.stringify({ endpoints: { api: ENTERPRISE } }), { status: 200 }),
+            );
+          }
+          if (host === "auto-moved" && origin === DEFAULT_COPILOT_API_BASE) {
+            return Promise.resolve(new Response("forbidden", { status: 403 }));
+          }
+          const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+          return Promise.resolve(
+            id === OTHER || (id === CACHED && accepts)
+              ? new Response(JSON.stringify({ data: [] }), { status: 200 })
+              : new Response("Personal Access Tokens are not supported", { status: 400 }),
+          );
+        });
+        const result = await resolveAndPersistDirectWiring(null);
+        table.push({
+          cell,
+          identity: result.directIntegrationId ?? "codex",
+          host: result.directBaseUrl,
+          probed: seen.length > 0,
+        });
+        expected.push({
+          cell,
+          // A valid pair replays; anything else selects on the host in use, the cached id first.
+          identity: cache === "valid" ? CACHED : cache !== "none" && accepts ? CACHED : OTHER,
+          host: hostInUse[host],
+          probed: cache !== "valid",
+        });
+        // Under a literal nothing reaches any other host.
+        if (host === "literal") expect(seen.every((o) => o === GHE)).toBe(true);
+      }
+    }
+  }
+  expect(table).toEqual(expected);
+});
+
+test("a preferred identity the host rejects never returns through the transient fallback", async () => {
+  dir = isolateAgentHomes("copilot-host-preferred-fallback-").dir;
+  // The literal 400s the cached sandbox id and 503s every other candidate: nothing is accepted, the
+  // run is inconclusive, and the fallback is the built-in default, not the rejected preference.
+  new CopilotEnvConfig().set({ copilotHost: GHE });
+  setIntegrationProbeFetch((_input, init) => {
+    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+    return Promise.resolve(
+      id === COPILOT_SANDBOX_INTEGRATION_ID
+        ? new Response("Personal Access Tokens are not supported", { status: 400 })
+        : new Response("upstream", { status: 503 }),
+    );
+  });
+  expect(await probeDirectWiring(null, "github_pat_z", COPILOT_SANDBOX_INTEGRATION_ID)).toEqual({
+    directIntegrationId: null,
+    directBaseUrl: GHE,
+  });
+});
+
 test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is probed again on the host that serves it", async () => {
   dir = isolateAgentHomes("copilot-host-reprobe-").dir;
   const seen: { host: string; id: string | null }[] = [];
@@ -430,9 +542,7 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
   // A replayed slot verdict was probed on the generic host too: it is re-checked the same way (the
   // process memo answers the second pass here, so no request is counted).
   expect(
-    await probeDirectWiring(null, "github_pat_x", {
-      directIntegrationId: "copilot-developer-sandbox",
-    }),
+    await probeDirectWiring(null, "github_pat_x", "copilot-developer-sandbox"),
   ).toEqual({ directIntegrationId: COPILOT_CLI_INTEGRATION_ID, directBaseUrl: ENTERPRISE });
 });
 

@@ -607,7 +607,7 @@ test("a gh-cli default over a working local token falls through to the kept slot
   expect(new Credential().resolve()).toBe("github_pat_local");
 });
 
-test("a direct profile with a persisted identity wires offline (no identity re-probe; one host probe)", async () => {
+test("a direct profile with a persisted identity wires with that identity FIRST: one probe accepts it, one resolves the host", async () => {
   const machine = isolate();
   const probes: { url: string; id: string | null }[] = [];
   setIntegrationProbeFetch((input, init) => {
@@ -633,9 +633,11 @@ test("a direct profile with a persisted identity wires offline (no identity re-p
   const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
 
   expect(outcome.wiredProfiles).toEqual([WORK]);
-  // The replayed identity is never re-probed; a bundle carries no host, so `copilot-host auto`
-  // costs exactly one GET /models, under that identity, on the generic host.
+  // A bundle carries no host pair, so the imported identity is a preference, not a verdict: it is
+  // tried first on the generic host (accepted here), then the host is resolved under it. Two GETs,
+  // both under the imported identity; no other identity is ever sent.
   expect(probes).toEqual([
+    { url: "https://api.githubcopilot.com/models", id: "copilot-developer-cli" },
     { url: "https://api.githubcopilot.com/models", id: "copilot-developer-cli" },
   ]);
   const settings = JSON.parse(readFileSync(settingsPathFor(machine.claudeHome, WORK), "utf8"));

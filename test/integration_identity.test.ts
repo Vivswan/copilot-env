@@ -9,6 +9,7 @@ import {
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   directIdentityCandidates,
+  type IdentityHostSurvey,
   type IdentitySurvey,
   type IdentityVerdict,
   INTEGRATION_ID_HEADER,
@@ -251,6 +252,26 @@ test("surveyIntegrationIdentities: the designated and configured columns appear 
     ["generic", DEFAULT_COPILOT_API_BASE],
     ["designated", ENTERPRISE_API_BASE],
   ]);
+});
+
+test("autoIdentityFor: a preferred first row never wins by the transient fallback; the built-in default does", () => {
+  const rejected = { kind: "rejected" as const, detail: "400 PATs not supported" };
+  const unclear = { kind: "inconclusive" as const, detail: "503 upstream", blocked: true };
+  const column: IdentityHostSurvey = {
+    apiBase: DEFAULT_COPILOT_API_BASE,
+    role: "generic",
+    verdicts: [
+      { name: COPILOT_CLI_INTEGRATION_ID, verdict: rejected },
+      { name: CODEX_IDENTITY_NAME, verdict: unclear },
+      { name: COPILOT_SANDBOX_INTEGRATION_ID, verdict: unclear },
+    ],
+  };
+  // The writer's selection (resolveDirectIntegrationId) falls back to the built-in default here.
+  expect(autoIdentityFor("ghp_x", column, CODEX_IDENTITY_NAME)).toBe(CODEX_IDENTITY_NAME);
+  // Without the explicit default the first row is the default: the pre-existing, un-reordered case.
+  expect(autoIdentityFor("ghp_x", { ...column, verdicts: column.verdicts.slice(1) })).toBe(
+    CODEX_IDENTITY_NAME,
+  );
 });
 
 test("resolveCopilotHost: 2xx/400/401 keep the generic host; 403/404/5xx/network move to the account's host; a failed lookup stays", async () => {

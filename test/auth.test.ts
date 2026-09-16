@@ -608,8 +608,9 @@ test("auth --identities: columns are the generic host, the account's when it dif
     expect(one).not.toContain("(account)");
 
     // A literal adds its column and takes the in-use mark; a Codex config baked for the generic
-    // host keeps its star THERE, the host note names the move the next rewire makes, and the
-    // proxy's pick (`+`) is the launch resolver's: ranked on the generic host, shown in use.
+    // host keeps its star THERE, the host note names the move the next rewire makes, and both
+    // picks are ranked on the literal's column, where every identity is accepted: the Direct
+    // default (codex) and the proxy default (vscode-chat, `+`).
     new CopilotEnvConfig().set({ copilotHost: CONFIGURED_HOST });
     configureCodexConfig(
       codexHome,
@@ -626,8 +627,9 @@ test("auth --identities: columns are the generic host, the account's when it dif
       /^codex\s+rejected \(400\) \*\s+rejected \(400\)\s+accepted \(9 models\)\s+Direct default/m,
     );
     expect(three).toMatch(
-      /^copilot-developer-cli\s+accepted \(5 models\)\s+accepted \(37 models\)\s+accepted \(9 models\) \+\s+GitHub Copilot CLI/m,
+      /^vscode-chat\s+rejected \(400\)\s+rejected \(400\)\s+accepted \(9 models\) \+\s+proxy default/m,
     );
+    expect(three).not.toContain("Direct: the wiring sends codex until");
     expect(three).toContain(
       "Host: Codex sends to api.githubcopilot.com; `agent init` moves it to copilot.example.",
     );
@@ -697,6 +699,19 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
     expect(unknown).toContain(
       "The account's designated host could not be looked up (transient); pinning unverified.",
     );
+
+    // Under a literal every request goes there, so its rejection alone refuses the pin even though
+    // another host accepts the identity (the enterprise host rejects the sandbox id in this stub).
+    await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
+    stubIdentitySurvey();
+    new CopilotEnvConfig().set({ copilotHost: "https://api.enterprise.githubcopilot.com" });
+    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
+      .toThrow(
+        "api.enterprise.githubcopilot.com (account, in use) rejects this credential under " +
+          `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the ` +
+          `copilot-host in use: ${PAT_REJECTION}`,
+      );
+    expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
   } finally {
     setIntegrationProbeFetch(null);
   }

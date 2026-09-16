@@ -1063,21 +1063,31 @@ async function surveyAndTable(
     token,
     provider: credential.provider(),
   });
-  // A fresh probe (resolveDirectIntegrationId) ranks the built-ins only, on the generic host, so
-  // the extras are excluded from auto's pick; a named profile's launch replays the slot's verdict.
+  // A fresh probe (resolveDirectIntegrationId) ranks the built-ins only, on the host it runs on
+  // (the literal, else the generic host), so the extras are excluded from auto's pick; a named
+  // profile's launch replays the slot's verdict.
+  const probeColumn = configuredHost === null
+    ? generic
+    : survey.hosts.find((h) => sameOrigin(h.apiBase, configuredHost)) ?? generic;
   const fresh = autoIdentityFor(token, {
-    ...generic,
-    verdicts: generic.verdicts.slice(0, directBuiltins.length),
+    ...probeColumn,
+    verdicts: probeColumn.verdicts.slice(0, directBuiltins.length),
   });
-  const slot = new CopilotEnvState().readProfileSlot(profile).integrationIdentity;
-  const firstPick = pinned ?? (profile === null ? fresh : slot ?? fresh);
-  // The proxy's pick is the launch resolver's: its own candidates, in their order, on the generic
+  // A named profile's writer replays its slot's verdict only while the cached pair still reads
+  // back for this pin and literal (or no pair exists at all); a stale pair means a fresh probe.
+  const state = new CopilotEnvState();
+  const slot = state.readProfileSlot(profile).integrationIdentity;
+  const slotReplays = slot !== null &&
+    (state.readProfileCopilotHost(profile, pinned, configuredHost) !== null ||
+      !state.hasProfileCopilotHost(profile));
+  const firstPick = pinned ?? (profile !== null && slotReplays ? slot : fresh);
+  // The proxy's pick is the launch resolver's: its own candidates, in their order, on the same
   // host (resolveLaunchCredential), before the host is chosen.
   const proxyNext = proxyPassthrough
     ? pinned ?? autoIdentityFor(token, {
-      ...generic,
+      ...probeColumn,
       verdicts: PASSTHROUGH_IDENTITY_CANDIDATES.flatMap((c) =>
-        generic.verdicts.filter((v) => v.name === c.name)
+        probeColumn.verdicts.filter((v) => v.name === c.name)
       ),
     })
     : VSCODE_CHAT_INTEGRATION_ID;
@@ -1089,7 +1099,7 @@ async function surveyAndTable(
     : directClientHeaders(userAgent, firstPick === CODEX_IDENTITY_NAME ? null : firstPick);
   const cachedHost = profile === null
     ? null
-    : new CopilotEnvState().readProfileCopilotHost(profile, pinned);
+    : new CopilotEnvState().readProfileCopilotHost(profile, pinned, null);
   const hostInUse = configuredHost ?? cachedHost ??
     await resolveCopilotHost(token, inUseHeaders, { narrator: logger });
   const proxyHost = configuredHost ?? await resolveCopilotHost(
@@ -1191,15 +1201,25 @@ async function pinIdentity(
   if (token === null) {
     logger.warn(`Pinning \`${id}\` unverified: ${reason}.`);
   } else {
+    const configuredHost = new CopilotEnvConfig().copilotHost();
     const survey = await surveyIntegrationIdentities(
       token,
       pinnedIdentityCandidates(id, codexUserAgent()),
-      { configuredHost: new CopilotEnvConfig().copilotHost() },
+      { configuredHost },
     );
-    const hosts = survey.hosts.map((column) => ({
-      label: hostLabel(column),
-      verdict: column.verdicts[0]?.verdict,
-    }));
+    const hosts = survey.hosts.map((column) => {
+      const inUse = configuredHost !== null && sameOrigin(column.apiBase, configuredHost);
+      return { label: hostLabel(column, inUse), verdict: column.verdicts[0]?.verdict, inUse };
+    });
+    // Under a literal every request goes to that host, so its verdict alone decides a definitive
+    // rejection: acceptance elsewhere cannot carry the pin.
+    const inUse = hosts.find((h) => h.inUse);
+    if (inUse?.verdict?.kind === "rejected") {
+      throw new Error(
+        `${inUse.label} rejects this credential under \`${id}\`; not pinned, every request ` +
+          `goes to the copilot-host in use: ${inUse.verdict.detail}`,
+      );
+    }
     // "Every host" needs the account's host to be known: a transient lookup failure hides that
     // column, so the surveyed hosts' rejections alone cannot refuse the pin.
     if (!survey.designatedUnknown && hosts.every((h) => h.verdict?.kind === "rejected")) {

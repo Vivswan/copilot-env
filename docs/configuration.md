@@ -45,13 +45,13 @@ agent config --del idle-timeout       # revert one to its default
 
 ## Credential
 
-| Key              | Default                       | Effect                                                     |
-| ---------------- | ----------------------------- | ---------------------------------------------------------- |
-| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`) |
-| `passthrough`    | `auto`                        | PAT passthrough: `auto` / `on` / `off`                     |
-| `static-key`     | `false`                       | Bake the credential value into the agent configs           |
+| Key              | Default                       | Effect                                                                                |
+| ---------------- | ----------------------------- | ------------------------------------------------------------------------------------- |
+| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`)                            |
+| `passthrough`    | `auto`                        | PAT passthrough: `auto` / `on` / `off`                                                |
+| `static-key`     | `none`                        | Whose config carries the credential value itself: `none` / `claude` / `codex` / `all` |
 
-`passthrough` is explained under [PAT passthrough](authentication.md#pat-passthrough) and `static-key` under [static key](authentication.md#static-key).
+`integration-id` is surveyed and pinned by `agent auth --identities` / `--identity` ([client identity](authentication.md#client-identity)); `passthrough` is explained under [PAT passthrough](authentication.md#pat-passthrough) and `static-key` under [static key](authentication.md#static-key).
 
 ## Codex
 
@@ -111,7 +111,7 @@ One exception: a configuration you applied in the app yourself stays applied, si
 The files these land in, what writes and removes them, and where they sit on each platform are in the [wiring write list](getting-started.md#what-a-wiring-pass-writes).
 
 - **On:** a wiring pass ends with `Claude Desktop is ready to use.` once the default entry is wired, applied, and the app boots third-party; which passes write what is in the [write list](getting-started.md#what-a-wiring-pass-writes).
-- **Off:** the default entry stays in place as yours, named once and never rewritten; only `agent uninstall` removes it. What the same writes remove is in the [write list](getting-started.md#what-a-wiring-pass-writes).
+- **Off:** the default entry stays in place as yours, named once and never rewritten; only `agent uninstall` removes it. Profile entries go, each with its credential-helper scripts under `~/.local/share/copilot-env/helpers/`; what the same writes remove is in the [write list](getting-started.md#what-a-wiring-pass-writes).
 - **Drift:** `agent claude --check` and `agent health` report an entry missing or stale with the key on, profile entries left behind after turning it off, which entry the app applies, and whether it will show the sign-in chooser or lacks the Developer menu.
 
 ## Shell

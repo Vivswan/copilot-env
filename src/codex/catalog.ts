@@ -35,10 +35,12 @@ import {
   scratchDir,
   writeFileReported,
 } from "../utils/report_write.ts";
-// config.ts imports this module too. The cycle is runtime-safe (neither module reads the other's
-// bindings at top level) and buys the one thing the seed needs: the pinned User-Agent Codex sends,
-// so the catalog it generates is the one Codex is served.
-import { codexUserAgent } from "./config.ts";
+import {
+  CODEX_VERSION_TIMEOUT_MS,
+  codexUserAgent,
+  installedCodexVersion,
+  liveLookupsDisabled,
+} from "./user_agent.ts";
 
 const logger = createStderrLogger();
 
@@ -47,11 +49,8 @@ const logger = createStderrLogger();
  *  of serving the old shape for up to a day after a copilot-env update. */
 export const CATALOG_PATCH_VERSION = 3;
 
-// Local-only runs (no network) that may still cold-start the CLI.
-const CODEX_VERSION_TIMEOUT_MS = 1000;
+// A local-only run (no network) that may still cold-start the CLI.
 const BUNDLED_DUMP_TIMEOUT_MS = 5000;
-// The one network lookup outside the Copilot fetch: a registry query, not on any auth deadline.
-const NPM_VERSION_TIMEOUT_MS = 5000;
 // One budget for EVERY probe spawn in this process (candidates and their controls, across
 // generation and the auth-time sync); see probeBudgetLeftMs.
 const CATALOG_PROBE_TIMEOUT_MS = 5000;
@@ -93,79 +92,8 @@ export async function withCatalogRefreshDeadline<T>(
   }
 }
 
-/** Any non-empty value disables this module's live lookups (the installed codex's version, the npm
- *  version query, the catalog probe), which then read as unavailable or unverifiable. The test
- *  suite sets it so no test depends on the developer's network or codex install. */
-export const CI_NO_LIVE_LOOKUPS_ENV = "COPILOT_ENV_CI_NO_LIVE_LOOKUPS";
-
-function liveLookupsDisabled(): boolean {
-  return Boolean(process.env[CI_NO_LIVE_LOOKUPS_ENV]);
-}
-
 // The shared fetch (copilot_api/catalog.ts) owns the two roads to the raw `/models` body.
 export type { CatalogSource } from "../copilot_api/catalog.ts";
-
-function parseCodexVersion(output: string): string | null {
-  return output.match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] ?? null;
-}
-
-let cachedCodexVersion: string | null | undefined;
-
-/** The installed CLI's version: the first road to the Direct User-Agent (codexUserAgentVersion),
- *  and the key of the catalog acceptance record (judgeCatalog), since the probe asks THAT codex to
- *  parse the file. */
-function installedCodexVersion(): string | null {
-  if (liveLookupsDisabled()) return null;
-  if (cachedCodexVersion !== undefined) return cachedCodexVersion;
-  // cliSpawn routes through cmd.exe on Windows so a codex.cmd shim is launchable.
-  const s = cliSpawn("codex", ["--version"]);
-  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  const result = spawnSync(s.file, s.args, {
-    encoding: "utf8",
-    timeout: CODEX_VERSION_TIMEOUT_MS,
-    windowsHide: true,
-    shell: s.shell,
-  });
-  cachedCodexVersion = result.error || result.status !== 0
-    ? null
-    : parseCodexVersion(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
-  return cachedCodexVersion;
-}
-
-let cachedNpmCodexVersion: string | null | undefined;
-
-/** A live npm query, so a machine without the codex CLI (Claude-only Direct) still learns the
- *  current release; off under the suite's seam. */
-function latestNpmCodexVersion(): string | null {
-  if (liveLookupsDisabled()) return null;
-  if (cachedNpmCodexVersion !== undefined) return cachedNpmCodexVersion;
-  const s = cliSpawn("npm", ["view", "@openai/codex", "version"]);
-  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  const result = spawnSync(s.file, s.args, {
-    encoding: "utf8",
-    timeout: NPM_VERSION_TIMEOUT_MS,
-    windowsHide: true,
-    shell: s.shell,
-  });
-  cachedNpmCodexVersion = result.error || result.status !== 0
-    ? null
-    : parseCodexVersion(result.stdout ?? "");
-  return cachedNpmCodexVersion;
-}
-
-/** The current codex release, for the Direct User-Agent of both agents: a real version is a
- *  stronger editor-client identity than the baked fallback, so the installed codex is asked first,
- *  then npm; null (fully offline, no codex) leaves the caller its fallback. Memoized per process, so
- *  one run resolves once. */
-export function codexUserAgentVersion(): string | null {
-  return installedCodexVersion() ?? latestNpmCodexVersion();
-}
-
-/** Test seam: the next resolve spawns again (a fixture just changed PATH or the seam). */
-export function resetCodexVersionMemo(): void {
-  cachedCodexVersion = undefined;
-  cachedNpmCodexVersion = undefined;
-}
 
 export interface CopilotModelLimits {
   maxContextWindowTokens: number;

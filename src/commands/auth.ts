@@ -9,7 +9,7 @@ import { consola } from "consola";
 import { readBakedDirectIdentities } from "../agents/wiring.ts";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
-import { codexUserAgent } from "../codex/config.ts";
+import { codexUserAgent } from "../codex/user_agent.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {
   AUTH_PROVIDERS,

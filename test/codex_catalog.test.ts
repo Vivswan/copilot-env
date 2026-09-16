@@ -11,7 +11,6 @@ import { join } from "node:path";
 import {
   AUTH_REFRESH_WORST_CASE_MS,
   CATALOG_PATCH_VERSION,
-  CI_NO_LIVE_LOOKUPS_ENV,
   type CopilotCatalogModel,
   type CopilotModelLimits,
   generateCodexModelCatalog,
@@ -22,7 +21,8 @@ import {
   resetCatalogProbeState,
   withCatalogRefreshDeadline,
 } from "../src/codex/catalog.ts";
-import { codexUserAgent, DIRECT_AUTH_TIMEOUT_MS } from "../src/codex/config.ts";
+import { DIRECT_AUTH_TIMEOUT_MS } from "../src/codex/config.ts";
+import { CI_NO_LIVE_LOOKUPS_ENV, codexUserAgent } from "../src/codex/user_agent.ts";
 import { GH_AUTH_TIMEOUT_MS } from "../src/copilot_api/gh_cli.ts";
 import { directClientHeaders } from "../src/copilot_api/integration_identity.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";

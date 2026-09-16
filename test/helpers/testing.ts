@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { it } from "@std/testing/bdd";
 import { CLAUDE_DESKTOP_DIR_ENV } from "../../src/claude/desktop.ts";
-import { CI_NO_LIVE_LOOKUPS_ENV } from "../../src/codex/catalog.ts";
+import { CI_NO_LIVE_LOOKUPS_ENV } from "../../src/codex/user_agent.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
 import { sleepSync } from "../../src/utils/time.ts";
 

@@ -121,7 +121,7 @@ Demonstrated by: [test/env_config.test.ts](../test/env_config.test.ts), [test/up
 ```mermaid
 flowchart TD
   root["src/utils/root.ts<br>rootMode() RootMode isProtectedRoot() looksLikeInstallRoot()"]
-  install["src/install/installer.ts<br>buildInstallPlan() applyInstallPlan() runInstall() adoptVersionedLayout()"]
+  install["src/install/installer.ts<br>buildInstallPlan() applyInstallPlan() runInstall() pointCurrentAt()"]
   layout["the versioned layout: versions vX.Y.Z, a current link, bin shims dispatching through current"]
   update["src/commands/update.ts<br>runUpdate() recheckVerdict()"]
   preflight["src/autoupdate/preflight.ts<br>runPreflight()"]
@@ -274,9 +274,7 @@ graph TD
   migrations --> claude
   migrations --> codex
   migrations --> copilot_api
-  migrations --> install
   migrations --> proxy_float
-  migrations --> scripts
   migrations --> shell
   migrations --> utils
   scripts --> copilot_api

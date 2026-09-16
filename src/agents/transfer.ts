@@ -27,7 +27,7 @@ import {
   planCodexHostFarm,
   unmanagedCodexHome,
 } from "../codex/host.ts";
-import { codexConfigPath } from "../codex/paths.ts";
+import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
 import { GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
 import {
@@ -507,13 +507,6 @@ export interface ImportPlan {
   writes: string[];
 }
 
-/** Named-profile wiring writes its provider tables into the effective home's config.toml. The
- *  apply replaces the preference store before it wires, so the home named here is resolved under
- *  the BUNDLE's codex-host value, not the local one. */
-function profileCodexLine(codexHost: boolean): string {
-  return `Codex config: ${codexConfigPath(effectiveCodexHomeFor(codexHost))}`;
-}
-
 // PLAN-INPUT RULE for planWrites: everything read there is either apply-immutable (env, homes,
 // the pre-import store content described as overwritten) or resolved as its POST-import value
 // when the apply mutates it before the writers read it. wire-mcp is resolved post-import (the
@@ -560,11 +553,15 @@ function planWrites(
     lines.push(`profile slot${overwritten.length === 1 ? "" : "s"}: ${overwritten.join(", ")}`);
   }
   const wired = profiles.filter((p) => p.landing.action !== "skip" && p.slot.mode !== null);
+  // Named-profile wiring writes its provider table into config.toml and its selector into
+  // `<name>.config.toml` of the effective home. The apply replaces the preference store before it
+  // wires, so the home is resolved under the BUNDLE's codex-host value, not the local one.
+  const codexHost = codexHostEnabledFor(bundle.config.codexHost);
+  let profileCodexHome = effectiveCodexHomeFor(codexHost);
   if (modes.codex !== null) {
     // Post-import resolution (the plan-input rule): the farm decision is the SAME one the apply
     // takes, so its action and landing can be named.
     const farm = codexHostFarm();
-    const codexHost = codexHostEnabledFor(bundle.config.codexHost);
     const plan = planCodexHostFarm(codexHost, farm);
     if (plan.action === "build") lines.push(`Per-host CODEX_HOME farm (built): ${farm.hostHome}`);
     if (plan.action === "remove") {
@@ -573,17 +570,17 @@ function planWrites(
     if (plan.action === "leave") {
       lines.push(`Per-host CODEX_HOME farm path (left alone, not proven ours): ${farm.hostHome}`);
     }
-    const home = plan.action === "build" || plan.action === "verify"
+    profileCodexHome = plan.action === "build" || plan.action === "verify"
       ? farm.hostHome
       : unmanagedCodexHome();
     // The catalog sync may rewrite other host configs and the generated catalog file; the set is
     // dynamic, so one honest line beats an enumeration that would go stale.
     lines.push(
-      `Codex config: ${codexConfigPath(home)} (the model-catalog sync may rewrite ` +
+      `Codex config: ${codexConfigPath(profileCodexHome)} (the model-catalog sync may rewrite ` +
         "other known host configs and the generated catalog file)",
     );
   } else if (wired.length > 0) {
-    lines.push(profileCodexLine(codexHostEnabledFor(bundle.config.codexHost)));
+    lines.push(`Codex config: ${codexConfigPath(profileCodexHome)}`);
   }
   const claudeHome = resolveClaudeHome();
   if (modes.claude !== null) {
@@ -596,9 +593,8 @@ function planWrites(
     }
   }
   for (const p of wired) {
-    lines.push(
-      `Claude profile settings: ${settingsPathFor(claudeHome, p.name)}`,
-    );
+    lines.push(`Codex profile config: ${codexProfileConfigPath(profileCodexHome, p.name)}`);
+    lines.push(`Claude profile settings: ${settingsPathFor(claudeHome, p.name)}`);
   }
   return lines;
 }

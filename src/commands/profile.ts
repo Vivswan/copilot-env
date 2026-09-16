@@ -1,5 +1,5 @@
 // The store's profile slot (credential + mode, src/copilot_api/env_state.ts) is the source of
-// truth; the per-agent artifacts (settings-<name>.json, [profiles.<name>] in config.toml) are
+// truth; the per-agent artifacts (settings-<name>.json, <name>.config.toml beside config.toml) are
 // derived from it.
 import { consola } from "consola";
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";

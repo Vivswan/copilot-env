@@ -14,7 +14,7 @@ import {
   inspectCodexWiring,
 } from "../codex/config.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
-import { codexConfigPath } from "../codex/paths.ts";
+import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import type { BakedDirectIdentity } from "../copilot_api/integration_identity.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
@@ -64,7 +64,10 @@ export function readBakedDirectIdentities(
     codex: bakedCodexDirectIntegrationId(
       readTextResult(codexConfigPath(codexHome)),
       expectedPort,
-      profile,
+      profile === null ? { profile } : {
+        profile,
+        profileToml: readTextResult(codexProfileConfigPath(codexHome, profile)),
+      },
     ),
     claude: bakedClaudeDirectIntegrationId(
       readTextResult(settingsPathFor(claudeHome, profile)),

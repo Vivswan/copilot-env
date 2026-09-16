@@ -24,7 +24,7 @@ import {
   inspectCodexWiring,
 } from "../codex/config.ts";
 import { type CodexHostFarm, codexHostFarm, effectiveCodexHome } from "../codex/host.ts";
-import { codexConfigPath } from "../codex/paths.ts";
+import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -955,14 +955,18 @@ export async function gatherFacts(
         // would produce; the .env read stays don't-care (absence and unreadability are alike).
         const configRead = deps.readFileResult(codexConfigPath(home));
         const envText = deps.readFileSafe(join(home, ".env"));
-        // A named profile inspects ITS selection ([profiles.<name>] over the suffixed provider
-        // table) against ITS resolved port.
+        // A named profile inspects ITS selection (`<name>.config.toml` over the suffixed provider
+        // table in config.toml) against ITS resolved port; the profile file is read three-way for
+        // the same reason config.toml is.
         const wiring = inspectCodexWiring(
           configRead,
           envText,
           wiringPort(),
           deps.codexTokenInEnviron(),
-          profile,
+          profile === null ? { profile } : {
+            profile,
+            profileToml: deps.readFileResult(codexProfileConfigPath(home, profile)),
+          },
         );
         const { directAuth, noGhNeeded } = await directAuthFor(
           authShapeOf(wiring),

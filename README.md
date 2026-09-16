@@ -39,7 +39,7 @@ powershell -c "irm https://github.com/Vivswan/copilot-env/releases/latest/downlo
 Then, in a new shell:
 
 ```bash
-agent shell --clis   # install the Claude + Codex CLIs (init probes Direct through them, or at the endpoint without them)
+agent shell --clis   # install the Claude, Codex, and Copilot CLIs (init probes Direct through Claude and Codex, or at the endpoint without them)
 agent init           # wire Codex + Claude to GitHub Copilot
 agent start          # run the local proxy (only if init picked it)
 ```

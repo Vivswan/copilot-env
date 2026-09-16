@@ -1001,8 +1001,9 @@ skipWin(
   async () => {
     const { hostHome } = isolate();
     const own = join(dir, "my-own-codex");
-    const line = staleCodexHomeExportLine({ home: hostHome, staleExport: own });
-    if (line === null) throw new Error("a differing export must produce the note");
+    // The user-facing line, pinned as a literal: it must name both the export and the farm in use.
+    const line =
+      `Ignoring the shell's CODEX_HOME=${own}: codex-host is on, so Codex is wired at the per-host farm ${hostHome}`;
     // Key off: the export IS the home, so the write lands there and nothing is stale.
     process.env.CODEX_HOME = own;
     const unmanaged = await stderrDuring(configureCodex);

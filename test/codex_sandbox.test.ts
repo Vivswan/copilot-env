@@ -98,7 +98,13 @@ test("health: a read-only sandbox warns per proxy selection, naming the line; Di
   const cases: {
     name: string;
     toml: string;
-    expected: { profile: string | null; status: string; at?: string; fix?: string }[];
+    expected: {
+      profile: string | null;
+      status: string;
+      cites?: string;
+      at?: string;
+      fix?: string;
+    }[];
   }[] = [
     {
       name: "proxy + top-level read-only: both selections inherit it",
@@ -196,6 +202,114 @@ test("health: a read-only sandbox warns per proxy selection, naming the line; Di
       toml: configToml(bothProxy, { top: ["profile = 1", readOnly] }),
       expected: [],
     },
+    // Permission profiles (default_permissions, Codex >= 0.138): their network is off unless the
+    // profile enables it and [sandbox_workspace_write] does not apply, so the built-in :workspace
+    // blocks as much as :read-only; only :danger-full-access or a custom profile with network on
+    // reaches the proxy. Any sandbox_mode, in the selected profile or at the top level, wins over
+    // the key (verified against openai/codex config_toml.rs and the permissions guide).
+    ...[":read-only", ":workspace"].map((builtin) => ({
+      name: `default_permissions = "${builtin}" leaves the auth command offline`,
+      toml: configToml(bothProxy, { top: [`default_permissions = "${builtin}"`] }),
+      expected: [
+        {
+          profile: null,
+          status: "warn",
+          cites: `default_permissions = "${builtin}"`,
+          at: `${CONFIG}:2`,
+          fix: 'set sandbox_mode = "workspace-write" in',
+        },
+        {
+          profile: P,
+          status: "warn",
+          cites: `default_permissions = "${builtin}"`,
+          at: `${CONFIG}:2`,
+        },
+      ],
+    })),
+    {
+      name: 'default_permissions = ":danger-full-access" lifts the sandbox',
+      toml: configToml(bothProxy, { top: ['default_permissions = ":danger-full-access"'] }),
+      expected: [{ profile: null, status: "ok" }, { profile: P, status: "ok" }],
+    },
+    {
+      name: "a custom permission profile with network enabled reaches the proxy",
+      toml: configToml(bothProxy, {
+        top: ['default_permissions = "net"', "[permissions.net]", "network = { enabled = true }"],
+      }),
+      expected: [{ profile: null, status: "ok" }, { profile: P, status: "ok" }],
+    },
+    {
+      name: "a custom permission profile without network names its own switch as the fix",
+      toml: configToml(bothProxy, {
+        top: ['default_permissions = "net"', "[permissions.net]", "network = { enabled = false }"],
+      }),
+      expected: [
+        {
+          profile: null,
+          status: "warn",
+          cites: 'default_permissions = "net"',
+          at: `${CONFIG}:2`,
+          fix: `set permissions.net.network.enabled = true in ${CONFIG}`,
+        },
+        { profile: P, status: "warn", cites: 'default_permissions = "net"', at: `${CONFIG}:2` },
+      ],
+    },
+    {
+      // `permissions.team.net.network` would address a nested pair, not the profile's table.
+      name: "a custom profile name that is not a bare TOML key is quoted in the fix",
+      toml: configToml(bothProxy, {
+        top: [
+          'default_permissions = "team.net"',
+          '[permissions."team.net".network]',
+          "enabled = false",
+        ],
+      }),
+      expected: [
+        {
+          profile: null,
+          status: "warn",
+          cites: 'default_permissions = "team.net"',
+          at: `${CONFIG}:2`,
+          fix: `set permissions."team.net".network.enabled = true in ${CONFIG}`,
+        },
+        {
+          profile: P,
+          status: "warn",
+          cites: 'default_permissions = "team.net"',
+          at: `${CONFIG}:2`,
+        },
+      ],
+    },
+    // Codex refuses the file on a wrong-typed key or an unknown sandbox_mode (verified against
+    // codex 0.153.4), so no launch runs and no selection is judged in its place, whatever the
+    // other keys say.
+    ...[
+      ["default_permissions = 1", 'sandbox_mode = "workspace-write"'],
+      ["sandbox_mode = 1"],
+      ['sandbox_mode = "everything"'],
+      // An UNSELECTED profile's bad value refuses the file just the same.
+      ['sandbox_mode = "workspace-write"', "[profiles.other]", "sandbox_mode = 1"],
+    ].map((top) => ({
+      name: `Codex refuses [${top.join("; ")}]: no row for any launch`,
+      toml: configToml(bothProxy, { top }),
+      expected: [],
+    })),
+    {
+      name: "the selected profile's legacy sandbox_mode wins over default_permissions",
+      toml: configToml(bothProxy, {
+        top: ['default_permissions = ":read-only"'],
+        profile: 'sandbox_mode = "workspace-write"',
+      }),
+      expected: [
+        {
+          profile: null,
+          status: "warn",
+          cites: 'default_permissions = ":read-only"',
+          at: `${CONFIG}:2`,
+        },
+        { profile: P, status: "ok" },
+      ],
+    },
   ];
   for (const c of cases) {
     const rows = await sandboxRows(c.toml);
@@ -203,7 +317,9 @@ test("health: a read-only sandbox warns per proxy selection, naming the line; Di
       c.expected.map(({ profile, status }) => ({ profile, status })),
     );
     for (const [i, e] of c.expected.entries()) {
-      if (e.at) expect(rows[i]?.detail, c.name).toContain(`sandbox_mode = "read-only" at ${e.at}`);
+      if (e.at) {
+        expect(rows[i]?.detail, c.name).toContain(`${e.cites ?? readOnly} at ${e.at}`);
+      }
       if (e.fix) expect(rows[i]?.fix, c.name).toContain(e.fix);
     }
   }

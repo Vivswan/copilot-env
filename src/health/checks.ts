@@ -951,7 +951,8 @@ export function checkCodexSandbox(f: CodexSandboxFacts): CheckResult {
       configFile: f.configFile,
       effectiveProfile: f.selection.profile,
       selectedVia: f.selection.via,
-      sandboxMode: f.sandbox.kind === "set" ? f.sandbox.mode : null,
+      sandboxKey: f.sandbox.kind === "set" ? f.sandbox.key : null,
+      sandboxValue: f.sandbox.kind === "set" ? f.sandbox.value : null,
       line: f.sandbox.kind === "set" ? f.sandbox.line : null,
     },
   };

@@ -92,7 +92,15 @@ export function resetWebSearchAliasCache(): void {
 function catalogAliases(token: string, fetchImpl?: ProbeFetch): Promise<Record<string, string>> {
   const build = async () =>
     generateAliases(
-      parseCatalogModels(await fetchRawModels("direct", { directToken: token, fetchImpl })),
+      parseCatalogModels(
+        await fetchRawModels("direct", {
+          directToken: token,
+          fetchImpl,
+          // The aliases name models for the /responses call below, so the catalog is asked under
+          // that call's own identity (the version-free UA it sends).
+          identity: { kind: "agents", userAgent: CODEX_EXEC_USER_AGENT },
+        }),
+      ),
     );
   if (fetchImpl !== undefined) return build();
   let pending = aliasMemo.get(token);

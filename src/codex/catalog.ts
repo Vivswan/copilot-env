@@ -35,6 +35,10 @@ import {
   scratchDir,
   writeFileReported,
 } from "../utils/report_write.ts";
+// config.ts imports this module too. The cycle is runtime-safe (neither module reads the other's
+// bindings at top level) and buys the one thing the seed needs: the pinned User-Agent Codex sends,
+// so the catalog it generates is the one Codex is served.
+import { codexUserAgent } from "./config.ts";
 
 const logger = createStderrLogger();
 
@@ -615,12 +619,21 @@ async function defaultFetchCopilotModels(
   directToken?: string,
 ): Promise<Map<string, CopilotCatalogModel> | null> {
   // The deadline aborts the requests themselves (identity probes included), so a slow Copilot
-  // cannot keep the auth process alive past the budget.
+  // cannot keep the auth process alive past the budget. The catalog feeds Codex's OWN requests,
+  // so the direct fetch asks as Codex does (identity-exact gating, copilot_api/catalog.ts); the
+  // proxy fetch names no identity, and never resolves the User-Agent, whose version lookup can
+  // spawn `codex --version` and `npm view` for seconds with no codex installed.
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(), COPILOT_FETCH_BUDGET_MS);
   try {
     return parseCopilotModels(
-      await fetchRawModels(source, { directToken, signal: deadline.signal }),
+      await fetchRawModels(source, {
+        directToken,
+        signal: deadline.signal,
+        ...(source === "direct"
+          ? { identity: { kind: "agents", userAgent: codexUserAgent() } }
+          : {}),
+      }),
     );
   } catch {
     return null;

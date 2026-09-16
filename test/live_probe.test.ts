@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { delimiter, join, resolve } from "node:path";
 import {
   CLAUDE_PROBE,
   CODEX_CATALOG_NOISE_RE,
@@ -269,7 +271,95 @@ test("probeDirectWorks falls back after exhausting retries", async () => {
   expect(calls).toBe(DEFAULT_PROBE_RETRIES + 1); // initial attempt + retries
 });
 
+// --- probeDirectWorks: the child's working directory ------------------------
+
+test("probeDirectWorks spawns the CLI from inside the throwaway home, never the caller's cwd", async () => {
+  // Both CLIs read project-level config from the working directory (a repo's .claude/settings.json,
+  // codex project trust), so a probe run from the caller's cwd would judge that project's wiring.
+  // The "CLI" is deno itself, running a script the config writer dropped into the home; it exits 0
+  // only when the process cwd IS that home (realpaths: macOS tmp dirs live behind a symlink).
+  const script = "cwd_check.mts";
+  const descriptor: ProbeDescriptor = {
+    cli: "deno",
+    homeEnvVar: "CLAUDE_CONFIG_DIR",
+    args: (_prompt, home) => ["run", "--allow-read", join(home, script)],
+  };
+  const ok = await probeDirectWorks(
+    descriptor,
+    (home) =>
+      writeFileSync(
+        join(home, script),
+        "Deno.exit(Deno.realPathSync(Deno.cwd()) === Deno.realPathSync(import.meta.dirname) ? 0 : 3);\n",
+      ),
+    fakeSmoke(),
+    { findCommand: () => ({ path: process.execPath }), retries: 0, retryDelayMs: 0 },
+  );
+  expect(ok).toBe(true);
+});
+
+test("probeDirectWorks anchors a relative CLI path to the caller's cwd before the child leaves it", async () => {
+  // `command -v` under dash answers with the relative form for a relative or empty PATH entry
+  // (./node_modules/.bin/codex, or a bare `codex` for one in the caller's dir); spawned from
+  // inside the temp home that path is ENOENT and the verdict would fall to the proxy. Windows
+  // findCommand answers with a bare name on purpose (PATH resolves it), so the POSIX shape alone
+  // is pinned here.
+  if (process.platform === "win32") return;
+  let seen: { cliPath: string; path: string[] } | null = null;
+  const ok = await probeDirectWorks(FAKE_DESCRIPTOR, () => {}, fakeSmoke(), {
+    findCommand: (c: string) => ({ path: join(".", "tools", c) }),
+    runProbe: (cliPath, _args, env) => {
+      seen = { cliPath, path: (env.PATH ?? "").split(delimiter) };
+      return { ok: true };
+    },
+    retryDelayMs: 0,
+  });
+  expect(ok).toBe(true);
+  const got = seen as unknown as { cliPath: string; path: string[] };
+  expect(got.cliPath).toBe(resolve("tools", "claude"));
+  // Only the entries this probe ADDED (the CLI's and gh's shared bin dir, once): the inherited PATH
+  // may itself carry "." or the like.
+  const inherited = new Set((process.env.PATH ?? "").split(delimiter));
+  expect(got.path.filter((p) => !inherited.has(p))).toEqual([resolve("tools")]);
+});
+
 // --- probeDirectWorks: env sanitization -------------------------------------
+
+test("the real probe child never sees a provider variable the parent shell exported", async () => {
+  // The env the probe builds omits the provider families (pinned by the test below), but on Deno
+  // spawnSync merges the parent's variables back into the child whatever `env` says (2.9.6,
+  // verified): a shell ANTHROPIC_BASE_URL at a running proxy would answer the Claude smoke
+  // prompt and mint a Direct verdict the proxy earned. Only a REAL child can see that.
+  const saved = {
+    ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+  };
+  process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
+  process.env.OPENAI_BASE_URL = "http://127.0.0.1:4141/v1";
+  const script = "env_check.mts";
+  const descriptor: ProbeDescriptor = {
+    cli: "deno",
+    homeEnvVar: "CLAUDE_CONFIG_DIR",
+    args: (_prompt, home) => ["run", "--allow-env", join(home, script)],
+  };
+  try {
+    const ok = await probeDirectWorks(
+      descriptor,
+      (home) =>
+        writeFileSync(
+          join(home, script),
+          'Deno.exit(Deno.env.has("ANTHROPIC_BASE_URL") || Deno.env.has("OPENAI_BASE_URL") ? 3 : 0);\n',
+        ),
+      fakeSmoke(),
+      { findCommand: () => ({ path: process.execPath }), retries: 0, retryDelayMs: 0 },
+    );
+    expect(ok).toBe(true);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
 
 test("probeDirectWorks strips provider/CLI env families but keeps gh auth", async () => {
   process.env.ANTHROPIC_AUTH_TOKEN = "leaked-token";

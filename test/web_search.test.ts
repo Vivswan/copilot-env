@@ -1,5 +1,9 @@
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import {
+  CODEX_EXEC_USER_AGENT,
+  directClientHeaders,
+} from "../src/copilot_api/integration_identity.ts";
 import { generateAliases, parseCatalogModels } from "../src/copilot_api/models.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import {
@@ -191,6 +195,12 @@ test("webSearch resolves catalog aliases for the stored model (the proxy's seman
   await webSearch("q", { fetchImpl: stub.fetchImpl });
 
   expect(stub.calls[0]?.url).toBe(MODELS_URL);
+  // The catalog is asked under the SAME identity the /responses call sends: Copilot gates the
+  // list per identity, so a list fetched as the proxy daemon could name a model this POST cannot use.
+  expect(stub.calls[0]?.init.headers).toEqual({
+    ...directClientHeaders(CODEX_EXEC_USER_AGENT),
+    Authorization: "Bearer gho_stored",
+  });
   expect(JSON.parse(String(stub.calls[1]?.init.body)).model).toBe("gpt-6");
 });
 

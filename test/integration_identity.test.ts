@@ -20,6 +20,7 @@ import {
   surveyIntegrationIdentities,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
+import { codexUserAgent } from "../src/codex/config.ts";
 import { ROOT } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -403,6 +404,14 @@ test("the preload's copied header literal stays in step with the module's (drift
   expect(shim).toContain(`const INTEGRATION_ID_HEADER = "${INTEGRATION_ID_HEADER}"`);
 });
 
+/** A request's header set lower-cased the way `Headers` reports names, Authorization included. */
+function wireHeaders(headers: Record<string, string>, token: string): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries({ ...headers, Authorization: `Bearer ${token}` })
+      .map(([name, value]) => [name.toLowerCase(), value]),
+  );
+}
+
 test("fetchRawModels(direct): a caller deadline aborts the identity probe chain itself", async () => {
   // The Codex catalog refresh runs inside `agent auth --get`'s bounded budget: its
   // deadline must end the pending REQUESTS (a PAT chains identity probes before the
@@ -437,18 +446,22 @@ test("fetchRawModels(direct): a caller deadline aborts the identity probe chain 
   expect(abortReasons).toContain(sentinel);
 });
 
-test("fetchRawModels(direct) probes and fetches ONE host, with the resolved identity", async () => {
+test("fetchRawModels(direct) probes and fetches ONE host; by default it asks as the proxy daemon", async () => {
   // A PAT's identity must be probed against the SAME host the catalog request then hits;
   // probing a discovered account host while fetching the public one renders the verdict
-  // against a host this request never touches.
+  // against a host this request never touches. With no identity named, the header set is the
+  // daemon's (vscode-chat first, the id header alone): what feeds the proxy's own listing.
   const { fetchRawModels, DIRECT_MODELS_URL } = await import("../src/copilot_api/catalog.ts");
 
   const seen: string[] = [];
+  const sent: Record<string, string>[] = [];
   const accepted: string[] = [];
   const respond = (input: string | URL | Request, init?: RequestInit): Response => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     seen.push(url);
-    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+    const headers = new Headers(init?.headers);
+    sent.push(Object.fromEntries(headers.entries()));
+    const id = headers.get(INTEGRATION_ID_HEADER);
     // Only the CLI identity is accepted -- the PAT case, which forces a real probe.
     if (id !== COPILOT_CLI_INTEGRATION_ID) {
       return new Response("PATs not supported", { status: 400 });
@@ -475,4 +488,53 @@ test("fetchRawModels(direct) probes and fetches ONE host, with the resolved iden
   // The winning probe and the catalog GET both carried the settled identity.
   expect(accepted.length).toBe(2);
   expect(accepted.every((id) => id === COPILOT_CLI_INTEGRATION_ID)).toBe(true);
+  const passthrough = (id: string) => wireHeaders({ [INTEGRATION_ID_HEADER]: id }, "github_pat_x");
+  expect(sent[0]).toEqual(passthrough(VSCODE_CHAT_INTEGRATION_ID));
+  expect(sent[sent.length - 1]).toEqual(passthrough(COPILOT_CLI_INTEGRATION_ID));
+});
+
+test("fetchRawModels(direct) under the agents' identity sends the exact header set Codex bakes", async () => {
+  // Copilot gates the catalog per identity, so a list fetched as the daemon is not what a Direct
+  // agent is served; a consumer feeding an agent names that agent's identity and gets its header
+  // set byte for byte: the versioned codex_exec UA, Openai-Intent, and the baked id (none for the
+  // default). A PAT is probed through the DIRECT candidates (the id-less Codex one first); a
+  // gho_/device token goes unprobed, one GET.
+  const { fetchRawModels } = await import("../src/copilot_api/catalog.ts");
+  const agents = (id: string | null, token: string) =>
+    wireHeaders(directClientHeaders(codexUserAgent(), id), token);
+  const cases: { token: string; expected: Record<string, string>[] }[] = [
+    {
+      token: "github_pat_x",
+      expected: [
+        agents(null, "github_pat_x"),
+        agents(COPILOT_CLI_INTEGRATION_ID, "github_pat_x"),
+        agents(COPILOT_CLI_INTEGRATION_ID, "github_pat_x"),
+      ],
+    },
+    { token: "gho_x", expected: [agents(null, "gho_x")] },
+  ];
+  for (const c of cases) {
+    const sent: Record<string, string>[] = [];
+    const body = await fetchRawModels("direct", {
+      directToken: c.token,
+      identity: { kind: "agents", userAgent: codexUserAgent() },
+      fetchImpl: (_input, init) => {
+        const headers = new Headers(init?.headers);
+        sent.push(Object.fromEntries(headers.entries()));
+        // A PAT is refused under the default identity and accepted under the CLI one.
+        const ok = !c.token.startsWith("github_pat_") ||
+          headers.get(INTEGRATION_ID_HEADER) === COPILOT_CLI_INTEGRATION_ID;
+        return Promise.resolve(
+          ok
+            ? new Response(JSON.stringify({ data: [] }), { status: 200 })
+            : new Response("PATs not supported", { status: 400 }),
+        );
+      },
+    });
+    expect({ token: c.token, body, sent }).toEqual({
+      token: c.token,
+      body: { data: [] },
+      sent: c.expected,
+    });
+  }
 });

@@ -94,8 +94,6 @@ type CodexModeRequest =
   | (Extract<ManagedWrite, { mode: "proxy" }> & { baseUrl: string });
 
 interface CodexWriteCommon {
-  /** Suppress the catalog-verdict warning (the direct probe's throwaway write). */
-  quiet?: boolean;
   /** Wire a NAMED profile's tables instead of the default selection. */
   profile?: Profile;
 }
@@ -775,7 +773,7 @@ export function configureCodexConfig(
       new CopilotEnvConfig().codexModelCatalogEnabled()
         ? inspectCatalogFile(catalogFile, catalogDeps)
         : "disabled";
-    if (verdict === "rejected" && !request.quiet) {
+    if (verdict === "rejected") {
       logger.warn(
         `  ! the installed codex rejects ${catalogFile}; leaving it out of the config ` +
           "(regenerate with `agent codex`, or disable with " +
@@ -833,10 +831,9 @@ export function configureCodexConfig(
     saveCodexToml(profileFile.path, profileFile.doc, "Codex profile config");
   }
   // Ownership lands only AFTER the successful save (the ledger's crash-direction contract), and
-  // only for a KNOWN Codex home (the set the cleanup sweep visits), so detectCodexDirect's
-  // throwaway probe home never enters the ledger. Recording on every enabled write also ADOPTS a
-  // pre-ledger install's reference the next time it rewires; the cleared branch drops any claim,
-  // ours or stale.
+  // only for a KNOWN Codex home (the set the cleanup sweep visits), so a write to a foreign home
+  // never enters the ledger. Recording on every enabled write also ADOPTS a pre-ledger install's
+  // reference the next time it rewires; the cleared branch drops any claim, ours or stale.
   if (catalogRef !== null && knownHome) {
     if (catalogRef === "written") new OwnershipLedger().record("codexCatalog", hostConfig);
     else new OwnershipLedger().release("codexCatalog", hostConfig);
@@ -1062,6 +1059,29 @@ export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
   },
 };
 
+/** The throwaway config's selector, NOT the managed id. The table's `auth.command` runs `agent auth
+ *  --get` in the child, and with codex-host off (the default) that child's Codex home is $CODEX_HOME =
+ *  the throwaway home (defaultCodexHome; a live farm record wins over it). Its catalog self-heal
+ *  (src/codex/catalog_reference.ts) adds `model_catalog_json` to, and ledgers, any config there that
+ *  selects the managed provider: the next attempt would then run under the user's catalog, and the
+ *  ledger would keep a path removeScratchDir deletes. A foreign selector is left alone by that
+ *  self-heal's own contract. */
+const CODEX_PROBE_PROVIDER_ID = `${CODEX_PROVIDER_ID}-probe`;
+
+/** The detect probe's throwaway config: the Direct provider table and its selector, nothing else.
+ *  The real write's top-level extras (`web_search`, the generated `model_catalog_json`) belong to
+ *  the user's wiring, not to Direct, and a catalog file produced under another credential would
+ *  colour the verdict. Shares managedDirectProvider, so the table is byte-identical to the real one. */
+function writeCodexProbeConfig(tmpHome: string, directIntegrationId: string | null): void {
+  saveCodexToml(codexConfigPath(tmpHome), {
+    ...defaultConfig(),
+    "model_provider": CODEX_PROBE_PROVIDER_ID,
+    "model_providers": {
+      [CODEX_PROBE_PROVIDER_ID]: managedDirectProvider(COMMAND_SHAPE, null, directIntegrationId),
+    },
+  }, "Codex probe config");
+}
+
 /** Writes a throwaway direct config and runs `codex exec --model <catalog pick> --sandbox
  *  read-only` against it (src/agents/live_probe.ts); with no codex CLI on the machine the endpoint
  *  smoke judges the credential instead. False means the caller writes proxy. */
@@ -1072,14 +1092,7 @@ export function detectCodexDirect(
 ): Promise<boolean> {
   return probeDirectWorks(
     CODEX_PROBE,
-    (tmpHome) => {
-      configureCodexConfig(tmpHome, {
-        mode: "direct",
-        quiet: true,
-        directIntegrationId,
-        credential: COMMAND_SHAPE,
-      });
-    },
+    (tmpHome) => writeCodexProbeConfig(tmpHome, directIntegrationId),
     ghToken === null
       ? null
       : directSmoke(CODEX_ENDPOINT_SMOKE, ghToken, codexUserAgent(), directIntegrationId, {
@@ -1104,16 +1117,15 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
       // The farm derivation decides the home the write lands in (and records it after).
       await withCodexHostFarm((codexHome) => applyCodexConfig(codexHome, write, seedDeps, null));
     },
-    configureProfile(name, write, options) {
+    configureProfile(name, write) {
       const request: CodexWriteRequest = write.mode === "proxy"
         ? {
           mode: "proxy",
           profile: name,
-          quiet: options.quiet,
           baseUrl: openaiBaseUrl(wiringPortFor(name)),
           credential: write.credential,
         }
-        : { ...write, profile: name, quiet: options.quiet };
+        : { ...write, profile: name };
       configureCodexConfig(effectiveCodexHome(), request);
     },
     removeProfile(name) {

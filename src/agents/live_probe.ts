@@ -15,7 +15,7 @@
 //                                             .claude/settings.json or codex trust never colours it
 //   a failure past DEFAULT_PROBE_RETRIES   -> the proxy
 //   a FAILED attempt near PROBE_TIMEOUT_MS -> no further retry; a slow SUCCESS still wins
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
@@ -137,7 +137,7 @@ export interface DirectProbeDeps {
     args: string[],
     env: Record<string, string>,
     cwd: string,
-  ) => ProbeOutcome;
+  ) => ProbeOutcome | Promise<ProbeOutcome>;
   /** Extra live-call retries on failure (default DEFAULT_PROBE_RETRIES). */
   retries?: number;
   /** Base backoff ms between retries (default DEFAULT_PROBE_RETRY_DELAY_MS; 0 in tests). */
@@ -194,38 +194,49 @@ function defaultRunProbe(
   args: string[],
   env: Record<string, string>,
   cwd: string,
-): ProbeOutcome {
+): Promise<ProbeOutcome> {
   const s = cliSpawn(cliPath, args);
-  // `env` is the COMPLETE child environment probeDirectWorks built; re-merging process.env here
-  // would bring the cleared provider vars back. `cwd` is the throwaway home, never the caller's:
-  // both CLIs read project-level config from the working directory (src/codex/catalog.ts pins
-  // its catalog probe the same way).
+  // `env` is the COMPLETE child environment probeDirectWorks built, and it reaches the child only
+  // through the async `spawn`: Deno's spawnSync (2.9.6, verified) merges the parent's variables
+  // back in whatever `env` says, and a shell ANTHROPIC_BASE_URL at a running proxy then answers
+  // the Claude smoke prompt for it. `cwd` is the throwaway home, never the caller's: both CLIs
+  // read project-level config from the working directory.
   //
-  //   stdout/stderr piped -> a failure carries a reason (summarizeProbeFailure)
-  //   maxBuffer 16 MB     -> codex prints tens of KB of model catalog, and the 1 MB default sets
-  //                          result.error (ENOBUFS) on a probe that exited 0
-  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  const result = spawnSync(s.file, s.args, {
-    cwd,
-    stdio: ["ignore", "pipe", "pipe"],
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-    timeout: PROBE_TIMEOUT_MS,
-    windowsHide: true,
-    shell: s.shell,
-    env,
+  //   stdout/stderr piped, utf8 -> a failure carries a reason (summarizeProbeFailure)
+  //   close with a null code    -> our timeout when `killed`, so the detail says so
+  return new Promise((resolveOutcome) => {
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+    const child = spawn(s.file, s.args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: PROBE_TIMEOUT_MS,
+      windowsHide: true,
+      shell: s.shell,
+      env,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8").on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr?.setEncoding("utf8").on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", (e) => {
+      resolveOutcome({
+        ok: false,
+        detail: summarizeProbeFailure(null, null, errMessage(e), stdout, stderr),
+      });
+    });
+    child.on("close", (code, signal) => {
+      if (code === 0) return resolveOutcome({ ok: true });
+      const timedOut = code === null && child.killed ? "timed out" : undefined;
+      resolveOutcome({
+        ok: false,
+        detail: summarizeProbeFailure(code, signal, timedOut, stdout, stderr),
+      });
+    });
   });
-  if (!result.error && result.status === 0) return { ok: true };
-  return {
-    ok: false,
-    detail: summarizeProbeFailure(
-      result.status,
-      result.signal,
-      result.error?.message,
-      result.stdout ?? "",
-      result.stderr ?? "",
-    ),
-  };
 }
 
 /** POSIX `command -v` answers with a path that can be RELATIVE (dash, a relative or empty PATH
@@ -334,7 +345,7 @@ export async function probeDirectWorks(
         sleepSync(retryDelayMs * attempt);
       }
       const startedAt = Date.now();
-      const outcome = runProbe(cliPath, args, childEnv, tmpHome);
+      const outcome = await runProbe(cliPath, args, childEnv, tmpHome);
       if (outcome.ok) {
         logger.success("    GitHub Copilot Direct is available");
         return true;

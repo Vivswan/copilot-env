@@ -324,6 +324,43 @@ test("probeDirectWorks anchors a relative CLI path to the caller's cwd before th
 
 // --- probeDirectWorks: env sanitization -------------------------------------
 
+test("the real probe child never sees a provider variable the parent shell exported", async () => {
+  // The env the probe builds omits the provider families (pinned by the test below), but on Deno
+  // spawnSync merges the parent's variables back into the child whatever `env` says (2.9.6,
+  // verified): a shell ANTHROPIC_BASE_URL at a running proxy would answer the Claude smoke
+  // prompt and mint a Direct verdict the proxy earned. Only a REAL child can see that.
+  const saved = {
+    ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+  };
+  process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
+  process.env.OPENAI_BASE_URL = "http://127.0.0.1:4141/v1";
+  const script = "env_check.mts";
+  const descriptor: ProbeDescriptor = {
+    cli: "deno",
+    homeEnvVar: "CLAUDE_CONFIG_DIR",
+    args: (_prompt, home) => ["run", "--allow-env", join(home, script)],
+  };
+  try {
+    const ok = await probeDirectWorks(
+      descriptor,
+      (home) =>
+        writeFileSync(
+          join(home, script),
+          'Deno.exit(Deno.env.has("ANTHROPIC_BASE_URL") || Deno.env.has("OPENAI_BASE_URL") ? 3 : 0);\n',
+        ),
+      fakeSmoke(),
+      { findCommand: () => ({ path: process.execPath }), retries: 0, retryDelayMs: 0 },
+    );
+    expect(ok).toBe(true);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("probeDirectWorks strips provider/CLI env families but keeps gh auth", async () => {
   process.env.ANTHROPIC_AUTH_TOKEN = "leaked-token";
   process.env.OPENAI_BASE_URL = "http://proxy.local";

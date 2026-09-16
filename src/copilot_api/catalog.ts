@@ -67,7 +67,7 @@ export async function fetchRawModels(
   const narrator = createStderrLogger();
   const integrationId = await resolvePassthroughIntegrationId(token, {
     pinned: config.pinnedIntegrationId(),
-    apiBase: DEFAULT_COPILOT_API_BASE,
+    apiBase: opts.apiBase ?? config.copilotHost() ?? DEFAULT_COPILOT_API_BASE,
     fetchImpl: opts.fetchImpl,
     signal: opts.signal,
     narrator,

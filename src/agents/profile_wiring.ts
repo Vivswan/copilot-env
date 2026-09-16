@@ -70,7 +70,8 @@ export async function wireBothAgents(
  *
  * The launcher hot path (`--sync` on every `cl --profile`) thus replays the stored pair offline; a
  * credential change clears the slot (CopilotEnvState.setCredential). A slot holding only the
- * identity, or a pin naming another identity, probes the host again (never the identity).
+ * identity, or a pin naming another identity, probes the host again; the identity is probed again
+ * only where `auto` moved the host (probeDirectWiring).
  */
 export async function resolveAndPersistDirectWiring(
   profile: Profile,
@@ -90,9 +91,7 @@ export async function resolveAndPersistDirectWiring(
   const pin = config.pinnedIntegrationId();
   const literal = config.copilotHost();
   const directIntegrationId = pin ?? cachedIdentity;
-  // The slot's host was resolved under the slot's identity: the store reads it as null under a pin
-  // naming another (readProfileCopilotHost), and the raw value is kept for the write below.
-  const slotHost = state.readProfileCopilotHost(profile, null);
+  // The cached host reads back only under the identity it was resolved for (readProfileCopilotHost).
   const cachedHost = state.readProfileCopilotHost(profile, pin);
   const directBaseUrl = literal ?? cachedHost;
   if (directIntegrationId !== undefined && directBaseUrl !== null) {
@@ -103,17 +102,18 @@ export async function resolveAndPersistDirectWiring(
     credentialToken,
     directIntegrationId === undefined ? undefined : { directIntegrationId },
   );
-  // Keyed to the credential the probe ACTUALLY ran under; null means the two cannot be tied. A
-  // pinned identity or a literal host is configuration, not a verdict: the slot keeps what it held,
-  // and a host resolved under a pin that is not the slot's identity is never cached beside it.
+  // Keyed to the credential the probe ACTUALLY ran under; null means the two cannot be tied. A pin
+  // is configuration, never written as the verdict (the slot keeps what it held, so `--identity
+  // auto` returns to it); the host is cached with the identity it was resolved under, pin or
+  // verdict, and replays while that identity is in force. A literal caches no host.
   const keyCredential = identityCacheKey(slot.credential, credentialToken);
   if (keyCredential !== null) {
-    const hostUnderSlotIdentity = pin === null || pin === slot.integrationIdentity;
+    const verdict = probed.directIntegrationId ?? CODEX_IDENTITY_NAME;
     state.setProfileIntegrationIdentity(
       profile,
-      pin === null ? probed.directIntegrationId ?? CODEX_IDENTITY_NAME : slot.integrationIdentity,
+      pin === null ? verdict : slot.integrationIdentity,
       keyCredential,
-      literal === null && hostUnderSlotIdentity ? probed.directBaseUrl : slotHost,
+      literal === null ? { host: probed.directBaseUrl, identity: pin ?? verdict } : undefined,
     );
   }
   return probed;

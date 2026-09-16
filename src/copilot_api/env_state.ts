@@ -5,7 +5,7 @@
 import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
 import { CopilotApiConfig } from "./config.ts";
-import { INTEGRATION_ID_RE } from "./env_config.ts";
+import { CopilotEnvConfig, INTEGRATION_ID_RE } from "./env_config.ts";
 import { GH_LOGIN_RE } from "./gh_cli.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import {
@@ -477,6 +477,7 @@ export class CopilotEnvState {
       raw.authProvider = patch.authProvider;
       delete raw.integrationIdentity;
       delete raw.copilotHost;
+      delete raw.copilotHostIdentity;
       profiles[key] = raw;
       d.profiles = profiles;
     });
@@ -500,6 +501,7 @@ export class CopilotEnvState {
       delete raw.ghUser;
       delete raw.integrationIdentity;
       delete raw.copilotHost;
+      delete raw.copilotHostIdentity;
       tidyEmptySlot(d, profiles, key);
     });
     return had;
@@ -539,6 +541,7 @@ export class CopilotEnvState {
       if (!credentialUnchanged) {
         delete committed.integrationIdentity;
         delete committed.copilotHost;
+        delete committed.copilotHostIdentity;
       }
       profiles[name] = committed;
       d.profiles = profiles;
@@ -557,32 +560,36 @@ export class CopilotEnvState {
     });
   }
 
-  /** Lands only while the slot still holds `forCredential`, compared inside the same update, so a probe
-   *  result outlives no rotation that raced it under update()'s best-effort lock; past its bounded wait
-   *  both writers proceed unlocked. Never creates a slot: a deletion race just loses the cache. */
   /**
    * The Copilot host the slot's Direct wiring resolved (`copilot-host auto`, resolveCopilotHost),
-   * cached beside `integrationIdentity` under the SAME identity and cleared with it on every
-   * credential change. `pin` is the `integration-id` pin in force: one naming another identity
-   * makes the cached host moot, so it reads null. Read off the raw slot: a derived cache, never part
-   * of the exported slot shape (a bundle re-resolves on the importing machine's network).
+   * cached with the identity NAME it was resolved under and cleared on every credential change. It
+   * reads back only while that identity is the one in force: the `integration-id` pin, else the
+   * slot's own verdict. A pin is configuration, never written into the verdict, so `--identity auto`
+   * always returns to the probed identity. Read off the raw slot: a derived cache, never part of the
+   * exported slot shape (a bundle re-resolves on the importing machine's network).
    */
   readProfileCopilotHost(profile: Profile, pin: string | null): string | null {
     const profiles = this.store.loadStrict().profiles;
     const raw = isRecord(profiles) ? profiles[slotKey(profile)] : undefined;
     if (!isRecord(raw)) return null;
-    if (pin !== null && pin !== raw.integrationIdentity) return null;
+    const inForce = pin ?? raw.integrationIdentity;
+    if (typeof inForce !== "string" || raw.copilotHostIdentity !== inForce) return null;
     const host = raw.copilotHost;
     if (typeof host !== "string" || !URL.canParse(host)) return null;
     const url = new URL(host);
     return url.protocol === "https:" && url.origin === host ? host : null;
   }
 
+  /** Lands only while the slot still holds `forCredential`, compared inside the same update, so a probe
+   *  result outlives no rotation that raced it under update()'s best-effort lock; past its bounded wait
+   *  both writers proceed unlocked. Never creates a slot: a deletion race just loses the cache.
+   *  `copilotHost`: the resolved host with the identity name it was resolved under; null clears the
+   *  pair, undefined leaves it. */
   setProfileIntegrationIdentity(
     profile: Profile,
     integrationIdentity: string | null,
     forCredential: ProvisionedCredential,
-    copilotHost: string | null = null,
+    copilotHost?: { host: string; identity: string } | null,
   ): void {
     const expected = rawCredentialPatch(forCredential);
     this.store.update((d) => {
@@ -602,8 +609,13 @@ export class CopilotEnvState {
       } else {
         raw.integrationIdentity = integrationIdentity.trim();
       }
-      if (copilotHost === null) delete raw.copilotHost;
-      else raw.copilotHost = copilotHost;
+      if (copilotHost === null) {
+        delete raw.copilotHost;
+        delete raw.copilotHostIdentity;
+      } else if (copilotHost !== undefined) {
+        raw.copilotHost = copilotHost.host;
+        raw.copilotHostIdentity = copilotHost.identity;
+      }
     });
   }
 
@@ -647,4 +659,16 @@ export class CopilotEnvState {
       d.claudeModelVerdicts = { ...verdicts, [key]: verdict };
     });
   }
+}
+
+/**
+ * The Copilot host a Direct rewire of `profile` would bake WITHOUT probing: the `copilot-host`
+ * literal, else the slot's cached host under the pin in force. Null = only a probe can say (`auto`,
+ * nothing cached): read paths (health, Desktop status) then take the baked host as expected. The
+ * one rule for every "expected host" question, so no reader derives its own.
+ */
+export function expectedDirectHost(profile: Profile): string | null {
+  const config = new CopilotEnvConfig();
+  return config.copilotHost() ??
+    new CopilotEnvState().readProfileCopilotHost(profile, config.pinnedIntegrationId());
 }

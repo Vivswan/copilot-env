@@ -11,7 +11,7 @@
 import { consola, type ConsolaInstance } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
-import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "./env_config.ts";
+import { CODEX_IDENTITY_NAME } from "./env_config.ts";
 import type { AuthProvider } from "./env_state.ts";
 
 /** The gating header. Its VALUES below are external contracts: never rename. */
@@ -34,43 +34,23 @@ export const DAEMON_INTEGRATION_ID_ENV = "COPILOT_ENV_DAEMON_INTEGRATION_ID";
 export const COPILOT_USER_URL = "https://api.github.com/copilot_internal/user";
 /** The generic host, what `copilot-host auto` lands on unless it is blocked for the credential. */
 export const DEFAULT_COPILOT_API_BASE = "https://api.githubcopilot.com";
-/** The per-plan hosts `endpoints.api` of COPILOT_USER_URL names; with the generic one, the set a
- *  Direct config is recognised by. */
-export const COPILOT_PLAN_API_BASES: readonly string[] = [
-  "https://api.individual.githubcopilot.com",
-  "https://api.business.githubcopilot.com",
-  "https://api.enterprise.githubcopilot.com",
-];
 
 /** The copilot-host preload (src/scripts/copilot_host_preload.ts) reads this and rewrites the
  *  `endpoints.api` the daemon learns from GitHub, so the proxy talks to the same host as Direct. */
 export const DAEMON_COPILOT_HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
 
-/** What a Direct config may carry as its base URL: the generic host, a plan host, or the
- *  `copilot-host` literal. Origins compare, so a trailing slash never fails the match. */
+/** The base-URL SHAPE of a Direct wiring: an https origin, whatever the host. Detection keys on
+ *  copilot-env's own markers (the managed helper, provider name, auth shape) plus this shape, never
+ *  on a host list, so a wiring baked for a past plan host or literal stays ours and a rewire moves
+ *  it; health renders the expected host beside it (expectedDirectHost, env_state.ts). */
 export function isDirectBaseUrl(url: string): boolean {
   if (!URL.canParse(url)) return false;
-  const origin = new URL(url).origin;
-  return origin === DEFAULT_COPILOT_API_BASE || COPILOT_PLAN_API_BASES.includes(origin) ||
-    origin === new CopilotEnvConfig().copilotHost();
+  const parsed = new URL(url);
+  // A loopback https origin is nobody's Copilot host: it stays a (mis-shaped) proxy contract.
+  return parsed.protocol === "https:" && !LOOPBACK_HOSTS.has(parsed.hostname);
 }
 
-/** The host a Direct write bakes when nothing is probed: the `copilot-host` literal, else the
- *  generic host. Read paths (health, Desktop status) render it as the expected host. */
-export function directBaseUrl(): string {
-  return new CopilotEnvConfig().copilotHost() ?? DEFAULT_COPILOT_API_BASE;
-}
-
-/** Health's note for a Direct config baked on a Copilot host other than the `copilot-host` literal:
- *  still Direct, still green, but the next rewire moves it. Empty under `auto` (that host is only
- *  known by probing) and when the bake matches. */
-export function directHostDrift(bakedBaseUrl: string): string {
-  const literal = new CopilotEnvConfig().copilotHost();
-  if (literal === null || !URL.canParse(bakedBaseUrl)) return "";
-  return new URL(bakedBaseUrl).origin === literal
-    ? ""
-    : ` (the next rewire moves it to ${literal}: copilot-host)`;
-}
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "[::1]", "localhost"]);
 
 const PROBE_TIMEOUT_MS = 5000;
 

@@ -167,9 +167,15 @@ test("a pinned Copilot host loads the copilot-host shim (before the PAT shim) an
   ]);
   expect(daemonEnvironment(pinned, {})[DAEMON_COPILOT_HOST_ENV]).toBe(host);
   // copilot-api's own host override would beat the rewritten state: a pinned daemon drops it.
-  const enterprise = { COPILOT_API_ENTERPRISE_URL: "ghe.example" };
+  const enterprise = {
+    COPILOT_API_ENTERPRISE_URL: "ghe.example",
+    COPILOT_API_OAUTH_APP: "opencode",
+  };
   expect(daemonEnvironment(pinned, enterprise).COPILOT_API_ENTERPRISE_URL).toBeUndefined();
+  // ... and the opencode app selector, which answers generic before the rewritten state.
+  expect(daemonEnvironment(pinned, enterprise).COPILOT_API_OAUTH_APP).toBeUndefined();
   expect(daemonEnvironment(BASE, enterprise).COPILOT_API_ENTERPRISE_URL).toBe("ghe.example");
+  expect(daemonEnvironment(BASE, enterprise).COPILOT_API_OAUTH_APP).toBe("opencode");
   // Set-or-delete: a pin left in the parent's environment must not outlive the spec that set it.
   const inherited = { [DAEMON_COPILOT_HOST_ENV]: "https://stale.example" };
   expect(daemonEnvironment(BASE, inherited)[DAEMON_COPILOT_HOST_ENV]).toBeUndefined();

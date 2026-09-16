@@ -45,12 +45,12 @@ agent config --del idle-timeout       # revert one to its default
 
 ## Credential
 
-| Key              | Default                       | Effect                                                                                                                                                                                               |
-| ---------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `copilot-host`   | `auto`                        | The Copilot API host every mode uses (Direct configs, Claude Desktop, the proxy, every probe); or an `https://` origin (one outside githubcopilot.com needs a build whose network grant includes it) |
-| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`)                                                                                                                                           |
-| `passthrough`    | `auto`                        | PAT passthrough: `auto` / `on` / `off`                                                                                                                                                               |
-| `static-key`     | `false`                       | Bake the credential value into the agent configs                                                                                                                                                     |
+| Key              | Default                       | Effect                                                                                                                                                                                                                                                                               |
+| ---------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `copilot-host`   | `auto`                        | The Copilot API host every mode uses (Direct configs, Claude Desktop, the proxy, every probe): `auto` probes per credential (a proxy with no stored credential is not pinned), or an `https://` origin (one outside githubcopilot.com needs a build whose network grant includes it) |
+| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`)                                                                                                                                                                                                                           |
+| `passthrough`    | `auto`                        | PAT passthrough: `auto` / `on` / `off`                                                                                                                                                                                                                                               |
+| `static-key`     | `false`                       | Bake the credential value into the agent configs                                                                                                                                                                                                                                     |
 
 `passthrough` is explained under [PAT passthrough](authentication.md#pat-passthrough) and `static-key` under [static key](authentication.md#static-key).
 

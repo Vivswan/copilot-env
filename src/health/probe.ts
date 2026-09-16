@@ -33,6 +33,7 @@ import {
   type AuthProvider,
   CopilotEnvState,
   credentialProvider,
+  expectedDirectHost,
   type ProfileMode,
   storedCredentialKind,
 } from "../copilot_api/env_state.ts";
@@ -986,6 +987,7 @@ export async function gatherFacts(
         facts.codex = {
           ...codexFacts,
           ...storeFacts(wiring.credential),
+          expectedDirectHost: wiring.providerMode === "direct" ? expectedDirectHost(profile) : null,
           ...(wiring.credential === "static"
             ? {
               bakedCredential: bakedFreshness(
@@ -1021,6 +1023,7 @@ export async function gatherFacts(
             profile,
           ),
           ...storeFacts(wiring.credential),
+          expectedDirectHost: wiring.providerMode === "direct" ? expectedDirectHost(profile) : null,
           ...(wiring.credential === "static"
             ? {
               bakedCredential: bakedFreshness(

@@ -12,6 +12,7 @@ import { CopilotEnvConfig } from "./env_config.ts";
 import { ghTokenEnvVarsList, ghTokenFromEnv } from "./gh_cli.ts";
 import {
   CODEX_EXEC_USER_AGENT,
+  DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   type ProbeFetch,
   resolveCopilotHost,
@@ -165,6 +166,7 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   const integrationId = await raceWithAbort(
     resolveDirectIntegrationId(token, CODEX_EXEC_USER_AGENT, {
       pinned: config.pinnedIntegrationId(),
+      apiBase: config.copilotHost() ?? DEFAULT_COPILOT_API_BASE,
       fetchImpl: opts.fetchImpl,
     }),
     opts.signal,

@@ -478,6 +478,7 @@ export class CopilotEnvState {
       delete raw.integrationIdentity;
       delete raw.copilotHost;
       delete raw.copilotHostIdentity;
+      delete raw.copilotHostSource;
       profiles[key] = raw;
       d.profiles = profiles;
     });
@@ -502,6 +503,7 @@ export class CopilotEnvState {
       delete raw.integrationIdentity;
       delete raw.copilotHost;
       delete raw.copilotHostIdentity;
+      delete raw.copilotHostSource;
       tidyEmptySlot(d, profiles, key);
     });
     return had;
@@ -542,6 +544,7 @@ export class CopilotEnvState {
         delete committed.integrationIdentity;
         delete committed.copilotHost;
         delete committed.copilotHostIdentity;
+        delete committed.copilotHostSource;
       }
       profiles[name] = committed;
       d.profiles = profiles;
@@ -561,35 +564,54 @@ export class CopilotEnvState {
   }
 
   /**
-   * The Copilot host the slot's Direct wiring resolved (`copilot-host auto`, resolveCopilotHost),
-   * cached with the identity NAME it was resolved under and cleared on every credential change. It
-   * reads back only while that identity is the one in force: the `integration-id` pin, else the
-   * slot's own verdict. A pin is configuration, never written into the verdict, so `--identity auto`
-   * always returns to the probed identity. Read off the raw slot: a derived cache, never part of the
-   * exported slot shape (a bundle re-resolves on the importing machine's network).
+   * The Copilot host the slot's Direct wiring resolved, cached with the identity NAME it was
+   * resolved under and how (`auto` probe or the `copilot-host` literal of the time), cleared on every
+   * credential change. It reads back only while BOTH still hold: the identity in force (the
+   * `integration-id` pin, else the slot's own verdict) is the cached one, and the host in force is
+   * the cached one (under a literal, the literal itself; under `auto`, an `auto` answer). A pin is
+   * configuration, never written into the verdict, so `--identity auto` returns to the probed
+   * identity. Read off the raw slot: a derived cache, never part of the exported slot shape.
    */
-  readProfileCopilotHost(profile: Profile, pin: string | null): string | null {
-    const profiles = this.store.loadStrict().profiles;
-    const raw = isRecord(profiles) ? profiles[slotKey(profile)] : undefined;
-    if (!isRecord(raw)) return null;
+  readProfileCopilotHost(
+    profile: Profile,
+    pin: string | null,
+    literal: string | null,
+  ): string | null {
+    const raw = this.rawProfileSlot(profile);
+    if (raw === null) return null;
     const inForce = pin ?? raw.integrationIdentity;
     if (typeof inForce !== "string" || raw.copilotHostIdentity !== inForce) return null;
     const host = raw.copilotHost;
     if (typeof host !== "string" || !URL.canParse(host)) return null;
     const url = new URL(host);
-    return url.protocol === "https:" && url.origin === host ? host : null;
+    if (url.protocol !== "https:" || url.origin !== host) return null;
+    if (literal === null ? raw.copilotHostSource !== "auto" : host !== literal) return null;
+    return host;
+  }
+
+  /** Whether the slot holds a cached host pair at all (valid for the current pin and literal or
+   *  not): a pair that no longer reads back marks the identity verdict as another host's. */
+  hasProfileCopilotHost(profile: Profile): boolean {
+    const raw = this.rawProfileSlot(profile);
+    return raw !== null && typeof raw.copilotHost === "string";
+  }
+
+  private rawProfileSlot(profile: Profile): Record<string, unknown> | null {
+    const profiles = this.store.loadStrict().profiles;
+    const raw = isRecord(profiles) ? profiles[slotKey(profile)] : undefined;
+    return isRecord(raw) ? raw : null;
   }
 
   /** Lands only while the slot still holds `forCredential`, compared inside the same update, so a probe
    *  result outlives no rotation that raced it under update()'s best-effort lock; past its bounded wait
    *  both writers proceed unlocked. Never creates a slot: a deletion race just loses the cache.
-   *  `copilotHost`: the resolved host with the identity name it was resolved under; null clears the
-   *  pair, undefined leaves it. */
+   *  `copilotHost`: the resolved host with the identity name it was resolved under and how; null
+   *  clears the pair, undefined leaves it. */
   setProfileIntegrationIdentity(
     profile: Profile,
     integrationIdentity: string | null,
     forCredential: ProvisionedCredential,
-    copilotHost?: { host: string; identity: string } | null,
+    copilotHost?: CachedCopilotHost | null,
   ): void {
     const expected = rawCredentialPatch(forCredential);
     this.store.update((d) => {
@@ -612,9 +634,11 @@ export class CopilotEnvState {
       if (copilotHost === null) {
         delete raw.copilotHost;
         delete raw.copilotHostIdentity;
+        delete raw.copilotHostSource;
       } else if (copilotHost !== undefined) {
         raw.copilotHost = copilotHost.host;
         raw.copilotHostIdentity = copilotHost.identity;
+        raw.copilotHostSource = copilotHost.source;
       }
     });
   }
@@ -670,5 +694,13 @@ export class CopilotEnvState {
 export function expectedDirectHost(profile: Profile): string | null {
   const config = new CopilotEnvConfig();
   return config.copilotHost() ??
-    new CopilotEnvState().readProfileCopilotHost(profile, config.pinnedIntegrationId());
+    new CopilotEnvState().readProfileCopilotHost(profile, config.pinnedIntegrationId(), null);
+}
+
+/** A resolved host beside the identity it was resolved under and how: `auto` (resolveCopilotHost)
+ *  or `literal` (the `copilot-host` value of the time). */
+export interface CachedCopilotHost {
+  host: string;
+  identity: string;
+  source: "auto" | "literal";
 }

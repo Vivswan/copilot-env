@@ -171,14 +171,12 @@ test("a Direct wiring bakes the copilot-host into both agents' base URLs; detect
     )
       .providerMode,
   ).toBe("direct");
-  // Only the shape gates: an http base that is not the proxy is the inspector's UNWIRED proxy.
-  const foreign = inspectCodexWiring(
-    codexConfigToml({ baseUrl: "http://elsewhere.example" }),
-    null,
-    4141,
-    false,
-  );
-  expect([foreign.providerMode, foreign.providerWired]).toEqual(["proxy", false]);
+  // Only the shape gates: an http base that is not the proxy, or an https base with a path (some
+  // other API), is the inspector's UNWIRED proxy.
+  for (const baseUrl of ["http://elsewhere.example", "https://api.openai.com/v1"]) {
+    const foreign = inspectCodexWiring(codexConfigToml({ baseUrl }), null, 4141, false);
+    expect([foreign.providerMode, foreign.providerWired]).toEqual(["proxy", false]);
+  }
 
   // `auto` with the generic host serving: today's bytes.
   seen.length = 0;
@@ -216,27 +214,33 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
     );
   });
 
-  // Under a literal the identity is probed (a PAT) ON THE LITERAL and cached; no host is cached.
+  // Under a literal the identity is probed (a PAT) ON THE LITERAL and the pair is cached as the
+  // literal's: it replays under that literal alone, not under `auto`.
   new CopilotEnvConfig().set({ copilotHost: GHE });
   expect(await resolveAndPersistDirectWiring(null)).toEqual({
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
     directBaseUrl: GHE,
   });
   expect(state.readProfileSlot(null).integrationIdentity).toBe(COPILOT_CLI_INTEGRATION_ID);
-  expect(state.readProfileCopilotHost(null, null)).toBeNull();
+  expect(state.readProfileCopilotHost(null, null, GHE)).toBe(GHE);
+  expect(state.readProfileCopilotHost(null, null, null)).toBeNull();
   expect(seen.length).toBeGreaterThan(0);
   expect(seen.every((s) => s.host === GHE)).toBe(true);
+  seen.length = 0;
+  await resolveAndPersistDirectWiring(null);
+  expect(seen).toEqual([]);
 
-  // Dropping the literal probes the host ONCE, under the cached identity (never the identity
-  // again), persists it, and replays it offline from then on.
+  // Dropping the literal re-probes BOTH (an identity accepted on the literal says nothing about
+  // the generic host), persists the `auto` pair, and replays it offline from then on.
   new CopilotEnvConfig().del("copilotHost");
   seen.length = 0;
   expect(await resolveAndPersistDirectWiring(null)).toEqual({
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
     directBaseUrl: DEFAULT_COPILOT_API_BASE,
   });
-  expect(seen).toEqual([{ host: DEFAULT_COPILOT_API_BASE, id: COPILOT_CLI_INTEGRATION_ID }]);
-  expect(state.readProfileCopilotHost(null, null)).toBe(DEFAULT_COPILOT_API_BASE);
+  expect(seen.map((s) => s.host).every((h) => h === DEFAULT_COPILOT_API_BASE)).toBe(true);
+  expect(seen.length).toBeGreaterThan(1);
+  expect(state.readProfileCopilotHost(null, null, null)).toBe(DEFAULT_COPILOT_API_BASE);
   seen.length = 0;
   await resolveAndPersistDirectWiring(null);
   expect(seen).toEqual([]);
@@ -253,8 +257,8 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
   // (readable under it, not under the verdict), so `--identity auto` re-probes the host, never
   // the identity.
   expect(state.readProfileSlot(null).integrationIdentity).toBe(COPILOT_CLI_INTEGRATION_ID);
-  expect(state.readProfileCopilotHost(null, "copilot-developer-sandbox")).toBe(ENTERPRISE);
-  expect(state.readProfileCopilotHost(null, null)).toBeNull();
+  expect(state.readProfileCopilotHost(null, "copilot-developer-sandbox", null)).toBe(ENTERPRISE);
+  expect(state.readProfileCopilotHost(null, null, null)).toBeNull();
   new CopilotEnvConfig().set({ integrationId: "auto" });
   expect(await resolveAndPersistDirectWiring(null)).toEqual({
     directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
@@ -262,12 +266,12 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
   });
   // (The slot cache read null above; the process memo answered the CLI host probe, same token
   // and identity as the dropped-literal probe, so no request is counted here.)
-  expect(state.readProfileCopilotHost(null, null)).toBe(DEFAULT_COPILOT_API_BASE);
+  expect(state.readProfileCopilotHost(null, null, null)).toBe(DEFAULT_COPILOT_API_BASE);
 
   // A credential change clears both halves.
   new Credential(state).store("gh-token", "ghp_rotated");
   expect(state.readProfileSlot(null).integrationIdentity).toBeNull();
-  expect(state.readProfileCopilotHost(null, null)).toBeNull();
+  expect(state.readProfileCopilotHost(null, null, null)).toBeNull();
 
   // A fresh slot under a pin caches the host resolved under the pin WITHOUT writing the pin as its
   // verdict, so the launcher hot path replays offline and `--identity auto` still probes afresh.
@@ -279,7 +283,7 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
   });
   expect(seen).toEqual([{ host: DEFAULT_COPILOT_API_BASE, id: COPILOT_CLI_INTEGRATION_ID }]);
   expect(state.readProfileSlot(null).integrationIdentity).toBeNull();
-  expect(state.readProfileCopilotHost(null, COPILOT_CLI_INTEGRATION_ID)).toBe(
+  expect(state.readProfileCopilotHost(null, COPILOT_CLI_INTEGRATION_ID, null)).toBe(
     DEFAULT_COPILOT_API_BASE,
   );
   seen.length = 0;
@@ -341,6 +345,45 @@ test("a wiring baked for one host stays ours after the copilot-host literal chan
   );
 });
 
+test("a literal change re-probes a cached identity: a verdict from one host is never baked on another", async () => {
+  dir = isolateAgentHomes("copilot-host-literal-change-").dir;
+  const state = new CopilotEnvState();
+  new Credential(state).store("gh-token", "github_pat_x");
+  const seen: { host: string; id: string | null }[] = [];
+  // The generic host accepts the sandbox id alone; the literal accepts the CLI id alone.
+  setIntegrationProbeFetch((input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/copilot_internal/user")) {
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+    }
+    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+    const origin = new URL(url).origin;
+    seen.push({ host: origin, id });
+    const accepted = origin === GHE
+      ? id === COPILOT_CLI_INTEGRATION_ID
+      : id === "copilot-developer-sandbox";
+    return Promise.resolve(
+      accepted
+        ? new Response(JSON.stringify({ data: [] }), { status: 200 })
+        : new Response("Personal Access Tokens are not supported", { status: 400 }),
+    );
+  });
+  expect(await resolveAndPersistDirectWiring(null)).toEqual({
+    directIntegrationId: "copilot-developer-sandbox",
+    directBaseUrl: DEFAULT_COPILOT_API_BASE,
+  });
+  // The literal changes the host in use: the cached (generic, sandbox) pair is not this host's, so
+  // the identity is probed again on the literal, where sandbox 400s and the CLI id is accepted.
+  new CopilotEnvConfig().set({ copilotHost: GHE });
+  seen.length = 0;
+  expect(await resolveAndPersistDirectWiring(null)).toEqual({
+    directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
+    directBaseUrl: GHE,
+  });
+  expect(seen.every((s) => s.host === GHE)).toBe(true);
+  expect(seen.some((s) => s.id === COPILOT_CLI_INTEGRATION_ID)).toBe(true);
+});
+
 test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is probed again on the host that serves it", async () => {
   dir = isolateAgentHomes("copilot-host-reprobe-").dir;
   const seen: { host: string; id: string | null }[] = [];
@@ -374,7 +417,7 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
     COPILOT_CLI_INTEGRATION_ID,
   ]);
   // A literal skips the HOST probe only: the identity is probed on the literal host, and nothing
-  // reaches the generic host (which would 403 and read as "rejected under every identity").
+  // reaches the generic host (whose 403 would leave the probe inconclusive, baking the default).
   new CopilotEnvConfig().set({ copilotHost: GHE });
   seen.length = 0;
   expect(await probeDirectWiring(null, "github_pat_y")).toEqual({

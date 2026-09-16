@@ -73,9 +73,10 @@ export async function wireBothAgents(
  *   when it can be keyed to the credential it ran under (identityCacheKey)
  *
  * The launcher hot path (`--sync` on every `cl --profile`) thus replays the stored pair offline; a
- * credential change clears the slot (CopilotEnvState.setCredential). A slot holding only the
- * identity, or a pin naming another identity, probes the host again; the identity is probed again
- * only where `auto` moved the host (probeDirectWiring).
+ * credential change clears the slot (CopilotEnvState.setCredential). The pair is one verdict: an
+ * identity accepted on one host says nothing about another, so a pair that no longer reads back
+ * (the literal changed or went away, a pin names another identity) re-probes BOTH; a slot holding
+ * only an identity (imported, or cached before hosts were) probes the host under it.
  */
 export async function resolveAndPersistDirectWiring(
   profile: Profile,
@@ -94,12 +95,15 @@ export async function resolveAndPersistDirectWiring(
     : slot.integrationIdentity;
   const pin = config.pinnedIntegrationId();
   const literal = config.copilotHost();
-  const directIntegrationId = pin ?? cachedIdentity;
-  // The cached host reads back only under the identity it was resolved for (readProfileCopilotHost).
-  const cachedHost = state.readProfileCopilotHost(profile, pin);
-  const directBaseUrl = literal ?? cachedHost;
-  if (directIntegrationId !== undefined && directBaseUrl !== null) {
-    return { directIntegrationId, directBaseUrl };
+  // The cached pair reads back only under the identity and host in force (readProfileCopilotHost);
+  // a pair that does not is another host's verdict, so its identity is not replayed either.
+  const cachedHost = state.readProfileCopilotHost(profile, pin, literal);
+  const replayIdentity = cachedHost === null && state.hasProfileCopilotHost(profile)
+    ? undefined
+    : cachedIdentity;
+  const directIntegrationId = pin ?? replayIdentity;
+  if (directIntegrationId !== undefined && cachedHost !== null) {
+    return { directIntegrationId, directBaseUrl: cachedHost };
   }
   const probed = await probeDirectWiring(
     profile,
@@ -108,8 +112,8 @@ export async function resolveAndPersistDirectWiring(
   );
   // Keyed to the credential the probe ACTUALLY ran under; null means the two cannot be tied. A pin
   // is configuration, never written as the verdict (the slot keeps what it held, so `--identity
-  // auto` returns to it); the host is cached with the identity it was resolved under, pin or
-  // verdict, and replays while that identity is in force. A literal caches no host.
+  // auto` returns to it); the pair is cached with the identity it was resolved under, pin or
+  // verdict, and how, so it replays exactly while both stay in force.
   const keyCredential = identityCacheKey(slot.credential, credentialToken);
   if (keyCredential !== null) {
     const verdict = probed.directIntegrationId ?? CODEX_IDENTITY_NAME;
@@ -117,7 +121,11 @@ export async function resolveAndPersistDirectWiring(
       profile,
       pin === null ? verdict : slot.integrationIdentity,
       keyCredential,
-      literal === null ? { host: probed.directBaseUrl, identity: pin ?? verdict } : undefined,
+      {
+        host: probed.directBaseUrl,
+        identity: pin ?? verdict,
+        source: literal === null ? "auto" : "literal",
+      },
     );
   }
   return probed;

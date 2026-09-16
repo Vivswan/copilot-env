@@ -4,6 +4,7 @@ modules:
   - release-please
   - pr-title
   - custom-license
+  - site
 project:
   name: copilot-env
   slug: copilot-env

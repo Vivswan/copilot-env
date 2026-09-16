@@ -172,6 +172,14 @@ test("removing a profile deletes its file, or only our selector when the user's 
     "model": "gpt-5.4-mini",
     "model_provider": "openai",
   });
+
+  // A profile file that cannot be read refuses the whole removal: config.toml keeps the provider
+  // table, so the selector is never left pointing at a table that is gone.
+  writeProxyProfile(codexHome);
+  const before = configText(codexHome);
+  writeFileSync(profilePath, 'model_provider = "unclosed');
+  expect(() => removeCodexProfile(codexHome, WORK)).toThrow(/work\.config\.toml/);
+  expect(configText(codexHome)).toBe(before);
 });
 
 test("a base_url on the wrong port un-wires the proxy profile", () => {

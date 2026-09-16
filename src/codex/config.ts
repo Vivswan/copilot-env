@@ -981,7 +981,11 @@ function serviceTierDetail(doc: Record<string, unknown>): string {
 export function removeCodexProfile(codexHome: string, name: ProfileName): void {
   const providerId = codexProviderId(name);
   const configPath = codexConfigPath(codexHome);
+  const profilePath = codexProfileConfigPath(codexHome, name);
+  // Both reads before either save: a profile file that throws must leave config.toml as it was,
+  // never a selector whose provider table is already gone.
   const doc = readConfigForRemoval(configPath);
+  const profileDoc = readConfigForRemoval(profilePath);
   if (doc !== null) {
     const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
     if (providers[providerId] !== undefined) {
@@ -990,8 +994,6 @@ export function removeCodexProfile(codexHome: string, name: ProfileName): void {
       saveCodexToml(configPath, doc);
     }
   }
-  const profilePath = codexProfileConfigPath(codexHome, name);
-  const profileDoc = readConfigForRemoval(profilePath);
   if (profileDoc === null || profileDoc.model_provider !== providerId) return;
   delete profileDoc.model_provider;
   if (Object.keys(profileDoc).length === 0) removeReported(profilePath);

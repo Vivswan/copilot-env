@@ -20,7 +20,7 @@ import {
   surveyIntegrationIdentities,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
-import { codexUserAgent } from "../src/codex/config.ts";
+import { codexUserAgent } from "../src/codex/user_agent.ts";
 import { ROOT } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 

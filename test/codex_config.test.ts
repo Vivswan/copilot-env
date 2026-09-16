@@ -9,12 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
-import {
-  CATALOG_PATCH_VERSION,
-  CI_NO_LIVE_LOOKUPS_ENV,
-  NOOP_CATALOG_DEPS,
-  resetCodexVersionMemo,
-} from "../src/codex/catalog.ts";
+import { CATALOG_PATCH_VERSION, NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import {
   refreshCodexCatalogAndSync,
   syncCodexCatalogReference,
@@ -22,10 +17,10 @@ import {
 import {
   configureCodexConfig,
   detectCodexDirect,
-  FALLBACK_CODEX_UA_VERSION,
   inspectCodexWiring,
   runCodex,
 } from "../src/codex/config.ts";
+import { FALLBACK_CODEX_UA_VERSION } from "../src/codex/user_agent.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
@@ -35,7 +30,7 @@ import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, linesNaming } from "./helpers.ts";
 
-const restoreEnv = envSnapshot(["PATH", CI_NO_LIVE_LOOKUPS_ENV]);
+const restoreEnv = envSnapshot();
 let dir = "";
 // The default credential shape: the config names a copilot-env command that prints the credential.
 const COMMAND = { kind: "command" } as const;
@@ -301,63 +296,6 @@ test("writes the managed direct default config when no provider section exists",
   expect(provider.supports_websockets).toBe(false);
   expect(existsSync(join(codexHome, ".env"))).toBe(false);
 });
-
-// The live-lookup seam is OFF here, so the real `codex --version` and `npm view` roads run, against
-// fakes that shadow any real codex or npm (the fake bin dir leads PATH in every arm, an exit-1 fake
-// included; /usr/bin and /bin stay for `sh`).
-test.skipIf(process.platform === "win32")(
-  "Direct UA version chain: installed codex, else npm's release, else the baked fallback; one spawn per road per process, failures included",
-  () => {
-    isolate();
-    const bin = join(dir, "bin");
-    mkdirSync(bin);
-    const spawns = join(dir, "spawns");
-    const fake = (command: string, output: string | null): void => {
-      const answer = output === null ? "exit 1" : `echo '${output}'`;
-      writeFileSync(join(bin, command), `#!/bin/sh\necho ${command} >> "${spawns}"\n${answer}\n`);
-      chmodSync(join(bin, command), 0o755);
-    };
-    process.env.PATH = `${bin}:/usr/bin:/bin`;
-    delete process.env[CI_NO_LIVE_LOOKUPS_ENV];
-    const codexHome = join(dir, ".codex");
-    const userAgent = (): unknown => {
-      configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND });
-      const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-      return asRecord(asRecord(asRecord(doc.model_providers)["copilot-env"]).http_headers)[
-        "User-Agent"
-      ];
-    };
-    // Two writes per arm: the second must reuse the memo, a memoized failure included.
-    const arm = (
-      codex: string | null,
-      npm: string | null,
-    ): { agent: unknown; spawned: string[] } => {
-      resetCodexVersionMemo();
-      rmSync(spawns, { force: true });
-      fake("codex", codex);
-      fake("npm", npm);
-      const agent = userAgent();
-      expect(userAgent()).toBe(agent);
-      return { agent, spawned: readFileSync(spawns, "utf8").trim().split("\n") };
-    };
-
-    expect(arm("codex-cli 9.9.9", "8.8.8")).toEqual({
-      agent: "codex_exec/9.9.9", // the installed codex wins; npm is never asked
-      spawned: ["codex"],
-    });
-    expect(arm(null, "8.8.8")).toEqual({
-      agent: "codex_exec/8.8.8", // no codex: npm's current release
-      spawned: ["codex", "npm"],
-    });
-    expect(arm(null, null)).toEqual({
-      agent: `codex_exec/${FALLBACK_CODEX_UA_VERSION}`, // offline: the fallback
-      spawned: ["codex", "npm"],
-    });
-    // Copilot rejects some models for a version-LESS codex_exec UA (the gate is the versioned
-    // SHAPE), so the fallback must stay a real X.Y.Z release.
-    expect(FALLBACK_CODEX_UA_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
-  },
-);
 
 test("runCodex --proxy writes the proxy provider at CODEX_HOME", async () => {
   isolate();

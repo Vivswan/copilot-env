@@ -19,7 +19,6 @@ import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { isReducedGpt } from "../copilot_api/models.ts";
 import {
   type BakedDirectIdentity,
-  CODEX_EXEC_USER_AGENT,
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   INTEGRATION_ID_HEADER,
@@ -44,7 +43,6 @@ import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../ut
 import {
   type CatalogFileVerdict,
   type CodexCatalogDeps,
-  codexUserAgentVersion,
   generateCodexModelCatalog,
   inspectCatalogFile,
   parseCopilotModels,
@@ -65,6 +63,7 @@ import {
   defaultCodexHome,
 } from "./paths.ts";
 import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
+import { codexUserAgent } from "./user_agent.ts";
 
 const logger = createStderrLogger();
 
@@ -108,17 +107,6 @@ export type CodexWriteRequest =
 // smol-toml does NOT preserve comments or whitespace (TS has no battle-tested tomlkit equivalent),
 // so load-merge-stringify is the best the writer can do. Every managed field is ENFORCED on each
 // run, so a renamed or added key propagates even into a pre-existing config.
-
-/** Copilot's Anthropic surface REJECTS some models (claude-fable-5, verified live) for a
- *  version-LESS `codex_exec` UA while accepting any versioned form (the gate is the shape, not the
- *  value), so the managed identity must never go bare: the last resort when neither the installed
- *  codex nor npm answers (codexUserAgentVersion). A real release keeps it plausible. */
-export const FALLBACK_CODEX_UA_VERSION = "0.152.0";
-
-/** Both agents' Direct headers carry this; resolved once per process (the catalog module's memo). */
-export function codexUserAgent(): string {
-  return `${CODEX_EXEC_USER_AGENT}/${codexUserAgentVersion() ?? FALLBACK_CODEX_UA_VERSION}`;
-}
 
 /** The unified table doesn't encode mode in its name, so mode is read from base_url; anything but
  *  the Direct host or a localhost proxy on `expectedPort` is "other" (a half-written table). */

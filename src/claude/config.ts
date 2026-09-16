@@ -23,7 +23,8 @@ import {
   type ManagedAgentMode,
   providerModeExitCode,
 } from "../agents/provider_mode.ts";
-import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
+import { probeDirectIntegrationId } from "../codex/config.ts";
+import { codexUserAgent } from "../codex/user_agent.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";

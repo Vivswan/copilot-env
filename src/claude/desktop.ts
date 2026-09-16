@@ -16,7 +16,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
-import { codexUserAgent } from "../codex/config.ts";
+import { codexUserAgent } from "../codex/user_agent.ts";
 import type { ManagedMode, ManagedWrite } from "../agents/configure.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { atomicWriteFile, chmodReported, removeReported } from "../utils/report_write.ts";

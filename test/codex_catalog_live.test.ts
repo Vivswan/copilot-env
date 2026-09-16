@@ -5,11 +5,11 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stringify } from "smol-toml";
 import {
-  CI_NO_LIVE_LOOKUPS_ENV,
   type CopilotCatalogModel,
   generateCodexModelCatalog,
   parseCopilotModels,
 } from "../src/codex/catalog.ts";
+import { CI_NO_LIVE_LOOKUPS_ENV } from "../src/codex/user_agent.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../src/utils/command.ts";

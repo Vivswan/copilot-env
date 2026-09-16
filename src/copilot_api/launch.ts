@@ -772,7 +772,7 @@ function copilotTokenFailureHint(log: string, profile: Profile): string | null {
   return (
     "The credential was not accepted by Copilot's token exchange. For a gh-cli or PAT credential, " +
     `enable passthrough (\`${
-      configSetCommand("passthrough", "on")
+      configSetCommand("passthrough", "on", profile)
     }\`); otherwise re-authenticate with a ` +
     `Copilot-capable login (\`agent auth${flag} --provider copilot\`).`
   );

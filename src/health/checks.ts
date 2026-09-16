@@ -762,7 +762,7 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
     ? {
       ...base,
       status: "ok",
-      detail: "enabled (the `launchers` config key; `agent env` defines them)",
+      detail: "enabled (the `shell.launchers` config key; `agent env` defines them)",
     }
     : {
       ...base,

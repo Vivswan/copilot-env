@@ -747,7 +747,7 @@ program
   .helpGroup("Setup:")
   .description(
     "Set up the shell environment: wire the copilot-env integration (rc / PowerShell $PROFILE) " +
-      "and optionally install the agent CLIs (the cl / co / cx launchers follow the `launchers` config key).",
+      "and optionally install the agent CLIs (the cl / co / cx launchers follow the `shell.launchers` config key).",
   )
   .option(
     "--clis",
@@ -764,7 +764,7 @@ program
   )
   .option("--no-prereqs", "With --clis: verify prerequisites and CLIs only; install nothing.")
   .option("--all-hosts", "Windows only: target the CurrentUserAllHosts profile.")
-  .option("--remove", "Unwire the integration (the `launchers` config key is left as it is).")
+  .option("--remove", "Unwire the integration (the `shell.launchers` config key is left as it is).")
   .action((opts: Opts) =>
     runShell({
       remove: Boolean(opts.remove),

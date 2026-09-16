@@ -11,7 +11,7 @@
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
-import { CODEX_IDENTITY_NAME, isLoopbackHostname } from "./env_config.ts";
+import { CODEX_IDENTITY_NAME, configSetCommand, isLoopbackHostname } from "./env_config.ts";
 import type { AuthProvider } from "./env_state.ts";
 import { fetchModelCatalog, type ModelCatalogOutcome } from "./models_fetch.ts";
 
@@ -670,7 +670,9 @@ function narrateIdentity(
     // Pinning the mode's own default (the daemon's fixed vscode-chat) is nothing to explain.
     if (chosen === defaultName) return;
     narrator.info(
-      `Copilot integration identity: ${chosen} (pinned via \`agent config integration-id\`).`,
+      `Copilot integration identity: ${chosen} (pinned via \`${
+        configSetCommand("identity", "<id>")
+      }\`).`,
     );
   } else if (chosen === preferred && chosen !== defaultName) {
     narrator.info(

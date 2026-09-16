@@ -48,7 +48,7 @@ function stringLiterals(source: string): string[] {
     .filter((line) => !/^\s*\}\s*from\s+["']/.test(line))
     .join("\n");
   const literals = code.match(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g) ?? [];
-  return literals.map((lit) => lit.replace(/\$\{[^}]*\}/g, " "));
+  return literals.map((lit) => lit.slice(1, -1).replace(/\$\{[^}]*\}/g, " "));
 }
 
 const KEYS: ReadonlySet<string> = new Set(CONFIG_REGISTRY.map((def) => def.key));
@@ -58,7 +58,11 @@ const DOTTED_KEY_SHAPE = new RegExp(
   `\\b(?:${GROUPS.join("|")})\\.[a-z][a-z-]*(?:\\.[a-z][a-z-]*)*\\b`,
   "g",
 );
-const HAND_SPELLED_HINT = /agent config --(?:set|del|get) (?!<)[^\s`'"()]+/g;
+/** `agent config --set <key> ...` or a bare `agent config <key>`; a `<placeholder>` or a second flag is
+ *  not a key. */
+const HAND_SPELLED_HINT = /agent config (?:--(?:set|del|get) )?(?!<|--)[a-z][a-z0-9.-]*/g;
+/** "the <key> config key", "`<key>` config key", or a dotted/dashed "<key> config key". */
+const KEY_MENTION = /(?:(?:the |`)([a-z][a-z0-9.-]*)`?|([a-z0-9]+(?:[.-][a-z0-9]+)+)) config key/g;
 
 test("no source string spells an `agent config` hint by hand or names a dotted key the registry lacks", () => {
   const offences: string[] = [];
@@ -73,6 +77,11 @@ test("no source string spells an `agent config` hint by hand or names a dotted k
         if (KEYS.has(token) || NOT_KEYS.has(token)) continue;
         offences.push(`${where}: \`${token}\` is not a registry key`);
       }
+      for (const mention of literal.matchAll(KEY_MENTION)) {
+        const token = mention[1] ?? mention[2] ?? "";
+        if (KEYS.has(token)) continue;
+        offences.push(`${where}: "${token} config key" names no registry key`);
+      }
     }
   }
   expect(offences).toEqual([]);
@@ -85,4 +94,10 @@ test("no source string spells an `agent config` hint by hand or names a dotted k
   expect(stringLiterals('z("(daemon.auto-stop on)")').join("").match(DOTTED_KEY_SHAPE))
     .toEqual(["daemon.auto-stop"]);
   expect(KEYS.has("daemon.auto-stop")).toBe(false);
+  expect('"pinned via `agent config integration-id`"'.match(HAND_SPELLED_HINT))
+    .toEqual(["agent config integration-id"]);
+  expect('"usage: agent config --set <key> <value>"'.match(HAND_SPELLED_HINT)).toBeNull();
+  expect([...'"the `launchers` config key"'.matchAll(KEY_MENTION)].map((m) => m[1] ?? m[2]))
+    .toEqual(["launchers"]);
+  expect([...'"unknown config key"'.matchAll(KEY_MENTION)]).toEqual([]);
 });

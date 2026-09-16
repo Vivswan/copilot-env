@@ -65,7 +65,7 @@ export interface CostArgs {
   days?: string;
   json?: boolean;
   perDay?: boolean;
-  /** Unset defers to the `pricing-url` config key. */
+  /** Unset defers to the `cost.pricing-url` config key. */
   pricingUrl?: string;
   sources?: boolean;
   /** The usage index is neither opened nor written. */

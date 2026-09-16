@@ -23,7 +23,7 @@ const NODE_PROBE_COMMAND = process.platform === "win32" ? NPM_COMMAND : "node";
 /** Distinct from the autoupdate release cooldown, which happens to share the number. */
 export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
 
-/** The cl/co/cx launchers belong to the `launchers` config key (`agent env` emits them); a wire
+/** The cl/co/cx launchers belong to the `shell.launchers` config key (`agent env` emits them); a wire
  *  only reports that state. */
 export interface ShellArgs {
   remove?: boolean;

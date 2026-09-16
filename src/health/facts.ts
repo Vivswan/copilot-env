@@ -203,7 +203,7 @@ export interface ShellFacts {
    *  check says "could not check" instead of a confident "not wired". Optional so hand-built
    *  fixtures stay valid. */
   targetsUnproven?: true;
-  /** The `launchers` config key: the cl/co/cx launchers are `agent env` emissions gated on it,
+  /** The `shell.launchers` config key: the cl/co/cx launchers are `agent env` emissions gated on it,
    *  so the key, not any rc marker, is what "wired" means. */
   launchersWired: boolean;
 }

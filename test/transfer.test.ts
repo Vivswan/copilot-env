@@ -26,6 +26,7 @@ import { settingsPathFor } from "../src/claude/paths.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { runCodex } from "../src/codex/config.ts";
 import { getHostLocalCodexHome } from "../src/codex/host.ts";
+import { runConfig } from "../src/commands/config.ts";
 import { importRestartHints, parseSettingsAction, runSettings } from "../src/commands/settings.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -40,6 +41,7 @@ import {
 } from "../src/claude/desktop.ts";
 import { CopilotApiPaths, resolveRootHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
+import { captureChannels } from "./helpers/output.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   type AgentHomes,
@@ -1038,6 +1040,26 @@ test("import surfaces the proxy restart hint when a projected key is set OR rese
   expect(resetHints[0]).toContain("next proxy start");
   // A prefs-only bundle with no projected keys on either side stays silent.
   expect(importRestartHints({ autoStart: true }, { idleTimeout: 60 })).toEqual([]);
+});
+
+test("import of a copilot-host outside the build's network grant prints the line `--set` prints", async () => {
+  const machine = isolate();
+  // The test grant (deno.json `test` net) holds loopback alone, so the running process's own
+  // permission query judges this host, unstubbed, exactly as the standard build's would.
+  const ghe = "https://copilot-api.ghe.example";
+  const warningLine = (output: string): string | undefined =>
+    output.split("\n").find((line) => line.includes("network policy"));
+  const set = await captureChannels(() => runConfig({ set: ["copilot-host", ghe] }));
+  const expected = warningLine(set.all);
+  expect(expected).toContain(ghe);
+
+  const bundle = join(machine.dir, "ghe.json");
+  writeFileSync(bundle, JSON.stringify(rawBundle({ config: { copilotHost: ghe } })));
+  const imported = await captureChannels(() =>
+    runSettings({ importFrom: bundle, force: true }, { catalogDeps: NOOP_CATALOG_DEPS })
+  );
+  expect(warningLine(imported.all)).toBe(expected);
+  expect(new CopilotEnvConfig().copilotHost()).toBe(ghe);
 });
 
 // --- pre-import backups -----------------------------------------------------------

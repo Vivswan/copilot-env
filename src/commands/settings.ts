@@ -15,6 +15,7 @@ import {
   serializeSettingsBundle,
   writeSettingsBackup,
 } from "../agents/transfer.ts";
+import { copilotHostGrantWarning } from "../copilot_api/copilot_host_grant.ts";
 import {
   CONFIG_REGISTRY,
   CopilotEnvConfig,
@@ -201,6 +202,9 @@ async function runImport(
   const [restartHint, ...projectionWarnings] = importRestartHints(bundle.config, preImportPrefs);
   if (restartHint !== undefined) logger.info(restartHint);
   for (const warning of projectionWarnings) logger.warn(warning);
+  // Prefs are full-replace, so the bundle's copilot-host is the stored one now.
+  const grant = copilotHostGrantWarning(bundle.config.copilotHost);
+  if (grant !== null) logger.warn(grant);
   // The backup lives inside copilot-env's own home, where writes are silent, so the rollback
   // command is said here.
   if (backupPath !== null) {

@@ -14,7 +14,8 @@ import {
 } from "../src/claude/config.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { codexAdapter, inspectCodexWiring, probeDirectWiring } from "../src/codex/config.ts";
-import { copilotHostGrantWarning, runConfig } from "../src/commands/config.ts";
+import { runConfig } from "../src/commands/config.ts";
+import { copilotHostGrantWarning } from "../src/copilot_api/copilot_host_grant.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { configKeyDef, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState, expectedDirectHost } from "../src/copilot_api/env_state.ts";

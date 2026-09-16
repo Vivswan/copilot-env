@@ -273,6 +273,11 @@ onlyWin("Windows: the key cannot be set, reads off, and the derivation is inert"
   fs.mkdirSync(hostHome, { recursive: true });
   fs.writeFileSync(join(hostHome, "config.toml"), "x = 1\n");
   expect(codexHostDrift()).toBeNull();
+  // A farm-shaped export is the user's own home here: honoured, and left in the shell.
+  process.env.CODEX_HOME = hostHome;
+  expect(resolveCodexHome()).toEqual({ home: hostHome, by: "default", staleExport: null });
+  expect(managedCodexHome()).toBeNull();
+  delete process.env.CODEX_HOME;
   const written: string[] = [];
   await withCodexHostFarm((home) => {
     written.push(home);

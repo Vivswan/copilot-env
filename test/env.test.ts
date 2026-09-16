@@ -221,7 +221,7 @@ skipWin(
     // home the key names, so the export stays and the drift is warned about, never swallowed.
     writeRunState({ codexHome: null });
     expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toContain(
-      `no wiring pass has completed the per-host CODEX_HOME farm at ${hostHome}`,
+      `no completed wiring pass is recorded for the per-host CODEX_HOME farm at ${hostHome}`,
     );
     writeRunState({ codexHome: hostHome });
     writeFileSync(join(hostHome, "config.toml"), "");

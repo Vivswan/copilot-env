@@ -4,7 +4,6 @@ import { basename, isAbsolute, join, sep } from "node:path";
 import {
   CI_PS_DOCUMENTS_DIR_ENV,
   CI_RC_DIR_ENV,
-  LAUNCHERS_MARKER_END,
   MARKER_END,
   posixBlock,
   quotePosix,
@@ -22,7 +21,6 @@ import { afterEach, beforeEach, expect, tempDir, test } from "./helpers/testing.
 // The POSIX path runs the real CLI under a throwaway $HOME so the real rc files are never touched.
 
 const MARKER = "# copilot-env shell integration";
-const LAUNCHERS_MARKER = "# copilot-env launchers";
 // On win32 the command takes the Windows code path (writes the PS $PROFILE, not an
 // rc file), so these POSIX-behavior tests only run off Windows.
 const skipWin = test.skipIf(process.platform === "win32");
@@ -31,17 +29,6 @@ let home = "";
 /** upsertBlock's content, for the round-trip assertions that don't inspect leftBehind. */
 function up(content: string, marker: Parameters<typeof upsertBlock>[1], block: string): string {
   return upsertBlock(content, marker, block).content;
-}
-
-/** A launchers block exactly as pre-`agent launch` releases wired it (the builders are
- *  gone; the strip machinery must still recognize both platform flavors). */
-function legacyLaunchersBlock(powershell: boolean): string {
-  const body = powershell
-    ? "$AgentsLaunchers = 'C:\\x\\shell\\agents.launchers.ps1'\n" +
-      "if (Test-Path -LiteralPath $AgentsLaunchers) { . $AgentsLaunchers }"
-    : 'AGENTS_LAUNCHERS="/x/shell/agents.launchers.bashrc"\n' +
-      '[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"';
-  return `\n${LAUNCHERS_MARKER}\n${body}\n${LAUNCHERS_MARKER_END}\n`;
 }
 
 /** Occurrences of `marker` as a whole line. The end markers contain the open markers
@@ -204,7 +191,6 @@ skipWin("shell wires NO launchers block and reports the launchers key without wr
   expect(wired.out).toContain("Launchers: disabled (the launchers config key)");
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(MARKER);
-  expect(rc).not.toContain(LAUNCHERS_MARKER);
   expect(markerLines(rc, MARKER)).toBe(1);
   expect(storedLaunchersKey()).toBeUndefined();
   const rejected = run("--launchers");
@@ -212,20 +198,15 @@ skipWin("shell wires NO launchers block and reports the launchers key without wr
   expect(rejected.out).toContain("unknown option");
 });
 
-skipWin(
-  "--remove strips the integration and a legacy launchers block; the key is the user's",
-  () => {
-    run();
-    writeFileSync(join(home, "preferences.json"), JSON.stringify({ launchers: true }));
-    const rcPath = join(home, ".bashrc");
-    writeFileSync(rcPath, readFileSync(rcPath, "utf-8") + legacyLaunchersBlock(false));
-    run("--remove");
-    const rc = readFileSync(rcPath, "utf-8");
-    expect(rc).not.toContain(MARKER);
-    expect(rc).not.toContain(LAUNCHERS_MARKER);
-    expect(storedLaunchersKey()).toBe(true);
-  },
-);
+skipWin("--remove strips the integration; the launchers key is the user's", () => {
+  run();
+  writeFileSync(join(home, "preferences.json"), JSON.stringify({ launchers: true }));
+  const rcPath = join(home, ".bashrc");
+  run("--remove");
+  const rc = readFileSync(rcPath, "utf-8");
+  expect(rc).not.toContain(MARKER);
+  expect(storedLaunchersKey()).toBe(true);
+});
 
 skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
   // Simulate a pre-`shell/`-move block that points at the old root-level agents.bashrc.
@@ -238,46 +219,6 @@ skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
   expect(rc).toContain("shell/agents.bashrc");
   expect(rc).not.toContain("/old/agents.bashrc");
   expect(markerLines(rc, MARKER)).toBe(1);
-});
-
-skipWin("wiring strips old launchers blocks and never touches the config key", () => {
-  expect(run().code).toBe(0);
-  expect(storedLaunchersKey()).toBeUndefined();
-  // The launchers blocks older releases wrote are cleared on the next wire (the file
-  // they sourced no longer ships). The opt-in they carried is the user's to re-set
-  // with the `launchers` key.
-  writeFileSync(
-    join(home, ".bashrc"),
-    `export KEEP=1\n${legacyLaunchersBlock(false)}\nexport AFTER=1\n`,
-  );
-  expect(run().code).toBe(0);
-  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain(MARKER);
-  expect(rc).not.toContain(LAUNCHERS_MARKER);
-  expect(rc).not.toContain("agents.launchers");
-  expect(rc).toContain("export KEEP=1");
-  expect(rc).toContain("export AFTER=1");
-  expect(storedLaunchersKey()).toBeUndefined();
-});
-
-skipWin("a launchers block directly below the main one: ONE wire converges", () => {
-  // The shipped adjacency: main block, launchers block, then the user's line. The
-  // launchers strip and the main refresh share the blank between the blocks, so the
-  // strip must run FIRST -- stripping after would eat the separator the refresh just
-  // emitted and only the SECOND run would converge.
-  const main = `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n` +
-    `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n${MARKER_END}`;
-  writeFileSync(
-    join(home, ".bashrc"),
-    `export A=1\n\n${main}\n${legacyLaunchersBlock(false)}export B=1\n`,
-  );
-  run();
-  const once = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(once).not.toContain(LAUNCHERS_MARKER);
-  expect(once).toContain(`${MARKER_END}\n\nexport B=1`); // separator present on the FIRST run
-  expect(once).not.toContain(`${MARKER_END}\n\n\n`);
-  run();
-  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toBe(once);
 });
 
 skipWin("posixBlock safely quotes paths with shell metacharacters", () => {
@@ -327,11 +268,10 @@ test("the PowerShell blocks anchor an under-home path at $HOME, and only then", 
   expect(windowsBlock(outside)).toContain(`$AgentsPs1 = '${outside}'`);
 });
 
-// The end markers are new external contracts: existing installs carry only the open
-// markers, so those spellings are frozen, and the end fence extends each verbatim.
-test("the end markers extend the frozen open markers verbatim", () => {
+// The end marker is an external contract: existing installs carry the open marker,
+// so its spelling is frozen, and the end fence extends it verbatim.
+test("the end marker extends the frozen open marker verbatim", () => {
   expect(MARKER_END).toBe("# copilot-env shell integration end");
-  expect(LAUNCHERS_MARKER_END).toBe("# copilot-env launchers end");
 });
 
 test("every builder emits a fenced block: open marker first, end fence + ONE blank last", () => {
@@ -343,24 +283,16 @@ test("every builder emits a fenced block: open marker first, end fence + ONE bla
     expect(block.endsWith(`\n${MARKER_END}\n\n`)).toBe(true);
     expect(block.endsWith(`\n${MARKER_END}\n\n\n`)).toBe(false); // one blank, never more
   }
-  // Not builders anymore, but the legacy fixtures must keep the retired blank-less
-  // fence spelling so the strip coverage below can never drift from what was shipped.
-  for (const block of [legacyLaunchersBlock(false), legacyLaunchersBlock(true)]) {
-    expect(block.startsWith(`\n${LAUNCHERS_MARKER}\n`)).toBe(true);
-    expect(block.endsWith(`\n${LAUNCHERS_MARKER_END}\n`)).toBe(true);
-    expect(block.endsWith("\n\n")).toBe(false);
-  }
 });
 
 test("a new-format PowerShell block round-trips: write, upsert over it, remove", () => {
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
   const original = "Write-Host before\n";
-  const wired = up(original, MARKER, block) + legacyLaunchersBlock(true);
+  const wired = up(original, MARKER, block);
   expect(wired).toContain(MARKER_END);
-  expect(wired).toContain(LAUNCHERS_MARKER_END);
   // Upsert over the fenced block is byte-idempotent: the extent comes from the fence.
   expect(up(wired, MARKER, block)).toBe(wired);
-  const removed = stripBlocks(wired, [MARKER, LAUNCHERS_MARKER]);
+  const removed = stripBlocks(wired, [MARKER]);
   expect(removed.content).toBe(original);
   expect(removed.leftBehind).toEqual([]);
 });

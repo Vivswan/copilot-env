@@ -1,7 +1,6 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand } from "../src/claude/config.ts";
-import { DEFAULT_HOME_STAGING_DIR, PROFILES_DIR_NAME } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import type { TextReadResult } from "../src/utils/fs.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
@@ -17,7 +16,6 @@ import {
   checkAutoupdate,
   checkCli,
   checkCliVersion,
-  checkDefaultHomeMigration,
   checkDeno,
   checkLaunchers,
   checkNodeModules,
@@ -1329,48 +1327,6 @@ test("gatherFacts is read-only: no files appear in a fresh isolated home", async
   }
 });
 
-test("an interrupted default-home migration warns, naming the staging dir and the migrate re-run", async () => {
-  // The 3.5.6 fix-up stages the flat root's daemon files into profiles/.default.migrating and flips
-  // with ONE atomic rename, so a kill inside that window leaves the staging dir. Home resolution
-  // still answers the flat root, so the verdict is warn and the fix is the re-run that completes it.
-  const root = tempDir("copilot-health-staging-");
-  const restoreEnv = envSnapshot();
-  const home = join(root, "api-home");
-  process.env.COPILOT_API_HOME = home;
-  try {
-    const overrides = {
-      resolvePort: () => "4141",
-      readState: () => ({}),
-      reach: async () => false, // offline-deterministic; irrelevant to this row
-      codexHome: () => join(root, "codex-home"),
-      claudeHome: () => join(root, "claude-home"),
-    };
-    const clean = await gatherFacts("proxy", {}, overrides);
-    if (!clean.defaultHomeMigration) throw new Error("expected default-home migration facts");
-    expect(clean.defaultHomeMigration.staged).toBe(false);
-    const cleanRow = checkDefaultHomeMigration(clean.defaultHomeMigration);
-    expect(cleanRow.status).toBe("ok");
-    expect(cleanRow.fix).toBeUndefined();
-
-    const staging = join(home, PROFILES_DIR_NAME, DEFAULT_HOME_STAGING_DIR);
-    mkdirSync(staging, { recursive: true });
-    const facts = await gatherFacts("proxy", {}, overrides);
-    const row = evaluateAll("proxy", facts).find((r) => r.id === "runtime.defaultHomeMigration");
-    if (!row) throw new Error("expected the default-home migration check in the proxy scope");
-    expect(row.status).toBe("warn");
-    expect(row.detail).toContain(staging);
-    // The fix line is an external contract: the exact command that re-runs the 3.5.6 fix-ups.
-    expect(row.fix).toBe("agent migrate 3.5.6 3.5.7");
-
-    // The launchers' fast `runtime` probe never gathers the fact, so its contracted row set cannot grow.
-    const fast = await gatherFacts("runtime", {}, overrides);
-    expect(fast.defaultHomeMigration).toBeUndefined();
-  } finally {
-    restoreEnv();
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 // --- bootstrap checks -------------------------------------------------------
 
 test("deno unavailable fails; node_modules absent fails, stale warns, fresh ok", () => {
@@ -1616,21 +1572,18 @@ test("evaluateAll(full) includes the live checks only when their facts are prese
 
 // --- pure sub-evaluators ----------------------------------------------------
 
-test("evalShellFiles: launchersWired is the config key; markers stay per-file facts", () => {
+test("evalShellFiles: launchersWired is the config key; the marker stays a per-file fact", () => {
   const integration = "# copilot-env shell integration";
-  const launchers = "# copilot-env launchers";
   const facts = evalShellFiles([
     { path: "/a", content: `before\n${integration}\nsource x\n` },
-    { path: "/b", content: `${launchers}\nsource y\n` },
+    { path: "/b", content: "source y\n" },
     { path: "/c", content: null },
   ], true);
   expect(facts.integrationWired).toBe(true);
   expect(facts.launchersWired).toBe(true);
-  // The legacy launchers marker stays a per-file fact but no longer decides launchersWired; the key does.
-  expect(facts.files.find((f) => f.path === "/b")?.hasLaunchers).toBe(true);
   expect(facts.files.find((f) => f.path === "/c")?.hasIntegration).toBe(false);
   expect(
-    evalShellFiles([{ path: "/b", content: `${launchers}\nsource y\n` }], false)
+    evalShellFiles([{ path: "/b", content: "source y\n" }], false)
       .launchersWired,
   ).toBe(false);
 });

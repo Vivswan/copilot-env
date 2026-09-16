@@ -19,23 +19,17 @@ import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
 // shared; only the block body and the target files differ per OS.
 
 export const MARKER = "# copilot-env shell integration";
-export const LAUNCHERS_MARKER = "# copilot-env launchers";
 export const MARKER_END = `${MARKER} end`;
-export const LAUNCHERS_MARKER_END = `${LAUNCHERS_MARKER} end`;
 /** A marker this module owns a block under. Every shape lookup is typed against this
- *  union, so an unknown marker is a compile error rather than a runtime throw.
- *  LAUNCHERS_MARKER is retired as a WRITE target (the launchers are `agent env`
- *  function emissions now, gated by the `launchers` config key) but stays owned so
- *  blocks older releases wrote are still recognized and stripped. */
-export type BlockMarker = typeof MARKER | typeof LAUNCHERS_MARKER;
+ *  union, so an unknown marker is a compile error rather than a runtime throw. */
+export type BlockMarker = typeof MARKER;
 
 // Per marker: the end-marker line that closes its fenced block. An unfenced block
-// (a 3.5.6-or-older write, before the end fence existed) is converted in place by the
-// 4.0.0 shell migration, never recognized here: a marker with no end fence owns only
-// its own line, and whatever follows is the user's.
+// (written before the end fence existed) is converted in place by the 4.0.0 shell
+// migration, never recognized here: a marker with no end fence owns only its own
+// line, and whatever follows is the user's.
 const BLOCK_ENDS: Record<BlockMarker, string> = {
   [MARKER]: MARKER_END,
-  [LAUNCHERS_MARKER]: LAUNCHERS_MARKER_END,
 };
 
 // Derived from BLOCK_ENDS (the Record is exhaustive over BlockMarker), so a new
@@ -55,8 +49,8 @@ function fencedBlock(marker: BlockMarker, body: string[]): string {
 
 /**
  * What ONE `agent shell` file operation does: wire (or refresh) the integration
- * block, or strip every owned block (retired launchers blocks included). A union
- * so a wire can never carry removal knobs and vice versa.
+ * block, or strip the owned block. A union so a wire can never carry removal knobs
+ * and vice versa.
  */
 export type ShellIntegrationAction =
   | { kind: "wire"; allHosts: boolean }
@@ -253,19 +247,13 @@ function warnLeftBehind(file: string, lines: readonly string[]): void {
 /**
  * Wire (or refresh) the integration block. It is upserted IN PLACE, so re-running is
  * byte-idempotent and a stale (pre-`shell/`-move) path migrates without moving the block
- * or reordering the rest of the file. Any launchers block an older release wrote is
- * stripped in the same pass (the launchers are `agent env` emissions now, so a leftover
- * block would source a file that no longer ships); the caller migrated its opt-in first.
- * The strip runs BEFORE the upsert: a launchers block directly below the main one shares
- * the separating blank, so stripping after would claim the separator the upsert just
- * emitted and the first run would not converge.
+ * or reordering the rest of the file.
  */
 function wireBlocks(files: string[], mainBlock: string): void {
   for (const file of files) {
     const original = existsSync(file) ? readFileSync(file, "utf-8") : "";
-    const stripped = stripBlocks(original, [LAUNCHERS_MARKER]);
-    const upserted = upsertBlock(stripped.content, MARKER, mainBlock);
-    warnLeftBehind(file, [...stripped.leftBehind, ...upserted.leftBehind]);
+    const upserted = upsertBlock(original, MARKER, mainBlock);
+    warnLeftBehind(file, upserted.leftBehind);
     if (upserted.content === original) {
       consola.info(`Shell integration already wired in ${file} -- skipping.`);
       continue;
@@ -307,7 +295,7 @@ function removeFrom(files: string[]): boolean {
 }
 
 /** The rc / PowerShell profile files on this machine that carry an owned block right
- *  now (integration or launchers): what an uninstall plans to strip. Read-only. Fail
+ *  now: what an uninstall plans to strip. Read-only. Fail
  *  closed: a file that exists but cannot be read may hold a block that points at the
  *  install about to go, so the caller refuses rather than plan around it; only a proven
  *  absence (ENOENT) is "no block here". */

@@ -8,16 +8,7 @@ import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { disableConsolaTimestamps } from "../utils/logger.ts";
 import { type SemverString, stripV, toSemverString, versionLessThan } from "../utils/semver.ts";
-import {
-  v356,
-  v356ClaudeWiring,
-  v356CodexWiring,
-  v356DefaultHome,
-  v356DefaultSlot,
-  v356Ownership,
-  v356ShellFence,
-  v356VersionedLayout,
-} from "./3.5.6.ts";
+import { v356, v356ClaudeWiring, v356CodexWiring, v356ShellFence } from "./3.5.6.ts";
 import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence } from "./4.0.0.ts";
 import { v402DesktopHelpers, v402GhAccountPin, v402RootLayout } from "./4.0.2.ts";
 import { v409CodexProfileFiles, v409IntegrationIdPin, v409StaticKeyScope } from "./4.0.9.ts";
@@ -44,13 +35,9 @@ export interface Migration {
  *  so no such step could be reached. */
 const MIGRATIONS: Migration[] = [
   v356,
-  v356Ownership,
-  v356DefaultSlot,
-  v356DefaultHome,
   v356ShellFence,
   v356CodexWiring,
   v356ClaudeWiring,
-  v356VersionedLayout,
   v400ShellFence,
   v400CodexWiring,
   v400ClaudeWiring,

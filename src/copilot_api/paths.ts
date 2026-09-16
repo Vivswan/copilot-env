@@ -23,18 +23,13 @@ export const RUN_DIR_NAME = ".run";
  *  retries on exactly this basename. */
 export const PROXY_CONFIG_FILENAME = "config.json";
 
-/** One per host dir; a pre-host-split copy may sit at the top of the home (usageDbsUnderHome). */
+/** One per host dir (usageDbsUnderHome). */
 export const SQLITE_DB_FILENAME = "copilot-api.sqlite";
 
 /** Lives here so `agent cost`'s sweep follows any future move of the DB layout. Only paths that exist
  *  are returned. */
 export function usageDbsUnderHome(home: string): string[] {
   const paths: string[] = [];
-
-  const legacy = join(home, SQLITE_DB_FILENAME);
-  if (statIfPresent(legacy) !== null) {
-    paths.push(legacy);
-  }
 
   const runDir = join(home, RUN_DIR_NAME);
   let hosts: string[] = [];
@@ -71,8 +66,8 @@ function statIfPresent(path: string): Stats | null {
 
 // --- profile homes ------------------------------------------------------------
 
-// EVERY profile's daemon, the default included, runs against its own home (`<root>/profiles/<name>`, or
-// the flat root until the 3.5.6 fix-up): two daemons over one home would contend on sqlite and config.json. The ACCOUNT-WIDE files anchor at the ROOT
+// EVERY profile's daemon, the default included, runs against its own home (`<root>/profiles/<name>`): two
+// daemons over one home would contend on sqlite and config.json. The ACCOUNT-WIDE files anchor at the ROOT
 // home instead, so every profile shares one credential store and one preference set.
 //   COPILOT_API_HOME       -> the daemon's own profile home
 //   COPILOT_ENV_ROOT_HOME  -> the root home, where the preloads' zero-arg constructors find the shared files
@@ -88,22 +83,18 @@ export const LOGS_DIR_NAME = "logs";
 /** ProxyProjectionState's record; lives beside the config.json it describes. */
 export const PROJECTIONS_FILENAME = ".copilot-env-projections.json";
 
-/** Their presence directly at the ROOT home marks an unmigrated FLAT default daemon home (defaultDaemonHome);
- *  the 3.5.6 default-home fix-up moves exactly this set into `profiles/default/`. daemon.lock is
- *  deliberately absent: a home that ever ran a daemon carries `.run/` (the CLI creates it before any
- *  spawn). */
-export const DAEMON_HOME_ARTIFACTS = [
+/** Their presence directly at the ROOT home marks a daemon home at the root itself (defaultDaemonHome).
+ *  The device-flow login (src/commands/auth.ts) runs the proxy against a pinned COPILOT_API_HOME root
+ *  unchanged, and the proxy's own setup writes config.json there, so a daemon first started afterwards
+ *  ran from the root. daemon.lock is deliberately absent: a home that ever ran a daemon carries `.run/`
+ *  (the CLI creates it before any spawn). */
+const DAEMON_HOME_ARTIFACTS = [
   PROXY_CONFIG_FILENAME,
   PROJECTIONS_FILENAME,
   RUN_DIR_NAME,
   LOGS_DIR_NAME,
   SQLITE_DB_FILENAME,
 ] as const;
-
-/** The default-home move's staging dir; never a valid profile name, so every enumerator skips it. Its
- *  EXISTENCE is part of defaultDaemonHome's precedence: staged-but-unflipped artifacts are still the flat
- *  layout's, so reads resolve flat until the migration's one atomic rename creates `profiles/default`. */
-export const DEFAULT_HOME_STAGING_DIR = ".default.migrating";
 
 /** Env var carrying the ROOT home inside a profile daemon (set at spawn). */
 export const ROOT_HOME_ENV = "COPILOT_ENV_ROOT_HOME";
@@ -127,18 +118,16 @@ export function profileHome(name: ProfileName): string {
 /**
  * THE one place the default daemon's home precedence is decided. Inside a daemon, COPILOT_API_HOME IS the
  * pinned home; nothing is derived.
- *   `profiles/default` exists                                    -> it
- *   root holds a DAEMON_HOME_ARTIFACTS entry or the staging dir   -> the root: an unmigrated FLAT home, until the 3.5.6 fix-up
- *   otherwise                                                     -> `profiles/default`
+ *   `profiles/default` exists                -> it
+ *   root holds a DAEMON_HOME_ARTIFACTS entry  -> the root: a daemon home at the root itself
+ *   otherwise                                 -> `profiles/default`
  */
 export function defaultDaemonHome(): string {
   if (process.env[ROOT_HOME_ENV]) return resolveHome();
   const root = resolveHome();
   const migrated = join(root, PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR);
   if (existsSync(migrated)) return migrated;
-  const flat = DAEMON_HOME_ARTIFACTS.some((name) => existsSync(join(root, name))) ||
-    existsSync(join(root, PROFILES_DIR_NAME, DEFAULT_HOME_STAGING_DIR));
-  return flat ? root : migrated;
+  return DAEMON_HOME_ARTIFACTS.some((name) => existsSync(join(root, name))) ? root : migrated;
 }
 
 /** The sweep and corroboration sites' one list producer, so no caller enumerates homes with a different rule. */
@@ -192,8 +181,7 @@ export class CopilotApiPaths {
   activityFile: string;
   logFile: string;
   /** The proxy's per-endpoint handler logs, distinct from the access `logFile` (which also records
-   *  liveness pings). `agent health` reads the inference ones as a fallback activity signal for daemons
-   *  started by an older copilot-env; the `proxy-logs` config key (off) discards writes here entirely. */
+   *  liveness pings); the `proxy-logs` config key (off) discards writes here entirely. */
   logsDir: string;
   sqliteDb: string;
   /** `credentials.json`: the provisioned GitHub credentials (default + named profile slots). Account-wide,

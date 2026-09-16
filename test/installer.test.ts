@@ -12,21 +12,17 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import {
-  adoptVersionedLayout,
   applyInstallPlan,
   buildInstallPlan,
   BUNDLED_ONLY_ASSETS,
   CHECKOUT_MARKERS,
-  classifyInstallRoot,
   CURRENT_LINK,
   currentLinkPath,
-  flatArtifactPaths,
   flatBinaryResiduePaths,
   INSTALL_ROOT_ENV,
   type InstallOptions,
   type InstallPlan,
   isCheckoutShapedRoot,
-  LEGACY_ARTIFACTS,
   MATERIALIZED_ASSET_DIRS,
   MATERIALIZED_ASSET_FILES,
   pointCurrentAt,
@@ -38,9 +34,7 @@ import {
   removeFlatBinaryResidue,
   removeVersionDirsExcept,
   versionDirName,
-  versionRootPath,
   VERSIONS_DIR,
-  wiredShellTargets,
   writeTopLevelShims,
 } from "../src/install/installer.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
@@ -99,26 +93,6 @@ function versionedPlan(
 
 const VERSION_NAME = versionDirName(packageVersion());
 
-/** Capture BOTH process write streams (consola routes by level) while running `fn`. */
-function captureAllWrites(fn: () => void): string {
-  const stdout = process.stdout.write.bind(process.stdout);
-  const stderr = process.stderr.write.bind(process.stderr);
-  let out = "";
-  const capture = (chunk: string | Uint8Array): boolean => {
-    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    return true;
-  };
-  process.stdout.write = capture;
-  process.stderr.write = capture;
-  try {
-    fn();
-  } finally {
-    process.stdout.write = stdout;
-    process.stderr.write = stderr;
-  }
-  return out;
-}
-
 function writeFakeBinary(path: string, content = "#!/bin/sh\nexit 0\n"): string {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content);
@@ -132,8 +106,8 @@ beforeEach(() => {
   mkdirSync(source, { recursive: true });
   mkdirSync(dest, { recursive: true });
   writeAssetSource(source);
-  // Redirect any rc/profile inspection at an empty sandbox, so wiredShellTargets
-  // (used by layout adoption) never reads this machine's real shell files.
+  // Redirect any rc/profile inspection at an empty sandbox, so nothing here reads this
+  // machine's real shell files.
   process.env[CI_RC_DIR_ENV] = join(root, "rc");
   process.env[CI_PS_DOCUMENTS_DIR_ENV] = join(root, "rc");
   mkdirSync(join(root, "rc"), { recursive: true });
@@ -222,16 +196,6 @@ describe("buildInstallPlan", () => {
     writeAssetSource(source);
     rmSync(join(source, "src", "utils", "json.ts"));
     expect(() => assetsOnlyPlan()).toThrow("embedded assets are missing src/utils/json.ts");
-  });
-
-  test("assets-only plans removal of only the superseded artifacts actually present", () => {
-    mkdirSync(join(dest, "node_modules"), { recursive: true });
-    const plan = assetsOnlyPlan();
-    if (plan.kind !== "installed") throw new Error("expected an installed plan");
-
-    // Only what is actually there: an install must not report removing files it never found.
-    expect(plan.legacyRemovals).toEqual([join(dest, "node_modules")]);
-    expect(LEGACY_ARTIFACTS.length).toBeGreaterThan(0);
   });
 });
 
@@ -361,49 +325,12 @@ describe("the versioned full-install plan", () => {
     expect(readCurrentVersionName(dest)).toBe(VERSION_NAME);
   });
 
-  test("a flat root's runtime files are swept only AFTER the flip", () => {
-    writeAssetSource(dest);
-    rmSync(join(dest, "copilot-env.config"));
-    rmSync(join(dest, ".dvmrc"));
-    rmSync(join(dest, "deno.json")); // flat installs never materialized these
-    writeFileSync(join(dest, INSTALL_MANIFEST_FILE), "{}");
-    mkdirSync(join(dest, "node_modules"), { recursive: true });
-
-    const plan = versionedPlan();
-    if (plan.kind !== "versioned") throw new Error("expected a versioned plan");
-    expect(plan.flatRemovals).toContain(join(dest, "shell"));
-    expect(plan.flatRemovals).toContain(join(dest, INSTALL_MANIFEST_FILE));
-    expect(plan.flatRemovals).toContain(join(dest, "node_modules"));
-
-    applyInstallPlan(plan);
-    expect(existsSync(join(dest, "shell"))).toBe(false);
-    expect(existsSync(join(dest, "skills"))).toBe(false);
-    expect(existsSync(join(dest, INSTALL_MANIFEST_FILE))).toBe(false);
-    expect(existsSync(join(dest, "node_modules"))).toBe(false);
-    // The per-file sweep also prunes the emptied src scaffolding.
-    expect(existsSync(join(dest, "src"))).toBe(false);
-    expect(readCurrentVersionName(dest)).toBe(VERSION_NAME);
-  });
-
   test("applying a plan names exactly the plan's paths: no live write without a plan entry", () => {
-    // A flat root with every superseded artifact present, a flat binary to relocate,
-    // and an `.old-` aside the pre-versioned Windows updater would have left.
-    writeAssetSource(dest);
-    rmSync(join(dest, "copilot-env.config"));
-    rmSync(join(dest, ".dvmrc"));
-    rmSync(join(dest, "deno.json"));
-    writeFileSync(join(dest, INSTALL_MANIFEST_FILE), "{}");
-    mkdirSync(join(dest, "node_modules"), { recursive: true });
+    // The bootstrap binary sits at <top>/bin, where install.sh put it, and is relocated.
     const binarySource = writeFakeBinary(join(dest, "bin", installedBinaryName()), "BINARY");
-    writeFileSync(join(dest, "bin", `${installedBinaryName()}.old-1`), "OLD");
     const plan = versionedPlan(QUIET, binarySource);
     if (plan.kind !== "versioned" || plan.binary === null) throw new Error("expected a binary");
-    expect(plan.flatBinaryRemovals.sort()).toEqual(
-      [binarySource, join(dest, "bin", `${installedBinaryName()}.old-1`)].sort(),
-    );
-    // Planted AFTER planning: a sweep that recomputed its list at apply time would
-    // remove (and report) it; the plan-driven one must leave it alone.
-    writeFileSync(join(dest, "bun.lock"), "");
+    expect(plan.flatBinaryRemovals).toEqual([binarySource]);
 
     const created = [
       ...plan.copies.map((c) => c.to),
@@ -426,8 +353,6 @@ describe("the versioned full-install plan", () => {
       ...dirs.map((d) => `created -> ${d}`),
       ...created.map((f) => `created -> ${f}`),
       `linked -> ${plan.currentLink.path} (to ${plan.currentLink.target})`,
-      ...plan.flatRemovals.map((p) => `deleted -> ${p}`),
-      ...plan.flatPrunes.map((p) => `deleted -> ${p}`),
       ...plan.flatBinaryRemovals.map((p) => `deleted -> ${p}`),
     ];
 
@@ -435,7 +360,6 @@ describe("the versioned full-install plan", () => {
     applyInstallPlan(plan);
     const reported = flushWriteReports();
     expect(reported.sort()).toEqual(expected.sort());
-    expect(existsSync(join(dest, "bun.lock"))).toBe(true);
   });
 
   skipWin("wires the shell through the INSTALLED binary, aimed at the current link", () => {
@@ -453,22 +377,6 @@ echo "\${${INSTALL_ROOT_ENV}:-} $@" >> "$(dirname "$0")/../../../wires.log"
     applyInstallPlan(plan);
     const log = readFileSync(join(dest, "wires.log"), "utf8").trim();
     expect(log).toBe(`${join(dest, CURRENT_LINK)} shell`);
-  });
-
-  skipWin("a failed shell rewire KEEPS the flat payload the rc block still sources", () => {
-    // Sweeping shell/ after a failed rewire would leave the user's rc block
-    // pointing at nothing; a stale payload that works beats that.
-    mkdirSync(join(dest, "shell"), { recursive: true });
-    writeFileSync(join(dest, "shell", "agents.bashrc"), "flat payload");
-    writeFileSync(join(dest, INSTALL_MANIFEST_FILE), "{}");
-    const failing = writeFakeBinary(join(root, "failing.sh"), "#!/bin/sh\nexit 1\n");
-
-    applyInstallPlan(versionedPlan({ ...OPTIONS, allHosts: false }, failing));
-
-    expect(readFileSync(join(dest, "shell", "agents.bashrc"), "utf8")).toBe("flat payload");
-    // Everything else superseded still went.
-    expect(existsSync(join(dest, INSTALL_MANIFEST_FILE))).toBe(false);
-    expect(readCurrentVersionName(dest)).toBe(VERSION_NAME);
   });
 });
 
@@ -528,30 +436,6 @@ describe("the current link primitives", () => {
     expect(readFileSync(join(dest, VERSIONS_DIR, "v1.0.0", "who"), "utf8")).toBe("one");
   });
 
-  test("classifyInstallRoot: flat, top-shaped, and current-shaped spellings", () => {
-    expect(classifyInstallRoot(dest)).toEqual({ kind: "flat", top: dest });
-    // The name `current` alone (no versions/ sibling) is just a directory.
-    expect(classifyInstallRoot(join(dest, CURRENT_LINK))).toEqual({
-      kind: "flat",
-      top: join(dest, CURRENT_LINK),
-    });
-
-    // A REAL directory named `current` beside a versions/ dir is still not the
-    // layout: only a link into versions/ is (coincidental names must never
-    // reroute an install).
-    mkdirSync(join(dest, VERSIONS_DIR, "v1.0.0"), { recursive: true });
-    mkdirSync(join(dest, CURRENT_LINK));
-    expect(classifyInstallRoot(dest)).toEqual({ kind: "flat", top: dest });
-    rmSync(join(dest, CURRENT_LINK), { recursive: true });
-
-    pointCurrentAt(dest, "v1.0.0");
-    expect(classifyInstallRoot(dest)).toEqual({ kind: "versioned", top: dest });
-    expect(classifyInstallRoot(join(dest, CURRENT_LINK))).toEqual({
-      kind: "versioned",
-      top: dest,
-    });
-  });
-
   skipWin("writeTopLevelShims repairs a lost exec bit even when the text is current", () => {
     // The identical-text shortcut must not freeze a broken mode: a crash
     // between an earlier write and its chmod would otherwise persist forever.
@@ -574,15 +458,13 @@ describe("the current link primitives", () => {
     removeVersionDirsExcept(join(root, "nowhere"), new Set());
   });
 
-  test("removeFlatBinaryResidue sweeps the flat binary and .old- aside files only", () => {
+  test("removeFlatBinaryResidue sweeps the bootstrap binary only", () => {
     const name = installedBinaryName();
     mkdirSync(join(dest, "bin"), { recursive: true });
-    writeFileSync(join(dest, "bin", name), "flat");
-    writeFileSync(join(dest, "bin", `${name}.old-123`), "aside");
+    writeFileSync(join(dest, "bin", name), "bootstrap");
     writeFileSync(join(dest, "bin", "agent"), "shim");
     removeFlatBinaryResidue(flatBinaryResiduePaths(dest));
     expect(existsSync(join(dest, "bin", name))).toBe(false);
-    expect(existsSync(join(dest, "bin", `${name}.old-123`))).toBe(false);
     expect(existsSync(join(dest, "bin", "agent"))).toBe(true);
   });
 });
@@ -643,10 +525,8 @@ describe("the unsafe-target canonical guard", () => {
 
 describe("the checkout guard and the install manifest sentinel", () => {
   // An installed-mode plan can be aimed at a dev checkout through COPILOT_ENV_INSTALL_ROOT, and
-  // its writes would replace the checkout's bin/agent and src/scripts. The pre-binary installer
-  // extracted source archives, so package.json/deno.json alone cannot decide.
+  // its writes would replace the checkout's bin/agent and src/scripts.
   //   .git present (dir or file)  -> a checkout: refuse
-  //   markers, no .git            -> an archive root: sweep and install over it
   test("refuses a root with checkout markers and .git", () => {
     for (const marker of CHECKOUT_MARKERS) {
       writeFileSync(join(dest, marker), "{}");
@@ -659,7 +539,6 @@ describe("the checkout guard and the install manifest sentinel", () => {
         expect(() => buildInstallPlan(options, dest, source)).toThrow(".git");
       }
       expect(isCheckoutShapedRoot(dest)).toBe(true);
-      expect(flatArtifactPaths(dest)).toEqual([]); // NEVER ours to sweep
       rmSync(join(dest, ".git"), { recursive: true });
       // A worktree carries .git as a FILE; both spellings must refuse.
       writeFileSync(join(dest, ".git"), "gitdir: /elsewhere");
@@ -680,25 +559,6 @@ describe("the checkout guard and the install manifest sentinel", () => {
     expect(() => buildInstallPlan(OPTIONS, dest, source)).toThrow(
       `refusing to install into ${dest}`,
     );
-  });
-
-  test("a legacy source-archive root (markers, no .git) is swept and versioned over", () => {
-    // An archive root is a checkout minus .git; its first full install must proceed, sweep the
-    // stale markers with the other superseded artifacts, and leave a versioned layout.
-    writeFileSync(join(dest, "package.json"), "{}");
-    writeFileSync(join(dest, "deno.json"), "{}");
-    mkdirSync(join(dest, "node_modules"), { recursive: true });
-
-    const plan = versionedPlan();
-    if (plan.kind !== "versioned") throw new Error("expected a versioned plan");
-    expect(plan.flatRemovals).toContain(join(dest, "package.json"));
-    expect(plan.flatRemovals).toContain(join(dest, "deno.json"));
-    expect(plan.flatRemovals).toContain(join(dest, "node_modules"));
-
-    applyInstallPlan(plan);
-    expect(existsSync(join(dest, "package.json"))).toBe(false);
-    expect(existsSync(join(dest, "deno.json"))).toBe(false);
-    expect(existsSync(join(dest, VERSIONS_DIR, VERSION_NAME, INSTALL_MANIFEST_FILE))).toBe(true);
   });
 
   test("a fresh root installs and gains the per-version manifest", () => {
@@ -729,16 +589,12 @@ describe("the checkout guard and the install manifest sentinel", () => {
 });
 
 describe("applyInstallPlan (assets-only)", () => {
-  test("materializes the assets and shims, and removes superseded artifacts", () => {
-    mkdirSync(join(dest, "node_modules"), { recursive: true });
-    writeFileSync(join(dest, "node_modules", "stale"), "stale");
-
+  test("materializes the assets and shims", () => {
     applyInstallPlan(assetsOnlyPlan());
 
     expect(readFileSync(join(dest, "shell", "payload.txt"), "utf8")).toBe("content of shell");
     expect(readFileSync(join(dest, "bin", "agent"), "utf8")).toBe(POSIX_SHIM);
     expect(readFileSync(join(dest, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_SHIM);
-    expect(() => statSync(join(dest, "node_modules"))).toThrow();
   });
 
   skipWin("makes the shim and the .sh assets executable", () => {
@@ -757,183 +613,6 @@ describe("applyInstallPlan (assets-only)", () => {
     applyInstallPlan(assetsOnlyPlan());
 
     expect(readFileSync(join(dest, "shell", "payload.txt"), "utf8")).toBe("content of shell");
-  });
-});
-
-describe("adoptVersionedLayout (the 3.5.6 migration core)", () => {
-  /** A flat install fixture: the live binary plus flat runtime files at `top`. */
-  function seedFlatInstall(top: string): string {
-    const binary = writeFakeBinary(join(top, "bin", installedBinaryName()), "LIVE");
-    for (const dir of ["shell", "skills"]) {
-      mkdirSync(join(top, dir), { recursive: true });
-      writeFileSync(join(top, dir, "payload.txt"), "flat");
-    }
-    writeFileSync(join(top, INSTALL_MANIFEST_FILE), "{}");
-    return binary;
-  }
-
-  test("builds the layout around the live flat binary, then sweeps the flat files", () => {
-    const binary = seedFlatInstall(dest);
-    adoptVersionedLayout({
-      mode: { kind: "compiled", root: dest },
-      sourceRoot: source,
-      binarySource: binary,
-    });
-
-    const versionRoot = versionRootPath(dest, VERSION_NAME);
-    expect(readCurrentVersionName(dest)).toBe(VERSION_NAME);
-    expect(readFileSync(join(versionRoot, "bin", installedBinaryName()), "utf8")).toBe("LIVE");
-    expect(readFileSync(join(dest, "bin", "agent"), "utf8")).toBe(POSIX_CURRENT_SHIM);
-    expect(existsSync(join(versionRoot, INSTALL_MANIFEST_FILE))).toBe(true);
-    // Flat leftovers: runtime files and manifest swept, binary superseded.
-    expect(existsSync(join(dest, "shell"))).toBe(false);
-    expect(existsSync(join(dest, INSTALL_MANIFEST_FILE))).toBe(false);
-    if (process.platform !== "win32") {
-      expect(existsSync(join(dest, "bin", installedBinaryName()))).toBe(false);
-    }
-    // The version root carries every marker uninstall requires of a root.
-    for (const marker of INSTALL_ROOT_MARKERS) {
-      expect(existsSync(join(versionRoot, marker))).toBe(true);
-    }
-  });
-
-  test("an already-versioned root REPAIRS the commit window (idempotent re-run)", () => {
-    const binary = seedFlatInstall(dest);
-    adoptVersionedLayout({
-      mode: { kind: "compiled", root: dest },
-      sourceRoot: source,
-      binarySource: binary,
-    });
-
-    // A crashed earlier run: the flip landed, but the top shims were never rewritten, flat
-    // debris reappeared, and the flat binary residue survived. The retry must converge all of
-    // it and name each shim it rewrites; a converged re-run names none.
-    writeFileSync(join(dest, INSTALL_MANIFEST_FILE), "{}");
-    writeFileSync(join(dest, "bin", "agent"), "stale adjacent-dispatch shim");
-    writeFileSync(join(dest, "bin", "agent.ps1"), "stale adjacent-dispatch shim");
-    writeFakeBinary(join(dest, "bin", installedBinaryName()), "FLAT-RESIDUE");
-    const repair = () =>
-      adoptVersionedLayout({
-        mode: { kind: "compiled", root: join(dest, CURRENT_LINK) },
-        sourceRoot: source,
-        binarySource: null,
-      });
-    const output = captureAllWrites(repair);
-
-    expect(existsSync(join(dest, INSTALL_MANIFEST_FILE))).toBe(false);
-    expect(readFileSync(join(dest, "bin", "agent"), "utf8")).toBe(POSIX_CURRENT_SHIM);
-    expect(readFileSync(join(dest, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_CURRENT_SHIM);
-    if (process.platform !== "win32") {
-      expect(existsSync(join(dest, "bin", installedBinaryName()))).toBe(false);
-    }
-    expect(readCurrentVersionName(dest)).toBe(VERSION_NAME);
-    for (const shim of ["agent", "agent.ps1"]) {
-      // Newline-anchored: the POSIX path is a prefix of the .ps1 line.
-      const line = `Wrote launcher shim ${join(dest, "bin", shim)}\n`;
-      expect(output.split(line).length - 1, line).toBe(1);
-    }
-    expect(captureAllWrites(repair)).not.toContain("Wrote launcher shim");
-  });
-
-  test("a dangling current link HALTS the repair instead of deleting the fallback", () => {
-    const binary = seedFlatInstall(dest);
-    adoptVersionedLayout({
-      mode: { kind: "compiled", root: dest },
-      sourceRoot: source,
-      binarySource: binary,
-    });
-
-    // Break the layout: the live version dir is gone (the link dangles), and
-    // the flat binary is the only thing that still runs. The repair must not
-    // sweep it, or write shims that dispatch into nothing.
-    rmSync(join(dest, VERSIONS_DIR, VERSION_NAME), { recursive: true, force: true });
-    writeFakeBinary(join(dest, "bin", installedBinaryName()), "FALLBACK");
-    writeFileSync(join(dest, INSTALL_MANIFEST_FILE), "{}");
-    adoptVersionedLayout({
-      mode: { kind: "compiled", root: join(dest, CURRENT_LINK) },
-      sourceRoot: source,
-      binarySource: null,
-    });
-
-    expect(readFileSync(join(dest, "bin", installedBinaryName()), "utf8")).toBe("FALLBACK");
-    expect(existsSync(join(dest, INSTALL_MANIFEST_FILE))).toBe(true); // nothing swept
-  });
-
-  test("a checkout-shaped top is never repaired: launchers and wiring stay untouched", () => {
-    // Reachable: `agent update --force` on a dev clone builds versions/ + current inside the
-    // checkout, then the post-flip migrate runs this adoption. The clone's bin/agent(.ps1) are
-    // tracked source, so the repair arm must apply the same checkout guard.
-    writeFileSync(join(dest, "package.json"), "{}");
-    mkdirSync(join(dest, ".git"));
-    mkdirSync(join(dest, "bin"), { recursive: true });
-    writeFileSync(join(dest, "bin", "agent"), "dev launcher");
-    // A complete version behind the link, so only the checkout guard stands between the repair
-    // arm and the overwrite. The binary is an executable recorder: a shell rewire would leave
-    // wires.log (non-executable, its absence would prove nothing).
-    const versionRoot = versionRootPath(dest, VERSION_NAME);
-    const recorder = writeFakeBinary(
-      join(versionRoot, "bin", installedBinaryName()),
-      `#!/bin/sh\necho "$@" >> "$(dirname "$0")/../../../wires.log"\n`,
-    );
-    chmodSync(recorder, 0o755);
-    writeFileSync(
-      join(versionRoot, INSTALL_MANIFEST_FILE),
-      JSON.stringify({
-        "version": packageVersion(),
-        "kind": "installed",
-        "assets": ["shell"],
-      }),
-    );
-    pointCurrentAt(dest, VERSION_NAME);
-    // A wired rc block in the sandbox: without the guard it would be rewired.
-    writeFileSync(join(root, "rc", ".bashrc"), "# copilot-env shell integration\n");
-
-    adoptVersionedLayout({
-      mode: { kind: "compiled", root: join(dest, CURRENT_LINK) },
-      sourceRoot: source,
-      binarySource: null,
-    });
-
-    expect(readFileSync(join(dest, "bin", "agent"), "utf8")).toBe("dev launcher");
-    expect(existsSync(join(dest, "bin", "agent.ps1"))).toBe(false);
-    expect(existsSync(join(dest, "wires.log"))).toBe(false); // no rewire spawned
-    expect(existsSync(join(dest, "package.json"))).toBe(true); // nothing swept
-  });
-
-  test("a source checkout never adopts", () => {
-    adoptVersionedLayout({
-      mode: { kind: "checkout", root: dest },
-      sourceRoot: source,
-      binarySource: null,
-    });
-    expect(existsSync(join(dest, VERSIONS_DIR))).toBe(false);
-    expect(existsSync(currentLinkPath(dest))).toBe(false);
-  });
-});
-
-describe("wiredShellTargets", () => {
-  /** The rc/profile file the adoption inspects in this suite's sandbox. */
-  function sandboxRcFile(): string {
-    return process.platform === "win32"
-      ? join(root, "rc", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
-      : join(root, "rc", ".bashrc");
-  }
-
-  test("an unwired rc yields no rewire targets (the opt-out is honored)", () => {
-    const file = sandboxRcFile();
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, "export UNRELATED=1\n");
-    expect(wiredShellTargets()).toEqual([]);
-  });
-
-  test("a launchers-only rc counts as wired: the shell pass must migrate its opt-in", () => {
-    // An rc carrying only the launchers block (main integration removed by hand) must still
-    // be a rewire target: the shell pass carries that opt-in to the `launchers` key and strips
-    // the retired block.
-    const file = sandboxRcFile();
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, "# copilot-env launchers\n# copilot-env launchers end\n");
-    expect(wiredShellTargets()).toEqual([{ allHosts: false }]);
   });
 });
 

@@ -19,8 +19,10 @@ const SHIM = join(ROOT, "src", "scripts", "log_mute_preload.ts");
 function runPreloaded(home: string, script: string): string {
   const target = join(home, "target.ts");
   writeFileSync(target, script);
+  // Both env vars as the daemon spawn pins them (src/copilot_api/launch.ts): inside a daemon,
+  // COPILOT_API_HOME IS the home.
   const res = runSync(Deno.execPath(), [...denoRunArgs("--preload", SHIM), target], {
-    env: { ...process.env, COPILOT_API_HOME: home },
+    env: { ...process.env, COPILOT_API_HOME: home, COPILOT_ENV_ROOT_HOME: home },
   });
   if (res.exitCode !== 0) {
     throw new Error(`preloaded target failed: ${res.stderr}`);

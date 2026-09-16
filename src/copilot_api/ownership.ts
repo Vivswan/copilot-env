@@ -28,14 +28,6 @@ const LEDGER_KEYS = {
 
 export type OwnedArtifactKind = keyof typeof LEDGER_KEYS;
 
-// Pre-ledger keys in the shared state store (`credentials.json`). ONLY adoptLegacyRecords reads them: the
-// ledger's own readers answer from the ledger file alone, so an unmigrated record owns nothing until
-// `agent update` has moved it.
-const LEGACY_STATE_KEYS: Partial<Record<OwnedArtifactKind, string>> = {
-  webSearchDeny: "webSearchDenyOwnedPaths",
-  claudeDesktop: "claudeDesktopOwnedPaths",
-};
-
 /** Junk entries are dropped INDIVIDUALLY, never the whole list, and survivors come back TRIMMED so a
  *  hand-padded entry still matches the exact-path checks. The read schema and every in-place update
  *  share it, so the two can never disagree about the entry shape. */
@@ -57,16 +49,12 @@ const LEDGER_SCHEMA = v.object({
 
 export class OwnershipLedger {
   private readonly store: CopilotApiConfig;
-  /** The shared state store, read/cleared ONLY by adoptLegacyRecords. */
-  private readonly legacyStore: CopilotApiConfig;
-  /** Distinct from each store's own update `.lock`: the adoption reads the legacy store, then writes the
-   *  ledger, and a release landing between the two could clear the ledger's copy just before the
-   *  adoption re-adds the one it read. */
+  /** Distinct from the store's own update `.lock`: release() decides on a lock-free read, then
+   *  writes, and a record() landing between the two must not be lost. */
   private readonly opsLock: string;
 
   constructor(paths: CopilotApiPaths = new CopilotApiPaths()) {
     this.store = new CopilotApiConfig(paths.ownershipFile, paths.ownershipLock);
-    this.legacyStore = new CopilotApiConfig(paths.sharedStateFile, paths.sharedStateLock);
     this.opsLock = paths.ownershipOpsLock;
   }
 
@@ -104,37 +92,6 @@ export class OwnershipLedger {
         const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
         if (list.length === 0) delete d[key];
         else d[key] = list;
-      });
-    });
-  }
-
-  /** Merge, never replace: ledger entries recorded since the update survive, and a re-run finds no
-   *  legacy keys and writes nothing. */
-  adoptLegacyRecords(): void {
-    withFileLockSync(this.opsLock, BOUNDED_LOCK_POLICY, () => {
-      // "No legacy records" is the decision to skip the move, so it must be proven, not flattened from a
-      // failed read; the runner is best-effort, so the throw defers the adoption instead of falsely completing it.
-      const legacy = this.legacyStore.loadStrict();
-      const present = (Object.entries(LEGACY_STATE_KEYS) as [OwnedArtifactKind, string][])
-        .filter(([, key]) => key in legacy);
-      if (present.length === 0) return;
-      const moves = present
-        .map(([kind, key]) => [kind, ownedPathList(legacy[key])] as const)
-        .filter(([, paths]) => paths.length > 0);
-      // The ledger's read-side refusals are cleared BEFORE the legacy delete: a malformed ledger refused
-      // after it would lose the record (the runner carries on past a failed step).
-      if (moves.length > 0) this.store.loadForUpdate();
-      // Legacy delete FIRST: a crash between the two loses the claim (the safe direction), whereas the other
-      // order leaves a second copy a re-run could re-adopt AFTER a take-back released the ledger's, resurrecting it.
-      this.legacyStore.update((d) => {
-        for (const [, key] of present) delete d[key];
-      });
-      if (moves.length === 0) return;
-      this.store.update((d) => {
-        for (const [kind, paths] of moves) {
-          const key = LEDGER_KEYS[kind];
-          d[key] = [...new Set([...ownedPathList(d[key]), ...paths])];
-        }
       });
     });
   }

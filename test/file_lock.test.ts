@@ -1,7 +1,6 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  reclaimStaleLock,
   releaseFileLock,
   tryAcquireFileLock,
   withFileLock,
@@ -84,27 +83,6 @@ test("a JSON marker with a non-finite ts is malformed, not immortal", () => {
   // never age out.
   writeFileSync(path, `{"pid":${process.pid},"ts":1e999}`);
   expect(tryAcquireFileLock(path, 5_000, { nowMs: 6_001 })).toBe(true);
-});
-
-test("reclaimStaleLock restores a FRESH holder's lock instead of stealing it", () => {
-  const path = tmp("x.lock");
-  // The interleaving under test: we observed a stale marker, but before our rename a
-  // fresh holder replaced the lock. The yanked marker no longer matches, so the
-  // reclaim must put the fresh lock back untouched.
-  const fresh = marker(process.pid, Date.now());
-  writeFileSync(path, fresh);
-  reclaimStaleLock(path, marker(DEAD_PID, 1_000));
-  expect(readFileSync(path, "utf-8")).toBe(fresh); // restored byte-for-byte
-  expect(tryAcquireFileLock(path, Number.POSITIVE_INFINITY)).toBe(false); // still held
-  expect(readdirSync(dir).filter((f) => f.includes(".steal."))).toEqual([]);
-});
-
-test("reclaimStaleLock removes the lock when it IS the stale marker we judged", () => {
-  const path = tmp("x.lock");
-  const stale = marker(DEAD_PID, 1_000);
-  writeFileSync(path, stale);
-  reclaimStaleLock(path, stale);
-  expect(existsSync(path)).toBe(false);
 });
 
 test("release by a non-holder is refused (a successor's lock survives)", () => {
@@ -374,7 +352,6 @@ test("the lock primitives and the update-lock test seam stay out of src/", () =>
       join(ROOT, "src", "scripts", "daemon_lock.ts"),
     ],
     releaseFileLock: [join(ROOT, "src", "utils", "file_lock.ts")],
-    reclaimStaleLock: [join(ROOT, "src", "utils", "file_lock.ts")],
     withUpdateLockForTests: [join(ROOT, "src", "autoupdate", "lock.ts")],
   };
   const found: string[] = [];

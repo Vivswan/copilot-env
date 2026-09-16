@@ -1,6 +1,5 @@
 // One `token_usage_events` row per request, in a per-host DB, so a home shared across machines
-// holds several DBs (plus a pre-host-split flat one). The layout is src/copilot_api/paths.ts's;
-// this module only sweeps it.
+// holds several DBs. The layout is src/copilot_api/paths.ts's; this module only sweeps it.
 
 import { DatabaseSync } from "node:sqlite";
 import { readdirSync, realpathSync } from "node:fs";
@@ -223,8 +222,7 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
     }
   }
 
-  // A hand-COPIED DB across homes (distinct inodes) still counts twice: accepted, since the
-  // default-home migration only moves or refuses, never copies.
+  // A hand-COPIED DB across homes (distinct inodes) still counts twice: accepted.
   const seen = new Set<string>();
   return paths.filter((path) => {
     let canonical = path;

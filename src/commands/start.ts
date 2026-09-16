@@ -295,9 +295,7 @@ export async function runStart(
     recordHeartbeat(profile);
     return;
   }
-  /** Resolved together so paths and stores can never disagree. The live launch resolves INSIDE the
-   *  start lock: the 3.5.6 default-home migration refuses to move the home while that lock is held,
-   *  so a held-lock resolution cannot go stale against a concurrent move. */
+  /** Resolved together so paths and stores can never disagree. */
   const launchContext = (): LaunchContext => {
     const paths = new CopilotApiPaths(profile);
     return {

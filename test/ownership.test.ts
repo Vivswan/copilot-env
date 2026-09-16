@@ -7,7 +7,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname } from "node:path";
-import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger, ProxyProjectionState } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
@@ -29,10 +28,6 @@ function isolate(): CopilotApiPaths {
   // paths.projectionsFile with raw writeFileSync.
   mkdirSync(paths.home, { recursive: true });
   return paths;
-}
-
-function readStateRaw(paths: CopilotApiPaths): Record<string, unknown> {
-  return JSON.parse(readFileSync(paths.sharedStateFile, "utf8"));
 }
 
 test("ownership round-trips per kind; kinds never bleed into one another", () => {
@@ -127,89 +122,6 @@ test("a junk-degraded ledger owns less, never crashes; survivors come back trimm
   expect(ledger.ownedPaths("webSearchDeny")).toEqual(["/a/settings.json", "/b/settings.json"]);
   expect(ledger.owns("webSearchDeny", "/b/settings.json")).toBe(true);
   expect(ledger.ownedPaths("codexCatalog")).toEqual([]);
-});
-
-test("an unmigrated pre-ledger record in the state store owns nothing; only the migration moves it", () => {
-  const paths = isolate();
-  // A pre-ledger install: ownership sits under the LEGACY state-store keys.
-  writeFileSync(
-    paths.sharedStateFile,
-    `${
-      JSON.stringify({
-        profiles: { default: { githubToken: "ghu_keep", authProvider: "copilot" } },
-        webSearchDenyOwnedPaths: ["/a/settings.json"],
-        claudeDesktopOwnedPaths: ["/lib/uuid.json"],
-      })
-    }\n`,
-  );
-  const ledger = new OwnershipLedger();
-  expect(ledger.owns("webSearchDeny", "/a/settings.json")).toBe(false);
-  expect(ledger.ownedPaths("claudeDesktop")).toEqual([]);
-
-  // The legacy keys must survive every write (a release, a state-store set) for the migration to move them.
-  const stateBytes = readFileSync(paths.sharedStateFile, "utf8");
-  ledger.release("webSearchDeny", "/a/settings.json");
-  expect(readFileSync(paths.sharedStateFile, "utf8")).toBe(stateBytes);
-  expect(existsSync(paths.ownershipFile)).toBe(false);
-  new CopilotEnvState().set({ codexCatalogLastAttemptMs: 5 });
-  expect(readStateRaw(paths).webSearchDenyOwnedPaths).toEqual(["/a/settings.json"]);
-
-  // A malformed ledger cannot take the record, so the adoption refuses BEFORE it
-  // deletes the legacy keys (naming the ledger); both files keep their bytes.
-  writeFileSync(paths.ownershipFile, "{ not json");
-  const legacyBytes = readFileSync(paths.sharedStateFile, "utf8");
-  expect(() => ledger.adoptLegacyRecords()).toThrow(
-    `${paths.ownershipFile} is not valid JSON`,
-  );
-  expect(readFileSync(paths.sharedStateFile, "utf8")).toBe(legacyBytes);
-  expect(readFileSync(paths.ownershipFile, "utf8")).toBe("{ not json");
-});
-
-test("adoptLegacyRecords moves both legacy kinds into the ledger and is idempotent", () => {
-  const paths = isolate();
-  writeFileSync(
-    paths.sharedStateFile,
-    `${
-      JSON.stringify({
-        githubToken: "ghu_keep",
-        webSearchDenyOwnedPaths: ["/a/settings.json"],
-        claudeDesktopOwnedPaths: ["/lib/uuid.json", 42, ""],
-      })
-    }\n`,
-  );
-  const ledger = new OwnershipLedger();
-  // A post-update record already in the ledger must survive the merge.
-  ledger.record("webSearchDeny", "/other/settings.json");
-
-  ledger.adoptLegacyRecords();
-  expect(ledger.ownedPaths("webSearchDeny").sort()).toEqual([
-    "/a/settings.json",
-    "/other/settings.json",
-  ]);
-  expect(ledger.ownedPaths("claudeDesktop")).toEqual(["/lib/uuid.json"]);
-  const raw = readStateRaw(paths);
-  expect(raw.webSearchDenyOwnedPaths).toBeUndefined();
-  expect(raw.claudeDesktopOwnedPaths).toBeUndefined();
-  expect(raw.githubToken).toBe("ghu_keep");
-
-  const ledgerBytes = readFileSync(paths.ownershipFile, "utf8");
-  const stateBytes = readFileSync(paths.sharedStateFile, "utf8");
-  ledger.adoptLegacyRecords();
-  expect(readFileSync(paths.ownershipFile, "utf8")).toBe(ledgerBytes);
-  expect(readFileSync(paths.sharedStateFile, "utf8")).toBe(stateBytes);
-});
-
-test("adoptLegacyRecords on a store without legacy keys writes nothing at all", () => {
-  const paths = isolate();
-  new CopilotEnvState().setCredential(null, {
-    kind: "stored",
-    provider: "gh-token",
-    token: "ghu_x",
-  });
-  const stateBytes = readFileSync(paths.sharedStateFile, "utf8");
-  new OwnershipLedger().adoptLegacyRecords();
-  expect(existsSync(paths.ownershipFile)).toBe(false);
-  expect(readFileSync(paths.sharedStateFile, "utf8")).toBe(stateBytes);
 });
 
 // --- the per-daemon-home projection record (ProxyProjectionState) ----------------

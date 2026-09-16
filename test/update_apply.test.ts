@@ -432,23 +432,6 @@ describe("applyUpdate", () => {
     ]);
   });
 
-  skipWin("a flat (pre-versioned) root is versioned by the same update", async () => {
-    writeRelease(RECORDING_BINARY);
-    writeFileSync(join(installDir, "bin", installedBinaryName()), "FLAT-LIVE");
-    mkdirSync(join(installDir, "shell"), { recursive: true });
-    writeFileSync(join(installDir, "shell", "payload.txt"), "flat");
-
-    await applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
-
-    expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
-    expect(readFileSync(join(installDir, "bin", "agent"), "utf8")).toBe(POSIX_CURRENT_SHIM);
-    // The flat binary is superseded and swept post-flip; the flat SHELL payload
-    // is spared -- nothing in the update rewires the rc block that may still
-    // source it (the 3.5.6 migration and `agent shell` own that).
-    expect(existsSync(join(installDir, "bin", installedBinaryName()))).toBe(false);
-    expect(existsSync(join(installDir, "shell"))).toBe(true);
-  });
-
   skipWin("keeps exactly one previous version and GCs everything older", async () => {
     writeRelease(RECORDING_BINARY);
     seedVersion("v9.9.6");
@@ -497,23 +480,6 @@ describe("applyUpdate", () => {
 
     expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
     expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
-  });
-
-  skipWin("a failed shim refresh keeps the flat binary the old shims still dispatch", async () => {
-    // The commit is best-effort about the shims, but while the OLD
-    // adjacent-dispatch shims are live, the flat binary is what they invoke --
-    // the GC must not take it out from under them.
-    writeRelease(RECORDING_BINARY);
-    writeFileSync(join(installDir, "bin", installedBinaryName()), "FLAT-LIVE");
-    // A DIRECTORY at the shim path defeats both the rename and the fallback write.
-    mkdirSync(join(installDir, "bin", "agent"), { recursive: true });
-
-    await applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
-
-    expect(readCurrentVersionName(installDir)).toBe("v9.9.9"); // committed regardless
-    expect(readFileSync(join(installDir, "bin", installedBinaryName()), "utf8")).toBe(
-      "FLAT-LIVE",
-    );
   });
 
   skipWin("a provision failure aborts BEFORE the flip: the old version stays live", async () => {

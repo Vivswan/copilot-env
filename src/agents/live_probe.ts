@@ -47,16 +47,16 @@ export const DEFAULT_PROBE_RETRY_DELAY_MS = 600;
  *  this, and a slow SUCCESS never reaches the check. */
 const TIMEOUT_RETRY_FRACTION = 0.9;
 
-/** Shared by the temp-home detect below and the health `--live` probe (src/health/probe.ts)
- *  so the exact smoke command never drifts between them. */
+/** The ISOLATED Direct-detect start, and only that: a throwaway home, auth forced through the
+ *  managed config, the catalog's model pin. The health `--live` probe is the other intent, the
+ *  user's real launch, and builds its own argv in src/health/live_launch.ts; an isolating flag
+ *  added here must never be copied there. */
 export interface ProbeDescriptor {
   cli: string;
   homeEnvVar: string;
-  /** `home` is the config dir the probe points the CLI at (the temp dir for detect, the real
-   *  home for health); `model` pins the call (detect passes the catalog pick; health passes null
-   *  and lets the user's own wiring choose, since that wiring is what it tests); `profile` selects
-   *  a named profile's wiring through the same knob each launcher uses (null = the default argv).
-   *  The per-CLI notes below say how. */
+  /** `home` is the temp config dir the probe points the CLI at; `model` pins the call to the
+   *  catalog pick (null = the CLI's own choice); `profile` selects a named profile's wiring through
+   *  the same knob each launcher uses (null = the default argv). The per-CLI notes below say how. */
   args: (prompt: string, home: string, model: string | null, profile?: Profile) => string[];
 }
 

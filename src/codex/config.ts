@@ -17,9 +17,11 @@ import { Credential } from "../copilot_api/credential.ts";
 import { type EndpointSmoke, smokeDirectEndpoint } from "../copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
+  type BakedDirectIdentity,
   CODEX_EXEC_USER_AGENT,
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
+  INTEGRATION_ID_HEADER,
   resolveDirectIntegrationId,
 } from "../copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
@@ -385,6 +387,29 @@ export type CodexWiringStatus =
 /** Path `/v1`, what openaiBaseUrl writes; the grammar lives in port.ts next to the writers. */
 function baseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
   return matchesProxyOrigin(baseUrl, expectedPort, "/v1");
+}
+
+/** The Copilot-Integration-Id the selection's Direct table bakes in `http_headers`, for `agent auth
+ *  --identities`: like bakedClaudeToken, a side reader sharing the inspector's classification, so
+ *  the status type stays free of it. */
+export function bakedCodexDirectIntegrationId(
+  configToml: TextReadResult,
+  expectedPort: number,
+  profile: Profile = null,
+): BakedDirectIdentity {
+  if (configToml.kind === "absent") return { kind: "not-direct" };
+  if (configToml.kind === "unreadable") return { kind: "unreadable", reason: configToml.error };
+  const wiring = inspectCodexWiring(configToml, null, expectedPort, false, profile);
+  if (wiring.providerMode === "other" && wiring.otherReason === "malformed") {
+    return { kind: "unreadable", reason: codexOtherDetail("malformed") };
+  }
+  if (wiring.providerMode !== "direct") return { kind: "not-direct" };
+  const doc: unknown = parse(configToml.text);
+  const providers = isRecord(doc) ? doc.model_providers : undefined;
+  const table = isRecord(providers) ? providers[codexProviderId(profile)] : undefined;
+  const headers = isRecord(table) ? table.http_headers : undefined;
+  const id = isRecord(headers) ? headers[INTEGRATION_ID_HEADER] : undefined;
+  return { kind: "direct", integrationId: typeof id === "string" ? id : null };
 }
 
 /**

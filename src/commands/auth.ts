@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { consola } from "consola";
+import { readBakedDirectIdentities } from "../agents/wiring.ts";
 import { type CodexCatalogDeps, codexUserAgentVersion } from "../codex/catalog.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { codexUserAgent } from "../codex/config.ts";
@@ -19,7 +20,7 @@ import {
   ghAuthTokenLook,
   type GhTokenLook,
 } from "../copilot_api/credential.ts";
-import { stopTrackedProxy } from "../copilot_api/daemon.ts";
+import { stopTrackedProxy, trackedDaemonAlive } from "../copilot_api/daemon.ts";
 import {
   CODEX_IDENTITY_NAME,
   configKeyDef,
@@ -44,13 +45,17 @@ import {
 import { type GithubLoginLook, githubLoginLook } from "../copilot_api/github_login.ts";
 import {
   autoIdentityFor,
+  type BakedDirectIdentity,
   COPILOT_CLI_INTEGRATION_ID,
+  directIdentity,
   directIdentityCandidates,
   type IdentityHostSurvey,
   type IdentitySurvey,
   type IdentityVerdict,
   INTEGRATION_ID_HEADER,
+  type IntegrationIdentity,
   PASSTHROUGH_IDENTITY_CANDIDATES,
+  passthroughIdentity,
   pinnedIdentityCandidates,
   surveyIntegrationIdentities,
   usePatPassthrough,
@@ -807,29 +812,52 @@ interface IdentityTableInput {
   token: string;
   survey: IdentitySurvey;
   pinned: string | null;
-  /** The slot's persisted Direct verdict (profile_wiring.ts replays it on every launch until the
-   *  credential changes), or null when never probed. */
-  storedDirectIdentity: string | null;
+  /** What each agent's Direct wiring sends today: the star's source of truth for Direct. */
+  baked: { codex: BakedDirectIdentity; claude: BakedDirectIdentity };
+  /** What the next Direct wiring pass bakes: the pin, else (named profile) the slot's replayed
+   *  verdict, else a fresh probe's pick; null = every candidate rejects the credential. */
+  nextDirect: string | null;
+  /** The command that rebakes this profile's Direct wiring. */
+  rewire: string;
   /** Whether a proxy launch would run the passthrough shim for this credential; without it the
    *  daemon exchanges the token itself and always sends vscode-chat, pin or not. */
   proxyPassthrough: boolean;
+  /** A running daemon keeps the identity it launched with, so the Proxy star (a fresh launch's)
+   *  is not what is being sent right now. */
+  daemonRunning: boolean;
+  profile: Profile;
 }
 
-/** The `*` marks the identity a launch uses today per host, following the launch's own chain:
- *  the pin, else (Direct) the slot's stored verdict, else what `auto` settles on for this
- *  credential. */
+/** The identity NAME each Direct-wired agent sends: its header value, or the codex identity when
+ *  it sends none. Agents not wired Direct, or whose config could not be read, are absent. */
+function bakedDirectSenders(
+  baked: IdentityTableInput["baked"],
+): { agent: string; name: string }[] {
+  return [{ agent: "Codex", baked: baked.codex }, { agent: "Claude", baked: baked.claude }]
+    .flatMap(({ agent, baked }) =>
+      baked.kind === "direct" ? [{ agent, name: baked.integrationId ?? CODEX_IDENTITY_NAME }] : []
+    );
+}
+
+/** The `*` marks what is in effect today per host: Direct as the agent configs bake it (a pin
+ *  lands there only at the next rewire), Proxy as a fresh daemon launch sends it. */
 function identityTableLines(input: IdentityTableInput): string[] {
-  const { token, survey, pinned, storedDirectIdentity, proxyPassthrough } = input;
-  const freshDirect = autoIdentityFor(token, survey.direct);
+  const { token, survey, pinned, baked, nextDirect, rewire, proxyPassthrough, daemonRunning } =
+    input;
+  const senders = bakedDirectSenders(baked);
+  const directSends = [...new Set(senders.map((s) => s.name))];
+  const unreadable = [{ agent: "Codex", baked: baked.codex }, {
+    agent: "Claude",
+    baked: baked.claude,
+  }].flatMap(({ agent, baked }) =>
+    baked.kind === "unreadable" ? [{ agent, reason: baked.reason }] : []
+  );
+  const proxyNext = proxyPassthrough
+    ? pinned ?? autoIdentityFor(token, survey.passthrough)
+    : VSCODE_CHAT_INTEGRATION_ID;
   const columns = [
-    { label: "Direct", survey: survey.direct, pick: pinned ?? storedDirectIdentity ?? freshDirect },
-    {
-      label: "Proxy",
-      survey: survey.passthrough,
-      pick: proxyPassthrough
-        ? pinned ?? autoIdentityFor(token, survey.passthrough)
-        : VSCODE_CHAT_INTEGRATION_ID,
-    },
+    { label: "Direct", survey: survey.direct, stars: directSends },
+    { label: "Proxy", survey: survey.passthrough, stars: proxyNext === null ? [] : [proxyNext] },
   ];
   const names = [
     ...new Set([...survey.direct.verdicts, ...survey.passthrough.verdicts].map((v) => v.name)),
@@ -838,7 +866,7 @@ function identityTableLines(input: IdentityTableInput): string[] {
     column.verdicts.find((v) => v.name === name)?.verdict;
   const rows = names.map((name) => [
     name,
-    ...columns.map((c) => verdictCell(verdictOf(c.survey, name), c.pick === name)),
+    ...columns.map((c) => verdictCell(verdictOf(c.survey, name), c.stars.includes(name))),
     IDENTITY_NOTES[name] ?? "",
   ]);
   const reasons = names.flatMap((name) =>
@@ -849,31 +877,44 @@ function identityTableLines(input: IdentityTableInput): string[] {
         : [`  ${name} on ${c.label}: ${verdict.detail}`];
     })
   );
-  const state = pinned === null
-    ? "integration-id: auto (* = what a launch uses for this credential)"
-    : names.includes(pinned)
-    ? `integration-id: pinned to ${pinned} (*)`
-    : `integration-id: pinned to ${pinned} (not a known identity; check it with ` +
-      `\`agent auth --identity ${pinned}\`)`;
-  const staleStored = pinned === null && storedDirectIdentity !== null &&
-    storedDirectIdentity !== freshDirect;
+  const next = nextDirect ?? "nothing (every identity rejects this credential)";
+  // An unreadable config is reported as unknown; only a fully readable "nobody is Direct" says so.
+  const directNote = directSends.length === 0
+    ? unreadable.length === 0
+      ? `Direct: no agent is wired Direct; \`${rewire}\` would bake ${next}.`
+      : null
+    : directSends.length > 1
+    ? `Direct: the agents disagree (${
+      senders.map((s) => `${s.agent} sends ${s.name}`).join(", ")
+    }); \`${rewire}\` rebakes both to ${next}.`
+    : directSends[0] === nextDirect
+    ? null
+    : `Direct: the wiring sends ${directSends[0]} until \`${rewire}\` rebakes it to ${next}` +
+      `${pinned === null ? "" : " (the pin)"}.`;
+  const flag = input.profile === null ? "" : ` --profile ${input.profile}`;
+  const restart = `\`agent stop${flag}\`, then \`agent start${flag}\``;
   const notes = [
-    ...(staleStored
-      ? [
-        `Direct: launches replay the stored verdict ${storedDirectIdentity} (kept until the ` +
-        `credential changes); a fresh probe picks ${freshDirect ?? "nothing"} today.`,
-      ]
-      : []),
+    ...unreadable.map((u) =>
+      `Direct: ${u.agent}'s config could not be read (${u.reason}); what it sends is unknown.`
+    ),
+    ...(directNote === null ? [] : [directNote]),
     ...(proxyPassthrough ? [] : [
       "Proxy: passthrough is off for this credential, so the proxy exchanges the token itself " +
       `and always sends ${VSCODE_CHAT_INTEGRATION_ID}; the pin applies to Direct only.`,
     ]),
-    ...columns
-      .filter((c) => pinned === null && c.pick === null)
-      .map((c) => `${c.label}: no identity accepts this credential; auto refuses it`),
+    ...(proxyNext === null
+      ? ["Proxy: no identity accepts this credential; a daemon launch refuses it."]
+      : []),
+    ...(daemonRunning
+      ? [
+        "Proxy: a daemon is running and keeps the identity it launched with; restart it to " +
+        `apply a change: ${restart}.`,
+      ]
+      : []),
   ];
   return [
-    state,
+    pinned === null ? "integration-id: auto" : `integration-id: pinned to ${pinned}`,
+    "* = in effect today: Direct as the agent configs bake it, Proxy as a fresh daemon launch sends it",
     ...formatTable(rows, {
       header: [
         "identity",
@@ -908,15 +949,43 @@ function resolveForProbe(profile: Profile): string | null {
   return token;
 }
 
+/** `ids` not already among `builtins` are appended, so a row the star or the pin lands on always
+ *  carries a probed verdict, whether or not it is a built-in candidate on that host. */
+function withExtraCandidates(
+  builtins: readonly IntegrationIdentity[],
+  ids: readonly (string | null)[],
+  build: (id: string) => IntegrationIdentity,
+): IntegrationIdentity[] {
+  const seen = new Set(builtins.map((c) => c.name));
+  const extras: IntegrationIdentity[] = [];
+  for (const id of ids) {
+    if (id === null || seen.has(id)) continue;
+    seen.add(id);
+    extras.push(build(id));
+  }
+  return [...builtins, ...extras];
+}
+
 async function surveyAndTable(
   profile: Profile,
   token: string,
   pinned: string | null,
   catalogDeps: CodexCatalogDeps | undefined,
 ): Promise<IdentitySurvey> {
+  const userAgent = surveyUserAgent(catalogDeps);
+  const baked = readBakedDirectIdentities(profile);
+  const directBuiltins = directIdentityCandidates(userAgent);
   const survey = await surveyIntegrationIdentities(token, {
-    direct: directIdentityCandidates(surveyUserAgent(catalogDeps)),
-    passthrough: PASSTHROUGH_IDENTITY_CANDIDATES,
+    direct: withExtraCandidates(
+      directBuiltins,
+      [pinned, ...bakedDirectSenders(baked).map((s) => s.name)],
+      (id) => directIdentity(userAgent, id),
+    ),
+    passthrough: withExtraCandidates(
+      PASSTHROUGH_IDENTITY_CANDIDATES,
+      [pinned],
+      passthroughIdentity,
+    ),
   });
   const credential = new Credential(undefined, profile);
   const proxyPassthrough = usePatPassthrough({
@@ -924,14 +993,26 @@ async function surveyAndTable(
     token,
     provider: credential.provider(),
   });
-  const storedDirectIdentity = new CopilotEnvState().readProfileSlot(profile).integrationIdentity;
+  // A fresh probe (resolveDirectIntegrationId) ranks the built-ins only, so the extras are
+  // excluded from auto's pick; a named profile's launch replays the slot's verdict before probing.
+  const fresh = autoIdentityFor(token, {
+    ...survey.direct,
+    verdicts: survey.direct.verdicts.slice(0, directBuiltins.length),
+  });
+  const slot = new CopilotEnvState().readProfileSlot(profile).integrationIdentity;
+  const nextDirect = pinned ?? (profile === null ? fresh : slot ?? fresh);
+  const rewire = profile === null ? "agent init" : `agent profile --add ${profile} --direct`;
   for (
     const line of identityTableLines({
       token,
       survey,
       pinned,
-      storedDirectIdentity,
+      baked,
+      nextDirect,
+      rewire,
       proxyPassthrough,
+      daemonRunning: trackedDaemonAlive(profile),
+      profile,
     })
   ) {
     console.log(line);

@@ -2,16 +2,23 @@
 // direct?" consumer goes through here so the answer cannot drift. The two predicates at the
 // bottom answer two DIFFERENT questions: pick by question, not by name.
 import {
+  bakedClaudeDirectIntegrationId,
   type ClaudeWiringStatus,
   DIRECT_BASE_URL as CLAUDE_DIRECT_BASE_URL,
   inspectClaudeWiring,
 } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
+import {
+  bakedCodexDirectIntegrationId,
+  type CodexWiringStatus,
+  inspectCodexWiring,
+} from "../codex/config.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
+import type { BakedDirectIdentity } from "../copilot_api/integration_identity.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
+import type { Profile } from "../copilot_api/profile.ts";
 import { readTextResult } from "../utils/fs.ts";
 import type { AgentProviderMode } from "./provider_mode.ts";
 
@@ -42,6 +49,29 @@ export function readAgentWirings(opts: AgentWiringOptions = {}): {
   const claudeHome = opts.claudeHome ?? resolveClaudeHome();
   const claude = inspectClaudeWiring(readTextResult(settingsPathFor(claudeHome)), expectedPort);
   return { codex, claude };
+}
+
+/** What each agent's Direct wiring for `profile` sends today (a named profile's tables and
+ *  settings-<name>.json live in the same homes), read from the effective homes. */
+export function readBakedDirectIdentities(
+  profile: Profile,
+  opts: AgentWiringOptions = {},
+): { codex: BakedDirectIdentity; claude: BakedDirectIdentity } {
+  const expectedPort = opts.expectedPort ?? Number(copilotApiResolvePort(profile));
+  const codexHome = opts.codexHome ?? effectiveCodexHome();
+  const claudeHome = opts.claudeHome ?? resolveClaudeHome();
+  return {
+    codex: bakedCodexDirectIntegrationId(
+      readTextResult(codexConfigPath(codexHome)),
+      expectedPort,
+      profile,
+    ),
+    claude: bakedClaudeDirectIntegrationId(
+      readTextResult(settingsPathFor(claudeHome, profile)),
+      expectedPort,
+      profile,
+    ),
+  };
 }
 
 /** DEFAULT selections only; named profiles have their own artifacts. Store-level failures (run

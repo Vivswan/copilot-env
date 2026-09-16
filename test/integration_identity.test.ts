@@ -168,28 +168,33 @@ test("surveyIntegrationIdentities: every candidate on both hosts, no early stop,
       lowercaseKeys(directClientHeaders("codex_exec/1", id))
     ),
   );
-  // What `auto` settles on per column: a PAT takes the first accepted, a non-PAT never probes.
-  expect([
-    autoIdentityFor("ghp_x", survey.direct),
-    autoIdentityFor("ghp_x", survey.passthrough),
-    autoIdentityFor("gho_x", survey.passthrough),
-  ]).toEqual([CODEX_IDENTITY_NAME, COPILOT_CLI_INTEGRATION_ID, VSCODE_CHAT_INTEGRATION_ID]);
+  // The star `agent auth --identities` draws off a column is the identity a LAUNCH sends: fed the
+  // same stub, each mode's resolver lands where autoIdentityFor says (the codex name is Direct's
+  // null header; a non-PAT credential is never probed by either).
+  const direct = autoIdentityFor("ghp_x", survey.direct);
+  expect(await resolveDirectIntegrationId("ghp_x", "codex_exec/1", { fetchImpl })).toBe(
+    direct === CODEX_IDENTITY_NAME ? null : direct,
+  );
+  for (const token of ["ghp_x", "gho_x"]) {
+    expect(await resolvePassthroughIntegrationId(token, { fetchImpl })).toBe(
+      autoIdentityFor(token, survey.passthrough),
+    );
+  }
 });
 
 test("surveyIntegrationIdentities: a transient account-host lookup downgrades the fallback host's rejections", async () => {
+  const fetchImpl: ProbeFetch = (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    return Promise.resolve(
+      url.includes("/copilot_internal/user")
+        ? new Response("upstream", { status: 503 })
+        : new Response("PATs not supported", { status: 400 }),
+    );
+  };
   const survey = await surveyIntegrationIdentities("ghp_x", {
     direct: directIdentityCandidates("codex_exec/1").slice(0, 1),
     passthrough: PASSTHROUGH_IDENTITY_CANDIDATES.slice(0, 1),
-  }, {
-    fetchImpl: (input) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      return Promise.resolve(
-        url.includes("/copilot_internal/user")
-          ? new Response("upstream", { status: 503 })
-          : new Response("PATs not supported", { status: 400 }),
-      );
-    },
-  });
+  }, { fetchImpl });
   // Direct never looks the host up, so its 400 stays definitive; the fallback host may not be
   // where this credential is served, so the proxy column's 400 must not read as a verdict.
   expect(survey.direct.verdicts[0]?.verdict).toEqual({
@@ -200,7 +205,10 @@ test("surveyIntegrationIdentities: a transient account-host lookup downgrades th
     kind: "inconclusive",
     detail: "400 PATs not supported (account host lookup failed; probed the fallback host)",
   });
+  // "No pick" on Direct is the launch's refusal: the resolver throws on the same stub.
   expect(autoIdentityFor("ghp_x", survey.direct)).toBeNull();
+  await expect(resolveDirectIntegrationId("ghp_x", "codex_exec/1", { fetchImpl })).rejects
+    .toThrow(/rejects this credential/);
 });
 
 test("probeIntegrationIdentity: a network error is inconclusive, not a rejection", async () => {

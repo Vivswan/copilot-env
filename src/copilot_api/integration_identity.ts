@@ -77,9 +77,23 @@ export const PASSTHROUGH_IDENTITY_CANDIDATES: readonly [
 ];
 
 /** The header set the daemon rewrite sends for `id` (src/scripts/pat_passthrough_preload.ts). */
-function passthroughIdentity(id: string): IntegrationIdentity {
+export function passthroughIdentity(id: string): IntegrationIdentity {
   return { name: id, headers: { [INTEGRATION_ID_HEADER]: id } };
 }
+
+/** The header set a Direct agent bakes for `id`, through THE single builder. */
+export function directIdentity(userAgent: string, id: string): IntegrationIdentity {
+  return { name: id, headers: directClientHeaders(userAgent, id) };
+}
+
+/** What an agent's Direct wiring sends today, read off its config by the agent's own layer
+ *  (bakedCodexDirectIntegrationId, bakedClaudeDirectIntegrationId). `integrationId` null = the
+ *  header is absent, the codex identity. A config that cannot be read or parsed is `unreadable`,
+ *  never `not-direct`: "failed to look" must not read as "not wired". */
+export type BakedDirectIdentity =
+  | { kind: "direct"; integrationId: string | null }
+  | { kind: "not-direct" }
+  | { kind: "unreadable"; reason: string };
 
 /**
  * THE single builder: the DIRECT probe candidates and every writer that bakes the result (Codex `http_headers`,
@@ -106,14 +120,8 @@ export function directIdentityCandidates(
 ): [IntegrationIdentity, ...IntegrationIdentity[]] {
   return [
     { name: CODEX_IDENTITY_NAME, headers: directClientHeaders(userAgent) },
-    {
-      name: COPILOT_CLI_INTEGRATION_ID,
-      headers: directClientHeaders(userAgent, COPILOT_CLI_INTEGRATION_ID),
-    },
-    {
-      name: COPILOT_SANDBOX_INTEGRATION_ID,
-      headers: directClientHeaders(userAgent, COPILOT_SANDBOX_INTEGRATION_ID),
-    },
+    directIdentity(userAgent, COPILOT_CLI_INTEGRATION_ID),
+    directIdentity(userAgent, COPILOT_SANDBOX_INTEGRATION_ID),
   ];
 }
 
@@ -123,10 +131,7 @@ export function pinnedIdentityCandidates(
   id: string,
   userAgent: string,
 ): IdentitySurveyCandidates {
-  return {
-    direct: [{ name: id, headers: directClientHeaders(userAgent, id) }],
-    passthrough: [passthroughIdentity(id)],
-  };
+  return { direct: [directIdentity(userAgent, id)], passthrough: [passthroughIdentity(id)] };
 }
 
 export function bakedIntegrationId(identity: IntegrationIdentity): string | null {

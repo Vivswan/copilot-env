@@ -344,7 +344,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
   });
 
   skipWin(
-    "install.sh proceeds on a legacy root (marker without .git) and leaves the sweep to the binary",
+    "install.sh proceeds on a marker-only root (no .git) and hands off to the binary",
     () => {
       const downloadDir = makeDownloadDir();
       const root = makeRoot("deno.json", "none");
@@ -352,8 +352,8 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
         const res = runInstaller(root, downloadDir);
         const why = evidence(res, root);
         expect(res.exitCode, why).toBe(0);
-        // The sweep is the binary's legacyRemovals (src/install/installer.ts) and the stand-in
-        // does nothing, so the debris must survive the handoff.
+        // The installer sweeps nothing itself (it hands off to `agent install`) and the stand-in
+        // does nothing, so the root's own files must survive the handoff.
         expect(existsSync(join(root, "node_modules")), why).toBe(true);
         expect(existsSync(join(root, "deno.json")), why).toBe(true);
         expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
@@ -418,14 +418,14 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
   });
 
   winOnly(
-    "install.ps1 proceeds on a legacy root (marker without .git) and leaves the sweep to the binary",
+    "install.ps1 proceeds on a marker-only root (no .git) and hands off to the binary",
     () => {
       const downloadDir = makeDownloadDir();
       const root = makeRoot("deno.json", "none");
       try {
         // The stand-in .exe cannot run, so the non-zero exit proves the handoff was attempted
-        // and the mutations before it prove the guard let the legacy root through. The sweep
-        // is the binary's legacyRemovals, so the debris survives.
+        // and the mutations before it prove the guard let the marker-only root through. The
+        // installer sweeps nothing, so the root's own files survive.
         const res = runInstaller(root, downloadDir);
         const why = evidence(res, root);
         expect(res.exitCode, why).not.toBe(0);

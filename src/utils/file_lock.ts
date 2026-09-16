@@ -7,10 +7,10 @@
 // exclusive LockFileEx blocks reads from every other handle, which would blind exactly the readers
 // whose contract the marker is. The sidecar is never unlinked: a deletable lock file can be locked
 // as an orphan inode by a contender that opened it just before the holder released the path.
-import { linkSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
-import { isEnoentOrNotdir, readTextOrNull } from "./fs.ts";
+import { isEnoentOrNotdir } from "./fs.ts";
 import { isRecord } from "./json.ts";
 import { pidAlive } from "./pid.ts";
 import { mkdirReported } from "./report_write.ts";
@@ -24,12 +24,6 @@ import { sleepSync } from "./time.ts";
 const LOCK_STALE_MS = 10_000;
 const LOCK_WAIT_MS = 4_000;
 const LOCK_RETRY_MS = 15;
-
-/** Only for a lock we do NOT hold: our own marker is the `#raw` HeldFileLock remembers, never a
- *  fresh disk read, because a rename-steal can put a successor's marker at the path. */
-function readLockRaw(lockPath: string): string | null {
-  return readTextOrNull(lockPath);
-}
 
 interface LockMarker {
   pid: number;
@@ -260,42 +254,6 @@ function observeOsLock(lockPath: string): "held" | "free" | "unknown" {
     return "unknown";
   } finally {
     dropHandle(file);
-  }
-}
-
-/** The marker-only protocol's identity-verified steal: a FRESH holder that replaced the marker
- *  between the caller's read and the rename is restored via linkSync (which fails rather than
- *  clobber a third process's lock). The sidecar acquire path no longer needs it; it stays as the
- *  takeover contract old-release processes execute against our markers, pinned by
- *  test/file_lock.test.ts. */
-export function reclaimStaleLock(lockPath: string, observed: string): void {
-  const claimed = `${lockPath}.steal.${process.pid}.${Date.now()}`;
-  let yanked: string | null = null;
-  try {
-    renameSync(lockPath, claimed);
-    yanked = readLockRaw(claimed);
-  } catch {
-    yanked = null; // someone else already moved/removed it
-  }
-  if (yanked === null) return;
-  if (yanked === observed) {
-    try {
-      rmSync(claimed, { force: true }); // reclaimed exactly the stale lock we judged
-    } catch {
-      // ignore
-    }
-  } else {
-    // Yanked a DIFFERENT (fresh) lock -> put it back without clobbering, don't steal.
-    try {
-      linkSync(claimed, lockPath);
-    } catch {
-      // lockPath re-occupied / fs error -> leave it; the yanked holder re-locks next attempt
-    }
-    try {
-      rmSync(claimed, { force: true });
-    } catch {
-      // ignore
-    }
   }
 }
 

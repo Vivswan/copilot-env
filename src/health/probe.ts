@@ -44,13 +44,7 @@ import {
   ghAuthVerdict,
   parseGhAuthStatusAccounts,
 } from "../copilot_api/gh_cli.ts";
-import {
-  CopilotApiPaths,
-  DEFAULT_HOME_STAGING_DIR,
-  profileHomeExists,
-  PROFILES_DIR_NAME,
-  resolveRootHome,
-} from "../copilot_api/paths.ts";
+import { CopilotApiPaths, profileHomeExists, resolveRootHome } from "../copilot_api/paths.ts";
 import {
   copilotApiFallbackPort,
   copilotApiResolvePort,
@@ -68,7 +62,7 @@ import {
 } from "../proxy_float.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { persistedInferenceMs } from "../scripts/inference_activity.ts";
-import { hasMarker, LAUNCHERS_MARKER, MARKER, shellTargetFiles } from "../shell/integration.ts";
+import { hasMarker, MARKER, shellTargetFiles } from "../shell/integration.ts";
 import {
   childEnvWithPath,
   cliSpawn,
@@ -89,7 +83,6 @@ import {
   type CodexDirectAuthFacts,
   type CodexFacts,
   type DaemonProbed,
-  type DefaultHomeMigrationFacts,
   type DefaultRuntimeTarget,
   type HealthFacts,
   type LiveProbeFacts,
@@ -200,8 +193,6 @@ export interface ProbeDeps {
   /** The Claude Desktop wiring status (read-only; see claudeDesktopStatus). */
   claudeDesktop(): ClaudeDesktopStatus;
   dirExists(path: string): boolean;
-  /** The 3.5.6 default-home move's staging state under the root's profiles dir. */
-  defaultHomeMigration(): DefaultHomeMigrationFacts;
   readAutoupdate(): AutoupdateStatus;
   nodeModulesPresent(): boolean;
   nodeModulesFresh(): boolean;
@@ -491,12 +482,6 @@ export function defaultProbeDeps(): ProbeDeps {
     codexHostEnabled: () => new CopilotEnvConfig().codexHostEnabled(),
     claudeDesktop: claudeDesktopStatus,
     dirExists: (path: string) => existsSync(path),
-    defaultHomeMigration: () => {
-      // The same spelling defaultDaemonHome's precedence rule reads (paths.ts): the staging dir
-      // the 3.5.6 fix-up renames into profiles/default.
-      const stagingPath = join(resolveRootHome(), PROFILES_DIR_NAME, DEFAULT_HOME_STAGING_DIR);
-      return { stagingPath, staged: existsSync(stagingPath) };
-    },
     readAutoupdate: () => ({
       ...new AutoupdateState().read(),
       enabled: new CopilotEnvConfig().autoUpdateEnabled(),
@@ -522,8 +507,7 @@ export function defaultProbeDeps(): ProbeDeps {
 
 // --- pure sub-evaluators (no I/O) -------------------------------------------
 
-/** Per-file hasLaunchers reports a leftover LEGACY block; launchersWired is the `launchers`
- *  config key (see ShellFacts). */
+/** launchersWired is the `launchers` config key (see ShellFacts). */
 export function evalShellFiles(
   contents: { path: string; content: string | null }[],
   launchersEnabled: boolean,
@@ -531,7 +515,6 @@ export function evalShellFiles(
   const files: ShellFileFact[] = contents.map(({ path, content }) => ({
     path,
     hasIntegration: content !== null && hasMarker(content, MARKER),
-    hasLaunchers: content !== null && hasMarker(content, LAUNCHERS_MARKER),
   }));
   return {
     files,
@@ -895,8 +878,6 @@ export async function gatherFacts(
   if (profile === null && SCOPE_BOOTSTRAP.includes(scope)) {
     jobs.push(
       (async () => {
-        // An interrupted 3.5.6 default-home move (root-wide, one root per run).
-        facts.defaultHomeMigration = deps.defaultHomeMigration();
         const sidecar = deps.sidecar();
         facts.bootstrap = {
           cliVersion: deps.cliVersion(),

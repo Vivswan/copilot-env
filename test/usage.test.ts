@@ -671,21 +671,14 @@ test("readUsage on an all-corrupt set returns an empty report, no throw", () => 
   expect(report.perDay.size).toBe(0);
 });
 
-test("discoverUsageDbs finds the legacy file plus per-host DBs", () => {
+test("discoverUsageDbs finds the per-host DBs", () => {
   dir = tempDir("copilot-usage-");
-  const legacy = join(dir, "copilot-api.sqlite");
-  writeFileSync(legacy, "");
-
   const hostDir = join(dir, ".run", "host-a");
   mkdirSync(hostDir, { recursive: true });
   const hostDb = join(hostDir, "copilot-api.sqlite");
   writeFileSync(hostDb, "");
 
-  const found = discoverUsageDbs(dir);
-
-  expect(found).toContain(legacy);
-  expect(found).toContain(hostDb);
-  expect(found).toHaveLength(2);
+  expect(discoverUsageDbs(dir)).toEqual([hostDb]);
 });
 
 test("discoverUsageDbs also sweeps named profile daemon homes", () => {
@@ -714,31 +707,20 @@ test("discoverUsageDbs also sweeps named profile daemon homes", () => {
 test("discoverUsageDbs sweeps the DEFAULT profile's home; a stray invalid dir stays out", () => {
   dir = tempDir("copilot-usage-");
 
-  // The migrated shape: the default daemon's DBs live under profiles/default (a name
-  // isValidProfileName REJECTS as reserved, so the sweep must admit it explicitly),
-  // beside an unmigrated flat legacy DB still at the root.
-  const flatLegacy = join(dir, "copilot-api.sqlite");
-  writeFileSync(flatLegacy, "");
+  // The default daemon's DBs live under profiles/default (a name isValidProfileName REJECTS as
+  // reserved, so the sweep must admit it explicitly).
   const defaultHost = join(dir, "profiles", "default", ".run", "host-a");
   mkdirSync(defaultHost, { recursive: true });
   const defaultDb = join(defaultHost, "copilot-api.sqlite");
   writeFileSync(defaultDb, "");
-  const defaultLegacy = join(dir, "profiles", "default", "copilot-api.sqlite");
-  writeFileSync(defaultLegacy, "");
 
-  // Control: a stray non-profile dir under profiles/ (the migration staging name)
-  // carrying a DB must NOT be swept -- proving the default is admitted by name,
-  // not by the filter having gone permissive.
-  const strayHost = join(dir, "profiles", ".default.migrating", ".run", "host-a");
+  // Control: a stray non-profile dir under profiles/ carrying a DB must NOT be swept -- proving
+  // the default is admitted by name, not by the filter having gone permissive.
+  const strayHost = join(dir, "profiles", ".stray", ".run", "host-a");
   mkdirSync(strayHost, { recursive: true });
   writeFileSync(join(strayHost, "copilot-api.sqlite"), "");
 
-  const found = discoverUsageDbs(dir);
-
-  expect(found).toContain(flatLegacy);
-  expect(found).toContain(defaultDb);
-  expect(found).toContain(defaultLegacy);
-  expect(found).toHaveLength(3);
+  expect(discoverUsageDbs(dir)).toEqual([defaultDb]);
 });
 
 test("discoverUsageDbs excludes a stray .run file and a host dir missing the sqlite", () => {
@@ -777,8 +759,6 @@ test.skipIf(skipUnreadableDir)(
   "an UNREADABLE .run dir raises instead of reporting no databases",
   () => {
     dir = tempDir("copilot-usage-");
-    const legacy = join(dir, "copilot-api.sqlite");
-    writeFileSync(legacy, "");
     const runDir = join(dir, ".run");
     mkdirSync(runDir, { recursive: true });
     chmodSync(runDir, 0o000);
@@ -802,8 +782,6 @@ test.skipIf(skipUnreadableDir)(
   "an UNREADABLE profiles dir raises instead of reporting no profiles",
   () => {
     dir = tempDir("copilot-usage-");
-    const legacy = join(dir, "copilot-api.sqlite");
-    writeFileSync(legacy, "");
     const profilesDir = join(dir, "profiles");
     mkdirSync(profilesDir, { recursive: true });
     chmodSync(profilesDir, 0o000);
@@ -825,8 +803,6 @@ test("both scans still read ABSENT dirs as empty, never as a failure (the contro
   // Absence is the PROVEN "nothing here" and must keep flowing silently: a fresh home has
   // neither .run nor profiles/, and `agent cost` must not raise on it.
   dir = tempDir("copilot-usage-");
-  const legacy = join(dir, "copilot-api.sqlite");
-  writeFileSync(legacy, "");
 
-  expect(discoverUsageDbs(dir)).toEqual([legacy]);
+  expect(discoverUsageDbs(dir)).toEqual([]);
 });

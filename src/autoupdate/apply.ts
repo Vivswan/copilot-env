@@ -31,16 +31,12 @@ import {
   parseChecksums,
 } from "../install/checksums.ts";
 import {
-  classifyInstallRoot,
   currentLinkPath,
-  flatArtifactPaths,
   flatBinaryResiduePaths,
-  flatScaffoldingPaths,
   INSTALL_ROOT_ENV,
   isCheckoutShapedRoot,
   pointCurrentAt,
   readCurrentVersionName,
-  removeFlatArtifacts,
   removeFlatBinaryResidue,
   removeVersionDirsExcept,
   versionDirName,
@@ -51,7 +47,7 @@ import type { Release } from "../install/resolve-release.ts";
 import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../install/targets.ts";
 import type { HeldUpdateLock } from "./lock.ts";
 import { errMessage } from "../utils/error.ts";
-import { PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
+import { installStateRoot, PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
 import { stripV } from "../utils/semver.ts";
 import {
   chmodReported,
@@ -174,11 +170,6 @@ interface Committed {
   readonly binary: string;
   readonly versionName: string;
   readonly previous: string | null;
-  /** Whether the top shims now dispatch through the link (or the top is a
-   *  checkout, whose bin/agent is not ours). While false, the pre-versioned
-   *  adjacent-dispatch shims may still be live -- the flat binary they invoke
-   *  must then survive the GC. */
-  readonly shimsRefreshed: boolean;
 }
 
 /** Where to fetch a release file from: a local directory or a URL prefix. */
@@ -376,12 +367,10 @@ function provision(staged: Staged, stdio: StdioOptions): Provisioned {
  */
 function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Committed {
   pointCurrentAt(top, provisioned.versionName);
-  let shimsRefreshed = true;
   if (!isCheckoutShapedRoot(top)) {
     try {
       writeTopLevelShims(top, logger);
     } catch (error) {
-      shimsRefreshed = false;
       logger.warn(`Could not refresh the launcher shims: ${errMessage(error)}`);
     }
   }
@@ -389,7 +378,6 @@ function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Co
     binary: provisioned.binary,
     versionName: provisioned.versionName,
     previous: provisioned.previous,
-    shimsRefreshed,
   } as Committed;
 }
 
@@ -438,8 +426,7 @@ export async function applyUpdate(
   // ["ignore", 2, 2] => stdin closed, child stdout AND stderr both go to our fd2.
   const stdio: StdioOptions = opts.childStdoutToStderr ? ["ignore", 2, 2] : "inherit";
 
-  const shape = classifyInstallRoot(root);
-  const top = shape.top;
+  const top = installStateRoot(root);
   const versionName = versionDirName(target.tag);
   const versionRoot = versionRootPath(top, versionName);
 
@@ -487,25 +474,15 @@ export async function applyUpdate(
     logger.warn(`Post-update migrations could not run: ${errMessage(error)}`);
   }
 
-  // GC keeps the new version plus ONE previous (the rollback candidate). The flat shell payload
-  // is spared: nothing here rewires the rc block that may still source it (the 3.5.6 migration
-  // and `agent shell` own that), and a stale payload that works beats a swept one a block still
-  // points at.
+  // GC keeps the new version plus ONE previous (the rollback candidate).
   const keep = new Set(
     committed.previous === null
       ? [committed.versionName]
       : [committed.versionName, committed.previous],
   );
   removeVersionDirsExcept(top, keep);
-  // Only once the top shims dispatch through the link: old adjacent-dispatch shims still invoke
-  // the flat binary and its runtime assets, and neither may go out from under them.
-  if (committed.shimsRefreshed) {
-    removeFlatBinaryResidue(flatBinaryResiduePaths(top));
-    if (shape.kind === "flat") {
-      const flat = flatArtifactPaths(top);
-      removeFlatArtifacts(flat, flatScaffoldingPaths(top, flat), new Set(["shell"]));
-    }
-  }
+  // The bootstrap binary a Windows install could not unlink while it was the running image.
+  removeFlatBinaryResidue(flatBinaryResiduePaths(top));
 
   logger.success(
     `Updated copilot-env ${current} -> ${target.tag}. Restart your agents to pick it up.`,

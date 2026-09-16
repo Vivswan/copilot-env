@@ -44,30 +44,21 @@ test("a fresh root resolves the default daemon home to profiles/default", () => 
   expect(defaultDaemonHome()).toBe(join(dir, "profiles", "default"));
 });
 
-test("an unmigrated FLAT root (daemon files at the root itself) resolves to the root", () => {
+test("a root holding daemon files (a daemon home at the root itself) resolves to the root", () => {
   dir = isolateProxyHome("copilot-env-paths-");
-  // Any one daemon-home artifact at the root marks the flat legacy layout; the
-  // account-wide files alone (state/config stores) must NOT.
+  // Any one daemon-home artifact at the root marks it; the account-wide files alone
+  // (state/config stores) must NOT.
   writeFileSync(join(dir, "credentials.json"), "{}\n");
   expect(defaultDaemonHome()).toBe(join(dir, "profiles", "default"));
   mkdirSync(join(dir, ".run"), { recursive: true });
   expect(defaultDaemonHome()).toBe(dir);
 });
 
-test("profiles/default wins over lingering flat files once it exists", () => {
+test("profiles/default wins over lingering root daemon files once it exists", () => {
   dir = isolateProxyHome("copilot-env-paths-");
-  mkdirSync(join(dir, ".run"), { recursive: true }); // flat leftover
+  mkdirSync(join(dir, ".run"), { recursive: true }); // root leftover
   mkdirSync(join(dir, "profiles", "default"), { recursive: true });
   expect(defaultDaemonHome()).toBe(join(dir, "profiles", "default"));
-});
-
-test("an unfinished migration staging dir alone still resolves to the flat root", () => {
-  dir = isolateProxyHome("copilot-env-paths-");
-  // A crash after the last artifact staged but before the flip: no flat artifacts and
-  // no profiles/default -- the staging dir is what proves the root is mid-move, not
-  // fresh, so reads must not split onto an absent profiles/default.
-  mkdirSync(join(dir, "profiles", ".default.migrating"), { recursive: true });
-  expect(defaultDaemonHome()).toBe(dir);
 });
 
 test("inside a daemon (ROOT_HOME_ENV set) the pinned COPILOT_API_HOME IS the home", () => {

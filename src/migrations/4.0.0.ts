@@ -23,13 +23,7 @@ import {
   type Profile,
   type ProfileName,
 } from "../copilot_api/profile.ts";
-import {
-  LAUNCHERS_MARKER,
-  LAUNCHERS_MARKER_END,
-  MARKER,
-  MARKER_END,
-  shellTargetFiles,
-} from "../shell/integration.ts";
+import { MARKER, MARKER_END, shellTargetFiles } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent, readTextResult } from "../utils/fs.ts";
 import { chmodReported, removeReported, writeFileReported } from "../utils/report_write.ts";
@@ -44,6 +38,12 @@ function failIfAny(failed: readonly string[]): void {
 }
 
 // --- the shell rc block ----------------------------------------------------------
+
+/** The launchers block every pre-4.0.0 release wrote, frozen here: the launchers are `agent env`
+ *  emissions now (the `launchers` config key). Fenced like the main block below; the 4.0.9 step
+ *  removes it. */
+export const LAUNCHERS_MARKER = "# copilot-env launchers";
+export const LAUNCHERS_MARKER_END = `${LAUNCHERS_MARKER} end`;
 
 /** The [assignment, guard] pair every 3.5.6-or-older release (and the pre-TS installers) wrote
  *  under each rc marker, frozen here: how an UNFENCED block is bounded without eating user
@@ -72,7 +72,13 @@ const UNFENCED_BLOCKS: Record<
     ],
   },
 };
-const FENCE_LINES: readonly string[] = [MARKER, MARKER_END, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END];
+/** Every marker and end-marker line the rc blocks ever used: an extent search stops at any of them. */
+export const FENCE_LINES: readonly string[] = [
+  MARKER,
+  MARKER_END,
+  LAUNCHERS_MARKER,
+  LAUNCHERS_MARKER_END,
+];
 
 /** An unfenced marker block whose two body lines are its release's pair gets the end fence
  *  inserted after the guard, so the current writer (fenced blocks only) refreshes or strips it
@@ -109,9 +115,7 @@ export function fenceUnfencedBlocks(content: string): string {
   return out.join("\n");
 }
 
-/** Shared with the 3.5.6 step (v356ShellFence), which must run BEFORE the versioned-layout
- *  adoption re-wires the shell: that writer owns only the marker line of an unfenced block and
- *  would strand its body. */
+/** Shared with the 3.5.6 step (v356ShellFence). */
 export function fenceShellBlocks(): void {
   const failed: string[] = [];
   for (const file of shellTargetFiles()) {

@@ -3,7 +3,6 @@
 // resolving the link into one.
 //
 //   versioned install  -> `<top>/.autoupdate/`, beside `versions/` (installStateRoot)
-//   flat install       -> `<root>/.autoupdate/`
 //   dev checkout       -> `<root>/.autoupdate/`
 import { join } from "node:path";
 import { installStateRoot, PROJECT_ROOT } from "../utils/root.ts";

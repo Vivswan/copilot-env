@@ -202,7 +202,7 @@ resolve_safe_install_dir "$INSTALL_DIR"
 # Mirrors the binary's plan-time refusal (CHECKOUT_MARKERS in src/install/installer.ts)
 # before the bin write touches the root.
 #   a marker and .git (a file in a worktree, so `-e`)  -> a live source checkout  -> refused
-#   a marker, no .git                                  -> a legacy source install -> proceeds; the binary sweeps it
+#   a marker, no .git                                  -> not a checkout           -> proceeds
 if [ -e "$INSTALL_DIR/.git" ]; then
     for _marker in package.json deno.json; do
         if [ -e "$INSTALL_DIR/$_marker" ]; then

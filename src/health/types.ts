@@ -85,12 +85,6 @@ export const CHECK_DESCRIPTORS = {
     group: "runtime",
     scopes: RUNTIME_SCOPES,
   },
-  // Diagnostic-only (full + proxy), like the informational runtime rows above.
-  "runtime.defaultHomeMigration": {
-    label: "Default home migration",
-    group: "runtime",
-    scopes: ["full", "proxy"],
-  },
   "setup.shell": { label: "Shell integration", group: "setup", scopes: SETUP_SCOPES },
   "setup.launchers": { label: "Launchers (cl/co/cx)", group: "setup", scopes: SETUP_SCOPES },
   "setup.tool.node": { label: "node", group: "setup", scopes: SETUP_SCOPES },

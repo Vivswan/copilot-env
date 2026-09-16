@@ -193,8 +193,6 @@ export interface ProxyFacts {
 export interface ShellFileFact {
   path: string;
   hasIntegration: boolean;
-  /** The file carries a LEGACY launchers rc block (retired; `agent shell` strips it). */
-  hasLaunchers: boolean;
 }
 
 export interface ShellFacts {
@@ -317,16 +315,6 @@ export interface CodexHostFacts {
   enabled: boolean;
 }
 
-/** The 3.5.6 default-home move stages the flat root's daemon files under DEFAULT_HOME_STAGING_DIR
- *  and flips with one rename, so a kill inside that window leaves the staging dir. `staged`
- *  means exactly that unfinished move; the flat root still answers until the flip. */
-export interface DefaultHomeMigrationFacts {
-  /** The staging dir's absolute path under the root's profiles dir. */
-  stagingPath: string;
-  /** The staging dir exists on disk (an interrupted move). */
-  staged: boolean;
-}
-
 /** The persisted state plus the effective cooldown, which is the LIVE `update-cooldown` config
  *  (never snapshotted into state), so `agent health` matches `agent update --auto-status`. */
 export type AutoupdateStatus = AutoupdateData & { enabled: boolean; cooldownDays: number };
@@ -367,8 +355,6 @@ export interface HealthFacts {
   codexLive?: LiveProbeFacts;
   claudeLive?: LiveProbeFacts;
   autoupdate?: AutoupdateStatus;
-  /** Root-wide, so never gathered on a narrowed `--profile` run. */
-  defaultHomeMigration?: DefaultHomeMigrationFacts;
 }
 
 /** Never tokens. The ProfileName key documents intent (TS erases a branded index to string); the

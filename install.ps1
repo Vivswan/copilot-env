@@ -193,7 +193,7 @@ $InstallDir = Resolve-SafeInstallDir
 
 # Mirrors the binary's plan-time refusal (CHECKOUT_MARKERS in src/install/installer.ts)
 # before the bin write touches the root; a worktree's .git is a file, so no -PathType.
-# Markers without .git are a legacy source install, which the binary sweeps.
+# Markers without .git are not a checkout, so the install proceeds.
 if (Test-Path -LiteralPath (Join-Path $InstallDir '.git')) {
     foreach ($marker in @('package.json', 'deno.json')) {
         if (Test-Path -LiteralPath (Join-Path $InstallDir $marker)) {

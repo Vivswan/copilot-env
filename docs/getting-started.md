@@ -106,12 +106,6 @@ done
 - `--source-ref` requires `main`.
 - `--cert-identity-regex` allows either release workflow at any ref: this repository's own `release.yml`, or the fleet's `fleet-release-publish.yml` that the attest step is moving to.
 
-### Upgrading from 3.5.6 or earlier
-
-Those versions installed a source tree and bootstrapped a runtime into it, and `agent update` cannot cross that gap.
-
-Re-run the installer once. It replaces the old layout in place, removing the `node_modules` it left behind, and every later update is the ordinary binary swap. Your settings live outside the install directory, so nothing is lost.
-
 ## Uninstall
 
 `agent uninstall` removes everything copilot-env manages: daemons, profiles, agent wiring, shell integration, credentials, data, and the install itself. It leaves the agent CLIs (`claude` / `copilot` / `codex`) alone. Its flags are in the [command list](usage.md#commands).

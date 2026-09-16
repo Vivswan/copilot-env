@@ -28,14 +28,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { consola } from "consola";
 
-import {
-  hasMarker,
-  LAUNCHERS_MARKER,
-  MARKER,
-  rcFiles,
-  runShellIntegration,
-  windowsProfileTarget,
-} from "../shell/integration.ts";
+import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
 import {
   atomicSymlink,
@@ -58,11 +51,7 @@ import {
   type InstallManifest,
   installStateRoot,
   isStandaloneBinary,
-  isVersionedInstallTop,
   PROJECT_ROOT,
-  readInstallManifest,
-  type RootMode,
-  rootMode,
   VERSIONS_DIR,
 } from "../utils/root.ts";
 import { stripV } from "../utils/semver.ts";
@@ -112,13 +101,8 @@ export const MATERIALIZED_ASSET_FILES = [
  *    copilot-env.config -> readProjectConfig
  *    .dvmrc             -> readDvmrcPin
  *    deno.json          -> writeDaemonConfig; also a CHECKOUT_MARKERS entry, so on disk it would
- *                          make every install root read as checkout debris */
+ *                          make every install root read as a checkout */
 export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", ".dvmrc", "deno.json"] as const;
-
-/** Superseded files a pre-binary source install leaves in the root; `node_modules` alone is
- *  hundreds of megabytes, so they are removed outright (no upgrade bridge). This list lives
- *  ONLY here: install.sh / install.ps1 do no sweeping, they hand off to `agent install`. */
-export const LEGACY_ARTIFACTS = ["node_modules", "bun.lock", "bunfig.toml"] as const;
 
 // --- The versioned layout vocabulary --------------------------------------------
 
@@ -147,24 +131,6 @@ export function versionRootPath(top: string, versionName: string): string {
 
 export function currentLinkPath(top: string): string {
   return join(top, CURRENT_LINK);
-}
-
-/**
- * Accepts both spellings a versioned root reaches this code under: the `current` link path (how
- * a versioned binary sees its own root) and the top directory (how the bootstrap sees a root it
- * is about to version). Versioned is believed only when `current` is a REAL link into
- * `versions/` (isVersionedInstallTop): coincidental directory names must never reroute an
- * install or an update. Anything else is the flat, pre-versioned shape.
- */
-export type InstallRootShape =
-  | { kind: "flat"; top: string }
-  | { kind: "versioned"; top: string };
-
-export function classifyInstallRoot(root: string): InstallRootShape {
-  // installStateRoot (src/utils/root.ts) owns the current-link -> top mapping;
-  // the verdict here is only whether that top carries the real link layout.
-  const top = installStateRoot(root);
-  return isVersionedInstallTop(top) ? { kind: "versioned", top } : { kind: "flat", top };
 }
 
 /** The link target in the spelling the platform stores: RELATIVE on POSIX (the install stays
@@ -293,68 +259,8 @@ export function isCheckoutShapedRoot(root: string): boolean {
     existsSync(join(root, ".git"));
 }
 
-/** The pre-versioned (flat) artifacts present at `top`. Empty for a checkout-shaped root: those
- *  files are SOURCE there, never ours to sweep. */
-export function flatArtifactPaths(top: string): string[] {
-  if (isCheckoutShapedRoot(top)) return [];
-  const names: string[] = [
-    ...MATERIALIZED_ASSET_DIRS,
-    ...MATERIALIZED_ASSET_FILES,
-    INSTALL_MANIFEST_FILE,
-    ...LEGACY_ARTIFACTS,
-    ...CHECKOUT_MARKERS,
-  ];
-  return names.map((name) => join(top, name)).filter(directoryEntryExists);
-}
-
-/** The flat `src` scaffolding dirs that `removals` (flatArtifactPaths) will leave EMPTY,
- *  innermost first. A scaffolding dir holding anything else is not planned and stays. */
-export function flatScaffoldingPaths(top: string, removals: readonly string[]): string[] {
-  const going = new Set(removals);
-  const prunes: string[] = [];
-  for (const dir of [join("src", "copilot_api"), join("src", "utils"), "src"]) {
-    const path = join(top, dir);
-    let entries: string[];
-    try {
-      entries = readdirSync(path);
-    } catch {
-      continue; // absent (or unreadable, which the sweep would also leave alone)
-    }
-    if (entries.every((entry) => going.has(join(path, entry)))) {
-      going.add(path);
-      prunes.push(path);
-    }
-  }
-  return prunes;
-}
-
-/** Best-effort entry by entry. `keep` names entries to spare: the shell payload stays whenever
- *  the rc/profile block still points at it (a stale payload that works beats a swept one a block
- *  still sources). */
-export function removeFlatArtifacts(
-  paths: readonly string[],
-  prunes: readonly string[],
-  keep: ReadonlySet<string> = new Set(),
-): void {
-  for (const path of paths) {
-    if (keep.has(basename(path))) continue;
-    try {
-      removeTreeReported(path);
-    } catch {
-      // in use (Windows); harmless debris until something releases it
-    }
-  }
-  for (const dir of prunes) {
-    try {
-      removeEmptyDirReported(dir); // non-recursive: only ever prunes an EMPTY dir
-    } catch {
-      // not empty or already gone -- either way, leave it
-    }
-  }
-}
-
-/** The flat-layout `copilot-env(.exe)` in `<top>/bin` (superseded by `versions/<v>/bin/...`)
- *  and any `.old-<ts>` aside files the pre-versioned Windows updater left. */
+/** The bootstrap `copilot-env(.exe)` install.sh / install.ps1 downloaded to `<top>/bin`, superseded
+ *  once the plan copied it into `versions/<v>/bin/...`. */
 export function flatBinaryResiduePaths(top: string): string[] {
   const binDir = join(top, "bin");
   let entries: string[];
@@ -364,9 +270,7 @@ export function flatBinaryResiduePaths(top: string): string[] {
     return [];
   }
   const liveName = installedBinaryName();
-  return entries
-    .filter((entry) => entry === liveName || entry.startsWith(`${liveName}.old-`))
-    .map((entry) => join(binDir, entry));
+  return entries.filter((entry) => entry === liveName).map((entry) => join(binDir, entry));
 }
 
 /** Best-effort: a still-running image refuses deletion and is swept by a later update. */
@@ -448,10 +352,8 @@ export interface InstallOptions {
   assetsOnly: boolean;
 }
 
-/** Files only a source checkout OR a legacy source-archive install carries at its root. With
- *  `.git` beside them they mark a live checkout an installed-mode plan must refuse to clobber;
- *  without `.git` they are debris the old source-archive installer left, swept like
- *  LEGACY_ARTIFACTS. */
+/** Files only a source checkout carries at its root. With `.git` beside them they mark a live
+ *  checkout an installed-mode plan must refuse to clobber. */
 export const CHECKOUT_MARKERS = ["package.json", "deno.json"] as const;
 
 /** One shell-integration pass (Windows may need two: per-host and all-hosts profiles are
@@ -494,7 +396,6 @@ export type InstallPlan =
     copies: AssetCopy[];
     shims: ShimWrite[];
     manifest: ManifestWrite;
-    legacyRemovals: string[];
     shell: ShellWiring | null;
   }
   | {
@@ -511,15 +412,11 @@ export type InstallPlan =
     /** The commit step: `<top>/current` linked to `target` (currentLinkTarget). */
     currentLink: { path: string; target: string };
     topShims: ShimWrite[];
-    /** Pre-versioned artifacts at the top root, swept AFTER the flip. */
-    flatRemovals: string[];
-    /** The flat `src` scaffolding those removals empty, pruned after them. */
-    flatPrunes: string[];
-    /** The flat binary and its `.old-` aside files, swept once the top shims dispatch through
-     *  the link. */
+    /** The bootstrap binary at `<top>/bin`, swept once the top shims dispatch through the link. */
     flatBinaryRemovals: string[];
-    /** Run through the INSTALLED binary post-flip: this process may be rooted at the flat top,
-     *  so its own PROJECT_ROOT-derived rc paths would not survive the layout change. */
+    /** Run through the INSTALLED binary post-flip: this process may be rooted at the top itself
+     *  (the bootstrap), so its own PROJECT_ROOT-derived rc paths would not survive the layout
+     *  change. */
     shellWires: ShellWiring[];
   };
 
@@ -600,9 +497,8 @@ function collectAssetCopies(sourceRoot: string, root: string, dir: string): Asse
   return copies;
 }
 
-/** The refusals every installed-mode target must clear. Returns the checkout markers present
- *  WITHOUT `.git`: legacy source-install debris the caller may sweep. */
-function guardInstalledTarget(root: string): string[] {
+/** The refusals every installed-mode target must clear. */
+function guardInstalledTarget(root: string): void {
   // The root is DERIVED (from the binary's location, or the COPILOT_ENV_INSTALL_ROOT override)
   // and the writes and removals aim at it, so an unsafe target is refused before anything is
   // planned. The shell installers keep only a lexical pre-check; this is the canonical one.
@@ -611,13 +507,8 @@ function guardInstalledTarget(root: string): string[] {
     throw new Error(`refusing to install into ${root}: ${unsafe}`);
   }
 
-  // The markers alone cannot condemn a root: the source-archive installer era laid down roots
-  // byte-indistinguishable from a checkout, and LEGACY_ARTIFACTS never swept package.json /
-  // deno.json out of them. `.git` (a directory, or a file in a worktree) is the one honest
-  // discriminant: archives never carry it.
-  //
-  //   markers + .git   -> a live checkout reached through COPILOT_ENV_INSTALL_ROOT, refused here
-  //   markers, no .git -> legacy debris, swept with the other superseded artifacts
+  // `.git` (a directory, or a file in a worktree) beside the markers is what makes a root a live
+  // checkout reached through COPILOT_ENV_INSTALL_ROOT.
   const presentMarkers = CHECKOUT_MARKERS.filter((marker) => existsSync(join(root, marker)));
   if (presentMarkers.length > 0 && existsSync(join(root, ".git"))) {
     throw new Error(
@@ -625,7 +516,6 @@ function guardInstalledTarget(root: string): string[] {
         `source checkout, and installing would overwrite its bin/agent and working files`,
     );
   }
-  return presentMarkers;
 }
 
 /** Verifies the embedded assets, then lays out the copies, per-version shims, and manifest. */
@@ -705,23 +595,19 @@ export function buildInstallPlan(
   }
 
   if (options.assetsOnly) {
-    // INTO the aimed root exactly: an update aims this inside a staged version root; the
-    // pre-versioned updater aimed it at a flat top.
-    const presentMarkers = guardInstalledTarget(root);
+    // INTO the aimed root exactly: an update aims this inside a staged version root.
+    guardInstalledTarget(root);
     return {
       kind: "installed",
       root,
       ...planMaterialization(root, sourceRoot),
-      legacyRemovals: [...LEGACY_ARTIFACTS, ...presentMarkers]
-        .map((name) => join(root, name))
-        .filter(existsSync),
       shell: null,
     };
   }
 
   // A FULL install builds the versioned layout at the top root, whichever spelling of it this
   // process was aimed at (the top during bootstrap, the `current` link from an installed binary).
-  const top = classifyInstallRoot(root).top;
+  const top = installStateRoot(root);
   guardInstalledTarget(top);
 
   const versionName = versionDirName(packageVersion());
@@ -736,7 +622,6 @@ export function buildInstallPlan(
   const binary = binarySource !== null && !sameFile
     ? { from: binarySource, to: binaryTarget }
     : null;
-  const flatRemovals = flatArtifactPaths(top);
 
   return {
     kind: "versioned",
@@ -750,8 +635,6 @@ export function buildInstallPlan(
       { to: join(top, "bin", "agent"), text: POSIX_CURRENT_SHIM, executable: true },
       { to: join(top, "bin", "agent.ps1"), text: POWERSHELL_CURRENT_SHIM, executable: false },
     ],
-    flatRemovals,
-    flatPrunes: flatScaffoldingPaths(top, flatRemovals),
     flatBinaryRemovals: flatBinaryResiduePaths(top),
     shellWires: shell === null ? [] : [shell],
   };
@@ -775,23 +658,19 @@ function applyMaterialization(m: Materialization): void {
 }
 
 /** Runs through the INSTALLED binary aimed at `<top>/current`, because only a process rooted at
- *  the link derives rc-block paths that survive updates and GC.
- *
- *   every pass succeeded (vacuously, for none) -> the caller may sweep the flat shell payload
- *   a pass failed                              -> warn with the manual command and install anyway
- */
+ *  the link derives rc-block paths that survive updates and GC. A failed pass warns with the
+ *  manual command and the install stands. */
 function wireShellsThroughInstalledBinary(
   top: string,
   versionRoot: string,
   wires: readonly ShellWiring[],
-): boolean {
-  if (wires.length === 0) return true;
+): void {
+  if (wires.length === 0) return;
   const binary = join(versionRoot, "bin", installedBinaryName());
   if (!existsSync(binary)) {
     consola.warn("No installed binary to wire the shell with; run 'agent shell' afterwards.");
-    return false;
+    return;
   }
-  let allOk = true;
   for (const wire of wires) {
     const args = ["shell", ...(wire.allHosts ? ["--all-hosts"] : [])];
     const result = spawnSync(binary, args, {
@@ -801,24 +680,21 @@ function wireShellsThroughInstalledBinary(
     });
     if (result.error || result.status !== 0) {
       consola.warn("Shell integration reported a problem; run 'agent shell' to retry.");
-      allOk = false;
     }
   }
-  return allOk;
 }
 
 export function applyInstallPlan(plan: InstallPlan): void {
   if (plan.kind === "installed") {
     applyMaterialization(plan);
     consola.success("Installed the copilot-env runtime files.");
-    for (const path of plan.legacyRemovals) removeTreeReported(path);
   }
 
   if (plan.kind === "versioned") {
     // Prepare the version root completely BEFORE the flip: any failure up to pointCurrentAt
     // leaves whatever was live before fully live. Deliberate exception: a SAME-VERSION reinstall
     // refreshes the live version root in place; staging plus a dir swap is not available under
-    // a running image on Windows, and in-place refresh is what every pre-versioned release did.
+    // a running image on Windows.
     applyMaterialization(plan);
     if (plan.binary !== null) {
       mkdirReported(dirname(plan.binary.to));
@@ -830,133 +706,13 @@ export function applyInstallPlan(plan: InstallPlan): void {
       writeShimFile(shim.to, shim.text, shim.executable, consola);
     }
     consola.success(`Installed copilot-env ${plan.versionName} (live via the current link).`);
-    // Shell wiring BEFORE the flat sweep: on a flat->versioned transition the rc block still
-    // points at the flat payload, and the rewire must land before that payload disappears; a
-    // failed rewire keeps it in place. Each removal names itself as it happens (through the
-    // reporting seam), so nothing is announced that the keep set then spares.
-    const wiredOk = wireShellsThroughInstalledBinary(plan.top, plan.versionRoot, plan.shellWires);
-    removeFlatArtifacts(
-      plan.flatRemovals,
-      plan.flatPrunes,
-      wiredOk ? new Set() : new Set(["shell"]),
-    );
+    wireShellsThroughInstalledBinary(plan.top, plan.versionRoot, plan.shellWires);
     removeFlatBinaryResidue(plan.flatBinaryRemovals);
     return;
   }
 
   if (plan.shell === null) return;
   runShellIntegration({ kind: "wire", allHosts: plan.shell.allHosts });
-}
-
-/** What a layout adoption must REWIRE (the block's source path changes), never widen: a user who
- *  opted out stays out. A LAUNCHERS-only rc counts as wired: the launchers ride the main block
- *  now (`agent env` function emissions), so the shell pass is what carries that opt-in into the
- *  `launchers` config key and strips the retired block; skipping it would leave the user
- *  silently launcher-less once the payload sweep runs. */
-export function wiredShellTargets(): ShellWiring[] {
-  const wiredIn = (paths: string[]): boolean =>
-    paths.some((path) => {
-      let content: string;
-      try {
-        content = readFileSync(path, "utf-8");
-      } catch (error) {
-        // Present but unreadable: assume wired. The answer gates whether the flat shell payload
-        // may be swept, and "could not look" must retain.
-        return (error as { code?: string }).code !== "ENOENT";
-      }
-      return hasMarker(content, MARKER) || hasMarker(content, LAUNCHERS_MARKER);
-    });
-  if (process.platform !== "win32") {
-    return wiredIn(rcFiles(true)) ? [{ allHosts: false }] : [];
-  }
-  const wires: ShellWiring[] = [];
-  if (wiredIn(windowsProfileTarget(false).paths)) wires.push({ allHosts: false });
-  if (wiredIn(windowsProfileTarget(true).paths)) wires.push({ allHosts: true });
-  return wires;
-}
-
-/** Test seam for `adoptVersionedLayout`: the ambient root mode, asset source, and binary source
- *  are all real-machine facts a suite must substitute. */
-export interface AdoptVersionedLayoutDeps {
-  mode?: RootMode;
-  sourceRoot?: string;
-  binarySource?: string | null;
-}
-
-/**
- * The 3.5.6 migration core: the versioned layout built around a live flat install. It runs as the
- * NEW binary (spawned from `<top>/bin/copilot-env` by the pre-versioned updater), so the image it
- * relocates is its own, which is why the placement is a COPY rather than a rename.
- *
- *   copy into versions/ -> flip `current` -> top shims -> rewire shells -> sweep the flat original
- *
- *   a failure before the flip -> the flat install is still live
- *   after the flip            -> POSIX unlinks the flat binary, Windows leaves it to a later sweep
- */
-export function adoptVersionedLayout(deps: AdoptVersionedLayoutDeps = {}): void {
-  const mode = deps.mode ?? rootMode();
-  if (mode.kind !== "compiled") {
-    consola.info("  a source checkout keeps its own layout; nothing to adopt.");
-    return;
-  }
-  const shape = classifyInstallRoot(mode.root);
-  if (shape.kind === "versioned") {
-    // Never ours to repair: `agent update --force` on a dev clone can build versions/ + current
-    // INSIDE the checkout, but its bin/agent launchers and rc wiring are SOURCE (the same guard
-    // commit() applies before refreshing the top shims).
-    if (isCheckoutShapedRoot(shape.top)) {
-      consola.info("  a source checkout keeps its own launchers; nothing to repair.");
-      return;
-    }
-    // REPAIR, not a no-op: an earlier run may have crashed after the flip but before the shims,
-    // rewire, or sweep. Only behind a link that RESOLVES to a complete version, though (the
-    // binary present AND a valid manifest naming the linked version, the updater's provision
-    // postcondition): through a dangling or half-built `current` the shims dispatch nothing
-    // trustworthy, and the flat leftovers may be the only working install.
-    const link = currentLinkPath(shape.top);
-    const manifest = readInstallManifest(link);
-    const complete = existsSync(join(link, "bin", installedBinaryName())) &&
-      manifest.kind === "valid" &&
-      versionDirName(manifest.manifest.version) === readCurrentVersionName(shape.top);
-    if (!complete) {
-      consola.warn(
-        `  ${link} does not resolve to a complete installed version; ` +
-          "leaving everything in place - re-run the installer to repair this install.",
-      );
-      return;
-    }
-    // Each step converges (identical shims skip, wiring is idempotent, the sweep finds nothing
-    // on a clean layout), so re-running is always safe. The flat binary residue goes only once
-    // the top shims dispatch through the link.
-    writeTopLevelShims(shape.top);
-    const repaired = wireShellsThroughInstalledBinary(
-      shape.top,
-      link,
-      wiredShellTargets(),
-    );
-    const flat = flatArtifactPaths(shape.top);
-    removeFlatArtifacts(
-      flat,
-      flatScaffoldingPaths(shape.top, flat),
-      repaired ? new Set() : new Set(["shell"]),
-    );
-    removeFlatBinaryResidue(flatBinaryResiduePaths(shape.top));
-    consola.info("  already on the versioned layout.");
-    return;
-  }
-  const plan = buildInstallPlan(
-    { noShellIntegration: true, allHosts: false, assetsOnly: false },
-    shape.top,
-    deps.sourceRoot ?? ASSET_ROOT,
-    deps.binarySource !== undefined ? deps.binarySource : defaultBinarySource(),
-  );
-  if (plan.kind !== "versioned") {
-    throw new Error(`expected a versioned install plan for ${shape.top}, got ${plan.kind}`);
-  }
-  // Rewire exactly the shell targets wired today (their block points at the flat payload the
-  // sweep removes); never wire a target that was not.
-  applyInstallPlan({ ...plan, shellWires: wiredShellTargets() });
-  consola.info("  moved the install to the versioned layout (live via the current link).");
 }
 
 /** Skipped for `--assets-only`, a machine-to-machine step inside `agent update`. */

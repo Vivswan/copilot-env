@@ -42,8 +42,10 @@ import {
 import {
   dropCodexIdentityPin,
   moveCodexProfileTables,
+  scopeStaticKeyBoolean,
   v409CodexProfileFiles,
   v409IntegrationIdPin,
+  v409StaticKeyScope,
 } from "../src/migrations/4.0.9.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
@@ -127,6 +129,7 @@ test("the shipped registry holds exactly the named fix-ups in order, home move f
     v402DesktopHelpers,
     v409CodexProfileFiles,
     v409IntegrationIdPin,
+    v409StaticKeyScope,
   ]);
   // An install already on 4.0.0 (whose readers tolerated the 3.5.6 shapes) still gets
   // every wiring rewrite on its way to the next release.
@@ -1170,6 +1173,32 @@ test("4.0.9 integration-id: a stored `codex` pin is dropped and said so; any oth
       said: said ? 1 : 0,
     });
     if (said) expect(lines[0]).toContain("agent init");
+  }
+});
+
+test("4.0.9 static-key: a stored boolean becomes the scope it meant, said once; a scope or nothing stays quiet", () => {
+  // The key became a scope; a boolean left in preferences.json fails the domain and reads as
+  // `none`, so an install that baked both agents would silently stop baking at its next wiring.
+  const home = isolateProxyHome("copilot-mig-static-key-");
+  dir = home;
+  const prefs = join(home, "preferences.json");
+  const cases: { stored: unknown; after: string | undefined; said: boolean }[] = [
+    { stored: true, after: "all", said: true },
+    { stored: false, after: undefined, said: true },
+    { stored: "claude", after: "claude", said: false },
+    { stored: undefined, after: undefined, said: false },
+  ];
+  for (const { stored, after, said } of cases) {
+    writeFileSync(prefs, `${JSON.stringify({ port: 4199, staticKey: stored })}\n`);
+    const lines = warningsDuring(scopeStaticKeyBoolean, "info");
+    const raw = JSON.parse(readFileSync(prefs, "utf8")) as Record<string, unknown>;
+    expect({ stored, raw, said: lines.length }).toEqual({
+      stored,
+      raw: { port: 4199, ...(after === undefined ? {} : { staticKey: after }) },
+      said: said ? 1 : 0,
+    });
+    // Idempotent: the mapped store is a scope or absent, so a re-run has nothing to say.
+    expect(warningsDuring(scopeStaticKeyBoolean, "info")).toEqual([]);
   }
 });
 

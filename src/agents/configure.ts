@@ -29,10 +29,11 @@ export type ManagedMode =
   | { mode: "proxy"; directIntegrationId?: never };
 
 /**
- * How the agents obtain the credential at request time (the `static-key` preference).
+ * How one agent obtains the credential at request time (the `static-key` scope names the agents
+ * that bake it).
  *
- *   command -> each config names a copilot-env command that prints the credential (the default)
- *   static  -> the value itself is written into each config; the agents spawn nothing of ours
+ *   command -> the config names a copilot-env command that prints the credential (the default)
+ *   static  -> the value itself is written into the config; the agent spawns nothing of ours
  */
 export type CredentialWiring = { kind: "command" } | { kind: "static"; token: string };
 
@@ -41,17 +42,20 @@ export type CredentialWiring = { kind: "command" } | { kind: "static"; token: st
 export type ManagedWrite = ManagedMode & { credential: CredentialWiring };
 
 /**
- * The one place the `static-key` preference is read for a write. Proxy bakes the daemon's own API
- * key (minted here if absent, like wiringPortFor reserving the port); direct bakes the GitHub
- * credential, `directToken` when the caller already resolved it. A value that cannot be resolved
- * throws: an unresolvable static credential is a failed write, never a silent command fallback.
+ * The one place the `static-key` preference is read for a write, per agent. Proxy bakes the
+ * daemon's own API key (minted here if absent, like wiringPortFor reserving the port); direct
+ * bakes the GitHub credential, `directToken` when the caller already resolved it. A value that
+ * cannot be resolved throws: an unresolvable static credential is a failed write, never a silent
+ * command fallback.
  */
 export function resolveCredentialWiring(
+  agent: ManagedAgentId,
   mode: ManagedAgentMode,
   profile: Profile,
   directToken?: string | null,
 ): CredentialWiring {
-  if (!new CopilotEnvConfig().staticKeyEnabled()) return { kind: "command" };
+  const config = new CopilotEnvConfig();
+  if (!config.staticKeyFor(agent)) return { kind: "command" };
   if (mode === "proxy") {
     return { kind: "static", token: CopilotApiConfig.forProfile(profile).ensureApiKey() };
   }
@@ -61,9 +65,9 @@ export function resolveCredentialWiring(
   if (resolved.token === null) {
     const slot = profile === null ? "" : ` --profile ${profile}`;
     throw new Error(
-      `static-key is on but no credential resolves to bake: ${resolved.reason}. ` +
-        `Run \`agent auth${slot}\`, or \`agent config --set static-key false\` to go back to ` +
-        "the resolver command.",
+      `static-key is ${config.staticKeyScope()} but no credential resolves to bake: ` +
+        `${resolved.reason}. Run \`agent auth${slot}\`, or \`agent config --set static-key none\` ` +
+        "to go back to the resolver command.",
     );
   }
   return { kind: "static", token: resolved.token };
@@ -236,7 +240,7 @@ export async function runAgentConfig(
   const ghToken = opts.ghToken !== undefined ? opts.ghToken : new Credential().resolve();
   const chosen = await resolveDefaultMode(adapter, action.mode, ghToken);
   logger.log(configuringLine(adapter.label, chosen.mode));
-  const credential = resolveCredentialWiring(chosen.mode, null, ghToken);
+  const credential = resolveCredentialWiring(adapter.id, chosen.mode, null, ghToken);
   const write: ManagedWrite = chosen.mode === "direct"
     ? { ...chosen, credential }
     : { mode: "proxy", credential };

@@ -279,7 +279,7 @@ export function commandDeps(): LaunchDeps {
     refreshCodexCatalog: () => refreshCodexCatalogAndSync("direct"),
     profileSlot: (name) => new CopilotEnvState().readProfileSlot(name),
     writeClaudeProfileSettings: async (name, mode) => {
-      const credential = resolveCredentialWiring(mode, name);
+      const credential = resolveCredentialWiring("claude", mode, name);
       const write: ManagedWrite = mode === "direct"
         ? {
           mode,

@@ -1318,11 +1318,17 @@ async function runAuthenticate(
 
 /** A baked value (static-key) never follows the store, so only the rewire brings it up to date. */
 function noteStaticKeyStale(profile: Profile): void {
-  if (!new CopilotEnvConfig().staticKeyEnabled()) return;
+  const scope = new CopilotEnvConfig().staticKeyScope();
+  if (scope === "none") return;
+  const whose = scope === "all"
+    ? "Claude's and Codex's"
+    : scope === "claude"
+    ? "Claude's"
+    : "Codex's";
   const rewire = profile === null
     ? "agent init"
     : `agent profile --add ${profile} --direct|--proxy`;
   logger.info(
-    `static-key is on: the agent configs keep the value they hold until \`${rewire}\` rewrites them.`,
+    `static-key is ${scope}: ${whose} baked value stays as it is until \`${rewire}\` rewrites it.`,
   );
 }

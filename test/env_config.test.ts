@@ -181,6 +181,10 @@ test("the registry parsers accept valid input and reject bad input with a clear 
   expect(() => configKeyDef("passthrough")?.parse(" BAD ")).toThrow(
     "expected one of auto|on|off, got ' BAD '",
   );
+  // The boolean spelling the key had before it became a scope is refused with the four values.
+  expect(() => configKeyDef("static-key")?.parse("true")).toThrow(
+    "expected one of none|claude|codex|all, got 'true'",
+  );
   expect(() => configKeyDef("idle-timeout")?.parse("-5")).toThrow();
   expect(() => configKeyDef("port")?.parse("70000")).toThrow(); // out of range
   expect(() => configKeyDef("codex-model-catalog")?.parse("bogus")).toThrow();
@@ -358,7 +362,7 @@ const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "responses-websearch": "false",
   "responses-websocket": "false",
   "small-model": "gpt-5-mini",
-  "static-key": "true",
+  "static-key": "all",
   "strict-port": "true",
   "update-cooldown": "7",
   "verify-provenance": "false",

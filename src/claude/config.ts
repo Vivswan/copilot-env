@@ -4,9 +4,9 @@
 //   stdout cached ~5 minutes, re-run on 401
 //   stdout anything but the single credential line -> hard failure, so both resolvers keep their
 //                                                     diagnostics on stderr
-// With `static-key` on, the value rides in env.ANTHROPIC_AUTH_TOKEN instead and no apiKeyHelper is
-// written: Claude prefers that variable over the helper, so a command-shape write takes it out
-// (applyManagedCredential).
+// With `static-key` covering Claude, the value rides in env.ANTHROPIC_AUTH_TOKEN instead and no
+// apiKeyHelper is written: Claude prefers that variable over the helper, so a command-shape write
+// takes it out (applyManagedCredential).
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {

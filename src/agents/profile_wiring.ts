@@ -16,7 +16,8 @@ import { type Profile, profileLabel, type ProfileName } from "../copilot_api/pro
 import { errMessage } from "../utils/error.ts";
 import {
   type AgentAdapter,
-  type ManagedWrite,
+  type CredentialWiring,
+  type ManagedMode,
   resolveCredentialWiring,
   resolvedDirectToken,
 } from "./configure.ts";
@@ -31,26 +32,29 @@ export function bothAgents(catalogDeps?: CodexCatalogDeps): AgentAdapter[] {
 /** Every adapter runs even after one throws, and the collected failures then fail the wiring as
  *  a whole. Direct resolves the client identity ONCE into the ManagedWrite (from
  *  `credentialToken` when the caller already holds the credential), so both agents and their
- *  derived surfaces bake the same value without re-probing. */
+ *  derived surfaces bake the same value without re-probing. The credential is per agent (the
+ *  `static-key` scope) and resolved from the store at most once: the first static resolution's
+ *  token feeds the next agent's and the identity probe. */
 export async function wireBothAgents(
   name: ProfileName,
   mode: ProfileMode,
   quiet: boolean,
   credentialToken?: string | null,
 ): Promise<void> {
-  const credential = resolveCredentialWiring(mode, name, credentialToken);
-  const identityToken = credentialToken ?? resolvedDirectToken(mode, credential);
-  const write: ManagedWrite = mode === "direct"
-    ? {
-      mode,
-      directIntegrationId: await resolveAndPersistDirectIdentity(name, identityToken),
-      credential,
-    }
-    : { mode, credential };
-  const failures: string[] = [];
+  let token = credentialToken;
+  const writes: { agent: AgentAdapter; credential: CredentialWiring }[] = [];
   for (const agent of bothAgents()) {
+    const credential = resolveCredentialWiring(agent.id, mode, name, token);
+    token ??= resolvedDirectToken(mode, credential);
+    writes.push({ agent, credential });
+  }
+  const identity: ManagedMode = mode === "direct"
+    ? { mode, directIntegrationId: await resolveAndPersistDirectIdentity(name, token) }
+    : { mode };
+  const failures: string[] = [];
+  for (const { agent, credential } of writes) {
     try {
-      await agent.configureProfile(name, write, { quiet });
+      await agent.configureProfile(name, { ...identity, credential }, { quiet });
     } catch (e) {
       failures.push(`${agent.label}: ${errMessage(e)}`);
     }

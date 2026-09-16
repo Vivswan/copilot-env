@@ -8,12 +8,13 @@ import { atomicWriteFile } from "../utils/report_write.ts";
 import { canonicalPricingUrl, OPENROUTER_MODELS_URL } from "../copilot_api/env_config.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
 import { readTextOrNull } from "../utils/fs.ts";
+import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { usageIndexDir } from "./paths.ts";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const PER_MILLION = 1_000_000;
-const PRICING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const PRICING_CACHE_TTL_MS = MILLISECONDS_PER_DAY;
 
 const MODEL_ID_RE = /^\S+$/;
 

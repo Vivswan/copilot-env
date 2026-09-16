@@ -7,7 +7,8 @@
 // The lookup is anonymous on purpose: the stored credential exists to reach Copilot, and a token
 // exported in the shell may belong to another account. The anonymous limit (60/hour/IP) covers a
 // lookup that runs once per `--check` or per autoupdate cooldown.
-const SECONDS_PER_DAY = 24 * 60 * 60;
+import { SECONDS_PER_DAY } from "../utils/time.ts";
+
 // per_page=100 reads every release in one page (this repo will not exceed that for years), so
 // cooldown selection sees the whole eligible set, not just the first 30.
 const RELEASES_API = "https://api.github.com/repos/Vivswan/copilot-env/releases?per_page=100";

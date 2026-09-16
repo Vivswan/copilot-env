@@ -13,12 +13,15 @@ import {
 } from "../agents/configure.ts";
 import { recordDefaultModeFromWiring } from "../agents/configure_defaults.ts";
 import { resolveAndPersistDirectIdentity, wireBothAgents } from "../agents/profile_wiring.ts";
-import type { AgentProviderMode } from "../agents/provider_mode.ts";
+import type { AgentProviderMode, ManagedAgentMode } from "../agents/provider_mode.ts";
 import { readAgentModes } from "../agents/wiring.ts";
-import { BASE_URL_ENV, claudeAdapter, runClaude } from "../claude/config.ts";
+import { BASE_URL_ENV, claudeAdapter, DIRECT_BASE_URL, runClaude } from "../claude/config.ts";
+import { claudeModelChoice, unservableClaudeModelWarning } from "../claude/model_check.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { runCodex } from "../codex/config.ts";
+import { fetchRawModels } from "../copilot_api/catalog.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
@@ -33,8 +36,10 @@ import {
   type Profile,
   type ProfileName,
 } from "../copilot_api/profile.ts";
+import { type CatalogModel, parseCatalogModels } from "../copilot_api/models.ts";
 import { childEnvWithPath, findCommand, verbatimCliSpawn } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
+import { isRecord } from "../utils/json.ts";
 import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
 import { managedClaudeBaseUrl, managedCodexHome, type ManagedEnvValue } from "./env.ts";
 import {
@@ -108,6 +113,9 @@ export interface LaunchDeps {
   syncProfileWiring(name: ProfileName, mode: ProfileMode): Promise<void>;
   managedClaudeBaseUrl(profile: Profile): ManagedEnvValue;
   managedCodexHome(): ManagedEnvValue;
+  /** Best effort, never blocking: null = no credential or a failed fetch, and the model check is
+   *  skipped. */
+  claudeCatalog(mode: ManagedAgentMode, profile: Profile): Promise<CatalogModel[] | null>;
   /** stderr: stdout belongs to the launched agent. */
   notify(line: string): void;
 }
@@ -154,6 +162,31 @@ async function wireDefaultProvider(
   return mode;
 }
 
+/** The child inherits the parent's ANTHROPIC_BASE_URL unless the plan sets or scrubs it (spawnAgentCli
+ *  merges). The Copilot host itself is ours to judge; anything else is another provider. */
+function inheritsForeignBaseUrl(plan: LaunchPlan): boolean {
+  if (plan.env[BASE_URL_ENV] !== undefined || plan.scrub.includes(BASE_URL_ENV)) return false;
+  const inherited = process.env[BASE_URL_ENV];
+  return inherited !== undefined && inherited !== "" && inherited !== DIRECT_BASE_URL;
+}
+
+/** After the wiring, so a proxy fetch hits the port the launch just ensured. An explicit --model
+ *  skips the fetch: the user chose. */
+async function warnUnservableClaudeModel(
+  mode: ManagedAgentMode,
+  profile: Profile,
+  settingsPaths: readonly string[],
+  args: readonly string[],
+  deps: LaunchDeps,
+): Promise<void> {
+  const choice = claudeModelChoice(args, settingsPaths);
+  if (choice.kind === "user-supplied") return;
+  const catalog = await deps.claudeCatalog(mode, profile);
+  if (catalog === null) return;
+  const warning = unservableClaudeModelWarning(choice, catalog, mode);
+  if (warning !== null) deps.notify(warning);
+}
+
 /** Null = abort with exit 1; the failing step already narrated on stderr. */
 export async function prepareLaunch(
   action: LaunchAction,
@@ -182,12 +215,33 @@ export async function prepareLaunch(
         // profile's own env block.
         plan.scrub.push(BASE_URL_ENV);
         plan.args = ["--settings", settings, ...flags, ...action.args];
+        // Claude Code merges `--settings` over settings.json, so a model saved there still applies.
+        await warnUnservableClaudeModel(
+          mode,
+          action.profile,
+          [settings, settingsPathFor(resolveClaudeHome())],
+          action.args,
+          deps,
+        );
         return plan;
       }
-      if ((await wireDefaultProvider("claude", "Claude", deps)) === null) return null;
+      const mode = await wireDefaultProvider("claude", "Claude", deps);
+      if (mode === null) return null;
       // Read AFTER the wiring step so a fresh proxy port is what gets exported.
       applyManagedEnv(plan, BASE_URL_ENV, deps.managedClaudeBaseUrl(null));
       plan.args = [...flags, ...action.args];
+      // "none" was just wired to the proxy; "other" is a provider we cannot judge; a foreign
+      // ANTHROPIC_BASE_URL the launch leaves in place (a user's own gateway) is where the session
+      // really goes, and the Copilot catalog says nothing about it.
+      if (mode !== "other" && !inheritsForeignBaseUrl(plan)) {
+        await warnUnservableClaudeModel(
+          mode === "direct" ? "direct" : "proxy",
+          null,
+          [settingsPathFor(resolveClaudeHome())],
+          action.args,
+          deps,
+        );
+      }
       return plan;
     }
     case "codex": {
@@ -298,6 +352,25 @@ export function commandDeps(): LaunchDeps {
     syncProfileWiring: (name, mode) => wireBothAgents(name, mode, true),
     managedClaudeBaseUrl,
     managedCodexHome,
+    claudeCatalog: async (mode, profile) => {
+      try {
+        let body: unknown;
+        if (mode === "proxy") {
+          body = await fetchRawModels("proxy", { profile });
+        } else {
+          // Resolved here so an unconfigured credential skips the fetch instead of failing it.
+          const directToken = new Credential(undefined, profile).resolve();
+          if (directToken === null) return null;
+          body = await fetchRawModels("direct", { directToken, profile });
+        }
+        // parseCatalogModels reads a body with no `data` array as an EMPTY catalog, which the check
+        // would report as "no Claude model"; an unrecognized shape is unknown, not proven empty.
+        if (!isRecord(body) || !Array.isArray(body.data)) return null;
+        return parseCatalogModels(body);
+      } catch {
+        return null;
+      }
+    },
     notify: (line) => {
       process.stderr.write(`${line}\n`);
     },

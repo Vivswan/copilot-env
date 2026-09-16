@@ -7,6 +7,15 @@
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { consola } from "consola";
+import {
+  applyPatch,
+  type FilePlan,
+  type PatchOp,
+  planPatch,
+  remove,
+  set,
+  textVerdict,
+} from "../agents/write_plan.ts";
 import { atomicWriteFile } from "../utils/report_write.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
@@ -97,6 +106,8 @@ interface ClaudeJsonDoc {
   path: string;
   doc: Record<string, unknown>;
   raw: string;
+  /** False when no file exists (raw is then ""); a present-but-blank file is true. */
+  exists: boolean;
 }
 
 /** Null (unreadable or malformed) means leave it alone. Absence comes from readTextResult, so a
@@ -109,12 +120,13 @@ function loadClaudeJson(): ClaudeJsonDoc | null {
     logger.warn(`could not read ${path}: ${read.error}`);
     return null;
   }
+  const exists = read.kind === "text";
   const raw = read.kind === "text" ? read.text : "";
-  if (raw.trim() === "") return { path, doc: {}, raw };
+  if (raw.trim() === "") return { path, doc: {}, raw, exists };
   try {
     const doc: unknown = JSON.parse(raw);
     if (!isRecord(doc)) throw new Error("not a JSON object");
-    return { path, doc, raw };
+    return { path, doc, raw, exists };
   } catch {
     logger.warn(`${path} is not valid JSON; leaving it alone (Claude Code owns this file)`);
     return null;
@@ -123,12 +135,48 @@ function loadClaudeJson(): ClaudeJsonDoc | null {
 
 /** Claude Code writes this file WITHOUT a trailing newline, so the serialization mirrors the source
  *  text's convention; otherwise the unchanged-skip could never match a file Claude wrote. */
-function saveClaudeJson(loaded: ClaudeJsonDoc): void {
+function claudeJsonText(loaded: ClaudeJsonDoc, doc: Record<string, unknown>): string {
   const newline = loaded.raw === "" || loaded.raw.endsWith("\n");
-  const text = `${JSON.stringify(loaded.doc, null, 2)}${newline ? "\n" : ""}`;
-  if (text === loaded.raw) return;
-  atomicWriteFile(loaded.path, text);
+  return `${JSON.stringify(doc, null, 2)}${newline ? "\n" : ""}`;
 }
+
+/** The patch as one file plan plus the step that lands it; a byte-identical result is not
+ *  rewritten. The step returns false (after warning) when the write failed. */
+function planClaudeJsonPatch(loaded: ClaudeJsonDoc, ops: readonly PatchOp[]): McpWritePlan {
+  const attributes = planPatch(loaded.doc, ops);
+  const text = claudeJsonText(loaded, applyPatch(structuredClone(loaded.doc), ops));
+  return {
+    files: [{
+      path: loaded.path,
+      verdict: textVerdict(loaded.exists ? loaded.raw : null, text),
+      attributes,
+    }],
+    apply() {
+      if (text === loaded.raw) return true;
+      try {
+        atomicWriteFile(loaded.path, text);
+      } catch (e) {
+        logger.warn(`could not write ${loaded.path}: ${String(e)}`);
+        return false;
+      }
+      return true;
+    },
+  };
+}
+
+/** A `.claude.json` write, computed: `apply` returns what the eager function it replaces returned. */
+export interface McpWritePlan {
+  files: FilePlan[];
+  apply(): boolean;
+}
+
+/** The registration, computed. `inPlace` predicts the apply's answer (the entry will be in place
+ *  unless the write itself fails), so a caller can plan what it gates on that before writing. */
+export interface McpRegistrationPlan extends McpWritePlan {
+  inPlace: boolean;
+}
+
+const LEFT_ALONE: McpRegistrationPlan = { inPlace: false, files: [], apply: () => false };
 
 /** What `agent mcp` (status) reports about the registration. */
 export interface McpRegistrationInspection {
@@ -147,39 +195,53 @@ export function inspectMcpRegistration(): McpRegistrationInspection {
   return { path, status: classifyMcpEntry(entry) };
 }
 
-/** True when the entry is in place (freshly written or already current): the caller gates the
- *  WebSearch deny on that, so a machine is never left denied without a server. */
-export function registerClaudeMcpServer(
+/** The entry in place (freshly written, or already current: then the plan states the entry it
+ *  keeps); the caller gates the WebSearch deny on that, so a machine is never left denied without
+ *  a server. */
+export function planClaudeMcpRegistration(
   ghPath: string | null = resolveExecutablePath("gh"),
-): boolean {
+): McpRegistrationPlan {
   const loaded = loadClaudeJson();
-  if (loaded === null) return false;
+  if (loaded === null) return LEFT_ALONE;
   const servers = loaded.doc.mcpServers ?? {};
   if (!isRecord(servers)) {
     logger.warn(`${loaded.path} has a non-object mcpServers; leaving it alone`);
-    return false;
+    return LEFT_ALONE;
   }
+  const entryPath = ["mcpServers", MCP_SERVER_NAME];
   switch (classifyMcpEntry(servers[MCP_SERVER_NAME], ghPath)) {
     case "ours-current":
-      return true;
+      return {
+        inPlace: true,
+        files: [{
+          path: loaded.path,
+          verdict: "same",
+          attributes: planPatch(loaded.doc, [set(entryPath, servers[MCP_SERVER_NAME])]),
+        }],
+        apply: () => true,
+      };
     case "foreign":
       logger.warn(
         `${loaded.path} already has a '${MCP_SERVER_NAME}' MCP server that is not ours; leaving it alone`,
       );
-      return false;
+      return LEFT_ALONE;
     case "absent":
     case "ours-stale":
       break;
   }
-  servers[MCP_SERVER_NAME] = managedEntry(ghPath, servers[MCP_SERVER_NAME]);
-  loaded.doc.mcpServers = servers;
-  try {
-    saveClaudeJson(loaded);
-  } catch (e) {
-    logger.warn(`could not write ${loaded.path}: ${String(e)}`);
-    return false;
-  }
-  return true;
+  return {
+    inPlace: true,
+    ...planClaudeJsonPatch(loaded, [
+      set(entryPath, managedEntry(ghPath, servers[MCP_SERVER_NAME])),
+    ]),
+  };
+}
+
+/** planClaudeMcpRegistration, performed. */
+export function registerClaudeMcpServer(
+  ghPath: string | null = resolveExecutablePath("gh"),
+): boolean {
+  return planClaudeMcpRegistration(ghPath).apply();
 }
 
 /** The `.claude.json` removeClaudeMcpRegistration would rewrite right now, or null (no entry, a
@@ -196,21 +258,20 @@ export function plannedClaudeMcpRemoval(): string | null {
 
 /** Foreign survives. True when NO managed entry remains (removed, or none was there); false when a
  *  foreign entry was left in place or the write failed. */
-export function removeClaudeMcpRegistration(): boolean {
+export function planClaudeMcpRemoval(): McpWritePlan {
   const loaded = loadClaudeJson();
-  if (loaded === null) return false;
+  if (loaded === null) return { files: [], apply: () => false };
   const servers = loaded.doc.mcpServers;
-  if (!isRecord(servers)) return true;
+  if (!isRecord(servers)) return { files: [], apply: () => true };
   const status = classifyMcpEntry(servers[MCP_SERVER_NAME]);
-  if (status === "absent") return true;
-  if (status === "foreign") return false;
-  delete servers[MCP_SERVER_NAME];
-  if (Object.keys(servers).length === 0) delete loaded.doc.mcpServers;
-  try {
-    saveClaudeJson(loaded);
-  } catch (e) {
-    logger.warn(`could not write ${loaded.path}: ${String(e)}`);
-    return false;
-  }
-  return true;
+  if (status === "absent") return { files: [], apply: () => true };
+  if (status === "foreign") return { files: [], apply: () => false };
+  const ops = [remove(["mcpServers", MCP_SERVER_NAME])];
+  if (Object.keys(servers).length === 1) ops.push(remove(["mcpServers"]));
+  return planClaudeJsonPatch(loaded, ops);
+}
+
+/** planClaudeMcpRemoval, performed. */
+export function removeClaudeMcpRegistration(): boolean {
+  return planClaudeMcpRemoval().apply();
 }

@@ -2,8 +2,7 @@
 // the local proxy. By default no credential is baked (`auth.command` resolves it at fetch time);
 // with `static-key` covering Codex the value rides as a static `http_headers.Authorization` and
 // no `auth` table is written.
-import * as fs from "node:fs";
-import { parse } from "smol-toml";
+import { parse, stringify } from "smol-toml";
 import {
   type AgentAdapter,
   type AgentRunAction,
@@ -13,6 +12,18 @@ import {
   runAgentConfig,
 } from "../agents/configure.ts";
 import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
+import {
+  applyPatch,
+  type Doc,
+  dottedKey,
+  type FilePlan,
+  type PatchOp,
+  planPatch,
+  remove,
+  set,
+  textVerdict,
+  type WritePlan,
+} from "../agents/write_plan.ts";
 import { type AgentProviderMode, providerModeExitCode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
@@ -619,23 +630,6 @@ function defaultConfig(): Record<string, unknown> {
   };
 }
 
-// A present-but-UNPARSEABLE file throws rather than letting the caller clobber a config it could
-// not read: a hand-edit typo must never cost the user their whole config.toml (mcp_servers, custom
-// providers, model pins). Other read errors (EISDIR, permission) propagate raw from readCodexToml.
-function loadOrCreateConfig(hostConfig: string): Record<string, unknown> {
-  const read = readCodexToml(hostConfig);
-  switch (read.kind) {
-    case "absent":
-      return defaultConfig();
-    case "unparseable":
-      throw new Error(`${hostConfig} is not valid TOML; refusing to overwrite it (${read.error})`);
-    case "ok":
-      return read.doc;
-    default:
-      return assertNever(read);
-  }
-}
-
 /** A named profile's `<name>.config.toml` as the writer merges into it: the user's own keys stay,
  *  a missing file starts empty, and a present-but-unparseable one throws like config.toml does
  *  (never clobber what could not be read). */
@@ -683,8 +677,11 @@ function validateProxyOptions(
 }
 
 /**
- * Throws when the write cannot proceed (unusable proxy options, uncreatable directory,
- * unparseable existing config).
+ * The write, computed but not performed: every managed key is a patch over config.toml (and a named
+ * profile's `<name>.config.toml`), folded into the plan's rows and applied to the in-memory
+ * documents the returned step saves, so no key can be written without appearing in the plan.
+ * Throws when the write cannot proceed (unusable proxy options, unparseable existing config); an
+ * uncreatable directory throws from the apply.
  *
  * DEFAULT profile -> the top-level `model_provider` selects `copilot-env`, plus the top-level
  *                    managed keys (web_search, catalog reference)
@@ -694,11 +691,11 @@ function validateProxyOptions(
  * either, proxy   -> also the GLOBAL `sandbox_workspace_write.network_access`, which auth.command
  *                    needs
  */
-export function configureCodexConfig(
+export function planCodexConfig(
   codexHome: string,
   request: CodexWriteRequest,
   catalogDeps: CodexCatalogDeps = {},
-): void {
+): WritePlan {
   const profile = request.profile ?? null;
   const providerId = codexProviderId(profile);
   // The union guarantees a base URL exists; this rejects an empty or malformed one before anything
@@ -707,42 +704,45 @@ export function configureCodexConfig(
     ? validateProxyOptions(request)
     : request;
 
-  try {
-    mkdirReported(codexHome);
-  } catch (e) {
-    throw new Error(`could not create Codex config directory ${codexHome}: ${errMessage(e)}`);
-  }
-
   const hostConfig = codexConfigPath(codexHome);
-
-  // "Had content", not "existed": loadOrCreateConfig also seeds the template for an EMPTY file, and
-  // the template's `model_provider` must not survive a named-profile write that never creates the
-  // unsuffixed table.
-  const configHadContent = (() => {
-    try {
-      return fs.readFileSync(hostConfig, "utf8").trim() !== "";
-    } catch {
-      return false;
-    }
-  })();
-  const doc = loadOrCreateConfig(hostConfig);
+  const hostText = readTextResult(hostConfig);
+  // A present-but-UNPARSEABLE file throws rather than letting the caller clobber a config it could
+  // not read: a hand-edit typo must never cost the user their whole config.toml (mcp_servers,
+  // custom providers, model pins). Other read errors (EISDIR, permission) propagate raw.
+  const hostRead = readCodexToml(hostConfig);
+  if (hostRead.kind === "unparseable") {
+    throw new Error(
+      `${hostConfig} is not valid TOML; refusing to overwrite it (${hostRead.error})`,
+    );
+  }
+  // A blank file is seeded like a missing one (readCodexToml reads it as absent), and the plan then
+  // compares against nothing, so every seeded key shows as set.
+  const current: Doc | null = hostRead.kind === "ok" ? hostRead.doc : null;
+  const doc: Doc = current ?? defaultConfig();
   // Loaded BEFORE anything is saved, so a profile file this write refuses to clobber fails the
   // write whole rather than after config.toml already changed.
   const profileFile = profile === null ? null : {
     path: codexProfileConfigPath(codexHome, profile),
+    text: readTextResult(codexProfileConfigPath(codexHome, profile)),
     doc: loadProfileConfig(codexHome, profile),
   };
 
+  const ops: PatchOp[] = [];
+  // The template's keys are a fresh file's plan; re-applied over the seeded document they change
+  // nothing.
+  if (current === null) {
+    for (const [key, value] of Object.entries(defaultConfig())) ops.push(set([key], value));
+  }
   // Every managed field is (re)written on every run, so a stale value or a missing managed key
   // heals; other providers, [analytics]/[feedback], and unknown top-level keys are left untouched.
   // The top-level managed keys are the DEFAULT selection's alone.
   if (profile === null) {
-    doc.model_provider = CODEX_PROVIDER_ID;
-    doc.web_search = "live";
-  } else if (!configHadContent) {
+    ops.push(set(["model_provider"], CODEX_PROVIDER_ID));
+    ops.push(set(["web_search"], "live"));
+  } else if (current === null) {
     // The template's default `model_provider` would point at a `copilot-env` table this write never
     // creates, and an unknown provider reference is a Codex startup error.
-    delete doc.model_provider;
+    ops.push(remove(["model_provider"]));
   }
   if (request.mode === "proxy") {
     // Codex's offline sandbox blocks loopback for its sandboxed subprocesses, the auth.command
@@ -750,9 +750,7 @@ export function configureCodexConfig(
     // workspace-write network access is the documented toggle (verified: it removes the
     // codex_sandbox_offline_block_loopback firewall rule), and codex has no finer exemption.
     //   global key, not provider-scoped -> the model's sandboxed shell reaches the network too
-    const sandboxWrite = isRecord(doc.sandbox_workspace_write) ? doc.sandbox_workspace_write : {};
-    sandboxWrite.network_access = true;
-    doc.sandbox_workspace_write = sandboxWrite;
+    ops.push(set(["sandbox_workspace_write", "network_access"], true));
   }
 
   // `model_catalog_json` REPLACES Codex's bundled catalog, and a missing, empty, unparseable, or
@@ -777,14 +775,14 @@ export function configureCodexConfig(
       );
     }
     if (verdict === "accepted" || verdict === "unverifiable") {
-      doc.model_catalog_json = catalogFile;
+      ops.push(set(["model_catalog_json"], catalogFile));
       catalogRef = "written";
       if (previousRef !== catalogFile) {
         catalogRefLine = `model_catalog_json = "${catalogFile}" set` +
           (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : "");
       }
     } else {
-      delete doc.model_catalog_json;
+      ops.push(remove(["model_catalog_json"]));
       catalogRef = "cleared";
       if (previousRef !== undefined) {
         catalogRefLine = `model_catalog_json removed, was "${String(previousRef)}"`;
@@ -792,18 +790,41 @@ export function configureCodexConfig(
     }
   }
 
-  const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
-  const existing = isRecord(providers[providerId]) ? providers[providerId] : {};
-  // Both modes share ONE table per profile, so every managed key is stripped BEFORE spreading:
-  // toggling modes can never bleed the OTHER mode's keys. User-added keys survive.
-  const userKeys = Object.fromEntries(
-    Object.entries(existing).filter(([key]) => !MANAGED_PROVIDER_KEYS.has(key)),
-  );
-  providers[providerId] = {
-    ...userKeys,
-    ...managedProviderForMode(modeRequest, profile),
-  };
-  doc.model_providers = providers;
+  // Both modes share ONE table per profile, so every managed key is stripped BEFORE the mode's own
+  // land: toggling modes can never bleed the OTHER mode's keys, and the managed keys settle after
+  // the user's own, which survive.
+  const table = ["model_providers", providerId];
+  for (const key of MANAGED_PROVIDER_KEYS) ops.push(remove([...table, key]));
+  for (const [key, value] of Object.entries(managedProviderForMode(modeRequest, profile))) {
+    ops.push(set([...table, key], value));
+  }
+  const secrets = new Set([dottedKey([...table, "http_headers", AUTHORIZATION_HEADER])]);
+  const hostRows = planPatch(current, ops, secrets);
+  applyPatch(doc, ops);
+
+  // `codex --profile <name>` flips ONLY the provider; the user's own keys in the profile file
+  // (model pins etc.) survive.
+  const profileOps = [set(["model_provider"], providerId)];
+  const profileRows = profileFile === null
+    ? []
+    : planPatch(profileFile.text.kind === "text" ? profileFile.doc : null, profileOps);
+  if (profileFile !== null) applyPatch(profileFile.doc, profileOps);
+
+  const files: FilePlan[] = [{
+    path: hostConfig,
+    verdict: textVerdict(hostText.kind === "text" ? hostText.text : null, stringify(doc)),
+    attributes: hostRows,
+  }];
+  if (profileFile !== null) {
+    files.push({
+      path: profileFile.path,
+      verdict: textVerdict(
+        profileFile.text.kind === "text" ? profileFile.text.text : null,
+        stringify(profileFile.doc),
+      ),
+      attributes: profileRows,
+    });
+  }
 
   const knownHome = knownCodexHomes().homes.includes(codexHome);
   // The write's own line carries what the write means and lands before the fallible ledger
@@ -814,26 +835,40 @@ export function configureCodexConfig(
     : request.mode === "direct"
     ? "static key"
     : `static key, start the proxy yourself (${agentStartCommand(profile)}, or the cx launcher)`;
-  saveCodexToml(
-    hostConfig,
-    doc,
-    ["Codex config", credentialLine, catalogRefLine].filter(Boolean).join("; "),
-  );
-  if (profileFile !== null) {
-    // `codex --profile <name>` flips ONLY the provider; the user's own keys in the profile file
-    // (model pins etc.) survive. Saved after config.toml so the selector never lands ahead of the
-    // table it points at.
-    profileFile.doc.model_provider = providerId;
-    saveCodexToml(profileFile.path, profileFile.doc, "Codex profile config");
-  }
-  // Ownership lands only AFTER the successful save (the ledger's crash-direction contract), and
-  // only for a KNOWN Codex home (the set the cleanup sweep visits), so a write to a foreign home
-  // never enters the ledger. Recording on every enabled write also ADOPTS a pre-ledger install's
-  // reference the next time it rewires; the cleared branch drops any claim, ours or stale.
-  if (catalogRef !== null && knownHome) {
-    if (catalogRef === "written") new OwnershipLedger().record("codexCatalog", hostConfig);
-    else new OwnershipLedger().release("codexCatalog", hostConfig);
-  }
+  const detail = ["Codex config", credentialLine, catalogRefLine].filter(Boolean).join("; ");
+
+  return {
+    files,
+    apply() {
+      try {
+        mkdirReported(codexHome);
+      } catch (e) {
+        throw new Error(`could not create Codex config directory ${codexHome}: ${errMessage(e)}`);
+      }
+      saveCodexToml(hostConfig, doc, detail);
+      // Saved after config.toml so the selector never lands ahead of the table it points at.
+      if (profileFile !== null) {
+        saveCodexToml(profileFile.path, profileFile.doc, "Codex profile config");
+      }
+      // Ownership lands only AFTER the successful save (the ledger's crash-direction contract), and
+      // only for a KNOWN Codex home (the set the cleanup sweep visits), so a write to a foreign home
+      // never enters the ledger. Recording on every enabled write also ADOPTS a pre-ledger install's
+      // reference the next time it rewires; the cleared branch drops any claim, ours or stale.
+      if (catalogRef !== null && knownHome) {
+        if (catalogRef === "written") new OwnershipLedger().record("codexCatalog", hostConfig);
+        else new OwnershipLedger().release("codexCatalog", hostConfig);
+      }
+    },
+  };
+}
+
+/** planCodexConfig, performed. */
+export function configureCodexConfig(
+  codexHome: string,
+  request: CodexWriteRequest,
+  catalogDeps: CodexCatalogDeps = {},
+): void {
+  planCodexConfig(codexHome, request, catalogDeps).apply();
 }
 
 /**

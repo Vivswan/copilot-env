@@ -4,7 +4,8 @@
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import type { Profile, ProfileName } from "../copilot_api/profile.ts";
+import { wiringPortFor } from "../copilot_api/port.ts";
+import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { resolveDirectMode } from "./direct_detect.ts";
@@ -88,6 +89,19 @@ export function resolvedDirectToken(
   credential: CredentialWiring,
 ): string | undefined {
   return mode === "direct" && credential.kind === "static" ? credential.token : undefined;
+}
+
+/** A plan PEEKS a proxy profile's port (copilotApiResolvePort) so computing it writes nothing; the
+ *  apply RESERVES it here (wiringPortFor, a write path) and refuses a port that moved in between,
+ *  which would bake a base URL the plan never showed. */
+export function reservePlannedPort(profile: Profile, plannedPort: string): void {
+  const port = wiringPortFor(profile);
+  if (port !== plannedPort) {
+    throw new Error(
+      `${profileLabel(profile)}'s proxy port moved from ${plannedPort} to ${port} while the ` +
+        "wiring was being planned; re-run the command",
+    );
+  }
 }
 
 /** Contradictory flag pairs (`--check --direct`, `--mobile --check`) are rejected at the

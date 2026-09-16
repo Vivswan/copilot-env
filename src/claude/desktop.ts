@@ -17,7 +17,20 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { codexUserAgent } from "../codex/user_agent.ts";
-import type { ManagedMode, ManagedWrite } from "../agents/configure.ts";
+import { type ManagedMode, type ManagedWrite, reservePlannedPort } from "../agents/configure.ts";
+import {
+  applyPatch,
+  type Doc,
+  type FilePlan,
+  filePlan,
+  NO_WRITE,
+  type PatchOp,
+  planPatch,
+  remove,
+  set,
+  textVerdict,
+  type WritePlan,
+} from "../agents/write_plan.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { atomicWriteFile, chmodReported, removeReported } from "../utils/report_write.ts";
 import { Credential } from "../copilot_api/credential.ts";
@@ -38,7 +51,7 @@ import {
   parseModelList,
 } from "../copilot_api/models.ts";
 import { CopilotApiPaths, HELPERS_DIR_NAME, resolveRootHome } from "../copilot_api/paths.ts";
-import { proxyLoopbackOrigin, wiringPortFor } from "../copilot_api/port.ts";
+import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import {
   agentStartCommand,
   parseProfileName,
@@ -267,13 +280,60 @@ export function saveJsonIfChanged(path: string, doc: unknown, detail?: string): 
   return true;
 }
 
-function saveDesktopMeta(dir: string, meta: DesktopMeta): void {
-  const path = join(dir, META_FILENAME);
-  saveJsonIfChanged(path, {
-    ...meta.extra,
-    "appliedId": meta.appliedId ?? undefined,
-    "entries": meta.entries.map((e) => ({ ...e.extra, "id": e.id, "name": e.name })),
-  }, "Claude Desktop config-library index");
+/** A JSON write, planned: `apply` lands the bytes unless the file already holds them (what
+ *  saveJsonIfChanged decides at write time, decided here at plan time). */
+interface JsonWritePlan {
+  file: FilePlan;
+  /** True when the file was written. */
+  apply(): boolean;
+}
+
+function parsedRecord(raw: string | null): Doc | null {
+  if (raw === null) return null;
+  try {
+    const doc: unknown = JSON.parse(raw);
+    return isRecord(doc) ? doc : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `ops` over `base` (the document the save starts from) yield the bytes; the rows compare against
+ *  the file's own current document (`currentRaw` parsed, null when absent or not an object). */
+function planJsonWrite(
+  path: string,
+  currentRaw: string | null,
+  base: Doc,
+  ops: readonly PatchOp[],
+  detail?: string,
+  secrets?: ReadonlySet<string>,
+): JsonWritePlan {
+  const attributes = planPatch(parsedRecord(currentRaw), ops, secrets);
+  const text = `${JSON.stringify(applyPatch(base, ops), null, 2)}\n`;
+  return {
+    file: { path, verdict: textVerdict(currentRaw, text), attributes },
+    apply() {
+      if (currentRaw === text) return false;
+      atomicWriteFile(path, text, undefined, detail);
+      return true;
+    },
+  };
+}
+
+/** `_meta.json` rebuilt from the parsed index: the app's other fields first, then the two we own.
+ *  A cleared applied slot is an explicit removal, so the plan names it. */
+function planDesktopMeta(dir: string, currentRaw: string | null, meta: DesktopMeta): JsonWritePlan {
+  const ops: PatchOp[] = [
+    meta.appliedId === null ? remove(["appliedId"]) : set(["appliedId"], meta.appliedId),
+    set(["entries"], meta.entries.map((e) => ({ ...e.extra, "id": e.id, "name": e.name }))),
+  ];
+  return planJsonWrite(
+    join(dir, META_FILENAME),
+    currentRaw,
+    { ...meta.extra },
+    ops,
+    "Claude Desktop config-library index",
+  );
 }
 
 /** Fail-closed (entryAbsent): a failed look reads "may be there", a dangling symlink is present,
@@ -336,16 +396,10 @@ function managedMcpServers(profile: Profile, existing: unknown): Record<string, 
   ];
 }
 
-/** The ONE strip both payload branches apply, so a stale managed header survives neither a mode
- *  switch nor a credential rotation. A non-record reads as empty. */
-function foreignCustomHeaders(existing: unknown): Record<string, unknown> {
-  const stripped: Record<string, unknown> = { ...(isRecord(existing) ? existing : {}) };
-  // Names only: any placeholder value yields the same key set, so no UA lookup runs.
-  for (const name of Object.keys(directClientHeaders("x", "x"))) {
-    delete stripped[name];
-  }
-  return stripped;
-}
+/** The Direct client header names, the ONE strip both payload branches apply, so a stale managed
+ *  header survives neither a mode switch nor a credential rotation. Names only: any placeholder
+ *  value yields the same key set, so no UA lookup runs at import. */
+const MANAGED_HEADER_NAMES: readonly string[] = Object.keys(directClientHeaders("x", "x"));
 
 /** How the entry obtains its credential. Desktop's helper is a FILE path (unlike Claude Code's
  *  inline command), so the command shape carries the script the writer produced. */
@@ -362,91 +416,111 @@ export type DesktopPayloadOptions = ManagedMode & {
   existing?: Record<string, unknown>;
 };
 
+/** The one Desktop value a preview must redact. */
+const DESKTOP_SECRETS: ReadonlySet<string> = new Set(["inferenceGatewayApiKey"]);
+
 /** Every key below is an external contract (Desktop's documented flat config vocabulary): never
- *  rename. */
-export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string, unknown> {
-  const doc: Record<string, unknown> = { ...(opts.existing ?? {}) };
+ *  rename. The patch over the entry's current document; desktopConfigPayload is it applied. */
+export function desktopPayloadOps(opts: DesktopPayloadOptions): PatchOp[] {
+  const existing = opts.existing ?? {};
   // inferenceProvider is what activates third-party mode: without it the app treats the entry as
   // incomplete and boots into claude.ai sign-in. The credential kind names the ONE source the app
   // may use (a recorded helper would otherwise win over static fields), so each shape sets its own
   // kind and deletes the other's keys.
-  doc["inferenceProvider"] = "gateway";
-  doc["inferenceGatewayBaseUrl"] = opts.baseUrl;
+  const ops: PatchOp[] = [
+    set(["inferenceProvider"], "gateway"),
+    set(["inferenceGatewayBaseUrl"], opts.baseUrl),
+  ];
   if (opts.credential.kind === "command") {
-    doc["inferenceCredentialKind"] = "helper-script";
-    doc["inferenceCredentialHelper"] = opts.credential.helperPath;
-    // The proxy helper may float and launch the daemon on first call, so it gets headroom.
-    doc["inferenceCredentialHelperTimeoutSec"] = opts.mode === "direct" ? 30 : 120;
-    delete doc["inferenceGatewayApiKey"];
-    delete doc["inferenceGatewayAuthScheme"];
+    ops.push(
+      set(["inferenceCredentialKind"], "helper-script"),
+      set(["inferenceCredentialHelper"], opts.credential.helperPath),
+      // The proxy helper may float and launch the daemon on first call, so it gets headroom.
+      set(["inferenceCredentialHelperTimeoutSec"], opts.mode === "direct" ? 30 : 120),
+      remove(["inferenceGatewayApiKey"]),
+      remove(["inferenceGatewayAuthScheme"]),
+    );
   } else {
-    delete doc["inferenceCredentialHelper"];
-    delete doc["inferenceCredentialHelperTimeoutSec"];
-    doc["inferenceCredentialKind"] = "static";
-    doc["inferenceGatewayApiKey"] = opts.credential.token;
-    doc["inferenceGatewayAuthScheme"] = "bearer";
+    ops.push(
+      remove(["inferenceCredentialHelper"]),
+      remove(["inferenceCredentialHelperTimeoutSec"]),
+      set(["inferenceCredentialKind"], "static"),
+      set(["inferenceGatewayApiKey"], opts.credential.token),
+      set(["inferenceGatewayAuthScheme"], "bearer"),
+    );
   }
-  doc["deploymentDisplayName"] = DESKTOP_DISPLAY_NAME;
-  doc["managedMcpServers"] = managedMcpServers(opts.profile, doc["managedMcpServers"]);
-  // Capability switches: everything on (user decision).
-  doc["chatTabEnabled"] = true;
-  doc["coworkTabEnabled"] = true;
-  doc["isClaudeCodeForDesktopEnabled"] = true;
-  doc["isDesktopExtensionEnabled"] = true;
-  doc["chatAdvancedFileAnalysisEnabled"] = true;
-  doc["skillCreationEnabled"] = true;
-  doc["autoModeEnabled"] = true;
-  doc["userPluginMarketplacesEnabled"] = true;
-  doc["userPluginUploadsEnabled"] = true;
-  // Show estimated cost in the UI, default to the 1M window (user decisions).
-  doc["inferenceModelPricingEnabled"] = true;
-  doc["modelPrefer1mContext"] = true;
-  // Claude.ai data import/export switches all on (user decision); merged so a hand-set field like
-  // bannerBehavior survives.
-  const existingImport = doc["claudeAiImport"];
-  doc["claudeAiImport"] = {
-    ...(isRecord(existingImport) ? existingImport : {}),
-    "enabled": true,
-    "automatic3pImport": true,
-    "exportEnabled": true,
-  };
-  // No telemetry at all (user decision), essential included.
-  doc["disableEssentialTelemetry"] = true;
-  doc["disableNonessentialTelemetry"] = true;
-  doc["disableNonessentialServices"] = true;
+  ops.push(
+    set(["deploymentDisplayName"], DESKTOP_DISPLAY_NAME),
+    set(["managedMcpServers"], managedMcpServers(opts.profile, existing["managedMcpServers"])),
+    // Capability switches: everything on (user decision).
+    set(["chatTabEnabled"], true),
+    set(["coworkTabEnabled"], true),
+    set(["isClaudeCodeForDesktopEnabled"], true),
+    set(["isDesktopExtensionEnabled"], true),
+    set(["chatAdvancedFileAnalysisEnabled"], true),
+    set(["skillCreationEnabled"], true),
+    set(["autoModeEnabled"], true),
+    set(["userPluginMarketplacesEnabled"], true),
+    set(["userPluginUploadsEnabled"], true),
+    // Show estimated cost in the UI, default to the 1M window (user decisions).
+    set(["inferenceModelPricingEnabled"], true),
+    set(["modelPrefer1mContext"], true),
+    // Claude.ai data import/export switches all on (user decision); leaf sets, so a hand-set field
+    // like bannerBehavior survives.
+    set(["claudeAiImport", "enabled"], true),
+    set(["claudeAiImport", "automatic3pImport"], true),
+    set(["claudeAiImport", "exportEnabled"], true),
+    // No telemetry at all (user decision), essential included.
+    set(["disableEssentialTelemetry"], true),
+    set(["disableNonessentialTelemetry"], true),
+    set(["disableNonessentialServices"], true),
+  );
+  const headers = existing["inferenceCustomHeaders"];
   if (opts.mode === "direct") {
     // directClientHeaders OMITS the integration id when null, so a rotation to a null identity must
     // drop the stale header rather than inherit it; user-added headers survive.
-    doc["inferenceCustomHeaders"] = {
-      ...foreignCustomHeaders(doc["inferenceCustomHeaders"]),
-      ...directClientHeaders(codexUserAgent(), opts.directIntegrationId),
-    };
+    for (const name of MANAGED_HEADER_NAMES) ops.push(remove(["inferenceCustomHeaders", name]));
+    for (
+      const [name, value] of Object.entries(
+        directClientHeaders(codexUserAgent(), opts.directIntegrationId),
+      )
+    ) {
+      ops.push(set(["inferenceCustomHeaders", name], value));
+    }
     // Copilot Direct 404s /v1/models -- discovery must stay off; the list is the picker.
-    delete doc["modelDiscoveryEnabled"];
+    ops.push(remove(["modelDiscoveryEnabled"]));
   } else {
     // Discovery alone carries no capability metadata (anthropics/claude-code#88345: 1m models
     // silently cap at 200k), so the inferenceModels list stays as ANNOTATIONS marking 1m support.
-    doc["modelDiscoveryEnabled"] = true;
-    const existingHeaders = doc["inferenceCustomHeaders"];
-    if (isRecord(existingHeaders)) {
-      const stripped = foreignCustomHeaders(existingHeaders);
-      if (Object.keys(stripped).length === 0) delete doc["inferenceCustomHeaders"];
-      else doc["inferenceCustomHeaders"] = stripped;
+    ops.push(set(["modelDiscoveryEnabled"], true));
+    if (isRecord(headers)) {
+      const foreign = Object.keys(headers).filter((name) => !MANAGED_HEADER_NAMES.includes(name));
+      if (foreign.length === 0) ops.push(remove(["inferenceCustomHeaders"]));
+      else {for (const name of MANAGED_HEADER_NAMES) {
+          ops.push(remove(["inferenceCustomHeaders", name]));
+        }}
     }
   }
   // No live rows (an offline wire): the entry keeps whatever it carries; a fresh offline entry has
   // none until the first online wire.
   if (opts.models !== undefined) {
-    doc["inferenceModels"] = opts.models.map((m) => ({
-      "name": m.name,
-      "labelOverride": m.labelOverride,
-      "supports1m": m.supports1m,
-      "prefer1m": m.prefer1m,
-      "anthropicFamilyTier": m.anthropicFamilyTier,
-      "isFamilyDefault": m.isFamilyDefault,
-    }));
+    ops.push(set(
+      ["inferenceModels"],
+      opts.models.map((m) => ({
+        "name": m.name,
+        "labelOverride": m.labelOverride,
+        "supports1m": m.supports1m,
+        "prefer1m": m.prefer1m,
+        "anthropicFamilyTier": m.anthropicFamilyTier,
+        "isFamilyDefault": m.isFamilyDefault,
+      })),
+    ));
   }
-  return doc;
+  return ops;
+}
+
+export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string, unknown> {
+  return applyPatch(structuredClone(opts.existing ?? {}), desktopPayloadOps(opts));
 }
 
 export function desktopModelsFromPicks(
@@ -474,18 +548,36 @@ export function desktopHelperPath(rootHome: string, mode: ProfileMode, profile: 
 }
 
 /** The executable bit is healed even when the body matched (a chmod'd-away +x would otherwise
- *  survive every wire). The OTHER mode's script is retired separately (retireDesktopHelperScript)
+ *  survive every wire). The OTHER mode's script is retired separately (planRetireDesktopHelperScript)
  *  AFTER the entry saves, so a failed save never leaves the current entry pointing at a deleted
  *  helper. */
-export function writeDesktopHelperScript(mode: ProfileMode, profile: Profile): string {
+export function planDesktopHelperScript(
+  mode: ProfileMode,
+  profile: Profile,
+): { path: string; file: FilePlan; apply(): void } {
   const body = desktopHelperBody(mode, profile);
   const path = desktopHelperPath(resolveRootHome(), mode, profile);
-  if (readFileOrNull(path) !== body) {
-    atomicWriteFile(path, body, 0o755);
-  } else if (!helperExecutable(path)) {
-    chmodReported(path, 0o755);
-  }
-  return path;
+  const current = readFileOrNull(path);
+  const verdict = current === null
+    ? "create"
+    : current !== body || !helperExecutable(path)
+    ? "rewrite"
+    : "same";
+  return {
+    path,
+    file: filePlan(path, verdict),
+    apply() {
+      if (current !== body) atomicWriteFile(path, body, 0o755);
+      else if (!helperExecutable(path)) chmodReported(path, 0o755);
+    },
+  };
+}
+
+/** planDesktopHelperScript, performed; returns the script's path. */
+export function writeDesktopHelperScript(mode: ProfileMode, profile: Profile): string {
+  const plan = planDesktopHelperScript(mode, profile);
+  plan.apply();
+  return plan.path;
 }
 
 /** ONE builder for the writer and the status inspector, so "wired" always means "this body". */
@@ -501,10 +593,32 @@ export function helperExecutable(path: string): boolean {
   return WIN || (statSync(path).mode & 0o111) === 0o111;
 }
 
-/** Called post-save on a wire. */
-export function retireDesktopHelperScript(mode: ProfileMode, profile: Profile): void {
+/** A file removal as a plan: present files are named with the delete verdict; the apply removes
+ *  whatever is there at that moment (removeReported is a no-op on an absent path). */
+function planRemoveFile(path: string, detail?: string): WritePlan {
+  return {
+    files: entryExists(path) ? [filePlan(path, "delete")] : [],
+    apply: () => void removeReported(path, detail),
+  };
+}
+
+function concatPlans(plans: readonly WritePlan[]): WritePlan {
+  return {
+    files: plans.flatMap((p) => p.files),
+    apply() {
+      for (const plan of plans) plan.apply();
+    },
+  };
+}
+
+/** Applied post-save on a wire. */
+export function planRetireDesktopHelperScript(mode: ProfileMode, profile: Profile): WritePlan {
   const other: ProfileMode = mode === "direct" ? "proxy" : "direct";
-  removeReported(desktopHelperPath(resolveRootHome(), other, profile));
+  return planRemoveFile(desktopHelperPath(resolveRootHome(), other, profile));
+}
+
+export function retireDesktopHelperScript(mode: ProfileMode, profile: Profile): void {
+  planRetireDesktopHelperScript(mode, profile).apply();
 }
 
 // --- app files -----------------------------------------------------------------------
@@ -526,34 +640,43 @@ export type DesktopAppState =
 /** A merge that keeps the file's other keys (claude_desktop_config.json holds the user's MCP
  *  servers and preferences). An unparseable file is left alone and reported: rebuilding it would
  *  destroy those. */
-function mergeAppFile(path: string, patch: Record<string, unknown>, detail: string): void {
-  const existing = readAppFile(path);
-  if (typeof existing === "string") {
-    logger.warn(`  Claude Desktop: ${path} is ${existing}; leaving it alone.`);
-    return;
+function planAppFileMerge(path: string, patch: Record<string, unknown>, detail: string): WritePlan {
+  const loaded = loadAppFile(path);
+  if (typeof loaded === "string") {
+    logger.warn(`  Claude Desktop: ${path} is ${loaded}; leaving it alone.`);
+    return NO_WRITE;
   }
-  saveJsonIfChanged(path, { ...existing, ...patch }, detail);
+  const write = planJsonWrite(
+    path,
+    loaded.raw,
+    loaded.doc,
+    Object.entries(patch).map(([key, value]) => set([key], value)),
+    detail,
+  );
+  return { files: [write.file], apply: () => void write.apply() };
 }
 
 /** The two files the app itself writes when the user clicks "Continue" on the sign-in chooser and
  *  "Enable Developer Mode": written with every entry wire so `agent init` alone leaves the app
  *  ready. Never removed: once no applied entry names an inferenceProvider the app boots claude.ai
  *  regardless, and Developer Mode is the user's. Both files are read at launch only. */
-function wireClaudeDesktopAppFiles(): void {
+function planClaudeDesktopAppFiles(): WritePlan {
   const dirs = resolveDesktopDataDirs();
-  if (dirs === null) return;
-  mergeAppFile(
-    join(dirs.data, APP_CONFIG_FILENAME),
-    { "deploymentMode": "3p" },
-    "Claude Desktop starts in third-party mode, no sign-in chooser",
-  );
-  for (const dir of [dirs.standard, dirs.data]) {
-    mergeAppFile(
-      join(dir, DEVELOPER_SETTINGS_FILENAME),
-      { "allowDevTools": true },
-      "Claude Desktop Developer Mode on",
-    );
-  }
+  if (dirs === null) return NO_WRITE;
+  return concatPlans([
+    planAppFileMerge(
+      join(dirs.data, APP_CONFIG_FILENAME),
+      { "deploymentMode": "3p" },
+      "Claude Desktop starts in third-party mode, no sign-in chooser",
+    ),
+    ...[dirs.standard, dirs.data].map((dir) =>
+      planAppFileMerge(
+        join(dir, DEVELOPER_SETTINGS_FILENAME),
+        { "allowDevTools": true },
+        "Claude Desktop Developer Mode on",
+      )
+    ),
+  ]);
 }
 
 /** The state the writer's merge would read: absent is an empty document; unreadable or malformed
@@ -569,9 +692,9 @@ export function readDesktopAppState(): DesktopAppState {
       join(dirs.data, DEVELOPER_SETTINGS_FILENAME),
     ]
   ) {
-    const doc = readAppFile(path);
-    if (typeof doc === "string") return { kind: "unreadable", path, reason: doc };
-    docs.push(doc);
+    const loaded = loadAppFile(path);
+    if (typeof loaded === "string") return { kind: "unreadable", path, reason: loaded };
+    docs.push(loaded.doc);
   }
   const [config, ...developer] = docs;
   const mode = config?.["deploymentMode"];
@@ -582,22 +705,23 @@ export function readDesktopAppState(): DesktopAppState {
   };
 }
 
-/** The document, an empty one when the file is absent, or the reason it could not be one. */
-function readAppFile(path: string): Record<string, unknown> | string {
+/** The document with its bytes (an empty document and null bytes when the file is absent), or the
+ *  reason it could not be one. */
+function loadAppFile(path: string): { raw: string | null; doc: Record<string, unknown> } | string {
   let raw: string | null;
   try {
     raw = readFileOrNull(path);
   } catch (e) {
     return errMessage(e);
   }
-  if (raw === null) return {};
+  if (raw === null) return { raw, doc: {} };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
     return "not valid JSON";
   }
-  return isRecord(parsed) ? parsed : "not a JSON object";
+  return isRecord(parsed) ? { raw, doc: parsed } : "not a JSON object";
 }
 
 /** The app reads its files at launch only; a running app also rewrites claude_desktop_config.json
@@ -690,29 +814,33 @@ async function wiringModels(
 }
 
 /**
- * Throws on real write failures; syncClaudeDesktopWiring is the best-effort face. `appliedId` is
- * only ever SET when the library had none: an applied user config is never displaced.
+ * The entry wire, computed but not performed. Throws on real read failures; planClaudeDesktopSync
+ * is the best-effort face. `appliedId` is only ever SET when the library had none: an applied user
+ * config is never displaced.
  *   ours (an owned path whose document names `profile`)
  *   -> adoptable (a foreign entry at the same gateway, taken over under its uuid and name)
  *   -> a foreign namesake (warn, never clobber)
  *   -> a fresh uuid
  */
-export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<void> {
+export async function planClaudeDesktopEntry(opts: DesktopWireOptions): Promise<WritePlan> {
   const dir = resolveDesktopLibraryDir();
-  if (dir === null || !claudeDesktopInstalled()) return;
+  if (dir === null || !claudeDesktopInstalled()) return NO_WRITE;
 
-  const baseUrl = opts.mode === "direct"
+  // The plan PEEKS a proxy port; the apply reserves it (reservePlannedPort).
+  const plannedPort = opts.mode === "proxy" ? copilotApiResolvePort(opts.profile) : null;
+  const baseUrl = plannedPort === null
     ? opts.directBaseUrl ?? DEFAULT_COPILOT_API_BASE
-    : proxyLoopbackOrigin(wiringPortFor(opts.profile));
+    : proxyLoopbackOrigin(plannedPort);
 
-  const meta = parseDesktopMeta(readFileOrNull(join(dir, META_FILENAME)));
+  const metaRaw = readFileOrNull(join(dir, META_FILENAME));
+  const meta = parseDesktopMeta(metaRaw);
   if (meta === null) {
     logger.warn(
       `  Claude Desktop: ${
         join(dir, META_FILENAME)
       } has an unexpected shape; leaving the config library alone.`,
     );
-    return;
+    return NO_WRITE;
   }
 
   const ledger = new OwnershipLedger();
@@ -755,7 +883,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     logger.warn(
       `  Claude Desktop: a config entry named "${name}" already exists and is not ours; leaving it alone.`,
     );
-    return;
+    return NO_WRITE;
   }
   const owned = entry !== undefined &&
     ledger.owns("claudeDesktop", configPathOf(entry.id));
@@ -766,15 +894,8 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
 
   const configPath = configPathOf(entry.id);
   const existingRaw = readFileOrNull(configPath);
-  let existing: Record<string, unknown> = {};
-  if (existingRaw !== null) {
-    try {
-      const parsed: unknown = JSON.parse(existingRaw);
-      if (isRecord(parsed)) existing = parsed;
-    } catch {
-      // Unparseable content under our path (an in-app edit racing us): rebuild it.
-    }
-  }
+  // Unparseable content under our path (an in-app edit racing us) is rebuilt.
+  const existing: Record<string, unknown> = parsedRecord(existingRaw) ?? {};
 
   // The launcher hot path (quiet) must NEVER run discovery: its probes are billed requests. It
   // reuses the recorded rows; init, profile-add, and `agent claude` refresh live.
@@ -788,14 +909,18 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     logger.warn(
       "  Claude Desktop: no model data available; not creating an unusable direct entry (re-run online).",
     );
-    return;
+    return NO_WRITE;
   }
   if (created) meta.entries.push(entry);
 
   // The helper script exists only for the command shape; a static entry names none.
-  const credential: DesktopCredential = opts.credential.kind === "command"
-    ? { kind: "command", helperPath: writeDesktopHelperScript(opts.mode, opts.profile) }
-    : opts.credential;
+  const credential: DesktopCredential = opts.credential.kind === "static" ? opts.credential : {
+    kind: "command",
+    helperPath: desktopHelperPath(resolveRootHome(), opts.mode, opts.profile),
+  };
+  const helper = credential.kind === "command"
+    ? planDesktopHelperScript(opts.mode, opts.profile)
+    : null;
   // Re-extracted so the payload receives the Direct facts only alongside a direct mode.
   const write: ManagedMode = opts.mode === "direct"
     ? {
@@ -804,21 +929,6 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
       directBaseUrl: opts.directBaseUrl,
     }
     : { mode: "proxy" };
-  const payload = desktopConfigPayload({
-    ...write,
-    profile: opts.profile,
-    baseUrl,
-    credential,
-    models,
-    existing,
-  });
-
-  // The order is the safety: config, then meta, then ownership and helper retirement.
-  //   config without its meta row  -> invisible junk
-  //   meta row without its config  -> a broken picker row
-  //   claim before the save        -> a claim on an entry that was never written
-  //   retirement before the save   -> a helper the still-current entry names, gone
-  //
   // The write's own line announces the wiring; a byte-identical no-op states it instead, unless
   // quiet (the launcher hot path).
   const staticClause = credential.kind === "command"
@@ -827,25 +937,58 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     ? "; static key"
     : `; static key, start the proxy yourself (${agentStartCommand(opts.profile)})`;
   const wiring = `${ENTRY} "${entry.name}" (${opts.mode}) wired${staticClause}`;
-  const configWritten = saveJsonIfChanged(
+  const config = planJsonWrite(
     configPath,
-    payload,
+    existingRaw,
+    structuredClone(existing),
+    desktopPayloadOps({ ...write, profile: opts.profile, baseUrl, credential, models, existing }),
     `${wiring}; restart Claude Desktop to pick it up`,
+    DESKTOP_SECRETS,
   );
-  if (!configWritten && !opts.quiet) {
-    logger.success(`  ${wiring} at ${configPath} already.`);
-  }
   // An applied slot that is empty, or names a row the library no longer lists, is ours to fill;
   // a slot naming a live entry (a user's own config) is never displaced.
   if (!meta.entries.some((e) => e.id === meta.appliedId)) meta.appliedId = entry.id;
-  saveDesktopMeta(dir, meta);
-  // Only a NEW claim is recorded, so the ledger write is a real change, never a byte-identical one.
-  if (!owned) ledger.record("claudeDesktop", configPath);
-  if (credential.kind === "command") retireDesktopHelperScript(opts.mode, opts.profile);
-  else removeHelperScripts(opts.profile);
-  // Last: the app files are independent of the entry, so a failure here (an unreadable
-  // developer_settings.json) leaves a complete, owned entry behind.
-  wireClaudeDesktopAppFiles();
+  const index = planDesktopMeta(dir, metaRaw, meta);
+  const retire = helper === null
+    ? planRemoveHelperScripts(opts.profile)
+    : planRetireDesktopHelperScript(opts.mode, opts.profile);
+  const appFiles = planClaudeDesktopAppFiles();
+
+  return {
+    files: [
+      ...(helper === null ? [] : [helper.file]),
+      config.file,
+      index.file,
+      ...retire.files,
+      ...appFiles.files,
+    ],
+    apply() {
+      if (plannedPort !== null) reservePlannedPort(opts.profile, plannedPort);
+      helper?.apply();
+      // The order is the safety: config, then meta, then ownership and helper retirement.
+      //   config without its meta row  -> invisible junk
+      //   meta row without its config  -> a broken picker row
+      //   claim before the save        -> a claim on an entry that was never written
+      //   retirement before the save   -> a helper the still-current entry names, gone
+      const configWritten = config.apply();
+      if (!configWritten && !opts.quiet) {
+        logger.success(`  ${wiring} at ${configPath} already.`);
+      }
+      index.apply();
+      // Only a NEW claim is recorded, so the ledger write is a real change, never a byte-identical
+      // one.
+      if (!owned) ledger.record("claudeDesktop", configPath);
+      retire.apply();
+      // Last: the app files are independent of the entry, so a failure here (an unreadable
+      // developer_settings.json) leaves a complete, owned entry behind.
+      appFiles.apply();
+    },
+  };
+}
+
+/** planClaudeDesktopEntry, performed. */
+export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<void> {
+  (await planClaudeDesktopEntry(opts)).apply();
 }
 
 /** The entry's recorded inferenceModels rows when they are OUR shape, else null (fetch). */
@@ -892,73 +1035,119 @@ export function profileStoreWellFormed(storeFile: string): boolean {
     (isRecord(profiles) && Object.values(profiles).every(isRecord));
 }
 
-/** Best-effort: a Desktop failure warns, never fails the caller. Key off leaves the default's entry
- *  alone and says nothing, because the whole-library reconcile in src/agents/claude_desktop.ts
- *  names it once and the launcher's default repair stays quiet.
+/** Best-effort: a Desktop failure warns, never fails the caller, at plan time and at apply time
+ *  alike. Key off leaves the default's entry alone and says nothing, because the whole-library
+ *  reconcile in src/agents/claude_desktop.ts names it once and the launcher's default repair stays
+ *  quiet.
  *
  *    key on                    -> upserts `profile`'s entry
  *    key off, named profile    -> removes that entry
  *    key off, malformed store  -> warns, touches nothing (the guard that sweep sits behind too)
  */
-export async function syncClaudeDesktopWiring(opts: DesktopWireOptions): Promise<void> {
-  try {
-    if (new CopilotEnvConfig().claudeDesktopEnabled()) {
-      await wireClaudeDesktopEntry(opts);
-      return;
-    }
-    if (opts.profile === null) return;
-    const storeFile = new CopilotApiPaths().sharedStateFile;
-    if (!profileStoreWellFormed(storeFile)) {
-      logger.warn(
-        `  Claude Desktop: the profile store ${storeFile} is malformed; leaving the config library alone.`,
-      );
-      return;
-    }
-    removeClaudeDesktopEntry(opts.profile);
-  } catch (e) {
+export async function planClaudeDesktopSync(opts: DesktopWireOptions): Promise<WritePlan> {
+  const warn = (e: unknown): void =>
     logger.warn(
       `  Could not wire Claude Desktop for ${profileLabel(opts.profile)}: ${errMessage(e)}`,
     );
+  let plan: WritePlan;
+  try {
+    plan = await planClaudeDesktopSyncOrThrow(opts);
+  } catch (e) {
+    warn(e);
+    return NO_WRITE;
   }
+  return {
+    files: plan.files,
+    apply() {
+      try {
+        plan.apply();
+      } catch (e) {
+        warn(e);
+      }
+    },
+  };
+}
+
+async function planClaudeDesktopSyncOrThrow(opts: DesktopWireOptions): Promise<WritePlan> {
+  if (new CopilotEnvConfig().claudeDesktopEnabled()) return await planClaudeDesktopEntry(opts);
+  if (opts.profile === null) return NO_WRITE;
+  const storeFile = new CopilotApiPaths().sharedStateFile;
+  if (!profileStoreWellFormed(storeFile)) {
+    logger.warn(
+      `  Claude Desktop: the profile store ${storeFile} is malformed; leaving the config library alone.`,
+    );
+    return NO_WRITE;
+  }
+  return planRemoveClaudeDesktopEntry(opts.profile);
+}
+
+/** planClaudeDesktopSync, performed. */
+export async function syncClaudeDesktopWiring(opts: DesktopWireOptions): Promise<void> {
+  (await planClaudeDesktopSync(opts)).apply();
 }
 
 /** A foreign entry, even one carrying our name, is never touched. Best-effort. */
-export function removeClaudeDesktopEntry(profile: Profile): void {
-  removeOwned(
+export function planRemoveClaudeDesktopEntry(profile: Profile): WritePlan {
+  return planRemoveOwned(
     `the Claude Desktop entry for ${profileLabel(profile)}`,
     (e) => entryProfileAt(e.path) === profile,
     profile,
   );
 }
 
+export function removeClaudeDesktopEntry(profile: Profile): void {
+  planRemoveClaudeDesktopEntry(profile).apply();
+}
+
 /** Best-effort. */
-export function removeClaudeDesktopOrphan(orphan: DesktopOwnedEntry): void {
-  removeOwned(
+export function planRemoveClaudeDesktopOrphan(orphan: DesktopOwnedEntry): WritePlan {
+  return planRemoveOwned(
     `the orphaned Claude Desktop entry at ${orphan.path}`,
     (e) => e.path === orphan.path,
     orphan.profile,
   );
 }
 
-function removeOwned(
+export function removeClaudeDesktopOrphan(orphan: DesktopOwnedEntry): void {
+  planRemoveClaudeDesktopOrphan(orphan).apply();
+}
+
+function planRemoveOwned(
   what: string,
   selects: (owned: OwnedDesktopEntry) => boolean,
   helpersOf: Profile | undefined,
-): void {
+): WritePlan {
+  const warn = (e: unknown): void => logger.warn(`  Could not remove ${what}: ${errMessage(e)}`);
+  let entries: OwnedEntriesRemoval;
   try {
-    // A blocked sweep (malformed _meta.json) may leave a live entry pointing at these scripts, so
-    // they go only when the library was actually processed.
-    if (removeOwnedEntries(selects) === "blocked") return;
-    if (helpersOf !== undefined) removeHelperScripts(helpersOf);
+    entries = planRemoveOwnedEntries(selects);
   } catch (e) {
-    logger.warn(`  Could not remove ${what}: ${errMessage(e)}`);
+    warn(e);
+    return NO_WRITE;
   }
+  // A blocked sweep (malformed _meta.json) may leave a live entry pointing at these scripts, so
+  // they go only when the library was actually processed.
+  if (entries.kind === "blocked") return NO_WRITE;
+  const helpers = helpersOf === undefined ? NO_WRITE : planRemoveHelperScripts(helpersOf);
+  return {
+    files: [...entries.files, ...helpers.files],
+    apply() {
+      try {
+        entries.apply();
+        helpers.apply();
+      } catch (e) {
+        warn(e);
+      }
+    },
+  };
 }
 
-function removeHelperScripts(profile: Profile): void {
+function planRemoveHelperScripts(profile: Profile): WritePlan {
   const rootHome = resolveRootHome();
-  removeReported(desktopHelperPath(rootHome, "direct", profile));
-  removeReported(desktopHelperPath(rootHome, "proxy", profile));
+  return concatPlans([
+    planRemoveFile(desktopHelperPath(rootHome, "direct", profile)),
+    planRemoveFile(desktopHelperPath(rootHome, "proxy", profile)),
+  ]);
 }
 
 /** The filename grammar desktopHelperPath produces, either platform's extension. */
@@ -1026,7 +1215,7 @@ export function removeAllClaudeDesktopWiring(
  *
  *  Helper scripts go by FILENAME: a named profile's script goes even when its entry was left.
  */
-export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {}): void {
+export function planRemoveUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {}): WritePlan {
   const sweepable = (path: string): boolean => {
     let profile: Profile | undefined;
     try {
@@ -1042,12 +1231,32 @@ export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {
     }
     return profile !== undefined && profile !== null;
   };
-  if (removeOwnedEntries((e) => sweepable(e.path)) === "blocked") return;
-  removeUnlistedClaudeDesktopClaims(undefined, sweepable);
-  for (const path of presentDesktopHelperScripts(resolveRootHome())) {
-    if (desktopHelperScriptWiring(basename(path))?.profile !== null) removeReported(path);
-  }
-  if (!opts.quiet) announceUnmanagedDefault();
+  const entries = planRemoveOwnedEntries((e) => sweepable(e.path));
+  if (entries.kind === "blocked") return NO_WRITE;
+  const unlisted = planRemoveUnlistedClaudeDesktopClaims(undefined, sweepable);
+  const helpers = concatPlans(
+    presentDesktopHelperScripts(resolveRootHome())
+      .filter((path) => desktopHelperScriptWiring(basename(path))?.profile !== null)
+      .map((path) => planRemoveFile(path)),
+  );
+  return {
+    files: [
+      ...entries.files,
+      ...(unlisted.kind === "blocked" ? [] : unlisted.files),
+      ...helpers.files,
+    ],
+    apply() {
+      entries.apply();
+      if (unlisted.kind === "swept") unlisted.apply();
+      helpers.apply();
+      if (!opts.quiet) announceUnmanagedDefault();
+    },
+  };
+}
+
+/** planRemoveUnmanagedClaudeDesktopWiring, performed. */
+export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {}): void {
+  planRemoveUnmanagedClaudeDesktopWiring(opts).apply();
 }
 
 /** Name every claim the key-off sweep leaves as the default's, so the user knows it is theirs now
@@ -1191,41 +1400,63 @@ export function readOwnedLibrary(dir: string): OwnedLibrary | null {
 /** The leftovers of a removal that failed after the meta save: the claims released, their files
  *  deleted when present. `dirOverride` as in removeAllClaudeDesktopWiring; `selects` narrows the
  *  sweep (the key-off attribution). */
+export function planRemoveUnlistedClaudeDesktopClaims(
+  dirOverride?: string | null,
+  selects: (path: string) => boolean = () => true,
+): OwnedEntriesRemoval {
+  const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
+  if (dir === null) return { kind: "swept", ...NO_WRITE };
+  const library = readOwnedLibrary(dir);
+  if (library === null) return { kind: "blocked" };
+  const ledger = new OwnershipLedger();
+  const removals = library.unlisted.filter(selects).map((path) => ({
+    path,
+    file: planRemoveFile(path, ENTRY),
+  }));
+  return {
+    kind: "swept",
+    files: removals.flatMap((r) => r.file.files),
+    apply() {
+      for (const { path, file } of removals) {
+        file.apply();
+        ledger.release("claudeDesktop", path);
+      }
+    },
+  };
+}
+
+/** planRemoveUnlistedClaudeDesktopClaims, performed. */
 export function removeUnlistedClaudeDesktopClaims(
   dirOverride?: string | null,
   selects: (path: string) => boolean = () => true,
 ): "swept" | "blocked" {
-  const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
-  if (dir === null) return "swept";
-  const library = readOwnedLibrary(dir);
-  if (library === null) return "blocked";
-  const ledger = new OwnershipLedger();
-  for (const path of library.unlisted) {
-    if (!selects(path)) continue;
-    removeReported(path, ENTRY);
-    ledger.release("claudeDesktop", path);
-  }
-  return "swept";
+  const plan = planRemoveUnlistedClaudeDesktopClaims(dirOverride, selects);
+  if (plan.kind === "swept") plan.apply();
+  return plan.kind;
 }
+
+/** A sweep over the owned entries: blocked when _meta.json cannot be judged, else the files it
+ *  removes and the step that removes them. */
+type OwnedEntriesRemoval = { kind: "blocked" } | ({ kind: "swept" } & WritePlan);
 
 /** A foreign row is never a candidate. Meta FIRST, config files second, ownership release last: a
  *  failure mid-way can leave an orphaned (invisible) config file, never a picker row whose config
  *  is gone. */
-function removeOwnedEntries(
+function planRemoveOwnedEntries(
   selects: (owned: OwnedDesktopEntry) => boolean,
   dirOverride?: string | null,
-): "swept" | "blocked" {
+): OwnedEntriesRemoval {
   const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
-  if (dir === null) return "swept";
+  if (dir === null) return { kind: "swept", ...NO_WRITE };
   const metaPath = join(dir, META_FILENAME);
   const raw = readFileOrNull(metaPath);
-  if (raw === null) return "swept"; // no library, nothing recorded here to remove
+  if (raw === null) return { kind: "swept", ...NO_WRITE }; // no library, nothing recorded here to remove
   const meta = parseDesktopMeta(raw);
   if (meta === null) {
     logger.warn(
       `  Claude Desktop: ${metaPath} has an unexpected shape; leaving the config library alone.`,
     );
-    return "blocked"; // a live entry may reference the helper scripts: keep them
+    return { kind: "blocked" }; // a live entry may reference the helper scripts: keep them
   }
   const ledger = new OwnershipLedger();
   const claims = claimsUnder(ledger, dir);
@@ -1241,7 +1472,7 @@ function removeOwnedEntries(
       kept.push(entry);
     }
   }
-  if (removedPaths.length === 0) return "swept";
+  if (removedPaths.length === 0) return { kind: "swept", ...NO_WRITE };
   // The applied slot is handed to a remaining entry of ours (the default's first), never left
   // empty: an empty slot boots the app into claude.ai sign-in, and only the non-quiet wire could
   // refill it.
@@ -1251,10 +1482,27 @@ function removeOwnedEntries(
     meta.appliedId = next?.id ?? null;
   }
   meta.entries = kept;
-  saveDesktopMeta(dir, meta);
-  for (const path of removedPaths) {
-    removeReported(path, ENTRY);
-    ledger.release("claudeDesktop", path);
-  }
-  return "swept";
+  const index = planDesktopMeta(dir, raw, meta);
+  const removals = removedPaths.map((path) => ({ path, file: planRemoveFile(path, ENTRY) }));
+  return {
+    kind: "swept",
+    files: [index.file, ...removals.flatMap((r) => r.file.files)],
+    apply() {
+      index.apply();
+      for (const { path, file } of removals) {
+        file.apply();
+        ledger.release("claudeDesktop", path);
+      }
+    },
+  };
+}
+
+/** planRemoveOwnedEntries, performed. */
+function removeOwnedEntries(
+  selects: (owned: OwnedDesktopEntry) => boolean,
+  dirOverride?: string | null,
+): "swept" | "blocked" {
+  const plan = planRemoveOwnedEntries(selects, dirOverride);
+  if (plan.kind === "swept") plan.apply();
+  return plan.kind;
 }

@@ -11,7 +11,7 @@ import {
   checkCodex,
   checkCodexHost,
   checkCodexLive,
-  legacyTableMigrateCommand,
+  legacyTableRepair,
 } from "../src/health/checks_agents.ts";
 import type { ClaudeFacts, CodexFacts, CodexHostFacts } from "../src/health/facts.ts";
 import { v409CodexProfileFiles } from "../src/migrations/4.0.9.ts";
@@ -134,18 +134,23 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(legacyTable.status).toBe("warn");
   expect(legacyTable.detail).toContain("[profiles.work]");
   expect(legacyTable.fix).toBe(
-    `run \`${legacyTableMigrateCommand()}\` (moves the table into work.config.toml), or move it ` +
-      "by hand, then re-run `agent profile --add work`",
+    `${legacyTableRepair("work.config.toml")}, then re-run \`agent profile --add work\``,
   );
   // The command the fix names must be one the runner selects the table step for: the bounds are
-  // parsed back out of the rendered text and fed to the runner's own selection. Driven with an
-  // installed release above the step's, since a checkout still at the step's own version renders
-  // an empty range (the accepted checkout edge), and the reversed range is the control.
-  const bounds = /^agent migrate (\S+) (\S+)$/.exec(legacyTableMigrateCommand("4.0.10"));
+  // parsed back out of the rendered text and fed to the runner's own selection, with the reversed
+  // range as the control. A binary built from a checkout still at the step's own version (the
+  // package.json on this branch) renders an empty range, so its repair must promise no command.
+  const released = legacyTableRepair("work.config.toml", "4.0.10");
+  const bounds = /run `agent migrate (\S+) (\S+)` \(moves the table into work\.config\.toml\)/.exec(
+    released,
+  );
   expect(bounds).not.toBeNull();
   const [, from = "", to = ""] = bounds ?? [];
   expect(dueMigrations(from, to)).toContain(v409CodexProfileFiles);
   expect(dueMigrations(to, from)).toEqual([]);
+  expect(legacyTableRepair("work.config.toml", v409CodexProfileFiles.version)).toBe(
+    "move the table into work.config.toml by hand",
+  );
   const legacyKey = checkCodex({
     ...foreign,
     modelProvider: null,

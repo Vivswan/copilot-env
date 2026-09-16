@@ -48,7 +48,7 @@ agent claude --check       # print Claude provider mode; exits 0 direct, 2 proxy
 agent --full-help          # help for agent and every subcommand, every flag included
 ```
 
-`agent install` and `agent migrate <from> <to>` also exist; the installer and `agent update` run them, and you never need to.
+`agent install` and `agent migrate <from> <to>` are run for you by the installer and `agent update`. You run one by hand only when a message tells you to: `agent migrate <from> <to>` after a migration step did not complete, or `agent install` to refresh the current version in place.
 
 `agent settings --import` is non-destructive: preferences are full-replace, credentials are preserve-if-absent, and the stores are backed up first. A rollback re-imports the backup but never deletes profiles.
 
@@ -138,7 +138,7 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
 }
 ```
 
-- **Credential:** it resolves the `agent auth` credential, falling back to `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`. A bare clone works: `GH_TOKEN=... bin/agent mcp --serve`.
+- **Credential:** it resolves the `agent auth` credential. Only when no provider is stored at all does it fall back to `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, so a bare clone works: `GH_TOKEN=... bin/agent mcp --serve`. A stored provider that no longer resolves is an error, never a silent switch to the env.
 - **Profiles:** the registered server uses the default credential. A named profile that needs its own registers a second entry with `--profile <name>`; the [profiles section](authentication.md#profiles) has the Direct-over-proxy caveat.
 - **Plugin + skill:** the repo doubles as a Claude Code plugin (`.claude-plugin/`, which bundles the MCP server inline) and a skills collection. `npx skills add Vivswan/copilot-env` installs the companion [`web-search` skill](../skills/web-search).
 - **Windows:** the plugin's bundled registration runs `bin/agent`, a POSIX script. Wire through `agent init` or register `bin\agent.ps1` by hand instead.

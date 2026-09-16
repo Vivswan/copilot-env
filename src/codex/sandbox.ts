@@ -56,6 +56,10 @@ export function codexRefusesLaunch(configToml: TextReadResult | string, launch: 
   if (doc[PROFILE_KEY] !== undefined) return true;
   const permissions = doc[PERMISSIONS_KEY];
   if (permissions !== undefined && typeof permissions !== "string") return true;
+  if (
+    typeof permissions === "string" && !permissions.startsWith(":") &&
+    customProfileNetwork(doc, permissions) === "rejected"
+  ) return true;
   const profiles = doc.profiles;
   if (launch !== null && isRecord(profiles) && profiles[launch] !== undefined) return true;
   const modes = [
@@ -69,6 +73,31 @@ export function codexRefusesLaunch(configToml: TextReadResult | string, launch: 
   return modes.some((mode) =>
     mode !== undefined && !(typeof mode === "string" && SANDBOX_MODES.has(mode))
   );
+}
+
+const BUILTIN_PARENTS: ReadonlySet<string> = new Set([":read-only", ":workspace"]);
+
+/** A custom permission profile's network switch, the nearest `network.enabled` along its `extends`
+ *  chain (a built-in parent has it off). "rejected" is a chain Codex refuses to load anywhere along
+ *  its length, even past the nearest switch: a missing profile or parent, a cycle, a non-string
+ *  `extends`, or a parent that is not `:read-only`, `:workspace`, or a named profile. */
+function customProfileNetwork(doc: unknown, name: string): boolean | "rejected" {
+  const seen = new Set<string>();
+  let nearest: boolean | null = null;
+  for (let current = name;;) {
+    if (current.startsWith(":")) {
+      return BUILTIN_PARENTS.has(current) ? nearest ?? false : "rejected";
+    }
+    if (seen.has(current)) return "rejected";
+    seen.add(current);
+    const table = valueAt(doc, ["permissions", current]);
+    if (!isRecord(table)) return "rejected";
+    const enabled = valueAt(table, ["network", "enabled"]);
+    if (nearest === null && typeof enabled === "boolean") nearest = enabled;
+    if (table.extends === undefined) return nearest ?? false;
+    if (typeof table.extends !== "string") return "rejected";
+    current = table.extends;
+  }
 }
 
 /** Only the command shape runs anything inside the sandbox: a static bearer rides in the table, a
@@ -122,10 +151,9 @@ export function readCodexSandboxMode(configToml: TextReadResult | string): Codex
       kind: "set",
       key: PERMISSIONS_KEY,
       value: permissions,
-      line: assignmentLine(text, [PERMISSIONS_KEY]),
+      line: assignmentLine(text, [PERMISSIONS_KEY], permissions),
       proxyAuthReaches: permissions === BUILTIN_FULL_ACCESS ||
-        (!permissions.startsWith(":") &&
-          valueAt(doc, ["permissions", permissions, "network", "enabled"]) === true),
+        (!permissions.startsWith(":") && customProfileNetwork(doc, permissions) === true),
       overrides: typeof mode === "string" ? mode : null,
     };
   }
@@ -134,7 +162,7 @@ export function readCodexSandboxMode(configToml: TextReadResult | string): Codex
       kind: "set",
       key: SANDBOX_MODE_KEY,
       value: mode,
-      line: assignmentLine(text, [SANDBOX_MODE_KEY]),
+      line: assignmentLine(text, [SANDBOX_MODE_KEY], mode),
       proxyAuthReaches: mode !== LEGACY_READ_ONLY,
     };
   }
@@ -153,19 +181,20 @@ function valueAt(doc: unknown, path: readonly string[]): unknown {
 const PROBE_VALUE = "copilot-env-line-probe";
 
 /** 1-based line of the assignment at `path`, proved rather than pattern-matched: the line is the
- *  one where rewriting the assigned string makes the parsed value at `path` read PROBE_VALUE. A
- *  look-alike inside a comment or a multi-line string, or a quoted key that only spells the path,
- *  changes something else or nothing, so it never passes. */
-function assignmentLine(text: string, path: readonly string[]): number | null {
+ *  one where rewriting the assigned string makes the parsed value at `path` read a probe value the
+ *  file does not already hold. A look-alike inside a comment or a multi-line string, or a quoted
+ *  key that only spells the path, changes something else or nothing, so it never passes. */
+function assignmentLine(text: string, path: readonly string[], current: string): number | null {
+  const probe = current === PROBE_VALUE ? `${PROBE_VALUE}-2` : PROBE_VALUE;
   const assignment = new RegExp(`(${path[path.length - 1]}\\s*=\\s*)(?:"[^"]*"|'[^']*')`);
   const lines = text.split(/\r?\n/);
   for (const [i, line] of lines.entries()) {
     if (!assignment.test(line)) continue;
     const probed = lines
-      .map((l, j) => j === i ? l.replace(assignment, `$1"${PROBE_VALUE}"`) : l)
+      .map((l, j) => j === i ? l.replace(assignment, `$1"${probe}"`) : l)
       .join("\n");
     try {
-      if (valueAt(parse(probed), path) === PROBE_VALUE) return i + 1;
+      if (valueAt(parse(probed), path) === probe) return i + 1;
     } catch {
       // The rewrite broke the syntax (a string body spanning lines): not the assignment.
     }

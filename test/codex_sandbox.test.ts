@@ -212,6 +212,58 @@ test("health: the sandbox that blocks proxy auth is named with its line; open or
         fix: `set permissions."team.net".network.enabled = true in ${CONFIG}`,
       }],
     },
+    // `extends` (single parent, chains allowed): the nearest network.enabled along the chain decides,
+    // and a built-in parent has the network off.
+    {
+      name: "a custom profile inherits its parent's network switch",
+      toml: configToml("proxy", [
+        'default_permissions = "child"',
+        "[permissions.base]",
+        "network = { enabled = true }",
+        "[permissions.child]",
+        'extends = "base"',
+      ]),
+      expected: [{ status: "ok" }],
+    },
+    {
+      name: "a child's own network switch overrides its parent's",
+      toml: configToml("proxy", [
+        'default_permissions = "child"',
+        "[permissions.base]",
+        "network = { enabled = true }",
+        "[permissions.child]",
+        'extends = "base"',
+        "network = { enabled = false }",
+      ]),
+      expected: [{ status: "warn", cites: 'default_permissions = "child"', at: `${CONFIG}:2` }],
+    },
+    {
+      name: "a chain ending in a built-in parent has the network off",
+      toml: configToml("proxy", [
+        'default_permissions = "child"',
+        "[permissions.base]",
+        'extends = ":workspace"',
+        "[permissions.child]",
+        'extends = "base"',
+      ]),
+      expected: [{ status: "warn", cites: 'default_permissions = "child"', at: `${CONFIG}:2` }],
+    },
+    {
+      // The probe value must differ from the file's own value, or a comment look-alike (line 2)
+      // probed first leaves the parse unchanged and gets cited over the assignment (line 3).
+      name: "a value equal to the line probe's sentinel still cites the right line",
+      toml: configToml("proxy", [
+        '# default_permissions = "not-it"',
+        'default_permissions = "copilot-env-line-probe"',
+        "[permissions.copilot-env-line-probe]",
+        "network = { enabled = false }",
+      ]),
+      expected: [{
+        status: "warn",
+        cites: 'default_permissions = "copilot-env-line-probe"',
+        at: `${CONFIG}:3`,
+      }],
+    },
     // Precedence, the reverse of Codex's docs: `codex exec` under legacy workspace-write plus
     // `:read-only` banners "sandbox: read-only", and legacy read-only plus `:danger-full-access`
     // banners "sandbox: danger-full-access" (codex 0.153.4).
@@ -260,6 +312,39 @@ test("health: a launch Codex refuses to start gets no row, whatever the sandbox 
       readOnly,
       "[profiles.other]",
       "sandbox_mode = 1",
+    ], false],
+    // Permission-profile chains Codex refuses: a missing profile or parent, a cycle, a
+    // :danger-full-access parent.
+    ["a selected custom profile with no table", ['default_permissions = "ghost"'], false],
+    ["an unknown parent", [
+      'default_permissions = "child"',
+      "[permissions.child]",
+      'extends = "ghost"',
+    ], false],
+    ["an inheritance cycle", [
+      'default_permissions = "a"',
+      "[permissions.a]",
+      'extends = "b"',
+      "[permissions.b]",
+      'extends = "a"',
+    ], false],
+    ["a :danger-full-access parent", [
+      'default_permissions = "child"',
+      "[permissions.child]",
+      'extends = ":danger-full-access"',
+    ], false],
+    // The chain is validated past the nearest switch, and only :read-only/:workspace are built-in
+    // parents.
+    ["an unknown parent behind the child's own network switch", [
+      'default_permissions = "child"',
+      "[permissions.child]",
+      'extends = "ghost"',
+      "network = { enabled = true }",
+    ], false],
+    ["a misspelled built-in parent", [
+      'default_permissions = "child"',
+      "[permissions.child]",
+      'extends = ":workspce"',
     ], false],
   ];
   for (const [name, top, legacyProfile] of refusedForAll) {

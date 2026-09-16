@@ -967,18 +967,25 @@ export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
   },
 };
 
+/** The throwaway config's selector, NOT the managed id. The table's `auth.command` runs `agent auth
+ *  --get` in the child, and with codex-host off (the default) that child's Codex home is $CODEX_HOME =
+ *  the throwaway home (defaultCodexHome; a live farm record wins over it). Its catalog self-heal
+ *  (src/codex/catalog_reference.ts) adds `model_catalog_json` to, and ledgers, any config there that
+ *  selects the managed provider: the next attempt would then run under the user's catalog, and the
+ *  ledger would keep a path removeScratchDir deletes. A foreign selector is left alone by that
+ *  self-heal's own contract. */
+const CODEX_PROBE_PROVIDER_ID = `${CODEX_PROVIDER_ID}-probe`;
+
 /** The detect probe's throwaway config: the Direct provider table and its selector, nothing else.
  *  The real write's top-level extras (`web_search`, the generated `model_catalog_json`) belong to
  *  the user's wiring, not to Direct, and a catalog file produced under another credential would
- *  colour the verdict. Shares managedDirectProvider, so the table is byte-identical to the real one.
- *  The table's `auth.command` runs `agent auth --get` in the child, whose catalog self-heal
- *  (src/codex/catalog_reference.ts) writes effectiveCodexHome(), never $CODEX_HOME, so it cannot
- *  reach this home. */
+ *  colour the verdict. Shares managedDirectProvider, so the table is byte-identical to the real one. */
 function writeCodexProbeConfig(tmpHome: string, directIntegrationId: string | null): void {
   saveCodexToml(codexConfigPath(tmpHome), {
     ...defaultConfig(),
+    "model_provider": CODEX_PROBE_PROVIDER_ID,
     "model_providers": {
-      [CODEX_PROVIDER_ID]: managedDirectProvider(COMMAND_SHAPE, null, directIntegrationId),
+      [CODEX_PROBE_PROVIDER_ID]: managedDirectProvider(COMMAND_SHAPE, null, directIntegrationId),
     },
   }, "Codex probe config");
 }

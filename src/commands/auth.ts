@@ -31,6 +31,7 @@ import {
   assertProfileSlot,
   CopilotEnvState,
   type ProvisionedCredential,
+  replayableIdentity,
   type StoredCredential,
 } from "../copilot_api/env_state.ts";
 import {
@@ -55,6 +56,7 @@ import {
   type IdentityVerdict,
   INTEGRATION_ID_HEADER,
   type IntegrationIdentity,
+  isPatShapedToken,
   PASSTHROUGH_IDENTITY_CANDIDATES,
   passthroughIdentity,
   pinnedIdentityCandidates,
@@ -1042,11 +1044,20 @@ async function surveyAndTable(
   const directBuiltins = directIdentityCandidates(userAgent);
   const config = new CopilotEnvConfig();
   const configuredHost = config.copilotHost();
-  // Rows: the Direct candidates (the agents' exact bytes) plus the pin and every baked id, then the
-  // proxy's own candidates not already named (the daemon's bytes: the id header alone).
+  // What a named profile's writer does with its slot (replayableIdentity): replay a valid pair, try
+  // a cached identity first, or probe afresh. The default slot's rewire (`agent init`) probes afresh.
+  const rule = profile === null
+    ? { kind: "probe" as const }
+    : replayableIdentity(profile, pinned, configuredHost);
+  const preferredName = rule.kind === "preferred"
+    ? rule.directIntegrationId ?? CODEX_IDENTITY_NAME
+    : null;
+  // Rows: the Direct candidates (the agents' exact bytes) plus the pin, every baked id, and a
+  // preferred cached id, then the proxy's own candidates not already named (the daemon's bytes: the
+  // id header alone).
   const directRows = withExtraCandidates(
     directBuiltins,
-    [pinned, ...bakedDirectSenders(baked).map((s) => s.name)],
+    [pinned, ...bakedDirectSenders(baked).map((s) => s.name), preferredName],
     (id) => directIdentity(userAgent, id),
   );
   const candidates = withExtraCandidates(
@@ -1069,17 +1080,24 @@ async function surveyAndTable(
   const probeColumn = configuredHost === null
     ? generic
     : survey.hosts.find((h) => sameOrigin(h.apiBase, configuredHost)) ?? generic;
-  const fresh = autoIdentityFor(token, {
-    ...probeColumn,
-    verdicts: probeColumn.verdicts.slice(0, directBuiltins.length),
-  });
-  // A named profile's writer replays its slot's verdict only while the cached pair still reads
-  // back for this pin and literal (or no pair exists at all); a stale pair means a fresh probe.
-  const state = new CopilotEnvState();
-  const slot = state.readProfileSlot(profile).integrationIdentity;
-  const slotReplays = slot !== null &&
-    state.readProfileCopilotHostCache(profile, pinned, configuredHost).kind !== "stale";
-  const firstPick = pinned ?? (profile !== null && slotReplays ? slot : fresh);
+  // What the wiring's selection on `column` picks: the built-ins in order, a preferred cached
+  // identity first (resolveDirectIntegrationId's candidate order). A non-PAT credential is never
+  // probed and takes the default whatever the slot cached, so no preference applies to it.
+  const selectionOn = (column: IdentityHostSurvey): string | null => {
+    const ranked = column.verdicts.slice(0, directBuiltins.length);
+    const preferredVerdict = isPatShapedToken(token)
+      ? column.verdicts.find((v) => v.name === preferredName)
+      : undefined;
+    return autoIdentityFor(token, {
+      ...column,
+      verdicts: preferredVerdict === undefined
+        ? ranked
+        : [preferredVerdict, ...ranked.filter((v) => v.name !== preferredName)],
+    }, ranked[0]?.name ?? null);
+  };
+  const fresh = selectionOn(probeColumn);
+  const firstPick = pinned ??
+    (rule.kind === "replay" ? rule.directIntegrationId ?? CODEX_IDENTITY_NAME : fresh);
   // The proxy's pick is the launch resolver's: its own candidates, in their order, on the same
   // host (resolveLaunchCredential), before the host is chosen.
   const proxyNext = proxyPassthrough
@@ -1096,10 +1114,7 @@ async function surveyAndTable(
   const inUseHeaders = firstPick === null
     ? passthroughIdentity(VSCODE_CHAT_INTEGRATION_ID).headers
     : directClientHeaders(userAgent, firstPick === CODEX_IDENTITY_NAME ? null : firstPick);
-  const cachedHost = profile === null
-    ? null
-    : new CopilotEnvState().readProfileCopilotHost(profile, pinned, null);
-  const hostInUse = configuredHost ?? cachedHost ??
+  const hostInUse = configuredHost ?? (rule.kind === "replay" ? rule.directBaseUrl : null) ??
     await resolveCopilotHost(token, inUseHeaders, { narrator: logger });
   const proxyHost = configuredHost ?? await resolveCopilotHost(
     token,
@@ -1111,12 +1126,9 @@ async function surveyAndTable(
   // literal, a profile replaying its cached pair, or a first pick of "nothing" (the wiring throws on
   // the generic host before any move).
   const inUseColumn = survey.hosts.find((h) => sameOrigin(h.apiBase, hostInUse));
-  const nextDirect = pinned === null && configuredHost === null && cachedHost === null &&
+  const nextDirect = pinned === null && configuredHost === null && rule.kind !== "replay" &&
       firstPick !== null && inUseColumn !== undefined && inUseColumn !== generic
-    ? autoIdentityFor(token, {
-      ...inUseColumn,
-      verdicts: inUseColumn.verdicts.slice(0, directBuiltins.length),
-    })
+    ? selectionOn(inUseColumn)
     : firstPick;
   const rewire = profile === null ? "agent init" : `agent profile --add ${profile} --direct`;
   for (
@@ -1208,10 +1220,8 @@ async function pinIdentity(
     // to the account's, any other answer keeps it). A known host is surveyed as the configured
     // column, so it always has a row whatever the account lookup answers.
     const configuredHost = new CopilotEnvConfig().copilotHost();
-    const cached = configuredHost === null
-      ? new CopilotEnvState().readProfileCopilotHostCache(profile, id, null)
-      : { kind: "none" as const };
-    const knownHost = configuredHost ?? (cached.kind === "valid" ? cached.host : null);
+    const rule = replayableIdentity(profile, id, configuredHost);
+    const knownHost = configuredHost ?? (rule.kind === "replay" ? rule.directBaseUrl : null);
     const survey = await surveyIntegrationIdentities(
       token,
       pinnedIdentityCandidates(id, codexUserAgent()),

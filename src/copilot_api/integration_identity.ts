@@ -513,8 +513,13 @@ async function resolveAutoHost(
  *   PAT, none accepted, a blip    -> the default
  *   PAT, every candidate rejected -> null: the mode refuses this credential
  */
-export function autoIdentityFor(token: string, column: IdentityHostSurvey): string | null {
-  const defaultName = column.verdicts[0]?.name ?? null;
+export function autoIdentityFor(
+  token: string,
+  column: IdentityHostSurvey,
+  // The mode's built-in default, the transient fallback: passed when the column's first row is a
+  // preferred cached identity (auth.ts selectionOn), which must never win by fallback.
+  defaultName: string | null = column.verdicts[0]?.name ?? null,
+): string | null {
   if (!isPatShapedToken(token)) return defaultName;
   const accepted = column.verdicts.find((v) => v.verdict.kind === "accepted");
   if (accepted !== undefined) return accepted.name;
@@ -564,6 +569,9 @@ export function identityRejectionHints(): string[] {
 export interface ResolveIdentityOptions extends IdentityProbeDeps {
   /** The `integration-id` config pin, or null to probe. */
   pinned?: string | null;
+  /** A cached identity to try FIRST (replayableIdentity `preferred`, env_state.ts): probe order only,
+   *  never a verdict. `null` names the default identity, already first. */
+  preferred?: string | null;
   /** Callers whose stdout is a contract (`agent auth --get`) pass a stderr logger. */
   narrator?: Pick<ConsolaInstance, "info">;
 }
@@ -601,13 +609,15 @@ export function usePatPassthrough(opts: {
 
 /**
  * THROWS with the real reason when every candidate is definitively rejected (the caller's mode cannot
- * work with this credential); returns the default on an inconclusive result, so a transient failure
+ * work with this credential); returns `fallback` (the mode's default identity, never a preferred
+ * candidate the host may just have rejected) on an inconclusive result, so a transient failure
  * degrades to today's behavior instead of blocking a launch.
  */
 async function acceptedIdentity(
   token: string,
   candidates: readonly [IntegrationIdentity, ...IntegrationIdentity[]],
   deps: IdentityProbeDeps,
+  fallback: IntegrationIdentity = candidates[0],
 ): Promise<IntegrationIdentity> {
   const probe = await probeIntegrationIdentityCached(token, candidates, deps);
   if (probe.identity !== null) return probe.identity;
@@ -615,7 +625,7 @@ async function acceptedIdentity(
     consola.warn(
       "Could not verify the Copilot integration identity (transient error); using the default.",
     );
-    return candidates[0];
+    return fallback;
   }
   throw new Error(
     [
@@ -626,16 +636,22 @@ async function acceptedIdentity(
   );
 }
 
-/** Narrated once, so `agent start`/`init` explain a surprising id. */
+/** Narrated once, so `agent start`/`init` explain a surprising id. A preferred (cached) identity
+ *  accepted first says so: the default was not probed, so nothing about it is claimed. */
 function narrateIdentity(
   chosen: string,
   defaultName: string,
   pinned: boolean,
   narrator: Pick<ConsolaInstance, "info"> = consola,
+  preferred: string | null = null,
 ): void {
   if (pinned) {
     narrator.info(
       `Copilot integration identity: ${chosen} (pinned via \`agent config integration-id\`).`,
+    );
+  } else if (chosen === preferred && chosen !== defaultName) {
+    narrator.info(
+      `Copilot integration identity: ${chosen} (the profile's cached identity, accepted again).`,
     );
   } else if (chosen !== defaultName) {
     narrator.info(
@@ -653,22 +669,39 @@ export async function resolveDirectIntegrationId(
   userAgent: string,
   opts: ResolveIdentityOptions = {},
 ): Promise<string | null> {
-  const { pinned = null, narrator, ...deps } = opts;
+  const { pinned = null, preferred = null, narrator, ...deps } = opts;
   if (pinned !== null) {
     narrateIdentity(pinned, CODEX_IDENTITY_NAME, true, narrator);
     return pinned;
   }
   // Only PATs are rejected by the default identity, so only they justify a probe's network round.
   if (token === null || !isPatShapedToken(token)) return null;
-  const candidates = directIdentityCandidates(userAgent);
-  // Probed on the generic host: the identity comes first, then resolveCopilotHost judges the host
-  // under the accepted identity's headers, so a blocked host never reads as an identity rejection.
+  const builtins = directIdentityCandidates(userAgent);
+  const candidates = preferredFirst(builtins, preferred, userAgent);
+  // Probed on the host the caller passes (the host in use); the first accepted candidate wins, so a
+  // preferred identity the host rejects definitively gives way to the next, and a transient run
+  // falls back to the built-in default, never to the preferred candidate.
   const identity = await acceptedIdentity(token, candidates, {
     ...deps,
     apiBase: deps.apiBase ?? DEFAULT_COPILOT_API_BASE,
-  });
-  narrateIdentity(identity.name, CODEX_IDENTITY_NAME, false, narrator);
+  }, builtins[0]);
+  narrateIdentity(identity.name, CODEX_IDENTITY_NAME, false, narrator, preferred);
   return bakedIntegrationId(identity);
+}
+
+/** `preferred` moved to the front (added when it is not a built-in); the default identity is
+ *  already first, so `null` changes nothing. */
+function preferredFirst(
+  builtins: readonly [IntegrationIdentity, ...IntegrationIdentity[]],
+  preferred: string | null,
+  userAgent: string,
+): readonly [IntegrationIdentity, ...IntegrationIdentity[]] {
+  if (preferred === null) return builtins;
+  const rest = builtins.filter((c) => c.name !== preferred);
+  return [
+    builtins.find((c) => c.name === preferred) ?? directIdentity(userAgent, preferred),
+    ...rest,
+  ];
 }
 
 /** Always returns an id (the proxy sends one); `agent start` only overrides the daemon default when it

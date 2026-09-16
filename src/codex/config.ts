@@ -872,48 +872,38 @@ export async function applyCodexConfig(
   if (profile === null) syncCodexCatalogReference(catalogDeps);
 }
 
-/** The Direct facts a write bakes, resolved ONCE: the `integration-id` pin, else a live probe, then
- *  the `copilot-host` literal, else the host probe under that identity (integration_identity.ts).
- *  Throws when the credential is rejected under every known identity.
+/** The Direct facts a write bakes, resolved ONCE on the host in use: the `integration-id` pin, else
+ *  identity selection on that host (a `preferred` cached identity tried first, never taken on trust;
+ *  a definitive 400/401 moves on), then the `copilot-host` literal, else the host probe under that
+ *  identity; a host `auto` moves to re-runs the selection there. Throws when the credential is
+ *  rejected under every known identity.
  *
  *  Claude           -> the result rides in ANTHROPIC_BASE_URL + ANTHROPIC_CUSTOM_HEADERS
  *  Codex            -> the same result rides in base_url + http_headers
- *  `token` supplied -> skips a redundant credential resolve
- *  `known` supplied -> the identity a slot replays (profile_wiring.ts): only the host is probed */
+ *  `token` supplied -> skips a redundant credential resolve */
 export async function probeDirectWiring(
   profile: Profile = null,
   token?: string | null,
-  known?: { directIntegrationId: string | null },
+  preferred: string | null = null,
 ): Promise<DirectWiring> {
   const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
   const config = new CopilotEnvConfig();
   const userAgent = codexUserAgent();
-  // A literal skips the HOST probe, never the identity probe, which runs on the one host in use.
   const literal = config.copilotHost();
-  const directIntegrationId = known !== undefined
-    ? known.directIntegrationId
-    : await resolveDirectIntegrationId(resolved, userAgent, {
-      pinned: config.pinnedIntegrationId(),
-      apiBase: literal ?? DEFAULT_COPILOT_API_BASE,
-    });
+  const pinned = config.pinnedIntegrationId();
+  const identityOn = (apiBase: string): Promise<string | null> =>
+    resolveDirectIntegrationId(resolved, userAgent, { pinned, preferred, apiBase });
+  // A literal skips the HOST probe, never the identity selection, which runs on the host in use.
+  const directIntegrationId = await identityOn(literal ?? DEFAULT_COPILOT_API_BASE);
   const directBaseUrl = await resolveCopilotHost(
     resolved,
     directClientHeaders(userAgent, directIntegrationId),
     { literal },
   );
-  // Under `auto`, a blocked generic host leaves the identity probe inconclusive (its default) and a
-  // replayed slot verdict was probed there too, so a PAT is probed again where the account is served:
-  // that host is where the identity must be accepted.
-  if (
-    literal === null && config.pinnedIntegrationId() === null &&
-    directBaseUrl !== DEFAULT_COPILOT_API_BASE
-  ) {
-    return {
-      directIntegrationId: await resolveDirectIntegrationId(resolved, userAgent, {
-        apiBase: directBaseUrl,
-      }),
-      directBaseUrl,
-    };
+  // Under `auto`, a blocked generic host leaves the selection inconclusive (its first candidate), so
+  // a PAT is selected again where the account is served: that host is where it must be accepted.
+  if (literal === null && pinned === null && directBaseUrl !== DEFAULT_COPILOT_API_BASE) {
+    return { directIntegrationId: await identityOn(directBaseUrl), directBaseUrl };
   }
   return { directIntegrationId, directBaseUrl };
 }

@@ -9,6 +9,7 @@ import {
   CopilotEnvState,
   type ProfileMode,
   type ProvisionedCredential,
+  replayableIdentity,
   type StoredCredential,
 } from "../copilot_api/env_state.ts";
 import { CODEX_IDENTITY_NAME } from "../copilot_api/env_config.ts";
@@ -67,16 +68,12 @@ export async function wireBothAgents(
 
 /**
  * The Direct facts to bake for `profile` (null = the default slot): the client identity and the
- * Copilot host. Throws when the credential is rejected under every identity.
- *
- *   config pin / `copilot-host` literal -> persisted slot verdict -> fresh probe, persisted only
- *   when it can be keyed to the credential it ran under (identityCacheKey)
- *
- * The launcher hot path (`--sync` on every `cl --profile`) thus replays the stored pair offline; a
- * credential change clears the slot (CopilotEnvState.setCredential). The pair is one verdict: an
- * identity accepted on one host says nothing about another, so a pair that no longer reads back
- * (the literal changed or went away, a pin names another identity) re-probes BOTH; a slot holding
- * only an identity (imported, or cached before hosts were) probes the host under it.
+ * Copilot host, through THE replay rule (replayableIdentity, env_state.ts): a valid cached pair is
+ * baked offline (the launcher hot path, `--sync` on every `cl --profile`); anything else is a probe
+ * on the host in use, with a cached identity as the first candidate only. The result is persisted
+ * when it can be keyed to the credential it ran under (identityCacheKey); a credential change
+ * clears the slot (CopilotEnvState.setCredential). Throws when the credential is rejected under
+ * every identity.
  */
 export async function resolveAndPersistDirectWiring(
   profile: Profile,
@@ -85,27 +82,16 @@ export async function resolveAndPersistDirectWiring(
   const config = new CopilotEnvConfig();
   const state = new CopilotEnvState();
   const slot = state.readProfileSlot(profile);
-  // The slot stores the identity NAME, not the header value, so "probed, the default won"
-  // (CODEX_IDENTITY_NAME) is distinguishable from "never probed" (null). Only a named
-  // integration is a real header; the default sends none.
-  const cachedIdentity = slot.integrationIdentity === null
-    ? undefined
-    : slot.integrationIdentity === CODEX_IDENTITY_NAME
-    ? null
-    : slot.integrationIdentity;
   const pin = config.pinnedIntegrationId();
   const literal = config.copilotHost();
-  // The cached pair reads back only under the identity and host in force; a stale pair is another
-  // host's verdict, so its identity is not replayed either (readProfileCopilotHostCache).
-  const cache = state.readProfileCopilotHostCache(profile, pin, literal);
-  const directIntegrationId = pin ?? (cache.kind === "stale" ? undefined : cachedIdentity);
-  if (directIntegrationId !== undefined && cache.kind === "valid") {
-    return { directIntegrationId, directBaseUrl: cache.host };
+  const rule = replayableIdentity(profile, pin, literal);
+  if (rule.kind === "replay") {
+    return { directIntegrationId: rule.directIntegrationId, directBaseUrl: rule.directBaseUrl };
   }
   const probed = await probeDirectWiring(
     profile,
     credentialToken,
-    directIntegrationId === undefined ? undefined : { directIntegrationId },
+    rule.kind === "preferred" ? rule.directIntegrationId : null,
   );
   // Keyed to the credential the probe ACTUALLY ran under; null means the two cannot be tied. A pin
   // is configuration, never written as the verdict (the slot keeps what it held, so `--identity

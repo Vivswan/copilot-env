@@ -2,8 +2,12 @@
 // --check` and the health engine share these lines and repair commands so the two cannot disagree.
 import { basename, join } from "node:path";
 import type { CredentialWiring, ManagedMode } from "../agents/configure.ts";
-import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotEnvState, expectedDirectHost, type ProfileMode } from "../copilot_api/env_state.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import {
+  expectedDirectHost,
+  type ProfileMode,
+  replayableIdentity,
+} from "../copilot_api/env_state.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
   INTEGRATION_ID_HEADER,
@@ -291,15 +295,17 @@ function expectedDirectGateway(profile: Profile, gateway: unknown): string {
       : DEFAULT_COPILOT_API_BASE);
 }
 
-/** The identity a rewire would bake, without probing:
- *    config pin -> the slot's persisted verdict (the replay every rewire uses)
- *    -> the header the document already carries (never probed yet) */
+/** The identity a rewire would bake without probing (replayableIdentity): the config pin, else the
+ *  slot's valid cached pair; anything else a rewire probes, so the header the document already
+ *  carries stands as expected. */
 function expectedIntegrationId(profile: Profile, doc: Record<string, unknown>): string | null {
-  const pin = new CopilotEnvConfig().pinnedIntegrationId();
+  const config = new CopilotEnvConfig();
+  const pin = config.pinnedIntegrationId();
   if (pin !== null) return pin;
-  const slot = new CopilotEnvState().readProfileSlot(profile).integrationIdentity;
-  if (slot !== null) return slot === CODEX_IDENTITY_NAME ? null : slot;
-  return recordedHeader(doc, INTEGRATION_ID_HEADER);
+  const rule = replayableIdentity(profile, null, config.copilotHost());
+  return rule.kind === "replay"
+    ? rule.directIntegrationId
+    : recordedHeader(doc, INTEGRATION_ID_HEADER);
 }
 
 function recordedHeader(doc: Record<string, unknown>, name: string): string | null {

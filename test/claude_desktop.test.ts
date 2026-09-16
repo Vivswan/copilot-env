@@ -463,17 +463,14 @@ test("fresh upsert: config + meta entry + appliedId only when the library had no
   expect(statSync(join(library, "_meta.json")).mtimeMs).toBe(metaM);
 });
 
-test("offline direct: a FRESH entry is never created; an owned entry keeps its rows", async () => {
+test("no live model data: a fresh or foreign direct entry is never written; an owned one keeps its last derived rows", async () => {
   const { library } = isolateWithDesktop();
   mkdirSync(library, { recursive: true });
-  writeFileSync(
-    join(library, "user-1.json"),
-    `${JSON.stringify({ "inferenceGatewayBaseUrl": "https://elsewhere.example" })}\n`,
-  );
-  writeFileSync(
-    join(library, "_meta.json"),
-    `${JSON.stringify({ appliedId: "user-1", entries: [{ id: "user-1", name: "Mine" }] })}\n`,
-  );
+  // The user's applied entry at another gateway.
+  const elsewhere = { "inferenceGatewayBaseUrl": "https://elsewhere.example" };
+  writeFileSync(join(library, "user-1.json"), `${JSON.stringify(elsewhere)}\n`);
+  const userOnly = { appliedId: "user-1", entries: [{ id: "user-1", name: "Mine" }] };
+  writeFileSync(join(library, "_meta.json"), `${JSON.stringify(userOnly)}\n`);
   const offline = {
     profile: null,
     mode: "direct" as const,
@@ -483,47 +480,85 @@ test("offline direct: a FRESH entry is never created; an owned entry keeps its r
     quiet: false,
     fetchImpl: () => Promise.reject(new Error("offline")),
   };
-  // Fresh + no model data: a direct entry would have neither discovery nor a
-  // picker -- nothing is created, the user's applied entry is never displaced.
+  // No rows to derive: a direct entry would have neither discovery nor a picker, so no fresh one
+  // is created and the user's applied entry is not displaced.
   await wireClaudeDesktopEntry(offline);
-  let meta = metaOf(library);
-  expect(meta.appliedId).toBe("user-1");
-  expect(meta.entries as unknown[]).toHaveLength(1);
+  expect(metaOf(library)).toEqual(userOnly);
 
-  // An OWNED entry wired online first keeps its recorded rows through an
-  // offline re-wire (no hardcoded fallback list exists to clobber them).
+  // A foreign entry at OUR gateway carrying hand rows: adoptable, yet not offline either.
+  const handDoc = {
+    "inferenceGatewayBaseUrl": DEFAULT_COPILOT_API_BASE,
+    "inferenceModels": [{ "name": "claude-hand-1", "labelOverride": "Hand" }],
+  };
+  const handPath = join(library, "hand-1.json");
+  writeFileSync(handPath, `${JSON.stringify(handDoc)}\n`);
+  const meta = { ...userOnly, entries: [...userOnly.entries, { id: "hand-1", name: "Hand" }] };
+  writeFileSync(join(library, "_meta.json"), `${JSON.stringify(meta)}\n`);
+  await wireClaudeDesktopEntry(offline);
+  expect(metaOf(library)).toEqual(meta);
+  expect(readJson(handPath)).toEqual(handDoc);
+  expect(new OwnershipLedger().owns("claudeDesktop", handPath)).toBe(false);
+
+  // Online: the same-gateway entry is adopted and its hand rows give way to the catalog's.
   await wireClaudeDesktopEntry({ ...offline, fetchImpl: catalogFetch(CATALOG) });
-  meta = metaOf(library);
-  const ours = (meta.entries as { id: string; name: string }[]).find(
-    (e) => e.name === "copilot-env",
-  );
-  const wired = readJson(join(library, `${ours?.id}.json`))["inferenceModels"];
-  expect(wired).toHaveLength(3); // catalog-derived, so the survival check below is non-vacuous
+  const wired = readJson(handPath)["inferenceModels"] as { name: string }[];
+  expect(wired.map((m) => m.name).sort()).toEqual([
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-opus-5",
+  ]);
 
+  // Offline again, now OWNED: the recorded rows stand in WHOLE (names, labels, 1m flags), a
+  // hand-blanked label healing from its id (the app would show a blank Display name).
+  const blanked = readJson(handPath);
+  blanked["inferenceModels"] = wired.map((m) =>
+    m.name === "claude-fable-5" ? { ...m, "labelOverride": "" } : m
+  );
+  writeFileSync(handPath, `${JSON.stringify(blanked, null, 2)}\n`);
   await wireClaudeDesktopEntry(offline);
-  // The WHOLE rows survive -- a clobber that keeps the names but blanks the
-  // labels or flips the 1m flags must fail here, not just an emptied list.
-  expect(readJson(join(library, `${ours?.id}.json`))["inferenceModels"]).toEqual(wired);
-  // The foreign entry is untouched (different gateway: not adoptable).
-  expect(readJson(join(library, "user-1.json"))).toEqual({
-    "inferenceGatewayBaseUrl": "https://elsewhere.example",
-  });
+  expect(readJson(handPath)["inferenceModels"]).toEqual(wired);
+  // The entry at another gateway is untouched throughout (not adoptable).
+  expect(readJson(join(library, "user-1.json"))).toEqual(elsewhere);
 });
 
-test("a quiet wire never discovers: fresh direct entries are skipped outright", async () => {
+test("the quiet wire derives the rows from the catalog too: a hand-edited row in an owned entry gives way", async () => {
   const { library } = isolateWithDesktop();
-  await wireClaudeDesktopEntry({
-    profile: null,
-    mode: "direct",
-    directIntegrationId: null,
-    credential: COMMAND,
-    directToken: "ghu_x",
-    quiet: true,
-    fetchImpl: () => Promise.reject(new Error("quiet must not fetch")),
+  const quiet = (catalog: typeof CATALOG) =>
+    wireClaudeDesktopEntry({ ...directWire(), quiet: true, fetchImpl: catalogFetch(catalog) });
+  // A fresh direct entry lands on the quiet path: it pays the same derivation as init.
+  await quiet(CATALOG);
+  const configPath = firstEntryPath(library);
+  const doc = readJson(configPath);
+  const rows = doc["inferenceModels"] as Record<string, unknown>[];
+  // Hand edits in Desktop's config editor: a renamed label, a 1m flag turned off, a row added.
+  doc["inferenceModels"] = [
+    ...rows.map((m) =>
+      m["name"] === "claude-fable-5" ? { ...m, "labelOverride": "Mine", "supports1m": false } : m
+    ),
+    {
+      "name": "claude-hand-9",
+      "labelOverride": "Hand",
+      "supports1m": true,
+      "prefer1m": true,
+      "anthropicFamilyTier": "hand",
+      "isFamilyDefault": true,
+    },
+  ];
+  writeFileSync(configPath, `${JSON.stringify(doc, null, 2)}\n`);
+  // The catalog moved on meanwhile (opus-4-8 retired): the quiet pass writes the catalog's list,
+  // not the file's, so every hand edit is gone and the retired model with it.
+  await quiet(CATALOG.filter((m) => m.id !== "claude-opus-4-8"));
+  const derived = readJson(configPath)["inferenceModels"] as {
+    name: string;
+    labelOverride: string;
+    supports1m: boolean;
+  }[];
+  expect(derived.map((m) => m.name).sort()).toEqual(["claude-fable-5", "claude-opus-5"]);
+  expect(derived.find((m) => m.name === "claude-fable-5")).toEqual({
+    ...rows.find((m) => m["name"] === "claude-fable-5"),
+    "labelOverride": "Claude Fable 5",
+    "supports1m": true,
   });
-  // No files at all: the quiet path may not pay discovery, and a fresh direct
-  // entry without model data is unusable, so nothing was written.
-  expect(existsSync(join(library, "_meta.json"))).toBe(false);
 });
 
 test("a blocked removal (malformed _meta.json) keeps the helper scripts", async () => {
@@ -841,47 +876,6 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
     existing: doc,
   });
   expect(proxy["inferenceCustomHeaders"]).toEqual({ "X-Custom": "keep" });
-});
-
-test("quiet re-wire heals rows recorded without labels (no catalog fetch)", async () => {
-  const { library } = isolateWithDesktop();
-  await wireClaudeDesktopEntry({
-    profile: null,
-    mode: "direct",
-    directIntegrationId: null,
-    credential: COMMAND,
-    directToken: "ghu_x",
-    quiet: false,
-    fetchImpl: catalogFetch(CATALOG),
-  });
-  const meta = metaOf(library);
-  const id = (meta.entries as { id: string }[])[0]?.id;
-  const configPath = join(library, `${id}.json`);
-  // Strip the labels, as a pre-label release would have recorded the rows.
-  const doc = readJson(configPath);
-  doc.inferenceModels = (doc.inferenceModels as Record<string, unknown>[]).map((m) => {
-    const { labelOverride: _l, ...rest } = m;
-    return rest;
-  });
-  writeFileSync(configPath, `${JSON.stringify(doc, null, 2)}\n`);
-  // Quiet + owned: rows are reused (the fetchImpl would throw if fetched) and healed.
-  await wireClaudeDesktopEntry({
-    profile: null,
-    mode: "direct",
-    directIntegrationId: null,
-    credential: COMMAND,
-    directToken: "ghu_x",
-    quiet: true,
-    fetchImpl: () => Promise.reject(new Error("must not fetch on the quiet path")),
-  });
-  const healed = readJson(configPath).inferenceModels as { name: string; labelOverride: string }[];
-  expect(healed.find((m) => m.name === "claude-fable-5")?.labelOverride).toBe("Claude Fable 5");
-  expect(healed.every((m) => typeof m.labelOverride === "string" && m.labelOverride !== "")).toBe(
-    true,
-  );
-  // The recorded rows were REUSED, not refetched: opus-4-8 exists only in the
-  // recorded catalog rows, and the fetchImpl would have rejected.
-  expect(healed.some((m) => m.name === "claude-opus-4-8")).toBe(true);
 });
 
 // --- the `claude-desktop` key: reconcile, status, dry-run listing -----------------------
@@ -1251,7 +1245,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   expect(rendered.lines).toEqual(["settings.json junk; the Desktop entries were not judged"]);
   expect(rendered.fix).toBe("fix the cause named above, then re-run `agent claude`");
 
-  // Stale: a managed key drifted, then the same bytes a quiet rewire would rewrite
+  // Stale: a managed key drifted, then the same bytes an offline rewire would rewrite
   // (compact JSON), then a direct entry lost its model rows (an empty picker is not wired).
   const doc = readJson(configPath);
   const drifted = { ...doc, "deploymentDisplayName": "Mine" };
@@ -1809,26 +1803,32 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
   new CopilotEnvConfig().set({ claudeDesktop: false });
   await captureAllWrites(() => runProfile({ sync: true, mode: "auto" }));
   expect(names()).toEqual(["copilot-env"]);
-  // ... and with the key on, the launcher hot path never runs model discovery: a proxy
-  // profile's reconcile issues no catalog fetch (the global fetch would throw here).
+  // ... and with the key on, `--sync` (the launcher's quiet path) derives a profile's rows from
+  // the catalog like every other pass: the proxy profile's entry lands with the catalog's Claude
+  // models, and the quiet pass still says nothing.
   new CopilotEnvConfig().del("claudeDesktop");
   new CopilotEnvState().commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "proxy",
   });
   const realFetch = globalThis.fetch;
-  globalThis.fetch = () => {
-    throw new Error("discovery ran on the hot path");
-  };
+  globalThis.fetch = catalogFetch(CATALOG);
   let synced = "";
   try {
     synced = await captureAllWrites(() => runProfile({ sync: true, mode: "auto" }));
   } finally {
     globalThis.fetch = realFetch;
   }
-  expect(synced).not.toContain("discovery ran on the hot path");
-  expect(synced).not.toContain("Claude Desktop is ready"); // the quiet pass says nothing
+  expect(synced).not.toContain("Claude Desktop is ready");
   expect(names()).toEqual(["copilot-env", "copilot-env: work"]);
+  const workRows = readJson(entryPathNamed(library, "copilot-env: work"))["inferenceModels"] as {
+    name: string;
+  }[];
+  expect(workRows.map((m) => m.name).sort()).toEqual([
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-opus-5",
+  ]);
   new CopilotEnvState().deleteProfile(WORK);
   removeAllClaudeDesktopWiring();
   // ... nor an identity probe for a DIRECT profile whose identity cache is empty: the

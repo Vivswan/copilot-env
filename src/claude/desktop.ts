@@ -434,9 +434,10 @@ export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string
       else doc["inferenceCustomHeaders"] = stripped;
     }
   }
-  // No live rows (an offline wire): the entry keeps whatever it carries; a fresh offline entry has
-  // none until the first online wire.
-  if (opts.models !== undefined) {
+  // The rows are exactly the list the caller derived, never the document's own: a row inherited
+  // from the file would be a decision this wiring never made.
+  if (opts.models === undefined) delete doc["inferenceModels"];
+  else {
     doc["inferenceModels"] = opts.models.map((m) => ({
       "name": m.name,
       "labelOverride": m.labelOverride,
@@ -612,6 +613,7 @@ export type DesktopWireOptions = ManagedWrite & {
   profile: Profile;
   /** Direct only: credential for the catalog fetch (never re-resolved when given). */
   directToken?: string | null;
+  /** The launcher hot path: silences the no-op and adoption lines, skips no step. */
   quiet?: boolean;
   /** Test seam, threaded to fetchRawModels. */
   fetchImpl?: ProbeFetch;
@@ -634,8 +636,8 @@ function labelLookup(body: unknown): (id: string) => string | null {
 }
 
 /**
- * Undefined when no live data exists: the caller then leaves an existing entry's rows untouched and
- * refuses to create a fresh direct one. Each mode shows what its own backend will actually serve.
+ * Undefined when no live data exists (each failed source warned already); the caller decides what
+ * stands in. Each mode shows what its own backend will actually serve.
  *   direct -> the full discovery pipeline (src/copilot_api/discovery.ts) under the wiring's own
  *             identity, so unadvertised-but-servable models get a PROBED 1m verdict
  *   proxy  -> what the daemon's /v1/models will discover: its catalog first, Copilot when down
@@ -682,9 +684,6 @@ async function wiringModels(
       }
     }
   }
-  logger.warn(
-    "  Claude Desktop: no live model data; leaving the entry's model rows as they are.",
-  );
   return undefined;
 }
 
@@ -775,17 +774,24 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     }
   }
 
-  // The launcher hot path (quiet) must NEVER run discovery: its probes are billed requests. It
-  // reuses the recorded rows; init, profile-add, and `agent claude` refresh live.
-  const models = opts.quiet
-    ? (owned ? recordedModelRows(existing) ?? undefined : undefined)
-    : await wiringModels(opts);
-
-  // A FRESH direct entry without model data would have neither discovery (Copilot 404s /v1/models)
-  // nor a picker, so it is not created at all; an existing entry keeps its recorded rows.
-  if (created && opts.mode === "direct" && models === undefined) {
+  // Live on EVERY pass, the launcher's quiet one included, so a row hand-edited in Desktop's config
+  // editor lasts only until the next pass the catalog answers. The billed probes stay bounded by
+  // discovery's own per-day verdict cache (src/copilot_api/discovery.ts).
+  const live = await wiringModels(opts);
+  // No live data: an OWNED entry's recorded rows are the last list this wiring derived, so they
+  // stand in; a foreign entry's rows never do.
+  const models = live ?? (owned ? recordedModelRows(existing) ?? undefined : undefined);
+  if (live === undefined && models !== undefined) {
     logger.warn(
-      "  Claude Desktop: no model data available; not creating an unusable direct entry (re-run online).",
+      "  Claude Desktop: no live model data; keeping the entry's last derived model rows.",
+    );
+  }
+
+  // A direct entry without model data would have neither discovery (Copilot 404s /v1/models) nor a
+  // picker, so a fresh or adoptable one is not written at all; an owned one stays current.
+  if (!owned && opts.mode === "direct" && models === undefined) {
+    logger.warn(
+      "  Claude Desktop: no model data available; not writing an unusable direct entry (re-run online).",
     );
     return;
   }
@@ -843,7 +849,8 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   wireClaudeDesktopAppFiles();
 }
 
-/** The entry's recorded inferenceModels rows when they are OUR shape, else null (fetch). */
+/** The rows an entry recorded when they are OUR shape, else null: the offline stand-in for an owned
+ *  entry, and the inspector's picture of what such a rewire would write. */
 export function recordedModelRows(existing: Record<string, unknown>): DesktopModelSpec[] | null {
   const rows = existing["inferenceModels"];
   if (!Array.isArray(rows) || rows.length === 0) return null;
@@ -852,7 +859,7 @@ export function recordedModelRows(existing: Record<string, unknown>): DesktopMod
     if (!isRecord(row) || typeof row.name !== "string") return null;
     parsed.push({
       name: row.name,
-      // Rows written before labels existed heal on the quiet path too.
+      // A blank label shows a blank Display name in the app's editor.
       labelOverride: typeof row.labelOverride === "string" && row.labelOverride !== ""
         ? row.labelOverride
         : desktopModelLabel(row.name),

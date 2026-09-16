@@ -210,8 +210,14 @@ function entryVerdict(
   }
   const recordedCredential = expectedCredential(doc, target, rootHome, credential);
   if ("stale" in recordedCredential) return stale(recordedCredential.stale);
-  // Wired means the QUIET rewire (recorded rows, the replayed identity, the live codex User-Agent,
-  // no probe) would be a byte-identical no-op: the same bytes saveJsonIfChanged compares.
+  // An empty picker is judged before the byte compare, whose offline rewrite would drop the key.
+  const rows = recordedModelRows(doc);
+  if (target.mode === "direct" && rows === null) {
+    return stale("no model rows (re-run `agent claude` online)");
+  }
+  // Wired means the OFFLINE rewire (recorded rows, the replayed identity, the live codex
+  // User-Agent, no probe) would be a byte-identical no-op: the same bytes saveJsonIfChanged
+  // compares. Whether the rows still match the catalog is a live question no read-only judge asks.
   const write: ManagedMode = target.mode === "direct"
     ? { mode: "direct", directIntegrationId: expectedIntegrationId(target.profile, doc) }
     : { mode: "proxy" };
@@ -220,15 +226,11 @@ function entryVerdict(
     profile: target.profile,
     baseUrl: expectedBase,
     credential: recordedCredential,
-    models: recordedModelRows(doc) ?? undefined,
+    models: rows ?? undefined,
     existing: doc,
   });
   if (`${JSON.stringify(rewrite, null, 2)}\n` !== raw) {
     return stale("the managed keys drifted (a rewire would change the entry)");
-  }
-  const rows = doc["inferenceModels"];
-  if (target.mode === "direct" && (!Array.isArray(rows) || rows.length === 0)) {
-    return stale("no model rows (re-run `agent claude` online)");
   }
   return { kind: "wired", path };
 }

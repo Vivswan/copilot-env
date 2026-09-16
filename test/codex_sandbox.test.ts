@@ -8,6 +8,7 @@ import { parse, stringify } from "smol-toml";
 import { providerModeExitCode } from "../src/agents/provider_mode.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { configureCodexConfig, runCodex } from "../src/codex/config.ts";
+import { proxyAuthBlockedBySandbox, readCodexSandboxMode } from "../src/codex/sandbox.ts";
 import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { evaluateAll } from "../src/health/checks.ts";
@@ -121,8 +122,9 @@ test("health: the sandbox that blocks proxy auth is named with its line; open or
         status: "warn",
         at: `${CONFIG}:2`,
         fix: `set sandbox_mode = "workspace-write" and ${toggleFixBare} in ${CONFIG}, or bake` +
-          " the credential with `agent config --set static-key true` (no token command runs" +
-          " inside the sandbox), or switch Codex to Direct with `agent codex --direct`",
+          " the credential with `agent config --set static-key true` then `agent codex --proxy`" +
+          " (no token command runs inside the sandbox), or switch Codex to Direct with" +
+          " `agent codex --direct`",
       }],
     },
     {
@@ -461,6 +463,22 @@ test("health: a launch Codex refuses to start gets no row, whatever the sandbox 
   // plain codex is judged, the named launch is not.
   const rows = await sandboxRows(configToml("proxy", [readOnly], { legacyProfile: true }));
   expect(rows.map((r) => [r.profile, r.status])).toEqual([[null, "warn"]]);
+});
+
+test("a named launch's fix rewires through agent profile, never agent codex", () => {
+  // A named profile's tables are written by `agent profile --add` (mode sticky; profileAddFix),
+  // so both the static-key rewire and the Direct switch must address it there: `agent codex`
+  // would rewire the default's tables. Pinned on the wording function itself: on current Codex a
+  // named launch is judged only through the v1 `[profiles.<name>]` table, which also refuses it
+  // (codexRefusesLaunch), so no health path reaches this line until the v2 profile files land.
+  const reading = readCodexSandboxMode('sandbox_mode = "read-only"\n');
+  if (reading === null) throw new Error("expected a reading");
+  expect(proxyAuthBlockedBySandbox(reading, CONFIG, P)?.fix).toBe(
+    `set sandbox_mode = "workspace-write" and network_access = true under` +
+      ` [sandbox_workspace_write] in ${CONFIG}, or bake the credential with` +
+      " `agent config --set static-key true` then `agent profile --add work` (no token command" +
+      " runs inside the sandbox), or switch Codex to Direct with `agent profile --add work --direct`",
+  );
 });
 
 test("agent codex --check says where a read-only sandbox blocks proxy auth, and leaves the line alone", async () => {

@@ -265,11 +265,16 @@ function legacyRepairs(
   ];
 }
 
-/** The static-key route (`agent config --set static-key true`): the credential rides in the config
- *  and no command runs inside the sandbox, so the sandbox stops mattering for proxy auth; the
- *  reader gives a static bearer no row (runsSandboxedProxyAuth). */
-const STATIC_KEY_ROUTE =
-  "bake the credential with `agent config --set static-key true` (no token command runs inside the sandbox)";
+/** The static-key route: the credential rides in the config and no command runs inside the
+ *  sandbox, so the sandbox stops mattering for proxy auth (the reader gives a static bearer no
+ *  row, runsSandboxedProxyAuth). The key applies only at the next wiring (its applyHint in
+ *  env_config.ts), so the route names that rewire: the default's `agent codex --proxy`, a named
+ *  profile's `agent profile --add <name>` (its mode is sticky). */
+function staticKeyRoute(launch: Profile): string {
+  const rewire = launch === null ? "agent codex --proxy" : `agent profile --add ${launch}`;
+  return "bake the credential with `agent config --set static-key true` then " +
+    `\`${rewire}\` (no token command runs inside the sandbox)`;
+}
 
 /** The warning both surfaces print for a launch that runsSandboxedProxyAuth and whose sandbox
  *  blocks that command; null when the network is open to it. The three routes come in the order
@@ -313,6 +318,8 @@ export function proxyAuthBlockedBySandbox(
     detail: `${
       describeCodexSandboxMode(reading, configPath)
     } blocks the proxy auth command (Codex runs it inside the sandbox, and ${why})`,
-    fix: `${setting}, or ${STATIC_KEY_ROUTE}, or switch Codex to Direct with \`${directSwitch}\``,
+    fix: `${setting}, or ${
+      staticKeyRoute(launch)
+    }, or switch Codex to Direct with \`${directSwitch}\``,
   };
 }

@@ -798,7 +798,11 @@ function verdictCell(verdict: IdentityVerdict | undefined, inEffect: boolean): s
     detail.startsWith("network error") ? "network error" : detail.split(" ")[0] ?? "";
   switch (verdict.kind) {
     case "accepted":
-      return `accepted${verdict.models === null ? "" : ` (${verdict.models} models)`}${mark}`;
+      return `accepted${
+        verdict.models === null
+          ? ""
+          : ` (${verdict.models} ${verdict.models === 1 ? "model" : "models"})`
+      }${mark}`;
     case "rejected":
       return `rejected (${tag(verdict.detail)})${mark}`;
     case "inconclusive":

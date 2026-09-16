@@ -83,7 +83,7 @@ Other Codex consumers sharing `~/.codex`, such as an IDE extension's own codex-c
 agent config --set codex-host true    # false removes the farm again
 ```
 
-- `agent init` / `agent codex` build the farm when the key is on, and remove it when it is off.
+- What builds the farm, what it holds, and what removes it are in the [write list](getting-started.md#what-a-wiring-pass-writes).
 - `agent env` exports `CODEX_HOME` only while a wiring pass has built and activated the farm and the key is not off.
 - `agent codex --check` / `agent health` report any drift between the key and the disk.
 
@@ -102,17 +102,16 @@ agent config --set codex-host true    # false removes the farm again
 
 One exception: a configuration you applied in the app yourself stays applied, since a wire never displaces it. `agent claude --check` names it, and the switch is `Developer > Configure Third-Party Inference...`.
 
-| Written                                                                                               | Why                                                                                                                                                                                  |
-| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `Claude-3p/configLibrary/<uuid>.json` + `_meta.json`                                                  | the gateway config: provider `gateway`, credential from a helper script, the model list (first row = default model, newest of the most capable family), the `copilot-env` MCP server |
-| `"deploymentMode": "3p"` in `Claude-3p/claude_desktop_config.json`                                    | the app boots third-party instead of asking "Continue with Gateway" or "sign in with Claude.ai"; other keys in the file are kept                                                     |
-| `{"allowDevTools": true}` in `Claude/developer_settings.json` and `Claude-3p/developer_settings.json` | the Developer menu, where saved entries are switched (`Developer > Configure Third-Party Inference...`)                                                                              |
+| Setting                                             | Why                                                                                                                                                              |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the gateway entry, one per wired default or profile | provider `gateway`, credential from a helper script, the model list (first row = default model, newest of the most capable family), the `copilot-env` MCP server |
+| `"deploymentMode": "3p"`                            | the app boots third-party instead of asking "Continue with Gateway" or "sign in with Claude.ai"; other keys in the file are kept                                 |
+| `{"allowDevTools": true}`                           | the Developer menu, where saved entries are switched (`Developer > Configure Third-Party Inference...`)                                                          |
 
-Where the two directories sit on each platform is in the [wiring write list](getting-started.md#what-a-wiring-pass-writes).
+The files these land in, what writes and removes them, and where they sit on each platform are in the [wiring write list](getting-started.md#what-a-wiring-pass-writes).
 
-- **On:** every managed Claude write keeps a matching entry in Claude Desktop's config library, for the default and every profile, while the app is installed. The pass ends with `Claude Desktop is ready to use.` once the default entry is wired, applied, and the app boots third-party.
-- **Off:** the same writes remove the profile entries and their credential-helper scripts. The default entry stays in place as yours, named once and never rewritten; only `agent uninstall` removes it. The two app files are never removed.
-- **Always:** every file created, rewritten, or removed is printed.
+- **On:** a wiring pass ends with `Claude Desktop is ready to use.` once the default entry is wired, applied, and the app boots third-party; which passes write what is in the [write list](getting-started.md#what-a-wiring-pass-writes).
+- **Off:** the default entry stays in place as yours, named once and never rewritten; only `agent uninstall` removes it. What the same writes remove is in the [write list](getting-started.md#what-a-wiring-pass-writes).
 - **Drift:** `agent claude --check` and `agent health` report an entry missing or stale with the key on, profile entries left behind after turning it off, which entry the app applies, and whether it will show the sign-in chooser or lacks the Developer menu.
 
 ## Shell

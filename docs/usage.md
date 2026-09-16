@@ -111,7 +111,7 @@ Claude Code wired to GitHub Copilot Direct cannot use its builtin WebSearch. Cop
 
 Copilot's own Responses API does serve web search, so copilot-env ships an MCP stdio server. `agent mcp --serve` runs it, and its `web_search` tool proxies through that API and returns a cited answer with a `Sources:` list. Bare `agent mcp` prints the wiring status.
 
-Wiring Claude direct (`agent init`, `agent claude --direct`) sets this up by itself. It registers the server in Claude Code's user scope and denies the broken builtin, and a proxy write takes both back. Through the local proxy the builtin WebSearch works, so nothing is needed there.
+Wiring Claude direct sets this up by itself: it registers the server in Claude Code's user scope and denies the broken builtin. The [write list](getting-started.md#what-a-wiring-pass-writes) names the commands that add the pair and the ones that take it back. Through the local proxy the builtin WebSearch works, so nothing is needed there.
 
 The pair is opt-out:
 

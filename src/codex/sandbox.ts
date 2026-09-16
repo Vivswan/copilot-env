@@ -3,11 +3,11 @@
 //
 // Why a proxy selection cares: Codex runs the managed `auth.command` inside its sandbox, and that
 // command reaches the proxy on loopback. configureCodexConfig opens the network with
-// `[sandbox_workspace_write] network_access`, which applies ONLY under the legacy
-// `sandbox_mode = "workspace-write"` (interactive Codex's default); read-only has no network
-// switch, and a permission profile (`default_permissions`) ignores the legacy tables altogether and
-// keeps its network off unless the profile enables it. Either way the proxy auth exits 1 with no
-// hint.
+// `[sandbox_workspace_write] network_access = true`, the ONLY switch under the legacy
+// `sandbox_mode = "workspace-write"` (interactive Codex's default), so a removed or false toggle
+// blocks as surely as read-only, which has no switch at all; a permission profile
+// (`default_permissions`) ignores the legacy tables altogether and keeps its network off unless the
+// profile enables it. Either way the proxy auth exits 1 with no hint.
 //
 // Every rule below was verified live on codex 0.153.4 (`codex exec` banners and config-load
 // errors), and two of them contradict Codex's own docs, so the docs are not the reference here:
@@ -25,11 +25,14 @@ const SANDBOX_MODE_KEY = "sandbox_mode";
 const PERMISSIONS_KEY = "default_permissions";
 const PROFILE_KEY = "profile";
 const LEGACY_READ_ONLY = "read-only";
-const BUILTIN_FULL_ACCESS = ":danger-full-access";
+const LEGACY_WORKSPACE_WRITE = "workspace-write";
+const LEGACY_FULL_ACCESS = "danger-full-access";
+const BUILTIN_FULL_ACCESS = `:${LEGACY_FULL_ACCESS}`;
+const NETWORK_TOGGLE_PATH = ["sandbox_workspace_write", "network_access"] as const;
 const SANDBOX_MODES: ReadonlySet<string> = new Set([
   LEGACY_READ_ONLY,
-  "workspace-write",
-  BUILTIN_FULL_ACCESS.slice(1),
+  LEGACY_WORKSPACE_WRITE,
+  LEGACY_FULL_ACCESS,
 ]);
 
 function parseToml(configToml: TextReadResult | string): unknown {
@@ -54,6 +57,8 @@ export function codexRefusesLaunch(configToml: TextReadResult | string, launch: 
   const doc = parseToml(configToml);
   if (!isRecord(doc)) return false;
   if (doc[PROFILE_KEY] !== undefined) return true;
+  const toggle = valueAt(doc, NETWORK_TOGGLE_PATH);
+  if (toggle !== undefined && typeof toggle !== "boolean") return true;
   const permissions = doc[PERMISSIONS_KEY];
   if (permissions !== undefined && typeof permissions !== "string") return true;
   if (typeof permissions === "string" && permissions.startsWith(":")) {
@@ -96,6 +101,7 @@ function customProfileNetwork(doc: unknown, name: string): boolean | "rejected" 
     const table = valueAt(doc, ["permissions", current]);
     if (!isRecord(table)) return "rejected";
     const enabled = valueAt(table, ["network", "enabled"]);
+    if (enabled !== undefined && typeof enabled !== "boolean") return "rejected";
     if (nearest === null && typeof enabled === "boolean") nearest = enabled;
     if (table.extends === undefined) return nearest ?? false;
     if (typeof table.extends !== "string") return "rejected";
@@ -115,8 +121,8 @@ export function runsSandboxedProxyAuth(
  *  re-derives Codex's rules. `line` is null when no single line can be proven to own the
  *  assignment (a multi-line inline table); the value is read from the parse, never the scan. */
 export type CodexSandboxMode =
-  /** Neither key set: interactive Codex's workspace-write default, which the managed toggle opens. */
-  | { kind: "unset" }
+  /** Neither key set: interactive Codex's workspace-write default, open only with the toggle. */
+  | ({ kind: "unset" } & SandboxNetwork)
   | (SandboxSetting & { key: typeof SANDBOX_MODE_KEY })
   | (SandboxSetting & {
     key: typeof PERMISSIONS_KEY;
@@ -125,17 +131,25 @@ export type CodexSandboxMode =
     overrides: string | null;
   });
 
-interface SandboxSetting {
+interface SandboxNetwork {
+  /** `[sandbox_workspace_write] network_access` is true: the one switch that opens workspace-write,
+   *  so every repair that lands on workspace-write must also name it when off. */
+  networkToggle: boolean;
+  proxyAuthReaches: boolean;
+}
+
+interface SandboxSetting extends SandboxNetwork {
   kind: "set";
   value: string;
   line: number | null;
-  proxyAuthReaches: boolean;
 }
 
 /** The top-level sandbox of config.toml: `default_permissions` when set, else `sandbox_mode`. A
  *  permission profile's network is off unless `[permissions.<name>].network.enabled` is true and
  *  `[sandbox_workspace_write]` does not apply to it, so the built-ins `:read-only` and `:workspace`
- *  both block while `:danger-full-access` lifts the sandbox. A `--profile <name>` launch layers
+ *  both block while `:danger-full-access` lifts the sandbox. The legacy workspace-write (set or
+ *  defaulted) reaches the network only with `[sandbox_workspace_write] network_access = true`, the
+ *  toggle the proxy writer emits; danger-full-access needs none. A `--profile <name>` launch layers
  *  `<name>.config.toml` on top, which nothing of ours writes yet, so it is not read here. Null when
  *  the file is not readable TOML. */
 export function readCodexSandboxMode(configToml: TextReadResult | string): CodexSandboxMode | null {
@@ -149,12 +163,14 @@ export function readCodexSandboxMode(configToml: TextReadResult | string): Codex
   if (!isRecord(doc)) return null;
   const permissions = doc[PERMISSIONS_KEY];
   const mode = doc[SANDBOX_MODE_KEY];
+  const toggleOn = valueAt(doc, NETWORK_TOGGLE_PATH) === true;
   if (typeof permissions === "string") {
     return {
       kind: "set",
       key: PERMISSIONS_KEY,
       value: permissions,
       line: assignmentLine(text, [PERMISSIONS_KEY], permissions),
+      networkToggle: toggleOn,
       proxyAuthReaches: permissions === BUILTIN_FULL_ACCESS ||
         (!permissions.startsWith(":") && customProfileNetwork(doc, permissions) === true),
       overrides: typeof mode === "string" ? mode : null,
@@ -166,10 +182,12 @@ export function readCodexSandboxMode(configToml: TextReadResult | string): Codex
       key: SANDBOX_MODE_KEY,
       value: mode,
       line: assignmentLine(text, [SANDBOX_MODE_KEY], mode),
-      proxyAuthReaches: mode !== LEGACY_READ_ONLY,
+      networkToggle: toggleOn,
+      proxyAuthReaches: mode === LEGACY_FULL_ACCESS ||
+        (mode === LEGACY_WORKSPACE_WRITE && toggleOn),
     };
   }
-  return { kind: "unset" };
+  return { kind: "unset", networkToggle: toggleOn, proxyAuthReaches: toggleOn };
 }
 
 function valueAt(doc: unknown, path: readonly string[]): unknown {
@@ -220,6 +238,16 @@ function tomlKey(name: string): string {
   return /^[A-Za-z0-9_-]+$/.test(name) ? name : JSON.stringify(name);
 }
 
+/** The settings that make the legacy sandbox `mode` (null = Codex's workspace-write default) reach
+ *  the network: the mode itself when read-only, and the toggle when the result is workspace-write. */
+function legacyRepairs(mode: string | null, networkToggle: boolean): string[] {
+  if (mode === LEGACY_FULL_ACCESS) return [];
+  return [
+    ...(mode === LEGACY_READ_ONLY ? [`${SANDBOX_MODE_KEY} = "${LEGACY_WORKSPACE_WRITE}"`] : []),
+    ...(networkToggle ? [] : ["network_access = true under [sandbox_workspace_write]"]),
+  ];
+}
+
 /** The warning both surfaces print for a launch that runsSandboxedProxyAuth and whose sandbox
  *  blocks that command; null when the network is open to it. The Direct switch addresses the
  *  launch's own wiring: a named profile is rewired by `agent profile`, never `agent codex`. */
@@ -228,20 +256,30 @@ export function proxyAuthBlockedBySandbox(
   configPath: string,
   launch: Profile,
 ): { detail: string; fix: string } | null {
-  if (reading.kind !== "set" || reading.proxyAuthReaches) return null;
+  if (reading.proxyAuthReaches) return null;
   const directSwitch = launch === null
     ? "agent codex --direct"
     : `agent profile --add ${launch} --direct`;
-  const why = reading.key === SANDBOX_MODE_KEY
+  const legacy = reading.kind === "unset" || reading.key === SANDBOX_MODE_KEY;
+  const readOnly = reading.kind === "set" && reading.key === SANDBOX_MODE_KEY &&
+    reading.value === LEGACY_READ_ONLY;
+  const why = !legacy
+    ? "a permission profile keeps its network off unless permissions.<name>.network.enabled = true," +
+      " and [sandbox_workspace_write] does not apply to it"
+    : readOnly
     ? "read-only has no network switch"
-    : "a permission profile keeps its network off unless permissions.<name>.network.enabled = true, and [sandbox_workspace_write] does not apply to it";
-  const setting = reading.key === SANDBOX_MODE_KEY
-    ? `set ${SANDBOX_MODE_KEY} = "workspace-write" in ${configPath}`
+    : "workspace-write reaches the network only with [sandbox_workspace_write] network_access = true";
+  const legacyMode = reading.kind === "unset"
+    ? null
+    : reading.key === SANDBOX_MODE_KEY
+    ? reading.value
+    : reading.overrides;
+  const repairs = legacyRepairs(legacyMode, reading.networkToggle).join(" and ");
+  const setting = legacy
+    ? `set ${repairs} in ${configPath}`
     : reading.value.startsWith(":")
     ? `remove ${PERMISSIONS_KEY} from ${configPath} (it overrides ${SANDBOX_MODE_KEY})${
-      reading.overrides === LEGACY_READ_ONLY
-        ? ` and set ${SANDBOX_MODE_KEY} = "workspace-write"`
-        : ""
+      repairs === "" ? "" : ` and set ${repairs}`
     } or select a custom [permissions.<name>] with network.enabled = true`
     : `set permissions.${tomlKey(reading.value)}.network.enabled = true in ${configPath}`;
   return {

@@ -949,6 +949,7 @@ export function checkCodexSandbox(f: CodexSandboxFacts): CheckResult {
     profile: f.profile,
     value: {
       configFile: f.configFile,
+      proxyAuthReaches: f.sandbox.proxyAuthReaches,
       sandboxKey: f.sandbox.kind === "set" ? f.sandbox.key : null,
       sandboxValue: f.sandbox.kind === "set" ? f.sandbox.value : null,
       line: f.sandbox.kind === "set" ? f.sandbox.line : null,

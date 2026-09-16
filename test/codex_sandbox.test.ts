@@ -105,22 +105,66 @@ async function sandboxRows(toml: string): Promise<CheckResult[]> {
 test("health: the sandbox that blocks proxy auth is named with its line; open or absent sandboxes are not", async () => {
   const readOnly = 'sandbox_mode = "read-only"';
   const workspace = 'sandbox_mode = "workspace-write"';
+  const toggle = (on: boolean) => ["[sandbox_workspace_write]", `network_access = ${on}`];
+  const toggleFixBare = "network_access = true under [sandbox_workspace_write]";
+  const toggleFix = `set ${toggleFixBare} in ${CONFIG}`;
   const cases: {
     name: string;
     toml: string;
     expected: { status: string; cites?: string; at?: string; fix?: string }[];
   }[] = [
     {
-      name: "legacy read-only warns",
+      // Switching to workspace-write alone would leave the network closed without the toggle.
+      name: "legacy read-only without the toggle names both repairs",
       toml: configToml("proxy", [readOnly]),
-      expected: [{ status: "warn", at: `${CONFIG}:2`, fix: "agent codex --direct" }],
+      expected: [{
+        status: "warn",
+        at: `${CONFIG}:2`,
+        fix: `set sandbox_mode = "workspace-write" and ${toggleFixBare} in ${CONFIG}, or switch` +
+          " Codex to Direct with `agent codex --direct`",
+      }],
     },
     {
-      name: "legacy workspace-write is fine",
-      toml: configToml("proxy", [workspace]),
+      name: "legacy read-only with the toggle names only the mode",
+      toml: configToml("proxy", [readOnly, ...toggle(true)]),
+      expected: [{
+        status: "warn",
+        at: `${CONFIG}:2`,
+        fix: `set sandbox_mode = "workspace-write" in ${CONFIG}, or switch`,
+      }],
+    },
+    // The proxy writer's `[sandbox_workspace_write] network_access = true` is the ONLY switch that
+    // opens legacy workspace-write, set or defaulted; danger-full-access needs none.
+    {
+      name: "legacy workspace-write with the network toggle is fine",
+      toml: configToml("proxy", [workspace, ...toggle(true)]),
       expected: [{ status: "ok" }],
     },
-    { name: "nothing set is fine", toml: configToml("proxy", []), expected: [{ status: "ok" }] },
+    {
+      name: "legacy workspace-write without the toggle blocks",
+      toml: configToml("proxy", [workspace]),
+      expected: [{ status: "warn", cites: workspace, at: `${CONFIG}:2`, fix: toggleFix }],
+    },
+    {
+      name: "legacy workspace-write with the toggle off blocks",
+      toml: configToml("proxy", [workspace, ...toggle(false)]),
+      expected: [{ status: "warn", cites: workspace, at: `${CONFIG}:2`, fix: toggleFix }],
+    },
+    {
+      name: "nothing set with the toggle is fine",
+      toml: configToml("proxy", toggle(true)),
+      expected: [{ status: "ok" }],
+    },
+    {
+      name: "nothing set without the toggle blocks",
+      toml: configToml("proxy", []),
+      expected: [{ status: "warn", fix: toggleFix }],
+    },
+    {
+      name: "legacy danger-full-access needs no toggle",
+      toml: configToml("proxy", ['sandbox_mode = "danger-full-access"']),
+      expected: [{ status: "ok" }],
+    },
     {
       name: "direct + read-only: nothing to report",
       toml: configToml("direct", [readOnly]),
@@ -149,7 +193,7 @@ test("health: the sandbox that blocks proxy auth is named with its line; open or
     // does not apply, so :workspace blocks as much as :read-only.
     ...[":read-only", ":workspace"].map((builtin) => ({
       name: `default_permissions = "${builtin}" leaves the auth command offline`,
-      toml: configToml("proxy", [`default_permissions = "${builtin}"`]),
+      toml: configToml("proxy", [`default_permissions = "${builtin}"`, ...toggle(true)]),
       expected: [{
         status: "warn",
         cites: `default_permissions = "${builtin}"`,
@@ -158,9 +202,20 @@ test("health: the sandbox that blocks proxy auth is named with its line; open or
       }],
     })),
     {
+      // Removing the profile key lands on workspace-write, which the missing toggle keeps closed.
+      name: "a built-in profile without the toggle names the toggle as the second repair",
+      toml: configToml("proxy", ['default_permissions = ":workspace"']),
+      expected: [{
+        status: "warn",
+        cites: 'default_permissions = ":workspace"',
+        at: `${CONFIG}:2`,
+        fix: `(it overrides sandbox_mode) and set ${toggleFixBare} or select`,
+      }],
+    },
+    {
       // Removing the profile key alone would expose the legacy read-only underneath.
       name: "a built-in profile over a legacy read-only names both steps of the fix",
-      toml: configToml("proxy", [readOnly, 'default_permissions = ":workspace"']),
+      toml: configToml("proxy", [readOnly, 'default_permissions = ":workspace"', ...toggle(true)]),
       expected: [{
         status: "warn",
         cites: 'default_permissions = ":workspace"',
@@ -269,7 +324,7 @@ test("health: the sandbox that blocks proxy auth is named with its line; open or
     // banners "sandbox: danger-full-access" (codex 0.153.4).
     {
       name: "default_permissions wins over a legacy workspace-write",
-      toml: configToml("proxy", [workspace, 'default_permissions = ":read-only"']),
+      toml: configToml("proxy", [workspace, 'default_permissions = ":read-only"', ...toggle(true)]),
       expected: [{
         status: "warn",
         cites: 'default_permissions = ":read-only"',
@@ -347,6 +402,21 @@ test("health: a launch Codex refuses to start gets no row, whatever the sandbox 
       'extends = ":nope"',
     ], false],
     ["a misspelled built-in as the selected profile", ['default_permissions = ":nope"'], false],
+    // Boolean fields refuse a non-boolean ("invalid type: integer `1`, expected a boolean", codex
+    // 0.153.4), even behind an inherited true.
+    ["a wrong-typed network.enabled in a permission chain", [
+      'default_permissions = "child"',
+      "[permissions.base]",
+      "network = { enabled = true }",
+      "[permissions.child]",
+      'extends = "base"',
+      "network = { enabled = 1 }",
+    ], false],
+    ["a wrong-typed network_access toggle", [
+      'sandbox_mode = "workspace-write"',
+      "[sandbox_workspace_write]",
+      "network_access = 1",
+    ], false],
   ];
   for (const [name, top, legacyProfile] of refusedForAll) {
     expect(await sandboxRows(configToml("proxy", top, { legacyProfile })), name).toEqual([]);

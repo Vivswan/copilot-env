@@ -10,7 +10,9 @@ import { codexHostDriftFrom, codexHostDriftLine } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
 import { agentStartCommand, type Profile } from "../copilot_api/profile.ts";
+import { v409CodexProfileFiles } from "../migrations/4.0.9.ts";
 import { assertNever } from "../utils/assert.ts";
+import { packageVersion } from "../utils/version.ts";
 import type {
   BakedCredentialFreshness,
   ClaudeFacts,
@@ -171,7 +173,7 @@ function codexOtherLine(
       return {
         line:
           `config.toml carries a [profiles.${profile}] table, which Codex no longer supports (\`codex --profile ${profile}\` refuses to start)`,
-        repair: `run \`agent update\` (its migration moves the table into ${
+        repair: `run \`${legacyTableMigrateCommand()}\` (moves the table into ${
           basename(profileFile)
         }), or move it by hand`,
       };
@@ -180,6 +182,14 @@ function codexOtherLine(
     default:
       return assertNever(reason);
   }
+}
+
+/** The runner selects steps from [from, to) (src/migrations/index.ts), so the repair names the
+ *  release the table shape came from and the installed release. `agent update` is not the route: an
+ *  install that already updated reports itself up to date and runs no migration. `installed` is the
+ *  test seam. */
+export function legacyTableMigrateCommand(installed: string = packageVersion()): string {
+  return `agent migrate ${v409CodexProfileFiles.version} ${installed}`;
 }
 
 export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult {

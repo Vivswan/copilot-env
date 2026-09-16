@@ -91,15 +91,12 @@ export async function resolveAndPersistDirectWiring(
     : slot.integrationIdentity;
   const pin = config.pinnedIntegrationId();
   const literal = config.copilotHost();
-  // The cached pair reads back only under the identity and host in force (readProfileCopilotHost);
-  // a pair that does not is another host's verdict, so its identity is not replayed either.
-  const cachedHost = state.readProfileCopilotHost(profile, pin, literal);
-  const replayIdentity = cachedHost === null && state.hasProfileCopilotHost(profile)
-    ? undefined
-    : cachedIdentity;
-  const directIntegrationId = pin ?? replayIdentity;
-  if (directIntegrationId !== undefined && cachedHost !== null) {
-    return { directIntegrationId, directBaseUrl: cachedHost };
+  // The cached pair reads back only under the identity and host in force; a stale pair is another
+  // host's verdict, so its identity is not replayed either (readProfileCopilotHostCache).
+  const cache = state.readProfileCopilotHostCache(profile, pin, literal);
+  const directIntegrationId = pin ?? (cache.kind === "stale" ? undefined : cachedIdentity);
+  if (directIntegrationId !== undefined && cache.kind === "valid") {
+    return { directIntegrationId, directBaseUrl: cache.host };
   }
   const probed = await probeDirectWiring(
     profile,

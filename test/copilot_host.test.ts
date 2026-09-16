@@ -253,9 +253,9 @@ test("a profile slot caches the resolved host beside its identity: replayed offl
     directBaseUrl: ENTERPRISE,
   });
   expect(seen).toEqual([{ host: DEFAULT_COPILOT_API_BASE, id: "copilot-developer-sandbox" }]);
-  // The pin is configuration: the slot keeps its own verdict, and the host now cached is the pin's
-  // (readable under it, not under the verdict), so `--identity auto` re-probes the host, never
-  // the identity.
+  // The pin is configuration: the slot keeps its own verdict, and the pair now cached is the pin's
+  // (readable under it, not under the verdict). `--identity auto` then finds a STALE pair and
+  // re-probes both identity and host (the memo answers them here, so no request is counted).
   expect(state.readProfileSlot(null).integrationIdentity).toBe(COPILOT_CLI_INTEGRATION_ID);
   expect(state.readProfileCopilotHost(null, "copilot-developer-sandbox", null)).toBe(ENTERPRISE);
   expect(state.readProfileCopilotHost(null, null, null)).toBeNull();

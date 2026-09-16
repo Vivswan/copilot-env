@@ -577,23 +577,27 @@ export class CopilotEnvState {
     pin: string | null,
     literal: string | null,
   ): string | null {
-    const raw = this.rawProfileSlot(profile);
-    if (raw === null) return null;
-    const inForce = pin ?? raw.integrationIdentity;
-    if (typeof inForce !== "string" || raw.copilotHostIdentity !== inForce) return null;
-    const host = raw.copilotHost;
-    if (typeof host !== "string" || !URL.canParse(host)) return null;
-    const url = new URL(host);
-    if (url.protocol !== "https:" || url.origin !== host) return null;
-    if (literal === null ? raw.copilotHostSource !== "auto" : host !== literal) return null;
-    return host;
+    const cache = this.readProfileCopilotHostCache(profile, pin, literal);
+    return cache.kind === "valid" ? cache.host : null;
   }
 
-  /** Whether the slot holds a cached host pair at all (valid for the current pin and literal or
-   *  not): a pair that no longer reads back marks the identity verdict as another host's. */
-  hasProfileCopilotHost(profile: Profile): boolean {
+  /** The cached pair's standing for the pin and literal in force: `valid` (replay it), `stale` (a
+   *  pair exists for another identity or host, so the identity verdict is another host's too:
+   *  re-probe both), `none` (nothing cached: an imported or pre-host slot, whose identity stands). */
+  readProfileCopilotHostCache(
+    profile: Profile,
+    pin: string | null,
+    literal: string | null,
+  ): CachedCopilotHostRead {
     const raw = this.rawProfileSlot(profile);
-    return raw !== null && typeof raw.copilotHost === "string";
+    const host = raw?.copilotHost;
+    if (raw === null || typeof host !== "string" || !URL.canParse(host)) return { kind: "none" };
+    const inForce = pin ?? raw.integrationIdentity;
+    const url = new URL(host);
+    const valid = typeof inForce === "string" && raw.copilotHostIdentity === inForce &&
+      url.protocol === "https:" && url.origin === host &&
+      (literal === null ? raw.copilotHostSource === "auto" : host === literal);
+    return valid ? { kind: "valid", host } : { kind: "stale" };
   }
 
   private rawProfileSlot(profile: Profile): Record<string, unknown> | null {
@@ -696,6 +700,11 @@ export function expectedDirectHost(profile: Profile): string | null {
   return config.copilotHost() ??
     new CopilotEnvState().readProfileCopilotHost(profile, config.pinnedIntegrationId(), null);
 }
+
+export type CachedCopilotHostRead =
+  | { kind: "none" }
+  | { kind: "stale" }
+  | { kind: "valid"; host: string };
 
 /** A resolved host beside the identity it was resolved under and how: `auto` (resolveCopilotHost)
  *  or `literal` (the `copilot-host` value of the time). */

@@ -1078,8 +1078,7 @@ async function surveyAndTable(
   const state = new CopilotEnvState();
   const slot = state.readProfileSlot(profile).integrationIdentity;
   const slotReplays = slot !== null &&
-    (state.readProfileCopilotHost(profile, pinned, configuredHost) !== null ||
-      !state.hasProfileCopilotHost(profile));
+    state.readProfileCopilotHostCache(profile, pinned, configuredHost).kind !== "stale";
   const firstPick = pinned ?? (profile !== null && slotReplays ? slot : fresh);
   // The proxy's pick is the launch resolver's: its own candidates, in their order, on the same
   // host (resolveLaunchCredential), before the host is chosen.
@@ -1185,16 +1184,27 @@ async function chooseIdentity(
   return parseIdentityChoice(String(value));
 }
 
+/** resolveCopilotHost's "blocked" reading of a generic-host verdict: 403, 404, 5xx, or a network
+ *  failure move `auto` to the account's host; 2xx, 400, 401, and transient statuses keep it. */
+function autoMovesOff(verdict: IdentityVerdict | undefined): boolean {
+  if (verdict === undefined || verdict.kind !== "inconclusive") return false;
+  if (verdict.detail.startsWith("network error")) return true;
+  const status = Number.parseInt(verdict.detail.split(" ")[0] ?? "", 10);
+  return status === 403 || status === 404 || status >= 500;
+}
+
 function noteIdentityApplies(): void {
   const hint = configKeyDef("integration-id")?.applyHint;
   if (hint !== undefined) logger.info(hint);
 }
 
-/** Pins `id` unless every host rejects it definitively. With one acceptance the other hosts'
- *  verdicts are narrated; with none (an unresolvable credential, or every probe inconclusive) the
- *  pin lands unverified, and says so. */
+/** Pins `id` unless the host its requests would go to rejects it definitively (the `copilot-host`
+ *  literal, else what `auto` selects for it), or every surveyed host does. Otherwise the other
+ *  hosts' verdicts are narrated, and with no acceptance at all (an unresolvable credential, every
+ *  probe inconclusive, the account's host unknown) the pin lands unverified and says so. */
 async function pinIdentity(
   id: string,
+  profile: Profile,
   credential: Credential,
 ): Promise<void> {
   const { token, reason } = credential.resolveWithReason();
@@ -1207,21 +1217,30 @@ async function pinIdentity(
       pinnedIdentityCandidates(id, codexUserAgent()),
       { configuredHost },
     );
-    const hosts = survey.hosts.map((column) => {
-      const inUse = configuredHost !== null && sameOrigin(column.apiBase, configuredHost);
-      return { label: hostLabel(column, inUse), verdict: column.verdicts[0]?.verdict, inUse };
-    });
-    // Under a literal every request goes to that host, so its verdict alone decides a definitive
-    // rejection: acceptance elsewhere cannot carry the pin.
-    const inUse = hosts.find((h) => h.inUse);
-    if (inUse?.verdict?.kind === "rejected") {
-      throw new Error(
-        `${inUse.label} rejects this credential under \`${id}\`; not pinned, every request ` +
-          `goes to the copilot-host in use: ${inUse.verdict.detail}`,
-      );
-    }
+    // The host the pin's requests go to: the literal; else the slot's cached host while it reads
+    // back under this id (what the writer replays without probing); else what `auto` selects under
+    // the pin's headers (resolveCopilotHost's rule read off the generic column: a blocked host moves
+    // to the account's, any other answer keeps it).
+    const genericIndex = survey.hosts.findIndex((h) => h.role === "generic");
+    const designatedIndex = survey.hosts.findIndex((h) => h.role === "designated");
+    const autoIndex = autoMovesOff(survey.hosts[genericIndex]?.verdicts[0]?.verdict) &&
+        designatedIndex >= 0
+      ? designatedIndex
+      : genericIndex;
+    const cached = configuredHost === null
+      ? new CopilotEnvState().readProfileCopilotHostCache(profile, id, null)
+      : { kind: "none" as const };
+    const inUseIndex = configuredHost !== null
+      ? survey.hosts.findIndex((h) => sameOrigin(h.apiBase, configuredHost))
+      : cached.kind === "valid"
+      ? survey.hosts.findIndex((h) => sameOrigin(h.apiBase, cached.host))
+      : autoIndex;
+    const hosts = survey.hosts.map((column, i) => ({
+      label: hostLabel(column, configuredHost !== null && i === inUseIndex),
+      verdict: column.verdicts[0]?.verdict,
+    }));
     // "Every host" needs the account's host to be known: a transient lookup failure hides that
-    // column, so the surveyed hosts' rejections alone cannot refuse the pin.
+    // column, so the surveyed hosts' rejections alone cannot say so.
     if (!survey.designatedUnknown && hosts.every((h) => h.verdict?.kind === "rejected")) {
       throw new Error(
         [
@@ -1230,6 +1249,17 @@ async function pinIdentity(
             `  - ${h.label}: ${h.verdict?.kind === "rejected" ? h.verdict.detail : ""}`
           ),
         ].join("\n"),
+      );
+    }
+    // The host in use decides alone: acceptance elsewhere cannot carry a pin its requests never reach.
+    const inUse = hosts[inUseIndex];
+    if (inUse?.verdict?.kind === "rejected") {
+      const why = configuredHost === null
+        ? "the host auto selects for this identity"
+        : "the copilot-host in use";
+      throw new Error(
+        `${inUse.label} rejects this credential under \`${id}\`; not pinned, every request ` +
+          `goes to ${why}: ${inUse.verdict.detail}`,
       );
     }
     const accepted = hosts.filter((h) => h.verdict?.kind === "accepted").map((h) => h.label);
@@ -1264,7 +1294,7 @@ async function runIdentity(
       noteIdentityApplies();
       return;
     case "pin":
-      await pinIdentity(choice.id, new Credential(undefined, profile));
+      await pinIdentity(choice.id, profile, new Credential(undefined, profile));
       return;
     case "choose": {
       if (!process.stdin.isTTY) {

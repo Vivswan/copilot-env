@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parse, stringify } from "smol-toml";
+import { parse, stringify, TomlDate } from "smol-toml";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { startLockPath } from "../src/copilot_api/launch.ts";
@@ -39,6 +39,12 @@ import {
   v402GhAccountPin,
   v402RootLayout,
 } from "../src/migrations/4.0.2.ts";
+import {
+  dropCodexIdentityPin,
+  moveCodexProfileTables,
+  v409CodexProfileFiles,
+  v409IntegrationIdPin,
+} from "../src/migrations/4.0.9.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
 import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
@@ -50,6 +56,7 @@ import {
   MARKER_END,
 } from "../src/shell/integration.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
+import { consola } from "consola";
 import type { SemverString } from "../src/utils/semver.ts";
 import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
@@ -101,7 +108,7 @@ test("the shipped registry holds exactly the named fix-ups in order, home move f
   //   Codex/Claude rewrites before the layout adoption   -> the adoption removes the flat src/scripts
   //                                                         the old wiring pointed at
   //   layout adoption last among the 3.5.6 steps         -> it relocates the install they fixed up
-  //   Desktop helper move last of all                    -> its wiring pass needs the rewrites done
+  //   Desktop helper move, then the Codex profile files  -> each needs the 4.0.0 rewrites done
   expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
     v356,
     v402RootLayout,
@@ -118,6 +125,8 @@ test("the shipped registry holds exactly the named fix-ups in order, home move f
     v400AutoupdateFlag,
     v402GhAccountPin,
     v402DesktopHelpers,
+    v409CodexProfileFiles,
+    v409IntegrationIdPin,
   ]);
   // An install already on 4.0.0 (whose readers tolerated the 3.5.6 shapes) still gets
   // every wiring rewrite on its way to the next release.
@@ -1119,4 +1128,162 @@ test("3.5.6 default home: a fresh (or migrated) root is a strict no-op", async (
   expect(existsSync(join(dir, "profiles"))).toBe(false);
   expect(existsSync(join(dir, "config.json"))).toBe(false);
   expect(existsSync(daemonLockPath(dir))).toBe(false);
+});
+
+// --- 4.0.9: Codex named profiles -----------------------------------------------------
+
+/** consola's lines at `level` for the span of `run`, restored after; the fix-ups report what they
+ *  left and what they dropped. */
+function warningsDuring(run: () => void, level: "warn" | "info" = "warn"): string[] {
+  const lines: string[] = [];
+  const original = consola[level];
+  consola[level] = ((...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  }) as typeof consola.warn;
+  try {
+    run();
+  } finally {
+    consola[level] = original;
+  }
+  return lines;
+}
+
+test("4.0.9 integration-id: a stored `codex` pin is dropped and said so; any other value stays", () => {
+  // The domain refused `codex` only from #228 on; a pin stored before then reads as unset but
+  // would sit in preferences.json forever, and its baked header outlives it until a rewire.
+  const home = isolateProxyHome("copilot-mig-identity-pin-");
+  dir = home;
+  const prefs = join(home, "preferences.json");
+  const cases: { stored: string | undefined; after: string | undefined; said: boolean }[] = [
+    { stored: "codex", after: undefined, said: true },
+    { stored: "Codex ", after: undefined, said: true },
+    { stored: "copilot-developer-cli", after: "copilot-developer-cli", said: false },
+    { stored: undefined, after: undefined, said: false },
+  ];
+  for (const { stored, after, said } of cases) {
+    writeFileSync(prefs, `${JSON.stringify({ port: 4199, integrationId: stored })}\n`);
+    const lines = warningsDuring(dropCodexIdentityPin, "info");
+    const raw = JSON.parse(readFileSync(prefs, "utf8")) as Record<string, unknown>;
+    expect({ stored, raw, said: lines.length }).toEqual({
+      stored,
+      raw: { port: 4199, ...(after === undefined ? {} : { integrationId: after }) },
+      said: said ? 1 : 0,
+    });
+    if (said) expect(lines[0]).toContain("agent init");
+  }
+});
+
+test("4.0.9 codex profiles: an owned [profiles.<name>] table becomes <name>.config.toml; foreign ones are reported, not moved", () => {
+  // Codex 0.153 refuses `codex --profile work` on a [profiles.work] table (and every launch on a
+  // top-level `profile` key), so what 4.0.9 wrote must move; what the user wrote is theirs.
+  dir = tempDir("copilot-mig-codex-profiles-");
+  const configPath = join(dir, "config.toml");
+  writeFileSync(
+    configPath,
+    stringify({
+      "model_provider": "copilot-env",
+      "profile": "theirs",
+      "model_providers": {
+        "copilot-env-work": { "base_url": "http://localhost:4545/v1" },
+        "copilot-env-fast": { "base_url": "https://api.githubcopilot.com" },
+      },
+      "profiles": {
+        // Ours, with a model pin the user added to the table: the pin rides along.
+        "work": { "model_provider": "copilot-env-work", "model": "gpt-5.4" },
+        // Ours, and the user already made a work-alike file by hand: its leaves win, the table's
+        // other nested keys survive (Codex layers the two the same way), the selector stays ours.
+        "fast": {
+          "model_provider": "copilot-env-fast",
+          "model": "from-table",
+          "features": { "multi_agent": true, "shell_tool": true },
+          // A date-time scalar on both sides: a leaf, never recursed into as a table.
+          "stamp": new TomlDate("2025-01-01T00:00:00Z"),
+        },
+        // Not ours (a foreign provider, a misaddressed one, a name copilot-env never mints):
+        // left, reported.
+        "theirs": { "model_provider": "openai" },
+        "wrong": { "model_provider": "copilot-env-work" },
+        "personal_dev": { "model_provider": "copilot-env-personal_dev" },
+      },
+    }),
+  );
+  writeFileSync(
+    join(dir, "fast.config.toml"),
+    stringify({
+      "model": "from-file",
+      "model_provider": "x",
+      "features": { "shell_tool": false },
+      "stamp": new TomlDate("2026-01-01T00:00:00Z"),
+    }),
+  );
+
+  const warnings = warningsDuring(() => moveCodexProfileTables(dir));
+
+  const config = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  expect(config.profiles).toEqual({
+    "theirs": { "model_provider": "openai" },
+    "wrong": { "model_provider": "copilot-env-work" },
+    "personal_dev": { "model_provider": "copilot-env-personal_dev" },
+  });
+  expect(config.profile).toBe("theirs"); // never copilot-env's to delete
+  expect(config.model_providers).toEqual({
+    "copilot-env-work": { "base_url": "http://localhost:4545/v1" },
+    "copilot-env-fast": { "base_url": "https://api.githubcopilot.com" },
+  });
+  expect(parse(readFileSync(join(dir, "work.config.toml"), "utf8"))).toEqual({
+    "model_provider": "copilot-env-work",
+    "model": "gpt-5.4",
+  });
+  expect(parse(readFileSync(join(dir, "fast.config.toml"), "utf8"))).toEqual({
+    "model_provider": "copilot-env-fast",
+    "model": "from-file",
+    "features": { "multi_agent": true, "shell_tool": false },
+    "stamp": new TomlDate("2026-01-01T00:00:00Z"),
+  });
+  // Each thing left behind is named once, with the Codex error it causes.
+  expect(warnings.filter((w) => w.includes("[profiles.theirs]"))).toHaveLength(1);
+  expect(warnings.filter((w) => w.includes("[profiles.wrong]"))).toHaveLength(1);
+  expect(warnings.filter((w) => w.includes("[profiles.personal_dev]"))).toHaveLength(1);
+  expect(warnings.filter((w) => w.includes('profile = "theirs"'))).toHaveLength(1);
+  expect(warnings.every((w) => w.includes("refuses"))).toBe(true);
+
+  // Idempotent: a re-run has nothing of ours left to move and rewrites nothing.
+  const after = readFileSync(configPath, "utf8");
+  expect(warningsDuring(() => moveCodexProfileTables(dir))).toEqual(warnings);
+  expect(readFileSync(configPath, "utf8")).toBe(after);
+});
+
+test("4.0.9 codex profiles: an unparseable <name>.config.toml keeps its table and fails the step after the others moved", () => {
+  // No wiring command removes a legacy table, so the only way out is a re-run of the migration
+  // once the file is repaired: the step must fail (the runner names the re-run), not report clean.
+  dir = tempDir("copilot-mig-codex-profiles-stuck-");
+  const configPath = join(dir, "config.toml");
+  writeFileSync(
+    configPath,
+    stringify({
+      "profiles": {
+        "work": { "model_provider": "copilot-env-work" },
+        "fast": { "model_provider": "copilot-env-fast" },
+      },
+    }),
+  );
+  writeFileSync(join(dir, "work.config.toml"), 'model_provider = "unclosed');
+
+  let thrown: unknown;
+  const warnings = warningsDuring(() => {
+    try {
+      moveCodexProfileTables(dir);
+    } catch (e) {
+      thrown = e;
+    }
+  });
+  expect(String(thrown)).toMatch(/work\.config\.toml/);
+  expect(warnings.filter((w) => w.includes("left [profiles.work]"))).toHaveLength(1);
+  expect(readFileSync(join(dir, "work.config.toml"), "utf8")).toBe('model_provider = "unclosed');
+  expect(parse(readFileSync(configPath, "utf8"))).toEqual({
+    "profiles": { "work": { "model_provider": "copilot-env-work" } },
+  });
+  expect(parse(readFileSync(join(dir, "fast.config.toml"), "utf8"))).toEqual({
+    "model_provider": "copilot-env-fast",
+  });
 });

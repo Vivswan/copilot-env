@@ -107,6 +107,48 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(namedMalformed.fix).toBe(
     `repair ${join("/c", "config.toml")}, then re-run \`agent profile --add work\``,
   );
+  // The profile's own file (`codex --profile work` layers it over config.toml) is the one to
+  // repair when IT is the broken one, and every named row names it beside config.toml.
+  const namedFileMalformed = checkCodex(
+    { ...foreign, modelProvider: null, otherReason: "profile-malformed" },
+    parseProfileName("work"),
+  );
+  expect(namedFileMalformed.detail).toContain(
+    `work.config.toml: ${join("/c", "work.config.toml")}`,
+  );
+  expect(namedFileMalformed.detail).toContain("work.config.toml is present but not valid TOML");
+  expect(namedFileMalformed.fix).toBe(
+    `repair ${join("/c", "work.config.toml")}, then re-run \`agent profile --add work\``,
+  );
+  // A profile-v1 leftover is not repaired by a re-add (the writer never deletes it), so the fix
+  // names the migration; a top-level `profile` key names the line to delete.
+  const legacyTable = checkCodex(
+    { ...foreign, modelProvider: null, otherReason: "legacy-profile-table" },
+    parseProfileName("work"),
+  );
+  expect(legacyTable.status).toBe("warn");
+  expect(legacyTable.detail).toContain("[profiles.work]");
+  expect(legacyTable.fix).toBe(
+    "run `agent update` (its migration moves the table into work.config.toml), or move it by " +
+      "hand, then re-run `agent profile --add work`",
+  );
+  const legacyKey = checkCodex({
+    ...foreign,
+    modelProvider: null,
+    otherReason: "legacy-profile-key",
+  });
+  expect(legacyKey.status).toBe("warn");
+  expect(legacyKey.fix).toBe(
+    `delete the \`profile\` line from ${join("/c", "config.toml")}, then re-run \`agent codex\``,
+  );
+  // With no config.toml beside it the broken file still owns the repair: `agent profile --add`
+  // would refuse that file, so "not wired, re-add" is the wrong fix.
+  expect(
+    checkCodex(
+      { ...foreign, configExists: false, modelProvider: null, otherReason: "profile-malformed" },
+      parseProfileName("work"),
+    ).fix,
+  ).toBe(namedFileMalformed.fix);
   // base_url points at the wrong port.
   expect(
     checkCodex({

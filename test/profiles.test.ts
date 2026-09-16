@@ -12,6 +12,7 @@ import {
 } from "../src/claude/desktop.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
+import { codexProfileConfigPath } from "../src/codex/paths.ts";
 import {
   deleteProfileEverywhere,
   parseProfileAction,
@@ -365,7 +366,7 @@ function readToml(path: string): Record<string, unknown> {
   return parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 }
 
-test("a Codex profile writes [profiles.<name>] + its provider table, leaving the default selection untouched", () => {
+test("a Codex profile writes <name>.config.toml + its provider table, leaving the default selection untouched", () => {
   tmpProxyHome();
   const codexHome = tmpCodexHome();
   const state = new CopilotEnvState();
@@ -381,8 +382,10 @@ test("a Codex profile writes [profiles.<name>] + its provider table, leaving the
   configureCodexConfig(codexHome, { credential: COMMAND, mode: "direct", profile: WORK });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBe("copilot-env"); // untouched
-  const profiles = doc.profiles as Record<string, Record<string, unknown>>;
-  expect(profiles.work?.model_provider).toBe(codexProviderId(WORK));
+  expect(doc.profiles).toBeUndefined();
+  expect(readToml(codexProfileConfigPath(codexHome, WORK))).toEqual({
+    model_provider: codexProviderId(WORK),
+  });
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
   const table = providers[codexProviderId(WORK)];
   expect(table).toBeDefined();
@@ -421,8 +424,9 @@ test("a Codex profile write on an EMPTY config file also leaves no dangling mode
   expect(doc.model_provider).toBeUndefined();
   // The write LANDED: the whitespace-only file parses as empty, and the profile
   // wiring must still arrive whole -- selection plus its provider table.
-  const profiles = doc.profiles as Record<string, Record<string, unknown>>;
-  expect(profiles.fast?.model_provider).toBe(codexProviderId(FAST));
+  expect(readToml(codexProfileConfigPath(codexHome, FAST)).model_provider).toBe(
+    codexProviderId(FAST),
+  );
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
   expect(providers[codexProviderId(FAST)]).toBeDefined();
 });
@@ -554,7 +558,7 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   const doc = readToml(join(codexHome, "config.toml"));
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
   expect(providers[codexProviderId(WORK)]).toBeDefined();
-  expect((doc.profiles as Record<string, Record<string, unknown>>).work?.model_provider).toBe(
+  expect(readToml(codexProfileConfigPath(codexHome, WORK)).model_provider).toBe(
     codexProviderId(WORK),
   );
 
@@ -579,7 +583,7 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   expect(
     (after.model_providers as Record<string, unknown> | undefined)?.[codexProviderId(WORK)],
   ).toBeUndefined();
-  expect(after.profiles).toBeUndefined();
+  expect(existsSync(codexProfileConfigPath(codexHome, WORK))).toBe(false);
   expect(existsSync(profileHome(WORK))).toBe(false);
 });
 

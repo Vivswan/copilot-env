@@ -22,6 +22,7 @@ import {
 import { claudeJsonPath, registerClaudeMcpServer } from "../src/claude/mcp_registration.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
+import { codexProfileConfigPath } from "../src/codex/paths.ts";
 import {
   applyUninstall,
   describeUninstall,
@@ -517,6 +518,8 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
     mode: "direct",
   });
   configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", profile: WORK });
+  // The Codex profile file is a deletion OUTSIDE our homes, so the plan must name it.
+  configureCodexConfig(codexHome, { credential: COMMAND, mode: "direct", profile: WORK });
   mkdirSync(profileHome(WORK), { recursive: true });
   // The AMBIENT Desktop library (the env seam) is the injected one, so a profile
   // teardown that rescanned the library would find what is planted below.
@@ -635,6 +638,9 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   expect([...rewritten].filter((path) => !named.has(path))).toEqual([]);
   expect(named.has(rc)).toBe(true);
   expect(named.has(claudeJsonPath())).toBe(true);
+  const workCodexFile = codexProfileConfigPath(codexHome, WORK);
+  expect(deleted.has(workCodexFile)).toBe(true);
+  expect(named.has(workCodexFile)).toBe(true);
   const planned = [
     ...ctx.targets.desktop.entries,
     ...ctx.targets.desktop.helpers,

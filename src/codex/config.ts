@@ -39,7 +39,7 @@ import { errMessage } from "../utils/error.ts";
 import { readTextResult, type TextReadResult } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { mkdirReported } from "../utils/report_write.ts";
+import { mkdirReported, removeReported } from "../utils/report_write.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
 import {
   type CatalogFileVerdict,
@@ -58,7 +58,12 @@ import {
   knownCodexHomes,
   withCodexHostFarm,
 } from "./host.ts";
-import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome } from "./paths.ts";
+import {
+  CODEX_PROVIDER_ID,
+  codexConfigPath,
+  codexProfileConfigPath,
+  defaultCodexHome,
+} from "./paths.ts";
 import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
 
 const logger = createStderrLogger();
@@ -76,9 +81,9 @@ const DIRECT_BASE_URL = DEFAULT_COPILOT_API_BASE;
  *  test). */
 export const DIRECT_AUTH_TIMEOUT_MS = 30000;
 
-/** A named profile is selected via Codex's NATIVE `[profiles.<name>]` table (`codex --profile
- *  <name>`), whose `model_provider` points here; the top-level default selection is never touched.
- */
+/** A named profile is selected by its own `<name>.config.toml` (`codex --profile <name>` layers it
+ *  over config.toml), whose top-level `model_provider` points here; config.toml's default selection
+ *  is never touched. */
 export function codexProviderId(profile: Profile = null): string {
   return profile === null ? CODEX_PROVIDER_ID : `${CODEX_PROVIDER_ID}-${profile}`;
 }
@@ -288,11 +293,31 @@ export function bakedCodexToken(
 // Lives HERE, next to the managed provider tables, so `agent health` and `agent codex` share one
 // contract instead of shell/TOML copies.
 
-/** Minted with providerMode by inspectCodexWiring (mirrors ClaudeOtherReason).
- *    "malformed"   -> config.toml is present but not valid TOML
- *    "read-error"  -> config.toml exists but could not be read
- *    "custom"      -> a foreign `model_provider` is selected */
-export type CodexOtherReason = "malformed" | "custom" | "read-error";
+/** Minted with providerMode by inspectCodexWiring (mirrors ClaudeOtherReason). The profile-
+ *  prefixed pair names `<name>.config.toml`, so a named repair points at the right file; the
+ *  legacy pair is Codex (>= 0.134) refusing the launch outright, whatever the wiring says.
+ *    "malformed"             -> config.toml is present but not valid TOML
+ *    "read-error"            -> config.toml exists but could not be read
+ *    "profile-malformed"     -> `<name>.config.toml` is present but not valid TOML
+ *    "profile-read-error"    -> `<name>.config.toml` exists but could not be read
+ *    "legacy-profile-key"    -> config.toml carries a top-level `profile`: every launch refuses
+ *    "legacy-profile-table"  -> config.toml carries `[profiles.<name>]`: `--profile <name>` refuses
+ *    "custom"                -> a foreign `model_provider` is selected */
+export type CodexOtherReason =
+  | "malformed"
+  | "read-error"
+  | "profile-malformed"
+  | "profile-read-error"
+  | "legacy-profile-key"
+  | "legacy-profile-table"
+  | "custom";
+
+/** What selects the inspected wiring: config.toml's top-level key for the default, and for a
+ *  named profile the top-level key of its `<name>.config.toml`, read alongside config.toml. A
+ *  named inspection without its profile read is unrepresentable. */
+export type CodexSelectionRead =
+  | { profile: null }
+  | { profile: ProfileName; profileToml: TextReadResult };
 
 /** Read from different files than config.toml, so independent of how it classifies. A named
  *  profile's provider never reads an env var (managed auth.command only), so envKeyInDotenv,
@@ -314,9 +339,9 @@ export type CodexWiringStatus =
     | {
       providerMode: "direct";
       configExists: true;
-      /** The inspected selection's `model_provider` (the top-level key for the default, the
-       *  `[profiles.<name>]` selector's value for a named profile); on "other", the foreign value,
-       *  or null when unknowable. */
+      /** The inspected selection's `model_provider` (config.toml's top-level key for the default,
+       *  `<name>.config.toml`'s for a named profile); on "other", the foreign value, or null when
+       *  unknowable. */
       modelProvider: string;
       providerSelected: true;
       /** Direct classification requires the exact Direct base URL, so both facts are pinned at the
@@ -365,7 +390,9 @@ export type CodexWiringStatus =
     }
     | {
       providerMode: "other";
-      configExists: true;
+      /** False only for a named inspection whose `<name>.config.toml` is broken while config.toml
+       *  is absent: presence stays a fact of its own, apart from the classification. */
+      configExists: boolean;
       modelProvider: string | null;
       providerSelected: false;
       baseUrl: null;
@@ -389,18 +416,24 @@ function baseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
 export function bakedCodexDirectIntegrationId(
   configToml: TextReadResult,
   expectedPort: number,
-  profile: Profile = null,
+  selection: CodexSelectionRead = { profile: null },
 ): BakedDirectIdentity {
   if (configToml.kind === "absent") return { kind: "not-direct" };
   if (configToml.kind === "unreadable") return { kind: "unreadable", reason: configToml.error };
-  const wiring = inspectCodexWiring(configToml, null, expectedPort, false, profile);
-  if (wiring.providerMode === "other" && wiring.otherReason === "malformed") {
-    return { kind: "unreadable", reason: codexOtherDetail("malformed") };
+  if (selection.profile !== null && selection.profileToml.kind === "unreadable") {
+    return { kind: "unreadable", reason: selection.profileToml.error };
+  }
+  const wiring = inspectCodexWiring(configToml, null, expectedPort, false, selection);
+  if (
+    wiring.providerMode === "other" &&
+    (wiring.otherReason === "malformed" || wiring.otherReason === "profile-malformed")
+  ) {
+    return { kind: "unreadable", reason: codexOtherDetail(wiring.otherReason) };
   }
   if (wiring.providerMode !== "direct") return { kind: "not-direct" };
   const doc: unknown = parse(configToml.text);
   const providers = isRecord(doc) ? doc.model_providers : undefined;
-  const table = isRecord(providers) ? providers[codexProviderId(profile)] : undefined;
+  const table = isRecord(providers) ? providers[codexProviderId(selection.profile)] : undefined;
   const headers = isRecord(table) ? table.http_headers : undefined;
   const id = isRecord(headers) ? headers[INTEGRATION_ID_HEADER] : undefined;
   return { kind: "direct", integrationId: typeof id === "string" ? id : null };
@@ -410,8 +443,9 @@ export function bakedCodexDirectIntegrationId(
  * An UNREADABLE or unparseable config is "other", never "none": "none" would let a best-effort
  * caller write over a config it could not read.
  *
- *   a NAMED profile  -> Codex's own `[profiles.<name>]` -> `[model_providers.copilot-env-<name>]`,
- *                       with the top-level default selection playing no part
+ *   a NAMED profile  -> `<name>.config.toml`'s `model_provider` -> config.toml's
+ *                       `[model_providers.copilot-env-<name>]`, with the default selection playing
+ *                       no part; a profile file without the key selects nothing of its own
  *   `expectedPort`   -> the caller passes the selection's OWN reserved proxy port
  */
 export function inspectCodexWiring(
@@ -419,11 +453,12 @@ export function inspectCodexWiring(
   envText: string | null,
   expectedPort: number,
   envKeyInEnviron: boolean,
-  profile: Profile = null,
+  selection: CodexSelectionRead = { profile: null },
 ): CodexWiringStatus {
   const read: TextReadResult = typeof configToml === "string"
     ? { kind: "text", text: configToml }
     : configToml ?? { kind: "absent" };
+  const profile = selection.profile;
   const providerId = codexProviderId(profile);
   const envKeyInDotenv = profile === null &&
     envText !== null &&
@@ -452,10 +487,11 @@ export function inspectCodexWiring(
   const other = (
     otherReason: CodexOtherReason,
     modelProvider: string | null,
+    configExists = true,
   ): CodexWiringStatus => ({
     ...tokenFacts,
     providerMode: "other",
-    configExists: true,
+    configExists,
     modelProvider,
     providerSelected: false,
     baseUrl: null,
@@ -466,22 +502,47 @@ export function inspectCodexWiring(
     directUsesToken: false,
     otherReason,
   });
-  if (read.kind === "absent") return none(false);
   if (read.kind === "unreadable") return other("read-error", null);
-  let doc: unknown;
-  try {
-    doc = parse(read.text);
-  } catch {
-    return other("malformed", null);
+  let doc: unknown = null;
+  if (read.kind === "text") {
+    try {
+      doc = parse(read.text);
+    } catch {
+      return other("malformed", null);
+    }
   }
-  // The selection fact mirrors what Codex itself reads: the top-level `model_provider` for the
-  // default, the `[profiles.<name>]` table's for a named profile (`codex --profile <name>`).
-  const profilesTable = isRecord(doc) ? doc.profiles : undefined;
-  const selector = profile === null
-    ? doc
-    : isRecord(profilesTable)
-    ? profilesTable[profile]
-    : undefined;
+  // The selection fact mirrors what Codex itself reads: config.toml's top-level `model_provider`
+  // for the default, `<name>.config.toml`'s for a named profile (`codex --profile <name>`), which
+  // Codex refuses as a whole when either file is unparseable. The profile file is judged before
+  // config.toml's absence, so a broken one is never hidden behind "no config".
+  let selector: unknown = doc;
+  if (selection.profile !== null) {
+    const profileRead = selection.profileToml;
+    const configExists = read.kind !== "absent";
+    if (profileRead.kind === "unreadable") {
+      return other("profile-read-error", null, configExists);
+    }
+    if (profileRead.kind === "text") {
+      try {
+        selector = parse(profileRead.text);
+      } catch {
+        return other("profile-malformed", null, configExists);
+      }
+    }
+  }
+  if (read.kind === "absent") return none(false);
+  // Codex refuses the launch on the profile-v1 shapes before any provider is read (verified on
+  // 0.153.4), so a layout that still carries them must never read as wired, nor as "none" (whose
+  // repair, a re-add, writes the profile file and leaves the shape in place). hasOwn: a profile
+  // named like an Object.prototype property must not find the prototype's.
+  if (isRecord(doc) && doc.profile !== undefined) return other("legacy-profile-key", null);
+  if (
+    selection.profile !== null && isRecord(doc) && isRecord(doc.profiles) &&
+    Object.hasOwn(doc.profiles, selection.profile)
+  ) {
+    return other("legacy-profile-table", null);
+  }
+  if (selection.profile !== null && selection.profileToml.kind === "absent") return none(true);
   const modelProvider = isRecord(selector) && typeof selector.model_provider === "string"
     ? selector.model_provider
     : null;
@@ -580,6 +641,24 @@ function loadOrCreateConfig(hostConfig: string): Record<string, unknown> {
   }
 }
 
+/** A named profile's `<name>.config.toml` as the writer merges into it: the user's own keys stay,
+ *  a missing file starts empty, and a present-but-unparseable one throws like config.toml does
+ *  (never clobber what could not be read). */
+function loadProfileConfig(codexHome: string, name: ProfileName): Record<string, unknown> {
+  const profilePath = codexProfileConfigPath(codexHome, name);
+  const read = readCodexToml(profilePath);
+  switch (read.kind) {
+    case "absent":
+      return {};
+    case "unparseable":
+      throw new Error(`${profilePath} is not valid TOML; refusing to overwrite it (${read.error})`);
+    case "ok":
+      return read.doc;
+    default:
+      return assertNever(read);
+  }
+}
+
 /** The removal paths delete keys and write back, so a file that exists but cannot be read or parsed
  *  throws: they must never blind-write over a config they could not fully read. */
 function readConfigForRemoval(configPath: string): Record<string, unknown> | null {
@@ -614,9 +693,9 @@ function validateProxyOptions(
  *
  * DEFAULT profile -> the top-level `model_provider` selects `copilot-env`, plus the top-level
  *                    managed keys (web_search, catalog reference)
- * NAMED profile   -> only `[model_providers.copilot-env-<name>]` and the native
- *                    `[profiles.<name>]` selector, so `codex --profile <name>` and plain `codex`
- *                    coexist
+ * NAMED profile   -> `[model_providers.copilot-env-<name>]` in config.toml plus the selector as the
+ *                    top-level `model_provider` of `<name>.config.toml`, so `codex --profile
+ *                    <name>` and plain `codex` coexist
  * either, proxy   -> also the GLOBAL `sandbox_workspace_write.network_access`, which auth.command
  *                    needs
  */
@@ -653,6 +732,12 @@ export function configureCodexConfig(
     }
   })();
   const doc = loadOrCreateConfig(hostConfig);
+  // Loaded BEFORE anything is saved, so a profile file this write refuses to clobber fails the
+  // write whole rather than after config.toml already changed.
+  const profileFile = profile === null ? null : {
+    path: codexProfileConfigPath(codexHome, profile),
+    doc: loadProfileConfig(codexHome, profile),
+  };
 
   // Every managed field is (re)written on every run, so a stale value or a missing managed key
   // heals; other providers, [analytics]/[feedback], and unknown top-level keys are left untouched.
@@ -726,15 +811,6 @@ export function configureCodexConfig(
   };
   doc.model_providers = providers;
 
-  if (profile !== null) {
-    // `codex --profile <name>` flips ONLY the provider; user keys in the same [profiles.<name>]
-    // table (model pins etc.) survive.
-    const profilesTable = isRecord(doc.profiles) ? doc.profiles : {};
-    const existingProfile = isRecord(profilesTable[profile]) ? profilesTable[profile] : {};
-    profilesTable[profile] = { ...existingProfile, "model_provider": providerId };
-    doc.profiles = profilesTable;
-  }
-
   const knownHome = knownCodexHomes().homes.includes(codexHome);
   // The write's own line carries what the write means and lands before the fallible ledger
   // bookkeeping. Every profile shares this one file and the seam names a path once per process, so
@@ -749,6 +825,13 @@ export function configureCodexConfig(
     doc,
     ["Codex config", credentialLine, catalogRefLine].filter(Boolean).join("; "),
   );
+  if (profileFile !== null) {
+    // `codex --profile <name>` flips ONLY the provider; the user's own keys in the profile file
+    // (model pins etc.) survive. Saved after config.toml so the selector never lands ahead of the
+    // table it points at.
+    profileFile.doc.model_provider = providerId;
+    saveCodexToml(profileFile.path, profileFile.doc, "Codex profile config");
+  }
   // Ownership lands only AFTER the successful save (the ledger's crash-direction contract), and
   // only for a KNOWN Codex home (the set the cleanup sweep visits), so detectCodexDirect's
   // throwaway probe home never enters the ledger. Recording on every enabled write also ADOPTS a
@@ -817,6 +900,14 @@ function codexOtherDetail(otherReason: CodexOtherReason): string {
       return "config.toml is present but not valid TOML";
     case "read-error":
       return "config.toml exists but could not be read";
+    case "profile-malformed":
+      return "the profile's config.toml is present but not valid TOML";
+    case "profile-read-error":
+      return "the profile's config.toml exists but could not be read";
+    case "legacy-profile-key":
+      return "config.toml carries a legacy top-level `profile` key (Codex refuses every launch)";
+    case "legacy-profile-table":
+      return "config.toml carries a legacy [profiles.<name>] table (Codex refuses the profile)";
     case "custom":
       return "custom or unsupported provider";
     default:
@@ -884,28 +975,29 @@ function serviceTierDetail(doc: Record<string, unknown>): string {
   return `"${String(tier)}" (unrecognized; left alone)`;
 }
 
-/** The `[profiles.<name>]` selector goes only while it still points at our provider id: a
- *  user-repointed selector is no longer ours to delete. A present-but-unparseable file throws. */
+/** The provider table goes by name; `<name>.config.toml`'s selector goes only while it still points
+ *  at our provider id (a user-repointed one is no longer ours), and the file itself only when
+ *  nothing of the user's remains in it. A present-but-unparseable file throws. */
 export function removeCodexProfile(codexHome: string, name: ProfileName): void {
-  const configPath = codexConfigPath(codexHome);
-  const doc = readConfigForRemoval(configPath);
-  if (doc === null) return;
   const providerId = codexProviderId(name);
-  let changed = false;
-  const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
-  if (providers[providerId] !== undefined) {
-    delete providers[providerId];
-    changed = true;
-    if (Object.keys(providers).length === 0) delete doc.model_providers;
+  const configPath = codexConfigPath(codexHome);
+  const profilePath = codexProfileConfigPath(codexHome, name);
+  // Both reads before either save: a profile file that throws must leave config.toml as it was,
+  // never a selector whose provider table is already gone.
+  const doc = readConfigForRemoval(configPath);
+  const profileDoc = readConfigForRemoval(profilePath);
+  if (doc !== null) {
+    const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
+    if (providers[providerId] !== undefined) {
+      delete providers[providerId];
+      if (Object.keys(providers).length === 0) delete doc.model_providers;
+      saveCodexToml(configPath, doc);
+    }
   }
-  const profiles = isRecord(doc.profiles) ? doc.profiles : {};
-  const selector = profiles[name];
-  if (isRecord(selector) && selector.model_provider === providerId) {
-    delete profiles[name];
-    changed = true;
-    if (Object.keys(profiles).length === 0) delete doc.profiles;
-  }
-  if (changed) saveCodexToml(configPath, doc);
+  if (profileDoc === null || profileDoc.model_provider !== providerId) return;
+  delete profileDoc.model_provider;
+  if (Object.keys(profileDoc).length === 0) removeReported(profilePath);
+  else saveCodexToml(profilePath, profileDoc);
 }
 
 /**

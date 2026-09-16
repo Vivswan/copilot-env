@@ -2,11 +2,12 @@
 // stand against the facts probe.ts gathered, plus the `--live` end-to-end
 // checks. No I/O, like checks.ts, whose evaluateAll registers these alongside
 // the environment and runtime checks.
+import { basename, dirname } from "node:path";
 import { DIRECT_BASE_URL } from "../claude/config.ts";
 import { type ClaudeDesktopStatus, renderClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import { type CodexOtherReason, codexProviderId } from "../codex/config.ts";
 import { codexHostDriftFrom, codexHostDriftLine } from "../codex/host.ts";
-import { codexConfigPath } from "../codex/paths.ts";
+import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
 import { agentStartCommand, type Profile } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -131,15 +132,49 @@ function directAuthVerdict(
   };
 }
 
-/** Keyed off the reason the classifier minted (exhaustive, so a new reason forces a verdict).
- *  Null = "custom": a foreign selection is re-wirable, so checkCodex's generic model_provider
- *  reporting owns it. */
-function codexOtherLine(reason: CodexOtherReason): string | null {
+/** Keyed off the reason the classifier minted (exhaustive, so a new reason forces a verdict), with
+ *  the repair: `repair <file>` for a broken one, or the one step that lifts a profile-v1 shape (a
+ *  rewire never removes it, so `agent profile --add` alone would leave Codex refusing). Null =
+ *  "custom": a foreign selection is re-wirable, so checkCodex's generic model_provider reporting
+ *  owns it. */
+function codexOtherLine(
+  reason: CodexOtherReason,
+  configPath: string,
+  profile: Profile,
+): { line: string; repair: string } | null {
+  // The inspector mints a profile reason only for a named inspection, so the fallback is unreached.
+  const profileFile = profile === null
+    ? configPath
+    : codexProfileConfigPath(dirname(configPath), profile);
   switch (reason) {
     case "malformed":
-      return "config.toml is present but not valid TOML";
+      return { line: "config.toml is present but not valid TOML", repair: `repair ${configPath}` };
     case "read-error":
-      return "config.toml exists but could not be read";
+      return { line: "config.toml exists but could not be read", repair: `repair ${configPath}` };
+    case "profile-malformed":
+      return {
+        line: `${basename(profileFile)} is present but not valid TOML`,
+        repair: `repair ${profileFile}`,
+      };
+    case "profile-read-error":
+      return {
+        line: `${basename(profileFile)} exists but could not be read`,
+        repair: `repair ${profileFile}`,
+      };
+    case "legacy-profile-key":
+      return {
+        line:
+          "config.toml carries a top-level `profile` key, which Codex no longer supports (every launch refuses to start)",
+        repair: `delete the \`profile\` line from ${configPath}`,
+      };
+    case "legacy-profile-table":
+      return {
+        line:
+          `config.toml carries a [profiles.${profile}] table, which Codex no longer supports (\`codex --profile ${profile}\` refuses to start)`,
+        repair: `run \`agent update\` (its migration moves the table into ${
+          basename(profileFile)
+        }), or move it by hand`,
+      };
     case "custom":
       return null;
     default:
@@ -149,6 +184,12 @@ function codexOtherLine(reason: CodexOtherReason): string | null {
 
 export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult {
   const configPath = codexConfigPath(f.home);
+  // A named profile's selector lives in its own file, named on every row beside config.toml.
+  const profileConfigPath = profile === null ? null : codexProfileConfigPath(f.home, profile);
+  const fileLines = [
+    `config.toml: ${configPath}`,
+    ...(profileConfigPath === null ? [] : [`${basename(profileConfigPath)}: ${profileConfigPath}`]),
+  ];
   // A named profile's whole wiring (both agents, one mode) is rewritten by ONE command, so every
   // named repair points there instead of `agent codex ...`.
   const directFix = profile === null ? "agent codex --direct" : profileAddFix(profile);
@@ -175,6 +216,22 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
       directUsesToken: f.directNeedsNoGh,
     },
   };
+  // A file that could not be parsed or read: the managed writers REFUSE such a file, so a re-wire
+  // fix cannot land and the repair comes first (mirrors the Claude malformed/read-error arm;
+  // codexOtherLine's null sends a foreign "custom" selection to the re-wire path below). Judged
+  // before "no config": a named profile's broken file needs repairing whether config.toml exists.
+  if (f.providerMode === "other") {
+    const other = codexOtherLine(f.otherReason, configPath, profile);
+    if (other !== null) {
+      const rewire = profile === null ? "agent codex" : profileAddFix(profile);
+      return {
+        ...base,
+        status: "warn",
+        detail: ["provider: other", ...fileLines, other.line].join("\n"),
+        fix: `${other.repair}, then re-run \`${rewire}\``,
+      };
+    }
+  }
   // No config: fine for the default, but a NAMED profile promises both-agent wiring, so its
   // absence is an interrupted `agent profile --add`.
   if (!f.configExists) {
@@ -207,7 +264,7 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
       status: "warn",
       detail: [
         `provider: ${f.providerMode}`,
-        `config.toml: ${configPath}`,
+        ...fileLines,
         `wired ${f.providerMode}, but the profile's recorded mode is ${f.expectedMode} (out of step with the store slot)`,
       ].join("\n"),
       fix: profileAddFix(profile),
@@ -230,7 +287,7 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
     );
     const detail = [
       "provider: direct",
-      `config.toml: ${configPath}`,
+      ...fileLines,
       `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}`,
       verdict.authLine,
     ].join("\n");
@@ -238,23 +295,8 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
       ? { ...base, status: "ok", detail }
       : { ...base, status: "warn", detail, fix: verdict.fix };
   }
-  // A config.toml that could not be parsed or read: the managed writers REFUSE such a file, so a
-  // re-wire fix cannot land and the repair comes first (mirrors the Claude malformed/read-error
-  // arm; codexOtherLine's null sends a foreign "custom" selection to the re-wire path below).
-  if (f.providerMode === "other") {
-    const otherLine = codexOtherLine(f.otherReason);
-    if (otherLine !== null) {
-      const rewire = profile === null ? "agent codex" : profileAddFix(profile);
-      return {
-        ...base,
-        status: "warn",
-        detail: ["provider: other", `config.toml: ${configPath}`, otherLine].join("\n"),
-        fix: `repair ${configPath}, then re-run \`${rewire}\``,
-      };
-    }
-  }
   // Config exists: report precisely which part of the wiring is off.
-  const withConfigPath = (message: string) => `config.toml: ${configPath}\n${message}`;
+  const withConfigPath = (message: string) => [...fileLines, message].join("\n");
   let detail: string | null = null;
   if (!f.providerSelected) {
     detail = [
@@ -284,7 +326,7 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
   const baked = bakedCredentialClause(f.bakedCredential, proxyFix);
   const detailLines = [
     "provider: proxy",
-    `config.toml: ${configPath}`,
+    ...fileLines,
     `model_provider ${codexProviderId(profile)} → ${f.baseUrl}`,
     f.credential === "static"
       ? `auth: local proxy key baked into the config (static-key; the daemon must be running: \`${

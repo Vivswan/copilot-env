@@ -973,11 +973,13 @@ test.skipIf(process.platform === "win32")(
         })),
         { catalogDeps: NOOP_CATALOG_DEPS },
       ).writes.join("\n");
+    // Both Codex files the profile write touches are named, under the same home.
     expect(profileOnly({ codexHost: true })).toContain(
-      `Codex config: ${farmConfig}`,
+      `Codex config: ${farmConfig}\nCodex profile config: ${join(hostHome, "work.config.toml")}`,
     );
     expect(profileOnly({})).toContain(
-      `Codex config: ${join(homes.codexHome, "config.toml")}`,
+      `Codex config: ${join(homes.codexHome, "config.toml")}\n` +
+        `Codex profile config: ${join(homes.codexHome, "work.config.toml")}`,
     );
   },
 );

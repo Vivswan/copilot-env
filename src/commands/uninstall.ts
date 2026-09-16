@@ -16,7 +16,7 @@ import {
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
-import { codexConfigPath } from "../codex/paths.ts";
+import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { allProfileNames } from "../copilot_api/env_state.ts";
@@ -151,7 +151,7 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     describe: (ctx) =>
       ctx.targets.profiles.map(
         ({ name, claudeArtifacts, home }) =>
-          `Would delete ${profileLabel(name)}: its credential, its Codex profile tables, ` +
+          `Would delete ${profileLabel(name)}: its credential, its Codex wiring (named below), ` +
           `${[...claudeArtifacts, home].join(", ")}.`,
       ),
     run: async (ctx) => {
@@ -166,9 +166,19 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     // step 7 removes (a dangling reference breaks Codex startup), and a profile wired while that
     // home was active left its tables there; step 2 stripped only the currently-effective home.
     describe: (ctx) => {
-      const lines = ctx.codexHomes.map(
-        (home) => `Would remove the copilot-env wiring from ${codexConfigPath(home)}.`,
-      );
+      // Every named profile's own file is a deletion outside our homes, so each one present is
+      // named here, per home, before the user approves.
+      const lines = ctx.codexHomes.map((home) => {
+        const profileFiles = ctx.profiles
+          .map((name) => codexProfileConfigPath(home, name))
+          .filter((file) => existsSync(file));
+        return `Would remove the copilot-env wiring from ${codexConfigPath(home)}` +
+          (profileFiles.length === 0
+            ? "."
+            : ` and from ${
+              profileFiles.join(", ")
+            } (each deleted when nothing else remains in it).`);
+      });
       const farm = ctx.targets.codexHostFarm;
       if (farm !== null) lines.push(`Would delete the CODEX_HOME host farm: ${farm}`);
       return lines;

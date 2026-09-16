@@ -56,6 +56,11 @@ import {
   withCodexHostFarm,
 } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome } from "./paths.ts";
+import {
+  proxyAuthBlockedBySandbox,
+  readCodexSandboxMode,
+  runsSandboxedProxyAuth,
+} from "./sandbox.ts";
 import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
 
 const logger = createStderrLogger();
@@ -838,6 +843,11 @@ function checkCodexConfig(): void {
         `service_tier: ${serviceTierDetail(parse(read.text) as Record<string, unknown>)}`,
       );
     }
+    // Same verdict as health's setup.codex-sandbox row; the command-shape classification proves
+    // the text parsed, so the reader is non-null here.
+    const sandbox = runsSandboxedProxyAuth(status) ? readCodexSandboxMode(read, null) : null;
+    const blocked = sandbox === null ? null : proxyAuthBlockedBySandbox(sandbox, configPath, null);
+    if (blocked !== null) logger.warn(`  ! ${blocked.detail}; ${blocked.fix}`);
     process.exitCode = providerModeExitCode(status.providerMode);
   } catch (e) {
     logger.error(`Codex provider check failed: ${errMessage(e)}`);

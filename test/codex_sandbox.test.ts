@@ -1,0 +1,223 @@
+// A read-only Codex sandbox blocks the proxy auth command (loopback is firewalled there, and
+// Codex has no network switch for read-only), so both surfaces must name the offending line.
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { parse, stringify } from "smol-toml";
+import { providerModeExitCode } from "../src/agents/provider_mode.ts";
+import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
+import { configureCodexConfig, runCodex } from "../src/codex/config.ts";
+import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
+import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
+import { evaluateAll } from "../src/health/checks.ts";
+import { gatherFacts, type ProbeDeps } from "../src/health/probe.ts";
+import type { CheckResult } from "../src/health/types.ts";
+import type { TextReadResult } from "../src/utils/fs.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
+import { proxyTokenCommand } from "../src/utils/root.ts";
+import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers.ts";
+
+const restoreEnv = envSnapshot();
+let dir = "";
+
+afterEach(() => {
+  restoreEnv();
+  resetExitCode();
+  dir = removeDir(dir);
+});
+
+const P = parseProfileName("work");
+const HOME = "/hx";
+const CONFIG = join(HOME, "config.toml");
+const PROXY_URL = "http://127.0.0.1:4141/v1";
+const PROFILE_PROXY_URL = "http://127.0.0.1:4242/v1";
+
+/** A selection's provider table: the managed proxy command shape, a static bearer, or Direct. */
+type Wiring = "proxy" | "static-proxy" | "direct";
+
+function providerTable(wiring: Wiring, profile: Profile): string[] {
+  if (wiring === "direct") return [`base_url = "${DEFAULT_COPILOT_API_BASE}"`];
+  const lines = [`base_url = "${profile === null ? PROXY_URL : PROFILE_PROXY_URL}"`];
+  if (wiring === "static-proxy") {
+    return [...lines, 'http_headers = { Authorization = "Bearer sk-baked" }'];
+  }
+  const { command, args } = proxyTokenCommand(profile);
+  const argList = args.map((a) => JSON.stringify(a)).join(", ");
+  return [...lines, `auth = { command = ${JSON.stringify(command)}, args = [${argList}] }`];
+}
+
+/** The default selection plus the named profile `work`; `lines.top` starts on line 2 and
+ *  `lines.profile` sits on line 6, so a sandbox_mode line's number is known to the assertions. */
+function configToml(
+  wiring: { default: Wiring; profile: Wiring },
+  lines: { top?: string[]; profileHeaderComment?: string; profile?: string },
+): string {
+  return [
+    'model_provider = "copilot-env"',
+    ...(lines.top ?? []),
+    "",
+    `[profiles.work]${lines.profileHeaderComment ? ` # ${lines.profileHeaderComment}` : ""}`,
+    'model_provider = "copilot-env-work"',
+    ...(lines.profile ? [lines.profile] : []),
+    "",
+    "[model_providers.copilot-env]",
+    ...providerTable(wiring.default, null),
+    "",
+    "[model_providers.copilot-env-work]",
+    ...providerTable(wiring.profile, P),
+    "",
+  ].join("\n");
+}
+
+async function sandboxRows(toml: string): Promise<CheckResult[]> {
+  // A named profile's candidate port is never derived: on an exhausted port range that derivation
+  // throws, and a Direct profile needs no port at all. The classification is port-independent.
+  const neverForNamed = (what: string) => (profile: Profile): never => {
+    throw new Error(`${what} derived a candidate port for profile ${profile}`);
+  };
+  const deps: Partial<ProbeDeps> = {
+    codexHome: () => HOME,
+    readFileSafe: () => null,
+    readFileResult: (): TextReadResult => ({ kind: "text", text: toml }),
+    resolvePort: (profile) => profile === null ? "4141" : neverForNamed("resolvePort")(profile),
+    fallbackPort: neverForNamed("fallbackPort"),
+    profileNames: () => [P],
+    codexTokenInEnviron: () => false,
+    authProvider: () => null,
+    storedTokenPresent: () => false,
+    codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+    ghActiveLogin: () => Promise.resolve(null),
+  };
+  const facts = await gatherFacts("codex", {}, deps);
+  return evaluateAll("codex", facts).filter((c) => c.id === "setup.codex-sandbox");
+}
+
+test("health: a read-only sandbox warns per proxy selection, naming the line; Direct has no row", async () => {
+  const readOnly = 'sandbox_mode = "read-only"';
+  const bothProxy = { default: "proxy", profile: "proxy" } as const;
+  const cases: {
+    name: string;
+    toml: string;
+    expected: { profile: string | null; status: string; at?: string; fix?: string }[];
+  }[] = [
+    {
+      name: "proxy + top-level read-only: both selections inherit it",
+      toml: configToml(bothProxy, { top: [readOnly] }),
+      expected: [
+        { profile: null, status: "warn", at: `${CONFIG}:2`, fix: "agent codex --direct" },
+        { profile: P, status: "warn", at: `${CONFIG}:2`, fix: "agent profile --add work --direct" },
+      ],
+    },
+    {
+      name: "proxy + workspace-write is fine",
+      toml: configToml(bothProxy, { top: ['sandbox_mode = "workspace-write"'] }),
+      expected: [{ profile: null, status: "ok" }, { profile: P, status: "ok" }],
+    },
+    {
+      name: "direct + read-only: nothing to report",
+      toml: configToml({ default: "direct", profile: "direct" }, { top: [readOnly] }),
+      expected: [],
+    },
+    {
+      name: "a static bearer runs no auth command, so only the command-shape profile has a row",
+      toml: configToml({ default: "static-proxy", profile: "proxy" }, { top: [readOnly] }),
+      expected: [{ profile: P, status: "warn", at: `${CONFIG}:2` }],
+    },
+    {
+      name:
+        "the profile table's read-only overrides a top-level workspace-write for that profile only",
+      toml: configToml(bothProxy, { top: ['sandbox_mode = "workspace-write"'], profile: readOnly }),
+      expected: [
+        { profile: null, status: "ok" },
+        { profile: P, status: "warn", at: `${CONFIG}:6 (in the profile table)` },
+      ],
+    },
+    {
+      // smol-toml reports no positions, so the line is proved by rewriting its value; a look-alike
+      // inside a multi-line string (line 3), a quoted key that merely spells the path (line 5),
+      // and a comment on the profile's table header (line 8) must not be cited over the real
+      // assignments (line 6 for the default, line 10 for the profile).
+      name: "the cited line is the assignment itself, never a look-alike",
+      toml: configToml(bothProxy, {
+        top: [
+          'developer_instructions = """',
+          'sandbox_mode = "workspace-write"',
+          '"""',
+          '"profiles.work.sandbox_mode" = "workspace-write"',
+          readOnly,
+        ],
+        profileHeaderComment: readOnly,
+        profile: readOnly,
+      }),
+      expected: [
+        { profile: null, status: "warn", at: `${CONFIG}:6` },
+        { profile: P, status: "warn", at: `${CONFIG}:10 (in the profile table)` },
+      ],
+    },
+  ];
+  for (const c of cases) {
+    const rows = await sandboxRows(c.toml);
+    expect(rows.map((r) => ({ profile: r.profile, status: r.status })), c.name).toEqual(
+      c.expected.map(({ profile, status }) => ({ profile, status })),
+    );
+    for (const [i, e] of c.expected.entries()) {
+      if (e.at) expect(rows[i]?.detail, c.name).toContain(`sandbox_mode = "read-only" at ${e.at}`);
+      if (e.fix) expect(rows[i]?.fix, c.name).toContain(e.fix);
+    }
+  }
+});
+
+test("agent codex --check says where a read-only sandbox blocks proxy auth, and leaves the line alone", async () => {
+  const homes = isolateAgentHomes("copilot-sandbox-", { mkdirs: true });
+  dir = homes.dir;
+  const configPath = join(homes.codexHome, "config.toml");
+  const write = () =>
+    configureCodexConfig(homes.codexHome, {
+      mode: "proxy",
+      baseUrl: PROXY_URL,
+      credential: { kind: "command" },
+      quiet: true,
+    });
+  write();
+  const doc = parse(readFileSync(configPath, "utf8"));
+  writeFileSync(configPath, stringify({ ...doc, sandbox_mode: "read-only" }));
+  const line = readFileSync(configPath, "utf8").split("\n")
+    .findIndex((l) => l.startsWith("sandbox_mode")) + 1;
+  expect(line).toBeGreaterThan(0);
+
+  const said = await stderrOf(() => runCodex({ kind: "check" }, NOOP_CATALOG_DEPS));
+  // The warning is advisory: the provider-mode exit code stays.
+  expect(process.exitCode).toBe(providerModeExitCode("proxy"));
+  expect(said).toContain(
+    `sandbox_mode = "read-only" at ${configPath}:${line} blocks the proxy auth command`,
+  );
+  // The logger renders markdown, so the command's backticks are asserted apart from the text.
+  expect(said).toContain(
+    `set sandbox_mode = "workspace-write" in ${configPath}, or switch Codex to Direct with`,
+  );
+  expect(said).toContain("agent codex --direct");
+  // A rewire never touches the user's setting.
+  write();
+  expect(parse(readFileSync(configPath, "utf8")).sandbox_mode).toBe("read-only");
+});
+
+/** Everything `fn` says on stderr, the logger's lines and the seam's held-back write reports. */
+async function stderrOf(fn: () => Promise<void>): Promise<string> {
+  let out = "";
+  const realWrite = process.stderr.write;
+  const realLog = console.log;
+  process.stderr.write = (chunk: string | Uint8Array): boolean => {
+    out += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    return true;
+  };
+  console.log = () => {};
+  deferWriteReports();
+  try {
+    await fn();
+  } finally {
+    process.stderr.write = realWrite;
+    console.log = realLog;
+    out += flushWriteReports().map((line) => `${line}\n`).join("");
+  }
+  return out;
+}

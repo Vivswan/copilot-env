@@ -620,7 +620,9 @@ async function defaultFetchCopilotModels(
 ): Promise<Map<string, CopilotCatalogModel> | null> {
   // The deadline aborts the requests themselves (identity probes included), so a slow Copilot
   // cannot keep the auth process alive past the budget. The catalog feeds Codex's OWN requests,
-  // so the direct fetch asks as Codex does (identity-exact gating, copilot_api/catalog.ts).
+  // so the direct fetch asks as Codex does (identity-exact gating, copilot_api/catalog.ts); the
+  // proxy fetch names no identity, and never resolves the User-Agent, whose version lookup can
+  // spawn `codex --version` and `npm view` for seconds with no codex installed.
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(), COPILOT_FETCH_BUDGET_MS);
   try {
@@ -628,7 +630,9 @@ async function defaultFetchCopilotModels(
       await fetchRawModels(source, {
         directToken,
         signal: deadline.signal,
-        identity: { kind: "agents", userAgent: codexUserAgent() },
+        ...(source === "direct"
+          ? { identity: { kind: "agents", userAgent: codexUserAgent() } }
+          : {}),
       }),
     );
   } catch {

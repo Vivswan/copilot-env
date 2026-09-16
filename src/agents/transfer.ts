@@ -31,7 +31,8 @@ import { codexConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
 import { GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
 import {
-  codexHostEnabledFor,
+  type CodexHomePrefs,
+  codexHomePrefsFor,
   CONFIG_REGISTRY,
   CONFIG_SCHEMA,
   configDefaultBoolean,
@@ -509,9 +510,9 @@ export interface ImportPlan {
 
 /** Named-profile wiring writes its provider tables into the effective home's config.toml. The
  *  apply replaces the preference store before it wires, so the home named here is resolved under
- *  the BUNDLE's codex-host value, not the local one. */
-function profileCodexLine(codexHost: boolean): string {
-  return `Codex config: ${codexConfigPath(effectiveCodexHomeFor(codexHost))}`;
+ *  the BUNDLE's codex-home and codex-host values, not the local ones. */
+function profileCodexLine(prefs: CodexHomePrefs): string {
+  return `Codex config: ${codexConfigPath(effectiveCodexHomeFor(prefs))}`;
 }
 
 // PLAN-INPUT RULE for planWrites: everything read there is either apply-immutable (env, homes,
@@ -560,12 +561,12 @@ function planWrites(
     lines.push(`profile slot${overwritten.length === 1 ? "" : "s"}: ${overwritten.join(", ")}`);
   }
   const wired = profiles.filter((p) => p.landing.action !== "skip" && p.slot.mode !== null);
+  const homePrefs = codexHomePrefsFor(bundle.config);
   if (modes.codex !== null) {
     // Post-import resolution (the plan-input rule): the farm decision is the SAME one the apply
     // takes, so its action and landing can be named.
-    const farm = codexHostFarm();
-    const codexHost = codexHostEnabledFor(bundle.config.codexHost);
-    const plan = planCodexHostFarm(codexHost, farm);
+    const farm = codexHostFarm(homePrefs);
+    const plan = planCodexHostFarm(homePrefs.hostFarm, farm);
     if (plan.action === "build") lines.push(`Per-host CODEX_HOME farm (built): ${farm.hostHome}`);
     if (plan.action === "remove") {
       lines.push(`Per-host CODEX_HOME farm (removed): ${farm.hostHome}`);
@@ -575,7 +576,7 @@ function planWrites(
     }
     const home = plan.action === "build" || plan.action === "verify"
       ? farm.hostHome
-      : unmanagedCodexHome();
+      : homePrefs.explicit ?? unmanagedCodexHome(homePrefs);
     // The catalog sync may rewrite other host configs and the generated catalog file; the set is
     // dynamic, so one honest line beats an enumeration that would go stale.
     lines.push(
@@ -583,7 +584,7 @@ function planWrites(
         "other known host configs and the generated catalog file)",
     );
   } else if (wired.length > 0) {
-    lines.push(profileCodexLine(codexHostEnabledFor(bundle.config.codexHost)));
+    lines.push(profileCodexLine(homePrefs));
   }
   const claudeHome = resolveClaudeHome();
   if (modes.claude !== null) {

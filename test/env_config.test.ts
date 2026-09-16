@@ -1,4 +1,5 @@
 import { chmodSync } from "node:fs";
+import { resolve } from "node:path";
 import * as v from "valibot";
 import {
   configTable,
@@ -8,8 +9,9 @@ import {
   unreadProjectedKeyWarnings,
 } from "../src/commands/config.ts";
 import {
-  codexHostEnabledFor,
+  codexHomePrefsFor,
   CONFIG_REGISTRY,
+  CONFIG_SCHEMA,
   CONFIG_SECTIONS,
   type ConfigCli,
   configDefaultNumber,
@@ -330,6 +332,9 @@ test("runConfig --get <key> prints just the value to stdout (script-friendly)", 
 
 // One valid `--set` string per registry key, typed over ConfigCli: a new registry key without
 // an entry here is a compile error, so the round trip below covers every key.
+// Fully qualified on every platform: on Windows this carries the drive the domain requires.
+const ABS_CODEX_HOME = resolve("/srv/codex");
+
 const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "alpha-search-codex-priority": "false",
   "alpha-search-model": "gpt-5",
@@ -338,6 +343,7 @@ const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "claude-auto-model": "claude-haiku-4.5",
   "claude-desktop": "false",
   "claude-token-multiplier": "1.3",
+  "codex-home": ABS_CODEX_HOME,
   "codex-host": "true",
   "codex-model-catalog": "true",
   "idle-timeout": "120",
@@ -412,13 +418,53 @@ test("auto-update: stored else default, degraded read like auto-start (the prefl
   }
 });
 
+test("codex-home: an absolute path as typed or `auto`; `~` and relative paths are refused with the reason", () => {
+  tmpHome();
+  const def = configKeyDef("codex-home")!;
+  // Trimmed, never expanded or normalized: the export and the write use the exact spelling.
+  expect(def.parse(`  ${ABS_CODEX_HOME}  `)).toBe(ABS_CODEX_HOME);
+  expect(def.parse("AUTO")).toBe("AUTO");
+  for (const bad of ["~/.codex", "relative/dir", "", "  "]) {
+    expect(() => def.parse(bad), bad).toThrow("expected an absolute path or `auto`");
+  }
+  // Rooted but driveless: path.isAbsolute says yes, the drive it lands on says otherwise.
+  if (process.platform === "win32") {
+    expect(() => def.parse("\\Codex")).toThrow("on Windows the drive is required");
+    expect(def.parse("C:\\Codex")).toBe("C:\\Codex");
+  }
+  expect(() => runConfig({ set: ["codex-home", "~/.codex"] })).toThrow(
+    /invalid value for 'codex-home'/,
+  );
+  expect(new CopilotEnvConfig().read().codexHome).toBeUndefined();
+  // The fold the derivation reads: `auto` and unset are no path; a path leaves the farm key alone
+  // (the farm then roots under the path), and Windows still has no farm.
+  expect(codexHomePrefsFor({}, "linux")).toEqual({ explicit: null, hostFarm: false });
+  expect(codexHomePrefsFor({ codexHome: "Auto", codexHost: true }, "linux")).toEqual({
+    explicit: null,
+    hostFarm: true,
+  });
+  expect(codexHomePrefsFor({ codexHome: ABS_CODEX_HOME, codexHost: true }, "linux")).toEqual({
+    explicit: ABS_CODEX_HOME,
+    hostFarm: true,
+  });
+  expect(codexHomePrefsFor({ codexHome: ABS_CODEX_HOME, codexHost: true }, "win32")).toEqual({
+    explicit: ABS_CODEX_HOME,
+    hostFarm: false,
+  });
+  // A hand-edited relative value reads as unset: the derivation falls back rather than writing
+  // under the cwd.
+  runConfig({ set: ["codex-home", ABS_CODEX_HOME] }, "win32");
+  expect(new CopilotEnvConfig().codexHomePrefs("win32").explicit).toBe(ABS_CODEX_HOME);
+  expect(v.parse(CONFIG_SCHEMA, { codexHome: "relative/dir" }).codexHome).toBeUndefined();
+});
+
 test("codex-host: stored else default, POSIX-only set, and Windows always reads off", () => {
   tmpHome();
   const cfg = new CopilotEnvConfig();
   // The one platform rule the accessor and the settings-import plan share.
-  expect(codexHostEnabledFor(undefined, "linux")).toBe(false);
-  expect(codexHostEnabledFor(true, "darwin")).toBe(true);
-  expect(codexHostEnabledFor(true, "win32")).toBe(false);
+  expect(codexHomePrefsFor({}, "linux").hostFarm).toBe(false);
+  expect(codexHomePrefsFor({ codexHost: true }, "darwin").hostFarm).toBe(true);
+  expect(codexHomePrefsFor({ codexHost: true }, "win32").hostFarm).toBe(false);
   expect(cfg.codexHostEnabled("linux")).toBe(false);
   runConfig({ set: ["codex-host", "true"] }, "darwin");
   expect(cfg.codexHostEnabled("linux")).toBe(true);

@@ -43,18 +43,21 @@ function isLocalProxyUrl(url: string): boolean {
   return parseLoopbackProxyUrl(url) !== null;
 }
 
-/** The shell-side mirror of effectiveCodexHome (src/codex/host.ts). They part on drift: with
- *  codex-host on and a recorded farm home that still exists, effectiveCodexHomeFor keeps it, while
- *  this wants farm.wired and otherwise clears the export. */
+/** The shell-side mirror of effectiveCodexHome (src/codex/host.ts). They part on drift: with the
+ *  farm on and recorded, effectiveCodexHomeFor takes its directory's existence, while this wants
+ *  farm.wired and otherwise clears the export. A `codex-home` path with no farm is exported as is:
+ *  the write creates it. */
 export function managedCodexHome(): ManagedEnvValue {
-  if (process.platform === "win32") return null;
-  const farm = codexHostFarm();
-  if (new CopilotEnvConfig().codexHostEnabled()) {
+  const prefs = new CopilotEnvConfig().codexHomePrefs();
+  if (prefs.hostFarm) {
+    const farm = codexHostFarm(prefs);
     if (farm.wired && farm.active) return { value: farm.hostHome };
     const drift = codexHostDriftFrom(true, farm);
     if (drift !== null) logger.warn(codexHostDriftLine(drift));
+  } else if (prefs.explicit !== null) {
+    return { value: prefs.explicit };
   }
-  if (isManagedFarmExport(process.env.CODEX_HOME)) return { unset: true };
+  if (isManagedFarmExport(process.env.CODEX_HOME, prefs)) return { unset: true };
   return null;
 }
 

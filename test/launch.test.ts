@@ -645,7 +645,7 @@ skipWin(
     const bin = fakeCliBin(root, "codex", 3);
     const farm = stageRecordedFarm(root);
     const staleExport = join(root, "old-farm");
-    const line = staleCodexHomeExportLine({ home: farm, staleExport });
+    const line = staleCodexHomeExportLine({ home: farm, by: "farm", staleExport });
     if (line === null) throw new Error("a differing export must produce the note");
     const stale = runCli(["launch", "codex", "--", "exec", "ls"], {
       env: { ...launchEnv(root, bin), CODEX_HOME: staleExport },

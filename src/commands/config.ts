@@ -34,7 +34,8 @@ import { bold, COLOR_ENABLED, cyan, dim, green } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { versionLessThan } from "../utils/semver.ts";
-import { terminalWidth } from "../utils/table.ts";
+import { terminalWidth, wrapMessage } from "../utils/table.ts";
+import stringWidth from "string-width";
 
 export interface ConfigArgs {
   /** A Commander variadic; exactly two strings when well-formed. */
@@ -254,8 +255,7 @@ function runGet(get: string | undefined, profile: Profile, platform: NodeJS.Plat
   process.stdout.write(`${configTableOutput(platform, profile)}\n`);
 }
 
-/** Below this the right column stops wrapping: a narrower ribbon reads worse than the terminal's
- *  own breaking. */
+/** A lead that leaves the right column fewer than this goes on its own line instead. */
 const MIN_RIGHT_COLUMNS = 30;
 /** Indent of a right column stacked under its key row on a narrow terminal. */
 const STACKED_INDENT = 6;
@@ -317,7 +317,7 @@ export interface ConfigTableOptions {
 /** The one table `agent config` and `agent config --help` both print: a PROFILE banner for every
  *  key the selected profile's daemon and wiring consume (its own keys, then the profile-default
  *  groups resolved for it), a GLOBAL banner for the machine's keys, grouped by the key's group.
- *  Nothing breaks mid-word. */
+ *  Prose breaks between words; a value wider than its column (a URL) splits at the edge. */
 export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions): string {
   const plain = (text: string): string => text;
   const paint = opts.color ? { bold, cyan, dim, green } : {
@@ -339,32 +339,35 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
       fallback,
       value,
       indent,
-      leadLength: indent + 2 + `${def.key}=${value}`.length,
+      leadLength: indent + 2 + stringWidth(`${def.key}=${value}`),
     };
   });
   // The key=value column is the longest lead that still leaves the right column
-  // MIN_RIGHT_COLUMNS; a longer one (a URL) gets its own line with its right column below. When
-  // none fits, every right column stacks at STACKED_INDENT, and when even that leaves fewer than
-  // the floor, wrapping stops altogether.
+  // MIN_RIGHT_COLUMNS; a longer one (a URL) gets its own line, split at the width when it is
+  // wider still, with its right column below. When none fits, every right column stacks at
+  // STACKED_INDENT and takes what is left of the width.
   const fitting = rows
     .map((row) => row.leadLength)
     .filter((n) => n + 2 + MIN_RIGHT_COLUMNS <= opts.width);
   const column = fitting.length > 0 ? Math.max(...fitting) + 2 : STACKED_INDENT;
-  const rightWidth = opts.width - column >= MIN_RIGHT_COLUMNS
-    ? opts.width - column
-    : Number.POSITIVE_INFINITY;
+  const rightWidth = Math.max(opts.width - column, 1);
   const indent = " ".repeat(column);
-  /** A lead with its right column beside it when it fits, below it when not. */
+  const fit = (text: string, width: number): string[] =>
+    wrapMessage(text, Number.isFinite(width) ? width : null).split("\n");
+  /** A lead with its right column beside it when it fits, below it when not; a cell wider than
+   *  the right column (a URL) splits at its edge. */
   const layout = (lead: string, leadLength: number, right: string[]): string[] => {
-    const [first = "", ...rest] = right;
-    if (leadLength + 2 > column) return [lead, ...right.map((line) => indent + line)];
+    const [first = "", ...rest] = right.flatMap((line) => fit(line, rightWidth));
+    if (leadLength + 2 > column) {
+      return [...fit(lead, opts.width), ...[first, ...rest].map((line) => indent + line)];
+    }
     return [
       `${lead}${" ".repeat(column - leadLength)}${first}`,
       ...rest.map((line) => indent + line),
     ];
   };
   const wrapNote = (note: string): string[] =>
-    packToWidth(note.split(" "), (word) => word.length, rightWidth)
+    packToWidth(note.split(" "), stringWidth, rightWidth)
       .map((words) => paint.dim(words.join(" ")));
 
   // The global layer a profile override hides: the global map's value, else the built-in default.
@@ -399,7 +402,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     if (isStoredValueInert(def, row.resolved, opts.platform)) {
       cells.push({ text: "(inert on this platform)", paint: paint.dim });
     }
-    const right = packToWidth(cells, (cell) => cell.text.length, rightWidth)
+    const right = packToWidth(cells, (cell) => stringWidth(cell.text), rightWidth)
       .map((line) => line.map((cell) => cell.paint(cell.text)).join(" "));
     const daemonReads = isProxyProjected(def) || def.restartToApply === true;
     const up = row.resolved.source === "profile" ? opts.profileDaemonUp : opts.daemonUp;
@@ -438,11 +441,11 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     ...(inherited === "" ? [] : [`${inherited} set without --profile is every profile's default`]),
   ];
   // A part wider than the terminal stands alone on its line; its words then wrap like prose.
-  const header = packToWidth(headerParts, (part) => part.length, opts.width, HEADER_GAP.length)
+  const header = packToWidth(headerParts, stringWidth, opts.width, HEADER_GAP.length)
     .flatMap((parts) => {
       const [only = ""] = parts;
       return parts.length === 1 && only.length > opts.width
-        ? packToWidth(only.split(" "), (word) => word.length, opts.width)
+        ? packToWidth(only.split(" "), stringWidth, opts.width)
           .map((words) => words.join(" "))
         : [parts.join(HEADER_GAP)];
     })
@@ -452,7 +455,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
   /** A bold title whose note is its right column: on the shared column, or under the title
    *  when the title runs past it. */
   const banner = (title: string, note: string): string =>
-    layout(paint.bold(title), title.length, wrapNote(`(${note})`)).join("\n");
+    layout(paint.bold(title), stringWidth(title), wrapNote(`(${note})`)).join("\n");
   const groupIndent = " ".repeat(GROUP_INDENT);
 
   /** One block per group that has a key of `scope`, in CONFIG_GROUPS order. */

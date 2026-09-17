@@ -37,10 +37,11 @@ import { runCost } from "./usage/cost.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
 import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
-import { disableConsolaTimestamps, redirectConsolaToStderr } from "./utils/logger.ts";
+import { configureConsolaOutput, redirectConsolaToStderr } from "./utils/logger.ts";
+import { terminalWidth, wrapMessage } from "./utils/table.ts";
 import { packageVersion } from "./utils/version.ts";
 
-disableConsolaTimestamps();
+configureConsolaOutput();
 
 /** Commander hands action callbacks an options bag of mixed-typed values. */
 type Opts = Record<string, unknown>;
@@ -108,8 +109,17 @@ program
 
 // The option:full-help listener fires during parse, before any "missing command" handling, so it
 // works with no subcommand.
+/** Commander's own help wraps at this width, so the divider never runs past it. */
+const HELP_DIVIDER_COLUMNS = 72;
+
+/** Help paragraphs Commander prints verbatim: dim, one blank line before each, wrapped at help
+ *  time to the terminal the way the option descriptions above them are. */
+function helpNote(...paragraphs: string[]): string {
+  return wrapMessage(paragraphs.map((p) => `\n${gray(p)}`).join("\n"), terminalWidth());
+}
+
 program.on("option:full-help", () => {
-  const sep = "─".repeat(72);
+  const sep = "─".repeat(Math.min(terminalWidth() ?? HELP_DIVIDER_COLUMNS, HELP_DIVIDER_COLUMNS));
   // `helpInformation()` omits `addHelpText('after', ...)` (the `config` key list), which is emitted
   // via help events during outputHelp(); those events are captured into a string instead.
   const renderHelp = (cmd: Command): string => {
@@ -437,13 +447,12 @@ program
   .option("--no-backup", "With --import: skip the automatic pre-import settings backup.")
   .addHelpText(
     "after",
-    `\n${
-      gray(
+    () =>
+      helpNote(
         "Import semantics: preferences are FULL-REPLACE (a key absent from the bundle resets " +
           "to its built-in default), while credentials are PRESERVE-IF-ABSENT (a slot whose " +
           "token is redacted or missing never overwrites a working local credential).",
-      )
-    }`,
+      ),
   )
   .action((opts: Opts) =>
     runSettings({
@@ -557,19 +566,13 @@ program
   )
   .addHelpText(
     "after",
-    // Two unwrapped paragraphs: the terminal folds them to its own width, like the
-    // option descriptions above, and they take that column's colour.
-    [
-      "",
-      gray(
+    () =>
+      helpNote(
         "Sources: the proxy's per-host SQLite DBs (default + every profile daemon home; " +
           "proxied traffic only), the Codex CLI's local session logs, and Claude Code's local " +
           "transcripts (each agent's FULL traffic, Direct included). The default table merges " +
           "all three, so traffic through the proxy can be double counted; use --sources for " +
           "per-source tables.",
-      ),
-      "",
-      gray(
         "Active days: distinct local calendar days (your timezone) that recorded at " +
           "least one request, unioned across the displayed sources. The header also shows " +
           "the inclusive min..max calendar span and what percent of it was active. Avg/day " +
@@ -577,7 +580,6 @@ program
           "column independently across the active days (so columns need not sum, but " +
           "each is robust to a few outlier days). Idle days are never counted in either.",
       ),
-    ].join("\n"),
   )
   .action((opts: Opts) => {
     // The report (and the --json payload) owns stdout; every consola line from any module the

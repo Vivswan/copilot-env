@@ -29,6 +29,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { isEnoentOrNotdir } from "./fs.ts";
+import { terminalWidth, wrapMessage } from "./table.ts";
 import { sleepSync } from "./time.ts";
 
 export type WriteKind = "created" | "rewritten" | "deleted" | "moved" | "linked";
@@ -86,7 +87,7 @@ function emit(line: string): void {
     deferred.push(line);
     return;
   }
-  const bytes = ENCODER.encode(`${line}\n`);
+  const bytes = ENCODER.encode(`${wrapMessage(line, terminalWidth(process.stderr))}\n`);
   let written = 0;
   while (written < bytes.length) written += Deno.stderr.writeSync(bytes.subarray(written));
 }

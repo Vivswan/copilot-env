@@ -48,6 +48,7 @@ import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { mkdirReported, removeReported } from "../utils/report_write.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
+import { printWrapped } from "../utils/table.ts";
 import {
   type CatalogFileVerdict,
   type CodexCatalogDeps,
@@ -953,14 +954,14 @@ function checkCodexConfig(): void {
     const configPath = codexConfigPath(codexHome);
     const read = readTextResult(configPath);
     const status = inspectCodexWiring(read, null, Number(copilotApiResolvePort()), false);
-    console.log(`Codex provider mode: ${status.providerMode} (${providerModeDetail(status)})`);
-    console.log(`CODEX_HOME: ${codexHome}`);
-    console.log(`config.toml: ${configPath}`);
+    printWrapped(`Codex provider mode: ${status.providerMode} (${providerModeDetail(status)})`);
+    printWrapped(`CODEX_HOME: ${codexHome}`);
+    printWrapped(`config.toml: ${configPath}`);
     const drift = codexHostDrift();
-    if (drift !== null) console.log(codexHostDriftLine(drift));
+    if (drift !== null) printWrapped(codexHostDriftLine(drift));
     // "direct" was classified from this very text, so it parses.
     if (status.providerMode === "direct" && read.kind === "text") {
-      console.log(
+      printWrapped(
         `service_tier: ${serviceTierDetail(parse(read.text) as Record<string, unknown>)}`,
       );
     }

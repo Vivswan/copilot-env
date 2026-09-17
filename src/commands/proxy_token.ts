@@ -14,6 +14,7 @@ import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { agentStartCommand, parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
+import { printWrappedToStderr, terminalWidth, wrapMessage } from "../utils/table.ts";
 import { runPrintProxyToken } from "./auth.ts";
 
 export interface ProxyTokenFlags {
@@ -67,7 +68,7 @@ export function launchProxy(profile: Profile, output: LaunchOutput): void {
  *   EOF                                   -> "", which means START (the apiKeyHelper case)
  */
 export function readStartAnswer(query: string): Promise<string> {
-  process.stderr.write(query);
+  process.stderr.write(wrapMessage(query, terminalWidth(process.stderr)));
   return new Promise((resolve) => {
     // String chunks split on character boundaries; per-chunk Buffer.toString could mangle a
     // straddling UTF-8 sequence.
@@ -149,7 +150,7 @@ function commandDeps(): ProxyTokenDeps {
     recordHeartbeat,
     printProxyToken: (profile) => runPrintProxyToken(profile),
     notify: (line) => {
-      process.stderr.write(`${line}\n`);
+      printWrappedToStderr(line);
     },
   };
 }

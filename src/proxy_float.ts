@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
+import { wrapToTerminal } from "./utils/logger.ts";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
 import { atomicWriteFile, removeTreeReported } from "./utils/report_write.ts";
@@ -71,7 +72,7 @@ const loggerOptions: ProxyConsolaOptions = {
   "fancy": false,
   "formatOptions": { "date": false },
 };
-const logger = createConsola(loggerOptions);
+const logger = wrapToTerminal(createConsola(loggerOptions));
 
 /** The single source the float, the verify status, and health all read; 0 disables. */
 export function resolveMinimumReleaseAgeSeconds(): number {

@@ -6,7 +6,7 @@
 //                                                                  profile registers by hand
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { consola } from "consola";
+import { taggedLogger } from "../utils/logger.ts";
 import {
   applyPatch,
   type FilePlan,
@@ -24,7 +24,7 @@ import { isRecord } from "../utils/json.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { claudeConfigDirOverride } from "./paths.ts";
 
-const logger = consola.withTag("claude.mcp");
+const logger = taggedLogger("claude.mcp");
 
 /** Whose entry sits under our name in `mcpServers`.
  *    absent        -> no entry

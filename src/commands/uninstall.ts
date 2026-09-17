@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { consola } from "consola";
+import { prompt } from "../utils/logger.ts";
 import { claudeProfileArtifacts, removeClaudeDefaultWiring } from "../claude/config.ts";
 import {
   type ClaudeDesktopOwnedArtifacts,
@@ -423,7 +424,7 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
     if (!process.stdin.isTTY) {
       throw new Error("not a terminal - pass --yes to uninstall non-interactively");
     }
-    const confirmed = await consola.prompt(
+    const confirmed = await prompt(
       "Remove copilot-env from this machine (daemons, profiles, agent wiring, " +
         "shell integration, credentials, data)?",
       { type: "confirm", initial: false },

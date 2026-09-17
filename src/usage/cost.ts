@@ -1,7 +1,7 @@
 import { consola } from "consola";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { errMessage } from "../utils/error.ts";
-import { type Align, printTable } from "../utils/table.ts";
+import { type Align, printTable, printWrapped, printWrappedToStderr } from "../utils/table.ts";
 import { formatDuration, MILLISECONDS_PER_DAY, startOfLocalDay } from "../utils/time.ts";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "./codex_sessions.ts";
@@ -304,10 +304,10 @@ async function reportCost(
     );
   }
 
-  console.log(SOURCES_NOTE);
+  printWrapped(SOURCES_NOTE);
   console.log("");
   if (logs.indexed) {
-    process.stderr.write(`${describeIndexRun(logs.meter.stats)}\n`);
+    printWrappedToStderr(describeIndexRun(logs.meter.stats));
   }
 }
 
@@ -392,7 +392,7 @@ function printSeparateReports(
     }
   } else {
     console.log("");
-    console.log("No proxy usage databases found; skipping the proxy section.");
+    printWrapped("No proxy usage databases found; skipping the proxy section.");
   }
 
   for (const provider of [...codexByProvider.keys()].sort()) {
@@ -893,7 +893,7 @@ function printCostReport(
       activeDays === 1 ? "" : "s"
     } (${coverage.percent}% of a ${coverage.spanDays}-day span)`
     : "0 active days";
-  console.log(
+  printWrapped(
     `${opts.title} - ${period} | ${opts.sourceLabel} | ${sum.reqs} requests | ${activeDaysLabel}`,
   );
   console.log("");
@@ -904,7 +904,7 @@ function printCostReport(
   });
   if (estimate.unpriced.length > 0) {
     console.log("");
-    console.log(`  Unpriced (excluded from total): ${estimate.unpriced.join(", ")}`);
+    printWrapped(`  Unpriced (excluded from total): ${estimate.unpriced.join(", ")}`);
   }
   console.log("");
 }
@@ -964,7 +964,7 @@ function printPerDayReport(
     [dayRow("TOTAL", sumDayTotals(rows, estimate))],
   );
 
-  console.log(title);
+  printWrapped(title);
   console.log("");
   printTable(cells.body, {
     header: ["Day", ...COST_TABLE_COLUMNS],

@@ -71,12 +71,13 @@ fits             -> the natural layout
 too wide         -> the widest column shrinks first, never below its floor; a free-text column
                     (the identities `note`, the `--list` description, the models detail, the
                     alias list) wraps at word boundaries, a header wraps between its words; a
-                    word longer than its column overflows rather than splits; a path column
-                    (the `agent start` summary) splits at its column edge
+                    path column (the `agent start` summary) splits at its column edge
 floors too wide  -> one block per record: "identity: codex", then "  header: cell" per non-empty cell
 ```
 
 The lines under the identities table wrap the same way, with a hanging indent. An exported `COLUMNS` never overrides a TTY's own size. With `COLUMNS` unset, `agent auth --identities | cat` prints the full-width lines; `COLUMNS=80 agent auth --identities | cat` prints the 80-column layout.
+
+Every other line wraps at the logger: a consola message is wrapped before its icon or frame goes on, each line under its own indent with the continuation one step deeper; a word wider than the line splits at the width. Reports printed without a logger (`agent health`, `agent cost`, the installer's next steps) and every prompt use the same wrapper. Down a pipe nothing wraps unless `COLUMNS` is set.
 
 ## Shell integration
 

@@ -8,6 +8,7 @@ import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "
 import { runCaptured } from "../utils/command.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { type RootMode, rootMode } from "../utils/root.ts";
+import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import {
   DAEMON_CLIENT_HEADERS_ENV,
   DAEMON_COPILOT_HOST_ENV,
@@ -602,7 +603,11 @@ export function printLogTail(logfile: string, lines: number): void {
     const tail = allLines.slice(-lines).join("\n");
     // Raw, not line-by-line through consola.error: copilot-api already formats its lines, and a tagged
     // ERROR badge on each (blank stack-trace lines included) buried the real failure in padded gaps.
-    process.stderr.write(`\n--- proxy log tail (${logfile}) ---\n${tail}\n`);
+    const heading = wrapMessage(
+      `--- proxy log tail (${logfile}) ---`,
+      terminalWidth(process.stderr),
+    );
+    process.stderr.write(`\n${heading}\n${tail}\n`);
   } catch (_e) {
     // ignore
   }

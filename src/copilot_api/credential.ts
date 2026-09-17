@@ -1,7 +1,7 @@
 // The Direct-mode GitHub credential over the shared state store (env_state.ts). The domain lives here
 // so the agent config writers, health, and the daemon never import the `commands/` layer; the
 // interactive surface (provider prompt, device flow, `runAuth`) is src/commands/auth.ts on top.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { findCommand } from "../utils/command.ts";
 import { withFileLockSync } from "../utils/file_lock.ts";
 import { removeReported } from "../utils/report_write.ts";
@@ -14,10 +14,15 @@ import {
   type TokenProvider,
 } from "./env_state.ts";
 import {
+  activeGhLogin,
+  GH_COPILOT_HOST,
   type GhAccount,
+  ghAuthHostTokenSpawnSpec,
   ghAuthStatusSpawnSpec,
   ghAuthTokenSpawnSpec,
   ghAuthVerdict,
+  type GhSpawnResult,
+  type GhSpawnSpec,
   parseGhAuthStatusAccounts,
 } from "./gh_cli.ts";
 import { CopilotApiPaths } from "./paths.ts";
@@ -47,29 +52,164 @@ function firstStderrLine(stderr: string | null | undefined): string {
   return (stderr ?? "").trim().split(/\r?\n/)[0]?.trim() ?? "";
 }
 
-/** Exported for tests. Empty output on exit 0 is a proven miss: gh RAN. */
+/** The call as the user could retype it: the pinned `--user` form and the plain one fail for
+ *  different reasons, so a miss must name WHICH gh call it reports. */
+function ghCommandLabel(spec: Pick<GhSpawnSpec, "args">): string {
+  return `gh ${spec.args.join(" ")}`;
+}
+
+/** Exported for tests. Empty output on exit 0 is a proven miss: gh RAN. The detail quotes the
+ *  command and gh's first stderr line. */
 export function ghTokenLookFromSpawn(
-  result: {
-    status: number | null;
-    error?: unknown;
-    stdout?: string | null;
-    stderr?: string | null;
-  },
+  result: GhSpawnResult,
+  command = "gh auth token",
 ): GhTokenLook {
   const verdict = ghAuthVerdict(result);
   if (verdict === "unproven") {
     const cause = result.error instanceof Error ? result.error.message : "the spawn was killed";
-    return { token: null, unproven: true, detail: `\`gh auth token\` did not complete (${cause})` };
+    return { token: null, unproven: true, detail: `\`${command}\` did not complete (${cause})` };
   }
   const stderr = firstStderrLine(result.stderr);
   if (!verdict) {
     return {
       token: null,
-      detail: `\`gh auth token\` exited ${result.status}${stderr ? `: ${stderr}` : ""}`,
+      detail: `\`${command}\` exited ${result.status}${stderr ? `: ${stderr}` : ""}`,
     };
   }
   const token = (result.stdout ?? "").trim();
-  return token ? { token } : { token: null, detail: "`gh auth token` printed no token" };
+  return token ? { token } : { token: null, detail: `\`${command}\` printed no token` };
+}
+
+function runGhSpec(s: GhSpawnSpec): GhSpawnResult {
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+  return spawnSync(s.file, s.args, {
+    encoding: "utf8",
+    timeout: s.timeout,
+    windowsHide: true,
+    shell: s.shell,
+    env: s.env,
+  });
+}
+
+function runGhSpecAsync(s: GhSpawnSpec): Promise<GhSpawnResult> {
+  return new Promise((resolve) => {
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+    const child = spawn(s.file, s.args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: s.timeout,
+      windowsHide: true,
+      shell: s.shell,
+      env: s.env,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", (error) => resolve({ status: null, error, stdout, stderr }));
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+/** One gh call at a time, so the sync resolve and the async health probe drive ONE recipe. */
+export type GhLookStep =
+  | { kind: "done"; look: GhTokenLook }
+  | { kind: "run"; spec: GhSpawnSpec; then: (result: GhSpawnResult) => GhLookStep };
+
+/** gh's own token vars for GH_COPILOT_HOST: when one is set, the plain `gh auth token` serves IT. */
+const GH_OWN_TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
+
+/**
+ * Exported for tests. `gh auth token --user` is not the only way gh serves a saved login:
+ *
+ *   gh < 2.40            -> rejects `--user` outright ("unknown flag")
+ *   a hosts.yml layout   -> `gh auth status` lists the account, `--user` finds no token for it
+ *
+ * so when the pin IS gh's active account on GH_COPILOT_HOST, the plain host-scoped `gh auth token`
+ * serves the same login, and the pin still holds: a later `gh auth switch` fails both looks. The
+ * status listing is read off ANY exit code (a missing-scope warning exits 1 while the token is
+ * fine). An env token is never adopted for a pin: it is not a saved login and vanishes with the
+ * shell, so a set GH_TOKEN/GITHUB_TOKEN, or gh reporting such a var as the login's source, is a miss.
+ */
+export function ghAuthTokenLookStart(ghUser: string | null, ghPath: string): GhLookStep {
+  const done = (look: GhTokenLook): GhLookStep => ({ kind: "done", look });
+  const pinnedSpec = ghAuthTokenSpawnSpec(ghPath, ghUser);
+  return {
+    kind: "run",
+    spec: pinnedSpec,
+    then: (pinnedResult) => {
+      const pinned = ghTokenLookFromSpawn(pinnedResult, ghCommandLabel(pinnedSpec));
+      if (ghUser === null || pinned.token !== null || pinned.unproven) return done(pinned);
+      const why = pinned.detail ?? "gh gave no token";
+      const envVar = GH_OWN_TOKEN_VARS.find((name) => (pinnedSpec.env[name] ?? "").trim() !== "");
+      if (envVar !== undefined) {
+        return done({ token: null, detail: `${why}; $${envVar} is set, not a saved login` });
+      }
+      const statusSpec = ghAuthStatusSpawnSpec(ghPath);
+      return {
+        kind: "run",
+        spec: statusSpec,
+        then: (statusResult) => {
+          const listing = ghAccountsLookFromSpawn(statusResult);
+          if (listing.unproven) {
+            return done({
+              token: null,
+              unproven: true,
+              detail: `${why}; \`${ghCommandLabel(statusSpec)}\` did not complete`,
+            });
+          }
+          const active = activeGhLogin(listing.accounts);
+          if (active !== ghUser) {
+            const who = active === null ? "no active account" : `active account ${active}`;
+            return done({ token: null, detail: `${why}; \`gh auth status\` reports ${who}` });
+          }
+          const envSource = listing.accounts.find((a) =>
+            a.host === GH_COPILOT_HOST && a.login === ghUser && /_TOKEN$/.test(a.source)
+          )?.source;
+          if (envSource !== undefined) {
+            return done({
+              token: null,
+              detail: `${why}; gh serves ${ghUser} from $${envSource}, not a saved login`,
+            });
+          }
+          const plainSpec = ghAuthHostTokenSpawnSpec(ghPath);
+          return {
+            kind: "run",
+            spec: plainSpec,
+            then: (plainResult) => {
+              const plain = ghTokenLookFromSpawn(plainResult, ghCommandLabel(plainSpec));
+              if (plain.token !== null) return done(plain);
+              return done({ ...plain, detail: `${why}; ${plain.detail ?? "gh gave no token"}` });
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+/** Exported for tests (`run` is the spawn seam). */
+export function ghAuthTokenLookVia(
+  ghUser: string | null,
+  ghPath: string,
+  run: (spec: GhSpawnSpec) => GhSpawnResult = runGhSpec,
+): GhTokenLook {
+  let step = ghAuthTokenLookStart(ghUser, ghPath);
+  while (step.kind === "run") step = step.then(run(step.spec));
+  return step.look;
+}
+
+/** The same recipe off the event loop, for probes that overlap other work (`agent health`). */
+export async function ghAuthTokenLookAsync(
+  ghUser: string | null,
+  ghPath: string,
+): Promise<GhTokenLook> {
+  let step = ghAuthTokenLookStart(ghUser, ghPath);
+  while (step.kind === "run") step = step.then(await runGhSpecAsync(step.spec));
+  return step.look;
 }
 
 /** `ghUser` pins the call to that gh account; null follows gh's active account. */
@@ -80,16 +220,7 @@ export function ghAuthTokenLook(ghUser: string | null = null): GhTokenLook {
       ? { token: null, unproven: true, detail: "looking for `gh` on PATH failed" }
       : { token: null, detail: "`gh` is not on this process's PATH" };
   }
-  const s = ghAuthTokenSpawnSpec(gh.path, ghUser);
-  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  const result = spawnSync(s.file, s.args, {
-    encoding: "utf8",
-    timeout: s.timeout,
-    windowsHide: true,
-    shell: s.shell,
-    env: s.env,
-  });
-  return ghTokenLookFromSpawn(result);
+  return ghAuthTokenLookVia(ghUser, gh.path);
 }
 
 /**
@@ -111,14 +242,7 @@ export interface GhAccountsLook {
 /** Exported for tests. Two gh quirks shape it:
  *    non-zero exit  -> still parsed; `gh auth status` fails when one account is broken but lists the healthy ones
  *    stderr merged  -> older gh wrote the listing there */
-export function ghAccountsLookFromSpawn(
-  result: {
-    status: number | null;
-    error?: unknown;
-    stdout?: string | null;
-    stderr?: string | null;
-  },
-): GhAccountsLook {
+export function ghAccountsLookFromSpawn(result: GhSpawnResult): GhAccountsLook {
   if (ghAuthVerdict(result) === "unproven") return { accounts: [], unproven: true };
   return { accounts: parseGhAuthStatusAccounts(`${result.stdout ?? ""}\n${result.stderr ?? ""}`) };
 }
@@ -128,16 +252,7 @@ export function ghAccountsLook(): GhAccountsLook {
   if (gh.path === null) {
     return gh.launchFailed ? { accounts: [], unproven: true } : { accounts: [] };
   }
-  const s = ghAuthStatusSpawnSpec(gh.path);
-  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  const result = spawnSync(s.file, s.args, {
-    encoding: "utf8",
-    timeout: s.timeout,
-    windowsHide: true,
-    shell: s.shell,
-    env: s.env,
-  });
-  return ghAccountsLookFromSpawn(result);
+  return ghAccountsLookFromSpawn(runGhSpec(ghAuthStatusSpawnSpec(gh.path)));
 }
 
 /**

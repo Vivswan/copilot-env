@@ -17,6 +17,8 @@ import {
 import {
   Credential,
   ghAccountsLookFromSpawn,
+  ghAuthTokenLookVia,
+  type GhTokenLook,
   ghTokenLookFromSpawn,
 } from "../src/copilot_api/credential.ts";
 import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -26,6 +28,7 @@ import {
   type GhAccount,
   ghAuthStatusSpawnSpec,
   ghAuthTokenSpawnSpec,
+  type GhSpawnSpec,
   parseGhAuthStatusAccounts,
 } from "../src/copilot_api/gh_cli.ts";
 import { githubLoginLook, setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
@@ -50,7 +53,7 @@ import {
   writeRunState,
 } from "./helpers.ts";
 
-const restoreEnv = envSnapshot();
+const restoreEnv = envSnapshot(["PATH"]);
 let dir = "";
 
 afterEach(() => {
@@ -1081,6 +1084,16 @@ test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven",
       token: null,
       detail: "`gh auth token` exited 1: no oauth token",
     });
+  // The detail names the call that ran, so a pinned miss is never mistaken for a plain one.
+  expect(
+    ghTokenLookFromSpawn(
+      { status: 1, stdout: "", stderr: "unknown flag: --user\n" },
+      "gh auth token --user work --hostname github.com",
+    ),
+  ).toEqual({
+    token: null,
+    detail: "`gh auth token --user work --hostname github.com` exited 1: unknown flag: --user",
+  });
   // The spawn never completed (timeout kill / spawn error): proven NOTHING.
   expect(ghTokenLookFromSpawn({ status: null })).toEqual({
     token: null,
@@ -1094,12 +1107,20 @@ test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven",
   });
 });
 
-test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps the gh advice", async () => {
-  expect(() => loginWithGhCli(null, () => ({ token: null, unproven: true }))).toThrow(
-    "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`",
+test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quotes gh and keeps the advice", async () => {
+  isolate(); // clears GH_TOKEN/GITHUB_TOKEN: the env clause below must be earned, never assumed
+  const killed: GhTokenLook = {
+    token: null,
+    unproven: true,
+    detail: "`gh auth token` did not complete (killed)",
+  };
+  expect(() => loginWithGhCli(null, () => killed)).toThrow(
+    "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
   );
-  expect(() => loginWithGhCli(null, () => ({ token: null }))).toThrow(
-    "gh is not authenticated - run `gh auth login`, then retry `agent auth`",
+  expect(() =>
+    loginWithGhCli(null, () => ({ token: null, detail: "`gh auth token` exited 1: not logged in" }))
+  ).toThrow(
+    "gh is not authenticated (`gh auth token` exited 1: not logged in) - run `gh auth login`, then retry `agent auth`",
   );
   expect(() => loginWithGhCli(null, () => ({ token: "tok" }))).not.toThrow();
   // The auto success line names the followed account when known (nothing hidden).
@@ -1111,25 +1132,282 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps
     "Using the gh CLI login on AUTO (currently account vivswan; follows gh account switches) " +
       "as the Direct credential.",
   );
-  // A pinned account wears its own words: the miss is about THAT account (gh's
-  // active login may well be fine), and the look receives the pin to verify.
+  // A pinned account wears its own words: the miss is about THAT account (gh's active login may
+  // well be fine), the look receives the pin to verify, and gh's own stderr is quoted verbatim.
   const asked: Array<string | null> = [];
-  expect(() =>
-    loginWithGhCli("work", (ghUser) => {
-      asked.push(ghUser);
-      return { token: null };
-    })
-  ).toThrow(
-    "gh has no saved credential for account 'work' (pinning needs a saved login; " +
-      "an env GH_TOKEN cannot serve `gh auth token --user`) - run `gh auth login` " +
-      "for that account, pass --gh-user <login> for another, or choose auto " +
-      "interactively via `agent auth --provider gh-cli`",
+  const miss = {
+    token: null,
+    detail: "`gh auth token --user work --hostname github.com` exited 1: no oauth token found",
+  };
+  const pinnedMiss = (ghUser: string | null) => {
+    asked.push(ghUser);
+    return miss;
+  };
+  expect(() => loginWithGhCli("work", pinnedMiss)).toThrow(
+    "gh has no saved credential for account 'work' (`gh auth token --user work --hostname " +
+      "github.com` exited 1: no oauth token found) - run `gh auth login` for that account, pass " +
+      "--gh-user <login> for another, or choose auto interactively via `agent auth --provider gh-cli`",
   );
-  expect(() => loginWithGhCli("work", () => ({ token: null, unproven: true }))).toThrow(
-    "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`",
+  // The env-token clause is a fact about THIS shell, stated only when gh would read such a var.
+  process.env.GITHUB_TOKEN = "ghp_from_env";
+  expect(() => loginWithGhCli("work", pinnedMiss)).toThrow(
+    "no oauth token found; $GITHUB_TOKEN is set, and an env token cannot serve `gh auth token --user`) - run",
   );
-  expect(asked).toEqual(["work"]);
+  expect(() => loginWithGhCli("work", () => killed)).toThrow(
+    "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
+  );
+  expect(asked).toEqual(["work", "work"]);
 });
+
+// --- the pinned look's fallback: the plain token when the pin is gh's active account ----------
+
+/** The owner's coder box: a hosts.yml login, a missing-scope warning that makes `gh auth status` exit 1,
+ *  and a `--user` call gh refuses. The check marks are gh's output, fine inside a fixture literal. */
+const HOSTS_YML_STATUS = `github.com
+  ✓ Logged in to github.com account vivswanshah_microsoft (/home/coder/.config/gh/hosts.yml)
+  - Active account: true
+  - Git operations protocol: https
+  - Token: gho_************************
+  - Token scopes: 'read:user', 'repo'
+  ! Missing required token scopes: 'read:org'
+  - To request missing scopes, run: gh auth refresh -h github.com
+`;
+
+/** gh < 2.40: "as <login>", no active marker, and no `--user` flag at all. */
+const OLD_GH_STATUS = `github.com
+  ✓ Logged in to github.com as vivswanshah_microsoft (/home/coder/.config/gh/hosts.yml)
+  ✓ Git operations for github.com configured to use ssh protocol.
+  ✓ Token: gho_************************
+`;
+
+type GhRun = (spec: GhSpawnSpec) => { status: number | null; stdout: string; stderr: string };
+
+interface FakeGhShape {
+  pinned: { status: number; stdout?: string; stderr?: string };
+  status: { status: number | null; stdout: string };
+  /** Absent: the plain call reports "not logged in". */
+  plain?: { status: number; stdout: string };
+}
+
+/** A gh answering each of the three calls per `shape`, recording the order it was asked in. */
+function fakeGh(shape: FakeGhShape): { run: GhRun; calls: string[] } {
+  const calls: string[] = [];
+  const run: GhRun = (spec) => {
+    const call = spec.args.join(" ");
+    calls.push(call);
+    if (call.startsWith("auth status")) return { stderr: "", ...shape.status };
+    if (call.includes("--user")) return { stdout: "", stderr: "", ...shape.pinned };
+    return shape.plain === undefined
+      ? { status: 1, stdout: "", stderr: "not logged in" }
+      : { stderr: "", ...shape.plain };
+  };
+  return { run, calls };
+}
+
+const NO_USER_FLAG = { status: 1, stderr: "unknown flag: --user\n\nUsage:  gh auth token [flags]" };
+const NO_TOKEN_FOR_USER = {
+  status: 1,
+  stderr: "no oauth token found for github.com account vivswanshah_microsoft",
+};
+const SAVED = { status: 0, stdout: "gho_saved\n" };
+const PINNED_CALL = "auth token --user vivswanshah_microsoft --hostname github.com";
+/** Host-scoped: a bare `gh auth token` would follow a GH_HOST override to another host. */
+const PLAIN_CALL = "auth token --hostname github.com";
+
+test("ghAuthTokenLookVia: a refused --user lands the plain token when the pin is gh's active account; the pin never follows a switch", () => {
+  isolate(); // clears GH_TOKEN/GITHUB_TOKEN: the env guard below must be earned
+  // (a) gh < 2.40 rejects --user; its status names the login as the only one.
+  const old = fakeGh({
+    pinned: NO_USER_FLAG,
+    status: { status: 0, stdout: OLD_GH_STATUS },
+    plain: SAVED,
+  });
+  expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", old.run)).toEqual({
+    token: "gho_saved",
+  });
+  expect(old.calls).toEqual([PINNED_CALL, "auth status --hostname github.com", PLAIN_CALL]);
+  // (b) a hosts.yml login `--user` cannot serve, status exit 0.
+  const hosts = fakeGh({
+    pinned: NO_TOKEN_FOR_USER,
+    status: {
+      status: 0,
+      stdout: HOSTS_YML_STATUS.replace(/ *! Missing.*\n *- To request.*\n/, ""),
+    },
+    plain: SAVED,
+  });
+  expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", hosts.run)).toEqual({
+    token: "gho_saved",
+  });
+  // (c) the same with the missing-scope warning: status exits 1 and is still read.
+  const scopes = fakeGh({
+    pinned: NO_TOKEN_FOR_USER,
+    status: { status: 1, stdout: HOSTS_YML_STATUS },
+    plain: SAVED,
+  });
+  expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", scopes.run)).toEqual({
+    token: "gho_saved",
+  });
+  // A working --user asks nothing else; an auto look never falls back.
+  const direct = fakeGh({
+    pinned: { status: 0, stdout: "gho_pinned\n" },
+    status: { status: 0, stdout: "" },
+  });
+  expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", direct.run)).toEqual({
+    token: "gho_pinned",
+  });
+  expect(direct.calls).toEqual([PINNED_CALL]);
+  const auto = fakeGh({
+    pinned: NO_TOKEN_FOR_USER,
+    status: { status: 0, stdout: HOSTS_YML_STATUS },
+  });
+  expect(ghAuthTokenLookVia(null, "/opt/gh/gh", auto.run)).toEqual({
+    token: null,
+    detail: "`gh auth token` exited 1: not logged in",
+  });
+  expect(auto.calls).toEqual(["auth token"]);
+  // gh switched to another account: the plain token is someone else's, so the pin stays a miss
+  // and the detail quotes both what gh refused and whom it now serves.
+  const switched = fakeGh({
+    pinned: NO_TOKEN_FOR_USER,
+    status: { status: 0, stdout: TWO_ACCOUNT_STATUS },
+    plain: SAVED,
+  });
+  expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", switched.run)).toEqual({
+    token: null,
+    detail: "`gh auth token --user vivswanshah_microsoft --hostname github.com` exited 1: " +
+      "no oauth token found for github.com account vivswanshah_microsoft; `gh auth status` reports active account vivswan",
+  });
+  expect(switched.calls).not.toContain(PLAIN_CALL);
+  // An env-token active account is not a saved login: never adopted, and named as the reason.
+  const envServed = fakeGh({
+    pinned: NO_TOKEN_FOR_USER,
+    status: {
+      status: 0,
+      stdout: TWO_ACCOUNT_STATUS.replace("vivswan (keyring)", "vivswan (GH_TOKEN)"),
+    },
+    plain: SAVED,
+  });
+  expect(ghAuthTokenLookVia("vivswan", "/opt/gh/gh", envServed.run).detail).toContain(
+    "; gh serves vivswan from $GH_TOKEN, not a saved login",
+  );
+  expect(envServed.calls).not.toContain(PLAIN_CALL);
+  // Older gh marks no active account, so the env source must be found on the login itself.
+  const oldEnvServed = fakeGh({
+    pinned: NO_TOKEN_FOR_USER,
+    status: {
+      status: 0,
+      stdout: OLD_GH_STATUS.replace("(/home/coder/.config/gh/hosts.yml)", "(GH_TOKEN)"),
+    },
+    plain: SAVED,
+  });
+  expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", oldEnvServed.run).detail)
+    .toContain(
+      "; gh serves vivswanshah_microsoft from $GH_TOKEN, not a saved login",
+    );
+  expect(oldEnvServed.calls).not.toContain(PLAIN_CALL);
+  // A token var in OUR environment is what the plain call would print: refused before any status call.
+  process.env.GITHUB_TOKEN = "ghp_env";
+  const envSet = fakeGh({
+    pinned: NO_TOKEN_FOR_USER,
+    status: { status: 0, stdout: HOSTS_YML_STATUS },
+    plain: SAVED,
+  });
+  expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", envSet.run)).toEqual({
+    token: null,
+    detail: "`gh auth token --user vivswanshah_microsoft --hostname github.com` exited 1: " +
+      "no oauth token found for github.com account vivswanshah_microsoft; $GITHUB_TOKEN is set, not a saved login",
+  });
+  expect(envSet.calls).toEqual([PINNED_CALL]);
+  delete process.env.GITHUB_TOKEN;
+  // The plain call failing too reports both refusals; a status that never completed proves nothing.
+  const both = fakeGh({ pinned: NO_USER_FLAG, status: { status: 0, stdout: OLD_GH_STATUS } });
+  expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", both.run).detail).toBe(
+    "`gh auth token --user vivswanshah_microsoft --hostname github.com` exited 1: unknown flag: --user; " +
+      "`gh auth token --hostname github.com` exited 1: not logged in",
+  );
+  const killedStatus = fakeGh({
+    pinned: NO_USER_FLAG,
+    status: { status: null, stdout: "" },
+    plain: SAVED,
+  });
+  expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", killedStatus.run)).toEqual({
+    token: null,
+    unproven: true,
+    detail:
+      "`gh auth token --user vivswanshah_microsoft --hostname github.com` exited 1: unknown flag: --user; " +
+      "`gh auth status --hostname github.com` did not complete",
+  });
+});
+
+// The production path end to end through a fake `gh` on PATH: status listing -> pin -> the pinned
+// look -> the fallback, then the recorded slot resolves through the same code every `--get` runs.
+// (POSIX shell scripts; the Windows .cmd dispatch is covered by the launch tests.)
+const onPosix = test.skipIf(process.platform === "win32");
+
+function fakeGhOnPath(script: string): void {
+  const bin = join(dir, "fake-bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "gh"), `#!/bin/sh\n${script}`, { mode: 0o755 });
+  // The fake bin dir FIRST, with the system dirs kept: findCommand resolves through `sh`.
+  process.env.PATH = `${bin}:/usr/bin:/bin`;
+}
+
+/** A gh whose `--user` call fails as `userReply` says, whose status prints `status` with `statusExit`,
+ *  and whose plain `gh auth token` serves the saved login. Every other call is a test failure. */
+function ghScript(userReply: string, status: string, statusExit: number): string {
+  return [
+    'case "$*" in',
+    `  "auth token --user vivswanshah_microsoft --hostname github.com") echo "${userReply}" >&2; exit 1;;`,
+    `  "auth status --hostname github.com") cat <<'STATUS'\n${status}STATUS\n    exit ${statusExit};;`,
+    '  "auth token --hostname github.com") echo gho_saved;;',
+    '  *) echo "unexpected gh call: $*" >&2; exit 2;;',
+    "esac",
+    "",
+  ].join("\n");
+}
+
+onPosix(
+  "auth --provider gh-cli lands the owner's hosts.yml login and an old gh's login through a fake gh",
+  async () => {
+    const hadTty = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+    try {
+      for (
+        const script of [
+          ghScript(NO_TOKEN_FOR_USER.stderr, HOSTS_YML_STATUS, 1),
+          ghScript("unknown flag: --user", OLD_GH_STATUS, 0),
+        ]
+      ) {
+        isolate();
+        fakeGhOnPath(script);
+        await runAuth({ provider: "gh-cli" });
+        const stored = state().read();
+        expect([stored.authProvider, stored.ghUser]).toEqual(["gh-cli", "vivswanshah_microsoft"]);
+        expect(new Credential().resolveWithReason()).toEqual({ token: "gho_saved", reason: null });
+      }
+      // The same box after `gh auth switch` to another account: the failure quotes gh's own refusal
+      // and names whom gh now serves, and never the env-token guess (nothing is set here).
+      isolate();
+      fakeGhOnPath(ghScript(NO_TOKEN_FOR_USER.stderr, TWO_ACCOUNT_STATUS, 0));
+      let message = "";
+      try {
+        await runAuth({ provider: "gh-cli", ghUser: "vivswanshah_microsoft" });
+      } catch (e) {
+        message = errMessage(e);
+      }
+      expect(message).toBe(
+        "gh has no saved credential for account 'vivswanshah_microsoft' (`gh auth token --user " +
+          "vivswanshah_microsoft --hostname github.com` exited 1: no oauth token found for github.com " +
+          "account vivswanshah_microsoft; `gh auth status` reports active account vivswan) - run " +
+          "`gh auth login` for that account, pass --gh-user <login> for another, or choose auto " +
+          "interactively via `agent auth --provider gh-cli`",
+      );
+      expect(state().read().authProvider).toBeNull();
+    } finally {
+      process.stdin.isTTY = hadTty;
+    }
+  },
+);
 
 // --- gh multi-account selection (choice menu only, never an auth verdict) ------
 

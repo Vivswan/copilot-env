@@ -66,12 +66,27 @@ export function ghAuthTokenSpawnSpec(ghPath: string, ghUser: string | null = nul
   return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
 }
 
+/** The active account's token ON GH_COPILOT_HOST: the pinned look's fallback, where a bare
+ *  `gh auth token` would follow a GH_HOST override to another host's credential. */
+export function ghAuthHostTokenSpawnSpec(ghPath: string): GhSpawnSpec {
+  const s = cliSpawn(ghPath, ["auth", "token", "--hostname", GH_COPILOT_HOST]);
+  return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
+}
+
 export interface GhSpawnSpec {
   file: string;
   args: string[];
   shell: boolean;
   timeout: number;
   env: Record<string, string>;
+}
+
+/** What a completed or failed gh spawn left behind; `status` null with no error is the timeout kill. */
+export interface GhSpawnResult {
+  status: number | null;
+  error?: unknown;
+  stdout?: string | null;
+  stderr?: string | null;
 }
 
 /**
@@ -140,7 +155,9 @@ export function parseGhAuthStatusAccounts(output: string): GhAccount[] {
     return account;
   };
   for (const line of output.split(/\r?\n/)) {
-    const login = line.match(/Logged in to (\S+) account (\S+)(?: \(([^)]*)\))?/);
+    // gh >= 2.40 says "account <login>"; older gh said "as <login>" and marked no active account,
+    // which activeGhLogin's only-login rule covers.
+    const login = line.match(/Logged in to (\S+) (?:account|as) (\S+)(?: \(([^)]*)\))?/);
     if (login) {
       // \S+ cannot produce an empty capture; the defaults only satisfy indexed-access strictness.
       const [, host = "", name = "", source = ""] = login;

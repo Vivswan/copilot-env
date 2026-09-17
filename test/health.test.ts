@@ -45,7 +45,7 @@ import {
   type WatchdogFacts,
 } from "../src/health/facts.ts";
 import {
-  directAuthFromSpawn,
+  directAuthFromLook,
   evalCodex,
   evalShellFiles,
   gatherFacts,
@@ -1406,33 +1406,29 @@ test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look 
   expect(toolUnproven.value).toEqual({ resolved: null, lookFailed: true });
 });
 
-test("directAuthFromSpawn: completed exits prove the verdict; error/kill stays unproven", () => {
-  expect(directAuthFromSpawn("/bin/gh", { status: 0 })).toEqual({
+test("directAuthFromLook: a token proves the verdict; an unproven look stays unproven", () => {
+  expect(directAuthFromLook("/bin/gh", { token: "tok" })).toEqual({
     command: "/bin/gh",
     authenticated: true,
   });
-  expect(directAuthFromSpawn("/bin/gh", { status: 1 })).toEqual({
-    command: "/bin/gh",
-    authenticated: false,
-  });
-  // The timeout kill closes with a null code: gh was never actually asked.
-  expect(directAuthFromSpawn("/bin/gh", { status: null })).toEqual({
-    command: "/bin/gh",
-    authenticated: false,
-    unproven: true,
-  });
-  expect(directAuthFromSpawn("/bin/gh", { status: 1, error: new Error("spawn EAGAIN") })).toEqual({
+  expect(directAuthFromLook("/bin/gh", { token: null, detail: "`gh auth token` exited 1" }))
+    .toEqual({
+      command: "/bin/gh",
+      authenticated: false,
+    });
+  // The timeout kill or a spawn error: gh was never actually asked.
+  expect(directAuthFromLook("/bin/gh", { token: null, unproven: true })).toEqual({
     command: "/bin/gh",
     authenticated: false,
     unproven: true,
   });
   // The account pin travels on the fact so the check can name it; auto adds nothing to the shape.
-  expect(directAuthFromSpawn("/bin/gh", { status: 1 }, "work-bot")).toEqual({
+  expect(directAuthFromLook("/bin/gh", { token: null }, "work-bot")).toEqual({
     command: "/bin/gh",
     authenticated: false,
     ghUser: "work-bot",
   });
-  expect(directAuthFromSpawn("/bin/gh", { status: 0 }, null)).toEqual({
+  expect(directAuthFromLook("/bin/gh", { token: "tok" }, null)).toEqual({
     command: "/bin/gh",
     authenticated: true,
   });

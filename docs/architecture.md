@@ -250,7 +250,7 @@ flowchart LR
   cli --> launch
   launch -->|"ensureProxy"| token
   launch -->|"syncProfileWiring, on a named Codex launch"| wire
-  launch -->|"writeClaudeProfileSettings, on a named Claude launch: settings-{name}.json alone"| configs
+  launch -->|"writeClaudeProfileSettings, on a named Claude launch: settings-{name}.json, and the Desktop reconcile the profiles diagram shows"| configs
   token -->|"launchProxy(): spawns it"| daemonproc
   wire -->|"rewrites both agents' files"| configs
   launch -->|"refreshCodexCatalog: a due Codex refresh"| catalog

@@ -2,7 +2,7 @@
 // owns process.exitCode), like the builder/printer split in src/usage/cost.ts. The `--json` path
 // bypasses this entirely.
 import type { ProfileMode } from "../copilot_api/env_state.ts";
-import { COLOR_ENABLED, palette, statusPaint, type Tone } from "../utils/ansi.ts";
+import { COLOR_ENABLED, paintFor, statusPaint, type Tone } from "../utils/ansi.ts";
 import { printWrapped } from "../utils/table.ts";
 import { worstStatus } from "./aggregate.ts";
 import type { CheckGroup, CheckResult, CheckStatus, HealthScope } from "./types.ts";
@@ -26,11 +26,7 @@ const GROUP_LABEL: Record<CheckGroup, string> = {
   runtime: "Runtime",
 };
 
-/** `agent config`'s palette, or plain: `color` is the command edge's COLOR_ENABLED. */
 type Paint = Record<Tone, (text: string) => string>;
-const PLAIN: Paint = Object.fromEntries(
-  Object.keys(palette).map((tone) => [tone, (text: string) => text]),
-) as Paint;
 
 function glyph(status: CheckStatus, paint: Paint): string {
   if (status === "ok") return paint.green("✔");
@@ -47,7 +43,7 @@ export function renderReport(
   profileModes: ReadonlyMap<string, ProfileMode | null> = new Map(),
   color = COLOR_ENABLED,
 ): void {
-  const paint = color ? palette : PLAIN;
+  const paint = paintFor(color);
   printWrapped(paint.bold(`copilot-env health - scope: ${scope}`));
   for (const group of GROUP_ORDER) {
     const inGroup = results.filter((r) => r.group === group);

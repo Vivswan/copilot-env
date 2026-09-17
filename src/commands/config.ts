@@ -30,7 +30,7 @@ import {
 import { LEDGER_KEY_NAMES } from "../copilot_api/ownership.ts";
 import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { nextProxyVersion } from "../proxy_float.ts";
-import { bold, COLOR_ENABLED, cyan, dim, green } from "../utils/ansi.ts";
+import { COLOR_ENABLED, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { versionLessThan } from "../utils/semver.ts";
@@ -320,12 +320,7 @@ export interface ConfigTableOptions {
  *  Prose breaks between words; a value wider than its column (a URL) splits at the edge. */
 export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions): string {
   const plain = (text: string): string => text;
-  const paint = opts.color ? { bold, cyan, dim, green } : {
-    bold: plain,
-    cyan: plain,
-    dim: plain,
-    green: plain,
-  };
+  const paint = paintFor(opts.color);
   const rows = CONFIG_REGISTRY.map((def) => {
     const resolved = resolveSettingIn(data, def.key, { profile: opts.profile });
     const stored = isStoredSource(resolved.source);

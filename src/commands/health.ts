@@ -8,7 +8,6 @@ import type { HealthFacts } from "../health/facts.ts";
 import { gatherFacts } from "../health/probe.ts";
 import { renderReport } from "../health/report.ts";
 import { HEALTH_SCOPES } from "../health/types.ts";
-import { COLOR_ENABLED } from "../utils/ansi.ts";
 
 export interface HealthArgs {
   scope: string;
@@ -40,7 +39,7 @@ export async function runHealth(args: HealthArgs): Promise<void> {
   if (args.json) {
     console.log(JSON.stringify(buildHealthJson(scope, results, profile), null, 2));
   } else {
-    renderReport(scope, results, profileModes(facts), COLOR_ENABLED);
+    renderReport(scope, results, profileModes(facts));
   }
   // Set, don't exit, so stderr/stdout flush (matches the rest of the CLI).
   process.exitCode = exitCodeFor(results);

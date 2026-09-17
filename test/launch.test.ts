@@ -48,7 +48,7 @@ test("renderModelAliases wraps a long alias list inside its own column at width 
     "gpt-4o": targets.gpt,
     "gpt-4.1": targets.gpt,
   };
-  const [title, ...rows] = renderModelAliases(mappings, 80).split("\n");
+  const [title, ...rows] = renderModelAliases(mappings, 80, false).split("\n");
   expect(title).toBe("Model aliases (6 -> 2 models):");
   expect(rows.length).toBeGreaterThan(2);
   for (const row of rows) {
@@ -64,7 +64,7 @@ test("renderModelAliases wraps a long alias list inside its own column at width 
     const sources = Object.keys(mappings).filter((s) => mappings[s] === target).sort();
     expect(text).toContain(`${target} <- ${sources.join(", ")}`);
   }
-  expect(renderModelAliases(mappings, null).split("\n")).toHaveLength(3);
+  expect(renderModelAliases(mappings, null, false).split("\n")).toHaveLength(3);
 });
 
 // --- parseLaunchAction ----------------------------------------------------------

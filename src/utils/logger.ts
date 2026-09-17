@@ -82,9 +82,11 @@ export class WrappingReporter implements ConsolaReporter {
  *  characterFormat finds none; wrap-ansi re-opens a span it splits across lines. */
 function inlinePaint(text: string, tone: Tone): string {
   const open = sgrOpen(tone);
-  return text
+  const body = text
     .replaceAll(FG_CLOSE, `${FG_CLOSE}${open}`)
     .replace(/`([^`]+)`/g, (_, code: string) => `${sgrOpen("cyan")}${code}${FG_CLOSE}${open}`);
+  // A close that ended the text needs no re-open: it would leave an empty span at the end.
+  return body.endsWith(open) ? body.slice(0, -open.length) : body;
 }
 
 /** After the wrap: every line in its own span, since consola appends a gray tag, closing the

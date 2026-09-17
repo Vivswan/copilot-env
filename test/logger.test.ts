@@ -92,6 +92,9 @@ test("with color on, the whole wrapped warning body is yellow, an inline backtic
   ]);
   log.info("plain");
   expect(seen[1]?.args).toEqual(["plain"]);
+  // A command that ends the text leaves no empty span behind it.
+  log.warn("check `agent health`");
+  expect(String(seen[2]?.args[0]).endsWith(`${cyan}agent health${close}${close}`)).toBe(true);
   // Through consola's own reporter with a tag: the tag's gray close lands on the first line, and
   // every continuation line still opens yellow.
   const fancy = fancyAt(40, true);

@@ -1,4 +1,5 @@
 import { consola } from "consola";
+import { COLOR_ENABLED, statusPaint } from "../utils/ansi.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import {
@@ -9,6 +10,9 @@ import {
 } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
+
+/** A status word in its tone, the edge's COLOR_ENABLED resolved once here. */
+const status = (word: string): string => statusPaint(word, COLOR_ENABLED);
 
 export interface StopArgs {
   profile?: string;
@@ -33,20 +37,22 @@ async function stopOne(profile: Profile): Promise<boolean> {
   const { trackedPid, signalled, stopped } = await stopTrackedProxy(0, profile);
   const what = profile === null ? "proxy" : `${profileLabel(profile)} proxy`;
   if (trackedPid === undefined) {
-    consola.info(`The ${what} is not running on this host (nothing to stop).`);
+    consola.info(`The ${what} is ${status("not running")} on this host (nothing to stop).`);
     return false;
   }
   if (!signalled) {
     if (!stopped) {
       // stopTrackedProxy already warned why the pid was not signalled; the summary must agree
       // nothing changed.
-      consola.info(`The ${what} (PID ${trackedPid}) was left running; tracking kept.`);
+      consola.info(`The ${what} (PID ${trackedPid}) was left ${status("running")}; tracking kept.`);
     } else {
-      consola.info(`The ${what} (PID ${trackedPid}) was already stopped; cleared stale tracking.`);
+      consola.info(
+        `The ${what} (PID ${trackedPid}) was already ${status("stopped")}; cleared stale tracking.`,
+      );
     }
     return false;
   }
-  consola.info(`Stopped the ${what} (PID ${trackedPid})`);
+  consola.info(`${status("Stopped")} the ${what} (PID ${trackedPid})`);
   return true;
 }
 

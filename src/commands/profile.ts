@@ -27,7 +27,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { removeTreeReported } from "../utils/report_write.ts";
-import { formatTable, printWrapped, terminalWidth } from "../utils/table.ts";
+import { formatTable, printKeyValue, printWrapped, terminalWidth } from "../utils/table.ts";
 import {
   acquireCredential,
   type CredentialAcquisition,
@@ -270,7 +270,7 @@ function runCheck(name: ProfileName): void {
       process.exitCode = providerModeExitCode("other");
       return;
     case "complete":
-      printWrapped(`${profileLabel(name)}: ${slot.mode}`);
+      printKeyValue(profileLabel(name), slot.mode);
       process.exitCode = providerModeExitCode(slot.mode);
       return;
     default:

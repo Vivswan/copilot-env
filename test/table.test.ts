@@ -1,10 +1,22 @@
 import stringWidth from "string-width";
-import { formatTable, terminalWidth, wrapLine } from "../src/utils/table.ts";
+import {
+  formatTable as renderTable,
+  keyValueLine,
+  type TableOptions,
+  type TableRow,
+  terminalWidth,
+  wrapLine,
+} from "../src/utils/table.ts";
+import { statusPaint } from "../src/utils/ansi.ts";
 import { expect, test } from "./helpers/testing.ts";
+
+/** Plain unless a case asks for color: the default is the running terminal's. */
+const formatTable = (body: TableRow[], options: TableOptions = {}): string[] =>
+  renderTable(body, { color: false, ...options });
 
 test("formatTable pads and aligns per column, separates header and footer rows, trims every line, and takes ragged rows, an empty body, and a custom indent", () => {
   const rows: Array<
-    { body: string[][]; options?: Parameters<typeof formatTable>[1]; lines: string[] }
+    { body: string[][]; options?: TableOptions; lines: string[] }
   > = [
     {
       body: [["a", "10"], ["longer", "5"]],
@@ -265,5 +277,22 @@ test("a colored table paints the header bold and the key column cyan without wid
   expect(wide[2]).toBe(plainWide[2]?.replace(/^codex/, `${esc}[36mcodex${esc}[39m`));
   expect(wide[0]).toBe(
     plainWide[0]?.replace(/(\S[^ ]*(?: \S[^ ]*)*)/g, (cell) => `${esc}[1m${cell}${esc}[22m`),
+  );
+});
+
+test("keyValueLine paints the key cyan and the status word in its tone, case-insensitively, and nothing without color", () => {
+  const esc = String.fromCharCode(27);
+  expect(keyValueLine("Claude registration", "not registered", true)).toBe(
+    `${esc}[36mClaude registration${esc}[39m: ${esc}[33mnot registered${esc}[39m`,
+  );
+  expect(keyValueLine("claude.wire-mcp", "true (default)", true)).toBe(
+    `${esc}[36mclaude.wire-mcp${esc}[39m: true (default)`,
+  );
+  expect(statusPaint("Stopped", true)).toBe(`${esc}[2mStopped${esc}[22m`);
+  expect(statusPaint("registered (current)", true)).toBe(
+    `${esc}[32mregistered (current)${esc}[39m`,
+  );
+  expect(keyValueLine("Claude registration", "not registered", false)).toBe(
+    "Claude registration: not registered",
   );
 });

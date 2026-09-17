@@ -1,6 +1,6 @@
 import stringWidth from "string-width";
 import wrapAnsi from "wrap-ansi";
-import { palette } from "./ansi.ts";
+import { COLOR_ENABLED, paintFor, palette, statusPaint } from "./ansi.ts";
 
 export type Align = "left" | "right";
 
@@ -20,7 +20,7 @@ export interface TableOptions {
   /** Visible columns to fit; null never wraps. Defaults to the terminal's. */
   width?: number | null;
   /** `agent config`'s palette by construction: the header and headings bold, the key column (the
-   *  first) cyan. The command edge's COLOR_ENABLED, so a test can force it. */
+   *  first) cyan. Defaults to the command edge's COLOR_ENABLED; the argument is the test override. */
   color?: boolean;
 }
 
@@ -91,6 +91,16 @@ export function printWrapped(text: string): void {
   console.log(wrapMessage(text, terminalWidth()));
 }
 
+/** A `key: value` status line (`agent mcp`, the `--check` reports): the key cyan, a status word in
+ *  its tone. Defaults to the command edge's COLOR_ENABLED; the argument is the test override. */
+export function keyValueLine(key: string, value: string, color = COLOR_ENABLED): string {
+  return `${paintFor(color).cyan(key)}: ${statusPaint(value, color)}`;
+}
+
+export function printKeyValue(key: string, value: string, color = COLOR_ENABLED): void {
+  printWrapped(keyValueLine(key, value, color));
+}
+
 /** The stderr twin, for narration beside a command's stdout payload. */
 export function printWrappedToStderr(text: string): void {
   process.stderr.write(`${wrapMessage(text, terminalWidth(process.stderr))}\n`);
@@ -131,7 +141,7 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
     wrap = [],
     indent = GAP,
     width = terminalWidth(),
-    color = false,
+    color = COLOR_ENABLED,
   } = options;
   const tint = tintFor(color);
   const records = body.filter((row): row is string[] => !isHeading(row));

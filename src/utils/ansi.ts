@@ -51,6 +51,17 @@ export const palette: Record<Tone, Paint> = {
   red: sgr("red"),
 };
 
+/** Every tone as identity: what a renderer paints with when `color` is off. */
+export const plainPalette: Record<Tone, Paint> = Object.fromEntries(
+  Object.keys(palette).map((tone) => [tone, (text: string) => text]),
+) as Record<Tone, Paint>;
+
+/** The palette a renderer resolves once from its `color` argument (the command edge's
+ *  COLOR_ENABLED, or a test's override): never the gated helpers, which read the environment. */
+export function paintFor(color: boolean): Record<Tone, Paint> {
+  return color ? palette : plainPalette;
+}
+
 function gated(paint: Paint): Paint {
   return (text: string): string => (NO_COLOR ? text : paint(text));
 }
@@ -67,11 +78,15 @@ export const red = gated(palette.red);
 /** The tone of a status word that is data, not a log level: what `agent health` rows, the profile
  *  table, and the start/stop lines say about a thing. Green is healthy, yellow needs a hand, red
  *  failed, dim is absent or idle; any other word keeps its color. */
-const STATUS_TONES: ReadonlyArray<readonly [RegExp, keyof typeof palette]> = [
-  [/^(ok|up|running|accepted|authenticated|wired|complete)\b/, "green"],
-  [/^(warn|incomplete|no credential|not running|not authenticated|stale|partial)\b/, "yellow"],
-  [/^(fail|failed|rejected|refused|error|broken)\b/, "red"],
-  [/^(down|stopped|-|none|unset|<unset>)$/, "dim"],
+const STATUS_TONES: ReadonlyArray<readonly [RegExp, Tone]> = [
+  // `registered (current)` ends in a non-word character, where `\b` cannot sit.
+  [/^(ok|up|running|accepted|authenticated|wired|complete)\b|^registered \(current\)/i, "green"],
+  [
+    /^(warn|incomplete|no credential|not running|not authenticated|not registered|registered by|stale|partial)\b/i,
+    "yellow",
+  ],
+  [/^(fail|failed|rejected|refused|error|broken|could not read)\b/i, "red"],
+  [/^(down|stopped|-|none|unset|<unset>)$/i, "dim"],
 ];
 
 /** `color` is the command edge's COLOR_ENABLED, so a renderer never reads the environment and a

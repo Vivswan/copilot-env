@@ -1,7 +1,7 @@
 ---
 title: Architecture
 group: Internals
-order: 1
+order: 5
 ---
 
 # Architecture
@@ -35,7 +35,8 @@ flowchart TD
   daemonenv[["the daemon's env: COPILOT_ENV_DAEMON_GH_TOKEN, COPILOT_ENV_DAEMON_INTEGRATION_ID, COPILOT_ENV_DAEMON_COPILOT_HOST"]]
   credfile -->|"reads the slot: gh-cli, a stored token, or none"| store
   prefs -->|"reads static-key"| wiring
-  proxycfg -->|"static-key on a proxy write: ensureApiKey() reads a key, minting one when absent"| wiring
+  proxycfg -->|"static-key on a proxy write: ensureApiKey() reads a key"| wiring
+  wiring -->|"mints auth.apiKeys when the file holds none"| proxycfg
   store --> cred
   gh -->|"reads stdout: the OAuth token"| cred
   cred -->|"resolve(): the token, or null for a none slot"| wiring
@@ -54,7 +55,7 @@ flowchart TD
 ```
 
 - **No implicit `gh` fallback:** a `none` slot resolves to null and the caller asks (`agent auth`); a named profile's reason names the profile.
-- **`static-key` is the one opt-in that bakes the value:** `resolveCredentialWiring()` resolves it once per agent at the write, and the file then carries the value (`http_headers.Authorization` for Codex, `env.ANTHROPIC_AUTH_TOKEN` for Claude) instead of the resolver command. An unresolvable static credential is a failed write, never a silent return to the command shape.
+- **`static-key` is the one opt-in that bakes the value** ([authentication: static key](authentication.md#static-key) owns it): `resolveCredentialWiring()` resolves it once per agent at the write, and an unresolvable static credential is a failed write, never a silent return to the command shape.
 
 Demonstrated by: [test/configure.test.ts](../test/configure.test.ts), [test/auth.test.ts](../test/auth.test.ts), [test/codex_config.test.ts](../test/codex_config.test.ts).
 
@@ -73,17 +74,19 @@ flowchart TD
   select["src/copilot_api/integration_identity.ts<br>selectDirectIdentityAndHost() selectPassthroughIdentityAndHost() IdentityAndHost probeIntegrationIdentityCached()"]
   launch["src/copilot_api/launch.ts<br>resolveLaunchCredential()"]
   slotout[("~/.local/share/copilot-env/credentials.json<br>the profile slot, rewritten")]
+  wiringout["DirectWiring: the identity and host the agent config bakes"]
   prefs -->|"reads integration-id, copilot-host"| config
   slotin -->|"reads integrationIdentity, copilotHost, copilotHostIdentity, copilotHostSource"| rule
   config -->|"integration-id pin, copilot-host literal"| rule
-  rule -->|"replay: bake the cached pair, no request"| persist
+  rule -->|"replay: the cached pair, no request, nothing written"| wiringout
   rule -->|"preferred or probe"| probe
   probe --> select
   models -->|"first 2xx wins, per identity, on the host in use"| select
   user -->|"endpoints.api: the account's designated host"| select
   select -->|"identity on the host in use, then the host under it, then re-select where auto moved"| persist
-  persist -->|"setProfileIntegrationIdentity(): writes the verdict and the host it was accepted on, keyed to the credential"| slotout
-  launch -->|"the passthrough twin: the daemon's host pin"| select
+  persist -->|"after a probe only: setProfileIntegrationIdentity() writes the verdict and the host it was accepted on, keyed to the credential"| slotout
+  persist --> wiringout
+  select -->|"the passthrough twin: the daemon's host pin, no slot write"| launch
 ```
 
 - **The probe memo is process-lifetime and never invalidated** (`probeIntegrationIdentityCached()`): a CLI run ends in seconds, and the MCP server keeps its verdict until the transport closes. Injected I/O and a caller deadline bypass it.
@@ -163,13 +166,14 @@ Demonstrated by: [test/proxy_float.test.ts](../test/proxy_float.test.ts), [test/
 flowchart LR
   flag[("an explicit flag or env var: agent update --no-verify here, COPILOT_API_VERSION for the proxy pin")]
   cmd["src/commands/config.ts<br>runConfig() configTable()"]
-  prefs[("~/.local/share/copilot-env/preferences.json")]
+  prefsin[("~/.local/share/copilot-env/preferences.json<br>as stored")]
   store["src/copilot_api/env_config.ts<br>CopilotEnvConfig CONFIG_REGISTRY ConfigKeyDef"]
   dflt["src/copilot_api/env_config.ts<br>configDefaultValue() configDefaultBoolean() configDefaultNumber() configDefaultString()"]
   site["src/autoupdate/apply.ts<br>resolveProvenanceDecision()"]
+  prefsout[("~/.local/share/copilot-env/preferences.json<br>rewritten whole")]
   cmd -->|"--set, --del, --get"| store
-  store -->|"set(), del(): writes the whole document"| prefs
-  prefs -->|"read()"| store
+  prefsin -->|"read()"| store
+  store -->|"set(), del()"| prefsout
   flag -->|"1. wins when given"| site
   store -->|"2. the stored value"| site
   dflt -->|"3. the built-in default"| site
@@ -190,7 +194,7 @@ flowchart TD
   download[["https://github.com/Vivswan/copilot-env/releases/download/{tag}: copilot-env-{triple} (.exe on Windows), checksums.txt, attestation.json"]]
   tuf[["https://tuf-repo-cdn.sigstore.dev: the Sigstore trust root"]]
   prefs[("~/.local/share/copilot-env/preferences.json")]
-  autostate[("{top}/.autoupdate/state.json")]
+  autostatein[("{top}/.autoupdate/state.json<br>as stored")]
   root["src/utils/root.ts<br>rootMode() RootMode isProtectedRoot() looksLikeInstallRoot()"]
   install["src/install/installer.ts<br>buildInstallPlan() applyInstallPlan() runInstall() pointCurrentAt()"]
   update["src/commands/update.ts<br>runUpdate() recheckVerdict()"]
@@ -201,11 +205,12 @@ flowchart TD
   att["src/install/attestation.ts<br>RELEASE_SIGNER_POLICY parseStatement() assertSubjectsAttested()"]
   layout[("{top}/versions/vX.Y.Z, {top}/current, {top}/bin/agent and agent.ps1")]
   rcfile[("~/.bashrc, ~/.zshrc, or the PowerShell $PROFILE")]
+  autostateout[("{top}/.autoupdate/state.json<br>rewritten")]
   root -->|"checkout or compiled, decided once"| install
   root -->|"a checkout refuses without --force"| update
   assets -->|"reads at plan time, materializes the payloads into the version root"| install
   prefs -->|"reads auto-update, verify-provenance, and update-cooldown as the release age"| preflight
-  autostate -->|"reads lastCheckMs: due once a day"| preflight
+  autostatein -->|"reads lastCheckMs: due once a day"| preflight
   update --> release
   preflight --> release
   releases -->|"reads tags and publish dates"| release
@@ -217,7 +222,7 @@ flowchart TD
   apply -->|"stage, provision with the new binary's install --assets-only, commit by flipping current"| install
   install -->|"writes versions/vX.Y.Z whole, then flips current"| layout
   install -->|"writes the block that sources agents.bashrc or agents.ps1"| rcfile
-  preflight -->|"writes lastCheckMs, lastResult"| autostate
+  preflight -->|"writes lastCheckMs, lastResult"| autostateout
 ```
 
 - **Trust on first use:** the installer never verifies the release it was fetched from (that would be circular). `agent update` proves origin with Sigstore and fails closed; `--no-verify` and the `verify-provenance` key are the two opt-outs, and the skip warning names the way back.

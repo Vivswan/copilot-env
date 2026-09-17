@@ -145,9 +145,8 @@ export { pidAlive };
 
 /** Both scans gate on the process table's executable name (ps `ucomm`, the WMI image Name) derived from
  *  this list, never on argv text, where a spaced executable path is indistinguishable from arguments.
- *    node, bun                                  -> only for daemons left running by pre-rewrite installs
- *    a renamed deno (COPILOT_ENV_SIDECAR_DENO)  -> unmatched, an accepted loss */
-const DAEMON_RUNTIMES = ["deno", "node", "bun"] as const;
+ *  A renamed deno (COPILOT_ENV_SIDECAR_DENO) goes unmatched: an accepted loss. */
+const DAEMON_RUNTIMES = ["deno"] as const;
 const RUNTIME_ALTERNATION = DAEMON_RUNTIMES.join("|");
 
 // Each alternative consumes exactly one whitespace-delimited token and the classes are disjoint (a fragment
@@ -347,8 +346,6 @@ function listCopilotApiPids(): Promise<number[]> {
   return scanCopilotApiPids().then((scan) => (scan === "unproven" ? [] : scan));
 }
 
-/** `node.exe` and `bun.exe` exist only so an `agent update` from 3.5.6 or older (whose launcher ran the
- *  daemon under bun) can still find and stop the daemon that install left running. */
 const WINDOWS_DAEMON_IMAGES = DAEMON_RUNTIMES.map((runtime) => `${runtime}.exe`);
 
 async function scanCopilotApiPidsWindows(): Promise<number[] | "unproven"> {
@@ -434,20 +431,8 @@ async function listUserProcesses(): Promise<ProcessRow[]> {
   return parseProcessRows(stdout);
 }
 
-/** The copilot-api.sh / copilot_api.py excludes are the pre-rewrite launcher wrappers, whose argv also
- *  carries the daemon shape. */
 function posixDaemonPids(rows: ProcessRow[]): number[] {
-  const pids: number[] = [];
-  for (const row of rows) {
-    if (!isDaemonProcess(row)) {
-      continue;
-    }
-    if (row.command.includes("copilot-api.sh") || row.command.includes("copilot_api.py")) {
-      continue;
-    }
-    pids.push(row.pid);
-  }
-  return pids;
+  return rows.filter(isDaemonProcess).map((row) => row.pid);
 }
 
 /** Same control as classifyPidFromRows: rows without `selfPid` prove the scan FAILED, which is

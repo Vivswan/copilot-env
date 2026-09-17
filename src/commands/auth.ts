@@ -1,8 +1,6 @@
 // The credential domain is the `Credential` class (src/copilot_api/credential.ts); this is the
 // command and interactive layer. The agent Direct configs shell into `agent auth --get` at fetch
 // time, so this command is also their resolver.
-import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { consola } from "consola";
@@ -43,7 +41,11 @@ import {
   ghTokenEnvVarsList,
   ghTokensInEnv,
 } from "../copilot_api/gh_cli.ts";
-import { type GithubLoginLook, githubLoginLook } from "../copilot_api/github_login.ts";
+import {
+  githubDeviceFlowLogin,
+  type GithubLoginLook,
+  githubLoginLook,
+} from "../copilot_api/github_login.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
   DEFAULT_COPILOT_API_BASE,
@@ -59,28 +61,18 @@ import {
   surveyIntegrationIdentities,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../copilot_api/integration_identity.ts";
-import { CopilotApiPaths, profileHomeNames } from "../copilot_api/paths.ts";
-import {
-  copilotApiArgv,
-  copilotApiEnv,
-  DAEMON_SIGKILL_GRACE_MS,
-  resolveCopilotApiEntry,
-} from "../copilot_api/process.ts";
-import { resolveDenoBin } from "../copilot_api/sidecar.ts";
+import { profileHomeNames } from "../copilot_api/paths.ts";
+import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import {
   parseProfileFlag,
   type Profile,
   profileLabel,
   type ProfileName,
 } from "../copilot_api/profile.ts";
-import { installedProxyVersion } from "../copilot_api/version.ts";
 import { COLOR_ENABLED, cyan, palette } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
-import { errMessage } from "../utils/error.ts";
-import { withFileLockSync } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { formatTable, printTable, terminalWidth, wrapLine } from "../utils/table.ts";
-import { removeReported } from "../utils/report_write.ts";
 
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
 const logger = createStderrLogger();
@@ -316,63 +308,17 @@ export async function chooseGhAccount(
 
 // --- provider acquisition ---------------------------------------------------
 
-/** The INSTALLED copilot-api runs the device flow, not `npx @latest`, which would bypass the
- *  supply-chain cooldown and the float. It writes its own github_token file, which is read and
- *  scrubbed here. */
-function loginWithCopilot(): string {
-  const entry = resolveCopilotApiEntry();
-  if (entry.kind === "package" && installedProxyVersion() === null) {
-    throw new Error(
-      "cannot run the device-flow login - copilot-api is not installed. " +
-        "Re-run the agent launcher to install dependencies, or use `agent auth --provider gh-token`.",
-    );
-  }
-  const { githubTokenFile: tokenFile, githubTokenLoginLock: lockPath } = new CopilotApiPaths();
-  // Every profile's device flow funnels through the ONE github_token file, so two concurrent logins
-  // could read each other's token into the wrong slot. Dead-holder-only reclaim: an interactive
-  // login holds it for minutes.
-  return withFileLockSync(lockPath, {
-    staleMs: Number.POSITIVE_INFINITY,
-    waitMs: Number.POSITIVE_INFINITY,
-    retryMs: 500,
-    onWait: () =>
-      logger.info("Another device-flow login is in progress; waiting for it to finish ..."),
-  }, () => {
-    const result = spawnSync(
-      resolveDenoBin(),
-      copilotApiArgv(["auth", "login", "--provider", "copilot"], [], entry),
-      {
-        stdio: "inherit",
-        windowsHide: true,
-        env: { ...process.env, ...copilotApiEnv(entry) },
-      },
-    );
-    if (result.error || result.status !== 0) {
-      throw new Error(
-        `device-flow login failed${
-          result.error ? `: ${result.error.message}` : ` (exit ${result.status})`
-        }`,
+/** copilot-env runs GitHub's device flow itself (github_login.ts) and RETURNS the token: the caller's
+ *  single store write is the only place it lands, so no proxy-side token file exists to drift from
+ *  the store. The prompt goes to stderr like every other narration. */
+async function loginWithCopilot(): Promise<string> {
+  return await githubDeviceFlowLogin({
+    announce: (code) => {
+      logger.info(
+        `  Open ${cyan(code.verificationUri)} and enter the code ${cyan(code.userCode)} ` +
+          `(valid ${Math.round(code.expiresInS / 60)} minutes); waiting for GitHub ...`,
       );
-    }
-    let token: string;
-    try {
-      token = readFileSync(tokenFile, "utf8").trim();
-    } catch (e) {
-      throw new Error(
-        `login succeeded but its GitHub token wasn't found at ${tokenFile}: ${errMessage(e)}`,
-      );
-    }
-    if (!token) throw new Error("the device-flow login did not produce a GitHub token");
-    // Scrub copilot-api's copy so the token rests only in our state (the proxy receives it via
-    // `--github-token` from there).
-    //   the removal fails                  -> best-effort, that file stays on disk
-    //   a crash before the caller persists -> one re-login, since the scrub already ran
-    try {
-      removeReported(tokenFile);
-    } catch {
-      // best-effort
-    }
-    return token;
+    },
   });
 }
 
@@ -542,7 +488,7 @@ export async function acquireCredential(
     return { kind: "stored", provider: "gh-env", token: await loginWithGhEnv() };
   }
   if (resolved.kind === "copilot") {
-    return { kind: "stored", provider: "copilot", token: loginWithCopilot() };
+    return { kind: "stored", provider: "copilot", token: await loginWithCopilot() };
   }
   const look = seams.look ?? ghAuthTokenLook;
   const account: SettledGhAccount = resolved.account.kind === "choose"

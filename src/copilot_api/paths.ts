@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, type Stats, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import { hideWritesUnder } from "../utils/report_write.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
@@ -83,10 +83,9 @@ export const LOGS_DIR_NAME = "logs";
 /** ProxyProjectionState's record; lives beside the config.json it describes. */
 export const PROJECTIONS_FILENAME = ".copilot-env-projections.json";
 
-/** Their presence directly at the ROOT home marks a daemon home at the root itself (defaultDaemonHome).
- *  The device-flow login (src/commands/auth.ts) runs the proxy against a pinned COPILOT_API_HOME root
- *  unchanged, and the proxy's own setup writes config.json there, so a daemon first started afterwards
- *  ran from the root. daemon.lock is deliberately absent: a home that ever ran a daemon carries `.run/`
+/** Their presence directly at the ROOT home marks a daemon home at the root itself (defaultDaemonHome):
+ *  earlier releases ran the proxy against the root as its COPILOT_API_HOME, and its own setup wrote
+ *  config.json there. daemon.lock is deliberately absent: a home that ever ran a daemon carries `.run/`
  *  (the CLI creates it before any spawn). */
 const DAEMON_HOME_ARTIFACTS = [
   PROXY_CONFIG_FILENAME,
@@ -198,14 +197,6 @@ export class CopilotApiPaths {
   /** One root-wide mutex for reserveProfilePort (port.ts), best-effort: past its bounded wait a
    *  reserver proceeds UNLOCKED, so two racing reservers can still mint the same port. */
   profilePortsLock: string;
-  /** copilot-api's OWN device-login token (`github_token`). copilot-env never writes it (the token travels
-   *  via `--github-token`); it is read and scrubbed only when consolidating an existing proxy login into
-   *  our store. Root-home only: profile daemons always receive their token via the flag. */
-  githubTokenFile: string;
-  /** A device-flow login (auth.ts) holds it across its whole spawn+read+scrub; the de-auth scrub
-   *  (credential.ts) waits a bounded two seconds and then SKIPS rather than race a mid-login token write.
-   *  Derived beside the file it guards so the two sites never drift onto different lock paths. */
-  githubTokenLoginLock: string;
   /** The bundled `codex debug models` catalog with Copilot's live context-window limits overlaid; the
    *  managed Codex config.toml references it by absolute path (`model_catalog_json`). Not dot-prefixed:
    *  Codex and users read it. */
@@ -229,8 +220,6 @@ export class CopilotApiPaths {
     this.locksDir = join(rootHome, LOCKS_DIR_NAME);
     this.stateStoreLock = join(this.locksDir, `${STATE_STORE_FILENAME}.lock`);
     this.profilePortsLock = join(this.locksDir, "profile-ports.lock");
-    this.githubTokenFile = join(rootHome, "github_token");
-    this.githubTokenLoginLock = join(this.locksDir, `${basename(this.githubTokenFile)}.login.lock`);
     this.codexModelCatalogFile = join(rootHome, "codex-model-catalog.json");
   }
 }

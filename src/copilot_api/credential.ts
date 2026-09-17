@@ -3,8 +3,6 @@
 // interactive surface (provider prompt, device flow, `runAuth`) is src/commands/auth.ts on top.
 import { spawnSync } from "node:child_process";
 import { findCommand } from "../utils/command.ts";
-import { withFileLockSync } from "../utils/file_lock.ts";
-import { removeReported } from "../utils/report_write.ts";
 import {
   type AuthProvider,
   CopilotEnvState,
@@ -20,7 +18,6 @@ import {
   ghAuthVerdict,
   parseGhAuthStatusAccounts,
 } from "./gh_cli.ts";
-import { CopilotApiPaths } from "./paths.ts";
 import { type Profile, profileLabel } from "./profile.ts";
 
 // The provider vocabulary is defined with the store that persists it (env_state);
@@ -241,29 +238,7 @@ export class Credential {
     this.record({ kind: "gh-cli", ghUser });
   }
 
-  /**
-   * Default profile only: also scrub copilot-api's own device-login file, else a detached proxy could
-   * keep using that stale upstream token (a named profile's login already scrubbed it at login time).
-   * The scrub takes the login lock the device flow holds (bounded wait), so a `--del` racing a mid-login
-   * cannot delete the token between its creation and its read; past the bound, the login's own scrub covers it.
-   */
   clear(): boolean {
-    const had = this.state.clearCredential(this.profile);
-    if (this.profile === null) {
-      const { githubTokenFile: tokenFile, githubTokenLoginLock: lockPath } = new CopilotApiPaths();
-      withFileLockSync(
-        lockPath,
-        { staleMs: Number.POSITIVE_INFINITY, waitMs: 2000, retryMs: 100 },
-        (outcome) => {
-          if (!outcome.held) return; // a live login holds it past the bound: skip the scrub
-          try {
-            removeReported(tokenFile);
-          } catch {
-            // best-effort
-          }
-        },
-      );
-    }
-    return had;
+    return this.state.clearCredential(this.profile);
   }
 }

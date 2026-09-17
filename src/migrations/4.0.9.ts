@@ -464,8 +464,8 @@ export const v409IdentityCache: Migration = {
 // This is a `layout` step, ahead of every other 4.0.9 step, which read the merged maps.
 // The same pass removes what nothing reads any more, naming each file: the three stores' lock
 // sidecars, the copilot-api login artifact under `opencode/` (a host selector the proxy no longer
-// runs under) and its then-empty directory, and the catalog backup a past sync left. The root
-// `github_token` stays: the login flow still reads it.
+// runs under) and its then-empty directory, the catalog backup a past sync left, and the root
+// `github_token` with its login lock (the device flow stores its token in state.json now).
 
 const FOLDED_STORES = ["credentials.json", "preferences.json", "ownership.json"] as const;
 type FoldedStore = (typeof FOLDED_STORES)[number];
@@ -482,6 +482,9 @@ const FOLDED_LOCKS: readonly string[] = [
 const ROOT_DEBRIS: readonly string[] = [
   join("opencode", "github_token"),
   "codex-model-catalog.json.bak",
+  "github_token",
+  join(LOCKS_DIR_NAME, "github_token.login.lock"),
+  join(LOCKS_DIR_NAME, "github_token.login.lock.oslock"),
 ];
 
 function mapHasKey(map: unknown, keys: readonly string[]): boolean {

@@ -109,13 +109,11 @@ test("account-wide files resolve to the ROOT home, never a daemon home or .run/<
   // A regression moving any account-wide store into a daemon home or runDir must fail here.
   expect(paths.stateStoreFile).toBe(join(dir, "state.json"));
   expect(paths.stateStoreLock).toBe(join(dir, "locks", "state.json.lock"));
-  expect(paths.githubTokenFile).toBe(join(dir, "github_token"));
   expect(paths.codexModelCatalogFile).toBe(join(dir, "codex-model-catalog.json"));
 
   for (
     const rootFile of [
       paths.stateStoreFile,
-      paths.githubTokenFile,
       paths.codexModelCatalogFile,
     ]
   ) {

@@ -212,7 +212,6 @@ test("profile paths isolate the daemon home but share the account-wide files", (
   // Account-wide files anchor at the ROOT home for every profile.
   expect(work.stateStoreFile).toBe(def.stateStoreFile);
   expect(work.codexModelCatalogFile).toBe(def.codexModelCatalogFile);
-  expect(work.githubTokenFile).toBe(def.githubTokenFile);
 });
 
 test("COPILOT_ENV_ROOT_HOME re-anchors the shared files inside a profile daemon", () => {

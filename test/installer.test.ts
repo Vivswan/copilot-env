@@ -409,6 +409,24 @@ echo "\${${INSTALL_ROOT_ENV}:-} $@" >> "$(dirname "$0")/../../../wires.log"
     if (refresh.kind !== "versioned") throw new Error("expected a versioned plan");
     expect(refresh.migration).toBeNull();
   });
+
+  skipWin("a refused top-level shim write skips neither the other shim nor the migrations", () => {
+    // Post-flip, the install has landed: a locked `agent` must still leave a working `agent.ps1`
+    // and run the migrations (the bootstrap binary is swept right after).
+    const recorder = `#!/bin/sh
+echo "\${${INSTALL_ROOT_ENV}:-} $@" >> "$(dirname "$0")/../../../wires.log"
+`;
+    const binarySource = writeFakeBinary(join(root, "recorder.sh"), recorder);
+    pointCurrentAt(dest, "v0.0.1");
+    mkdirSync(join(dest, "bin", "agent"), { recursive: true });
+
+    applyInstallPlan(versionedPlan(QUIET, binarySource));
+
+    expect(readFileSync(join(dest, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_CURRENT_SHIM);
+    expect(readFileSync(join(dest, "wires.log"), "utf8").trim()).toBe(
+      `${join(dest, CURRENT_LINK)} migrate 0.0.1 ${packageVersion()}`,
+    );
+  });
 });
 
 describe("the current link primitives", () => {

@@ -243,14 +243,33 @@ function writeShimFile(to: string, text: string, executable: boolean, logger: Sh
 /** Where a shim write is announced (the global consola, or an update's stderr logger). */
 export interface ShimLogger {
   info(message: string): void;
+  warn(message: string): void;
+}
+
+/** The stable PATH entries at `<top>/bin`, dispatching through the `current` link. */
+function topLevelShims(top: string): ShimWrite[] {
+  return [
+    { to: join(top, "bin", "agent"), text: POSIX_CURRENT_SHIM, executable: true },
+    { to: join(top, "bin", "agent.ps1"), text: POWERSHELL_CURRENT_SHIM, executable: false },
+  ];
+}
+
+/** Post-flip, so warned and never raised: a locked shim must not undo a landed flip, and a
+ *  failure on one shim must not skip the other (Windows can lock `agent` while `agent.ps1` is
+ *  absent, and the bootstrap binary goes right after). */
+function writeShimBestEffort(shim: ShimWrite, logger: ShimLogger): void {
+  try {
+    writeShimFile(shim.to, shim.text, shim.executable, logger);
+  } catch (error) {
+    logger.warn(`Could not refresh the launcher shim ${shim.to}: ${errMessage(error)}`);
+  }
 }
 
 /** Idempotent and cheap in the steady state (identical text is never rewritten), so every
  *  install and update commit can refresh the shims, which is also what heals a crash that
  *  flipped `current` but got no further. */
 export function writeTopLevelShims(top: string, logger: ShimLogger = consola): void {
-  writeShimFile(join(top, "bin", "agent"), POSIX_CURRENT_SHIM, true, logger);
-  writeShimFile(join(top, "bin", "agent.ps1"), POWERSHELL_CURRENT_SHIM, false, logger);
+  for (const shim of topLevelShims(top)) writeShimBestEffort(shim, logger);
 }
 
 /** Markers + .git: the shape of a LIVE source checkout (see CHECKOUT_MARKERS).
@@ -637,10 +656,7 @@ export function buildInstallPlan(
     ...planMaterialization(versionRoot, sourceRoot),
     binary,
     currentLink: { path: currentLinkPath(top), target: currentLinkTarget(top, versionName) },
-    topShims: [
-      { to: join(top, "bin", "agent"), text: POSIX_CURRENT_SHIM, executable: true },
-      { to: join(top, "bin", "agent.ps1"), text: POWERSHELL_CURRENT_SHIM, executable: false },
-    ],
+    topShims: topLevelShims(top),
     flatBinaryRemovals: flatBinaryResiduePaths(top),
     migration: previous === null || previous === versionName
       ? null
@@ -751,15 +767,7 @@ export function applyInstallPlan(plan: InstallPlan): void {
       if (process.platform !== "win32") chmodReported(plan.binary.to, 0o755);
     }
     pointCurrentAt(plan.top, plan.versionName);
-    // The flip IS the commit: a refused shim write is warned, never raised, so the migrations
-    // below still run (a same-version reinstall plans none).
-    try {
-      for (const shim of plan.topShims) {
-        writeShimFile(shim.to, shim.text, shim.executable, consola);
-      }
-    } catch (error) {
-      consola.warn(`Could not refresh the launcher shims: ${errMessage(error)}`);
-    }
+    for (const shim of plan.topShims) writeShimBestEffort(shim, consola);
     consola.success(`Installed copilot-env ${plan.versionName} (live via the current link).`);
     if (plan.migration !== null) {
       runPostFlipMigrations(

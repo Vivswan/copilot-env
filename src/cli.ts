@@ -785,7 +785,8 @@ program
   )
   .option(
     "--no-shell-integration",
-    "Skip the shell wiring pass. Migrations due over a prior version still run.",
+    "Skip the shell wiring pass (no block is added to your rc file). A reinstall over an older " +
+      "release still runs its migrations, which may rewrite or remove a copilot-env block already there.",
   )
   .option("--all-hosts", "Windows only: wire the AllHosts PowerShell profile.")
   .option(

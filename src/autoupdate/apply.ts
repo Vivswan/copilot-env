@@ -360,21 +360,14 @@ function provision(staged: Staged, stdio: StdioOptions): Provisioned {
 
 /**
  * Stage 5, THE commit: the `current` flip is what lands the update, so nothing after it may fail
- * the run.
+ * the run (the shim refresh is best-effort by construction, writeTopLevelShims).
  *
  *   shim text already identical  -> no-op on a healthy install, a repair after a crashed commit
- *   shim write throws            -> warned, not raised: a locked shim must not undo a landed flip
  *   checkout-shaped root         -> keeps its own bin/agent; that file is source
  */
 function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Committed {
   pointCurrentAt(top, provisioned.versionName);
-  if (!isCheckoutShapedRoot(top)) {
-    try {
-      writeTopLevelShims(top, logger);
-    } catch (error) {
-      logger.warn(`Could not refresh the launcher shims: ${errMessage(error)}`);
-    }
-  }
+  if (!isCheckoutShapedRoot(top)) writeTopLevelShims(top, logger);
   return {
     binary: provisioned.binary,
     versionName: provisioned.versionName,

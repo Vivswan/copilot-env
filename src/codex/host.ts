@@ -115,13 +115,10 @@ export interface CodexHomeResolution {
  * run-state record nor the disk steers the home, so a farm not built yet (or hand-edited) is still
  * the home the user asked for, and the next `agent codex` builds or repairs it there.
  *
- *   codex-host on   -> the farm, <root>/hosts/<hostname>; a differing export is noted, not honoured
- *   codex-home set  -> that path; a differing export is noted, not honoured
- *   neither         -> $CODEX_HOME (Codex's own convention) unless it is OUR farm export, built or
- *                      not (a write through it would resurrect the removed farm as a plain dir),
- *                      else ~/.codex; never stale
- *
- * The settings-import plan calls this with the BUNDLE's prefs before the store is replaced.
+ *   codex.host on   -> the farm, <root>/hosts/<hostname>; a differing export is noted, not honoured
+ *   codex.home set  -> that path; a differing export is noted, not honoured
+ *   neither         -> $CODEX_HOME unless it is OUR farm export, built or not (a write through it
+ *                      would resurrect the removed farm as a plain dir), else ~/.codex
  */
 export function resolveCodexHome(
   prefs: CodexHomePrefs = codexHomePrefsOrDerived(),

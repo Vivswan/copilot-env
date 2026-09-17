@@ -481,17 +481,14 @@ interface ResolveHostOptions extends Omit<IdentityProbeDeps, "apiBase"> {
 const hostMemo = new Map<string, Promise<string>>();
 
 /**
- * THE `host auto` rule, for every mode. `headers` is the identity the caller will bake (the
- * accepted Direct identity, the daemon's passthrough id, or vscode-chat), resolved BEFORE this.
- * Module-private, like the identity steps below: only the select*IdentityAndHost pair may call it,
- * so no consumer can select an identity on one host and bake another.
+ * THE `host auto` rule, for every mode. `headers` is the identity the caller will bake, resolved
+ * BEFORE this. Module-private: only the select*IdentityAndHost pair may call it, so no consumer can
+ * select an identity on one host and bake another.
  *
  *   literal set                     -> the literal
  *   no token                        -> the generic host, nothing probed
  *   generic /models 403, 404, 5xx, or a network failure
- *                                   -> the account's designated host (COPILOT_USER_URL endpoints.api)
- *   ... and that lookup fails       -> the generic host
- *   any other answer                -> the generic host
+ *                                   -> the account's designated host, else the generic host
  */
 function resolveCopilotHost(
   token: string | null,

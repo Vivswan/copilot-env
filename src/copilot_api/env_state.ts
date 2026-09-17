@@ -710,13 +710,12 @@ export function expectedDirectHost(profile: Profile): string | null {
 
 /**
  * THE replay rule for a slot's cached Direct identity, the one answer every reader that bakes,
- * predicts, or ranks an identity takes (profile_wiring.ts, desktop_status.ts, auth.ts):
+ * predicts, or ranks an identity takes:
  *
  *   replay     -> the cached pair names the identity AND the host in force: bake both, no request
  *   preferred  -> an identity is cached but no pair reads back (imported, cached before hosts were,
  *                 or the host in force changed): never a verdict, only the FIRST candidate of the
- *                 selection probeDirectWiring runs on the host in use; a definitive 400/401 there
- *                 moves on to the next candidate
+ *                 selection probeDirectWiring runs on the host in use
  *   probe      -> nothing cached (or a pin with no pair: the pin is configuration, the host is probed)
  */
 export type ReplayableIdentity =

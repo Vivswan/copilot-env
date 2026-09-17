@@ -28,6 +28,7 @@ import {
   defaultHomeDir,
   envSnapshot,
   isolateProxyHome,
+  until,
   withUnprovablePidProbe,
   writeRunState,
 } from "./helpers.ts";
@@ -74,15 +75,6 @@ async function freePort(): Promise<number> {
   const { server, port } = await listenEphemeral();
   await closeServer(server);
   return port;
-}
-
-async function until(deadlineMs: number, probe: () => boolean): Promise<boolean> {
-  const deadline = Date.now() + deadlineMs;
-  while (Date.now() < deadline) {
-    if (probe()) return true;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return probe();
 }
 
 /** Run `body` with stdout/stderr captured (consola routes through one of them); the
@@ -176,7 +168,7 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
     stderr: "inherit",
   });
   try {
-    expect(await until(10_000, () => existsSync(ready))).toBe(true);
+    await until(() => existsSync(ready));
 
     // Holder alive: the probe sees it held by the child's pid, and a contender's
     // bounded-retry acquisition fails -- the OS lock, not the pid table, refuses it.
@@ -189,7 +181,7 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
     child.kill("SIGKILL");
     await child.status;
     const flippedAt = Date.now();
-    expect(await until(5_000, () => daemonLockVerdict(home, child.pid) === "dead")).toBe(true);
+    await until(() => daemonLockVerdict(home, child.pid) === "dead");
     expect(Date.now() - flippedAt).toBeLessThan(5_000);
 
     // And the lock is genuinely re-acquirable (the dead holder's marker is stolen).
@@ -230,9 +222,7 @@ test("a launched daemon holds its home's lock for life, released by SIGKILL", as
   try {
     // The preload acquires before the proxy serves, so a held lock is observable no
     // later than readiness.
-    expect(
-      await until(20_000, () => daemonLockVerdict(dir, pid) === "alive"),
-    ).toBe(true);
+    await until(() => daemonLockVerdict(dir, pid) === "alive");
     expect(daemonLockHolderPid(dir)).toBe(pid);
   } finally {
     try {
@@ -241,9 +231,9 @@ test("a launched daemon holds its home's lock for life, released by SIGKILL", as
       // already gone
     }
   }
-  expect(await until(5_000, () => !pidAlive(pid))).toBe(true);
+  await until(() => !pidAlive(pid));
   // The postcondition of the whole design: the killed daemon's lock reads dead, by pid.
-  expect(await until(5_000, () => daemonLockVerdict(dir, pid) === "dead")).toBe(true);
+  await until(() => daemonLockVerdict(dir, pid) === "dead");
 }, 30_000);
 
 // --- proxyStatus consults the lock first --------------------------------------------------
@@ -308,7 +298,7 @@ test(
       stderr: "inherit",
     });
     try {
-      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      await until(() => existsSync(ready));
       writeRunState({ pid: child.pid });
 
       const result = await stopTrackedProxy();
@@ -362,8 +352,9 @@ test(
       } catch {
         // already gone
       }
-      await until(5_000, () => !pidAlive(child.pid));
+      // Our own lock first: the wait below can end with the deadline's error.
       releaseFileLock(daemonLockPath(home));
+      await until(() => !pidAlive(child.pid));
     }
   },
   30_000,
@@ -397,7 +388,7 @@ test.skipIf(process.platform === "win32")(
       stderr: "inherit",
     });
     try {
-      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      await until(() => existsSync(ready));
       // No daemon.lock at all ("unproven"), so the TERM gate falls back to classification.
       writeRunState({ pid: child.pid, port: 4141 });
       const answers: ("yes" | "no")[] = ["yes", "no"];
@@ -430,7 +421,7 @@ test.skipIf(process.platform === "win32")(
       } catch {
         // already gone
       }
-      await until(5_000, () => !pidAlive(child.pid));
+      await until(() => !pidAlive(child.pid));
     }
   },
   30_000,
@@ -505,7 +496,7 @@ test(
       stderr: "inherit",
     });
     try {
-      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      await until(() => existsSync(ready));
       writeRunState({ pid: child.pid, port: 4141 });
       // No lock file: the verdict is "unproven" and the injected TERM-gate classify
       // answers "yes" (a confirmed daemon this token still cannot signal or re-probe).

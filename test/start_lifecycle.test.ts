@@ -248,7 +248,7 @@ test(
     const home = tmpHome();
     const daemonPid = launchFakeDaemon(home, await freePort());
     try {
-      expect(await until(20_000, () => daemonLockHolderPid(home) === daemonPid)).toBe(true);
+      await until(() => daemonLockHolderPid(home) === daemonPid);
       writeRunState({ pid: DEAD_PID, port: 4141 });
 
       const narration = await dryRunNarration();
@@ -320,12 +320,8 @@ test(
       );
     }) as typeof fetch;
     try {
-      expect(await until(20_000, () => daemonLockHolderPid(home) === daemonPid)).toBe(true);
-      const listening = Date.now() + 20_000;
-      while (!(await portListening(port)) && Date.now() < listening) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      expect(await portListening(port)).toBe(true);
+      await until(() => daemonLockHolderPid(home) === daemonPid);
+      await until(() => portListening(port));
       writeRunState({ pid: daemonPid, port });
       process.env.COPILOT_API_ENTRY = join(ROOT, "test", "copilot-api-fake.mjs");
       const config = new CopilotEnvConfig();

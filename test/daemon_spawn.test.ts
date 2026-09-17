@@ -47,7 +47,7 @@ import {
   spawnChild,
 } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome, until } from "./helpers.ts";
 
 // Every daemon spawn derives from ONE DaemonSpec, so argv and environment are pinned against the
 // spec rather than a pile of optional arguments.
@@ -341,12 +341,11 @@ test("launchDaemon spawns exactly the spec's denoBin, never a re-derived one", a
   });
   try {
     expect(pid).toBeGreaterThan(0);
-    const deadline = Date.now() + 20_000;
     let logged = "";
-    while (Date.now() < deadline && !logged.includes("EXEC:")) {
+    await until(() => {
       logged = readFileSync(logFile, "utf8");
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
+      return logged.includes("EXEC:");
+    });
     const reported = /EXEC:(.+)/.exec(logged)?.[1]?.trim();
     if (reported === undefined) throw new Error(`no EXEC line; log was: ${logged}`);
     // realpath both sides: Deno.execPath() canonicalizes, and the OS tmpdir may be a symlink.
@@ -359,16 +358,9 @@ test("launchDaemon spawns exactly the spec's denoBin, never a re-derived one", a
     } catch {
       /* already gone */
     }
-    const gone = Date.now() + 5_000;
-    while (pidAlive(pid) && Date.now() < gone) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    // The postcondition, not just the wait: a leaked child must fail loud, never pass.
-    expect(pidAlive(pid)).toBe(false);
+    await until(() => !pidAlive(pid));
   }
-  // Deadline above the inner bounds (20s log wait + 5s kill wait): under the 15s default the harness
-  // would abandon the body mid-cleanup and the dead-pid assertion would fire invisibly.
-}, 30_000);
+}, 30_000); // a real daemon boot on a loaded runner
 
 // --- the daemon environment ----------------------------------------------------------
 
@@ -735,6 +727,7 @@ test.skipIf(Deno.build.os === "windows")(
       stderr: "piped",
     });
     let stdout = "";
+    let stdoutOpen = true;
     const decoder = new TextDecoder();
     const reader = child.stdout.getReader();
     const pump = (async () => {
@@ -743,10 +736,13 @@ test.skipIf(Deno.build.os === "windows")(
         if (done) return;
         stdout += decoder.decode(value);
       }
-    })();
-    const awaitLine = async (line: string, budgetMs: number): Promise<void> => {
-      const deadline = Date.now() + budgetMs;
-      while (!stdout.includes(line) && Date.now() < deadline) {
+    })().finally(() => {
+      stdoutOpen = false;
+    });
+    // No clock of its own: the test deadline is the one budget for a slow child, and the harness
+    // kills this child when it fires, which closes stdout and ends the wait.
+    const awaitLine = async (line: string): Promise<void> => {
+      while (!stdout.includes(line) && stdoutOpen) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       expect(stdout).toContain(line);
@@ -754,17 +750,17 @@ test.skipIf(Deno.build.os === "windows")(
     let inFlight: Promise<Response> | undefined;
     try {
       // Signal it only once it is genuinely listening (the handler installs before serve).
-      await awaitLine("PORT ", 10_000);
+      await awaitLine("PORT ");
       const match = /PORT (\d+)/.exec(stdout);
       expect(match).not.toBeNull();
       inFlight = fetch(`http://127.0.0.1:${match?.[1]}/`);
       inFlight.catch(() => {}); // marked handled; the await below is what surfaces a failure
-      await awaitLine("SERVING", 5_000); // the handler is parked, response not yet written
+      await awaitLine("SERVING"); // the handler is parked, response not yet written
 
       child.kill("SIGTERM");
-      // The signal must show up INSIDE the drain window: past it the daemon has already
-      // exited on the deadline and there is no in-flight request left to prove anything about.
-      await awaitLine("SIGNALLED", DRAIN_DEADLINE_MS);
+      // The listener prints in the same tick the drain starts, so a daemon that reaches its drain
+      // deadline without this line exits, closes stdout, and fails the wait right here.
+      await awaitLine("SIGNALLED");
       writeFileSync(release, "");
 
       // The parked request completes: drained, not severed.

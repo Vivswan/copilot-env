@@ -17,7 +17,6 @@ repository:
   has_issues: true
   has_projects: false
   has_wiki: false
-  homepage: https://github.com/Vivswan/copilot-env
   private: false
   security_and_analysis:
     secret_scanning:

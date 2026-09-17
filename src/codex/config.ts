@@ -27,7 +27,7 @@ import {
 } from "../agents/write_plan.ts";
 import { type AgentProviderMode, providerModeExitCode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { CopilotEnvState } from "../copilot_api/env_state.ts";
+import { directOverlay, landDirectPair } from "../copilot_api/direct_pair.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { isReducedGpt } from "../copilot_api/models.ts";
@@ -883,37 +883,31 @@ export async function probeDirectWiring(
 ): Promise<DirectWiring> {
   const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
   if (resolved === null) throw directNeedsCredentialError(profile);
-  const config = new CopilotEnvConfig();
-  const userAgent = codexUserAgent();
+  const overlay = directOverlay(profile);
   // The one identity-then-host rule (selectDirectIdentityAndHost): a literal skips the HOST probe,
   // never the identity selection, and a host `auto` moved to re-runs the selection there.
-  const { integrationId, apiBase } = await selectDirectIdentityAndHost(resolved, userAgent, {
-    pinned: config.pinnedIntegrationId(profile),
-    fixedHost: config.copilotHost(profile),
+  const { integrationId, apiBase } = await selectDirectIdentityAndHost(resolved, codexUserAgent(), {
+    pinned: overlay.pinned,
+    fixedHost: overlay.literal,
   });
   return directWiring(integrationId, apiBase);
 }
 
-/** The LANDING probe: probeDirectWiring plus the one write of the slot's Direct pair, and only
- *  the halves the probe ANSWERED (a pin or literal in force is an overlay: it renders at read time
- *  and never enters the slot). Only the commands that land a credential or wire a slot holding no
- *  pair reach it (`agent profile --add`, `agent auth --profile`, an import, and a re-render whose
- *  slot holds no pair; the default's landing stores through commitDefaultWiring in
- *  configure_defaults.ts once both agents' writes land Direct); a listing such as `agent models --direct` probes
- *  without it, so a transient answer there can never overwrite the stored pair. */
+/** The LANDING: landDirectPair (src/copilot_api/direct_pair.ts, the one probe-and-store owner) as
+ *  the branded wiring the writers take. Only the commands that land a credential or wire a slot
+ *  holding no pair reach it (`agent profile --add`, `agent auth --profile`, an import, and a named
+ *  profile's re-render whose slot holds no pair; the default's landing probes per agent and
+ *  stores through commitDefaultWiring in configure_defaults.ts once both agents' files are
+ *  written); a listing such as `agent models --direct` probes without it (probeDirectWiring), so a
+ *  transient answer there can never overwrite the stored pair. */
 export async function landDirectWiring(
   profile: Profile = null,
   token?: string | null,
 ): Promise<DirectWiring> {
-  const direct = await probeDirectWiring(profile, token);
-  const config = new CopilotEnvConfig();
-  new CopilotEnvState().setProfileDirectPair(profile, {
-    ...(config.pinnedIntegrationId(profile) === null
-      ? { integrationId: direct.directIntegrationId }
-      : {}),
-    ...(config.copilotHost(profile) === null ? { host: direct.directBaseUrl } : {}),
-  });
-  return direct;
+  const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
+  if (resolved === null) throw directNeedsCredentialError(profile);
+  const landed = await landDirectPair(profile, resolved, codexUserAgent(), directOverlay(profile));
+  return directWiring(landed.integrationId, landed.apiBase);
 }
 
 function codexOtherDetail(otherReason: CodexOtherReason): string {

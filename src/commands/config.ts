@@ -22,7 +22,12 @@ import {
   resolveSettingIn,
   type SettingTarget,
 } from "../copilot_api/env_config.ts";
-import { assertKnownProfile } from "../copilot_api/env_state.ts";
+import {
+  assertKnownProfile,
+  GLOBAL_STATE_KEYS,
+  PROFILE_STATE_KEYS,
+} from "../copilot_api/env_state.ts";
+import { LEDGER_KEY_NAMES } from "../copilot_api/ownership.ts";
 import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { nextProxyVersion } from "../proxy_float.ts";
 import { bold, COLOR_ENABLED, cyan, dim, green } from "../utils/ansi.ts";
@@ -39,6 +44,31 @@ export interface ConfigArgs {
   /** The profile a profile-scoped key is set, deleted, or read for; absent = the default profile
    *  (and, for a profile-default key, the global value). */
   profile?: string;
+}
+
+/** The state keys sharing the store's maps with the settings, each with the commands that write
+ *  it. The spellings are the schemas' own (derived there), so a renamed key cannot leave this list
+ *  stale. */
+const STATE_KEY_OWNERS: ReadonlyArray<readonly [readonly string[], string]> = [
+  [
+    PROFILE_STATE_KEYS,
+    "`agent auth`, `agent profile`, and the wiring commands (the profile's slot)",
+  ],
+  [GLOBAL_STATE_KEYS, "the Codex catalog sync and the Claude model discovery"],
+  [LEDGER_KEY_NAMES, "the wiring commands (their claims on the files they wrote)"],
+  [["ownership"], "the wiring commands (their claims on the files they wrote)"],
+];
+
+/** `agent config` writes settings only: a state key (spelled bare, or as a path into the file such
+ *  as `profiles.default.githubToken`) is refused with its owner, never written or deleted here. */
+function refuseStateKey(key: string): void {
+  const leaf = key.split(".").at(-1) ?? key;
+  const owner = STATE_KEY_OWNERS.find(([keys]) => keys.includes(leaf))?.[1];
+  if (owner === undefined) return;
+  throw new Error(
+    `'${key}' is state written by ${owner}; the \`agent config\` command sets preferences only ` +
+      "(its --help lists them)",
+  );
 }
 
 function unknownKeyError(key: string): Error {
@@ -144,6 +174,7 @@ function runSet(
   profile: Profile | undefined,
   platform: NodeJS.Platform,
 ): void {
+  refuseStateKey(key);
   const def = configKeyDef(key);
   if (def === undefined) throw unknownKeyError(key);
   if (def.posixOnly && platform === "win32") {
@@ -185,6 +216,7 @@ export function unreadProjectedKeyWarnings(
 }
 
 function runDel(key: string, profile: Profile | undefined): void {
+  refuseStateKey(key);
   const def = configKeyDef(key);
   if (def === undefined) throw unknownKeyError(key);
   const config = new CopilotEnvConfig();

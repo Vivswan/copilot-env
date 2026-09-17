@@ -551,7 +551,7 @@ test.skipIf(WIN || process.getuid?.() === 0)(
     const home = tmpHome();
     configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
     expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
-    const ledgerFile = new CopilotApiPaths().ownershipFile;
+    const ledgerFile = new CopilotApiPaths().stateStoreFile;
     chmodSync(ledgerFile, 0o000);
     try {
       expect(() => configureClaudeConfig(home, { mode: "proxy", credential: COMMAND })).toThrow(
@@ -861,6 +861,24 @@ test("syncDefaultWebSearchWiring applies the pair to existing direct wiring (the
   const before = statSync(join(home, "settings.json")).mtimeMs;
   syncDefaultWebSearchWiring(home);
   expect(statSync(join(home, "settings.json")).mtimeMs).toBe(before);
+});
+
+// The ledger, not the record, decides whether we strip what we wrote: a deny claimed in the ledger
+// with the default's mode gone (a record cleared after the wiring) is still ours to take back.
+test("syncDefaultWebSearchWiring strips a claimed deny with no recorded mode; a foreign deny stays", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
+  expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
+  expect(new CopilotEnvState().readProfileSlot(null).mode).toBeNull();
+  syncDefaultWebSearchWiring(home);
+  expect(denyOf(readSettings(home))).toBeUndefined(); // the emptied permissions key goes too
+  expect(new OwnershipLedger().owns("webSearchDeny", join(home, "settings.json"))).toBe(false);
+  // Control: the same deny the user wrote (no claim) is left alone.
+  const doc = readSettings(home);
+  doc.permissions = { deny: [WEBSEARCH_DENY_RULE] };
+  writeFileSync(join(home, "settings.json"), `${JSON.stringify(doc, null, 2)}\n`);
+  syncDefaultWebSearchWiring(home);
+  expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
 });
 
 test("runMcp --remove takes back the pair and stores a durable wire-mcp opt-out", async () => {

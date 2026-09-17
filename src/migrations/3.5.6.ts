@@ -12,6 +12,7 @@ import { knownCodexHomes } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { moveRootStores } from "./4.0.2.ts";
+import { foldRootStores } from "./4.0.9.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { DEFAULT_HOME, profileHomeNames } from "../copilot_api/paths.ts";
@@ -55,11 +56,15 @@ export async function moveDataHome(opts: DataHomeMoveOptions): Promise<void> {
     renameSync(legacyHome, nextHome);
     consola.info(`  moved ${legacyHome} -> ${nextHome}`);
   }
-  // The moved-in stores still wear their pre-4.0.2 names, and every read below goes through the
-  // new-only readers (the hoisted v402RootLayout step runs only after this step returns). Rename
-  // whenever the destination exists, not only on the move path: a re-run after a crash right
-  // after the directory rename enters with legacyHome already absent.
-  if (existsSync(nextHome)) moveRootStores(nextHome);
+  // The moved-in stores wear their pre-4.0.2 names as three files, and the reads below (the ledger,
+  // for the Desktop entries) know only state.json. The v402RootLayout and v409StateFold steps that
+  // would rename and fold them run AFTER this step (it precedes them in the layout order), so it
+  // does both itself. Whenever the destination exists, not only on the move path: a re-run after a
+  // crash right after the directory rename finds legacyHome already gone.
+  if (existsSync(nextHome)) {
+    moveRootStores(nextHome);
+    foldRootStores(nextHome);
+  }
 
   /** `value` repointed onto the new home, or null when it does not reference the
    *  legacy home (foreign paths are never ours to rewrite). */

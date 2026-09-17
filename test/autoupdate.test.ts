@@ -38,7 +38,7 @@ test("autoupdate state lives at the TOP of a versioned root, never through the l
     symlinkSync(join(top, "versions", "v1.0.0"), join(top, "current"), "junction");
     expect(autoupdateDir(join(top, "current"))).toBe(join(top, ".autoupdate"));
     expect(autoupdateStateFile(join(top, "current"))).toBe(
-      join(top, ".autoupdate", "state.json"),
+      join(top, ".autoupdate", "autoupdate.json"),
     );
     expect(autoupdateDir(top)).toBe(join(top, ".autoupdate")); // top spelling agrees
   } finally {
@@ -49,12 +49,12 @@ test("autoupdate state lives at the TOP of a versioned root, never through the l
 // --- AutoupdateState --------------------------------------------------------
 
 test("AutoupdateState defaults to never-checked when absent", () => {
-  const s = new AutoupdateState(tmp("state.json")).read();
+  const s = new AutoupdateState(tmp("autoupdate.json")).read();
   expect(s).toEqual({ lastCheckMs: 0, lastResult: "" });
 });
 
 test("AutoupdateState round-trips the check record and preserves unknown keys", () => {
-  const path = tmp("state.json");
+  const path = tmp("autoupdate.json");
   writeFileSync(path, JSON.stringify({ keep: "me" }));
   const state = new AutoupdateState(path);
   state.set({ lastCheckMs: 1234, lastResult: "updated v1.2.3" });
@@ -67,7 +67,7 @@ test("AutoupdateState round-trips the check record and preserves unknown keys", 
 });
 
 test("AutoupdateState coerces ill-typed fields back to safe defaults", () => {
-  const path = tmp("state.json");
+  const path = tmp("autoupdate.json");
   // `cooldownDays` and `enabled` are retired keys older state files still carry; the lenient
   // schema ignores them.
   writeFileSync(
@@ -88,7 +88,7 @@ function isolatedConfig(): CopilotEnvConfig {
 // The preflight's gate is the key ALONE: off -> nothing, even when a check is due and the file
 // still carries the pre-key `enabled: true`; on but not due -> nothing.
 test("runPreflight honors the auto-update key and ignores a legacy enabled field", async () => {
-  const path = tmp("state.json");
+  const path = tmp("autoupdate.json");
   const config = isolatedConfig();
   const now = Date.parse("2026-06-10T00:00:00.000Z");
   // Off (default), a check long due, the old flag still set: untouched, nothing run.
@@ -174,14 +174,14 @@ test("effectiveUpdateCooldownDays: the live update-cooldown config, else the 7-d
   process.env.COPILOT_API_HOME = dir;
   expect(effectiveUpdateCooldownDays()).toBe(DEFAULT_AUTOUPDATE_COOLDOWN_DAYS); // unset -> default
   writeFileSync(
-    join(dir, "preferences.json"),
+    join(dir, "state.json"),
     JSON.stringify({ global: { "update.cooldown": 3 } }),
   );
   expect(effectiveUpdateCooldownDays()).toBe(3); // read live, never snapshotted
 });
 
 test("AutoupdateState writes a 0600 file (POSIX)", () => {
-  const path = tmp("state.json");
+  const path = tmp("autoupdate.json");
   new AutoupdateState(path).set({ lastResult: "up to date" });
   if (process.platform !== "win32") {
     expect(statSync(path).mode & 0o777).toBe(0o600);

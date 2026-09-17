@@ -16,7 +16,7 @@ import {
   v409IdentityCache,
   v409IntegrationIdPin,
   v409LaunchersBlock,
-  v409PreferenceGroups,
+  v409StateFold,
   v409StaticKeyScope,
 } from "./4.0.9.ts";
 
@@ -52,8 +52,8 @@ const MIGRATIONS: Migration[] = [
   v402GhAccountPin,
   v402RootLayout,
   v402DesktopHelpers,
+  v409StateFold,
   v409CodexProfileFiles,
-  v409PreferenceGroups,
   v409IntegrationIdPin,
   v409StaticKeyScope,
   v409IdentityCache,

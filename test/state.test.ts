@@ -25,14 +25,20 @@ function tmpHome(): void {
 /** Write the raw state file verbatim (fixtures the typed API cannot -- and must
  *  not -- produce: the legacy top-level pair, stray/junk fields). */
 function seedRawState(data: Record<string, unknown>): void {
-  writeFileSync(join(dir, "credentials.json"), `${JSON.stringify(data)}\n`);
+  // The slots are `profiles`; every other key of the old credentials shape is account-wide state
+  // under `global`.
+  const { profiles, ...global } = data;
+  writeFileSync(join(dir, "state.json"), `${JSON.stringify({ global, profiles })}\n`);
 }
 
+/** The state as stored, flattened back to the shape the assertions read: `profiles` plus the
+ *  account-wide keys of `global`. */
 function rawState(): Record<string, unknown> {
-  return JSON.parse(readFileSync(join(dir, "credentials.json"), "utf8")) as Record<
-    string,
-    unknown
-  >;
+  const doc = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as {
+    global?: Record<string, unknown>;
+    profiles?: unknown;
+  };
+  return { ...(doc.global ?? {}), profiles: doc.profiles };
 }
 
 test("the provisioned GitHub token round-trips through the shared store and clears", () => {
@@ -254,20 +260,15 @@ test("commitProfile mutates the raw slot in place, preserving unknown keys", () 
   tmpHome();
   // A newer release may write fields this version does not know; the commit
   // must not erase them (the store-wide preserve-unknown-keys contract).
-  writeFileSync(
-    join(dir, "credentials.json"),
-    `${
-      JSON.stringify({
-        profiles: { work: { mode: "proxy", authProvider: "gh-token", futureField: "keep-me" } },
-      })
-    }\n`,
-  );
+  seedRawState({
+    profiles: { work: { mode: "proxy", authProvider: "gh-token", futureField: "keep-me" } },
+  });
   const state = new CopilotEnvState();
   state.commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_new" },
     mode: "direct",
   });
-  const raw = JSON.parse(readFileSync(join(dir, "credentials.json"), "utf8")) as {
+  const raw = rawState() as {
     profiles: Record<string, Record<string, unknown>>;
   };
   expect(raw.profiles.work?.futureField).toBe("keep-me");
@@ -333,14 +334,11 @@ test("legacy ownership keys in the state file survive writes and stay out of rea
   // Pre-ledger installs recorded artifact ownership under these keys; only the
   // 3.5.6 migration moves them into the ledger (ownership.test.ts), so the
   // state store must neither surface them nor destroy them on its own writes.
-  writeFileSync(
-    join(dir, "credentials.json"),
-    `${JSON.stringify({ webSearchDenyOwnedPaths: ["/a/settings.json"] })}\n`,
-  );
+  seedRawState({ webSearchDenyOwnedPaths: ["/a/settings.json"] });
   const state = new CopilotEnvState();
   expect("webSearchDenyOwnedPaths" in state.read()).toBe(false);
   state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_x" });
-  const raw = JSON.parse(readFileSync(join(dir, "credentials.json"), "utf8"));
+  const raw = rawState();
   expect(raw.webSearchDenyOwnedPaths).toEqual(["/a/settings.json"]);
 });
 
@@ -351,18 +349,13 @@ test("profileNames skips a hand-edited invalid profile key so it can never reach
   // if it ever reached profileHome; "con" cannot be a directory on Windows) is
   // dropped at the read boundary -- the same sweep semantic as profileHomeNames'
   // stray-directory filter -- while valid siblings still come back.
-  writeFileSync(
-    join(dir, "credentials.json"),
-    `${
-      JSON.stringify({
-        profiles: {
-          "../escape": { mode: "proxy", authProvider: "gh-token", githubToken: "ghp_evil" },
-          con: { mode: "direct" },
-          work: { mode: "direct" },
-        },
-      })
-    }\n`,
-  );
+  seedRawState({
+    profiles: {
+      "../escape": { mode: "proxy", authProvider: "gh-token", githubToken: "ghp_evil" },
+      con: { mode: "direct" },
+      work: { mode: "direct" },
+    },
+  });
   expect(new CopilotEnvState().profileNames()).toEqual([WORK]);
 });
 

@@ -72,9 +72,21 @@ export async function landDirectPair(
     signal: opts.signal,
     narrator: opts.narrator,
   });
-  new CopilotEnvState().setProfileDirectPair(profile, {
-    ...(opts.pinned === null ? { integrationId: selected.integrationId } : {}),
-    ...(opts.literal === null ? { host: selected.apiBase } : {}),
-  });
+  storeProbedPair(profile, selected, opts);
   return selected;
+}
+
+/** The store half of a landing, for a caller that probed elsewhere (the default's landing probes
+ *  per agent and commits once both files are written, src/agents/configure_defaults.ts): only the
+ *  halves the probe ANSWERED under `overlay`, a pinned identity or a literal host never entering
+ *  the slot. */
+export function storeProbedPair(
+  profile: Profile,
+  selected: IdentityAndHost,
+  overlay: DirectOverlay,
+): void {
+  new CopilotEnvState().setProfileDirectPair(profile, {
+    ...(overlay.pinned === null ? { integrationId: selected.integrationId } : {}),
+    ...(overlay.literal === null ? { host: selected.apiBase } : {}),
+  });
 }

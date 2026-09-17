@@ -199,7 +199,7 @@ test("writes inside copilot-env's own homes print nothing; the same write outsid
     // The home itself is a path the user sees appear: named.
     mkdirReported(rootHome);
     // Inside it: a store, a lock sidecar's directory, a profile home -- bookkeeping.
-    writeFileReported(join(rootHome, "credentials.json"), "{}");
+    writeFileReported(join(rootHome, "state.json"), "{}");
     mkdirReported(join(rootHome, "profiles", "work"));
     const codexConfig = join(home, ".codex", "config.toml");
     mkdirReported(join(home, ".codex"));

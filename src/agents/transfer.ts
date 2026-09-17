@@ -2,8 +2,8 @@
 // moving a setup to another machine. Cross-agent (import re-wires BOTH agents), so it lives in
 // src/agents/.
 //
-// Portable is exactly the two account-wide stores: preferences.json (CopilotEnvConfig) and
-// credentials.json (CopilotEnvState). Everything else is re-derived on import, never copied:
+// Portable is exactly the settings (CopilotEnvConfig) and the credential slots (CopilotEnvState) of
+// the account-wide store (state.json). Everything else is re-derived on import, never copied:
 // agent config files, daemon homes, port reservations, the Codex catalog cache fields, and the
 // machine-local ownership ledger (src/copilot_api/ownership.ts).
 //
@@ -65,7 +65,7 @@ import {
 } from "../utils/report_write.ts";
 import { configureDefaultAgents } from "./configure_defaults.ts";
 import { reconcileClaudeDesktopWiring } from "./claude_desktop.ts";
-import { bothAgents, defaultDirectPairIncomplete, wireBothAgents } from "./profile_wiring.ts";
+import { bothAgents, directPairIncomplete, wireBothAgents } from "./profile_wiring.ts";
 import {
   AGENT_PROVIDER_MODES,
   type AgentProviderMode,
@@ -711,7 +711,7 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
   //   one Direct agent on a recorded Direct default whose pair will not be stored -> the one-agent
   //   write would land both anyway (runAgentConfig): decided here, so the preview names the other
   //   agent's file too.
-  // "Not stored at apply time" is the apply's own test (runAgentConfig's defaultDirectPairIncomplete,
+  // "Not stored at apply time" is the apply's own test (runAgentConfig's directPairIncomplete,
   // keyed on the STORED pair alone, never on a pin or literal: the apply replaces the preferences
   // before it wires, so an overlay-dependent test would answer differently on the two sides), plus
   // the one fact only the plan knows: this import lands the default credential, whose write takes
@@ -731,7 +731,7 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
     modes.claude = mode;
   };
   const pairUnstored = recorded === "direct" &&
-    (defaultSlot.action === "write" || defaultDirectPairIncomplete());
+    (defaultSlot.action === "write" || directPairIncomplete(null));
   if (bundle.modes.codex === "none" && bundle.modes.claude === "none" && pairUnstored) {
     modes.codex = "direct";
     modes.claude = "direct";

@@ -44,7 +44,7 @@ import {
   desktopLibraryDirUnder,
   wireClaudeDesktopEntry,
 } from "../src/claude/desktop.ts";
-import { CopilotApiPaths, resolveRootHome } from "../src/copilot_api/paths.ts";
+import { resolveRootHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
@@ -536,11 +536,12 @@ test("a redacted bundle over resolvable LOCAL credentials wires normally (result
   expect(JSON.stringify(new CopilotEnvState().read())).not.toContain(REDACTED_TOKEN);
 });
 
-test("an unresolvable slot leaves the existing store byte-identical", async () => {
+test("an unresolvable slot leaves the existing state untouched", async () => {
   isolate();
   new Credential().store("gh-token", "ghp_local_default");
-  const stateFile = new CopilotApiPaths().sharedStateFile;
-  const before = readFileSync(stateFile, "utf8");
+  // The settings share the file and ARE rewritten by the import; the state keys are not.
+  const credentials = () => new CopilotEnvState().read();
+  const before = credentials();
 
   const bundle = parseSettingsBundle(
     rawBundle({
@@ -553,7 +554,7 @@ test("an unresolvable slot leaves the existing store byte-identical", async () =
   const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
 
   expect(outcome.skipped.join("\n")).toContain("agent profile --add work");
-  expect(readFileSync(stateFile, "utf8")).toBe(before);
+  expect(credentials()).toEqual(before);
 });
 
 test("the import's credential gate is direct-only: proxy wires without one", async () => {
@@ -709,6 +710,9 @@ test("a Direct default whose pair will not be stored at apply time rebakes both 
     modes: { codex: "direct", claude: "direct" },
   });
   expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(true);
+  // The control the rule protects: the apply replaced the preferences, so the local pin and literal
+  // are gone; a render-keyed rule would have found no overlay here and disagreed with the plan.
+  expect(new CopilotEnvConfig().read().profiles).toEqual({});
 });
 
 test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the identity", async () => {

@@ -402,7 +402,7 @@ function launchEnv(root: string, bin: string): Record<string, string> {
 const DIRECT_BASE = "https://api.githubcopilot.com";
 
 function recordedMode(root: string): string | undefined {
-  const statePath = join(root, "api-home", "credentials.json");
+  const statePath = join(root, "api-home", "state.json");
   if (!existsSync(statePath)) return undefined;
   const state = JSON.parse(readFileSync(statePath, "utf8")) as {
     profiles?: { default?: { mode?: string } };
@@ -414,7 +414,7 @@ function recordedMode(root: string): string | undefined {
 function recordDefault(root: string, mode: "direct" | "proxy"): void {
   mkdirSync(join(root, "api-home"), { recursive: true });
   writeFileSync(
-    join(root, "api-home", "credentials.json"),
+    join(root, "api-home", "state.json"),
     `${JSON.stringify({ profiles: { default: { mode } } })}\n`,
   );
 }

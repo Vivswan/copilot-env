@@ -37,9 +37,9 @@ export function resolveClaudeDesktopTargets(): DesktopTargetResolution {
     // Every promise comes from copilot-env's own state: the default slot's recorded mode (the one
     // mode both agents share, written by the default wiring commands; null until the first write)
     // and each complete named slot. settings.json is an output, never read for this.
-    const storeFile = new CopilotApiPaths().sharedStateFile;
+    const storeFile = new CopilotApiPaths().stateStoreFile;
     if (!profileStoreWellFormed(storeFile)) {
-      return { kind: "unresolvable", reason: `the profile store ${storeFile} is malformed` };
+      return { kind: "unresolvable", reason: `the state store ${storeFile} is malformed` };
     }
     const state = new CopilotEnvState();
     const defaultMode = state.readProfileSlot(null).mode;

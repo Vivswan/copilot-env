@@ -9,21 +9,26 @@
 // into the profile file and drops it from config.toml. Foreign tables and the `profile` key are
 // the user's: left in place, reported with the Codex error they cause.
 import { consola } from "consola";
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { codexProviderId } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
-import { CopilotApiConfig, ensureDict } from "../copilot_api/config.ts";
+import { CopilotApiConfig, ensureDict, JSON_PARSE_DIAGNOSTIC } from "../copilot_api/config.ts";
+import { AUTOUPDATE_FILENAME, autoupdateDir } from "../autoupdate/paths.ts";
 import {
   CODEX_IDENTITY_NAME,
   type ConfigKey,
   configScope,
   CopilotEnvConfig,
+  GLOBAL_SETTING_KEYS,
+  PROFILE_SETTING_KEYS,
   PROFILE_SETTINGS_DEFAULT_KEY,
 } from "../copilot_api/env_config.ts";
-import { CopilotEnvState } from "../copilot_api/env_state.ts";
-import { CopilotApiPaths } from "../copilot_api/paths.ts";
+import { GLOBAL_STATE_KEYS, PROFILE_STATE_KEYS } from "../copilot_api/env_state.ts";
+import { LOCKS_DIR_NAME, resolveRootHome, STATE_STORE_FILENAME } from "../copilot_api/paths.ts";
+import { rootStateStore } from "../copilot_api/state_store.ts";
 import {
   isValidProfileName,
   parseProfileName,
@@ -155,7 +160,7 @@ export const v409CodexProfileFiles: Migration = {
 
 // --- the preference store's shape: scoped, grouped keys -----------------------------------
 //
-// Away from 4.0.9: preferences.json was one flat map of camelCase keys. It is now a `global` map
+// Away from 4.0.9: the preference store was one flat map of camelCase keys. It is now a `global` map
 // of dotted, grouped keys plus a `profiles` section (one map per profile), and the four keys that
 // follow the credential (identity, host, passthrough, static-key) live only in a profile's
 // section. A reader knows only the new shape, so this is the one place the old names exist.
@@ -204,12 +209,13 @@ export const PREFERENCE_RENAMES: ReadonlyArray<readonly [string, string, ConfigK
   ["wireMcp", "wire-mcp", "claude.wire-mcp"],
 ];
 
-/** Pure over the raw document, so the fixture test can see the whole before/after. Values move
- *  verbatim (the other 4.0.9 steps still judge them at their new place); an old key whose new key
- *  already holds a value is dropped, since the new one is what readers use. A profile key was read
- *  by EVERY profile before, so it lands in the default's section and in each named profile's
- *  (`namedProfiles`, the credential store's), a section's own value winning. Idempotent: a document
- *  without old keys is returned unchanged. */
+/** Pure over the raw preferences document; the fold applies it as preferences.json folds, so a
+ *  store still flat at 4.0.9 lands grouped in one pass. Values move verbatim (the other 4.0.9 steps
+ *  still judge them at their new place); an old key whose new key already holds a value is dropped,
+ *  since the new one is what readers use. A profile key was read by EVERY profile before, so it
+ *  lands in the default's section and in each named profile's (`namedProfiles`, the credential
+ *  slots'), a section's own value winning. Idempotent: a document without old keys is returned
+ *  unchanged. */
 export function regroupPreferences(
   doc: Record<string, unknown>,
   namedProfiles: readonly string[],
@@ -233,44 +239,11 @@ export function regroupPreferences(
   return moved ? out : doc;
 }
 
-/** Exported for the migration test. */
-export function regroupPreferenceStore(): void {
-  const paths = new CopilotApiPaths();
-  const store = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock);
-  const named = new CopilotEnvState().profileNames();
-  const before = store.loadStrict();
-  const after = regroupPreferences(before, named);
-  if (after === before) return;
-  store.update((d) => {
-    const next = regroupPreferences(d, named);
-    for (const key of Object.keys(d)) delete d[key];
-    Object.assign(d, next);
-  });
-  consola.info(
-    "  preferences.json: keys grouped (daemon.*, proxy.*, codex.*, claude.*, shell.*, update.*, " +
-      "cost.*) and identity/host/passthrough/static-key moved into the profile sections " +
-      `(default${named.map((name) => `, ${name}`).join("")})`,
-  );
-}
-
-/** A `layout` step: every other step reads preferences.json through the new reader, which knows
- *  only the grouped shape, so the regrouping runs ahead of them all (after the 4.0.2 store rename,
- *  by version order among the layout steps). */
-export const v409PreferenceGroups: Migration = {
-  version: "4.0.9",
-  layout: true,
-  description:
-    "group preferences.json by dotted key and move the profile keys into profiles.default",
-  run: regroupPreferenceStore,
-};
-
 /** Every profile's RAW section (the default's and each named one's), since the typed reader already
  *  folds an invalid value to unset. The regrouping wrote the same value into all of them, so a
  *  fix-up that judged the default alone would leave the named profiles on the unfixed value. */
 function rawProfileSections(): Array<[Profile, Record<string, unknown>]> {
-  const paths = new CopilotApiPaths();
-  const doc = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock).loadStrict();
-  const profiles = doc.profiles;
+  const profiles = rootStateStore().loadStrict().profiles;
   if (!isRecord(profiles)) return [];
   const out: Array<[Profile, Record<string, unknown>]> = [];
   for (const [name, section] of Object.entries(profiles)) {
@@ -285,7 +258,7 @@ function rawProfileSections(): Array<[Profile, Record<string, unknown>]> {
 //
 // Away from 4.0.9: `agent config --set integration-id codex` was accepted (the domain was a bare
 // regex). The domain now refuses it (Direct's default identity sends no header, so nothing can pin
-// it) and the reader folds the stored value to unset, but the key stays in preferences.json and
+// it) and the reader folds the stored value to unset, but the key stays in the settings and
 // the agent configs may still bake `Copilot-Integration-Id: codex` until the next rewire. Runs
 // after the regrouping, so the pin is judged at its new place, each profile section's `identity`.
 
@@ -456,8 +429,7 @@ function inOldShape(slot: unknown): slot is Record<string, unknown> {
 
 /** Exported for the migration test. Silent when no slot is in the old shape. */
 export function dropSlotIdentityCache(): void {
-  const paths = new CopilotApiPaths();
-  const store = new CopilotApiConfig(paths.sharedStateFile, paths.sharedStateLock);
+  const store = rootStateStore();
   const profiles = store.loadStrict().profiles;
   const carrying = isRecord(profiles) ? Object.values(profiles).filter(inOldShape).length : 0;
   if (carrying === 0) return;
@@ -477,6 +449,214 @@ export function dropSlotIdentityCache(): void {
 
 export const v409IdentityCache: Migration = {
   version: "4.0.9",
-  description: "drop the cached Direct identity and host from credentials.json profile slots",
+  description: "drop the cached Direct identity and host from the profile slots",
   run: dropSlotIdentityCache,
+};
+
+// --- one store: state.json ---------------------------------------------------------------
+//
+// Away from 4.0.9: the root home held three account-wide stores (credentials.json, preferences.json,
+// ownership.json), each with its own lock under `locks/`. They are now ONE `state.json` under ONE
+// lock (src/copilot_api/state_store.ts): preferences.json's `global` map and credentials.json's
+// non-profile keys become `global`; each profile's settings section and its credential slot become
+// one `profiles.<name>`; ownership.json becomes `ownership`. A preferences.json still flat (pre-4.0.9
+// keys) is regrouped as it folds (regroupPreferences), so the fold is the one step that reads it.
+// This is a `layout` step, ahead of every other 4.0.9 step, which read the merged maps.
+// The same pass removes what nothing reads any more, naming each file: the three stores' lock
+// sidecars, the copilot-api login artifact under `opencode/` (a host selector the proxy no longer
+// runs under) and its then-empty directory, and the catalog backup a past sync left. The root
+// `github_token` stays: the login flow still reads it.
+
+const FOLDED_STORES = ["credentials.json", "preferences.json", "ownership.json"] as const;
+type FoldedStore = (typeof FOLDED_STORES)[number];
+
+/** Lock sidecars of the three folded stores, under `locks/`. */
+const FOLDED_LOCKS: readonly string[] = [
+  "credentials.json.lock",
+  "preferences.json.lock",
+  "ownership.json.lock",
+  "ownership.json.ops.lock",
+].flatMap((name) => [name, `${name}.oslock`]);
+
+/** Root-home debris nothing reads, relative to the root home. */
+const ROOT_DEBRIS: readonly string[] = [
+  join("opencode", "github_token"),
+  "codex-model-catalog.json.bak",
+];
+
+function mapHasKey(map: unknown, keys: readonly string[]): boolean {
+  return isRecord(map) && keys.some((key) => Object.hasOwn(map, key));
+}
+
+function anyProfileHasKey(doc: Record<string, unknown>, keys: readonly string[]): boolean {
+  return isRecord(doc.profiles) &&
+    Object.values(doc.profiles).some((slot) => mapHasKey(slot, keys));
+}
+
+/** Whether `doc` (state.json) already holds what `store` would fold into it: the store's own
+ *  keys, wherever they land. An old file beside a store already folded is the half-migrated
+ *  shape (a crash between the write and the delete): kept as is and named, never folded twice. */
+function alreadyFolded(doc: Record<string, unknown>, store: FoldedStore): boolean {
+  switch (store) {
+    case "credentials.json":
+      return mapHasKey(doc.global, GLOBAL_STATE_KEYS) || anyProfileHasKey(doc, PROFILE_STATE_KEYS);
+    case "preferences.json":
+      return mapHasKey(doc.global, GLOBAL_SETTING_KEYS) ||
+        anyProfileHasKey(doc, PROFILE_SETTING_KEYS);
+    case "ownership.json":
+      return Object.hasOwn(doc, "ownership");
+  }
+}
+
+function namedProfilesOf(doc: Record<string, unknown>): string[] {
+  return isRecord(doc.profiles)
+    ? Object.keys(doc.profiles).filter((name) =>
+      name !== PROFILE_SETTINGS_DEFAULT_KEY && isValidProfileName(name)
+    )
+    : [];
+}
+
+/** Whether a preferences.json document is still the pre-4.0.9 flat shape: regroupPreferences moves
+ *  a key. Pure (it returns the same document when nothing moves). */
+function isFlatPreferences(doc: Record<string, unknown>): boolean {
+  return regroupPreferences(doc, []) !== doc;
+}
+
+/** One old store's document merged into state.json's maps. A slot's key and a settings key never
+ *  share a spelling; were one to, the later fold (preferences.json, after credentials.json) wins.
+ *  A flat preferences.json copies its profile keys into EVERY profile: the union of the profiles
+ *  state.json already holds (the credential slots, folded first) and the sections the preferences
+ *  document carries itself, so no section preferences.json holds is dropped whatever the slots say. */
+function foldInto(
+  d: Record<string, unknown>,
+  store: FoldedStore,
+  doc: Record<string, unknown>,
+): void {
+  if (store === "ownership.json") {
+    d.ownership = doc;
+    return;
+  }
+  const grouped = store === "preferences.json"
+    ? regroupPreferences(doc, [...new Set([...namedProfilesOf(d), ...namedProfilesOf(doc)])])
+    : doc;
+  const { profiles, global, ...rest } = grouped;
+  const globalMap = ensureDict(d, "global");
+  Object.assign(globalMap, rest, isRecord(global) ? global : {});
+  if (Object.keys(globalMap).length === 0) delete d.global;
+  if (isRecord(profiles)) {
+    const profilesMap = ensureDict(d, "profiles");
+    for (const [name, section] of Object.entries(profiles)) {
+      if (isRecord(section)) Object.assign(ensureDict(profilesMap, name), section);
+    }
+  }
+}
+
+/** Exported for the migration test and the 3.5.6 home move (which folds the stores it moved in so
+ *  its ledger-fed rewrites read them through the one store); `rootHome` isolates. Idempotent: a
+ *  home already folded (no old store present) writes nothing. A store that is not a JSON object is
+ *  left in place and named: the fold never discards content it cannot carry over. */
+export function foldRootStores(rootHome: string = resolveRootHome()): void {
+  const stateFile = join(rootHome, STATE_STORE_FILENAME);
+  const store = new CopilotApiConfig(
+    stateFile,
+    join(rootHome, LOCKS_DIR_NAME, `${STATE_STORE_FILENAME}.lock`),
+  );
+  const docs = new Map<FoldedStore, Record<string, unknown>>();
+  for (const name of FOLDED_STORES) {
+    const oldPath = join(rootHome, name);
+    if (!existsSync(oldPath)) continue;
+    let doc: unknown;
+    try {
+      doc = JSON.parse(readFileSync(oldPath, "utf8"));
+    } catch {
+      // The parser's message can quote the file's text (a token); the store's fixed diagnostic instead.
+      consola.warn(
+        `  ${oldPath} is not valid JSON (${JSON_PARSE_DIAGNOSTIC}); left in place, not folded`,
+      );
+      continue;
+    }
+    if (!isRecord(doc)) {
+      consola.warn(`  ${oldPath} is not a JSON object; left in place, not folded`);
+      continue;
+    }
+    docs.set(name, doc);
+  }
+  // A flat preferences.json copies its profile keys into every profile credentials.json names, so
+  // it is folded only once credentials.json has been read (or never existed): a source is never
+  // deleted while a source it depends on failed validation.
+  const credentialsUnread = existsSync(join(rootHome, "credentials.json")) &&
+    !docs.has("credentials.json");
+  const prefs = docs.get("preferences.json");
+  const held = prefs !== undefined && credentialsUnread && isFlatPreferences(prefs);
+  if (held) docs.delete("preferences.json");
+  if (docs.size > 0) {
+    const kept: FoldedStore[] = [];
+    store.update((d) => {
+      // Judged on the document as it stood BEFORE this pass, so the credentials fold (which lands
+      // catalog keys in `global`) cannot make the preferences fold read as done.
+      const before = structuredClone(d);
+      for (const [name, doc] of docs) {
+        if (alreadyFolded(before, name)) kept.push(name);
+        else foldInto(d, name, doc);
+      }
+    });
+    for (const name of docs.keys()) {
+      const oldPath = join(rootHome, name);
+      if (kept.includes(name)) {
+        consola.warn(
+          `  both ${oldPath} and its keys in ${stateFile} exist - keeping ${stateFile} (the one ` +
+            `readers use); delete ${name} by hand after checking it holds nothing newer`,
+        );
+        continue;
+      }
+      rmSync(oldPath, { force: true });
+      consola.info(`  folded ${name} into ${stateFile}`);
+    }
+  }
+  if (held) {
+    consola.warn(
+      `  ${join(rootHome, "preferences.json")} kept: its profile keys copy into every profile ` +
+        `credentials.json names, and credentials.json could not be read; fix credentials.json, ` +
+        "then re-run the migration",
+    );
+  }
+  for (const name of FOLDED_LOCKS) {
+    const path = join(rootHome, LOCKS_DIR_NAME, name);
+    if (!existsSync(path)) continue;
+    rmSync(path, { force: true });
+    consola.info(`  removed ${path} (the store's one lock is ${STATE_STORE_FILENAME}.lock)`);
+  }
+  for (const rel of ROOT_DEBRIS) {
+    const path = join(rootHome, rel);
+    if (!existsSync(path)) continue;
+    rmSync(path, { force: true });
+    consola.info(`  removed ${path} (nothing reads it)`);
+  }
+  const opencodeDir = join(rootHome, "opencode");
+  if (existsSync(opencodeDir) && readdirSync(opencodeDir).length === 0) {
+    rmSync(opencodeDir, { recursive: true });
+    consola.info(`  removed ${opencodeDir} (empty)`);
+  }
+}
+
+/** The autoupdate throttle file takes the name of what it holds; "state.json" is the account-wide
+ *  store's. Exported for the migration test; `autoupdateHome` isolates. */
+export function renameAutoupdateThrottle(autoupdateHome: string = autoupdateDir()): void {
+  const oldAutoupdate = join(autoupdateHome, "state.json");
+  const newAutoupdate = join(autoupdateHome, AUTOUPDATE_FILENAME);
+  if (existsSync(oldAutoupdate) && !existsSync(newAutoupdate)) {
+    renameSync(oldAutoupdate, newAutoupdate);
+    consola.info(`  moved ${oldAutoupdate} -> ${newAutoupdate}`);
+  }
+}
+
+export const v409StateFold: Migration = {
+  version: "4.0.9",
+  layout: true,
+  description:
+    "fold credentials.json, preferences.json, and ownership.json into state.json (one store, one lock)",
+  run: () => {
+    foldRootStores();
+    renameAutoupdateThrottle();
+  },
 };

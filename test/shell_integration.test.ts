@@ -178,9 +178,10 @@ skipWin("--remove strips a CRLF-written block (Windows-style line endings)", () 
 /** The stored `launchers` config key, read from the per-test store run() points
  *  COPILOT_API_HOME at. */
 function storedLaunchersKey(): boolean | undefined {
-  const file = join(home, "preferences.json");
+  const file = join(home, "state.json");
   if (!existsSync(file)) return undefined;
-  return (JSON.parse(readFileSync(file, "utf-8")) as { launchers?: boolean }).launchers;
+  return (JSON.parse(readFileSync(file, "utf-8")) as { global?: { "shell.launchers"?: boolean } })
+    .global?.["shell.launchers"];
 }
 
 skipWin("shell wires NO launchers block and reports the launchers key without writing it", () => {
@@ -200,7 +201,7 @@ skipWin("shell wires NO launchers block and reports the launchers key without wr
 
 skipWin("--remove strips the integration; the launchers key is the user's", () => {
   run();
-  writeFileSync(join(home, "preferences.json"), JSON.stringify({ launchers: true }));
+  writeFileSync(join(home, "state.json"), JSON.stringify({ global: { "shell.launchers": true } }));
   const rcPath = join(home, ".bashrc");
   run("--remove");
   const rc = readFileSync(rcPath, "utf-8");

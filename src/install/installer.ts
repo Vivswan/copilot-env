@@ -87,6 +87,7 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/copilot_api/paths.ts",
   "src/copilot_api/profile.ts",
   "src/copilot_api/state.ts",
+  "src/copilot_api/state_store.ts",
   "src/utils/file_lock.ts",
   "src/utils/fs.ts",
   "src/utils/hostname.ts",

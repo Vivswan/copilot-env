@@ -48,7 +48,7 @@ test("a root holding daemon files (a daemon home at the root itself) resolves to
   dir = isolateProxyHome("copilot-env-paths-");
   // Any one daemon-home artifact at the root marks it; the account-wide files alone
   // (state/config stores) must NOT.
-  writeFileSync(join(dir, "credentials.json"), "{}\n");
+  writeFileSync(join(dir, "state.json"), "{}\n");
   expect(defaultDaemonHome()).toBe(join(dir, "profiles", "default"));
   mkdirSync(join(dir, ".run"), { recursive: true });
   expect(defaultDaemonHome()).toBe(dir);
@@ -70,7 +70,7 @@ test("inside a daemon (ROOT_HOME_ENV set) the pinned COPILOT_API_HOME IS the hom
   expect(defaultDaemonHome()).toBe(join(dir, "profiles", "work"));
   expect(new CopilotApiPaths().home).toBe(join(dir, "profiles", "work"));
   // Account-wide files still anchor at the ROOT home.
-  expect(new CopilotApiPaths().sharedStateFile).toBe(join(dir, "credentials.json"));
+  expect(new CopilotApiPaths().stateStoreFile).toBe(join(dir, "state.json"));
 });
 
 // --- CopilotApiPaths composition ---------------------------------------------------
@@ -107,17 +107,14 @@ test("account-wide files resolve to the ROOT home, never a daemon home or .run/<
   const paths = new CopilotApiPaths();
 
   // A regression moving any account-wide store into a daemon home or runDir must fail here.
-  expect(paths.sharedStateFile).toBe(join(dir, "credentials.json"));
-  expect(paths.envConfigFile).toBe(join(dir, "preferences.json"));
-  expect(paths.ownershipFile).toBe(join(dir, "ownership.json"));
+  expect(paths.stateStoreFile).toBe(join(dir, "state.json"));
+  expect(paths.stateStoreLock).toBe(join(dir, "locks", "state.json.lock"));
   expect(paths.githubTokenFile).toBe(join(dir, "github_token"));
   expect(paths.codexModelCatalogFile).toBe(join(dir, "codex-model-catalog.json"));
 
   for (
     const rootFile of [
-      paths.sharedStateFile,
-      paths.envConfigFile,
-      paths.ownershipFile,
+      paths.stateStoreFile,
       paths.githubTokenFile,
       paths.codexModelCatalogFile,
     ]

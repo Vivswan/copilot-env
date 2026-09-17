@@ -4,8 +4,8 @@
 // profile; the type keeps a profile-scoped key out of the global map.
 import * as path from "node:path";
 import * as v from "valibot";
-import { CopilotApiConfig, ensureDict } from "./config.ts";
-import { CopilotApiPaths } from "./paths.ts";
+import { type CopilotApiConfig, ensureDict } from "./config.ts";
+import { rootStateStore } from "./state_store.ts";
 import type { Profile, ProfileName } from "./profile.ts";
 import { isRecord } from "../utils/json.ts";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
@@ -817,7 +817,7 @@ export interface CopilotEnvConfigData {
 export type GlobalPatch = { [K in GlobalMapKey]?: ConfigValueTypes[K] | null };
 export type ProfilePatch = { [K in ProfileMapKey]?: ConfigValueTypes[K] | null };
 
-/** The default profile's section name (the same word credentials.json uses for its slot). */
+/** The default profile's map name: one `profiles.default` holds its settings and its credential slot. */
 export const PROFILE_SETTINGS_DEFAULT_KEY = "default";
 
 export function profileSettingsKey(profile: Profile): string {
@@ -866,6 +866,27 @@ export const GLOBAL_CONFIG_SCHEMA = mapSchema<GlobalConfigData>(
 export const PROFILE_CONFIG_SCHEMA = mapSchema<ProfileConfigData>(
   CONFIG_REGISTRY.filter((def) => def.scope !== "global"),
 );
+
+/** The settings keys each map of the store may hold (the state keys sharing the maps are
+ *  env_state.ts's): what a whole-store replace or a profile deletion touches. */
+export const GLOBAL_SETTING_KEYS: readonly string[] = CONFIG_REGISTRY
+  .filter((def) => def.scope !== "profile")
+  .map((def) => def.key);
+export const PROFILE_SETTING_KEYS: readonly string[] = CONFIG_REGISTRY
+  .filter((def) => def.scope !== "global")
+  .map((def) => def.key);
+
+/** A profile map holding no setting has nothing for the bundle or the table: skipped. */
+function settingsOf(data: CopilotEnvConfigData): CopilotEnvConfigData {
+  return {
+    global: data.global,
+    profiles: Object.fromEntries(
+      Object.entries(data.profiles).filter(([, section]) =>
+        Object.values(section).some((value) => value !== undefined)
+      ),
+    ),
+  };
+}
 
 /** A missing map reads as empty; a malformed one (not an object) reads as empty too. */
 export const CONFIG_SCHEMA: v.GenericSchema<unknown, CopilotEnvConfigData> = v.object({
@@ -1088,26 +1109,22 @@ function applyPatch(map: Record<string, unknown>, patch: Record<string, unknown>
 export class CopilotEnvConfig {
   private readonly store: CopilotApiConfig;
 
+  /** `path` = another `state.json` (a test fixture). */
   constructor(path?: string) {
-    if (path === undefined) {
-      const paths = new CopilotApiPaths();
-      this.store = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock);
-    } else {
-      this.store = new CopilotApiConfig(path);
-    }
+    this.store = rootStateStore(path);
   }
 
   /** STRICT: an unreadable file THROWS rather than reading as "no preference set", because wiring, the
    *  proxy float pin, and the port knobs are decisions that must never act on an unproven empty. */
   read(): CopilotEnvConfigData {
-    return v.parse(CONFIG_SCHEMA, this.store.loadStrict());
+    return settingsOf(v.parse(CONFIG_SCHEMA, this.store.loadStrict()));
   }
 
   /** ONLY for the best-effort background gates, where a throw would kill the serving daemon
    *  (src/scripts/idle_watchdog.ts) or the autoupdate preflight. Their flatten is the safe direction:
    *  lifecycle off, default window, no self-update. */
   private readDegraded(): CopilotEnvConfigData {
-    return v.parse(CONFIG_SCHEMA, this.store.load());
+    return settingsOf(v.parse(CONFIG_SCHEMA, this.store.load()));
   }
 
   /** The one precedence rule over this store (resolveSettingIn). */
@@ -1286,12 +1303,16 @@ export class CopilotEnvConfig {
     this.setProfile(profile, { [key]: undefined });
   }
 
-  /** The whole section goes with the profile (`agent profile --del`): a deleted profile leaves no
-   *  values behind for a later profile of the same name to inherit. */
+  /** Every setting goes with the profile (`agent profile --del`): a deleted profile leaves no
+   *  value behind for a later profile of the same name to inherit. The slot's state keys are
+   *  CopilotEnvState.deleteProfile's; a map left with nothing is dropped. */
   deleteProfile(name: ProfileName): void {
     this.store.update((d) => {
       const profiles = d.profiles;
-      if (isRecord(profiles)) delete profiles[name];
+      if (!isRecord(profiles) || !isRecord(profiles[name])) return;
+      const section = profiles[name];
+      for (const key of PROFILE_SETTING_KEYS) delete section[key];
+      if (Object.keys(section).length === 0) delete profiles[name];
     });
   }
 
@@ -1309,18 +1330,26 @@ export class CopilotEnvConfig {
     return target;
   }
 
-  /** The whole store at once (the settings-bundle import): both maps replaced, nothing merged. */
+  /** Every setting at once (the settings-bundle import): each map's setting keys are replaced,
+   *  nothing merged; the state keys sharing the maps are untouched. */
   replace(data: CopilotEnvConfigData): void {
     this.store.update((d) => {
-      d.global = {};
-      applyPatch(ensureDict(d, "global"), data.global);
-      const profiles: Record<string, unknown> = {};
-      for (const [name, section] of Object.entries(data.profiles)) {
-        const out: Record<string, unknown> = {};
-        applyPatch(out, section);
-        if (Object.keys(out).length > 0) profiles[name] = out;
+      const global = ensureDict(d, "global");
+      for (const key of GLOBAL_SETTING_KEYS) delete global[key];
+      applyPatch(global, data.global);
+      if (Object.keys(global).length === 0) delete d.global;
+      const profiles = ensureDict(d, "profiles");
+      for (const [name, section] of Object.entries(profiles)) {
+        if (!isRecord(section)) continue;
+        for (const key of PROFILE_SETTING_KEYS) delete section[key];
+        if (Object.keys(section).length === 0) delete profiles[name];
       }
-      d.profiles = profiles;
+      for (const [name, section] of Object.entries(data.profiles)) {
+        const out = ensureDict(profiles, name);
+        applyPatch(out, section);
+        if (Object.keys(out).length === 0) delete profiles[name];
+      }
+      if (Object.keys(profiles).length === 0) delete d.profiles;
     });
   }
 

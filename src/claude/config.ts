@@ -554,10 +554,11 @@ function planWebSearchPair(
  */
 export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): void {
   const settingsPath = settingsPathFor(claudeHome);
-  // The default slot's recorded mode is the truth (settings.json is an output): no mode recorded,
-  // nothing of ours is wired and there is no pair to sync or strip.
-  const mode = new CopilotEnvState().readProfileSlot(null).mode;
-  if (mode === null) return;
+  // The default slot's recorded mode decides whether the pair is APPLIED (direct); whether it is
+  // STRIPPED is the ownership ledger's decision alone (stripManagedWebSearchDenyPatch owns nothing,
+  // strips nothing), so a default with no recorded mode takes the strip arm like proxy: a deny we
+  // wrote before the record was cleared is still ours to take back.
+  const mode = new CopilotEnvState().readProfileSlot(null).mode ?? "proxy";
   const doc = loadSettings(settingsPath);
   const before = JSON.stringify(doc);
   const pair = planWebSearchPair(doc, mode, settingsPath).land();

@@ -12,9 +12,13 @@ export function autoupdateDir(root: string = PROJECT_ROOT): string {
   return join(installStateRoot(root), ".autoupdate");
 }
 
-/** Persistent autoupdate state file (JSON). */
+/** The autoupdate throttle file's basename: named for what it holds, not "state" (that word is
+ *  the account-wide store's, src/copilot_api/state_store.ts). */
+export const AUTOUPDATE_FILENAME = "autoupdate.json";
+
+/** Persistent autoupdate throttle file (JSON): `<install>/.autoupdate/autoupdate.json`. */
 export function autoupdateStateFile(root: string = PROJECT_ROOT): string {
-  return join(autoupdateDir(root), "state.json");
+  return join(autoupdateDir(root), AUTOUPDATE_FILENAME);
 }
 
 /** Lock file guarding concurrent preflight updates. */

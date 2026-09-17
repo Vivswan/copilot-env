@@ -1409,7 +1409,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
       credential: { kind: "stored", provider: "gh-token", token: "ghu_work" },
       mode: "proxy",
     });
-    const stateFile = new CopilotApiPaths().sharedStateFile;
+    const stateFile = new CopilotApiPaths().stateStoreFile;
     chmodSync(stateFile, 0o000);
     try {
       expect(() => state().readCredential(null)).toThrow(

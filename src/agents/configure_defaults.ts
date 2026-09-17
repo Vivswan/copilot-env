@@ -17,7 +17,7 @@ import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { codexAdapter } from "../codex/config.ts";
 import { claudeAdapter } from "../claude/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { directOverlay, storeProbedPair } from "../copilot_api/direct_pair.ts";
 import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { bold } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
@@ -32,7 +32,7 @@ import {
   resolveDefaultMode,
   writeDefaultAgent,
 } from "./configure.ts";
-import { bothAgents, defaultDirectPairIncomplete, renderDirectWiring } from "./profile_wiring.ts";
+import { bothAgents, directPairIncomplete, renderDirectWiring } from "./profile_wiring.ts";
 import type { AgentProviderMode, ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
 
 // All output goes to stderr (one logger) so it interleaves deterministically with
@@ -91,7 +91,7 @@ export async function runAgentConfig(
     );
   }
   if (recorded === "direct") {
-    if (defaultDirectPairIncomplete()) {
+    if (directPairIncomplete(null)) {
       return await landBoth(
         "direct",
         "The default profile's Direct pair is not stored (a credential landed since the last " +
@@ -246,14 +246,12 @@ function commitDefaultWiring(
   }
   state.recordDefaultMode(decided);
   if (decided !== "direct") return;
-  const config = new CopilotEnvConfig();
   // Both agents landed the same probe; either agent's wiring names the pair.
   const landed = chosen.get(adapters[0]?.id ?? "codex");
   if (landed === undefined || landed.mode !== "direct" || landed.direct === null) return;
-  state.setProfileDirectPair(null, {
-    ...(config.pinnedIntegrationId(null) === null
-      ? { integrationId: landed.direct.directIntegrationId }
-      : {}),
-    ...(config.copilotHost(null) === null ? { host: landed.direct.directBaseUrl } : {}),
-  });
+  storeProbedPair(
+    null,
+    { integrationId: landed.direct.directIntegrationId, apiBase: landed.direct.directBaseUrl },
+    directOverlay(null),
+  );
 }

@@ -25,7 +25,11 @@ import {
   textVerdict,
   type WritePlan,
 } from "../agents/write_plan.ts";
-import { type AgentProviderMode, providerModeExitCode } from "../agents/provider_mode.ts";
+import {
+  type AgentProviderMode,
+  MANAGED_MODE_DETAIL,
+  providerModeExitCode,
+} from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { directOverlay, landDirectPair } from "../copilot_api/direct_pair.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
@@ -935,9 +939,8 @@ function codexOtherDetail(otherReason: CodexOtherReason): string {
 function providerModeDetail(status: CodexWiringStatus): string {
   switch (status.providerMode) {
     case "proxy":
-      return "local copilot-api proxy";
     case "direct":
-      return "GitHub Copilot Direct";
+      return MANAGED_MODE_DETAIL[status.providerMode];
     case "none":
       return status.configExists ? "no model_provider configured" : "no config.toml found";
     case "other":

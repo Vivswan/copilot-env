@@ -8,7 +8,12 @@
 // Listings never write. `agent models --direct` and the web-search catalog probe a slot holding no
 // pair on every call and store nothing: a transient answer there can never overwrite the stored
 // pair, and the no-pair state lasts only until the first launch or wiring lands it here.
-import { CopilotEnvConfig } from "./env_config.ts";
+import {
+  CopilotEnvConfig,
+  type CopilotEnvConfigData,
+  copilotHostIn,
+  pinnedIntegrationIdIn,
+} from "./env_config.ts";
 import { CopilotEnvState } from "./env_state.ts";
 import {
   type HostNarrator,
@@ -26,7 +31,16 @@ export interface DirectOverlay {
 }
 
 export function directOverlay(profile: Profile, config = new CopilotEnvConfig()): DirectOverlay {
-  return { pinned: config.pinnedIntegrationId(profile), literal: config.copilotHost(profile) };
+  return directOverlayIn(config.read(), profile);
+}
+
+/** The overlay a settings document WOULD put in force (an import's plan judges the bundle's config
+ *  before the apply stores it), by the store's own rule. */
+export function directOverlayIn(config: CopilotEnvConfigData, profile: Profile): DirectOverlay {
+  return {
+    pinned: pinnedIntegrationIdIn(config, profile),
+    literal: copilotHostIn(config, profile),
+  };
 }
 
 /** What a Direct re-render bakes and a daemon launch sends: the overlay over the slot's stored

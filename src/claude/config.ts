@@ -31,6 +31,7 @@ import {
 } from "../agents/write_plan.ts";
 import {
   type AgentProviderMode,
+  MANAGED_MODE_DETAIL,
   type ManagedAgentMode,
   providerModeExitCode,
 } from "../agents/provider_mode.ts";
@@ -692,9 +693,8 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
 function providerModeDetail(mode: AgentProviderMode): string {
   switch (mode) {
     case "direct":
-      return "GitHub Copilot Direct";
     case "proxy":
-      return "local copilot-api proxy";
+      return MANAGED_MODE_DETAIL[mode];
     case "other":
       return "custom Claude provider (not managed)";
     case "none":

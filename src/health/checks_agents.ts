@@ -6,11 +6,14 @@ import { basename, dirname } from "node:path";
 import { type ClaudeDesktopStatus, renderClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import { type CodexOtherReason, codexProviderId } from "../codex/config.ts";
 import { codexHostDriftFrom, codexHostDriftLine } from "../codex/host.ts";
-import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
+import {
+  CODEX_PROFILE_TABLES_LAST_VERSION,
+  codexConfigPath,
+  codexProfileConfigPath,
+} from "../codex/paths.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
 import { isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { agentStartCommand, type Profile } from "../copilot_api/profile.ts";
-import { v409CodexProfileFiles } from "../migrations/4.0.9.ts";
 import { assertNever } from "../utils/assert.ts";
 import { versionLessThan } from "../utils/semver.ts";
 import { packageVersion } from "../utils/version.ts";
@@ -192,15 +195,15 @@ function codexOtherLine(
   }
 }
 
-/** A binary built from a checkout still at the step's own version renders an EMPTY [from, to)
- *  range (the runner's selection rule, src/migrations/index.ts; its module is not imported here
- *  because it loads the install-state .env at import), so that install gets no command to run.
- *  `agent update` is not the route: an already-updated install runs no migration. */
+/** A binary built from a checkout still at that version renders an EMPTY [from, to) range (the
+ *  runner's selection rule, src/migrations/index.ts; the domain never imports a migration), so that
+ *  install gets no command to run. `agent update` is not the route: an already-updated install runs
+ *  no migration. */
 export function profileTableRepair(
   profileFile: string,
   installed: string = packageVersion(),
 ): string {
-  const from = v409CodexProfileFiles.version;
+  const from = CODEX_PROFILE_TABLES_LAST_VERSION;
   const byHand = `move the table into ${profileFile} by hand`;
   return versionLessThan(from, installed)
     ? `run \`agent migrate ${from} ${installed}\` (moves the table into ${profileFile}), or ${byHand}`

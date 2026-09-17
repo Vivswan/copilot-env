@@ -62,6 +62,7 @@ export async function fetchPricing(
   let res: Response;
   try {
     res = await fetchImpl(canonical, {
+      // Not COPILOT_ENV_USER_AGENT: the pricing host sees this literal, and it differs on purpose.
       headers: { Accept: "application/json", "User-Agent": "copilot-env-cost" },
       signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]),
     });

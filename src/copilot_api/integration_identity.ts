@@ -20,6 +20,7 @@ import { isRecord } from "../utils/json.ts";
 import { CODEX_IDENTITY_NAME, isLoopbackHostname } from "./env_config.ts";
 import type { AuthProvider } from "./env_state.ts";
 import { fetchModelCatalog, type ModelCatalogOutcome } from "./models_fetch.ts";
+import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
 /** The gating header. Its VALUES below are external contracts: never rename. */
 export const INTEGRATION_ID_HEADER = "Copilot-Integration-Id";
@@ -80,10 +81,6 @@ export function setIntegrationProbeFetch(fetchImpl: ProbeFetch | null): void {
   hostMemo.clear();
   verdictMemo.clear();
 }
-
-/** Version-free on purpose so nothing here drifts against a client release; never sent by an agent
- *  (the daemon and the baked direct configs carry their own real client UAs). */
-const PROBE_USER_AGENT = "copilot-env";
 
 export interface IntegrationIdentity {
   /** The id header's value, or CODEX_IDENTITY_NAME for the set that sends none. */
@@ -211,7 +208,7 @@ async function accountApiBase(
     const res = await fetchImpl(COPILOT_USER_URL, {
       headers: {
         Authorization: `token ${token}`,
-        "User-Agent": PROBE_USER_AGENT,
+        "User-Agent": COPILOT_ENV_USER_AGENT,
       },
       signal: requestSignal(timeoutMs, signal),
     });

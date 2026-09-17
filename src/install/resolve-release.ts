@@ -8,6 +8,7 @@
 // exported in the shell may belong to another account. The anonymous limit (60/hour/IP) covers a
 // lookup that runs once per `--check` or per autoupdate cooldown.
 import { SECONDS_PER_DAY } from "../utils/time.ts";
+import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
 // per_page=100 reads every release in one page (this repo will not exceed that for years), so
 // cooldown selection sees the whole eligible set, not just the first 30.
@@ -16,7 +17,7 @@ const RELEASES_API = "https://api.github.com/repos/Vivswan/copilot-env/releases?
 const GH = {
   Accept: "application/vnd.github+json",
   "X-GitHub-Api-Version": "2026-03-10",
-  "User-Agent": "copilot-env",
+  "User-Agent": COPILOT_ENV_USER_AGENT,
 } as const;
 
 /** The tag picks the release and the running platform picks the asset within it

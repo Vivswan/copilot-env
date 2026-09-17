@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { codexConfigPath } from "./paths.ts";
 import { stringify } from "smol-toml";
 import { isDue } from "../autoupdate/due.ts";
 import { BOUNDED_LOCK_POLICY } from "../utils/file_lock.ts";
@@ -515,7 +516,7 @@ function probeCatalog(catalogJson: string): boolean | null {
   const referencing = (content: string) => (home: string): void => {
     const file = path.join(home, "candidate-catalog.json");
     writeFileReported(file, content);
-    writeFileReported(path.join(home, "config.toml"), stringify({ "model_catalog_json": file }));
+    writeFileReported(codexConfigPath(home), stringify({ "model_catalog_json": file }));
   };
   // A run that never reported an exit code (spawn error, or killed, the budget's timeout kill
   // included) proves nothing either way; only a real exit counts.
@@ -536,7 +537,7 @@ function probeCatalog(catalogJson: string): boolean | null {
     return garbageExit === 0 ? null : true;
   }
   const control = runProbeSpawn((home) => {
-    writeFileReported(path.join(home, "config.toml"), "");
+    writeFileReported(codexConfigPath(home), "");
   });
   if (exitOf(control) !== 0) return null;
   return parsesAsCatalog(control?.stdout ?? "") ? false : null;

@@ -47,7 +47,7 @@ import { runSync } from "./helpers/run.ts";
 import { afterEach, beforeEach, describe, expect, tempDir, test } from "./helpers/testing.ts";
 
 const OPTIONS: InstallOptions = { noShellIntegration: false, allHosts: false, assetsOnly: false };
-/** Plans no shell wiring, so applying never spawns a binary or touches rc files. */
+/** Plans no shell wiring: applying spawns the binary only for a migration over a prior version. */
 const QUIET: InstallOptions = { noShellIntegration: true, allHosts: false, assetsOnly: false };
 const ASSETS_ONLY: InstallOptions = {
   noShellIntegration: false,
@@ -377,6 +377,37 @@ echo "\${${INSTALL_ROOT_ENV}:-} $@" >> "$(dirname "$0")/../../../wires.log"
     applyInstallPlan(plan);
     const log = readFileSync(join(dest, "wires.log"), "utf8").trim();
     expect(log).toBe(`${join(dest, CURRENT_LINK)} shell`);
+  });
+
+  skipWin("an install over a prior version runs the migrations it leaves behind", () => {
+    // The same post-flip step `agent update` runs: `migrate <from> <to>` on the installed
+    // binary aimed at the current link. The fake binary records every invocation.
+    const recorder = `#!/bin/sh
+echo "\${${INSTALL_ROOT_ENV}:-} $@" >> "$(dirname "$0")/../../../wires.log"
+`;
+    const binarySource = writeFakeBinary(join(root, "recorder.sh"), recorder);
+
+    // Fresh: nothing was live, so there is no version to migrate away from.
+    const fresh = versionedPlan(QUIET, binarySource);
+    if (fresh.kind !== "versioned") throw new Error("expected a versioned plan");
+    expect(fresh.migration).toBeNull();
+    applyInstallPlan(fresh);
+    expect(existsSync(join(dest, "wires.log"))).toBe(false);
+
+    // Over a prior version: `current` moves from it to this one, and the range runs.
+    pointCurrentAt(dest, "v0.0.1");
+    const upgrade = versionedPlan(QUIET, binarySource);
+    if (upgrade.kind !== "versioned") throw new Error("expected a versioned plan");
+    expect(upgrade.migration).toEqual({ from: "v0.0.1", to: VERSION_NAME });
+    applyInstallPlan(upgrade);
+    expect(readFileSync(join(dest, "wires.log"), "utf8").trim()).toBe(
+      `${join(dest, CURRENT_LINK)} migrate 0.0.1 ${packageVersion()}`,
+    );
+
+    // The same version refreshed in place leaves nothing behind.
+    const refresh = versionedPlan(QUIET, binarySource);
+    if (refresh.kind !== "versioned") throw new Error("expected a versioned plan");
+    expect(refresh.migration).toBeNull();
   });
 });
 

@@ -14,7 +14,7 @@
 //
 // Every path that outlives a release goes through `<top>/current/...`, so flipping the link is
 // the whole commit of an update and old version dirs can be garbage-collected safely.
-import { spawnSync } from "node:child_process";
+import { spawnSync, type StdioOptions } from "node:child_process";
 import { configSetCommand } from "../copilot_api/env_config.ts";
 import {
   existsSync,
@@ -415,6 +415,10 @@ export type InstallPlan =
     topShims: ShimWrite[];
     /** The bootstrap binary at `<top>/bin`, swept once the top shims dispatch through the link. */
     flatBinaryRemovals: string[];
+    /** The version range this install leaves behind, run post-flip by runPostFlipMigrations: the
+     *  version `current` named before (`from`) to this one (`to`). Null when nothing was live
+     *  (a fresh install) or the same version is refreshed in place. */
+    migration: { from: string; to: string } | null;
     /** Run through the INSTALLED binary post-flip: this process may be rooted at the top itself
      *  (the bootstrap), so its own PROJECT_ROOT-derived rc paths would not survive the layout
      *  change. */
@@ -613,6 +617,7 @@ export function buildInstallPlan(
 
   const versionName = versionDirName(packageVersion());
   const versionRoot = versionRootPath(top, versionName);
+  const previous = readCurrentVersionName(top);
   const binaryTarget = join(versionRoot, "bin", installedBinaryName());
   // CANONICAL identity, not lexical: a binary running through the `current` link names its own
   // file twice (`<top>/current/bin/...` vs the version path), and copyFileSync onto the same
@@ -637,6 +642,9 @@ export function buildInstallPlan(
       { to: join(top, "bin", "agent.ps1"), text: POWERSHELL_CURRENT_SHIM, executable: false },
     ],
     flatBinaryRemovals: flatBinaryResiduePaths(top),
+    migration: previous === null || previous === versionName
+      ? null
+      : { from: previous, to: versionName },
     shellWires: shell === null ? [] : [shell],
   };
 }
@@ -656,6 +664,46 @@ function applyMaterialization(m: Materialization): void {
   }
   mkdirReported(dirname(m.manifest.to));
   writeFileReported(m.manifest.to, m.manifest.text);
+}
+
+/** Where a post-flip problem is announced (the global consola, or an update's stderr logger). */
+export interface WarnLogger {
+  warn(message: string): void;
+}
+
+/**
+ * THE post-flip migration step, for every path that moves `current` from one version to another:
+ * `agent update` (src/autoupdate/apply.ts) and a full `agent install` over a prior version. Runs
+ * `agent migrate <from> <to>` on the INSTALLED binary aimed at `<top>/current`: the migrations must
+ * load from the new code and see the finished layout, and this process may be the OLD binary (an
+ * update) or the bootstrap rooted at the flat top (an install). Best-effort by contract: `current`
+ * has already moved, so a failure warns with the manual command and never fails the run.
+ */
+export function runPostFlipMigrations(
+  top: string,
+  binary: string,
+  from: string,
+  to: string,
+  stdio: StdioOptions,
+  logger: WarnLogger,
+): void {
+  const args = ["migrate", stripV(from), stripV(to)];
+  const retry = `re-run it with \`agent ${args.join(" ")}\``;
+  try {
+    const result = spawnSync(binary, args, {
+      cwd: top,
+      stdio,
+      env: { ...process.env, [INSTALL_ROOT_ENV]: currentLinkPath(top) },
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      logger.warn(
+        `Post-update migrations reported a problem; see the output above, then ${retry}.`,
+      );
+    }
+  } catch (error) {
+    logger.warn(`Post-update migrations could not run: ${errMessage(error)}; ${retry}.`);
+  }
 }
 
 /** Runs through the INSTALLED binary aimed at `<top>/current`, because only a process rooted at
@@ -703,10 +751,26 @@ export function applyInstallPlan(plan: InstallPlan): void {
       if (process.platform !== "win32") chmodReported(plan.binary.to, 0o755);
     }
     pointCurrentAt(plan.top, plan.versionName);
-    for (const shim of plan.topShims) {
-      writeShimFile(shim.to, shim.text, shim.executable, consola);
+    // The flip IS the commit: a refused shim write is warned, never raised, so the migrations
+    // below still run (a same-version reinstall plans none).
+    try {
+      for (const shim of plan.topShims) {
+        writeShimFile(shim.to, shim.text, shim.executable, consola);
+      }
+    } catch (error) {
+      consola.warn(`Could not refresh the launcher shims: ${errMessage(error)}`);
     }
     consola.success(`Installed copilot-env ${plan.versionName} (live via the current link).`);
+    if (plan.migration !== null) {
+      runPostFlipMigrations(
+        plan.top,
+        join(plan.versionRoot, "bin", installedBinaryName()),
+        plan.migration.from,
+        plan.migration.to,
+        "inherit",
+        consola,
+      );
+    }
     wireShellsThroughInstalledBinary(plan.top, plan.versionRoot, plan.shellWires);
     removeFlatBinaryResidue(plan.flatBinaryRemovals);
     return;

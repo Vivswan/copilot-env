@@ -783,7 +783,10 @@ program
     "Finalize this install root: write the runtime files and launcher shims " +
       "shipped inside this binary, then wire shell integration. Run by install.sh / install.ps1.",
   )
-  .option("--no-shell-integration", "Materialize the runtime files only; don't touch your rc file.")
+  .option(
+    "--no-shell-integration",
+    "Skip the shell wiring pass. Migrations due over a prior version still run.",
+  )
   .option("--all-hosts", "Windows only: wire the AllHosts PowerShell profile.")
   .option(
     "--assets-only",
@@ -816,15 +819,15 @@ program
     })
   );
 
-// `agent update` invokes this on the NEW install after swapping it in, so the migrations run from
-// the new code. A compiled binary has no `src/migrations/index.ts` on disk, hence a subcommand
-// rather than a script path.
+// `agent update` and an `agent install` over a prior version invoke this on the NEW install after
+// swapping it in, so the migrations run from the new code. A compiled binary has no
+// `src/migrations/index.ts` on disk, hence a subcommand rather than a script path.
 program
   .command("migrate")
   .helpGroup("Maintenance:")
   .description(
-    "Run the migration steps due between two versions (what `agent update` runs after " +
-      "swapping in a release). Safe to re-run: steps are idempotent.",
+    "Run the migration steps due between two versions (what `agent update` and a reinstall " +
+      "run after swapping in a release). Safe to re-run: steps are idempotent.",
   )
   .argument("<from>", "Version being updated away from.")
   .argument("<to>", "Version being updated to.")

@@ -40,6 +40,7 @@ import {
   readCurrentVersionName,
   removeFlatBinaryResidue,
   removeVersionDirsExcept,
+  runPostFlipMigrations,
   versionDirName,
   versionRootPath,
   writeTopLevelShims,
@@ -49,7 +50,6 @@ import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../
 import type { HeldUpdateLock } from "./lock.ts";
 import { errMessage } from "../utils/error.ts";
 import { installStateRoot, PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
-import { stripV } from "../utils/semver.ts";
 import {
   chmodReported,
   copyFileReported,
@@ -382,23 +382,6 @@ function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Co
   } as Committed;
 }
 
-/** Run the COMMITTED binary for a post-flip step, rooted at the `current` link: a
- *  checkout-shaped top would derive wrong, and the migrations must see the finished layout. */
-function runNewBinary(
-  committed: Committed,
-  top: string,
-  args: string[],
-  stdio: StdioOptions,
-): number | null {
-  const result = spawnSync(committed.binary, args, {
-    cwd: top,
-    stdio,
-    env: { ...process.env, [INSTALL_ROOT_ENV]: currentLinkPath(top) },
-  });
-  if (result.error) throw result.error;
-  return result.status;
-}
-
 export interface ApplyUpdateOptions {
   /** Where progress/warnings go (default: the global stdout consola). */
   logger?: UpdateLogger;
@@ -465,15 +448,7 @@ export async function applyUpdate(
 
   // Everything after the flip is best-effort: `current` has moved forward, so a later `agent
   // update` would see "up to date" and never retry; failing here would strand the install.
-  try {
-    if (
-      runNewBinary(committed, top, ["migrate", stripV(current), stripV(target.tag)], stdio) !== 0
-    ) {
-      logger.warn("Post-update migrations reported a problem; see the output above.");
-    }
-  } catch (error) {
-    logger.warn(`Post-update migrations could not run: ${errMessage(error)}`);
-  }
+  runPostFlipMigrations(top, committed.binary, current, target.tag, stdio, logger);
 
   // GC keeps the new version plus ONE previous (the rollback candidate).
   const keep = new Set(

@@ -528,7 +528,7 @@ const CONFIG_REGISTRY_LITERAL = [
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint:
-      "Applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring.",
+      "Applies at the next `agent codex`/`agent init` wiring or the next direct `cx` launch.",
   },
   {
     key: "cost.credits-target",

@@ -9,7 +9,6 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
-  AUTH_REFRESH_WORST_CASE_MS,
   CATALOG_PATCH_VERSION,
   type CopilotCatalogModel,
   type CopilotModelLimits,
@@ -21,9 +20,7 @@ import {
   resetCatalogProbeState,
   withCatalogRefreshDeadline,
 } from "../src/codex/catalog.ts";
-import { DIRECT_AUTH_TIMEOUT_MS } from "../src/codex/config.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, codexUserAgent } from "../src/codex/user_agent.ts";
-import { GH_AUTH_TIMEOUT_MS } from "../src/copilot_api/gh_cli.ts";
 import { directClientHeaders } from "../src/copilot_api/integration_identity.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -822,7 +819,7 @@ test("refresh records the ATTEMPT timestamp even when generation fails", async (
   });
   expect(regenerated).toBe(false);
   // Attempt recorded BEFORE the (failed) generation: no retry storm on the
-  // 300s Codex auth refresh cadence.
+  // repeated direct launches.
   expect(new CopilotEnvState().read().codexCatalogLastAttemptMs).toBe(now);
 });
 
@@ -1009,7 +1006,7 @@ onPosix(
     expect(inspectCatalogFile(h.file)).toBe("accepted");
     expect(h.runs().length).toBe(2); // the candidate run and the garbage control
     expect(inspectCatalogFile(h.file)).toBe("accepted");
-    expect(h.runs().length).toBe(2); // the auth-time re-judgement spawns nothing
+    expect(h.runs().length).toBe(2); // the later re-judgement spawns nothing
   },
 );
 
@@ -1060,16 +1057,6 @@ onPosix("a spent probe budget judges nothing and spawns nothing", () => {
   } finally {
     resetCatalogProbeState();
   }
-});
-
-test("the refresh's worst case (derived from its real timeouts and lock waits) plus the gh look fits the direct auth timeout", () => {
-  // Constant arithmetic on purpose: GH_AUTH_TIMEOUT_MS is the budget of the WHOLE gh look (its
-  // chain of gh calls shares it), and AUTH_REFRESH_WORST_CASE_MS is built from the
-  // budgets the code passes to its spawns, fetches, and lock waits, so a raised
-  // budget that would overrun Codex's auth deadline fails here.
-  const STARTUP_MARGIN_MS = 1000;
-  expect(GH_AUTH_TIMEOUT_MS + AUTH_REFRESH_WORST_CASE_MS + STARTUP_MARGIN_MS)
-    .toBeLessThanOrEqual(DIRECT_AUTH_TIMEOUT_MS);
 });
 
 test("past the refresh deadline the catalog is still written but its acceptance is not memoized", async () => {
@@ -1167,7 +1154,7 @@ test("a failed post-upgrade regeneration does not retry on the next same-version
   });
 
   // Upgrade detected, but generation fails: the attempt AND new version are
-  // recorded up front, so the failure is not retried on every 300s auth cycle.
+  // recorded up front, so the failure is not retried on every launch.
   let calls = 0;
   const deps = {
     nowMs: () => now,

@@ -77,9 +77,9 @@ const logger = createStderrLogger();
 // `env.ts` exports; the inspector reports whether the user's `.env` or environment carries it as a
 // fact about the home (no managed wiring needs it).
 export const CODEX_ENV_KEY = "OPENAI_API_KEY";
-/** What one `agent auth --get` (the `gh` look, the token print, a due catalog refresh) has before
- *  Codex gives up. It sits in every install's config, so the refresh budgets bend to it (pinned by
- *  test). */
+/** What one `agent auth --get` (the `gh` look and the token print, nothing else) has before Codex
+ *  gives up. It sits in every install's config; the gh look's own budget (GH_AUTH_TIMEOUT_MS) stays
+ *  far under it. */
 export const DIRECT_AUTH_TIMEOUT_MS = 30000;
 
 /** A named profile is selected by its own `<name>.config.toml` (`codex --profile <name>` layers it
@@ -172,9 +172,8 @@ function managedDirectProvider(
     "wire_api": "responses",
     "supports_websockets": false,
     "requires_openai_auth": false,
-    // The launcher may cold-start deno, and a due (at most daily) catalog refresh runs after the
-    // token prints (AUTH_REFRESH_WORST_CASE_MS, src/codex/catalog.ts); warm calls take well under
-    // a second, and Codex refreshes lazily.
+    // The launcher may cold-start deno; warm calls take well under a second, and Codex refreshes
+    // lazily. The catalog refresh runs at wiring and launch, never inside this command.
     ...credentialTables(
       credential,
       { command, args, timeoutMs: DIRECT_AUTH_TIMEOUT_MS },
@@ -855,7 +854,7 @@ export async function applyCodexConfig(
   const { port, request } = codexWriteRequest(write, profile);
 
   // Seeded (best-effort, unthrottled) BEFORE the config write, so the very first wiring can already
-  // reference the file; the auth-time refresh (src/commands/auth.ts) keeps it fresh afterwards.
+  // reference the file; the launch-time refresh (src/commands/launch.ts) keeps it fresh afterwards.
   // Account-wide, keyed to the default credential, so named-profile writes never touch it.
   if (profile === null) await generateCodexModelCatalog(write.mode, catalogDeps);
 

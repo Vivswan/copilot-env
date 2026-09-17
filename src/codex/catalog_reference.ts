@@ -1,5 +1,5 @@
 // The managed config's `model_catalog_json` reference (catalog.ts generates the file; config.ts's
-// managed write seeds the key): the auth-time sync that heals or strips it, and the account-wide
+// managed write seeds the key): the wiring- and launch-time sync that heals or strips it, and the account-wide
 // sweep that keeps a deleted catalog from leaving a dangling reference in any known Codex home.
 // Best-effort throughout: stderr-only, never throws.
 import * as fs from "node:fs";
@@ -28,7 +28,7 @@ import { readCodexToml, saveCodexToml } from "./toml_io.ts";
 const logger = createStderrLogger();
 
 /**
- * Runs on every auth resolution. ENABLED, it is an ADD-only self-heal for a config that predates a
+ * Runs after the default Codex wiring write and on a direct launch. ENABLED, it is an ADD-only self-heal for a config that predates a
  * usable catalog (the wiring-time seed failed, or the file appeared while mobile pairing had the
  * provider stripped).
  *
@@ -72,7 +72,7 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
     if (!catalogBookkeepingAllowed() || !recordCatalogOwnership(configPath)) {
       logger.warn(
         `codex model catalog reference not set in ${configPath}: ownership could not be ` +
-          "recorded; the next auth refresh retries",
+          "recorded; the next wiring or direct launch retries",
       );
       return;
     }
@@ -99,7 +99,7 @@ function recordCatalogOwnership(configPath: string): boolean {
   }
 }
 
-/** The one catalog freshness hook every auth-time and launch path runs: the throttled regeneration,
+/** The one catalog freshness hook every launch path runs (the wiring write seeds, then syncs): the throttled regeneration,
  *  then the reference sync, under ONE refresh deadline so the two paths cannot drift. */
 export function refreshCodexCatalogAndSync(
   source: CatalogSource,
@@ -139,7 +139,7 @@ export function resolvesToCatalogFile(
 }
 
 /** Deletion fails closed while any readable config may still reference the file, and each step is
- *  skipped when already clean so the 300s auth cadence stays write-free.
+ *  skipped when already clean so a launch over a clean layout stays write-free.
  *    strip our reference from every config -> delete the file -> clear the throttle state
  *  Left after that: only a Codex that read the old config but has not opened the file yet. */
 function cleanupCodexCatalogArtifacts(catalogFile: string): void {

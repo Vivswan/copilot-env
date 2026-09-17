@@ -1333,7 +1333,7 @@ test("past the refresh deadline the sync adds no reference it could not record, 
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(false);
   expect(late).toContain(
     `catalog reference not set in ${configPath}: ownership could not be recorded; ` +
-      "the next auth refresh retries",
+      "the next wiring or direct launch retries",
   );
   // Control: inside the deadline the same sync records the claim.
   writeFileSync(configPath, 'model_provider = "copilot-env"\n');

@@ -2,9 +2,8 @@ import { directWiring } from "../src/agents/configure.ts";
 import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { parse, stringify } from "smol-toml";
+import { stringify } from "smol-toml";
 import { configureClaudeConfig } from "../src/claude/config.ts";
-import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import {
   chooseGhAccount,
   credentialSourceLabel,
@@ -93,7 +92,7 @@ function state(): CopilotEnvState {
   return new CopilotEnvState();
 }
 
-// The catalog is opt-in (default false); without this the auth-time refresh never runs.
+// The catalog is opt-in (default false); without this a wiring or launch refresh never runs.
 function enableCatalog(): void {
   new CopilotEnvConfig().set({ "codex.model-catalog": true });
 }
@@ -154,7 +153,7 @@ test("auth: --provider rejects unknown values", async () => {
 test("auth --get prints the stored token to stdout (nothing else)", async () => {
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
-  const out = await captureStdout(() => runAuth({ get: true }, NOOP_CATALOG_DEPS));
+  const out = await captureStdout(() => runAuth({ get: true }));
   expect(out).toBe("ghu_stored123\n");
 });
 
@@ -538,7 +537,7 @@ test("auth --identities: one column per host, ONE mark on the slot's identity un
       return stubbedSurveyFetch(input, init);
     };
     setIntegrationProbeFetch(surveyFetch);
-    const fresh = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const fresh = await captureLog(() => runAuth({ identities: true }));
     expect([...requests.entries()].filter(([, n]) => n !== 1)).toEqual([]);
     // The account lookup (no id, copilot-env's own User-Agent) happened exactly once.
     expect(requests.get("https://api.github.com/copilot_internal/user - copilot-env")).toBe(1);
@@ -580,7 +579,7 @@ test("auth --identities: one column per host, ONE mark on the slot's identity un
     // A pin without a stored pair marks nothing: the pin fixes the identity, so there is no pick to
     // preview, and the host is still the probe's to find, so the `*` waits for the pair.
     new CopilotEnvConfig().setProfile(null, { identity: COPILOT_CLI_INTEGRATION_ID });
-    const pinnedEmpty = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const pinnedEmpty = await captureLog(() => runAuth({ identities: true }));
     expect(pinnedEmpty).toContain(`identity: pinned to ${COPILOT_CLI_INTEGRATION_ID}`);
     expect(pinnedEmpty).not.toContain(">");
     expect(pinnedEmpty.match(/ \*/g)).toBeNull();
@@ -590,7 +589,7 @@ test("auth --identities: one column per host, ONE mark on the slot's identity un
     // A pinned landing stored only the host; with the pin cleared the slot holds that half alone.
     // The next landing re-selects from the generic host, so no pick is previewed on the stored one.
     state().setProfileDirectPair(null, { host: "https://api.enterprise.githubcopilot.com" });
-    const halfStored = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const halfStored = await captureLog(() => runAuth({ identities: true }));
     expect(halfStored).toContain("host: auto (api.enterprise.githubcopilot.com in use)");
     expect(halfStored).not.toContain(">");
     expect(halfStored.match(/ \*/g)).toBeNull();
@@ -601,7 +600,7 @@ test("auth --identities: one column per host, ONE mark on the slot's identity un
       integrationId: COPILOT_CLI_INTEGRATION_ID,
       host: GENERIC_HOST,
     });
-    const stored = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const stored = await captureLog(() => runAuth({ identities: true }));
     expect(stored).toMatch(
       /^copilot-developer-cli\s+accepted \(5 models\) \*\s+accepted \(37 models\)\s/m,
     );
@@ -616,11 +615,11 @@ test("auth --identities: one column per host, ONE mark on the slot's identity un
       credential: { kind: "command" },
       direct: directWiring(COPILOT_SANDBOX_INTEGRATION_ID, DEFAULT_COPILOT_API_BASE),
     });
-    expect(await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS))).toBe(stored);
+    expect(await captureLog(() => runAuth({ identities: true }))).toBe(stored);
 
     // A pin overlays the stored identity: the mark moves to it, and the note names the overlay.
-    await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
-    const pinned = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID });
+    const pinned = await captureLog(() => runAuth({ identities: true }));
     expect(pinned).toContain(`identity: pinned to ${COPILOT_SANDBOX_INTEGRATION_ID}`);
     expect(pinned).toMatch(
       /^copilot-developer-cli\s+accepted \(5 models\)\s+accepted \(37 models\)\s/m,
@@ -635,7 +634,7 @@ test("auth --identities: one column per host, ONE mark on the slot's identity un
 
     // A pin that is not a built-in candidate is still probed and marked, never a bare `-`.
     new CopilotEnvConfig().setProfile(null, { identity: FOREIGN_ID });
-    const foreign = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const foreign = await captureLog(() => runAuth({ identities: true }));
     expect(foreign).toMatch(FOREIGN_MARKED_ROW);
     expect(foreign).toContain(`  ${FOREIGN_ID} on api.githubcopilot.com: ${PAT_REJECTION}`);
 
@@ -643,7 +642,7 @@ test("auth --identities: one column per host, ONE mark on the slot's identity un
     // pin) stays in use once the pin clears, so its row stays and keeps the mark.
     new CopilotEnvConfig().setProfile(null, { identity: "auto" });
     state().setProfileDirectPair(null, { integrationId: FOREIGN_ID, host: GENERIC_HOST });
-    const storedForeign = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const storedForeign = await captureLog(() => runAuth({ identities: true }));
     expect(storedForeign).toContain("identity: auto");
     expect(storedForeign).toMatch(FOREIGN_MARKED_ROW);
     expect(storedForeign.match(/ \*/g)).toHaveLength(1);
@@ -651,14 +650,14 @@ test("auth --identities: one column per host, ONE mark on the slot's identity un
     // A credential the proxy exchanges itself (device-flow) has no identity story of its own: the
     // credential write took the pair with it, so the slot reads as never probed again.
     state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_device" });
-    const exchanged = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const exchanged = await captureLog(() => runAuth({ identities: true }));
     expect(exchanged.match(/ \*/g)).toBeNull();
     expect(exchanged).toContain("Nothing stored yet for this profile");
     expect(exchanged).not.toContain("passthrough");
 
     // A running daemon keeps the identity and host it launched with, and the table says so.
     writeRunState({ pid: process.pid, port: 4141 });
-    const running = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const running = await captureLog(() => runAuth({ identities: true }));
     expect(running).toContain(
       "Proxy: a daemon is running and keeps the identity and host it launched with; restart it " +
         "to apply a change: `agent stop`, then `agent start`.",
@@ -753,7 +752,7 @@ test("auth --identities: columns are the generic host, the account's when it dif
   try {
     // The account is served on the generic host: one column, marked in use.
     stubIdentitySurvey("https://api.githubcopilot.com");
-    const one = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const one = await captureLog(() => runAuth({ identities: true }));
     expect(one).toMatch(/^identity\s+api\.githubcopilot\.com \(in use\)\s+note$/m);
     expect(one).not.toContain("(account)");
 
@@ -762,7 +761,7 @@ test("auth --identities: columns are the generic host, the account's when it dif
     state().setProfileDirectPair(null, { integrationId: null, host: GENERIC_HOST });
     new CopilotEnvConfig().setProfile(null, { host: CONFIGURED_HOST });
     stubIdentitySurvey();
-    const three = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const three = await captureLog(() => runAuth({ identities: true }));
     expect(three).toContain(`host: ${CONFIGURED_HOST}`);
     expect(three).toMatch(
       /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account\)\s+copilot\.example \(host, in use\)\s+note$/m,
@@ -786,7 +785,7 @@ test("auth --identities: columns are the generic host, the account's when it dif
       }
       return stubbedSurveyFetch(input, init);
     });
-    const storedHost = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const storedHost = await captureLog(() => runAuth({ identities: true }));
     expect(storedHost).toContain("host: auto (api.enterprise.githubcopilot.com in use)");
     expect(storedHost).toMatch(
       /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(stored, in use\)\s+note$/m,
@@ -802,7 +801,7 @@ test("auth --identities: columns are the generic host, the account's when it dif
     // A literal equal to the account's host is one column, in its account role.
     stubIdentitySurvey();
     new CopilotEnvConfig().setProfile(null, { host: "https://api.enterprise.githubcopilot.com" });
-    const merged = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
+    const merged = await captureLog(() => runAuth({ identities: true }));
     expect(merged).toMatch(
       /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account, in use\)\s+note$/m,
     );
@@ -822,7 +821,7 @@ test("auth --identities: at 80 columns the note wraps inside its own column, nev
   const columns = process.env.COLUMNS;
   process.env.COLUMNS = "80";
   try {
-    const lines = (await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS)))
+    const lines = (await captureLog(() => runAuth({ identities: true })))
       .split("\n");
     expect(lines.filter((line) => line.length > 80)).toEqual([]);
     const header = lines.find((line) => line.startsWith("identity  "));
@@ -844,7 +843,7 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
   stubIdentitySurvey();
   try {
-    await expect(runAuth({ identity: VSCODE_CHAT_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
+    await expect(runAuth({ identity: VSCODE_CHAT_INTEGRATION_ID })).rejects
       .toThrow(
         [
           `every host rejects this credential under \`${VSCODE_CHAT_INTEGRATION_ID}\`; not pinned:`,
@@ -857,7 +856,7 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
     // Accepted on the generic host, rejected on the account's: pinned, and the warning names what
     // carried it.
     const narrated = await captureStderr(() =>
-      runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)
+      runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID })
     );
     expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
     // consola's fancy reporter strips the backticks around the id; the CI reporter keeps them.
@@ -868,7 +867,7 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
       ),
     );
 
-    await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
+    await runAuth({ identity: "auto" });
     expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
 
     // A transient account-host lookup leaves that host unknown and a blocked generic host (403)
@@ -883,7 +882,7 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
       );
     });
     const unknown = await captureStderr(() =>
-      runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)
+      runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID })
     );
     expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
     expect(unknown).toContain(
@@ -892,10 +891,10 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
 
     // Under a literal every request goes there, so its rejection alone refuses the pin even though
     // another host accepts the identity (the enterprise host rejects the sandbox id in this stub).
-    await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
+    await runAuth({ identity: "auto" });
     stubIdentitySurvey();
     new CopilotEnvConfig().setProfile(null, { host: "https://api.enterprise.githubcopilot.com" });
-    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
+    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID })).rejects
       .toThrow(
         "api.enterprise.githubcopilot.com (account, in use) rejects this credential under " +
           `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the ` +
@@ -929,14 +928,14 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
           }),
       );
     });
-    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
+    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID })).rejects
       .toThrow(
         "api.githubcopilot.com rejects this credential under " +
           `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
           `selects for this identity: ${PAT_REJECTION}`,
       );
     expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-    await runAuth({ identity: COPILOT_CLI_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
+    await runAuth({ identity: COPILOT_CLI_INTEGRATION_ID });
     expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_CLI_INTEGRATION_ID);
   } finally {
     setIntegrationProbeFetch(null);
@@ -950,177 +949,29 @@ test("auth --identity <id> validates the id at the flag like --provider, before 
   await expect(runAuth({ identity: true, list: true })).rejects.toThrow("mutually exclusive");
 });
 
-test("auth --get stdout stays EXACTLY the token even when the catalog refresh runs", async () => {
+test("auth --get and --print-proxy-token return the credential and write nothing else: a due catalog and a healable Codex config stay byte-identical", async () => {
   isolate();
   enableCatalog();
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
-  const out = await captureStdout(() =>
-    runAuth(
-      { get: true },
-      {
-        nowMs: () => 1_700_000_000_000,
-        codexVersion: () => null, // lastAttemptMs 0 => due, so the refresh really runs
-        bundledCatalog: () => '{"models":[{"slug":"gpt-5.5","context_window":272000}]}',
-        fetchCopilotModels: async () =>
-          new Map([["gpt-5.5", {
-            limits: { maxContextWindowTokens: 1_050_000, maxPromptTokens: 922_000 },
-            name: "GPT-5.5",
-            reasoningEfforts: null,
-            parallelToolCalls: null,
-            codexServable: true,
-          }]]),
-        acceptsCatalog: () => true,
-      },
-    )
-  );
-  expect(out).toBe("ghu_stored123\n");
-});
-
-test("auth --get with a PAT keeps stdout to the token while the due refresh probes an alternate identity", async () => {
-  isolate();
-  enableCatalog();
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
-  // Copilot's /models accepts the PAT only under the CLI identity: the production
-  // fetch probes, settles on it, and narrates the non-default choice.
-  const respond = (init?: RequestInit): Response =>
-    new Headers(init?.headers).get(INTEGRATION_ID_HEADER) === COPILOT_CLI_INTEGRATION_ID
-      ? new Response(
-        JSON.stringify({
-          data: [{
-            id: "gpt-5.5",
-            capabilities: {
-              limits: { max_context_window_tokens: 1_050_000, max_prompt_tokens: 922_000 },
-            },
-          }],
-        }),
-        { status: 200 },
-      )
-      : new Response("PATs not supported", { status: 400 });
-  setIntegrationProbeFetch((_input, init) => Promise.resolve(respond(init)));
-  const realFetch = globalThis.fetch;
-  globalThis.fetch =
-    ((_input: string | URL | Request, init?: RequestInit) =>
-      Promise.resolve(respond(init))) as typeof fetch;
-  let narrated = "";
-  let out = "";
-  try {
-    out = await captureStdout(async () => {
-      narrated = await captureStderr(() =>
-        runAuth({ get: true }, {
-          nowMs: () => 1_700_000_000_000, // lastAttemptMs 0 => due
-          codexVersion: () => "1.0.0",
-          bundledCatalog: () => '{"models":[{"slug":"gpt-5.5","context_window":272000}]}',
-          acceptsCatalog: () => true,
-        })
-      );
-    });
-  } finally {
-    globalThis.fetch = realFetch;
-    setIntegrationProbeFetch(null);
-  }
-  expect(out).toBe("github_pat_x\n");
-  expect(narrated).toContain(`Copilot integration identity: ${COPILOT_CLI_INTEGRATION_ID}`);
-  expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(true);
-});
-
-test("auth --get succeeds (exit 0) even when the catalog refresh blows up", async () => {
-  isolate();
-  enableCatalog();
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
-  const out = await captureStdout(() =>
-    runAuth(
-      { get: true },
-      {
-        nowMs: () => 1_700_000_000_000,
-        codexVersion: () => null,
-        bundledCatalog: () => {
-          throw new Error("spawn exploded");
-        },
-        fetchCopilotModels: async () => {
-          throw new Error("network exploded");
-        },
-      },
-    )
-  );
-  expect(out).toBe("ghu_stored123\n");
-  expect(process.exitCode).toBe(0);
-});
-
-test("auth --print-proxy-token stdout stays EXACTLY the key even when the refresh runs", async () => {
-  isolate();
-  enableCatalog();
-  const first = await captureStdout(() =>
-    runAuth(
-      { printProxyToken: true },
-      {
-        nowMs: () => 1_700_000_000_000,
-        codexVersion: () => null, // due => the refresh really runs (and fails, harmlessly)
-        bundledCatalog: () => null,
-        fetchCopilotModels: async () => {
-          throw new Error("proxy exploded");
-        },
-      },
-    )
-  );
-  // ensureApiKey mints a 64-char hex key on first use.
-  expect(first).toMatch(/^[0-9a-f]{64}\n$/);
-  expect(process.exitCode).toBe(0);
-});
-
-test("disabled: auth --get removes the catalog artifacts and stdout stays EXACTLY the token", async () => {
-  isolate();
-  // Opt-in NOT set: pre-seed the artifacts a pre-opt-in release left behind.
+  // What a refresh would act on: a config with our provider and no catalog
+  // reference (the sync's add-only heal), no catalog file, and a throttle that reads as due.
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
+  const configPath = join(codexHome, "config.toml");
+  writeFileSync(configPath, stringify({ "model_provider": "copilot-env" }));
+  const configBytes = readFileSync(configPath, "utf8");
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "proxy-home"), { recursive: true });
-  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
-  writeFileSync(
-    join(codexHome, "config.toml"),
-    // stringify, not a hand-written template: a raw Windows path inside a TOML
-    // basic string reads as escape sequences.
-    stringify({ "model_provider": "copilot-env", "model_catalog_json": catalogFile }),
-  );
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
-  state().set({
-    codexCatalogLastAttemptMs: 123,
-    codexCatalogCodexVersion: "1.0.0",
-    codexCatalogPatchVersion: 2,
-  });
 
-  const out = await captureStdout(() => runAuth({ get: true }, NOOP_CATALOG_DEPS));
-
-  expect(out).toBe("ghu_stored123\n");
+  expect(await captureStdout(() => runAuth({ get: true }))).toBe("ghu_stored123\n");
   expect(process.exitCode).toBe(0);
-  const doc = parse(readFileSync(join(codexHome, "config.toml"), "utf8")) as Record<
-    string,
-    unknown
-  >;
-  expect(doc.model_catalog_json).toBeUndefined();
+  expect(await captureStdout(() => runAuth({ printProxyToken: true }))).toMatch(
+    /^[0-9a-f]{64}\n$/,
+  );
+
+  expect(readFileSync(configPath, "utf8")).toBe(configBytes);
   expect(existsSync(catalogFile)).toBe(false);
+  // Not even the refresh's own bookkeeping ran: the attempt stamp is what a refresh writes first.
   expect(state().read().codexCatalogLastAttemptMs).toBe(0);
-  expect(state().read().codexCatalogCodexVersion).toBeNull();
-  expect(state().read().codexCatalogPatchVersion).toBe(0);
-});
-
-test("disabled: auth --print-proxy-token runs the same cleanup", async () => {
-  isolate();
-  const codexHome = join(dir, ".codex");
-  mkdirSync(codexHome, { recursive: true });
-  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "proxy-home"), { recursive: true });
-  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
-  writeFileSync(join(codexHome, "config.toml"), stringify({ "model_catalog_json": catalogFile }));
-
-  const out = await captureStdout(() => runAuth({ printProxyToken: true }, NOOP_CATALOG_DEPS));
-
-  expect(out).toMatch(/^[0-9a-f]{64}\n$/);
-  const doc = parse(readFileSync(join(codexHome, "config.toml"), "utf8")) as Record<
-    string,
-    unknown
-  >;
-  expect(doc.model_catalog_json).toBeUndefined();
-  expect(existsSync(catalogFile)).toBe(false);
 });
 
 // --- gh-cli verify gate (failed-probe honesty) --------------------------------

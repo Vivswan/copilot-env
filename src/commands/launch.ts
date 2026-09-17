@@ -219,8 +219,8 @@ export async function prepareLaunch(
       if (mode === null) return null;
       // Read AFTER the wiring step: a proxy re-wire may have just built the farm.
       pinCodexHome(plan, deps.codexHome());
-      // Codex parses `model_catalog_json` at startup, BEFORE the auth refresh that would regenerate
-      // a catalog an upgraded codex rejects, so a direct launch refreshes here first.
+      // Codex parses `model_catalog_json` at startup, so a catalog an upgraded codex rejects must be
+      // regenerated BEFORE it starts: a direct launch refreshes here first.
       if (mode === "direct") await deps.refreshCodexCatalog();
       plan.args = [...flags, ...action.args];
       return plan;
@@ -245,9 +245,10 @@ export async function prepareLaunch(
 // --- production effects --------------------------------------------------------
 
 /** The shared resolver matrix (resolveProxyToken) without `--yes`, so a down unmanaged proxy
- *  prompts. The print step emits no key (launch needs reachability, not the credential) but keeps
- *  runPrintProxyToken's other duty, the Codex catalog refresh, for the default profile only, like
- *  every catalog write. */
+ *  prompts. The print step emits no key (launch needs reachability, not the credential) and runs
+ *  the Codex catalog refresh instead: a launch is where a stale catalog is felt, and the
+ *  token-returning commands never write agent files. Default profile only, like every catalog
+ *  write. */
 async function ensureProxyUp(profile: Profile): Promise<boolean> {
   const deps: ProxyTokenDeps = {
     proxyUp: async (p) => (await proxyStatus(p)).up,

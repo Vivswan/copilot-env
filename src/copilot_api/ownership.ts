@@ -75,7 +75,7 @@ export class OwnershipLedger {
   }
 
   /** Call AFTER the successful artifact write. The one exception is a claim reserved BEFORE a best-effort
-   *  write that must never leave an unrecorded artifact behind (the Codex catalog reference's auth-time
+   *  write that must never leave an unrecorded artifact behind (the Codex catalog reference's wiring-time
    *  sync); the next cleanup sweep releases a claim on an unwritten path. */
   record(kind: OwnedArtifactKind, artifactPath: string): void {
     this.store.update((d) => {

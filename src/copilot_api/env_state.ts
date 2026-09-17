@@ -174,7 +174,7 @@ export interface CopilotEnvStateData {
   /** A copilot-env whose patch logic changed regenerates on the next refresh instead of serving the
    *  old patch for up to a day (src/codex/catalog.ts). */
   codexCatalogPatchVersion: number;
-  /** The catalog (by content hash) the installed codex (by version) last parsed, so the auth-time
+  /** The catalog (by content hash) the installed codex (by version) last parsed, so the reference
    *  sync re-asks only when either changes (src/codex/catalog.ts). */
   codexCatalogAccepted: { sha256: string; codexVersion: string } | null;
   /** Keyed `<credentialDigest>|<integrationId|default>|<modelId>` (src/copilot_api/discovery.ts). The

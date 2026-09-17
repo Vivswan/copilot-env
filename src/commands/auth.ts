@@ -5,8 +5,6 @@ import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { consola } from "consola";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
-import type { CodexCatalogDeps } from "../codex/catalog.ts";
-import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {
@@ -543,7 +541,10 @@ function noSuchProfileHint(profile: ProfileName): string {
     `\`agent profile --add ${profile} --direct|--proxy\``;
 }
 
-async function runGet(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise<void> {
+/** Codex re-runs this every 300s through auth.command, so it returns the token and nothing more: a
+ *  token-returning command writes no agent file. The catalog and its config.toml reference are the
+ *  wiring and launch commands' to keep. */
+async function runGet(profile: Profile): Promise<void> {
   const { token, reason } = new Credential(undefined, profile).resolveWithReason();
   if (token === null) {
     logger.error(
@@ -555,30 +556,14 @@ async function runGet(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise
   // codeql[js/clear-text-logging] -- emitting the token on stdout IS this command's
   // contract (like `gh auth token`); the agent configs consume it.
   process.stdout.write(`${token}\n`);
-  // Codex re-runs `auth --get` every 300s, which makes it the freshness hook for the model catalog:
-  // AFTER the token is on stdout, best-effort, stderr-only. Default profile only: the account-wide
-  // catalog belongs to the default credential, and a named profile's token would let one account's
-  // limits overwrite another's.
-  if (profile !== null) return;
-  // The sync half runs on EVERY call: enabled, it heals a config whose seed failed without waiting
-  // out the daily throttle; disabled, it removes the artifacts within one auth cycle.
-  await refreshCodexCatalogAndSync("direct", { directToken: token, ...catalogDeps });
 }
 
-/** The key line is the ENTIRE stdout contract. `agent proxy-token` must come through here, not bare
- *  ensureApiKey, or the catalog freshness hook silently dies. */
-export async function runPrintProxyToken(
-  profile: Profile,
-  catalogDeps?: CodexCatalogDeps,
-): Promise<void> {
+/** The key line is the ENTIRE stdout contract; like `--get`, it writes no agent file. */
+export function runPrintProxyToken(profile: Profile): void {
   const key = CopilotApiConfig.forProfile(profile).ensureApiKey();
   // codeql[js/clear-text-logging] -- emitting the proxy key on stdout IS this command's
   // contract (the proxy-mode agents' auth.command / apiKeyHelper consume it).
   process.stdout.write(`${key}\n`);
-  if (profile !== null) return; // the account-wide catalog belongs to the default credential
-  // Sourced from the local proxy's /models: a raw gh-cli token can 403 upstream, so proxy mode
-  // never fetches Copilot directly.
-  await refreshCodexCatalogAndSync("proxy", catalogDeps);
 }
 
 async function runDel(profile: Profile): Promise<void> {
@@ -1301,17 +1286,17 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
   };
 }
 
-export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): Promise<void> {
+export async function runAuth(args: AuthArgs): Promise<void> {
   const action = parseAuthAction(args);
   switch (action.kind) {
     case "list":
       runList();
       return;
     case "print-proxy-token":
-      await runPrintProxyToken(action.profile, catalogDeps);
+      runPrintProxyToken(action.profile);
       return;
     case "get":
-      await runGet(action.profile, catalogDeps);
+      await runGet(action.profile);
       return;
     case "del":
       await runDel(action.profile);

@@ -223,6 +223,9 @@ describe("verifyReleaseProvenance", () => {
   });
 
   test("control: a valid bundle with no reachable trust root is the fail-closed message", async () => {
+    // Unreachable by construction, not by permission set: under a wider grant (`-A`, an IDE
+    // runner) the empty cache would refresh from the mirror and the real bundle would verify.
+    expect((await Deno.permissions.revoke({ name: "net" })).state).not.toBe("granted");
     const cachePath = tempDir("copilot-tuf-");
     try {
       const err = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {

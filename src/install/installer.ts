@@ -31,6 +31,7 @@ import { consola } from "consola";
 
 import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
+import { entryAbsent } from "../utils/fs.ts";
 import {
   atomicSymlink,
   atomicWriteFile,
@@ -444,19 +445,6 @@ export type InstallPlan =
     shellWires: ShellWiring[];
   };
 
-/** Without following a final symlink: a dangling link or a loop IS an entry, and the guard must
- *  hand it to realpath (which refuses it) instead of peeling it as a missing tail. Errors other
- *  than a clean ENOENT count as existing for the same reason: "cannot prove absent" must fail
- *  closed at the realpath step. */
-function directoryEntryExists(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch (error) {
-    return (error as { code?: string }).code !== "ENOENT";
-  }
-}
-
 /** Canonicalize for the unsafe-target guard: the longest existing prefix resolved physically
  *  (symlinks; on Windows also junctions and 8.3 short names, via the OS realpath), the
  *  not-yet-existing tail re-appended lexically. Null when the prefix cannot be resolved (a
@@ -465,7 +453,7 @@ function directoryEntryExists(path: string): boolean {
 function canonicalizeForGuard(path: string): string | null {
   let base = resolve(path);
   const tail: string[] = [];
-  while (!directoryEntryExists(base)) {
+  while (entryAbsent(base)) {
     const parent = dirname(base);
     if (parent === base) break; // walked off the root; realpath below decides
     tail.unshift(basename(base));

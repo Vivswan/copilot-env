@@ -304,8 +304,8 @@ test("host rule: 2xx/400/401 keep the generic host; 403/404/5xx/network move to 
 });
 
 test("probeIntegrationIdentity: a 400 is the definitive rejection; a network error, a transient 5xx/429/408/404, or a 403 (policy/seat, not identity) is inconclusive", async () => {
-  // 400 is the verified "PATs not supported" identity rejection (401, a bad token, is the other
-  // definitive answer); the statuses here say nothing about the identity, so no candidate is
+  // 400 is the verified "PATs not supported" identity rejection and 401 a bad token: the two
+  // definitive answers. The other statuses say nothing about the identity, so no candidate is
   // rejected on them.
   const cases: { status: number | "network"; conclusive: boolean }[] = [
     { status: "network", conclusive: false },
@@ -316,6 +316,7 @@ test("probeIntegrationIdentity: a 400 is the definitive rejection; a network err
     { status: 404, conclusive: false },
     { status: 403, conclusive: false },
     { status: 400, conclusive: true },
+    { status: 401, conclusive: true },
   ];
   for (const c of cases) {
     const res = await probeIntegrationIdentity("ghp_x", CANDIDATES, {

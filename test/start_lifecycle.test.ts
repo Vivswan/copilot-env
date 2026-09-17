@@ -5,7 +5,7 @@ import { consola } from "consola";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
 import { type PreflightOptions, runPreflight } from "../src/autoupdate/preflight.ts";
 import { AutoupdateState } from "../src/autoupdate/state.ts";
-import { parseStartAction, runStart } from "../src/commands/start.ts";
+import { parseStartAction, renderStartSummary, runStart } from "../src/commands/start.ts";
 import { portListening } from "../src/copilot_api/daemon.ts";
 import { startLockPath } from "../src/copilot_api/launch.ts";
 import { classifyDaemonPid, pidAlive } from "../src/copilot_api/process.ts";
@@ -147,6 +147,25 @@ test("start --record-event --profile heartbeats ONLY the profile's run state", a
   expect(at).toBeGreaterThanOrEqual(before);
   expect(at).toBeLessThanOrEqual(Date.now());
   expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
+});
+
+test("renderStartSummary keeps the label column and splits a long path inside the value column at width 80", () => {
+  const logs = "/home/me/.local/share/copilot-env/logs/copilot-api-default-profile-very-long.log";
+  const lines = renderStartSummary([
+    ["Logs", logs],
+    ["PID", "48213"],
+    ["Install root", "/home/me/Projects/copilot-env"],
+  ], 80).split("\n");
+  expect(lines.length).toBeGreaterThan(3);
+  for (const line of lines) {
+    expect(line.length).toBeLessThanOrEqual(80);
+    // Every line starts in the label column or, for a continuation, in the value column.
+    expect(line).toMatch(/^ {3}(Logs|PID|Install root):|^ {18}\S/);
+  }
+  // The split loses no character of the path, and no value moves to another row.
+  expect(lines.join("").replace(/ +/g, "")).toBe(
+    `Logs:${logs}PID:48213Installroot:/home/me/Projects/copilot-env`,
+  );
 });
 
 // A conflicting flag combination is rejected at the boundary, never resolved by dispatch order:

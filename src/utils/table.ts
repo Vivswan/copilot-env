@@ -11,27 +11,28 @@ export interface TableOptions {
   header?: string[];
   footer?: string[][];
   aligns?: Align[];
-  /** Free-text columns that wrap on a narrow terminal; every other column keeps its widest cell
-   *  and only its header may wrap. */
-  wrap?: boolean[];
+  /** `true` marks a free-text column that wraps at word boundaries on a narrow terminal; `"hard"`
+   *  marks one (paths, ids) whose cells split at the column edge with every character kept.
+   *  Every other column keeps its widest cell and only its header may wrap. */
+  wrap?: Array<boolean | "hard">;
   indent?: string;
   /** Visible columns to fit; null never wraps. Defaults to the terminal's. */
   width?: number | null;
 }
 
 const GAP = "  ";
-/** A free-text column never wraps narrower than this, nor than its longest word. */
+/** A free-text column never wraps narrower than this; a word-wrapped one nor than its longest word. */
 const WRAP_FLOOR = 16;
 /** `process.stdout.columns` is 0 on a size-less pty; the same fallback Commander's help uses. */
 const TERMINAL_WIDTH_FALLBACK = 80;
 
-/** COLUMNS is the explicit override (and the test seam), a TTY reports its size, and a pipe is
- *  unbounded so captured output never wraps. */
+/** A TTY's own size wins: an exported COLUMNS goes stale across a resize. COLUMNS is the explicit
+ *  width for a pipe (tests, captures); without it a pipe is unbounded so captured output never
+ *  wraps. */
 export function terminalWidth(): number | null {
+  if (process.stdout.isTTY) return process.stdout.columns || TERMINAL_WIDTH_FALLBACK;
   const env = Number(process.env.COLUMNS);
-  if (Number.isInteger(env) && env > 0) return env;
-  if (!process.stdout.isTTY) return null;
-  return process.stdout.columns || TERMINAL_WIDTH_FALLBACK;
+  return Number.isInteger(env) && env > 0 ? env : null;
 }
 
 /** Wraps at word boundaries so that `indent` + the first line and `hang` + each continuation line
@@ -91,15 +92,16 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
   );
   const total = stringWidth(rowIndent) + natural.reduce((a, b) => a + b, 0) +
     GAP.length * Math.max(0, columns - 1);
-  const floors = natural.map((_, i) =>
-    Math.max(
-      wrap[i] === true ? WRAP_FLOOR : 0,
+  const floors = natural.map((_, i) => {
+    const mode = wrap[i] ?? false;
+    return Math.max(
+      mode === false ? 0 : WRAP_FLOOR,
       longestWord(header?.[i] ?? ""),
       ...[...records, ...footer].map((r) =>
-        wrap[i] === true ? longestWord(r[i] ?? "") : stringWidth(r[i] ?? "")
+        mode === true ? longestWord(r[i] ?? "") : mode === "hard" ? 0 : stringWidth(r[i] ?? "")
       ),
-    )
-  );
+    );
+  });
   const widths = width === null || total <= width
     ? natural
     : fitWidths(natural, floors, total - width);
@@ -108,16 +110,27 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
   const fmt = (row: string[]): string[] => {
     const cells = widths.map((w, i) => {
       const cell = row[i] ?? "";
-      return stringWidth(cell) > w ? wrapAnsi(cell, w, { hard: true }).split("\n") : [cell];
+      if (stringWidth(cell) <= w) return [cell];
+      // A hard column splits at the edge with every character kept, spaces included.
+      return wrap[i] === "hard"
+        ? wrapAnsi(cell, w, { hard: true, wordWrap: false, trim: false }).split("\n")
+        : wrapAnsi(cell, w, { hard: true }).split("\n");
     });
     const height = Math.max(1, ...cells.map((c) => c.length));
-    return Array.from(
-      { length: height },
-      (_, k) =>
-        `${rowIndent}${
-          cells.map((c, i) => padCell(c[k] ?? "", widths[i] ?? 0, aligns[i] ?? "left")).join(GAP)
-        }`.trimEnd(),
-    );
+    const last = cells.length - 1;
+    // Only padding is trimmed off a line's end: a last cell keeps its own trailing spaces (a hard
+    // chunk that ends in them), so it is padded only when right-aligned.
+    return Array.from({ length: height }, (_, k) => {
+      const texts = cells.map((c) => c[k] ?? "");
+      const line = `${rowIndent}${
+        texts.map((text, i) =>
+          i < last || aligns[i] === "right"
+            ? padCell(text, widths[i] ?? 0, aligns[i] ?? "left")
+            : text
+        ).join(GAP)
+      }`;
+      return (texts[last] ?? "") === "" ? line.trimEnd() : line;
+    });
   };
   const sep = `${rowIndent}${widths.map((w) => "-".repeat(w)).join(GAP)}`.trimEnd();
 

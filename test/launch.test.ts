@@ -13,6 +13,7 @@ import {
 import type { ManagedEnvValue } from "../src/commands/env.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import type { ProfileMode, ProfileSlot, TokenProvider } from "../src/copilot_api/env_state.ts";
+import { renderModelAliases } from "../src/copilot_api/launch.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
 import { runCli, spawnChild } from "./helpers/run.ts";
@@ -32,6 +33,37 @@ function e2eRoot(): string {
   roots.push(root);
   return root;
 }
+
+// --- the alias table ------------------------------------------------------------
+
+test("renderModelAliases wraps a long alias list inside its own column at width 80", () => {
+  const targets = { sonnet: "claude-sonnet-4.5", gpt: "gpt-5" };
+  const mappings: Record<string, string> = {
+    "claude-3-5-sonnet-20241022": targets.sonnet,
+    "claude-3-7-sonnet-20250219": targets.sonnet,
+    "claude-sonnet-4-20250514": targets.sonnet,
+    "claude-sonnet-4-5-20250929": targets.sonnet,
+    "gpt-4o": targets.gpt,
+    "gpt-4.1": targets.gpt,
+  };
+  const [title, ...rows] = renderModelAliases(mappings, 80).split("\n");
+  expect(title).toBe("Model aliases (6 -> 2 models):");
+  expect(rows.length).toBeGreaterThan(2);
+  for (const row of rows) {
+    expect(row.length).toBeLessThanOrEqual(80);
+    // A continuation line sits under the alias column, never under the target column.
+    if (!row.startsWith("   claude-sonnet-4.5  <-") && !row.startsWith("   gpt-5  ")) {
+      expect(row).toMatch(/^ {26}\S/);
+    }
+  }
+  // Wrapping drops no alias and moves none to another target's row.
+  const text = rows.join(" ").replace(/\s+/g, " ");
+  for (const target of Object.values(targets)) {
+    const sources = Object.keys(mappings).filter((s) => mappings[s] === target).sort();
+    expect(text).toContain(`${target} <- ${sources.join(", ")}`);
+  }
+  expect(renderModelAliases(mappings, null).split("\n")).toHaveLength(3);
+});
 
 // --- parseLaunchAction ----------------------------------------------------------
 

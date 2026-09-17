@@ -63,19 +63,20 @@ On Windows the same commands run via `agent` once the profile is wired, or direc
 
 ### Terminal width
 
-Every table (`agent auth --identities`, `agent auth --list`, `agent models`, `agent profile --list`, the `agent cost` tables) fits the terminal:
+Every table (`agent auth --identities`, `agent auth --list`, `agent models`, `agent profile --list`, the `agent start` summary and alias table, the `agent cost` tables) fits the terminal:
 
 ```text
-width = COLUMNS if set -> the TTY's size (80 on a size-less pty) -> a pipe: unbounded, never wraps
+width = a TTY: its size (80 on a size-less pty) -> a pipe: COLUMNS if set, else unbounded, never wraps
 fits             -> the natural layout
 too wide         -> the widest column shrinks first, never below its floor; a free-text column
-                    (the identities `note`, the `--list` description, the models detail) wraps at
-                    word boundaries, a header wraps between its words; a word longer than its
-                    column overflows rather than splits
+                    (the identities `note`, the `--list` description, the models detail, the
+                    alias list) wraps at word boundaries, a header wraps between its words; a
+                    word longer than its column overflows rather than splits; a path column
+                    (the `agent start` summary) splits at its column edge
 floors too wide  -> one block per record: "identity: codex", then "  header: cell" per non-empty cell
 ```
 
-The lines under the identities table wrap the same way, with a hanging indent. With `COLUMNS` unset, `agent auth --identities | cat` prints the full-width lines.
+The lines under the identities table wrap the same way, with a hanging indent. An exported `COLUMNS` never overrides a TTY's own size. With `COLUMNS` unset, `agent auth --identities | cat` prints the full-width lines; `COLUMNS=80 agent auth --identities | cat` prints the 80-column layout.
 
 ## Shell integration
 

@@ -39,7 +39,7 @@ import {
 } from "./paths.ts";
 import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "../scripts/daemon_lock.ts";
 import { isStandaloneBinary } from "../utils/root.ts";
-import { formatTable } from "../utils/table.ts";
+import { formatTable, terminalWidth } from "../utils/table.ts";
 import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
 import { ensureSidecar, resolveDenoBin } from "./sidecar.ts";
 import {
@@ -1021,6 +1021,15 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
     consola.warn(`Could not read live model mappings (${errMessage(e)}); check \`agent health\`.`);
     return;
   }
+  // One message, one consola timestamp: a stamp per row wraps and interleaves at terminal width.
+  consola.info(renderModelAliases(mappings));
+}
+
+/** One row per target model; its aliases wrap inside their own column. */
+export function renderModelAliases(
+  mappings: Record<string, string>,
+  width: number | null = terminalWidth(),
+): string {
   const sources = Object.keys(mappings);
   const byTarget = new Map<string, string[]>();
   for (const source of sources) {
@@ -1033,14 +1042,11 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
     byTarget.set(target, list);
   }
   const targets = [...byTarget.keys()].sort();
-  // One message, one consola timestamp: a stamp per row wraps and interleaves at terminal width.
   const rows = formatTable(
     targets.map((target) => [target, "<-", (byTarget.get(target) ?? []).sort().join(", ")]),
-    { indent: "   " },
+    { indent: "   ", wrap: [false, false, true], width },
   );
-  consola.info(
-    `Model aliases (${sources.length} -> ${targets.length} models):\n${rows.join("\n")}`,
-  );
+  return `Model aliases (${sources.length} -> ${targets.length} models):\n${rows.join("\n")}`;
 }
 
 /** The extraPrompts blank must precede the alias sync: the setModelMappings POST triggers the daemon's

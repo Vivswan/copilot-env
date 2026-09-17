@@ -6,18 +6,19 @@ import {
   CONFIG_GROUPS,
   CONFIG_REGISTRY,
   configDefaultValue,
-  type ConfigGroup,
   configGroup,
   type ConfigKeyDef,
   configKeyDef,
+  type ConfigValueTypes,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   formatConfigValue,
   isProxyProjected,
   isStoredSource,
   isStoredValueInert,
-  PROFILE_SETTINGS_DEFAULT_KEY,
+  profileSettingsKey,
   resolveSettingIn,
+  type SettingSource,
   type SettingTarget,
 } from "../copilot_api/env_config.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
@@ -225,12 +226,18 @@ function runGet(get: string | undefined, profile: Profile, platform: NodeJS.Plat
 const MIN_RIGHT_COLUMNS = 30;
 /** Indent of a right column stacked under its key row on a narrow terminal. */
 const STACKED_INDENT = 6;
+/** A group heading and its rows sit one level under the GLOBAL banner; the profile rows sit
+ *  directly under theirs. */
+const GROUP_INDENT = 2;
 /** For a key that is unset AND has no built-in default. */
 const UNSET_VALUE = "<unset>";
 const RESTART_LINE = "restart the proxy to apply";
+const PROFILE_FLAG = "--profile <name>";
+/** Between the header's parts, on one line. */
+const HEADER_GAP = "  |  ";
 
 /** Never splits an item: one longer than `columns` stands on its own line. The one wrap rule for
- *  the header's halves, the description's words, and the right column's cells alike. */
+ *  the header's parts, the description's words, and the right column's cells alike. */
 function packToWidth<T>(
   items: T[],
   length: (item: T) => number,
@@ -274,8 +281,15 @@ export interface ConfigTableOptions {
   color: boolean;
 }
 
-/** The one table `agent config` and `agent config --help` both print, grouped by the key's group
- *  with each row resolved for `opts.profile`. Nothing breaks mid-word. */
+/** A profile-default key is the selected profile's only while its own section sets it. */
+function rowBanner(def: ConfigKeyDef, source: SettingSource): "profile" | "global" {
+  if (def.scope === "profile") return "profile";
+  return def.scope === "profile-default" && source === "profile" ? "profile" : "global";
+}
+
+/** The one table `agent config` and `agent config --help` both print: a PROFILE banner for the
+ *  selected profile's own keys, a GLOBAL banner for the machine's, grouped by the key's group,
+ *  each row resolved for `opts.profile`. Nothing breaks mid-word. */
 export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions): string {
   const plain = (text: string): string => text;
   const paint = opts.color ? { bold, cyan, dim, green } : {
@@ -289,21 +303,46 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     const stored = isStoredSource(resolved.source);
     const fallback = configDefaultValue(def);
     const value = resolved.value === undefined ? UNSET_VALUE : formatConfigValue(resolved.value);
-    return { def, resolved, stored, fallback, value, keyValue: `${def.key}=${value}` };
+    const banner = rowBanner(def, resolved.source);
+    const indent = banner === "profile" ? 0 : GROUP_INDENT;
+    return {
+      def,
+      resolved,
+      stored,
+      fallback,
+      value,
+      banner,
+      indent,
+      leadLength: indent + 2 + `${def.key}=${value}`.length,
+    };
   });
-  // The key=value column is the longest key=value that still leaves the right column
+  // The key=value column is the longest lead that still leaves the right column
   // MIN_RIGHT_COLUMNS; a longer one (a URL) gets its own line with its right column below. When
   // none fits, every right column stacks at STACKED_INDENT, and when even that leaves fewer than
   // the floor, wrapping stops altogether.
   const fitting = rows
-    .map((row) => row.keyValue.length)
-    .filter((n) => 2 + n + 2 + MIN_RIGHT_COLUMNS <= opts.width);
-  const column = fitting.length > 0 ? 2 + Math.max(...fitting) + 2 : STACKED_INDENT;
+    .map((row) => row.leadLength)
+    .filter((n) => n + 2 + MIN_RIGHT_COLUMNS <= opts.width);
+  const column = fitting.length > 0 ? Math.max(...fitting) + 2 : STACKED_INDENT;
   const rightWidth = opts.width - column >= MIN_RIGHT_COLUMNS
     ? opts.width - column
     : Number.POSITIVE_INFINITY;
   const indent = " ".repeat(column);
+  /** A lead with its right column beside it when it fits, below it when not. */
+  const layout = (lead: string, leadLength: number, right: string[]): string[] => {
+    const [first = "", ...rest] = right;
+    if (leadLength + 2 > column) return [lead, ...right.map((line) => indent + line)];
+    return [
+      `${lead}${" ".repeat(column - leadLength)}${first}`,
+      ...rest.map((line) => indent + line),
+    ];
+  };
+  const wrapNote = (note: string): string[] =>
+    packToWidth(note.split(" "), (word) => word.length, rightWidth)
+      .map((words) => paint.dim(words.join(" ")));
 
+  // The global layer a profile override hides: the global map's value, else the built-in default.
+  const globalLayer: Partial<ConfigValueTypes> = data.global;
   const renderRow = (row: (typeof rows)[number]): string[] => {
     const { def } = row;
     const cells: Cell[] = [{ text: `[${def.type}]`, paint: plain }];
@@ -311,6 +350,15 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
       cells.push({
         text: `default ${formatConfigValue(row.fallback)}`,
         paint: (text) => paint.dim(paint.green(text)),
+      });
+    }
+    if (def.scope === "profile-default" && row.banner === "profile") {
+      const shared = globalLayer[def.key] ?? row.fallback;
+      cells.push({
+        text: `(overrides global ${
+          shared === undefined ? UNSET_VALUE : formatConfigValue(shared)
+        })`,
+        paint: paint.dim,
       });
     }
     if (isStoredValueInert(def, row.resolved, opts.platform)) {
@@ -326,43 +374,92 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     ) {
       right.push(paint.dim(paint.green(RESTART_LINE)));
     }
-    right.push(
-      ...packToWidth(def.describe.split(" "), (word) => word.length, rightWidth)
-        .map((words) => paint.dim(words.join(" "))),
-    );
+    right.push(...wrapNote(def.describe));
     const shownValue = row.value === UNSET_VALUE
       ? paint.dim(UNSET_VALUE)
       : row.stored
       ? paint.bold(paint.green(row.value))
       : paint.green(row.value);
-    const lead = `${row.stored ? paint.green("*") : " "} ${paint.cyan(def.key)}=${shownValue}`;
-    const leadLength = 2 + row.keyValue.length;
-    const [first = "", ...rest] = right;
-    if (leadLength + 2 > column) return [lead, ...right.map((line) => indent + line)];
-    return [
-      `${lead}${" ".repeat(column - leadLength)}${first}`,
-      ...rest.map((line) => indent + line),
-    ];
+    const lead = `${" ".repeat(row.indent)}${row.stored ? paint.green("*") : " "} ${
+      paint.cyan(def.key)
+    }=${shownValue}`;
+    return layout(lead, row.leadLength, right);
   };
 
   const storedCount = rows.filter((row) => row.stored).length;
-  const headerHalves = [
+  const headerParts = [
     `${storedCount} of ${rows.length} keys set (*).`,
-    "agent config --set <key> <value>  |  --del <key> reverts",
+    "agent config --set <key> <value>",
+    "--del <key> reverts",
+    `${PROFILE_FLAG} targets another profile`,
   ];
-  const header = packToWidth(headerHalves, (half) => half.length, opts.width, 2)
-    .map((halves) => paint.dim(halves.join("  ")))
+  const header = packToWidth(headerParts, (part) => part.length, opts.width, HEADER_GAP.length)
+    .map((parts) => paint.dim(parts.join(HEADER_GAP)))
     .join("\n");
-  // The profile group names whose section it shows; the other groups are the machine's.
-  const heading = (group: ConfigGroup): string =>
-    group === "profile"
-      ? `${group} [${opts.profile ?? PROFILE_SETTINGS_DEFAULT_KEY}]:`
-      : `${group}:`;
-  const blocks = CONFIG_GROUPS.map((group) => {
-    const lines = rows.filter((row) => configGroup(row.def.key) === group).flatMap(renderRow);
-    return [paint.bold(heading(group)), ...lines].join("\n");
+
+  /** A bold title with its note beside it and wrapped there while the note keeps
+   *  MIN_RIGHT_COLUMNS; otherwise (a long profile name on a narrow terminal) the note stacks
+   *  under the title at STACKED_INDENT, like a row's right column. */
+  const banner = (title: string, note: string): string => {
+    const beside = title.length + 3;
+    const at = opts.width - beside >= MIN_RIGHT_COLUMNS ? beside : STACKED_INDENT;
+    const noteWidth = opts.width - at >= MIN_RIGHT_COLUMNS
+      ? opts.width - at
+      : Number.POSITIVE_INFINITY;
+    const lines = packToWidth(`(${note})`.split(" "), (word) => word.length, noteWidth)
+      .map((words) => paint.dim(words.join(" ")));
+    if (at !== beside) {
+      return [paint.bold(title), ...lines.map((l) => " ".repeat(at) + l)].join("\n");
+    }
+    const [first = "", ...rest] = lines;
+    return [`${paint.bold(title)}   ${first}`, ...rest.map((l) => " ".repeat(at) + l)].join("\n");
+  };
+  const groupIndent = " ".repeat(GROUP_INDENT);
+
+  // The groups the notes name are the ones whose scope admits an override, so a new
+  // profile-default group reaches them on its own.
+  const ownRows = rows.filter((row) => row.def.scope === "profile");
+  const overrides = rows.filter((row) => row.banner === "profile" && row.def.scope !== "profile");
+  const overridable = [
+    ...new Set(
+      CONFIG_REGISTRY.filter((def) => def.scope === "profile-default")
+        .map((def) => configGroup(def.key)),
+    ),
+  ];
+  const noOverrides = (): string[] => {
+    // Two in: the star slot, so the line sits under the keys.
+    const lead = `  ${overridable.join("/")} overrides: none`;
+    const note = `a ${overridable.map((g) => `${g}.*`).join(" / ")} key set with ${PROFILE_FLAG} ` +
+      "shows here, overriding the global value";
+    return layout(paint.dim(lead), lead.length, wrapNote(note));
+  };
+  const profileBlock = [
+    banner(
+      `PROFILE ${profileSettingsKey(opts.profile)}`,
+      `per profile; another profile: ${PROFILE_FLAG}`,
+    ),
+    ...ownRows.flatMap(renderRow),
+    ...overrides.flatMap(renderRow),
+    ...(overrides.length === 0 && overridable.length > 0 ? noOverrides() : []),
+  ].join("\n");
+
+  const globalRows = rows.filter((row) => row.banner === "global");
+  const groupBlocks = CONFIG_GROUPS.flatMap((group): string[] => {
+    const lines = globalRows.filter((row) => configGroup(row.def.key) === group).flatMap(renderRow);
+    if (lines.length === 0) return [];
+    const heading = overridable.includes(group)
+      ? banner(
+        `${groupIndent}${group}:`,
+        `global default; a profile may override with ${PROFILE_FLAG} --set`,
+      )
+      : paint.bold(`${groupIndent}${group}:`);
+    return [[heading, ...lines].join("\n")];
   });
-  return [header, ...blocks].join("\n\n");
+  const globalBlock = [
+    banner("GLOBAL", "this machine, every profile"),
+    groupBlocks.join("\n\n"),
+  ].join("\n");
+  return [header, profileBlock, globalBlock].join("\n\n");
 }
 
 /** The one string both `agent config` and `agent config --help` print, so their outputs are

@@ -28,6 +28,8 @@ Every key has one scope:
 
 Every read resolves one way: **explicit flag or env (per invocation) > the profile's own value > the global value > the built-in default**, each layer only where the key's scope admits it (a `global` key never resolves from a profile's section).
 
+`agent config` prints the store under two banners: `PROFILE <name>` holds the selected profile's own keys and any `profile-default` value it overrides (with the global value it hides), and `GLOBAL` holds the machine's keys, the `proxy` group among them as every profile's default.
+
 The key names below are also the stored JSON keys in `~/.copilot-env/preferences.json`, under `global` and `profiles.<name>`.
 
 ## profile

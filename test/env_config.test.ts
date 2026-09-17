@@ -826,7 +826,13 @@ test("configTable() seats a key by its registry scope: profile keys and the sele
   expect(workView.profile.find((l) => rowRe.exec(l)?.[1] === shared.key)).toContain(
     `* ${shared.key}=${sharedDefault}`,
   );
-  expect(workView.profile.join("\n")).toContain(`(overrides global ${sharedDefault})`);
+  // The global map does not set the key, so the override names the built-in default it hides,
+  // once: no `default` cell beside it.
+  const overrideRow = workView.profile.slice(
+    workView.profile.findIndex((l) => rowRe.exec(l)?.[1] === shared.key),
+  ).slice(0, 3).join("\n");
+  expect(overrideRow).toContain(`(overrides the default ${sharedDefault})`);
+  expect(overrideRow).not.toContain(`default ${sharedDefault} `);
   expect(noOverridesLine(workView.profile)).toBeUndefined();
   // GLOBAL is grouped, so the keys come group by group, in registry order within a group.
   expect(keysIn(workView.global)).toEqual(
@@ -846,12 +852,23 @@ test("configTable() seats a key by its registry scope: profile keys and the sele
   const defaultView = sections(dflt);
   expect(defaultView.profile[0]?.startsWith("PROFILE default ")).toBe(true);
   expect(keysIn(defaultView.profile)).toEqual(profileKeys);
-  expect(noOverridesLine(defaultView.profile)).toContain(configGroup(shared.key));
+  // The default profile can never hold an override (a profile-default key set without
+  // --profile lands in the global map), so it gets no "overrides: none" line; a named profile
+  // with none does, naming the command that fills it.
+  expect(noOverridesLine(defaultView.profile)).toBeUndefined();
+  runConfig({ del: shared.key, profile: "work" });
+  const bare = sections(stdoutOf(() => runConfig({ get: true, profile: "work" })));
+  expect(noOverridesLine(bare.profile)).toContain(configGroup(shared.key));
+  expect(bare.profile.join("\n")).toContain("(set with --profile work --set ");
+  expect(keysIn(bare.global)).toContain(shared.key);
   expect(keysIn(defaultView.global)).toContain(shared.key);
-  expect(defaultView.global.join("\n")).toContain(
-    `  ${
-      configGroup(shared.key)
-    }:   (global default; a profile may override with --profile <name> --set)`,
+  expect(defaultView.global.join("\n")).toMatch(
+    new RegExp(
+      `^  ${
+        configGroup(shared.key)
+      }: +\\(global default; a profile may override with --profile <name> --set\\)$`,
+      "m",
+    ),
   );
 });
 

@@ -22,7 +22,12 @@ import {
   type SettingTarget,
 } from "../copilot_api/env_config.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
-import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import {
+  parseProfileFlag,
+  type Profile,
+  profileLabel,
+  type ProfileName,
+} from "../copilot_api/profile.ts";
 import { nextProxyVersion } from "../proxy_float.ts";
 import { bold, COLOR_ENABLED, cyan, dim, green } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -346,18 +351,23 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
   const renderRow = (row: (typeof rows)[number]): string[] => {
     const { def } = row;
     const cells: Cell[] = [{ text: `[${def.type}]`, paint: plain }];
-    if (row.stored && row.fallback !== undefined) {
+    // An override names the layer it hides once: the global map's value, or the built-in default
+    // in place of the `default` cell.
+    const overrides = def.scope === "profile-default" && row.banner === "profile";
+    const shared = overrides ? globalLayer[def.key] : undefined;
+    if (row.stored && row.fallback !== undefined && !(overrides && shared === undefined)) {
       cells.push({
         text: `default ${formatConfigValue(row.fallback)}`,
         paint: (text) => paint.dim(paint.green(text)),
       });
     }
-    if (def.scope === "profile-default" && row.banner === "profile") {
-      const shared = globalLayer[def.key] ?? row.fallback;
+    if (overrides) {
       cells.push({
-        text: `(overrides global ${
-          shared === undefined ? UNSET_VALUE : formatConfigValue(shared)
-        })`,
+        text: shared !== undefined
+          ? `(overrides global ${formatConfigValue(shared)})`
+          : `(overrides the default ${
+            row.fallback === undefined ? UNSET_VALUE : formatConfigValue(row.fallback)
+          })`,
         paint: paint.dim,
       });
     }
@@ -397,23 +407,10 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     .map((parts) => paint.dim(parts.join(HEADER_GAP)))
     .join("\n");
 
-  /** A bold title with its note beside it and wrapped there while the note keeps
-   *  MIN_RIGHT_COLUMNS; otherwise (a long profile name on a narrow terminal) the note stacks
-   *  under the title at STACKED_INDENT, like a row's right column. */
-  const banner = (title: string, note: string): string => {
-    const beside = title.length + 3;
-    const at = opts.width - beside >= MIN_RIGHT_COLUMNS ? beside : STACKED_INDENT;
-    const noteWidth = opts.width - at >= MIN_RIGHT_COLUMNS
-      ? opts.width - at
-      : Number.POSITIVE_INFINITY;
-    const lines = packToWidth(`(${note})`.split(" "), (word) => word.length, noteWidth)
-      .map((words) => paint.dim(words.join(" ")));
-    if (at !== beside) {
-      return [paint.bold(title), ...lines.map((l) => " ".repeat(at) + l)].join("\n");
-    }
-    const [first = "", ...rest] = lines;
-    return [`${paint.bold(title)}   ${first}`, ...rest.map((l) => " ".repeat(at) + l)].join("\n");
-  };
+  /** A bold title whose note is its right column: on the shared column, or under the title
+   *  when the title runs past it. */
+  const banner = (title: string, note: string): string =>
+    layout(paint.bold(title), title.length, wrapNote(`(${note})`)).join("\n");
   const groupIndent = " ".repeat(GROUP_INDENT);
 
   // The groups the notes name are the ones whose scope admits an override, so a new
@@ -426,11 +423,14 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
         .map((def) => configGroup(def.key)),
     ),
   ];
-  const noOverrides = (): string[] => {
+  // A profile-default key set without --profile lands in the global map (settingTarget), so
+  // only a named profile can hold an override and only it gets the line.
+  const noOverrides = (profile: ProfileName): string[] => {
     // Two in: the star slot, so the line sits under the keys.
     const lead = `  ${overridable.join("/")} overrides: none`;
-    const note = `a ${overridable.map((g) => `${g}.*`).join(" / ")} key set with ${PROFILE_FLAG} ` +
-      "shows here, overriding the global value";
+    const note = `(set with --profile ${profile} --set ${
+      overridable.map((g) => `${g}.<key>`).join(" / ")
+    } <value>)`;
     return layout(paint.dim(lead), lead.length, wrapNote(note));
   };
   const profileBlock = [
@@ -440,7 +440,9 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     ),
     ...ownRows.flatMap(renderRow),
     ...overrides.flatMap(renderRow),
-    ...(overrides.length === 0 && overridable.length > 0 ? noOverrides() : []),
+    ...(overrides.length === 0 && overridable.length > 0 && opts.profile !== null
+      ? noOverrides(opts.profile)
+      : []),
   ].join("\n");
 
   const globalRows = rows.filter((row) => row.banner === "global");

@@ -23,22 +23,26 @@ flowchart TD
   direct["Direct: the agent config names the Copilot host and a resolver command"]
   proxy["proxy: the agent config names the local daemon, which holds the token in memory"]
   daemon["src/copilot_api/launch.ts<br>resolveLaunchCredential() DaemonLaunchAuth"]
+  proxycfg[("~/.local/share/copilot-env/profiles/{name}/config.json<br>the daemon's own auth.apiKeys")]
+  codexw["src/codex/config.ts<br>configureCodexConfig()"]
+  claudew["src/claude/config.ts<br>configureClaudeConfig()"]
   codexfile[("~/.codex/config.toml")]
   claudefile[("~/.claude/settings.json")]
   daemonenv[["the daemon's env: COPILOT_ENV_DAEMON_GH_TOKEN, COPILOT_ENV_DAEMON_INTEGRATION_ID, COPILOT_ENV_DAEMON_COPILOT_HOST"]]
   credfile -->|"reads the slot: gh-cli, a stored token, or none"| store
   prefs -->|"reads static-key"| wiring
+  proxycfg -->|"static-key on a proxy write: ensureApiKey() reads a key, minting one when absent"| wiring
   store --> cred
   cred -->|"resolve(): the token, or null for a none slot"| wiring
   wiring -->|"kind command"| resolver
   wiring -->|"mode direct"| direct
   wiring -->|"mode proxy"| proxy
-  resolver -->|"writes auth.command"| codexfile
-  resolver -->|"writes apiKeyHelper"| claudefile
-  direct -->|"writes model_providers.copilot-env: base_url https://{host}, http_headers"| codexfile
-  direct -->|"writes env.ANTHROPIC_BASE_URL, env.ANTHROPIC_CUSTOM_HEADERS"| claudefile
-  proxy -->|"writes model_providers.copilot-env: base_url http://127.0.0.1:{port}"| codexfile
-  proxy -->|"writes env.ANTHROPIC_BASE_URL"| claudefile
+  direct -->|"base_url https://{host}, http_headers with the Copilot-Integration-Id"| codexw
+  direct -->|"the host, plus env.ANTHROPIC_CUSTOM_HEADERS"| claudew
+  proxy -->|"base_url http://127.0.0.1:{port}/v1"| codexw
+  proxy -->|"the loopback base URL"| claudew
+  codexw -->|"writes model_providers.copilot-env: base_url, http_headers, auth.command"| codexfile
+  claudew -->|"writes env.ANTHROPIC_BASE_URL and apiKeyHelper"| claudefile
   cred --> daemon
   daemon -->|"DaemonCredential: the token rides in env, spliced into argv in-process"| daemonenv
 ```
@@ -86,22 +90,24 @@ Demonstrated by: [test/integration_identity.test.ts](../test/integration_identit
 ```mermaid
 flowchart LR
   credfile[("~/.local/share/copilot-env/credentials.json")]
+  prefs[("~/.local/share/copilot-env/preferences.json")]
   slot["src/copilot_api/env_state.ts<br>ProfileSlot ProfileMode partialSlotGap() assertProfileSlot()"]
   wire["src/agents/profile_wiring.ts<br>bothAgents() wireBothAgents()"]
   adapter["src/agents/configure.ts<br>AgentAdapter"]
   claude["src/claude/config.ts<br>claudeAdapter() configureClaudeConfig()"]
   codex["src/codex/config.ts<br>codexAdapter() configureCodexConfig()"]
   claudefile[("~/.claude/settings-{name}.json<br>settings.json for the default")]
-  desktop[("Claude Desktop's config library: {Claude-3p data dir}/configLibrary/{uuid}.json")]
+  desktop[("Claude Desktop's files: {Claude-3p data dir}/configLibrary/{uuid}.json and _meta.json, claude_desktop_config.json, developer_settings.json<br>plus the helper under ~/.local/share/copilot-env/helpers and the claim in ownership.json")]
   codexfile[("~/.codex/{name}.config.toml and ~/.codex/config.toml<br>config.toml alone for the default")]
   credfile -->|"reads profiles.{name}: credential + mode"| slot
+  prefs -->|"reads claude-desktop"| claude
   slot -->|"one credential + one mode"| wire
   wire -->|"configureProfile on every adapter, even after one throws"| adapter
   adapter --> claude
   adapter --> codex
   claude -->|"writes env.ANTHROPIC_BASE_URL and the credential carrier"| claudefile
-  claude -->|"reconciles the entry it owns"| desktop
-  codex -->|"writes model_provider, and the model_providers.copilot-env-{name} table"| codexfile
+  claude -->|"reconciles the entry it owns: reads _meta.json and ownership.json, then writes the entry, its row, the claim, and the app files"| desktop
+  codex -->|"writes model_provider, and the model_providers table: copilot-env-{name}, copilot-env for the default"| codexfile
 ```
 
 - **No fallback** ([authentication: profiles](authentication.md#profiles) owns the rule): `Credential.resolveWithReason()` names the profile in its reason, and a launch on a partial slot reports `partialSlotGap()` instead of guessing.
@@ -121,13 +127,16 @@ flowchart LR
   preloads["src/scripts/node_compat_preload.ts<br>src/scripts/daemon_lock_preload.ts<br>src/scripts/token_argv_preload.ts<br>src/scripts/daemon_runtime_preload.ts<br>src/scripts/copilot_host_preload.ts<br>src/scripts/pat_passthrough_preload.ts<br>src/scripts/idle_watchdog_preload.ts<br>src/scripts/log_mute_preload.ts"]
   cache[("~/.local/share/copilot-env/deno/cache<br>the daemon's DENO_DIR")]
   record[("~/.local/share/copilot-env/proxy/resolved-version.json")]
-  daemonproc[["the daemon: deno run --preload ... npm:@jeffreycao/copilot-api@{version}, COPILOT_API_HOME=~/.local/share/copilot-env/profiles/{name}"]]
+  dcfg[("~/.local/share/copilot-env/proxy/deno.json and deno.lock<br>the daemon's import map and transitive pins")]
+  daemonproc[["the daemon: deno run --config ... --preload ... npm:@jeffreycao/copilot-api@{version}, COPILOT_API_HOME=~/.local/share/copilot-env/profiles/{name}"]]
   registry -->|"reads versions and publish times"| float
   prefs -->|"reads proxy-version, release-cooldown"| float
   shims -->|"every shim, warmed into the cache"| float
+  float -->|"writes this build's import map, then deno cache pins the lock"| dcfg
   float -->|"deno cache: the package and the shims"| cache
   float -->|"writes the version, its DENO_DIR, the build fingerprint"| record
   record -->|"reads the daemon's entry"| spawn
+  dcfg -->|"reads --config"| spawn
   shims -->|"the subset DaemonSpec derives"| spawn
   spawn -->|"--preload, in order"| preloads
   spawn -->|"launchDaemon(): COPILOT_ENV_ROOT_HOME, COPILOT_ENV_DAEMON_KEEP_PORT, --cached-only"| daemonproc
@@ -168,9 +177,9 @@ Demonstrated by: [test/env_config.test.ts](../test/env_config.test.ts), [test/up
 
 ```mermaid
 flowchart TD
-  assets[("the binary's embedded assets: the bin and shell payloads, the daemon shims, deno.json, .dvmrc, copilot-env.config")]
-  releases[["GET https://api.github.com/repos/Vivswan/copilot-env/releases"]]
-  download[["https://github.com/Vivswan/copilot-env/releases/download/{tag}: copilot-env-{triple}, checksums.txt, attestation.json"]]
+  assets[("the binary's embedded assets<br>materialized: the bin and shell payloads, the daemon shims<br>read in place: deno.json, .dvmrc, copilot-env.config")]
+  releases[["GET https://api.github.com/repos/Vivswan/copilot-env/releases?per_page=100"]]
+  download[["https://github.com/Vivswan/copilot-env/releases/download/{tag}: copilot-env-{triple} (.exe on Windows), checksums.txt, attestation.json"]]
   tuf[["https://tuf-repo-cdn.sigstore.dev: the Sigstore trust root"]]
   prefs[("~/.local/share/copilot-env/preferences.json")]
   autostate[("{top}/.autoupdate/state.json")]
@@ -186,7 +195,7 @@ flowchart TD
   rcfile[("~/.bashrc, ~/.zshrc, or the PowerShell $PROFILE")]
   root -->|"checkout or compiled, decided once"| install
   root -->|"a checkout refuses without --force"| update
-  assets -->|"reads, then materializes into the version root"| install
+  assets -->|"reads at plan time, materializes the payloads into the version root"| install
   prefs -->|"reads auto-update, update-cooldown, verify-provenance"| preflight
   autostate -->|"reads lastCheckMs: once per cooldown"| preflight
   update --> release

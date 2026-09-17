@@ -30,7 +30,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger, withConsolaOnStderr } from "../utils/logger.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
-import { formatTable } from "../utils/table.ts";
+import { formatTable, terminalWidth } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
 import { mkdirReported } from "../utils/report_write.ts";
 import { ensureAuthenticated } from "./auth.ts";
@@ -182,11 +182,12 @@ function reportManagedLifecycle(state: CopilotEnvRunState): void {
   }
 }
 
-async function logProxyVersion(entry: FloorCheckedEntry): Promise<void> {
+/** The summary's first line, consola-decorated; the table rows go through console.log: consola
+ *  would put its icon in front of the first row and read a hard-split path chunk as markup. */
+async function proxyLine(entry: FloorCheckedEntry): Promise<string> {
+  if (entry.kind === "file") return `   Proxy: ${entry.path} (COPILOT_API_ENTRY)`;
   const version = entryProxyVersion(entry);
-  if (version === null) {
-    return;
-  }
+  if (version === null) return `   Proxy: ${PROXY_PACKAGE_NAME} (version unknown)`;
   let published = "";
   try {
     const res = await fetch(`https://registry.npmjs.org/${PROXY_PACKAGE_NAME}`, {
@@ -203,10 +204,24 @@ async function logProxyVersion(entry: FloorCheckedEntry): Promise<void> {
   } catch {
     // offline or slow registry: the version alone is still useful
   }
-  consola.info(`   Proxy: ${PROXY_PACKAGE_NAME} ${version}${published}`);
+  return `   Proxy: ${PROXY_PACKAGE_NAME} ${version}${published}`;
 }
 
-/** The path block is one message so its lines cannot interleave with other output. */
+/** The label column stays put; a value column too wide for the terminal (a path) splits at its
+ *  own edge. */
+export function renderStartSummary(
+  summary: ReadonlyArray<readonly [label: string, value: string]>,
+  width: number | null = terminalWidth(),
+): string {
+  return formatTable(summary.map(([label, value]) => [`${label}:`, value]), {
+    indent: "   ",
+    wrap: [false, "hard"],
+    width,
+  }).join("\n");
+}
+
+/** The proxy line and the path block print back to back, so their lines never interleave with
+ *  other output. */
 async function reportStartSummary(
   profile: Profile,
   live: { pid: number; port: number },
@@ -214,19 +229,14 @@ async function reportStartSummary(
   logFile: string,
   entry: FloorCheckedEntry,
 ): Promise<void> {
-  await logProxyVersion(entry);
-  const summary: Array<[string, string]> = [
+  consola.info(await proxyLine(entry));
+  console.log(renderStartSummary([
     ["Logs", logFile],
     ["PID", String(live.pid)],
     ["Port", String(live.port)],
     ["SQLite", paths.sqliteDb],
     ["Install root", PROJECT_ROOT],
-  ];
-  consola.info(
-    formatTable(summary.map(([label, value]) => [`${label}:`, value]), { indent: "   " }).join(
-      "\n",
-    ),
-  );
+  ]));
   // The default box is an output contract.
   consola.log("");
   consola.box(

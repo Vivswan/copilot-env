@@ -1,4 +1,4 @@
-import { formatTable, wrapLine } from "../src/utils/table.ts";
+import { formatTable, terminalWidth, wrapLine } from "../src/utils/table.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 test("formatTable pads columns and aligns per column", () => {
@@ -105,9 +105,22 @@ const WRAPPED_AT_120 = [
   "                                                                                            own identity)",
 ];
 
+// One column short of the natural 161: the note column alone gives up the column.
+const WRAPPED_AT_160 = [
+  WIDE[0] ?? "",
+  "-------------------------  ------------------------------  ----------------------------------------  " +
+  "-----------------------------------------------------------",
+  "codex                      rejected (400)                  -                                         " +
+  "Direct default: no Copilot-Integration-Id header (auto",
+  "                                                                                                     only)",
+  WIDE[3] ?? "",
+  WIDE[4] ?? "",
+  WIDE[5] ?? "",
+];
+
 // The floors (25 + 23 + 34 + 22 + gaps) exceed 100 columns: one block per record, empty cells
-// skipped, a blank line between records.
-const STACKED_AT_100 = [
+// skipped, a blank line between records; 80 stacks the same blocks.
+const STACKED = [
   "identity: codex",
   "  Direct (api.githubcopilot.com): rejected (400)",
   "  Proxy (api.enterprise.githubcopilot.com): -",
@@ -132,14 +145,69 @@ test("formatTable fits the width: natural when it fits or off a TTY, word-wrappe
   const cases: Array<{ width: number | null; lines: string[] }> = [
     { width: 200, lines: WIDE },
     { width: null, lines: WIDE },
+    { width: 160, lines: WRAPPED_AT_160 },
     { width: 120, lines: WRAPPED_AT_120 },
-    { width: 100, lines: STACKED_AT_100 },
+    { width: 100, lines: STACKED },
+    { width: 80, lines: STACKED },
   ];
   for (const { width, lines } of cases) {
     const rendered = formatTable(IDENTITIES.body, { ...IDENTITIES.options, width });
     expect(rendered).toEqual(lines);
     if (width !== null) {
       expect(Math.max(...rendered.map((l) => l.length))).toBeLessThanOrEqual(width);
+    }
+  }
+});
+
+test("a hard-wrap column splits a path at its own edge, spaces kept, where a word-wrap column would stack the table", () => {
+  const path = "/Users/Jane  Doe/Library/Application  Support/copilot-env/logs/api.log";
+  const body = [["Logs:", path], ["PID:", "1"]];
+  const hard = formatTable(body, { indent: "", wrap: [false, "hard"], width: 40 });
+  expect(hard).toEqual([
+    "Logs:  /Users/Jane  Doe/Library/Applicat",
+    "       ion  Support/copilot-env/logs/api",
+    "       .log",
+    "PID:   1",
+  ]);
+  // The double spaces survive the split at every width, including a split that lands right after
+  // them (45: the chunk ends in the two spaces, which the line keeps): the rows rejoin to the path
+  // byte for byte.
+  for (const width of [40, 45, 50]) {
+    const rows = formatTable([["Logs:", path]], { indent: "", wrap: [false, "hard"], width });
+    expect(rows.map((line) => line.slice(7)).join("")).toBe(path);
+  }
+  // A path without spaces has no word boundary a word-wrap column may use: the floors do not fit.
+  const spaceless = "/home/me/.local/share/copilot-env/logs/copilot-api.log";
+  expect(formatTable([["Logs:", spaceless], ["PID:", "1"]], {
+    indent: "",
+    wrap: [false, true],
+    width: 40,
+  })).toEqual(["Logs:", `  ${spaceless}`, "", "PID:", "  1"]);
+});
+
+test("terminalWidth takes a TTY's own size over COLUMNS, and COLUMNS only for a pipe", () => {
+  const saved = process.env.COLUMNS;
+  const stub = (key: "isTTY" | "columns", value: boolean | number): void => {
+    Object.defineProperty(process.stdout, key, { value, configurable: true });
+  };
+  const isTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  const columns = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+  try {
+    process.env.COLUMNS = "200";
+    stub("isTTY", true);
+    stub("columns", 100);
+    expect(terminalWidth()).toBe(100);
+    stub("isTTY", false);
+    process.env.COLUMNS = "100";
+    expect(terminalWidth()).toBe(100);
+    delete process.env.COLUMNS;
+    expect(terminalWidth()).toBeNull();
+  } finally {
+    if (saved === undefined) delete process.env.COLUMNS;
+    else process.env.COLUMNS = saved;
+    for (const [key, desc] of [["isTTY", isTTY], ["columns", columns]] as const) {
+      if (desc === undefined) delete (process.stdout as unknown as Record<string, unknown>)[key];
+      else Object.defineProperty(process.stdout, key, desc);
     }
   }
 });

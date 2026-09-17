@@ -1046,7 +1046,7 @@ test("resolveWithReason: one probe answers with the token or names the provider 
     token: null,
     reason: "no GitHub credential configured - run `agent auth` to log in",
   });
-  credential.useGhCli("Vivswan");
+  credential.useGhCli("octocat");
   expect(credential.resolveWithReason(() => ({ token: "tok" }))).toEqual({
     token: "tok",
     reason: null,
@@ -1058,7 +1058,7 @@ test("resolveWithReason: one probe answers with the token or names the provider 
     token: null,
     detail: "`gh` is not on this process's PATH",
   })).reason;
-  expect(missing).toContain("provider 'gh-cli as Vivswan' is selected but no credential resolves");
+  expect(missing).toContain("provider 'gh-cli as octocat' is selected but no credential resolves");
   expect(missing).toContain("`gh` is not on this process's PATH");
   expect(missing).toContain("minimal PATH");
   expect(missing).not.toContain("agent auth");

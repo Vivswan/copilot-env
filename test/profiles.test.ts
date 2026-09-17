@@ -200,27 +200,34 @@ test("the default credential lives in the reserved default slot on disk", () => 
 
 // --- profile homes + ports ------------------------------------------------------
 
-test("profile paths isolate the daemon home but share the account-wide files", () => {
+test("profile paths isolate the daemon home but share the account-wide files, however the home is addressed", () => {
   const root = tmpProxyHome();
   const def = new CopilotApiPaths();
-  const work = new CopilotApiPaths(WORK);
-  expect(work.home).toBe(join(root, "profiles", "work"));
-  expect(work.home).toBe(profileHome(WORK));
-  expect(work.configFile.startsWith(work.home)).toBe(true);
-  expect(work.sqliteDb.startsWith(work.home)).toBe(true);
-  expect(work.stateFile.startsWith(work.home)).toBe(true);
-  // Account-wide files anchor at the ROOT home for every profile.
-  expect(work.stateStoreFile).toBe(def.stateStoreFile);
-  expect(work.codexModelCatalogFile).toBe(def.codexModelCatalogFile);
-});
-
-test("COPILOT_ENV_ROOT_HOME re-anchors the shared files inside a profile daemon", () => {
-  const root = tmpProxyHome();
-  process.env.COPILOT_API_HOME = join(root, "profiles", "work");
-  process.env.COPILOT_ENV_ROOT_HOME = root;
-  const p = new CopilotApiPaths();
-  expect(p.home).toBe(join(root, "profiles", "work"));
-  expect(p.stateStoreFile).toBe(join(root, "state.json"));
+  // Addressed by name from the root, or from inside the profile daemon (COPILOT_API_HOME is its
+  // own home; COPILOT_ENV_ROOT_HOME re-anchors the shared files).
+  const routes: { name: string; paths: () => CopilotApiPaths }[] = [
+    { name: "by profile", paths: () => new CopilotApiPaths(WORK) },
+    {
+      name: "inside the profile daemon",
+      paths: () => {
+        process.env.COPILOT_API_HOME = join(root, "profiles", "work");
+        process.env.COPILOT_ENV_ROOT_HOME = root;
+        return new CopilotApiPaths();
+      },
+    },
+  ];
+  for (const a of routes) {
+    const work = a.paths();
+    expect(work.home, a.name).toBe(join(root, "profiles", "work"));
+    expect(work.home, a.name).toBe(profileHome(WORK));
+    expect(work.configFile.startsWith(work.home), a.name).toBe(true);
+    expect(work.sqliteDb.startsWith(work.home), a.name).toBe(true);
+    expect(work.stateFile.startsWith(work.home), a.name).toBe(true);
+    // Account-wide files anchor at the ROOT home for every profile.
+    expect(work.stateStoreFile, a.name).toBe(join(root, "state.json"));
+    expect(work.stateStoreFile, a.name).toBe(def.stateStoreFile);
+    expect(work.codexModelCatalogFile, a.name).toBe(def.codexModelCatalogFile);
+  }
 });
 
 test("reserveProfilePort records stable, distinct ports; resolve peeks read-only", () => {
@@ -409,44 +416,49 @@ test("a Codex profile writes <name>.config.toml + its provider table, leaving th
   expect(providers["copilot-env"]).toBeDefined();
 });
 
-test("a Codex profile write on a FRESH config leaves no dangling default model_provider", () => {
-  tmpProxyHome();
-  const codexHome = tmpCodexHome();
-  configureCodexConfig(codexHome, {
-    credential: COMMAND,
-    mode: "proxy",
-    profile: FAST,
-    baseUrl: `http://127.0.0.1:${copilotApiResolvePort(FAST)}/v1`,
-  });
-  const doc = readToml(join(codexHome, "config.toml"));
-  expect(doc.model_provider).toBeUndefined();
-  const providers = doc.model_providers as Record<string, Record<string, unknown>>;
-  expect(providers[codexProviderId(FAST)]).toBeDefined();
-  // Proxy profiles force the global sandbox loopback exemption (auth.command needs it).
-  const sandbox = doc.sandbox_workspace_write as Record<string, unknown>;
-  expect(sandbox.network_access).toBe(true);
-});
-
-test("a Codex profile write on an EMPTY config file also leaves no dangling model_provider", () => {
-  tmpProxyHome();
-  const codexHome = tmpCodexHome();
-  mkdirSync(codexHome, { recursive: true });
-  writeFileSync(join(codexHome, "config.toml"), "   \n");
-  configureCodexConfig(codexHome, {
-    credential: COMMAND,
-    mode: "direct",
-    direct: null,
-    profile: FAST,
-  });
-  const doc = readToml(join(codexHome, "config.toml"));
-  expect(doc.model_provider).toBeUndefined();
-  // The write LANDED: the whitespace-only file parses as empty, and the profile
-  // wiring must still arrive whole -- selection plus its provider table.
-  expect(readToml(codexProfileConfigPath(codexHome, FAST)).model_provider).toBe(
-    codexProviderId(FAST),
-  );
-  const providers = doc.model_providers as Record<string, Record<string, unknown>>;
-  expect(providers[codexProviderId(FAST)]).toBeDefined();
+test("a Codex profile write on a FRESH or whitespace-only config lands whole and leaves no dangling default model_provider", () => {
+  const cases: {
+    name: string;
+    seed: string | null;
+    write: Parameters<typeof configureCodexConfig>[1];
+  }[] = [
+    {
+      name: "absent config.toml, proxy",
+      seed: null,
+      write: { credential: COMMAND, mode: "proxy", profile: FAST, baseUrl: "" },
+    },
+    {
+      name: "whitespace-only config.toml, direct",
+      seed: "   \n",
+      write: { credential: COMMAND, mode: "direct", direct: null, profile: FAST },
+    },
+  ];
+  for (const c of cases) {
+    dir = removeDir(dir);
+    tmpProxyHome();
+    const codexHome = tmpCodexHome();
+    if (c.seed !== null) {
+      mkdirSync(codexHome, { recursive: true });
+      writeFileSync(join(codexHome, "config.toml"), c.seed);
+    }
+    const write = c.write.mode === "proxy"
+      ? { ...c.write, baseUrl: `http://127.0.0.1:${copilotApiResolvePort(FAST)}/v1` }
+      : c.write;
+    configureCodexConfig(codexHome, write);
+    const doc = readToml(join(codexHome, "config.toml"));
+    expect(doc.model_provider, c.name).toBeUndefined();
+    // The write LANDED: the profile wiring arrives whole -- selection plus its provider table.
+    expect(readToml(codexProfileConfigPath(codexHome, FAST)).model_provider, c.name).toBe(
+      codexProviderId(FAST),
+    );
+    const providers = doc.model_providers as Record<string, Record<string, unknown>>;
+    expect(providers[codexProviderId(FAST)], c.name).toBeDefined();
+    // Proxy profiles force the global sandbox loopback exemption (auth.command needs it).
+    if (c.write.mode === "proxy") {
+      const sandbox = doc.sandbox_workspace_write as Record<string, unknown>;
+      expect(sandbox.network_access, c.name).toBe(true);
+    }
+  }
 });
 
 test("profile --sync refreshes wiring from the STORE mode and never touches model_provider", async () => {
@@ -509,8 +521,8 @@ test("profile --check is store-driven: exit 1 unknown/incomplete, 2 proxy, 0 dir
 });
 
 test("partialSlotGap: the ONE spelling of a partial slot's repair line (output contract)", () => {
-  // Rendered at three sites (profile --check, --settings-for, agent launch);
-  // pinned once here, byte for byte.
+  // Rendered at three sites (profile --check, --settings-for, agent launch); pinned once here,
+  // byte for byte (launch.test.ts matches both lines end to end, but only as substrings).
   expect(
     partialSlotGap(WORK, {
       kind: "partial",

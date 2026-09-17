@@ -26,10 +26,8 @@ import {
   GLOBAL_CONFIG_SCHEMA,
   isProxyProjected,
   OPENROUTER_MODELS_URL,
-  optInProxyConfigPaths,
   projectedProxyConfig,
   type ProjectedProxyEntry,
-  type TotalOverConfigKeys,
 } from "../src/copilot_api/env_config.ts";
 import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../src/copilot_api/daemon.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -97,11 +95,84 @@ function stdoutOf(run: () => void): string {
   return written.join("");
 }
 
-test("each typed key round-trips and del() reverts it to undefined (default)", () => {
+test("the typed store: read() starts empty, each accessor answers stored else built-in default and del() reverts it, a whole patch lands beside a profile section", () => {
   tmpHome();
   const cfg = new CopilotEnvConfig();
   expect(cfg.read()).toEqual(stored({}));
+  const global = (): Record<string, unknown> => cfg.read().global;
 
+  // One accessor per opinionated key: the built-in default when unset, the stored value once
+  // `--set` lands it (wire-mcp and claude.desktop are opt-OUT: unset reads enabled), the default
+  // again after `--del`, which leaves the key absent.
+  const accessors: {
+    key: ConfigKey;
+    raw: string;
+    stored: unknown;
+    unset: unknown;
+    read: (c: CopilotEnvConfig) => unknown;
+  }[] = [
+    {
+      key: "daemon.auto-start",
+      raw: "true",
+      stored: true,
+      unset: false,
+      read: (c) => c.autoStartEnabled(),
+    },
+    {
+      key: "codex.model-catalog",
+      raw: "true",
+      stored: true,
+      unset: false,
+      read: (c) => c.codexModelCatalogEnabled(),
+    },
+    {
+      key: "claude.wire-mcp",
+      raw: "false",
+      stored: false,
+      unset: true,
+      read: (c) => c.wireMcpEnabled(),
+    },
+    {
+      key: "claude.desktop",
+      raw: "false",
+      stored: false,
+      unset: true,
+      read: (c) => c.claudeDesktopEnabled(),
+    },
+    {
+      key: "daemon.logs",
+      raw: "true",
+      stored: true,
+      unset: false,
+      read: (c) => c.proxyLogsEnabled(),
+    },
+    {
+      key: "update.auto",
+      raw: "on", // the boolean alias spelling
+      stored: true,
+      unset: false,
+      read: (c) => c.autoUpdateEnabled(),
+    },
+    {
+      key: "cost.pricing-url",
+      raw: "https://pricing.example/models",
+      stored: "https://pricing.example/models",
+      unset: OPENROUTER_MODELS_URL,
+      read: (c) => c.pricingUrl(),
+    },
+  ];
+  for (const a of accessors) {
+    expect(a.read(cfg), a.key).toBe(a.unset);
+    runConfig({ set: [a.key, a.raw] });
+    expect(global()[a.key], a.key).toBe(a.stored);
+    expect(a.read(cfg), a.key).toBe(a.stored);
+    runConfig({ del: a.key });
+    expect(global()[a.key], a.key).toBeUndefined();
+    expect(a.read(cfg), a.key).toBe(a.unset);
+  }
+
+  // A whole patch lands as given beside a profile section; deleting one key leaves the others
+  // intact, and a section emptied by its last delete is removed, not left as `{}`.
   const patch = {
     "daemon.auto-start": true,
     "daemon.idle-timeout": 120,
@@ -130,30 +201,10 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
   cfg.set(patch);
   cfg.setProfile(null, { passthrough: "on" });
   expect(cfg.read()).toEqual(stored(patch, { default: { passthrough: "on" } }));
-  expect(cfg.autoStartEnabled()).toBe(true);
-  expect(cfg.codexModelCatalogEnabled()).toBe(true);
-  expect(cfg.wireMcpEnabled()).toBe(false);
-  expect(cfg.pricingUrl()).toBe("https://pricing.example/models");
   expect(cfg.passthroughOverride(null)).toBe(true);
-
   cfg.del("daemon.auto-start");
-  expect(cfg.read().global["daemon.auto-start"]).toBeUndefined();
-  expect(cfg.autoStartEnabled()).toBe(false);
-  // Deleting one key leaves the others intact.
-  expect(cfg.read().global["daemon.port"]).toBe(4242);
-
-  cfg.del("codex.model-catalog");
-  expect(cfg.codexModelCatalogEnabled()).toBe(false);
-
-  // claude.wire-mcp is opt-OUT: unset reads as enabled.
-  cfg.del("claude.wire-mcp");
-  expect(cfg.read().global["claude.wire-mcp"]).toBeUndefined();
-  expect(cfg.wireMcpEnabled()).toBe(true);
-
-  cfg.del("cost.pricing-url");
-  expect(cfg.pricingUrl()).toBe(OPENROUTER_MODELS_URL);
-
-  // A profile section emptied by its last delete is removed, not left as `{}`.
+  expect(global()["daemon.auto-start"]).toBeUndefined();
+  expect(global()["daemon.port"]).toBe(4242);
   cfg.delProfile(null, "passthrough");
   expect(cfg.read().profiles).toEqual({});
   expect(cfg.passthroughOverride(null)).toBeUndefined();
@@ -357,59 +408,72 @@ test("runConfig --profile: a profile key lands in that profile's section, never 
   expect(new CopilotEnvConfig().read().profiles).not.toHaveProperty("other");
 });
 
-test("identity is header-safe end to end: --set rejects without echoing, stored junk reads unset", () => {
-  tmpHome();
-  // The pin lands in HTTP headers, so a header-splitting value is rejected, and never
-  // echoed: junk pasted here may be a token.
-  let message = "";
-  try {
-    runConfig({ set: ["identity", "evil\nX-Injected: 1"] });
-  } catch (e) {
-    message = (e as Error).message;
+test("a credential-shaped key is rejected without echoing the value, and stored junk reads as unset", () => {
+  // identity lands in HTTP headers (a header-splitting value is refused); cost.pricing-url may
+  // carry a token in its query (https only, no userinfo). Junk pasted at either may be a token,
+  // so the rejection never echoes it, and a hand-mangled STORED value degrades to unset (probe
+  // per credential / the built-in URL), never a baked header or a bad fetch.
+  const cases: {
+    key: "identity" | "cost.pricing-url";
+    bad: string;
+    leak: string;
+    reason: string;
+    valid: string;
+    junk: (c: CopilotEnvConfig) => void;
+    stored: (c: CopilotEnvConfig) => unknown;
+    reads: (c: CopilotEnvConfig) => unknown;
+    defaultReads: unknown;
+  }[] = [
+    {
+      key: "identity",
+      bad: "evil\nX-Injected: 1",
+      leak: "evil",
+      reason: "header-safe",
+      valid: "copilot-developer-cli",
+      junk: (c) => c.setProfile(null, { identity: "evil\nX-Injected: 1" }),
+      stored: (c) => c.read().profiles.default?.identity,
+      reads: (c) => c.pinnedIntegrationId(null),
+      defaultReads: null,
+    },
+    {
+      key: "cost.pricing-url",
+      bad: "http://user:secret@pricing.example/models",
+      leak: "secret",
+      reason: "https://",
+      valid: "https://pricing.example/models",
+      junk: (c) => c.set({ "cost.pricing-url": "not a url" }),
+      stored: (c) => c.read().global["cost.pricing-url"],
+      reads: (c) => c.pricingUrl(),
+      defaultReads: OPENROUTER_MODELS_URL,
+    },
+  ];
+  for (const c of cases) {
+    dir = removeDir(dir);
+    tmpHome();
+    let message = "";
+    try {
+      runConfig({ set: [c.key, c.bad] });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message, c.key).toContain(`invalid value for '${c.key}'`);
+    expect(message, c.key).toContain(c.reason);
+    expect(message, c.key).not.toContain(c.leak);
+    expect(new CopilotEnvConfig().read(), c.key).toEqual(stored({})); // nothing written
+    runConfig({ set: [c.key, c.valid] });
+    expect(c.stored(new CopilotEnvConfig()), c.key).toBe(c.valid);
+    expect(c.reads(new CopilotEnvConfig()), c.key).toBe(c.valid);
+    c.junk(new CopilotEnvConfig());
+    expect(c.stored(new CopilotEnvConfig()), c.key).toBeUndefined();
+    expect(c.reads(new CopilotEnvConfig()), c.key).toBe(c.defaultReads);
   }
-  expect(message).toContain("invalid value for 'identity'");
-  expect(message).toContain("header-safe");
-  expect(message).not.toContain("evil");
-  expect(new CopilotEnvConfig().read().profiles).toEqual({});
-
-  // The probe sentinel and real identities still parse.
+  // identity alone: the probe sentinel parses, and `codex` is refused keeping the previous pin
+  // (it is the ABSENCE of the header, so a pin, always sent as the header's value, cannot mean it).
   runConfig({ set: ["identity", "auto"] });
   expect(new CopilotEnvConfig().read().profiles.default?.identity).toBe("auto");
   runConfig({ set: ["identity", "copilot-developer-cli"] });
-  expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe("copilot-developer-cli");
-
-  // `codex` is the ABSENCE of the header, so a pin (always sent as the header's value) cannot mean
-  // it; the store refuses it and keeps the previous pin.
   expect(() => runConfig({ set: ["identity", "codex"] })).toThrow(/cannot be pinned/);
   expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe("copilot-developer-cli");
-
-  // A hand-mangled STORED value degrades to unset (= probe per credential),
-  // never a baked header-splitting pin.
-  new CopilotEnvConfig().setProfile(null, { identity: "evil\nX-Injected: 1" });
-  expect(new CopilotEnvConfig().read().profiles.default?.identity).toBeUndefined();
-  expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-});
-
-test("cost.pricing-url: --set rejects a non-https URL without echoing it; stored junk reads as the default", () => {
-  tmpHome();
-  let message = "";
-  try {
-    runConfig({ set: ["cost.pricing-url", "http://user:secret@pricing.example/models"] });
-  } catch (e) {
-    message = (e as Error).message;
-  }
-  expect(message).toContain("invalid value for 'cost.pricing-url'");
-  expect(message).toContain("https://");
-  expect(message).not.toContain("secret");
-  expect(new CopilotEnvConfig().read().global["cost.pricing-url"]).toBeUndefined();
-
-  runConfig({ set: ["cost.pricing-url", "https://pricing.example/models"] });
-  expect(new CopilotEnvConfig().pricingUrl()).toBe("https://pricing.example/models");
-
-  // A hand-mangled STORED value degrades to unset: the built-in URL, never a bad fetch.
-  new CopilotEnvConfig().set({ "cost.pricing-url": "not a url" });
-  expect(new CopilotEnvConfig().read().global["cost.pricing-url"]).toBeUndefined();
-  expect(new CopilotEnvConfig().pricingUrl()).toBe(OPENROUTER_MODELS_URL);
 });
 
 test("runConfig --get <key> prints just the value to stdout (script-friendly)", () => {
@@ -464,6 +528,9 @@ const ROUND_TRIP_RAW: Record<ConfigKey, string> = {
 
 test("every registry key round-trips: a CLI-set value survives read() and reaches the projection", () => {
   tmpHome();
+  // The registry is total over ConfigKey and holds each key once: configKeyDef() is a find(), so
+  // a duplicate would silently resolve to the first entry, and the schema fold is fromEntries.
+  expect(CONFIG_REGISTRY.map((d) => d.key).sort()).toEqual(Object.keys(ROUND_TRIP_RAW).sort());
   for (const def of CONFIG_REGISTRY) {
     // Set as on Linux: the POSIX-only keys refuse `--set` on Windows (own test below).
     runConfig({ set: [def.key, ROUND_TRIP_RAW[def.key]] }, "linux");
@@ -485,33 +552,6 @@ test("every registry key round-trips: a CLI-set value survives read() and reache
     if (isProxyProjected(def)) {
       expect(projectedValue(projected, def.proxyPath!)).toBe(expected);
     }
-  }
-});
-
-test("daemon.logs: off by default, a stored value wins", () => {
-  tmpHome();
-  const cfg = new CopilotEnvConfig();
-  expect(cfg.proxyLogsEnabled()).toBe(false);
-  runConfig({ set: ["daemon.logs", "true"] });
-  expect(cfg.proxyLogsEnabled()).toBe(true);
-});
-
-test("update.auto: stored else default, degraded read like daemon.auto-start (the preflight is best-effort)", () => {
-  tmpHome();
-  const cfg = new CopilotEnvConfig();
-  expect(cfg.autoUpdateEnabled()).toBe(false); // unset -> the built-in default
-  runConfig({ set: ["update.auto", "on"] });
-  expect(cfg.autoUpdateEnabled()).toBe(true);
-  runConfig({ del: "update.auto" });
-  expect(cfg.autoUpdateEnabled()).toBe(false);
-  // An unreadable store degrades to "off" (the preflight must never act on an unproven on).
-  chmodSync(new CopilotApiPaths().stateStoreFile, 0o000);
-  try {
-    if (process.platform !== "win32" && process.getuid?.() !== 0) {
-      expect(cfg.autoUpdateEnabled()).toBe(false);
-    }
-  } finally {
-    chmodSync(new CopilotApiPaths().stateStoreFile, 0o600);
   }
 });
 
@@ -614,15 +654,6 @@ test("configTableOutput() takes the terminal's width from the one table seam: CO
     if (orig.env === undefined) delete process.env.COLUMNS;
     else process.env.COLUMNS = orig.env;
   }
-});
-
-test("the registry is alphabetical by key, with unique keys", () => {
-  const keys = CONFIG_REGISTRY.map((d) => d.key);
-  // The order within a group IS alphabetical -- a new key must be inserted in place.
-  expect(keys).toEqual([...keys].sort());
-  // Keys are unique: configKeyDef() is a find(), so a duplicate would silently resolve to the
-  // first entry, and the schema fold is fromEntries, where a duplicate would overwrite.
-  expect(new Set(keys).size).toBe(keys.length);
 });
 
 const PLAIN_TABLE = {
@@ -879,26 +910,44 @@ test("configTable() by scope: PROFILE holds the profile keys and the profile-def
   expect(overrideRow).not.toContain(`default ${sharedDefault} `);
 });
 
-test("configTable() at width 60 packs the header's parts to the width and keeps every row within it", () => {
-  const out = configTable(stored({ "daemon.strict-port": true }), { ...PLAIN_TABLE, width: 60 })
-    .split("\n");
-  expect(out.slice(0, 5)).toEqual([
-    `1 of ${CONFIG_REGISTRY.length} keys set (*).  |  agent config --set <key> <value>`,
-    "--del <key> reverts",
-    "--profile <name> targets another profile",
-    "proxy.* set without --profile is every profile's default",
-    "",
+test("configTable() narrows with the width: the header packs to it, the right column stacks under the key row at 40, and only unbreakable pieces run past it", () => {
+  const at = (width: number): string[] =>
+    configTable(stored({ "daemon.strict-port": true }), { ...PLAIN_TABLE, width }).split("\n");
+  const headers: [number, string[]][] = [
+    [60, [
+      `1 of ${CONFIG_REGISTRY.length} keys set (*).  |  agent config --set <key> <value>`,
+      "--del <key> reverts",
+      "--profile <name> targets another profile",
+      "proxy.* set without --profile is every profile's default",
+      "",
+    ]],
+    [40, [
+      `1 of ${CONFIG_REGISTRY.length} keys set (*).`,
+      "agent config --set <key> <value>",
+      "--del <key> reverts",
+      "--profile <name> targets another profile",
+      "proxy.* set without --profile is every",
+      "profile's default",
+    ]],
+  ];
+  for (const [width, header] of headers) {
+    expect(at(width).slice(0, header.length), String(width)).toEqual(header);
+  }
+  // At 60 every row fits; at 40 only the unbreakable pieces run past the width: the key=value
+  // leads longer than the width and the URL value.
+  expect(at(60).filter((l) => l.length > 60)).toEqual([]);
+  const out = at(40);
+  expect(out.filter((l) => l.length > 40)).toEqual([
+    "    proxy.alpha-search.codex-priority=true",
+    "    proxy.message-websearch-model=gpt-5-mini",
+    "    proxy.responses.context-management=false",
+    `    cost.pricing-url=${OPENROUTER_MODELS_URL}`,
   ]);
-  expect(out.filter((l) => l.length > 60)).toEqual([]);
-});
-
-test("configTable() at width 40 stacks the right column under each key row at a six-space indent", () => {
-  const out = configTable(stored({ "daemon.strict-port": true }), { ...PLAIN_TABLE, width: 40 })
-    .split("\n");
-  const at = out.indexOf("  * daemon.strict-port=true");
-  expect(at).toBeGreaterThan(0);
-  expect(out[at + 1]).toBe("      [bool] default false");
-  expect(out[at + 2]?.startsWith("      Fail start on a busy port")).toBe(true);
+  // The right column stacks under each key row at a six-space indent.
+  const strict = out.indexOf("  * daemon.strict-port=true");
+  expect(strict).toBeGreaterThan(0);
+  expect(out[strict + 1]).toBe("      [bool] default false");
+  expect(out[strict + 2]?.startsWith("      Fail start on a busy port")).toBe(true);
   // A banner whose title leaves the note too little room stacks it under the title instead of
   // running past the width: the longest profile name fills the width on its own.
   const longName = parseProfileName("a".repeat(32));
@@ -911,25 +960,9 @@ test("configTable() at width 40 stacks the right column under each key row at a 
   expect(long[bannerAt]).toBe(`PROFILE ${longName}`);
   expect(long[bannerAt + 1]?.startsWith("      (per profile;")).toBe(true);
   expect(long.slice(bannerAt, bannerAt + 4).filter((l) => l.length > 40)).toEqual([]);
-  // Only the unbreakable pieces run past the width: the key=value leads longer than the width
-  // and the URL value.
-  expect(out.slice(0, 6)).toEqual([
-    `1 of ${CONFIG_REGISTRY.length} keys set (*).`,
-    "agent config --set <key> <value>",
-    "--del <key> reverts",
-    "--profile <name> targets another profile",
-    "proxy.* set without --profile is every",
-    "profile's default",
-  ]);
-  expect(out.filter((l) => l.length > 40)).toEqual([
-    "    proxy.alpha-search.codex-priority=true",
-    "    proxy.message-websearch-model=gpt-5-mini",
-    "    proxy.responses.context-management=false",
-    `    cost.pricing-url=${OPENROUTER_MODELS_URL}`,
-  ]);
 });
 
-test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys only when set, per profile", () => {
+test("projectedProxyConfig(): force keys always project (built-in default or stored), opt-in keys only when set, per profile, along the registry's paths; internal keys never leak", () => {
   tmpHome();
   // Empty store: the force-projected keys resolve to their built-in defaults; the opt-in keys
   // are absent so the proxy's own defaults stand.
@@ -940,18 +973,43 @@ test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys
   expect(projectedValue(empty, ["useMessagesApi"])).toBe(true);
   expect(empty).toHaveLength(4);
   expect(empty.every((e) => !e.optIn)).toBe(true);
-  // A stored override on a force key is honored; a stored opt-in key now appears too.
+  for (
+    const path of [
+      "alphaSearchCodexPriority",
+      "alphaSearchModel",
+      "claudeAutoModel",
+      "claudeTokenMultiplier",
+      "messageApiWebSearchModel",
+    ]
+  ) {
+    expect(projectedValue(empty, [path]), path).toBeUndefined();
+  }
+  expect(projectedValue(empty, ["contextManagement", "responses"])).toBeUndefined();
+  // A stored override on a force key is honored; a stored opt-in key now appears too, each under
+  // the proxy's own key (the paths are the proxy's contract): the nested one under
+  // contextManagement.responses (the pre-1.14 flat key is never projected).
   const cfg = new CopilotEnvConfig();
   cfg.set({
-    "daemon.auto-start": true,
     "proxy.responses.websocket": false,
     "proxy.message-websearch-model": "gpt-5",
+    "proxy.responses.context-management": true,
+    "proxy.alpha-search.codex-priority": false,
+    "proxy.alpha-search.model": "gpt-5",
+    "proxy.claude-auto-model": "claude-haiku-4.5",
   });
   const projected = projectedProxyConfig(null);
   expect(projectedValue(projected, ["useResponsesApiWebSocket"])).toBe(false);
   expect(projectedValue(projected, ["messageApiWebSearchModel"])).toBe("gpt-5");
   expect(projected.find((e) => e.path[0] === "messageApiWebSearchModel")?.optIn).toBe(true);
-  // Copilot-env-internal keys (daemon.auto-start) never leak into the proxy projection.
+  expect(projectedValue(projected, ["alphaSearchCodexPriority"])).toBe(false);
+  expect(projectedValue(projected, ["alphaSearchModel"])).toBe("gpt-5");
+  expect(projectedValue(projected, ["claudeAutoModel"])).toBe("claude-haiku-4.5");
+  expect(projectedValue(projected, ["contextManagement", "responses"])).toBe(true);
+  expect(projected.find((e) => e.path[0] === "contextManagement")?.optIn).toBe(true);
+  expect(projectedValue(projected, ["useResponsesApiContextManagement"])).toBeUndefined();
+  // Copilot-env-internal keys never leak into the proxy projection.
+  cfg.set({ "daemon.auto-start": true, "claude.desktop": false });
+  expect(projectedProxyConfig(null)).toEqual(projected);
   expect(projectedValue(projected, ["autoStart"])).toBeUndefined();
   // A profile's daemon projects the profile's own override over the global value, and a knob set
   // for that profile alone; the default profile's projection is unchanged by either.
@@ -961,68 +1019,12 @@ test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys
   expect(projectedValue(work, ["claudeTokenMultiplier"])).toBe(2);
   expect(projectedValue(work, ["messageApiWebSearchModel"])).toBe("gpt-5");
   expect(projectedProxyConfig(null)).toEqual(projected);
-});
-
-test("proxy.responses.context-management projects to the proxy's NESTED contextManagement.responses", () => {
-  tmpHome();
-  new CopilotEnvConfig().set({ "proxy.responses.context-management": true });
-  const projected = projectedProxyConfig(null);
-  expect(projectedValue(projected, ["contextManagement", "responses"])).toBe(true);
-  expect(projected.find((e) => e.path[0] === "contextManagement")?.optIn).toBe(true);
-  // The pre-1.14 flat proxy key is never projected.
-  expect(projectedValue(projected, ["useResponsesApiContextManagement"])).toBeUndefined();
-  expect(configDefaultValue(configKeyDef("proxy.responses.context-management")!)).toBe(false);
-  // The ownership allowlist is exactly the opt-in entries' paths, set or not.
-  expect(optInProxyConfigPaths()).toEqual([
-    ["alphaSearchCodexPriority"],
-    ["alphaSearchModel"],
-    ["claudeAutoModel"],
-    ["claudeTokenMultiplier"],
-    ["messageApiWebSearchModel"],
-    ["contextManagement", "responses"],
-  ]);
   // No two projected entries (force or opt-in, set or not) may share a path: a force entry
   // always re-emits its path, which would permanently disable the opt-in clearing pass for it.
   const allProjectedPaths = CONFIG_REGISTRY.filter(isProxyProjected).map((d) =>
     JSON.stringify(d.proxyPath)
   );
   expect(new Set(allProjectedPaths).size).toBe(allProjectedPaths.length);
-});
-
-test("the alpha-search and claude proxy keys are opt-in projections at the top level", () => {
-  tmpHome();
-  // Unset -> absent from the projection, so the proxy's own defaults stand.
-  const empty = projectedProxyConfig(null);
-  const keys = [
-    "alphaSearchCodexPriority",
-    "alphaSearchModel",
-    "claudeAutoModel",
-    "claudeTokenMultiplier",
-  ];
-  for (const key of keys) {
-    expect(projectedValue(empty, [key])).toBeUndefined();
-  }
-  // Set through the CLI path -> each appears under its own top-level proxy key.
-  runConfig({ set: ["proxy.alpha-search.codex-priority", "false"] });
-  runConfig({ set: ["proxy.alpha-search.model", "gpt-5"] });
-  runConfig({ set: ["proxy.claude-auto-model", "claude-haiku-4.5"] });
-  runConfig({ set: ["proxy.claude-token-multiplier", "1.3"] });
-  const projected = projectedProxyConfig(null);
-  expect(projectedValue(projected, ["alphaSearchCodexPriority"])).toBe(false);
-  expect(projectedValue(projected, ["alphaSearchModel"])).toBe("gpt-5");
-  expect(projectedValue(projected, ["claudeAutoModel"])).toBe("claude-haiku-4.5");
-  expect(projectedValue(projected, ["claudeTokenMultiplier"])).toBe(1.3);
-  for (
-    const key of [
-      "proxy.alpha-search.codex-priority",
-      "proxy.alpha-search.model",
-      "proxy.claude-auto-model",
-      "proxy.claude-token-multiplier",
-    ]
-  ) {
-    expect(isProxyProjected(configKeyDef(key)!)).toBe(true);
-    expect(configKeyDef(key)?.proxyDefault).toBeUndefined();
-  }
 });
 
 test("sinceProxyVersionWarning fires only when the installed proxy predates the key", () => {
@@ -1080,167 +1082,12 @@ test("unreadProjectedKeyWarnings covers stored gated keys at start time, for the
   expect(forWork[0]).toContain("'proxy.alpha-search.codex-priority'");
 });
 
-test("the entry type refuses a key without a scope, a flat key that is not a profile key, and a projection outside the proxy group", () => {
-  // @ts-expect-error - scope is required on every entry
-  const _unscoped: ConfigKeyDef = {
-    key: "daemon.auto-start",
-    describe: "bogus",
-    type: "bool",
-    schema: v.boolean(),
-    parse: () => true,
-    defaultValue: false,
-  };
-  // A flat name IS a profile key: it cannot land as global.
-  // @ts-expect-error - a flat key's scope is `profile`
-  const _flatGlobal: ConfigKeyDef = {
-    key: "identity",
-    scope: "global",
-    describe: "bogus",
-    type: "id|auto",
-    schema: v.string(),
-    parse: (raw) => raw,
-    defaultValue: "auto",
-  };
-  // ... and a grouped name cannot be profile-only.
-  // @ts-expect-error - a grouped key's scope is `profile-default` or `global`
-  const _groupedProfile: ConfigKeyDef = {
-    key: "daemon.auto-start",
-    scope: "profile",
-    describe: "bogus",
-    type: "bool",
-    schema: v.boolean(),
-    parse: () => true,
-    defaultValue: false,
-  };
-  // Only the proxy group's keys land in config.json.
-  const _projectedElsewhere: ConfigKeyDef = {
-    key: "daemon.auto-start",
-    scope: "global",
-    describe: "bogus",
-    type: "bool",
-    schema: v.boolean(),
-    parse: () => true,
-    defaultValue: false,
-    // @ts-expect-error - proxyProjected exists only on `proxy.*` keys
-    proxyProjected: true,
-  };
-  // @ts-expect-error - sinceProxyVersion exists only on the projected shapes
-  const _gatedInternal: ConfigKeyDef = {
-    key: "daemon.auto-start",
-    scope: "global",
-    describe: "bogus",
-    type: "bool",
-    schema: v.boolean(),
-    parse: () => true,
-    defaultValue: false,
-    sinceProxyVersion: "1.0.0",
-  };
-});
-
-test("the entry type forces a schema matching the key's own value type", () => {
-  // The read schemas are folded from these entries, so one without a schema would be write-only:
-  // accepted by --set, stripped by the read schema.
-  // @ts-expect-error - schema is required on every entry
-  const _missing: ConfigKeyDef = {
-    key: "daemon.auto-start",
-    scope: "global",
-    describe: "bogus",
-    type: "bool",
-    parse: () => true,
-    defaultValue: false,
-  };
-  // ... and the schema's output must be the key's declared value type, so one key's entry
-  // cannot smuggle in another key's domain.
-  // @ts-expect-error - the schema must validate the key's own value type
-  const _mismatched: ConfigKeyDef = {
-    key: "daemon.auto-start",
-    scope: "global",
-    describe: "bogus",
-    type: "bool",
-    schema: v.number(),
-    parse: () => true,
-    defaultValue: false,
-  };
-  // The default is typed by the key too: the table shows it as the value when unset, so a
-  // default outside the key's domain would print something `--set` could never store.
-  // @ts-expect-error - the default must be the key's own value type
-  const _wrongDefault: ConfigKeyDef = {
-    key: "daemon.auto-start",
-    scope: "global",
-    describe: "bogus",
-    type: "bool",
-    schema: v.boolean(),
-    parse: () => true,
-    defaultValue: "yes",
-  };
-});
-
-test("the registry's keys are pinned total over ConfigValueTypes, and a profile key cannot enter the global map", () => {
-  // Every stored field is optional, so a registry missing one would compile and the key would be
-  // written by set() yet stripped by the read schema; the totality pin makes the omission a
-  // compile error.
-  // @ts-expect-error - a mapped record missing a key (daemon.auto-start) fails the pin
-  type _Missing = TotalOverConfigKeys<{ [K in Exclude<ConfigKey, "daemon.auto-start">]: K }>;
-  // ... and the other direction: a key OUTSIDE ConfigValueTypes is rejected per entry by
-  // ConfigKeyDefCore's `key`, so the pinned union can never grow an extra key.
-  const _extra: ConfigKeyDef = {
-    // @ts-expect-error - 'bogus' is not a key of ConfigValueTypes
-    key: "bogus",
-    scope: "global",
-    describe: "bogus",
-    type: "bool",
-    schema: v.boolean(),
-    parse: () => true,
-    defaultValue: false,
-  };
-  // The store's types keep the four profile keys out of the global map and the global keys out
-  // of a profile's section.
-  const cfg = new CopilotEnvConfig();
-  // @ts-expect-error - identity is a profile key
-  const _globalIdentity = () => cfg.set({ identity: "auto" });
-  // @ts-expect-error - daemon.port is a global key
-  const _profilePort = () => cfg.setProfile(null, { "daemon.port": 4242 });
-});
-
-test("isProxyProjected marks force + opt-in keys, not copilot-env-internal ones", () => {
-  expect(isProxyProjected(configKeyDef("proxy.responses.websocket")!)).toBe(true); // force
-  expect(isProxyProjected(configKeyDef("proxy.message-websearch-model")!)).toBe(true); // opt-in
-  expect(isProxyProjected(configKeyDef("daemon.auto-start")!)).toBe(false);
-  // daemon.logs is launch wiring, not a projection -- but it still needs a daemon restart,
-  // like the other keys `agent start` reads when launching (passthrough, idle-timeout, port).
-  expect(isProxyProjected(configKeyDef("daemon.logs")!)).toBe(false);
-  for (const key of ["daemon.logs", "passthrough", "daemon.idle-timeout", "daemon.port"]) {
-    expect(configKeyDef(key)?.restartToApply, key).toBe(true);
-  }
-  // daemon.auto-start stays unmarked: the resolver and the in-daemon watchdog read it live (though
-  // ATTACHING a watchdog to an already-running unmanaged daemon still takes a relaunch).
-  expect(configKeyDef("daemon.auto-start")?.restartToApply).toBeUndefined();
-  // codex.model-catalog is copilot-env-internal (read at auth/wiring time, never
-  // projected into the proxy) and needs no daemon restart.
-  expect(isProxyProjected(configKeyDef("codex.model-catalog")!)).toBe(false);
-  expect(configKeyDef("codex.model-catalog")?.restartToApply).toBeUndefined();
-});
-
-test("claude.desktop is opt-OUT: unset and deleted read enabled, stored false disables", () => {
-  tmpHome();
-  const cfg = new CopilotEnvConfig();
-  expect(cfg.claudeDesktopEnabled()).toBe(true);
-  // Internal to copilot-env: setting it projects nothing new into the proxy's config.json.
-  const before = projectedProxyConfig(null);
-  cfg.set({ "claude.desktop": false });
-  expect(cfg.claudeDesktopEnabled()).toBe(false);
-  expect(projectedProxyConfig(null)).toEqual(before);
-  cfg.del("claude.desktop");
-  expect(cfg.claudeDesktopEnabled()).toBe(true);
-});
-
 test("one web-search default for both surfaces, and unset IS the default where the read sites layer their own", () => {
   // The proxy's own default must match the MCP tool's DEFAULT_WEB_SEARCH_MODEL, owned by
   // web_search.ts (which imports env_config, so the registry cannot reference it).
   expect(configDefaultValue(configKeyDef("proxy.message-websearch-model")!)).toBe(
     DEFAULT_WEB_SEARCH_MODEL,
   );
-  expect(DEFAULT_WEB_SEARCH_MODEL).toBe("gpt-5-mini");
   // Unset IS the default: a disabled override, a floating pin, and the update cooldown (whose
   // two read sites apply different defaults: none for `agent update`, 7 days for autoupdate).
   for (const key of ["proxy.claude-auto-model", "daemon.version", "update.cooldown"] as const) {
@@ -1250,22 +1097,29 @@ test("one web-search default for both surfaces, and unset IS the default where t
 
 // One unreadable prefs file, two contracts. POSIX non-root only: root bypasses file modes.
 //   read(), wiring, the float pin, the port knobs  -> throw; never decide on an unproven "no preference"
-//   the in-daemon watchdog's tick gates            -> built-in defaults; a throw there would kill the serving daemon
+//   the in-daemon watchdog's tick gates and the update preflight -> built-in defaults; a throw there
+//   would kill the serving daemon, and the preflight must never act on an unproven on
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-  "an unreadable prefs store: read() throws; the watchdog gates degrade to defaults",
+  "an unreadable prefs store: read() throws; the watchdog gates and the update preflight degrade to defaults",
   () => {
     tmpHome();
     const cfg = new CopilotEnvConfig();
-    cfg.set({ "daemon.auto-start": true, "daemon.idle-timeout": 30, "daemon.port": 5555 });
+    cfg.set({
+      "daemon.auto-start": true,
+      "daemon.idle-timeout": 30,
+      "daemon.port": 5555,
+      "update.auto": true,
+    });
     const file = new CopilotApiPaths().stateStoreFile;
     chmodSync(file, 0o000);
     try {
       expect(() => cfg.read()).toThrow("refusing to treat an unreadable store as empty");
       expect(() => cfg.defaultPort()).toThrow(file);
       expect(() => cfg.wireMcpEnabled()).toThrow(file);
-      // The watchdog-reachable gates must NOT throw; they answer the defaults.
+      // The watchdog-reachable gates and the preflight must NOT throw; they answer the defaults.
       expect(cfg.autoStartEnabled()).toBe(false);
       expect(cfg.idleTimeoutSeconds()).toBe(configDefaultNumber("daemon.idle-timeout"));
+      expect(cfg.autoUpdateEnabled()).toBe(false);
     } finally {
       chmodSync(file, 0o600);
     }
@@ -1273,5 +1127,6 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     expect(cfg.autoStartEnabled()).toBe(true);
     expect(cfg.idleTimeoutSeconds()).toBe(30);
     expect(cfg.defaultPort()).toBe(5555);
+    expect(cfg.autoUpdateEnabled()).toBe(true);
   },
 );

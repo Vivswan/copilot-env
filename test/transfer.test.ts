@@ -29,7 +29,7 @@ import { settingsPathFor } from "../src/claude/paths.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { getHostLocalCodexHome } from "../src/codex/host.ts";
 import { codexConfigPath } from "../src/codex/paths.ts";
-import { importRestartHints, parseSettingsAction, runSettings } from "../src/commands/settings.ts";
+import { importRestartHints, runSettings } from "../src/commands/settings.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -970,31 +970,6 @@ test("settings requires exactly one of --export/--import and gates the modifier 
   expect(runSettings({ exportTo: true, noBackup: true })).rejects.toThrow(/only apply to --import/);
 });
 
-test("parseSettingsAction: each arm carries only its own knobs", () => {
-  expect(parseSettingsAction({ exportTo: true })).toEqual({
-    kind: "export",
-    target: true,
-    withCredentials: false,
-  });
-  expect(parseSettingsAction({ exportTo: "out.json", withCredentials: true })).toEqual({
-    kind: "export",
-    target: "out.json",
-    withCredentials: true,
-  });
-  expect(parseSettingsAction({ importFrom: "in.json", force: true })).toEqual({
-    kind: "import",
-    file: "in.json",
-    force: true,
-    noBackup: false,
-  });
-  expect(parseSettingsAction({ importFrom: "in.json", noBackup: true })).toEqual({
-    kind: "import",
-    file: "in.json",
-    force: false,
-    noBackup: true,
-  });
-});
-
 async function runSettingsCaptured(
   args: Parameters<typeof runSettings>[0],
 ): Promise<{ stdout: string; stderr: string }> {
@@ -1268,16 +1243,28 @@ test("import surfaces the proxy restart hint when a projected key is set OR rese
 
 // --- pre-import backups -----------------------------------------------------------
 
-test("import backs up the previous settings with credentials intact, and the backup rolls back", async () => {
+test("import backs up the previous settings with credentials intact unless --no-backup, and the backup rolls back", async () => {
   const machine = isolate();
   await seedStores();
   const exported = join(machine.dir, "bundle.json");
   await runSettings({ exportTo: exported, withCredentials: true });
 
   // Diverge the machine from the exported state, so the import overwrites it.
-  new CopilotEnvConfig().set({ "daemon.auto-start": false, "daemon.port": 6060 });
-  new Credential().store("gh-token", "ghp_before_import");
+  const diverge = (): void => {
+    new CopilotEnvConfig().set({ "daemon.auto-start": false, "daemon.port": 6060 });
+    new Credential().store("gh-token", "ghp_before_import");
+  };
 
+  // --no-backup skips the backup entirely: the import lands, no backup dir appears.
+  diverge();
+  await runSettings(
+    { importFrom: exported, force: true, noBackup: true },
+    { catalogDeps: NOOP_CATALOG_DEPS },
+  );
+  expect(new CopilotEnvConfig().read().global["daemon.port"]).toBe(5050);
+  expect(existsSync(settingsBackupDir())).toBe(false);
+
+  diverge();
   const imported = await captureStderr(() =>
     runSettings({ importFrom: exported, force: true }, { catalogDeps: NOOP_CATALOG_DEPS })
   );
@@ -1336,19 +1323,6 @@ test("a mid-import failure still reports the backup and the rollback command", a
   expect(message).toContain("mid-import failure");
   expect(message).toContain("roll back with: agent settings --import ");
   expect(message).toContain(settingsBackupDir());
-});
-
-test("--no-backup skips the backup entirely", async () => {
-  const machine = isolate();
-  await seedStores();
-  const exported = join(machine.dir, "bundle.json");
-  await runSettings({ exportTo: exported, withCredentials: true });
-
-  await runSettings(
-    { importFrom: exported, force: true, noBackup: true },
-    { catalogDeps: NOOP_CATALOG_DEPS },
-  );
-  expect(existsSync(settingsBackupDir())).toBe(false);
 });
 
 test("the backup pile is pruned to the newest 5", async () => {

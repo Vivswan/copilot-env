@@ -35,7 +35,7 @@ Passthrough decides only the exchange; the proxy's [client identity](#client-ide
 
 Copilot reads the client from two things on every request: the `Copilot-Integration-Id` header (or its absence) and the `User-Agent`. Together they decide which credentials are accepted and which catalog is served, so copilot-env resolves ONE client identity per credential and every mode sends it:
 
-- **Candidates, in probe order:** `codex` (the codex User-Agent with no `Copilot-Integration-Id`; the identity that lists the widest catalog), then `copilot-developer-cli`, then `copilot-developer-sandbox`. The first `GET /models` that answers 2xx on the host in use wins.
+- **Candidates, in probe order:** `codex` (the codex User-Agent with no `Copilot-Integration-Id`; the identity that lists the widest catalog), then `copilot-developer-cli`, then `copilot-developer-sandbox`, then `vscode-chat` (copilot-api's former default). The first `GET /models` that answers 2xx on the host in use wins, so a later candidate is reached only when every earlier one answered without a 2xx.
 - **Probed at a landing, stored in the slot:** a credential landing (`agent init`, `agent profile --add`, `agent auth --profile <name>`) probes on the host in use and stores the halves the probe answered; a pinned identity or a literal host is an overlay, never stored.
 - **Read back everywhere else:** every Direct re-render and every daemon start read the slot under the `identity` pin and `host` literal, with no request; a half still unknown is probed once and stored.
 - **Direct** bakes the header set into the agent configs (Codex `http_headers`, Claude `ANTHROPIC_CUSTOM_HEADERS`).
@@ -47,20 +47,25 @@ identity: auto
 host: auto (api.githubcopilot.com in use)
 * = in use: the pin, else the slot's probed identity; what every Direct re-render bakes and a daemon launch sends, on the host in use
 identity                   api.githubcopilot.com (in use)  api.enterprise.githubcopilot.com (account)  note
--------------------------  ------------------------------  ------------------------------------------  ------------------------------------------------------
+-------------------------  ------------------------------  ------------------------------------------  ---------------------------------------------------------
 codex                      rejected (400)                  rejected (400)                              the default: no Copilot-Integration-Id header (auto only)
 copilot-developer-cli      accepted (5 models) *           accepted (37 models)                        GitHub Copilot CLI; accepts fine-grained PATs
 copilot-developer-sandbox  accepted (2 models)             rejected (400)
+vscode-chat                rejected (400)                  rejected (400)                              copilot-api's former default
   codex on api.githubcopilot.com: 400 Personal Access Tokens are not supported for this endpoint
   codex on api.enterprise.githubcopilot.com (account): 400 Personal Access Tokens are not supported for this endpoint
   copilot-developer-sandbox on api.enterprise.githubcopilot.com (account): 400 Personal Access Tokens are not supported for this endpoint
+  vscode-chat on api.githubcopilot.com: 400 Personal Access Tokens are not supported for this endpoint
+  vscode-chat on api.enterprise.githubcopilot.com (account): 400 Personal Access Tokens are not supported for this endpoint
 ```
 
-- **Rows** are the identities: the three candidates, plus the pin and the slot's stored identity when they are neither. Every row is probed with exactly the header set every mode sends; the rows are probed concurrently, and the survey never stops at the first acceptance. The survey never reads the agent files and never stores a pair.
+- **Rows** are the identities: the four candidates, plus the pin and the slot's stored identity when they are neither. Every row is probed with exactly the header set every mode sends; the rows are probed concurrently, and the survey never stops at the first acceptance. The survey never reads the agent files and never stores a pair.
 - **Columns** are the hosts: `api.githubcopilot.com`, the API host the credential's account reports when it differs (`api.enterprise.githubcopilot.com` above), and the host in use when it is neither: the `host` literal (tagged `host`) or the slot's stored host (tagged `stored`).
 - **Cells:** `accepted (N models)` is a 2xx with the `/models` catalog size; `rejected (400)` a 400/401; `unclear (403)` or `unclear (network error)` a non-definitive status or a blip; `-` an identity not probed on that host.
-- **The `*`** marks the one identity in use for this credential, on the host in use: the pin, else the slot's stored identity, on the literal, else the slot's stored host. Nothing is marked while either half is unknown.
-- **Lines under the table:** the reason for every rejected or unclear cell (trimmed to 160 characters), and a note for each gap: a half is not probed yet and the next landing or daemon start stores it; a pin overlays the stored identity; a daemon is running and keeps its launch-time identity until `agent stop`, then `agent start`.
+- **The `*`** marks the one identity in use for this credential, on the host in use: the pin, else the slot's stored identity, on the literal, else the slot's stored host. Nothing is marked `*` while either half is unknown.
+- **The `>`** appears only while nothing is stored and no pin is set: it marks the identity the next landing would pick, the first candidate the host in use accepts. A row never carries both marks.
+- **Lines under the table:** the reason for every rejected or unclear cell (trimmed to 160 characters), and a note for each gap: nothing (or one half) is stored yet and one `agent init` (or `agent start`) probes and stores what it lands on; a pin overlays the stored identity; a daemon is running and keeps its launch-time identity until `agent stop`, then `agent start`.
+- **Width:** the table fits the terminal by the [terminal width](usage.md#terminal-width) rules; with the two hosts above the columns give way to one block per identity below about 105 columns.
 
 `agent auth --identity <id>` pins one; the store is the [`identity`](configuration.md#profile) key, so `agent config --set identity <id>` is the same write.
 

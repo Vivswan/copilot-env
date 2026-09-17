@@ -166,7 +166,7 @@ flowchart LR
 ```
 
 - **We never patch the package:** every shim wraps a runtime seam (`globalThis.fetch`, undici's global dispatcher, `fs.createWriteStream`, `process.argv`) and touches none of copilot-api's files, so none of them pins the floated version.
-- **`--cached-only` at spawn gives no second chance,** which is why the float warms the cache; the spawn's subset means a credential-less daemon carries no token shim.
+- **`--cached-only` at spawn gives no second chance,** which is why the float warms the cache; every spawn carries the token, host, and client-header shims, since a launch without a credential is refused.
 - **The secret-carrying shims stay import-free** (`test/lint/no_shim_imports.ts`): a runtime import would drag CLI modules into the daemon process.
 
 Demonstrated by: [test/proxy_float.test.ts](../test/proxy_float.test.ts), [test/daemon_spawn.test.ts](../test/daemon_spawn.test.ts), [test/daemon_env_keys.test.ts](../test/daemon_env_keys.test.ts).

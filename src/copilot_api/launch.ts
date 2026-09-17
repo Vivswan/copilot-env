@@ -14,6 +14,7 @@ import { type ProjectConfig, readProjectConfig } from "../utils/project_config.t
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig, ensureDict } from "./config.ts";
 import { Credential } from "./credential.ts";
+import { assertProfileSlot, type AuthProvider } from "./env_state.ts";
 import { directOverlay, landDirectPair, renderDirectPair } from "./direct_pair.ts";
 import {
   configSetCommand,
@@ -73,8 +74,8 @@ import { installedProxyVersion, PROXY_PACKAGE_NAME, proxyVersionFloorStatus } fr
 // --- the start lock -----------------------------------------------------------
 
 // Two concurrent `agent start` (two agents auto-starting at once) would each reap the OTHER's freshly
-// launched daemon. The lock reclaims ONLY a DEAD holder (staleMs = Infinity): a start may hold it for
-// minutes while it prompts for interactive auth, and age-stealing it would let the waiter kill its daemon.
+// launched daemon. The lock reclaims ONLY a DEAD holder (staleMs = Infinity): a start may hold it
+// for a while (the float, the cleanup), and age-stealing it would let the waiter kill its daemon.
 const START_LOCK_RETRY_MS = 250;
 const START_LOCK_NOTICE_MS = 2000;
 
@@ -610,59 +611,73 @@ export async function cleanupExistingProxies(
 
 // --- credential resolution ---------------------------------------------------------
 
-/** `interactiveLogin` is REQUIRED: the login flow lives in src/commands/auth.ts, which this domain
- *  module must not import, so the orchestrator hands it down. So is `userAgent`: the daemon sends
- *  the codex User-Agent the agent configs bake (codexUserAgent(), the codex layer), and the probe
- *  must run under the bytes the daemon then sends. */
+/** What the refusal gate read from the slot: the token the daemon runs with and the provider that
+ *  stored it, handed on to the resolution so a launch reads its slot once. */
+export interface LaunchToken {
+  token: string;
+  provider: AuthProvider | null;
+}
+
+/**
+ * The launch's refusal, and NOTHING else: reads of state.json alone (a recorded gh-cli's `gh auth
+ * token` IS the credential), so `agent start` refuses before it takes the start lock, makes a
+ * directory, stops the running daemon (`--force`), probes a port, or spawns anything, the codex
+ * User-Agent's version lookup included. A named profile must exist (`agent profile --add` is its one
+ * creator): its slot's own reason would otherwise send the user to an `agent auth --profile` that
+ * cannot create it. It resolves ONLY its own slot, never the default credential, and NO credential
+ * refuses the launch: the daemon never logs in on its own (a token it minted would live in the
+ * proxy's files, outside the store), so the refusal names the `agent auth` the slot needs.
+ */
+export function readLaunchToken(profile: Profile): LaunchToken {
+  if (profile !== null) assertProfileSlot(profile);
+  const credential = new Credential(undefined, profile);
+  // Passed as `--github-token`, copilot-api holds the token in memory and writes no github_token file
+  // of its own, so the proxy stays on our single source of truth.
+  const resolved = credential.resolveWithReason();
+  if (resolved.token === null) {
+    throw new Error(`cannot start the proxy without a credential: ${resolved.reason}`);
+  }
+  return { token: resolved.token, provider: credential.provider() };
+}
+
+/** `userAgent` is REQUIRED: the daemon sends the codex User-Agent the agent configs bake
+ *  (codexUserAgent(), the codex layer), and the probe must run under the bytes the daemon then
+ *  sends. */
 export interface LaunchCredentialDeps {
-  interactiveLogin: (profile: Profile) => Promise<void>;
   userAgent: string;
-  credential?: Credential;
-  /** Default: process.stdin.isTTY. */
-  isTTY?: boolean;
   selectIdentity?: typeof selectDirectIdentityAndHost;
 }
 
 /** What a daemon launch resolved: the credential it runs with and the Copilot host it is pinned
- *  to, one pair, so the daemon never sends an identity to a host that was not judged under it. Null
- *  host = unpinned: a credential-less daemon logs in inside the proxy, and with `auto` there is
- *  nothing to probe with, so GitHub's answer for that login stands. */
+ *  to, one pair, so the daemon never sends an identity to a host that was not judged under it. */
 export interface DaemonLaunchAuth {
   credential: DaemonCredential;
-  copilotHost: string | null;
+  copilotHost: string;
 }
 
 /**
- * A named profile resolves ONLY its own slot, never the default credential. The result is the
- * daemon's DaemonCredential itself, so the launch never carries a passthrough decision apart from the
- * token it applies to. The client identity is THE one per credential, read and landed through
- * direct_pair.ts like every Direct re-render; the daemon then applies it upstream through the
- * client-headers preload, so the proxy serves the catalog the Direct configs see.
+ * The daemon's DaemonCredential itself for the token the gate read (readLaunchToken), so the launch
+ * never carries a passthrough decision apart from the token it applies to. The client identity is
+ * THE one per credential, read and landed through direct_pair.ts like every Direct re-render; the
+ * daemon then applies it upstream through the client-headers preload, so the proxy serves the
+ * catalog the Direct configs see. This half may probe Copilot and land the pair: it runs after the
+ * gate, under the start lock, never before a refusal could.
  */
 export async function resolveLaunchCredential(
   profile: Profile,
-  config: CopilotEnvConfig = new CopilotEnvConfig(),
+  launch: LaunchToken,
+  config: CopilotEnvConfig,
   deps: LaunchCredentialDeps,
 ): Promise<DaemonLaunchAuth> {
-  const credential = deps.credential ?? new Credential(undefined, profile);
-  const isTTY = deps.isTTY ?? Boolean(process.stdin.isTTY);
   const overlay = directOverlay(profile, config);
-  // Passed as `--github-token`, copilot-api holds the token in memory and writes no github_token file
-  // of its own, so the proxy stays on our single source of truth.
-  let githubToken = credential.resolve() ?? undefined;
-  if (githubToken === undefined && isTTY) {
-    // Headless (no TTY) cannot complete an interactive login, so the daemon handles its own cold-start
-    // login there; a fake proxy in tests just starts without a token.
-    await deps.interactiveLogin(profile);
-    githubToken = credential.resolve() ?? undefined;
-  }
+  const githubToken = launch.token;
   // A gh-cli OAuth token or a PAT cannot perform copilot-api's editor token exchange, so the
   // passthrough shim fakes it and hands the token straight through as the Copilot bearer.
   const forcePassthrough = config.passthroughOverride(profile);
   const patPassthrough = usePatPassthrough({
     force: forcePassthrough,
     token: githubToken,
-    provider: credential.provider(),
+    provider: launch.provider,
   });
   if (patPassthrough) {
     consola.info(
@@ -670,9 +685,6 @@ export async function resolveLaunchCredential(
     );
   } else if (forcePassthrough === false) {
     consola.info("Token passthrough off: using the standard editor token exchange.");
-  }
-  if (githubToken === undefined) {
-    return { credential: { kind: "none" }, copilotHost: overlay.literal };
   }
   // A half the slot never probed is landed here, BEFORE launching, so an unusable credential fails
   // with the real reason instead of an opaque daemon-side "Failed to get models".
@@ -726,7 +738,7 @@ export function spawnConfiguredDaemon(opts: {
   paths: CopilotApiPaths;
   credential: DaemonCredential;
   /** resolveLaunchCredential's host for `credential` (one pair), so the spawn never re-probes. */
-  copilotHost: string | null;
+  copilotHost: string;
   /** Only ensureProxyFloor mints one, so a spawn without the gate does not compile; every bind-race
    *  relaunch runs exactly what the floor check judged. */
   entry: FloorCheckedEntry;

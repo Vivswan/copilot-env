@@ -23,10 +23,9 @@ import {
   setIntegrationProbeFetch,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
-import { resolveLaunchCredential } from "../src/copilot_api/launch.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { codexConfigToml, envSnapshot, isolateAgentHomes } from "./helpers.ts";
+import { codexConfigToml, envSnapshot, isolateAgentHomes, launchAuth } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -257,19 +256,17 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
   expect(seen.every((s) => s.host === GHE)).toBe(true);
 });
 
-test("a daemon launch pairs identity and host: re-selected where auto moves, passthrough or not, unpinned without a credential", async () => {
+test("a daemon launch pairs identity and host: re-selected where auto moves, passthrough or not, refused without a credential", async () => {
   dir = isolateAgentHomes("copilot-host-daemon-").dir;
   const state = new CopilotEnvState();
   const UA = "codex_exec/1";
   const seen: { host: string; id: string | null }[] = [];
-  const launch = () =>
-    resolveLaunchCredential(null, new CopilotEnvConfig(), {
-      interactiveLogin: () => Promise.reject(new Error("no login in this test")),
-      userAgent: UA,
-      isTTY: false,
-    });
-  // No credential: nothing to probe with, so the daemon is not pinned (GitHub's login answer stands).
-  expect(await launch()).toEqual({ credential: { kind: "none" }, copilotHost: null });
+  const launch = () => launchAuth(null, { userAgent: UA });
+  // No credential: the launch is refused with the login the slot needs; the daemon never logs in
+  // on its own.
+  await expect(launch()).rejects.toThrow(
+    "cannot start the proxy without a credential: no GitHub credential configured - run `agent auth` to log in",
+  );
   // A PAT with the generic host blocked: identity and host are one pair, selected again where the
   // account is served, so the daemon sends the id THAT host accepts.
   new Credential(state).store("gh-token", "github_pat_x");

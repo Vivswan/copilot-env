@@ -1,11 +1,21 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:net";
-import { join } from "node:path";
+import { delimiter, join, relative } from "node:path";
 import { consola } from "consola";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
 import { type PreflightOptions, runPreflight } from "../src/autoupdate/preflight.ts";
 import { AutoupdateState } from "../src/autoupdate/state.ts";
+import { CI_NO_LIVE_LOOKUPS_ENV, resetCodexVersionMemo } from "../src/codex/user_agent.ts";
 import { parseStartAction, renderStartSummary, runStart } from "../src/commands/start.ts";
+import { Credential } from "../src/copilot_api/credential.ts";
 import { portListening } from "../src/copilot_api/daemon.ts";
 import { startLockPath } from "../src/copilot_api/launch.ts";
 import { classifyDaemonPid, pidAlive } from "../src/copilot_api/process.ts";
@@ -36,7 +46,7 @@ const WORK = parseProfileName("work");
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
 
-const restoreEnv = envSnapshot(["COPILOT_API_ENTRY"]);
+const restoreEnv = envSnapshot(["COPILOT_API_ENTRY", "PATH", CI_NO_LIVE_LOOKUPS_ENV]);
 let dir = "";
 
 afterEach(() => {
@@ -334,6 +344,9 @@ test(
       process.env.COPILOT_API_ENTRY = join(ROOT, "test", "copilot-api-fake.mjs");
       const config = new CopilotEnvConfig();
       config.set({ "daemon.auto-start": true, "update.cooldown": 0 });
+      // The refusal gate runs before the managed no-op (a refusal precedes every side effect, the
+      // heartbeat included); on this path the token is read, never probed.
+      new Credential().store("gh-token", "ghp_fake_for_the_noop");
       const launch = {
         kind: "launch",
         dryRun: false,
@@ -443,3 +456,122 @@ test("start --check stays DOWN for a live pid + listening port that is not a cop
     await closeServer(server);
   }
 });
+
+// No credential: the launch is refused naming the login, and the proxy is never spawned into a
+// login of its own (a token it minted would live in its files, outside the store).
+test(
+  "start with no stored credential refuses with the `agent auth` hint and spawns no daemon",
+  async () => {
+    const home = tmpHome();
+    process.env.COPILOT_API_ENTRY = join(ROOT, "test", "copilot-api-fake.mjs");
+    const preflight = () => Promise.resolve();
+    const launch = {
+      kind: "launch",
+      dryRun: false,
+      force: false,
+      port: undefined,
+      profile: null,
+    } as const;
+    const before = fingerprint(dir);
+
+    await expect(runStart(launch, preflight)).rejects.toThrow(
+      "cannot start the proxy without a credential: no GitHub credential configured - run `agent auth` to log in",
+    );
+    // A profile that was never created is refused by name.
+    await expect(runStart({ ...launch, profile: WORK }, preflight)).rejects.toThrow(
+      "no such profile 'work'",
+    );
+
+    // Nothing was spawned and nothing written: no run directory, no tracked pid, no start lock
+    // marker, no daemon home for the unknown profile, and no daemon.lock holder.
+    expect(fingerprint(dir)).toEqual(before);
+    expect(daemonLockHolderPid(home)).toBeNull();
+  },
+  30_000,
+);
+
+/** Every entry under `root`, relative path -> sha256 of a file's bytes, a directory recorded as
+ *  itself (so an empty run or daemon directory counts): the "nothing written" detector for a
+ *  refused start, lock markers, run files, and daemon homes included. An `.oslock` sidecar is
+ *  recorded by name only: the running daemon holds it and Windows refuses to read a held lock. */
+function fingerprint(root: string): Record<string, string> {
+  const hashes: Record<string, string> = {};
+  const walk = (at: string): void => {
+    for (const entry of readdirSync(at, { withFileTypes: true })) {
+      const path = join(at, entry.name);
+      if (entry.isDirectory()) {
+        hashes[`${relative(root, path)}/`] = "directory";
+        walk(path);
+      } else if (entry.name.endsWith(".oslock")) {
+        hashes[relative(root, path)] = "lock";
+      } else {
+        hashes[relative(root, path)] = createHash("sha256").update(readFileSync(path)).digest(
+          "hex",
+        );
+      }
+    }
+  };
+  walk(root);
+  return hashes;
+}
+
+/** A `codex` that shadows any real one on PATH and records each spawn: with the live-lookup seam
+ *  OFF, the codex User-Agent's version road really spawns `codex --version`. */
+function fakeCodexOnPath(): { spawns: () => string[] } {
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const spawns = join(bin, "spawns");
+  writeFileSync(join(bin, "codex"), `#!/bin/sh\necho codex >> "${spawns}"\necho codex-cli 1.2.3\n`);
+  chmodSync(join(bin, "codex"), 0o755);
+  writeFileSync(
+    join(bin, "codex.cmd"),
+    `@echo off\r\necho codex>>"${spawns}"\r\necho codex-cli 1.2.3\r\n`,
+  );
+  process.env.PATH = `${bin}${delimiter}${process.env.PATH ?? ""}`;
+  delete process.env[CI_NO_LIVE_LOOKUPS_ENV];
+  resetCodexVersionMemo();
+  return {
+    spawns: () => existsSync(spawns) ? readFileSync(spawns, "utf8").trim().split("\n") : [],
+  };
+}
+
+// The refusal comes before ANY side effect: a `--force` with no credential must not stop the
+// running daemon first and refuse second, which would leave the user worse off than before the
+// command. The detectors: a hash of every file under the root (no lock marker, no daemon home, no
+// cleared run state, the tracked pid included), the daemon alive and holding its lock, and a spawn
+// ledger for the codex User-Agent's version lookup, the one spawn the refusal path used to reach.
+test(
+  "start --force with no stored credential refuses before any side effect: nothing written, nothing spawned, the running daemon untouched",
+  async () => {
+    const home = tmpHome();
+    const port = await freePort();
+    const daemonPid = launchFakeDaemon(home, port);
+    try {
+      await until(() => daemonLockHolderPid(home) === daemonPid);
+      await until(() => portListening(port));
+      // The daemon's one log line has landed, so the log cannot change under the fingerprint.
+      await until(() => readFileSync(join(home, "daemon.log"), "utf8").includes("Listening on:"));
+      writeRunState({ pid: daemonPid, port });
+      process.env.COPILOT_API_ENTRY = join(ROOT, "test", "copilot-api-fake.mjs");
+      const codex = fakeCodexOnPath();
+      const before = fingerprint(dir);
+
+      await expect(
+        runStart(
+          { kind: "launch", dryRun: false, force: true, port: undefined, profile: null },
+          () => Promise.resolve(),
+        ),
+      ).rejects.toThrow(
+        "cannot start the proxy without a credential: no GitHub credential configured - run `agent auth` to log in",
+      );
+
+      expect(fingerprint(dir)).toEqual(before);
+      expect(pidAlive(daemonPid)).toBe(true);
+      expect(daemonLockHolderPid(home)).toBe(daemonPid);
+      expect(codex.spawns()).toEqual([]);
+    } finally {
+      await killAndAwaitExit(daemonPid);
+    }
+  },
+  60_000,
+);

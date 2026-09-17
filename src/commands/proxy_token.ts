@@ -7,8 +7,8 @@
 // stdout, and in-process that would land on ours.
 //
 //   child stderr  -> always forwarded: that is where it names every file it writes
-//   child stdin   -> ignored on the managed branch: with no stored credential `agent start` would
-//                    render an auth prompt whose output is suppressed here, an invisible hang
+//   child stdin   -> ignored on the managed branch: nothing in `agent start` reads it (with no stored
+//                    credential the child refuses and names `agent auth`; nothing prompts)
 import { spawnSync } from "node:child_process";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";

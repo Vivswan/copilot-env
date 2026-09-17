@@ -27,6 +27,8 @@ import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.t
 import {
   defaultHomeDir,
   envSnapshot,
+  FAKE_DAEMON_CREDENTIAL,
+  FAKE_DAEMON_HOST,
   isolateProxyHome,
   until,
   withUnprovablePidProbe,
@@ -208,10 +210,10 @@ test("a launched daemon holds its home's lock for life, released by SIGKILL", as
     logFile,
     home: dir,
     env: {},
-    credential: { kind: "none" },
+    credential: FAKE_DAEMON_CREDENTIAL,
     idleWatchdog: false,
     muteProxyLogs: false,
-    copilotHost: null,
+    copilotHost: FAKE_DAEMON_HOST,
     entry: {
       kind: "file",
       path: join(ROOT, "test", "copilot-api-fake.mjs"),

@@ -363,6 +363,11 @@ function verifySidecarDaemonSpawn(launcher: string): void {
   const entryEnv = {
     COPILOT_API_ENTRY: fileURLToPath(new URL("../../test/copilot-api-fake.mjs", import.meta.url)),
   };
+  // `agent start` refuses without a credential; the fake proxy never reads the token, and the
+  // identity pin and host literal keep the launch from probing Copilot with it.
+  runLauncher(launcher, ["config", "--set", "identity", "copilot-developer-cli"], entryEnv);
+  runLauncher(launcher, ["config", "--set", "host", "https://copilot.invalid"], entryEnv);
+  runLauncher(launcher, ["auth", "--set", "fake-default-token"], entryEnv);
   runLauncher(launcher, ["start"], entryEnv);
   runLauncher(launcher, ["stop"], entryEnv);
   let generated: unknown;

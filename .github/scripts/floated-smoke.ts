@@ -1,10 +1,12 @@
 // The one run that floats the REAL @jeffreycao/copilot-api against the live registry and runs
 // the daemon; the container suite launches the real proxy too, but offline from the warmed
-// fixture, and the lifecycle smoke uses test/copilot-api-fake.mjs. There is no credential here,
-// so the daemon dying for want of one is the expected end state, not a failure.
+// fixture, and the lifecycle smoke uses test/copilot-api-fake.mjs. The credential is a fake
+// (`agent start` refuses without one; the identity pin and host literal keep the launch from
+// probing Copilot with it), so the daemon dying at upstream auth is the expected end state, not
+// a failure.
 //
 //   float resolves + installs a version -> daemon spawns under the production permission set
-//   with its `--preload` shims -> reaches auth-provider resolution
+//   with its `--preload` shims -> runs with the passed token, which upstream rejects
 //
 // On a developer machine: deno task test:docker --floated-lifecycle
 import { join } from "node:path";
@@ -21,14 +23,14 @@ export interface FloatedSmokeEvidence {
 }
 
 /**
- * The first failed check, in assertion order, or null once the daemon reached auth-provider
- * resolution. Pure; test/smoke_scripts.test.ts drives it.
+ * The first failed check, in assertion order, or null once the daemon ran with the token it was
+ * handed. Pure; test/smoke_scripts.test.ts drives it.
  *
  * legacy home recreated  -> the spawn stopped pinning COPILOT_API_HOME
  * NotCapable in the log  -> THE regression this job exists for: the real dependency tree
  *                           probes the environment in ways the fake never does
- * provider|auth, loose   -> the wording is upstream's; this fails for our regressions, not
- *                           their copy edits
+ * the passed token       -> upstream's line for a `--github-token` it was handed; a daemon that
+ *                           logged in on its own, or died before auth, never writes it
  */
 export function floatedSmokeFailure(evidence: FloatedSmokeEvidence): string | null {
   if (!evidence.startOutput.includes("now using @jeffreycao/copilot-api@")) {
@@ -39,8 +41,8 @@ export function floatedSmokeFailure(evidence: FloatedSmokeEvidence): string | nu
   if (/NotCapable|Requires all access/.test(evidence.proxyLog)) {
     return "the daemon hit a permission error under the production grant set";
   }
-  if (!/provider|auth/i.test(evidence.proxyLog)) {
-    return "the daemon never reached auth-provider resolution; see the log above";
+  if (!evidence.proxyLog.includes("Using provided GitHub token")) {
+    return "the daemon never ran with the passed token; see the log above";
   }
   return null;
 }
@@ -76,8 +78,12 @@ if (import.meta.main) {
   requireDisposableHome("floated-smoke.ts", "floats a real proxy into", "--floated-lifecycle");
   const home = Deno.env.get("HOME") ?? fail("HOME is unset");
 
-  // Expected to exit nonzero: no credential. The assertions are on what it got
-  // through first, so the exit code alone tells us nothing.
+  // A fake credential: the daemon spawns and fails upstream auth, so `start` is expected to exit
+  // nonzero. The assertions are on what it got through first, so the exit code alone tells us
+  // nothing.
+  cli(["config", "--set", "identity", "copilot-developer-cli"]);
+  cli(["config", "--set", "host", "https://copilot.invalid"]);
+  cli(["auth", "--set", "fake-default-token"]);
   const start = cli(["start"], { stdout: "piped", stderr: "piped" });
   const startOutput = start.stdout + start.stderr;
   console.log("--- agent start output ---");
@@ -96,6 +102,6 @@ if (import.meta.main) {
   });
   if (failure !== null) fail(failure);
   console.log(
-    `floated proxy smoke OK on ${runnerOs()}: float installed a version, daemon started under the production permissions and reached auth`,
+    `floated proxy smoke OK on ${runnerOs()}: float installed a version, daemon started under the production permissions and ran with the passed token`,
   );
 }

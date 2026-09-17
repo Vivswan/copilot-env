@@ -77,12 +77,14 @@ describe("the smokes' disposable-HOME guard", () => {
   );
 });
 
-// The checks fire in order, so each failing row trips exactly one of them; the two null rows
-// pass, one on drifted upstream wording that still reads as reaching auth.
+// The checks fire in order, so each failing row trips exactly one of them; the null row is the
+// real daemon's own log for a token it was handed and Copilot rejected.
 test("the floated smoke's verdict names the first failed check", () => {
   const healthy: FloatedSmokeEvidence = {
-    startOutput: "info: now using @jeffreycao/copilot-api@2.3.4\nerror: no credential",
-    proxyLog: "[info] Resolving auth provider...\n[error] no GitHub token",
+    startOutput:
+      "info: now using @jeffreycao/copilot-api@2.3.4\nerror: the proxy exited before it was ready",
+    proxyLog:
+      '[info] Using provided GitHub token\n[error] Failed to get Copilot user response body {\n  "message": "Bad credentials"\n}',
     legacyHomeExists: false,
   };
   const cases: { name: string; evidence: FloatedSmokeEvidence; failure: string | null }[] = [
@@ -114,12 +116,7 @@ test("the floated smoke's verdict names the first failed check", () => {
     {
       name: "died before auth",
       evidence: { ...healthy, proxyLog: "[info] listening on 127.0.0.1:4141\n" },
-      failure: "the daemon never reached auth-provider resolution; see the log above",
-    },
-    {
-      name: "upstream wording drifted but still about auth",
-      evidence: { ...healthy, proxyLog: "[warn] AUTH: nothing configured" },
-      failure: null,
+      failure: "the daemon never ran with the passed token; see the log above",
     },
     { name: "expected end state", evidence: healthy, failure: null },
   ];

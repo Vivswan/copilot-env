@@ -3,6 +3,7 @@ import { type PreflightOptions, runPreflight } from "../autoupdate/preflight.ts"
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { assertProfileSlot } from "../copilot_api/env_state.ts";
 import {
   applyDefaultConfig,
   awaitReadiness,
@@ -12,7 +13,9 @@ import {
   entryProxyVersion,
   type FloorCheckedEntry,
   type HeldStartLock,
+  type LaunchToken,
   planCleanup,
+  readLaunchToken,
   resolveLaunchCredential,
   resolveStartPort,
   spawnConfiguredDaemon,
@@ -34,7 +37,6 @@ import { COLOR_ENABLED, statusPaint } from "../utils/ansi.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
 import { mkdirReported } from "../utils/report_write.ts";
-import { ensureAuthenticated } from "./auth.ts";
 import { unreadProjectedKeyWarnings } from "./config.ts";
 
 export interface StartFlags {
@@ -310,6 +312,9 @@ export async function runStart(
     recordHeartbeat(profile);
     return;
   }
+  // Before any directory is made: a launch of a profile that does not exist must not leave a
+  // half-created daemon home behind its refusal.
+  if (profile !== null) assertProfileSlot(profile);
   /** Resolved together so paths and stores can never disagree. */
   const launchContext = (): LaunchContext => {
     const paths = new CopilotApiPaths(profile);
@@ -328,11 +333,17 @@ export async function runStart(
     return;
   }
 
+  // The refusal is the FIRST thing a launch does (readLaunchToken): before the start lock, any
+  // directory, the cleanup of the running daemon, the port probe, or a spawn. A `--force` with no
+  // credential would otherwise stop the daemon and then refuse, leaving the user worse off than
+  // before the command.
+  const launch = readLaunchToken(profile);
+
   // Every human-facing follow-up command must address THIS daemon.
   const profileFlag = daemonPolicy(profile).flagSuffix;
   await withStartLock(async (lock) => {
     try {
-      await launchUnderLock(lock, action, profile, profileFlag, launchContext);
+      await launchUnderLock(lock, action, profile, profileFlag, launchContext, launch);
     } finally {
       // On every exit path: a failed launch still gets its daily check, and its error passes
       // through.
@@ -347,6 +358,7 @@ async function launchUnderLock(
   profile: Profile,
   profileFlag: string,
   launchContext: () => LaunchContext,
+  launch: LaunchToken,
 ): Promise<void> {
   const ctx = launchContext();
   const paths = ctx.paths;
@@ -373,11 +385,15 @@ async function launchUnderLock(
   await cleanupExistingProxies(lock, profile, ctx.state);
 
   const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);
-  const { credential, copilotHost } = await resolveLaunchCredential(profile, ctx.envConfig, {
-    interactiveLogin: ensureAuthenticated,
-    // The daemon sends the codex User-Agent the agent configs bake, so it is probed under it.
-    userAgent: codexUserAgent(),
-  });
+  const { credential, copilotHost } = await resolveLaunchCredential(
+    profile,
+    launch,
+    ctx.envConfig,
+    {
+      // The daemon sends the codex User-Agent the agent configs bake, so it is probed under it.
+      userAgent: codexUserAgent(),
+    },
+  );
   const spawned = spawnConfiguredDaemon({
     port,
     logFile: ctx.logFile,

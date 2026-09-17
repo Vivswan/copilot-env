@@ -10,7 +10,7 @@
 // The bundle wins where it resolves: a bundle credential this machine can resolve REPLACES the
 // local slot, and a store write is not rolled back when the wiring after it fails (the slot
 // stays committed-but-unwired for a re-add or `--sync`). Proxy wiring is the one
-// credential-free write: the daemon logs in itself at `agent start`.
+// credential-free write: `agent start` resolves the credential itself and refuses without one.
 //
 //   bundle credential unresolvable here -> local slot kept; skipped whole when it is unresolvable too
 //   profile absent from the bundle      -> untouched
@@ -529,8 +529,8 @@ function planSlotCredential(
 }
 
 /** Only managed modes are ours to write. Direct needs the default credential to resolve (its
- *  helper fetches the token at request time); proxy is written credential-free: the daemon
- *  acquires its own auth at `agent start`. */
+ *  helper fetches the token at request time); proxy is written credential-free, and `agent start`
+ *  resolves the credential itself, refusing without one. */
 function importableMode(
   mode: AgentProviderMode,
   label: string,

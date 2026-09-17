@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
+import { errMessage } from "../src/utils/error.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -30,7 +31,6 @@ import {
   listUntrackedOrphans,
   lockProtectedDaemonPids,
   planCleanup,
-  resolveLaunchCredential,
   resolveStartPort,
   trackedDaemonPids,
   withStartLock,
@@ -66,6 +66,7 @@ import {
   envSnapshot,
   isolateProxyHome,
   killAndAwaitExit,
+  launchAuth,
   launchFakeDaemon,
   until,
   withUnprovablePidProbe,
@@ -107,10 +108,6 @@ test("daemonLifecycleEnv transports home, root, and the keep-port policy per dae
   expect(work["COPILOT_ENV_DAEMON_KEEP_PORT"]).toBe("1");
   expect(work["COPILOT_ENV_ROOT_HOME"]).toBe(dir);
 });
-
-async function loginMustNotRun(): Promise<void> {
-  throw new Error("interactive login must not run for this case");
-}
 
 const UA = "codex_exec/1";
 
@@ -169,10 +166,8 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
   new Credential().store("gh-token", "ghp_stored_pat");
   const probe = probeSpy(COPILOT_CLI_INTEGRATION_ID);
 
-  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: loginMustNotRun,
+  const result = (await launchAuth(null, {
     userAgent: UA,
-    isTTY: true, // a resolved token never prompts, even on a TTY
     selectIdentity: probe.resolve,
   })).credential;
 
@@ -189,10 +184,8 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
     host: DEFAULT_COPILOT_API_BASE,
   });
   const never = probeSpy("copilot-developer-sandbox");
-  const replayed = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: loginMustNotRun,
+  const replayed = await launchAuth(null, {
     userAgent: UA,
-    isTTY: true,
     selectIdentity: never.resolve,
   });
   expect(never.calls).toEqual([]);
@@ -209,10 +202,8 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
   // names a host the launch would never pick on its own).
   new Credential().store("gh-token", "ghp_rotated_pat");
   const moved = probeSpy(COPILOT_CLI_INTEGRATION_ID, "https://api.enterprise.githubcopilot.com");
-  const { copilotHost } = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: loginMustNotRun,
+  const { copilotHost } = await launchAuth(null, {
     userAgent: UA,
-    isTTY: true,
     selectIdentity: moved.resolve,
   });
   expect(copilotHost).toBe("https://api.enterprise.githubcopilot.com");
@@ -222,11 +213,11 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
 });
 
 // One decision table over the single-step launches: (profile, stored credential, passthrough
-// config, TTY, identity selector) -> the credential handed to the daemon, the tokens probed, the
-// logins run. A wrong row is a PAT sent raw, a daemon under the wrong identity, or an interactive
-// login where a resolved token (or a headless run) forbids one.
-test("resolveLaunchCredential: the credential, probe, and login decision per stored credential, config, and TTY", async () => {
-  type Launched = Awaited<ReturnType<typeof resolveLaunchCredential>>["credential"];
+// config, identity selector) -> the credential handed to the daemon, or the refusal, and the tokens
+// probed. A wrong row is a PAT sent raw, a daemon under the wrong identity, or a probe (or a daemon)
+// where no credential, or a profile that was never created, forbids one.
+test("a daemon launch: the credential, refusal, and probe decision per stored credential and config", async () => {
+  type Launched = Awaited<ReturnType<typeof launchAuth>>["credential"];
   const acceptingProbe = (): Promise<Response> =>
     Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
   const rows: Array<{
@@ -235,14 +226,11 @@ test("resolveLaunchCredential: the credential, probe, and login decision per sto
     /** The DEFAULT slot's stored credential. */
     stored: { provider: "gh-token" | "copilot"; token: string } | null;
     passthrough?: "on" | "off";
-    isTTY: boolean;
     /** A spy answering this id, or the real selector over a probe fetch that accepts. */
     identity: { spy: string | null } | "real";
-    /** What the interactive login stores when it runs. */
-    loginStores?: { provider: "copilot"; token: string };
-    credential: Launched;
+    /** The credential handed to the daemon, or the refusal (no daemon is spawned). */
+    credential: Launched | { refused: string };
     probedTokens: string[];
-    logins: Profile[];
   }> = [
     {
       // The daemon exchanges the token itself, and the codex identity (no id header) is what the
@@ -250,7 +238,6 @@ test("resolveLaunchCredential: the credential, probe, and login decision per sto
       name: "copilot device-flow token: no passthrough, probed identity",
       profile: null,
       stored: { provider: "copilot", token: "gho_device_flow" },
-      isTTY: false,
       identity: { spy: null },
       credential: {
         kind: "token",
@@ -258,14 +245,12 @@ test("resolveLaunchCredential: the credential, probe, and login decision per sto
         clientHeaders: daemonClientHeaders(UA, null),
       },
       probedTokens: ["gho_device_flow"],
-      logins: [],
     },
     {
       name: "passthrough off overrides even a PAT; the identity is selected all the same",
       profile: null,
       stored: { provider: "gh-token", token: "ghp_forced_off" },
       passthrough: "off",
-      isTTY: false,
       identity: { spy: COPILOT_CLI_INTEGRATION_ID },
       credential: {
         kind: "token",
@@ -273,7 +258,6 @@ test("resolveLaunchCredential: the credential, probe, and login decision per sto
         clientHeaders: daemonClientHeaders(UA, COPILOT_CLI_INTEGRATION_ID),
       },
       probedTokens: ["ghp_forced_off"],
-      logins: [],
     },
     {
       // The real selector: every credential is probed, and the codex identity is accepted first.
@@ -281,7 +265,6 @@ test("resolveLaunchCredential: the credential, probe, and login decision per sto
       profile: null,
       stored: { provider: "gh-token", token: "ghu_user_to_server" },
       passthrough: "on",
-      isTTY: false,
       identity: "real",
       credential: {
         kind: "pat",
@@ -289,45 +272,32 @@ test("resolveLaunchCredential: the credential, probe, and login decision per sto
         clientHeaders: daemonClientHeaders(UA, null),
       },
       probedTokens: [],
-      logins: [],
     },
     {
-      name: "nothing resolved + no TTY: no login, no token, no shim",
+      // The daemon never logs in on its own: no credential is a refusal naming the login, on a
+      // TTY or headless alike, before anything is probed or spawned.
+      name: "nothing resolved: refused with the `agent auth` hint, nothing probed",
       profile: null,
       stored: null,
-      isTTY: false,
       identity: { spy: null },
-      credential: { kind: "none" },
-      probedTokens: [],
-      logins: [],
-    },
-    {
-      // copilot provider: exchange-capable, so a plain token and no passthrough shim; the fresh
-      // credential is the one probed.
-      name: "nothing resolved + TTY: logs in, then resolves the fresh credential",
-      profile: null,
-      stored: null,
-      isTTY: true,
-      identity: { spy: null },
-      loginStores: { provider: "copilot", token: "gho_after_login" },
       credential: {
-        kind: "token",
-        token: "gho_after_login",
-        clientHeaders: daemonClientHeaders(UA, null),
+        refused:
+          "cannot start the proxy without a credential: no GitHub credential configured - run `agent auth` to log in",
       },
-      probedTokens: ["gho_after_login"],
-      logins: [null],
+      probedTokens: [],
     },
     {
-      // Hard-empty, not the default token: a named profile NEVER falls back to the default credential.
+      // Hard-empty, not the default token: a named profile NEVER falls back to the default
+      // credential, and one that was never created is named as such (not sent to `agent auth`).
       name: "a named profile never falls back to the default credential",
       profile: WORK,
       stored: { provider: "gh-token", token: "ghp_default_only" },
-      isTTY: false,
       identity: { spy: COPILOT_CLI_INTEGRATION_ID },
-      credential: { kind: "none" },
+      credential: {
+        refused: "no such profile 'work' (no profiles exist - create one with " +
+          "`agent profile --add <name> --direct|--proxy`)",
+      },
       probedTokens: [],
-      logins: [],
     },
   ];
   for (const row of rows) {
@@ -339,30 +309,22 @@ test("resolveLaunchCredential: the credential, probe, and login decision per sto
     if (row.passthrough) new CopilotEnvConfig().setProfile(null, { passthrough: row.passthrough });
     const probe = probeSpy(row.identity === "real" ? null : row.identity.spy);
     if (row.identity === "real") setIntegrationProbeFetch(acceptingProbe);
-    const logins: Profile[] = [];
 
-    const { credential } = await resolveLaunchCredential(row.profile, new CopilotEnvConfig(), {
-      interactiveLogin: (profile) => {
-        logins.push(profile);
-        if (row.loginStores) {
-          new Credential().store(row.loginStores.provider, row.loginStores.token);
-        }
-        return Promise.resolve();
-      },
+    const credential: Launched | { refused: string } = await launchAuth(row.profile, {
       userAgent: UA,
-      isTTY: row.isTTY,
       ...(row.identity === "real" ? {} : { selectIdentity: probe.resolve }),
-    });
+    }).then((auth) => auth.credential, (e: unknown) => ({ refused: errMessage(e) }));
 
-    expect({ name: row.name, credential, probedTokens: probe.calls.map((c) => c.token), logins })
+    expect({ name: row.name, credential, probedTokens: probe.calls.map((c) => c.token) })
       .toEqual({
         name: row.name,
         credential: row.credential,
         probedTokens: row.probedTokens,
-        logins: row.logins,
       });
     // Every probe runs under the daemon's User-Agent, unpinned.
-    for (const call of probe.calls) expect(call).toMatchObject({ userAgent: UA, pinned: null });
+    for (const call of probe.calls) {
+      expect(call).toMatchObject({ userAgent: UA, pinned: null });
+    }
   }
 });
 
@@ -372,10 +334,8 @@ test("resolveLaunchCredential: a pinned integration-id reaches the probe as the 
   new CopilotEnvConfig().setProfile(null, { identity: "copilot-developer-sandbox" });
   const probe = probeSpy("copilot-developer-sandbox");
 
-  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: loginMustNotRun,
+  const result = (await launchAuth(null, {
     userAgent: UA,
-    isTTY: false,
     selectIdentity: probe.resolve,
   })).credential;
 
@@ -394,10 +354,8 @@ test("resolveLaunchCredential: a pinned integration-id reaches the probe as the 
   });
   // With both halves known (the pin, the stored host) nothing probes; the daemon sends the pin.
   const never = probeSpy(COPILOT_CLI_INTEGRATION_ID);
-  const overlaid = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: loginMustNotRun,
+  const overlaid = (await launchAuth(null, {
     userAgent: UA,
-    isTTY: false,
     selectIdentity: never.resolve,
   })).credential;
   expect(never.calls).toEqual([]);
@@ -410,10 +368,8 @@ test("resolveLaunchCredential: a pinned integration-id reaches the probe as the 
   // `auto` the host is the selection's too) and stores what it probed.
   new CopilotEnvConfig().setProfile(null, { identity: "auto" });
   const probe2 = probeSpy(COPILOT_CLI_INTEGRATION_ID);
-  const cleared = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: loginMustNotRun,
+  const cleared = (await launchAuth(null, {
     userAgent: UA,
-    isTTY: false,
     selectIdentity: probe2.resolve,
   })).credential;
   expect(probe2.calls).toEqual([{ token: "ghp_pinned", userAgent: UA, pinned: null }]);
@@ -446,10 +402,8 @@ test("resolveLaunchCredential: PAT + real probe -- the injected fetch's accepted
   };
   setIntegrationProbeFetch(stub);
 
-  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: loginMustNotRun,
+  const result = (await launchAuth(null, {
     userAgent: UA,
-    isTTY: false,
   })).credential;
 
   expect(result).toEqual({

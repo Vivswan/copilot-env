@@ -42,6 +42,15 @@ function daemonAlive(pid: number): boolean {
   return liveness === "alive";
 }
 
+// `agent start` and every wiring command need a credential first; the fake proxy never reads the
+// token, so any string satisfies the gate headless. A daemon launch with a credential selects its
+// client identity and host by probing Copilot, which refuses a fake token; the pin and the literal
+// are the two knobs that skip both probes (the token-label lookup at api.github.com still runs,
+// best-effort).
+cliOrExit(["config", "--set", "identity", "copilot-developer-cli"]);
+cliOrExit(["config", "--set", "host", "https://copilot.invalid"]);
+cliOrExit(["auth", "--set", "fake-default-token"]);
+
 cliOrExit(["start"]);
 cliOrExit(["health", "--scope", "runtime"]);
 
@@ -64,13 +73,6 @@ if (pidAfter === pidForced) failOn("start --force did not relaunch a fresh daemo
 cliOrExit(["health", "--scope", "runtime"]);
 cliOrExit(["config", "--del", "daemon.auto-start"]);
 
-// Every wiring command logs in first; the fake proxy never reads the token, so any string
-// satisfies the gate headless. A daemon launch with a credential selects its client identity
-// and host by probing Copilot, which refuses a fake token; the pin and the literal are the two
-// knobs that skip both probes (the token-label lookup at api.github.com still runs, best-effort).
-cliOrExit(["config", "--set", "identity", "copilot-developer-cli"]);
-cliOrExit(["config", "--set", "host", "https://copilot.invalid"]);
-cliOrExit(["auth", "--set", "fake-default-token"]);
 cliOrExit(["codex", "--proxy"]);
 cliOrExit(["claude", "--proxy"]);
 cliOrExit(["health", "--scope", "setup"]);

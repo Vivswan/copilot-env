@@ -382,7 +382,7 @@ export class Credential {
   }
 
   /** Usable RIGHT NOW: a recorded-but-broken provider (gh-cli after `gh` logout) is NOT authenticated,
-   *  so init/start/auth re-ask, and a bare `gh` login the user never opted into never counts. */
+   *  so init/auth re-ask and start refuses, and a bare `gh` login the user never opted into never counts. */
   isAuthenticated(): boolean {
     return this.resolve() !== null;
   }

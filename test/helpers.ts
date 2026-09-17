@@ -4,9 +4,21 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { GITHUB_GRAPHQL_URL, setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
-import type { ProfileName } from "../src/copilot_api/profile.ts";
+import type { Profile, ProfileName } from "../src/copilot_api/profile.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import {
+  type DaemonLaunchAuth,
+  type LaunchCredentialDeps,
+  readLaunchToken,
+  resolveLaunchCredential,
+} from "../src/copilot_api/launch.ts";
 import { defaultDaemonHome } from "../src/copilot_api/paths.ts";
 import { launchDaemon } from "../src/copilot_api/process.ts";
+import type { DaemonCredential } from "../src/copilot_api/process.ts";
+import {
+  daemonClientHeaders,
+  DEFAULT_COPILOT_API_BASE,
+} from "../src/copilot_api/integration_identity.ts";
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
@@ -204,6 +216,29 @@ export function writeRunState(
 
 // --- live-daemon fixtures -------------------------------------------------------------
 
+/** `agent start`'s two credential steps as one call, the refusal gate and the resolution it feeds,
+ *  so a decision table holds refusals and resolved credentials side by side (a refusal rejects). */
+export async function launchAuth(
+  profile: Profile,
+  deps: LaunchCredentialDeps,
+): Promise<DaemonLaunchAuth> {
+  return await resolveLaunchCredential(
+    profile,
+    readLaunchToken(profile),
+    new CopilotEnvConfig(),
+    deps,
+  );
+}
+
+/** Every daemon carries a credential and a host (a launch without one is refused); the fake proxy
+ *  reads neither, so the spawn fixtures share one placeholder pair. */
+export const FAKE_DAEMON_CREDENTIAL: DaemonCredential = {
+  kind: "token",
+  token: "gho_fake_daemon",
+  clientHeaders: daemonClientHeaders("copilot-env-test/0", null),
+};
+export const FAKE_DAEMON_HOST = DEFAULT_COPILOT_API_BASE;
+
 /** A real detached daemon over `home`, preloads included, so it takes the daemon.lock at boot like
  *  production. */
 export function launchFakeDaemon(home: string, port: number): number {
@@ -215,10 +250,10 @@ export function launchFakeDaemon(home: string, port: number): number {
     logFile,
     home,
     env: {},
-    credential: { kind: "none" },
+    credential: FAKE_DAEMON_CREDENTIAL,
     idleWatchdog: false,
     muteProxyLogs: false,
-    copilotHost: null,
+    copilotHost: FAKE_DAEMON_HOST,
     entry: {
       kind: "file",
       path: join(ROOT, "test", "copilot-api-fake.mjs"),

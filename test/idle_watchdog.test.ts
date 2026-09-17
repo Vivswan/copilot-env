@@ -103,38 +103,27 @@ test("idleCheck: the spawn's keep-port value preserves a profile reservation acr
   expect(after.port).toBe(4242);
 });
 
-test("idleTimeoutMs: default is 1 hour; the env knob overrides in whole seconds", () => {
+// The knob's precedence is env > config > default, in whole seconds; 0 or a negative value
+// disables (armIdleWatchdog reads <= 0 as no watchdog), and a non-numeric env must fall through
+// rather than crash the watchdog.
+test("idleTimeoutMs: env > config > default in whole seconds; 0 and negatives disable; a malformed env falls through", () => {
   tmpHome();
-  delete process.env[IDLE_TIMEOUT_ENV];
-  expect(idleTimeoutMs()).toBe(configDefaultNumber("daemon.idle-timeout") * 1000);
-  expect(idleTimeoutMs()).toBe(3600 * 1000);
-
-  process.env[IDLE_TIMEOUT_ENV] = "5";
-  expect(idleTimeoutMs()).toBe(5000);
-});
-
-test("idleTimeoutMs: precedence env > config > default", () => {
-  tmpHome();
-  delete process.env[IDLE_TIMEOUT_ENV];
-  new CopilotEnvConfig().set({ "daemon.idle-timeout": 90 });
-  expect(idleTimeoutMs()).toBe(90_000);
-  process.env[IDLE_TIMEOUT_ENV] = "7";
-  expect(idleTimeoutMs()).toBe(7000);
-});
-
-test("idleTimeoutMs: 0 disables (<=0 means no watchdog); a malformed value falls back", () => {
-  tmpHome();
-  process.env[IDLE_TIMEOUT_ENV] = "0";
-  expect(idleTimeoutMs()).toBe(0);
-
-  // A negative value parses too (the env knob's contract: "0 or negative disables") -- a <=0
-  // result disables the watchdog via armIdleWatchdog, so it must NOT fall through to the default.
-  process.env[IDLE_TIMEOUT_ENV] = "-1";
-  expect(idleTimeoutMs()).toBe(-1000);
-
-  // Non-numeric env -> falls through to config/default (a bad env must not crash the watchdog).
-  process.env[IDLE_TIMEOUT_ENV] = "notanumber";
-  expect(idleTimeoutMs()).toBe(configDefaultNumber("daemon.idle-timeout") * 1000);
+  const defaultMs = configDefaultNumber("daemon.idle-timeout") * 1000;
+  const rows: { env: string | undefined; config: number | undefined; ms: number }[] = [
+    { env: undefined, config: undefined, ms: defaultMs },
+    { env: "5", config: undefined, ms: 5000 },
+    { env: undefined, config: 90, ms: 90_000 },
+    { env: "7", config: 90, ms: 7000 },
+    { env: "0", config: undefined, ms: 0 },
+    { env: "-1", config: undefined, ms: -1000 },
+    { env: "notanumber", config: undefined, ms: defaultMs },
+  ];
+  for (const row of rows) {
+    if (row.env === undefined) delete process.env[IDLE_TIMEOUT_ENV];
+    else process.env[IDLE_TIMEOUT_ENV] = row.env;
+    new CopilotEnvConfig().set({ "daemon.idle-timeout": row.config ?? null });
+    expect({ ...row, ms: idleTimeoutMs() }).toEqual(row);
+  }
 });
 
 test("defaultCheckIntervalMs: a quarter of the window, clamped to [1s, 60s]", () => {
@@ -160,13 +149,15 @@ test("isIdle: true exactly at and past the timeout boundary, false before it", (
   expect(isIdle(0, 1500, timeout)).toBe(true);
 });
 
-test("idleCheck: lifecycle OFF (auto-start unset) returns without exiting, even when idle", () => {
+test("idleCheck: lifecycle OFF (auto-start unset) returns before touching run-state, even when idle", () => {
   tmpHome();
-  // auto-start unset disables the managed lifecycle, so idleCheck must disengage. idleCheck(0, 1)
-  // is long-idle with a 1ms timeout: without the OFF gate it would call shutdownDaemon(0), whose
-  // Deno.exit the process.exit stub below does not intercept, so a broken gate ends the whole
-  // `deno test` run with code 0 rather than failing here.
+  // auto-start unset disables the managed lifecycle, so idleCheck must disengage before clearIfPid.
+  // idleCheck(0, 1) is long-idle with a 1ms timeout: without the OFF gate it would clearIfPid and
+  // call shutdownDaemon(0), whose Deno.exit the process.exit stub below does not intercept, so a
+  // broken gate ends the whole `deno test` run with code 0 rather than failing here.
   expect(new CopilotEnvConfig().autoStartEnabled()).toBe(false);
+  const state = new CopilotEnvRunState();
+  state.set({ pid: process.pid, port: 4141, lastEnsureAt: 1 });
   const realExit = process.exit;
   let exited = false;
   process.exit = ((code?: number): never => {
@@ -179,69 +170,40 @@ test("idleCheck: lifecycle OFF (auto-start unset) returns without exiting, even 
     process.exit = realExit;
   }
   expect(exited).toBe(false);
-});
-
-test("idleCheck: lifecycle OFF also short-circuits before touching run-state", () => {
-  tmpHome();
-  // The OFF early-return happens before clearIfPid, so the seeded state must be untouched. A
-  // broken gate would clearIfPid THEN exit via Deno.exit, ending the runner before the assertions
-  // (the process.exit stub does not catch that path).
-  const state = new CopilotEnvRunState();
-  state.set({ pid: process.pid, port: 4141, lastEnsureAt: 1 });
-  const realExit = process.exit;
-  process.exit = ((code?: number): never => {
-    throw new Error(`idleCheck unexpectedly exited (${code})`);
-  }) as typeof process.exit;
-  try {
-    idleCheck(0, 1); // idle + tiny timeout, but lifecycle OFF -> no clear, no exit
-  } finally {
-    process.exit = realExit;
-  }
   const after = state.read();
   expect(after.pid).toBe(process.pid);
   expect(after.port).toBe(4141);
   expect(after.lastEnsureAt).toBe(1);
 });
 
-test("armIdleWatchdog: COPILOT_API_IDLE_TIMEOUT=0 arms no timer", () => {
+// A timeout <= 0 arms nothing; a positive one arms an unref'd interval, so the timer never holds
+// the event loop open on its own.
+test("armIdleWatchdog: a timeout of 0 arms no timer; a positive one arms an unref'd timer", () => {
   tmpHome();
-  process.env[IDLE_TIMEOUT_ENV] = "0"; // timeoutMs <= 0 disables the watchdog
-  // Stub setInterval to detect whether a timer is armed; armIdleWatchdog must return before it.
-  const realSetInterval = globalThis.setInterval;
-  let armed = false;
-  globalThis.setInterval = ((): ReturnType<typeof realSetInterval> => {
-    armed = true;
-    return { unref() {} } as unknown as ReturnType<typeof realSetInterval>;
-  }) as typeof realSetInterval;
-  try {
-    armIdleWatchdog();
-  } finally {
-    globalThis.setInterval = realSetInterval;
+  const rows: { env: string; armed: boolean; unrefCalled: boolean }[] = [
+    { env: "0", armed: false, unrefCalled: false },
+    { env: "5", armed: true, unrefCalled: true },
+  ];
+  for (const row of rows) {
+    process.env[IDLE_TIMEOUT_ENV] = row.env;
+    const realSetInterval = globalThis.setInterval;
+    let armed = false;
+    let unrefCalled = false;
+    const fakeTimer = {
+      unref() {
+        unrefCalled = true;
+        return fakeTimer;
+      },
+    };
+    globalThis.setInterval = ((): ReturnType<typeof realSetInterval> => {
+      armed = true;
+      return fakeTimer as unknown as ReturnType<typeof realSetInterval>;
+    }) as typeof realSetInterval;
+    try {
+      armIdleWatchdog();
+    } finally {
+      globalThis.setInterval = realSetInterval;
+    }
+    expect({ env: row.env, armed, unrefCalled }).toEqual(row);
   }
-  expect(armed).toBe(false);
-});
-
-test("armIdleWatchdog: a positive timeout DOES arm an unref'd timer", () => {
-  tmpHome();
-  process.env[IDLE_TIMEOUT_ENV] = "5"; // positive -> watchdog enabled
-  const realSetInterval = globalThis.setInterval;
-  let armed = false;
-  let unrefCalled = false;
-  const fakeTimer = {
-    unref() {
-      unrefCalled = true;
-      return fakeTimer;
-    },
-  };
-  globalThis.setInterval = ((): ReturnType<typeof realSetInterval> => {
-    armed = true;
-    return fakeTimer as unknown as ReturnType<typeof realSetInterval>;
-  }) as typeof realSetInterval;
-  try {
-    armIdleWatchdog();
-  } finally {
-    globalThis.setInterval = realSetInterval;
-  }
-  expect(armed).toBe(true); // contrast with the timeout=0 case: here a timer IS armed
-  expect(unrefCalled).toBe(true); // the timer is unref'd so it never holds the loop open alone
 });

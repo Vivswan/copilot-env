@@ -48,20 +48,23 @@ function runPreloaded(host: string | null): string[] {
   }
 }
 
-test("pinned: every /copilot_internal/ body's endpoints.api becomes the pin; status and headers stay; other paths pass through", () => {
-  expect(runPreloaded(PINNED)).toEqual([
-    `200 application/json /copilot_internal/user ${PINNED}`,
-    `200 application/json /copilot_internal/v2/token ${PINNED}`,
-    `200 application/json /other ${ACCOUNT}`,
-  ]);
-});
-
-test("with no pin in the environment, no wrap is installed (the bodies pass through)", () => {
-  expect(runPreloaded(null)).toEqual([
-    `200 application/json /copilot_internal/user ${ACCOUNT}`,
-    `200 application/json /copilot_internal/v2/token ${ACCOUNT}`,
-    `200 application/json /other ${ACCOUNT}`,
-  ]);
+// With the pin set, every /copilot_internal/ body's endpoints.api becomes the pin while status and
+// headers stay and other paths pass through; with no pin, no wrap is installed at all.
+test("the pin in the environment decides whether the /copilot_internal/ bodies are rewritten", () => {
+  const rows: { pin: string | null; api: string }[] = [
+    { pin: PINNED, api: PINNED },
+    { pin: null, api: ACCOUNT },
+  ];
+  for (const { pin, api } of rows) {
+    expect({ pin, lines: runPreloaded(pin) }).toEqual({
+      pin,
+      lines: [
+        `200 application/json /copilot_internal/user ${api}`,
+        `200 application/json /copilot_internal/v2/token ${api}`,
+        `200 application/json /other ${ACCOUNT}`,
+      ],
+    });
+  }
 });
 
 // Importing the preload without the env var installs nothing, so the pure helper is unit-testable.

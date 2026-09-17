@@ -13,11 +13,9 @@ const SHIM = join(ROOT, "src", "scripts", "pat_passthrough_preload.ts");
 const EXCHANGE_URL = "http://127.0.0.1:1/copilot_internal/v2/token";
 const OTHER_URL = "http://127.0.0.1:1/other";
 
-function runPreloaded(
-  url: string,
-  token: string | null,
-  inputKind: "string" | "url" | "request" = "string",
-): string {
+type InputKind = "string" | "url" | "request";
+
+function runPreloaded(url: string, token: string | null, inputKind: InputKind): string {
   const dir = tempDir("copilot-preload-");
   try {
     const target = join(dir, "target.ts");
@@ -26,15 +24,17 @@ function runPreloaded(
       : inputKind === "request"
       ? `new Request(${CHILD_VALUES}.url)`
       : `${CHILD_VALUES}.url`;
+    // Only the fetch itself may fail into PASSTHROUGH; an intercepted body that does not parse
+    // fails the child instead of reading as a pass-through.
     writeFileSync(
       target,
       [
-        "try {",
-        `  const r = await fetch(${input});`,
+        `const r = await fetch(${input}).catch(() => null);`,
+        "if (r === null) {",
+        "  console.log('PASSTHROUGH');",
+        "} else {",
         "  const b = await r.json();",
         "  console.log('INTERCEPTED:' + b.token + ':' + b.refresh_in);",
-        "} catch {",
-        "  console.log('PASSTHROUGH');",
         "}",
       ].join("\n"),
     );
@@ -49,25 +49,25 @@ function runPreloaded(
   }
 }
 
+// The exchange URL is intercepted for every fetch input shape and any token shape (the load
+// decision lives in launch.ts and `usePatPassthrough`, not in the shim); without a token in argv
+// no wrap is installed, and other URLs always reach the real fetch.
 // Fake-token fixtures stay short and low-entropy so gitleaks' generic rules never match.
-test("the exchange URL is intercepted (synthetic token = the passed token, no network)", () => {
-  expect(runPreloaded(EXCHANGE_URL, "ghp_test")).toBe("INTERCEPTED:ghp_test:21600");
-});
-
-test("the exchange is intercepted for URL and Request fetch inputs too", () => {
-  expect(runPreloaded(EXCHANGE_URL, "ghp_test", "url")).toBe("INTERCEPTED:ghp_test:21600");
-  expect(runPreloaded(EXCHANGE_URL, "ghp_test", "request")).toBe("INTERCEPTED:ghp_test:21600");
-});
-
-test("with no --github-token in argv, no wrap is installed (real fetch is used)", () => {
-  expect(runPreloaded(EXCHANGE_URL, null)).toBe("PASSTHROUGH");
-});
-
-test("the wrap acts for ANY token shape (the load decision is the launch pipeline's job, not the shim's)", () => {
-  // The load decision lives in launch.ts and `usePatPassthrough` (integration_identity.ts).
-  expect(runPreloaded(EXCHANGE_URL, "gho_test")).toBe("INTERCEPTED:gho_test:21600");
-});
-
-test("non-exchange URLs are never intercepted", () => {
-  expect(runPreloaded(OTHER_URL, "ghp_test")).toBe("PASSTHROUGH");
+test("the exchange URL with a token in argv is intercepted; anything else passes through", () => {
+  const rows: { url: string; token: string | null; input: InputKind; out: string }[] = [
+    { url: EXCHANGE_URL, token: "ghp_test", input: "string", out: "INTERCEPTED:ghp_test:21600" },
+    { url: EXCHANGE_URL, token: "ghp_test", input: "url", out: "INTERCEPTED:ghp_test:21600" },
+    { url: EXCHANGE_URL, token: "ghp_test", input: "request", out: "INTERCEPTED:ghp_test:21600" },
+    { url: EXCHANGE_URL, token: "gho_test", input: "string", out: "INTERCEPTED:gho_test:21600" },
+    { url: EXCHANGE_URL, token: null, input: "string", out: "PASSTHROUGH" },
+    { url: OTHER_URL, token: "ghp_test", input: "string", out: "PASSTHROUGH" },
+  ];
+  for (const { url, token, input, out } of rows) {
+    expect({ url, token, input, out: runPreloaded(url, token, input) }).toEqual({
+      url,
+      token,
+      input,
+      out,
+    });
+  }
 });

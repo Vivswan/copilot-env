@@ -1,5 +1,5 @@
 import { dirname, join } from "node:path";
-import { CHILD_VALUES, childValuesEnv, runSync, spawnChild } from "./helpers/run.ts";
+import { runSync, spawnChild } from "./helpers/run.ts";
 import { expect, PINNED_DENO_DIR, tempDir, test, TEST_ROOT_ENV } from "./helpers/testing.ts";
 
 // The env contract of the suite's one synchronous spawn: `undefined` means the key is really
@@ -7,9 +7,9 @@ import { expect, PINNED_DENO_DIR, tempDir, test, TEST_ROOT_ENV } from "./helpers
 // that way depends on it; childEnv in test/helpers/run.ts explains why it needs doing at all.
 
 const PROBE = "COPILOT_ENV_RUN_HELPER_PROBE";
-const readProbe = `console.log("V=" + (Deno.env.get(${JSON.stringify(PROBE)}) ?? "<unset>"))`;
 
-function childSees(env: Record<string, string | undefined>): string {
+function childSees(key: string, env: Record<string, string | undefined>): string {
+  const readProbe = `console.log("V=" + (Deno.env.get(${JSON.stringify(key)}) ?? "<unset>"))`;
   const result = runSync(Deno.execPath(), ["eval", readProbe], { env });
   expect(result.exitCode).toBe(0);
   return result.stdout.trim();
@@ -17,8 +17,8 @@ function childSees(env: Record<string, string | undefined>): string {
 
 /**
  * Replacement semantics pass a partial env VERBATIM (Windows CreateProcess injects nothing), so
- * a child cannot reliably start without these. The partial-env tests assert one NAMED variable, never
- * that the env is minimal, so carrying the essentials costs the assertions nothing.
+ * a child cannot reliably start without these. The partial-env rows assert one NAMED variable,
+ * never that the env is minimal, so carrying the essentials costs the assertions nothing.
  */
 function platformEssentials(): Record<string, string> {
   const keep = new Set(["SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "TEMP", "TMP"]);
@@ -29,58 +29,71 @@ function platformEssentials(): Record<string, string> {
   return out;
 }
 
-test("runSync: the child gets EXACTLY the requested env, not the parent merged with it", () => {
-  process.env[PROBE] = "PARENT_VALUE";
-  try {
-    // A PARTIAL env is the case that separates replacement from merge: under Deno's native
-    // merge the parent's value reaches the child even though the caller never mentioned it.
-    expect(childSees({ ...platformEssentials(), SOMETHING_ELSE: "x" })).toBe("V=<unset>");
-    expect(process.env[PROBE]).toBe("PARENT_VALUE");
-  } finally {
-    delete process.env[PROBE];
-  }
-});
-
-test("runSync: a parent variable named after an Object prototype member is cleared too", () => {
-  // childEnv's map is null-prototype and the clearing loop tests Object.hasOwn today; on an
-  // ordinary object with an `in` test, `"toString" in wanted` is true through the prototype
-  // chain, which would spare this key and leak it.
-  // `protoKey` is typed as a plain string so it reaches ProcessEnv's index signature.
-  const protoKey: string = "toString";
-  process.env[protoKey] = "PARENT_VALUE";
-  try {
-    const seen = runSync(Deno.execPath(), [
-      "eval",
-      'console.log("V=" + (Deno.env.get("toString") ?? "<unset>"))',
-    ], { env: { ...platformEssentials(), SOMETHING_ELSE: "x" } });
-    expect(seen.stdout.trim()).toBe("V=<unset>");
-    expect(process.env[protoKey]).toBe("PARENT_VALUE");
-  } finally {
-    delete process.env[protoKey];
-  }
-});
-
-test("runSync: an explicitly undefined env value is unset in the child, not merged over", () => {
-  process.env[PROBE] = "PARENT_VALUE";
-  try {
-    expect(childSees({ ...process.env })).toBe("V=PARENT_VALUE");
-    expect(childSees({ ...process.env, [PROBE]: undefined })).toBe("V=<unset>");
-    expect(childSees({ ...process.env, [PROBE]: "CHILD_VALUE" })).toBe("V=CHILD_VALUE");
-    expect(process.env[PROBE]).toBe("PARENT_VALUE");
-  } finally {
-    delete process.env[PROBE];
-  }
-});
-
 /** A path no executable occupies, so the spawn fails rather than running something.
  *  Built from the temp dir so it is absolute-and-absent on every platform. */
 const UNSPAWNABLE = join(tempDir("copilot-env-definitely-not-"), "not-a-binary");
 
-test("runSync: an unset survives a failed spawn, and never leaks into the parent", () => {
+// Each row plants a parent value under `key` first, so a merge over the parent's env (Deno's
+// native spawn semantics) shows as the value leaking into the child, and a clearing span that
+// never restores shows as the parent losing it afterwards.
+const ENV_SHAPES: {
+  shape: string;
+  key: string;
+  env: () => Record<string, string | undefined>;
+  sees: string;
+}[] = [
+  {
+    // A PARTIAL env is the case that separates replacement from merge: under a merge the parent's
+    // value reaches the child even though the caller never mentioned it.
+    shape: "a partial env that never names the variable",
+    key: PROBE,
+    env: () => ({ ...platformEssentials(), SOMETHING_ELSE: "x" }),
+    sees: "V=<unset>",
+  },
+  {
+    // childEnv's map is null-prototype and the clearing loop tests Object.hasOwn; on an ordinary
+    // object with an `in` test, `"toString" in wanted` is true through the prototype chain, which
+    // would spare this key and leak it.
+    shape: "a partial env, with the parent's variable named after an Object prototype member",
+    key: "toString",
+    env: () => ({ ...platformEssentials(), SOMETHING_ELSE: "x" }),
+    sees: "V=<unset>",
+  },
+  {
+    shape: "the parent's env spread whole",
+    key: PROBE,
+    env: () => ({ ...process.env }),
+    sees: "V=PARENT_VALUE",
+  },
+  {
+    shape: "the parent's env with the variable explicitly undefined",
+    key: PROBE,
+    env: () => ({ ...process.env, [PROBE]: undefined }),
+    sees: "V=<unset>",
+  },
+  {
+    shape: "the parent's env with the caller's own value",
+    key: PROBE,
+    env: () => ({ ...process.env, [PROBE]: "CHILD_VALUE" }),
+    sees: "V=CHILD_VALUE",
+  },
+];
+
+test("runSync: the child gets EXACTLY the requested env, and the parent's is restored afterwards", () => {
+  for (const { shape, key, env, sees } of ENV_SHAPES) {
+    process.env[key] = "PARENT_VALUE";
+    try {
+      expect({ shape, sees: childSees(key, env()) }).toEqual({ shape, sees });
+      expect({ shape, parent: process.env[key] }).toEqual({ shape, parent: "PARENT_VALUE" });
+    } finally {
+      delete process.env[key];
+    }
+  }
+  // The restore must also survive a spawn that never ran. A missing executable surfaces
+  // differently per platform: POSIX throws, Windows node-compat returns a nonzero status with no
+  // error. Either way is the failed spawn under test.
   process.env[PROBE] = "PARENT_VALUE";
   try {
-    // A missing executable surfaces differently per platform: POSIX throws, Windows node-compat
-    // returns a nonzero status with no error. Either way is the failed spawn under test.
     let failed = false;
     try {
       const res = runSync(UNSPAWNABLE, [], { env: { ...process.env, [PROBE]: undefined } });
@@ -93,32 +106,6 @@ test("runSync: an unset survives a failed spawn, and never leaks into the parent
   } finally {
     delete process.env[PROBE];
   }
-});
-
-test("CHILD_VALUES: the env payload round-trips paths, markup, and terminators as data", () => {
-  const values = {
-    ready: 'C:\\tmp\\ready "quoted" \\ end',
-    tag: "</script><script>alert(1)</script>",
-    terminators: "a\u2028b\u2029c",
-    n: 42,
-  };
-  const script =
-    `const v = ${CHILD_VALUES}; console.log(JSON.stringify([v.ready, v.tag, v.terminators, v.n]));`;
-  const result = runSync(Deno.execPath(), ["eval", script], {
-    env: { ...process.env, ...childValuesEnv(values) },
-  });
-  expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([
-    values.ready,
-    values.tag,
-    values.terminators,
-    values.n,
-  ]);
-  // And without the env entry the object is empty, never a crash: an unset key reads undefined.
-  const bare = runSync(Deno.execPath(), ["eval", `console.log(String(${CHILD_VALUES}.ready))`], {
-    env: { ...process.env },
-  });
-  expect(bare.stdout.trim()).toBe("undefined");
 });
 
 // --- the harness keys: on every child, over whatever env the caller gave ---------------

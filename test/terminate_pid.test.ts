@@ -83,67 +83,55 @@ async function withCapturedOutput(body: () => Promise<void>): Promise<string> {
   return written.join("");
 }
 
-// The TERM'd daemon died inside the grace and the OS reassigned the pid: a KILL on the
-// stale TERM-time proof would hit the impostor.
+// Each child ignores SIGTERM, so its death is attributable only to the SIGKILL.
+//   "no"      -> the TERM'd daemon died inside the grace and the OS reassigned the pid: a KILL on
+//                the stale TERM-time proof would hit the impostor, so it is spared and the refusal
+//                lands in the verdict AND the log (the caller learns the daemon is gone instead of
+//                guessing from a live foreign pid)
+//   "yes"     -> killed
+//   "unknown" -> killed all the same: a scan that cannot answer must not strand the stop, since
+//                every caller gates its TERM on an identity read at least as demanding (contrast
+//                corroborateLockHolder in launch.ts, which fails closed with no recent read)
 test.skipIf(process.platform === "win32")(
-  "a pid classifying 'no' at the KILL boundary is spared, and the reuse is reported",
+  "the KILL-boundary verdict: 'no' is spared and reported, 'yes' and 'unknown' draw the SIGKILL",
   async () => {
-    const child = await spawnTermIgnoringChild();
-    try {
-      const { calls, classify } = classifyStub("no");
-      let verdict: TerminateVerdict | undefined;
-      const output = await withCapturedOutput(async () => {
-        verdict = await terminatePid(child.pid, 300, classify);
-      });
-      // The refusal lands in the verdict AND the log, so the caller learns the daemon is
-      // gone instead of guessing from a live foreign pid.
-      expect(verdict).toBe("refused-reused-pid");
-      expect(calls).toEqual([child.pid]);
-      expect(pidAlive(child.pid)).toBe(true);
-      expect(output).toContain(`Not escalating pid ${child.pid} to SIGKILL`);
-    } finally {
-      await killAndAwaitExit(child.pid);
+    const rows: {
+      answer: "yes" | "no" | "unknown";
+      verdict: TerminateVerdict;
+      survives: boolean;
+    }[] = [
+      { answer: "no", verdict: "refused-reused-pid", survives: true },
+      { answer: "yes", verdict: "killed", survives: false },
+      { answer: "unknown", verdict: "killed", survives: false },
+    ];
+    for (const row of rows) {
+      const child = await spawnTermIgnoringChild();
+      try {
+        const { calls, classify } = classifyStub(row.answer);
+        let verdict: TerminateVerdict | undefined;
+        const output = await withCapturedOutput(async () => {
+          verdict = await terminatePid(child.pid, 300, classify);
+        });
+        if (!row.survives) await until(() => !pidAlive(child.pid));
+        expect({
+          answer: row.answer,
+          verdict,
+          calls,
+          alive: pidAlive(child.pid),
+          reported: output.includes(`Not escalating pid ${child.pid} to SIGKILL`),
+        }).toEqual({
+          answer: row.answer,
+          verdict: row.verdict,
+          calls: [child.pid],
+          alive: row.survives,
+          reported: row.survives,
+        });
+      } finally {
+        await killAndAwaitExit(child.pid);
+      }
     }
   },
-  30_000,
-);
-
-// The child ignores SIGTERM, so its death is attributable only to the SIGKILL.
-test.skipIf(process.platform === "win32")(
-  "a pid still classifying 'yes' draws the SIGKILL escalation",
-  async () => {
-    const child = await spawnTermIgnoringChild();
-    try {
-      const { calls, classify } = classifyStub("yes");
-      expect(await terminatePid(child.pid, 300, classify)).toBe("killed");
-      expect(calls).toEqual([child.pid]);
-      await until(() => !pidAlive(child.pid));
-    } finally {
-      await killAndAwaitExit(child.pid);
-    }
-  },
-  30_000,
-);
-
-// A scan that cannot answer must not strand the stop: every caller gates its TERM on an
-// identity read at least as demanding as this kill gate. Contrast corroborateLockHolder in
-// launch.ts, which fails closed because no recent identity read backs the pid there.
-test.skipIf(process.platform === "win32")(
-  "a failed identity scan ('unknown') at the KILL boundary still escalates",
-  async () => {
-    const child = await spawnTermIgnoringChild();
-    try {
-      const { calls, classify } = classifyStub("unknown");
-      // Same verdict as "yes": the kill-on-unknown carries no behavioral difference,
-      // so it earns no separate arm.
-      expect(await terminatePid(child.pid, 300, classify)).toBe("killed");
-      expect(calls).toEqual([child.pid]);
-      await until(() => !pidAlive(child.pid));
-    } finally {
-      await killAndAwaitExit(child.pid);
-    }
-  },
-  30_000,
+  60_000,
 );
 
 // Liveness is checked before identity, so the classify seam is a KILL-boundary check only

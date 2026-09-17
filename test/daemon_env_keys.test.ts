@@ -13,7 +13,7 @@ import shimImportsPlugin, { SHIM_FILES } from "./lint/no_shim_imports.ts";
 // layer into the daemon), so each env-var contract between launchDaemon and such a shim is spelled
 // twice, and a drift fails silently at launch (a token-less daemon, a daemon under the proxy's own identity).
 //   the shim's literal, read as text  -> must equal the CLI constant (importing the shim would defeat the design)
-//   the shim's runtime imports        -> none for these shims; once one may import, the copy becomes an import
+//   the shim's runtime imports        -> none; `deno lint` runs test/lint/no_shim_imports.ts (deno.json) over them
 
 const SRC_DIR = join(ROOT, "src");
 const SCRIPTS_DIR = join(SRC_DIR, "scripts");
@@ -197,38 +197,31 @@ for (const { key, keyName, shim, localConst } of PINNED_PAIRS) {
     const source = readFileSync(join(SCRIPTS_DIR, shim), "utf8");
     expect(extractStringConst(source, localConst, shim)).toBe(key);
   });
-
-  test(`${shim} stays free of runtime imports (why the literal is duplicated)`, () => {
-    // The repo's own lint rule through deno's real parser: every runtime module reference is
-    // reported, type-only imports are erased and stay allowed. deno.json registers the same
-    // rule; this test pins the invariant even if that registration goes away.
-    const file = join(SCRIPTS_DIR, shim);
-    const diagnostics = Deno.lint.runPlugin(shimImportsPlugin, file, readFileSync(file, "utf8"));
-    expect(diagnostics).toEqual([]);
-  });
 }
 
-// The clean-shim assertions above prove nothing if the rule itself is a no-op,
-// so pin its teeth (and its file scoping) against doctored sources.
-test("no-shim-imports: rejects every runtime-import shape, allows type-only", () => {
+// The lint gate keeps the shims import-free only if the rule has teeth and covers them, so pin
+// both against doctored sources: (source, path) -> diagnostic count.
+test("no-shim-imports: rejects every runtime-import shape in a shim, allows type-only, silent elsewhere", () => {
   const shim = SHIM_FILES[0];
-  const lint = (source: string): string[] =>
-    Deno.lint.runPlugin(shimImportsPlugin, shim, source).map((d) => d.message);
-
-  expect(lint('import { x } from "./cli.ts";')).toHaveLength(1);
-  expect(lint('import "./side_effect.ts";')).toHaveLength(1);
-  expect(lint('export * from "./cli.ts";')).toHaveLength(1);
-  expect(lint('export { x } from "./cli.ts";')).toHaveLength(1);
-  expect(lint('const m = await import("./cli" + ".ts");')).toHaveLength(1);
-  expect(lint('const r = require; r("node:fs");')).toHaveLength(1); // aliasing still caught
-  // Erased at runtime: type-only imports and plain sourceless exports stay legal.
-  expect(lint('import type { T } from "./cli.ts"; export {};')).toEqual([]);
-  expect(lint("export function f(): number { return 1; }")).toEqual([]);
-});
-
-test("no-shim-imports: scoped to the shim files, silent elsewhere", () => {
   const importing = 'import { x } from "./cli.ts";';
-  expect(Deno.lint.runPlugin(shimImportsPlugin, "src/commands/init.ts", importing)).toEqual([]);
+  const rows: { source: string; path: string; diagnostics: number }[] = [
+    { source: importing, path: shim, diagnostics: 1 },
+    { source: 'import "./side_effect.ts";', path: shim, diagnostics: 1 },
+    { source: 'export * from "./cli.ts";', path: shim, diagnostics: 1 },
+    { source: 'export { x } from "./cli.ts";', path: shim, diagnostics: 1 },
+    { source: 'const m = await import("./cli" + ".ts");', path: shim, diagnostics: 1 },
+    // Aliasing require is still caught.
+    { source: 'const r = require; r("node:fs");', path: shim, diagnostics: 1 },
+    // Erased at runtime: type-only imports and plain sourceless exports stay legal.
+    { source: 'import type { T } from "./cli.ts"; export {};', path: shim, diagnostics: 0 },
+    { source: "export function f(): number { return 1; }", path: shim, diagnostics: 0 },
+    // Outside the shim files the rule says nothing.
+    { source: importing, path: "src/commands/init.ts", diagnostics: 0 },
+  ];
+  for (const row of rows) {
+    const count = Deno.lint.runPlugin(shimImportsPlugin, row.path, row.source).length;
+    expect({ ...row, count }).toEqual({ ...row, count: row.diagnostics });
+  }
   // Every pinned shim is inside the rule's scope -- the two lists may not drift.
   for (const { shim } of PINNED_PAIRS) {
     expect(SHIM_FILES.map((f) => f.split("/").at(-1))).toContain(shim);

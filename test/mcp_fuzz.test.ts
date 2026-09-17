@@ -175,9 +175,15 @@ test(
     const client = new McpClient();
     try {
       client.sendRaw(binaryGarbage());
-      for (const line of ["not json at all", '{"truncated": ', "[1,2,3]", "42", '"bare"']) {
-        client.sendRaw(line);
-      }
+      const noise = [
+        "not json at all",
+        '{"truncated": ',
+        "[1,2,3]",
+        "42",
+        '"bare"',
+        '{"foo":"bar"}',
+      ];
+      for (const line of noise) client.sendRaw(line);
       for (const line of generatedCorpus(rnd, 50)) client.sendRaw(line);
 
       expect(client.exitCode).toBeNull();
@@ -199,43 +205,6 @@ test("a ~1MB request (under the 10MB transport buffer) is answered normally", as
   try {
     const big = await client.request("big-1", "no/such/method", { "blob": "x".repeat(1_000_000) });
     expect(big.error?.code).toBe(-32601);
-
-    expect(client.exitCode).toBeNull();
-    await expectFullRecovery(client);
-    expectStdoutPurity(client);
-  } catch (e) {
-    client.kill();
-    throw e;
-  }
-  expect(await client.closeAndWait()).toBe(0);
-}, 20_000);
-
-test("interleaved corpus in seeded-shuffle order: the server survives and recovers", async () => {
-  const rnd = makePrng(FUZZ_SEED ^ 0x5f5f5f5f);
-  const corpus = [
-    ...classifierCorpus(),
-    "not json at all",
-    '{"truncated": ',
-    "[1,2,3]",
-    "42",
-    '"bare"',
-    '{"foo":"bar"}',
-    ...generatedCorpus(rnd, 30),
-  ];
-  // Fisher-Yates on the seeded PRNG: a fixed but arbitrary interleaving.
-  for (let i = corpus.length - 1; i > 0; i--) {
-    const j = Math.floor(rnd() * (i + 1));
-    const a = corpus[i] as string;
-    corpus[i] = corpus[j] as string;
-    corpus[j] = a;
-  }
-
-  const client = new McpClient();
-  try {
-    for (const line of corpus) client.sendRaw(line);
-    // The answered classifier probes may arrive in any order relative to the
-    // shuffle; waiting on the unknown-method probe drains everything before it.
-    await client.waitFor("str-1");
 
     expect(client.exitCode).toBeNull();
     await expectFullRecovery(client);

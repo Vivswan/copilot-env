@@ -7,6 +7,8 @@ import { staleCodexHomeExportLine } from "../src/codex/host.ts";
 import {
   type LaunchAction,
   type LaunchDeps,
+  type LaunchFlags,
+  type LaunchPlan,
   parseLaunchAction,
   prepareLaunch,
 } from "../src/commands/launch.ts";
@@ -35,71 +37,73 @@ function e2eRoot(): string {
 
 // --- parseLaunchAction ----------------------------------------------------------
 
-test("parseLaunchAction rejects an unknown CLI naming the choices", () => {
-  expect(() => parseLaunchAction({ cli: "cursor", args: [] })).toThrow(
-    "unknown agent CLI 'cursor' (expected claude | codex | copilot)",
-  );
-});
-
-test("parseLaunchAction hoists a LEADING --profile pair for claude/codex only", () => {
-  // The shell rc launcher (`cl --profile work --resume`) hands the whole tail through as args, so
-  // the leading pair is hoisted here.
-  expect(parseLaunchAction({ cli: "claude", args: ["--profile", "work", "--resume"] })).toEqual({
-    kind: "claude",
-    profile: WORK,
-    relaxed: false,
-    args: ["--resume"],
-  });
-  expect(parseLaunchAction({ cli: "codex", args: ["--profile", "work"] })).toEqual({
-    kind: "codex",
-    profile: WORK,
-    relaxed: false,
-    args: [],
-  });
-  // A NON-leading pair is the agent CLI's own business.
-  expect(parseLaunchAction({ cli: "claude", args: ["--resume", "--profile", "work"] })).toEqual({
-    kind: "claude",
-    profile: null,
-    relaxed: false,
-    args: ["--resume", "--profile", "work"],
-  });
-  expect(parseLaunchAction({ cli: "copilot", args: ["--profile", "work"] })).toEqual({
-    kind: "copilot",
-    relaxed: false,
-    args: ["--profile", "work"],
-  });
-});
-
-test("parseLaunchAction: the explicit --profile flag wins; the pair then rides through", () => {
-  expect(
-    parseLaunchAction({ cli: "claude", profile: "work", args: ["--profile", "other"] }),
-  ).toEqual({
-    kind: "claude",
-    profile: WORK,
-    relaxed: false,
-    args: ["--profile", "other"],
-  });
-});
-
-test("parseLaunchAction rejects --profile on copilot and validates hoisted names", () => {
-  expect(() => parseLaunchAction({ cli: "copilot", profile: "work", args: [] })).toThrow(
-    "--profile does not apply to copilot",
-  );
-  expect(() => parseLaunchAction({ cli: "claude", profile: "", args: [] })).toThrow(
-    "invalid profile name",
-  );
-  // A hoisted name goes through the same smart constructor as the flag.
-  expect(() => parseLaunchAction({ cli: "codex", args: ["--profile", "NOT VALID"] })).toThrow(
-    "invalid profile name",
-  );
-  // `--profile` with an EMPTY next arg is not a pair (the rc `-n "$2"` guard):
-  // both tokens pass through.
-  expect(parseLaunchAction({ cli: "claude", args: ["--profile", ""] })).toEqual({
-    kind: "claude",
-    profile: null,
-    relaxed: false,
-    args: ["--profile", ""],
-  });
+// One flag shape per row. The shell rc launcher (`cl --profile work --resume`) hands the whole tail
+// through as args, so a LEADING pair is hoisted; a non-leading pair, or one after an explicit flag,
+// is the agent CLI's own business, and copilot never hoists.
+test("parseLaunchAction: each flag shape parses to its action or is rejected naming the rule", () => {
+  const rows: Array<{ flags: LaunchFlags } & ({ action: LaunchAction } | { throws: string })> = [
+    {
+      flags: { cli: "cursor", args: [] },
+      throws: "unknown agent CLI 'cursor' (expected claude | codex | copilot)",
+    },
+    {
+      flags: { cli: "claude", args: ["--profile", "work", "--resume"] },
+      action: { kind: "claude", profile: WORK, relaxed: false, args: ["--resume"] },
+    },
+    {
+      flags: { cli: "codex", args: ["--profile", "work"] },
+      action: { kind: "codex", profile: WORK, relaxed: false, args: [] },
+    },
+    {
+      flags: { cli: "claude", args: ["--resume", "--profile", "work"] },
+      action: {
+        kind: "claude",
+        profile: null,
+        relaxed: false,
+        args: ["--resume", "--profile", "work"],
+      },
+    },
+    {
+      flags: { cli: "copilot", args: ["--profile", "work"] },
+      action: { kind: "copilot", relaxed: false, args: ["--profile", "work"] },
+    },
+    // The explicit flag wins; the pair then rides through.
+    {
+      flags: { cli: "claude", profile: "work", args: ["--profile", "other"] },
+      action: { kind: "claude", profile: WORK, relaxed: false, args: ["--profile", "other"] },
+    },
+    {
+      flags: { cli: "copilot", profile: "work", args: [] },
+      throws: "--profile does not apply to copilot",
+    },
+    { flags: { cli: "claude", profile: "", args: [] }, throws: "invalid profile name" },
+    // A hoisted name goes through the same smart constructor as the flag.
+    { flags: { cli: "codex", args: ["--profile", "NOT VALID"] }, throws: "invalid profile name" },
+    // `--profile` with an EMPTY next arg is not a pair (the rc `-n "$2"` guard): both tokens pass.
+    {
+      flags: { cli: "claude", args: ["--profile", ""] },
+      action: { kind: "claude", profile: null, relaxed: false, args: ["--profile", ""] },
+    },
+  ];
+  for (const row of rows) {
+    const parsed = (): { action: LaunchAction } | { throws: string } => {
+      try {
+        return { action: parseLaunchAction(row.flags) };
+      } catch (e) {
+        return { throws: (e as Error).message };
+      }
+    };
+    const got = parsed();
+    if ("throws" in row) {
+      const message = "throws" in got ? got.throws : `parsed: ${JSON.stringify(got.action)}`;
+      expect({ flags: row.flags, message }).toEqual({
+        flags: row.flags,
+        message: expect.stringContaining(row.throws),
+      });
+    } else {
+      expect({ flags: row.flags, ...got }).toEqual({ flags: row.flags, action: row.action });
+    }
+  }
 });
 
 // --- prepareLaunch over scripted deps --------------------------------------------
@@ -183,165 +187,277 @@ function scriptedDeps(script: DepsScript = {}): {
   return { deps, calls, notes };
 }
 
-const claudeDefault = (relaxed = false, args: string[] = []): LaunchAction => ({
-  kind: "claude",
-  profile: null,
-  relaxed,
-  args,
-});
+/** The plan (null = abort) or the thrown message. */
+type Outcome = { plan: LaunchPlan | null } | { throws: string };
 
-test("claude direct: no proxy work, managed flags + env, stale local URL scrubbed", async () => {
-  const { deps, calls, notes } = scriptedDeps({ mode: "direct", claudeUrl: { unset: true } });
-  const plan = await prepareLaunch(claudeDefault(false, ["--resume", "x"]), deps);
-  expect(plan).toEqual({
-    command: "claude",
-    args: ["--permission-mode", "auto", "--enable-auto-mode", "--resume", "x"],
-    env: { CLAUDE_CODE_NO_FLICKER: "1" },
-    scrub: ["ANTHROPIC_BASE_URL"],
-  });
-  expect(calls).toEqual(["mode:claude"]);
-  expect(notes).toEqual([]);
-});
+interface ScriptedRow {
+  name: string;
+  script: DepsScript;
+  action: LaunchAction;
+  outcome: Outcome;
+  calls: string[];
+  notes?: string[];
+}
 
-test("claude proxy/none: ensure THEN re-wire, fresh proxy URL exported", async () => {
-  for (const mode of ["proxy", "none"] as const) {
-    const { deps, calls } = scriptedDeps({
-      mode,
-      claudeUrl: { value: "http://127.0.0.1:4242" },
+async function runScripted(rows: ScriptedRow[]): Promise<void> {
+  for (const row of rows) {
+    const { deps, calls, notes } = scriptedDeps(row.script);
+    const outcome: Outcome = await prepareLaunch(row.action, deps).then(
+      (plan) => ({ plan }),
+      (e: unknown) => ({ throws: (e as Error).message }),
+    );
+    expect({ name: row.name, outcome, calls, notes }).toEqual({
+      name: row.name,
+      outcome: row.outcome,
+      calls: row.calls,
+      notes: row.notes ?? [],
     });
-    const plan = await prepareLaunch(claudeDefault(), deps);
-    // Ensure precedes the re-wire: a cold start may move the port the wiring bakes.
-    expect(calls).toEqual(["mode:claude", "ensure:(default)", "wire:claude"]);
-    expect(plan?.env).toEqual({
-      CLAUDE_CODE_NO_FLICKER: "1",
-      ANTHROPIC_BASE_URL: "http://127.0.0.1:4242",
-    });
-    expect(plan?.scrub).toEqual([]);
   }
-});
+}
 
-test("claude proxy: a failed ensure aborts before any wiring or launch", async () => {
-  const { deps, calls } = scriptedDeps({ mode: "proxy", proxyUp: false });
-  expect(await prepareLaunch(claudeDefault(), deps)).toBeNull();
-  expect(calls).toEqual(["mode:claude", "ensure:(default)"]);
-});
+const CLAUDE_FLAGS = ["--permission-mode", "auto", "--enable-auto-mode"];
 
-test("claude 'other': launched as-is with a note, config never touched", async () => {
-  const { deps, calls, notes } = scriptedDeps({ mode: "other" });
-  const plan = await prepareLaunch(claudeDefault(), deps);
-  expect(plan?.args).toEqual(["--permission-mode", "auto", "--enable-auto-mode"]);
-  expect(calls).toEqual(["mode:claude"]);
-  expect(notes).toEqual([
-    "agent launch: Claude has a custom or unrecognized provider config " +
-    "(not managed by copilot-env); launching it as-is.",
-  ]);
-});
-
-test("claude --relaxed: IS_SANDBOX=1 and the skip flag behind the managed set", async () => {
-  const { deps } = scriptedDeps({ mode: "direct" });
-  const plan = await prepareLaunch(claudeDefault(true, ["hi"]), deps);
-  expect(plan?.env).toEqual({ CLAUDE_CODE_NO_FLICKER: "1", IS_SANDBOX: "1" });
-  expect(plan?.args).toEqual([
-    "--permission-mode",
-    "auto",
-    "--enable-auto-mode",
-    "--dangerously-skip-permissions",
-    "hi",
-  ]);
-});
-
-test("claude --profile: settings synced, base URL scrubbed unconditionally", async () => {
-  const { deps, calls } = scriptedDeps({
-    slot: completeSlot("proxy"),
-    // Even a set-verdict must not leak into a profile launch: the profile's own
-    // settings file carries its URL.
-    claudeUrl: { value: "http://127.0.0.1:4141" },
+const defaultAction =
+  (kind: "claude" | "codex") => (relaxed = false, args: string[] = []): LaunchAction => ({
+    kind,
+    profile: null,
+    relaxed,
+    args,
   });
-  const plan = await prepareLaunch(
-    { kind: "claude", profile: WORK, relaxed: false, args: ["--resume"] },
-    deps,
-  );
-  expect(calls).toEqual(["slot:work", "ensure:work", "settings:work:proxy"]);
-  expect(plan).toEqual({
-    command: "claude",
-    args: [
-      "--settings",
-      "/fake/settings-work.json",
-      "--permission-mode",
-      "auto",
-      "--enable-auto-mode",
-      "--resume",
-    ],
-    env: { CLAUDE_CODE_NO_FLICKER: "1" },
-    scrub: ["ANTHROPIC_BASE_URL"],
-  });
-});
+const claudeDefault = defaultAction("claude");
+const codexDefault = defaultAction("codex");
 
-test("a direct profile never touches the proxy; missing/credential-less ones hard-fail", async () => {
-  const direct = scriptedDeps({ slot: completeSlot("direct", "copilot") });
-  await prepareLaunch({ kind: "claude", profile: WORK, relaxed: false, args: [] }, direct.deps);
-  expect(direct.calls).toEqual(["slot:work", "settings:work:direct"]);
+// The default Claude launch by configured mode: ensure precedes the re-wire (a cold start may move
+// the port the wiring bakes), the base URL is read AFTER the wiring, and "other" is never touched.
+test("claude default: each provider mode composes its plan, calls, and note", () =>
+  runScripted([
+    {
+      name: "direct: no proxy work, managed flags + env, stale local URL scrubbed",
+      script: { mode: "direct", claudeUrl: { unset: true } },
+      action: claudeDefault(false, ["--resume", "x"]),
+      outcome: {
+        plan: {
+          command: "claude",
+          args: [...CLAUDE_FLAGS, "--resume", "x"],
+          env: { CLAUDE_CODE_NO_FLICKER: "1" },
+          scrub: ["ANTHROPIC_BASE_URL"],
+        },
+      },
+      calls: ["mode:claude"],
+    },
+    ...(["proxy", "none"] as const).map((mode): ScriptedRow => ({
+      name: `${mode}: ensure THEN re-wire, fresh proxy URL exported`,
+      script: { mode, claudeUrl: { value: "http://127.0.0.1:4242" } },
+      action: claudeDefault(),
+      outcome: {
+        plan: {
+          command: "claude",
+          args: CLAUDE_FLAGS,
+          env: { CLAUDE_CODE_NO_FLICKER: "1", ANTHROPIC_BASE_URL: "http://127.0.0.1:4242" },
+          scrub: [],
+        },
+      },
+      calls: ["mode:claude", "ensure:(default)", "wire:claude"],
+    })),
+    {
+      name: "proxy: a failed ensure aborts before any wiring or launch",
+      script: { mode: "proxy", proxyUp: false },
+      action: claudeDefault(),
+      outcome: { plan: null },
+      calls: ["mode:claude", "ensure:(default)"],
+    },
+    {
+      name: "other: launched as-is with a note, config never touched",
+      script: { mode: "other" },
+      action: claudeDefault(),
+      outcome: {
+        plan: {
+          command: "claude",
+          args: CLAUDE_FLAGS,
+          env: { CLAUDE_CODE_NO_FLICKER: "1" },
+          scrub: [],
+        },
+      },
+      calls: ["mode:claude"],
+      notes: [
+        "agent launch: Claude has a custom or unrecognized provider config " +
+        "(not managed by copilot-env); launching it as-is.",
+      ],
+    },
+    {
+      name: "--relaxed: IS_SANDBOX=1 and the skip flag behind the managed set",
+      script: { mode: "direct" },
+      action: claudeDefault(true, ["hi"]),
+      outcome: {
+        plan: {
+          command: "claude",
+          args: [...CLAUDE_FLAGS, "--dangerously-skip-permissions", "hi"],
+          env: { CLAUDE_CODE_NO_FLICKER: "1", IS_SANDBOX: "1" },
+          scrub: [],
+        },
+      },
+      calls: ["mode:claude"],
+    },
+  ]));
 
-  const missing = scriptedDeps({ slot: partialSlot() });
-  await expect(
-    prepareLaunch({ kind: "codex", profile: WORK, relaxed: false, args: [] }, missing.deps),
-  ).rejects.toThrow(
-    "profile 'work' does not exist - create it with `agent profile --add work --direct|--proxy`",
-  );
+// A named profile by slot state: a proxy slot ensures its daemon FIRST (then syncs), a direct slot
+// never touches the proxy, and a partial slot hard-fails with the repair line rather than falling
+// back to the default credential. Claude's base URL is scrubbed unconditionally (the profile's own
+// settings file carries its URL); CODEX_HOME is read only AFTER the sync.
+test("--profile: each slot state syncs, launches, or hard-fails, for claude and codex", () =>
+  runScripted([
+    {
+      name: "claude proxy: settings synced, base URL scrubbed unconditionally",
+      script: { slot: completeSlot("proxy"), claudeUrl: { value: "http://127.0.0.1:4141" } },
+      action: { kind: "claude", profile: WORK, relaxed: false, args: ["--resume"] },
+      outcome: {
+        plan: {
+          command: "claude",
+          args: ["--settings", "/fake/settings-work.json", ...CLAUDE_FLAGS, "--resume"],
+          env: { CLAUDE_CODE_NO_FLICKER: "1" },
+          scrub: ["ANTHROPIC_BASE_URL"],
+        },
+      },
+      calls: ["slot:work", "ensure:work", "settings:work:proxy"],
+    },
+    {
+      name: "claude direct: never touches the proxy",
+      script: { slot: completeSlot("direct", "copilot") },
+      action: { kind: "claude", profile: WORK, relaxed: false, args: [] },
+      outcome: {
+        plan: {
+          command: "claude",
+          args: ["--settings", "/fake/settings-work.json", ...CLAUDE_FLAGS],
+          env: { CLAUDE_CODE_NO_FLICKER: "1" },
+          scrub: ["ANTHROPIC_BASE_URL"],
+        },
+      },
+      calls: ["slot:work", "settings:work:direct"],
+    },
+    {
+      name: "codex, missing profile: hard-fails",
+      script: { slot: partialSlot() },
+      action: { kind: "codex", profile: WORK, relaxed: false, args: [] },
+      outcome: {
+        throws:
+          "profile 'work' does not exist - create it with `agent profile --add work --direct|--proxy`",
+      },
+      calls: ["slot:work"],
+    },
+    {
+      name: "claude, credential-less profile: hard-fails",
+      script: { slot: partialSlot("proxy") },
+      action: { kind: "claude", profile: WORK, relaxed: false, args: [] },
+      outcome: {
+        throws: "profile 'work' has no credential - repair it with `agent auth --profile work` " +
+          "or `agent profile --add work`",
+      },
+      calls: ["slot:work"],
+    },
+    {
+      name:
+        "codex proxy: ensure daemon FIRST, then sync; the farm the sync built reaches the child",
+      script: {
+        slot: completeSlot("proxy"),
+        codexHome: "/fake/codex-farm",
+        codexHomeOnceWired: true,
+      },
+      action: { kind: "codex", profile: WORK, relaxed: false, args: ["--resume"] },
+      outcome: {
+        plan: {
+          command: "codex",
+          args: ["--profile", "work", "--resume"],
+          env: { CODEX_HOME: "/fake/codex-farm" },
+          scrub: ["CODEX_HOME"],
+        },
+      },
+      calls: ["slot:work", "ensure:work", "sync:work:proxy"],
+    },
+    {
+      name: "codex proxy: a failed sync warns and launches with the existing config",
+      script: { slot: completeSlot("proxy"), syncThrows: true },
+      action: { kind: "codex", profile: WORK, relaxed: false, args: [] },
+      outcome: {
+        plan: {
+          command: "codex",
+          args: ["--profile", "work"],
+          env: { CODEX_HOME: "/fake/.codex" },
+          scrub: ["CODEX_HOME"],
+        },
+      },
+      calls: ["slot:work", "ensure:work", "sync:work:proxy"],
+      notes: [
+        "agent launch: could not refresh the profile wiring; launching with the " +
+        "existing config (boom).",
+      ],
+    },
+    // The account-wide catalog belongs to the default selection: a profile's launch is the
+    // profile's own wiring, so no catalog refresh appears among its calls.
+    {
+      name: "codex direct: synced without the proxy or the catalog",
+      script: { slot: completeSlot("direct") },
+      action: { kind: "codex", profile: WORK, relaxed: false, args: [] },
+      outcome: {
+        plan: {
+          command: "codex",
+          args: ["--profile", "work"],
+          env: { CODEX_HOME: "/fake/.codex" },
+          scrub: ["CODEX_HOME"],
+        },
+      },
+      calls: ["slot:work", "sync:work:direct"],
+    },
+  ]));
 
-  const credless = scriptedDeps({ slot: partialSlot("proxy") });
-  await expect(
-    prepareLaunch({ kind: "claude", profile: WORK, relaxed: false, args: [] }, credless.deps),
-  ).rejects.toThrow(
-    "profile 'work' has no credential - repair it with `agent auth --profile work` " +
-      "or `agent profile --add work`",
-  );
-});
-
-test("codex default: managed CODEX_HOME applied; proxy mode ensures then re-wires", async () => {
-  const { deps, calls } = scriptedDeps({
-    mode: "proxy",
-    codexHome: "/fake/codex-farm",
-    codexHomeOnceWired: true, // the farm the re-wire just built must reach the child env
-  });
-  const plan = await prepareLaunch(
-    { kind: "codex", profile: null, relaxed: true, args: ["exec", "ls"] },
-    deps,
-  );
-  expect(calls).toEqual(["mode:codex", "ensure:(default)", "wire:codex"]);
-  expect(plan).toEqual({
-    command: "codex",
-    args: ["--sandbox", "danger-full-access", "exec", "ls"],
-    env: { CODEX_HOME: "/fake/codex-farm" },
-    scrub: ["CODEX_HOME"], // every inherited casing goes before the pin lands
-  });
-});
-
-test("codex --profile: ensure daemon FIRST, then sync; a failed sync warns and launches", async () => {
-  const ok = scriptedDeps({
-    slot: completeSlot("proxy"),
-    codexHome: "/fake/codex-farm",
-    codexHomeOnceWired: true, // the farm the sync just made wired must reach the child env
-  });
-  const plan = await prepareLaunch(
-    { kind: "codex", profile: WORK, relaxed: false, args: ["--resume"] },
-    ok.deps,
-  );
-  expect(ok.calls).toEqual(["slot:work", "ensure:work", "sync:work:proxy"]);
-  expect(plan?.args).toEqual(["--profile", "work", "--resume"]);
-  expect(plan?.env).toEqual({ CODEX_HOME: "/fake/codex-farm" });
-
-  const broken = scriptedDeps({ slot: completeSlot("proxy"), syncThrows: true });
-  const degraded = await prepareLaunch(
-    { kind: "codex", profile: WORK, relaxed: false, args: [] },
-    broken.deps,
-  );
-  expect(degraded?.args).toEqual(["--profile", "work"]);
-  expect(broken.notes).toEqual([
-    "agent launch: could not refresh the profile wiring; launching with the " +
-    "existing config (boom).",
-  ]);
-});
+// The default Codex launch by mode: proxy ensures then re-wires (the farm the re-wire just built
+// must reach the child env) and leaves the catalog to the token step; direct refreshes the model
+// catalog BEFORE Codex starts, since Codex parses it at startup. Every inherited CODEX_HOME casing
+// is scrubbed before the pin lands.
+test("codex default: proxy ensures then re-wires; direct refreshes the catalog first", () =>
+  runScripted([
+    {
+      name: "proxy --relaxed: managed CODEX_HOME applied after the re-wire",
+      script: { mode: "proxy", codexHome: "/fake/codex-farm", codexHomeOnceWired: true },
+      action: codexDefault(true, ["exec", "ls"]),
+      outcome: {
+        plan: {
+          command: "codex",
+          args: ["--sandbox", "danger-full-access", "exec", "ls"],
+          env: { CODEX_HOME: "/fake/codex-farm" },
+          scrub: ["CODEX_HOME"],
+        },
+      },
+      calls: ["mode:codex", "ensure:(default)", "wire:codex"],
+    },
+    {
+      name: "proxy: a plain launch leaves the catalog to the token step",
+      script: { mode: "proxy", codexHome: "/fake/codex-farm", codexHomeOnceWired: true },
+      action: codexDefault(),
+      outcome: {
+        plan: {
+          command: "codex",
+          args: [],
+          env: { CODEX_HOME: "/fake/codex-farm" },
+          scrub: ["CODEX_HOME"],
+        },
+      },
+      calls: ["mode:codex", "ensure:(default)", "wire:codex"],
+    },
+    {
+      name: "direct: the catalog refresh precedes the launch",
+      script: { mode: "direct" },
+      action: codexDefault(),
+      outcome: {
+        plan: {
+          command: "codex",
+          args: [],
+          env: { CODEX_HOME: "/fake/.codex" },
+          scrub: ["CODEX_HOME"],
+        },
+      },
+      calls: ["mode:codex", "catalog:refresh"],
+    },
+  ]));
 
 test("copilot: the managed flag set verbatim, --relaxed adds --allow-all", async () => {
   const { deps, calls } = scriptedDeps();
@@ -684,25 +800,4 @@ skipWin("e2e: copilot gets the managed flag set and no provider wiring", () => {
     "ARGS=--autopilot --enable-reasoning-summaries --experimental --allow-all hello",
   );
   expect(res.exitCode).toBe(0);
-});
-
-test("codex direct default launch refreshes the model catalog BEFORE Codex starts; proxy leaves it to the token step", async () => {
-  const codexDefault: LaunchAction = { kind: "codex", profile: null, relaxed: false, args: [] };
-  const direct = scriptedDeps({ mode: "direct" });
-  expect(await prepareLaunch(codexDefault, direct.deps)).not.toBeNull();
-  expect(direct.calls).toEqual(["mode:codex", "catalog:refresh"]);
-  const proxy = scriptedDeps({ mode: "proxy" });
-  expect(await prepareLaunch(codexDefault, proxy.deps)).not.toBeNull();
-  expect(proxy.calls).toEqual(["mode:codex", "ensure:(default)", "wire:codex"]);
-  // A named-profile launch is the profile's own wiring; the account-wide catalog
-  // belongs to the default selection.
-  const named = scriptedDeps({ mode: "direct", slot: completeSlot("direct") });
-  const action: LaunchAction = {
-    kind: "codex",
-    profile: WORK,
-    relaxed: false,
-    args: [],
-  };
-  expect(await prepareLaunch(action, named.deps)).not.toBeNull();
-  expect(named.calls).not.toContain("catalog:refresh");
 });

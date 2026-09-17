@@ -121,84 +121,69 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-test("start --record-event writes the lastEnsureAt heartbeat and never launches", async () => {
+// The heartbeat lands in the NAMED daemon's run state alone. A real proxy profile always has run
+// state before its resolver heartbeats (the port reservation writes it); a profile WITHOUT state
+// must not be fabricated, and the other slot's state is left exactly as it was.
+test("start --record-event writes the lastEnsureAt heartbeat to the named run state only, and never launches", async () => {
   tmpHome();
-  expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
-
-  const before = Date.now();
-  await runStart({ kind: "record-event", profile: null });
-
-  // A real clock reading, not just "some number" (NaN/0 would satisfy typeof).
-  const at = new CopilotEnvRunState().read().lastEnsureAt;
-  expect(at).toBeGreaterThanOrEqual(before);
-  expect(at).toBeLessThanOrEqual(Date.now());
-  expect(new CopilotEnvRunState().read().pid).toBeUndefined(); // no daemon was started
-});
-
-test("start --record-event --profile heartbeats ONLY the profile's run state", async () => {
-  tmpHome();
-  // A real proxy profile always has run state before its resolver heartbeats (the
-  // port reservation writes it); a profile WITHOUT state must not be fabricated.
   writeRunState({ port: 4242 }, WORK);
-  const before = Date.now();
-  await runStart({ kind: "record-event", profile: WORK });
+  const rows = [
+    { profile: WORK, own: CopilotEnvRunState.forProfile(WORK), other: new CopilotEnvRunState() },
+    { profile: null, own: new CopilotEnvRunState(), other: CopilotEnvRunState.forProfile(WORK) },
+  ];
+  for (const { profile, own, other } of rows) {
+    const slot = profile ?? "(default)";
+    expect(own.read().lastEnsureAt, slot).toBeUndefined();
+    const otherBefore = other.read().lastEnsureAt;
+    const before = Date.now();
+    await runStart({ kind: "record-event", profile });
 
-  const at = CopilotEnvRunState.forProfile(WORK).read().lastEnsureAt;
-  expect(at).toBeGreaterThanOrEqual(before);
-  expect(at).toBeLessThanOrEqual(Date.now());
-  expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
+    // A real clock reading, not just "some number" (NaN/0 would satisfy typeof).
+    const at = own.read().lastEnsureAt;
+    expect(at, slot).toBeGreaterThanOrEqual(before);
+    expect(at, slot).toBeLessThanOrEqual(Date.now());
+    expect(other.read().lastEnsureAt, slot).toBe(otherBefore);
+    expect(own.read().pid, slot).toBeUndefined(); // no daemon was started
+  }
 });
 
 // A conflicting flag combination is rejected at the boundary, never resolved by dispatch order:
-// the old shape silently dropped `--record-event` when `--check` was present.
-test("parseStartAction rejects conflicting mode flags at the boundary", () => {
+// the old shape silently dropped `--record-event` when `--check` was present. A valid shape
+// parses into its single action, knobs kept.
+test("parseStartAction: each flag shape is one action, or a boundary rejection", () => {
   const CONFLICT =
     "--check and --record-event are mutually exclusive and cannot combine with --dry-run/--port/--force";
-  expect(() => parseStartAction({ check: true, recordEvent: true })).toThrow(CONFLICT);
-  expect(() => parseStartAction({ check: true, force: true })).toThrow(CONFLICT);
-  expect(() => parseStartAction({ check: true, dryRun: true })).toThrow(CONFLICT);
-  expect(() => parseStartAction({ recordEvent: true, port: 4141 })).toThrow(CONFLICT);
-  expect(() => parseStartAction({ check: true, recordEvent: true, dryRun: true })).toThrow(
-    CONFLICT,
-  );
-});
-
-test("parseStartAction parses each valid flag shape into its single action", () => {
-  expect(parseStartAction({ check: true, profile: "work" })).toEqual({
-    kind: "check",
-    profile: WORK,
-  });
-  expect(parseStartAction({ recordEvent: true })).toEqual({
-    kind: "record-event",
-    profile: null,
-  });
-  // A launch keeps its knobs; --dry-run with --force/--port stays a valid combination.
-  expect(parseStartAction({ dryRun: true, force: true, port: 4141 })).toEqual({
-    kind: "launch",
-    dryRun: true,
-    force: true,
-    port: 4141,
-    profile: null,
-  });
-  expect(parseStartAction({})).toEqual({
-    kind: "launch",
-    dryRun: false,
-    force: false,
-    port: undefined,
-    profile: null,
-  });
-});
-
-test("start --check --profile exits non-zero when that profile's daemon is not running", async () => {
-  tmpHome();
-  await runStart({ kind: "check", profile: WORK });
-  expect(process.exitCode).toBe(1);
-});
-
-test("start --check exits non-zero when no proxy is tracked/running", async () => {
-  tmpHome();
-  await runStart({ kind: "check", profile: null });
-  expect(process.exitCode).toBe(1);
+  const rows: Array<
+    & { flags: Parameters<typeof parseStartAction>[0] }
+    & (
+      | { action: ReturnType<typeof parseStartAction> }
+      | { throws: string }
+    )
+  > = [
+    { flags: { check: true, recordEvent: true }, throws: CONFLICT },
+    { flags: { check: true, force: true }, throws: CONFLICT },
+    { flags: { check: true, dryRun: true }, throws: CONFLICT },
+    { flags: { recordEvent: true, port: 4141 }, throws: CONFLICT },
+    { flags: { check: true, recordEvent: true, dryRun: true }, throws: CONFLICT },
+    { flags: { check: true, profile: "work" }, action: { kind: "check", profile: WORK } },
+    { flags: { recordEvent: true }, action: { kind: "record-event", profile: null } },
+    // A launch keeps its knobs; --dry-run with --force/--port stays a valid combination.
+    {
+      flags: { dryRun: true, force: true, port: 4141 },
+      action: { kind: "launch", dryRun: true, force: true, port: 4141, profile: null },
+    },
+    {
+      flags: {},
+      action: { kind: "launch", dryRun: false, force: false, port: undefined, profile: null },
+    },
+  ];
+  for (const row of rows) {
+    if ("throws" in row) {
+      expect(() => parseStartAction(row.flags), JSON.stringify(row.flags)).toThrow(row.throws);
+    } else {
+      expect(parseStartAction(row.flags), JSON.stringify(row.flags)).toEqual(row.action);
+    }
+  }
 });
 
 // The dry run narrates planCleanup (the SHARED decision source) and never acts on it. In the
@@ -374,46 +359,54 @@ test(
 
 // The full UP path is not reproducible here: classifyDaemonPid needs a `copilot-api ... start`
 // command line, which the test runner's own pid cannot satisfy (see the "stays DOWN" test
-// below). These two pin the TCP liveness half alone.
-test("portListening resolves true against a real listening loopback port", async () => {
-  const { server, port } = await listenEphemeral();
-  try {
-    expect(await portListening(port, 2000)).toBe(true);
-  } finally {
-    await closeServer(server);
-  }
-});
-
-test("portListening resolves false for a port with nothing listening", async () => {
-  const { server, port } = await listenEphemeral();
-  await closeServer(server);
-  expect(await portListening(port, 1000)).toBe(false);
-});
-
-test("portListening detects an IPv6-loopback-only listener too", async () => {
-  // The probe connects to 127.0.0.1 and ::1 concurrently and settles on the first success, so a
-  // daemon bound only to IPv6 loopback is still found.
-  let listener: { server: Server; port: number };
-  try {
-    listener = await listenEphemeral("::1");
-  } catch {
-    return; // no IPv6 loopback on this machine -- nothing to assert
-  }
-  try {
-    expect(await portListening(listener.port)).toBe(true);
-  } finally {
-    await closeServer(listener.server);
+// below). This pins the TCP liveness half alone, one listener state per row. The probe connects
+// to 127.0.0.1 and ::1 concurrently and settles on the first success, so a daemon bound only to
+// IPv6 loopback is still found; that row skips itself where ::1 is unavailable.
+test("portListening: a real v4 or v6-only loopback listener reads true, a closed port false", async () => {
+  const rows: Array<{ host: string; close: boolean; listening: boolean }> = [
+    { host: "127.0.0.1", close: false, listening: true },
+    { host: "127.0.0.1", close: true, listening: false },
+    { host: "::1", close: false, listening: true },
+  ];
+  for (const row of rows) {
+    let listener: { server: Server; port: number };
+    try {
+      listener = await listenEphemeral(row.host);
+    } catch {
+      if (row.host === "::1") continue; // no IPv6 loopback on this machine
+      throw new Error(`could not listen on ${row.host}`);
+    }
+    try {
+      if (row.close) await closeServer(listener.server);
+      expect({ ...row, got: await portListening(listener.port, 2000) }).toEqual({
+        ...row,
+        got: row.listening,
+      });
+    } finally {
+      if (!row.close) await closeServer(listener.server);
+    }
   }
 });
 
 // The guard is load-bearing: a live, IDENTIFIABLE pid whose command line is not
 // `copilot-api ... start`, plus a genuinely listening port, must still be DOWN, never a false UP.
 //   identifiable non-daemon pid -> "no"      -> exit 1, whatever the port says
-//   unreadable command line     -> "unknown" -> the port probe decides (classifyDaemonPid test below)
+//   unreadable command line     -> "unknown" -> the port probe decides
 // The true exit-0 path runs in the start/stop lifecycle against the fake proxy, whose command
-// line does match.
+// line does match. The controls: with nothing tracked (default or a named profile) the check is
+// DOWN too, and the classifier's definitive "no" for a dead pid and for this runner is what keeps
+// the guard honest; "unknown" (a restricted token that cannot read a command line) is reserved for
+// sandboxed callers and is not reproducible here.
 test("start --check stays DOWN for a live pid + listening port that is not a copilot-api daemon", async () => {
   tmpHome();
+  for (const profile of [null, WORK]) {
+    await runStart({ kind: "check", profile });
+    expect(process.exitCode, profile ?? "(default)").toBe(1); // nothing tracked
+    resetExitCode();
+  }
+  expect(await classifyDaemonPid(DEAD_PID)).toBe("no");
+  expect(await classifyDaemonPid(process.pid)).toBe("no");
+
   const { server, port } = await listenEphemeral();
   try {
     // process.pid is alive and the port listens, but the runner is identifiable as not a daemon.
@@ -426,11 +419,4 @@ test("start --check stays DOWN for a live pid + listening port that is not a cop
   } finally {
     await closeServer(server);
   }
-});
-
-// A definitive "no" is what keeps the DOWN test above honest; "unknown" (a restricted token that
-// cannot read a command line) is reserved for sandboxed callers and is not reproducible here.
-test("classifyDaemonPid returns 'no' for a dead pid and a live non-daemon pid", async () => {
-  expect(await classifyDaemonPid(DEAD_PID)).toBe("no");
-  expect(await classifyDaemonPid(process.pid)).toBe("no");
 });

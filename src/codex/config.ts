@@ -5,12 +5,12 @@
 import { parse, stringify } from "smol-toml";
 import {
   type AgentAdapter,
-  type AgentRunAction,
   type CredentialWiring,
+  directNeedsCredentialError,
   type DirectWiring,
+  directWiring,
   type ManagedWrite,
   reservePlannedPort,
-  runAgentConfig,
 } from "../agents/configure.ts";
 import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
 import {
@@ -27,6 +27,7 @@ import {
 } from "../agents/write_plan.ts";
 import { type AgentProviderMode, providerModeExitCode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { isReducedGpt } from "../copilot_api/models.ts";
@@ -210,9 +211,9 @@ function managedProviderForMode(request: CodexModeRequest, profile: Profile = nu
     return managedDirectProvider(
       request.credential,
       profile,
-      request.directIntegrationId,
+      request.direct?.directIntegrationId ?? null,
       codexUserAgent(),
-      request.directBaseUrl,
+      request.direct?.directBaseUrl,
     );
   }
   return managedProxyProvider(request.baseUrl, profile, request.credential);
@@ -904,8 +905,7 @@ export async function applyCodexConfig(
 }
 
 /** The Direct facts a write bakes, resolved ONCE on the host in use: the `identity` pin, else
- *  identity selection on that host (a `preferred` cached identity tried first, never taken on trust;
- *  a definitive 400/401 moves on), then the `host` literal, else the host probe under that
+ *  identity selection on that host, then the `host` literal, else the host probe under that
  *  identity; a host `auto` moves to re-runs the selection there. Throws when the credential is
  *  rejected under every known identity.
  *
@@ -915,19 +915,40 @@ export async function applyCodexConfig(
 export async function probeDirectWiring(
   profile: Profile = null,
   token?: string | null,
-  preferred: string | null = null,
 ): Promise<DirectWiring> {
   const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
+  if (resolved === null) throw directNeedsCredentialError(profile);
   const config = new CopilotEnvConfig();
   const userAgent = codexUserAgent();
   // The one identity-then-host rule (selectDirectIdentityAndHost): a literal skips the HOST probe,
   // never the identity selection, and a host `auto` moved to re-runs the selection there.
   const { integrationId, apiBase } = await selectDirectIdentityAndHost(resolved, userAgent, {
     pinned: config.pinnedIntegrationId(profile),
-    preferred,
     fixedHost: config.copilotHost(profile),
   });
-  return { directIntegrationId: integrationId, directBaseUrl: apiBase };
+  return directWiring(integrationId, apiBase);
+}
+
+/** The LANDING probe: probeDirectWiring plus the one write of the slot's Direct pair, and only
+ *  the halves the probe ANSWERED (a pin or literal in force is an overlay: it renders at read time
+ *  and never enters the slot). Only the commands that land a credential or wire a slot holding no
+ *  pair reach it (`agent profile --add`, `agent auth --profile`, an import, and a re-render whose
+ *  slot holds no pair; the default's landing stores through commitDefaultWiring in
+ *  configure_defaults.ts once both agents' writes land Direct); a listing such as `agent models --direct` probes
+ *  without it, so a transient answer there can never overwrite the stored pair. */
+export async function landDirectWiring(
+  profile: Profile = null,
+  token?: string | null,
+): Promise<DirectWiring> {
+  const direct = await probeDirectWiring(profile, token);
+  const config = new CopilotEnvConfig();
+  new CopilotEnvState().setProfileDirectPair(profile, {
+    ...(config.pinnedIntegrationId(profile) === null
+      ? { integrationId: direct.directIntegrationId }
+      : {}),
+    ...(config.copilotHost(profile) === null ? { host: direct.directBaseUrl } : {}),
+  });
+  return direct;
 }
 
 function codexOtherDetail(otherReason: CodexOtherReason): string {
@@ -1175,12 +1196,4 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
       removeCodexProfile(effectiveCodexHome(), name);
     },
   };
-}
-
-/** `agent codex`: the shared skeleton (runAgentConfig) over codexAdapter. */
-export async function runCodex(
-  action: AgentRunAction,
-  catalogDeps?: CodexCatalogDeps,
-): Promise<void> {
-  return runAgentConfig(codexAdapter(catalogDeps), action);
 }

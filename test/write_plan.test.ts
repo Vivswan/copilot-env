@@ -1,6 +1,7 @@
 // The plan half of a managed write: the rows a patch yields over a document, and the parity a
 // writer owes them (what the apply saves is what the plan said, and a second plan over the result
 // is all `same`).
+import { directWiring } from "../src/agents/configure.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
@@ -78,7 +79,11 @@ test("the Codex plan is what its apply writes, and a re-plan over the result is 
   });
   const before = parse(readFileSync(configPath, "utf8"));
 
-  const plan = planCodexConfig(homes.codexHome, { mode: "direct", credential: COMMAND });
+  const plan = planCodexConfig(homes.codexHome, {
+    mode: "direct",
+    direct: null,
+    credential: COMMAND,
+  });
   expect(plan.files.map((f) => [f.path, f.verdict])).toEqual([[configPath, "rewrite"]]);
   plan.apply();
   const after = parse(readFileSync(configPath, "utf8"));
@@ -88,7 +93,11 @@ test("the Codex plan is what its apply writes, and a re-plan over the result is 
   expect(rows.find((r) => r.key === "model_providers.copilot-env.env_key")?.status).toBe("remove");
   expect(rows.find((r) => r.key === "model_providers.copilot-env.base_url")?.status).toBe("change");
 
-  const again = planCodexConfig(homes.codexHome, { mode: "direct", credential: COMMAND });
+  const again = planCodexConfig(homes.codexHome, {
+    mode: "direct",
+    direct: null,
+    credential: COMMAND,
+  });
   expect(again.files[0]?.verdict).toBe("same");
   expect(new Set(again.files[0]?.attributes.map((r) => r.status))).toEqual(new Set(["same"]));
 });
@@ -100,8 +109,7 @@ test("the Claude plan is what its apply writes, from a first write to a re-plan"
 
   const plan = planClaudeConfig(homes.claudeHome, {
     mode: "direct",
-    directIntegrationId: "copilot-developer-cli",
-    directBaseUrl: "https://api.githubcopilot.com",
+    direct: directWiring("copilot-developer-cli", "https://api.githubcopilot.com"),
     credential: { kind: "static", token: "ghu_baked_value" },
   });
   const settings = plan.files.find((f) => f.path === settingsPath);

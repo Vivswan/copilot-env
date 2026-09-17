@@ -5,7 +5,7 @@
 import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
 import { CopilotApiConfig } from "./config.ts";
-import { CODEX_IDENTITY_NAME, CopilotEnvConfig, INTEGRATION_ID_RE } from "./env_config.ts";
+import { CODEX_IDENTITY_NAME, INTEGRATION_ID_RE, isLoopbackHostname } from "./env_config.ts";
 import { GH_LOGIN_RE } from "./gh_cli.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import {
@@ -102,7 +102,8 @@ function rawCredentialPatch(
 // A profile is ONE credential slot plus ONE wiring mode, applied to BOTH agents; the default is a profile
 // too, under the reserved `default` key.
 //   a named profile  -> never falls back to the default credential; `mode` is the truth its agent artifacts derive from
-//   the default      -> `mode` only records what `agent init` wrote, the artifacts staying the live truth
+//   the default      -> `mode` is the one mode both agents share, written by the wiring commands (a single-agent write
+//                       that would differ is refused); the slot is the truth and the agent files are its outputs
 
 /** Mirrors ManagedAgentMode; declared here so the store layer stays dependency-light. */
 export const PROFILE_MODES = ["direct", "proxy"] as const;
@@ -125,18 +126,7 @@ export interface ProfileCredentialData {
 /** The raw slot as persisted; also the export bundle's shape. */
 export interface ProfileSlotData extends ProfileCredentialData {
   mode: ProfileMode | null;
-  /**
-   * The probed direct-mode IntegrationIdentity NAME (integration_identity.ts), null when never probed.
-   * The name, not the header value, distinguishes "probed, the default won" from "unknown", so the
-   * launcher hot path replays instead of re-probing. Derived from the credential: setCredential clears it.
-   * Off disk it reaches code two ways only: replayableIdentity (the one bake/predict/rank rule) and
-   * slotIdentityForDisplay (diagnostics and the export bundle). No read view carries it.
-   */
-  integrationIdentity: string | null;
 }
-
-/** The slot fields a read view projects: the cached identity beside them on disk stays out. */
-type ProfileSlotView = Omit<ProfileSlotData, "integrationIdentity">;
 
 /**
  * "complete" is the atomic unit `agent profile` commits and the only kind the launch/wiring paths act
@@ -147,7 +137,7 @@ export type ProfileSlot =
   | { kind: "complete"; credential: ProvisionedCredential; mode: ProfileMode }
   | { kind: "partial"; credential: StoredCredential; mode: ProfileMode | null };
 
-function parseProfileSlot(data: ProfileSlotView): ProfileSlot {
+function parseProfileSlot(data: ProfileSlotData): ProfileSlot {
   const credential = parseStoredCredential(data.githubToken, data.authProvider, data.ghUser);
   if (credential.kind !== "none" && data.mode !== null) {
     return { kind: "complete", credential, mode: data.mode };
@@ -174,7 +164,7 @@ export interface CopilotEnvStateData {
   githubToken: string | null;
   authProvider: AuthProvider | null;
   ghUser: string | null;
-  profiles: Record<string, ProfileSlotView>;
+  profiles: Record<string, ProfileSlotData>;
   /** Epoch ms of the last catalog generation ATTEMPT, 0 if never (src/codex/catalog.ts). */
   codexCatalogLastAttemptMs: number;
   codexCatalogCodexVersion: string | null;
@@ -210,12 +200,41 @@ const PROFILE_SCHEMA = v.object({
   // value reads as null instead of reaching a shell.
   ghUser: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.regex(GH_LOGIN_RE))), null),
   mode: v.fallback(v.nullable(v.picklist(PROFILE_MODES)), null),
-  // The cached identity flows verbatim into HTTP headers, so a hand-mangled value reads as null = re-probe.
+});
+
+// The probed Direct pair, state beside the credential (never a cache): the identity NAME the last
+// landing baked (CODEX_IDENTITY_NAME for the default, which sends no header) and the Copilot host
+// origin it was accepted on. Written by the probing callers only; read by every re-render. A
+// hand-mangled value reads as null = never probed, so the next re-render probes and writes it.
+const DIRECT_PAIR_SCHEMA = v.object({
   integrationIdentity: v.fallback(
     v.nullable(v.pipe(v.string(), v.trim(), v.regex(INTEGRATION_ID_RE))),
     null,
   ),
+  copilotHost: v.fallback(
+    v.nullable(
+      // The same origin shape the `host` literal takes (an https origin, no path, not loopback):
+      // anything else is a hand edit and reads as never probed.
+      v.pipe(
+        v.string(),
+        v.trim(),
+        v.check((s) =>
+          URL.canParse(s) && new URL(s).protocol === "https:" && new URL(s).origin === s &&
+          !isLoopbackHostname(new URL(s).hostname)
+        ),
+      ),
+    ),
+    null,
+  ),
 });
+
+/** What the slot holds of a Direct wiring, half by half: `integrationId` null = the default identity
+ *  (no header), a half `undefined` = never probed (the pin or literal was in force at every landing,
+ *  so no probe ever answered for it). Overlays render over it and never enter it. */
+export interface StoredDirectPair {
+  integrationId?: string | null;
+  host?: string;
+}
 
 // Every field FALLS BACK rather than throwing: a hand-mangled value reads as unset.
 const STATE_SCHEMA = v.object({
@@ -254,7 +273,6 @@ function emptyProfile(): ProfileSlotData {
     authProvider: null,
     ghUser: null,
     mode: null,
-    integrationIdentity: null,
   };
 }
 
@@ -366,11 +384,7 @@ export class CopilotEnvState {
 
   read(): CopilotEnvStateData {
     const data = this.rawRead();
-    const { [DEFAULT_PROFILE_KEY]: slot = emptyProfile(), ...named } = data.profiles;
-    const profiles: Record<string, ProfileSlotView> = {};
-    for (const [name, { integrationIdentity: _identity, ...view }] of Object.entries(named)) {
-      profiles[name] = view;
-    }
+    const { [DEFAULT_PROFILE_KEY]: slot = emptyProfile(), ...profiles } = data.profiles;
     return {
       ...data,
       githubToken: slot.githubToken,
@@ -422,15 +436,6 @@ export class CopilotEnvState {
     return { exists: slot !== undefined, slot: parseProfileSlot(slot ?? emptyProfile()) };
   }
 
-  /**
-   * The slot's cached identity NAME for diagnostics (health facts) and the export bundle, schema-
-   * validated like every read. NEVER an input to what gets baked, predicted, or ranked: those take
-   * replayableIdentity's answer, the only reader that turns the stored name into a header.
-   */
-  slotIdentityForDisplay(profile: Profile): string | null {
-    return this.rawRead().profiles[slotKey(profile)]?.integrationIdentity ?? null;
-  }
-
   /** The keys are a trust boundary (user-editable file): an invalid name is skipped so it can never
    *  reach a path join, the same filter profileHomeNames applies. */
   profileNames(): ProfileName[] {
@@ -443,8 +448,7 @@ export class CopilotEnvState {
   /**
    * A NAMED slot must already exist (commitProfile is the only creator), checked INSIDE the same update
    * as the write, so a racing deleteProfile resurrects no credential-only half slot under update()'s
-   * best-effort lock; past its bounded wait both writers proceed unlocked. The cached
-   * `integrationIdentity` is keyed to the credential, so a credential change must invalidate it.
+   * best-effort lock; past its bounded wait both writers proceed unlocked.
    */
   setCredential(profile: Profile, credential: ProvisionedCredential): void {
     const patch = rawCredentialPatch(credential);
@@ -473,10 +477,10 @@ export class CopilotEnvState {
         delete raw.ghUser;
       }
       raw.authProvider = patch.authProvider;
+      // The pair was probed for the credential this write replaces: it goes with it, so the next
+      // Direct re-render probes (the one gap) instead of baking another credential's pair.
       delete raw.integrationIdentity;
       delete raw.copilotHost;
-      delete raw.copilotHostIdentity;
-      delete raw.copilotHostSource;
       profiles[key] = raw;
       d.profiles = profiles;
     });
@@ -498,10 +502,6 @@ export class CopilotEnvState {
       delete raw.githubToken;
       delete raw.authProvider;
       delete raw.ghUser;
-      delete raw.integrationIdentity;
-      delete raw.copilotHost;
-      delete raw.copilotHostIdentity;
-      delete raw.copilotHostSource;
       tidyEmptySlot(d, profiles, key);
     });
     return had;
@@ -509,10 +509,8 @@ export class CopilotEnvState {
 
   /**
    * THE transition that makes a named profile exist: credential and mode land in one update, so the
-   * store can never hold a half profile.
-   *
-   *   the raw slot is mutated, not replaced  -> unknown keys a newer release wrote survive
-   *   the credential changed                 -> the cached identity goes; it was that credential's verdict
+   * store can never hold a half profile. The raw slot is mutated, not replaced, so unknown keys a
+   * newer release wrote survive; a changed credential takes its probed pair with it (setCredential).
    */
   commitProfile(
     name: ProfileName,
@@ -541,8 +539,6 @@ export class CopilotEnvState {
       if (!credentialUnchanged) {
         delete committed.integrationIdentity;
         delete committed.copilotHost;
-        delete committed.copilotHostIdentity;
-        delete committed.copilotHostSource;
       }
       profiles[name] = committed;
       d.profiles = profiles;
@@ -561,97 +557,49 @@ export class CopilotEnvState {
     });
   }
 
-  /**
-   * The Copilot host the slot's Direct wiring resolved, cached with the identity NAME it was
-   * resolved under and how (`auto` probe or the `host` literal of the time), cleared on every
-   * credential change. It reads back only while BOTH still hold: the identity in force (the
-   * `identity` pin, else the slot's own verdict) is the cached one, and the host in force is
-   * the cached one (under a literal, the literal itself; under `auto`, an `auto` answer). A pin is
-   * configuration, never written into the verdict, so `--identity auto` returns to the probed
-   * identity. Read off the raw slot: a derived cache, never part of the exported slot shape.
-   */
-  readProfileCopilotHost(
-    profile: Profile,
-    pin: string | null,
-    literal: string | null,
-  ): string | null {
-    const cache = this.readProfileCopilotHostCache(profile, pin, literal);
-    return cache.kind === "valid" ? cache.host : null;
-  }
-
-  /** The cached pair's standing for the pin and literal in force: `valid` (replay it), `stale` (a
-   *  pair exists for another identity or host, so the identity verdict is another host's too:
-   *  re-probe both), `none` (no pair: an imported or pre-host slot, whose identity is then only a
-   *  probe-order preference, replayableIdentity). */
-  readProfileCopilotHostCache(
-    profile: Profile,
-    pin: string | null,
-    literal: string | null,
-  ): CachedCopilotHostRead {
-    const raw = this.rawProfileSlot(profile);
-    const host = raw?.copilotHost;
-    if (raw === null || typeof host !== "string" || !URL.canParse(host)) return { kind: "none" };
-    const inForce = pin ?? raw.integrationIdentity;
-    const url = new URL(host);
-    const valid = typeof inForce === "string" && raw.copilotHostIdentity === inForce &&
-      url.protocol === "https:" && url.origin === host &&
-      (literal === null ? raw.copilotHostSource === "auto" : host === literal);
-    return valid ? { kind: "valid", host } : { kind: "stale" };
-  }
-
-  private rawProfileSlot(profile: Profile): Record<string, unknown> | null {
+  /** The slot's probed Direct halves; a half that fails its shape is a hand edit and reads as
+   *  never probed. */
+  readProfileDirectPair(profile: Profile): StoredDirectPair {
     const profiles = this.store.loadStrict().profiles;
     const raw = isRecord(profiles) ? profiles[slotKey(profile)] : undefined;
-    return isRecord(raw) ? raw : null;
+    if (!isRecord(raw)) return {};
+    const pair = v.parse(DIRECT_PAIR_SCHEMA, raw);
+    return {
+      ...(pair.integrationIdentity === null ? {} : {
+        integrationId: pair.integrationIdentity === CODEX_IDENTITY_NAME
+          ? null
+          : pair.integrationIdentity,
+      }),
+      ...(pair.copilotHost === null ? {} : { host: new URL(pair.copilotHost).origin }),
+    };
   }
 
-  /** Lands only while the slot still holds `forCredential`, compared inside the same update, so a probe
-   *  result outlives no rotation that raced it under update()'s best-effort lock; past its bounded wait
-   *  both writers proceed unlocked. Never creates a slot: a deletion race just loses the cache.
-   *  `integrationIdentity`: the verdict to record; undefined keeps what the slot holds (a pin is
-   *  configuration, never written as the verdict). `copilotHost`: the resolved host with the identity
-   *  name it was resolved under and how; null clears the pair, undefined leaves it. */
-  setProfileIntegrationIdentity(
-    profile: Profile,
-    integrationIdentity: string | undefined,
-    forCredential: ProvisionedCredential,
-    copilotHost?: CachedCopilotHost | null,
-  ): void {
-    const expected = rawCredentialPatch(forCredential);
+  /** The probing commands' write (a credential landing, or a re-render whose slot holds no pair):
+   *  only the halves a probe ANSWERED land, so a pin or literal in force at the landing leaves its
+   *  half as it was (a pin renders at read time and never enters the slot). The default slot is
+   *  created for it like setCredential does; a named slot must exist (a deletion that raced the
+   *  probe just loses the pair). */
+  setProfileDirectPair(profile: Profile, probed: StoredDirectPair): void {
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
       const key = slotKey(profile);
-      const raw = Object.hasOwn(profiles, key) ? profiles[key] : undefined;
-      if (!isRecord(raw)) return;
-      if (
-        (raw.githubToken ?? null) !== expected.githubToken ||
-        raw.authProvider !== expected.authProvider ||
-        (raw.ghUser ?? null) !== expected.ghUser
-      ) {
-        return;
+      const existing = Object.hasOwn(profiles, key) ? profiles[key] : undefined;
+      if (!isRecord(existing) && profile !== null) return;
+      const raw: Record<string, unknown> = isRecord(existing) ? existing : {};
+      if (probed.integrationId !== undefined) {
+        raw.integrationIdentity = probed.integrationId ?? CODEX_IDENTITY_NAME;
       }
-      // A kept name is re-written as the schema reads it (trimmed; an invalid one dropped), so the
-      // pinned re-wire lands the same bytes recording the held verdict would.
-      const next = integrationIdentity ?? v.parse(PROFILE_SCHEMA, raw).integrationIdentity;
-      if (next === null || next.trim() === "") {
-        delete raw.integrationIdentity;
-      } else {
-        raw.integrationIdentity = next.trim();
-      }
-      if (copilotHost === null) {
-        delete raw.copilotHost;
-        delete raw.copilotHostIdentity;
-        delete raw.copilotHostSource;
-      } else if (copilotHost !== undefined) {
-        raw.copilotHost = copilotHost.host;
-        raw.copilotHostIdentity = copilotHost.identity;
-        raw.copilotHostSource = copilotHost.source;
-      }
+      if (probed.host !== undefined) raw.copilotHost = new URL(probed.host).origin;
+      profiles[key] = raw;
+      d.profiles = profiles;
     });
   }
 
-  /** Written when BOTH agents land on one managed mode, cleared when they diverge. A record of
-   *  intent only: the per-agent artifacts stay the live truth the wiring readers sniff. */
+  /** The mode both agents share, with ONE writer: commitDefaultWiring (src/agents/configure_defaults.ts),
+   *  after both agents' writes of a landing (`agent init`, an import naming both agents, the first
+   *  write on a fresh default) succeeded; a single-agent command re-renders it and never moves it.
+   *  The default Desktop entry's promise (resolveClaudeDesktopTargets). Never read back off the
+   *  agent files. */
   recordDefaultMode(mode: ProfileMode | null): void {
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
@@ -690,65 +638,4 @@ export class CopilotEnvState {
       d.claudeModelVerdicts = { ...verdicts, [key]: verdict };
     });
   }
-}
-
-/**
- * The Copilot host a Direct rewire of `profile` would bake WITHOUT probing: the `host`
- * literal, else the slot's cached host under the pin in force. Null = only a probe can say (`auto`,
- * nothing cached): read paths (health, Desktop status) then take the baked host as expected. The
- * one rule for every "expected host" question, so no reader derives its own.
- */
-export function expectedDirectHost(profile: Profile): string | null {
-  const config = new CopilotEnvConfig();
-  return config.copilotHost(profile) ??
-    new CopilotEnvState().readProfileCopilotHost(
-      profile,
-      config.pinnedIntegrationId(profile),
-      null,
-    );
-}
-
-/**
- * THE replay rule for a slot's cached Direct identity, the one answer every reader that bakes,
- * predicts, or ranks an identity takes:
- *
- *   replay     -> the cached pair names the identity AND the host in force: bake both, no request
- *   preferred  -> an identity is cached but no pair reads back (imported, cached before hosts were,
- *                 or the host in force changed): never a verdict, only the FIRST candidate of the
- *                 selection probeDirectWiring runs on the host in use
- *   probe      -> nothing cached (or a pin with no pair: the pin is configuration, the host is probed)
- */
-export type ReplayableIdentity =
-  | { kind: "replay"; directIntegrationId: string | null; directBaseUrl: string }
-  | { kind: "preferred"; directIntegrationId: string | null }
-  | { kind: "probe" };
-
-export function replayableIdentity(
-  profile: Profile,
-  pin: string | null,
-  literal: string | null,
-): ReplayableIdentity {
-  const state = new CopilotEnvState();
-  const cache = state.readProfileCopilotHostCache(profile, pin, literal);
-  const inForce = pin ?? state.slotIdentityForDisplay(profile);
-  if (inForce === null) return { kind: "probe" };
-  // The slot stores the identity NAME: the default identity's name means "probed, no header won".
-  const directIntegrationId = inForce === CODEX_IDENTITY_NAME ? null : inForce;
-  if (cache.kind === "valid") {
-    return { kind: "replay", directIntegrationId, directBaseUrl: cache.host };
-  }
-  return pin === null ? { kind: "preferred", directIntegrationId } : { kind: "probe" };
-}
-
-export type CachedCopilotHostRead =
-  | { kind: "none" }
-  | { kind: "stale" }
-  | { kind: "valid"; host: string };
-
-/** A resolved host beside the identity it was resolved under and how: `auto` (select*IdentityAndHost)
- *  or `literal` (the `host` value of the time). */
-export interface CachedCopilotHost {
-  host: string;
-  identity: string;
-  source: "auto" | "literal";
 }

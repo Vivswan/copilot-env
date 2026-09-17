@@ -430,3 +430,53 @@ export const v409LaunchersBlock: Migration = {
   description: "remove the launchers rc block (the launchers are `agent env` emissions)",
   run: stripLaunchersRcBlocks,
 };
+
+// --- the per-profile identity and host cache ---------------------------------------------------
+//
+// Away from 4.0.9: a Direct profile slot cached its probed identity and host beside two validity
+// keys (`integrationIdentity`, `copilotHost`, `copilotHostIdentity`, `copilotHostSource`) and a
+// replay checked the validity keys before trusting the pair. The pair is now state the probing
+// wiring writes and every re-render reads as-is, and the cache is not promoted into it (no compat):
+// all four go from a slot in the old shape, and the first Direct rewire of the slot probes once
+// through the no-pair gap. Store writes preserve unknown keys, so the four would otherwise ride
+// along forever. The two validity keys are the old shape's marker: a slot without them is already
+// in the new shape (the pair the new wiring stored), so a re-run leaves it alone.
+
+const SLOT_CACHE_KEYS = [
+  "integrationIdentity",
+  "copilotHost",
+  "copilotHostIdentity",
+  "copilotHostSource",
+] as const;
+const OLD_SHAPE_KEYS = ["copilotHostIdentity", "copilotHostSource"] as const;
+
+function inOldShape(slot: unknown): slot is Record<string, unknown> {
+  return isRecord(slot) && OLD_SHAPE_KEYS.some((key) => key in slot);
+}
+
+/** Exported for the migration test. Silent when no slot is in the old shape. */
+export function dropSlotIdentityCache(): void {
+  const paths = new CopilotApiPaths();
+  const store = new CopilotApiConfig(paths.sharedStateFile, paths.sharedStateLock);
+  const profiles = store.loadStrict().profiles;
+  const carrying = isRecord(profiles) ? Object.values(profiles).filter(inOldShape).length : 0;
+  if (carrying === 0) return;
+  store.update((d) => {
+    const slots = isRecord(d.profiles) ? d.profiles : {};
+    for (const slot of Object.values(slots)) {
+      if (!inOldShape(slot)) continue;
+      for (const key of SLOT_CACHE_KEYS) delete slot[key];
+    }
+  });
+  consola.info(
+    `  dropped the cached Direct identity and host from ${carrying} profile slot(s); the next ` +
+      "Direct rewire of each renders from its identity pin and host literal, and probes once for " +
+      "a half neither covers, storing what it finds",
+  );
+}
+
+export const v409IdentityCache: Migration = {
+  version: "4.0.9",
+  description: "drop the cached Direct identity and host from credentials.json profile slots",
+  run: dropSlotIdentityCache,
+};

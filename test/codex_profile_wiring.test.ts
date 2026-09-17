@@ -133,7 +133,7 @@ test("a named write lands the selector in <name>.config.toml and no [profiles.<n
 
 test("an unparseable <name>.config.toml refuses the whole write: config.toml is left as it was", () => {
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND });
+  configureCodexConfig(codexHome, { mode: "direct", direct: null, credential: COMMAND });
   const before = configText(codexHome);
   writeFileSync(codexProfileConfigPath(codexHome, WORK), 'model_provider = "unclosed');
 
@@ -143,7 +143,7 @@ test("an unparseable <name>.config.toml refuses the whole write: config.toml is 
 
 test("removing a profile deletes its file, or only our selector when the user's keys remain", () => {
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND });
+  configureCodexConfig(codexHome, { mode: "direct", direct: null, credential: COMMAND });
   writeProxyProfile(codexHome);
   const profilePath = codexProfileConfigPath(codexHome, WORK);
 
@@ -268,7 +268,12 @@ test("an env_key alongside intact managed auth still un-wires a named profile", 
   expect(wiring.envKeyMatches).toBe(false);
   expect(wiring.providerWired).toBe(false);
 
-  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND, profile: WORK });
+  configureCodexConfig(codexHome, {
+    mode: "direct",
+    direct: null,
+    credential: COMMAND,
+    profile: WORK,
+  });
   mutateConfig(codexHome, (doc) => {
     profileProvider(doc).env_key = "OPENAI_API_KEY";
   });
@@ -281,7 +286,12 @@ test("an env_key alongside intact managed auth still un-wires a named profile", 
 
 test("a writer-produced direct profile inspects as wired via its own auth command", () => {
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND, profile: WORK });
+  configureCodexConfig(codexHome, {
+    mode: "direct",
+    direct: null,
+    credential: COMMAND,
+    profile: WORK,
+  });
 
   const wiring = inspectWork(codexHome);
   expect(wiring.modelProvider).toBe("copilot-env-work");
@@ -334,7 +344,12 @@ test("a static named profile inspects as wired through its baked bearer, proxy a
   expect(proxyWiring.envKeyMatches).toBe(true);
   expect(proxyWiring.providerWired).toBe(true);
 
-  configureCodexConfig(codexHome, { mode: "direct", credential: STATIC, profile: WORK });
+  configureCodexConfig(codexHome, {
+    mode: "direct",
+    direct: null,
+    credential: STATIC,
+    profile: WORK,
+  });
   const directWiring = inspectWork(codexHome);
   expect(directWiring.providerMode).toBe("direct");
   expect(directWiring.credential).toBe("static");
@@ -344,7 +359,7 @@ test("a static named profile inspects as wired through its baked bearer, proxy a
 
 test("default and profile wiring coexist; each view reads only its own selection", () => {
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND });
+  configureCodexConfig(codexHome, { mode: "direct", direct: null, credential: COMMAND });
   writeProxyProfile(codexHome);
 
   const defaultWiring = inspectCodexWiring(configText(codexHome), null, DEFAULT_PORT, false);
@@ -376,7 +391,7 @@ test("a profile-only config leaves the default view unconfigured", () => {
 
 test("no <name>.config.toml, or one without a selector, reads as none for the named view", () => {
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND });
+  configureCodexConfig(codexHome, { mode: "direct", direct: null, credential: COMMAND });
 
   // `codex --profile work` would then run on config.toml alone (the DEFAULT credential), which a
   // named profile must never read as its own wiring.
@@ -510,7 +525,7 @@ test("a leftover [profiles.<name>] table or top-level profile key reads other (l
   // top-level `profile` key, whatever the v2 file says; a re-add writes work.config.toml but
   // never removes either, so a wired-looking mixed layout must not read green.
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND });
+  configureCodexConfig(codexHome, { mode: "direct", direct: null, credential: COMMAND });
   writeProxyProfile(codexHome);
   const mixed = mutateConfig(codexHome, (doc) => {
     doc.profiles = { work: { "model_provider": "copilot-env-work" }, other: { "model": "x" } };

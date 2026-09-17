@@ -1,5 +1,6 @@
 // The suite floor points CLAUDE_DESKTOP_DIR_ENV at a dir that is never created, so no test
 // can reach a real library; a test that wants Desktop installed makes its own data dir.
+import { directWiring } from "../src/agents/configure.ts";
 import {
   chmodSync,
   existsSync,
@@ -53,7 +54,7 @@ import {
 } from "../src/agents/claude_desktop.ts";
 import { printClaudeDesktopCheck } from "../src/commands/claude.ts";
 import { runInit } from "../src/commands/init.ts";
-import { runClaude } from "../src/claude/config.ts";
+import { runClaude } from "../src/agents/configure_defaults.ts";
 import { commandDeps } from "../src/commands/launch.ts";
 import { runProfile } from "../src/commands/profile.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
@@ -80,6 +81,7 @@ let dir = "";
 afterEach(() => {
   restoreEnv();
   resetExitCode();
+  setIntegrationProbeFetch(null);
   dir = removeDir(dir);
 });
 
@@ -228,7 +230,7 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
     credential: { kind: "command", helperPath: "/x/helper.sh" },
-    directIntegrationId: "copilot-developer-cli",
+    direct: directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
     models,
   });
   expect(direct["inferenceGatewayBaseUrl"]).toBe(DEFAULT_COPILOT_API_BASE);
@@ -300,6 +302,7 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
 test("payload: foreign keys in the existing document survive the surgical merge", () => {
   const merged = desktopConfigPayload({
     mode: "direct",
+    direct: null,
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
     credential: { kind: "command", helperPath: "/x/h.sh" },
@@ -325,7 +328,7 @@ test("payload: a rotation to a null integration id drops the stale header; forei
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
     credential: { kind: "command", helperPath: "/x/h.sh" },
-    directIntegrationId: "copilot-developer-cli",
+    direct: directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
     existing: { "inferenceCustomHeaders": { "X-Custom": "keep" } },
   });
   const before = withId["inferenceCustomHeaders"] as Record<string, string>;
@@ -339,7 +342,7 @@ test("payload: a rotation to a null integration id drops the stale header; forei
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
     credential: { kind: "command", helperPath: "/x/h.sh" },
-    directIntegrationId: null,
+    direct: null,
     existing: withId,
   });
   const headers = rotated["inferenceCustomHeaders"] as Record<string, string>;
@@ -349,7 +352,12 @@ test("payload: a rotation to a null integration id drops the stale header; forei
 });
 
 test("payload: the static shape bakes the key and drops the helper keys; the command shape undoes it", () => {
-  const base = { mode: "direct" as const, profile: null, baseUrl: DEFAULT_COPILOT_API_BASE };
+  const base = {
+    mode: "direct" as const,
+    direct: null,
+    profile: null,
+    baseUrl: DEFAULT_COPILOT_API_BASE,
+  };
   const command = { kind: "command", helperPath: "/x/h.sh" } as const;
   const viaHelper = desktopConfigPayload({ ...base, credential: command });
   // A recorded helper always wins in the app, so the static shape must scrub it, not just add.
@@ -409,7 +417,7 @@ test("fresh upsert: config + meta entry + appliedId only when the library had no
   await wireClaudeDesktopEntry({
     profile: null,
     mode: "direct",
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
@@ -453,7 +461,7 @@ test("fresh upsert: config + meta entry + appliedId only when the library had no
   await wireClaudeDesktopEntry({
     profile: null,
     mode: "direct",
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
@@ -477,7 +485,7 @@ test("offline direct: a FRESH entry is never created; an owned entry keeps its r
   const offline = {
     profile: null,
     mode: "direct" as const,
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
@@ -515,8 +523,7 @@ test("a direct entry's gateway is the write's Copilot host, the generic host whe
   await wireClaudeDesktopEntry({
     profile: null,
     mode: "direct",
-    directIntegrationId: null,
-    directBaseUrl: "https://api.business.githubcopilot.com",
+    direct: directWiring(null, "https://api.business.githubcopilot.com"),
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
@@ -536,7 +543,7 @@ test("a quiet wire never discovers: fresh direct entries are skipped outright", 
   await wireClaudeDesktopEntry({
     profile: null,
     mode: "direct",
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: true,
@@ -552,7 +559,7 @@ test("a blocked removal (malformed _meta.json) keeps the helper scripts", async 
   await wireClaudeDesktopEntry({
     profile: null,
     mode: "direct",
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
@@ -588,7 +595,7 @@ test("adopt-and-replace: same-gateway foreign entry is taken over in place, name
   await wireClaudeDesktopEntry({
     profile: null,
     mode: "direct",
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
@@ -619,7 +626,7 @@ test("never-clobber: a foreign entry carrying our name, or a malformed _meta.jso
   const opts = {
     profile: null,
     mode: "direct" as const,
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
@@ -652,7 +659,7 @@ test.skipIf(process.platform === "win32")(
       wireClaudeDesktopEntry({
         profile: null,
         mode: "direct",
-        directIntegrationId: null,
+        direct: null,
         credential: COMMAND,
         directToken: "ghu_x",
         quiet: false,
@@ -675,7 +682,7 @@ test.skipIf(process.platform === "win32")(
     const opts = {
       profile: null,
       mode: "direct" as const,
-      directIntegrationId: null,
+      direct: null,
       credential: COMMAND,
       directToken: "ghu_x",
       quiet: false,
@@ -755,7 +762,7 @@ test("profile entries: named, removed owned-only, appliedId nulled when it was o
   await wireClaudeDesktopEntry({
     profile: WORK,
     mode: "direct",
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
@@ -784,12 +791,54 @@ test("profile entries: named, removed owned-only, appliedId nulled when it was o
   expect(existsSync(desktopHelperPath(resolveRootHome(), "direct", WORK))).toBe(false);
 });
 
+test("Desktop status judges a Direct entry against the slot's stored pair: what the reconcile renders, with no probe and no CLI file read", async () => {
+  const { library } = isolateWithDesktop();
+  const enterprise = "https://api.enterprise.githubcopilot.com";
+  const state = new CopilotEnvState();
+  state.commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "github_pat_w" },
+    mode: "direct",
+  });
+  // The slot holds the pair a probing --add stored: the enterprise host under the CLI id. No CLI
+  // file exists for the profile at all, so nothing but the slot can be the source.
+  state.setProfileDirectPair(WORK, { integrationId: "copilot-developer-cli", host: enterprise });
+  // The Desktop entry still records the generic host with no header: what an earlier wiring wrote.
+  await wireClaudeDesktopEntry({
+    profile: WORK,
+    mode: "direct",
+    direct: directWiring(null, DEFAULT_COPILOT_API_BASE),
+    credential: COMMAND,
+    directToken: "github_pat_w",
+    quiet: false,
+    fetchImpl: catalogFetch(CATALOG),
+  });
+  const target = { profile: WORK, mode: "direct" } as const;
+  const verdict = (): string => {
+    const status = inspectClaudeDesktopWiring([target]);
+    if (status.kind !== "inspected") throw new Error(`not inspected: ${status.kind}`);
+    const entry = status.entries[0]?.verdict;
+    return entry === undefined ? "none" : entry.kind === "stale" ? entry.reason : entry.kind;
+  };
+  // Stale, and for the reconcile's reason: the entry records another host than the slot holds.
+  expect(verdict()).toBe(`gateway ${DEFAULT_COPILOT_API_BASE}, expected ${enterprise}`);
+  // The reconcile renders the slot's pair without a probe; the status now agrees it is wired.
+  setIntegrationProbeFetch(() => Promise.reject(new Error("no probe expected")));
+  // The non-quiet reconcile upserts the targets (the quiet one only sweeps orphans).
+  await reconcileClaudeDesktopWiring();
+  const doc = readJson(firstEntryPath(library));
+  expect(doc["inferenceGatewayBaseUrl"]).toBe(enterprise);
+  expect((doc["inferenceCustomHeaders"] as Record<string, string>)["Copilot-Integration-Id"]).toBe(
+    "copilot-developer-cli",
+  );
+  expect(verdict()).toBe("wired");
+});
+
 test("removeAllClaudeDesktopWiring sweeps every owned entry via an injected dir", async () => {
   const { library } = isolateWithDesktop();
   await wireClaudeDesktopEntry({
     profile: null,
     mode: "direct",
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
@@ -810,6 +859,7 @@ test("removeAllClaudeDesktopWiring sweeps every owned entry via an injected dir"
 test("payload: MCP entry carries the profile selector and merges over foreign servers", () => {
   const doc = desktopConfigPayload({
     mode: "direct",
+    direct: null,
     profile: WORK,
     baseUrl: DEFAULT_COPILOT_API_BASE,
     credential: { kind: "command", helperPath: "/x/h.sh" },
@@ -842,6 +892,7 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
   // Our former object shape is not foreign rows: it goes.
   const fromObject = desktopConfigPayload({
     mode: "direct",
+    direct: null,
     profile: WORK,
     baseUrl: DEFAULT_COPILOT_API_BASE,
     credential: { kind: "command", helperPath: "/x/h.sh" },
@@ -869,7 +920,7 @@ test("quiet re-wire heals rows recorded without labels (no catalog fetch)", asyn
   await wireClaudeDesktopEntry({
     profile: null,
     mode: "direct",
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
@@ -889,7 +940,7 @@ test("quiet re-wire heals rows recorded without labels (no catalog fetch)", asyn
   await wireClaudeDesktopEntry({
     profile: null,
     mode: "direct",
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: true,
@@ -934,11 +985,22 @@ function count(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }
 
+/** A Direct wire's options, with the pair a landing would have stored in the slot (the status
+ *  judges an entry against the slot, and a slot holding no pair is stale by construction). A store
+ *  a test has deliberately broken takes no pair: the test is then about the broken store. */
 function directWire(profile: Profile = null): DesktopWireOptions {
+  try {
+    new CopilotEnvState().setProfileDirectPair(profile, {
+      integrationId: null,
+      host: DEFAULT_COPILOT_API_BASE,
+    });
+  } catch {
+    // the store is malformed on purpose
+  }
   return {
     profile,
     mode: "direct",
-    directIntegrationId: null,
+    direct: null,
     credential: COMMAND,
     directToken: "ghu_x",
     quiet: false,
@@ -1439,6 +1501,7 @@ test("reconcileClaudeDesktopWiring: orphans go when the key is on, the profiles'
   // sweep too (the launcher / `profile --sync` path, which never upserts): an empty slot
   // would boot the app into claude.ai sign-in until the next non-quiet wire.
   await wireClaudeDesktopEntry(directWire(WORK)); // first in: takes the applied slot
+  new CopilotEnvState().recordDefaultMode("proxy"); // the default this re-render renders
   await captureAllWrites(() => runClaude({ kind: "configure", mode: "proxy" }));
   const handedTo = entryPathNamed(library, "copilot-env");
   expect(metaOf(library).appliedId).toBe(
@@ -1452,19 +1515,21 @@ test("reconcileClaudeDesktopWiring: orphans go when the key is on, the profiles'
   removeAllClaudeDesktopWiring();
   rmSync(join(resolveClaudeHome(), "settings.json"));
 
-  // An unreadable settings.json is NOT "the default promises nothing": the entry stays,
-  // the status says it was not judged, and the reconcile warns instead of sweeping.
+  // The default's promise is the slot's recorded mode, never settings.json: with the mode recorded
+  // and settings.json unreadable, the entry is still judged and kept; with no mode recorded, no
+  // target promises it and the reconcile sweeps it as an orphan.
   await wireClaudeDesktopEntry(directWire());
   const kept = firstEntryPath(library);
   mkdirSync(resolveClaudeHome(), { recursive: true });
   writeFileSync(join(resolveClaudeHome(), "settings.json"), "{ not json");
-  expect(resolveClaudeDesktopTargets().kind).toBe("unresolvable");
-  const unjudged = claudeDesktopStatus();
-  expect(unjudged.kind).toBe("unjudged");
-  expect(renderClaudeDesktopStatus(unjudged).lines[0]).toContain("settings.json malformed");
-  const warned = await captureAllWrites(() => reconcileClaudeDesktopWiring());
-  expect(warned).toContain("leaving the config library alone");
+  new CopilotEnvState().recordDefaultMode("direct");
+  expect(resolveClaudeDesktopTargets()).toEqual({
+    kind: "resolved",
+    targets: [{ profile: null, mode: "direct" }],
+  });
+  await captureAllWrites(() => reconcileClaudeDesktopWiring({ quiet: true }));
   expect(existsSync(kept)).toBe(true);
+  new CopilotEnvState().recordDefaultMode(null);
   rmSync(join(resolveClaudeHome(), "settings.json"));
   await reconcileClaudeDesktopWiring();
   expect(existsSync(kept)).toBe(false);
@@ -1692,6 +1757,11 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   const twin = metaOf(library);
   (twin.entries as { name: string }[])[0]!.name = "copilot-env: work";
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify(twin)}\n`);
+  // A named Direct slot must exist for its pair to land (what `agent profile --add` commits).
+  new CopilotEnvState().commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_w" },
+    mode: "direct",
+  });
   await wireClaudeDesktopEntry(directWire(WORK));
   expect((metaOf(library).entries as { name: string }[]).map((e) => e.name)).toEqual([
     "copilot-env: work",
@@ -1913,6 +1983,7 @@ test("the reconcile re-discovers the default entry only when it is missing or st
     return Promise.reject(new Error("offline"));
   };
   try {
+    new CopilotEnvState().recordDefaultMode("proxy"); // the default this re-render renders
     await captureAllWrites(() => runClaude({ kind: "configure", mode: "proxy" }));
     expect(names()).toEqual(["copilot-env"]);
     // Already wired: the reconcile (what init / `agent claude` run next) fetches nothing.
@@ -2007,6 +2078,7 @@ test("entryProfileAt attributes by the managed MCP server's --profile argument a
   const payload = (profile: Profile) =>
     desktopConfigPayload({
       mode: "direct",
+      direct: null,
       profile,
       baseUrl: DEFAULT_COPILOT_API_BASE,
       credential: { kind: "static", token: "ghu_x" },
@@ -2071,4 +2143,32 @@ test("the inspector judges against the static-key preference, never the key's va
     path: configPath,
     reason: "a credential helper is still recorded, but static-key covers Claude",
   });
+});
+
+// The pair is landed only together with both agents' files; the reconcile writes the Desktop entry
+// alone, so a Direct default whose slot holds no pair is named, not landed.
+test("the Desktop reconcile never lands a Direct default's missing pair: it names the repair and writes no entry", async () => {
+  const { library } = isolateWithDesktop();
+  // The app's library exists with nothing of ours in it (an absent library is nothing to reconcile).
+  mkdirSync(library, { recursive: true });
+  const metaPath = join(library, "_meta.json");
+  writeFileSync(metaPath, `${JSON.stringify({ entries: [] })}\n`);
+  new CopilotEnvState().recordDefaultMode("direct"); // no pair stored: a credential landed since
+  const warned = await captureAllWrites(() => reconcileClaudeDesktopWiring());
+  expect(warned).toContain("Direct pair is not stored");
+  // consola keeps or strips the backticks by reporter, so the match allows both.
+  expect(warned).toMatch(/`?agent claude`? lands the pair together with both agents' files/);
+  expect(new CopilotEnvState().readProfileDirectPair(null)).toEqual({});
+  expect(readFileSync(metaPath, "utf8")).toBe(`${JSON.stringify({ entries: [] })}\n`);
+  expect(readdirSync(library)).toEqual(["_meta.json"]);
+  // A named profile's gap names the sync that lands it (`--sync` takes no name: it heals every
+  // profile), and its entry is left alone the same way.
+  new CopilotEnvState().commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "direct",
+  });
+  const named = await captureAllWrites(() => reconcileClaudeDesktopWiring());
+  expect(named).toMatch(/profile 'work'.*Direct pair is not stored/);
+  expect(named).toMatch(/`?agent profile --sync`? lands the pair/);
+  expect(readdirSync(library)).toEqual(["_meta.json"]);
 });

@@ -5,12 +5,10 @@ import "./utils/dotenv.ts";
 import { Command } from "commander";
 import { consola } from "consola";
 import { parseClaudeAction, parseCodexAction } from "./agents/configure.ts";
-import { recordDefaultModeFromWiring } from "./agents/configure_defaults.ts";
 import { parseModeFlags } from "./agents/provider_mode.ts";
-import { runClaude } from "./claude/config.ts";
+import { runClaude, runCodex } from "./agents/configure_defaults.ts";
 import { reconcileClaudeDesktopWiring } from "./agents/claude_desktop.ts";
 import { printClaudeDesktopCheck } from "./commands/claude.ts";
-import { runCodex } from "./codex/config.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
 import { ensureAuthenticated, runAuth } from "./commands/auth.ts";
 import { configTableOutput, runConfig } from "./commands/config.ts";
@@ -427,7 +425,9 @@ program
     "--import <file>",
     "Restore a bundle: back up + overwrite the stores, then re-derive both agents' " +
       "wiring and every profile from them. Non-destructive: profiles that exist only " +
-      "on this machine are kept, and agents the bundle leaves unconfigured are not touched.",
+      "on this machine are kept. The default is one mode for both agents: a bundle wiring one " +
+      "agent re-renders the recorded mode (a different mode is refused), or lands both on a " +
+      "default with none.",
   )
   .option(
     "--with-credentials",
@@ -618,10 +618,17 @@ program
   .command("codex")
   .helpGroup("Setup:")
   .description(
-    "Configure Codex: GitHub Copilot Direct or the local proxy (auto-detects with no flag).",
+    "Rewrite Codex's config from the default profile's recorded mode (the first wiring on a " +
+      "fresh default sets up both agents, probing GitHub Copilot Direct vs the proxy with no flag).",
   )
-  .option("--direct", "Force GitHub Copilot Direct (no auto-detect probe).")
-  .option("--proxy", "Force the local copilot-api proxy (no auto-detect probe).")
+  .option(
+    "--direct",
+    "GitHub Copilot Direct: on a fresh default lands both agents; else must match the recorded mode.",
+  )
+  .option(
+    "--proxy",
+    "The local copilot-api proxy: on a fresh default lands both agents; else must match the recorded mode.",
+  )
   .option(
     "--check",
     "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
@@ -639,10 +646,9 @@ program
       case "check":
         return runCodex(action);
       case "configure":
-        // A single-agent default rewire stales the default slot's recorded mode.
+        // A re-render of the recorded default mode; `agent init` is what sets or moves it.
         return ensureAuthenticated()
-          .then(() => runCodex(action))
-          .then(() => recordDefaultModeFromWiring());
+          .then(() => runCodex(action));
       default:
         return assertNever(action);
     }
@@ -652,10 +658,17 @@ program
   .command("claude")
   .helpGroup("Setup:")
   .description(
-    "Configure Claude Code: GitHub Copilot Direct or the local proxy (auto-detects with no flag).",
+    "Rewrite Claude Code's config from the default profile's recorded mode (the first wiring on a " +
+      "fresh default sets up both agents, probing GitHub Copilot Direct vs the proxy with no flag).",
   )
-  .option("--direct", "Force GitHub Copilot Direct (no auto-detect probe).")
-  .option("--proxy", "Force the local copilot-api proxy (no auto-detect probe).")
+  .option(
+    "--direct",
+    "GitHub Copilot Direct: on a fresh default lands both agents; else must match the recorded mode.",
+  )
+  .option(
+    "--proxy",
+    "The local copilot-api proxy: on a fresh default lands both agents; else must match the recorded mode.",
+  )
   .option(
     "--check",
     "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
@@ -674,7 +687,6 @@ program
         // profiles.
         return ensureAuthenticated()
           .then(() => runClaude(action))
-          .then(() => recordDefaultModeFromWiring())
           .then(() => reconcileClaudeDesktopWiring());
       default:
         return assertNever(action);

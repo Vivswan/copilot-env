@@ -649,7 +649,6 @@ export function checkProfileAuth(
     value: {
       provider: slot?.provider ?? null,
       mode: slot?.mode ?? null,
-      integrationIdentity: slot?.integrationIdentity ?? null,
       storedToken: resolution.storedToken,
       ghAuthenticated: resolution.ghAuthenticated,
       ...(resolution.ghAuthUnproven ? { ghAuthUnproven: true } : {}),
@@ -707,7 +706,6 @@ export function checkProfileAuth(
       ? `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`
       : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
     : "stored GitHub token";
-  const identity = slot.integrationIdentity === null ? "" : `, ${slot.integrationIdentity}`;
   const start = agentStartCommand(name);
   const usage = slot.mode === "proxy"
     ? `resolved by \`agent auth --get --profile ${name}\`; passed to the profile's daemon on \`${start}\``
@@ -718,7 +716,7 @@ export function checkProfileAuth(
     ...base,
     status: "ok",
     detail: [
-      `credential: ${how} (provider: ${slot.provider}, mode: ${slot.mode ?? "none"}${identity})`,
+      `credential: ${how} (provider: ${slot.provider}, mode: ${slot.mode ?? "none"})`,
       usage,
     ].join("\n"),
   };
@@ -827,8 +825,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
     `named profiles: ${
       profileEntries
         .map(([name, slot]) => {
-          const identity = slot.integrationIdentity ? `, ${slot.integrationIdentity}` : "";
-          return `${name} (${slot.provider ?? "no auth"}, ${slot.mode ?? "no mode"}${identity})`;
+          return `${name} (${slot.provider ?? "no auth"}, ${slot.mode ?? "no mode"})`;
         })
         .join(", ")
     }`,

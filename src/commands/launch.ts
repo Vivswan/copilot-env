@@ -6,19 +6,12 @@
 // inherited stdio and its exit code (or 128+signal) passes through.
 import { spawnSync } from "node:child_process";
 import { constants } from "node:os";
-import {
-  type ManagedWrite,
-  resolveCredentialWiring,
-  resolvedDirectToken,
-} from "../agents/configure.ts";
-import { recordDefaultModeFromWiring } from "../agents/configure_defaults.ts";
-import { resolveAndPersistDirectWiring, wireBothAgents } from "../agents/profile_wiring.ts";
+import { wireBothAgents } from "../agents/profile_wiring.ts";
 import type { AgentProviderMode } from "../agents/provider_mode.ts";
-import { readAgentModes } from "../agents/wiring.ts";
-import { BASE_URL_ENV, claudeAdapter, runClaude } from "../claude/config.ts";
+import { runClaude, runCodex } from "../agents/configure_defaults.ts";
+import { BASE_URL_ENV } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
-import { runCodex } from "../codex/config.ts";
 import { narrateCodexHome, resolveCodexHome } from "../codex/host.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -276,36 +269,25 @@ async function ensureProxyUp(profile: Profile): Promise<boolean> {
 /** Exported for its tests. */
 export function commandDeps(): LaunchDeps {
   return {
-    agentMode: (agent) => readAgentModes()[agent],
+    // The default slot's recorded mode is the truth for both agents; the agent files are outputs.
+    agentMode: () => new CopilotEnvState().readProfileSlot(null).mode ?? "none",
     ensureProxy: ensureProxyUp,
     wireProxyDefault: async (agent) => {
+      // On a fresh default (no recorded mode) this write lands BOTH agents (runAgentConfig's
+      // null-record rule); on a recorded proxy it re-renders the launching agent alone.
       await (agent === "claude"
         ? runClaude({ kind: "configure", mode: "proxy" })
         : runCodex({ kind: "configure", mode: "proxy" }));
-      // The same success-only step the `agent codex`/`agent claude` configure arms run;
-      // non-throwing, so it can never abort the launch.
-      recordDefaultModeFromWiring();
     },
     refreshCodexCatalog: () => refreshCodexCatalogAndSync("direct"),
     profileSlot: (name) => new CopilotEnvState().readProfileSlot(name),
     writeClaudeProfileSettings: async (name, mode) => {
-      const credential = resolveCredentialWiring("claude", mode, name);
-      const write: ManagedWrite = mode === "direct"
-        ? {
-          mode,
-          ...(await resolveAndPersistDirectWiring(
-            name,
-            resolvedDirectToken(mode, credential),
-          )),
-          credential,
-        }
-        : { mode, credential };
-      // Through the adapter so the profile's Desktop entry follows the `claude.desktop` key, like
-      // `--settings-for`.
-      await claudeAdapter().configureProfile(name, write, { quiet: true });
+      // Both agents, like the Codex hook (syncProfileWiring): the slot's pair is rendered into both
+      // files, so a Claude-only write can never leave the two disagreeing.
+      await wireBothAgents(name, mode, true, "stored");
       return settingsPathFor(resolveClaudeHome(), name);
     },
-    syncProfileWiring: (name, mode) => wireBothAgents(name, mode, true),
+    syncProfileWiring: (name, mode) => wireBothAgents(name, mode, true, "stored"),
     managedClaudeBaseUrl,
     codexHome: () => narrateCodexHome(resolveCodexHome()),
     notify: (line) => {

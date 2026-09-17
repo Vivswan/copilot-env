@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { consola } from "consola";
+import { wireBothAgents } from "../agents/profile_wiring.ts";
 import { readBakedDirectIdentities } from "../agents/wiring.ts";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
@@ -31,7 +32,6 @@ import {
   assertProfileSlot,
   CopilotEnvState,
   type ProvisionedCredential,
-  replayableIdentity,
   type StoredCredential,
 } from "../copilot_api/env_state.ts";
 import {
@@ -562,7 +562,10 @@ export async function acquireCredential(
 }
 
 /** A named profile's slot must already exist (`agent profile --add` is the only creator), and the
- *  gate fires BEFORE the acquisition so a typo'd name never costs a device flow. */
+ *  gate fires BEFORE the acquisition so a typo'd name never costs a device flow. A complete Direct
+ *  profile is rebaked here with a fresh selection: the credential write took the previous
+ *  credential's stored pair with it, and every re-render bakes the slot's pair, so the landing is
+ *  where the new one is probed and stored. */
 export async function authenticate(
   acquisition: CredentialAcquisition,
   profile: Profile,
@@ -570,6 +573,12 @@ export async function authenticate(
   if (profile !== null) assertProfileSlot(profile);
   const credential = await acquireCredential(acquisition);
   new Credential(undefined, profile).record(credential);
+  if (profile !== null) {
+    const slot = new CopilotEnvState().readProfileSlot(profile);
+    if (slot.kind === "complete" && slot.mode === "direct") {
+      await wireBothAgents(profile, "direct", false, "probe");
+    }
+  }
   return credential.kind === "gh-cli" ? "gh-cli" : credential.provider;
 }
 
@@ -846,8 +855,8 @@ interface IdentityTableInput {
   proxyHost: string;
   /** What each agent's Direct wiring sends today, and to which host: the `*` marks' source of truth. */
   baked: { codex: BakedDirectIdentity; claude: BakedDirectIdentity };
-  /** What the next Direct wiring pass bakes: the pin, else (named profile) the slot's replayed
-   *  verdict, else a fresh probe's pick; null = every candidate rejects the credential. */
+  /** What the next Direct wiring pass bakes: the pin, else a fresh probe's pick (`agent init` and
+   *  `agent profile --add` both probe); null = every candidate rejects the credential. */
   nextDirect: string | null;
   /** What a fresh daemon launch sends on the host in use; null = no identity accepts the credential. */
   proxyNext: string | null;
@@ -1079,20 +1088,11 @@ async function surveyAndTable(
   const directBuiltins = directIdentityCandidates(userAgent);
   const config = new CopilotEnvConfig();
   const configuredHost = config.copilotHost(profile);
-  // What a named profile's writer does with its slot (replayableIdentity): replay a valid pair, try
-  // a cached identity first, or probe afresh. The default slot's rewire (`agent init`) probes afresh.
-  const rule = profile === null
-    ? { kind: "probe" as const }
-    : replayableIdentity(profile, pinned, configuredHost);
-  const preferredName = rule.kind === "preferred"
-    ? rule.directIntegrationId ?? CODEX_IDENTITY_NAME
-    : null;
-  // Rows: the Direct candidates (the agents' exact bytes) plus the pin, every baked id, and a
-  // preferred cached id, then the proxy's own candidates not already named (the daemon's bytes: the
-  // id header alone).
+  // Rows: the Direct candidates (the agents' exact bytes) plus the pin and every baked id, then the
+  // proxy's own candidates not already named (the daemon's bytes: the id header alone).
   const directRows = withExtraCandidates(
     directBuiltins,
-    [pinned, ...bakedDirectSenders(baked).map((s) => s.name), preferredName],
+    [pinned, ...bakedDirectSenders(baked).map((s) => s.name)],
     (id) => directIdentity(userAgent, id),
   );
   // The daemon's rows under ITS header set (the id header alone), surveyed apart: one identity's
@@ -1116,19 +1116,16 @@ async function surveyAndTable(
     token,
     provider: credential.provider(),
   });
-  // What the next Direct wiring bakes and where: the writer's own selection (probeDirectWiring's
-  // rule, selectDirectIdentityAndHost) or its replayed pair; a refusal (every identity rejected on
-  // the host in use) is "nothing", and the wiring throws before any host move.
-  const direct = rule.kind === "replay"
-    ? { name: rule.directIntegrationId ?? CODEX_IDENTITY_NAME, host: rule.directBaseUrl }
-    : await pickOrRefusal(
-      selectDirectIdentityAndHost(token, userAgent, {
-        pinned,
-        preferred: rule.kind === "preferred" ? rule.directIntegrationId : null,
-        fixedHost: configuredHost,
-        narrator: logger,
-      }).then((s) => ({ name: s.integrationId ?? CODEX_IDENTITY_NAME, host: s.apiBase })),
-    );
+  // What the next Direct wiring bakes and where: the writer's own selection (`agent profile --add`
+  // and `agent init` both probe: probeDirectWiring's rule, selectDirectIdentityAndHost); a refusal
+  // (every identity rejected on the host in use) is "nothing", and the wiring throws before any host move.
+  const direct = await pickOrRefusal(
+    selectDirectIdentityAndHost(token, userAgent, {
+      pinned,
+      fixedHost: configuredHost,
+      narrator: logger,
+    }).then((s) => ({ name: s.integrationId ?? CODEX_IDENTITY_NAME, host: s.apiBase })),
+  );
   // What a fresh daemon launch sends and where (resolveLaunchCredential): its own selection under
   // passthrough, else the daemon's fixed vscode-chat, whose host is still judged.
   const proxy = await pickOrRefusal(
@@ -1228,9 +1225,10 @@ function noteIdentityApplies(): void {
 }
 
 /** Pins `id` unless the host its requests would go to rejects it definitively (the `host`
- *  literal, else what `auto` selects for it), or every surveyed host does. Otherwise the other
- *  hosts' verdicts are narrated, and with no acceptance at all (an unresolvable credential, every
- *  probe inconclusive, the account's host unknown) the pin lands unverified and says so. */
+ *  literal, else the slot's stored host, else what `auto` selects for it), or every surveyed host
+ *  does. Otherwise the other hosts' verdicts are narrated, and with no acceptance at all (an
+ *  unresolvable credential, every probe inconclusive, the account's host unknown) the pin lands
+ *  unverified and says so. */
 async function pinIdentity(
   id: string,
   profile: Profile,
@@ -1241,13 +1239,13 @@ async function pinIdentity(
     logger.warn(`Pinning \`${id}\` unverified: ${reason}.`);
   } else {
     const configuredHost = new CopilotEnvConfig().copilotHost(profile);
-    const rule = replayableIdentity(profile, id, configuredHost);
-    // The host the pin's requests go to: the writer's replayed pair, else the pin's own selection
-    // (a pin never re-selects; the host is judged under its headers). Surveyed as the configured
-    // column, so it always has a row whatever the account lookup answers.
-    const inUseHost = rule.kind === "replay"
-      ? rule.directBaseUrl
-      : (await selectDirectIdentityAndHost(token, codexUserAgent(), {
+    // The host the pin's requests go to: the `host` literal, else the slot's stored host (what
+    // every re-render bakes under the pin), else the pin's own selection (a slot never probed: the
+    // next re-render probes and stores). Surveyed as the configured column, so it always has a
+    // row whatever the account lookup answers.
+    const inUseHost = configuredHost ??
+      new CopilotEnvState().readProfileDirectPair(profile)?.host ??
+      (await selectDirectIdentityAndHost(token, codexUserAgent(), {
         pinned: id,
         fixedHost: configuredHost,
         narrator: logger,
@@ -1489,14 +1487,21 @@ async function runAuthenticate(
     }
   }
 
+  // A complete Direct profile is rebaked by authenticate itself; anything else still needs the
+  // `--add` that wires (or re-wires) it.
+  const rebakes = profile !== null &&
+    new CopilotEnvState().readProfileSlot(profile).mode === "direct";
   const provider = await authenticate(acquisition, profile);
   logger.success(
     profile === null
       ? `Authenticated (${provider}). Run \`agent init\` to configure Codex and Claude.`
+      : rebakes
+      ? `Authenticated ${profileLabel(profile)} (${provider}); its Direct wiring is rebaked for ` +
+        "this credential."
       : `Authenticated ${profileLabel(profile)} (${provider}). Wire it into both agents with ` +
         `\`agent profile --add ${profile} --direct|--proxy\`.`,
   );
-  noteStaticKeyStale(profile);
+  if (!rebakes) noteStaticKeyStale(profile);
 }
 
 /** A baked value (static-key) never follows the store, so only the rewire brings it up to date. */

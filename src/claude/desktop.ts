@@ -476,7 +476,7 @@ export function desktopPayloadOps(opts: DesktopPayloadOptions): PatchOp[] {
     for (const name of MANAGED_HEADER_NAMES) ops.push(remove(["inferenceCustomHeaders", name]));
     for (
       const [name, value] of Object.entries(
-        directClientHeaders(codexUserAgent(), opts.directIntegrationId),
+        directClientHeaders(codexUserAgent(), opts.direct?.directIntegrationId ?? null),
       )
     ) {
       ops.push(set(["inferenceCustomHeaders", name], value));
@@ -773,8 +773,8 @@ async function wiringModels(
       const discovered = await discoverServableClaudeModels(
         token,
         codexUserAgent(),
-        opts.directIntegrationId ?? null,
-        opts.directBaseUrl ?? DEFAULT_COPILOT_API_BASE,
+        opts.direct?.directIntegrationId ?? null,
+        opts.direct?.directBaseUrl ?? DEFAULT_COPILOT_API_BASE,
         { fetchImpl: opts.fetchImpl },
       );
       const rows = claudeCatalogRows(discovered.models);
@@ -823,7 +823,7 @@ export async function planClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   // The plan PEEKS a proxy port; the apply reserves it (reservePlannedPort).
   const plannedPort = opts.mode === "proxy" ? copilotApiResolvePort(opts.profile) : null;
   const baseUrl = plannedPort === null
-    ? opts.directBaseUrl ?? DEFAULT_COPILOT_API_BASE
+    ? opts.direct?.directBaseUrl ?? DEFAULT_COPILOT_API_BASE
     : proxyLoopbackOrigin(plannedPort);
 
   const metaRaw = readFileOrNull(join(dir, META_FILENAME));
@@ -917,11 +917,7 @@ export async function planClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     : null;
   // Re-extracted so the payload receives the Direct facts only alongside a direct mode.
   const write: ManagedMode = opts.mode === "direct"
-    ? {
-      mode: "direct",
-      directIntegrationId: opts.directIntegrationId,
-      directBaseUrl: opts.directBaseUrl,
-    }
+    ? { mode: "direct", direct: opts.direct }
     : { mode: "proxy" };
   // The write's own line announces the wiring; a byte-identical no-op states it instead, unless
   // quiet (the launcher hot path).

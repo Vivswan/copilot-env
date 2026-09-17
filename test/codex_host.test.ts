@@ -3,10 +3,9 @@
 
 import * as fs from "node:fs";
 import { join, relative } from "node:path";
-import { recordDefaultModeFromWiring } from "../src/agents/configure_defaults.ts";
 import { proxyHelperCommand } from "../src/claude/config.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
-import { runCodex } from "../src/codex/config.ts";
+import { runCodex } from "../src/agents/configure_defaults.ts";
 import {
   codexHostDrift,
   codexHostFarm,
@@ -99,6 +98,8 @@ function isolate(): Farm {
 }
 
 function configureCodex(): Promise<void> {
+  // A single-agent write re-renders the recorded default mode (the record is `agent init`'s).
+  new CopilotEnvState().recordDefaultMode("proxy");
   return runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
 }
 
@@ -1187,7 +1188,6 @@ skipWin(
     // The shell still points elsewhere; the read-back resolves Codex through the key's farm.
     process.env.CODEX_HOME = join(dir, "elsewhere");
     await build();
-    recordDefaultModeFromWiring();
     expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
     expect(new CopilotEnvState().readProfileSlot(null).mode).toBe("proxy");
   },
@@ -1208,7 +1208,6 @@ skipWin(
     process.env.CODEX_HOME = hostHome;
 
     await configureCodex();
-    recordDefaultModeFromWiring();
     expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
     // The farm stayed gone (not resurrected as a plain dir by the config write) ...
     expect(lexists(hostHome)).toBe(false);

@@ -105,14 +105,11 @@ function childBaseEnv(): Record<string, string | undefined> {
 
 function writeClaude(home: string, apiKeyHelper: string, baseUrl: string): void {
   writeClaudeSettings(home, { apiKeyHelper, baseUrl });
+  // The default slot's recorded mode is what `agent env` renders from; the file is an output.
+  new CopilotEnvState().recordDefaultMode(
+    apiKeyHelper === proxyHelperCommand() ? "proxy" : "direct",
+  );
 }
-
-test("env exports ANTHROPIC_BASE_URL when Claude is proxy at a localhost proxy URL", () => {
-  const home = isolate();
-  writeClaude(home, proxyHelperCommand(), "http://localhost:4141");
-  const lines = envLines();
-  expect(lines).toContain("export ANTHROPIC_BASE_URL='http://localhost:4141'");
-});
 
 test("env exports a 127.0.0.1 proxy URL (the production shape the writer now emits)", () => {
   // The Claude writer emits http://127.0.0.1:<port>, not localhost, so the agent reaches the IPv4
@@ -139,23 +136,6 @@ test("env clears a stale localhost ANTHROPIC_BASE_URL when Claude switched to di
   const lines = envLines();
   expect(lines).toContain("unset ANTHROPIC_BASE_URL");
   expect(lines.some((l) => l.startsWith("export ANTHROPIC_BASE_URL"))).toBe(false);
-});
-
-test("env never touches a user's own (non-local) ANTHROPIC_BASE_URL", () => {
-  const home = isolate();
-  writeClaude(home, proxyHelperCommand(), "https://example.test");
-  process.env.ANTHROPIC_BASE_URL = "https://example.test";
-  const lines = envLines();
-  expect(lines.some((l) => l.includes("ANTHROPIC_BASE_URL"))).toBe(false);
-});
-
-test("env leaves a localhost ANTHROPIC_BASE_URL alone when settings.json is unreadable", () => {
-  const home = isolate();
-  // A directory at the settings path exists but cannot be read, on every platform.
-  mkdirSync(join(home, "settings.json"));
-  process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
-  const lines = envLines();
-  expect(lines.some((l) => l.includes("ANTHROPIC_BASE_URL"))).toBe(false);
 });
 
 test("env does not unset a CODEX_HOME the user pointed elsewhere", () => {

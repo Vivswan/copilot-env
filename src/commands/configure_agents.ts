@@ -1,5 +1,6 @@
 import { configureDefaultAgents } from "../agents/configure_defaults.ts";
 import { configSetCommand } from "../copilot_api/env_config.ts";
+import type { ManagedAgentId } from "../agents/configure.ts";
 import type { AgentProviderMode, RequestedMode } from "../agents/provider_mode.ts";
 import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -11,11 +12,15 @@ const logger = createStderrLogger();
 /** configureDefaultAgents owns the narration and per-agent resilience; init warns and continues, so
  *  the failures it reports are dropped here. */
 export async function configureBothAgents(mode: RequestedMode): Promise<{
+  failedAgents: ManagedAgentId[];
   codex: AgentProviderMode;
   claude: AgentProviderMode;
 }> {
-  const { codex, claude } = await configureDefaultAgents({ codex: mode, claude: mode });
-  return { codex, claude };
+  const { codex, claude, failedAgents } = await configureDefaultAgents({
+    codex: mode,
+    claude: mode,
+  });
+  return { codex, claude, failedAgents };
 }
 
 function modeLabel(mode: AgentProviderMode): string {
@@ -32,11 +37,20 @@ export function printGuidance(
   codex: AgentProviderMode,
   claude: AgentProviderMode,
   usedToken = false,
+  failedAgents: readonly ManagedAgentId[] = [],
 ): void {
   const bothDirect = codex === "direct" && claude === "direct";
   const anyProxy = codex === "proxy" || claude === "proxy";
 
-  const lines: string[] = [`Codex   →  ${modeLabel(codex)}`, `Claude  →  ${modeLabel(claude)}`];
+  // A write that failed left that agent's files as they were: "unchanged", never "not configured".
+  const label = (agent: ManagedAgentId, mode: AgentProviderMode): string =>
+    failedAgents.includes(agent)
+      ? "unchanged (this run's write failed; see the warning above)"
+      : modeLabel(mode);
+  const lines: string[] = [
+    `Codex   →  ${label("codex", codex)}`,
+    `Claude  →  ${label("claude", claude)}`,
+  ];
 
   // Backticked commands render as highlighted inline code inside the box, so no space-padded
   // columns.

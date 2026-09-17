@@ -3,11 +3,10 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
-import {
-  configureDefaultAgents,
-  recordDefaultModeFromWiring,
-} from "../src/agents/configure_defaults.ts";
-import { AUTH_TOKEN_ENV, directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
+import { type AgentAdapter, directWiring, type ManagedAgentId } from "../src/agents/configure.ts";
+import { configureDefaultAgents, runAgentConfig } from "../src/agents/configure_defaults.ts";
+import { bothAgents } from "../src/agents/profile_wiring.ts";
+import { AUTH_TOKEN_ENV, claudeAdapter, proxyHelperCommand } from "../src/claude/config.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { CopilotEnvConfig, type StaticKeyScope } from "../src/copilot_api/env_config.ts";
@@ -15,15 +14,9 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
 import { runCli } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
-import {
-  envSnapshot,
-  isolateAgentHomes,
-  isolateProxyHome,
-  writeClaudeSettings,
-  writeCodexConfigToml,
-} from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "./helpers.ts";
 
-const restoreEnv = envSnapshot();
+const restoreEnv = envSnapshot(["PATH"]);
 let dir = "";
 
 beforeEach(() => {
@@ -35,73 +28,8 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-const DIRECT_BASE = "https://api.githubcopilot.com";
-const PROXY_CODEX_BASE = "http://127.0.0.1:4141/v1";
-const PROXY_CLAUDE_BASE = "http://127.0.0.1:4141";
-
-type WiredMode = "direct" | "proxy" | "none";
-
-function makeCodexHome(mode: WiredMode): string {
-  const home = join(dir, "codex-home");
-  mkdirSync(home, { recursive: true });
-  if (mode === "direct") writeCodexConfigToml(home, { baseUrl: DIRECT_BASE });
-  if (mode === "proxy") {
-    writeCodexConfigToml(home, { baseUrl: PROXY_CODEX_BASE, envKey: "OPENAI_API_KEY" });
-  }
-  return home;
-}
-
-function makeClaudeHome(mode: WiredMode): string {
-  const home = join(dir, "claude-home");
-  mkdirSync(home, { recursive: true });
-  if (mode === "direct") {
-    writeClaudeSettings(home, { apiKeyHelper: directHelperCommand(), baseUrl: DIRECT_BASE });
-  }
-  if (mode === "proxy") {
-    writeClaudeSettings(home, { apiKeyHelper: proxyHelperCommand(), baseUrl: PROXY_CLAUDE_BASE });
-  }
-  return home;
-}
-
-test("records the agreed managed mode when both agents match", () => {
-  recordDefaultModeFromWiring({
-    codexHome: makeCodexHome("proxy"),
-    claudeHome: makeClaudeHome("proxy"),
-  });
-  expect(new CopilotEnvState().readProfileSlot(null).mode).toBe("proxy");
-
-  // A rewire of ONE agent onto the other's mode lands on the new agreement.
-  recordDefaultModeFromWiring({
-    codexHome: makeCodexHome("direct"),
-    claudeHome: makeClaudeHome("direct"),
-  });
-  expect(new CopilotEnvState().readProfileSlot(null).mode).toBe("direct");
-});
-
-test("a one-agent rewire that diverges the pair clears the stale record", () => {
-  // The bug this step closes: the record says proxy, then `agent codex --direct`
-  // rewires ONE agent -- the pair diverges, so the record must clear, not stay.
-  new CopilotEnvState().recordDefaultMode("proxy");
-  recordDefaultModeFromWiring({
-    codexHome: makeCodexHome("direct"),
-    claudeHome: makeClaudeHome("proxy"),
-  });
-  expect(new CopilotEnvState().readProfileSlot(null).mode).toBeNull();
-});
-
-test("an unmanaged pair (none/none) records null, never a managed mode", () => {
-  new CopilotEnvState().recordDefaultMode("direct");
-  recordDefaultModeFromWiring({
-    codexHome: makeCodexHome("none"),
-    claudeHome: makeClaudeHome("none"),
-  });
-  expect(new CopilotEnvState().readProfileSlot(null).mode).toBeNull();
-});
-
 // --- the CLI dispatch hooks, end-to-end (src/cli.ts) -------------------------------
-// Each test hand-wires the OTHER agent first, so the child's rewire is the transition that
-// creates agreement. A forced-proxy wire needs no probe or network, so the children run offline
-// on a stored token.
+// A forced-proxy wire needs no probe or network, so the children run offline on a stored token.
 
 function childCliEnv(codexHome: string, claudeHome: string): Record<string, string | undefined> {
   return {
@@ -137,20 +65,150 @@ function storeCredential(): void {
   });
 }
 
-test("`agent codex --proxy` lands the pair on agreement and records it", () => {
+// Profiles are atomic units, the default included: on a fresh default (no recorded mode) a
+// single-agent command is the first landing and wires BOTH agents, as `agent init --proxy` would.
+test("`agent codex --proxy` on a fresh default lands both agents and records the mode they share", () => {
   storeCredential();
-  const claudeHome = makeClaudeHome("proxy");
-  const run = runCli(["codex", "--proxy"], { env: childCliEnv(join(dir, ".codex"), claudeHome) });
+  const codexHome = join(dir, ".codex");
+  const claudeHome = join(dir, ".claude");
+  const run = runCli(["codex", "--proxy"], { env: childCliEnv(codexHome, claudeHome) });
   expect(run.exitCode).toBe(0);
+  // consola keeps or strips the backticks by reporter, so the match allows both.
+  expect(run.stderr).toMatch(/wiring both, as `?agent init --proxy`? would/);
+  expect(existsSync(join(codexHome, "config.toml"))).toBe(true);
+  expect(existsSync(join(claudeHome, "settings.json"))).toBe(true);
   expect(recordedMode()).toBe("proxy");
 });
 
-test("`agent claude --proxy` lands the pair on agreement and records it", () => {
+// The default is one mode for both agents: only the both-agents write moves a recorded mode.
+test("the both-agents write moves a recorded default; a single-agent write onto another mode is refused", async () => {
+  dir = removeDir(dir);
+  const homes = isolateAgentHomes("copilot-move-mode-", { mkdirs: true });
+  dir = homes.dir;
   storeCredential();
-  const codexHome = makeCodexHome("proxy");
-  const run = runCli(["claude", "--proxy"], { env: childCliEnv(codexHome, join(dir, ".claude")) });
-  expect(run.exitCode).toBe(0);
-  expect(recordedMode()).toBe("proxy");
+  const state = new CopilotEnvState();
+  state.recordDefaultMode("direct");
+  const single = await configureDefaultAgents(
+    { codex: "proxy", claude: null, ghToken: "ghu_test" },
+    bothAgents(NOOP_CATALOG_DEPS),
+  );
+  expect(single.failedAgents).toEqual(["codex"]);
+  expect(existsSync(join(homes.codexHome, "config.toml"))).toBe(false);
+  expect(state.readProfileSlot(null).mode).toBe("direct");
+  const both = await configureDefaultAgents(
+    { codex: "proxy", claude: "proxy", ghToken: "ghu_test" },
+    bothAgents(NOOP_CATALOG_DEPS),
+  );
+  expect(both.failures).toEqual([]);
+  expect(existsSync(join(homes.codexHome, "config.toml"))).toBe(true);
+  expect(state.readProfileSlot(null).mode).toBe("proxy");
+});
+
+// --- `agent init` (auto): one probe pass decides one mode for both agents ------------------------
+
+/** One ordered trace of what the landing did: `probe:<id>` events, then `write:<id>:<mode>`. */
+function probeAdapter(id: ManagedAgentId, verdict: boolean, trace: string[]): AgentAdapter {
+  return {
+    id,
+    label: id,
+    check: () => {},
+    detectDirect: () => {
+      trace.push(`probe:${id}`);
+      return Promise.resolve(verdict);
+    },
+    resolveDirectWiring: () =>
+      Promise.resolve(directWiring("copilot-developer-cli", "https://api.githubcopilot.com")),
+    configureDefault(write) {
+      trace.push(`write:${id}:${write.mode}`);
+      return Promise.resolve();
+    },
+    configureProfile: () => {},
+    removeProfile: () => {},
+  };
+}
+
+test("`agent init` (auto) probes both agents BEFORE any write and lands one mode; disagreeing probes put both on the proxy", async () => {
+  const state = new CopilotEnvState();
+  for (const c of [{ codex: false, expected: "proxy" }, { codex: true, expected: "direct" }]) {
+    const trace: string[] = [];
+    state.recordDefaultMode("direct"); // whatever the record says, init never refuses itself
+    const out = await configureDefaultAgents(
+      { codex: "auto", claude: "auto", ghToken: "ghu_test" },
+      [probeAdapter("claude", true, trace), probeAdapter("codex", c.codex, trace)],
+    );
+    expect({ codexProbe: c.codex, ...out, trace, recorded: state.readProfileSlot(null).mode })
+      .toEqual({
+        codexProbe: c.codex,
+        codex: c.expected,
+        claude: c.expected,
+        failures: [],
+        failedAgents: [],
+        trace: [
+          "probe:claude",
+          "probe:codex",
+          `write:claude:${c.expected}`,
+          `write:codex:${c.expected}`,
+        ],
+        recorded: c.expected,
+      });
+  }
+});
+
+// The record is the mode both agents share, so it is committed only once both writes succeeded
+// (commitDefaultWiring): a move one agent did not make leaves the previous record.
+test("a failed write in a both-agents landing leaves the previous record, and names the agent that did not move", async () => {
+  const state = new CopilotEnvState();
+  state.recordDefaultMode("direct");
+  const trace: string[] = [];
+  const failing: AgentAdapter = {
+    ...probeAdapter("codex", false, trace),
+    configureDefault: () => Promise.reject(new Error("disk full")),
+  };
+  const out = await configureDefaultAgents(
+    { codex: "proxy", claude: "proxy", ghToken: "ghu_test" },
+    [probeAdapter("claude", false, trace), failing],
+  );
+  expect({ ...out, trace, recorded: state.readProfileSlot(null).mode }).toEqual({
+    codex: "none",
+    claude: "proxy",
+    failures: ["codex: disk full"],
+    failedAgents: ["codex"],
+    trace: ["write:claude:proxy"],
+    recorded: "direct",
+  });
+});
+
+// A selection made without a credential runs no request and hands back the fallback pair; stored,
+// every re-render would replay it. So a Direct landing with no resolvable credential is refused at
+// the owner (resolveDefaultMode, probeDirectWiring) before any write.
+test("a Direct landing with no resolvable credential is refused before any write: nothing written, nothing stored", async () => {
+  dir = removeDir(dir);
+  const homes = isolateAgentHomes("copilot-no-credential-", { mkdirs: true });
+  dir = homes.dir;
+  // A gh-cli slot whose `gh` is not on PATH resolves to null, never a throw.
+  const state = new CopilotEnvState();
+  state.setCredential(null, { kind: "gh-cli", ghUser: null });
+  const emptyBin = join(dir, "empty-bin");
+  mkdirSync(emptyBin, { recursive: true });
+  process.env.PATH = emptyBin;
+  const direct = await configureDefaultAgents(
+    { codex: "direct", claude: "direct" },
+    bothAgents(NOOP_CATALOG_DEPS),
+  );
+  expect(direct.failures.map((f) => f.includes("run `agent auth` first"))).toEqual([true, true]);
+  // `auto` is refused the same way: a proxy landing on that credential would serve nothing.
+  await expect(
+    configureDefaultAgents({ codex: "auto", claude: "auto" }, bothAgents(NOOP_CATALOG_DEPS)),
+  ).rejects.toThrow("run `agent auth` first");
+  // The re-render gap takes the same refusal: a Direct record whose slot holds no pair.
+  state.recordDefaultMode("direct");
+  await expect(runAgentConfig(claudeAdapter(), { kind: "configure", mode: "auto" })).rejects
+    .toThrow("run `agent auth` first");
+  expect({
+    codexFile: existsSync(join(homes.codexHome, "config.toml")),
+    claudeFile: existsSync(join(homes.claudeHome, "settings.json")),
+    pair: state.readProfileDirectPair(null),
+  }).toEqual({ codexFile: false, claudeFile: false, pair: {} });
 });
 
 // --- the `static-key` scope: WHICH agent's config carries the value -----------------------------
@@ -175,7 +233,7 @@ test("static-key scopes the baked value to the named agent; the other keeps its 
     new CopilotEnvConfig().setProfile(null, { "static-key": c.scope });
     const out = await configureDefaultAgents(
       { codex: "proxy", claude: "proxy", ghToken: "ghu_test" },
-      NOOP_CATALOG_DEPS,
+      bothAgents(NOOP_CATALOG_DEPS),
     );
     const settings = record(
       JSON.parse(readFileSync(join(homes.claudeHome, "settings.json"), "utf8")),

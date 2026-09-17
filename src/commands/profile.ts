@@ -3,20 +3,9 @@
 // derived from it.
 import { consola } from "consola";
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
-import {
-  configuringLine,
-  type ManagedWrite,
-  type RemoveProfileOptions,
-  resolveCredentialWiring,
-  resolvedDirectToken,
-} from "../agents/configure.ts";
-import {
-  bothAgents,
-  resolveAndPersistDirectWiring,
-  wireBothAgents,
-} from "../agents/profile_wiring.ts";
+import { configuringLine, type RemoveProfileOptions } from "../agents/configure.ts";
+import { bothAgents, wireBothAgents } from "../agents/profile_wiring.ts";
 import { providerModeExitCode, type RequestedMode } from "../agents/provider_mode.ts";
-import { claudeAdapter } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { ghAuthToken } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
@@ -141,7 +130,7 @@ async function runAdd(
   // a wiring failure leaves a complete-but-unwired slot that a re-add or the launchers' `--sync`
   // re-derives.
   state.commitProfile(name, { credential, mode });
-  await wireBothAgents(name, mode, false);
+  await wireBothAgents(name, mode, false, "probe");
   const switched = previous !== null && previous !== mode ? ` (switched from ${previous})` : "";
   logger.success(`${profileLabel(name)} is ready${switched}.`);
   logger.log(`  Launch it:  cl --profile ${name}  /  cx --profile ${name}`);
@@ -292,25 +281,16 @@ function runCheck(name: ProfileName): void {
   }
 }
 
-/** Through the adapter so the profile's Desktop entry follows the `claude.desktop` key; the printed
- *  path is what `cl --profile` evals into `--settings`. */
+/** Both agents through wireBothAgents (the slot's pair is rendered into both files, so a Claude-only
+ *  write can never leave the two disagreeing); the profile's Desktop entry
+ *  follows the `claude.desktop` key through the adapter. The printed path is what `cl --profile`
+ *  evals into `--settings`. */
 async function runSettingsFor(name: ProfileName): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(name);
   if (slot.kind === "partial") {
     throw new Error(partialSlotGap(name, slot));
   }
-  const credential = resolveCredentialWiring("claude", slot.mode, name);
-  const write: ManagedWrite = slot.mode === "direct"
-    ? {
-      mode: "direct",
-      ...(await resolveAndPersistDirectWiring(
-        name,
-        resolvedDirectToken(slot.mode, credential),
-      )),
-      credential,
-    }
-    : { mode: "proxy", credential };
-  await claudeAdapter().configureProfile(name, write, { quiet: true });
+  await wireBothAgents(name, slot.mode, true, "stored");
   process.stdout.write(`${settingsPathFor(resolveClaudeHome(), name)}\n`);
 }
 
@@ -324,7 +304,7 @@ async function runSync(): Promise<void> {
     const slot = state.readProfileSlot(name);
     if (slot.kind !== "complete") continue;
     try {
-      await wireBothAgents(name, slot.mode, true);
+      await wireBothAgents(name, slot.mode, true, "stored");
       synced++;
     } catch (e) {
       failed++;

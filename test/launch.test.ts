@@ -13,7 +13,6 @@ import {
 import type { ManagedEnvValue } from "../src/commands/env.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import type { ProfileMode, ProfileSlot, TokenProvider } from "../src/copilot_api/env_state.ts";
-import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
 import { runCli, spawnChild } from "./helpers/run.ts";
@@ -411,9 +410,19 @@ function recordedMode(root: string): string | undefined {
   return state.profiles?.default?.mode;
 }
 
+/** What the wiring command records: the launcher reads the default slot's mode, never settings.json. */
+function recordDefault(root: string, mode: "direct" | "proxy"): void {
+  mkdirSync(join(root, "api-home"), { recursive: true });
+  writeFileSync(
+    join(root, "api-home", "credentials.json"),
+    `${JSON.stringify({ profiles: { default: { mode } } })}\n`,
+  );
+}
+
 skipWin("e2e: a direct Claude launch composes flags and scrubs a stale local URL", () => {
   const root = e2eRoot();
   const bin = fakeCliBin(root, "claude", 7);
+  recordDefault(root, "direct");
   writeClaudeSettings(join(root, ".claude"), {
     apiKeyHelper: directHelperCommand(),
     baseUrl: DIRECT_BASE,
@@ -436,6 +445,7 @@ skipWin("e2e: %VAR% / $VAR user args arrive literally (no shell between us and t
   // and the CLI would substitute these.
   const root = e2eRoot();
   const bin = fakeCliBin(root, "claude");
+  recordDefault(root, "direct");
   writeClaudeSettings(join(root, ".claude"), {
     apiKeyHelper: directHelperCommand(),
     baseUrl: DIRECT_BASE,
@@ -468,6 +478,7 @@ test.skipIf(process.platform !== "win32")(
         "",
       ].join("\n"),
     );
+    recordDefault(root, "direct");
     writeClaudeSettings(join(root, ".claude"), {
       apiKeyHelper: directHelperCommand(),
       baseUrl: DIRECT_BASE,
@@ -494,6 +505,7 @@ test.skipIf(process.platform !== "win32")(
 skipWin("e2e: --relaxed exports IS_SANDBOX and never scrubs a foreign base URL", () => {
   const root = e2eRoot();
   const bin = fakeCliBin(root, "claude");
+  recordDefault(root, "direct");
   writeClaudeSettings(join(root, ".claude"), {
     apiKeyHelper: directHelperCommand(),
     baseUrl: DIRECT_BASE,
@@ -510,6 +522,7 @@ skipWin("e2e: --relaxed exports IS_SANDBOX and never scrubs a foreign base URL",
 skipWin("e2e: a proxy-wired Claude launch aborts (exit 1) when the start offer is declined", () => {
   const root = e2eRoot();
   const bin = fakeCliBin(root, "claude");
+  recordDefault(root, "proxy");
   writeClaudeSettings(join(root, ".claude"), {
     apiKeyHelper: proxyHelperCommand(),
     baseUrl: "http://127.0.0.1:4199",
@@ -522,7 +535,7 @@ skipWin("e2e: a proxy-wired Claude launch aborts (exit 1) when the start offer i
   expect(res.stderr).toContain("copilot proxy not running. Start it now? [Y/n]");
   expect(res.stderr).toContain("Continuing without the proxy");
   expect(res.stdout).not.toContain("ARGS="); // claude was never launched
-  expect(recordedMode(root)).toBeUndefined(); // aborted before the wire: no record
+  expect(recordedMode(root)).toBe("proxy"); // aborted before the wire: only the fixture's record
 });
 
 skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success records", async () => {
@@ -564,16 +577,15 @@ skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success recor
       envKey: "OPENAI_API_KEY",
     });
 
-    // Success-only: a FAILED wire records nothing. The "direct" sentinel exposes any premature
-    // record, since a hook firing anyway would clear or overwrite it.
-    //   plain file where the Claude home should be -> reads unwired ("none"): the wire IS attempted
-    //   settings write (mkdir over a file)          -> fails for any uid
-    new CopilotEnvState().recordDefaultMode("direct");
+    // Success-only: a FAILED wire records nothing. The launcher reads the default slot's recorded
+    // mode (none yet: the wire IS attempted), never settings.json.
+    //   plain file where the Claude home should be -> the settings write (mkdir over a file) fails
+    //                                                  for any uid
     writeFileSync(join(root, ".claude"), "");
     const failed = runCli(["launch", "claude", "--"], { env: launchEnv(root, bin) });
     expect(failed.exitCode).not.toBe(0);
     expect(failed.stdout).not.toContain("ARGS="); // claude was never launched
-    expect(recordedMode(root)).toBe("direct"); // the sentinel survived: no record
+    expect(recordedMode(root)).toBeUndefined(); // nothing landed: no record
 
     rmSync(join(root, ".claude"), { force: true });
     writeClaudeSettings(join(root, ".claude"), {
@@ -622,6 +634,7 @@ skipWin(
   "e2e: codex-host off, a direct Codex launch passes args through untouched and pins CODEX_HOME to the shell's export, which is the home",
   () => {
     const root = e2eRoot();
+    recordDefault(root, "direct");
     const bin = fakeCliBin(root, "codex", 3);
     // Codex's own convention: the export is where the config lives, so it is what the child gets.
     const exported = join(root, "my-own-codex");
@@ -640,6 +653,7 @@ skipWin(
   "e2e: codex-host on, the child is pinned to the farm and a differing shell export is named exactly once",
   () => {
     const root = e2eRoot();
+    recordDefault(root, "direct");
     const bin = fakeCliBin(root, "codex", 3);
     const farm = stageFarm(root);
     const staleExport = join(root, "old-farm");

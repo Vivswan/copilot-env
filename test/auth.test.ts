@@ -1,3 +1,5 @@
+import { directWiring } from "../src/agents/configure.ts";
+import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
@@ -544,7 +546,7 @@ test("auth --identities: one column per host, marks what the configs bake and a 
     configureClaudeConfig(claudeHome, {
       mode: "direct",
       credential: { kind: "command" },
-      directIntegrationId: COPILOT_CLI_INTEGRATION_ID,
+      direct: directWiring(COPILOT_CLI_INTEGRATION_ID, DEFAULT_COPILOT_API_BASE),
     });
     await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
     const pinned = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
@@ -564,7 +566,7 @@ test("auth --identities: one column per host, marks what the configs bake and a 
     // and the disagreement said.
     configureCodexConfig(
       codexHome,
-      { mode: "direct", credential: { kind: "command" } },
+      { mode: "direct", direct: null, credential: { kind: "command" } },
       NOOP_CATALOG_DEPS,
     );
     const split = await captureLog(() => runAuth({ identities: true }, NOOP_CATALOG_DEPS));
@@ -654,7 +656,7 @@ test("auth --identities: columns are the generic host, the account's when it dif
     new CopilotEnvConfig().setProfile(null, { host: CONFIGURED_HOST });
     configureCodexConfig(
       codexHome,
-      { mode: "direct", credential: { kind: "command" } },
+      { mode: "direct", direct: null, credential: { kind: "command" } },
       NOOP_CATALOG_DEPS,
     );
     stubIdentitySurvey();
@@ -815,47 +817,6 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
     expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
     await runAuth({ identity: COPILOT_CLI_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
     expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_CLI_INTEGRATION_ID);
-    // A slot whose cached pair already carries this id on the account's host (an earlier `auto`
-    // wiring) replays THAT host without probing, so the pin's requests go there: it lands.
-    await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
-    state().setProfileIntegrationIdentity(
-      null,
-      COPILOT_SANDBOX_INTEGRATION_ID,
-      { kind: "stored", provider: "gh-token", token: "github_pat_x" },
-      {
-        host: "https://api.enterprise.githubcopilot.com",
-        identity: COPILOT_SANDBOX_INTEGRATION_ID,
-        source: "auto",
-      },
-    );
-    await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS);
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
-    // The cached host is surveyed in its own right: with the account lookup failing (no account
-    // column) and the generic host accepting the id, the cached host's rejection still refuses
-    // the pin, because that is where the writer sends it.
-    await runAuth({ identity: "auto" }, NOOP_CATALOG_DEPS);
-    setIntegrationProbeFetch((input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("/copilot_internal/user")) {
-        return Promise.resolve(new Response("upstream", { status: 503 }));
-      }
-      const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
-      const enterprise = url.startsWith("https://api.enterprise.");
-      return Promise.resolve(
-        id === COPILOT_SANDBOX_INTEGRATION_ID && !enterprise
-          ? new Response(JSON.stringify({ data: [{}] }), { status: 200 })
-          : new Response("Personal Access Tokens are not supported for this endpoint", {
-            status: 400,
-          }),
-      );
-    });
-    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }, NOOP_CATALOG_DEPS)).rejects
-      .toThrow(
-        "api.enterprise.githubcopilot.com (in use for this identity) rejects this credential under " +
-          `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
-          `selects for this identity: ${PAT_REJECTION}`,
-      );
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
   } finally {
     setIntegrationProbeFetch(null);
   }

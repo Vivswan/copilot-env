@@ -119,8 +119,9 @@ skipWin(
       // Fresh deps per pass: the install-root sandbox is deleted by each apply.
       const { removeCodexHostFarm: _real, ...deps } = tmpDeps(codexHome);
       mkdirSync(recorded, { recursive: true });
-      if (ours) configureCodexConfig(recorded, { credential: COMMAND, mode: "direct" });
-      else writeFileSync(join(recorded, "config.toml"), 'model_provider = "openai"\n');
+      if (ours) {
+        configureCodexConfig(recorded, { credential: COMMAND, mode: "direct", direct: null });
+      } else writeFileSync(join(recorded, "config.toml"), 'model_provider = "openai"\n');
       new CopilotEnvRunState().set({ codexHome: recorded });
       const ctx = resolveUninstallContext({ yes: true }, deps);
       expect(ctx.targets.codexHostFarm).toBe(ours ? recorded : null);
@@ -164,7 +165,7 @@ test("uninstall removes everything managed and preserves user config", async () 
 
   mkdirSync(claudeHome, { recursive: true });
   writeFileSync(settingsPathFor(claudeHome), JSON.stringify({ model: "opus" }));
-  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct" });
+  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", direct: null });
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(
     join(codexHome, "config.toml"),
@@ -183,8 +184,18 @@ test("uninstall removes everything managed and preserves user config", async () 
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "direct",
   });
-  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", profile: WORK });
-  configureCodexConfig(codexHome, { credential: COMMAND, mode: "direct", profile: WORK });
+  configureClaudeConfig(claudeHome, {
+    credential: COMMAND,
+    mode: "direct",
+    direct: null,
+    profile: WORK,
+  });
+  configureCodexConfig(codexHome, {
+    credential: COMMAND,
+    mode: "direct",
+    direct: null,
+    profile: WORK,
+  });
   mkdirSync(profileHome(WORK), { recursive: true });
 
   // A second Codex home (e.g. a farm home from when it was the effective one)
@@ -195,7 +206,12 @@ test("uninstall removes everything managed and preserves user config", async () 
     mode: "proxy",
     baseUrl: "http://127.0.0.1:4199/v1",
   });
-  configureCodexConfig(codexHome2, { credential: COMMAND, mode: "direct", profile: WORK });
+  configureCodexConfig(codexHome2, {
+    credential: COMMAND,
+    mode: "direct",
+    direct: null,
+    profile: WORK,
+  });
 
   const deps = tmpDeps(codexHome);
   deps.codexHomes = [codexHome, codexHome2];
@@ -322,7 +338,7 @@ test("uninstall leaves foreign Claude/Codex wiring untouched", async () => {
 
 test("uninstall on a foreign-edited config strips OUR deny, then removes the registration", async () => {
   const { claudeHome, codexHome } = tmpHomes();
-  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct" }); // deny + registration + ownership
+  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", direct: null }); // deny + registration + ownership
   const settingsPath = settingsPathFor(claudeHome);
   const doc = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
   doc.apiKeyHelper = "/usr/local/bin/my-helper"; // foreign edit: wiring classifies "other"
@@ -361,7 +377,7 @@ test("uninstall never touches a user's own deny on a foreign config (registratio
 
 test("uninstall keeps the MCP registration while an owned deny cannot be stripped", async () => {
   const { claudeHome, codexHome } = tmpHomes();
-  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct" }); // deny + registration + ownership
+  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", direct: null }); // deny + registration + ownership
   const settingsPath = settingsPathFor(claudeHome);
   writeFileSync(settingsPath, "{ not json"); // the owned deny is now unverifiable
 
@@ -386,7 +402,7 @@ test("uninstall is idempotent: a second run finds nothing and exits 0", async ()
 test("uninstall without --yes on a non-TTY refuses and deletes nothing", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
-  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct" });
+  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", direct: null });
   new Credential().store("gh-token", "ghp_default");
 
   // the test runner's stdin is not a TTY, so the guard fires before the prompt.
@@ -398,7 +414,7 @@ test("uninstall without --yes on a non-TTY refuses and deletes nothing", async (
 test("uninstall --dry-run changes nothing and narrates every step", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
-  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct" });
+  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", direct: null });
   configureCodexConfig(codexHome, {
     credential: COMMAND,
     mode: "proxy",
@@ -453,8 +469,8 @@ test.skipIf(process.platform === "win32")(
     const farm = join(dir, "farm");
     const untracked = join(dir, "untracked-farm");
     // Both carry our config, as a wiring pass leaves a farm; the record alone separates them.
-    configureCodexConfig(farm, { credential: COMMAND, mode: "direct" });
-    configureCodexConfig(untracked, { credential: COMMAND, mode: "direct" });
+    configureCodexConfig(farm, { credential: COMMAND, mode: "direct", direct: null });
+    configureCodexConfig(untracked, { credential: COMMAND, mode: "direct", direct: null });
     new CopilotEnvRunState().set({ codexHome: farm });
 
     // No farm seam: exercise the real implementation (it reads the redirected
@@ -473,7 +489,7 @@ test.skipIf(process.platform === "win32")(
   async () => {
     const { codexHome } = tmpHomes();
     const farm = join(dir, "farm");
-    configureCodexConfig(farm, { credential: COMMAND, mode: "direct" });
+    configureCodexConfig(farm, { credential: COMMAND, mode: "direct", direct: null });
     new CopilotEnvRunState().set({ codexHome: farm });
 
     // No farm seam, so the narration reflects the REAL removal it describes.
@@ -538,16 +554,26 @@ test("uninstall removes owned Claude Desktop entries via the injected library di
 test("uninstall's dry run and live run render ONE resolved plan", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
-  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct" });
+  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", direct: null });
   expect(registerClaudeMcpServer()).toBe(true); // our MCP entry is in .claude.json
   // A named profile with a daemon home, so the profile step has a tree to delete.
   new CopilotEnvState().commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "direct",
   });
-  configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", profile: WORK });
+  configureClaudeConfig(claudeHome, {
+    credential: COMMAND,
+    mode: "direct",
+    direct: null,
+    profile: WORK,
+  });
   // The Codex profile file is a deletion OUTSIDE our homes, so the plan must name it.
-  configureCodexConfig(codexHome, { credential: COMMAND, mode: "direct", profile: WORK });
+  configureCodexConfig(codexHome, {
+    credential: COMMAND,
+    mode: "direct",
+    direct: null,
+    profile: WORK,
+  });
   mkdirSync(profileHome(WORK), { recursive: true });
   // The AMBIENT Desktop library (the env seam) is the injected one, so a profile
   // teardown that rescanned the library would find what is planted below.

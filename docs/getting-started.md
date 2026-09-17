@@ -88,7 +88,7 @@ Every file copilot-env leaves outside its own homes (`~/.copilot-env`, `~/.local
 
 `agent update` fetches the newest release's binary, checks its SHA256 against `checksums.txt`, then verifies both files against the release's Sigstore build-provenance attestation. Only then does it swap the binary in place.
 
-The attestation must be signed by a release workflow this build trusts, running in this repository on `main`, and both files must be among the attested bytes.
+The attestation must be signed by a GitHub Actions workflow of Vivswan's GitHub account (any repository, any ref), and both files must be among the attested bytes.
 
 - That check is on by default. `agent update --no-verify` skips it once, `agent config --set update.verify-provenance false` turns it off.
 - The release lookup is anonymous: no `GH_TOKEN` / `GITHUB_TOKEN` from the shell and no stored Copilot credential is sent, so a token for another account cannot turn the lookup into a 401. GitHub's anonymous limit (60 requests an hour per IP) covers one lookup per `--check` or autoupdate cooldown; when nothing resolves (no eligible release, a refusal, or no network) `agent update --check` says so and exits 2.
@@ -103,14 +103,13 @@ Every release also carries a build-provenance attestation, `attestation.json`. T
 
 ```bash
 for f in copilot-env-<target> checksums.txt; do
-  gh attestation verify "$f" -R Vivswan/copilot-env --source-ref refs/heads/main --bundle attestation.json \
-    --cert-identity-regex '^https://github\.com/Vivswan/(copilot-env/\.github/workflows/release\.yml|repo-platform/\.github/workflows/fleet-release-publish\.yml)@refs/.+$'
+  gh attestation verify "$f" --owner Vivswan --bundle attestation.json \
+    --cert-identity-regex '^https://github\.com/Vivswan/[^/]+/\.github/workflows/[^@]+@refs/.+$'
 done
 ```
 
-- `-R` names this repository, where `agent update` pins the immutable repository id.
-- `--source-ref` requires `main`.
-- `--cert-identity-regex` allows either release workflow at any ref: this repository's own `release.yml`, or the fleet's `fleet-release-publish.yml` that the attest step is moving to.
+- `--owner` and `--cert-identity-regex` allow any workflow of any repository under Vivswan's GitHub account, at any ref: the fleet's publish leg signs releases from another repository and a tag. The repository is pinned by the download URL, not the certificate.
+- `--owner` also requires the calling repository to be Vivswan's; `agent update` checks only the signing workflow's identity.
 
 ## Uninstall
 

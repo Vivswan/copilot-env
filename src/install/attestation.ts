@@ -5,56 +5,30 @@
 // checksums.txt travels with the binary, so matching it proves the download is intact, not who
 // built it: whoever can swap release assets can swap the manifest too. Every release also
 // carries ONE Sigstore bundle (`attestation.json`) in which GitHub Actions attests the sha256 of
-// every asset it published, signed under the release workflow's OIDC identity.
+// every asset it published, signed under the publishing workflow's OIDC identity.
 //
 // Two failure classes, told apart because the right next step differs:
 //   "cannot verify"        -> the bundle or trust root could not be fetched; names the opt-outs
 //   "verification FAILED"  -> the bytes are not attested or the signer is wrong; never names them
 import { configSetCommand } from "../copilot_api/env_config.ts";
 import { isRecord } from "../utils/json.ts";
-import { escapeRegExp } from "../utils/regexp.ts";
 
 /** The release asset carrying the Sigstore bundle (uploaded by the release workflow's publish
  *  stage). */
 export const ATTESTATION_NAME = "attestation.json";
 
 /**
- * The certificate SAN names the workflow that ran the attest step (`<workflow url>@<ref>`). The
- * ref is free so the fleet publish leg can move between branches and tags without a release
- * here first; the trust rides on the source-repository pins below, which require the signing
- * run to have happened IN this repository on main (a reusable workflow's SAN names the CALLED
- * workflow; the pins name the caller).
+ * The certificate SAN names the workflow that ran the attest step (`<workflow url>@<ref>`). Any
+ * workflow of any repository under Vivswan's GitHub account may publish a release, at any ref:
+ * the fleet's publish leg runs in another repository and from a tag. The certificate proves that
+ * GitHub Actions under this account signed the bytes; the release download URL, not the
+ * certificate, pins the repository.
  */
-export const RELEASE_SIGNER_WORKFLOWS: readonly string[] = [
-  "https://github.com/Vivswan/copilot-env/.github/workflows/release.yml",
-  "https://github.com/Vivswan/repo-platform/.github/workflows/fleet-release-publish.yml",
-];
+export const RELEASE_SIGNER_SAN =
+  /^https:\/\/github\.com\/Vivswan\/[^/]+\/\.github\/workflows\/[^@]+@refs\/.+$/;
 
 /** GitHub Actions' OIDC issuer, as recorded in the signing certificate. */
 export const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
-
-/** The repository the release workflow must have run IN (the caller), by its immutable numeric
- *  id (a rename or transfer cannot inherit it) and the ref the release job runs on. Both are
- *  certificate extensions GitHub's OIDC token carries into the Fulcio certificate. */
-export const SOURCE_REPOSITORY_ID = "1258991131";
-export const SOURCE_REPOSITORY_REF = "refs/heads/main";
-
-/** Fulcio's GitHub Actions certificate extensions (1.3.6.1.4.1.57264.1.*): 14 = Source
- *  Repository Ref, 15 = Source Repository Identifier. Their values are DER UTF8Strings. */
-export const FULCIO_OID_SOURCE_REPOSITORY_REF = [1, 3, 6, 1, 4, 1, 57264, 1, 14] as const;
-export const FULCIO_OID_SOURCE_REPOSITORY_ID = [1, 3, 6, 1, 4, 1, 57264, 1, 15] as const;
-
-/** DER-encode `text` as an ASN.1 UTF8String (tag 0x0C), the shape Fulcio's v2 extensions carry
- *  their values in; a policy value must match it byte for byte. */
-export function derUtf8String(text: string): Uint8Array {
-  const bytes = new TextEncoder().encode(text);
-  const length = bytes.length < 0x80
-    ? [bytes.length]
-    : bytes.length < 0x100
-    ? [0x81, bytes.length]
-    : [0x82, bytes.length >> 8, bytes.length & 0xff];
-  return new Uint8Array([0x0c, ...length, ...bytes]);
-}
 
 /** The DSSE payload type of an in-toto statement. */
 export const IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json";
@@ -65,29 +39,16 @@ export const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
 
 /** Who may have signed the bundle. */
 export interface SignerPolicy {
-  /** The workflow URLs accepted in the certificate SAN, at any `@refs/...` ref. */
-  signerWorkflows: readonly string[];
+  /** The anchored pattern the certificate SAN must match. */
+  signerSan: RegExp;
   /** The exact OIDC issuer extension. */
   issuer: string;
-  /** The exact source repository id (Fulcio extension 15). */
-  sourceRepositoryId: string;
-  /** The exact source repository ref (Fulcio extension 14). */
-  sourceRepositoryRef: string;
 }
 
 export const RELEASE_SIGNER_POLICY: SignerPolicy = {
-  signerWorkflows: RELEASE_SIGNER_WORKFLOWS,
+  signerSan: RELEASE_SIGNER_SAN,
   issuer: GITHUB_OIDC_ISSUER,
-  sourceRepositoryId: SOURCE_REPOSITORY_ID,
-  sourceRepositoryRef: SOURCE_REPOSITORY_REF,
 };
-
-/** sigstore-js matches the SAN as a regular expression even when given a string, so the
- *  workflow URLs are escaped and the whole pattern anchored. */
-export function signerSanPattern(policy: SignerPolicy): RegExp {
-  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- our URLs, escaped and anchored, vs a SAN
-  return new RegExp(`^(?:${policy.signerWorkflows.map(escapeRegExp).join("|")})@refs/.+$`);
-}
 
 /** One attested artifact: the name is informational, the digest is what matches. */
 export interface AttestedSubject {
@@ -108,11 +69,10 @@ export function cannotVerifyMessage(tag: string, cause: string): string {
     `opt-out with '${configSetCommand("update.verify-provenance", "false")}'.`;
 }
 
-/** The mismatch wording: the check ran and the download is not what our release
- *  workflow built. Deliberately silent about the opt-outs. */
+/** The mismatch wording: the check ran and the bytes or the signer failed it. Deliberately
+ *  silent about the opt-outs. */
 export function verificationFailedMessage(tag: string, detail: string): string {
-  return `build provenance verification FAILED for ${tag}: ${detail}; the download is not ` +
-    "what GitHub Actions built from Vivswan/copilot-env. Do not install it.";
+  return `build provenance verification FAILED for ${tag}: ${detail}. Do not install it.`;
 }
 
 /** Decode a DSSE payload as an in-toto v1 statement carrying SLSA provenance.

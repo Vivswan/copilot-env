@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { consola } from "consola";
+import { taggedLogger } from "../utils/logger.ts";
 
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
 import { entryAbsent, isEnoentOrNotdir } from "../utils/fs.ts";
@@ -11,7 +11,7 @@ import { sleepSync } from "../utils/time.ts";
 import { CopilotApiPaths, PROXY_CONFIG_FILENAME } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 
-const logger = consola.withTag("copilot_api.config");
+const logger = taggedLogger("copilot_api.config");
 
 /** One read of a store file; see CopilotApiConfig.read() for the kinds' meaning. */
 type StoreRead =

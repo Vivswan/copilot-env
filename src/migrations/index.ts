@@ -6,7 +6,7 @@
 import "../utils/dotenv.ts";
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
-import { disableConsolaTimestamps } from "../utils/logger.ts";
+import { configureConsolaOutput } from "../utils/logger.ts";
 import { type SemverString, stripV, toSemverString, versionLessThan } from "../utils/semver.ts";
 import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence } from "./4.0.0.ts";
 import { v402DesktopHelpers, v402GhAccountPin, v402RootLayout } from "./4.0.2.ts";
@@ -119,7 +119,7 @@ export async function runMigrations(
 
 // Guarded by import.meta.main so importing the registry never executes the runner.
 if (import.meta.main) {
-  disableConsolaTimestamps();
+  configureConsolaOutput();
   const [from, to] = process.argv.slice(2);
   if (!from || !to) {
     consola.error("usage: deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>");

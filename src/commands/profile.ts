@@ -27,7 +27,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { removeTreeReported } from "../utils/report_write.ts";
-import { formatTable, terminalWidth } from "../utils/table.ts";
+import { formatTable, printWrapped, terminalWidth } from "../utils/table.ts";
 import {
   acquireCredential,
   type CredentialAcquisition,
@@ -269,11 +269,11 @@ function runCheck(name: ProfileName): void {
   const slot = new CopilotEnvState().readProfileSlot(name);
   switch (slot.kind) {
     case "partial":
-      console.log(partialSlotGap(name, slot));
+      printWrapped(partialSlotGap(name, slot));
       process.exitCode = providerModeExitCode("other");
       return;
     case "complete":
-      console.log(`${profileLabel(name)}: ${slot.mode}`);
+      printWrapped(`${profileLabel(name)}: ${slot.mode}`);
       process.exitCode = providerModeExitCode(slot.mode);
       return;
     default:

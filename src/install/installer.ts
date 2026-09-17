@@ -57,6 +57,7 @@ import {
   VERSIONS_DIR,
 } from "../utils/root.ts";
 import { stripV } from "../utils/semver.ts";
+import { printWrapped } from "../utils/table.ts";
 import { packageVersion } from "../utils/version.ts";
 import {
   INSTALLED_BINARY_POSIX,
@@ -92,8 +93,10 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/utils/fs.ts",
   "src/utils/hostname.ts",
   "src/utils/json.ts",
+  "src/utils/logger.ts",
   "src/utils/pid.ts",
   "src/utils/report_write.ts",
+  "src/utils/table.ts",
   "src/utils/time.ts",
 ] as const;
 
@@ -781,24 +784,24 @@ export function applyInstallPlan(plan: InstallPlan): void {
 function printEpilogue(options: InstallOptions): void {
   console.log("");
   if (options.noShellIntegration) {
-    console.log("Done. Shell integration was skipped; run 'agent shell' to enable it.");
+    printWrapped("Done. Shell integration was skipped; run 'agent shell' to enable it.");
   } else {
-    console.log(
+    printWrapped(
       process.platform === "win32"
         ? "Done. Restart PowerShell to load the integration."
         : "Done. Restart your shell to load the integration.",
     );
   }
   console.log("");
-  console.log("Next steps:");
+  printWrapped("Next steps:");
   // CLIs first: `agent init` auto-detects Direct by smoke-testing the installed CLI, so a
   // machine without one lands on the proxy.
-  console.log(
+  printWrapped(
     `  1. Run 'agent shell --clis' to install the Claude and Codex CLIs ('${
       configSetCommand("shell.launchers", "true")
     }' adds the cl/co/cx shortcuts).`,
   );
-  console.log(
+  printWrapped(
     "  2. Run 'agent init' to set up Codex + Claude (it picks GitHub Copilot Direct or the local proxy), then tells you whether you need 'agent start' (only for the proxy).",
   );
 }

@@ -3,6 +3,7 @@
 // bypasses this entirely.
 import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { bold, gray, green, red, yellow } from "../utils/ansi.ts";
+import { printWrapped } from "../utils/table.ts";
 import { worstStatus } from "./aggregate.ts";
 import type { CheckGroup, CheckResult, CheckStatus, HealthScope } from "./types.ts";
 
@@ -39,7 +40,7 @@ export function renderReport(
   results: CheckResult[],
   profileModes: ReadonlyMap<string, ProfileMode | null> = new Map(),
 ): void {
-  console.log(bold(`copilot-env health - scope: ${scope}`));
+  printWrapped(bold(`copilot-env health - scope: ${scope}`));
   for (const group of GROUP_ORDER) {
     const inGroup = results.filter((r) => r.group === group);
     // Sections are keyed on (group, profile): default-target (null) checks render under the
@@ -57,19 +58,19 @@ export function renderReport(
       } else {
         heading = `${GROUP_LABEL[group]} - profile '${profile}'`;
       }
-      console.log(`\n${bold(heading)}`);
+      printWrapped(`\n${bold(heading)}`);
       for (const r of section) {
         const lines = r.detail.split("\n");
         if (lines.length <= 1) {
           // Single fact -> one row: `ok label: value`.
-          console.log(`  ${glyph(r.status)} ${r.label}: ${lines[0] ?? ""}`);
+          printWrapped(`  ${glyph(r.status)} ${r.label}: ${lines[0] ?? ""}`);
         } else {
           // Multiple facts -> a label row, then each fact as a `-` sub-item.
-          console.log(`  ${glyph(r.status)} ${r.label}`);
-          for (const line of lines) console.log(`      ${gray("•")} ${line}`);
+          printWrapped(`  ${glyph(r.status)} ${r.label}`);
+          for (const line of lines) printWrapped(`      ${gray("•")} ${line}`);
         }
         // The CheckOutcome union: every warn/fail carries a fix, ok never does.
-        if (r.status !== "ok") console.log(`      ${gray(`→ fix: ${r.fix}`)}`);
+        if (r.status !== "ok") printWrapped(`      ${gray(`→ fix: ${r.fix}`)}`);
       }
     }
   }
@@ -77,7 +78,7 @@ export function renderReport(
   for (const r of results) counts[r.status]++;
   const summary = `${counts.ok} ok, ${counts.warn} warn, ${counts.fail} fail`;
   const overall = worstStatus(results);
-  console.log(`\n${glyph(overall)} ${bold(summary)}`);
+  printWrapped(`\n${glyph(overall)} ${bold(summary)}`);
 }
 
 /** First-appearance (evaluation) order: the default (null) target evaluates first, so it leads. */

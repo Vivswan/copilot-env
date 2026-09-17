@@ -64,6 +64,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, readTextResult, type TextReadResult } from "../utils/fs.ts";
 import { escapeRegExp } from "../utils/regexp.ts";
+import { printWrapped } from "../utils/table.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { mkdirReported, removeReported, writeFileReported } from "../utils/report_write.ts";
@@ -709,17 +710,17 @@ function checkClaudeConfig(): void {
   const claudeHome = resolveClaudeHome();
   const settingsPath = settingsPathFor(claudeHome);
   const status = inspectClaudeWiring(readTextResult(settingsPath), Number(copilotApiResolvePort()));
-  console.log(
+  printWrapped(
     `Claude provider mode: ${status.providerMode} (${providerModeDetail(status.providerMode)})`,
   );
-  console.log(`settings.json: ${settingsPath}`);
+  printWrapped(`settings.json: ${settingsPath}`);
   if (status.providerMode === "direct" || status.providerMode === "proxy") {
-    console.log(
+    printWrapped(
       status.credential === "command"
         ? `apiKeyHelper: ${status.helperPath}`
         : `credential: static ${AUTH_TOKEN_ENV} (static-key; no apiKeyHelper)`,
     );
-    console.log(`${BASE_URL_ENV}: ${status.baseUrl}`);
+    printWrapped(`${BASE_URL_ENV}: ${status.baseUrl}`);
   }
   process.exitCode = providerModeExitCode(status.providerMode);
 }

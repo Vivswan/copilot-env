@@ -722,11 +722,8 @@ test("configTable() renders the header, the groups, and key=value rows with type
     const typeLine = lines.slice(rowAt(def.key)).find((l) => l.includes(`[${def.type}]`)) ?? "";
     expect(typeLine.indexOf("[")).toBe(column);
   }
-  // Right-column cells pack to the width like words; the one line past the cap is the URL
-  // default, an unbreakable cell wider than the column.
-  expect(lines.filter((l) => l.length > PLAIN_TABLE.width)).toEqual([
-    " ".repeat(column) + `default ${OPENROUTER_MODELS_URL}`,
-  ]);
+  // Right-column cells pack to the width like words; nothing runs past the cap.
+  expect(lines.filter((l) => l.length > PLAIN_TABLE.width)).toEqual([]);
   // A stored key: the star, the stored value, its type, and its bare default.
   expect(row("daemon.strict-port")).toBe(
     `  * daemon.strict-port=true`.padEnd(column) + "[bool] default false",
@@ -738,11 +735,15 @@ test("configTable() renders the header, the groups, and key=value rows with type
     `    proxy.claude-auto-model=<unset>`.padEnd(column) + "[model id]",
   );
   // A key=value too long for the column keeps its own line; its right column starts below,
-  // and a cell that will not fit beside the type moves down again.
+  // and a cell that will not fit beside the type moves down again, the URL split at the edge
+  // under its `default` label.
   const url = rowAt("cost.pricing-url");
   expect(lines[url]).toBe(`  * cost.pricing-url=${global["cost.pricing-url"]}`);
   expect(lines[url + 1]).toBe(" ".repeat(column) + "[url]");
-  expect(lines[url + 2]).toBe(" ".repeat(column) + `default ${OPENROUTER_MODELS_URL}`);
+  expect(lines[url + 2]).toBe(" ".repeat(column) + "default");
+  const urlLines = lines.slice(url + 3, url + 5);
+  expect(urlLines.every((l) => l.startsWith(" ".repeat(column + 2)))).toBe(true);
+  expect(urlLines.map((l) => l.trim()).join("")).toBe(OPENROUTER_MODELS_URL);
   // A stored POSIX-only value on Windows is still starred (it IS stored) and named inert, the
   // note packed onto the next line where it does not fit beside the type and default.
   expect(row("codex.host")).toBe(
@@ -910,7 +911,7 @@ test("configTable() by scope: PROFILE holds the profile keys and the profile-def
   expect(overrideRow).not.toContain(`default ${sharedDefault} `);
 });
 
-test("configTable() narrows with the width: the header packs to it, the right column stacks under the key row at 40, and only unbreakable pieces run past it", () => {
+test("configTable() narrows with the width: the header packs to it, the right column stacks under the key row at 40, and nothing runs past it: a lead wider than the terminal splits at the edge", () => {
   const at = (width: number): string[] =>
     configTable(stored({ "daemon.strict-port": true }), { ...PLAIN_TABLE, width }).split("\n");
   const headers: [number, string[]][] = [
@@ -933,16 +934,14 @@ test("configTable() narrows with the width: the header packs to it, the right co
   for (const [width, header] of headers) {
     expect(at(width).slice(0, header.length), String(width)).toEqual(header);
   }
-  // At 60 every row fits; at 40 only the unbreakable pieces run past the width: the key=value
-  // leads longer than the width and the URL value.
+  // Nothing runs past the width at either: a key=value lead wider than the terminal splits at
+  // the edge, with its remainder on the next line.
   expect(at(60).filter((l) => l.length > 60)).toEqual([]);
   const out = at(40);
-  expect(out.filter((l) => l.length > 40)).toEqual([
-    "    proxy.alpha-search.codex-priority=true",
-    "    proxy.message-websearch-model=gpt-5-mini",
-    "    proxy.responses.context-management=false",
-    `    cost.pricing-url=${OPENROUTER_MODELS_URL}`,
-  ]);
+  expect(out.filter((l) => l.length > 40)).toEqual([]);
+  const urlLead = out.indexOf("    cost.pricing-url=https://openrouter.");
+  expect(urlLead).toBeGreaterThan(0);
+  expect(out[urlLead + 1]).toBe("      ai/api/v1/models");
   // The right column stacks under each key row at a six-space indent.
   const strict = out.indexOf("  * daemon.strict-port=true");
   expect(strict).toBeGreaterThan(0);

@@ -164,13 +164,21 @@ test("a hard-wrap column splits a path at its own edge, spaces kept, where a wor
     const rows = formatTable([["Logs:", path]], { indent: "", wrap: [false, "hard"], width });
     expect(rows.map((line) => line.slice(7)).join("")).toBe(path);
   }
-  // A path without spaces has no word boundary a word-wrap column may use: the floors do not fit.
+  // A path without spaces has no word boundary a word-wrap column may use: the floors do not fit,
+  // and the stacked cell splits at the width too rather than spill.
   const spaceless = "/home/me/.local/share/copilot-env/logs/copilot-api.log";
   expect(formatTable([["Logs:", spaceless], ["PID:", "1"]], {
     indent: "",
     wrap: [false, true],
     width: 40,
-  })).toEqual(["Logs:", `  ${spaceless}`, "", "PID:", "  1"]);
+  })).toEqual([
+    "Logs:",
+    "  /home/me/.local/share/copilot-env/logs",
+    "    /copilot-api.log",
+    "",
+    "PID:",
+    "  1",
+  ]);
 });
 
 test("terminalWidth takes a TTY's own size over COLUMNS, and COLUMNS only for a pipe", () => {

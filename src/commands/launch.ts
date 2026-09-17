@@ -37,6 +37,7 @@ import {
   readStartAnswer,
   resolveProxyToken,
 } from "./proxy_token.ts";
+import { printWrappedToStderr } from "../utils/table.ts";
 
 /** Each name is also the command spawned. */
 const LAUNCH_CLIS = ["claude", "codex", "copilot"] as const;
@@ -260,7 +261,7 @@ async function ensureProxyUp(profile: Profile): Promise<boolean> {
       await refreshCodexCatalogAndSync("proxy");
     },
     notify: (line) => {
-      process.stderr.write(`${line}\n`);
+      printWrappedToStderr(line);
     },
   };
   return (await resolveProxyToken({ assumeYes: false, profile }, deps)) === 0;
@@ -291,7 +292,7 @@ export function commandDeps(): LaunchDeps {
     managedClaudeBaseUrl,
     codexHome: () => narrateCodexHome(resolveCodexHome()),
     notify: (line) => {
-      process.stderr.write(`${line}\n`);
+      printWrappedToStderr(line);
     },
   };
 }
@@ -343,8 +344,8 @@ export async function runLaunch(
         // A failed look must not read "not installed": the probe never completed, which proves
         // nothing about the CLI. The launch below is the honest test; its own spawn error names the
         // real problem.
-        process.stderr.write(
-          `could not check whether '${action.kind}' is installed (the command probe failed to run); launching anyway\n`,
+        printWrappedToStderr(
+          `could not check whether '${action.kind}' is installed (the command probe failed to run); launching anyway`,
         );
       } else {
         throw new Error(

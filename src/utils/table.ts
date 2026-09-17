@@ -29,21 +29,67 @@ const TERMINAL_WIDTH_FALLBACK = 80;
 /** A TTY's own size wins: an exported COLUMNS goes stale across a resize. COLUMNS is the explicit
  *  width for a pipe (tests, captures); without it a pipe is unbounded so captured output never
  *  wraps. */
-export function terminalWidth(): number | null {
-  if (process.stdout.isTTY) return process.stdout.columns || TERMINAL_WIDTH_FALLBACK;
+export function terminalWidth(stream: NodeJS.WriteStream = process.stdout): number | null {
+  if (stream.isTTY) return stream.columns || TERMINAL_WIDTH_FALLBACK;
   const env = Number(process.env.COLUMNS);
   return Number.isInteger(env) && env > 0 ? env : null;
 }
 
 /** Wraps at word boundaries so that `indent` + the first line and `hang` + each continuation line
- *  fit `width`; a word longer than its line overflows rather than splits. */
+ *  fit `width`; a word wider than its line (a path) splits at the width, its later pieces on
+ *  continuation lines. */
 export function wrapLine(text: string, width: number | null, indent = "", hang = indent): string[] {
   if (width === null) return [`${indent}${text}`];
-  const fit = (chunk: string, prefix: string): string[] =>
-    wrapAnsi(chunk, Math.max(1, width - stringWidth(prefix))).split("\n");
-  const [first = "", ...rest] = fit(text, indent);
-  const tail = rest.length === 0 ? [] : fit(rest.join(" "), hang);
-  return [`${indent}${first}`, ...tail.map((line) => `${hang}${line}`)];
+  const room = (prefix: string): number => Math.max(1, width - stringWidth(prefix));
+  const soft = (chunk: string, prefix: string): string[] =>
+    wrapAnsi(chunk, room(prefix)).split("\n");
+  const [first = "", ...rest] = soft(text, indent);
+  const tail = rest.length === 0 ? [] : soft(rest.join(" "), hang);
+  // The soft wrap sets a word wider than its line on a line of its own, so an over-wide line is
+  // one word: split it at the width without the spaces a re-wrap of joined pieces would add.
+  return [first, ...tail].flatMap((line, i) => {
+    const prefix = i === 0 ? indent : hang;
+    const pieces = stringWidth(line) > room(prefix)
+      ? splitHard(line, room(prefix), room(hang))
+      : [line];
+    return pieces.map((piece, k) => `${k === 0 ? prefix : hang}${piece}`);
+  });
+}
+
+/** `word` cut into pieces of at most `firstRoom` columns, then `restRoom`, every character kept. */
+function splitHard(word: string, firstRoom: number, restRoom: number): string[] {
+  const cut = (text: string, columns: number): string[] =>
+    wrapAnsi(text, columns, { hard: true, wordWrap: false, trim: false }).split("\n");
+  const [head = "", ...more] = cut(word, firstRoom);
+  return more.length === 0 ? [head] : [head, ...cut(more.join(""), restRoom)];
+}
+
+/** A line's leading whitespace, looked for behind any ANSI codes that paint the whole line. The
+ *  escape byte comes from fromCharCode: a control character in a regex literal is a lint error. */
+const LEADING = new RegExp(`^((?:${String.fromCharCode(27)}\\[[0-9;]*m)*)(\\s*)`);
+
+/** Every line of a message wrapped to `width` under its own indent with a hanging continuation
+ *  one GAP deeper; `lead` is what the printer puts in front of the first line (a logger's icon).
+ *  A line that fits is returned as it came, so table rows pass through untouched. */
+export function wrapMessage(text: string, width: number | null, lead = 0): string {
+  if (width === null) return text;
+  return text.split("\n").flatMap((line, i) => {
+    const room = i === 0 ? width - lead : width;
+    if (stringWidth(line) <= room) return [line];
+    const [prefix = "", paint = "", indent = ""] = LEADING.exec(line) ?? [];
+    return wrapLine(`${paint}${line.slice(prefix.length)}`, room, indent, `${indent}${GAP}`);
+  }).join("\n");
+}
+
+/** console.log for prose lines (status reports, next steps): wrapped to the terminal, unwrapped
+ *  down a pipe. */
+export function printWrapped(text: string): void {
+  console.log(wrapMessage(text, terminalWidth()));
+}
+
+/** The stderr twin, for narration beside a command's stdout payload. */
+export function printWrappedToStderr(text: string): void {
+  process.stderr.write(`${wrapMessage(text, terminalWidth(process.stderr))}\n`);
 }
 
 function isHeading(row: TableRow): row is { heading: string } {

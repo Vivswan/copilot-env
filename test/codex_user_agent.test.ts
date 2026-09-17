@@ -50,7 +50,7 @@ test.skipIf(process.platform === "win32")(
     delete process.env[CI_NO_LIVE_LOOKUPS_ENV];
     const codexHome = join(dir, ".codex");
     const userAgent = (): unknown => {
-      configureCodexConfig(codexHome, { mode: "direct", credential: COMMAND });
+      configureCodexConfig(codexHome, { mode: "direct", direct: null, credential: COMMAND });
       const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
       return asRecord(asRecord(asRecord(doc.model_providers)["copilot-env"]).http_headers)[
         "User-Agent"

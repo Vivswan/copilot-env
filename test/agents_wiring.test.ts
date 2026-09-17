@@ -7,8 +7,9 @@ import { join } from "node:path";
 import {
   defaultSetupNeedsProxy,
   proxyUnusedEverywhere,
-  readAgentModes,
+  readAgentWirings,
 } from "../src/agents/wiring.ts";
+
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
 import { getHostLocalCodexHome } from "../src/codex/host.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -19,6 +20,13 @@ import {
   writeClaudeSettings,
   writeCodexConfigToml,
 } from "./helpers.ts";
+
+/** The two default modes as the classifiers read them (a test-side view: src reads no agent file
+ *  as truth, so this helper exists here alone). */
+function readAgentModes(opts: Parameters<typeof readAgentWirings>[0] = {}) {
+  const { codex, claude } = readAgentWirings(opts);
+  return { codex: codex.providerMode, claude: claude.providerMode };
+}
 
 const restoreEnv = envSnapshot();
 let dir = "";

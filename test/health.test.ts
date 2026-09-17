@@ -141,7 +141,6 @@ function profileTarget(name: string, overrides: TargetOverrides = {}): RuntimeTa
       mode: "proxy",
       storedToken: false,
       ghUser: null,
-      integrationIdentity: null,
     },
     homeExists: true,
   };
@@ -1849,16 +1848,15 @@ test("checkAuth renders the named-profiles detail line from the swept facts", ()
     ghAuthenticated: false,
     provider: "gh-token",
     profiles: {
-      [parseProfileName("fast")]: { provider: null, mode: "proxy", integrationIdentity: null },
+      [parseProfileName("fast")]: { provider: null, mode: "proxy" },
       [parseProfileName("work")]: {
         provider: "gh-token",
         mode: "direct",
-        integrationIdentity: "copilot-developer-cli",
       },
     },
     pinnedIntegrationId: null,
   });
   expect(res.detail).toContain(
-    "named profiles: fast (no auth, proxy), work (gh-token, direct, copilot-developer-cli)",
+    "named profiles: fast (no auth, proxy), work (gh-token, direct)",
   );
 });

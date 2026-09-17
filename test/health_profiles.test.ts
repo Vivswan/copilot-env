@@ -82,7 +82,6 @@ function namedTarget(name: string, overrides: NamedOverrides = {}): NamedRuntime
       mode: "proxy",
       storedToken: true,
       ghUser: null,
-      integrationIdentity: null,
     },
     homeExists: overrides.homeExists ?? true,
     proxyExpected,
@@ -156,7 +155,6 @@ test("profile.consistency: slot + home agreement per mode", () => {
         mode: "direct",
         storedToken: true,
         ghUser: null,
-        integrationIdentity: null,
       },
       homeExists: false,
       proxyExpected: false,
@@ -175,7 +173,6 @@ test("profile.consistency: home without a slot warns half-created with both repa
         mode: null,
         storedToken: false,
         ghUser: null,
-        integrationIdentity: null,
       },
       homeExists: true,
     }),
@@ -204,7 +201,6 @@ test("profile.consistency: a slot with no recorded mode warns", () => {
         mode: null,
         storedToken: true,
         ghUser: null,
-        integrationIdentity: null,
       },
     }),
   );
@@ -280,7 +276,6 @@ test("a named DIRECT profile yields only the consistency check, no daemon rows",
       mode: "direct",
       storedToken: true,
       ghUser: null,
-      integrationIdentity: null,
     },
     homeExists: false,
     proxyExpected: false,
@@ -351,13 +346,12 @@ test("the sweep renders default rows before profile rows (gather order preserved
 
 const RESOLVES = { storedToken: true, ghAuthenticated: false };
 
-test("checkProfileAuth: a provisioned slot reads ok with provider + mode + identity", () => {
+test("checkProfileAuth: a provisioned slot reads ok with provider + mode", () => {
   const ok = checkProfileAuth(
     P,
     {
       provider: "gh-token",
       mode: "proxy",
-      integrationIdentity: "copilot-developer-cli",
     },
     RESOLVES,
   );
@@ -365,13 +359,12 @@ test("checkProfileAuth: a provisioned slot reads ok with provider + mode + ident
   expect(ok.profile).toBe(P);
   expect(ok.group).toBe("auth");
   expect(ok.detail).toContain("gh-token");
-  expect(ok.detail).toContain("copilot-developer-cli");
   expect(ok.detail).toContain("agent auth --get --profile p");
   expect(ok.detail).toContain("agent start --profile p");
 
   const direct = checkProfileAuth(
     P,
-    { provider: "gh-token", mode: "direct", integrationIdentity: null },
+    { provider: "gh-token", mode: "direct" },
     RESOLVES,
   );
   expect(direct.status).toBe("ok");
@@ -382,7 +375,7 @@ test("checkProfileAuth: a provisioned slot reads ok with provider + mode + ident
 test("checkProfileAuth: a missing credential warns and never falls back to the default", () => {
   const noProvider = checkProfileAuth(
     P,
-    { provider: null, mode: "proxy", integrationIdentity: null },
+    { provider: null, mode: "proxy" },
     { storedToken: false, ghAuthenticated: false },
   );
   expect(noProvider.status).toBe("warn");
@@ -397,7 +390,7 @@ test("checkProfileAuth: a missing credential warns and never falls back to the d
   // has no previous mode to stick to).
   const noMode = checkProfileAuth(
     P,
-    { provider: null, mode: null, integrationIdentity: null },
+    { provider: null, mode: null },
     { storedToken: false, ghAuthenticated: false },
   );
   expect(noMode.fix).toBe("agent profile --add p --direct|--proxy");
@@ -407,7 +400,7 @@ test("checkProfileAuth: a recorded provider whose credential does not resolve wa
   // Token provider with no stored token: the slot is provisioned on paper only.
   const tokenGone = checkProfileAuth(
     P,
-    { provider: "gh-token", mode: "proxy", integrationIdentity: null },
+    { provider: "gh-token", mode: "proxy" },
     { storedToken: false, ghAuthenticated: false },
   );
   expect(tokenGone.status).toBe("warn");
@@ -418,7 +411,6 @@ test("checkProfileAuth: a recorded provider whose credential does not resolve wa
   const ghSlot = {
     provider: "gh-cli" as const,
     mode: "direct" as const,
-    integrationIdentity: null,
   };
   expect(checkProfileAuth(P, ghSlot, { storedToken: false, ghAuthenticated: true }).status).toBe(
     "ok",
@@ -696,7 +688,6 @@ const launcherDeps: LaunchDeps = {
     kind: "complete",
     credential: { kind: "stored", provider: "gh-token", token: "tok" },
     mode: "direct",
-    integrationIdentity: null,
   }),
   writeClaudeProfileSettings: (name) => Promise.resolve(join("/h", `settings-${name}.json`)),
   syncProfileWiring: () => Promise.resolve(),
@@ -1030,6 +1021,7 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
     const codexHome = join(home, "codex-home");
     configureCodexConfig(codexHome, {
       mode: "direct",
+      direct: null,
       profile: P,
       credential: { kind: "command" },
     });
@@ -1071,6 +1063,7 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
 
     configureCodexConfig(codexHome, {
       mode: "direct",
+      direct: null,
       profile: P,
       credential: { kind: "static", token: "tok-p" },
     });
@@ -1239,14 +1232,13 @@ test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth 
       mode: "direct",
       storedToken: false,
       ghUser: null,
-      integrationIdentity: null,
     }),
     codexDirectAuth: () => Promise.resolve(unproven),
     ghActiveLogin: () => Promise.resolve(null),
   });
   expect(narrowed.profileAuth).toEqual({
     name: P,
-    slot: { provider: "gh-cli", mode: "direct", integrationIdentity: null },
+    slot: { provider: "gh-cli", mode: "direct" },
     storedToken: false,
     ghAuthenticated: false,
     ghAuthUnproven: true,
@@ -1310,7 +1302,7 @@ test("profile.consistency and setup.auth reuse ids across targets, disambiguated
     },
     profileAuth: {
       name: P,
-      slot: { provider: "gh-token", mode: "direct", integrationIdentity: null },
+      slot: { provider: "gh-token", mode: "direct" },
       storedToken: true,
       ghAuthenticated: false,
     },

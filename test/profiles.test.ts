@@ -3,7 +3,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
-import { resolveAndPersistDirectWiring } from "../src/agents/profile_wiring.ts";
 import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
 import {
   CLAUDE_DESKTOP_DIR_ENV,
@@ -19,13 +18,18 @@ import {
   renderProfileTable,
   runProfile,
 } from "../src/commands/profile.ts";
+import { commandDeps } from "../src/commands/launch.ts";
 import { runStart } from "../src/commands/start.ts";
 import { parseStopAction, runStop } from "../src/commands/stop.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState, partialSlotGap } from "../src/copilot_api/env_state.ts";
 import { setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
-import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
+import {
+  DEFAULT_COPILOT_API_BASE,
+  resetIntegrationIdentityCache,
+  setIntegrationProbeFetch,
+} from "../src/copilot_api/integration_identity.ts";
 import {
   CopilotApiPaths,
   profileHome,
@@ -281,10 +285,10 @@ test("a direct Claude profile writes settings-<name>.json + a --profile helper, 
   });
 
   // Pre-existing default settings must stay byte-identical.
-  configureClaudeConfig(home, { credential: COMMAND, mode: "direct" });
+  configureClaudeConfig(home, { credential: COMMAND, mode: "direct", direct: null });
   const defaultBefore = readFileSync(settingsPathFor(home), "utf8");
 
-  configureClaudeConfig(home, { credential: COMMAND, mode: "direct", profile: WORK });
+  configureClaudeConfig(home, { credential: COMMAND, mode: "direct", direct: null, profile: WORK });
 
   expect(readFileSync(settingsPathFor(home), "utf8")).toBe(defaultBefore);
   const doc = JSON.parse(readFileSync(settingsPathFor(home, WORK), "utf8")) as Record<
@@ -311,7 +315,14 @@ test("a direct Claude profile without its own credential is refused", () => {
   tmpProxyHome();
   const home = tmpClaudeHome();
   new Credential().store("gh-token", "ghp_default"); // default cred must NOT satisfy it
-  expect(() => configureClaudeConfig(home, { credential: COMMAND, mode: "direct", profile: WORK }))
+  expect(() =>
+    configureClaudeConfig(home, {
+      credential: COMMAND,
+      mode: "direct",
+      direct: null,
+      profile: WORK,
+    })
+  )
     .toThrow(
       /no credential of its own/,
     );
@@ -375,11 +386,16 @@ test("a Codex profile writes <name>.config.toml + its provider table, leaving th
     mode: "direct",
   });
 
-  configureCodexConfig(codexHome, { credential: COMMAND, mode: "direct" });
+  configureCodexConfig(codexHome, { credential: COMMAND, mode: "direct", direct: null });
   const before = readToml(join(codexHome, "config.toml"));
   expect(before.model_provider).toBe("copilot-env");
 
-  configureCodexConfig(codexHome, { credential: COMMAND, mode: "direct", profile: WORK });
+  configureCodexConfig(codexHome, {
+    credential: COMMAND,
+    mode: "direct",
+    direct: null,
+    profile: WORK,
+  });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBe("copilot-env"); // untouched
   expect(doc.profiles).toBeUndefined();
@@ -419,7 +435,12 @@ test("a Codex profile write on an EMPTY config file also leaves no dangling mode
   const codexHome = tmpCodexHome();
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(join(codexHome, "config.toml"), "   \n");
-  configureCodexConfig(codexHome, { credential: COMMAND, mode: "direct", profile: FAST });
+  configureCodexConfig(codexHome, {
+    credential: COMMAND,
+    mode: "direct",
+    direct: null,
+    profile: FAST,
+  });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBeUndefined();
   // The write LANDED: the whitespace-only file parses as empty, and the profile
@@ -760,83 +781,18 @@ test("stop/record-event against a never-existing profile fabricate NOTHING", asy
   expect(profileHomeNames()).toEqual([]);
 });
 
-test("the DEFAULT slot's identity cache replays without a probe and re-arms on rotation", async () => {
-  tmpProxyHome();
-  // Count only the identity probes (the /models candidate requests).
-  let probes = 0;
-  setIntegrationProbeFetch((input) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.includes("/models")) probes++;
-    return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
-  });
-  const state = new CopilotEnvState();
-  new Credential(state).store("gh-token", "ghp_default");
-
-  // First resolution probes and persists the verdict (the identity NAME, so
-  // "probed, the default won" is distinguishable from "never probed").
-  expect((await resolveAndPersistDirectWiring(null)).directIntegrationId).toBeNull();
-  expect(state.slotIdentityForDisplay(null)).toBe("codex");
-  const afterFirst = probes;
-  expect(afterFirst).toBeGreaterThan(0);
-
-  // The replay path: no further network (same contract as a named profile).
-  expect((await resolveAndPersistDirectWiring(null)).directIntegrationId).toBeNull();
-  expect(probes).toBe(afterFirst);
-
-  // A credential change invalidates the cached verdict, re-arming the probe.
-  new Credential(state).store("gh-token", "ghp_rotated");
-  expect(state.slotIdentityForDisplay(null)).toBeNull();
-  await resolveAndPersistDirectWiring(null);
-  expect(probes).toBeGreaterThan(afterFirst);
-});
-
-test("a direct profile probes the client identity ONCE, persisting the verdict for later syncs", async () => {
-  tmpProxyHome();
-  const claudeHome = tmpClaudeHome();
-  tmpCodexHome();
-  // Count only the identity probes (the /models candidate requests).
-  let probes = 0;
-  setIntegrationProbeFetch((input) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.includes("/models")) probes++;
-    return Promise.resolve(
-      url.includes("Copilot-Integration-Id") || url.includes("/copilot_internal/user")
-        ? new Response("{}", { status: 200 })
-        : new Response(JSON.stringify({ data: [] }), { status: 200 }),
-    );
-  });
-
-  await runProfile({ add: "work", mode: "direct", set: "ghp_worktoken" });
-  const state = new CopilotEnvState();
-  // The DEFAULT identity won, and that verdict is persisted (as the identity NAME) so it
-  // is distinguishable from "never probed" -- the launcher hot path must not re-probe.
-  expect(state.slotIdentityForDisplay(WORK)).toBe("codex");
-  const afterAdd = probes;
-  expect(afterAdd).toBeGreaterThan(0);
-
-  // `--settings-for` and `--sync` are the per-launch replay paths: no further network.
-  await runProfile({ settingsFor: "work", mode: "auto" });
-  await runProfile({ sync: true, mode: "auto" });
-  expect(probes).toBe(afterAdd);
-  expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(true);
-
-  // A credential change invalidates the cached verdict, re-arming the probe.
-  new Credential(state, WORK).store("gh-token", "ghp_rotated");
-  expect(state.slotIdentityForDisplay(WORK)).toBeNull();
-  await runProfile({ sync: true, mode: "auto" });
-  expect(probes).toBeGreaterThan(afterAdd);
-});
-
-test("a direct profile bakes a non-default probed identity into BOTH agents", async () => {
+test("a direct profile probes ONCE and bakes the accepted identity into BOTH agents; a rewire re-renders the baked pair with no probe", async () => {
   tmpProxyHome();
   const claudeHome = tmpClaudeHome();
   const codexHome = tmpCodexHome();
   // Only copilot-developer-cli is accepted -- the PAT case this feature exists for.
+  let probes = 0;
   setIntegrationProbeFetch((input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(new Response("{}", { status: 200 }));
     }
+    probes++;
     const id = new Headers(init?.headers).get("Copilot-Integration-Id");
     return Promise.resolve(
       id === "copilot-developer-cli"
@@ -844,19 +800,168 @@ test("a direct profile bakes a non-default probed identity into BOTH agents", as
         : new Response("PATs not supported", { status: 400 }),
     );
   });
+  const baked = (): {
+    claude: string;
+    claudeHost: string;
+    codex: string | undefined;
+    codexHost: unknown;
+  } => {
+    const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, WORK), "utf8"));
+    const doc = readToml(join(codexHome, "config.toml"));
+    const providers = doc.model_providers as Record<string, Record<string, unknown>>;
+    const table = providers[codexProviderId(WORK)];
+    const headers = table?.http_headers as Record<string, string>;
+    return {
+      claude: settings.env.ANTHROPIC_CUSTOM_HEADERS,
+      claudeHost: settings.env.ANTHROPIC_BASE_URL,
+      codex: headers["Copilot-Integration-Id"],
+      codexHost: table?.base_url,
+    };
+  };
 
   await runProfile({ add: "work", mode: "direct", set: "github_pat_worktoken" });
-  expect(new CopilotEnvState().slotIdentityForDisplay(WORK)).toBe(
-    "copilot-developer-cli",
-  );
-  const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, WORK), "utf8"));
-  expect(settings.env.ANTHROPIC_CUSTOM_HEADERS).toContain(
-    "Copilot-Integration-Id: copilot-developer-cli",
-  );
-  const doc = readToml(join(codexHome, "config.toml"));
-  const providers = doc.model_providers as Record<string, Record<string, unknown>>;
-  const headers = providers[codexProviderId(WORK)]?.http_headers as Record<string, string>;
-  expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
+  const first = baked();
+  expect(first.claude).toContain("Copilot-Integration-Id: copilot-developer-cli");
+  expect(first.codex).toBe("copilot-developer-cli");
+  expect(probes).toBeGreaterThan(0);
+
+  // `--settings-for` and `--sync` re-render what the files already bake: no request, same bytes.
+  // The stub now rejects everything, so a probe would both count and change the verdict.
+  probes = 0;
+  setIntegrationProbeFetch(() => {
+    probes++;
+    return Promise.resolve(new Response("PATs not supported", { status: 400 }));
+  });
+  await runProfile({ settingsFor: "work", mode: "auto" });
+  await runProfile({ sync: true, mode: "auto" });
+  expect(probes).toBe(0);
+  expect(baked()).toEqual(first);
+
+  // A re-add is a probing wiring (the credential may have changed): the files are overwritten
+  // with the fresh selection, here the one identity the stub now accepts.
+  setIntegrationProbeFetch((_input, init) => {
+    probes++;
+    const id = new Headers(init?.headers).get("Copilot-Integration-Id");
+    return Promise.resolve(
+      id === "copilot-developer-sandbox"
+        ? new Response(JSON.stringify({ data: [] }), { status: 200 })
+        : new Response("PATs not supported", { status: 400 }),
+    );
+  });
+  await runProfile({ add: "work", mode: "direct", set: "github_pat_worktoken" });
+  expect(probes).toBeGreaterThan(0);
+  expect(baked().codex).toBe("copilot-developer-sandbox");
+  expect(baked().claude).toContain("Copilot-Integration-Id: copilot-developer-sandbox");
+
+  // A `copilot-host` literal overlays the stored host at the next re-render: no request, and both
+  // files move to the literal while the slot keeps the probed host.
+  probes = 0;
+  const ghe = "https://copilot-api.ghe.example";
+  new CopilotEnvConfig().setProfile(WORK, { host: ghe });
+  resetIntegrationIdentityCache();
+  await runProfile({ sync: true, mode: "auto" });
+  expect(probes).toBe(0);
+  expect(baked().claudeHost).toBe(ghe);
+  expect(baked().codexHost).toBe(ghe);
+  expect(new CopilotEnvState().readProfileDirectPair(WORK)).toEqual({
+    integrationId: "copilot-developer-sandbox",
+    host: DEFAULT_COPILOT_API_BASE,
+  });
+  // Cleared, the slot's own host returns at the next re-render, again with no request.
+  new CopilotEnvConfig().delProfile(WORK, "host");
+  resetIntegrationIdentityCache();
+  await runProfile({ sync: true, mode: "auto" });
+  expect(probes).toBe(0);
+  expect(baked().claudeHost).toBe(DEFAULT_COPILOT_API_BASE);
+});
+
+test("a Claude-only launch write wires BOTH agents from the slot: a pin change is rendered with no request, and a slot never probed is probed once", async () => {
+  tmpProxyHome();
+  const claudeHome = tmpClaudeHome();
+  const codexHome = tmpCodexHome();
+  let probes = 0;
+  setIntegrationProbeFetch(() => {
+    probes++;
+    return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+  });
+  await runProfile({ add: "work", mode: "direct", set: "github_pat_worktoken" });
+  const bakedIds = (): [string | undefined, string | undefined] => {
+    const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, WORK), "utf8")) as {
+      env: Record<string, string>;
+    };
+    const doc = readToml(join(codexHome, "config.toml"));
+    const providers = doc.model_providers as Record<string, Record<string, unknown>>;
+    const headers = providers[codexProviderId(WORK)]?.http_headers as Record<string, string>;
+    return [
+      settings.env.ANTHROPIC_CUSTOM_HEADERS?.match(/Copilot-Integration-Id: (\S+)/)?.[1],
+      headers?.["Copilot-Integration-Id"],
+    ];
+  };
+  expect(bakedIds()).toEqual([undefined, undefined]);
+
+  // The pin overlays the slot's identity: the Claude launcher's write (`--settings-for`) renders
+  // it into BOTH files with no request, so the two never disagree and nothing is re-derived.
+  new CopilotEnvConfig().setProfile(WORK, { identity: "copilot-developer-sandbox" });
+  resetIntegrationIdentityCache();
+  probes = 0;
+  await runProfile({ settingsFor: "work", mode: "auto" });
+  expect(probes).toBe(0);
+  expect(bakedIds()).toEqual(["copilot-developer-sandbox", "copilot-developer-sandbox"]);
+  // Cleared, the slot's probed identity (the default) returns, still with no request.
+  new CopilotEnvConfig().delProfile(WORK, "identity");
+  resetIntegrationIdentityCache();
+  await runProfile({ settingsFor: "work", mode: "auto" });
+  expect(probes).toBe(0);
+  expect(bakedIds()).toEqual([undefined, undefined]);
+
+  // A slot never probed (a hand edit dropped the pair) is the one gap: the re-render probes once,
+  // stores the pair, and the next re-render is quiet again.
+  const state = new CopilotEnvState();
+  state.commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "github_pat_worktoken" },
+    mode: "direct",
+  });
+  const raw = JSON.parse(readFileSync(new CopilotApiPaths().sharedStateFile, "utf8")) as {
+    profiles: Record<string, Record<string, unknown>>;
+  };
+  delete raw.profiles.work?.integrationIdentity;
+  delete raw.profiles.work?.copilotHost;
+  writeFileSync(new CopilotApiPaths().sharedStateFile, `${JSON.stringify(raw)}\n`);
+  expect(state.readProfileDirectPair(WORK)).toEqual({});
+  resetIntegrationIdentityCache();
+  await runProfile({ settingsFor: "work", mode: "auto" });
+  expect(probes).toBeGreaterThan(0);
+  expect(state.readProfileDirectPair(WORK)).toEqual({
+    integrationId: null,
+    host: DEFAULT_COPILOT_API_BASE,
+  });
+  probes = 0;
+  resetIntegrationIdentityCache();
+  await runProfile({ settingsFor: "work", mode: "auto" });
+  expect(probes).toBe(0);
+});
+
+test("the cl --profile launch hook re-renders a Direct profile from the slot: no request, both agent files byte-identical", async () => {
+  tmpProxyHome();
+  const claudeHome = tmpClaudeHome();
+  const codexHome = tmpCodexHome();
+  await runProfile({ add: "work", mode: "direct", set: "github_pat_worktoken" });
+  const bytes = (): [string, string] => [
+    readFileSync(settingsPathFor(claudeHome, WORK), "utf8"),
+    readFileSync(join(codexHome, "config.toml"), "utf8"),
+  ];
+  const before = bytes();
+  // Every /models answer is a rejection: a probe here would count AND change the verdict.
+  let probes = 0;
+  setIntegrationProbeFetch(() => {
+    probes++;
+    return Promise.resolve(new Response("PATs not supported", { status: 400 }));
+  });
+  resetIntegrationIdentityCache();
+  const path = await commandDeps().writeClaudeProfileSettings(WORK, "direct");
+  expect(path).toBe(settingsPathFor(claudeHome, WORK));
+  expect(probes).toBe(0);
+  expect(bytes()).toEqual(before);
 });
 
 test("profile add/del keeps the Claude Desktop entry in lockstep when Desktop is present", async () => {

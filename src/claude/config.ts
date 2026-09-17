@@ -11,13 +11,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   type AgentAdapter,
-  type AgentRunAction,
   type CredentialWiring,
   type DirectWiring,
   type ManagedWrite,
   reservePlannedPort,
   resolvedDirectToken,
-  runAgentConfig,
 } from "../agents/configure.ts";
 import { CLAUDE_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
 import {
@@ -39,6 +37,7 @@ import {
 import { probeDirectWiring } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
@@ -592,15 +591,13 @@ function planWebSearchPair(
  */
 export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): void {
   const settingsPath = settingsPathFor(claudeHome);
-  const status = inspectClaudeWiring(readTextResult(settingsPath), 0);
-  if (status.providerMode === "other") return;
+  // The default slot's recorded mode is the truth (settings.json is an output): no mode recorded,
+  // nothing of ours is wired and there is no pair to sync or strip.
+  const mode = new CopilotEnvState().readProfileSlot(null).mode;
+  if (mode === null) return;
   const doc = loadSettings(settingsPath);
   const before = JSON.stringify(doc);
-  const pair = planWebSearchPair(
-    doc,
-    status.providerMode === "direct" ? "direct" : "proxy",
-    settingsPath,
-  ).land();
+  const pair = planWebSearchPair(doc, mode, settingsPath).land();
   applyPatch(doc, pair.ops);
   if (JSON.stringify(doc) !== before) {
     saveOrRemoveSettings(settingsPath, doc);
@@ -661,9 +658,9 @@ export function planClaudeConfig(claudeHome: string, request: ClaudeWriteRequest
     ops = [
       ...managedEnvOps(
         "direct",
-        request.directBaseUrl ?? DEFAULT_COPILOT_API_BASE,
+        request.direct?.directBaseUrl ?? DEFAULT_COPILOT_API_BASE,
         profile,
-        request.directIntegrationId,
+        request.direct?.directIntegrationId ?? null,
       ),
       ...managedCredentialOps(request.credential, directHelperCommand(profile), profile),
     ];
@@ -851,7 +848,7 @@ export function detectClaudeDirect(
     (tmpHome) => {
       configureClaudeConfig(tmpHome, {
         mode: "direct",
-        ...direct,
+        direct,
         credential: { kind: "command" },
       });
     },
@@ -895,9 +892,4 @@ export function claudeAdapter(): AgentAdapter {
       if (!options?.keepDesktopEntry) removeClaudeDesktopEntry(name);
     },
   };
-}
-
-/** `agent claude`: the shared skeleton (runAgentConfig) over claudeAdapter. */
-export async function runClaude(action: AgentRunAction): Promise<void> {
-  return runAgentConfig(claudeAdapter(), action);
 }

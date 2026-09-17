@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { directWiring } from "../src/agents/configure.ts";
 import { parse, stringify } from "smol-toml";
 import { CATALOG_PATCH_VERSION, NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import {
@@ -18,8 +19,8 @@ import {
   configureCodexConfig,
   detectCodexDirect,
   inspectCodexWiring,
-  runCodex,
 } from "../src/codex/config.ts";
+import { runCodex } from "../src/agents/configure_defaults.ts";
 import { FALLBACK_CODEX_UA_VERSION } from "../src/codex/user_agent.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
@@ -31,8 +32,16 @@ import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, linesNaming } from "./helpers.ts";
 
+/** A recorded Direct default whose slot holds its pair, so a single-agent write is a re-render
+ *  (zero probes, no credential needed); with no pair it would land both agents and ask to log in. */
+function directDefault(): void {
+  const state = new CopilotEnvState();
+  state.recordDefaultMode("direct");
+  state.setProfileDirectPair(null, { integrationId: null, host: DEFAULT_COPILOT_API_BASE });
+}
+
 /** A scratch Direct wiring with no identity header on the generic host: today's default bytes. */
-const DIRECT_NONE = { directIntegrationId: null, directBaseUrl: DEFAULT_COPILOT_API_BASE };
+const DIRECT_NONE = directWiring(null, DEFAULT_COPILOT_API_BASE);
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -91,6 +100,7 @@ test("enforces every managed field while preserving unknown user keys", () => {
 
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
 
@@ -143,7 +153,7 @@ test("direct bakes a probed Copilot-Integration-Id into http_headers when passed
   configureCodexConfig(codexHome, {
     mode: "direct",
     credential: COMMAND,
-    directIntegrationId: "copilot-developer-cli",
+    direct: directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
   });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   const headers = asRecord(asRecord(asRecord(doc.model_providers)["copilot-env"]).http_headers);
@@ -157,6 +167,7 @@ test("direct uses the launcher auth.command (no env_key, no token at rest), clas
 
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
 
@@ -288,6 +299,7 @@ test("writes the managed direct default config when no provider section exists",
 
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
 
@@ -318,6 +330,7 @@ test("runCodex --proxy writes the proxy provider at CODEX_HOME", async () => {
     ].join("\n"),
   );
 
+  new CopilotEnvState().recordDefaultMode("proxy"); // a single-agent write re-renders the record
   await runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
@@ -347,6 +360,7 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", asy
     ].join("\n"),
   );
 
+  new CopilotEnvState().recordDefaultMode("proxy"); // a single-agent write re-renders the record
   await runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
   let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
@@ -354,6 +368,7 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", asy
     "http://127.0.0.1:4141/v1",
   );
 
+  directDefault();
   await runCodex({ kind: "configure", mode: "direct" }, NOOP_CATALOG_DEPS);
   doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
@@ -369,6 +384,7 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
 
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
   let provider = asRecord(
@@ -413,6 +429,7 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
   const said = stderrOfSync(() =>
     configureCodexConfig(directHome, {
       mode: "direct",
+      direct: null,
       credential: STATIC,
     })
   );
@@ -438,6 +455,7 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
   // Back to the command shape: the bearer goes, the client headers stay, the managed auth returns.
   configureCodexConfig(directHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
   table = provider(directHome);
@@ -631,7 +649,7 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
   let probeDoc: Record<string, unknown> | null = null;
   let spawn: { cwd: string; home: string } | null = null;
   const verdict = await detectCodexDirect(
-    { ...DIRECT_NONE, directIntegrationId: "copilot-developer-cli" },
+    directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
     "ghu_tok",
     {
       findCommand: (c: string) => ({ path: `/bin/${c}` }),
@@ -660,7 +678,7 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
   configureCodexConfig(realHome, {
     mode: "direct",
     credential: COMMAND,
-    directIntegrationId: "copilot-developer-cli",
+    direct: directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
   });
   const realDoc = asRecord(parse(readFileSync(join(realHome, "config.toml"), "utf8")));
   const probe = probeDoc as unknown as Record<string, unknown>;
@@ -696,6 +714,7 @@ test("model_catalog_json is written when enabled and the catalog file exists (bo
 
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
   let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
@@ -720,6 +739,7 @@ test("the catalog reference is ledger-recorded on write and released on the disa
 
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(true);
@@ -728,6 +748,7 @@ test("the catalog reference is ledger-recorded on write and released on the disa
   new CopilotEnvConfig().set({ "codex.model-catalog": false });
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
   expect(
@@ -747,6 +768,7 @@ test("a write to an unknown home never enters the ledger", () => {
   const probeHome = join(dir, "probe-home");
   configureCodexConfig(probeHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
   const doc = asRecord(parse(readFileSync(join(probeHome, "config.toml"), "utf8")));
@@ -768,6 +790,7 @@ test("a stale model_catalog_json is scrubbed when the catalog file is absent", (
 
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
@@ -785,6 +808,7 @@ test("a corrupt or empty catalog file is scrubbed like a missing one", () => {
 
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
@@ -873,6 +897,7 @@ test("disabled: configureCodexConfig scrubs model_catalog_json even when the fil
 
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
@@ -1167,6 +1192,7 @@ test("a catalog the installed codex rejects is left out of the config and its cl
   // Accepted (or unverifiable) yesterday: referenced and claimed.
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   }, {
     acceptsCatalog: () => true,
@@ -1179,6 +1205,7 @@ test("a catalog the installed codex rejects is left out of the config and its cl
   // the next regeneration.
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   }, {
     acceptsCatalog: () => false,
@@ -1190,6 +1217,7 @@ test("a catalog the installed codex rejects is left out of the config and its cl
   // Unverifiable (no codex to ask) keeps the pre-probe behavior: referenced.
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   }, {
     acceptsCatalog: () => null,
@@ -1201,6 +1229,7 @@ test("a catalog the installed codex rejects is left out of the config and its cl
   mkdirSync(catalogFile);
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   }, {
     acceptsCatalog: () => true,
@@ -1388,7 +1417,7 @@ test("the config write's one line carries the model_catalog_json change it makes
   const write = (home: string) =>
     configureCodexConfig(
       home,
-      { mode: "direct", credential: COMMAND },
+      { mode: "direct", direct: null, credential: COMMAND },
       {
         acceptsCatalog: () => true,
       },
@@ -1485,6 +1514,7 @@ test("the writer reports its config changes even when the ownership ledger canno
   const write = () =>
     configureCodexConfig(codexHome, {
       mode: "direct",
+      direct: null,
       credential: COMMAND,
     }, {
       acceptsCatalog: () => true,
@@ -1551,6 +1581,7 @@ test("agent codex --check reports a Direct config's service_tier line and never 
   mkdirSync(codexHome, { recursive: true });
   configureCodexConfig(codexHome, {
     mode: "direct",
+    direct: null,
     credential: COMMAND,
   });
   const checkLine = async (): Promise<string | undefined> => {
@@ -1584,6 +1615,7 @@ test("agent codex --check reports a Direct config's service_tier line and never 
     // A rewrite leaves the user's line exactly as it was.
     configureCodexConfig(codexHome, {
       mode: "direct",
+      direct: null,
       credential: COMMAND,
     });
     expect(asRecord(parse(readFileSync(configPath, "utf8"))).service_tier).toBe(tier);

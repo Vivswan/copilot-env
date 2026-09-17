@@ -42,8 +42,6 @@ export interface ProfileSlotFacts {
   storedToken: boolean;
   /** gh-cli only: the slot's pinned gh account, or null = follow gh's active account. */
   ghUser: string | null;
-  /** The probed direct-mode client identity NAME cached on the slot, or null. */
-  integrationIdentity: string | null;
 }
 
 /** Reconciled ONCE at probe time, so runtime.orphan's verdict is a single derivation instead of
@@ -273,9 +271,6 @@ export type CodexFacts = CodexWiringStatus & {
   directNeedsNoGh: boolean;
   /** Present only for a static wiring. */
   bakedCredential?: BakedCredentialFreshness;
-  /** Direct only: the host a rewire would bake without probing (expectedDirectHost, env_state.ts);
-   *  null = the baked host stands. Optional so hand-built fixtures stay valid. */
-  expectedDirectHost?: string | null;
 };
 
 /** Claude wiring facts: the home + settings.json contract + gh-auth (for direct). */
@@ -294,8 +289,6 @@ export type ClaudeFacts = ClaudeWiringStatus & {
   directUsesToken: boolean;
   /** Present only for a static wiring. */
   bakedCredential?: BakedCredentialFreshness;
-  /** Direct only: the host a rewire would bake without probing (see CodexFacts). */
-  expectedDirectHost?: string | null;
 };
 
 export interface CodexHostFacts {
@@ -363,7 +356,6 @@ export interface HealthFacts {
 export type ProfileAuthFacts = {
   provider: AuthProvider | null;
   mode: ProfileMode | null;
-  integrationIdentity: string | null;
 };
 
 /** The GitHub credential state, independent of any one agent. Direct resolves the credential at

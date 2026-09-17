@@ -8,8 +8,7 @@
 // The launcher functions ride here rather than in an rc block, so enabling `shell.launchers` takes effect
 // on the next `agent` command, whose wrapper evals this output; redefining a function is
 // idempotent. Disabling emits nothing, so functions a shell already defined live until it exits.
-import { BASE_URL_ENV, inspectClaudeWiring } from "../claude/config.ts";
-import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
+import { BASE_URL_ENV } from "../claude/config.ts";
 import {
   codexHostDriftFrom,
   codexHostDriftLine,
@@ -18,11 +17,13 @@ import {
   resolveCodexHome,
 } from "../codex/host.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { assertKnownProfile } from "../copilot_api/env_state.ts";
-import { isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
-import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
+import { assertKnownProfile, CopilotEnvState } from "../copilot_api/env_state.ts";
+import {
+  copilotApiResolvePort,
+  parseLoopbackProxyUrl,
+  proxyLoopbackOrigin,
+} from "../copilot_api/port.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
-import { readTextResult } from "../utils/fs.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
@@ -60,25 +61,14 @@ export function managedCodexHome(): ManagedEnvValue {
   return null;
 }
 
-/** Read-only: a named profile answers from its own settings-<name>.json and resolved port, never
- *  reserving one. Shared by `agent env` and `agent launch`. */
+/** Read-only, from copilot-env's own state: the slot's recorded mode (the default's, or the named
+ *  profile's) and the profile's resolved port, never reserving one; the settings file is an output
+ *  and is not read. Shared by `agent env` and `agent launch`. */
 export function managedClaudeBaseUrl(profile: Profile): ManagedEnvValue {
-  const claudeHome = resolveClaudeHome();
-  const claude = inspectClaudeWiring(
-    readTextResult(settingsPathFor(claudeHome, profile)),
-    Number(copilotApiResolvePort(profile)),
-    profile,
-  );
-  // The clear below rests on "Claude is no longer proxy", which an unreadable settings file cannot
-  // establish (an absent one can: nothing is wired), so a read failure degrades to hands-off.
-  if (claude.otherReason === "read-error") return null;
-  const proxyUrl = claude.providerMode === "proxy" &&
-      claude.baseUrl &&
-      !isDirectBaseUrl(claude.baseUrl) &&
-      isLocalProxyUrl(claude.baseUrl)
-    ? claude.baseUrl
-    : null;
-  if (proxyUrl) return { value: proxyUrl };
+  const mode = new CopilotEnvState().readProfileSlot(profile).mode;
+  if (mode === "proxy") return { value: proxyLoopbackOrigin(copilotApiResolvePort(profile)) };
+  // Direct, or nothing wired: a stale local URL in the shell is ours to clear, anything else is
+  // the user's.
   const current = process.env[BASE_URL_ENV];
   if (current && isLocalProxyUrl(current)) return { unset: true };
   return null;

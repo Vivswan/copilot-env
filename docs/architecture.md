@@ -59,40 +59,44 @@ flowchart TD
 
 Demonstrated by: [test/configure.test.ts](../test/configure.test.ts), [test/auth.test.ts](../test/auth.test.ts), [test/codex_config.test.ts](../test/codex_config.test.ts).
 
-## Identity and host: one pair, one replay rule
+## Identity and host: state in the slot, rendered into the agent files
 
 ```mermaid
 flowchart TD
   prefs[("~/.local/share/copilot-env/preferences.json")]
-  slotin[("~/.local/share/copilot-env/credentials.json<br>the profile slot, as last written")]
+  slotin[("~/.local/share/copilot-env/credentials.json<br>the profile slot: token, mode, integrationIdentity, copilotHost")]
   models[["GET https://{host}/models"]]
   user[["GET https://api.github.com/copilot_internal/user"]]
   config["src/copilot_api/env_config.ts<br>CopilotEnvConfig"]
-  rule["src/copilot_api/env_state.ts<br>replayableIdentity() ReplayableIdentity CachedCopilotHost expectedDirectHost()"]
-  persist["src/agents/profile_wiring.ts<br>resolveAndPersistDirectWiring()"]
-  probe["src/codex/config.ts<br>probeDirectWiring()"]
+  state["src/copilot_api/env_state.ts<br>CopilotEnvState StoredDirectPair"]
+  wire["src/agents/profile_wiring.ts<br>wireBothAgents() DirectResolution resolveDirectWiring()"]
+  probe["src/codex/config.ts<br>probeDirectWiring() landDirectWiring()"]
   select["src/copilot_api/integration_identity.ts<br>selectDirectIdentityAndHost() selectPassthroughIdentityAndHost() IdentityAndHost probeIntegrationIdentityCached()"]
   launch["src/copilot_api/launch.ts<br>resolveLaunchCredential()"]
-  slotout[("~/.local/share/copilot-env/credentials.json<br>the profile slot, rewritten")]
-  wiringout["DirectWiring: the identity and host the agent config bakes"]
-  prefs -->|"reads integration-id, copilot-host"| config
-  slotin -->|"reads integrationIdentity, copilotHost, copilotHostIdentity, copilotHostSource"| rule
-  config -->|"integration-id pin, copilot-host literal"| rule
-  rule -->|"replay: the cached pair, no request, nothing written"| wiringout
-  rule -->|"preferred or probe"| probe
+  slotout[("~/.local/share/copilot-env/credentials.json<br>the profile slot, its pair rewritten")]
+  codexfile[("~/.codex/config.toml<br>base_url https://{host}, http_headers")]
+  claudefile[("~/.claude/settings-{name}.json<br>env.ANTHROPIC_BASE_URL, env.ANTHROPIC_CUSTOM_HEADERS")]
+  prefs -->|"reads the identity pin and the host literal"| config
+  slotin -->|"readProfileDirectPair(): integrationIdentity, copilotHost; a half undefined while never probed"| state
+  state -->|"stored: pin ?? identity, literal ?? host; no request, no agent file read"| wire
+  config -->|"the overlay, rendered at read time and never written into the slot"| wire
+  wire -->|"probe: a credential landing, or a slot holding no pair"| probe
   probe --> select
   models -->|"first 2xx wins, per identity, on the host in use"| select
   user -->|"endpoints.api: the account's designated host"| select
-  select -->|"identity on the host in use, then the host under it, then re-select where auto moved"| persist
-  persist -->|"after a probe only: setProfileIntegrationIdentity() writes the verdict and the host it was accepted on, keyed to the credential"| slotout
-  persist --> wiringout
+  select -->|"identity on the host in use, then the host under it, then re-select where auto moved"| probe
+  probe -->|"landDirectWiring() for a profile, commitDefaultWiring() for the default: setProfileDirectPair() writes the halves the probe answered, the pair's only writers"| slotout
+  wire -->|"both agents, the same pair"| codexfile
+  wire -->|"both agents, the same pair"| claudefile
   select -->|"the passthrough twin: the daemon's host pin, no slot write"| launch
 ```
 
 - **The probe memo is process-lifetime and never invalidated** (`probeIntegrationIdentityCached()`): a CLI run ends in seconds, and the MCP server keeps its verdict until the transport closes. Injected I/O and a caller deadline bypass it.
-- **A pin is configuration, never a verdict:** the slot keeps what it held, so `--identity auto` returns to it; a credential change clears the slot.
+- **The slot is the truth, the agent files are outputs:** a re-render (`--sync`, `--settings-for`, the `cl --profile` hook, the Desktop reconcile and its status) renders the slot's pair under the pin and literal in force, never reading a file back. A credential landing (`agent auth --profile`, `agent profile --add`, a settings import) probes and stores.
+- **A credential write takes the previous pair with it,** so a definitive refusal leaves the files as they were and an empty pair: a credential refused under every identity works under none, and the next Direct landing probes again.
+- **A pin is configuration, an overlay:** it is rendered over the stored pair and never enters it, so setting or clearing it applies at the next re-render; a landing under a pin or literal stores only the half the probe answered, and the other half is probed once when the overlay is cleared.
 
-Demonstrated by: [test/integration_identity.test.ts](../test/integration_identity.test.ts), [test/copilot_host.test.ts](../test/copilot_host.test.ts).
+Demonstrated by: [test/integration_identity.test.ts](../test/integration_identity.test.ts), [test/copilot_host.test.ts](../test/copilot_host.test.ts), [test/profiles.test.ts](../test/profiles.test.ts).
 
 ## Profiles are atomic units
 
@@ -120,7 +124,8 @@ flowchart LR
 ```
 
 - **No fallback** ([authentication: profiles](authentication.md#profiles) owns the rule): `Credential.resolveWithReason()` names the profile in its reason, and a launch on a partial slot reports `partialSlotGap()` instead of guessing.
-- **The default is a profile too,** under the reserved `default` key. For a named profile `mode` is the truth its artifacts derive from; for the default, `mode` records what the wiring last wrote (`recordDefaultModeFromWiring()` in `src/agents/configure_defaults.ts`) and the artifacts stay the live truth.
+- **The default is a profile too,** under the reserved `default` key. Its `mode` is the one mode both agents share, with one writer: `commitDefaultWiring()` in `src/agents/configure_defaults.ts`, which records it (and the probed pair) after BOTH agents' writes succeeded, so a failed write leaves the previous record.
+- **A single-agent command re-renders the default** and never moves its record: with a pair stored it renders that pair; with no record, or a Direct record whose pair a credential write took, it lands both agents as `agent init` would.
 
 Demonstrated by: [test/profiles.test.ts](../test/profiles.test.ts), [test/codex_profile_wiring.test.ts](../test/codex_profile_wiring.test.ts).
 
@@ -303,7 +308,6 @@ graph TD
   scripts["src/scripts/"]
   utils["src/utils/"]
   cli --> agents
-  cli --> claude
   cli --> codex
   cli --> commands
   cli --> copilot_api

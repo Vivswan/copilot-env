@@ -21,7 +21,6 @@
   "edges": {
     "cli": [
       "agents",
-      "claude",
       "codex",
       "commands",
       "copilot_api",

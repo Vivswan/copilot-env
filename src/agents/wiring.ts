@@ -19,7 +19,6 @@ import { profileHomeNames } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 import { readTextResult } from "../utils/fs.ts";
-import type { AgentProviderMode } from "./provider_mode.ts";
 
 /** Overrides for tests and callers that already resolved the homes/port; the defaults are the
  *  effective ones (effectiveCodexHome, resolveClaudeHome, copilotApiResolvePort). */
@@ -74,33 +73,6 @@ export function readBakedDirectIdentities(
       profile,
     ),
   };
-}
-
-/** DEFAULT selections only; named profiles have their own artifacts. Store-level failures (run
- *  state, port resolution) propagate: never-throw callers use readAgentModesSafe.
- *    missing config file  -> "none"
- *    unreadable           -> "other" (present, not ours to touch)
- *    malformed            -> as the inspect functions classify it */
-export function readAgentModes(opts: AgentWiringOptions = {}): {
-  codex: AgentProviderMode;
-  claude: AgentProviderMode;
-} {
-  const { codex, claude } = readAgentWirings(opts);
-  return { codex: codex.providerMode, claude: claude.providerMode };
-}
-
-/** Every failure collapses to "other" for both agents, so a best-effort caller (a migration,
- *  init's read-back) neither aborts nor mistakes an unreadable setup for an unconfigured one it
- *  may write over. */
-export function readAgentModesSafe(opts: AgentWiringOptions = {}): {
-  codex: AgentProviderMode;
-  claude: AgentProviderMode;
-} {
-  try {
-    return readAgentModes(opts);
-  } catch {
-    return { codex: "other", claude: "other" };
-  }
 }
 
 /**

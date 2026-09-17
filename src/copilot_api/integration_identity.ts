@@ -43,7 +43,7 @@ export const DAEMON_COPILOT_HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
 /** The base-URL SHAPE of a Direct wiring: an https origin, whatever the host. Detection keys on
  *  copilot-env's own markers (the managed helper, provider name, auth shape) plus this shape, never
  *  on a host list, so a wiring baked for a past plan host or literal stays ours and a rewire moves
- *  it; health renders the expected host beside it (expectedDirectHost, env_state.ts). */
+ *  it from the slot's stored pair (resolveDirectWiring, src/agents/profile_wiring.ts). */
 export function isDirectBaseUrl(url: string): boolean {
   if (!URL.canParse(url)) return false;
   const parsed = new URL(url);
@@ -225,7 +225,7 @@ async function accountApiBase(
     const body: unknown = await res.json();
     const endpoints = isRecord(body) ? body.endpoints : undefined;
     const api = isRecord(endpoints) ? endpoints.api : undefined;
-    // The origin alone, so the value compares with the stored literal and the cached slot host.
+    // The origin alone, so the value compares with the `host` literal and a baked base URL.
     const apiBase = typeof api === "string" && api.startsWith("https://") && URL.canParse(api)
       ? new URL(api).origin
       : DEFAULT_COPILOT_API_BASE;
@@ -577,9 +577,6 @@ export function identityRejectionHints(): string[] {
 export interface ResolveIdentityOptions extends IdentityProbeDeps {
   /** The `identity` config pin, or null to probe. */
   pinned?: string | null;
-  /** A cached identity to try FIRST (replayableIdentity `preferred`, env_state.ts): probe order only,
-   *  never a verdict. `null` names the default identity, already first. */
-  preferred?: string | null;
   /** Callers whose stdout is a contract (`agent auth --get`) pass a stderr logger. */
   narrator?: HostNarrator;
 }
@@ -617,15 +614,13 @@ export function usePatPassthrough(opts: {
 
 /**
  * THROWS with the real reason when every candidate is definitively rejected (the caller's mode cannot
- * work with this credential); returns `fallback` (the mode's default identity, never a preferred
- * candidate the host may just have rejected) on an inconclusive result, so a transient failure
- * degrades to today's behavior instead of blocking a launch.
+ * work with this credential); returns the mode's default identity (the first candidate) on an
+ * inconclusive result, so a transient failure degrades to today's behavior instead of blocking a launch.
  */
 async function acceptedIdentity(
   token: string,
   candidates: readonly [IntegrationIdentity, ...IntegrationIdentity[]],
   deps: IdentityProbeDeps,
-  fallback: IntegrationIdentity = candidates[0],
 ): Promise<IntegrationIdentity> {
   const probe = await probeIntegrationIdentityCached(token, candidates, deps);
   if (probe.identity !== null) return probe.identity;
@@ -633,7 +628,7 @@ async function acceptedIdentity(
     consola.warn(
       "Could not verify the Copilot integration identity (transient error); using the default.",
     );
-    return fallback;
+    return candidates[0];
   }
   throw new IdentityRejectedError(
     probe.apiBase,
@@ -654,24 +649,18 @@ export class IdentityRejectedError extends Error {
   }
 }
 
-/** Narrated once, so `agent start`/`init` explain a surprising id. A preferred (cached) identity
- *  accepted first says so: the default was not probed, so nothing about it is claimed. */
+/** Narrated once, so `agent start`/`init` explain a surprising id. */
 function narrateIdentity(
   chosen: string,
   defaultName: string,
   pinned: boolean,
   narrator: HostNarrator = consola,
-  preferred: string | null = null,
 ): void {
   if (pinned) {
     // Pinning the mode's own default (the daemon's fixed vscode-chat) is nothing to explain.
     if (chosen === defaultName) return;
     narrator.info(
       `Copilot integration identity: ${chosen} (pinned via the \`identity\` config key).`,
-    );
-  } else if (chosen === preferred && chosen !== defaultName) {
-    narrator.info(
-      `Copilot integration identity: ${chosen} (the profile's cached identity, accepted again).`,
     );
   } else if (chosen !== defaultName) {
     narrator.info(
@@ -689,20 +678,16 @@ async function resolveDirectIntegrationId(
   userAgent: string,
   opts: ResolveIdentityOptions,
 ): Promise<string | null> {
-  const { pinned = null, preferred = null, narrator, ...deps } = opts;
+  const { pinned = null, narrator, ...deps } = opts;
   if (pinned !== null) {
     narrateIdentity(pinned, CODEX_IDENTITY_NAME, true, narrator);
     return pinned;
   }
   // Only PATs are rejected by the default identity, so only they justify a probe's network round.
   if (token === null || !isPatShapedToken(token)) return null;
-  const builtins = directIdentityCandidates(userAgent);
-  const candidates = preferredFirst(builtins, preferred, userAgent);
-  // Probed on the host the caller passes (the host in use); the first accepted candidate wins, so a
-  // preferred identity the host rejects definitively gives way to the next, and a transient run
-  // falls back to the built-in default, never to the preferred candidate.
-  const identity = await acceptedIdentity(token, candidates, deps, builtins[0]);
-  narrateIdentity(identity.name, CODEX_IDENTITY_NAME, false, narrator, preferred);
+  // Probed on the host the caller passes (the host in use); the first accepted candidate wins.
+  const identity = await acceptedIdentity(token, directIdentityCandidates(userAgent), deps);
+  narrateIdentity(identity.name, CODEX_IDENTITY_NAME, false, narrator);
   return bakedIntegrationId(identity);
 }
 
@@ -764,21 +749,6 @@ export async function selectPassthroughIdentityAndHost(
   const moved = fixedHost === null && (identityOpts.pinned ?? null) === null &&
     apiBase !== DEFAULT_COPILOT_API_BASE;
   return { integrationId: moved ? await identityOn(apiBase) : first, apiBase };
-}
-
-/** `preferred` moved to the front (added when it is not a built-in); the default identity is
- *  already first, so `null` changes nothing. */
-function preferredFirst(
-  builtins: readonly [IntegrationIdentity, ...IntegrationIdentity[]],
-  preferred: string | null,
-  userAgent: string,
-): readonly [IntegrationIdentity, ...IntegrationIdentity[]] {
-  if (preferred === null) return builtins;
-  const rest = builtins.filter((c) => c.name !== preferred);
-  return [
-    builtins.find((c) => c.name === preferred) ?? directIdentity(userAgent, preferred),
-    ...rest,
-  ];
 }
 
 /** Always returns an id (the proxy sends one); `agent start` only overrides the daemon default when it

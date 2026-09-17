@@ -3,6 +3,7 @@ import type { RequestedMode } from "../agents/provider_mode.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { discoverServableClaudeModels } from "../copilot_api/discovery.ts";
+import { renderDirectWiring } from "../agents/profile_wiring.ts";
 import { probeDirectWiring } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
@@ -119,7 +120,10 @@ export async function runModels(args: ModelsArgs): Promise<void> {
       const resolved = new Credential(undefined, profile).resolveWithReason();
       if (resolved.token === null) throw new Error(resolved.reason);
       const token = resolved.token;
-      const direct = await probeDirectWiring(profile, token);
+      // A listing renders what the wiring bakes (renderDirectWiring: the pin and literal over the
+      // slot's probed halves) and writes nothing; a half never probed is probed here, and even that
+      // answer is not stored: storing is the landing commands' (landDirectWiring).
+      const direct = renderDirectWiring(profile) ?? await probeDirectWiring(profile, token);
       const discovered = await discoverServableClaudeModels(
         token,
         codexUserAgent(),

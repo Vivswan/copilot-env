@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +15,7 @@ import {
   applyImportBundle,
   applyImportPlan,
   buildExportBundle,
+  type ImportPlan,
   parseSettingsBundle,
   planImport,
   REDACTED_TOKEN,
@@ -22,16 +24,19 @@ import {
   SETTINGS_BACKUP_KEEP,
   settingsBackupDir,
 } from "../src/agents/transfer.ts";
-import { runClaude } from "../src/claude/config.ts";
+import { runClaude, runCodex } from "../src/agents/configure_defaults.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
-import { runCodex } from "../src/codex/config.ts";
 import { getHostLocalCodexHome } from "../src/codex/host.ts";
+import { codexConfigPath } from "../src/codex/paths.ts";
 import { importRestartHints, parseSettingsAction, runSettings } from "../src/commands/settings.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
-import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
+import {
+  DEFAULT_COPILOT_API_BASE,
+  setIntegrationProbeFetch,
+} from "../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { claudeDesktopStatus, reconcileClaudeDesktopWiring } from "../src/agents/claude_desktop.ts";
 import {
@@ -112,6 +117,8 @@ async function seedStores(): Promise<void> {
   });
   state.set({ codexCatalogLastAttemptMs: 123, codexCatalogCodexVersion: "9.9.9" });
   new OwnershipLedger().record("webSearchDeny", "/some/other/machine/settings.json");
+  // The default record is the landing's (`agent init`); each single-agent write re-renders it.
+  state.recordDefaultMode("proxy");
   await runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
   await runClaude({ kind: "configure", mode: "proxy" });
 }
@@ -394,23 +401,6 @@ test("invalid slots are rejections that never echo the token", () => {
   expect(() => parseSettingsBundle(rawBundle({ profiles: { work: { nope: 1 } } }))).toThrow(
     /unknown key under profiles.work/,
   );
-
-  // The identity is interpolated into an HTTP header: header-splitting shapes
-  // are rejected, and (no-echo rule) the value never appears in the error.
-  message = "";
-  try {
-    parseSettingsBundle(
-      rawBundle({
-        profiles: { work: { integrationIdentity: "evil\r\nX-Injected: ghp_secret_leak" } },
-      }),
-    );
-  } catch (e) {
-    message = (e as Error).message;
-  }
-  expect(message).toContain("profiles.work.integrationIdentity");
-  expect(message).toContain("header-safe");
-  expect(message).not.toContain("ghp_secret_leak");
-  expect(message).not.toContain("evil");
 });
 
 // --- import -------------------------------------------------------------------
@@ -525,13 +515,6 @@ test("a redacted bundle over resolvable LOCAL credentials wires normally (result
   isolate();
   await seedStores();
   const bundle = buildExportBundle(); // redacted
-  // An identity travelling with a KEPT (redacted) slot belongs to the bundle's
-  // credential, not the local one that will actually be used -- it must be
-  // dropped, not baked.
-  const workSlot = bundle.profiles.work;
-  if (workSlot === undefined) throw new Error("seed produced no work profile");
-  workSlot.integrationIdentity = "evil-injected";
-
   // The target machine has its own working credentials for both slots.
   isolate();
   const state = new CopilotEnvState();
@@ -550,7 +533,6 @@ test("a redacted bundle over resolvable LOCAL credentials wires normally (result
   expect(new Credential(undefined, WORK).resolve()).toBe("ghp_local_work");
   const slot = new CopilotEnvState().readProfileSlot(WORK);
   expect(slot.mode).toBe("proxy");
-  expect(new CopilotEnvState().slotIdentityForDisplay(WORK)).toBeNull();
   expect(JSON.stringify(new CopilotEnvState().read())).not.toContain(REDACTED_TOKEN);
 });
 
@@ -576,23 +558,157 @@ test("an unresolvable slot leaves the existing store byte-identical", async () =
 
 test("the import's credential gate is direct-only: proxy wires without one", async () => {
   const machine = isolate();
-  const bundle = parseSettingsBundle(
+  // The default is one mode for both agents: a bundle naming two is refused before any write.
+  expect(() => parseSettingsBundle(rawBundle({ modes: { codex: "direct", claude: "proxy" } })))
+    .toThrow(/one mode for both agents/);
+
+  const proxy = parseSettingsBundle(
     rawBundle({
       credential: { githubToken: REDACTED_TOKEN, authProvider: "gh-token" },
-      modes: { codex: "direct", claude: "proxy" },
+      modes: { codex: "none", claude: "proxy" },
     }),
   );
+  const wired = await applyImportBundle(proxy, { catalogDeps: NOOP_CATALOG_DEPS });
+  // Claude (proxy) was written despite the unresolvable credential; on a fresh default that one
+  // write is the landing for BOTH agents (profiles are atomic units), so Codex is proxy-wired too.
+  expect(wired.skipped.join("\n")).not.toContain("agent init");
+  expect(wired.modes).toEqual({ codex: "proxy", claude: "proxy" });
+  expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(true);
+  const codexConfig = join(machine.codexHome, "config.toml");
+  const proxyBytes = readFileSync(codexConfig, "utf8");
 
-  const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
-
-  const skipped = outcome.skipped.join("\n");
+  const direct = parseSettingsBundle(
+    rawBundle({
+      credential: { githubToken: REDACTED_TOKEN, authProvider: "gh-token" },
+      modes: { codex: "direct", claude: "none" },
+    }),
+  );
+  const gated = await applyImportBundle(direct, { catalogDeps: NOOP_CATALOG_DEPS });
+  const skipped = gated.skipped.join("\n");
   expect(skipped).toContain("agent init --direct");
   expect(skipped).not.toContain("agent init --proxy");
-  // Claude (proxy) was written despite the unresolvable credential; Codex
-  // (direct) was left untouched.
-  expect(outcome.modes?.claude).toBe("proxy");
+  // Codex (direct) was left untouched: the proxy wiring's bytes stand.
+  expect(readFileSync(codexConfig, "utf8")).toBe(proxyBytes);
+});
+
+// The default is one mode for both agents, decided at PLAN time so the preview names every file
+// the apply touches and the outcome reports both agents.
+test("planImport decides the default's modes for both agents: record-less single mode lands both, mode-less credential rebakes Direct, skipped or unmanaged never", () => {
+  const machine = isolate();
+  const credential = { githubToken: "ghp_new", authProvider: "gh-token" };
+  const plan = (modes: Record<string, string>) =>
+    planImport(parseSettingsBundle(rawBundle({ credential, modes })));
+  const state = new CopilotEnvState();
+  const files = (p: ImportPlan) => ({
+    modes: p.modes,
+    codexFile: p.writes.join("\n").includes(codexConfigPath(machine.codexHome)),
+    claudeFile: p.writes.join("\n").includes(settingsPathFor(machine.claudeHome)),
+  });
+
+  // No record: one managed mode is the first landing and wires both; an unmanaged mode for the
+  // other agent is overridden, and its "left untouched" line says what lands instead.
+  expect(files(plan({ codex: "direct", claude: "none" }))).toEqual({
+    modes: { codex: "direct", claude: "direct" },
+    codexFile: true,
+    claudeFile: true,
+  });
+  const overridden = plan({ codex: "other", claude: "proxy" });
+  expect(overridden.modes).toEqual({ codex: "proxy", claude: "proxy" });
+  expect(overridden.skipped).toEqual([
+    "Codex wiring: the default profile has no recorded mode, so the bundle's proxy wiring " +
+    "lands for both agents (one mode for both)",
+  ]);
+  // A recorded Direct default: a bundle recording no default wiring rebakes both for the new
+  // credential; a bundle whose Codex wiring is unmanaged (`other`, left untouched) does not.
+  state.recordDefaultMode("direct");
+  expect(files(plan({ codex: "none", claude: "none" }))).toEqual({
+    modes: { codex: "direct", claude: "direct" },
+    codexFile: true,
+    claudeFile: true,
+  });
+  expect(files(plan({ codex: "other", claude: "none" }))).toEqual({
+    modes: { codex: null, claude: null },
+    codexFile: false,
+    claudeFile: false,
+  });
+  // A recorded proxy default: a mode-less credential landing rebakes nothing (no pair to renew).
+  state.recordDefaultMode("proxy");
+  expect(plan({ codex: "none", claude: "none" }).modes).toEqual({ codex: null, claude: null });
+});
+
+// "Nothing hidden": the credential landing takes the default's pair, so even a bundle naming one
+// agent lands both; the plan says so, names the other agent's file, and the outcome reports both.
+test("a Direct default whose pair will not be stored at apply time rebakes both agents even when the bundle names one: the preview names Claude's file", async () => {
+  const machine = isolate();
+  const state = new CopilotEnvState();
+  state.recordDefaultMode("direct");
+  state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghp_old" });
+  state.setProfileDirectPair(null, { integrationId: null, host: DEFAULT_COPILOT_API_BASE });
+  setIntegrationProbeFetch(() =>
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+  );
+  const plan = planImport(parseSettingsBundle(rawBundle({
+    credential: { githubToken: "ghp_new", authProvider: "gh-token" },
+    modes: { codex: "direct", claude: "other" },
+  })));
+  expect(plan.modes).toEqual({ codex: "direct", claude: "direct" });
+  expect(plan.writes.join("\n")).toContain(settingsPathFor(machine.claudeHome));
+  expect(plan.skipped).toEqual([
+    "Claude wiring: the default's Direct pair is not stored, so both agents are rebaked (one " +
+    "mode for both)",
+  ]);
+  const outcome = await applyImportPlan(plan, { catalogDeps: NOOP_CATALOG_DEPS });
+  expect({ failures: outcome.failures, modes: outcome.modes }).toEqual({
+    failures: [],
+    modes: { codex: "direct", claude: "direct" },
+  });
   expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(true);
-  expect(existsSync(join(machine.codexHome, "config.toml"))).toBe(false);
+  expect(state.readProfileDirectPair(null).host).toBe(DEFAULT_COPILOT_API_BASE);
+
+  // The pair dropped EARLIER (`agent auth` after the wiring) and a redacted bundle that keeps the
+  // local credential: the apply's one-agent write would land both, so the plan says so too.
+  state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghp_rotated" });
+  expect(state.readProfileDirectPair(null)).toEqual({});
+  rmSync(settingsPathFor(machine.claudeHome));
+  const kept = planImport(parseSettingsBundle(rawBundle({
+    credential: { githubToken: REDACTED_TOKEN, authProvider: "gh-token" },
+    modes: { codex: "direct", claude: "none" },
+  })));
+  expect(kept.defaultSlot.action).toBe("keep");
+  expect(kept.modes).toEqual({ codex: "direct", claude: "direct" });
+  expect(kept.writes.join("\n")).toContain(settingsPathFor(machine.claudeHome));
+  const rebaked = await applyImportPlan(kept, { catalogDeps: NOOP_CATALOG_DEPS });
+  expect({ failures: rebaked.failures, modes: rebaked.modes }).toEqual({
+    failures: [],
+    modes: { codex: "direct", claude: "direct" },
+  });
+  expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(true);
+  expect(state.readProfileDirectPair(null).host).toBe(DEFAULT_COPILOT_API_BASE);
+
+  // The landing rule keys on the STORED pair, never on an overlay: with a local pin and literal
+  // covering both halves, a render would succeed under the local preferences and fail under the
+  // bundle's (the apply replaces them before it wires; this bundle's profile sections are empty).
+  // The pair dropped again, so the plan and the apply must both say "both agents".
+  state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghp_rotated_twice" });
+  new CopilotEnvConfig().setProfile(null, {
+    identity: "copilot-developer-cli",
+    host: DEFAULT_COPILOT_API_BASE,
+  });
+  rmSync(settingsPathFor(machine.claudeHome));
+  const overlaid = planImport(parseSettingsBundle(rawBundle({
+    credential: { githubToken: REDACTED_TOKEN, authProvider: "gh-token" },
+    config: configOf({}),
+    modes: { codex: "direct", claude: "none" },
+  })));
+  expect(overlaid.defaultSlot.action).toBe("keep");
+  expect(overlaid.modes).toEqual({ codex: "direct", claude: "direct" });
+  expect(overlaid.writes.join("\n")).toContain(settingsPathFor(machine.claudeHome));
+  const landed = await applyImportPlan(overlaid, { catalogDeps: NOOP_CATALOG_DEPS });
+  expect({ failures: landed.failures, modes: landed.modes }).toEqual({
+    failures: [],
+    modes: { codex: "direct", claude: "direct" },
+  });
+  expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(true);
 });
 
 test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the identity", async () => {
@@ -602,13 +718,10 @@ test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the id
       credential: { githubToken: null, authProvider: "gh-cli" },
       modes: { codex: "none", claude: "direct" },
       profiles: {
-        // The bundled identity belongs to the SOURCE machine's gh login; the
-        // target must re-derive its own at wire time, so it is dropped.
         work: {
           githubToken: null,
           authProvider: "gh-cli",
           mode: "direct",
-          integrationIdentity: "copilot-developer-cli",
         },
         alt: { githubToken: null, authProvider: "gh-cli", mode: null },
       },
@@ -653,13 +766,10 @@ test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the id
   expect(state.githubToken).toBeNull();
   expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(true);
   expect(existsSync(settingsPathFor(machine.claudeHome, WORK))).toBe(true);
-  // The bundled identity was dropped; the wire-time probe re-derived the
-  // default identity ("codex" = probed, the default won).
   expect(new CopilotEnvState().readProfileSlot(WORK).credential).toEqual({
     kind: "gh-cli",
     ghUser: null,
   });
-  expect(new CopilotEnvState().slotIdentityForDisplay(WORK)).toBe("codex");
   expect(new CopilotEnvState().profileNames()).toEqual([WORK]); // alt never landed
 });
 
@@ -710,45 +820,52 @@ test("a gh-cli default over a working local token falls through to the kept slot
   expect(new Credential().resolve()).toBe("github_pat_local");
 });
 
-test("a direct profile with a persisted identity wires with that identity FIRST: one probe accepts it and settles the host", async () => {
+test("a mode-less bundle slot landing a new credential on a Direct profile probes and rebakes, and the preview names its files", async () => {
   const machine = isolate();
-  const probes: { url: string; id: string | null }[] = [];
-  setIntegrationProbeFetch((input, init) => {
-    probes.push({
-      url: String(input),
-      id: new Headers(init?.headers).get("Copilot-Integration-Id"),
+  const probes: (string | null)[] = [];
+  // The first token is accepted under the CLI id alone, the second under the sandbox id alone:
+  // a re-render of the first credential's files would bake the wrong identity for the second.
+  const accepting = (id: string, token: string): void =>
+    setIntegrationProbeFetch((_input, init) => {
+      const headers = new Headers(init?.headers);
+      probes.push(headers.get("Copilot-Integration-Id"));
+      const ok = headers.get("authorization") === `Bearer ${token}` &&
+        headers.get("Copilot-Integration-Id") === id;
+      return Promise.resolve(
+        ok
+          ? new Response(JSON.stringify({ data: [] }), { status: 200 })
+          : new Response("Personal Access Tokens are not supported", { status: 400 }),
+      );
     });
-    return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
-  });
-  const bundle = parseSettingsBundle(
-    rawBundle({
+  accepting("copilot-developer-cli", "github_pat_first");
+  await applyImportBundle(
+    parseSettingsBundle(rawBundle({
       profiles: {
-        work: {
-          githubToken: "github_pat_work",
-          authProvider: "gh-token",
-          mode: "direct",
-          integrationIdentity: "copilot-developer-cli",
-        },
+        work: { githubToken: "github_pat_first", authProvider: "gh-token", mode: "direct" },
       },
-    }),
+    })),
+    { catalogDeps: NOOP_CATALOG_DEPS },
   );
+  const bakedId = (): string | undefined =>
+    (JSON.parse(readFileSync(settingsPathFor(machine.claudeHome, WORK), "utf8")) as {
+      env: Record<string, string>;
+    }).env.ANTHROPIC_CUSTOM_HEADERS?.match(/Copilot-Integration-Id: (\S+)/)?.[1];
+  expect(bakedId()).toBe("copilot-developer-cli");
 
-  const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
-
+  accepting("copilot-developer-sandbox", "github_pat_second");
+  probes.length = 0;
+  const reauth = parseSettingsBundle(rawBundle({
+    profiles: { work: { githubToken: "github_pat_second", authProvider: "gh-token", mode: null } },
+  }));
+  // The overwrite preview names the profile's agent files: the apply rewrites them.
+  const plan = planImport(reauth);
+  expect(plan.writes.join("\n")).toContain(settingsPathFor(machine.claudeHome, WORK));
+  const outcome = await applyImportPlan(plan, { catalogDeps: NOOP_CATALOG_DEPS });
+  expect(outcome.failures).toEqual([]);
   expect(outcome.wiredProfiles).toEqual([WORK]);
-  // A bundle carries no host pair, so the imported identity is a preference, not a verdict: it is
-  // tried first on the generic host (accepted here), and that one memoized answer also settles the
-  // host. One GET, under the imported identity; no other identity is ever sent.
-  expect(probes).toEqual([
-    { url: "https://api.githubcopilot.com/models", id: "copilot-developer-cli" },
-  ]);
-  const settings = JSON.parse(readFileSync(settingsPathFor(machine.claudeHome, WORK), "utf8"));
-  expect(settings.env.ANTHROPIC_CUSTOM_HEADERS).toContain(
-    "Copilot-Integration-Id: copilot-developer-cli",
-  );
-  expect(new CopilotEnvState().slotIdentityForDisplay(WORK)).toBe(
-    "copilot-developer-cli",
-  );
+  expect(probes.length).toBeGreaterThan(0);
+  expect(bakedId()).toBe("copilot-developer-sandbox");
+  expect(new Credential(undefined, WORK).resolve()).toBe("github_pat_second");
 });
 
 test("a profile wiring failure lands in failures and the command exits non-zero", async () => {
@@ -1308,6 +1425,7 @@ test("a config-only import of claude-desktop true restores the DEFAULT Desktop e
       : [];
   // A managed proxy default (settings.json) written while the key was off: no entry.
   new CopilotEnvConfig().set({ "claude.desktop": false });
+  new CopilotEnvState().recordDefaultMode("proxy"); // the default this re-render renders
   await runClaude({ kind: "configure", mode: "proxy" });
   expect(names()).toEqual([]);
 

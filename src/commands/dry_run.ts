@@ -31,11 +31,14 @@ export async function runDryRun(body: () => Promise<unknown>): Promise<void> {
 function printPlan(header: string, files: readonly FilePlan[]): void {
   const width = terminalWidth();
   console.log(header);
-  // A path or a value wider than the line is one word: wrapLine splits it at the width.
+  // A path or a value wider than the line is one word: wrapLine splits it at the width. A diff
+  // row keeps its `+`/`-` marker in the indent, so a wrapped row never sheds it onto a line of
+  // its own.
   for (const line of renderDryRun(files)) {
-    const indent = line.startsWith("  ") ? "    " : "  ";
-    for (const wrapped of wrapLine(line.trimStart(), width, indent, `${indent}  `)) {
-      console.log(wrapped);
-    }
+    const marker = /^ {2}([+-]) ?/.exec(line);
+    const indent = marker !== null ? `    ${marker[1]} ` : line.startsWith("  ") ? "    " : "  ";
+    const hang = marker !== null ? "      " : `${indent}  `;
+    const text = marker !== null ? line.slice(marker[0].length) : line.trimStart();
+    for (const wrapped of wrapLine(text, width, indent, hang)) console.log(wrapped);
   }
 }

@@ -51,6 +51,9 @@ export function readCodexToml(path: string): CodexTomlRead {
   }
 }
 
+/** A Codex config can carry a baked bearer (a static-key `http_headers.Authorization`), so a
+ *  whole-document write reached in a dry run is planned path-only; the managed writers plan by
+ *  attribute, redact per leaf, and call this only from their apply step. */
 export function saveCodexToml(path: string, doc: Record<string, unknown>, detail?: string): void {
-  writeFileReported(path, stringify(doc), { detail });
+  writeFileReported(path, stringify(doc), { detail, secret: true });
 }

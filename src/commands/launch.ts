@@ -30,6 +30,7 @@ import {
 import { childEnvWithPath, findCommand, verbatimCliSpawn } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
+import { runDryRun } from "./dry_run.ts";
 import { managedClaudeBaseUrl, type ManagedEnvValue } from "./env.ts";
 import {
   launchProxy,
@@ -328,37 +329,55 @@ function spawnAgentCli(plan: LaunchPlan): number {
   }
 }
 
-/** process.exitCode, never process.exit, so pending stderr writes flush. */
+/** The refusal every launch, real or dry, gives before preparing anything. A failed look must not
+ *  read "not installed": the probe never completed, which proves nothing about the CLI. The launch
+ *  itself is then the honest test; its own spawn error names the real problem. */
+function rejectMissingCli(cli: LaunchAction["kind"]): void {
+  const cliLook = findCommand(cli);
+  if (cliLook.path !== null) return;
+  if (cliLook.launchFailed) {
+    printWrappedToStderr(
+      `could not check whether '${cli}' is installed (the command probe failed to run); launching anyway`,
+    );
+    return;
+  }
+  throw new Error(`'${cli}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`);
+}
+
+/** process.exitCode, never process.exit, so pending stderr writes flush. A dry run prepares the
+ *  launch (the wiring it lands is the plan) and says what it would spawn instead of spawning it. */
 export async function runLaunch(
   action: LaunchAction,
   deps: LaunchDeps = commandDeps(),
+  dryRun = false,
 ): Promise<void> {
+  // The one preparation (the refusal, the wiring, the plan); only what happens to the plan differs.
+  const prepare = async (): Promise<LaunchPlan | null> => {
+    rejectMissingCli(action.kind);
+    const plan = await prepareLaunch(action, deps);
+    if (plan === null) process.exitCode = 1;
+    return plan;
+  };
+  if (dryRun) {
+    await runDryRun(async () => {
+      const plan = await prepare();
+      if (plan === null) return;
+      deps.notify(
+        `Would launch ${[plan.command, ...plan.args].join(" ")} with ${
+          Object.keys(plan.env).length
+        } managed env var(s) set and ${plan.scrub.length} scrubbed.`,
+      );
+    });
+    return;
+  }
   // The wiring writes are named AFTER the agent hands the terminal back, not into a screen it is
   // about to clear. A signal that kills this process while the agent runs loses them: a signal
   // listener would keep the launcher alive past a signal aimed at it alone for as long as the agent
   // ignores the same signal.
   deferWriteReports();
   try {
-    const cliLook = findCommand(action.kind);
-    if (cliLook.path === null) {
-      if (cliLook.launchFailed) {
-        // A failed look must not read "not installed": the probe never completed, which proves
-        // nothing about the CLI. The launch below is the honest test; its own spawn error names the
-        // real problem.
-        printWrappedToStderr(
-          `could not check whether '${action.kind}' is installed (the command probe failed to run); launching anyway`,
-        );
-      } else {
-        throw new Error(
-          `'${action.kind}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`,
-        );
-      }
-    }
-    const plan = await prepareLaunch(action, deps);
-    if (plan === null) {
-      process.exitCode = 1;
-      return;
-    }
+    const plan = await prepare();
+    if (plan === null) return;
     process.exitCode = spawnAgentCli(plan);
   } finally {
     flushWriteReports();

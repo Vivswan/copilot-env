@@ -47,7 +47,9 @@ export interface SettingsArgs {
   force?: boolean;
   noBackup?: boolean;
   /** With --import: print what the bundle would change, attribute by attribute, and write nothing.
-   *  Only the confirmation is skipped: the pre-import backup and its prune are planned too. */
+   *  Only the confirmation is skipped: the pre-import backup and its prune are planned too. With
+   *  --export <file>: name the file the bundle would land in, and never its keys or tokens (the file
+   *  it replaces may hold real ones). */
   dryRun?: boolean;
 }
 
@@ -59,7 +61,7 @@ export interface SettingsDeps extends ImportDeps {
 }
 
 export type SettingsAction =
-  | { kind: "export"; target: string | boolean; withCredentials: boolean }
+  | { kind: "export"; target: string | boolean; withCredentials: boolean; dryRun: boolean }
   | { kind: "import"; file: string; force: boolean; noBackup: boolean; dryRun: boolean };
 
 const EXACTLY_ONE = "pass exactly one of --export [file], --import <file>";
@@ -81,10 +83,18 @@ export function parseSettingsAction(args: SettingsArgs): SettingsAction {
     };
   }
   if (args.exportTo === undefined) throw new Error(EXACTLY_ONE);
-  if (args.force || args.noBackup || args.dryRun) {
-    throw new Error("--force/--no-backup/--dry-run only apply to --import");
+  if (args.force || args.noBackup) {
+    throw new Error("--force/--no-backup only apply to --import");
   }
-  return { kind: "export", target: args.exportTo, withCredentials: Boolean(args.withCredentials) };
+  if (args.dryRun && typeof args.exportTo !== "string") {
+    throw new Error("--dry-run previews --export <file>; an export to stdout writes nothing");
+  }
+  return {
+    kind: "export",
+    target: args.exportTo,
+    withCredentials: Boolean(args.withCredentials),
+    dryRun: Boolean(args.dryRun),
+  };
 }
 
 const ROLLBACK_SCOPE_NOTE =
@@ -133,14 +143,16 @@ function runExport(target: string | boolean, withCredentials: boolean): void {
   if (withCredentials) {
     // A fresh 0600 inode by rename: a write into an existing 0644 target would hold the plaintext
     // tokens under its old permissions.
-    atomicWriteFile(target, text, 0o600, "settings bundle with your REAL tokens");
+    atomicWriteFile(target, text, 0o600, "settings bundle with your REAL tokens", { secret: true });
     // Its own line, not the write report's detail: a target inside copilot-env's own homes gets no
     // write line.
     logger.warn(
       `${target} contains your REAL tokens (and any stored pricing-url) - treat it like a password file.`,
     );
   } else {
-    writeFileReported(target, text, { detail: "settings bundle, tokens redacted" });
+    // The file this replaces may hold real tokens (an earlier --with-credentials export), so a
+    // dry run names the path and prints neither side.
+    writeFileReported(target, text, { detail: "settings bundle, tokens redacted", secret: true });
   }
 }
 
@@ -248,7 +260,11 @@ async function runImport(
 export async function runSettings(args: SettingsArgs, deps: SettingsDeps = {}): Promise<void> {
   const action = parseSettingsAction(args);
   if (action.kind === "export") {
-    runExport(action.target, action.withCredentials);
+    if (action.dryRun) {
+      await runDryRun(() => Promise.resolve(runExport(action.target, action.withCredentials)));
+    } else {
+      runExport(action.target, action.withCredentials);
+    }
     return;
   }
   await runImport(action, deps);

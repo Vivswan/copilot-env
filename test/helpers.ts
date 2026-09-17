@@ -1,6 +1,6 @@
 // Not a test file (the `test` task collects only test/**/*.test.ts), so importing it registers
 // nothing. Plain functions only: each test file keeps its own afterEach and calls these from it.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { GITHUB_GRAPHQL_URL, setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
@@ -87,6 +87,51 @@ export function envSnapshot(extraKeys: readonly string[] = []): () => void {
  *  must not leak into the rest of the run. */
 export function resetExitCode(): void {
   process.exitCode = 0;
+}
+
+// --- the dry-run controls -------------------------------------------------------
+
+/** Every entry under and including `dir`: a file by identity, size, mode, and mtime, a directory
+ *  by identity, mode, and mtime, so a write, a create, a delete, a chmod, or a file created and
+ *  deleted inside a run (its parent's mtime moves) anywhere in the tree changes the picture. */
+export function fingerprintTree(dir: string, out = new Map<string, string>()): Map<string, string> {
+  const stamp = (path: string): boolean => {
+    const stat = lstatSync(path);
+    out.set(
+      path,
+      stat.isDirectory()
+        ? `d:${stat.ino}:${stat.mode}:${stat.mtimeMs}`
+        : `f:${stat.ino}:${stat.size}:${stat.mode}:${stat.mtimeMs}`,
+    );
+    return stat.isDirectory();
+  };
+  if (out.size === 0) stamp(dir);
+  for (const name of readdirSync(dir).sort()) {
+    const path = join(dir, name);
+    if (stamp(path)) fingerprintTree(path, out);
+  }
+  return out;
+}
+
+/** The paths a real run changed between two fingerprints (created, rewritten, or deleted), minus
+ *  the lock protocol's sidecars and the atomic writer's staging files the run itself minted (a
+ *  lock or staging file that existed before and changed, a migration's deleted lock, counts). Final
+ *  state only: a create-then-delete inside the run is invisible to a before/after look. */
+export function changedPaths(before: Map<string, string>, after: Map<string, string>): Set<string> {
+  // A directory whose only change is its mtime was not written: a child was, and the child is
+  // listed on its own.
+  const norm = (stamp: string): string =>
+    stamp.startsWith("d:") ? stamp.replace(/:[^:]*$/, "") : stamp;
+  const changed = new Set<string>();
+  for (const [path, stamp] of after) {
+    const was = before.get(path);
+    if (was === undefined || norm(was) !== norm(stamp)) changed.add(path);
+  }
+  for (const path of before.keys()) if (!after.has(path)) changed.add(path);
+  for (const path of changed) {
+    if (/\.lock$|\.oslock$|\.tmp\.\d+$/.test(path) && !before.has(path)) changed.delete(path);
+  }
+  return changed;
 }
 
 // --- temp homes -----------------------------------------------------------------

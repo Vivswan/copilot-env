@@ -54,6 +54,44 @@ const CASES: readonly (readonly [string, number])[] = [
   ['import { writeFileReported } from "../utils/report_write.ts";', 0],
   ['export { writeFileReported } from "../utils/report_write.ts";', 0],
   ['const store = new Map(); store.rm("x");', 0],
+  // A handle opened for writing: node:fs by flag, Deno by option; a flag the rule cannot read is a
+  // write too. A read-only open stays legal.
+  ['import { openSync } from "node:fs"; openSync("x", "w");', 1],
+  ['import { open } from "node:fs/promises"; await open("x", "a+");', 1],
+  ['import * as fs from "node:fs"; fs.openSync("x", "r+");', 1],
+  ['import { openSync } from "node:fs"; openSync("x", flags);', 1],
+  ['import { openSync } from "node:fs"; openSync("x", "r"); openSync("y");', 0],
+  ['await Deno.open("x", { write: true, create: true });', 1],
+  ['Deno.openSync("x", { append: true });', 1],
+  ['await Deno.open("x", opts);', 1],
+  ['const flag = "write"; await Deno.open("x", { [flag]: true });', 1],
+  ['import * as fs from "node:fs"; const { openSync } = fs; openSync("x", "w");', 1],
+  [
+    'await Deno.open("x", { read: true }); await Deno.open("y"); Deno.openSync("z", { write: false });',
+    0,
+  ],
+  // A child process running a filesystem command: the command itself, a shell's command line, an
+  // exec command line, or Deno.Command; a computed command passes (the rule cannot read it).
+  ['import { spawnSync } from "node:child_process"; spawnSync("rm", ["-rf", "x"]);', 1],
+  ['import { spawn } from "node:child_process"; spawn("/bin/mv", ["a", "b"]);', 1],
+  ['import { spawnSync } from "node:child_process"; spawnSync("cmd.exe", ["/c", "del /q x"]);', 1],
+  [
+    'import { spawnSync } from "node:child_process"; spawnSync("powershell", ["-Command", "Remove-Item x"]);',
+    1,
+  ],
+  ['import { spawnSync } from "node:child_process"; spawnSync("sh", ["-c", "ls && rm x"]);', 1],
+  ['import { execSync } from "node:child_process"; execSync("cp a b");', 1],
+  [
+    'import { spawnSync } from "node:child_process"; spawnSync("cmd", ["/c", "echo ok & del x"]);',
+    1,
+  ],
+  ['import * as cp from "node:child_process"; cp.spawnSync("rmdir", ["x"]);', 1],
+  ['new Deno.Command("rm", { args: ["x"] }).outputSync();', 1],
+  ['new Deno.Command("sh", { "args": ["-c", "rm x"] }).outputSync();', 1],
+  [
+    'import { spawnSync } from "node:child_process"; spawnSync("gh", ["auth", "token"]); spawnSync("sh", ["-c", "ls"]); spawnSync(bin, ["rm"]);',
+    0,
+  ],
 ];
 
 test("no-unreported-fs-writes: every way of reaching a write API, and nothing else", () => {

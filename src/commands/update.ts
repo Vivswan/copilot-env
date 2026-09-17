@@ -1,6 +1,7 @@
 import { consola } from "consola";
 import {
   applyUpdate,
+  previewUpdate,
   type ProvenanceDecision,
   resolveProvenanceDecision,
 } from "../autoupdate/apply.ts";
@@ -13,6 +14,7 @@ import { isProtectedRoot } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
 import { assertNonNegativeDays } from "../utils/time.ts";
 import { packageVersion } from "../utils/version.ts";
+import { runDryRun } from "./dry_run.ts";
 
 // resolveTarget is shared with the autoupdate preflight so the release-pick logic has one home.
 
@@ -23,12 +25,14 @@ export interface UpdateArgs {
   /** Commander folds `--verify`/`--no-verify` into one option (last wins), so it arrives as one
    *  optional boolean; absent defers to the stored `update.verify-provenance` key. */
   verify?: boolean;
+  /** Resolve the release, then print what the update would lay down and flip; download nothing. */
+  dryRun?: boolean;
 }
 
 export type UpdateAction =
   | { kind: "check" }
   | { kind: "auto-status" }
-  | { kind: "apply"; force: boolean; verify: boolean | undefined };
+  | { kind: "apply"; force: boolean; verify: boolean | undefined; dryRun: boolean };
 
 /**
  * resolveTarget swallows a failed look (API error, offline) into the same null as "no eligible
@@ -60,9 +64,19 @@ export function parseUpdateAction(args: UpdateArgs): UpdateAction {
       "--verify/--no-verify only apply to the manual update; they do not combine with --check/--auto-status",
     );
   }
+  if (args.dryRun && reports > 0) {
+    throw new Error(
+      "--dry-run previews the manual update; --check and --auto-status already write nothing",
+    );
+  }
   if (args.autoStatus) return { kind: "auto-status" };
   if (args.check) return { kind: "check" };
-  return { kind: "apply", force: Boolean(args.force), verify: args.verify };
+  return {
+    kind: "apply",
+    force: Boolean(args.force),
+    verify: args.verify,
+    dryRun: Boolean(args.dryRun),
+  };
 }
 
 export async function runUpdate(args: UpdateArgs): Promise<void> {
@@ -82,6 +96,7 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
         cooldown,
         force: action.force,
         provenance: resolveProvenanceDecision(action.verify, config.verifyProvenanceEnabled()),
+        dryRun: action.dryRun,
       });
     default:
       assertNever(action);
@@ -106,6 +121,7 @@ async function runManualUpdate(
     cooldown: number | null;
     force: boolean;
     provenance: ProvenanceDecision;
+    dryRun: boolean;
   },
 ): Promise<void> {
   // `v` prefix to match the upstream tag format.
@@ -137,6 +153,24 @@ async function runManualUpdate(
       "This is a source checkout and `agent update` writes a versioned install layout " +
         "into the root; update a checkout via git, or re-run with --force.",
     );
+  }
+
+  if (args.dryRun) {
+    // No lock: the preview takes nothing another update could wait on.
+    await runDryRun(() => {
+      consola.info(
+        `Would download the ${target.tag} release for this platform, verify its checksum${
+          args.provenance.kind === "verify" ? " and build provenance" : ""
+        }, let the new binary lay down its runtime files, flip \`current\`, refresh the launcher ` +
+          `shims, and run the migrations ${current} -> ${target.tag} ` +
+          `(preview them: agent migrate ${current.replace(/^v/, "")} ${
+            target.tag.replace(/^v/, "")
+          } --dry-run).`,
+      );
+      previewUpdate(target);
+      return Promise.resolve();
+    });
+    return;
   }
 
   consola.start(`Updating copilot-env ${current} -> ${target.tag} ...`);

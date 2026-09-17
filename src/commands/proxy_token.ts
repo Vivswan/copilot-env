@@ -11,15 +11,22 @@
 //                    credential the child refuses and names `agent auth`; nothing prompts)
 import { spawnSync } from "node:child_process";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { agentStartCommand, parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
+import { errMessage } from "../utils/error.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { printWrappedToStderr, terminalWidth, wrapMessage } from "../utils/table.ts";
+import { dryRunActive, promptRefusedInDryRun } from "../utils/write_session.ts";
 import { runPrintProxyToken } from "./auth.ts";
+import { runDryRun } from "./dry_run.ts";
+import { runStart } from "./start.ts";
 
 export interface ProxyTokenFlags {
   yes?: boolean;
   profile?: string;
+  /** Print the daemon start and the store writes the resolve would make (the minted API key
+   *  redacted) and do none of them; the key is not printed, since none is stored. */
+  dryRun?: boolean;
 }
 
 export interface ProxyTokenAction {
@@ -34,7 +41,9 @@ export type LaunchOutput = "suppressed" | "visible";
 export interface ProxyTokenDeps {
   proxyUp(profile: Profile): Promise<boolean>;
   autoStartEnabled(): boolean;
-  launchProxy(profile: Profile, output: LaunchOutput): void;
+  /** In a dry run, the start's own preview (`agent start --dry-run`, in process): the same port
+   *  resolution and refusals the child would make. */
+  launchProxy(profile: Profile, output: LaunchOutput): void | Promise<void>;
   /** Prompts on stderr; EOF resolves "". */
   readAnswer(query: string): Promise<string>;
   recordHeartbeat(profile: Profile): void;
@@ -49,7 +58,10 @@ export interface ProxyTokenDeps {
  *   the child's stdio  -> placed so the caller's stdout stays untouched
  *   the exit status    -> unread; the follow-up proxyUp probe is the verdict
  *   `agent launch`     -> injects this as its own launchProxy dependency */
-export function launchProxy(profile: Profile, output: LaunchOutput): void {
+export function launchProxy(profile: Profile, output: LaunchOutput): void | Promise<void> {
+  if (dryRunActive()) {
+    return runStart({ kind: "launch", dryRun: true, force: false, port: undefined, profile });
+  }
   const { command, args } = agentLauncherCommand(
     profile === null ? ["start"] : ["start", "--profile", profile],
   );
@@ -112,15 +124,38 @@ export async function resolveProxyToken(
   // A named profile never falls back to the default credential, so its hint names its own slot.
   const authHint = profile === null ? "agent auth" : `agent auth --profile ${profile}`;
   let suppressedStart = false;
+  // A dry run asks nothing, and its start is the start's own preview (launchProxy under a dry
+  // run), whose refusals stand; past it the resolve proceeds as if the daemon came up, since the
+  // writes that follow are the plan.
+  let plannedStart = false;
+  const launch = async (output: LaunchOutput): Promise<void> => {
+    try {
+      await deps.launchProxy(profile, output);
+    } catch (e) {
+      // The real start is a child whose refusal is its own stderr and exit status (unread here):
+      // the in-process preview's refusal is said the same way, and the resolve reaches the same
+      // failed-start arm.
+      if (!dryRunActive()) throw e;
+      deps.notify(`the proxy start would refuse: ${errMessage(e)}`);
+      return;
+    }
+    plannedStart = dryRunActive();
+  };
   if (!(await deps.proxyUp(profile))) {
     if (deps.autoStartEnabled()) {
-      deps.launchProxy(profile, "suppressed");
+      await launch("suppressed");
       suppressedStart = true;
     } else if (!action.assumeYes) {
+      if (dryRunActive()) {
+        throw promptRefusedInDryRun(
+          "start the proxy? `agent proxy-token --yes` answers it, and " +
+            `\`${configSetCommand("daemon.auto-start", "true")}\` starts it for every launcher`,
+        );
+      }
       if (
         answerMeansStart(await deps.readAnswer("copilot proxy not running. Start it now? [Y/n] "))
       ) {
-        deps.launchProxy(profile, "visible");
+        await launch("visible");
       } else {
         deps.notify(
           `Continuing without the proxy; proxy-backed agents need it (run '${startHint}').`,
@@ -129,7 +164,7 @@ export async function resolveProxyToken(
     }
   }
   deps.recordHeartbeat(profile);
-  if (await deps.proxyUp(profile)) {
+  if (plannedStart || await deps.proxyUp(profile)) {
     await deps.printProxyToken(profile);
     return 0;
   }
@@ -164,5 +199,12 @@ export async function runProxyToken(flags: ProxyTokenFlags): Promise<void> {
     assumeYes: Boolean(flags.yes),
     profile: parseProfileFlag(flags.profile),
   };
-  process.exitCode = await resolveProxyToken(action, commandDeps());
+  const run = async (): Promise<void> => {
+    process.exitCode = await resolveProxyToken(action, commandDeps());
+  };
+  if (flags.dryRun) {
+    await runDryRun(run);
+    return;
+  }
+  await run();
 }

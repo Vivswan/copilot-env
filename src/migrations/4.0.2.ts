@@ -7,7 +7,7 @@
 //   several logins, or the account look never ran       -> auto; only the user can choose
 //   already pinned, or not gh-cli                       -> untouched
 import { consola } from "consola";
-import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
 import {
@@ -24,6 +24,7 @@ import { resolveRootHome } from "../copilot_api/paths.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 import { isRecord } from "../utils/json.ts";
 import type { Migration } from "./index.ts";
+import { removeReported, renameReported } from "../utils/report_write.ts";
 
 /** The same pin-or-ask rule the auth flow settles with. An unproven look pins nothing, and so
  *  does any count but one, where EVERY github.com entry counts, broken ones included: a broken
@@ -135,13 +136,10 @@ export function moveRootStores(rootHome: string = resolveRootHome()): void {
       );
       continue;
     }
-    renameSync(oldPath, newPath);
+    renameReported(oldPath, newPath);
     consola.info(`  moved ${oldName} -> ${newName}`);
   }
-  for (const name of LOCK_DEBRIS) {
-    const path = join(rootHome, name);
-    if (existsSync(path)) rmSync(path, { force: true });
-  }
+  for (const name of LOCK_DEBRIS) removeReported(join(rootHome, name));
 }
 
 /** Every helper path an owned Desktop entry still REFERENCES (`inferenceCredentialHelper`), one
@@ -206,7 +204,7 @@ export async function moveDesktopHelpers(
       );
       continue;
     }
-    rmSync(path, { force: true });
+    removeReported(path);
     consola.info(`  removed ${name} (the Desktop wiring now lives under helpers/)`);
   }
 }

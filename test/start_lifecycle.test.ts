@@ -16,6 +16,11 @@ import { AutoupdateState } from "../src/autoupdate/state.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, resetCodexVersionMemo } from "../src/codex/user_agent.ts";
 import { parseStartAction, renderStartSummary, runStart } from "../src/commands/start.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import {
+  resetIntegrationIdentityCache,
+  setIntegrationProbeFetch,
+} from "../src/copilot_api/integration_identity.ts";
 import { portListening } from "../src/copilot_api/daemon.ts";
 import { startLockPath } from "../src/copilot_api/launch.ts";
 import { classifyDaemonPid, pidAlive } from "../src/copilot_api/process.ts";
@@ -25,11 +30,13 @@ import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { daemonLockHolderPid } from "../src/scripts/daemon_lock.ts";
 import { probeFileLock } from "../src/utils/file_lock.ts";
 import { packageVersion } from "../src/utils/version.ts";
+import { captureChannels } from "./helpers/output.ts";
 import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   defaultHomeDir,
   envSnapshot,
+  fingerprintTree,
   isolateProxyHome,
   killAndAwaitExit,
   launchFakeDaemon,
@@ -50,10 +57,20 @@ const restoreEnv = envSnapshot(["COPILOT_API_ENTRY", "PATH", CI_NO_LIVE_LOOKUPS_
 let dir = "";
 
 afterEach(() => {
+  setIntegrationProbeFetch(null);
+  resetIntegrationIdentityCache();
   restoreEnv();
   resetExitCode();
   dir = removeDir(dir);
 });
+
+/** The start's credential resolution selects the daemon's identity over the network; the stub
+ *  accepts the first candidate on the default host, offline. */
+function stubIdentityProbe(): void {
+  setIntegrationProbeFetch(() =>
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+  );
+}
 
 /** Isolate a root and return the DEFAULT daemon's home under it (profiles/default,
  *  created on disk) -- what the dry-run plan and the lock/holder staging both
@@ -104,6 +121,52 @@ function dryRunNarration(): Promise<string> {
     runStart({ kind: "launch", dryRun: true, force: false, port: undefined, profile: null })
   );
 }
+
+test("start --dry-run runs the launch's credential gate: no credential is the real refusal, a stored one is named in the plan", async () => {
+  tmpHome();
+  const refusal = /cannot start the proxy without a credential/;
+  await expect(dryRunNarration()).rejects.toThrow(refusal);
+  // The real launch refuses the same way, before any side effect.
+  await expect(
+    narrationOf(() =>
+      runStart({ kind: "launch", dryRun: false, force: false, port: undefined, profile: null })
+    ),
+  ).rejects.toThrow(refusal);
+  new Credential().store("gh-token", "ghp_fake_for_the_plan");
+  stubIdentityProbe();
+  // A bare `start --dry-run` collects its own plan: the port and the credential pair it would
+  // record print as store rows, and nothing is written.
+  const before = fingerprintTree(dir);
+  // The narration is consola's (streamsOf reads it); the plan block is console output
+  // (captureChannels reads it). A second preview costs nothing: neither writes.
+  expect(await dryRunNarration()).toMatch(
+    /Would launch the proxy on port \d+ with the gh-token credential\./,
+  );
+  const { stdout } = await captureChannels(() =>
+    runStart({ kind: "launch", dryRun: true, force: false, port: undefined, profile: null })
+  );
+  expect(stdout).toContain("DRY RUN: nothing was written.");
+  expect(stdout).toMatch(/\bport {2}\(absent\) -> \d+/);
+  expect(fingerprintTree(dir)).toEqual(before);
+  // The projected configuration lands in the preview as in the real start, so a config.json the
+  // real start refuses to rewrite (not JSON) refuses the preview the same way.
+  writeFileSync(new CopilotApiPaths().configFile, "{");
+  const notJson = /is not valid JSON/;
+  await expect(dryRunNarration()).rejects.toThrow(notJson);
+  // The refusal comes where the real start's does, before the port and the credential pair land:
+  // the plan printed up to it carries neither.
+  const refused = await captureChannels(async () => {
+    await runStart({ kind: "launch", dryRun: true, force: false, port: undefined, profile: null })
+      .catch(() => {});
+  });
+  expect(refused.stdout).not.toContain(".state.json");
+  expect(refused.stdout).not.toContain("integrationIdentity");
+  await expect(
+    narrationOf(() =>
+      runStart({ kind: "launch", dryRun: false, force: false, port: undefined, profile: null })
+    ),
+  ).rejects.toThrow(notJson);
+});
 
 // A real listening socket, so portListening can probe a real port.
 function listenEphemeral(host = "127.0.0.1"): Promise<{ server: Server; port: number }> {
@@ -226,6 +289,9 @@ test(
   "start --dry-run narrates the refused holder and the tracking clear, and never acts",
   async () => {
     const home = tmpHome();
+    // The plan runs the launch's credential gate first, so the preview needs a credential.
+    new Credential().store("gh-token", "ghp_fake_for_the_plan");
+    stubIdentityProbe();
     const fixture = stageRefusedStop(home);
     try {
       const leaveLine = `Would leave the daemon.lock holder (pid=${fixture.bystanderPid}) alone`;
@@ -264,6 +330,9 @@ test(
   "start --dry-run reports the corroborated holder stop and the dead-pid tracking clear without acting",
   async () => {
     const home = tmpHome();
+    // The plan runs the launch's credential gate first, so the preview needs a credential.
+    new Credential().store("gh-token", "ghp_fake_for_the_plan");
+    stubIdentityProbe();
     const daemonPid = launchFakeDaemon(home, await freePort());
     try {
       await until(() => daemonLockHolderPid(home) === daemonPid);

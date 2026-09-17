@@ -949,7 +949,7 @@ test("auth --identity <id> validates the id at the flag like --provider, before 
   await expect(runAuth({ identity: true, list: true })).rejects.toThrow("mutually exclusive");
 });
 
-test("auth --get and --print-proxy-token return the credential and write nothing else: a due catalog and a healable Codex config stay byte-identical", async () => {
+test("auth --get and --print-proxy-token return the credential without a catalog refresh or a Codex config rewrite: a due catalog and a healable Codex config stay byte-identical", async () => {
   isolate();
   enableCatalog();
   // What a refresh would act on: a config with our provider and no catalog

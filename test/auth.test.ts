@@ -528,6 +528,8 @@ test("auth --identities: one column per host, ONE mark on the slot's identity un
     // The account lookup (no id, copilot-env's own User-Agent) happened exactly once.
     expect(requests.get("https://api.github.com/copilot_internal/user - copilot-env")).toBe(1);
     setIntegrationProbeFetch(stubbedSurveyFetch);
+    // Color is a TTY affordance: the survey a pipe or a test reads is plain text.
+    expect(fresh).not.toContain("\x1b");
     // Four candidate rows, nothing more; vscode-chat is the last candidate.
     expect(fresh).toMatch(
       /^vscode-chat\s+rejected \(400\)\s+rejected \(400\)\s+copilot-api's former default$/m,

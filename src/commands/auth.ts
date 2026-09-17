@@ -74,7 +74,7 @@ import {
   type ProfileName,
 } from "../copilot_api/profile.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
-import { cyan } from "../utils/ansi.ts";
+import { bold, cyan, dim, green, yellow } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { withFileLockSync } from "../utils/file_lock.ts";
@@ -798,37 +798,54 @@ const IDENTITY_NOTES: Record<string, string> = {
 
 /** The cell carries the verdict and a tag (status or "network error"); the full reason follows the
  *  table, so a 160-char rejection body never widens it. `mark` is `*` (in use) or `>` (the next
- *  landing's pick). */
+ *  landing's pick). Painted like `agent config`: green accepted, yellow rejected, dim otherwise;
+ *  the palette is plain off a TTY. */
 function verdictCell(verdict: IdentityVerdict | undefined, mark = ""): string {
-  if (verdict === undefined) return "-";
-  const suffix = mark === "" ? "" : ` ${mark}`;
+  const suffix = mark === "" ? "" : ` ${green(mark)}`;
+  if (verdict === undefined) return `${dim("-")}${suffix}`;
   const tag = (detail: string): string =>
     detail.startsWith("network error") ? "network error" : detail.split(" ")[0] ?? "";
   switch (verdict.kind) {
     case "accepted":
-      return `accepted${
-        verdict.models === null
-          ? ""
-          : ` (${verdict.models} ${verdict.models === 1 ? "model" : "models"})`
+      return `${
+        green(
+          `accepted${
+            verdict.models === null
+              ? ""
+              : ` (${verdict.models} ${verdict.models === 1 ? "model" : "models"})`
+          }`,
+        )
       }${suffix}`;
     case "rejected":
-      return `rejected (${tag(verdict.detail)})${suffix}`;
+      return `${yellow(`rejected (${tag(verdict.detail)})`)}${suffix}`;
     case "inconclusive":
-      return `unclear (${tag(verdict.detail)})${suffix}`;
+      return `${dim(`unclear (${tag(verdict.detail)})`)}${suffix}`;
     default:
       return assertNever(verdict);
   }
 }
 
-/** A column's header: the host, tagged with why it is shown (and whether it is the host in use).
- *  The configured column is the `host` literal, or under `auto` the slot's stored host. */
-function hostLabel(column: IdentityHostSurvey, inUse = false, literal = true): string {
+/** Why a column is shown (and whether it is the host in use). The configured column is the `host`
+ *  literal, or under `auto` the slot's stored host. */
+function hostTags(column: IdentityHostSurvey, inUse: boolean, literal: boolean): string[] {
   const tags: string[] = [];
   if (column.role === "designated") tags.push("account");
   if (column.role === "configured") tags.push(literal ? "host" : "stored");
   if (inUse) tags.push("in use");
+  return tags;
+}
+
+/** A column's header: the host, its tags in `paint`. A reason line, dim as a whole, passes none, so
+ *  dim never nests in dim. */
+function hostLabel(
+  column: IdentityHostSurvey,
+  inUse = false,
+  literal = true,
+  paint: (text: string) => string = (text) => text,
+): string {
+  const tags = hostTags(column, inUse, literal);
   const host = new URL(column.apiBase).host;
-  return tags.length === 0 ? host : `${host} (${tags.join(", ")})`;
+  return tags.length === 0 ? host : `${host} ${paint(`(${tags.join(", ")})`)}`;
 }
 
 function sameOrigin(a: string, b: string): boolean {
@@ -883,7 +900,7 @@ function identityTableLines(input: IdentityTableInput): string[] {
     return wouldPick === name ? ">" : "";
   };
   const rows = names.map((name) => [
-    name,
+    cyan(name),
     ...survey.hosts.map((c) => verdictCell(verdictOf(c, name), mark(c, name))),
     IDENTITY_NOTES[name] ?? "",
   ]);
@@ -892,7 +909,7 @@ function identityTableLines(input: IdentityTableInput): string[] {
     survey.hosts.flatMap((c) => {
       const verdict = verdictOf(c, name);
       return verdict === undefined || verdict.kind === "accepted" ? [] : wrapLine(
-        `${name} on ${hostLabel(c, false, configuredHost !== null)}: ${verdict.detail}`,
+        dim(`${name} on ${hostLabel(c, false, configuredHost !== null)}: ${verdict.detail}`),
         width,
         "  ",
         "    ",
@@ -952,18 +969,18 @@ function identityTableLines(input: IdentityTableInput): string[] {
       "",
       "  ",
     ),
-    ...wrapLine(legend, width, "", "  "),
+    ...wrapLine(dim(legend), width, "", "  "),
     ...formatTable(rows, {
       header: [
-        "identity",
-        ...survey.hosts.map((c) => hostLabel(c, c === inUseColumn, configuredHost !== null)),
+        bold("identity"),
+        ...survey.hosts.map((c) => hostLabel(c, c === inUseColumn, configuredHost !== null, dim)),
         "note",
       ],
       wrap: [false, ...survey.hosts.map(() => false), true],
       indent: "",
       width,
     }),
-    ...notes.flatMap((note) => wrapLine(note, width, "", "  ")),
+    ...notes.flatMap((note) => wrapLine(dim(note), width, "", "  ")),
     ...reasons,
   ];
 }

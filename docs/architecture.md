@@ -23,7 +23,9 @@ flowchart TD
   direct["Direct: the agent config names the Copilot host and a resolver command"]
   proxy["proxy: the agent config names the local daemon, which holds the token in memory"]
   daemon["src/copilot_api/launch.ts<br>resolveLaunchCredential() DaemonLaunchAuth"]
-  proxycfg[("~/.local/share/copilot-env/profiles/{name}/config.json<br>the daemon's own auth.apiKeys")]
+  proxycfg[("~/.local/share/copilot-env/profiles/{name}/config.json<br>the daemon's own auth.apiKeys<br>the default's is ~/.local/share/copilot-env/profiles/default, or the root home where a daemon first ran there")]
+  gh[["gh auth token, spawned for a gh-cli slot"]]
+  claudejson[("~/.claude.json")]
   codexw["src/codex/config.ts<br>configureCodexConfig()"]
   claudew["src/claude/config.ts<br>configureClaudeConfig()"]
   codexfile[("~/.codex/config.toml")]
@@ -33,16 +35,18 @@ flowchart TD
   prefs -->|"reads static-key"| wiring
   proxycfg -->|"static-key on a proxy write: ensureApiKey() reads a key, minting one when absent"| wiring
   store --> cred
+  gh -->|"reads stdout: the OAuth token"| cred
   cred -->|"resolve(): the token, or null for a none slot"| wiring
   wiring -->|"kind command"| resolver
   wiring -->|"mode direct"| direct
   wiring -->|"mode proxy"| proxy
-  direct -->|"base_url https://{host}, http_headers with the Copilot-Integration-Id"| codexw
+  direct -->|"base_url https://{host}, http_headers: the Codex user agent, plus Copilot-Integration-Id when one was selected"| codexw
   direct -->|"the host, plus env.ANTHROPIC_CUSTOM_HEADERS"| claudew
   proxy -->|"base_url http://127.0.0.1:{port}/v1"| codexw
   proxy -->|"the loopback base URL"| claudew
-  codexw -->|"writes model_providers.copilot-env: base_url, http_headers, auth.command"| codexfile
+  codexw -->|"writes model_providers.copilot-env: base_url, then auth.command or http_headers.Authorization"| codexfile
   claudew -->|"writes env.ANTHROPIC_BASE_URL and apiKeyHelper"| claudefile
+  claudew -->|"Direct with wire-mcp: registers mcpServers.copilot-env"| claudejson
   cred --> daemon
   daemon -->|"DaemonCredential: the token rides in env, spliced into argv in-process"| daemonenv
 ```
@@ -127,12 +131,14 @@ flowchart LR
   preloads["src/scripts/node_compat_preload.ts<br>src/scripts/daemon_lock_preload.ts<br>src/scripts/token_argv_preload.ts<br>src/scripts/daemon_runtime_preload.ts<br>src/scripts/copilot_host_preload.ts<br>src/scripts/pat_passthrough_preload.ts<br>src/scripts/idle_watchdog_preload.ts<br>src/scripts/log_mute_preload.ts"]
   cache[("~/.local/share/copilot-env/deno/cache<br>the daemon's DENO_DIR")]
   record[("~/.local/share/copilot-env/proxy/resolved-version.json")]
-  dcfg[("~/.local/share/copilot-env/proxy/deno.json and deno.lock<br>the daemon's import map and transitive pins")]
-  daemonproc[["the daemon: deno run --config ... --preload ... npm:@jeffreycao/copilot-api@{version}, COPILOT_API_HOME=~/.local/share/copilot-env/profiles/{name}"]]
+  pcfg[("copilot-env.config, embedded in the binary: PROXY_MIN_VERSION, PROXY_MAX_VERSION")]
+  dcfg[("~/.local/share/copilot-env/proxy/deno.json and deno.lock, ~/.local/share/copilot-env/.npmrc<br>the daemon's import map, its transitive pins, trust-policy=no-downgrade")]
+  daemonproc[["the daemon: deno run --config ... --preload ... npm:@jeffreycao/copilot-api@{version}, COPILOT_API_HOME={the profile's daemon home}"]]
   registry -->|"reads versions and publish times"| float
   prefs -->|"reads proxy-version, release-cooldown"| float
+  pcfg -->|"reads the version bounds"| float
   shims -->|"every shim, warmed into the cache"| float
-  float -->|"writes this build's import map, then deno cache pins the lock"| dcfg
+  float -->|"writes the import map and a marked .npmrc once, deno cache pins the lock"| dcfg
   float -->|"deno cache: the package and the shims"| cache
   float -->|"writes the version, its DENO_DIR, the build fingerprint"| record
   record -->|"reads the daemon's entry"| spawn
@@ -196,8 +202,8 @@ flowchart TD
   root -->|"checkout or compiled, decided once"| install
   root -->|"a checkout refuses without --force"| update
   assets -->|"reads at plan time, materializes the payloads into the version root"| install
-  prefs -->|"reads auto-update, update-cooldown, verify-provenance"| preflight
-  autostate -->|"reads lastCheckMs: once per cooldown"| preflight
+  prefs -->|"reads auto-update, verify-provenance, and update-cooldown as the release age"| preflight
+  autostate -->|"reads lastCheckMs: due once a day"| preflight
   update --> release
   preflight --> release
   releases -->|"reads tags and publish dates"| release
@@ -232,7 +238,8 @@ flowchart LR
   token["src/commands/proxy_token.ts<br>resolveProxyToken() launchProxy()"]
   wire["src/agents/profile_wiring.ts<br>wireBothAgents()"]
   daemonproc[["agent start, a child, when the proxy is down"]]
-  configs[("~/.codex/config.toml and ~/.claude/settings.json<br>the profile's pair for a named launch")]
+  configs[("~/.codex/{name}.config.toml and ~/.claude/settings-{name}.json<br>a default repair rewrites config.toml and settings.json through the agent commands instead")]
+  catalog[("~/.local/share/copilot-env/codex-model-catalog.json")]
   agentcli[["the agent CLI: claude, codex, or copilot, a child with inherited stdio"]]
   rcfile -->|"the copilot-env block sources it"| rc
   settings -->|"reads the wired base URL: managedClaudeBaseUrl()"| env
@@ -244,7 +251,8 @@ flowchart LR
   launch -->|"ensureProxy"| token
   launch -->|"syncProfileWiring"| wire
   token -->|"launchProxy(): spawns it"| daemonproc
-  wire -->|"rewrites"| configs
+  wire -->|"rewrites the pair on a named launch"| configs
+  launch -->|"refreshCodexCatalog: a due Codex refresh"| catalog
   launch -->|"LaunchPlan: command, args, env, scrub"| agentcli
 ```
 

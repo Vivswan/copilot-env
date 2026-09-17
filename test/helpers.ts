@@ -4,7 +4,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { GITHUB_GRAPHQL_URL, setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
-import type { ProfileName } from "../src/copilot_api/profile.ts";
+import type { Profile, ProfileName } from "../src/copilot_api/profile.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import {
+  type DaemonLaunchAuth,
+  type LaunchCredentialDeps,
+  readLaunchToken,
+  resolveLaunchCredential,
+} from "../src/copilot_api/launch.ts";
 import { defaultDaemonHome } from "../src/copilot_api/paths.ts";
 import { launchDaemon } from "../src/copilot_api/process.ts";
 import type { DaemonCredential } from "../src/copilot_api/process.ts";
@@ -208,6 +215,20 @@ export function writeRunState(
 }
 
 // --- live-daemon fixtures -------------------------------------------------------------
+
+/** `agent start`'s two credential steps as one call, the refusal gate and the resolution it feeds,
+ *  so a decision table holds refusals and resolved credentials side by side (a refusal rejects). */
+export async function launchAuth(
+  profile: Profile,
+  deps: LaunchCredentialDeps,
+): Promise<DaemonLaunchAuth> {
+  return await resolveLaunchCredential(
+    profile,
+    readLaunchToken(profile),
+    new CopilotEnvConfig(),
+    deps,
+  );
+}
 
 /** Every daemon carries a credential and a host (a launch without one is refused); the fake proxy
  *  reads neither, so the spawn fixtures share one placeholder pair. */

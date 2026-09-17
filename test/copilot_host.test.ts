@@ -23,10 +23,9 @@ import {
   setIntegrationProbeFetch,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
-import { resolveLaunchCredential } from "../src/copilot_api/launch.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { codexConfigToml, envSnapshot, isolateAgentHomes } from "./helpers.ts";
+import { codexConfigToml, envSnapshot, isolateAgentHomes, launchAuth } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -262,7 +261,7 @@ test("a daemon launch pairs identity and host: re-selected where auto moves, pas
   const state = new CopilotEnvState();
   const UA = "codex_exec/1";
   const seen: { host: string; id: string | null }[] = [];
-  const launch = () => resolveLaunchCredential(null, new CopilotEnvConfig(), { userAgent: UA });
+  const launch = () => launchAuth(null, { userAgent: UA });
   // No credential: the launch is refused with the login the slot needs; the daemon never logs in
   // on its own.
   await expect(launch()).rejects.toThrow(

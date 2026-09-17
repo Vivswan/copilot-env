@@ -31,7 +31,6 @@ import {
   listUntrackedOrphans,
   lockProtectedDaemonPids,
   planCleanup,
-  resolveLaunchCredential,
   resolveStartPort,
   trackedDaemonPids,
   withStartLock,
@@ -67,6 +66,7 @@ import {
   envSnapshot,
   isolateProxyHome,
   killAndAwaitExit,
+  launchAuth,
   launchFakeDaemon,
   until,
   withUnprovablePidProbe,
@@ -166,7 +166,7 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
   new Credential().store("gh-token", "ghp_stored_pat");
   const probe = probeSpy(COPILOT_CLI_INTEGRATION_ID);
 
-  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const result = (await launchAuth(null, {
     userAgent: UA,
     selectIdentity: probe.resolve,
   })).credential;
@@ -184,7 +184,7 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
     host: DEFAULT_COPILOT_API_BASE,
   });
   const never = probeSpy("copilot-developer-sandbox");
-  const replayed = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const replayed = await launchAuth(null, {
     userAgent: UA,
     selectIdentity: never.resolve,
   });
@@ -202,7 +202,7 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
   // names a host the launch would never pick on its own).
   new Credential().store("gh-token", "ghp_rotated_pat");
   const moved = probeSpy(COPILOT_CLI_INTEGRATION_ID, "https://api.enterprise.githubcopilot.com");
-  const { copilotHost } = await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const { copilotHost } = await launchAuth(null, {
     userAgent: UA,
     selectIdentity: moved.resolve,
   });
@@ -213,11 +213,11 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
 });
 
 // One decision table over the single-step launches: (profile, stored credential, passthrough
-// config, TTY, identity selector) -> the credential handed to the daemon, the tokens probed, the
-// logins run. A wrong row is a PAT sent raw, a daemon under the wrong identity, or an interactive
-// login where a resolved token (or a headless run) forbids one.
-test("resolveLaunchCredential: the credential, probe, and login decision per stored credential, config, and TTY", async () => {
-  type Launched = Awaited<ReturnType<typeof resolveLaunchCredential>>["credential"];
+// config, identity selector) -> the credential handed to the daemon, or the refusal, and the tokens
+// probed. A wrong row is a PAT sent raw, a daemon under the wrong identity, or a probe (or a daemon)
+// where no credential, or a profile that was never created, forbids one.
+test("a daemon launch: the credential, refusal, and probe decision per stored credential and config", async () => {
+  type Launched = Awaited<ReturnType<typeof launchAuth>>["credential"];
   const acceptingProbe = (): Promise<Response> =>
     Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
   const rows: Array<{
@@ -310,14 +310,10 @@ test("resolveLaunchCredential: the credential, probe, and login decision per sto
     const probe = probeSpy(row.identity === "real" ? null : row.identity.spy);
     if (row.identity === "real") setIntegrationProbeFetch(acceptingProbe);
 
-    const credential: Launched | { refused: string } = await resolveLaunchCredential(
-      row.profile,
-      new CopilotEnvConfig(),
-      {
-        userAgent: UA,
-        ...(row.identity === "real" ? {} : { selectIdentity: probe.resolve }),
-      },
-    ).then((auth) => auth.credential, (e: unknown) => ({ refused: errMessage(e) }));
+    const credential: Launched | { refused: string } = await launchAuth(row.profile, {
+      userAgent: UA,
+      ...(row.identity === "real" ? {} : { selectIdentity: probe.resolve }),
+    }).then((auth) => auth.credential, (e: unknown) => ({ refused: errMessage(e) }));
 
     expect({ name: row.name, credential, probedTokens: probe.calls.map((c) => c.token) })
       .toEqual({
@@ -326,7 +322,9 @@ test("resolveLaunchCredential: the credential, probe, and login decision per sto
         probedTokens: row.probedTokens,
       });
     // Every probe runs under the daemon's User-Agent, unpinned.
-    for (const call of probe.calls) expect(call).toMatchObject({ userAgent: UA, pinned: null });
+    for (const call of probe.calls) {
+      expect(call).toMatchObject({ userAgent: UA, pinned: null });
+    }
   }
 });
 
@@ -336,7 +334,7 @@ test("resolveLaunchCredential: a pinned integration-id reaches the probe as the 
   new CopilotEnvConfig().setProfile(null, { identity: "copilot-developer-sandbox" });
   const probe = probeSpy("copilot-developer-sandbox");
 
-  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const result = (await launchAuth(null, {
     userAgent: UA,
     selectIdentity: probe.resolve,
   })).credential;
@@ -356,7 +354,7 @@ test("resolveLaunchCredential: a pinned integration-id reaches the probe as the 
   });
   // With both halves known (the pin, the stored host) nothing probes; the daemon sends the pin.
   const never = probeSpy(COPILOT_CLI_INTEGRATION_ID);
-  const overlaid = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const overlaid = (await launchAuth(null, {
     userAgent: UA,
     selectIdentity: never.resolve,
   })).credential;
@@ -370,7 +368,7 @@ test("resolveLaunchCredential: a pinned integration-id reaches the probe as the 
   // `auto` the host is the selection's too) and stores what it probed.
   new CopilotEnvConfig().setProfile(null, { identity: "auto" });
   const probe2 = probeSpy(COPILOT_CLI_INTEGRATION_ID);
-  const cleared = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const cleared = (await launchAuth(null, {
     userAgent: UA,
     selectIdentity: probe2.resolve,
   })).credential;
@@ -404,7 +402,7 @@ test("resolveLaunchCredential: PAT + real probe -- the injected fetch's accepted
   };
   setIntegrationProbeFetch(stub);
 
-  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
+  const result = (await launchAuth(null, {
     userAgent: UA,
   })).credential;
 

@@ -514,7 +514,7 @@ function daemonPreloadFlags(spec: DaemonSpec): string[] {
  * The token travels through the ENVIRONMENT (owner-only: /proc/<pid>/environ is 0600, `ps e` shows
  * only your own processes), never argv; the token-argv shim splices it back in-process, so the proxy
  * uses it in memory and never writes its own github_token file. Every daemon carries one: a launch
- * without a credential is refused before the spawn (resolveLaunchCredential).
+ * without a credential is refused before the spawn (readLaunchToken).
  */
 function applyCredentialEnv(env: NodeJS.ProcessEnv, credential: DaemonCredential): void {
   env[DAEMON_GH_TOKEN_ENV] = credential.token;

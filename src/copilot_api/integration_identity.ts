@@ -594,10 +594,9 @@ export function isPatShapedToken(token: string): boolean {
  */
 export function usePatPassthrough(opts: {
   force: boolean | undefined;
-  token: string | undefined;
+  token: string;
   provider?: AuthProvider | null;
 }): boolean {
-  if (opts.token === undefined) return false; // the shim would be a no-op anyway
   if (opts.force !== undefined) return opts.force;
   // The device-flow `copilot` token CAN perform the exchange (and rotate the short-lived Copilot token),
   // so it is never shimmed whatever its shape; any `gho_` token (e.g. one pasted via gh-token) cannot.

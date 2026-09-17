@@ -22,8 +22,6 @@ test("usePatPassthrough: an explicit force (config on/off) wins regardless of to
   expect(usePatPassthrough({ force: false, token: "ghp_pat" })).toBe(false);
   // force wins even over the gh-cli provider / gho_ auto-on.
   expect(usePatPassthrough({ force: false, token: "gho_x", provider: "gh-cli" })).toBe(false);
-  // ...but with NO token resolved there is nothing to shim, so it's off even when forced on.
-  expect(usePatPassthrough({ force: true, token: undefined })).toBe(false);
 });
 
 test("usePatPassthrough: auto - on for a PAT-shaped OR gho_ OAuth token, off otherwise", () => {
@@ -33,7 +31,6 @@ test("usePatPassthrough: auto - on for a PAT-shaped OR gho_ OAuth token, off oth
   expect(usePatPassthrough({ force: undefined, token: "gho_oauth" })).toBe(true);
   // A non-PAT, non-gho_ token (e.g. ghu_ user-to-server) defaults to the exchange.
   expect(usePatPassthrough({ force: undefined, token: "ghu_user" })).toBe(false);
-  expect(usePatPassthrough({ force: undefined, token: undefined })).toBe(false);
 });
 
 test("usePatPassthrough: provider scoping - gh-cli auto-on, copilot never, gh-token by token shape", () => {

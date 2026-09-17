@@ -1216,7 +1216,7 @@ async function runIdentity(
 }
 
 /** Throws if acquisition fails, so `agent init` (and every wiring command) errors out rather than
- *  proceed unauthenticated; `agent start` never asks, it refuses (resolveLaunchCredential). */
+ *  proceed unauthenticated; `agent start` never asks, it refuses (readLaunchToken). */
 export async function ensureAuthenticated(profile: Profile = null): Promise<void> {
   if (new Credential(undefined, profile).isAuthenticated()) return;
   logger.log(

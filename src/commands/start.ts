@@ -13,7 +13,9 @@ import {
   entryProxyVersion,
   type FloorCheckedEntry,
   type HeldStartLock,
+  type LaunchToken,
   planCleanup,
+  readLaunchToken,
   resolveLaunchCredential,
   resolveStartPort,
   spawnConfiguredDaemon,
@@ -328,11 +330,17 @@ export async function runStart(
     return;
   }
 
+  // The refusal is the FIRST thing a launch does (readLaunchToken): before the start lock, any
+  // directory, the cleanup of the running daemon, the port probe, or a spawn. A `--force` with no
+  // credential would otherwise stop the daemon and then refuse, leaving the user worse off than
+  // before the command.
+  const launch = readLaunchToken(profile);
+
   // Every human-facing follow-up command must address THIS daemon.
   const profileFlag = daemonPolicy(profile).flagSuffix;
   await withStartLock(async (lock) => {
     try {
-      await launchUnderLock(lock, action, profile, profileFlag, launchContext);
+      await launchUnderLock(lock, action, profile, profileFlag, launchContext, launch);
     } finally {
       // On every exit path: a failed launch still gets its daily check, and its error passes
       // through.
@@ -347,6 +355,7 @@ async function launchUnderLock(
   profile: Profile,
   profileFlag: string,
   launchContext: () => LaunchContext,
+  launch: LaunchToken,
 ): Promise<void> {
   const ctx = launchContext();
   const paths = ctx.paths;
@@ -373,10 +382,15 @@ async function launchUnderLock(
   await cleanupExistingProxies(lock, profile, ctx.state);
 
   const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);
-  const { credential, copilotHost } = await resolveLaunchCredential(profile, ctx.envConfig, {
-    // The daemon sends the codex User-Agent the agent configs bake, so it is probed under it.
-    userAgent: codexUserAgent(),
-  });
+  const { credential, copilotHost } = await resolveLaunchCredential(
+    profile,
+    launch,
+    ctx.envConfig,
+    {
+      // The daemon sends the codex User-Agent the agent configs bake, so it is probed under it.
+      userAgent: codexUserAgent(),
+    },
+  );
   const spawned = spawnConfiguredDaemon({
     port,
     logFile: ctx.logFile,

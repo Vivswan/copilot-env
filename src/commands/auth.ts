@@ -956,6 +956,7 @@ export function identityTableLines(input: IdentityTableInput): string[] {
       wrap: [false, ...survey.hosts.map(() => false), true],
       indent: "",
       width,
+      color: input.color,
     }),
     ...notes.flatMap((note) => wrapLine(paint.dim(note), width, "", "  ")),
     ...reasons,

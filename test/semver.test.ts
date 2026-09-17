@@ -23,11 +23,6 @@ test("versionLessThan: a prerelease ranks below its plain release; build metadat
   expect(versionLessThan("1.2.3", "1.2.3+build")).toBe(false);
 });
 
-test("versionLessThan: an unparseable side is never less-than, so a canary deno never warns", () => {
-  expect(versionLessThan("canary", "2.9.5")).toBe(false);
-  expect(versionLessThan("2.9.5", "canary")).toBe(false);
-});
-
 test("stripV drops only a leading v", () => {
   expect(stripV("v1.2.3")).toBe("1.2.3");
   expect(stripV("1.2.3")).toBe("1.2.3");

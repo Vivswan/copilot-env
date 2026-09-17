@@ -15,6 +15,7 @@ import {
   selectDirectIdentityAndHost,
   setIntegrationProbeFetch,
   surveyIntegrationIdentities,
+  VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
 import { codexUserAgent } from "../src/codex/user_agent.ts";
 import { expect, test } from "./helpers/testing.ts";
@@ -38,7 +39,7 @@ function stubFetch(opts: {
   };
 }
 
-test("probeIntegrationIdentity: first accepted candidate wins, in the one order: codex, cli, sandbox", async () => {
+test("probeIntegrationIdentity: first accepted candidate wins, in the one order: codex, cli, sandbox, vscode-chat", async () => {
   const seen: string[] = [];
   const res = await probeIntegrationIdentity("ghp_x", CANDIDATES, {
     fetchImpl: stubFetch({ accept: (id) => id === COPILOT_CLI_INTEGRATION_ID, seen }),
@@ -46,8 +47,22 @@ test("probeIntegrationIdentity: first accepted candidate wins, in the one order:
   });
   expect(res.identity?.name).toBe(COPILOT_CLI_INTEGRATION_ID);
   expect(res.conclusive).toBe(true);
-  // The sandbox candidate is never reached once the CLI id is accepted.
+  // The later candidates are never reached once the CLI id is accepted.
   expect(seen).toEqual(["<none>", COPILOT_CLI_INTEGRATION_ID]);
+
+  // The last candidate is reached only after every earlier one answered without a 2xx.
+  const seenAll: string[] = [];
+  const last = await probeIntegrationIdentity("ghp_y", CANDIDATES, {
+    fetchImpl: stubFetch({ accept: (id) => id === VSCODE_CHAT_INTEGRATION_ID, seen: seenAll }),
+    apiBase: DEFAULT_COPILOT_API_BASE,
+  });
+  expect(last.identity?.name).toBe(VSCODE_CHAT_INTEGRATION_ID);
+  expect(seenAll).toEqual([
+    "<none>",
+    COPILOT_CLI_INTEGRATION_ID,
+    COPILOT_SANDBOX_INTEGRATION_ID,
+    VSCODE_CHAT_INTEGRATION_ID,
+  ]);
 });
 
 const ENTERPRISE_API_BASE = "https://api.enterprise.githubcopilot.com";
@@ -65,9 +80,10 @@ function lowercaseKeys(headers: Record<string, string>): Record<string, string> 
 
 /** The survey's row shape (`agent auth --identities`): the candidates in the one header set every
  *  mode sends, plus an id no candidate list carries (a pin, or the slot's stored identity). */
+const FOREIGN_ID = "my-custom-id";
 const SURVEY_ROWS = [
   ...CANDIDATES,
-  { name: "vscode-chat", headers: directClientHeaders("codex_exec/1", "vscode-chat") },
+  { name: FOREIGN_ID, headers: directClientHeaders("codex_exec/1", FOREIGN_ID) },
 ];
 
 const CONFIGURED_API_BASE = "https://copilot.example";
@@ -98,7 +114,8 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
         return Promise.resolve(catalog(3));
       case COPILOT_CLI_INTEGRATION_ID:
         return Promise.resolve(catalog(enterprise ? 37 : 5));
-      case "vscode-chat":
+      case VSCODE_CHAT_INTEGRATION_ID:
+      case FOREIGN_ID:
         return Promise.resolve(
           new Response("Personal Access Tokens are not supported", { status: 400 }),
         );
@@ -129,7 +146,8 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
             name: COPILOT_SANDBOX_INTEGRATION_ID,
             verdict: { kind: "inconclusive", detail: "503 upstream", status: 503 },
           },
-          { name: "vscode-chat", verdict: rejected },
+          { name: VSCODE_CHAT_INTEGRATION_ID, verdict: rejected },
+          { name: FOREIGN_ID, verdict: rejected },
         ],
       },
       {
@@ -142,7 +160,8 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
             name: COPILOT_SANDBOX_INTEGRATION_ID,
             verdict: { kind: "inconclusive", detail: "network error: offline", status: null },
           },
-          { name: "vscode-chat", verdict: rejected },
+          { name: VSCODE_CHAT_INTEGRATION_ID, verdict: rejected },
+          { name: FOREIGN_ID, verdict: rejected },
         ],
       },
       {

@@ -57,6 +57,7 @@ import {
   pinnedIdentityCandidates,
   selectDirectIdentityAndHost,
   surveyIntegrationIdentities,
+  VSCODE_CHAT_INTEGRATION_ID,
 } from "../copilot_api/integration_identity.ts";
 import { CopilotApiPaths, profileHomeNames } from "../copilot_api/paths.ts";
 import {
@@ -792,10 +793,12 @@ export function parseIdentityChoice(raw: string): IdentityChoice {
 const IDENTITY_NOTES: Record<string, string> = {
   [CODEX_IDENTITY_NAME]: `the default: no ${INTEGRATION_ID_HEADER} header (auto only)`,
   [COPILOT_CLI_INTEGRATION_ID]: "GitHub Copilot CLI; accepts fine-grained PATs",
+  [VSCODE_CHAT_INTEGRATION_ID]: "copilot-api's former default",
 };
 
 /** The cell carries the verdict and a tag (status or "network error"); the full reason follows the
- *  table, so a 160-char rejection body never widens it. `mark` (`*`) says what is in use. */
+ *  table, so a 160-char rejection body never widens it. `mark` is `*` (in use) or `>` (the next
+ *  landing's pick). */
 function verdictCell(verdict: IdentityVerdict | undefined, mark = ""): string {
   if (verdict === undefined) return "-";
   const suffix = mark === "" ? "" : ` ${mark}`;
@@ -832,6 +835,19 @@ function sameOrigin(a: string, b: string): boolean {
   return URL.canParse(a) && URL.canParse(b) && new URL(a).origin === new URL(b).origin;
 }
 
+/** What the slot decides for this credential, resolved once where the pair is read (surveyAndTable)
+ *  so the table never re-derives it from the halves. */
+type SlotReading =
+  /** Both halves known: the pin over the stored identity, on the literal over the stored host;
+   *  what every Direct re-render bakes AND what a daemon launch sends. */
+  | { kind: "in-use"; identity: string }
+  /** No pin and nothing stored: the next landing selects afresh on the host in use, so its pick
+   *  (the first candidate accepted there, in probe order; null when none is) can be previewed. */
+  | { kind: "empty"; wouldPick: string | null }
+  /** One half known (a pin without a stored host, or a stored half whose overlay cleared): the
+   *  next landing probes again from the generic host, so there is no pick to preview here. */
+  | { kind: "half"; missing: "identity" | "host" };
+
 interface IdentityTableInput {
   /** Every row under the one header set every mode sends (directClientHeaders). */
   survey: IdentitySurvey;
@@ -843,12 +859,7 @@ interface IdentityTableInput {
   /** The host every request goes to: the literal, else the stored host, else the generic host
    *  a first probe starts on. */
   hostInUse: string;
-  /** THE identity in use for this credential: the pin over the slot's stored identity; what every
-   *  Direct re-render bakes AND what a daemon launch sends. Null = a half is still unknown (no pin
-   *  and no stored identity, or no literal and no stored host): the next Direct landing or daemon
-   *  start selects on the host in use and stores the probed halves, so nothing is marked until
-   *  then. */
-  inUse: string | null;
+  slot: SlotReading;
   /** A running daemon keeps the identity and host it launched with, so the mark is not what is
    *  being sent right now. */
   daemonRunning: boolean;
@@ -856,19 +867,24 @@ interface IdentityTableInput {
 }
 
 /** One column per host, one row per identity. `*` marks the one identity in use, on the host in
- *  use; the notes name what would move it. */
+ *  use, or `>` the next landing's pick while the slot is empty; the notes name what would move it. */
 function identityTableLines(input: IdentityTableInput): string[] {
   const width = terminalWidth();
-  const { survey, pinned, configuredHost, stored, hostInUse, inUse, daemonRunning } = input;
+  const { survey, pinned, configuredHost, stored, hostInUse, slot, daemonRunning } = input;
+  const inUse = slot.kind === "in-use" ? slot.identity : null;
+  const wouldPick = slot.kind === "empty" ? slot.wouldPick : null;
   const inUseColumn = survey.hosts.find((h) => sameOrigin(h.apiBase, hostInUse)) ?? null;
   const names = [...new Set(survey.hosts.flatMap((h) => h.verdicts.map((v) => v.name)))];
   const verdictOf = (column: IdentityHostSurvey, name: string): IdentityVerdict | undefined =>
     column.verdicts.find((v) => v.name === name)?.verdict;
+  const mark = (column: IdentityHostSurvey, name: string): string => {
+    if (column !== inUseColumn) return "";
+    if (inUse === name) return "*";
+    return wouldPick === name ? ">" : "";
+  };
   const rows = names.map((name) => [
     name,
-    ...survey.hosts.map((c) =>
-      verdictCell(verdictOf(c, name), c === inUseColumn && inUse === name ? "*" : "")
-    ),
+    ...survey.hosts.map((c) => verdictCell(verdictOf(c, name), mark(c, name))),
     IDENTITY_NOTES[name] ?? "",
   ]);
   // Every rejection behind a rendered cell.
@@ -889,6 +905,9 @@ function identityTableLines(input: IdentityTableInput): string[] {
   const landing = input.profile === null
     ? "`agent init`"
     : `\`agent profile --add ${input.profile} --direct\``;
+  const legend = "* = in use: the pin, else the slot's probed identity; what every Direct " +
+    "re-render bakes and a daemon launch sends, on the host in use" +
+    (wouldPick === null ? "" : "; > = would be picked by the next landing (nothing stored yet)");
   const notes = [
     ...(survey.designatedUnknown
       ? [
@@ -896,10 +915,15 @@ function identityTableLines(input: IdentityTableInput): string[] {
         "above were surveyed.",
       ]
       : []),
-    ...(inUse === null
+    ...(slot.kind === "empty"
       ? [
-        `Slot: a half is not probed yet; the next Direct landing (${landing}) or daemon start ` +
-        "probes on the host in use and stores the halves the probe answered.",
+        `Nothing stored yet for this profile: run ${landing} (or \`agent start${flag}\`) once; ` +
+        "it probes on the host in use and stores the identity and host it lands on.",
+      ]
+      : slot.kind === "half"
+      ? [
+        `The ${slot.missing} is not stored yet for this profile: run ${landing} (or ` +
+        `\`agent start${flag}\`) once; it probes and stores what it lands on.`,
       ]
       : pinned !== null && stored.integrationId !== undefined &&
           pinned !== (stored.integrationId ?? CODEX_IDENTITY_NAME)
@@ -928,12 +952,7 @@ function identityTableLines(input: IdentityTableInput): string[] {
       "",
       "  ",
     ),
-    ...wrapLine(
-      "* = in use: the pin, else the slot's probed identity; what every Direct re-render bakes and a daemon launch sends, on the host in use",
-      width,
-      "",
-      "  ",
-    ),
+    ...wrapLine(legend, width, "", "  "),
     ...formatTable(rows, {
       header: [
         "identity",
@@ -978,6 +997,20 @@ function withExtraCandidates(
   return [...builtins, ...extras];
 }
 
+/** The identity a landing on `hostInUse` would select from these verdicts: the first candidate
+ *  accepted there, in candidate order (probeIntegrationIdentity's rule). Null when none is. */
+function nextLandingPick(
+  survey: IdentitySurvey,
+  hostInUse: string,
+  candidates: readonly IntegrationIdentity[],
+): string | null {
+  const column = survey.hosts.find((h) => sameOrigin(h.apiBase, hostInUse));
+  if (column === undefined) return null;
+  const accepted = (name: string): boolean =>
+    column.verdicts.find((v) => v.name === name)?.verdict.kind === "accepted";
+  return candidates.find((c) => accepted(c.name))?.name ?? null;
+}
+
 async function surveyAndTable(
   profile: Profile,
   token: string,
@@ -991,9 +1024,6 @@ async function surveyAndTable(
   const stored = new CopilotEnvState().readProfileDirectPair(profile);
   const identity = pinned ?? stored.integrationId;
   const host = configuredHost ?? stored.host;
-  const inUse = identity === undefined || host === undefined
-    ? null
-    : identity ?? CODEX_IDENTITY_NAME;
   const hostInUse = host ?? DEFAULT_COPILOT_API_BASE;
   // Rows: the candidates in the one header set every mode sends, plus the pin and the stored
   // identity when they are not candidates (a pin lands them there), so the row the mark lands on
@@ -1007,6 +1037,17 @@ async function surveyAndTable(
     (id) => directIdentity(userAgent, id),
   );
   const survey = await surveyIntegrationIdentities(token, rows, { configuredHost: hostInUse });
+  // A pinned landing stores only the host and a landing under a literal only the identity, so a
+  // cleared overlay leaves ONE half: the next landing then re-selects from the generic host, not
+  // the host in use, and only the empty slot's pick is previewed.
+  const slot: SlotReading = identity !== undefined && host !== undefined
+    ? { kind: "in-use", identity: identity ?? CODEX_IDENTITY_NAME }
+    : pinned === null && stored.integrationId === undefined && stored.host === undefined
+    ? {
+      kind: "empty",
+      wouldPick: nextLandingPick(survey, hostInUse, identityCandidates(userAgent)),
+    }
+    : { kind: "half", missing: host === undefined ? "host" : "identity" };
   for (
     const line of identityTableLines({
       survey,
@@ -1014,7 +1055,7 @@ async function surveyAndTable(
       configuredHost,
       stored,
       hostInUse,
-      inUse,
+      slot,
       daemonRunning: trackedDaemonAlive(profile),
       profile,
     })

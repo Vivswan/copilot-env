@@ -21,6 +21,7 @@ import {
   DEFAULT_COPILOT_API_BASE,
   INTEGRATION_ID_HEADER,
   setIntegrationProbeFetch,
+  VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
 import { resolveLaunchCredential } from "../src/copilot_api/launch.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
@@ -148,6 +149,7 @@ test("a Direct wiring bakes the copilot-host into both agents' base URLs; detect
     { host: DEFAULT_COPILOT_API_BASE, id: null },
     { host: DEFAULT_COPILOT_API_BASE, id: COPILOT_CLI_INTEGRATION_ID },
     { host: DEFAULT_COPILOT_API_BASE, id: COPILOT_SANDBOX_INTEGRATION_ID },
+    { host: DEFAULT_COPILOT_API_BASE, id: VSCODE_CHAT_INTEGRATION_ID },
     { host: ENTERPRISE, id: null },
   ]);
   expect(codexBaseUrl(homes.codexHome)).toBe(ENTERPRISE);

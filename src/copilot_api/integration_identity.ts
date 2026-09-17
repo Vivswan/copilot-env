@@ -23,8 +23,9 @@ import { fetchModelCatalog, type ModelCatalogOutcome } from "./models_fetch.ts";
 
 /** The gating header. Its VALUES below are external contracts: never rename. */
 export const INTEGRATION_ID_HEADER = "Copilot-Integration-Id";
-/** copilot-api's own upstream identity (the VS Code Chat extension): never a candidate, since the
- *  daemon's preload replaces it; discovery still consults its catalog for unadvertised models. */
+/** The VS Code Chat extension's identity, copilot-api's own upstream default before the daemon's
+ *  preload replaced it; the last candidate, and discovery consults its catalog for unadvertised
+ *  models. */
 export const VSCODE_CHAT_INTEGRATION_ID = "vscode-chat";
 /** GitHub Copilot CLI's identity, the one verified to accept fine-grained PATs. */
 export const COPILOT_CLI_INTEGRATION_ID = "copilot-developer-cli";
@@ -130,7 +131,9 @@ export function daemonClientHeaders(
 /**
  * THE candidate list, one for every mode, in probe order: the codex identity (no id header) first,
  * since it is the set the widest catalog was verified under, then the CLI and sandbox ids that
- * accept credentials the codex set refuses (a fine-grained PAT). `userAgent` rides in as a parameter
+ * accept credentials the codex set refuses (a fine-grained PAT), and copilot-api's former default
+ * last, for a credential the three others reject. The order is fixed: a later candidate is reached
+ * only once every earlier one has answered without a 2xx. `userAgent` rides in as a parameter
  * because this module must not import the codex layer: callers pass either the detected
  * codexUserAgent() or the version-free CODEX_EXEC_USER_AGENT (web_search.ts).
  */
@@ -141,6 +144,7 @@ export function identityCandidates(
     { name: CODEX_IDENTITY_NAME, headers: directClientHeaders(userAgent) },
     directIdentity(userAgent, COPILOT_CLI_INTEGRATION_ID),
     directIdentity(userAgent, COPILOT_SANDBOX_INTEGRATION_ID),
+    directIdentity(userAgent, VSCODE_CHAT_INTEGRATION_ID),
   ];
 }
 

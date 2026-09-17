@@ -82,11 +82,11 @@ test("runShell reports the launchers key on a wire and never writes it", () => {
   }) as typeof consola.info;
   try {
     runShell({});
-    expect(lines.at(-1)).toContain("Launchers: disabled (the launchers config key)");
-    expect(new CopilotEnvConfig().read().launchers).toBeUndefined();
-    new CopilotEnvConfig().set({ launchers: true });
+    expect(lines.at(-1)).toContain("Launchers: disabled (the shell.launchers config key)");
+    expect(new CopilotEnvConfig().read().global["shell.launchers"]).toBeUndefined();
+    new CopilotEnvConfig().set({ "shell.launchers": true });
     runShell({});
-    expect(lines.at(-1)).toContain("Launchers: enabled (the launchers config key)");
+    expect(lines.at(-1)).toContain("Launchers: enabled (the shell.launchers config key)");
     runShell({ remove: true }); // the unwire is the rc block's; the key is the user's
     expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
   } finally {

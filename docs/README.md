@@ -19,7 +19,7 @@ copilot-env points the Codex and Claude CLIs at GitHub Copilot, either through a
 | Give Claude Code web search on Direct, or register the MCP server elsewhere | [Usage: web search for Claude Code](usage.md#web-search-for-claude-code)                 |
 | See what I spent, and what the usage index stores                           | [Usage: cost reporting](usage.md#cost-reporting)                                         |
 | Look up any `agent config` key and its default                              | [Configuration](configuration.md)                                                        |
-| Change a proxy-side setting and know when it applies                        | [Configuration: proxy features](configuration.md#proxy-features)                         |
+| Change a proxy-side setting and know when it applies                        | [Configuration: proxy features](configuration.md#proxy)                                  |
 | Give Codex Copilot's real context windows                                   | [Configuration: Codex model catalog](configuration.md#codex-model-catalog)               |
 | Keep one `CODEX_HOME` per host                                              | [Configuration: per-host CODEX_HOME](configuration.md#per-host-codex_home)               |
 | Wire Claude Desktop, or see which files it touches                          | [Configuration: Claude Desktop](configuration.md#claude-desktop)                         |

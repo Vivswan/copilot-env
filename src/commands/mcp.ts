@@ -76,10 +76,10 @@ function printStatus(): void {
   logger.log(`  (${path})`);
   // One accessor, so value and provenance come from the same config read.
   const wireMcp = new CopilotEnvConfig().wireMcpResolved();
-  logger.log(`wire-mcp: ${wireMcp.value} (${wireMcp.source})`);
+  logger.log(`claude.wire-mcp: ${wireMcp.value} (${wireMcp.source})`);
   logger.log("");
   logger.log("agent mcp --serve   run the MCP stdio server (what registered clients spawn)");
-  logger.log("agent mcp --remove  unregister from Claude Code and opt out (wire-mcp false)");
+  logger.log("agent mcp --remove  unregister from Claude Code and opt out (claude.wire-mcp false)");
   logger.log("rewire: `agent claude --direct` or `agent init`");
 }
 
@@ -93,21 +93,21 @@ export async function runMcp(args: McpArgs): Promise<void> {
     await runMcpServer({ profile: action.profile, model: action.model });
     return;
   }
-  // `wire-mcp false` is stored first so a later direct write respects it; the deny and the
+  // `claude.wire-mcp false` is stored first so a later direct write respects it; the deny and the
   // registration then go together, since lifting the deny alone would leave a direct-wired machine
   // with no search path. The registration is machine-global, so it goes even when settings.json is
   // foreign and the sync leaves that file's deny alone.
-  new CopilotEnvConfig().set({ wireMcp: false });
+  new CopilotEnvConfig().set({ "claude.wire-mcp": false });
   syncDefaultWebSearchWiring(resolveClaudeHome());
   const unregistered = removeClaudeMcpRegistration();
   if (unregistered) {
     logger.log(
       "Removed the copilot-env MCP registration (and the managed WebSearch deny where " +
-        "copilot-env manages settings.json); stored `wire-mcp false` so direct rewires stay opted out.",
+        "copilot-env manages settings.json); stored `claude.wire-mcp false` so direct rewires stay opted out.",
     );
   } else {
     logger.warn(
-      "Stored `wire-mcp false`, but the 'copilot-env' entry in Claude's .claude.json was not " +
+      "Stored `claude.wire-mcp false`, but the 'copilot-env' entry in Claude's .claude.json was not " +
         "removed (not ours, or the file could not be written) - remove it by hand if needed.",
     );
   }

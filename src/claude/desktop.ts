@@ -1198,7 +1198,7 @@ export function removeAllClaudeDesktopWiring(
   for (const path of artifacts.helpers) removeReported(path);
 }
 
-/** The `claude-desktop false` sweep. Fail closed: only a claim POSITIVELY attributed to a named
+/** The `claude.desktop false` sweep. Fail closed: only a claim POSITIVELY attributed to a named
  *  profile goes, since anything else may be the default's. Listed entries and unlisted leftovers
  *  are judged by their document alike.
  *
@@ -1270,7 +1270,7 @@ function announceUnmanagedDefault(): void {
     } catch {
       continue;
     }
-    logger.info(`  Claude Desktop: ${label} left in place, unmanaged (claude-desktop false).`);
+    logger.info(`  Claude Desktop: ${label} left in place, unmanaged (claude.desktop false).`);
   }
 }
 

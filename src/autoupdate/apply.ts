@@ -17,6 +17,7 @@
 import { spawnSync, type StdioOptions } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { configDelCommand } from "../copilot_api/env_config.ts";
 import { consola } from "consola";
 
 import {
@@ -90,7 +91,7 @@ export type ProvenanceDecision =
   | { kind: "verify"; verifier?: ProvenanceVerifier }
   | { kind: "skip"; via: "--no-verify" | "verify-provenance" };
 
-/** flag (`--verify` / `--no-verify`) > the resolved `verify-provenance` config
+/** flag (`--verify` / `--no-verify`) > the resolved `update.verify-provenance` config
  *  (stored value, else its default: verify). */
 export function resolveProvenanceDecision(
   flag: boolean | undefined,
@@ -272,8 +273,8 @@ async function attest(
     logger.warn(
       decision.via === "--no-verify"
         ? "Skipping build-provenance verification (--no-verify)."
-        : "Skipping build-provenance verification (verify-provenance is false; " +
-          "`agent config --del verify-provenance` restores it).",
+        : "Skipping build-provenance verification (update.verify-provenance is false; " +
+          `\`${configDelCommand("update.verify-provenance")}\` restores it).`,
     );
     return { path: verified.path, sha256: verified.sha256 } as Attested;
   }

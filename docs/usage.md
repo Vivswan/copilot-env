@@ -84,11 +84,11 @@ The rc file and profile it edits are in the [wiring write list](getting-started.
 
 ### Launchers
 
-The `cl` / `co` / `cx` launchers are opt-in shell functions over `agent launch`. They follow the `launchers` config key:
+The `cl` / `co` / `cx` launchers are opt-in shell functions over `agent launch`. They follow the `shell.launchers` config key:
 
 ```bash
-agent config --set launchers true
-agent config --set launchers false
+agent config --set shell.launchers true
+agent config --set shell.launchers false
 ```
 
 - `cl` (`agent launch claude`) reads the configured Claude provider. For proxy-backed or unconfigured setups it starts the proxy, re-syncing port and token, then runs Claude.
@@ -111,16 +111,16 @@ Each has a more-permissive variant that adds the agent's most-relaxed flag (`age
 By default you manage the proxy yourself with `agent start` / `agent stop`. Opt in to the managed lifecycle instead:
 
 ```bash
-agent config --set auto-start true
+agent config --set daemon.auto-start true
 ```
 
-With `auto-start` on:
+With `daemon.auto-start` on:
 
 - **Auto-start:** whenever Codex, Claude, or the `cl` / `cx` launchers need a downed proxy, the shared credential resolver starts it. No manual `agent start`.
 - **Idle auto-stop:** a watchdog inside the daemon stops the proxy after an idle window. Inference requests and session heartbeats count as activity; health and liveness pings never do.
-- **Window:** `agent config --set idle-timeout <seconds>` ([default and the `0` case](configuration.md#proxy-daemon)) or the [`COPILOT_API_IDLE_TIMEOUT`](configuration.md#environment-overrides) env var.
+- **Window:** `agent config --set daemon.idle-timeout <seconds>` ([default and the `0` case](configuration.md#daemon)) or the [`COPILOT_API_IDLE_TIMEOUT`](configuration.md#environment-overrides) env var.
 
-With `auto-start` off, the launchers prompt before starting a downed proxy. Headless callers, such as the Codex and Claude config hooks, never start it implicitly.
+With `daemon.auto-start` off, the launchers prompt before starting a downed proxy. Headless callers, such as the Codex and Claude config hooks, never start it implicitly.
 
 ## Health checks
 
@@ -151,13 +151,13 @@ The pair is opt-out:
 
 ```bash
 agent mcp --remove                  # unregister + restore the builtin + remember the opt-out
-agent config --set wire-mcp true    # opt back in (applies on the next direct wiring)
+agent config --set claude.wire-mcp true    # opt back in (applies on the next direct wiring)
 ```
 
-The search model follows the [`message-websearch-model`](configuration.md#proxy-features) key, shared with the proxy; when a change applies to each is on that page:
+The search model follows the [`proxy.message-websearch-model`](configuration.md#proxy) key, shared with the proxy; when a change applies to each is on that page:
 
 ```bash
-agent config --set message-websearch-model gpt-5.6-sol   # one override, both surfaces
+agent config --set proxy.message-websearch-model gpt-5.6-sol   # one override, both surfaces
 ```
 
 The server is client-agnostic. Register it in Cursor or any other MCP client by pointing at the launcher. Codex itself needs no MCP for search, since it speaks the Responses API natively.
@@ -181,7 +181,7 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
 
 ## Cost reporting
 
-`agent cost` prices the proxy's usage DBs plus the Codex and Claude session logs at public OpenRouter rates ([`pricing-url`](configuration.md#cost)). Re-parsing every log on each run is slow, so the readers keep a usage index.
+`agent cost` prices the proxy's usage DBs plus the Codex and Claude session logs at public OpenRouter rates ([`cost.pricing-url`](configuration.md#cost)). Re-parsing every log on each run is slow, so the readers keep a usage index.
 
 - **What it stores:** per-file facts only. The path, size, mtime, how far it was parsed, and its contribution (token counts, timestamps, model names, hashed dedup keys).
 - **What it never stores:** message text or any other session content.
@@ -190,4 +190,4 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
 - **Also there:** the one thing that IS cached, the public OpenRouter price list (`pricing-*.json`, 24-hour TTL). `agent uninstall` removes both.
 - **Verify it:** `agent cost --no-index` parses every file from scratch.
 
-`agent credits` reports this month's Copilot AI credits: spent, projected, and paced against the plan and the optional [`credits-target`](configuration.md#cost). It is one live read of GitHub's meter; nothing local.
+`agent credits` reports this month's Copilot AI credits: spent, projected, and paced against the plan and the optional [`cost.credits-target`](configuration.md#cost). It is one live read of GitHub's meter; nothing local.

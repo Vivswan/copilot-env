@@ -82,8 +82,8 @@ export async function resolveAndPersistDirectWiring(
   const config = new CopilotEnvConfig();
   const state = new CopilotEnvState();
   const slot = state.readProfileSlot(profile);
-  const pin = config.pinnedIntegrationId();
-  const literal = config.copilotHost();
+  const pin = config.pinnedIntegrationId(profile);
+  const literal = config.copilotHost(profile);
   const rule = replayableIdentity(profile, pin, literal);
   if (rule.kind === "replay") {
     return { directIntegrationId: rule.directIntegrationId, directBaseUrl: rule.directBaseUrl };

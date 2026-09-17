@@ -1,6 +1,7 @@
 // Pure evaluators: HealthFacts -> CheckResult[]. No I/O -- every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
 import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
+import { configGetCommand, configSetCommand } from "../copilot_api/env_config.ts";
 import { compareDenoVersions, SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
 import { agentStartCommand, type ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
@@ -305,7 +306,7 @@ export function checkRuntimePort(f: RuntimeTarget, p: DaemonProbeFacts): CheckRe
     return {
       ...base,
       status: "ok",
-      detail: `proxy not running on port ${f.port}; starts on demand (auto-start on)`,
+      detail: `proxy not running on port ${f.port}; starts on demand (daemon.auto-start on)`,
       value: { port: f.port, reachable: p.reachable, autoStart: true },
     };
   }
@@ -352,7 +353,7 @@ export function checkRuntimePid(f: RuntimeTarget, p: DaemonProbeFacts): CheckRes
     return {
       ...base,
       status: "ok",
-      detail: `${detail}; starts on demand (auto-start on)`,
+      detail: `${detail}; starts on demand (daemon.auto-start on)`,
       value: { pid: p.trackedPid, tracked, alive: p.pidAlive, autoStart: true, ...scanNote },
     };
   }
@@ -397,14 +398,14 @@ export function checkRuntimeWatchdog(f: RuntimeTarget): CheckResult {
   if (!w.autoStart) {
     return {
       ...base,
-      detail: "off (auto-start false) -- no auto-start, no auto-stop",
+      detail: "off (daemon.auto-start false) -- no auto-start, no auto-stop",
       value: { autoStart: false },
     };
   }
   if (w.idleTimeoutMs <= 0) {
     return {
       ...base,
-      detail: "on; idle auto-stop disabled (idle-timeout 0) -- stays up until `agent stop`",
+      detail: "on; idle auto-stop disabled (daemon.idle-timeout 0) -- stays up until `agent stop`",
       value: { autoStart: true, idleTimeoutMs: 0 },
     };
   }
@@ -761,13 +762,13 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
     ? {
       ...base,
       status: "ok",
-      detail: "enabled (the `launchers` config key; `agent env` defines them)",
+      detail: "enabled (the `shell.launchers` config key; `agent env` defines them)",
     }
     : {
       ...base,
       status: "warn",
       detail: "not enabled (optional)",
-      fix: "agent config --set launchers true",
+      fix: configSetCommand("shell.launchers", "true"),
     };
 }
 
@@ -834,7 +835,9 @@ export function checkAuth(f: AuthFacts): CheckResult {
   // A pin overrides the per-credential identity probe: the knob a fine-grained PAT needs
   // (copilot-developer-cli) when auto-detection is off.
   const identityLine = f.pinnedIntegrationId === null ? [] : [
-    `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`agent config integration-id\`)`,
+    `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`${
+      configGetCommand("identity")
+    }\`)`,
   ];
   const base = {
     ...meta("setup.auth"),
@@ -931,7 +934,7 @@ export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
   // fact per line so the report renders them as `-` sub-items.
   const last = f.lastCheckMs > 0 ? new Date(f.lastCheckMs).toISOString() : "never";
   const detail = [
-    `status: ${f.enabled ? "enabled" : "disabled"} (the auto-update config key)`,
+    `status: ${f.enabled ? "enabled" : "disabled"} (the update.auto config key)`,
     `cooldown ${f.cooldownDays}d`,
     `last check ${last}`,
     `last result: ${f.lastResult || "(none)"}`,

@@ -1,4 +1,4 @@
-// The whole-library Claude Desktop reconcile behind the `claude-desktop` key, and the
+// The whole-library Claude Desktop reconcile behind the `claude.desktop` key, and the
 // status `agent claude --check` and health judge. Cross-agent: the default entry's mode
 // comes from settings.json (src/agents/wiring.ts), the profiles' from the store.
 import {
@@ -61,11 +61,11 @@ export function resolveClaudeDesktopTargets(): DesktopTargetResolution {
 export function claudeDesktopStatus(): ClaudeDesktopStatus {
   // The preference is read on its own first, so a later failed look still reports the
   // configured value (health publishes it), not an assumed one.
-  let enabled = configDefaultBoolean("claude-desktop");
+  let enabled = configDefaultBoolean("claude.desktop");
   try {
     enabled = new CopilotEnvConfig().claudeDesktopEnabled();
   } catch (e) {
-    return unjudged(enabled, `the claude-desktop preference could not be read (${errMessage(e)})`);
+    return unjudged(enabled, `the claude.desktop preference could not be read (${errMessage(e)})`);
   }
   try {
     return inspectClaudeDesktopWiring(resolveClaudeDesktopTargets());

@@ -2,7 +2,7 @@ import { consola } from "consola";
 import { type PreflightOptions, runPreflight } from "../autoupdate/preflight.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   applyDefaultConfig,
   awaitReadiness,
@@ -169,11 +169,12 @@ function reportManagedLifecycle(state: CopilotEnvRunState): void {
   if (idleMs > 0) {
     consola.info(
       `Managed lifecycle on: auto-stops after ${formatDuration(idleMs)} idle ` +
-        "(`agent config --set idle-timeout 0` disables auto-stop; `auto-start false` keeps it up).",
+        `(\`${configSetCommand("daemon.idle-timeout", "0")}\` disables auto-stop; ` +
+        `\`${configSetCommand("daemon.auto-start", "false")}\` keeps it up).`,
     );
   } else {
     consola.info(
-      "Managed lifecycle on (auto-start); idle auto-stop disabled (idle-timeout 0) -- " +
+      "Managed lifecycle on (daemon.auto-start); idle auto-stop disabled (daemon.idle-timeout 0) -- " +
         "the proxy stays up until `agent stop`.",
     );
   }
@@ -234,7 +235,7 @@ async function reportStartSummary(
         "",
         "  • Launch an agent:  `cl` (Claude) / `cx` (Codex) / `co` (Copilot)",
         "    ...or run `claude` / `codex` directly.",
-        "  • Enable those launchers:  `agent config --set launchers true`",
+        `  • Enable those launchers:  \`${configSetCommand("shell.launchers", "true")}\``,
         "  • `agent cost` reports proxy usage  ·  `agent stop` stops the proxy.",
       ].join("\n")
       : [
@@ -349,8 +350,10 @@ async function launchUnderLock(
   }
 
   mkdirReported(paths.home);
-  applyDefaultConfig(ctx.paths, ctx.envConfig);
-  for (const warning of unreadProjectedKeyWarnings(ctx.envConfig, entryProxyVersion(entry))) {
+  applyDefaultConfig(profile, ctx.paths, ctx.envConfig);
+  for (
+    const warning of unreadProjectedKeyWarnings(ctx.envConfig, entryProxyVersion(entry), profile)
+  ) {
     consola.warn(warning);
   }
   await cleanupExistingProxies(lock, profile, ctx.state);

@@ -607,7 +607,7 @@ function stageFarm(root: string): string {
   const previousHome = process.env.COPILOT_API_HOME;
   process.env.COPILOT_API_HOME = join(root, "api-home"); // the store resolves from env
   try {
-    new CopilotEnvConfig().set({ codexHost: true });
+    new CopilotEnvConfig().set({ "codex.host": true });
   } finally {
     process.env.COPILOT_API_HOME = previousHome;
   }

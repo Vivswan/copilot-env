@@ -65,7 +65,7 @@ export interface CostArgs {
   days?: string;
   json?: boolean;
   perDay?: boolean;
-  /** Unset defers to the `pricing-url` config key. */
+  /** Unset defers to the `cost.pricing-url` config key. */
   pricingUrl?: string;
   sources?: boolean;
   /** The usage index is neither opened nor written. */
@@ -139,7 +139,7 @@ export class ReconcileMeter {
   }
 }
 
-/** Flag, else the stored `pricing-url` key, else the built-in (the accessor folds the last two). */
+/** Flag, else the stored `cost.pricing-url` key, else the built-in (the accessor folds the last two). */
 export function resolvePricingUrl(
   flag: string | undefined,
   config: CopilotEnvConfig = new CopilotEnvConfig(),

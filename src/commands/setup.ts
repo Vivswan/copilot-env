@@ -2,7 +2,7 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { dirname } from "node:path";
 import { consola } from "consola";
 import { AGENT_CLIS } from "../agents/clis.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { runShellIntegration } from "../shell/integration.ts";
 import { pickAgedVersion } from "../utils/aged_version.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -23,7 +23,7 @@ const NODE_PROBE_COMMAND = process.platform === "win32" ? NPM_COMMAND : "node";
 /** Distinct from the autoupdate release cooldown, which happens to share the number. */
 export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
 
-/** The cl/co/cx launchers belong to the `launchers` config key (`agent env` emits them); a wire
+/** The cl/co/cx launchers belong to the `shell.launchers` config key (`agent env` emits them); a wire
  *  only reports that state. */
 export interface ShellArgs {
   remove?: boolean;
@@ -496,7 +496,9 @@ export function runShell(args: ShellArgs): void {
   runShellIntegration({ kind: "wire", allHosts: action.allHosts });
   consola.info(
     new CopilotEnvConfig().launchersEnabled()
-      ? "Launchers: enabled (the launchers config key) - cl / co / cx (+ clx / cox / cxx) load via `agent env`."
-      : "Launchers: disabled (the launchers config key) - `agent config --set launchers true` defines cl / co / cx.",
+      ? "Launchers: enabled (the shell.launchers config key) - cl / co / cx (+ clx / cox / cxx) load via `agent env`."
+      : `Launchers: disabled (the shell.launchers config key) - \`${
+        configSetCommand("shell.launchers", "true")
+      }\` defines cl / co / cx.`,
   );
 }

@@ -74,13 +74,13 @@ export async function fetchRawModels(
   const token = resolved.token;
   // Either selector pairs the CONSUMER's identity with the one host it was accepted on
   // (select*IdentityAndHost): a configured pin wins, a non-PAT token takes its default unprobed,
-  // only a PAT is probed; a caller's host or the `copilot-host` literal fixes the host, else `auto`
+  // only a PAT is probed; a caller's host or the `host` literal fixes the host, else `auto`
   // resolves it under the consumer's exact header set. Narration goes to stderr: `agent auth --get`
   // runs this fetch and its stdout is the token.
   const config = new CopilotEnvConfig();
   const selectOpts: IdentityAndHostOptions = {
-    pinned: config.pinnedIntegrationId(),
-    fixedHost: opts.apiBase ?? config.copilotHost(),
+    pinned: config.pinnedIntegrationId(profile),
+    fixedHost: opts.apiBase ?? config.copilotHost(profile),
     fetchImpl: opts.fetchImpl,
     signal: opts.signal,
     narrator: createStderrLogger(),

@@ -1,5 +1,5 @@
 // launchDaemon runs the proxy with `--verbose`, whose handler loggers dump every payload under
-// <home>/logs (gigabytes a week). Loaded when the `proxy-logs` key is false
+// <home>/logs (gigabytes a week). Loaded when the `daemon.logs` key is false
 // (src/copilot_api/launch.ts decides), this swaps a discard sink into `fs.createWriteStream` for
 // that directory so the files are never created.
 //

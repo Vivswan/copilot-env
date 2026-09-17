@@ -346,7 +346,7 @@ describe("applyUpdate", () => {
     expect((err as Error).message).toContain("cannot verify the build provenance of v9.9.9");
     expect((err as Error).message).toContain("attestation.json could not be fetched");
     expect((err as Error).message).toContain("--no-verify");
-    expect((err as Error).message).toContain("agent config --set verify-provenance false");
+    expect((err as Error).message).toContain("agent config --set update.verify-provenance false");
     expect(verifierCalls).toBe(0);
     expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
     expect(stagingDirs()).toEqual([]);
@@ -385,8 +385,8 @@ describe("applyUpdate", () => {
 
     expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
     expect(warns).toHaveLength(1);
-    expect(warns[0]).toContain("verify-provenance is false");
-    expect(warns[0]).toContain("agent config --del verify-provenance");
+    expect(warns[0]).toContain("update.verify-provenance is false");
+    expect(warns[0]).toContain("agent config --del update.verify-provenance");
   });
 
   skipWin("stages, provisions inside the version root, then commits the flip", async () => {

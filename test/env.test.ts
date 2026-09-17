@@ -168,7 +168,7 @@ test("env does not unset a CODEX_HOME the user pointed elsewhere", () => {
 test("env exports a `codex-home` path on every platform, quietly", () => {
   isolate();
   const root = join(dir, "explicit-root");
-  new CopilotEnvConfig().set({ codexHome: root });
+  new CopilotEnvConfig().set({ "codex.home": root });
   expect(stderrDuring(() => expect(envLines()).toEqual([`export CODEX_HOME='${root}'`]))).toBe("");
 });
 
@@ -177,7 +177,7 @@ skipWin(
   () => {
     isolate();
     const root = join(dir, "explicit-root");
-    new CopilotEnvConfig().set({ codexHome: root, codexHost: true });
+    new CopilotEnvConfig().set({ "codex.home": root, "codex.host": true });
     const hostHome = getHostLocalCodexHome();
     expect(hostHome.startsWith(`${root}/`)).toBe(true);
     // Not built yet: the farm is exported all the same (the next `agent codex` builds it), and the
@@ -214,7 +214,7 @@ skipWin(
     process.env.CODEX_HOME = hostHome;
     expect(envLines()).toEqual(["unset CODEX_HOME"]);
     delete process.env.CODEX_HOME;
-    new CopilotEnvConfig().set({ codexHost: true });
+    new CopilotEnvConfig().set({ "codex.host": true });
     const exported = [`export CODEX_HOME='${hostHome}'`];
     expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toBe("");
     // Wired but not recorded (no managed write succeeded there yet), half-built, or gone: still the
@@ -236,7 +236,7 @@ skipWin(
   () => {
     isolate();
     const hostHome = getHostLocalCodexHome();
-    new CopilotEnvConfig().set({ codexHost: true });
+    new CopilotEnvConfig().set({ "codex.host": true });
     let stdout: string[] = ["unset"];
     const stderr = stderrDuring(() => {
       stdout = envLines();
@@ -250,7 +250,7 @@ skipWin(
     // cleared at once, quietly.
     process.env.CODEX_HOME = hostHome;
     expect(stderrDuring(() => expect(envLines()).toEqual(stdout))).toContain("farm is missing");
-    new CopilotEnvConfig().set({ codexHost: false });
+    new CopilotEnvConfig().set({ "codex.host": false });
     expect(stderrDuring(() => expect(envLines()).toEqual(["unset CODEX_HOME"]))).toBe("");
   },
 );
@@ -259,13 +259,13 @@ skipWin(
   "cli env with codex-host on but no farm exits 0 with ONLY the export on stdout (the eval contract); the warning rides on stderr",
   () => {
     isolate();
-    new CopilotEnvConfig().set({ codexHost: true });
+    new CopilotEnvConfig().set({ "codex.host": true });
     const proc = runCli(["env"], {
       env: { ...process.env, ...childBaseEnv(), CONSOLA_LEVEL: "5" },
     });
     expect(proc.exitCode).toBe(0);
     expect(proc.stdout).toBe(`export CODEX_HOME='${getHostLocalCodexHome()}'\n`);
-    expect(proc.stderr).toContain("codex-host is on but the per-host CODEX_HOME farm is missing");
+    expect(proc.stderr).toContain("codex.host is on but the per-host CODEX_HOME farm is missing");
   },
 );
 
@@ -296,9 +296,9 @@ test("launcherFunctionLines pins both platform flavors, feature-matched", () => 
 test("env emits the launcher functions only when the launchers config key is on", () => {
   isolate();
   expect(envLines()).toEqual([]); // default: opt-in, so nothing is defined
-  new CopilotEnvConfig().set({ launchers: true });
+  new CopilotEnvConfig().set({ "shell.launchers": true });
   expect(envLines()).toEqual(POSIX_LAUNCHER_LINES);
-  new CopilotEnvConfig().set({ launchers: false });
+  new CopilotEnvConfig().set({ "shell.launchers": false });
   expect(envLines()).toEqual([]); // stored false stays off, same as unset
 });
 

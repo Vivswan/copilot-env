@@ -151,14 +151,17 @@ export function inspectClaudeDesktopWiring(
     return { ...base, kind: "unjudged", reason: resolution.reason };
   }
   const rootHome = resolveRootHome();
-  // Desktop follows Claude's scope, read once for the whole pass: a rewire of any target would
+  // Desktop follows Claude's scope, resolved per target's profile: a rewire of that target would
   // bake this shape.
-  const credential: CredentialWiring["kind"] = new CopilotEnvConfig().staticKeyFor("claude")
-    ? "static"
-    : "command";
+  const config = new CopilotEnvConfig();
   status.entries = resolution.targets.map((t) => ({
     ...t,
-    verdict: entryVerdict(judged, t, rootHome, credential),
+    verdict: entryVerdict(
+      judged,
+      t,
+      rootHome,
+      config.staticKeyFor("claude", t.profile) ? "static" : "command",
+    ),
   }));
   const wanted = new Set(resolution.targets.map((t) => t.profile));
   status.orphans = status.owned.filter((e) => e.profile === undefined || !wanted.has(e.profile));
@@ -300,9 +303,9 @@ function expectedDirectGateway(profile: Profile, gateway: unknown): string {
  *  carries stands as expected. */
 function expectedIntegrationId(profile: Profile, doc: Record<string, unknown>): string | null {
   const config = new CopilotEnvConfig();
-  const pin = config.pinnedIntegrationId();
+  const pin = config.pinnedIntegrationId(profile);
   if (pin !== null) return pin;
-  const rule = replayableIdentity(profile, null, config.copilotHost());
+  const rule = replayableIdentity(profile, null, config.copilotHost(profile));
   return rule.kind === "replay"
     ? rule.directIntegrationId
     : recordedHeader(doc, INTEGRATION_ID_HEADER);
@@ -342,10 +345,10 @@ export function renderClaudeDesktopStatus(
     const unlisted = status.kind === "inspected" ? status.unlisted : [];
     const unmanaged = [
       ...owned.filter((e) => e.profile === null).map((e) =>
-        `"${e.name}" present at ${e.path}, unmanaged (claude-desktop false)`
+        `"${e.name}" present at ${e.path}, unmanaged (claude.desktop false)`
       ),
       ...unlisted.filter((c) => c.profile === null).map((c) =>
-        `${c.path} present but not listed in ${META_FILENAME}, unmanaged (claude-desktop false)`
+        `${c.path} present but not listed in ${META_FILENAME}, unmanaged (claude.desktop false)`
       ),
     ];
     // A claim of unknown wiring is one the key-off sweep deliberately keeps (it may be the
@@ -359,7 +362,7 @@ export function renderClaudeDesktopStatus(
     ];
     if (left.length === 0 && unknown.length === 0) {
       return {
-        lines: [...unmanaged, "disabled (claude-desktop false); no copilot-env leftovers present"],
+        lines: [...unmanaged, "disabled (claude.desktop false); no copilot-env leftovers present"],
         fix: null,
       };
     }
@@ -368,14 +371,14 @@ export function renderClaudeDesktopStatus(
       ...(left.length > 0 ? ["agent claude"] : []),
       ...(unknown.length > 0
         ? [
-          "for the entries of unknown wiring: set claude-desktop true and re-run `agent claude` (it removes them as orphans), or `agent uninstall`",
+          "for the entries of unknown wiring: set claude.desktop true and re-run `agent claude` (it removes them as orphans), or `agent uninstall`",
         ]
         : []),
     ];
     return {
       lines: [
         ...unmanaged,
-        `disabled (claude-desktop false), but ${total} copilot-env leftover${
+        `disabled (claude.desktop false), but ${total} copilot-env leftover${
           total === 1 ? " remains" : "s remain"
         } (files or ownership claims)`,
         ...left,

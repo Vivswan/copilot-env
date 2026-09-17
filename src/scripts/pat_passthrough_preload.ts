@@ -26,7 +26,7 @@ function tokenFromArgv(): string | null {
 }
 
 /** The hosts that gate on the integration id: api., api.business., api.enterprise., plus the
- *  `copilot-host` origin the daemon is pinned to (a GHE Copilot host lives off githubcopilot.com).
+ *  `host` origin the daemon is pinned to (a GHE Copilot host lives off githubcopilot.com).
  *  Exported for tests; importing without `--github-token` in argv installs nothing. */
 export function isCopilotApiHost(url: string, configuredHost: string | null = null): boolean {
   try {

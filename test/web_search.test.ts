@@ -188,7 +188,7 @@ test("webSearch: a host `auto` moved to re-selects the identity there before the
 test("webSearch sends the pinned integration id without probing", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
-  new CopilotEnvConfig().set({ integrationId: "copilot-developer-cli" });
+  new CopilotEnvConfig().setProfile(null, { identity: "copilot-developer-cli" });
   const stub = fetchStub([hostProbeOk(), okJson(responsesFixture())]);
 
   await webSearch("q", { fetchImpl: stub.fetchImpl });
@@ -214,7 +214,7 @@ const RESPONSES_URL = "https://api.githubcopilot.com/responses";
 test("webSearch model precedence: explicit beats stored beats built-in default", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
-  new CopilotEnvConfig().set({ messageApiWebSearchModel: "stored-model" });
+  new CopilotEnvConfig().set({ "proxy.message-websearch-model": "stored-model" });
 
   // A configured model consults the live catalog first (alias resolution); an
   // unknown value passes through to the POST unchanged.
@@ -235,7 +235,7 @@ test("webSearch model precedence: explicit beats stored beats built-in default",
 test("webSearch resolves catalog aliases for the stored model (the proxy's semantics)", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
-  new CopilotEnvConfig().set({ messageApiWebSearchModel: "gpt-latest" });
+  new CopilotEnvConfig().set({ "proxy.message-websearch-model": "gpt-latest" });
   const stub = fetchStub([hostProbeOk(), okJson(catalogFixture()), okJson(responsesFixture())]);
 
   await webSearch("q", { fetchImpl: stub.fetchImpl });
@@ -264,7 +264,7 @@ test("webSearch resolves aliases for the explicit --model flag too", async () =>
 test("webSearch sends the raw value when the catalog fetch fails (best-effort)", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
-  new CopilotEnvConfig().set({ messageApiWebSearchModel: "gpt-latest" });
+  new CopilotEnvConfig().set({ "proxy.message-websearch-model": "gpt-latest" });
   const stub = fetchStub([
     hostProbeOk(),
     new Response("nope", { status: 500, statusText: "Internal Server Error" }),
@@ -293,7 +293,7 @@ test("the alias catalog is memoized per token, and a failed fetch is retried", a
   // must not stick) and the single shared fetch across subsequent calls.
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
-  new CopilotEnvConfig().set({ messageApiWebSearchModel: "gpt-latest" });
+  new CopilotEnvConfig().set({ "proxy.message-websearch-model": "gpt-latest" });
   const responses = [
     hostProbeOk(), // the host probe, memoized for the two calls after
     new Response("nope", { status: 500, statusText: "Internal Server Error" }), // catalog: fails
@@ -417,7 +417,7 @@ test("a cancelled call stops waiting for the alias catalog fetch too", async () 
   // webSearch; a hanging catalog fetch must not outlive the client's cancellation.
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
-  new CopilotEnvConfig().set({ messageApiWebSearchModel: "gpt-latest" });
+  new CopilotEnvConfig().set({ "proxy.message-websearch-model": "gpt-latest" });
   const neverFetch = () => new Promise<Response>(() => {});
 
   const reasoned = new AbortController();

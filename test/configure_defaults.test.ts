@@ -172,7 +172,7 @@ test("static-key scopes the baked value to the named agent; the other keeps its 
   const apiKey = CopilotApiConfig.forProfile(null).ensureApiKey();
   const record = (v: unknown) => v as Record<string, unknown>;
   for (const c of SCOPE_CASES) {
-    new CopilotEnvConfig().set({ staticKey: c.scope });
+    new CopilotEnvConfig().setProfile(null, { "static-key": c.scope });
     const out = await configureDefaultAgents(
       { codex: "proxy", claude: "proxy", ghToken: "ghu_test" },
       NOOP_CATALOG_DEPS,

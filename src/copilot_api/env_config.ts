@@ -1,9 +1,13 @@
-// The account-wide preference store behind `agent config`. Each read site applies the precedence
-// itself: explicit flag/env > this stored config > built-in default.
+// The preference store behind `agent config`: one key registry, every key scoped to a profile or to
+// the machine, and ONE precedence rule (resolveSettingIn): explicit flag > the profile's own value >
+// the global value > the built-in default. The store holds a global map and one section per
+// profile; the type keeps a profile-scoped key out of the global map.
 import * as path from "node:path";
 import * as v from "valibot";
-import { CopilotApiConfig } from "./config.ts";
+import { CopilotApiConfig, ensureDict } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
+import type { Profile, ProfileName } from "./profile.ts";
+import { isRecord } from "../utils/json.ts";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
 
 export type PassthroughPref = "auto" | "on" | "off";
@@ -15,47 +19,90 @@ export type StaticKeyScope = (typeof STATIC_KEY_SCOPES)[number];
 export type StaticKeyAgent = Exclude<StaticKeyScope, "none" | "all">;
 const STATIC_KEY_DEFAULT: StaticKeyScope = "none";
 
-/** Each key's meaning is its registry entry's `describe` below; an absent or ill-typed field reads back
- *  as `undefined`, which every read site treats as "apply the default". */
-export interface CopilotEnvConfigData {
-  autoStart?: boolean;
-  autoUpdate?: boolean;
-  passthrough?: PassthroughPref;
-  integrationId?: string;
-  idleTimeout?: number;
-  launchers?: boolean;
-  proxyLogs?: boolean;
-  smallModel?: string;
-  useResponsesApiWebSocket?: boolean;
-  useResponsesApiWebSearch?: boolean;
-  useMessagesApi?: boolean;
-  useResponsesApiContextManagement?: boolean;
-  messageApiWebSearchModel?: string;
-  alphaSearchCodexPriority?: boolean;
-  alphaSearchModel?: string;
-  claudeAutoModel?: string;
-  claudeDesktop?: boolean;
-  claudeTokenMultiplier?: number;
-  port?: number;
-  pricingUrl?: string;
-  creditsTarget?: number;
-  minPort?: number;
-  maxPort?: number;
-  strictPort?: boolean;
-  proxyVersion?: string;
-  releaseCooldown?: number;
-  updateCooldown?: number;
-  verifyProvenance?: boolean;
-  codexHome?: string;
-  codexHost?: boolean;
-  codexModelCatalog?: boolean;
-  wireMcp?: boolean;
-  staticKey?: StaticKeyScope;
-  copilotHost?: string;
+/** Every key's value type, keyed by its name: the CLI spelling AND the stored JSON key. A dotted
+ *  name's first segment is its group (the config menu); a flat name is a profile key. Each key's
+ *  meaning is its registry entry's `describe`; an absent or ill-typed stored field reads back as
+ *  `undefined`, which the resolution treats as "apply the next layer". */
+export interface ConfigValueTypes {
+  "claude.desktop": boolean;
+  "claude.wire-mcp": boolean;
+  "codex.home": string;
+  "codex.host": boolean;
+  "codex.model-catalog": boolean;
+  "cost.credits-target": number;
+  "cost.pricing-url": string;
+  "daemon.auto-start": boolean;
+  "daemon.idle-timeout": number;
+  "daemon.logs": boolean;
+  "daemon.max-port": number;
+  "daemon.min-port": number;
+  "daemon.port": number;
+  "daemon.release-cooldown": number;
+  "daemon.strict-port": boolean;
+  "daemon.version": string;
+  "host": string;
+  "identity": string;
+  "passthrough": PassthroughPref;
+  "proxy.alpha-search.codex-priority": boolean;
+  "proxy.alpha-search.model": string;
+  "proxy.claude-auto-model": string;
+  "proxy.claude-token-multiplier": number;
+  "proxy.message-websearch-model": string;
+  "proxy.messages-api": boolean;
+  "proxy.responses.context-management": boolean;
+  "proxy.responses.websearch": boolean;
+  "proxy.responses.websocket": boolean;
+  "proxy.small-model": string;
+  "shell.launchers": boolean;
+  "static-key": StaticKeyScope;
+  "update.auto": boolean;
+  "update.cooldown": number;
+  "update.verify-provenance": boolean;
 }
 
-/** null and undefined both delete the key. Exported for the settings-bundle import, which rebuilds the whole store. */
-export type ConfigPatch = { [K in keyof CopilotEnvConfigData]?: CopilotEnvConfigData[K] | null };
+export type ConfigKey = keyof ConfigValueTypes;
+export type ConfigValue = boolean | number | string;
+
+/**
+ * Who a key belongs to:
+ *   profile         -> the value follows the credential; lives in the profile's section only
+ *   profile-default -> the global value is every profile's default; a profile may override it
+ *   global          -> how this machine runs; a profile never carries it
+ */
+export type ConfigScope = "profile" | "profile-default" | "global";
+
+/** A flat name IS a profile key and a grouped name never is, so a key cannot land as global under
+ *  a flat name or as profile-only under a group. */
+type ScopeFor<K extends ConfigKey> = K extends `${string}.${string}`
+  ? Exclude<ConfigScope, "profile">
+  : "profile";
+
+/** The menu tree's first level; a dotted key's prefix must be one of these (pinned below). */
+export const CONFIG_GROUPS = [
+  "profile",
+  "daemon",
+  "proxy",
+  "codex",
+  "claude",
+  "shell",
+  "update",
+  "cost",
+] as const;
+export type ConfigGroup = (typeof CONFIG_GROUPS)[number];
+
+type GroupOf<K extends ConfigKey> = K extends `${infer G}.${string}` ? G : "profile";
+type AssertTrue<T extends true> = T;
+type _EveryGroupIsKnown = AssertTrue<GroupOf<ConfigKey> extends ConfigGroup ? true : false>;
+
+/** The group a key displays under. */
+export function configGroup(key: ConfigKey): ConfigGroup {
+  const dot = key.indexOf(".");
+  // The pin above proves every prefix is a group; the find only restates it for the type.
+  return CONFIG_GROUPS.find((g) => g === (dot < 0 ? "profile" : key.slice(0, dot))) ?? "profile";
+}
+
+/** The keys the proxy reads from its config.json; only these may be projected. */
+type ProxyGroupKey = Extract<ConfigKey, `proxy.${string}`>;
 
 // Generous ceilings: anything larger is a typo, not a setting.
 const MAX_SECONDS = 365 * 24 * 60 * 60;
@@ -77,40 +124,21 @@ export const INTEGRATION_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
  *  import closure and the identity module does not. */
 export const CODEX_IDENTITY_NAME = "codex";
 
-export type ConfigKey = keyof CopilotEnvConfigData;
-export type ConfigValue = boolean | number | string;
-
 /** A key path into the proxy config.json document, e.g. `["contextManagement", "responses"]`. */
 export type ProxyConfigPath = readonly [string, ...string[]];
 
-/** Display order of the config table. */
-export const CONFIG_SECTIONS = [
-  "Proxy daemon",
-  "Proxy features",
-  "Credential",
-  "Codex",
-  "Claude",
-  "Shell",
-  "Updates",
-  "Cost",
-] as const;
-
-export type ConfigSection = (typeof CONFIG_SECTIONS)[number];
-
-/** The one section whose keys are projected into the proxy's config.json. */
-const PROJECTED_SECTION = "Proxy features" satisfies ConfigSection;
-
-/** The generic ties `schema` and `parse` to the key's OWN field type, so a key can never be write-only
- *  again (accepted by `--set`, stripped by the folded read schema). */
+/** The generic ties `schema` and `parse` to the key's OWN value type, so a key can never be write-only
+ *  again (accepted by `--set`, stripped by the folded read schema). `scope` is required, and its type
+ *  follows the name (ScopeFor), so a new key without one, or grouped as a profile key, does not compile. */
 interface ConfigKeyDefCore<K extends ConfigKey = ConfigKey> {
-  cli: string;
   key: K;
+  scope: ScopeFor<K>;
   describe: string;
   /** The config table's `[type]` cell: `bool`, `1-65535`, `model id`, ... */
   type: string;
   /** The single source CONFIG_SCHEMA folds; `parse` is derived from it by the domain builders. */
-  schema: v.GenericSchema<unknown, NonNullable<CopilotEnvConfigData[K]>>;
-  parse: (raw: string) => NonNullable<CopilotEnvConfigData[K]>;
+  schema: v.GenericSchema<unknown, ConfigValueTypes[K]>;
+  parse: (raw: string) => ConfigValueTypes[K];
   /** `agent config --set` refuses the key on Windows. */
   posixOnly?: true;
 }
@@ -118,7 +146,7 @@ interface ConfigKeyDefCore<K extends ConfigKey = ConfigKey> {
 /** Absent when "unset" IS the default (a disabled override, a floating pin), rendered `<unset>`. On an
  *  opt-in projected key it is the PROXY'S own default, informational only and never projected. */
 interface DefaultSpec<K extends ConfigKey = ConfigKey> {
-  defaultValue?: NonNullable<CopilotEnvConfigData[K]>;
+  defaultValue?: ConfigValueTypes[K];
 }
 
 /** What `agent config` set/del prints about when a change takes effect; projected keys already get
@@ -137,11 +165,8 @@ type ApplySpec =
   | { restartToApply?: undefined; applyHint?: undefined };
 
 interface ProjectedKeyFields {
-  /** Pinning every projected key to the one section makes the grouping rule a compile check. */
-  section: typeof PROJECTED_SECTION;
-  /** Default `[key]`. Set when the proxy renamed or nested its key while our storage key stays put,
-   *  since renaming ours would need a store migration. */
-  proxyPath?: ProxyConfigPath;
+  /** The proxy's own key in config.json (an external contract, so it never follows our name). */
+  proxyPath: ProxyConfigPath;
   /** Oldest proxy version that reads the key: `agent config --set` warns on an older installed proxy,
    *  where the projection would be a silent no-op. Unset = every version above our floor. */
   sinceProxyVersion?: string;
@@ -153,26 +178,26 @@ type InternalConfigKeyDef<K extends ConfigKey = ConfigKey> =
   & DefaultSpec<K>
   & ApplySpec
   & {
-    section: Exclude<ConfigSection, typeof PROJECTED_SECTION>;
     proxyDefault?: undefined;
     proxyProjected?: undefined;
     proxyPath?: undefined;
     sinceProxyVersion?: undefined;
   };
 
-/** Always written at `agent start` as `stored ?? proxyDefault`, for keys copilot-env has an opinion on. */
+/** Always written at `agent start` as `resolved ?? proxyDefault`, for keys copilot-env has an opinion on. */
 type ForceProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
   & ConfigKeyDefCore<K>
   & ApplySpec
   & ProjectedKeyFields
   & {
-    proxyDefault: NonNullable<CopilotEnvConfigData[K]>;
+    proxyDefault: ConfigValueTypes[K];
     defaultValue?: undefined;
     proxyProjected?: undefined;
   };
 
-/** Written only while our store holds a value, so the proxy's own default stands otherwise. A previous
- *  write is cleared once the key is unset, ownership-tracked per daemon home (applyDefaultConfig in launch.ts). */
+/** Written only while a value resolves for the daemon's profile, so the proxy's own default stands
+ *  otherwise. A previous write is cleared once the key is unset, ownership-tracked per daemon home
+ *  (applyDefaultConfig in launch.ts). */
 type OptInProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
   & ConfigKeyDefCore<K>
   & DefaultSpec<K>
@@ -185,17 +210,16 @@ type OptInProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
 
 /** Distributed over ConfigKey so each entry's schema, parse, and default must fit ITS key's value type.
  *  The registry's `as const satisfies` rejects at compile time:
- *    proxyDefault + proxyProjected              -> the two projection shapes are exclusive
- *    proxyPath / sinceProxyVersion, unprojected  -> only projected keys land in config.json
- *    projected key outside PROJECTED_SECTION     -> that section means "restart the daemon to apply"
- *    unprojected key inside PROJECTED_SECTION    -> it would promise a projection that never happens
- *    force-projected + defaultValue              -> proxyDefault is its source
- *    restartToApply + applyHint                  -> one notice per key */
+ *    a key without `scope`, or a flat key that is not `profile`  -> ScopeFor
+ *    proxyDefault + proxyProjected                                -> the two projection shapes are exclusive
+ *    a projected key outside the `proxy` group                    -> only the proxy's knobs land in config.json
+ *    an unprojected key inside the `proxy` group                  -> it would promise a projection that never happens
+ *    force-projected + defaultValue                               -> proxyDefault is its source
+ *    restartToApply + applyHint                                   -> one notice per key */
 export type ConfigKeyDef = {
-  [K in ConfigKey]:
-    | InternalConfigKeyDef<K>
-    | ForceProjectedConfigKeyDef<K>
-    | OptInProjectedConfigKeyDef<K>;
+  [K in ConfigKey]: K extends ProxyGroupKey
+    ? ForceProjectedConfigKeyDef<K> | OptInProjectedConfigKeyDef<K>
+    : InternalConfigKeyDef<K>;
 }[ConfigKey];
 
 /** undefined when unset is itself the default. */
@@ -327,7 +351,7 @@ const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
   "id|auto",
 );
 
-/** The one validator behind `agent config --set integration-id` and `agent auth --identity`. */
+/** The one validator behind `agent config --set identity` and `agent auth --identity`. */
 export function parseIntegrationIdPin(raw: string): string {
   return INTEGRATION_ID_DOMAIN.parse(raw);
 }
@@ -403,7 +427,7 @@ export const COPILOT_HOST_AUTO = "auto";
 
 /** THE one loopback test for a URL's hostname (as `new URL().hostname` spells it): the whole
  *  127.0.0.0/8 block, `::1` and its IPv4-mapped forms (bracketed), and `localhost` with or without
- *  the trailing dot. Owned here, beside the `copilot-host` validator, so isDirectBaseUrl
+ *  the trailing dot. Owned here, beside the `host` validator, so isDirectBaseUrl
  *  (integration_identity.ts) and the validator can never disagree on what a Copilot host is not. */
 export function isLoopbackHostname(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/\.$/, "");
@@ -452,60 +476,15 @@ const COPILOT_HOST_DOMAIN: ConfigDomain<string> = domain(
   "url|auto",
 );
 
-/** Ordered ALPHABETICALLY by CLI name: that is the `--get` and `--help` display order, and a test pins
- *  it, so insert new keys in place. */
+const WIRING_HINT =
+  "Applies at the next `agent init` / `agent claude` / `agent codex` / `agent profile` wiring";
+
+/** Ordered ALPHABETICALLY by key: that is `--help`'s order within a group, and a test pins it, so
+ *  insert new keys in place. */
 const CONFIG_REGISTRY_LITERAL = [
   {
-    cli: "alpha-search-codex-priority",
-    key: "alphaSearchCodexPriority",
-    section: "Proxy features",
-    describe: "Prefer Codex for the proxy's /alpha/search (Codex search)",
-    ...BOOL_DOMAIN,
-    defaultValue: true,
-    proxyProjected: true,
-    sinceProxyVersion: "1.15.0",
-  },
-  {
-    cli: "alpha-search-model",
-    key: "alphaSearchModel",
-    section: "Proxy features",
-    describe: "Responses model for /alpha/search when the requested model cannot search",
-    ...MODEL_ID_DOMAIN,
-    defaultValue: "gpt-5-mini",
-    proxyProjected: true,
-    sinceProxyVersion: "1.16.3",
-  },
-  {
-    cli: "auto-start",
-    key: "autoStart",
-    section: "Proxy daemon",
-    describe: "Auto-start the proxy on agent open and auto-stop it when idle",
-    ...BOOL_DOMAIN,
-    defaultValue: false,
-  },
-  {
-    cli: "auto-update",
-    key: "autoUpdate",
-    section: "Updates",
-    describe: "Daily self-update on `agent start`, honoring update-cooldown",
-    ...BOOL_DOMAIN,
-    defaultValue: false,
-    applyHint:
-      "Applies at the next `agent start` (checked once a day); `agent update` updates now, `agent update --auto-status` shows the last check.",
-  },
-  {
-    cli: "claude-auto-model",
-    key: "claudeAutoModel",
-    section: "Proxy features",
-    describe: "Model for Claude Code's background security-monitor requests; unset disables",
-    ...MODEL_ID_DOMAIN,
-    proxyProjected: true,
-    sinceProxyVersion: "1.14.22",
-  },
-  {
-    cli: "claude-desktop",
-    key: "claudeDesktop",
-    section: "Claude",
+    key: "claude.desktop",
+    scope: "global",
     describe: "Wire Claude Desktop's config library; false unwires profiles only",
     ...BOOL_DOMAIN,
     defaultValue: true,
@@ -513,20 +492,18 @@ const CONFIG_REGISTRY_LITERAL = [
       "Applies at the next `agent init`/`agent claude`/`agent profile` wiring; setting the key writes no Desktop files itself.",
   },
   {
-    cli: "claude-token-multiplier",
-    key: "claudeTokenMultiplier",
-    section: "Proxy features",
-    describe: "Multiplier the proxy applies when estimating Claude token usage",
-    ...positiveDecimalDomain(MAX_TOKEN_MULTIPLIER),
-    defaultValue: 1.15,
-    proxyProjected: true,
+    key: "claude.wire-mcp",
+    scope: "global",
+    describe: "Wire the copilot-env MCP server + WebSearch deny on direct writes",
+    ...BOOL_DOMAIN,
+    defaultValue: true,
+    applyHint: "Applies at the next `agent claude`/`agent init` direct wiring.",
   },
   {
-    cli: "codex-home",
-    key: "codexHome",
-    section: "Codex",
+    key: "codex.home",
+    scope: "global",
     describe: "Root of the Codex home copilot-env writes and exports; auto is ~/.codex, or the " +
-      "shell's CODEX_HOME (never our own farm export) while codex-host is off; codex-host farms " +
+      "shell's CODEX_HOME (never our own farm export) while codex.host is off; codex.host farms " +
       "under it",
     ...ABSOLUTE_PATH_DOMAIN,
     defaultValue: CODEX_HOME_AUTO,
@@ -535,10 +512,9 @@ const CONFIG_REGISTRY_LITERAL = [
       "shell on the next `agent` command, whose wrapper re-evals `agent env`; a removal reaches new shells only.",
   },
   {
-    cli: "codex-host",
-    key: "codexHost",
-    section: "Codex",
-    describe: "Per-host CODEX_HOME at <codex-home>/hosts/<hostname> via `agent env` (Linux/macOS)",
+    key: "codex.host",
+    scope: "global",
+    describe: "Per-host CODEX_HOME at <codex.home>/hosts/<hostname> via `agent env` (Linux/macOS)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     posixOnly: true,
@@ -546,9 +522,8 @@ const CONFIG_REGISTRY_LITERAL = [
       "Applies at the next `agent codex`/`agent init` wiring, which builds or removes the farm.",
   },
   {
-    cli: "codex-model-catalog",
-    key: "codexModelCatalog",
-    section: "Codex",
+    key: "codex.model-catalog",
+    scope: "global",
     describe: "Patched Codex model catalog with Copilot's real context windows",
     ...BOOL_DOMAIN,
     defaultValue: false,
@@ -556,9 +531,92 @@ const CONFIG_REGISTRY_LITERAL = [
       "Applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring.",
   },
   {
-    cli: "copilot-host",
-    key: "copilotHost",
-    section: "Credential",
+    key: "cost.credits-target",
+    scope: "global",
+    describe:
+      "Copilot AI credits (100 to the dollar) to stay under per month; unset paces against the plan's entitlement alone",
+    ...wholeNumberDomain(1, MAX_CREDITS, "credits"),
+    applyHint: "Applies to the next `agent credits` run.",
+  },
+  {
+    key: "cost.pricing-url",
+    scope: "global",
+    describe: "OpenRouter models API URL for `agent cost`; `--pricing-url` overrides once",
+    ...HTTPS_URL_DOMAIN,
+    defaultValue: OPENROUTER_MODELS_URL,
+    applyHint: "Applies to the next `agent cost` run.",
+  },
+  {
+    key: "daemon.auto-start",
+    scope: "global",
+    describe: "Auto-start the proxy on agent open and auto-stop it when idle",
+    ...BOOL_DOMAIN,
+    defaultValue: false,
+  },
+  {
+    key: "daemon.idle-timeout",
+    scope: "global",
+    describe: "Idle auto-stop window; 0 disables",
+    ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
+    defaultValue: 3600,
+    restartToApply: true,
+  },
+  {
+    key: "daemon.logs",
+    scope: "global",
+    describe: "Proxy request logging under <home>/logs; false discards the writes",
+    ...BOOL_DOMAIN,
+    defaultValue: false,
+    restartToApply: true,
+  },
+  {
+    key: "daemon.max-port",
+    scope: "global",
+    describe: "Upper bound of the allowed proxy port range",
+    ...wholeNumberDomain(1, 65535),
+    defaultValue: 65535,
+    restartToApply: true,
+  },
+  {
+    key: "daemon.min-port",
+    scope: "global",
+    describe: "Lower bound of the allowed proxy port range",
+    ...wholeNumberDomain(1, 65535),
+    defaultValue: 1024,
+    restartToApply: true,
+  },
+  {
+    key: "daemon.port",
+    scope: "global",
+    describe: "Default proxy port; the next free one is used when busy",
+    ...wholeNumberDomain(1, 65535),
+    defaultValue: 4141,
+    restartToApply: true,
+  },
+  {
+    key: "daemon.release-cooldown",
+    scope: "global",
+    describe: "Age a proxy release must reach before the float adopts it",
+    ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
+    defaultValue: 7 * SECONDS_PER_DAY,
+  },
+  {
+    key: "daemon.strict-port",
+    scope: "global",
+    describe: "Fail start on a busy port instead of auto-incrementing",
+    ...BOOL_DOMAIN,
+    defaultValue: false,
+    restartToApply: true,
+  },
+  {
+    key: "daemon.version",
+    scope: "global",
+    describe: "Pin the floated proxy to a version or tag; unset floats to the latest",
+    ...PROXY_VERSION_DOMAIN,
+  },
+  {
+    key: "host",
+    scope: "profile",
     describe:
       "Copilot API host for every mode: `auto` probes api.githubcopilot.com and falls back to the account's designated host, or an https origin",
     ...COPILOT_HOST_DOMAIN,
@@ -567,139 +625,85 @@ const CONFIG_REGISTRY_LITERAL = [
       "Applies at the next `agent init`/`agent codex`/`agent claude` wiring and the next proxy start.",
   },
   {
-    cli: "credits-target",
-    key: "creditsTarget",
-    section: "Cost",
-    describe:
-      "Copilot AI credits (100 to the dollar) to stay under per month; unset paces against the plan's entitlement alone",
-    ...wholeNumberDomain(1, MAX_CREDITS, "credits"),
-    applyHint: "Applies to the next `agent credits` run.",
-  },
-  {
-    cli: "idle-timeout",
-    key: "idleTimeout",
-    section: "Proxy daemon",
-    describe: "Idle auto-stop window; 0 disables",
-    ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
-    defaultValue: 3600,
-    restartToApply: true,
-  },
-  {
-    cli: "integration-id",
-    key: "integrationId",
-    section: "Credential",
+    key: "identity",
+    scope: "profile",
     describe: "Copilot-Integration-Id header to send; auto probes it per credential",
     ...INTEGRATION_ID_DOMAIN,
     defaultValue: "auto",
     applyHint: "Applies to Direct at the next `agent init`/`agent profile --add` (rewires the " +
-      "agent configs) and to the proxy at its next daemon launch (a running daemon keeps its " +
-      "identity: `agent stop`, then `agent start`).",
+      "agent configs) and to the profile's proxy at its next daemon launch (a running daemon " +
+      "keeps its identity until restarted).",
   },
   {
-    cli: "launchers",
-    key: "launchers",
-    section: "Shell",
-    describe: "Shell launchers cl / co / cx (+ clx / cox / cxx) in `agent env`",
-    ...BOOL_DOMAIN,
-    defaultValue: false,
-    applyHint: "New shells pick a change up; the current one picks up an ENABLE on the next " +
-      "`agent` command (a disable applies to new shells only).",
-  },
-  {
-    cli: "max-port",
-    key: "maxPort",
-    section: "Proxy daemon",
-    describe: "Upper bound of the allowed proxy port range",
-    ...wholeNumberDomain(1, 65535),
-    defaultValue: 65535,
-    restartToApply: true,
-  },
-  {
-    cli: "message-websearch-model",
-    key: "messageApiWebSearchModel",
-    section: "Proxy features",
-    describe: "Web-search model: proxy Messages-API path and MCP web_search tool",
-    ...MODEL_ID_DOMAIN,
-    // Must equal DEFAULT_WEB_SEARCH_MODEL in web_search.ts, which imports this module and so cannot be
-    // referenced here; a registry test pins the two.
-    defaultValue: "gpt-5-mini",
-    proxyProjected: true,
-    applyHint:
-      "Proxy surface applies on the next `agent start`; the MCP web_search tool reads it on every call.",
-  },
-  {
-    cli: "messages-api",
-    key: "useMessagesApi",
-    section: "Proxy features",
-    describe: "Proxy Messages-API (Anthropic-shaped) endpoint",
-    ...BOOL_DOMAIN,
-    proxyDefault: true,
-  },
-  {
-    cli: "min-port",
-    key: "minPort",
-    section: "Proxy daemon",
-    describe: "Lower bound of the allowed proxy port range",
-    ...wholeNumberDomain(1, 65535),
-    defaultValue: 1024,
-    restartToApply: true,
-  },
-  {
-    cli: "passthrough",
     key: "passthrough",
-    section: "Credential",
+    scope: "profile",
     describe: "Use a PAT-shaped token as the bearer directly; auto detects the token",
     ...PASSTHROUGH_DOMAIN,
     defaultValue: "auto",
     restartToApply: true,
   },
   {
-    cli: "port",
-    key: "port",
-    section: "Proxy daemon",
-    describe: "Default proxy port; the next free one is used when busy",
-    ...wholeNumberDomain(1, 65535),
-    defaultValue: 4141,
-    restartToApply: true,
-  },
-  {
-    cli: "pricing-url",
-    key: "pricingUrl",
-    section: "Cost",
-    describe: "OpenRouter models API URL for `agent cost`; `--pricing-url` overrides once",
-    ...HTTPS_URL_DOMAIN,
-    defaultValue: OPENROUTER_MODELS_URL,
-    applyHint: "Applies to the next `agent cost` run.",
-  },
-  {
-    cli: "proxy-logs",
-    key: "proxyLogs",
-    section: "Proxy daemon",
-    describe: "Proxy request logging under <home>/logs; false discards the writes",
+    key: "proxy.alpha-search.codex-priority",
+    scope: "profile-default",
+    describe: "Prefer Codex for the proxy's /alpha/search (Codex search)",
     ...BOOL_DOMAIN,
-    defaultValue: false,
-    restartToApply: true,
+    defaultValue: true,
+    proxyProjected: true,
+    proxyPath: ["alphaSearchCodexPriority"],
+    sinceProxyVersion: "1.15.0",
   },
   {
-    cli: "proxy-version",
-    key: "proxyVersion",
-    section: "Proxy daemon",
-    describe: "Pin the floated proxy to a version or tag; unset floats to the latest",
-    ...PROXY_VERSION_DOMAIN,
+    key: "proxy.alpha-search.model",
+    scope: "profile-default",
+    describe: "Responses model for /alpha/search when the requested model cannot search",
+    ...MODEL_ID_DOMAIN,
+    defaultValue: "gpt-5-mini",
+    proxyProjected: true,
+    proxyPath: ["alphaSearchModel"],
+    sinceProxyVersion: "1.16.3",
   },
   {
-    cli: "release-cooldown",
-    key: "releaseCooldown",
-    section: "Proxy daemon",
-    describe: "Age a proxy release must reach before the float adopts it",
-    ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
-    defaultValue: 7 * SECONDS_PER_DAY,
+    key: "proxy.claude-auto-model",
+    scope: "profile-default",
+    describe: "Model for Claude Code's background security-monitor requests; unset disables",
+    ...MODEL_ID_DOMAIN,
+    proxyProjected: true,
+    proxyPath: ["claudeAutoModel"],
+    sinceProxyVersion: "1.14.22",
   },
   {
-    cli: "responses-context-management",
-    // The storage key is the proxy's pre-1.14 flat key; renaming it would need a store migration.
-    key: "useResponsesApiContextManagement",
-    section: "Proxy features",
+    key: "proxy.claude-token-multiplier",
+    scope: "profile-default",
+    describe: "Multiplier the proxy applies when estimating Claude token usage",
+    ...positiveDecimalDomain(MAX_TOKEN_MULTIPLIER),
+    defaultValue: 1.15,
+    proxyProjected: true,
+    proxyPath: ["claudeTokenMultiplier"],
+  },
+  {
+    key: "proxy.message-websearch-model",
+    scope: "profile-default",
+    describe: "Web-search model: proxy Messages-API path and MCP web_search tool",
+    ...MODEL_ID_DOMAIN,
+    // Must equal DEFAULT_WEB_SEARCH_MODEL in web_search.ts, which imports this module and so cannot be
+    // referenced here; a registry test pins the two.
+    defaultValue: "gpt-5-mini",
+    proxyProjected: true,
+    proxyPath: ["messageApiWebSearchModel"],
+    applyHint:
+      "The MCP web_search tool reads it on every call; the proxy surface at its next start.",
+  },
+  {
+    key: "proxy.messages-api",
+    scope: "profile-default",
+    describe: "Proxy Messages-API (Anthropic-shaped) endpoint",
+    ...BOOL_DOMAIN,
+    proxyDefault: true,
+    proxyPath: ["useMessagesApi"],
+  },
+  {
+    key: "proxy.responses.context-management",
+    scope: "profile-default",
     describe: "Proxy Responses-API server-side context management",
     ...BOOL_DOMAIN,
     defaultValue: false,
@@ -707,90 +711,137 @@ const CONFIG_REGISTRY_LITERAL = [
     proxyPath: ["contextManagement", "responses"],
   },
   {
-    cli: "responses-websearch",
-    key: "useResponsesApiWebSearch",
-    section: "Proxy features",
+    key: "proxy.responses.websearch",
+    scope: "profile-default",
     describe: "Proxy Responses-API web search",
     ...BOOL_DOMAIN,
     proxyDefault: true,
+    proxyPath: ["useResponsesApiWebSearch"],
   },
   {
-    cli: "responses-websocket",
-    key: "useResponsesApiWebSocket",
-    section: "Proxy features",
+    key: "proxy.responses.websocket",
+    scope: "profile-default",
     describe: "Proxy Responses-API over WebSocket instead of HTTP/SSE",
     ...BOOL_DOMAIN,
     proxyDefault: true,
+    proxyPath: ["useResponsesApiWebSocket"],
   },
   {
-    cli: "small-model",
-    key: "smallModel",
-    section: "Proxy features",
+    key: "proxy.small-model",
+    scope: "profile-default",
     describe: "Small/fast model the proxy uses",
     ...MODEL_ID_DOMAIN,
     proxyDefault: "gpt-5-mini",
+    proxyPath: ["smallModel"],
   },
   {
-    cli: "static-key",
-    key: "staticKey",
-    section: "Credential",
+    key: "shell.launchers",
+    scope: "global",
+    describe: "Shell launchers cl / co / cx (+ clx / cox / cxx) in `agent env`",
+    ...BOOL_DOMAIN,
+    defaultValue: false,
+    applyHint: "New shells pick a change up; the current one picks up an ENABLE on the next " +
+      "`agent` command (a disable applies to new shells only).",
+  },
+  {
+    key: "static-key",
+    scope: "profile",
     describe: "Whose config carries the credential value itself, not a resolver command",
     ...STATIC_KEY_DOMAIN,
     defaultValue: STATIC_KEY_DEFAULT,
-    applyHint:
-      "Applies at the next `agent init` / `agent claude` / `agent codex` / `agent profile` wiring. " +
+    applyHint: `${WIRING_HINT}. ` +
       "A baked value does not follow a credential change: re-run the wiring after `agent auth`.",
   },
   {
-    cli: "strict-port",
-    key: "strictPort",
-    section: "Proxy daemon",
-    describe: "Fail start on a busy port instead of auto-incrementing",
+    key: "update.auto",
+    scope: "global",
+    describe: "Daily self-update on `agent start`, honoring update.cooldown",
     ...BOOL_DOMAIN,
     defaultValue: false,
-    restartToApply: true,
+    applyHint:
+      "Applies at the next `agent start` (checked once a day); `agent update` updates now, `agent update --auto-status` shows the last check.",
   },
   {
-    cli: "update-cooldown",
-    key: "updateCooldown",
-    section: "Updates",
+    key: "update.cooldown",
+    scope: "global",
     describe: "Min release age for updates; unset means none by hand, 7 for auto",
     ...wholeNumberDomain(0, MAX_DAYS, "days"),
   },
   {
-    cli: "verify-provenance",
-    key: "verifyProvenance",
-    section: "Updates",
+    key: "update.verify-provenance",
+    scope: "global",
     describe: "Verify `agent update` downloads against Sigstore provenance",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint:
       "Applies to the next `agent update` / autoupdate run; `agent update --no-verify` skips a single run.",
   },
-  {
-    cli: "wire-mcp",
-    key: "wireMcp",
-    section: "Claude",
-    describe: "Wire the copilot-env MCP server + WebSearch deny on direct writes",
-    ...BOOL_DOMAIN,
-    defaultValue: true,
-    applyHint: "Applies at the next `agent claude`/`agent init` direct wiring.",
-  },
 ] as const satisfies readonly ConfigKeyDef[];
 
-/** The configDefault* accessors take this so a typo'd key is a compile error, not a module-load throw. */
-export type ConfigCli = (typeof CONFIG_REGISTRY_LITERAL)[number]["cli"];
-
-type RegistryStorageKey = (typeof CONFIG_REGISTRY_LITERAL)[number]["key"];
+type RegistryEntry = (typeof CONFIG_REGISTRY_LITERAL)[number];
 
 /** Exported only for the @ts-expect-error pin tests. */
 export type TotalOverConfigKeys<Pin extends { [K in ConfigKey]: K }> = Pin;
 
-/** Every CopilotEnvConfigData field is optional, so a key omitted from the registry would still compile:
- *  written by set() yet silently stripped by CONFIG_SCHEMA on every read. This pin names the omission. */
-type _RegistryIsTotalOverConfigKeys = TotalOverConfigKeys<{ [K in RegistryStorageKey]: K }>;
+/** Every ConfigValueTypes key is optional in the stores, so a key omitted from the registry would
+ *  still compile: written by set() yet silently stripped by CONFIG_SCHEMA on every read. This pin
+ *  names the omission. */
+type _RegistryIsTotalOverConfigKeys = TotalOverConfigKeys<
+  { [K in RegistryEntry["key"]]: K }
+>;
 
 export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = CONFIG_REGISTRY_LITERAL;
+
+// --- the two maps, typed from the registry's scopes ---------------------------------------
+
+type KeysOfScope<S extends ConfigScope> = Extract<RegistryEntry, { scope: S }>["key"];
+export type ProfileKey = KeysOfScope<"profile">;
+export type ProfileDefaultKey = KeysOfScope<"profile-default">;
+export type GlobalKey = KeysOfScope<"global">;
+/** What the global map may hold: never a profile key. */
+export type GlobalMapKey = GlobalKey | ProfileDefaultKey;
+/** What a profile's section may hold: never a global key. */
+export type ProfileMapKey = ProfileKey | ProfileDefaultKey;
+
+export type GlobalConfigData = { [K in GlobalMapKey]?: ConfigValueTypes[K] };
+export type ProfileConfigData = { [K in ProfileMapKey]?: ConfigValueTypes[K] };
+
+/** The store as read: both maps always present. `profiles` is keyed by profile name, the default
+ *  profile under PROFILE_SETTINGS_DEFAULT_KEY. */
+export interface CopilotEnvConfigData {
+  global: GlobalConfigData;
+  profiles: Record<string, ProfileConfigData>;
+}
+
+/** null and undefined both delete the key. */
+export type GlobalPatch = { [K in GlobalMapKey]?: ConfigValueTypes[K] | null };
+export type ProfilePatch = { [K in ProfileMapKey]?: ConfigValueTypes[K] | null };
+
+/** The default profile's section name (the same word credentials.json uses for its slot). */
+export const PROFILE_SETTINGS_DEFAULT_KEY = "default";
+
+export function profileSettingsKey(profile: Profile): string {
+  return profile ?? PROFILE_SETTINGS_DEFAULT_KEY;
+}
+
+// The `agent config` commands a message may point at, spelled ONCE. The key is typed, so a renamed
+// key cannot leave a stale hint behind, and test/config_key_lint.test.ts refuses a hand-spelled one.
+
+function profileFlag(profile: Profile): string {
+  return profile === null ? "" : ` --profile ${profile}`;
+}
+
+export function configSetCommand(key: ConfigKey, value: string, profile: Profile = null): string {
+  return `agent config --set ${key} ${value}${profileFlag(profile)}`;
+}
+
+export function configDelCommand(key: ConfigKey, profile: Profile = null): string {
+  return `agent config --del ${key}${profileFlag(profile)}`;
+}
+
+export function configGetCommand(key: ConfigKey, profile: Profile = null): string {
+  return `agent config --get ${key}${profileFlag(profile)}`;
+}
 
 /** A bad stored value falls back to undefined (unset) instead of throwing, so a hand-mangled file still reads. */
 function lenientField(
@@ -799,64 +850,162 @@ function lenientField(
   return v.fallback(v.optional(schema), undefined);
 }
 
-/**
- * Exported for the settings-bundle parser (src/agents/transfer.ts), which hardens the leniency into
- * strict rejections at its own trust boundary. The fromEntries fold erases the key-to-value-type
- * correlation ConfigKeyDefCore enforces per entry, so the cast only restates what `satisfies` checked.
- */
-export const CONFIG_SCHEMA = v.object(
-  Object.fromEntries(CONFIG_REGISTRY.map((def) => [def.key, lenientField(def.schema)])),
-) as v.GenericSchema<unknown, CopilotEnvConfigData>;
+function mapSchema<T>(keys: readonly ConfigKeyDef[]): v.GenericSchema<unknown, T> {
+  // The fromEntries fold erases the key-to-value-type correlation ConfigKeyDefCore enforces per
+  // entry, so the cast only restates what `satisfies` checked.
+  return v.object(
+    Object.fromEntries(keys.map((def) => [def.key, lenientField(def.schema)])),
+  ) as unknown as v.GenericSchema<unknown, T>;
+}
+
+/** Exported for the settings-bundle parser (src/agents/transfer.ts), which hardens the leniency into
+ *  strict rejections at its own trust boundary. */
+export const GLOBAL_CONFIG_SCHEMA = mapSchema<GlobalConfigData>(
+  CONFIG_REGISTRY.filter((def) => def.scope !== "profile"),
+);
+export const PROFILE_CONFIG_SCHEMA = mapSchema<ProfileConfigData>(
+  CONFIG_REGISTRY.filter((def) => def.scope !== "global"),
+);
+
+/** A missing map reads as empty; a malformed one (not an object) reads as empty too. */
+export const CONFIG_SCHEMA: v.GenericSchema<unknown, CopilotEnvConfigData> = v.object({
+  global: v.fallback(v.optional(GLOBAL_CONFIG_SCHEMA, {}), {}),
+  profiles: v.fallback(
+    v.optional(v.record(v.string(), v.fallback(PROFILE_CONFIG_SCHEMA, {})), {}),
+    {},
+  ),
+});
+
+// --- resolution -------------------------------------------------------------------------
+
+/** Where a resolved value came from. A global key never answers `profile`; a profile key never
+ *  answers `global`. */
+export type SettingSource = "flag" | "profile" | "global" | "default";
+
+export interface ResolvedSetting<T> {
+  /** undefined only when nothing is set and unset IS the default. */
+  value: T | undefined;
+  source: SettingSource;
+}
+
+export interface ResolveOptions<T> {
+  /** The profile the value is for; null is the default profile. Irrelevant to a global key. */
+  profile: Profile;
+  /** A per-invocation override (a CLI flag, an env var), already parsed; undefined = none given. */
+  flag?: T | undefined;
+}
+
+/** THE precedence: flag > the profile's own value > the global value > the built-in default, each
+ *  layer only where the key's scope admits it. Pure over an already-read store. */
+export function resolveSettingIn<K extends ConfigKey>(
+  data: CopilotEnvConfigData,
+  key: K,
+  opts: ResolveOptions<ConfigValueTypes[K]>,
+): ResolvedSetting<ConfigValueTypes[K]> {
+  if (opts.flag !== undefined) return { value: opts.flag, source: "flag" };
+  const def = registryEntry(key);
+  if (def.scope !== "global") {
+    // The section's type is a subset of every key's, so the widening is a plain assignment.
+    const section: Partial<ConfigValueTypes> = data.profiles[profileSettingsKey(opts.profile)] ??
+      {};
+    const own = section[key];
+    if (own !== undefined) return { value: own, source: "profile" };
+  }
+  if (def.scope !== "profile") {
+    const global: Partial<ConfigValueTypes> = data.global;
+    const shared = global[key];
+    if (shared !== undefined) return { value: shared, source: "global" };
+  }
+  // The registry's per-key `satisfies` typed the default to the key; the cast restates it.
+  return {
+    value: configDefaultValue(def) as ConfigValueTypes[K] | undefined,
+    source: "default",
+  };
+}
+
+/** The store read once, then resolveSettingIn. */
+export function resolveSetting<K extends ConfigKey>(
+  key: K,
+  opts: ResolveOptions<ConfigValueTypes[K]>,
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+): ResolvedSetting<ConfigValueTypes[K]> {
+  return config.resolve(key, opts);
+}
+
+/** A stored value is what `--del` can revert: anything resolved from either map. */
+export function isStoredSource(source: SettingSource): boolean {
+  return source === "profile" || source === "global";
+}
+
+// --- registry lookups --------------------------------------------------------------------
 
 /** The two Codex-home keys, folded ONCE for the derivation (src/codex/host.ts) and the
  *  settings-import plan, which resolves them from the bundle before the store is replaced. */
 export interface CodexHomePrefs {
-  /** The `codex-home` path; null for `auto` or unset, when the derivation starts at ~/.codex. */
+  /** The `codex.home` path; null for `auto` or unset, when the derivation starts at ~/.codex. */
   explicit: string | null;
-  /** The `codex-host` farm is in effect. Always false on Windows whatever a bundle imported: no farm
+  /** The `codex.host` farm is in effect. Always false on Windows whatever a bundle imported: no farm
    *  without POSIX symlinks. */
   hostFarm: boolean;
 }
 
 export function codexHomePrefsFor(
-  stored: Pick<CopilotEnvConfigData, "codexHome" | "codexHost">,
+  stored: Pick<GlobalConfigData, "codex.home" | "codex.host">,
   platform: NodeJS.Platform = process.platform,
 ): CodexHomePrefs {
-  const home = stored.codexHome;
+  const home = stored["codex.home"];
   return {
     explicit: home === undefined || home.toLowerCase() === CODEX_HOME_AUTO ? null : home,
-    hostFarm: platform !== "win32" && (stored.codexHost ?? configDefaultBoolean("codex-host")),
+    hostFarm: platform !== "win32" && (stored["codex.host"] ?? configDefaultBoolean("codex.host")),
   };
 }
 
-export function configKeyDef(cli: string): ConfigKeyDef | undefined {
-  return CONFIG_REGISTRY.find((d) => d.cli === cli.trim());
+/** For a CLI string; undefined when it names no key. */
+export function configKeyDef(key: string): ConfigKeyDef | undefined {
+  return CONFIG_REGISTRY.find((d) => d.key === key.trim());
+}
+
+/** For a typed key: the totality pin above proves the entry exists. */
+function registryEntry(key: ConfigKey): ConfigKeyDef {
+  const def = configKeyDef(key);
+  if (def === undefined) throw new Error(`config key '${key}' is not in the registry`);
+  return def;
+}
+
+/** The registry's scope for a key; the two guards below are the same fact as type narrowing. */
+export function configScope(key: ConfigKey): ConfigScope {
+  return registryEntry(key).scope;
+}
+
+export function isGlobalMapKey(key: ConfigKey): key is GlobalMapKey {
+  return configScope(key) !== "profile";
+}
+
+export function isProfileMapKey(key: ConfigKey): key is ProfileMapKey {
+  return configScope(key) !== "global";
 }
 
 /** A missing or non-numeric entry is a programmer error. */
-export function configDefaultNumber(cli: ConfigCli): number {
-  const def = configKeyDef(cli);
-  const value = def?.defaultValue ?? def?.proxyDefault;
+export function configDefaultNumber(key: ConfigKey): number {
+  const value = configDefaultValue(registryEntry(key));
   if (typeof value !== "number") {
-    throw new Error(`config key '${cli}' has no numeric built-in default`);
+    throw new Error(`config key '${key}' has no numeric built-in default`);
   }
   return value;
 }
 
-export function configDefaultString(cli: ConfigCli): string {
-  const def = configKeyDef(cli);
-  const value = def?.defaultValue ?? def?.proxyDefault;
+export function configDefaultString(key: ConfigKey): string {
+  const value = configDefaultValue(registryEntry(key));
   if (typeof value !== "string") {
-    throw new Error(`config key '${cli}' has no string built-in default`);
+    throw new Error(`config key '${key}' has no string built-in default`);
   }
   return value;
 }
 
-export function configDefaultBoolean(cli: ConfigCli): boolean {
-  const def = configKeyDef(cli);
-  const value = def?.defaultValue ?? def?.proxyDefault;
+export function configDefaultBoolean(key: ConfigKey): boolean {
+  const value = configDefaultValue(registryEntry(key));
   if (typeof value !== "boolean") {
-    throw new Error(`config key '${cli}' has no boolean built-in default`);
+    throw new Error(`config key '${key}' has no boolean built-in default`);
   }
   return value;
 }
@@ -874,27 +1023,29 @@ export interface ProjectedProxyEntry {
 export function optInProxyConfigPaths(): ProxyConfigPath[] {
   const out: ProxyConfigPath[] = [];
   for (const def of CONFIG_REGISTRY) {
-    if (def.proxyProjected === true) out.push(def.proxyPath ?? [def.key]);
+    if (def.proxyProjected === true) out.push(def.proxyPath);
   }
   return out;
 }
 
-/** What `agent start` writes into the daemon's config.json before launch (applyDefaultConfig in launch.ts). */
+/** What `agent start` writes into `profile`'s daemon config.json before launch (applyDefaultConfig
+ *  in launch.ts): each proxy knob as it resolves FOR THAT PROFILE. */
 export function projectedProxyConfig(
+  profile: Profile,
   config: CopilotEnvConfig = new CopilotEnvConfig(),
 ): ProjectedProxyEntry[] {
-  const prefs = config.read();
+  const data = config.read();
   const out: ProjectedProxyEntry[] = [];
   for (const def of CONFIG_REGISTRY) {
-    const stored = prefs[def.key];
     if (def.proxyDefault !== undefined) {
-      out.push({
-        path: def.proxyPath ?? [def.key],
-        value: stored ?? def.proxyDefault,
-        optIn: false,
-      });
-    } else if (def.proxyProjected === true && stored !== undefined) {
-      out.push({ path: def.proxyPath ?? [def.key], value: stored, optIn: true });
+      // Force-projected: the built-in default IS proxyDefault, so the resolution always has a value.
+      const resolved = resolveSettingIn(data, def.key, { profile });
+      out.push({ path: def.proxyPath, value: resolved.value ?? def.proxyDefault, optIn: false });
+    } else if (def.proxyProjected === true) {
+      const resolved = resolveSettingIn(data, def.key, { profile });
+      if (isStoredSource(resolved.source) && resolved.value !== undefined) {
+        out.push({ path: def.proxyPath, value: resolved.value, optIn: true });
+      }
     }
   }
   return out;
@@ -908,10 +1059,30 @@ export function formatConfigValue(value: ConfigValue): string {
  *  `--get <key>` name such a value instead of hiding it. */
 export function isStoredValueInert(
   def: ConfigKeyDef,
-  data: CopilotEnvConfigData,
+  resolved: ResolvedSetting<ConfigValue>,
   platform: NodeJS.Platform,
 ): boolean {
-  return def.posixOnly === true && platform === "win32" && data[def.key] !== undefined;
+  return def.posixOnly === true && platform === "win32" && isStoredSource(resolved.source);
+}
+
+// --- writes ------------------------------------------------------------------------------
+
+/** Which map a `--set`/`--del` lands in. */
+export type SettingTarget = { kind: "global" } | { kind: "profile"; profile: Profile };
+
+/** Applies one patch to one map: null, undefined, and a blank string delete; strings are trimmed. */
+function applyPatch(map: Record<string, unknown>, patch: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null || value === undefined) {
+      delete map[key];
+    } else if (typeof value === "string") {
+      const t = value.trim();
+      if (t === "") delete map[key];
+      else map[key] = t;
+    } else {
+      map[key] = value;
+    }
+  }
 }
 
 export class CopilotEnvConfig {
@@ -939,23 +1110,37 @@ export class CopilotEnvConfig {
     return v.parse(CONFIG_SCHEMA, this.store.load());
   }
 
+  /** The one precedence rule over this store (resolveSettingIn). */
+  resolve<K extends ConfigKey>(
+    key: K,
+    opts: ResolveOptions<ConfigValueTypes[K]>,
+  ): ResolvedSetting<ConfigValueTypes[K]> {
+    return resolveSettingIn(this.read(), key, opts);
+  }
+
+  private value<K extends GlobalKey>(key: K): ConfigValueTypes[K] | undefined {
+    return this.resolve(key, { profile: null }).value;
+  }
+
   /** Watchdog-reachable, so the read degrades. */
   autoStartEnabled(): boolean {
-    return this.readDegraded().autoStart ?? configDefaultBoolean("auto-start");
+    return resolveSettingIn(this.readDegraded(), "daemon.auto-start", { profile: null }).value ??
+      configDefaultBoolean("daemon.auto-start");
   }
 
   /** Preflight-reachable, so the read degrades. */
   autoUpdateEnabled(): boolean {
-    return this.readDegraded().autoUpdate ?? configDefaultBoolean("auto-update");
+    return resolveSettingIn(this.readDegraded(), "update.auto", { profile: null }).value ??
+      configDefaultBoolean("update.auto");
   }
 
   /** OFF sweeps the profile entries and leaves the default's in place (src/claude/desktop.ts). */
   claudeDesktopEnabled(): boolean {
-    return this.read().claudeDesktop ?? configDefaultBoolean("claude-desktop");
+    return this.value("claude.desktop") ?? configDefaultBoolean("claude.desktop");
   }
 
   codexHomePrefs(platform: NodeJS.Platform = process.platform): CodexHomePrefs {
-    return codexHomePrefsFor(this.read(), platform);
+    return codexHomePrefsFor(this.read().global, platform);
   }
 
   codexHostEnabled(platform: NodeJS.Platform = process.platform): boolean {
@@ -963,22 +1148,22 @@ export class CopilotEnvConfig {
   }
 
   codexModelCatalogEnabled(): boolean {
-    return this.read().codexModelCatalog ?? configDefaultBoolean("codex-model-catalog");
+    return this.value("codex.model-catalog") ?? configDefaultBoolean("codex.model-catalog");
   }
 
   launchersEnabled(): boolean {
-    return this.read().launchers ?? configDefaultBoolean("launchers");
+    return this.value("shell.launchers") ?? configDefaultBoolean("shell.launchers");
   }
 
   /** The agents in scope get the credential value baked by their writer (src/agents/configure.ts
    *  resolves it once per write) and run no copilot-env process at request time. */
-  staticKeyScope(): StaticKeyScope {
-    return this.read().staticKey ?? STATIC_KEY_DEFAULT;
+  staticKeyScope(profile: Profile): StaticKeyScope {
+    return this.resolve("static-key", { profile }).value ?? STATIC_KEY_DEFAULT;
   }
 
   /** The per-agent question every writer asks, so no call site compares scope strings. */
-  staticKeyFor(agent: StaticKeyAgent): boolean {
-    const scope = this.staticKeyScope();
+  staticKeyFor(agent: StaticKeyAgent, profile: Profile): boolean {
+    const scope = this.staticKeyScope(profile);
     return scope === "all" || scope === agent;
   }
 
@@ -988,105 +1173,191 @@ export class CopilotEnvConfig {
 
   /** Value and source from ONE snapshot, so `agent mcp` never prints a torn pair. */
   wireMcpResolved(): { value: boolean; source: "stored" | "default" } {
-    const stored = this.read().wireMcp;
-    return stored === undefined
-      ? { value: configDefaultBoolean("wire-mcp"), source: "default" }
-      : { value: stored, source: "stored" };
+    const resolved = this.resolve("claude.wire-mcp", { profile: null });
+    return {
+      value: resolved.value ?? configDefaultBoolean("claude.wire-mcp"),
+      source: isStoredSource(resolved.source) ? "stored" : "default",
+    };
   }
 
   /** On the STRICT read on purpose: an unreadable store fails the update rather than reading as "off". */
   verifyProvenanceEnabled(): boolean {
-    return this.read().verifyProvenance ?? configDefaultBoolean("verify-provenance");
+    return this.value("update.verify-provenance") ??
+      configDefaultBoolean("update.verify-provenance");
   }
 
-  /** The `copilot-host` literal, or null for `auto`: the caller then resolves the host per credential
+  /** `profile`'s `host` literal, or null for `auto`: the caller then resolves the host per credential
    *  (the select*IdentityAndHost pair, integration_identity.ts). */
-  copilotHost(): string | null {
-    const value = this.read().copilotHost;
+  copilotHost(profile: Profile): string | null {
+    const value = this.resolve("host", { profile }).value;
     return value === undefined || value === COPILOT_HOST_AUTO ? null : value;
   }
 
-  /** `auto` reads as null so `--set integration-id auto` restores probing without a separate `--del`. */
-  pinnedIntegrationId(): string | null {
-    const value = this.read().integrationId;
+  /** `auto` reads as null so `--set identity auto` restores probing without a separate `--del`. */
+  pinnedIntegrationId(profile: Profile): string | null {
+    const value = this.resolve("identity", { profile }).value;
     return value === undefined || value.toLowerCase() === "auto" ? null : value;
   }
 
   /** undefined = `auto` or unset; the caller decides from the credential's provider and token shape. */
-  passthroughOverride(): boolean | undefined {
-    const value = this.read().passthrough;
+  passthroughOverride(profile: Profile): boolean | undefined {
+    const value = this.resolve("passthrough", { profile }).value;
     if (value === "on") return true;
     if (value === "off") return false;
     return undefined;
   }
 
   defaultPort(): number {
-    return this.read().port ?? configDefaultNumber("port");
+    return this.value("daemon.port") ?? configDefaultNumber("daemon.port");
   }
 
   minPort(): number {
-    return this.read().minPort ?? configDefaultNumber("min-port");
+    return this.value("daemon.min-port") ?? configDefaultNumber("daemon.min-port");
   }
 
   maxPort(): number {
-    return this.read().maxPort ?? configDefaultNumber("max-port");
+    return this.value("daemon.max-port") ?? configDefaultNumber("daemon.max-port");
   }
 
   strictPortEnabled(): boolean {
-    return this.read().strictPort ?? configDefaultBoolean("strict-port");
+    return this.value("daemon.strict-port") ?? configDefaultBoolean("daemon.strict-port");
   }
 
   proxyLogsEnabled(): boolean {
-    return this.read().proxyLogs ?? configDefaultBoolean("proxy-logs");
+    return this.value("daemon.logs") ?? configDefaultBoolean("daemon.logs");
+  }
+
+  /** The `daemon.version` pin, or undefined to float (the COPILOT_API_VERSION env layer stays at the
+   *  read site, src/proxy_float.ts). */
+  proxyVersionPin(): string | undefined {
+    return this.value("daemon.version");
+  }
+
+  /** The COPILOT_API_MIN_RELEASE_AGE env layer stays at the read site (src/proxy_float.ts). */
+  releaseCooldownSeconds(): number {
+    return this.value("daemon.release-cooldown") ?? configDefaultNumber("daemon.release-cooldown");
   }
 
   /** The COPILOT_API_IDLE_TIMEOUT env layer stays at the read site (src/scripts/idle_watchdog.ts).
    *  Watchdog-reachable, so the read degrades. */
   idleTimeoutSeconds(): number {
-    return this.readDegraded().idleTimeout ?? configDefaultNumber("idle-timeout");
+    return resolveSettingIn(this.readDegraded(), "daemon.idle-timeout", { profile: null }).value ??
+      configDefaultNumber("daemon.idle-timeout");
   }
 
   /** The per-run `--pricing-url` layer stays at the read site (resolvePricingUrl in src/usage/cost.ts). */
   pricingUrl(): string {
-    return this.read().pricingUrl ?? configDefaultString("pricing-url");
+    return this.value("cost.pricing-url") ?? configDefaultString("cost.pricing-url");
   }
 
-  /** The stored `credits-target`, else null: `agent credits` then paces against the entitlement alone. */
+  /** The stored `cost.credits-target`, else null: `agent credits` then paces against the entitlement alone. */
   creditsTarget(): number | null {
-    return this.read().creditsTarget ?? null;
+    return this.value("cost.credits-target") ?? null;
   }
 
   /** null = no cooldown by hand; autoupdate layers its own policy default on top
    *  (effectiveUpdateCooldownDays in src/autoupdate/state.ts). */
   updateCooldownDays(): number | null {
-    return this.read().updateCooldown ?? null;
+    return this.value("update.cooldown") ?? null;
   }
 
   /** The defaults belong to the read sites: the proxy's own on the proxy path, DEFAULT_WEB_SEARCH_MODEL in
    *  web_search.ts on the MCP path (that module imports this one, so the registry cannot reference it). */
-  messageApiWebSearchModel(): string | null {
-    return this.read().messageApiWebSearchModel ?? null;
+  messageApiWebSearchModel(profile: Profile): string | null {
+    const resolved = this.resolve("proxy.message-websearch-model", { profile });
+    return isStoredSource(resolved.source) ? resolved.value ?? null : null;
   }
 
-  /** null, undefined, and a blank string all delete the key; strings are trimmed. */
-  set(patch: ConfigPatch): void {
+  /** The global map: null, undefined, and a blank string all delete the key; strings are trimmed. */
+  set(patch: GlobalPatch): void {
+    this.writeGlobal(patch);
+  }
+
+  del(key: GlobalMapKey): void {
+    this.set({ [key]: undefined });
+  }
+
+  /** `profile`'s section, same delete rules; an emptied section is removed. */
+  setProfile(profile: Profile, patch: ProfilePatch): void {
+    this.writeProfile(profile, patch);
+  }
+
+  delProfile(profile: Profile, key: ProfileMapKey): void {
+    this.setProfile(profile, { [key]: undefined });
+  }
+
+  /** The whole section goes with the profile (`agent profile --del`): a deleted profile leaves no
+   *  values behind for a later profile of the same name to inherit. */
+  deleteProfile(name: ProfileName): void {
     this.store.update((d) => {
-      for (const key of Object.keys(patch) as (keyof ConfigPatch)[]) {
-        const value = patch[key];
-        if (value === null || value === undefined) {
-          delete d[key];
-        } else if (typeof value === "string") {
-          const t = value.trim();
-          if (t === "") delete d[key];
-          else d[key] = t;
-        } else {
-          d[key] = value;
-        }
-      }
+      const profiles = d.profiles;
+      if (isRecord(profiles)) delete profiles[name];
     });
   }
 
-  del(key: ConfigKey): void {
-    this.set({ [key]: undefined });
+  /** The `agent config --set`/`--del` write: the key's scope decides the map (settingTarget), so the
+   *  rule sits at the one mutation point. `value` null deletes. Returns where it landed for the
+   *  caller to say. */
+  assign(
+    def: ConfigKeyDef,
+    value: ConfigValue | null,
+    profile: Profile | undefined,
+  ): SettingTarget {
+    const target = settingTarget(def, profile);
+    if (target.kind === "global") this.writeGlobal({ [def.key]: value });
+    else this.writeProfile(target.profile, { [def.key]: value });
+    return target;
+  }
+
+  /** The whole store at once (the settings-bundle import): both maps replaced, nothing merged. */
+  replace(data: CopilotEnvConfigData): void {
+    this.store.update((d) => {
+      d.global = {};
+      applyPatch(ensureDict(d, "global"), data.global);
+      const profiles: Record<string, unknown> = {};
+      for (const [name, section] of Object.entries(data.profiles)) {
+        const out: Record<string, unknown> = {};
+        applyPatch(out, section);
+        if (Object.keys(out).length > 0) profiles[name] = out;
+      }
+      d.profiles = profiles;
+    });
+  }
+
+  private writeGlobal(patch: Record<string, unknown>): void {
+    this.store.update((d) => applyPatch(ensureDict(d, "global"), patch));
+  }
+
+  private writeProfile(profile: Profile, patch: Record<string, unknown>): void {
+    this.store.update((d) => {
+      const profiles = ensureDict(d, "profiles");
+      const name = profileSettingsKey(profile);
+      const section = ensureDict(profiles, name);
+      applyPatch(section, patch);
+      if (Object.keys(section).length === 0) delete profiles[name];
+    });
+  }
+}
+
+/**
+ * Which map a key lands in, from its scope:
+ *
+ *   global key          -> the global map; a --profile is an error (the key has no profile value)
+ *   profile key         -> the named profile's section, the default's without --profile
+ *   profile-default key -> the named profile's section, the GLOBAL map without --profile
+ */
+export function settingTarget(def: ConfigKeyDef, profile: Profile | undefined): SettingTarget {
+  switch (def.scope) {
+    case "global":
+      if (profile !== undefined) {
+        throw new Error(
+          `'${def.key}' is a global setting (scope ${def.scope}): it has no per-profile value, so --profile does not apply`,
+        );
+      }
+      return { kind: "global" };
+    case "profile":
+      return { kind: "profile", profile: profile ?? null };
+    case "profile-default":
+      return profile === undefined ? { kind: "global" } : { kind: "profile", profile };
   }
 }

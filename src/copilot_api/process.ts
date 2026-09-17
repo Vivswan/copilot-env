@@ -489,13 +489,13 @@ export interface DaemonSpec {
   /** Extra daemon environment the launch pipeline assembles (sqlite path, root home). */
   env: Record<string, string>;
   credential: DaemonCredential;
-  /** The Copilot host the daemon is pinned to (`copilot-host`, resolveLaunchCredential in launch.ts); the
+  /** The Copilot host the daemon is pinned to (`host`, resolveLaunchCredential in launch.ts); the
    *  copilot-host preload rewrites the `endpoints.api` GitHub names. Null = unpinned: a credential-less
    *  daemon has nothing to probe with, so the proxy keeps the host GitHub names for its login. */
   copilotHost: string | null;
-  /** The `auto-start` config key. */
+  /** The `daemon.auto-start` config key. */
   idleWatchdog: boolean;
-  /** The `proxy-logs` config key. */
+  /** The `daemon.logs` config key. */
   muteProxyLogs: boolean;
   /** Resolved ONCE per launch, so the argv and the environment derive from one answer and the
    *  bind-race relaunch reuses the identical entry rather than re-resolving mid-flight. */

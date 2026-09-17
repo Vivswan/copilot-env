@@ -21,7 +21,7 @@ This page is about the credential and the profiles that carry one each. The wiri
 
 ## PAT passthrough
 
-Classic and fine-grained PATs can't perform the proxy's editor token exchange. So `agent start` transparently enables a passthrough shim for PAT-shaped tokens, using the PAT as the bearer directly. Force it either way with `agent config --set passthrough on|off` ([key](configuration.md#credential)).
+Classic and fine-grained PATs can't perform the proxy's editor token exchange. So `agent start` transparently enables a passthrough shim for PAT-shaped tokens, using the PAT as the bearer directly. Force it either way with `agent config --set passthrough on|off` ([key](configuration.md#profile)).
 
 ## Client identity
 
@@ -49,7 +49,7 @@ Direct: no agent is wired Direct; `agent init` would bake copilot-developer-cli.
 - **The `*`** marks what is in effect today, per host. Direct: the header the agent configs bake right now (a pin lands there only at the next rewire; a config that cannot be read is reported as unknown, never as "not wired"). Proxy: what a fresh daemon launch sends; a running daemon keeps its launch-time identity until restarted.
 - **Lines under the table:** the reason for every rejected or unclear cell (trimmed to 160 characters), and a note for each gap: the Direct wiring sends one identity until `agent init` (or `agent profile --add <name>`) rebakes the next pick; Codex and Claude disagree; passthrough is off for the credential, so the proxy exchanges the token itself and always sends `vscode-chat`; a daemon is running and needs `agent stop`, then `agent start`.
 
-`agent auth --identity <id>` pins one; the store is the [`integration-id`](configuration.md#credential) key, so `agent config --set integration-id <id>` is the same write.
+`agent auth --identity <id>` pins one; the store is the [`identity`](configuration.md#profile) key, so `agent config --set identity <id>` is the same write.
 
 ```text
 $ agent auth --identity copilot-developer-cli

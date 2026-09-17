@@ -21,7 +21,7 @@ export interface UpdateArgs {
   force?: boolean;
   autoStatus?: boolean;
   /** Commander folds `--verify`/`--no-verify` into one option (last wins), so it arrives as one
-   *  optional boolean; absent defers to the stored `verify-provenance` key. */
+   *  optional boolean; absent defers to the stored `update.verify-provenance` key. */
   verify?: boolean;
 }
 
@@ -95,7 +95,7 @@ function runAutoStatus(config: CopilotEnvConfig): void {
   consola.info(
     `Autoupdate: ${
       config.autoUpdateEnabled() ? "enabled" : "disabled"
-    } (the auto-update config key) | cooldown ${cooldown}d | ` +
+    } (the update.auto config key) | cooldown ${cooldown}d | ` +
       `last check ${last} | last result: ${s.lastResult || "(none)"}`,
   );
 }

@@ -205,7 +205,7 @@ test("resolveLaunchCredential: the copilot device-flow token skips passthrough A
 test("resolveLaunchCredential: `passthrough off` overrides even a PAT (and skips the probe)", async () => {
   tmpHome();
   new Credential().store("gh-token", "ghp_forced_off");
-  new CopilotEnvConfig().set({ passthrough: "off" });
+  new CopilotEnvConfig().setProfile(null, { passthrough: "off" });
   const probe = probeSpy(COPILOT_CLI_INTEGRATION_ID);
 
   const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
@@ -223,7 +223,7 @@ test("resolveLaunchCredential: `passthrough off` overrides even a PAT (and skips
 test("resolveLaunchCredential: `passthrough on` forces the shim for a non-PAT token; the probe skips non-PATs without network", async () => {
   tmpHome();
   new Credential().store("gh-token", "ghu_user_to_server");
-  new CopilotEnvConfig().set({ passthrough: "on" });
+  new CopilotEnvConfig().setProfile(null, { passthrough: "on" });
 
   // No resolver injected: the real one skips non-PAT shapes without a fetch and returns the daemon default.
   const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
@@ -241,7 +241,7 @@ test("resolveLaunchCredential: `passthrough on` forces the shim for a non-PAT to
 test("resolveLaunchCredential: a pinned integration-id reaches the probe as the pin", async () => {
   tmpHome();
   new Credential().store("gh-token", "ghp_pinned");
-  new CopilotEnvConfig().set({ integrationId: "copilot-developer-sandbox" });
+  new CopilotEnvConfig().setProfile(null, { identity: "copilot-developer-sandbox" });
   const probe = probeSpy("copilot-developer-sandbox");
 
   const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
@@ -1048,19 +1048,21 @@ test.skipIf(process.platform === "win32")(
 
 test("resolveStartPort: an inverted range (min > max) is a clear error", async () => {
   tmpHome();
-  new CopilotEnvConfig().set({ minPort: 5000, maxPort: 4000 });
+  new CopilotEnvConfig().set({ "daemon.min-port": 5000, "daemon.max-port": 4000 });
   await expect(
     resolveStartPort(undefined, false, null, false, new CopilotEnvConfig()),
   ).rejects.toThrow(
-    "invalid port range: min-port (5000) is greater than max-port (4000); fix it with `agent config --set min-port <n>` / `--set max-port <n>`.",
+    "invalid port range: daemon.min-port (5000) is greater than daemon.max-port (4000); fix it with " +
+      "`agent config --set daemon.min-port <n>` / `agent config --set daemon.max-port <n>`.",
   );
 });
 
 test("resolveStartPort: a pinned out-of-range port fails with the range message", async () => {
   tmpHome();
-  new CopilotEnvConfig().set({ minPort: 4000, maxPort: 5000 });
+  new CopilotEnvConfig().set({ "daemon.min-port": 4000, "daemon.max-port": 5000 });
   await expect(resolveStartPort(3999, false, null, false, new CopilotEnvConfig())).rejects.toThrow(
-    "requested port 3999 is out of range; the proxy port must be between 4000 and 5000 (`agent config --set min-port/max-port` to change the range).",
+    "requested port 3999 is out of range; the proxy port must be between 4000 and 5000 " +
+      "(`agent config --set daemon.min-port <n>` / `agent config --set daemon.max-port <n>` change the range).",
   );
 });
 
@@ -1084,11 +1086,11 @@ test("resolveStartPort: a pinned free port is used as-is", async () => {
 test("resolveStartPort: strict-port makes a busy DEFAULT port fatal instead of auto-incrementing", async () => {
   tmpHome();
   await withBusyPort(async (busy) => {
-    new CopilotEnvConfig().set({ port: busy, strictPort: true });
+    new CopilotEnvConfig().set({ "daemon.port": busy, "daemon.strict-port": true });
     await expect(
       resolveStartPort(undefined, false, null, false, new CopilotEnvConfig()),
     ).rejects.toThrow(
-      `port ${busy} is busy and auto-increment is disabled (\`strict-port\`); free it, pick another \`--port\`, or set \`agent config --set strict-port false\`.`,
+      `port ${busy} is busy and auto-increment is disabled (\`daemon.strict-port\`); free it, pick another \`--port\`, or set \`agent config --set daemon.strict-port false\`.`,
     );
   });
 });
@@ -1096,7 +1098,7 @@ test("resolveStartPort: strict-port makes a busy DEFAULT port fatal instead of a
 test("resolveStartPort: a busy default WITHOUT strict-port auto-increments to a free port", async () => {
   tmpHome();
   await withBusyPort(async (busy) => {
-    new CopilotEnvConfig().set({ port: busy });
+    new CopilotEnvConfig().set({ "daemon.port": busy });
     const resolved = await resolveStartPort(undefined, false, null, false, new CopilotEnvConfig());
     expect(resolved).not.toBe(busy);
     expect(resolved).toBeGreaterThan(busy);
@@ -1105,11 +1107,16 @@ test("resolveStartPort: a busy default WITHOUT strict-port auto-increments to a 
 
 test("resolveStartPort: a configured default port outside the range is a clear error", async () => {
   tmpHome();
-  new CopilotEnvConfig().set({ port: 1500, minPort: 2000, maxPort: 3000 });
+  new CopilotEnvConfig().set({
+    "daemon.port": 1500,
+    "daemon.min-port": 2000,
+    "daemon.max-port": 3000,
+  });
   await expect(
     resolveStartPort(undefined, false, null, false, new CopilotEnvConfig()),
   ).rejects.toThrow(
-    "configured port 1500 is outside the allowed range 2000-3000; run `agent config --set port <n>` within the range, or adjust min-port/max-port.",
+    "configured port 1500 is outside the allowed range 2000-3000; run " +
+      "`agent config --set daemon.port <n>` within the range, or adjust daemon.min-port/daemon.max-port.",
   );
 });
 
@@ -1122,7 +1129,7 @@ test("resolveStartPort: a named profile's reservation is honored, even after the
     reserved,
   );
   // Out of range now: the reservation gets a liveness-only probe, no range check.
-  new CopilotEnvConfig().set({ minPort: 1024, maxPort: 2048 });
+  new CopilotEnvConfig().set({ "daemon.min-port": 1024, "daemon.max-port": 2048 });
   expect(await resolveStartPort(undefined, false, WORK, false, new CopilotEnvConfig())).toBe(
     reserved,
   );
@@ -1131,7 +1138,7 @@ test("resolveStartPort: a named profile's reservation is honored, even after the
 test("resolveStartPort: strict-port is DEFAULT-daemon-only -- a profile's busy reservation still moves", async () => {
   tmpHome();
   await withBusyPort(async (busy) => {
-    new CopilotEnvConfig().set({ strictPort: true });
+    new CopilotEnvConfig().set({ "daemon.strict-port": true });
     writeRunState({ port: busy }, WORK);
     const resolved = await resolveStartPort(undefined, false, WORK, false, new CopilotEnvConfig());
     expect(resolved).not.toBe(busy);
@@ -1153,7 +1160,7 @@ test("resolveStartPort: reserve=true persists a profile's reservation", async ()
   const free = await freePort();
   // 4141 always seeds the scan's used set, so a pick colliding with it would exhaust the range.
   expect(free).not.toBe(4141);
-  new CopilotEnvConfig().set({ minPort: free, maxPort: free });
+  new CopilotEnvConfig().set({ "daemon.min-port": free, "daemon.max-port": free });
   const reserved = await resolveStartPort(undefined, false, WORK, true, new CopilotEnvConfig());
   expect(reserved).toBe(free);
   expect(CopilotEnvRunState.forProfile(WORK).read().port).toBe(reserved);
@@ -1191,7 +1198,7 @@ test("awaitReadiness: a pinned port that loses the bind race fails, never relaun
 
 test("awaitReadiness: strict-port turns the default daemon's bind race fatal, with the strict wording", async () => {
   const home = tmpHome();
-  new CopilotEnvConfig().set({ strictPort: true });
+  new CopilotEnvConfig().set({ "daemon.strict-port": true });
   const logFile = seedLog(home, "EADDRINUSE\n");
   await expect(
     awaitReadiness({
@@ -1205,7 +1212,7 @@ test("awaitReadiness: strict-port turns the default daemon's bind race fatal, wi
       config: new CopilotEnvConfig(),
     }),
   ).rejects.toThrow(
-    `port 4646 was taken by another process just before launch (strict-port is on, so no auto-increment). See ${logFile}`,
+    `port 4646 was taken by another process just before launch (daemon.strict-port is on, so no auto-increment). See ${logFile}`,
   );
 });
 
@@ -1320,14 +1327,14 @@ function projectionFixture(): { paths: CopilotApiPaths; config: CopilotApiConfig
 
 test("applyDefaultConfig: a nested projection merges into contextManagement", () => {
   const { paths, config } = projectionFixture();
-  new CopilotEnvConfig().set({ useResponsesApiContextManagement: true });
+  new CopilotEnvConfig().set({ "proxy.responses.context-management": true });
   // A daemon-owned sibling and a top-level key copilot-env never projects: both must survive.
   config.save({
     contextManagement: { messages: true },
     useResponsesApiContextManagement: false,
   });
 
-  applyDefaultConfig(paths);
+  applyDefaultConfig(null, paths);
 
   const doc = config.load();
   expect(doc.contextManagement).toEqual({ messages: true, responses: true });
@@ -1342,13 +1349,13 @@ test("applyDefaultConfig: a nested projection merges into contextManagement", ()
 test("applyDefaultConfig: --del of an opt-in key clears OUR recorded write on the next apply", () => {
   const { paths, config } = projectionFixture();
   const envConfig = new CopilotEnvConfig();
-  envConfig.set({ useResponsesApiContextManagement: true });
+  envConfig.set({ "proxy.responses.context-management": true });
   config.save({ contextManagement: { messages: true } });
-  applyDefaultConfig(paths);
+  applyDefaultConfig(null, paths);
   expect(config.load().contextManagement).toEqual({ messages: true, responses: true });
 
-  envConfig.del("useResponsesApiContextManagement");
-  applyDefaultConfig(paths);
+  envConfig.del("proxy.responses.context-management");
+  applyDefaultConfig(null, paths);
 
   const doc = config.load();
   expect(doc.contextManagement).toEqual({ messages: true });
@@ -1360,7 +1367,7 @@ test("applyDefaultConfig: with the opt-in key unset, a hand-edited value we neve
   const { paths, config } = projectionFixture();
   config.save({ contextManagement: { messages: false, responses: true } });
 
-  applyDefaultConfig(paths);
+  applyDefaultConfig(null, paths);
 
   const doc = config.load();
   // No ownership record exists for contextManagement.responses, so the hand edit stands.
@@ -1374,7 +1381,7 @@ test("applyDefaultConfig: a recorded path outside the registry's opt-in set is n
   // write, or an older registry's key).
   new ProxyProjectionState(paths).setOwnedPaths([["auth"]]);
 
-  applyDefaultConfig(paths);
+  applyDefaultConfig(null, paths);
 
   expect(config.load().auth).toMatchObject({ apiKeys: ["seeded-key"] });
   expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
@@ -1383,28 +1390,28 @@ test("applyDefaultConfig: a recorded path outside the registry's opt-in set is n
 test("applyDefaultConfig: a lost record write self-heals on the next apply", () => {
   const { paths, config } = projectionFixture();
   const envConfig = new CopilotEnvConfig();
-  envConfig.set({ useResponsesApiContextManagement: true });
-  applyDefaultConfig(paths);
+  envConfig.set({ "proxy.responses.context-management": true });
+  applyDefaultConfig(null, paths);
   // Simulate the crash window: config.json already carries our value, but the record write
   // (which lands after the config write) never did.
   rmSync(paths.projectionsFile);
 
-  applyDefaultConfig(paths);
+  applyDefaultConfig(null, paths);
   expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([
     ["contextManagement", "responses"],
   ]);
 
-  envConfig.del("useResponsesApiContextManagement");
-  applyDefaultConfig(paths);
+  envConfig.del("proxy.responses.context-management");
+  applyDefaultConfig(null, paths);
   expect(config.load().contextManagement).toEqual({});
 });
 
 test("applyDefaultConfig: a non-record in a nested path's way is replaced, not crashed on", () => {
   const { paths, config } = projectionFixture();
-  new CopilotEnvConfig().set({ useResponsesApiContextManagement: false });
+  new CopilotEnvConfig().set({ "proxy.responses.context-management": false });
   config.save({ contextManagement: "corrupt" });
 
-  applyDefaultConfig(paths);
+  applyDefaultConfig(null, paths);
 
   expect(config.load().contextManagement).toEqual({ responses: false });
 });
@@ -1412,12 +1419,12 @@ test("applyDefaultConfig: a non-record in a nested path's way is replaced, not c
 test("applyDefaultConfig: ownership clearing covers every opt-in key (claude-token-multiplier)", () => {
   const { paths, config } = projectionFixture();
   const envConfig = new CopilotEnvConfig();
-  envConfig.set({ claudeTokenMultiplier: 1.3 });
-  applyDefaultConfig(paths);
+  envConfig.set({ "proxy.claude-token-multiplier": 1.3 });
+  applyDefaultConfig(null, paths);
   expect(config.load().claudeTokenMultiplier).toBe(1.3);
 
-  envConfig.del("claudeTokenMultiplier");
-  applyDefaultConfig(paths);
+  envConfig.del("proxy.claude-token-multiplier");
+  applyDefaultConfig(null, paths);
 
   expect("claudeTokenMultiplier" in config.load()).toBe(false);
   expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);

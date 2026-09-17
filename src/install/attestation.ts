@@ -10,6 +10,8 @@
 // Two failure classes, told apart because the right next step differs:
 //   "cannot verify"        -> the bundle or trust root could not be fetched; names the opt-outs
 //   "verification FAILED"  -> the bytes are not attested or the signer is wrong; never names them
+import { configSetCommand } from "../copilot_api/env_config.ts";
+import { escapeRegExp } from "../utils/regexp.ts";
 
 /** The release asset carrying the Sigstore bundle (uploaded by the release workflow's publish
  *  stage). */
@@ -79,10 +81,6 @@ export const RELEASE_SIGNER_POLICY: SignerPolicy = {
   sourceRepositoryRef: SOURCE_REPOSITORY_REF,
 };
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /** sigstore-js matches the SAN as a regular expression even when given a string, so the
  *  workflow URLs are escaped and the whole pattern anchored. */
 export function signerSanPattern(policy: SignerPolicy): RegExp {
@@ -106,7 +104,7 @@ export interface ProvenanceStatement {
 export function cannotVerifyMessage(tag: string, cause: string): string {
   return `cannot verify the build provenance of ${tag}: ${cause}. ` +
     "To update without provenance verification, re-run with --no-verify, or persist the " +
-    "opt-out with 'agent config --set verify-provenance false'.";
+    `opt-out with '${configSetCommand("update.verify-provenance", "false")}'.`;
 }
 
 /** The mismatch wording: the check ran and the download is not what our release

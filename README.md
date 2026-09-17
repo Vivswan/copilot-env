@@ -9,7 +9,7 @@ TypeScript port of the original Python `copilot-api` helper. Runs on Linux, macO
 ## What it does
 
 - **Codex + Claude wiring**: both CLIs point at the proxy or at Copilot Direct, with `~/.codex` / `~/.claude` written for you.
-- **Lifecycle**: `start` / `stop` the proxy yourself, or let `auto-start` run it on demand and stop it when idle.
+- **Lifecycle**: `start` / `stop` the proxy yourself, or let `daemon.auto-start` run it on demand and stop it when idle.
 - **Zero setup**: one self-contained binary, no runtime or package manager first. The proxy is fetched on first use, never installed globally.
 - **One credential per setup**: `agent auth` holds the GitHub Copilot token (device flow, `gh` CLI, or a stored PAT), plus one slot per profile.
 - **Named profiles**: `agent profile` bundles one credential and one mode into both agents, so several sessions run at once.

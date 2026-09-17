@@ -5,7 +5,7 @@
 //            URL, a user's own http://localhost:9999/custom included
 //   SET   -> overrides whatever the shell already carries
 //
-// The launcher functions ride here rather than in an rc block, so enabling `launchers` takes effect
+// The launcher functions ride here rather than in an rc block, so enabling `shell.launchers` takes effect
 // on the next `agent` command, whose wrapper evals this output; redefining a function is
 // idempotent. Disabling emits nothing, so functions a shell already defined live until it exits.
 import { BASE_URL_ENV, inspectClaudeWiring } from "../claude/config.ts";
@@ -45,7 +45,7 @@ function isLocalProxyUrl(url: string): boolean {
   return parseLoopbackProxyUrl(url) !== null;
 }
 
-/** The same resolution the writer and the launch pin use (resolveCodexHome): with `codex-host` on
+/** The same resolution the writer and the launch pin use (resolveCodexHome): with `codex.host` on
  *  the farm is exported built or not (the next `agent codex` builds it), so a drift between the key
  *  and the disk is warned about beside it, never hidden by an empty export. */
 export function managedCodexHome(): ManagedEnvValue {

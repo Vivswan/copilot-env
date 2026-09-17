@@ -65,7 +65,7 @@ export type CreditsFetch = (input: string, init?: RequestInit) => Promise<Respon
 /** The same env the owner's ghco script reads, so one setting drives both. */
 export const CREDITS_TARGET_ENV = "COPILOT_CREDITS_TARGET";
 
-/** Flag > env > stored `credits-target` > none; an explicit value is parsed by the
+/** Flag > env > stored `cost.credits-target` > none; an explicit value is parsed by the
  *  registry's own rule, so the flag and the key share one range and one message. */
 export function resolveCreditsTarget(
   flag: string | undefined,
@@ -78,8 +78,8 @@ export function resolveCreditsTarget(
     ? { raw: env[CREDITS_TARGET_ENV] as string, source: CREDITS_TARGET_ENV }
     : null;
   if (explicit === null) return config.creditsTarget();
-  const parse = configKeyDef("credits-target")?.parse;
-  if (parse === undefined) throw new Error("config key 'credits-target' is not registered");
+  const parse = configKeyDef("cost.credits-target")?.parse;
+  if (parse === undefined) throw new Error("config key 'cost.credits-target' is not registered");
   try {
     return parse(explicit.raw) as number;
   } catch (e) {
@@ -137,7 +137,7 @@ export interface CreditsPace {
   login: string | null;
   entitlement: number;
   used: number;
-  /** The `credits-target` ceiling; null without one, and then no target bar or row is drawn. */
+  /** The `cost.credits-target` ceiling; null without one, and then no target bar or row is drawn. */
   target: number | null;
   /** Period bounds, ms since the epoch (UTC midnights). */
   periodStartMs: number;

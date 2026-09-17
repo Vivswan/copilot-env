@@ -140,7 +140,7 @@ flowchart TD
   install --> layout
 ```
 
-- **Trust on first use:** the installer never verifies the release it was fetched from (that would be circular). `agent update` proves origin with Sigstore and fails closed; `--no-verify` and the `verify-provenance` key are the two opt-outs, and the skip warning names the way back.
+- **Trust on first use:** the installer never verifies the release it was fetched from (that would be circular). `agent update` proves origin with Sigstore and fails closed; `--no-verify` and the `update.verify-provenance` key are the two opt-outs, and the skip warning names the way back.
 - **Nothing before the commit is best-effort;** past the `current` flip the install has moved forward, so `agent migrate` and the GC (one previous version kept) may fail without stranding it.
 
 Demonstrated by: [test/installer.test.ts](../test/installer.test.ts), [test/update_apply.test.ts](../test/update_apply.test.ts), [test/provenance.test.ts](../test/provenance.test.ts).

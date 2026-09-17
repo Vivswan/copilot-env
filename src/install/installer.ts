@@ -15,6 +15,7 @@
 // Every path that outlives a release goes through `<top>/current/...`, so flipping the link is
 // the whole commit of an update and old version dirs can be garbage-collected safely.
 import { spawnSync } from "node:child_process";
+import { configSetCommand } from "../copilot_api/env_config.ts";
 import {
   existsSync,
   lstatSync,
@@ -732,7 +733,9 @@ function printEpilogue(options: InstallOptions): void {
   // CLIs first: `agent init` auto-detects Direct by smoke-testing the installed CLI, so a
   // machine without one lands on the proxy.
   console.log(
-    "  1. Run 'agent shell --clis' to install the Claude and Codex CLIs ('agent config --set launchers true' adds the cl/co/cx shortcuts).",
+    `  1. Run 'agent shell --clis' to install the Claude and Codex CLIs ('${
+      configSetCommand("shell.launchers", "true")
+    }' adds the cl/co/cx shortcuts).`,
   );
   console.log(
     "  2. Run 'agent init' to set up Codex + Claude (it picks GitHub Copilot Direct or the local proxy), then tells you whether you need 'agent start' (only for the proxy).",

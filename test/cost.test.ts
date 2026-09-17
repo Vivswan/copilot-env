@@ -882,7 +882,7 @@ test("resolvePricingUrl: the flag beats the stored key, which beats the built-in
   try {
     const config = new CopilotEnvConfig(join(dir, "config.json"));
     expect(resolvePricingUrl(undefined, config)).toBe(OPENROUTER_MODELS_URL);
-    config.set({ pricingUrl: STORED_URL });
+    config.set({ "cost.pricing-url": STORED_URL });
     expect(resolvePricingUrl(undefined, config)).toBe(STORED_URL);
     expect(resolvePricingUrl(FLAG_URL, config)).toBe(FLAG_URL);
   } finally {
@@ -892,7 +892,7 @@ test("resolvePricingUrl: the flag beats the stored key, which beats the built-in
 
 test("runCost fetches the stored pricing-url, and --pricing-url overrides it for one run", () =>
   withCostHome(async ({ claudeRoot }) => {
-    new CopilotEnvConfig().set({ pricingUrl: STORED_URL });
+    new CopilotEnvConfig().set({ "cost.pricing-url": STORED_URL });
     const stored = recordingFetch(PRICED_BODY);
     await captureAllWrites(() =>
       runCost({ json: true }, { fetchImpl: stored.fetch, ...rootsOf([], [claudeRoot]) })
@@ -911,7 +911,7 @@ test("runCost fetches the stored pricing-url, and --pricing-url overrides it for
 
 test("a stored pricing-url never reaches a warning or the price cache on disk", () =>
   withCostHome(async ({ home, claudeRoot }) => {
-    new CopilotEnvConfig().set({ pricingUrl: STORED_URL });
+    new CopilotEnvConfig().set({ "cost.pricing-url": STORED_URL });
     const cacheDir = join(home, USAGE_INDEX_DIR_NAME);
 
     // A failed fetch: the warning names the failure, never the URL.

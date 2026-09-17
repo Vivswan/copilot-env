@@ -121,7 +121,7 @@ function catalogAliases(
 
 /**
  * Resolves an alias the way the proxy does for the same stored key (start.ts), so ONE
- * `message-websearch-model` value drives both surfaces.
+ * `proxy.message-websearch-model` value drives both surfaces.
  *
  *   the catalog fetch fails  -> warn and send the raw value
  *   no alias for the value   -> sent as-is; generateAliases skips identity mappings
@@ -171,15 +171,15 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   const config = new CopilotEnvConfig();
   const { integrationId, apiBase } = await raceWithAbort(
     selectDirectIdentityAndHost(token, CODEX_EXEC_USER_AGENT, {
-      pinned: config.pinnedIntegrationId(),
-      fixedHost: config.copilotHost(),
+      pinned: config.pinnedIntegrationId(profile),
+      fixedHost: config.copilotHost(profile),
       fetchImpl: opts.fetchImpl,
       narrator: logger,
     }),
     opts.signal,
   );
   const clientHeaders = directClientHeaders(CODEX_EXEC_USER_AGENT, integrationId);
-  const configured = opts.model ?? config.messageApiWebSearchModel();
+  const configured = opts.model ?? config.messageApiWebSearchModel(profile);
   // Only a configured value can be an alias; the built-in default is a raw catalog id, so the default
   // path stays catalog-free.
   const model = configured === null ? DEFAULT_WEB_SEARCH_MODEL : await raceWithAbort(

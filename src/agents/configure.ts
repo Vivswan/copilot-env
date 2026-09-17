@@ -3,7 +3,7 @@
 // runAgentConfig, so the dependency edge points one way (agent file -> here) and cannot cycle.
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { wiringPortFor } from "../copilot_api/port.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
@@ -62,7 +62,7 @@ export function resolveCredentialWiring(
   directToken?: string | null,
 ): CredentialWiring {
   const config = new CopilotEnvConfig();
-  if (!config.staticKeyFor(agent)) return { kind: "command" };
+  if (!config.staticKeyFor(agent, profile)) return { kind: "command" };
   if (mode === "proxy") {
     return { kind: "static", token: CopilotApiConfig.forProfile(profile).ensureApiKey() };
   }
@@ -72,8 +72,10 @@ export function resolveCredentialWiring(
   if (resolved.token === null) {
     const slot = profile === null ? "" : ` --profile ${profile}`;
     throw new Error(
-      `static-key is ${config.staticKeyScope()} but no credential resolves to bake: ` +
-        `${resolved.reason}. Run \`agent auth${slot}\`, or \`agent config --set static-key none\` ` +
+      `static-key is ${config.staticKeyScope(profile)} but no credential resolves to bake: ` +
+        `${resolved.reason}. Run \`agent auth${slot}\`, or \`${
+          configSetCommand("static-key", "none", profile)
+        }\` ` +
         "to go back to the resolver command.",
     );
   }
@@ -214,7 +216,7 @@ export interface AgentAdapter {
    *  machine, pings the wire itself; null (nothing stored) is the proxy verdict. */
   detectDirect(direct: DirectWiring, ghToken: string | null): Promise<boolean>;
   /** The DEFAULT credential's Direct client identity (config pin, else probe) and host
-   *  (`copilot-host` literal, else probe). On the adapter because this module must not import the
+   *  (`host` literal, else probe). On the adapter because this module must not import the
    *  per-agent probe machinery. */
   resolveDirectWiring(ghToken: string | null): Promise<DirectWiring>;
   /** `ghToken` is the credential runAgentConfig already resolved (null = none stored). Only

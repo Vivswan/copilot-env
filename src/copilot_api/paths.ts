@@ -181,7 +181,7 @@ export class CopilotApiPaths {
   activityFile: string;
   logFile: string;
   /** The proxy's per-endpoint handler logs, distinct from the access `logFile` (which also records
-   *  liveness pings); the `proxy-logs` config key (off) discards writes here entirely. */
+   *  liveness pings); the `daemon.logs` config key (off) discards writes here entirely. */
   logsDir: string;
   sqliteDb: string;
   /** `credentials.json`: the provisioned GitHub credentials (default + named profile slots). Account-wide,

@@ -9,7 +9,7 @@
 //                                                    writes and references it, unverified
 //   one ATTEMPT per day, not one success          -> a broken upstream never retries inside every
 //                                                    300s Codex auth refresh
-//   `agent config --set codex-model-catalog true` -> opt-in; off, config.ts and
+//   `agent config --set codex.model-catalog true` -> opt-in; off, config.ts and
 //                                                    catalog_reference.ts remove it
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -573,7 +573,7 @@ async function defaultFetchCopilotModels(
 /** Never throws, never deletes or truncates an existing file: a stale catalog serves until a
  *  refresh succeeds.
  *
- *  opt-in `codex-model-catalog` off -> a no-op
+ *  opt-in `codex.model-catalog` off -> a no-op
  *  Copilot fetched FIRST            -> no credential, or the proxy down, skips the codex spawn
  *  the installed CLI rejects it     -> the candidate is not written; an unjudgeable one is */
 export async function generateCodexModelCatalog(

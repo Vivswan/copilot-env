@@ -1,4 +1,4 @@
-// The once-per-day autoupdate routine, gated on the `auto-update` config key. `agent start`
+// The once-per-day autoupdate routine, gated on the `update.auto` config key. `agent start`
 // (src/commands/start.ts) runs it as the last step of a live launch, so an installed binary
 // self-updates through the one command path (a source checkout runs the check and skips the
 // apply). Stderr-only output: `start`'s stdout and exit code are never touched here.
@@ -87,7 +87,7 @@ async function checkAndApply(
   logger.start(`autoupdate: updating ${current} -> ${target.tag} ...`);
   try {
     // Stderr end to end, so an autoupdate can never write to stdout (protects `agent env`). No
-    // flag here: the stored `verify-provenance` (default: verify) decides.
+    // flag here: the stored `update.verify-provenance` (default: verify) decides.
     const provenance = resolveProvenanceDecision(
       undefined,
       new CopilotEnvConfig().verifyProvenanceEnabled(),

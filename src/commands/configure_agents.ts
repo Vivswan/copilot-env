@@ -1,4 +1,5 @@
 import { configureDefaultAgents } from "../agents/configure_defaults.ts";
+import { configSetCommand } from "../copilot_api/env_config.ts";
 import type { AgentProviderMode, RequestedMode } from "../agents/provider_mode.ts";
 import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -48,7 +49,9 @@ export function printGuidance(
     lines.push("", "At least one agent uses the local proxy.");
     section("Start the proxy", [
       "`agent start` - launch the daemon",
-      "`agent config --set launchers true` - `cl` / `cx` then auto-start it for you",
+      `\`${
+        configSetCommand("shell.launchers", "true")
+      }\` - \`cl\` / \`cx\` then auto-start it for you`,
       "`agent cost` - report proxy usage",
     ]);
   } else if (bothDirect) {
@@ -56,7 +59,9 @@ export function printGuidance(
     lines.push("", `Both agents use GitHub Copilot Direct - no local proxy needed${tail}`);
     section("Run the agents", [
       "Just use `claude` and `codex` - no `agent start` / `agent stop`",
-      "`agent config --set launchers true` - optional `cl` / `co` / `cx` shortcuts",
+      `\`${
+        configSetCommand("shell.launchers", "true")
+      }\` - optional \`cl\` / \`co\` / \`cx\` shortcuts`,
     ]);
     section("Good to know", [
       "`agent cost` reports proxy usage only - Direct usage won't appear",

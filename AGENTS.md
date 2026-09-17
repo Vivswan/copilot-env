@@ -55,7 +55,7 @@ copilot-env wires the Codex and Claude CLIs to GitHub Copilot, either through a 
 - **Profiles are atomic units** (`src/agents/profile_wiring.ts`): one credential + one mode, always both agents. A named profile hard-fails rather than falling back to the default credential.
 - **`agent config` is the typed preference store** with a single key registry (`src/copilot_api/env_config.ts`). Every read site applies explicit flag/env > stored config > built-in default.
 - **`agent update` proves origin and fails closed** (Sigstore provenance, `src/install/provenance.ts`). The installer is trust-on-first-use: verifying against the same release it was fetched from would be circular.
-- **Claude Desktop wiring is state driven** (`src/agents/claude_desktop.ts`): every pass re-derives from the `claude-desktop` key and the ownership ledger, and a sweep never removes an entry it does not own.
+- **Claude Desktop wiring is state driven** (`src/agents/claude_desktop.ts`): every pass re-derives from the `claude.desktop` key and the ownership ledger, and a sweep never removes an entry it does not own.
 - **The usage index is a pre-index, never a result cache.** Every `agent cost` report folds fresh from the files that exist now and must equal the full parse.
 - **Migrations** (`src/migrations/`): one file per from-version. Delete a step once its fix is re-derivable; the format it read goes with it, never into a reader.
 - **One env init**: every agent/dev environment and fresh worktree runs `scripts/setup-env.sh` (`.ps1` on Windows).

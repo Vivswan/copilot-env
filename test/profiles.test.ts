@@ -559,6 +559,10 @@ test("profile --add wires both agents atomically; --del removes everything", asy
     codexProviderId(WORK),
   );
 
+  // A profile-scoped setting lives in the profile's section of the preference store.
+  new CopilotEnvConfig().setProfile(WORK, { identity: "copilot-developer-cli" });
+  expect(new CopilotEnvConfig().pinnedIntegrationId(WORK)).toBe("copilot-developer-cli");
+
   // Mode switch: re-add with the other flag flips BOTH agents (one mode, never both).
   await runProfile({ add: "work", mode: "direct" });
   expect(state.readProfileSlot(WORK).mode).toBe("direct");
@@ -581,6 +585,12 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   ).toBeUndefined();
   expect(existsSync(codexProfileConfigPath(codexHome, WORK))).toBe(false);
   expect(existsSync(profileHome(WORK))).toBe(false);
+  // ... and the settings section, so a later profile of the same name inherits nothing.
+  expect(new CopilotEnvConfig().read().profiles).not.toHaveProperty("work");
+  // A profile that exists ONLY as a settings section (a settings-only import) is still deletable.
+  new CopilotEnvConfig().setProfile(WORK, { host: "https://copilot-api.ghe.example" });
+  await runProfile({ del: "work", mode: "auto" });
+  expect(new CopilotEnvConfig().read().profiles).not.toHaveProperty("work");
 });
 
 test("a wiring failure after the atomic commit leaves a complete slot that --sync heals", async () => {
@@ -901,7 +911,7 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
 
   // Key off: the launcher-style --settings-for (the Claude adapter's profile write, the
   // same path `cl --profile` takes) sweeps the entry -- no --sync or re-add needed.
-  new CopilotEnvConfig().set({ claudeDesktop: false });
+  new CopilotEnvConfig().set({ "claude.desktop": false });
   await captureAllWrites(() => runProfile({ settingsFor: "work", mode: "auto" }));
   expect(entryNames()).toEqual([]);
   expect(existsSync(helper)).toBe(false);
@@ -911,7 +921,7 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
 
   await runProfile({ add: "work", mode: "auto" });
   expect(entryNames()).toEqual([]);
-  new CopilotEnvConfig().del("claudeDesktop");
+  new CopilotEnvConfig().del("claude.desktop");
   await runProfile({ sync: true, mode: "auto" });
   expect(entryNames()).toEqual(["copilot-env: work"]);
   expect(existsSync(helper)).toBe(true);

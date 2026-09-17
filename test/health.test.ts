@@ -726,12 +726,12 @@ test("runtime: a down daemon reads ok (starts on demand) when auto-start is on",
   });
   const port = runPort(down);
   expect(port.status).toBe("ok");
-  expect(port.detail).toContain("starts on demand (auto-start on)");
+  expect(port.detail).toContain("starts on demand (daemon.auto-start on)");
   expect(port.fix).toBeUndefined();
   expect((port.value as Record<string, unknown>).autoStart).toBe(true);
   const pid = runPid(down);
   expect(pid.status).toBe("ok");
-  expect(pid.detail).toContain("starts on demand (auto-start on)");
+  expect(pid.detail).toContain("starts on demand (daemon.auto-start on)");
   expect(pid.fix).toBeUndefined();
   expect((pid.value as Record<string, unknown>).autoStart).toBe(true);
   expect(exitCodeFor(evaluateAll("runtime", { runtimes: [down] }))).toBe(0);

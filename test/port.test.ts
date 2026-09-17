@@ -45,8 +45,8 @@ test("daemonPolicy pins every default-vs-named lifecycle policy in one place", (
 
 test("the range defaults to [1024, 65535] and excludes privileged/out-of-range ports", () => {
   tmpHome();
-  expect(minProxyPort()).toBe(configDefaultNumber("min-port")); // 1024
-  expect(maxProxyPort()).toBe(configDefaultNumber("max-port")); // 65535
+  expect(minProxyPort()).toBe(configDefaultNumber("daemon.min-port")); // 1024
+  expect(maxProxyPort()).toBe(configDefaultNumber("daemon.max-port")); // 65535
   expect(proxyPortInRange(443)).toBe(false); // privileged
   expect(proxyPortInRange(1023)).toBe(false);
   expect(proxyPortInRange(1024)).toBe(true);
@@ -58,7 +58,7 @@ test("the range defaults to [1024, 65535] and excludes privileged/out-of-range p
 
 test("min-port / max-port config narrow the allowed range", () => {
   tmpHome();
-  new CopilotEnvConfig().set({ minPort: 4000, maxPort: 5000 });
+  new CopilotEnvConfig().set({ "daemon.min-port": 4000, "daemon.max-port": 5000 });
   expect(minProxyPort()).toBe(4000);
   expect(maxProxyPort()).toBe(5000);
   // 4141 (the built-in default) stays valid; ports outside the narrowed range do not.
@@ -70,7 +70,7 @@ test("min-port / max-port config narrow the allowed range", () => {
 
 test("an inverted range (min > max) admits no port", () => {
   tmpHome();
-  new CopilotEnvConfig().set({ minPort: 5000, maxPort: 4000 });
+  new CopilotEnvConfig().set({ "daemon.min-port": 5000, "daemon.max-port": 4000 });
   // proxyPortInRange is vacuously false for every port; resolveStartPort surfaces a clear
   // "min-port > max-port" error (exercised in the start flow, not here).
   for (const p of [3999, 4000, 4500, 5000, 5001]) {

@@ -19,13 +19,22 @@ import {
   CONFIG_REGISTRY,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
+  type GlobalMapKey,
+  isGlobalMapKey,
+  isProfileMapKey,
   isProxyProjected,
+  type ProfileMapKey,
 } from "../copilot_api/env_config.ts";
-import { profileLabel } from "../copilot_api/profile.ts";
+import {
+  isValidProfileName,
+  parseProfileName,
+  type Profile,
+  profileLabel,
+} from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { atomicWriteFile, writeFileReported } from "../utils/report_write.ts";
-import { PROXY_RESTART_HINT, unreadProjectedKeyWarnings } from "./config.ts";
+import { PROXY_RESTART_HINT_ALL, unreadProjectedKeyWarnings } from "./config.ts";
 
 // Narration to stderr so `--export`'s stdout stays a clean machine-readable bundle.
 const logger = createStderrLogger();
@@ -76,22 +85,33 @@ export function parseSettingsAction(args: SettingsArgs): SettingsAction {
 const ROLLBACK_SCOPE_NOTE =
   "(restores the stores; profiles this import created stay until `agent profile --del`)";
 
-/** Projection happens at `agent start`, and an auto-start no-op never re-projects, so a running
- *  daemon misses a projected key the bundle set or reset until it restarts. Hint first, then
- *  warnings. Exported for tests. */
+/** Projection happens at `agent start` per profile, and an auto-start no-op never re-projects, so a
+ *  running daemon misses a projected key the bundle set or reset until it restarts. Hint first, then
+ *  the installed-version warnings for EVERY profile either snapshot names, deduplicated. Exported for
+ *  tests. */
 export function importRestartHints(
   config: CopilotEnvConfigData,
   preImportPrefs: CopilotEnvConfigData,
+  warningsFor: (profile: Profile) => string[] = (profile) =>
+    unreadProjectedKeyWarnings(undefined, undefined, profile),
 ): string[] {
   // Prefs are full-replace, so a projected key changes when the bundle carries it OR when the
-  // bundle drops one the store had.
+  // bundle drops one the store had, in the global map or any profile's section.
+  const carries = (data: CopilotEnvConfigData, key: GlobalMapKey & ProfileMapKey): boolean =>
+    data.global[key] !== undefined ||
+    Object.values(data.profiles).some((section) => section[key] !== undefined);
   const projectedChanges = CONFIG_REGISTRY.some(
     (def) =>
-      isProxyProjected(def) &&
-      (config[def.key] !== undefined || preImportPrefs[def.key] !== undefined),
+      isProxyProjected(def) && isGlobalMapKey(def.key) && isProfileMapKey(def.key) &&
+      (carries(config, def.key) || carries(preImportPrefs, def.key)),
   );
   if (!projectedChanges) return [];
-  return [PROXY_RESTART_HINT, ...unreadProjectedKeyWarnings()];
+  const named = new Set([...Object.keys(config.profiles), ...Object.keys(preImportPrefs.profiles)]);
+  const profiles: Profile[] = [
+    null,
+    ...[...named].filter(isValidProfileName).sort().map(parseProfileName),
+  ];
+  return [PROXY_RESTART_HINT_ALL, ...new Set(profiles.flatMap(warningsFor))];
 }
 
 function runExport(target: string | boolean, withCredentials: boolean): void {

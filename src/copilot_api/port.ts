@@ -1,7 +1,7 @@
 import * as net from "node:net";
 
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
-import { CopilotEnvConfig } from "./env_config.ts";
+import { configSetCommand, CopilotEnvConfig } from "./env_config.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import type { Profile, ProfileName } from "./profile.ts";
 import { CopilotEnvRunState } from "./state.ts";
@@ -110,9 +110,9 @@ export async function copilotApiFindPort(start: number = defaultProxyPort()): Pr
     }
   }
   throw new Error(
-    `no free port found in range ${from}-${
-      to - 1
-    }; free a port or run \`agent config --set port <n>\` to start the search elsewhere`,
+    `no free port found in range ${from}-${to - 1}; free a port or run \`${
+      configSetCommand("daemon.port", "<n>")
+    }\` to start the search elsewhere`,
   );
 }
 
@@ -156,7 +156,10 @@ function candidateProfilePort(excluding: Profile = null): number {
   const max = maxProxyPort();
   if (min > max) {
     throw new Error(
-      `invalid port range: min-port (${min}) is greater than max-port (${max}); fix it with \`agent config --set min-port <n>\` / \`--set max-port <n>\`.`,
+      `invalid port range: daemon.min-port (${min}) is greater than daemon.max-port (${max}); ` +
+        `fix it with \`${configSetCommand("daemon.min-port", "<n>")}\` / \`${
+          configSetCommand("daemon.max-port", "<n>")
+        }\`.`,
     );
   }
   const used = recordedPorts(excluding);
@@ -169,7 +172,7 @@ function candidateProfilePort(excluding: Profile = null): number {
   }
   throw new Error(
     `no free port left in range ${min}-${max} to reserve for a profile; ` +
-      "widen it with `agent config --set max-port <n>`.",
+      `widen it with \`${configSetCommand("daemon.max-port", "<n>")}\`.`,
   );
 }
 

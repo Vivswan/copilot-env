@@ -1,5 +1,5 @@
 // `agent credits`: this month's Copilot AI credits, spent and projected, against the
-// plan's entitlement and the optional `credits-target`. One live read of GitHub's
+// plan's entitlement and the optional `cost.credits-target`. One live read of GitHub's
 // meter for the default credential; no local log is touched.
 import {
   type CredentialLook,

@@ -28,7 +28,7 @@ import {
 import { type AgentProviderMode, providerModeExitCode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { isReducedGpt } from "../copilot_api/models.ts";
 import {
   type BakedDirectIdentity,
@@ -767,7 +767,7 @@ export function planCodexConfig(
       logger.warn(
         `  ! the installed codex rejects ${catalogFile}; leaving it out of the config ` +
           "(regenerate with `agent codex`, or disable with " +
-          "`agent config --set codex-model-catalog false`)",
+          `\`${configSetCommand("codex.model-catalog", "false")}\`)`,
       );
     }
     if (verdict === "accepted" || verdict === "unverifiable") {
@@ -911,9 +911,9 @@ export async function applyCodexConfig(
   if (profile === null) syncCodexCatalogReference(catalogDeps);
 }
 
-/** The Direct facts a write bakes, resolved ONCE on the host in use: the `integration-id` pin, else
+/** The Direct facts a write bakes, resolved ONCE on the host in use: the `identity` pin, else
  *  identity selection on that host (a `preferred` cached identity tried first, never taken on trust;
- *  a definitive 400/401 moves on), then the `copilot-host` literal, else the host probe under that
+ *  a definitive 400/401 moves on), then the `host` literal, else the host probe under that
  *  identity; a host `auto` moves to re-runs the selection there. Throws when the credential is
  *  rejected under every known identity.
  *
@@ -931,9 +931,9 @@ export async function probeDirectWiring(
   // The one identity-then-host rule (selectDirectIdentityAndHost): a literal skips the HOST probe,
   // never the identity selection, and a host `auto` moved to re-runs the selection there.
   const { integrationId, apiBase } = await selectDirectIdentityAndHost(resolved, userAgent, {
-    pinned: config.pinnedIntegrationId(),
+    pinned: config.pinnedIntegrationId(profile),
     preferred,
-    fixedHost: config.copilotHost(),
+    fixedHost: config.copilotHost(profile),
   });
   return { directIntegrationId: integrationId, directBaseUrl: apiBase };
 }
@@ -1010,7 +1010,7 @@ function serviceTierDetail(doc: Record<string, unknown>): string {
   const tier = doc.service_tier;
   if (tier === undefined) return "not pinned";
   if (tier === COPILOT_REJECTED_SERVICE_TIER) {
-    return `"${tier}" (Copilot Direct rejects it; the opt-in codex-model-catalog stops Codex from ` +
+    return `"${tier}" (Copilot Direct rejects it; the opt-in codex.model-catalog stops Codex from ` +
       `sending any tier, else set service_tier = "default" or "flex" in config.toml)`;
   }
   if (typeof tier === "string" && COPILOT_ACCEPTED_SERVICE_TIERS.has(tier)) {
@@ -1108,7 +1108,7 @@ export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
 
 /** The throwaway config's selector, NOT the managed id. The table's `auth.command` runs `agent auth
  *  --get` in the child, and with neither Codex-home key set (the default) that child's Codex home is
- *  $CODEX_HOME = the throwaway home (defaultCodexHome; codex-home or a codex-host farm wins over it).
+ *  $CODEX_HOME = the throwaway home (defaultCodexHome; codex.home or a codex.host farm wins over it).
  *  Its catalog self-heal (src/codex/catalog_reference.ts) adds `model_catalog_json` to, and ledgers,
  *  any config there that selects the managed provider: the next attempt would then run under the
  *  user's catalog, and the ledger would keep a path removeScratchDir deletes. A foreign selector is

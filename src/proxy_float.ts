@@ -5,7 +5,7 @@
 //
 // npm lifecycle scripts never run for global-cache `npm:` execution, so a target declaring them
 // would misbehave silently at runtime: the default float REFUSES it (a recorded in-bounds version
-// is kept; otherwise it fails loud), while an explicit COPILOT_API_VERSION or `proxy-version` pin
+// is kept; otherwise it fails loud), while an explicit COPILOT_API_VERSION or `daemon.version` pin
 // installs it with a warning. The cache warm passes the cooldown as --minimum-dependency-age, so
 // TRANSITIVE deps get the window too.
 
@@ -18,7 +18,11 @@ import { createConsola } from "consola";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
 import { atomicWriteFile, removeTreeReported } from "./utils/report_write.ts";
-import { configDefaultNumber, CopilotEnvConfig } from "./copilot_api/env_config.ts";
+import {
+  configDefaultNumber,
+  configSetCommand,
+  CopilotEnvConfig,
+} from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
 import { resolveDenoBin } from "./copilot_api/sidecar.ts";
@@ -43,7 +47,7 @@ const PROXY_VERSION_ENV = "COPILOT_API_VERSION";
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
-export const DEFAULT_RELEASE_COOLDOWN_SECONDS = configDefaultNumber("release-cooldown");
+export const DEFAULT_RELEASE_COOLDOWN_SECONDS = configDefaultNumber("daemon.release-cooldown");
 
 /** The full document: its `time` map carries the publish times the cooldown needs; the abbreviated
  *  install doc lacks it. */
@@ -54,7 +58,7 @@ export const PROXY_REGISTRY_URL = `https://registry.npmjs.org/${PROXY_PKG.replac
  *  exists to prevent. An env pin short-circuits before the store is consulted, so it keeps working
  *  even then. */
 export function resolveProxyVersionOverride(): string | undefined {
-  return process.env[PROXY_VERSION_ENV]?.trim() || new CopilotEnvConfig().read().proxyVersion;
+  return process.env[PROXY_VERSION_ENV]?.trim() || new CopilotEnvConfig().proxyVersionPin();
 }
 
 type ProxyConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
@@ -80,7 +84,7 @@ export function resolveMinimumReleaseAgeSeconds(): number {
   }
   // Strict config read, like the version pin: a stored cooldown must not be shortened to the
   // default by an unreadable store.
-  return new CopilotEnvConfig().read().releaseCooldown ?? DEFAULT_RELEASE_COOLDOWN_SECONDS;
+  return new CopilotEnvConfig().releaseCooldownSeconds();
 }
 
 function formatReleaseAge(seconds: number): string {
@@ -235,7 +239,9 @@ function refusalMessage(sel: Extract<ProxySelection, { kind: "refused" }>): stri
       sel.lifecycleScripts.join(", ")
     }), ` +
     `which never run for global-cache execution and would misbehave silently; refusing it. ` +
-    `Review the release, then pin it (${PROXY_VERSION_ENV} or \`agent config --set proxy-version\`) ` +
+    `Review the release, then pin it (${PROXY_VERSION_ENV} or \`${
+      configSetCommand("daemon.version", "<version>")
+    }\`) ` +
     `or cap PROXY_MAX_VERSION in copilot-env.config below it.`
   );
 }
@@ -1055,7 +1061,7 @@ export async function proxyInstallAssertStatus(
     return {
       "ok": false,
       "message":
-        `recorded ${PROXY_PKG} ${record.version} does not match the pinned ${override} (${PROXY_VERSION_ENV} or the proxy-version config) - the proxy float failed to apply the pin.`,
+        `recorded ${PROXY_PKG} ${record.version} does not match the pinned ${override} (${PROXY_VERSION_ENV} or the daemon.version config) - the proxy float failed to apply the pin.`,
     };
   }
 
@@ -1161,7 +1167,7 @@ export async function proxyInstallAssertStatus(
 
 // --- the Direct-only skip predicate -------------------------------------------
 
-/** An env pin is per-invocation intent and forces the normal path; a stored `proxy-version` pin
+/** An env pin is per-invocation intent and forces the normal path; a stored `daemon.version` pin
  *  does NOT, since the config only matters once an agent is wired to the proxy again.
  *  src/health/probe.ts reports a skipped float instead of a stale one. */
 export function proxyFloatSkips(codexHome?: string, claudeHome?: string): boolean {

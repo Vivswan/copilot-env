@@ -1,19 +1,27 @@
 // configTable() is the one table both `agent config` and its `--help` print; the key registry is
 // src/copilot_api/env_config.ts.
 import { consola } from "consola";
-import { anyTrackedDaemonAlive } from "../copilot_api/daemon.ts";
+import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../copilot_api/daemon.ts";
 import {
+  CONFIG_GROUPS,
   CONFIG_REGISTRY,
-  CONFIG_SECTIONS,
   configDefaultValue,
+  type ConfigGroup,
+  configGroup,
   type ConfigKeyDef,
   configKeyDef,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   formatConfigValue,
   isProxyProjected,
+  isStoredSource,
   isStoredValueInert,
+  PROFILE_SETTINGS_DEFAULT_KEY,
+  resolveSettingIn,
+  type SettingTarget,
 } from "../copilot_api/env_config.ts";
+import { assertKnownProfile } from "../copilot_api/env_state.ts";
+import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { nextProxyVersion } from "../proxy_float.ts";
 import { bold, COLOR_ENABLED, cyan, dim, green } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -26,25 +34,37 @@ export interface ConfigArgs {
   set?: string[];
   get?: string | boolean;
   del?: string;
+  /** The profile a profile-scoped key is set, deleted, or read for; absent = the default profile
+   *  (and, for a profile-default key, the global value). */
+  profile?: string;
 }
 
-function unknownKeyError(cli: string): Error {
-  const keys = CONFIG_REGISTRY.map((d) => d.cli).join(", ");
-  return new Error(`unknown config key '${cli}'. Valid keys: ${keys}`);
+function unknownKeyError(key: string): Error {
+  const keys = CONFIG_REGISTRY.map((d) => d.key).join(", ");
+  return new Error(`unknown config key '${key}'. Valid keys: ${keys}`);
 }
 
-/** Shared with `agent settings --import`. Hints stay shell-neutral (no `&&`) for Windows PowerShell
- *  5.1. */
-export const PROXY_RESTART_HINT =
-  "Applies on the next proxy start; restart it: `agent stop`, then `agent start`.";
+/** The daemon that reads a projected or launch-time key is the profile's own, so the restart the
+ *  hint names is that daemon's. Hints stay shell-neutral (no `&&`) for Windows PowerShell 5.1. */
+export function proxyRestartHint(profile: Profile): string {
+  const flag = profile === null ? "" : ` --profile ${profile}`;
+  return `Applies on the next proxy start; restart it: \`agent stop${flag}\`, then \`agent start${flag}\`.`;
+}
 
-function noteHowItApplies(def: ConfigKeyDef): void {
-  if (def.applyHint !== undefined) {
-    consola.info(def.applyHint);
-    return;
-  }
+/** Shared with `agent settings --import`, whose bundle may touch every profile's knobs. */
+export const PROXY_RESTART_HINT_ALL =
+  "Applies on the next proxy start; restart the running daemons: `agent stop --all`, then " +
+  "`agent start` (add `--profile <name>` for a profile's daemon).";
+
+/** A global-map write (a global key, or a profile-default key's shared value) reaches every daemon
+ *  that reads it at launch; a profile section's write reaches that profile's daemon alone. A key's
+ *  own applyHint covers its other surfaces; the restart line is the target's, never the hint's. */
+function noteHowItApplies(def: ConfigKeyDef, target: SettingTarget): void {
+  if (def.applyHint !== undefined) consola.info(def.applyHint);
   if (!isProxyProjected(def) && def.restartToApply !== true) return;
-  consola.info(PROXY_RESTART_HINT);
+  consola.info(
+    target.kind === "global" ? PROXY_RESTART_HINT_ALL : proxyRestartHint(target.profile),
+  );
 }
 
 /** A projected key the installed proxy is too old to read is a silent no-op until the float catches
@@ -58,15 +78,17 @@ export function sinceProxyVersionWarning(
   if (since === undefined || installed === null) return null;
   if (!versionLessThan(installed, since)) return null;
   return (
-    `The installed proxy ${installed} does not read '${def.cli}' (added in copilot-api ` +
+    `The installed proxy ${installed} does not read '${def.key}' (added in copilot-api ` +
     `${since}); it applies once the proxy is >= ${since}.`
   );
 }
 
+/** `profile` is undefined when no --profile was given: a set/del then lands per the key's scope
+ *  (settingTarget), and a get resolves for the default profile. */
 export type ConfigAction =
-  | { kind: "set"; key: string; value: string }
-  | { kind: "del"; key: string }
-  | { kind: "get"; key?: string };
+  | { kind: "set"; key: string; value: string; profile: Profile | undefined }
+  | { kind: "del"; key: string; profile: Profile | undefined }
+  | { kind: "get"; key?: string; profile: Profile };
 
 export function parseConfigAction(args: ConfigArgs): ConfigAction {
   if (args.set !== undefined && args.del !== undefined) {
@@ -75,15 +97,20 @@ export function parseConfigAction(args: ConfigArgs): ConfigAction {
   if (args.get !== undefined && (args.set !== undefined || args.del !== undefined)) {
     throw new Error("--get reads a preference and cannot combine with --set/--del");
   }
+  // A named profile must exist: a section for a profile the store never created would be a
+  // hidden value with no reader.
+  const profile = parseProfileFlag(args.profile);
+  if (profile !== null) assertKnownProfile(profile);
+  const named = args.profile === undefined ? undefined : profile;
   if (args.set !== undefined) {
     const [key, value] = args.set;
     if (args.set.length !== 2 || key === undefined || value === undefined) {
       throw new Error("usage: agent config --set <key> <value>");
     }
-    return { kind: "set", key, value };
+    return { kind: "set", key, value, profile: named };
   }
-  if (args.del !== undefined) return { kind: "del", key: args.del };
-  return { kind: "get", key: typeof args.get === "string" ? args.get : undefined };
+  if (args.del !== undefined) return { kind: "del", key: args.del, profile: named };
+  return { kind: "get", key: typeof args.get === "string" ? args.get : undefined, profile };
 }
 
 /** `platform` is the POSIX-only key guard's test seam. */
@@ -91,68 +118,88 @@ export function runConfig(args: ConfigArgs, platform: NodeJS.Platform = process.
   const action = parseConfigAction(args);
   switch (action.kind) {
     case "set":
-      runSet(action.key, action.value, platform);
+      runSet(action.key, action.value, action.profile, platform);
       return;
     case "del":
-      runDel(action.key);
+      runDel(action.key, action.profile);
       return;
     case "get":
-      runGet(action.key, platform);
+      runGet(action.key, action.profile, platform);
       return;
     default:
       assertNever(action);
   }
 }
 
-function runSet(cli: string, raw: string, platform: NodeJS.Platform): void {
-  const def = configKeyDef(cli);
-  if (def === undefined) throw unknownKeyError(cli);
+/** Where a write landed, for the set/del lines: empty for the global map. */
+function targetSuffix(target: SettingTarget): string {
+  return target.kind === "global" ? "" : ` (${profileLabel(target.profile)})`;
+}
+
+function runSet(
+  key: string,
+  raw: string,
+  profile: Profile | undefined,
+  platform: NodeJS.Platform,
+): void {
+  const def = configKeyDef(key);
+  if (def === undefined) throw unknownKeyError(key);
   if (def.posixOnly && platform === "win32") {
     throw new Error(
-      `'${def.cli}' is only supported on Linux and macOS (this is ${platform}); it cannot be set here.`,
+      `'${def.key}' is only supported on Linux and macOS (this is ${platform}); it cannot be set here.`,
     );
   }
   let value: boolean | number | string;
   try {
     value = def.parse(raw);
   } catch (e) {
-    throw new Error(`invalid value for '${def.cli}': ${errMessage(e)}`);
+    throw new Error(`invalid value for '${def.key}': ${errMessage(e)}`);
   }
-  new CopilotEnvConfig().set({ [def.key]: value });
-  consola.success(`set ${def.cli} = ${formatConfigValue(value)}`);
+  const target = new CopilotEnvConfig().assign(def, value, profile);
+  consola.success(`set ${def.key} = ${formatConfigValue(value)}${targetSuffix(target)}`);
   const warning = sinceProxyVersionWarning(def, nextProxyVersion());
   if (warning !== null) consola.warn(warning);
   // The warning supersedes only the generic restart hint (a restart cannot make an old proxy read
   // the key); a bespoke applyHint often covers a non-proxy surface and still applies.
-  if (def.applyHint !== undefined || warning === null) noteHowItApplies(def);
+  if (def.applyHint !== undefined || warning === null) noteHowItApplies(def, target);
 }
 
-/** `agent start` prints these after projecting, passing the version its resolved entry runs, so a
- *  key set before the first start still gets its warning; callers without a resolved entry
- *  (`--set`, the table, `settings --import`) take the read-only default. */
+/** `agent start` prints these after projecting for ITS profile, passing the version its resolved
+ *  entry runs, so a key set before the first start still gets its warning; callers without a
+ *  resolved entry (`--set`, the table, `settings --import`) take the read-only default. */
 export function unreadProjectedKeyWarnings(
   envConfig: CopilotEnvConfig = new CopilotEnvConfig(),
   proxyVersion: string | null = nextProxyVersion(),
+  profile: Profile = null,
 ): string[] {
-  const stored = envConfig.read();
+  const data = envConfig.read();
   const warnings: string[] = [];
   for (const def of CONFIG_REGISTRY) {
-    if (stored[def.key] === undefined) continue;
+    if (!isStoredSource(resolveSettingIn(data, def.key, { profile }).source)) continue;
     const warning = sinceProxyVersionWarning(def, proxyVersion);
     if (warning !== null) warnings.push(warning);
   }
   return warnings;
 }
 
-function runDel(cli: string): void {
-  const def = configKeyDef(cli);
-  if (def === undefined) throw unknownKeyError(cli);
-  new CopilotEnvConfig().del(def.key);
-  consola.success(`deleted ${def.cli} (reverted to default)`);
-  noteHowItApplies(def);
+function runDel(key: string, profile: Profile | undefined): void {
+  const def = configKeyDef(key);
+  if (def === undefined) throw unknownKeyError(key);
+  const config = new CopilotEnvConfig();
+  const target = config.assign(def, null, profile);
+  // What the key resolves to NOW, and from where: a deleted profile override may fall back to the
+  // global value, not the built-in default.
+  const now = config.resolve(def.key, {
+    profile: target.kind === "global" ? null : target.profile,
+  });
+  const reads = now.value === undefined
+    ? "unset"
+    : `${formatConfigValue(now.value)} (${now.source})`;
+  consola.success(`deleted ${def.key}${targetSuffix(target)}; now ${reads}`);
+  noteHowItApplies(def, target);
 }
 
-function runGet(get: string | undefined, platform: NodeJS.Platform): void {
+function runGet(get: string | undefined, profile: Profile, platform: NodeJS.Platform): void {
   const data = new CopilotEnvConfig().read();
 
   if (typeof get === "string") {
@@ -160,14 +207,17 @@ function runGet(get: string | undefined, platform: NodeJS.Platform): void {
     // answers with the built-in default, which is what every read site sees.
     const def = configKeyDef(get);
     if (def === undefined) throw unknownKeyError(get);
-    const value = isStoredValueInert(def, data, platform) ? configDefaultValue(def) : data[def.key];
+    const resolved = resolveSettingIn(data, def.key, { profile });
+    const value = isStoredValueInert(def, resolved, platform)
+      ? configDefaultValue(def)
+      : resolved.value;
     process.stdout.write(value === undefined ? "\n" : `${formatConfigValue(value)}\n`);
     return;
   }
 
   // Straight to stdout, not consola: consola reformats the backticks in the descriptions, and this
   // must match `agent config --help` byte for byte.
-  process.stdout.write(`${configTableOutput(platform)}\n`);
+  process.stdout.write(`${configTableOutput(platform, profile)}\n`);
 }
 
 /** Below this the right column stops wrapping: a narrower ribbon reads worse than the terminal's
@@ -211,8 +261,12 @@ interface Cell {
 export interface ConfigTableOptions {
   platform: NodeJS.Platform;
   width: number;
-  /** A stored key the live daemon read at launch earns the restart line. */
+  /** Whose values the profile-scoped rows show; null is the default profile. */
+  profile: Profile;
+  /** A stored key a live daemon read at launch earns the restart line: any daemon for a value
+   *  from the global map, the selected profile's own daemon for a value from its section. */
   daemonUp: boolean;
+  profileDaemonUp: boolean;
   /** A stored projected key the next proxy is too old to read earns no restart line, since no
    *  restart makes it read. Null means the version cannot be known, and then NO row earns the line:
    *  a missing hint is cheaper than a wrong one. */
@@ -220,7 +274,8 @@ export interface ConfigTableOptions {
   color: boolean;
 }
 
-/** The one table `agent config` and `agent config --help` both print. Nothing breaks mid-word. */
+/** The one table `agent config` and `agent config --help` both print, grouped by the key's group
+ *  with each row resolved for `opts.profile`. Nothing breaks mid-word. */
 export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions): string {
   const plain = (text: string): string => text;
   const paint = opts.color ? { bold, cyan, dim, green } : {
@@ -230,14 +285,11 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     green: plain,
   };
   const rows = CONFIG_REGISTRY.map((def) => {
-    const stored = data[def.key];
+    const resolved = resolveSettingIn(data, def.key, { profile: opts.profile });
+    const stored = isStoredSource(resolved.source);
     const fallback = configDefaultValue(def);
-    const value = stored !== undefined
-      ? formatConfigValue(stored)
-      : fallback === undefined
-      ? UNSET_VALUE
-      : formatConfigValue(fallback);
-    return { def, stored: stored !== undefined, fallback, value, keyValue: `${def.cli}=${value}` };
+    const value = resolved.value === undefined ? UNSET_VALUE : formatConfigValue(resolved.value);
+    return { def, resolved, stored, fallback, value, keyValue: `${def.key}=${value}` };
   });
   // The key=value column is the longest key=value that still leaves the right column
   // MIN_RIGHT_COLUMNS; a longer one (a URL) gets its own line with its right column below. When
@@ -261,14 +313,15 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
         paint: (text) => paint.dim(paint.green(text)),
       });
     }
-    if (isStoredValueInert(def, data, opts.platform)) {
+    if (isStoredValueInert(def, row.resolved, opts.platform)) {
       cells.push({ text: "(inert on this platform)", paint: paint.dim });
     }
     const right = packToWidth(cells, (cell) => cell.text.length, rightWidth)
       .map((line) => line.map((cell) => cell.paint(cell.text)).join(" "));
     const daemonReads = isProxyProjected(def) || def.restartToApply === true;
+    const up = row.resolved.source === "profile" ? opts.profileDaemonUp : opts.daemonUp;
     if (
-      row.stored && opts.daemonUp && daemonReads && opts.proxyVersion !== null &&
+      row.stored && up && daemonReads && opts.proxyVersion !== null &&
       sinceProxyVersionWarning(def, opts.proxyVersion) === null
     ) {
       right.push(paint.dim(paint.green(RESTART_LINE)));
@@ -282,7 +335,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
       : row.stored
       ? paint.bold(paint.green(row.value))
       : paint.green(row.value);
-    const lead = `${row.stored ? paint.green("*") : " "} ${paint.cyan(def.cli)}=${shownValue}`;
+    const lead = `${row.stored ? paint.green("*") : " "} ${paint.cyan(def.key)}=${shownValue}`;
     const leadLength = 2 + row.keyValue.length;
     const [first = "", ...rest] = right;
     if (leadLength + 2 > column) return [lead, ...right.map((line) => indent + line)];
@@ -300,20 +353,30 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
   const header = packToWidth(headerHalves, (half) => half.length, opts.width, 2)
     .map((halves) => paint.dim(halves.join("  ")))
     .join("\n");
-  const blocks = CONFIG_SECTIONS.map((section) => {
-    const lines = rows.filter((row) => row.def.section === section).flatMap(renderRow);
-    return [paint.bold(`${section}:`), ...lines].join("\n");
+  // The profile group names whose section it shows; the other groups are the machine's.
+  const heading = (group: ConfigGroup): string =>
+    group === "profile"
+      ? `${group} [${opts.profile ?? PROFILE_SETTINGS_DEFAULT_KEY}]:`
+      : `${group}:`;
+  const blocks = CONFIG_GROUPS.map((group) => {
+    const lines = rows.filter((row) => configGroup(row.def.key) === group).flatMap(renderRow);
+    return [paint.bold(heading(group)), ...lines].join("\n");
   });
   return [header, ...blocks].join("\n\n");
 }
 
 /** The one string both `agent config` and `agent config --help` print, so their outputs are
  *  byte-identical. `platform` is the inert note's test seam. */
-export function configTableOutput(platform: NodeJS.Platform = process.platform): string {
+export function configTableOutput(
+  platform: NodeJS.Platform = process.platform,
+  profile: Profile = null,
+): string {
   return configTable(new CopilotEnvConfig().read(), {
     platform,
     width: terminalWidth() ?? Number.POSITIVE_INFINITY,
+    profile,
     daemonUp: anyTrackedDaemonAlive(),
+    profileDaemonUp: trackedDaemonAlive(profile),
     proxyVersion: nextProxyVersion(),
     color: COLOR_ENABLED,
   });

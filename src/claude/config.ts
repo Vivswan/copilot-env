@@ -66,6 +66,7 @@ import {
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, readTextResult, type TextReadResult } from "../utils/fs.ts";
+import { escapeRegExp } from "../utils/regexp.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { mkdirReported, removeReported, writeFileReported } from "../utils/report_write.ts";
@@ -114,10 +115,6 @@ const POSIX_LAUNCHER_SHAPE = String
 // `%` stays legal: the inline command is not a batch file, so the writer never doubles it.
 const WIN_LAUNCHER_SHAPE = String
   .raw`powershell -NoProfile -ExecutionPolicy Bypass -File "[^"\r\n]*\\bin\\agent\.ps1"`;
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 /** `win` is a parameter rather than the ambient platform so both shapes are testable on every CI
  *  runner. */
@@ -594,9 +591,9 @@ function planWebSearchPair(
 }
 
 /**
- * Re-derive the web-search pair for the current default wiring: direct applies it (per `wire-mcp`),
+ * Re-derive the web-search pair for the current default wiring: direct applies it (per `claude.wire-mcp`),
  * proxy or none takes it back, a foreign settings.json is never touched. `agent mcp --remove`
- * stores `wire-mcp false` before calling this, which makes it a strip.
+ * stores `claude.wire-mcp false` before calling this, which makes it a strip.
  */
 export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): void {
   const settingsPath = settingsPathFor(claudeHome);

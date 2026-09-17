@@ -14,10 +14,22 @@ import { codexProviderId } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
-import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotApiConfig, ensureDict } from "../copilot_api/config.ts";
+import {
+  CODEX_IDENTITY_NAME,
+  type ConfigKey,
+  configScope,
+  CopilotEnvConfig,
+  PROFILE_SETTINGS_DEFAULT_KEY,
+} from "../copilot_api/env_config.ts";
+import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { isValidProfileName, parseProfileName } from "../copilot_api/profile.ts";
+import {
+  isValidProfileName,
+  parseProfileName,
+  type Profile,
+  profileLabel,
+} from "../copilot_api/profile.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
 import { readTextResult } from "../utils/fs.ts";
@@ -141,30 +153,161 @@ export const v409CodexProfileFiles: Migration = {
   run: moveCodexProfileTablesEverywhere,
 };
 
-// --- the `codex` integration-id pin ------------------------------------------------------
+// --- the preference store's shape: scoped, grouped keys -----------------------------------
+//
+// Away from 4.0.9: preferences.json was one flat map of camelCase keys. It is now a `global` map
+// of dotted, grouped keys plus a `profiles` section (one map per profile), and the four keys that
+// follow the credential (identity, host, passthrough, static-key) live only in a profile's
+// section. A reader knows only the new shape, so this is the one place the old names exist.
+
+/** Old stored key, its old CLI spelling, new key. Every old key moves; the profile keys land in the
+ *  profile sections. Exported so test/config_key_lint.test.ts can refuse the old spellings anywhere
+ *  outside this directory, the one place they legitimately live. */
+export const PREFERENCE_RENAMES: ReadonlyArray<readonly [string, string, ConfigKey]> = [
+  ["alphaSearchCodexPriority", "alpha-search-codex-priority", "proxy.alpha-search.codex-priority"],
+  ["alphaSearchModel", "alpha-search-model", "proxy.alpha-search.model"],
+  ["autoStart", "auto-start", "daemon.auto-start"],
+  ["autoUpdate", "auto-update", "update.auto"],
+  ["claudeAutoModel", "claude-auto-model", "proxy.claude-auto-model"],
+  ["claudeDesktop", "claude-desktop", "claude.desktop"],
+  ["claudeTokenMultiplier", "claude-token-multiplier", "proxy.claude-token-multiplier"],
+  ["codexHome", "codex-home", "codex.home"],
+  ["codexHost", "codex-host", "codex.host"],
+  ["codexModelCatalog", "codex-model-catalog", "codex.model-catalog"],
+  ["copilotHost", "copilot-host", "host"],
+  ["creditsTarget", "credits-target", "cost.credits-target"],
+  ["idleTimeout", "idle-timeout", "daemon.idle-timeout"],
+  ["integrationId", "integration-id", "identity"],
+  ["launchers", "launchers", "shell.launchers"],
+  ["maxPort", "max-port", "daemon.max-port"],
+  ["messageApiWebSearchModel", "message-websearch-model", "proxy.message-websearch-model"],
+  ["minPort", "min-port", "daemon.min-port"],
+  ["passthrough", "passthrough", "passthrough"],
+  ["port", "port", "daemon.port"],
+  ["pricingUrl", "pricing-url", "cost.pricing-url"],
+  ["proxyLogs", "proxy-logs", "daemon.logs"],
+  ["proxyVersion", "proxy-version", "daemon.version"],
+  ["releaseCooldown", "release-cooldown", "daemon.release-cooldown"],
+  ["smallModel", "small-model", "proxy.small-model"],
+  ["staticKey", "static-key", "static-key"],
+  ["strictPort", "strict-port", "daemon.strict-port"],
+  ["updateCooldown", "update-cooldown", "update.cooldown"],
+  ["useMessagesApi", "messages-api", "proxy.messages-api"],
+  [
+    "useResponsesApiContextManagement",
+    "responses-context-management",
+    "proxy.responses.context-management",
+  ],
+  ["useResponsesApiWebSearch", "responses-websearch", "proxy.responses.websearch"],
+  ["useResponsesApiWebSocket", "responses-websocket", "proxy.responses.websocket"],
+  ["verifyProvenance", "verify-provenance", "update.verify-provenance"],
+  ["wireMcp", "wire-mcp", "claude.wire-mcp"],
+];
+
+/** Pure over the raw document, so the fixture test can see the whole before/after. Values move
+ *  verbatim (the other 4.0.9 steps still judge them at their new place); an old key whose new key
+ *  already holds a value is dropped, since the new one is what readers use. A profile key was read
+ *  by EVERY profile before, so it lands in the default's section and in each named profile's
+ *  (`namedProfiles`, the credential store's), a section's own value winning. Idempotent: a document
+ *  without old keys is returned unchanged. */
+export function regroupPreferences(
+  doc: Record<string, unknown>,
+  namedProfiles: readonly string[],
+): Record<string, unknown> {
+  const out = structuredClone(doc);
+  let moved = false;
+  for (const [oldKey, , key] of PREFERENCE_RENAMES) {
+    if (!Object.hasOwn(out, oldKey)) continue;
+    const value = out[oldKey];
+    delete out[oldKey];
+    moved = true;
+    const targets = configScope(key) === "profile"
+      ? [PROFILE_SETTINGS_DEFAULT_KEY, ...namedProfiles].map((name) =>
+        ensureDict(ensureDict(out, "profiles"), name)
+      )
+      : [ensureDict(out, "global")];
+    for (const map of targets) {
+      if (!Object.hasOwn(map, key)) map[key] = value;
+    }
+  }
+  return moved ? out : doc;
+}
+
+/** Exported for the migration test. */
+export function regroupPreferenceStore(): void {
+  const paths = new CopilotApiPaths();
+  const store = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock);
+  const named = new CopilotEnvState().profileNames();
+  const before = store.loadStrict();
+  const after = regroupPreferences(before, named);
+  if (after === before) return;
+  store.update((d) => {
+    const next = regroupPreferences(d, named);
+    for (const key of Object.keys(d)) delete d[key];
+    Object.assign(d, next);
+  });
+  consola.info(
+    "  preferences.json: keys grouped (daemon.*, proxy.*, codex.*, claude.*, shell.*, update.*, " +
+      "cost.*) and identity/host/passthrough/static-key moved into the profile sections " +
+      `(default${named.map((name) => `, ${name}`).join("")})`,
+  );
+}
+
+/** A `layout` step: every other step reads preferences.json through the new reader, which knows
+ *  only the grouped shape, so the regrouping runs ahead of them all (after the 4.0.2 store rename,
+ *  by version order among the layout steps). */
+export const v409PreferenceGroups: Migration = {
+  version: "4.0.9",
+  layout: true,
+  description:
+    "group preferences.json by dotted key and move the profile keys into profiles.default",
+  run: regroupPreferenceStore,
+};
+
+/** Every profile's RAW section (the default's and each named one's), since the typed reader already
+ *  folds an invalid value to unset. The regrouping wrote the same value into all of them, so a
+ *  fix-up that judged the default alone would leave the named profiles on the unfixed value. */
+function rawProfileSections(): Array<[Profile, Record<string, unknown>]> {
+  const paths = new CopilotApiPaths();
+  const doc = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock).loadStrict();
+  const profiles = doc.profiles;
+  if (!isRecord(profiles)) return [];
+  const out: Array<[Profile, Record<string, unknown>]> = [];
+  for (const [name, section] of Object.entries(profiles)) {
+    if (!isRecord(section)) continue;
+    if (name === PROFILE_SETTINGS_DEFAULT_KEY) out.push([null, section]);
+    else if (isValidProfileName(name)) out.push([parseProfileName(name), section]);
+  }
+  return out;
+}
+
+// --- the `codex` identity pin --------------------------------------------------------------
 //
 // Away from 4.0.9: `agent config --set integration-id codex` was accepted (the domain was a bare
 // regex). The domain now refuses it (Direct's default identity sends no header, so nothing can pin
 // it) and the reader folds the stored value to unset, but the key stays in preferences.json and
-// the agent configs may still bake `Copilot-Integration-Id: codex` until the next rewire.
+// the agent configs may still bake `Copilot-Integration-Id: codex` until the next rewire. Runs
+// after the regrouping, so the pin is judged at its new place, each profile section's `identity`.
 
-/** The RAW stored value, since the typed reader already folds `codex` to unset. Only the key goes;
- *  the agent configs are the wiring pass's to rebake. Exported for the migration test. */
+/** Only the key goes; the agent configs are the wiring pass's to rebake. Exported for the migration test. */
 export function dropCodexIdentityPin(): void {
-  const paths = new CopilotApiPaths();
-  const stored = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock).loadStrict()
-    .integrationId;
-  if (typeof stored !== "string" || stored.trim().toLowerCase() !== CODEX_IDENTITY_NAME) return;
-  new CopilotEnvConfig().del("integrationId");
-  consola.info(
-    `  dropped the integration-id pin \`${stored}\` (Direct's default identity cannot be pinned; ` +
-      "the identity now reads as auto, and Direct wiring rebakes at the next `agent init`)",
-  );
+  for (const [profile, section] of rawProfileSections()) {
+    const stored = section.identity;
+    if (typeof stored !== "string" || stored.trim().toLowerCase() !== CODEX_IDENTITY_NAME) continue;
+    new CopilotEnvConfig().delProfile(profile, "identity");
+    consola.info(
+      `  dropped ${
+        profileLabel(profile)
+      }'s identity pin \`${stored}\` (Direct's default identity ` +
+        "cannot be pinned; the identity now reads as auto, and Direct wiring rebakes at the next " +
+        "`agent init` / `agent profile --add`)",
+    );
+  }
 }
 
 export const v409IntegrationIdPin: Migration = {
   version: "4.0.9",
-  description: "drop a stored integration-id pin of `codex` (Direct's default, no longer pinnable)",
+  description: "drop a stored identity pin of `codex` (Direct's default, no longer pinnable)",
   run: dropCodexIdentityPin,
 };
 
@@ -173,24 +316,30 @@ export const v409IntegrationIdPin: Migration = {
 // Away from 4.0.9: `static-key` was a boolean (bake the value into both agent configs, or into
 // neither). It is now the scope `none | claude | codex | all`, and a stored boolean fails that
 // domain and reads as `none`: an install that baked both would go back to the resolver command at
-// its next wiring without being told.
+// its next wiring without being told. Judged at the key's new place, each profile section.
 
-/** The RAW stored value, since the typed reader already folds a boolean to unset. `true` becomes
- *  `all` (what the boolean baked); `false` was the default and goes. Exported for the migration test. */
+/** `true` becomes `all` (what the boolean baked); `false` was the default and goes. Exported for
+ *  the migration test. */
 export function scopeStaticKeyBoolean(): void {
-  const paths = new CopilotApiPaths();
-  const stored = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock).loadStrict()
-    .staticKey;
-  if (typeof stored !== "boolean") return;
-  const config = new CopilotEnvConfig();
-  if (stored) {
-    config.set({ staticKey: "all" });
-    consola.info(
-      "  static-key `true` is now the scope `all` (both agent configs keep the baked value)",
-    );
-  } else {
-    config.del("staticKey");
-    consola.info("  dropped static-key `false` (the default, now spelled `none`)");
+  for (const [profile, section] of rawProfileSections()) {
+    const stored = section["static-key"];
+    if (typeof stored !== "boolean") continue;
+    const config = new CopilotEnvConfig();
+    if (stored) {
+      config.setProfile(profile, { "static-key": "all" });
+      consola.info(
+        `  ${
+          profileLabel(profile)
+        }: static-key \`true\` is now the scope \`all\` (both agent configs keep the baked value)`,
+      );
+    } else {
+      config.delProfile(profile, "static-key");
+      consola.info(
+        `  ${
+          profileLabel(profile)
+        }: dropped static-key \`false\` (the default, now spelled \`none\`)`,
+      );
+    }
   }
 }
 

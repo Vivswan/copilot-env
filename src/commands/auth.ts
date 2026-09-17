@@ -819,7 +819,7 @@ function verdictCell(verdict: IdentityVerdict | undefined, marks = ""): string {
 function hostLabel(column: IdentityHostSurvey, inUse = false): string {
   const tags: string[] = [];
   if (column.role === "designated") tags.push("account");
-  if (column.role === "configured") tags.push("copilot-host");
+  if (column.role === "configured") tags.push("host");
   if (inUse) tags.push("in use");
   const host = new URL(column.apiBase).host;
   return tags.length === 0 ? host : `${host} (${tags.join(", ")})`;
@@ -837,7 +837,7 @@ interface IdentityTableInput {
    *  differ; the `+` cell renders this one. */
   passthrough: IdentitySurvey;
   pinned: string | null;
-  /** The `copilot-host` literal, or null for `auto`. */
+  /** The `host` literal, or null for `auto`. */
   configuredHost: string | null;
   /** What the key resolves to for this credential (selectDirectIdentityAndHost): the host the next Direct
    *  wiring bakes. */
@@ -1012,15 +1012,13 @@ function identityTableLines(input: IdentityTableInput): string[] {
   ];
   return [
     ...wrapLine(
-      pinned === null ? "integration-id: auto" : `integration-id: pinned to ${pinned}`,
+      pinned === null ? "identity: auto" : `identity: pinned to ${pinned}`,
       width,
       "",
       "  ",
     ),
     ...wrapLine(
-      configuredHost === null
-        ? `copilot-host: auto (${inUseHost} in use)`
-        : `copilot-host: ${configuredHost}`,
+      configuredHost === null ? `host: auto (${inUseHost} in use)` : `host: ${configuredHost}`,
       width,
       "",
       "  ",
@@ -1080,7 +1078,7 @@ async function surveyAndTable(
   const baked = readBakedDirectIdentities(profile);
   const directBuiltins = directIdentityCandidates(userAgent);
   const config = new CopilotEnvConfig();
-  const configuredHost = config.copilotHost();
+  const configuredHost = config.copilotHost(profile);
   // What a named profile's writer does with its slot (replayableIdentity): replay a valid pair, try
   // a cached identity first, or probe afresh. The default slot's rewire (`agent init`) probes afresh.
   const rule = profile === null
@@ -1114,7 +1112,7 @@ async function surveyAndTable(
   if (generic === undefined) throw new Error("the identity survey returned no host");
   const credential = new Credential(undefined, profile);
   const proxyPassthrough = usePatPassthrough({
-    force: config.passthroughOverride(),
+    force: config.passthroughOverride(profile),
     token,
     provider: credential.provider(),
   });
@@ -1183,7 +1181,7 @@ async function pickOrRefusal(
 async function runIdentities(profile: Profile): Promise<void> {
   const token = resolveForProbe(profile);
   if (token === null) return;
-  await surveyAndTable(profile, token, new CopilotEnvConfig().pinnedIntegrationId());
+  await surveyAndTable(profile, token, new CopilotEnvConfig().pinnedIntegrationId(profile));
 }
 
 /** The survey shows the rows; the picker offers every identity at least one host accepted, plus
@@ -1225,11 +1223,11 @@ async function chooseIdentity(
 }
 
 function noteIdentityApplies(): void {
-  const hint = configKeyDef("integration-id")?.applyHint;
+  const hint = configKeyDef("identity")?.applyHint;
   if (hint !== undefined) logger.info(hint);
 }
 
-/** Pins `id` unless the host its requests would go to rejects it definitively (the `copilot-host`
+/** Pins `id` unless the host its requests would go to rejects it definitively (the `host`
  *  literal, else what `auto` selects for it), or every surveyed host does. Otherwise the other
  *  hosts' verdicts are narrated, and with no acceptance at all (an unresolvable credential, every
  *  probe inconclusive, the account's host unknown) the pin lands unverified and says so. */
@@ -1242,7 +1240,7 @@ async function pinIdentity(
   if (token === null) {
     logger.warn(`Pinning \`${id}\` unverified: ${reason}.`);
   } else {
-    const configuredHost = new CopilotEnvConfig().copilotHost();
+    const configuredHost = new CopilotEnvConfig().copilotHost(profile);
     const rule = replayableIdentity(profile, id, configuredHost);
     // The host the pin's requests go to: the writer's replayed pair, else the pin's own selection
     // (a pin never re-selects; the host is judged under its headers). Surveyed as the configured
@@ -1284,7 +1282,7 @@ async function pinIdentity(
     if (inUse?.verdict?.kind === "rejected") {
       const why = configuredHost === null
         ? "the host auto selects for this identity"
-        : "the copilot-host in use";
+        : "the host in use";
       throw new Error(
         `${inUse.label} rejects this credential under \`${id}\`; not pinned, every request ` +
           `goes to ${why}: ${inUse.verdict.detail}`,
@@ -1303,9 +1301,9 @@ async function pinIdentity(
       logger.warn(`${h.label}: ${outcome} \`${id}\` (${h.verdict.detail}); ${ground}.`);
     }
   }
-  new CopilotEnvConfig().set({ integrationId: id });
+  new CopilotEnvConfig().setProfile(profile, { identity: id });
   logger.success(
-    `integration-id = ${id} (pinned; \`agent auth --identity auto\` restores probing).`,
+    `identity = ${id} (pinned; \`agent auth --identity auto\` restores probing).`,
   );
   noteIdentityApplies();
 }
@@ -1316,9 +1314,9 @@ async function runIdentity(
 ): Promise<void> {
   switch (choice.kind) {
     case "auto":
-      // The same literal `agent config --set integration-id auto` stores; the store reads it as no pin.
-      new CopilotEnvConfig().set({ integrationId: "auto" });
-      logger.success("integration-id = auto: the identity is probed per credential again.");
+      // The same literal `agent config --set identity auto` stores; the store reads it as no pin.
+      new CopilotEnvConfig().setProfile(profile, { identity: "auto" });
+      logger.success("identity = auto: the identity is probed per credential again.");
       noteIdentityApplies();
       return;
     case "pin":
@@ -1333,7 +1331,7 @@ async function runIdentity(
       }
       const token = resolveForProbe(profile);
       if (token === null) return;
-      const pinned = new CopilotEnvConfig().pinnedIntegrationId();
+      const pinned = new CopilotEnvConfig().pinnedIntegrationId(profile);
       const survey = await surveyAndTable(profile, token, pinned);
       await runIdentity(profile, await chooseIdentity(survey, pinned));
       return;
@@ -1503,7 +1501,7 @@ async function runAuthenticate(
 
 /** A baked value (static-key) never follows the store, so only the rewire brings it up to date. */
 function noteStaticKeyStale(profile: Profile): void {
-  const scope = new CopilotEnvConfig().staticKeyScope();
+  const scope = new CopilotEnvConfig().staticKeyScope(profile);
   if (scope === "none") return;
   const whose = scope === "all"
     ? "Claude's and Codex's"

@@ -8,7 +8,7 @@ import type { Profile } from "./profile.ts";
 export interface CopilotEnvRunStateData {
   port?: number;
   pid?: number;
-  /** The per-host Codex farm, recorded by the `codex-host` derivation (src/codex/host.ts). */
+  /** The per-host Codex farm, recorded by the `codex.host` derivation (src/codex/host.ts). */
   codexHome?: string;
   /**
    * Epoch ms of the last `start --record-event` heartbeat; the in-daemon idle watchdog counts it as

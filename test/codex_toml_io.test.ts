@@ -201,7 +201,7 @@ test("policy: syncCodexCatalogReference swallows an unparseable config, file pre
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
   // Reach the config read: catalog enabled AND a usable generated file.
-  new CopilotEnvConfig().set({ codexModelCatalog: true });
+  new CopilotEnvConfig().set({ "codex.model-catalog": true });
   writeFileSync(new CopilotApiPaths().codexModelCatalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
   const configPath = join(codexHome, "config.toml");
   writeFileSync(configPath, UNPARSEABLE);

@@ -20,6 +20,7 @@ import { claudeAdapter } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { ghAuthToken } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   allProfileNames,
   CopilotEnvState,
@@ -194,6 +195,7 @@ export async function deleteProfileEverywhere(
   }
   for (const agent of bothAgents()) agent.removeProfile(name, options);
   new CopilotEnvState().deleteProfile(name);
+  new CopilotEnvConfig().deleteProfile(name);
   removeTreeReported(profileHome(name));
 }
 
@@ -201,7 +203,8 @@ async function runDel(name: ProfileName): Promise<void> {
   // A foreign same-named settings-<name>.json or a hand-made [model_providers.copilot-env-<name>]
   // is not ours to delete unless the store or home says the profile was real.
   const existed = new CopilotEnvState().profileSlotStatus(name).exists ||
-    profileHomeNames().includes(name);
+    profileHomeNames().includes(name) ||
+    Object.hasOwn(new CopilotEnvConfig().read().profiles, name);
   if (!existed) {
     consola.info(`${profileLabel(name)} does not exist - nothing to delete.`);
     process.exitCode = 1;
@@ -289,7 +292,7 @@ function runCheck(name: ProfileName): void {
   }
 }
 
-/** Through the adapter so the profile's Desktop entry follows the `claude-desktop` key; the printed
+/** Through the adapter so the profile's Desktop entry follows the `claude.desktop` key; the printed
  *  path is what `cl --profile` evals into `--settings`. */
 async function runSettingsFor(name: ProfileName): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(name);

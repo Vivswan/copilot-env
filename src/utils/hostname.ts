@@ -9,7 +9,7 @@ export function homeDir(): string {
 
 /** The one spelling of the hosts subdirectory: the builder (src/codex/host.ts) and the cleanup
  *  sweeps (knownCodexHomes) both derive from it, so a move can never leave a sweep deleting from
- *  the old directory. `root` is the `codex-home` key's path when set, else ~/.codex. */
+ *  the old directory. `root` is the `codex.home` key's path when set, else ~/.codex. */
 export function codexFarmHostsDir(root: string = path.join(homeDir(), ".codex")): string {
   return path.join(root, "hosts");
 }

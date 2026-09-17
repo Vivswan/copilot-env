@@ -99,9 +99,9 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
     lastCheckMs: 1,
     lastResult: "up to date",
   });
-  expect(config.read().autoUpdate).toBeUndefined();
+  expect(config.read().global["update.auto"]).toBeUndefined();
   // On, checked a minute ago: not due, untouched.
-  config.set({ autoUpdate: true });
+  config.set({ "update.auto": true });
   writeFileSync(path, JSON.stringify({ lastCheckMs: now - 60_000, lastResult: "up to date" }));
   await runPreflight({ nowMs: now, state: new AutoupdateState(path) });
   expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
@@ -111,7 +111,7 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
   // On and DUE (the positive control): the release check runs against a stubbed GitHub
   // API whose newest release is the running version, so the due path records its result
   // without applying anything. Cooldown 0 so the stub's date needs no aging.
-  config.set({ updateCooldown: 0 });
+  config.set({ "update.cooldown": 0 });
   writeFileSync(path, JSON.stringify({ lastCheckMs: 1, lastResult: "old" }));
   const realFetch = globalThis.fetch;
   const urls: string[] = [];
@@ -173,7 +173,10 @@ test("effectiveUpdateCooldownDays: the live update-cooldown config, else the 7-d
   tmp("unused"); // creates an isolated dir; point the shared prefs store at it
   process.env.COPILOT_API_HOME = dir;
   expect(effectiveUpdateCooldownDays()).toBe(DEFAULT_AUTOUPDATE_COOLDOWN_DAYS); // unset -> default
-  writeFileSync(join(dir, "preferences.json"), JSON.stringify({ updateCooldown: 3 }));
+  writeFileSync(
+    join(dir, "preferences.json"),
+    JSON.stringify({ global: { "update.cooldown": 3 } }),
+  );
   expect(effectiveUpdateCooldownDays()).toBe(3); // read live, never snapshotted
 });
 

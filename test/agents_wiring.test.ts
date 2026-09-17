@@ -240,7 +240,7 @@ describe("default home resolution", () => {
     "codex follows the farm the keys derive; claude follows $CLAUDE_CONFIG_DIR",
     () => {
       // HOME stays real here, so the farm is rooted under the fixture through `codex-home`.
-      new CopilotEnvConfig().set({ codexHome: join(dir, "codex-root"), codexHost: true });
+      new CopilotEnvConfig().set({ "codex.home": join(dir, "codex-root"), "codex.host": true });
       const farmHome = getHostLocalCodexHome();
       expect(farmHome.startsWith(dir)).toBe(true);
       writeCodexConfigToml(farmHome, { baseUrl: DIRECT_BASE });

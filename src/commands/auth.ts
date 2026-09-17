@@ -74,7 +74,7 @@ import {
   type ProfileName,
 } from "../copilot_api/profile.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
-import { bold, cyan, dim, green, yellow } from "../utils/ansi.ts";
+import { COLOR_ENABLED, cyan, palette } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { withFileLockSync } from "../utils/file_lock.ts";
@@ -796,19 +796,36 @@ const IDENTITY_NOTES: Record<string, string> = {
   [VSCODE_CHAT_INTEGRATION_ID]: "copilot-api's former default",
 };
 
+/** The survey's palette, `agent config`'s: bold header, cyan names, green accepted, yellow
+ *  rejected, dim for the rest. Resolved once at the command edge (COLOR_ENABLED), so a test can
+ *  force it on. */
+type SurveyPaint = Record<"bold" | "cyan" | "dim" | "green" | "yellow", (text: string) => string>;
+const plainText = (text: string): string => text;
+const PLAIN_PAINT: SurveyPaint = {
+  bold: plainText,
+  cyan: plainText,
+  dim: plainText,
+  green: plainText,
+  yellow: plainText,
+};
+const ANSI_PAINT: SurveyPaint = palette;
+
 /** The cell carries the verdict and a tag (status or "network error"); the full reason follows the
  *  table, so a 160-char rejection body never widens it. `mark` is `*` (in use) or `>` (the next
- *  landing's pick). Painted like `agent config`: green accepted, yellow rejected, dim otherwise;
- *  the palette is plain off a TTY. */
-function verdictCell(verdict: IdentityVerdict | undefined, mark = ""): string {
-  const suffix = mark === "" ? "" : ` ${green(mark)}`;
-  if (verdict === undefined) return `${dim("-")}${suffix}`;
+ *  landing's pick). */
+function verdictCell(
+  verdict: IdentityVerdict | undefined,
+  mark: string,
+  paint: SurveyPaint,
+): string {
+  const suffix = mark === "" ? "" : ` ${paint.green(mark)}`;
+  if (verdict === undefined) return `${paint.dim("-")}${suffix}`;
   const tag = (detail: string): string =>
     detail.startsWith("network error") ? "network error" : detail.split(" ")[0] ?? "";
   switch (verdict.kind) {
     case "accepted":
       return `${
-        green(
+        paint.green(
           `accepted${
             verdict.models === null
               ? ""
@@ -817,9 +834,9 @@ function verdictCell(verdict: IdentityVerdict | undefined, mark = ""): string {
         )
       }${suffix}`;
     case "rejected":
-      return `${yellow(`rejected (${tag(verdict.detail)})`)}${suffix}`;
+      return `${paint.yellow(`rejected (${tag(verdict.detail)})`)}${suffix}`;
     case "inconclusive":
-      return `${dim(`unclear (${tag(verdict.detail)})`)}${suffix}`;
+      return `${paint.dim(`unclear (${tag(verdict.detail)})`)}${suffix}`;
     default:
       return assertNever(verdict);
   }
@@ -841,7 +858,7 @@ function hostLabel(
   column: IdentityHostSurvey,
   inUse = false,
   literal = true,
-  paint: (text: string) => string = (text) => text,
+  paint: (text: string) => string = plainText,
 ): string {
   const tags = hostTags(column, inUse, literal);
   const host = new URL(column.apiBase).host;
@@ -865,7 +882,7 @@ type SlotReading =
    *  next landing probes again from the generic host, so there is no pick to preview here. */
   | { kind: "half"; missing: "identity" | "host" };
 
-interface IdentityTableInput {
+export interface IdentityTableInput {
   /** Every row under the one header set every mode sends (directClientHeaders). */
   survey: IdentitySurvey;
   pinned: string | null;
@@ -881,12 +898,15 @@ interface IdentityTableInput {
    *  being sent right now. */
   daemonRunning: boolean;
   profile: Profile;
+  /** COLOR_ENABLED at the command edge; plain off a TTY. */
+  color: boolean;
 }
 
 /** One column per host, one row per identity. `*` marks the one identity in use, on the host in
  *  use, or `>` the next landing's pick while the slot is empty; the notes name what would move it. */
-function identityTableLines(input: IdentityTableInput): string[] {
+export function identityTableLines(input: IdentityTableInput): string[] {
   const width = terminalWidth();
+  const paint = input.color ? ANSI_PAINT : PLAIN_PAINT;
   const { survey, pinned, configuredHost, stored, hostInUse, slot, daemonRunning } = input;
   const inUse = slot.kind === "in-use" ? slot.identity : null;
   const wouldPick = slot.kind === "empty" ? slot.wouldPick : null;
@@ -900,8 +920,8 @@ function identityTableLines(input: IdentityTableInput): string[] {
     return wouldPick === name ? ">" : "";
   };
   const rows = names.map((name) => [
-    cyan(name),
-    ...survey.hosts.map((c) => verdictCell(verdictOf(c, name), mark(c, name))),
+    paint.cyan(name),
+    ...survey.hosts.map((c) => verdictCell(verdictOf(c, name), mark(c, name), paint)),
     IDENTITY_NOTES[name] ?? "",
   ]);
   // Every rejection behind a rendered cell.
@@ -909,7 +929,7 @@ function identityTableLines(input: IdentityTableInput): string[] {
     survey.hosts.flatMap((c) => {
       const verdict = verdictOf(c, name);
       return verdict === undefined || verdict.kind === "accepted" ? [] : wrapLine(
-        dim(`${name} on ${hostLabel(c, false, configuredHost !== null)}: ${verdict.detail}`),
+        paint.dim(`${name} on ${hostLabel(c, false, configuredHost !== null)}: ${verdict.detail}`),
         width,
         "  ",
         "    ",
@@ -969,18 +989,20 @@ function identityTableLines(input: IdentityTableInput): string[] {
       "",
       "  ",
     ),
-    ...wrapLine(dim(legend), width, "", "  "),
+    ...wrapLine(paint.dim(legend), width, "", "  "),
     ...formatTable(rows, {
       header: [
-        bold("identity"),
-        ...survey.hosts.map((c) => hostLabel(c, c === inUseColumn, configuredHost !== null, dim)),
+        paint.bold("identity"),
+        ...survey.hosts.map((c) =>
+          hostLabel(c, c === inUseColumn, configuredHost !== null, paint.dim)
+        ),
         "note",
       ],
       wrap: [false, ...survey.hosts.map(() => false), true],
       indent: "",
       width,
     }),
-    ...notes.flatMap((note) => wrapLine(dim(note), width, "", "  ")),
+    ...notes.flatMap((note) => wrapLine(paint.dim(note), width, "", "  ")),
     ...reasons,
   ];
 }
@@ -1075,6 +1097,7 @@ async function surveyAndTable(
       slot,
       daemonRunning: trackedDaemonAlive(profile),
       profile,
+      color: COLOR_ENABLED,
     })
   ) {
     console.log(line);
@@ -1104,7 +1127,7 @@ async function chooseIdentity(
     );
   const cell = (column: IdentityHostSurvey, name: string): string => {
     const verdict = verdictOn(column, name);
-    return verdict === undefined ? "not probed" : verdictCell(verdict);
+    return verdict === undefined ? "not probed" : verdictCell(verdict, "", PLAIN_PAINT);
   };
   const current = (name: string): string => name === pinned ? " (current pin)" : "";
   const value = await consola.prompt("Which Copilot client identity should be pinned?", {

@@ -1,4 +1,4 @@
-# copilot-env: documentation
+# copilot-env
 
 copilot-env points the Codex and Claude CLIs at GitHub Copilot, either through a local `@jeffreycao/copilot-api` proxy it manages or straight to Copilot Direct. Everything it does is an `agent` subcommand or an `agent config` key, and these pages cover them by task.
 

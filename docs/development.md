@@ -1,3 +1,9 @@
+---
+title: Development
+group: Internals
+order: 6
+---
+
 # Development
 
 How to drive the CLI from a checkout and where the repository's own rules live. Users install a release instead ([getting started](getting-started.md#install)); `agent update` refuses to overwrite a checkout unless you pass `--force`.

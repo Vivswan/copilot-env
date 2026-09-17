@@ -1,3 +1,9 @@
+---
+title: Getting started
+group: Start here
+order: 1
+---
+
 # Getting started
 
 One install per OS, one `agent init`, and the Codex and Claude CLIs talk to GitHub Copilot. This page is the install-to-uninstall lifecycle of copilot-env itself; the commands you run every day are on the [usage page](usage.md).

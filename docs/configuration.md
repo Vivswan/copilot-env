@@ -1,3 +1,9 @@
+---
+title: Configuration
+group: Reference
+order: 3
+---
+
 # Configuration
 
 `agent config` is the typed preference store, and this page is its reference: every key, its scope, its default, and what it changes. The commands that read these keys are on the [usage page](usage.md).

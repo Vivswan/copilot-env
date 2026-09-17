@@ -12,7 +12,6 @@ repository:
   description: "Local copilot-api proxy lifecycle + config helper (TypeScript)."
   # Declared even when empty: the apply manages only declared keys, so
   # this keeps it healing out-of-band edits.
-  homepage: "https://github.com/Vivswan/copilot-env"
   topics: "claude-code,cli,codex,copilot,copilot-api,deno,proxy,typescript"
   private: false
 

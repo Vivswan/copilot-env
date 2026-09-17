@@ -41,14 +41,16 @@ function rawState(): Record<string, unknown> {
   return { ...(doc.global ?? {}), profiles: doc.profiles };
 }
 
-test("the provisioned GitHub token round-trips through the shared store and clears", () => {
+test("the provisioned GitHub token and its provider round-trip through the shared store and clear", () => {
   tmpHome();
   const state = new CopilotEnvState();
   expect(state.read().githubToken).toBeNull();
+  expect(state.read().authProvider).toBeNull();
 
   // Written by `agent auth`, read by every config write + `agent start`.
   state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_provisioned" });
   expect(state.read().githubToken).toBe("ghu_provisioned");
+  expect(state.read().authProvider).toBe("gh-token");
 
   // On disk the credential lives in the reserved `default` slot, never in a
   // top-level pair.
@@ -59,37 +61,8 @@ test("the provisioned GitHub token round-trips through the shared store and clea
     "ghu_provisioned",
   );
 
-  // `agent auth --del` clears it (revert to the gh CLI / proxy device login).
+  // `agent auth --del` clears both halves (revert to the gh CLI / proxy device login).
   expect(state.clearCredential(null)).toBe(true);
-  expect(state.read().githubToken).toBeNull();
-});
-
-test("a credential token is trimmed at the write boundary", () => {
-  tmpHome();
-  const state = new CopilotEnvState();
-  state.setCredential(null, { kind: "stored", provider: "gh-token", token: "  ghu_trimmed  " });
-  expect(state.read().githubToken).toBe("ghu_trimmed");
-});
-
-test("set() trims; a blank/whitespace value reads back as null", () => {
-  tmpHome();
-  const state = new CopilotEnvState();
-  state.set({ codexCatalogCodexVersion: "  0.99.0  " });
-  expect(state.read().codexCatalogCodexVersion).toBe("0.99.0");
-
-  state.set({ codexCatalogCodexVersion: "   " });
-  expect(state.read().codexCatalogCodexVersion).toBeNull();
-});
-
-test("the auth provider round-trips and clears alongside the token", () => {
-  tmpHome();
-  const state = new CopilotEnvState();
-  expect(state.read().authProvider).toBeNull();
-
-  state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_x" });
-  expect(state.read().authProvider).toBe("gh-token");
-
-  state.clearCredential(null);
   expect(state.read()).toEqual({
     githubToken: null,
     authProvider: null,
@@ -101,6 +74,66 @@ test("the auth provider round-trips and clears alongside the token", () => {
     codexCatalogAccepted: null,
     claudeModelVerdicts: {},
   });
+});
+
+test("the write boundary trims every string and refuses a blank token; a blank state value reads null", () => {
+  const cases: {
+    name: string;
+    write: (state: CopilotEnvState) => void;
+    throws?: RegExp;
+    read: (state: CopilotEnvState) => unknown;
+    expected: unknown;
+  }[] = [
+    {
+      name: "credential token trimmed",
+      write: (s) =>
+        s.setCredential(null, { kind: "stored", provider: "gh-token", token: "  ghu_trimmed  " }),
+      read: (s) => s.read().githubToken,
+      expected: "ghu_trimmed",
+    },
+    {
+      name: "set() trims",
+      write: (s) => s.set({ codexCatalogCodexVersion: "  0.99.0  " }),
+      read: (s) => s.read().codexCatalogCodexVersion,
+      expected: "0.99.0",
+    },
+    {
+      name: "set() blank clears a stored value to null",
+      write: (s) => {
+        s.set({ codexCatalogCodexVersion: "  0.99.0  " });
+        s.set({ codexCatalogCodexVersion: "   " });
+      },
+      read: (s) => s.read().codexCatalogCodexVersion,
+      expected: null,
+    },
+    {
+      // Rejected at the boundary, never persisted as a partial profile.
+      name: "blank profile token refused",
+      write: (s) =>
+        s.commitProfile(WORK, {
+          credential: { kind: "stored", provider: "gh-token", token: "   " },
+          mode: "direct",
+        }),
+      throws: /non-empty token/,
+      read: (s) => s.profileNames(),
+      expected: [],
+    },
+    {
+      name: "empty default token refused",
+      write: (s) => s.setCredential(null, { kind: "stored", provider: "copilot", token: "" }),
+      throws: /non-empty token/,
+      read: (s) => s.read().authProvider,
+      expected: null,
+    },
+  ];
+  for (const c of cases) {
+    dir = removeDir(dir);
+    tmpHome();
+    const state = new CopilotEnvState();
+    if (c.throws === undefined) c.write(state);
+    else expect(() => c.write(state), c.name).toThrow(c.throws);
+    expect(c.read(state), c.name).toEqual(c.expected);
+  }
 });
 
 test("a store carrying only the legacy top-level pair reads as no default credential; writes preserve it", () => {
@@ -131,13 +164,14 @@ test("recordDefaultMode records the agreed default wiring and clears on divergen
   expect(state.readProfileSlot(null).mode).toBe("proxy");
 
   // With a credential recorded too, the default slot parses complete -- the
-  // same completeness rule as a named profile.
+  // same completeness rule as a named profile -- yet never surfaces as one.
   state.setCredential(null, { kind: "gh-cli", ghUser: null });
   expect(state.readProfileSlot(null)).toEqual({
     kind: "complete",
     credential: { kind: "gh-cli", ghUser: null },
     mode: "proxy",
   });
+  expect(state.profileNames()).toEqual([]);
 
   // Divergent (or unreadable) agent wiring clears the record; the credential stays.
   state.recordDefaultMode(null);
@@ -148,25 +182,6 @@ test("recordDefaultMode records the agreed default wiring and clears on divergen
   state.clearCredential(null);
   state.recordDefaultMode(null);
   expect(rawState().profiles).toBeUndefined();
-});
-
-test("the reserved default slot never surfaces as a named profile", () => {
-  tmpHome();
-  const state = new CopilotEnvState();
-  state.setCredential(null, { kind: "gh-cli", ghUser: null });
-  state.recordDefaultMode("direct");
-  expect(state.profileNames()).toEqual([]);
-});
-
-test("the state lives in the shared home, independent of per-host .run state", () => {
-  tmpHome();
-  new CopilotEnvState().setCredential(null, {
-    kind: "stored",
-    provider: "gh-token",
-    token: "ghu_shared",
-  });
-  // Stored beside config.json at the home root, not under .run/<host>/.
-  expect(new CopilotEnvState().read().githubToken).toBe("ghu_shared");
 });
 
 test("run-state clearIfPid clears the daemon tracking ONLY when the tracked pid matches", () => {
@@ -197,21 +212,6 @@ test("setCredential on an unknown named profile errors instead of creating a hal
   // The default slot is not a profile: it always accepts a credential.
   state.setCredential(null, { kind: "gh-cli", ghUser: null });
   expect(state.read().authProvider).toBe("gh-cli");
-});
-
-test("a blank token is rejected at the write boundary, never persisted as a partial", () => {
-  tmpHome();
-  const state = new CopilotEnvState();
-  expect(() =>
-    state.commitProfile(WORK, {
-      credential: { kind: "stored", provider: "gh-token", token: "   " },
-      mode: "direct",
-    })
-  ).toThrow(/non-empty token/);
-  expect(state.profileNames()).toEqual([]);
-  expect(() => state.setCredential(null, { kind: "stored", provider: "copilot", token: "" }))
-    .toThrow(/non-empty token/);
-  expect(state.read().authProvider).toBeNull();
 });
 
 test("a gh-cli account pin round-trips; an absent/blank stored pin reads as auto (no migration)", () => {
@@ -256,21 +256,32 @@ test("a gh-cli account pin round-trips; an absent/blank stored pin reads as auto
   expect(state.readCredential(null)).toEqual({ kind: "none", provider: null });
 });
 
-test("commitProfile mutates the raw slot in place, preserving unknown keys", () => {
+test("a store write mutates in place: unknown slot keys and legacy top-level keys survive both slot writers, and stay out of read()", () => {
   tmpHome();
-  // A newer release may write fields this version does not know; the commit
-  // must not erase them (the store-wide preserve-unknown-keys contract).
+  // A newer release may write fields this version does not know, and pre-ledger installs
+  // recorded artifact ownership under top-level keys that only the 3.5.6 migration moves into
+  // the ledger (ownership.test.ts). Neither slot writer may erase either (the store-wide
+  // preserve-unknown-keys contract), and read() surfaces neither.
   seedRawState({
+    webSearchDenyOwnedPaths: ["/a/settings.json"],
     profiles: { work: { mode: "proxy", authProvider: "gh-token", futureField: "keep-me" } },
   });
   const state = new CopilotEnvState();
+  expect("webSearchDenyOwnedPaths" in state.read()).toBe(false);
+  // The default slot's creation ...
+  state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_x" });
+  expect(rawState().webSearchDenyOwnedPaths).toEqual(["/a/settings.json"]);
+  // ... and a named profile's commit.
   state.commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_new" },
     mode: "direct",
   });
   const raw = rawState() as {
+    webSearchDenyOwnedPaths: unknown;
     profiles: Record<string, Record<string, unknown>>;
   };
+  expect(raw.webSearchDenyOwnedPaths).toEqual(["/a/settings.json"]);
+  expect(raw.profiles.default?.githubToken).toBe("ghu_x");
   expect(raw.profiles.work?.futureField).toBe("keep-me");
   expect(raw.profiles.work?.mode).toBe("direct");
   expect(raw.profiles.work?.githubToken).toBe("ghp_new");
@@ -327,19 +338,6 @@ test("clearCredential clears even a parse-rejected stray token and reports what 
   expect(slot.credential).toEqual({ kind: "none", provider: null });
   expect(slot.mode).toBe("proxy");
   expect(state.clearCredential(WORK)).toBe(false);
-});
-
-test("legacy ownership keys in the state file survive writes and stay out of read()", () => {
-  tmpHome();
-  // Pre-ledger installs recorded artifact ownership under these keys; only the
-  // 3.5.6 migration moves them into the ledger (ownership.test.ts), so the
-  // state store must neither surface them nor destroy them on its own writes.
-  seedRawState({ webSearchDenyOwnedPaths: ["/a/settings.json"] });
-  const state = new CopilotEnvState();
-  expect("webSearchDenyOwnedPaths" in state.read()).toBe(false);
-  state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_x" });
-  const raw = rawState();
-  expect(raw.webSearchDenyOwnedPaths).toEqual(["/a/settings.json"]);
 });
 
 test("profileNames skips a hand-edited invalid profile key so it can never reach a path join", () => {

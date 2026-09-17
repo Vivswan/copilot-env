@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
 import { codexHostDriftLine, getHostLocalCodexHome } from "../src/codex/host.ts";
@@ -61,6 +61,7 @@ function envLines(profile?: string): string[] {
 }
 
 function isolate(): string {
+  dir = removeDir(dir);
   dir = tempDir("copilot-env-cmd-");
   process.env.HOME = dir;
   process.env.COPILOT_API_HOME = join(dir, "gw"); // empty state -> no host CODEX_HOME
@@ -111,127 +112,203 @@ function writeClaude(home: string, apiKeyHelper: string, baseUrl: string): void 
   );
 }
 
-test("env exports a 127.0.0.1 proxy URL (the production shape the writer now emits)", () => {
-  // The Claude writer emits http://127.0.0.1:<port>, not localhost, so the agent reaches the IPv4
-  // proxy on Windows; isLocalProxyUrl must accept the production shape.
-  const home = isolate();
-  writeClaude(home, proxyHelperCommand(), "http://127.0.0.1:4141");
-  const lines = envLines();
-  expect(lines).toContain("export ANTHROPIC_BASE_URL='http://127.0.0.1:4141'");
+// --- ANTHROPIC_BASE_URL: the default Claude wiring against the shell's current export ---------
+
+test("env exports the proxy URL for a proxy-wired Claude and clears a stale local one for a direct-wired Claude", () => {
+  const cases: { name: string; mode: "proxy" | "direct"; current?: string; lines: string[] }[] = [
+    {
+      // The Claude writer emits http://127.0.0.1:<port>, not localhost, so the agent reaches the
+      // IPv4 proxy on Windows; isLocalProxyUrl must accept the production shape.
+      name: "proxy exports 127.0.0.1",
+      mode: "proxy",
+      lines: ["export ANTHROPIC_BASE_URL='http://127.0.0.1:4141'"],
+    },
+    {
+      name: "direct clears a stale 127.0.0.1",
+      mode: "direct",
+      current: "http://127.0.0.1:4141",
+      lines: ["unset ANTHROPIC_BASE_URL"],
+    },
+    {
+      name: "direct clears a stale localhost",
+      mode: "direct",
+      current: "http://localhost:4141",
+      lines: ["unset ANTHROPIC_BASE_URL"],
+    },
+  ];
+  for (const c of cases) {
+    const home = isolate();
+    if (c.mode === "proxy") writeClaude(home, proxyHelperCommand(), "http://127.0.0.1:4141");
+    else writeClaude(home, directHelperCommand(), "https://api.githubcopilot.com");
+    if (c.current !== undefined) process.env.ANTHROPIC_BASE_URL = c.current;
+    expect(envLines(), c.name).toEqual(c.lines);
+  }
 });
 
-test("env clears a stale 127.0.0.1 ANTHROPIC_BASE_URL when Claude switched to direct", () => {
-  const home = isolate();
-  writeClaude(home, directHelperCommand(), "https://api.githubcopilot.com");
-  process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
-  const lines = envLines();
-  expect(lines).toContain("unset ANTHROPIC_BASE_URL");
-  expect(lines.some((l) => l.startsWith("export ANTHROPIC_BASE_URL"))).toBe(false);
-});
+// --- CODEX_HOME: the `codex-home` path and the `codex-host` farm ---------------------------
 
-test("env clears a stale localhost ANTHROPIC_BASE_URL when Claude switched to direct", () => {
-  const home = isolate();
-  writeClaude(home, directHelperCommand(), "https://api.githubcopilot.com");
-  process.env.ANTHROPIC_BASE_URL = "http://localhost:4141";
-  const lines = envLines();
-  expect(lines).toContain("unset ANTHROPIC_BASE_URL");
-  expect(lines.some((l) => l.startsWith("export ANTHROPIC_BASE_URL"))).toBe(false);
-});
-
-test("env does not unset a CODEX_HOME the user pointed elsewhere", () => {
+test("env exports a `codex-home` path on every platform, quietly, and never unsets a CODEX_HOME the user pointed elsewhere", () => {
   isolate();
   process.env.CODEX_HOME = join(dir, "my-own-codex"); // not the host farm path
-  const lines = envLines();
-  expect(lines.some((l) => l.includes("CODEX_HOME"))).toBe(false);
-});
-
-test("env exports a `codex-home` path on every platform, quietly", () => {
-  isolate();
+  expect(envLines().some((l) => l.includes("CODEX_HOME"))).toBe(false);
+  delete process.env.CODEX_HOME;
   const root = join(dir, "explicit-root");
   new CopilotEnvConfig().set({ "codex.home": root });
   expect(stderrDuring(() => expect(envLines()).toEqual([`export CODEX_HOME='${root}'`]))).toBe("");
 });
 
-skipWin(
-  "env with codex-home and codex-host: the farm under the path is the export's subject",
-  () => {
-    isolate();
-    const root = join(dir, "explicit-root");
-    new CopilotEnvConfig().set({ "codex.home": root, "codex.host": true });
-    const hostHome = getHostLocalCodexHome();
-    expect(hostHome.startsWith(`${root}/`)).toBe(true);
-    // Not built yet: the farm is exported all the same (the next `agent codex` builds it), and the
-    // drift names it beside the export.
-    const exported = [`export CODEX_HOME='${hostHome}'`];
-    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toContain(
-      `farm is missing at ${hostHome}`,
-    );
-    mkdirSync(hostHome, { recursive: true });
-    writeFileSync(join(hostHome, "config.toml"), 'model_provider = "copilot-env"\n');
-    writeRunState({ codexHome: hostHome });
-    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toBe("");
-  },
-);
+/** The farm on disk: none, the directory alone, a blank config.toml, or a wired one. */
+type Farm = "none" | "dir" | "empty" | "built";
 
-// --- CODEX_HOME: the `codex-host` key against the farm on disk -------------------
-
-// The run-state record is what a successful wiring pass leaves; without it the farm is not active.
-function wireFarm(): string {
-  const hostHome = getHostLocalCodexHome();
+function layFarm(hostHome: string, farm: Farm): void {
+  if (farm === "none") return;
   mkdirSync(hostHome, { recursive: true });
-  writeFileSync(join(hostHome, "config.toml"), 'model_provider = "copilot-env"\n');
-  writeRunState({ codexHome: hostHome });
-  return hostHome;
+  if (farm === "empty") writeFileSync(join(hostHome, "config.toml"), "");
+  if (farm === "built") {
+    writeFileSync(join(hostHome, "config.toml"), 'model_provider = "copilot-env"\n');
+  }
 }
 
 skipWin(
-  "env exports the farm whenever codex-host is on, built or not, and names any drift beside it",
+  "env and the per-host farm: the codex-host key is the switch, the farm is the export's subject, and any drift is named beside the export, never swallowed",
   () => {
-    isolate();
-    const hostHome = wireFarm();
-    // The key is the switch: unset exports nothing even for an activated farm and clears OUR spelling at once.
-    expect(envLines()).toEqual([]);
-    process.env.CODEX_HOME = hostHome;
-    expect(envLines()).toEqual(["unset CODEX_HOME"]);
-    delete process.env.CODEX_HOME;
-    new CopilotEnvConfig().set({ "codex.host": true });
-    const exported = [`export CODEX_HOME='${hostHome}'`];
-    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toBe("");
-    // Wired but not recorded (no managed write succeeded there yet), half-built, or gone: still the
-    // home the key names, so the export stays and the drift is warned about, never swallowed.
-    writeRunState({ codexHome: null });
-    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toContain(
-      `no completed wiring pass is recorded for the per-host CODEX_HOME farm at ${hostHome}`,
-    );
-    writeRunState({ codexHome: hostHome });
-    writeFileSync(join(hostHome, "config.toml"), "");
-    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toContain("farm is missing");
-    rmSync(join(hostHome, "config.toml"));
-    expect(stderrDuring(() => expect(envLines()).toEqual(exported))).toContain("farm is missing");
-  },
-);
-
-skipWin(
-  "env with codex-host on but no farm: the farm exported, one stderr warning naming `agent codex`",
-  () => {
-    isolate();
-    const hostHome = getHostLocalCodexHome();
-    new CopilotEnvConfig().set({ "codex.host": true });
-    let stdout: string[] = ["unset"];
-    const stderr = stderrDuring(() => {
-      stdout = envLines();
-    });
-    // consola drops the backticks when it renders inline code, so both sides are compared without them.
-    expect(stdout).toEqual([`export CODEX_HOME='${hostHome}'`]);
-    expect(stderr.replaceAll("`", "")).toContain(
-      codexHostDriftLine({ kind: "missing", hostHome }).replaceAll("`", ""),
-    );
-    // A shell already carrying that export is told the same; with the key off OUR dead export is
-    // cleared at once, quietly.
-    process.env.CODEX_HOME = hostHome;
-    expect(stderrDuring(() => expect(envLines()).toEqual(stdout))).toContain("farm is missing");
-    new CopilotEnvConfig().set({ "codex.host": false });
-    expect(stderrDuring(() => expect(envLines()).toEqual(["unset CODEX_HOME"]))).toBe("");
+    const missing = (hostHome: string): string =>
+      codexHostDriftLine({ kind: "missing", hostHome }).replaceAll("`", "");
+    const unrecorded = (hostHome: string): string =>
+      `no completed wiring pass is recorded for the per-host CODEX_HOME farm at ${hostHome}`;
+    const cases: {
+      name: string;
+      config: { "codex.host"?: boolean; root?: boolean };
+      farm: Farm;
+      // The run-state record is what a successful wiring pass leaves; without it the farm is
+      // not active.
+      recorded: boolean;
+      exported: boolean; // the shell already carries OUR export
+      stdout: (hostHome: string) => string[];
+      stderr: ((hostHome: string) => string) | null; // null: silent
+    }[] = [
+      // The key is the switch: unset exports nothing even for an activated farm and clears OUR
+      // spelling at once.
+      {
+        name: "key unset, farm active",
+        config: {},
+        farm: "built",
+        recorded: true,
+        exported: false,
+        stdout: () => [],
+        stderr: null,
+      },
+      {
+        name: "key unset, farm active, shell exports it",
+        config: {},
+        farm: "built",
+        recorded: true,
+        exported: true,
+        stdout: () => ["unset CODEX_HOME"],
+        stderr: null,
+      },
+      {
+        name: "key false, no farm, shell exports it",
+        config: { "codex.host": false },
+        farm: "none",
+        recorded: false,
+        exported: true,
+        stdout: () => ["unset CODEX_HOME"],
+        stderr: null,
+      },
+      {
+        name: "key on, farm wired",
+        config: { "codex.host": true },
+        farm: "built",
+        recorded: true,
+        exported: false,
+        stdout: (h) => [`export CODEX_HOME='${h}'`],
+        stderr: null,
+      },
+      // Wired but not recorded (no managed write succeeded there yet), half-built, or gone: still
+      // the home the key names, so the export stays and the drift is warned about.
+      {
+        name: "key on, farm wired, no wiring pass recorded",
+        config: { "codex.host": true },
+        farm: "built",
+        recorded: false,
+        exported: false,
+        stdout: (h) => [`export CODEX_HOME='${h}'`],
+        stderr: unrecorded,
+      },
+      {
+        name: "key on, blank config.toml",
+        config: { "codex.host": true },
+        farm: "empty",
+        recorded: true,
+        exported: false,
+        stdout: (h) => [`export CODEX_HOME='${h}'`],
+        stderr: missing,
+      },
+      {
+        name: "key on, directory without config.toml",
+        config: { "codex.host": true },
+        farm: "dir",
+        recorded: true,
+        exported: false,
+        stdout: (h) => [`export CODEX_HOME='${h}'`],
+        stderr: missing,
+      },
+      {
+        name: "key on, no farm",
+        config: { "codex.host": true },
+        farm: "none",
+        recorded: false,
+        exported: false,
+        stdout: (h) => [`export CODEX_HOME='${h}'`],
+        stderr: missing,
+      },
+      {
+        name: "key on, no farm, shell exports it",
+        config: { "codex.host": true },
+        farm: "none",
+        recorded: false,
+        exported: true,
+        stdout: (h) => [`export CODEX_HOME='${h}'`],
+        stderr: missing,
+      },
+      // With a codex-home path the farm under the path is the subject: exported all the same
+      // before it is built (the next `agent codex` builds it), quiet once it is.
+      {
+        name: "key on under a codex-home root, not built",
+        config: { "codex.host": true, root: true },
+        farm: "none",
+        recorded: false,
+        exported: false,
+        stdout: (h) => [`export CODEX_HOME='${h}'`],
+        stderr: missing,
+      },
+      {
+        name: "key on under a codex-home root, wired",
+        config: { "codex.host": true, root: true },
+        farm: "built",
+        recorded: true,
+        exported: false,
+        stdout: (h) => [`export CODEX_HOME='${h}'`],
+        stderr: null,
+      },
+    ];
+    for (const c of cases) {
+      isolate();
+      const root = join(dir, "explicit-root");
+      const { root: underRoot, ...keys } = c.config;
+      new CopilotEnvConfig().set(underRoot === true ? { ...keys, "codex.home": root } : keys);
+      const hostHome = getHostLocalCodexHome();
+      if (underRoot === true) expect(hostHome.startsWith(`${root}/`), c.name).toBe(true);
+      layFarm(hostHome, c.farm);
+      writeRunState({ codexHome: c.recorded ? hostHome : null });
+      if (c.exported) process.env.CODEX_HOME = hostHome;
+      const stderr = stderrDuring(() => expect(envLines(), c.name).toEqual(c.stdout(hostHome)));
+      // consola drops the backticks when it renders inline code, so both sides are compared
+      // without them.
+      if (c.stderr === null) expect(stderr, c.name).toBe("");
+      else expect(stderr.replaceAll("`", ""), c.name).toContain(c.stderr(hostHome));
+    }
   },
 );
 
@@ -304,45 +381,55 @@ function seedProfile(
   );
 }
 
-test("env (no flag) output is byte-identical to the default wiring, profiles present or not", () => {
-  const home = isolate();
-  writeClaude(home, proxyHelperCommand(), "http://127.0.0.1:4141");
-  // A child with an isolated HOME keeps the machine's own launcher wiring out of the scan.
-  const expected = ["export ANTHROPIC_BASE_URL='http://127.0.0.1:4141'"];
-  expect(childEnvLines(childBaseEnv())).toEqual(expected);
-  seedProfile(home, "work", "proxy", 4242);
-  expect(childEnvLines(childBaseEnv())).toEqual(expected);
+test("env --profile renders the profile's OWN settings file and port; without the flag the default wiring, profiles present or not", () => {
+  const cases: {
+    name: string;
+    seed: "proxy" | "direct" | null;
+    profile?: string;
+    current?: string;
+    lines: string[];
+  }[] = [
+    // A child with an isolated HOME keeps the machine's own launcher wiring out of the scan.
+    {
+      name: "no flag, no profiles",
+      seed: null,
+      lines: ["export ANTHROPIC_BASE_URL='http://127.0.0.1:4141'"],
+    },
+    {
+      name: "no flag, a profile present",
+      seed: "proxy",
+      lines: ["export ANTHROPIC_BASE_URL='http://127.0.0.1:4141'"],
+    },
+    // The default wiring sits on a DIFFERENT port, so the answer can only come from settings-work.json.
+    {
+      name: "--profile, proxy profile",
+      seed: "proxy",
+      profile: "work",
+      lines: ["export ANTHROPIC_BASE_URL='http://127.0.0.1:4242'"],
+    },
+    // The default stays PROXY-wired: a direct profile must not inherit its export.
+    {
+      name: "--profile, direct profile clears its stale local URL",
+      seed: "direct",
+      profile: "work",
+      current: "http://127.0.0.1:4242",
+      lines: ["unset ANTHROPIC_BASE_URL"],
+    },
+  ];
+  for (const c of cases) {
+    const home = isolate();
+    writeClaude(home, proxyHelperCommand(), "http://127.0.0.1:4141");
+    if (c.seed !== null) seedProfile(home, "work", c.seed, 4242);
+    const env = c.current === undefined
+      ? childBaseEnv()
+      : { ...childBaseEnv(), ANTHROPIC_BASE_URL: c.current };
+    expect(childEnvLines(env, c.profile), c.name).toEqual(c.lines);
+  }
 });
 
-test("env --profile resolves a proxy profile's OWN settings file and port", () => {
-  const home = isolate();
-  // The default wiring sits on a DIFFERENT port, so the answer can only come from settings-work.json.
-  writeClaude(home, proxyHelperCommand(), "http://127.0.0.1:4141");
-  seedProfile(home, "work", "proxy", 4242);
-  expect(childEnvLines(childBaseEnv(), "work")).toEqual([
-    "export ANTHROPIC_BASE_URL='http://127.0.0.1:4242'",
-  ]);
-});
-
-test("env --profile for a direct profile clears a stale local proxy URL", () => {
-  const home = isolate();
-  // The default stays PROXY-wired: a direct profile must not inherit its export.
-  writeClaude(home, proxyHelperCommand(), "http://127.0.0.1:4141");
-  seedProfile(home, "work", "direct", 4242);
-  expect(
-    childEnvLines({ ...childBaseEnv(), ANTHROPIC_BASE_URL: "http://127.0.0.1:4242" }, "work"),
-  ).toEqual(["unset ANTHROPIC_BASE_URL"]);
-});
-
-test("env --profile with an unknown name hard-fails naming the known profiles", () => {
+test("env --profile with an unknown name hard-fails naming the known profiles, and the CLI exits 1 with an EMPTY stdout (the eval contract)", () => {
   const home = isolate();
   expect(() => envLines("nope")).toThrow("no such profile 'nope' (no profiles exist");
-  seedProfile(home, "work", "proxy", 4242);
-  expect(() => envLines("nope")).toThrow("no such profile 'nope' (known profiles: work)");
-});
-
-test("cli env --profile unknown exits 1 with an EMPTY stdout (the eval contract)", () => {
-  dir = tempDir("copilot-env-cmd-");
   const proc = runCli(["env", "--profile", "nope"], {
     env: { ...process.env, ...childBaseEnv(), CONSOLA_LEVEL: "5" },
   });
@@ -350,4 +437,6 @@ test("cli env --profile unknown exits 1 with an EMPTY stdout (the eval contract)
   // NOTHING may reach stdout: the shell wrapper evals it verbatim.
   expect(proc.stdout).toBe("");
   expect(proc.stderr).toContain("no such profile 'nope'");
+  seedProfile(home, "work", "proxy", 4242);
+  expect(() => envLines("nope")).toThrow("no such profile 'nope' (known profiles: work)");
 });

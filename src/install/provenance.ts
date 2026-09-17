@@ -111,7 +111,10 @@ export async function verifyReleaseProvenance(
     signerIdentity = identity;
   } catch (e) {
     throw new Error(
-      verificationFailedMessage(tag, `not signed by the release workflow (${errMessage(e)})`),
+      verificationFailedMessage(
+        tag,
+        `not signed by a GitHub Actions workflow of Vivswan's account (${errMessage(e)})`,
+      ),
     );
   }
 

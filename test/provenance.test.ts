@@ -77,7 +77,9 @@ describe("verifyReleaseProvenance", () => {
           /^https:\/\/github\.com\/someone-else\/[^/]+\/\.github\/workflows\/[^@]+@refs\/.+$/,
       },
     }).catch((e: unknown) => e as Error);
-    expect((err as Error).message).toContain("not signed by the release workflow");
+    expect((err as Error).message).toContain(
+      "not signed by a GitHub Actions workflow of Vivswan's account",
+    );
     expect((err as Error).message).not.toContain("--no-verify");
   });
 
@@ -109,7 +111,9 @@ describe("verifyReleaseProvenance", () => {
       trustedRoot: TRUSTED_ROOT,
       policy: { ...RELEASE_SIGNER_POLICY, issuer: "https://accounts.google.com" },
     }).catch((e: unknown) => e as Error);
-    expect((err as Error).message).toContain("not signed by the release workflow");
+    expect((err as Error).message).toContain(
+      "not signed by a GitHub Actions workflow of Vivswan's account",
+    );
   });
 
   test("a signed envelope whose payload or payload type was altered is a FAILED verdict", async () => {
@@ -128,7 +132,9 @@ describe("verifyReleaseProvenance", () => {
       { trustedRoot: TRUSTED_ROOT },
     ).catch((e: unknown) => e as Error);
     expect((err1 as Error).message).toContain("verification FAILED");
-    expect((err1 as Error).message).toContain("not signed by the release workflow");
+    expect((err1 as Error).message).toContain(
+      "not signed by a GitHub Actions workflow of Vivswan's account",
+    );
 
     // A different payload type is refused before the signature is even checked.
     const otherType = structuredClone(original);

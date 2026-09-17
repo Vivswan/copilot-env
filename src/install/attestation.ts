@@ -69,11 +69,10 @@ export function cannotVerifyMessage(tag: string, cause: string): string {
     `opt-out with '${configSetCommand("update.verify-provenance", "false")}'.`;
 }
 
-/** The mismatch wording: the check ran and the download is not what our release
- *  workflow built. Deliberately silent about the opt-outs. */
+/** The mismatch wording: the check ran and the bytes or the signer failed it. Deliberately
+ *  silent about the opt-outs. */
 export function verificationFailedMessage(tag: string, detail: string): string {
-  return `build provenance verification FAILED for ${tag}: ${detail}; the download is not ` +
-    "what GitHub Actions built from Vivswan/copilot-env. Do not install it.";
+  return `build provenance verification FAILED for ${tag}: ${detail}. Do not install it.`;
 }
 
 /** Decode a DSSE payload as an in-toto v1 statement carrying SLSA provenance.

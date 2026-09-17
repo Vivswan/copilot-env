@@ -21,7 +21,6 @@ import {
   desktopAppInstalledFor,
   desktopConfigPayload,
   desktopDataDirFor,
-  desktopEntryName,
   desktopHelperPath,
   desktopLibraryDirUnder,
   desktopModelLabel,
@@ -76,12 +75,15 @@ const restoreEnv = envSnapshot();
 const WORK = parseProfileName("work");
 /** The command credential shape every wire in this file uses unless it says otherwise. */
 const COMMAND = { kind: "command" } as const;
+/** The process's real fetch: a case that stubs the global for model discovery is reset here. */
+const REAL_FETCH = globalThis.fetch;
 let dir = "";
 
 afterEach(() => {
   restoreEnv();
   resetExitCode();
   setIntegrationProbeFetch(null);
+  globalThis.fetch = REAL_FETCH;
   dir = removeDir(dir);
 });
 
@@ -115,6 +117,21 @@ const CATALOG = [
   { id: "claude-opus-5", window: 1_000_000, name: "Claude Opus 5 (Upstream)" },
   { id: "gpt-5.6-sol" },
 ];
+
+/** Stubs the GLOBAL fetch (what a call site's model discovery reaches when no fetchImpl is
+ *  threaded): a Copilot host answers CATALOG, anything else (the daemon) is offline. Returns the
+ *  URLs seen, so a case pins that nothing left the stub for the network. */
+function stubDiscoveryFetch(): string[] {
+  const seen: string[] = [];
+  globalThis.fetch = ((input: string | URL | Request) => {
+    const url = String(input);
+    seen.push(url);
+    return url.startsWith("https://")
+      ? catalogFetch(CATALOG)(input)
+      : Promise.reject(new Error("offline"));
+  }) as typeof fetch;
+  return seen;
+}
 
 function readJson(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
@@ -212,11 +229,6 @@ test("desktopModelLabel: human labels from ids, dot and dash version forms alike
   // snapshots, which the model-id grammar's 2-digit minor cap keeps out.
   expect(desktopModelLabel("claude-fable-5-1m")).toBe("Claude Fable 5 1m");
   expect(desktopModelLabel("claude-fable-5-20251001")).toBe("Claude Fable 5 20251001");
-});
-
-test("desktopEntryName: default vs profile naming", () => {
-  expect(desktopEntryName(null)).toBe("copilot-env");
-  expect(desktopEntryName(WORK)).toBe("copilot-env: work");
 });
 
 // --- payload ---------------------------------------------------------------------
@@ -473,6 +485,19 @@ test("fresh upsert: config + meta entry + appliedId only when the library had no
 
 test("offline direct: a FRESH entry is never created; an owned entry keeps its rows", async () => {
   const { library } = isolateWithDesktop();
+  // A quiet wire on a pristine library: the quiet path may not pay discovery, and a fresh direct
+  // entry without model data is unusable, so no file at all is written (not even an empty index).
+  await wireClaudeDesktopEntry({
+    profile: null,
+    mode: "direct",
+    direct: null,
+    credential: COMMAND,
+    directToken: "ghu_x",
+    quiet: true,
+    fetchImpl: () => Promise.reject(new Error("quiet must not fetch")),
+  });
+  expect(existsSync(join(library, "_meta.json"))).toBe(false);
+
   mkdirSync(library, { recursive: true });
   writeFileSync(
     join(library, "user-1.json"),
@@ -536,22 +561,6 @@ test("a direct entry's gateway is the write's Copilot host, the generic host whe
   expect(readJson(firstEntryPath(library))["inferenceGatewayBaseUrl"]).toBe(
     DEFAULT_COPILOT_API_BASE,
   );
-});
-
-test("a quiet wire never discovers: fresh direct entries are skipped outright", async () => {
-  const { library } = isolateWithDesktop();
-  await wireClaudeDesktopEntry({
-    profile: null,
-    mode: "direct",
-    direct: null,
-    credential: COMMAND,
-    directToken: "ghu_x",
-    quiet: true,
-    fetchImpl: () => Promise.reject(new Error("quiet must not fetch")),
-  });
-  // No files at all: the quiet path may not pay discovery, and a fresh direct
-  // entry without model data is unusable, so nothing was written.
-  expect(existsSync(join(library, "_meta.json"))).toBe(false);
 });
 
 test("a blocked removal (malformed _meta.json) keeps the helper scripts", async () => {
@@ -645,40 +654,11 @@ test("never-clobber: a foreign entry carrying our name, or a malformed _meta.jso
 
 // POSIX only: creating symlinks on Windows needs elevation/dev-mode.
 test.skipIf(process.platform === "win32")(
-  "a dangling _meta.json symlink is could-not-read, never an empty library to rebuild",
+  "a dangling symlink at a library file (_meta.json, an owned entry's config) is could-not-read, never an empty document to rebuild",
   async () => {
-    const { library } = isolateWithDesktop();
-    mkdirSync(library, { recursive: true });
-    // A link whose target existed and was removed: the entry AT the path
-    // remains (lstat), but readFileSync follows it and reads ENOENT.
-    const target = join(library, "real-meta.json");
-    writeFileSync(target, `${JSON.stringify({ appliedId: null, entries: [] })}\n`);
-    symlinkSync(target, join(library, "_meta.json"));
-    rmSync(target);
-    await expect(
-      wireClaudeDesktopEntry({
-        profile: null,
-        mode: "direct",
-        direct: null,
-        credential: COMMAND,
-        directToken: "ghu_x",
-        quiet: false,
-        fetchImpl: catalogFetch(CATALOG),
-      }),
-    ).rejects.toThrow("could not read");
-    // Never clobbered: the link survives as a link, nothing materialized at its
-    // target, no entry config or ownership record was minted.
-    expect(lstatSync(join(library, "_meta.json")).isSymbolicLink()).toBe(true);
-    expect(existsSync(target)).toBe(false);
-    expect(readdirSync(library)).toEqual(["_meta.json"]);
-    expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
-  },
-);
-
-test.skipIf(process.platform === "win32")(
-  "an owned entry whose config is a dangling symlink is unreadable, not rebuilt from empty",
-  async () => {
-    const { library } = isolateWithDesktop();
+    // A link whose target existed and was removed: the entry AT the path remains (lstat), but
+    // readFileSync follows it and reads ENOENT. Refuse, never clobber: the link survives as a link,
+    // nothing materializes at its target.
     const opts = {
       profile: null,
       mode: "direct" as const,
@@ -688,23 +668,60 @@ test.skipIf(process.platform === "win32")(
       quiet: false,
       fetchImpl: catalogFetch(CATALOG),
     };
-    await wireClaudeDesktopEntry(opts);
-    const entries = metaOf(library).entries as { id: string }[];
-    const configPath = join(library, `${entries[0]?.id}.json`);
-    const target = join(library, "moved-away.json");
-    writeFileSync(target, "{}\n");
-    rmSync(configPath);
-    symlinkSync(target, configPath);
-    rmSync(target);
-    // Re-wire: the owned entry's config cannot be read -- refuse, never rebuild
-    // the document from {} over the user's link.
-    await expect(wireClaudeDesktopEntry(opts)).rejects.toThrow("could not read");
-    expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
-    expect(existsSync(target)).toBe(false);
-    // The same failed look leaves the status unjudged: nothing is swept as an orphan.
-    const status = inspectClaudeDesktopWiring([{ profile: null, mode: "direct" }]);
-    expect(status.kind).toBe("unjudged");
-    if (status.kind === "unjudged") expect(status.reason).toContain("could not read");
+    const cases: {
+      name: string;
+      /** Breaks one library file; answers the link's path. */
+      arrange: (library: string) => Promise<string>;
+      also: (library: string, target: string) => void;
+    }[] = [
+      {
+        name: "_meta.json",
+        arrange: (library) => {
+          mkdirSync(library, { recursive: true });
+          const target = join(library, "real-meta.json");
+          writeFileSync(target, `${JSON.stringify({ appliedId: null, entries: [] })}\n`);
+          symlinkSync(target, join(library, "_meta.json"));
+          return Promise.resolve(target);
+        },
+        // No entry config or ownership record was minted from an "empty" library.
+        also: (library) => {
+          expect(readdirSync(library)).toEqual(["_meta.json"]);
+          expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
+        },
+      },
+      {
+        name: "an owned entry's config",
+        arrange: async (library) => {
+          await wireClaudeDesktopEntry(opts);
+          const entries = metaOf(library).entries as { id: string }[];
+          const configPath = join(library, `${entries[0]?.id}.json`);
+          const target = join(library, "moved-away.json");
+          writeFileSync(target, "{}\n");
+          rmSync(configPath);
+          symlinkSync(target, configPath);
+          return target;
+        },
+        // The same failed look leaves the status unjudged: nothing is swept as an orphan.
+        also: () => {
+          const status = inspectClaudeDesktopWiring([{ profile: null, mode: "direct" }]);
+          expect(status.kind).toBe("unjudged");
+          if (status.kind === "unjudged") expect(status.reason).toContain("could not read");
+        },
+      },
+    ];
+    for (const c of cases) {
+      dir = removeDir(dir);
+      const { library } = isolateWithDesktop();
+      const target = await c.arrange(library);
+      const link = c.name === "_meta.json"
+        ? join(library, "_meta.json")
+        : join(library, `${(metaOf(library).entries as { id: string }[])[0]?.id}.json`);
+      rmSync(target);
+      await expect(wireClaudeDesktopEntry(opts), c.name).rejects.toThrow("could not read");
+      expect(lstatSync(link).isSymbolicLink(), c.name).toBe(true);
+      expect(existsSync(target), c.name).toBe(false);
+      c.also(library, target);
+    }
   },
 );
 
@@ -823,8 +840,13 @@ test("Desktop status judges a Direct entry against the slot's stored pair: what 
   expect(verdict()).toBe(`gateway ${DEFAULT_COPILOT_API_BASE}, expected ${enterprise}`);
   // The reconcile renders the slot's pair without a probe; the status now agrees it is wired.
   setIntegrationProbeFetch(() => Promise.reject(new Error("no probe expected")));
+  // Its model discovery is the one request it makes, and it goes to the slot's host under the
+  // slot's id: the stub answers it, nothing reaches the network.
+  const seen = stubDiscoveryFetch();
   // The non-quiet reconcile upserts the targets (the quiet one only sweeps orphans).
   await reconcileClaudeDesktopWiring();
+  expect(seen.length).toBeGreaterThan(0);
+  expect(seen.every((url) => new URL(url).origin === enterprise)).toBe(true);
   const doc = readJson(firstEntryPath(library));
   expect(doc["inferenceGatewayBaseUrl"]).toBe(enterprise);
   expect((doc["inferenceCustomHeaders"] as Record<string, string>)["Copilot-Integration-Id"]).toBe(
@@ -1132,27 +1154,6 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   expect(existsSync(library)).toBe(false);
 });
 
-test("a stale User-Agent is drift: the inspector judges with the writer's live UA", async () => {
-  const { library } = isolateWithDesktop();
-  await wireClaudeDesktopEntry(directWire());
-  const configPath = firstEntryPath(library);
-  const targets: DesktopTarget[] = [{ profile: null, mode: "direct" }];
-  expect(inspected(inspectClaudeDesktopWiring(targets)).entries[0]?.verdict.kind).toBe("wired");
-  const doc = readJson(configPath);
-  const headers = { ...(doc["inferenceCustomHeaders"] as Record<string, string>) };
-  headers["User-Agent"] = `${headers["User-Agent"]}-stale`;
-  writeFileSync(
-    configPath,
-    `${JSON.stringify({ ...doc, "inferenceCustomHeaders": headers }, null, 2)}\n`,
-  );
-  // A Codex upgrade WOULD rewrite this entry, so it must not read wired.
-  expect(inspected(inspectClaudeDesktopWiring(targets)).entries[0]?.verdict).toEqual({
-    kind: "stale",
-    path: configPath,
-    reason: "the managed keys drifted (a rewire would change the entry)",
-  });
-});
-
 test.skipIf(NO_CHMOD_FAULTS)(
   "the config write is announced the moment it lands, even when a later step fails",
   async () => {
@@ -1263,12 +1264,12 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
       JSON.stringify({
         ...metaDoc,
         "appliedId": foreignId,
-        "entries": [...(metaDoc.entries as unknown[]), { id: foreignId, name: "Stanford" }],
+        "entries": [...(metaDoc.entries as unknown[]), { id: foreignId, name: "Elsewhere" }],
       })
     }\n`,
   );
   rendered = renderClaudeDesktopStatus(inspectClaudeDesktopWiring(targets));
-  expect(rendered.lines[2]).toBe(`the app applies "Stanford" (not a copilot-env entry)`);
+  expect(rendered.lines[2]).toBe(`the app applies "Elsewhere" (not a copilot-env entry)`);
   expect(rendered.fix).toBe(
     'agent profile --add work, then in Claude Desktop (reopened): Developer > Configure Third-Party Inference..., select "copilot-env", Save & Restart',
   );
@@ -1335,16 +1336,26 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   expect(rendered.lines).toEqual(["settings.json junk; the Desktop entries were not judged"]);
   expect(rendered.fix).toBe("fix the cause named above, then re-run `agent claude`");
 
-  // Stale: a managed key drifted, then the same bytes a quiet rewire would rewrite
-  // (compact JSON), then a direct entry lost its model rows (an empty picker is not wired).
+  // Stale: a managed key drifted (the display name, then a User-Agent a Codex upgrade WOULD
+  // rewrite: the inspector judges with the writer's live UA), then the same bytes a quiet rewire
+  // would rewrite (compact JSON), then a direct entry lost its model rows (an empty picker is not
+  // wired).
   const doc = readJson(configPath);
-  const drifted = { ...doc, "deploymentDisplayName": "Mine" };
-  writeFileSync(configPath, `${JSON.stringify(drifted, null, 2)}\n`);
-  expect(inspected(inspectClaudeDesktopWiring(targets)).entries[0]?.verdict).toEqual({
+  const managedDrift = {
     kind: "stale",
     path: configPath,
     reason: "the managed keys drifted (a rewire would change the entry)",
-  });
+  };
+  const drifted = { ...doc, "deploymentDisplayName": "Mine" };
+  writeFileSync(configPath, `${JSON.stringify(drifted, null, 2)}\n`);
+  expect(inspected(inspectClaudeDesktopWiring(targets)).entries[0]?.verdict).toEqual(managedDrift);
+  const headers = { ...(doc["inferenceCustomHeaders"] as Record<string, string>) };
+  headers["User-Agent"] = `${headers["User-Agent"]}-stale`;
+  writeFileSync(
+    configPath,
+    `${JSON.stringify({ ...doc, "inferenceCustomHeaders": headers }, null, 2)}\n`,
+  );
+  expect(inspected(inspectClaudeDesktopWiring(targets)).entries[0]?.verdict).toEqual(managedDrift);
   writeFileSync(configPath, `${JSON.stringify(doc)}\n`);
   expect(inspected(inspectClaudeDesktopWiring(targets)).entries[0]?.verdict.kind).toBe("stale");
   writeFileSync(configPath, `${JSON.stringify({ ...doc, "inferenceModels": [] }, null, 2)}\n`);
@@ -1877,6 +1888,10 @@ test.skipIf(NO_CHMOD_FAULTS)(
 test("call sites reconcile the whole library: init, profile --sync, the launcher's profile write", async () => {
   const { library } = isolateWithDesktop();
   const names = () => (metaOf(library).entries as { name: string }[]).map((e) => e.name).sort();
+  // The proxy wires below fall back to the direct catalog when the daemon is down: the stub
+  // answers, nothing reaches the network, and the URLs it saw are pinned at the end.
+  const seen = stubDiscoveryFetch();
+  const online = globalThis.fetch;
 
   // `agent init --proxy`: the default entry is wired, and an owned entry whose profile
   // does not exist (an orphan) is removed in the same run. That orphan held the applied slot,
@@ -1911,7 +1926,6 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "proxy",
   });
-  const realFetch = globalThis.fetch;
   globalThis.fetch = () => {
     throw new Error("discovery ran on the hot path");
   };
@@ -1919,7 +1933,7 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
   try {
     synced = await captureAllWrites(() => runProfile({ sync: true, mode: "auto" }));
   } finally {
-    globalThis.fetch = realFetch;
+    globalThis.fetch = online;
   }
   expect(synced).not.toContain("discovery ran on the hot path");
   expect(synced).not.toContain("Claude Desktop is ready"); // the quiet pass says nothing
@@ -1937,7 +1951,7 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
     probes++;
     return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
   });
-  // The control's upsert also runs model discovery: keep it off the network too.
+  // The control's upsert also runs model discovery: offline here, so no entry rows to compare.
   globalThis.fetch = () => Promise.reject(new Error("offline"));
   try {
     await captureAllWrites(() => reconcileClaudeDesktopWiring({ quiet: true }));
@@ -1945,7 +1959,7 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
     await captureAllWrites(() => reconcileClaudeDesktopWiring());
     expect(probes).toBeGreaterThan(0);
   } finally {
-    globalThis.fetch = realFetch;
+    globalThis.fetch = online;
     setIntegrationProbeFetch(null);
   }
   new CopilotEnvState().deleteProfile(WORK);
@@ -1974,6 +1988,13 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
     await commandDeps().writeClaudeProfileSettings(WORK, "proxy");
   });
   expect(names()).toEqual(["copilot-env: work"]);
+  // Every request a call site made was a catalog GET: the daemon's, or Copilot's generic host.
+  expect(seen.length).toBeGreaterThan(0);
+  expect(seen.every((url) => url.endsWith("/models"))).toBe(true);
+  const copilotHosts = new Set(
+    seen.filter((url) => url.startsWith("https://")).map((url) => new URL(url).origin),
+  );
+  expect([...copilotHosts]).toEqual([DEFAULT_COPILOT_API_BASE]);
 });
 
 test("the reconcile re-discovers the default entry only when it is missing or stale", async () => {

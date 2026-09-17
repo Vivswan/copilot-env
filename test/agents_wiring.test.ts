@@ -81,6 +81,8 @@ function addProfileHome(): void {
 }
 
 describe("mode matrix: codex x claude x profile home", () => {
+  // Health once misdiagnosed the direct/direct/profileHome=true row: the DEFAULT setup needs no
+  // proxy, yet the profile's own daemon still runs on the package, so the float must keep floating.
   const MODES: WiredMode[] = ["direct", "proxy", "none"];
   for (const codex of MODES) {
     for (const claude of MODES) {
@@ -98,148 +100,162 @@ describe("mode matrix: codex x claude x profile home", () => {
   }
 });
 
-test("driving bug: both defaults Direct while a proxy profile home exists", () => {
-  // Health once misdiagnosed this: the DEFAULT setup needs no proxy, yet the profile's own daemon
-  // still runs on the package, so the float must keep floating.
-  const opts = { codexHome: makeCodexHome("direct"), claudeHome: makeClaudeHome("direct") };
-  addProfileHome();
-  expect(defaultSetupNeedsProxy(opts)).toBe(false);
-  expect(proxyUnusedEverywhere(opts)).toBe(false);
-});
-
-describe("proxyUnusedEverywhere edge cases", () => {
-  test("true when Codex is direct-wired and Claude points at the direct helper", () => {
-    const opts = { codexHome: makeCodexHome("direct"), claudeHome: makeClaudeHome("direct") };
-    expect(proxyUnusedEverywhere(opts)).toBe(true);
-  });
-
-  test("false on a mixed Claude config (direct helper but a proxy ANTHROPIC_BASE_URL)", () => {
-    const codexHome = makeCodexHome("direct");
-    const claudeHome = join(dir, "claude-home");
-    writeClaudeSettings(claudeHome, {
-      apiKeyHelper: directHelperCommand(),
-      baseUrl: PROXY_CLAUDE_BASE,
-    });
-    // The mode keys off apiKeyHelper alone and still reads direct, so both predicates must also
-    // check the base URL: Claude's traffic really goes to the local daemon. (The needsProxy
-    // assertion once said false; that was the bug health inherited.)
-    expect(readAgentModes({ codexHome, claudeHome }).claude).toBe("direct");
-    expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(true);
-    expect(proxyUnusedEverywhere({ codexHome, claudeHome })).toBe(false);
-  });
-
-  test("false when the Claude direct base URL is missing (partially managed config)", () => {
-    const codexHome = makeCodexHome("direct");
-    const claudeHome = join(dir, "claude-home");
-    writeClaudeSettings(claudeHome, { apiKeyHelper: directHelperCommand() });
-    // The float refuses to skip on ANY deviation from the managed Direct URL,
-    // but health's question is narrower: no base URL means no route to the
-    // local daemon, so the default setup still needs no proxy.
-    expect(proxyUnusedEverywhere({ codexHome, claudeHome })).toBe(false);
-    expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(false);
-  });
-
-  test("false on unparseable configs (uncertain wiring floats normally)", () => {
-    const codexHome = join(dir, "codex-home");
-    mkdirSync(codexHome, { recursive: true });
-    writeFileSync(join(codexHome, "config.toml"), "model_provider = [broken");
-    const claudeHome = makeClaudeHome("direct");
-    expect(proxyUnusedEverywhere({ codexHome, claudeHome })).toBe(false);
-    // The classifier mints the not-ours verdict itself (other/malformed), so a
-    // best-effort caller never mistakes an unparseable config for an unwired one.
-    expect(readAgentModes({ codexHome, claudeHome }).codex).toBe("other");
-  });
-
-  test("an UNREADABLE codex config reads other, never none (nothing synthesizes it)", () => {
-    // A directory at config.toml is the portable stand-in for a permission failure: the entry
-    // exists but cannot be read as text.
-    const codexHome = join(dir, "codex-home");
-    mkdirSync(join(codexHome, "config.toml"), { recursive: true });
-    const claudeHome = makeClaudeHome("direct");
-    expect(readAgentModes({ codexHome, claudeHome }).codex).toBe("other");
-    expect(proxyUnusedEverywhere({ codexHome, claudeHome })).toBe(false);
-  });
-});
-
-describe("defaultSetupNeedsProxy base-URL matrix (codex direct + Claude direct helper)", () => {
+describe("Claude's base URL against its helper: the route decides, not the mode alone", () => {
   // Claude's mode keys off apiKeyHelper alone, so the base URL decides whether a mode-direct Claude
   // still routes to OUR daemon. A daemon that is not in the path can neither fix nor break the
-  // agent, so health must not demand it.
-  const cases: { name: string; baseUrl?: string; needsProxy: boolean }[] = [
-    { name: "the local proxy origin", baseUrl: PROXY_CLAUDE_BASE, needsProxy: true },
+  // agent, so health must not demand it; the float skips only for a Direct-shaped https host (the
+  // generic one or a `host` literal), never a loopback or missing URL. (The mixed shape's
+  // needsProxy once said false: the bug health inherited.)
+  const cases: {
+    name: string;
+    codex: WiredMode;
+    helper: "direct" | "proxy";
+    baseUrl?: string;
+    claudeMode: "direct" | "proxy";
+    needsProxy: boolean;
+    unused: boolean;
+  }[] = [
+    {
+      name: "the local proxy origin (mixed: direct helper, proxy URL)",
+      codex: "direct",
+      helper: "direct",
+      baseUrl: PROXY_CLAUDE_BASE,
+      claudeMode: "direct",
+      needsProxy: true,
+      unused: false,
+    },
     {
       name: "the local proxy origin, localhost spelling",
+      codex: "direct",
+      helper: "direct",
       baseUrl: "http://localhost:4141",
+      claudeMode: "direct",
       needsProxy: true,
+      unused: false,
     },
     {
       name: "the local proxy origin, trailing slash",
+      codex: "direct",
+      helper: "direct",
       baseUrl: "http://127.0.0.1:4141/",
+      claudeMode: "direct",
       needsProxy: true,
+      unused: false,
     },
     {
-      name: "a foreign gateway (routes elsewhere)",
+      name: "a foreign https gateway (routes elsewhere: Direct on another host)",
+      codex: "direct",
+      helper: "direct",
       baseUrl: "https://some-gateway.example",
+      claudeMode: "direct",
       needsProxy: false,
+      unused: true,
     },
     {
       name: "a loopback service on a DIFFERENT port (not our daemon)",
+      codex: "direct",
+      helper: "direct",
       baseUrl: "http://127.0.0.1:5000",
+      claudeMode: "direct",
       needsProxy: false,
+      unused: false,
     },
-    { name: "the managed Direct URL", baseUrl: DIRECT_BASE, needsProxy: false },
-    { name: "no base URL at all", needsProxy: false },
+    {
+      name: "the managed Direct URL",
+      codex: "direct",
+      helper: "direct",
+      baseUrl: DIRECT_BASE,
+      claudeMode: "direct",
+      needsProxy: false,
+      unused: true,
+    },
+    {
+      name: "no base URL at all (partially managed config)",
+      codex: "direct",
+      helper: "direct",
+      claudeMode: "direct",
+      needsProxy: false,
+      unused: false,
+    },
+    {
+      name: "the reverse mixed shape (proxy helper, direct base URL) stays true via the mode",
+      codex: "direct",
+      helper: "proxy",
+      baseUrl: DIRECT_BASE,
+      claudeMode: "proxy",
+      needsProxy: true,
+      unused: false,
+    },
+    {
+      name: "codex proxy + claude direct stays true regardless of Claude's base URL",
+      codex: "proxy",
+      helper: "direct",
+      baseUrl: DIRECT_BASE,
+      claudeMode: "direct",
+      needsProxy: true,
+      unused: false,
+    },
   ];
-  for (const { name, baseUrl, needsProxy } of cases) {
-    test(`${name} => ${needsProxy}`, () => {
-      const codexHome = makeCodexHome("direct");
+  for (const c of cases) {
+    test(`${c.name} => needsProxy ${c.needsProxy}, unused ${c.unused}`, () => {
+      const codexHome = makeCodexHome(c.codex);
       const claudeHome = join(dir, "claude-home");
       writeClaudeSettings(claudeHome, {
-        apiKeyHelper: directHelperCommand(),
-        ...(baseUrl === undefined ? {} : { baseUrl }),
+        apiKeyHelper: c.helper === "direct" ? directHelperCommand() : proxyHelperCommand(),
+        ...(c.baseUrl === undefined ? {} : { baseUrl: c.baseUrl }),
       });
-      expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(needsProxy);
+      const opts = { codexHome, claudeHome };
+      expect(readAgentModes(opts)).toEqual({ codex: c.codex, claude: c.claudeMode });
+      expect(defaultSetupNeedsProxy(opts)).toBe(c.needsProxy);
+      expect(proxyUnusedEverywhere(opts)).toBe(c.unused);
     });
   }
+});
 
-  test("the reverse mixed shape stays true via the mode (proxy helper, direct base URL)", () => {
-    const codexHome = makeCodexHome("direct");
-    const claudeHome = join(dir, "claude-home");
-    writeClaudeSettings(claudeHome, {
-      apiKeyHelper: proxyHelperCommand(),
-      baseUrl: DIRECT_BASE,
+describe("a config that cannot be read as ours reads 'other', never unconfigured 'none'", () => {
+  // The classifier mints the not-ours verdict itself (other/malformed or read-error), so a
+  // best-effort caller never mistakes a broken config for an unwired one: uncertain wiring floats
+  // normally and health keeps asking for the proxy. A directory at the config path is the
+  // portable stand-in for a permission failure (a non-ENOENT error everywhere).
+  type Broken = "unparseable" | "unreadable";
+  const breakCodex = (how: Broken): string => {
+    const home = join(dir, "codex-home");
+    if (how === "unreadable") mkdirSync(join(home, "config.toml"), { recursive: true });
+    else {
+      mkdirSync(home, { recursive: true });
+      writeFileSync(join(home, "config.toml"), "model_provider = [broken");
+    }
+    return home;
+  };
+  const breakClaude = (how: Broken): string => {
+    const home = join(dir, "claude-home");
+    if (how === "unreadable") mkdirSync(join(home, "settings.json"), { recursive: true });
+    else {
+      mkdirSync(home, { recursive: true });
+      writeFileSync(join(home, "settings.json"), "{broken");
+    }
+    return home;
+  };
+  const cases: { codex: Broken | "direct"; claude: Broken | "direct" }[] = [
+    { codex: "unparseable", claude: "direct" },
+    { codex: "unreadable", claude: "direct" },
+    { codex: "direct", claude: "unparseable" },
+    { codex: "unreadable", claude: "unreadable" },
+  ];
+  for (const c of cases) {
+    test(`codex=${c.codex} claude=${c.claude}`, () => {
+      const opts = {
+        codexHome: c.codex === "direct" ? makeCodexHome("direct") : breakCodex(c.codex),
+        claudeHome: c.claude === "direct" ? makeClaudeHome("direct") : breakClaude(c.claude),
+      };
+      expect(readAgentModes(opts)).toEqual({
+        codex: c.codex === "direct" ? "direct" : "other",
+        claude: c.claude === "direct" ? "direct" : "other",
+      });
+      expect(defaultSetupNeedsProxy(opts)).toBe(true);
+      expect(proxyUnusedEverywhere(opts)).toBe(false);
     });
-    expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(true);
-  });
-
-  test("codex proxy + claude direct stays true regardless of Claude's base URL", () => {
-    const opts = { codexHome: makeCodexHome("proxy"), claudeHome: makeClaudeHome("direct") };
-    expect(defaultSetupNeedsProxy(opts)).toBe(true);
-  });
-});
-
-test("unparseable Claude settings read as 'other' (a config we must not clobber)", () => {
-  const codexHome = makeCodexHome("direct");
-  const claudeHome = join(dir, "claude-home");
-  mkdirSync(claudeHome, { recursive: true });
-  writeFileSync(join(claudeHome, "settings.json"), "{broken");
-  const opts = { codexHome, claudeHome };
-  expect(readAgentModes(opts)).toEqual({ codex: "direct", claude: "other" });
-  expect(defaultSetupNeedsProxy(opts)).toBe(true);
-  expect(proxyUnusedEverywhere(opts)).toBe(false);
-});
-
-test("unreadable configs read as 'other', never as unconfigured 'none'", () => {
-  // A directory at each config path is the cross-platform unreadable fixture (a non-ENOENT error
-  // everywhere).
-  const codexHome = join(dir, "codex-home");
-  mkdirSync(join(codexHome, "config.toml"), { recursive: true });
-  const claudeHome = join(dir, "claude-home");
-  mkdirSync(join(claudeHome, "settings.json"), { recursive: true });
-  const opts = { codexHome, claudeHome };
-  expect(readAgentModes(opts)).toEqual({ codex: "other", claude: "other" });
-  expect(defaultSetupNeedsProxy(opts)).toBe(true);
-  expect(proxyUnusedEverywhere(opts)).toBe(false);
+  }
 });
 
 describe("default home resolution", () => {

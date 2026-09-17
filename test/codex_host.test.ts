@@ -424,157 +424,180 @@ skipWin("building twice changes nothing (idempotent, byte for byte)", async () =
 // --- shared-home prime (primeSharedCodexHomeIfMissing) -----------------------
 
 skipWin(
-  "a missing shared root primes via a codex on PATH, and its failure is swallowed",
+  "the shared-home prime: a missing shared root is primed by a codex on PATH (its failure swallowed, the paths it made named as ours); an existing root skips the prime entirely",
   async () => {
-    const { sharedRoot } = isolate();
-    const bin = join(dir, "fake-bin");
-    const marker = join(dir, "codex-invocations.log");
-    fs.mkdirSync(bin, { recursive: true });
-    // Exit nonzero on purpose: the prime is best-effort and must not fail the build.
-    // It writes into the CODEX_HOME it is given, the way a real codex would.
-    fs.writeFileSync(
-      join(bin, "codex"),
-      `#!/bin/sh\nPATH=/usr/bin:/bin\nprintf '%s\\n' "$*" >> "${marker}"\ncat > /dev/null\n` +
-        `mkdir -p "$CODEX_HOME"\nprintf '{}' > "$CODEX_HOME/primed.json"\nexit 3\n`,
-      { mode: 0o755 },
-    );
-    // The fake bin dir FIRST, but with the system dirs kept: resolveCommand
-    // resolves through `sh`, which must itself stay spawnable.
-    process.env.PATH = `${bin}:/usr/bin:/bin`;
-    // An inherited CODEX_HOME must not divert the prime: the spawn gets the shared root.
-    const decoy = join(dir, "decoy-codex-home");
-    process.env.CODEX_HOME = decoy;
+    for (const rootExists of [false, true]) {
+      dir = removeDir(dir);
+      const { sharedRoot } = isolate();
+      if (rootExists) fs.mkdirSync(sharedRoot, { recursive: true });
+      const bin = join(dir, "fake-bin");
+      const marker = join(dir, "codex-invocations.log");
+      fs.mkdirSync(bin, { recursive: true });
+      // Exit nonzero on purpose: the prime is best-effort and must not fail the build.
+      // It writes into the CODEX_HOME it is given, the way a real codex would.
+      fs.writeFileSync(
+        join(bin, "codex"),
+        `#!/bin/sh\nPATH=/usr/bin:/bin\nprintf '%s\\n' "$*" >> "${marker}"\ncat > /dev/null\n` +
+          `mkdir -p "$CODEX_HOME"\nprintf '{}' > "$CODEX_HOME/primed.json"\nexit 3\n`,
+        { mode: 0o755 },
+      );
+      // The fake bin dir FIRST, but with the system dirs kept: resolveCommand
+      // resolves through `sh`, which must itself stay spawnable.
+      process.env.PATH = `${bin}:/usr/bin:/bin`;
+      // An inherited CODEX_HOME must not divert the prime: the spawn gets the shared root.
+      const decoy = join(dir, "decoy-codex-home");
+      process.env.CODEX_HOME = decoy;
 
-    deferWriteReports();
-    await build();
-    const reported = flushWriteReports();
-    expect(fs.readFileSync(marker, "utf8")).toBe("exec\n");
-    expect(isRealDir(sharedRoot)).toBe(true);
-    expect(lexists(decoy)).toBe(false);
-    // The paths codex made on our request are named as ours.
-    expect(reported).toContain(`created -> ${sharedRoot}`);
-    expect(reported).toContain(`created -> ${join(sharedRoot, "primed.json")}`);
+      deferWriteReports();
+      await build();
+      const reported = flushWriteReports();
+      const name = rootExists ? "existing root" : "missing root";
+      expect(isRealDir(sharedRoot), name).toBe(true);
+      expect(lexists(decoy), name).toBe(false);
+      if (rootExists) {
+        expect(lexists(marker), name).toBe(false);
+        expect(lexists(join(sharedRoot, "primed.json")), name).toBe(false);
+      } else {
+        expect(fs.readFileSync(marker, "utf8"), name).toBe("exec\n");
+        // The paths codex made on our request are named as ours.
+        expect(reported, name).toContain(`created -> ${sharedRoot}`);
+        expect(reported, name).toContain(`created -> ${join(sharedRoot, "primed.json")}`);
+      }
+    }
   },
 );
 
-skipWin("an existing shared root skips the codex prime entirely", async () => {
-  const { sharedRoot } = isolate();
-  fs.mkdirSync(sharedRoot, { recursive: true });
-  const bin = join(dir, "fake-bin");
-  const marker = join(dir, "codex-invocations.log");
-  fs.mkdirSync(bin, { recursive: true });
-  fs.writeFileSync(
-    join(bin, "codex"),
-    `#!/bin/sh\nPATH=/usr/bin:/bin\nprintf '%s\\n' "$*" >> "${marker}"\ncat > /dev/null\n`,
-    { mode: 0o755 },
-  );
-  process.env.PATH = `${bin}:/usr/bin:/bin`;
-
-  await build();
-  expect(lexists(marker)).toBe(false);
-});
-
 // --- local seeding (seedLocalCodexFileIfMissing, via history.jsonl) -----------
 
-skipWin("an existing shared history.jsonl seeds the host-local copy", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  fs.mkdirSync(sharedRoot, { recursive: true });
-  fs.writeFileSync(join(sharedRoot, "history.jsonl"), '{"x":1}\n');
-
-  await build();
-  const local = join(hostHome, "history.jsonl");
-  expect(isRegularFile(local)).toBe(true);
-  expect(isSymlink(local)).toBe(false);
-  expect(fs.readFileSync(local, "utf8")).toBe('{"x":1}\n');
-});
-
-skipWin("an existing host-local history.jsonl is left alone", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  fs.mkdirSync(sharedRoot, { recursive: true });
-  fs.writeFileSync(join(sharedRoot, "history.jsonl"), "shared\n");
-  fs.mkdirSync(hostHome, { recursive: true });
-  fs.writeFileSync(join(hostHome, "history.jsonl"), "local\n");
-
-  await build();
-  expect(fs.readFileSync(join(hostHome, "history.jsonl"), "utf8")).toBe("local\n");
-  expect(fs.readFileSync(join(sharedRoot, "history.jsonl"), "utf8")).toBe("shared\n");
-});
-
-skipWin("a host-local history.jsonl that is already a symlink is tolerated in place", async () => {
-  const { hostHome } = isolate();
-  fs.mkdirSync(hostHome, { recursive: true });
-  const elsewhere = join(dir, "elsewhere-history");
-  fs.symlinkSync(elsewhere, join(hostHome, "history.jsonl"));
-
-  const warned = await stderrDuring(build);
-  expect(linkTarget(join(hostHome, "history.jsonl"))).toBe(elsewhere);
-  expect(warned).toContain(
-    `Skipping local Codex seed because the path already exists as a symlink: ${
-      join(hostHome, "history.jsonl")
-    }`,
-  );
-});
+skipWin(
+  "the host-local seed (history.jsonl): copied from the shared root when missing; an existing local copy is left alone, a local symlink too (with a warning)",
+  async () => {
+    const cases: {
+      name: string;
+      shared?: string;
+      local?: string | { symlinkTo: string };
+      expected: (farm: Farm, warned: string) => void;
+    }[] = [
+      {
+        name: "shared present, local missing: seeded as a regular file",
+        shared: '{"x":1}\n',
+        expected: ({ hostHome }) => {
+          const local = join(hostHome, "history.jsonl");
+          expect(isRegularFile(local)).toBe(true);
+          expect(isSymlink(local)).toBe(false);
+          expect(fs.readFileSync(local, "utf8")).toBe('{"x":1}\n');
+        },
+      },
+      {
+        name: "both present: each side keeps its own bytes",
+        shared: "shared\n",
+        local: "local\n",
+        expected: ({ sharedRoot, hostHome }) => {
+          expect(fs.readFileSync(join(hostHome, "history.jsonl"), "utf8")).toBe("local\n");
+          expect(fs.readFileSync(join(sharedRoot, "history.jsonl"), "utf8")).toBe("shared\n");
+        },
+      },
+      {
+        name: "a local symlink is tolerated in place",
+        local: { symlinkTo: "elsewhere-history" },
+        expected: ({ hostHome }, warned) => {
+          expect(linkTarget(join(hostHome, "history.jsonl"))).toBe(join(dir, "elsewhere-history"));
+          expect(warned).toContain(
+            `Skipping local Codex seed because the path already exists as a symlink: ${
+              join(hostHome, "history.jsonl")
+            }`,
+          );
+        },
+      },
+    ];
+    for (const c of cases) {
+      dir = removeDir(dir);
+      const farm = isolate();
+      if (c.shared !== undefined) {
+        fs.mkdirSync(farm.sharedRoot, { recursive: true });
+        fs.writeFileSync(join(farm.sharedRoot, "history.jsonl"), c.shared);
+      }
+      if (c.local !== undefined) {
+        fs.mkdirSync(farm.hostHome, { recursive: true });
+        if (typeof c.local === "string") {
+          fs.writeFileSync(join(farm.hostHome, "history.jsonl"), c.local);
+        } else fs.symlinkSync(join(dir, c.local.symlinkTo), join(farm.hostHome, "history.jsonl"));
+      }
+      const warned = await stderrDuring(build);
+      c.expected(farm, warned);
+    }
+  },
+);
 
 // --- shared seeding (seedSharedCodexFileIfMissing, via AGENTS.md) -------------
 
 skipWin(
-  "a host-local AGENTS.md is promoted to the shared root and replaced by a symlink",
+  "the shared seed (AGENTS.md): a host-local copy is promoted to the shared root and replaced by a symlink, refilling an empty shared one; conflicting content keeps both copies unlinked (warned); a local symlink stays, the shared placeholder still lands",
   async () => {
-    const { sharedRoot, hostHome } = isolate();
-    fs.mkdirSync(hostHome, { recursive: true });
-    fs.writeFileSync(join(hostHome, "AGENTS.md"), "agents\n");
-
-    await build();
-    expect(isRegularFile(join(sharedRoot, "AGENTS.md"))).toBe(true);
-    expect(fs.readFileSync(join(sharedRoot, "AGENTS.md"), "utf8")).toBe("agents\n");
-    expect(linkTarget(join(hostHome, "AGENTS.md"))).toBe(join(sharedRoot, "AGENTS.md"));
-  },
-);
-
-skipWin("an empty shared AGENTS.md is refilled from a non-empty host-local copy", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  fs.mkdirSync(sharedRoot, { recursive: true });
-  fs.writeFileSync(join(sharedRoot, "AGENTS.md"), "");
-  fs.mkdirSync(hostHome, { recursive: true });
-  fs.writeFileSync(join(hostHome, "AGENTS.md"), "agents\n");
-
-  await build();
-  expect(fs.readFileSync(join(sharedRoot, "AGENTS.md"), "utf8")).toBe("agents\n");
-  expect(linkTarget(join(hostHome, "AGENTS.md"))).toBe(join(sharedRoot, "AGENTS.md"));
-});
-
-skipWin("conflicting AGENTS.md content keeps both copies and skips the symlink", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  fs.mkdirSync(sharedRoot, { recursive: true });
-  fs.writeFileSync(join(sharedRoot, "AGENTS.md"), "shared\n");
-  fs.mkdirSync(hostHome, { recursive: true });
-  fs.writeFileSync(join(hostHome, "AGENTS.md"), "local\n");
-
-  const warned = await stderrDuring(build);
-  expect(fs.readFileSync(join(sharedRoot, "AGENTS.md"), "utf8")).toBe("shared\n");
-  const local = join(hostHome, "AGENTS.md");
-  expect(isRegularFile(local)).toBe(true);
-  expect(isSymlink(local)).toBe(false);
-  expect(fs.readFileSync(local, "utf8")).toBe("local\n");
-  // The conflict is warned about and swallowed: the build still completes.
-  expect(warned).toContain(`Leaving existing Codex path unchanged: ${local}`);
-  expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
-});
-
-skipWin(
-  "a wrong-target AGENTS.md symlink is left in place; the shared placeholder still lands",
-  async () => {
-    const { sharedRoot, hostHome } = isolate();
-    fs.mkdirSync(hostHome, { recursive: true });
-    const elsewhere = join(dir, "elsewhere-agents");
-    fs.symlinkSync(elsewhere, join(hostHome, "AGENTS.md"));
-
-    await build();
-    // Not repaired today: the existing symlink wins (with a warning)...
-    expect(linkTarget(join(hostHome, "AGENTS.md"))).toBe(elsewhere);
-    // ...while the shared placeholder is still created for other hosts.
-    expect(isRegularFile(join(sharedRoot, "AGENTS.md"))).toBe(true);
-    expect(fs.readFileSync(join(sharedRoot, "AGENTS.md"), "utf8")).toBe("");
+    const cases: {
+      name: string;
+      shared?: string;
+      local: string | { symlinkTo: string };
+      expected: (farm: Farm, warned: string) => void;
+    }[] = [
+      {
+        name: "local only: promoted and symlinked",
+        local: "agents\n",
+        expected: ({ sharedRoot, hostHome }) => {
+          expect(isRegularFile(join(sharedRoot, "AGENTS.md"))).toBe(true);
+          expect(fs.readFileSync(join(sharedRoot, "AGENTS.md"), "utf8")).toBe("agents\n");
+          expect(linkTarget(join(hostHome, "AGENTS.md"))).toBe(join(sharedRoot, "AGENTS.md"));
+        },
+      },
+      {
+        name: "an empty shared copy is refilled from the local one",
+        shared: "",
+        local: "agents\n",
+        expected: ({ sharedRoot, hostHome }) => {
+          expect(fs.readFileSync(join(sharedRoot, "AGENTS.md"), "utf8")).toBe("agents\n");
+          expect(linkTarget(join(hostHome, "AGENTS.md"))).toBe(join(sharedRoot, "AGENTS.md"));
+        },
+      },
+      {
+        name: "conflicting content keeps both copies and skips the symlink",
+        shared: "shared\n",
+        local: "local\n",
+        expected: ({ sharedRoot, hostHome }, warned) => {
+          expect(fs.readFileSync(join(sharedRoot, "AGENTS.md"), "utf8")).toBe("shared\n");
+          const local = join(hostHome, "AGENTS.md");
+          expect(isRegularFile(local)).toBe(true);
+          expect(isSymlink(local)).toBe(false);
+          expect(fs.readFileSync(local, "utf8")).toBe("local\n");
+          // The conflict is warned about and swallowed: the build still completes.
+          expect(warned).toContain(`Leaving existing Codex path unchanged: ${local}`);
+          expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
+        },
+      },
+      {
+        name: "a wrong-target local symlink is left in place; the shared placeholder still lands",
+        local: { symlinkTo: "elsewhere-agents" },
+        expected: ({ sharedRoot, hostHome }) => {
+          // Not repaired today: the existing symlink wins (with a warning)...
+          expect(linkTarget(join(hostHome, "AGENTS.md"))).toBe(join(dir, "elsewhere-agents"));
+          // ...while the shared placeholder is still created for other hosts.
+          expect(isRegularFile(join(sharedRoot, "AGENTS.md"))).toBe(true);
+          expect(fs.readFileSync(join(sharedRoot, "AGENTS.md"), "utf8")).toBe("");
+        },
+      },
+    ];
+    for (const c of cases) {
+      dir = removeDir(dir);
+      const farm = isolate();
+      if (c.shared !== undefined) {
+        fs.mkdirSync(farm.sharedRoot, { recursive: true });
+        fs.writeFileSync(join(farm.sharedRoot, "AGENTS.md"), c.shared);
+      }
+      fs.mkdirSync(farm.hostHome, { recursive: true });
+      if (typeof c.local === "string") fs.writeFileSync(join(farm.hostHome, "AGENTS.md"), c.local);
+      else fs.symlinkSync(join(dir, c.local.symlinkTo), join(farm.hostHome, "AGENTS.md"));
+      const warned = await stderrDuring(build);
+      c.expected(farm, warned);
+    }
   },
 );
 
@@ -595,141 +618,164 @@ skipWin("a host-local installation_id is promoted and symlinked; none is fabrica
 
 // --- shared-dir promotion (ensureCodexDirSymlink / promoteCodexDirToSharedIfSafe)
 
-skipWin("a host-local sessions dir merges into the shared root, symlinks preserved", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  const localSessions = join(hostHome, "sessions");
-  fs.mkdirSync(join(localSessions, "nested"), { recursive: true });
-  fs.writeFileSync(join(localSessions, "top.txt"), "T");
-  fs.writeFileSync(join(localSessions, "nested", "a.txt"), "A");
-  const linkDest = join(dir, "session-target");
-  fs.symlinkSync(linkDest, join(localSessions, "ln"));
-
-  await build();
-  const shared = join(sharedRoot, "sessions");
-  expect(fs.readFileSync(join(shared, "top.txt"), "utf8")).toBe("T");
-  expect(fs.readFileSync(join(shared, "nested", "a.txt"), "utf8")).toBe("A");
-  expect(linkTarget(join(shared, "ln"))).toBe(linkDest);
-  expect(linkTarget(join(hostHome, "sessions"))).toBe(shared);
-});
-
 skipWin(
-  "identical file content on both sides still merges and symlinks, naming every merged path",
+  "a host-local sessions dir merges into the shared root and becomes a symlink, nested entries and symlinks preserved, every merged path named; identical content already on the shared side merges the same way",
   async () => {
-    const { sharedRoot, hostHome } = isolate();
-    fs.mkdirSync(join(sharedRoot, "sessions", "nested"), { recursive: true });
-    fs.writeFileSync(join(sharedRoot, "sessions", "top.txt"), "same");
-    fs.mkdirSync(join(hostHome, "sessions", "nested", "deep"), { recursive: true });
-    fs.writeFileSync(join(hostHome, "sessions", "top.txt"), "same");
-    fs.writeFileSync(join(hostHome, "sessions", "nested", "deep", "a.txt"), "A");
-    const linkDest = join(dir, "session-target");
-    fs.symlinkSync(linkDest, join(hostHome, "sessions", "nested", "ln"));
-    // The shared side already carries the SAME nested link: identical, so the merge
-    // proceeds and replaces it in place instead of failing on the existing entry.
-    fs.symlinkSync(linkDest, join(sharedRoot, "sessions", "nested", "ln"));
+    const cases: { name: string; sharedHasIdentical: boolean }[] = [
+      { name: "shared side empty", sharedHasIdentical: false },
+      // The shared side already carries the SAME file and nested link: identical, so the merge
+      // proceeds and replaces them in place instead of failing on the existing entries.
+      { name: "identical file and link on both sides", sharedHasIdentical: true },
+    ];
+    for (const c of cases) {
+      dir = removeDir(dir);
+      const { sharedRoot, hostHome } = isolate();
+      const linkDest = join(dir, "session-target");
+      // A symlink at the top level (mergeDirInto's own branch) and one nested (copyTree's).
+      fs.mkdirSync(join(hostHome, "sessions", "nested", "deep"), { recursive: true });
+      fs.writeFileSync(join(hostHome, "sessions", "top.txt"), "same");
+      fs.writeFileSync(join(hostHome, "sessions", "nested", "deep", "a.txt"), "A");
+      fs.symlinkSync(linkDest, join(hostHome, "sessions", "ln"));
+      fs.symlinkSync(linkDest, join(hostHome, "sessions", "nested", "ln"));
+      if (c.sharedHasIdentical) {
+        fs.mkdirSync(join(sharedRoot, "sessions", "nested"), { recursive: true });
+        fs.writeFileSync(join(sharedRoot, "sessions", "top.txt"), "same");
+        fs.symlinkSync(linkDest, join(sharedRoot, "sessions", "ln"));
+        fs.symlinkSync(linkDest, join(sharedRoot, "sessions", "nested", "ln"));
+      }
 
-    const narrated = await stderrDuring(build);
-    const shared = join(sharedRoot, "sessions");
-    expect(fs.readFileSync(join(shared, "top.txt"), "utf8")).toBe("same");
-    expect(fs.readFileSync(join(shared, "nested", "deep", "a.txt"), "utf8")).toBe("A");
-    expect(linkTarget(join(shared, "nested", "ln"))).toBe(linkDest);
-    expect(linkTarget(join(hostHome, "sessions"))).toBe(shared);
-    // The merge copies descendant by descendant, and names each one (nothing hidden).
-    const named = narratedPaths(narrated);
-    for (
-      const p of [
-        join(shared, "top.txt"),
-        join(shared, "nested", "deep"),
-        join(shared, "nested", "deep", "a.txt"),
-        join(shared, "nested", "ln"),
-        join(hostHome, "sessions"),
-      ]
-    ) {
-      expect(named.has(p), p).toBe(true);
+      const narrated = await stderrDuring(build);
+      const shared = join(sharedRoot, "sessions");
+      expect(fs.readFileSync(join(shared, "top.txt"), "utf8"), c.name).toBe("same");
+      expect(fs.readFileSync(join(shared, "nested", "deep", "a.txt"), "utf8"), c.name).toBe("A");
+      expect(linkTarget(join(shared, "ln")), c.name).toBe(linkDest);
+      expect(linkTarget(join(shared, "nested", "ln")), c.name).toBe(linkDest);
+      expect(linkTarget(join(hostHome, "sessions")), c.name).toBe(shared);
+      // The merge copies descendant by descendant, and names each one (nothing hidden).
+      const named = narratedPaths(narrated);
+      for (
+        const p of [
+          join(shared, "top.txt"),
+          join(shared, "ln"),
+          join(shared, "nested", "deep"),
+          join(shared, "nested", "deep", "a.txt"),
+          join(shared, "nested", "ln"),
+          join(hostHome, "sessions"),
+        ]
+      ) {
+        expect(named.has(p), `${c.name}: ${p}`).toBe(true);
+      }
     }
   },
 );
 
-skipWin("conflicting file content refuses promotion and leaves the local dir", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  fs.mkdirSync(join(sharedRoot, "sessions"), { recursive: true });
-  fs.writeFileSync(join(sharedRoot, "sessions", "top.txt"), "A");
-  fs.mkdirSync(join(hostHome, "sessions"), { recursive: true });
-  fs.writeFileSync(join(hostHome, "sessions", "top.txt"), "B");
-
-  const warned = await stderrDuring(build);
-  expect(fs.readFileSync(join(sharedRoot, "sessions", "top.txt"), "utf8")).toBe("A");
-  const local = join(hostHome, "sessions");
-  expect(isRealDir(local)).toBe(true);
-  expect(isSymlink(local)).toBe(false);
-  expect(fs.readFileSync(join(local, "top.txt"), "utf8")).toBe("B");
-  // rc 2 is warned about and swallowed by the caller: the rest of the farm still builds.
-  expect(warned).toContain(`Leaving existing Codex path unchanged: ${local}`);
-  expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
-});
-
-skipWin("a local subdir colliding with a shared file refuses promotion", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  fs.mkdirSync(join(sharedRoot, "sessions"), { recursive: true });
-  fs.writeFileSync(join(sharedRoot, "sessions", "sub"), "a file");
-  fs.mkdirSync(join(hostHome, "sessions", "sub"), { recursive: true });
-
-  await build();
-  expect(fs.readFileSync(join(sharedRoot, "sessions", "sub"), "utf8")).toBe("a file");
-  expect(isRealDir(join(hostHome, "sessions"))).toBe(true);
-  expect(isSymlink(join(hostHome, "sessions"))).toBe(false);
-});
-
-skipWin("symlink entries with differing targets refuse promotion", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  fs.mkdirSync(join(sharedRoot, "sessions"), { recursive: true });
-  fs.symlinkSync(join(dir, "target-a"), join(sharedRoot, "sessions", "ln"));
-  fs.mkdirSync(join(hostHome, "sessions"), { recursive: true });
-  fs.symlinkSync(join(dir, "target-b"), join(hostHome, "sessions", "ln"));
-
-  await build();
-  expect(linkTarget(join(sharedRoot, "sessions", "ln"))).toBe(join(dir, "target-a"));
-  expect(isRealDir(join(hostHome, "sessions"))).toBe(true);
-  expect(linkTarget(join(hostHome, "sessions", "ln"))).toBe(join(dir, "target-b"));
-});
-
-skipWin("a shared dir that is itself a symlink blocks promotion of the local dir", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  const realShared = join(dir, "real-sessions");
-  fs.mkdirSync(realShared, { recursive: true });
-  fs.mkdirSync(sharedRoot, { recursive: true });
-  fs.symlinkSync(realShared, join(sharedRoot, "sessions"));
-  fs.mkdirSync(join(hostHome, "sessions"), { recursive: true });
-  fs.writeFileSync(join(hostHome, "sessions", "top.txt"), "local");
-
-  await build();
-  expect(linkTarget(join(sharedRoot, "sessions"))).toBe(realShared);
-  expect(isRealDir(join(hostHome, "sessions"))).toBe(true);
-  expect(fs.readFileSync(join(hostHome, "sessions", "top.txt"), "utf8")).toBe("local");
-});
-
-skipWin("a wrong-target sessions symlink is tolerated, not repaired", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  const elsewhere = join(dir, "elsewhere-sessions");
-  fs.mkdirSync(elsewhere, { recursive: true });
-  fs.mkdirSync(hostHome, { recursive: true });
-  fs.symlinkSync(elsewhere, join(hostHome, "sessions"));
-
-  await build();
-  expect(linkTarget(join(hostHome, "sessions"))).toBe(elsewhere);
-  // The shared dir is still created for the other hosts.
-  expect(isRealDir(join(sharedRoot, "sessions"))).toBe(true);
-});
-
-skipWin("a host-local sessions regular file is left alone and gets no symlink", async () => {
-  const { hostHome } = isolate();
-  fs.mkdirSync(hostHome, { recursive: true });
-  fs.writeFileSync(join(hostHome, "sessions"), "not a dir");
-
-  await build();
-  expect(isRegularFile(join(hostHome, "sessions"))).toBe(true);
-  expect(fs.readFileSync(join(hostHome, "sessions"), "utf8")).toBe("not a dir");
-  expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
-});
+skipWin(
+  "promotion refusals: a sessions slot the merge cannot prove safe is left as it is on both sides (the build still completes), and the shared dir still lands for the other hosts",
+  async () => {
+    // rc 2 is warned about and swallowed by the caller: the rest of the farm still builds.
+    const cases: {
+      name: string;
+      arrange: (farm: Farm) => void;
+      expected: (farm: Farm, warned: string) => void;
+    }[] = [
+      {
+        name: "conflicting file content",
+        arrange: ({ sharedRoot, hostHome }) => {
+          fs.mkdirSync(join(sharedRoot, "sessions"), { recursive: true });
+          fs.writeFileSync(join(sharedRoot, "sessions", "top.txt"), "A");
+          fs.mkdirSync(join(hostHome, "sessions"), { recursive: true });
+          fs.writeFileSync(join(hostHome, "sessions", "top.txt"), "B");
+        },
+        expected: ({ sharedRoot, hostHome }, warned) => {
+          expect(fs.readFileSync(join(sharedRoot, "sessions", "top.txt"), "utf8")).toBe("A");
+          const local = join(hostHome, "sessions");
+          expect(isRealDir(local)).toBe(true);
+          expect(isSymlink(local)).toBe(false);
+          expect(fs.readFileSync(join(local, "top.txt"), "utf8")).toBe("B");
+          expect(warned).toContain(`Leaving existing Codex path unchanged: ${local}`);
+        },
+      },
+      {
+        name: "a local subdir colliding with a shared file",
+        arrange: ({ sharedRoot, hostHome }) => {
+          fs.mkdirSync(join(sharedRoot, "sessions"), { recursive: true });
+          fs.writeFileSync(join(sharedRoot, "sessions", "sub"), "a file");
+          fs.mkdirSync(join(hostHome, "sessions", "sub"), { recursive: true });
+        },
+        expected: ({ sharedRoot, hostHome }) => {
+          expect(fs.readFileSync(join(sharedRoot, "sessions", "sub"), "utf8")).toBe("a file");
+          expect(isRealDir(join(hostHome, "sessions"))).toBe(true);
+          expect(isSymlink(join(hostHome, "sessions"))).toBe(false);
+        },
+      },
+      {
+        name: "symlink entries with differing targets",
+        arrange: ({ sharedRoot, hostHome }) => {
+          fs.mkdirSync(join(sharedRoot, "sessions"), { recursive: true });
+          fs.symlinkSync(join(dir, "target-a"), join(sharedRoot, "sessions", "ln"));
+          fs.mkdirSync(join(hostHome, "sessions"), { recursive: true });
+          fs.symlinkSync(join(dir, "target-b"), join(hostHome, "sessions", "ln"));
+        },
+        expected: ({ sharedRoot, hostHome }) => {
+          expect(linkTarget(join(sharedRoot, "sessions", "ln"))).toBe(join(dir, "target-a"));
+          expect(isRealDir(join(hostHome, "sessions"))).toBe(true);
+          expect(linkTarget(join(hostHome, "sessions", "ln"))).toBe(join(dir, "target-b"));
+        },
+      },
+      {
+        name: "a shared dir that is itself a symlink",
+        arrange: ({ sharedRoot, hostHome }) => {
+          const realShared = join(dir, "real-sessions");
+          fs.mkdirSync(realShared, { recursive: true });
+          fs.mkdirSync(sharedRoot, { recursive: true });
+          fs.symlinkSync(realShared, join(sharedRoot, "sessions"));
+          fs.mkdirSync(join(hostHome, "sessions"), { recursive: true });
+          fs.writeFileSync(join(hostHome, "sessions", "top.txt"), "local");
+        },
+        expected: ({ sharedRoot, hostHome }) => {
+          expect(linkTarget(join(sharedRoot, "sessions"))).toBe(join(dir, "real-sessions"));
+          expect(isRealDir(join(hostHome, "sessions"))).toBe(true);
+          expect(fs.readFileSync(join(hostHome, "sessions", "top.txt"), "utf8")).toBe("local");
+        },
+      },
+      {
+        name: "a wrong-target local sessions symlink (tolerated, not repaired)",
+        arrange: ({ hostHome }) => {
+          fs.mkdirSync(join(dir, "elsewhere-sessions"), { recursive: true });
+          fs.mkdirSync(hostHome, { recursive: true });
+          fs.symlinkSync(join(dir, "elsewhere-sessions"), join(hostHome, "sessions"));
+        },
+        expected: ({ sharedRoot, hostHome }) => {
+          expect(linkTarget(join(hostHome, "sessions"))).toBe(join(dir, "elsewhere-sessions"));
+          expect(isRealDir(join(sharedRoot, "sessions"))).toBe(true);
+        },
+      },
+      {
+        name: "a local sessions regular file (left alone, no symlink)",
+        arrange: ({ hostHome }) => {
+          fs.mkdirSync(hostHome, { recursive: true });
+          fs.writeFileSync(join(hostHome, "sessions"), "not a dir");
+        },
+        expected: ({ hostHome }) => {
+          expect(isRegularFile(join(hostHome, "sessions"))).toBe(true);
+          expect(fs.readFileSync(join(hostHome, "sessions"), "utf8")).toBe("not a dir");
+        },
+      },
+    ];
+    for (const c of cases) {
+      dir = removeDir(dir);
+      const farm = isolate();
+      c.arrange(farm);
+      const warned = await stderrDuring(build);
+      // Never linked into the shared slot, and the build completed (the record is set).
+      expect(linkTarget(join(farm.hostHome, "sessions")), c.name).not.toBe(
+        join(farm.sharedRoot, "sessions"),
+      );
+      expect(new CopilotEnvRunState().read().codexHome, c.name).toBe(farm.hostHome);
+      c.expected(farm, warned);
+    }
+  },
+);
 
 skipWin("a shared dir slot occupied by a file fails the build with the farm error", async () => {
   const { sharedRoot } = isolate();
@@ -789,57 +835,75 @@ skipWin(
 // --- key off (what `--delete-host` did) ---------------------------------------
 
 skipWin(
-  "turning the key off removes the per-host home, keeps the shared root, clears the record",
+  "the key off (false, or unset: an install that built the farm before the key) removes the per-host home, keeps the shared root, clears the record, and lands the default write at ~/.codex; with no farm built it only clears a stale record, quietly",
   async () => {
-    const { sharedRoot, hostHome } = isolate();
-    await build();
-    expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
-
-    new CopilotEnvConfig().set({ "codex.host": false });
-    const narrated = await stderrDuring(configureCodex);
-    expect(lexists(hostHome)).toBe(false);
-    for (const d of SHARED_DIRS) expect(isRealDir(join(sharedRoot, d))).toBe(true);
-    for (const f of SHARED_FILES) expect(isRegularFile(join(sharedRoot, f))).toBe(true);
-    expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
-    // The default write then lands at the default home ($CODEX_HOME = the shared root here).
-    expect(fs.readFileSync(join(sharedRoot, "config.toml"), "utf8")).toContain(
-      'model_provider = "copilot-env"',
-    );
-    expect(narrated).toContain(`deleted -> ${hostHome} (per-host CODEX_HOME farm)`);
-    expect(narrated).toContain(`-> ${join(sharedRoot, "config.toml")} (Codex config)`);
-    expect(codexHostDrift()).toBeNull();
+    const cases: {
+      name: string;
+      arrange: (farm: Farm) => Promise<void>;
+      expected: (farm: Farm, narrated: string) => Promise<void>;
+    }[] = [
+      {
+        name: "false, farm built",
+        arrange: async ({ hostHome }) => {
+          await build();
+          expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
+          new CopilotEnvConfig().set({ "codex.host": false });
+        },
+        expected: ({ sharedRoot, hostHome }, narrated) => {
+          for (const d of SHARED_DIRS) expect(isRealDir(join(sharedRoot, d))).toBe(true);
+          for (const f of SHARED_FILES) expect(isRegularFile(join(sharedRoot, f))).toBe(true);
+          expect(fs.readFileSync(join(sharedRoot, "config.toml"), "utf8")).toContain(
+            'model_provider = "copilot-env"',
+          );
+          expect(narrated).toContain(`deleted -> ${hostHome} (per-host CODEX_HOME farm)`);
+          expect(narrated).toContain(`-> ${join(sharedRoot, "config.toml")} (Codex config)`);
+          return Promise.resolve();
+        },
+      },
+      {
+        name: "unset, farm built",
+        arrange: async ({ hostHome }) => {
+          await build();
+          new CopilotEnvConfig().del("codex.host");
+          expect(codexHostDrift()).toEqual({ kind: "disabled", hostHome });
+        },
+        expected: ({ sharedRoot, hostHome }, narrated) => {
+          expect(fs.readFileSync(join(sharedRoot, "config.toml"), "utf8")).toContain(
+            'model_provider = "copilot-env"',
+          );
+          expect(narrated).toContain(`deleted -> ${hostHome} (per-host CODEX_HOME farm)`);
+          expect(narrated).toContain(`-> ${join(sharedRoot, "config.toml")} (Codex config)`);
+          // Never written for the user.
+          expect(new CopilotEnvConfig().read().global["codex.host"]).toBeUndefined();
+          return Promise.resolve();
+        },
+      },
+      {
+        name: "false, no farm built, a stale record",
+        arrange: ({ hostHome }) => {
+          writeRunState({ codexHome: hostHome });
+          new CopilotEnvConfig().set({ "codex.host": false });
+          return Promise.resolve();
+        },
+        expected: async ({ hostHome }, narrated) => {
+          expect(narrated).not.toContain(hostHome);
+          const quiet = await stderrDuring(configureCodex);
+          expect(quiet).not.toContain("CODEX_HOME");
+        },
+      },
+    ];
+    for (const c of cases) {
+      dir = removeDir(dir);
+      const farm = isolate();
+      await c.arrange(farm);
+      const narrated = await stderrDuring(configureCodex);
+      expect(lexists(farm.hostHome), c.name).toBe(false);
+      expect(new CopilotEnvRunState().read().codexHome, c.name).toBeUndefined();
+      expect(codexHostDrift(), c.name).toBeNull();
+      await c.expected(farm, narrated);
+    }
   },
 );
-
-skipWin("key off with no farm built only clears a stale record", async () => {
-  const { hostHome } = isolate();
-  writeRunState({ codexHome: hostHome });
-  new CopilotEnvConfig().set({ "codex.host": false });
-
-  const narrated = await stderrDuring(configureCodex);
-  expect(lexists(hostHome)).toBe(false);
-  expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
-  expect(narrated).not.toContain(hostHome);
-  const quiet = await stderrDuring(configureCodex);
-  expect(quiet).not.toContain("CODEX_HOME");
-});
-
-// --- an unset key is off ------------------------------------------------------
-
-skipWin("an unset key behaves as off: an existing farm is removed and reported", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  await build();
-  new CopilotEnvConfig().del("codex.host"); // e.g. an install that built the farm before the key
-  expect(codexHostDrift()).toEqual({ kind: "disabled", hostHome });
-
-  const narrated = await stderrDuring(configureCodex);
-  expect(lexists(hostHome)).toBe(false);
-  expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
-  expect(narrated).toContain(`deleted -> ${hostHome} (per-host CODEX_HOME farm)`);
-  expect(narrated).toContain(`-> ${join(sharedRoot, "config.toml")} (Codex config)`);
-  expect(new CopilotEnvConfig().read().global["codex.host"]).toBeUndefined(); // never written for the user
-  expect(codexHostDrift()).toBeNull();
-});
 
 skipWin(
   "key off never deletes a path it cannot prove is ours: a foreign dir and a symlink survive",

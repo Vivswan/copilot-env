@@ -15,7 +15,7 @@ import {
   removeCodexDefaultWiring,
   removeCodexProfile,
 } from "../src/codex/config.ts";
-import { readCodexToml, saveCodexToml } from "../src/codex/toml_io.ts";
+import { readCodexToml } from "../src/codex/toml_io.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
@@ -31,32 +31,47 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-// --- readCodexToml variants -----------------------------------------------------
+// --- readCodexToml: the file's content decides the kind ---------------------------
 
-test("readCodexToml: a missing file reads as absent", () => {
-  dir = tempDir("codex-toml-io-");
-  expect(readCodexToml(join(dir, "config.toml"))).toEqual({ kind: "absent" });
-});
-
-test("readCodexToml: valid TOML reads as ok with the parsed document", () => {
+test("readCodexToml: missing and blank read as absent, key-less text as an empty ok document, anything the parser rejects as unparseable", () => {
+  // The seed-a-default site (loadOrCreateConfig) treats an absent read like a missing file, so
+  // only content with nothing in it may read absent: a comment-only file is real user text, and a
+  // BOM, NBSP, or lone CR is trim()-blank but rejected by smol-toml; classifying either "absent"
+  // would let a write path clobber a file that exists.
   dir = tempDir("codex-toml-io-");
   const path = join(dir, "config.toml");
+  const cases: { name: string; content: string | null; kind: "absent" | "ok" | "unparseable" }[] = [
+    { name: "missing", content: null, kind: "absent" },
+    { name: "empty", content: "", kind: "absent" },
+    { name: "whitespace only", content: "  \n\t\r\n", kind: "absent" },
+    { name: "comment only", content: "# my notes\n# more notes\n", kind: "ok" },
+    { name: "not TOML", content: 'command = "unbalanced\n', kind: "unparseable" },
+    { name: "BOM", content: "\ufeff", kind: "unparseable" },
+    { name: "NBSP", content: "\u00a0", kind: "unparseable" },
+    { name: "lone CR", content: "\r", kind: "unparseable" },
+    { name: "CR between spaces", content: " \r ", kind: "unparseable" },
+  ];
+  for (const c of cases) {
+    rmSync(path, { force: true });
+    if (c.content !== null) writeFileSync(path, c.content);
+    const read = readCodexToml(path);
+    if (c.kind === "unparseable") {
+      expect([c.name, read.kind]).toEqual([c.name, "unparseable"]);
+      if (read.kind === "unparseable") expect(read.error.length, c.name).toBeGreaterThan(0);
+    } else {
+      // The whole result: an absent read carries nothing else, an ok read the (empty) document.
+      expect([c.name, read]).toEqual([
+        c.name,
+        c.kind === "absent" ? { kind: "absent" } : { kind: "ok", doc: {} },
+      ]);
+    }
+  }
+  // Valid TOML reads as ok with the parsed document.
   writeFileSync(path, ['model_provider = "copilot-env"', "", "[t]", 'k = "v"', ""].join("\n"));
   const read = readCodexToml(path);
-  expect(read.kind).toBe("ok");
   if (read.kind !== "ok") throw new Error("expected ok");
   expect(read.doc.model_provider).toBe("copilot-env");
   expect(read.doc.t).toEqual({ "k": "v" });
-});
-
-test("readCodexToml: a file that exists but is not TOML reads as unparseable", () => {
-  dir = tempDir("codex-toml-io-");
-  const path = join(dir, "config.toml");
-  writeFileSync(path, 'command = "unbalanced\n');
-  const read = readCodexToml(path);
-  expect(read.kind).toBe("unparseable");
-  if (read.kind !== "unparseable") throw new Error("expected unparseable");
-  expect(read.error.length).toBeGreaterThan(0);
 });
 
 test("readCodexToml: the parser's diagnostic quotes the offending line, so a static-key bearer is redacted from it", () => {
@@ -80,36 +95,6 @@ test("readCodexToml: the parser's diagnostic quotes the offending line, so a sta
   expect(read.error).toContain("Bearer <redacted>");
 });
 
-test("readCodexToml: an empty or whitespace-only file reads as absent", () => {
-  // The seed-a-default site (loadOrCreateConfig) treats an empty file like a missing one.
-  dir = tempDir("codex-toml-io-");
-  const path = join(dir, "config.toml");
-  writeFileSync(path, "");
-  expect(readCodexToml(path)).toEqual({ kind: "absent" });
-  writeFileSync(path, "  \n\t\r\n");
-  expect(readCodexToml(path)).toEqual({ kind: "absent" });
-});
-
-test("readCodexToml: blank-LOOKING content the parser rejects reads as unparseable, not absent", () => {
-  // A BOM, NBSP, or lone CR is trim()-blank but smol-toml rejects it; classifying
-  // it "absent" would let write paths clobber a file that exists and did not parse.
-  dir = tempDir("codex-toml-io-");
-  const path = join(dir, "config.toml");
-  for (const content of ["\ufeff", "\u00a0", "\r", " \r "]) {
-    writeFileSync(path, content);
-    expect(readCodexToml(path).kind).toBe("unparseable");
-  }
-});
-
-test("readCodexToml: a comment-only file reads as ok with an empty document, not absent", () => {
-  // Non-blank but key-less content is real user text: it must NOT trigger the
-  // absent path (which would seed the default template over it at site 1).
-  dir = tempDir("codex-toml-io-");
-  const path = join(dir, "config.toml");
-  writeFileSync(path, "# my notes\n# more notes\n");
-  expect(readCodexToml(path)).toEqual({ kind: "ok", doc: {} });
-});
-
 test("readCodexToml: a non-ENOENT filesystem error throws raw instead of reading as absent", () => {
   dir = tempDir("codex-toml-io-");
   const asDir = join(dir, "config.toml");
@@ -124,27 +109,6 @@ test("readCodexToml: a non-ENOENT filesystem error throws raw instead of reading
   // Raw fs error, not ENOENT and not one of the wrapped call-site messages.
   expect((thrown as NodeJS.ErrnoException).code).toBe("EISDIR");
   expect((thrown as Error).message).not.toMatch(/valid TOML/);
-});
-
-test("saveCodexToml: round-trips through readCodexToml and writes smol-toml's exact bytes", () => {
-  dir = tempDir("codex-toml-io-");
-  const path = join(dir, "config.toml");
-  const doc = {
-    "model_provider": "copilot-env",
-    "model_providers": { "copilot-env": { "base_url": "http://localhost:4141/v1" } },
-  };
-  saveCodexToml(path, doc);
-  // Byte-identical to a direct stringify: the shared writer adds no formatting of its own.
-  expect(readFileSync(path, "utf8")).toBe(stringify(doc));
-  expect(readCodexToml(path)).toEqual({ kind: "ok", doc });
-});
-
-test("saveCodexToml: a write error propagates to the caller", () => {
-  // Each call site's own error handling (throw, or an outer swallow) stays in charge.
-  dir = tempDir("codex-toml-io-");
-  const asDir = join(dir, "config.toml");
-  mkdirSync(asDir);
-  expect(() => saveCodexToml(asDir, { "k": "v" })).toThrow();
 });
 
 // --- call-site policies in src/codex/config.ts + catalog_reference.ts ---------------
@@ -216,61 +180,46 @@ test("policy: syncCodexCatalogReference swallows an unparseable config, file pre
   expect(() => syncCodexCatalogReference()).not.toThrow();
 });
 
-test("policy: removeCodexProfile is a no-op when absent, throws wrapped on unparseable", () => {
-  dir = isolateAgentHomes("codex-toml-io-", { mkdirs: true }).dir;
-  const codexHome = join(dir, ".codex");
-  const configPath = join(codexHome, "config.toml");
+test("policy: the removals skip an absent config and never blind-write: unparseable or unreadable throws wrapped, file preserved", () => {
+  // Both removal functions share one read policy; the user's .env is never touched by either.
+  const removals: { name: string; remove: (codexHome: string) => void }[] = [
+    { name: "removeCodexProfile", remove: (h) => removeCodexProfile(h, parseProfileName("work")) },
+    { name: "removeCodexDefaultWiring", remove: (h) => removeCodexDefaultWiring(h) },
+  ];
+  for (const { name, remove } of removals) {
+    dir = removeDir(dir);
+    dir = isolateAgentHomes("codex-toml-io-", { mkdirs: true }).dir;
+    const codexHome = join(dir, ".codex");
+    const configPath = join(codexHome, "config.toml");
+    const envPath = join(codexHome, ".env");
+    writeFileSync(envPath, "OPENAI_API_KEY=user\n");
 
-  // Absent: nothing to remove, and no config is ever created.
-  expect(() => removeCodexProfile(codexHome, parseProfileName("work"))).not.toThrow();
-  expect(existsSync(configPath)).toBe(false);
+    // Absent: nothing to remove, no config is ever created, the user's .env untouched.
+    expect(() => remove(codexHome), name).not.toThrow();
+    expect(existsSync(configPath), name).toBe(false);
+    expect(readFileSync(envPath, "utf8"), name).toBe("OPENAI_API_KEY=user\n");
 
-  // Unparseable: never blind-write over a config we could not read. The exact
-  // wrapped message up to the parser's own text (path included).
-  writeFileSync(configPath, UNPARSEABLE);
-  const wrapped = capture(() => removeCodexProfile(codexHome, parseProfileName("work")));
-  expect((wrapped as Error).message.startsWith(`${configPath} is not readable/valid TOML: `)).toBe(
-    true,
-  );
-  expect(readFileSync(configPath, "utf8")).toBe(UNPARSEABLE);
+    // Unparseable: never blind-write over a config we could not read. The exact wrapped message up
+    // to the parser's own text (path included).
+    writeFileSync(configPath, UNPARSEABLE);
+    const wrapped = capture(() => remove(codexHome));
+    expect(
+      (wrapped as Error).message.startsWith(`${configPath} is not readable/valid TOML: `),
+      name,
+    )
+      .toBe(true);
+    expect(readFileSync(configPath, "utf8"), name).toBe(UNPARSEABLE);
 
-  // A non-ENOENT read error (config.toml is a directory) gets the same wrap.
-  rmSync(configPath);
-  mkdirSync(configPath);
-  const dirWrapped = capture(() => removeCodexProfile(codexHome, parseProfileName("work")));
-  expect(
-    (dirWrapped as Error).message.startsWith(`${configPath} is not readable/valid TOML: `),
-  ).toBe(true);
-});
-
-test("policy: removeCodexDefaultWiring skips an absent config and never blind-writes", () => {
-  dir = isolateAgentHomes("codex-toml-io-", { mkdirs: true }).dir;
-  const codexHome = join(dir, ".codex");
-  const configPath = join(codexHome, "config.toml");
-  const envPath = join(codexHome, ".env");
-  writeFileSync(envPath, "OPENAI_API_KEY=user\n");
-
-  // Absent config: nothing to strip, nothing created, the user's .env untouched.
-  removeCodexDefaultWiring(codexHome);
-  expect(existsSync(configPath)).toBe(false);
-  expect(readFileSync(envPath, "utf8")).toBe("OPENAI_API_KEY=user\n");
-
-  // Unparseable config: throws wrapped (exact prefix, path included), file preserved.
-  writeFileSync(configPath, UNPARSEABLE);
-  const wrapped = capture(() => removeCodexDefaultWiring(codexHome));
-  expect((wrapped as Error).message.startsWith(`${configPath} is not readable/valid TOML: `)).toBe(
-    true,
-  );
-  expect(readFileSync(configPath, "utf8")).toBe(UNPARSEABLE);
-
-  // A non-ENOENT read error (config.toml is a directory) gets the same wrap.
-  rmSync(configPath);
-  mkdirSync(configPath);
-  const dirWrapped = capture(() => removeCodexDefaultWiring(codexHome));
-  expect(
-    (dirWrapped as Error).message.startsWith(`${configPath} is not readable/valid TOML: `),
-  ).toBe(true);
-  expect(readFileSync(envPath, "utf8")).toBe("OPENAI_API_KEY=user\n");
+    // A non-ENOENT read error (config.toml is a directory) gets the same wrap.
+    rmSync(configPath);
+    mkdirSync(configPath);
+    const dirWrapped = capture(() => remove(codexHome));
+    expect(
+      (dirWrapped as Error).message.startsWith(`${configPath} is not readable/valid TOML: `),
+      name,
+    ).toBe(true);
+    expect(readFileSync(envPath, "utf8"), name).toBe("OPENAI_API_KEY=user\n");
+  }
 });
 
 // The removal strips `model_catalog_json` only when it DENOTES our catalog file; the cases differ

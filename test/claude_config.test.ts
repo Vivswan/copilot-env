@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { directWiring } from "../src/agents/configure.ts";
 import {
   AUTH_TOKEN_ENV,
   cmdHelperBody,
@@ -20,10 +21,10 @@ import {
   proxyHelperCommand,
   removeClaudeDefaultWiring,
   removeClaudeProfile,
-  runClaude,
   syncDefaultWebSearchWiring,
   WEBSEARCH_DENY_RULE,
 } from "../src/claude/config.ts";
+import { runClaude } from "../src/agents/configure_defaults.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { runMcp } from "../src/commands/mcp.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -37,8 +38,16 @@ import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, linesNaming, writeClaudeSettings } from "./helpers.ts";
 
+/** A recorded Direct default whose slot holds its pair, so a single-agent write is a re-render
+ *  (zero probes, no credential needed); with no pair it would land both agents and ask to log in. */
+function directDefault(): void {
+  const state = new CopilotEnvState();
+  state.recordDefaultMode("direct");
+  state.setProfileDirectPair(null, { integrationId: null, host: DEFAULT_COPILOT_API_BASE });
+}
+
 /** A scratch Direct wiring with no identity header on the generic host: today's default bytes. */
-const DIRECT_NONE = { directIntegrationId: null, directBaseUrl: DEFAULT_COPILOT_API_BASE };
+const DIRECT_NONE = directWiring(null, DEFAULT_COPILOT_API_BASE);
 
 const WIN = process.platform === "win32";
 const WORK = parseProfileName("work");
@@ -88,13 +97,13 @@ function writeReportsOf(fn: () => void): string[] {
 test("direct mode writes the inline apiKeyHelper command + env, preserving user keys", () => {
   const home = tmpHome();
 
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   const seeded = readSettings(home);
   seeded.model = "sonnet";
   seeded.permissions = { allow: ["Bash"] };
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
 
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
 
   const doc = readSettings(home);
   expect(doc.apiKeyHelper).toBe(directHelperCommand());
@@ -126,7 +135,7 @@ test("direct bakes a probed Copilot-Integration-Id into ANTHROPIC_CUSTOM_HEADERS
   const home = tmpHome();
   configureClaudeConfig(home, {
     mode: "direct",
-    directIntegrationId: "copilot-developer-cli",
+    direct: directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
     credential: COMMAND,
   });
   const headers = (readSettings(home).env as Record<string, unknown>)[CUSTOM_HEADERS_ENV] as string;
@@ -142,7 +151,7 @@ test("direct bakes a probed Copilot-Integration-Id into ANTHROPIC_CUSTOM_HEADERS
 
 test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), preserving user keys", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND }); // seed, then add a user key
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }); // seed, then add a user key
   const seeded = readSettings(home);
   seeded.model = "sonnet";
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
@@ -179,7 +188,7 @@ test("a static direct write bakes ANTHROPIC_AUTH_TOKEN beside the direct env and
   writeClaudeSettings(home, { apiKeyHelper: directHelperCommand() });
 
   const reports = writeReportsOf(() =>
-    configureClaudeConfig(home, { mode: "direct", credential: STATIC })
+    configureClaudeConfig(home, { mode: "direct", direct: null, credential: STATIC })
   );
   const doc = readSettings(home);
   expect(doc.apiKeyHelper).toBeUndefined();
@@ -201,7 +210,7 @@ test("a static direct write bakes ANTHROPIC_AUTH_TOKEN beside the direct env and
   expect(line).not.toContain(STATIC.token);
 
   // Claude prefers the variable over apiKeyHelper, so the command shape must delete it.
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(readSettings(home).apiKeyHelper).toBe(directHelperCommand());
   expect(envOf(home)[AUTH_TOKEN_ENV]).toBeUndefined();
   expect(inspectHome(home)).toMatchObject({ providerMode: "direct", credential: "command" });
@@ -329,12 +338,15 @@ test("runClaude direct/proxy round-trip cleans the other mode", async () => {
   const home = tmpHome();
   const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), 4141);
 
+  // A single-agent write re-renders the recorded mode; the record itself is `agent init`'s.
+  directDefault();
   await runClaude({ kind: "configure", mode: "direct" });
   expect(read().providerMode).toBe("direct");
   expect(
     (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
   ).toBe("1");
 
+  new CopilotEnvState().recordDefaultMode("proxy");
   await runClaude({ kind: "configure", mode: "proxy" });
   expect(read().providerMode).toBe("proxy");
   // Switching to proxy drops the direct-only disable-betas knob.
@@ -342,6 +354,7 @@ test("runClaude direct/proxy round-trip cleans the other mode", async () => {
     (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
   ).toBeUndefined();
 
+  directDefault();
   await runClaude({ kind: "configure", mode: "direct" });
   expect(read().providerMode).toBe("direct");
 });
@@ -415,7 +428,7 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
     );
   };
   const verdict = await detectClaudeDirect(
-    { ...DIRECT_NONE, directIntegrationId: "copilot-developer-cli" },
+    directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
     "ghu_tok",
     {
       findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
@@ -446,16 +459,17 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
 
 test("configureClaudeConfig refuses to overwrite a malformed settings.json", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND }); // creates the dir + a valid file
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }); // creates the dir + a valid file
   writeFileSync(join(home, "settings.json"), "{ this is : not json");
-  expect(() => configureClaudeConfig(home, { mode: "direct", credential: COMMAND })).toThrow(
-    "not valid JSON",
-  );
+  expect(() => configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }))
+    .toThrow(
+      "not valid JSON",
+    );
 });
 
 test("direct helper invokes `agent auth --get` and never bakes a token, still classified direct", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
 
   const doc = readSettings(home);
   expect(doc.apiKeyHelper).toBe(directHelperCommand());
@@ -472,6 +486,7 @@ test("direct helper invokes `agent auth --get` and never bakes a token, still cl
 test("runClaude --direct with static-key covering Claude fails closed without a credential, and bakes a stored one", async () => {
   const home = tmpHome();
   new CopilotEnvConfig().setProfile(null, { "static-key": "claude" });
+  directDefault(); // the mode this re-render bakes
 
   // Nothing resolves: the write is refused outright (never a silent fall back to the command shape).
   await expect(runClaude({ kind: "configure", mode: "direct" })).rejects.toThrow(
@@ -504,7 +519,7 @@ function denyOf(doc: Record<string, unknown>): unknown {
 test("a direct default write registers the MCP server and denies the builtin WebSearch; proxy takes both back", () => {
   const home = tmpHome();
 
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
   const servers = readClaudeJson().mcpServers as Record<string, unknown>;
   expect(servers["copilot-env"]).toMatchObject({ "type": "stdio" });
@@ -515,7 +530,7 @@ test("a direct default write registers the MCP server and denies the builtin Web
   const seeded = readSettings(home);
   seeded.permissions = { allow: ["Bash"], deny: ["Foreign", WEBSEARCH_DENY_RULE] };
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toEqual(["Foreign", WEBSEARCH_DENY_RULE]);
   expect((readSettings(home).permissions as Record<string, unknown>).allow).toEqual(["Bash"]);
 
@@ -534,7 +549,7 @@ test.skipIf(WIN || process.getuid?.() === 0)(
   "an unreadable ownership ledger refuses the take-back instead of leaving a deny with no replacement",
   () => {
     const home = tmpHome();
-    configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+    configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
     expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
     const ledgerFile = new CopilotApiPaths().ownershipFile;
     chmodSync(ledgerFile, 0o000);
@@ -562,7 +577,7 @@ test("a pre-existing user WebSearch deny is never claimed nor removed", () => {
     join(home, "settings.json"),
     `${JSON.stringify({ permissions: { deny: [WEBSEARCH_DENY_RULE] } }, null, 2)}\n`,
   );
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 
   configureClaudeConfig(home, { mode: "proxy", credential: COMMAND });
@@ -580,18 +595,18 @@ test("registration failure (foreign .claude.json entry) skips the deny - never d
       })
     }\n`,
   );
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toBeUndefined();
   expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 });
 
 test("wire-mcp false: a direct write wires nothing and clears prior managed artifacts", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
 
   new CopilotEnvConfig().set({ "claude.wire-mcp": false });
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   const doc = readSettings(home);
   expect(doc.permissions).toBeUndefined();
   expect(readClaudeJson().mcpServers).toBeUndefined();
@@ -600,7 +615,7 @@ test("wire-mcp false: a direct write wires nothing and clears prior managed arti
 
 test("removeClaudeDefaultWiring strips our deny and deletes settings.json when emptied", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   // The managed keys + our deny are ALL the file holds -> uninstall removes the file.
   removeClaudeDefaultWiring(home);
   expect(existsSync(join(home, "settings.json"))).toBe(false);
@@ -609,7 +624,7 @@ test("removeClaudeDefaultWiring strips our deny and deletes settings.json when e
 
 test("removeClaudeDefaultWiring keeps user keys and drops an emptied permissions object", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   const seeded = readSettings(home);
   seeded.model = "opus";
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
@@ -630,7 +645,7 @@ test("a command-shape NAMED write blanks the baked token so a static default can
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "proxy",
   });
-  configureClaudeConfig(home, { mode: "direct", credential: STATIC });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: STATIC });
   configureClaudeConfig(home, { mode: "proxy", profile: WORK, credential: COMMAND });
   const named = JSON.parse(readFileSync(join(home, "settings-work.json"), "utf8"));
   expect(named.apiKeyHelper).toBe(proxyHelperCommand(WORK));
@@ -650,7 +665,7 @@ test("a command-shape NAMED write blanks the baked token so a static default can
 
 test("removeClaudeDefaultWiring strips a static wiring's baked token with the other managed env keys", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: STATIC });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: STATIC });
   const seeded = readSettings(home);
   seeded.model = "opus"; // a user key, so the file survives and its env can be read back
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
@@ -681,7 +696,7 @@ test("removeClaudeDefaultWiring leaves an 'other' wiring AND the helper file it 
 
 test("removeClaudeDefaultWiring strips an OWNED deny from a foreign-edited config", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND }); // deny written + ownership recorded
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }); // deny written + ownership recorded
   const doc = readSettings(home);
   doc.apiKeyHelper = "/usr/local/bin/my-helper"; // foreign edit: classifies "other"
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(doc, null, 2)}\n`);
@@ -718,7 +733,7 @@ test("removeClaudeDefaultWiring never strips a deny it does not own from a forei
 
 test("removeClaudeDefaultWiring reports an owned deny it cannot strip (unverifiable file)", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND }); // deny written + ownership recorded
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }); // deny written + ownership recorded
   const settingsPath = join(home, "settings.json");
   writeFileSync(settingsPath, "{ not json"); // the deny is now unverifiable
 
@@ -733,7 +748,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   () => {
     // POSIX, non-root only: 0444 blocks the rewrite (root bypasses file modes).
     const home = tmpHome();
-    configureClaudeConfig(home, { mode: "direct", credential: COMMAND }); // deny written + ownership recorded
+    configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }); // deny written + ownership recorded
     const settingsPath = join(home, "settings.json");
     const doc = readSettings(home);
     doc.apiKeyHelper = "/usr/local/bin/my-helper"; // foreign edit: classifies "other"
@@ -753,7 +768,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 
 test("removeClaudeDefaultWiring releases a stale ownership marker for a vanished file", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   const settingsPath = join(home, "settings.json");
   rmSync(settingsPath); // the user deleted the file; the marker lingers
 
@@ -829,7 +844,8 @@ test("--check: absent settings exit 2 (none), unreadable settings exit 1 (other)
 
 test("syncDefaultWebSearchWiring applies the pair to existing direct wiring (the migration path)", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
+  directDefault(); // what the `agent claude` command records
   // Simulate a pre-3.5.2 install: wiring exists but the pair does not.
   const doc = readSettings(home);
   delete doc.permissions;
@@ -849,7 +865,8 @@ test("syncDefaultWebSearchWiring applies the pair to existing direct wiring (the
 
 test("runMcp --remove takes back the pair and stores a durable wire-mcp opt-out", async () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
+  directDefault();
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
 
   await runMcp({ remove: true });
@@ -858,36 +875,36 @@ test("runMcp --remove takes back the pair and stores a durable wire-mcp opt-out"
   expect(new CopilotEnvConfig().read().global["claude.wire-mcp"]).toBe(false);
 
   // A later direct write respects the stored opt-out.
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toBeUndefined();
 });
 
 test("registration failure with a PRIOR managed deny strips it - never denied without a server", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
 
   // ~/.claude.json turns malformed (Claude Code rewrites it constantly).
   writeFileSync(claudeJsonPath(), "{ not json");
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toBeUndefined();
   expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 });
 
 test("a malformed permissions value (non-object) is never replaced", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   const seeded = readSettings(home);
   seeded.permissions = "everything";
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
 
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND });
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(readSettings(home).permissions).toBe("everything");
 });
 
 test("ownership is keyed to the settings path: a stale marker never strips another home's deny", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", credential: COMMAND }); // marker now points at THIS home's settings.json
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }); // marker now points at THIS home's settings.json
 
   // Same store, different Claude home holding the USER'S OWN deny.
   const otherHome = join(dir, ".claude-other");

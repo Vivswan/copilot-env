@@ -63,7 +63,26 @@ A literal `https://` origin skips the probe (a GitHub Enterprise Server serves C
 - the proxy daemon's upstream (a pinned daemon ignores an inherited `COPILOT_API_ENTERPRISE_URL`);
 - every catalog, discovery, smoke, and web-search request.
 
-A named profile caches the resolved host beside its identity verdict and replays it offline until its credential or its `host` / `identity` value changes. `agent auth --identities` shows the hosts as columns and marks the one in use.
+A Direct profile slot in `~/.local/share/copilot-env/credentials.json` holds the probed identity and host as state. A credential landing (`agent profile --add`, `agent auth --profile <name>`, a settings import) writes it; every re-render reads it, with no request and no read of the agent files, which are outputs.
+
+| event                                                                                                         | the slot's Direct pair                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a re-render (`agent profile --sync`, `--settings-for`, the `cl --profile` hook, the Claude Desktop reconcile) | bakes `identity` pin ?? slot identity and `host` literal ?? slot host; nothing is probed or stored                                                                                                          |
+| a credential write                                                                                            | takes the previous credential's pair with it                                                                                                                                                                |
+| a named profile's next re-render after that                                                                   | probes once and stores the new pair                                                                                                                                                                         |
+| the default's next `agent codex` or `agent claude` after that                                                 | lands BOTH agents and says so: the default's pair is stored only together with both agents' files. The Claude Desktop reconcile leaves a pair-less Direct entry alone and names that repair                 |
+| a Direct landing with no resolvable credential                                                                | refused before any write (`agent auth` first): a selection made without one would store the fallback identity and host                                                                                      |
+| a pin or literal set or cleared                                                                               | applies at the next re-render; it renders over the slot and never enters it, so the slot keeps only what a probe answered (a half never probed under an overlay is probed once when the overlay is cleared) |
+
+The default profile is one mode for both agents. Its recorded mode has one writer: a landing that succeeded for both agents.
+
+- `agent init`: no flag probes both agents first and lands one mode (the proxy when they disagree); `--direct|--proxy` lands that mode for both.
+- `agent settings --import` of a bundle naming both agents, or one Direct agent on a Direct default whose stored pair is incomplete or whose credential the import replaces (the plan names both files).
+- The first `agent codex` / `agent claude` / launcher write on a default with no record yet, or on a Direct default whose stored pair is incomplete: it lands both agents and says so. Whether a write lands is decided by the stored pair alone; a pin or literal renders over the pair and never decides it.
+
+A failed write leaves the previous record and names the agent that did not move. With a mode recorded and its pair stored, `agent codex` or `agent claude` is a re-render of it: no flag or the recorded flag renders the slot's pair (no probe); a flag naming the other mode is refused before any file is written.
+
+`agent auth --identities` shows the hosts as columns and marks the one in use.
 
 Applies at the next wiring pass (`agent init`, `agent codex`, `agent claude`, `agent profile`) and the next proxy start. A proxy started with no stored credential (it logs in itself) keeps the host GitHub names for that login unless a literal is set.
 

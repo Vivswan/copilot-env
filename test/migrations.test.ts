@@ -37,11 +37,13 @@ import {
 } from "../src/migrations/4.0.2.ts";
 import {
   dropCodexIdentityPin,
+  dropSlotIdentityCache,
   moveCodexProfileTables,
   regroupPreferenceStore,
   scopeStaticKeyBoolean,
   stripLaunchersBlocks,
   v409CodexProfileFiles,
+  v409IdentityCache,
   v409IntegrationIdPin,
   v409LaunchersBlock,
   v409PreferenceGroups,
@@ -118,6 +120,7 @@ test("the shipped registry holds exactly the named fix-ups in order, home move f
     v409CodexProfileFiles,
     v409IntegrationIdPin,
     v409StaticKeyScope,
+    v409IdentityCache,
     v409LaunchersBlock,
   ]);
   // An install already on 4.0.0 (whose readers tolerated the 3.5.6 shapes) still gets
@@ -1081,4 +1084,62 @@ test("4.0.9 codex profiles: an unparseable <name>.config.toml keeps its table an
   expect(parse(readFileSync(join(dir, "fast.config.toml"), "utf8"))).toEqual({
     "model_provider": "copilot-env-fast",
   });
+});
+
+test("4.0.9 identity cache: the four cached keys go from a slot in the old shape, said once, promoting nothing into the pair; a new-shape slot and a clean store are untouched", () => {
+  const home = isolateProxyHome("copilot-mig-identity-cache-");
+  dir = home;
+  const store = join(home, "credentials.json");
+  const carrying = {
+    profiles: {
+      // No validity key: indistinguishable from the pair the new wiring stores, so it stays.
+      default: { githubToken: "ghp_d", authProvider: "gh-token", integrationIdentity: "codex" },
+      work: {
+        githubToken: "ghp_w",
+        authProvider: "gh-token",
+        mode: "direct",
+        integrationIdentity: "copilot-developer-cli",
+        copilotHost: "https://api.enterprise.githubcopilot.com",
+        copilotHostIdentity: "copilot-developer-cli",
+        copilotHostSource: "auto",
+        futureKey: true,
+      },
+      alt: { authProvider: "gh-cli", mode: "proxy" },
+      // A half-cached slot: its host key goes with the rest, and it reads as never probed
+      // like every other slot.
+      half: {
+        githubToken: "ghp_h",
+        authProvider: "gh-token",
+        mode: "direct",
+        copilotHost: "https://api.githubcopilot.com",
+        copilotHostSource: "auto",
+      },
+    },
+    codexCatalogLastAttemptMs: 5,
+  };
+  writeFileSync(store, `${JSON.stringify(carrying)}\n`);
+  expect(warningsDuring(dropSlotIdentityCache, "info")).toHaveLength(1);
+  const after = JSON.parse(readFileSync(store, "utf8"));
+  expect(after).toEqual({
+    profiles: {
+      default: { githubToken: "ghp_d", authProvider: "gh-token", integrationIdentity: "codex" },
+      work: { githubToken: "ghp_w", authProvider: "gh-token", mode: "direct", futureKey: true },
+      alt: { authProvider: "gh-cli", mode: "proxy" },
+      half: { githubToken: "ghp_h", authProvider: "gh-token", mode: "direct" },
+    },
+    codexCatalogLastAttemptMs: 5,
+  });
+  // No pair survives (the cache is not promoted into state), so the next Direct re-render of each
+  // slot probes once through the gap and stores what it finds.
+  const state = new CopilotEnvState(store);
+  expect(state.readProfileDirectPair(parseProfileName("work"))).toEqual({});
+  expect(state.readProfileDirectPair(parseProfileName("half"))).toEqual({});
+  // Idempotent and quiet once clean: the pair the new wiring then stores is not the cache, so a
+  // re-run neither writes nor speaks.
+  const pair = { integrationId: "copilot-developer-cli", host: "https://api.githubcopilot.com" };
+  state.setProfileDirectPair(parseProfileName("work"), pair);
+  const bytes = readFileSync(store, "utf8");
+  expect(warningsDuring(dropSlotIdentityCache, "info")).toHaveLength(0);
+  expect(readFileSync(store, "utf8")).toBe(bytes);
+  expect(state.readProfileDirectPair(parseProfileName("work"))).toEqual(pair);
 });

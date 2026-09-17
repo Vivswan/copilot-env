@@ -116,23 +116,6 @@ test("a store carrying only the legacy top-level pair reads as no default creden
   });
 });
 
-test("the default slot's integrationIdentity is a credential-derived cache like a named profile's", () => {
-  tmpHome();
-  const state = new CopilotEnvState();
-  const pat = { kind: "stored", provider: "gh-token", token: "github_pat_d" } as const;
-  // No credential recorded anywhere: the keyed cache write finds nothing to key to.
-  state.setProfileIntegrationIdentity(null, "copilot-developer-cli", pat);
-  expect(state.slotIdentityForDisplay(null)).toBeNull();
-
-  state.setCredential(null, pat);
-  state.setProfileIntegrationIdentity(null, "copilot-developer-cli", pat);
-  expect(state.slotIdentityForDisplay(null)).toBe("copilot-developer-cli");
-
-  // Re-auth invalidates the derived identity, exactly like a named slot.
-  state.setCredential(null, { kind: "gh-cli", ghUser: null });
-  expect(state.slotIdentityForDisplay(null)).toBeNull();
-});
-
 test("recordDefaultMode records the agreed default wiring and clears on divergence", () => {
   tmpHome();
   const state = new CopilotEnvState();
@@ -197,61 +180,6 @@ test("run-state clearIfPid clears the daemon tracking ONLY when the tracked pid 
   expect(after.pid).toBeUndefined();
   expect(after.port).toBeUndefined();
   expect(after.lastEnsureAt).toBeUndefined();
-});
-
-test("a named profile's integrationIdentity is a credential-derived cache: setCredential clears it", () => {
-  tmpHome();
-  const state = new CopilotEnvState();
-  state.commitProfile(WORK, {
-    credential: { kind: "stored", provider: "gh-token", token: "github_pat_x" },
-    mode: "direct",
-  });
-  const patX = { kind: "stored", provider: "gh-token", token: "github_pat_x" } as const;
-  state.setProfileIntegrationIdentity(WORK, "copilot-developer-cli", patX);
-  expect(state.slotIdentityForDisplay(WORK)).toBe("copilot-developer-cli");
-
-  // Re-auth (any credential write) invalidates the derived identity, so a stale id can
-  // never outlive the credential it was probed for -- the next wiring re-derives it.
-  state.setCredential(WORK, { kind: "stored", provider: "gh-token", token: "github_pat_y" });
-  expect(state.slotIdentityForDisplay(WORK)).toBeNull();
-  expect(state.readProfileSlot(WORK).mode).toBe("direct"); // mode is untouched
-
-  state.deleteProfile(WORK);
-  expect(state.profileNames()).toEqual([]);
-});
-
-test("commitProfile writes both slot halves atomically and keeps an unchanged credential's identity", () => {
-  tmpHome();
-  const state = new CopilotEnvState();
-  state.commitProfile(WORK, {
-    credential: { kind: "stored", provider: "gh-token", token: "github_pat_x" },
-    mode: "direct",
-  });
-  const slot = state.readProfileSlot(WORK);
-  expect(slot.kind).toBe("complete");
-  expect(slot.mode).toBe("direct");
-  expect(slot.credential).toEqual({ kind: "stored", provider: "gh-token", token: "github_pat_x" });
-
-  // A mode-only re-commit with the SAME credential keeps the probed identity
-  // (it is derived from the credential, and the credential did not change).
-  state.setProfileIntegrationIdentity(WORK, "copilot-developer-cli", {
-    kind: "stored",
-    provider: "gh-token",
-    token: "github_pat_x",
-  });
-  state.commitProfile(WORK, {
-    credential: { kind: "stored", provider: "gh-token", token: "github_pat_x" },
-    mode: "proxy",
-  });
-  expect(state.readProfileSlot(WORK).mode).toBe("proxy");
-  expect(state.slotIdentityForDisplay(WORK)).toBe("copilot-developer-cli");
-
-  // A commit that CHANGES the credential invalidates it, like setCredential.
-  state.commitProfile(WORK, {
-    credential: { kind: "stored", provider: "gh-token", token: "github_pat_y" },
-    mode: "proxy",
-  });
-  expect(state.slotIdentityForDisplay(WORK)).toBeNull();
 });
 
 test("setCredential on an unknown named profile errors instead of creating a half profile", () => {
@@ -322,54 +250,6 @@ test("a gh-cli account pin round-trips; an absent/blank stored pin reads as auto
   expect(state.readCredential(null)).toEqual({ kind: "none", provider: null });
 });
 
-test("commitProfile: a pin-only change IS a credential change - the derived identity clears", () => {
-  tmpHome();
-  const state = new CopilotEnvState();
-  state.commitProfile(WORK, { credential: { kind: "gh-cli", ghUser: "a" }, mode: "direct" });
-  state.setProfileIntegrationIdentity(WORK, "copilot-developer-cli", {
-    kind: "gh-cli",
-    ghUser: "a",
-  });
-  expect(state.slotIdentityForDisplay(WORK)).toBe("copilot-developer-cli");
-
-  // Same provider, same (absent) token, different gh account: a re-probe is due.
-  state.commitProfile(WORK, { credential: { kind: "gh-cli", ghUser: "b" }, mode: "direct" });
-  expect(state.slotIdentityForDisplay(WORK)).toBeNull();
-
-  // An identical re-add (mode switch only) keeps the cache, pin included.
-  state.setProfileIntegrationIdentity(WORK, "copilot-developer-cli", {
-    kind: "gh-cli",
-    ghUser: "b",
-  });
-  state.commitProfile(WORK, { credential: { kind: "gh-cli", ghUser: "b" }, mode: "proxy" });
-  expect(state.slotIdentityForDisplay(WORK)).toBe("copilot-developer-cli");
-
-  // The keyed identity write refuses a pin mismatch (a probe racing a pin change).
-  state.setProfileIntegrationIdentity(WORK, "codex", { kind: "gh-cli", ghUser: "a" });
-  expect(state.slotIdentityForDisplay(WORK)).toBe("copilot-developer-cli");
-});
-
-test("setProfileIntegrationIdentity is a credential-keyed cache write: no create, no resurrect, no stale attach", () => {
-  tmpHome();
-  const state = new CopilotEnvState();
-  const ghpW = { kind: "stored", provider: "gh-token", token: "ghp_w" } as const;
-  // Missing slot (never created, or deleted by a racing --del): a no-op.
-  state.setProfileIntegrationIdentity(WORK, "copilot-developer-cli", ghpW);
-  expect(state.profileNames()).toEqual([]);
-  state.commitProfile(WORK, { credential: ghpW, mode: "direct" });
-  state.deleteProfile(WORK);
-  state.setProfileIntegrationIdentity(WORK, "copilot-developer-cli", ghpW);
-  expect(state.profileNames()).toEqual([]);
-  // A rotation that raced the probe: the identity was derived from ghp_w, the
-  // slot now holds ghp_rotated -- the stale verdict is dropped, never attached.
-  state.commitProfile(WORK, {
-    credential: { kind: "stored", provider: "gh-token", token: "ghp_rotated" },
-    mode: "direct",
-  });
-  state.setProfileIntegrationIdentity(WORK, "copilot-developer-cli", ghpW);
-  expect(state.slotIdentityForDisplay(WORK)).toBeNull();
-});
-
 test("commitProfile mutates the raw slot in place, preserving unknown keys", () => {
   tmpHome();
   // A newer release may write fields this version does not know; the commit
@@ -435,22 +315,16 @@ test("clearCredential clears even a parse-rejected stray token and reports what 
   expect(state.read().githubToken).toBeNull();
   expect(state.clearCredential(null)).toBe(false);
 
-  // Named: de-auth clears the credential half (and the derived identity), keeps the mode.
+  // Named: de-auth clears the credential half, keeps the mode.
   state.commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_w" },
     mode: "proxy",
-  });
-  state.setProfileIntegrationIdentity(WORK, "copilot-developer-cli", {
-    kind: "stored",
-    provider: "gh-token",
-    token: "ghp_w",
   });
   expect(state.clearCredential(WORK)).toBe(true);
   const slot = state.readProfileSlot(WORK);
   expect(slot.kind).toBe("partial");
   expect(slot.credential).toEqual({ kind: "none", provider: null });
   expect(slot.mode).toBe("proxy");
-  expect(state.slotIdentityForDisplay(WORK)).toBeNull();
   expect(state.clearCredential(WORK)).toBe(false);
 });
 

@@ -13,10 +13,10 @@ export async function runInit(args: InitArgs): Promise<void> {
   // credential. The auto probe below then judges THIS credential's Direct access.
   await ensureAuthenticated();
 
-  const { codex, claude } = await configureBothAgents(args.mode);
+  const { codex, claude, failedAgents } = await configureBothAgents(args.mode);
 
   // configureBothAgents wrote only the default's Desktop entry; this covers the named profiles.
   await reconcileClaudeDesktopWiring();
 
-  printGuidance(codex, claude, new CopilotEnvState().read().githubToken !== null);
+  printGuidance(codex, claude, new CopilotEnvState().read().githubToken !== null, failedAgents);
 }

@@ -1,6 +1,7 @@
-// The shared `agent codex` / `agent claude` skeleton behind AgentAdapter. This module imports
-// NEITHER src/codex/ nor src/claude/: each agent file builds its own adapter and calls
-// runAgentConfig, so the dependency edge points one way (agent file -> here) and cannot cycle.
+// The AgentAdapter contract and the pure default write behind `agent codex` / `agent claude` /
+// `agent init`. This module imports NEITHER src/codex/ nor src/claude/: each agent file builds its
+// own adapter, and the default profile's writers (configure_defaults.ts) drive it, so the dependency
+// edge points one way (agent file -> here <- writers) and cannot cycle.
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -13,27 +14,53 @@ import type { ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
 
 const logger = createStderrLogger();
 
-/** The two Direct facts a wiring bakes, resolved ONCE above the writers (probeDirectWiring in
- *  src/codex/config.ts) and handed down, so no writer probes. */
+/** The two Direct facts a wiring bakes, resolved ONCE above the writers and handed down, so no
+ *  writer probes. Producible only through directWiring(): a probe's answer (probeDirectWiring in
+ *  src/codex/config.ts) or the slot's rendered pair (renderDirectWiring in profile_wiring.ts); a
+ *  hand-built literal cannot carry the brand, so no writer can bake a pair of its own making. */
 export interface DirectWiring {
   /** The probed `Copilot-Integration-Id` to bake, or null to send none. */
-  directIntegrationId: string | null;
+  readonly directIntegrationId: string | null;
   /** The Copilot host to bake as the base URL (selectDirectIdentityAndHost). */
-  directBaseUrl: string;
+  readonly directBaseUrl: string;
+  readonly [DIRECT_WIRING]: true;
+}
+
+const DIRECT_WIRING: unique symbol = Symbol("DirectWiring");
+
+/** A Direct landing selects its identity and host with the credential; with none, the selection
+ *  would run no request and hand back the fallback pair, which a landing then stores as state and
+ *  every re-render replays. So the landing is refused before any write, and the user is asked to
+ *  log in (planClaudeConfig refuses a named Direct profile the same way). */
+export function directNeedsCredentialError(profile: Profile): Error {
+  const flag = profile === null ? "" : ` --profile ${profile}`;
+  return new Error(
+    `a Direct wiring needs a credential and none resolves for ${profileLabel(profile)}; run ` +
+      `\`agent auth${flag}\` first (a selection made without one would bake the fallback identity ` +
+      "and host as state)",
+  );
+}
+
+/** The one constructor; the module boundary is the funnel (see DirectWiring). */
+export function directWiring(integrationId: string | null, baseUrl: string): DirectWiring {
+  return { directIntegrationId: integrationId, directBaseUrl: baseUrl, [DIRECT_WIRING]: true };
 }
 
 /**
  * The mode-dependent half of one managed wiring write, shared by every adapter and the Claude
- * Desktop wiring. Both Direct facts are optional in the type (absent = no header, the generic
- * host, today's bytes), so a scratch or replayed write needs no probe.
+ * Desktop wiring. `direct` is the probed pair as the branded DirectWiring (directWiring() is its
+ * one constructor: the probe and the renderer) or null (no header, the generic host: today's
+ * bytes, for a scratch or replayed write that needs no probe). A hand-built pair cannot carry the
+ * brand, so no writer can bake one of its own making, and the proxy arm carries no `direct` at all.
  *
- *   the default slot -> runAgentConfig resolves them
+ *   the default slot -> configure_defaults.ts resolves them (a landing probes, a re-render renders
+ *                       the slot's stored pair)
  *   a named profile  -> wireBothAgents resolves them
- *   mode "proxy"     -> carries neither field at all, so the pairing is unrepresentable
+ *   mode "proxy"     -> carries no pair at all, so the pairing is unrepresentable
  */
 export type ManagedMode =
-  | ({ mode: "direct" } & Partial<DirectWiring>)
-  | { mode: "proxy"; directIntegrationId?: never; directBaseUrl?: never };
+  | { mode: "direct"; direct: DirectWiring | null }
+  | { mode: "proxy"; direct?: never };
 
 /**
  * How one agent obtains the credential at request time (the `static-key` scope names the agents
@@ -243,25 +270,16 @@ export function configuringLine(subject: string, mode: ManagedAgentMode, suffix 
 }
 
 /**
- * The credential, the direct identity, and the Copilot host are each resolved ONCE here and handed
- * down, so the probe, the write, and every derived surface bake the same values without re-probing.
- *
- *   explicit flag > live probe of the stored credential    (resolveDirectMode)
- *
- * The identity and host come BEFORE the probe: a credential rejected under every known identity
- * cannot use Direct, which under "auto" is the proxy verdict, not a failure.
+ * ONE agent's default write: the credential wiring is resolved once here and handed down with the
+ * already-resolved mode, so the probe, the write, and every derived surface bake the same values.
+ * Writes no store state: the default record and pair have one writer, commitDefaultWiring in
+ * configure_defaults.ts, which runs after BOTH agents' writes.
  */
-export async function runAgentConfig(
+export async function writeDefaultAgent(
   adapter: AgentAdapter,
-  action: AgentRunAction,
-  opts: AgentRunOptions = {},
+  chosen: ManagedMode,
+  ghToken: string | null,
 ): Promise<void> {
-  if (action.kind === "check") {
-    adapter.check();
-    return;
-  }
-  const ghToken = opts.ghToken !== undefined ? opts.ghToken : new Credential().resolve();
-  const chosen = await resolveDefaultMode(adapter, action.mode, ghToken);
   logger.log(configuringLine(adapter.label, chosen.mode));
   const credential = resolveCredentialWiring(adapter.id, chosen.mode, null, ghToken);
   const write: ManagedWrite = chosen.mode === "direct"
@@ -270,12 +288,42 @@ export async function runAgentConfig(
   await adapter.configureDefault(write, ghToken);
 }
 
-async function resolveDefaultMode(
+/**
+ * A both-agents auto request (`agent init` with no flag) decides ONE mode before any write: every
+ * agent's probe runs first, Direct only when each accepts, else proxy for both. So the default is
+ * never left with one agent wired and the other refused when the two probes disagree.
+ */
+export async function decideDefaultMode(
+  adapters: readonly AgentAdapter[],
+  ghToken: string | null,
+): Promise<Map<ManagedAgentId, ManagedMode>> {
+  const verdicts = new Map<ManagedAgentId, ManagedMode>();
+  for (const adapter of adapters) {
+    verdicts.set(adapter.id, await resolveDefaultMode(adapter, "auto", ghToken));
+  }
+  if ([...verdicts.values()].every((v) => v.mode === "direct")) return verdicts;
+  if ([...verdicts.values()].some((v) => v.mode === "direct")) {
+    logger.log("  the Direct probes disagree → both agents use the local proxy");
+  }
+  return new Map(
+    [...verdicts.keys()].map((id): [ManagedAgentId, ManagedMode] => [id, { mode: "proxy" }]),
+  );
+}
+
+/**
+ * The mode one agent LANDS for a request, with its Direct wiring freshly probed
+ * (adapter.resolveDirectWiring): explicit flag > live probe of the stored credential. The identity
+ * and host come BEFORE the probe: a credential rejected under every known identity cannot use
+ * Direct, which under "auto" is the proxy verdict, not a failure, while `--direct` surfaces it.
+ */
+export async function resolveDefaultMode(
   adapter: AgentAdapter,
   mode: RequestedMode,
   ghToken: string | null,
 ): Promise<ManagedMode> {
   if (mode === "proxy") return { mode };
+  // Refused for `auto` too: a proxy landing on a credential that does not resolve serves nothing.
+  if (ghToken === null) throw directNeedsCredentialError(null);
   let direct: DirectWiring;
   try {
     direct = await adapter.resolveDirectWiring(ghToken);
@@ -287,6 +335,6 @@ async function resolveDefaultMode(
     return { mode: "proxy" };
   }
   return (await resolveDirectMode(mode, () => adapter.detectDirect(direct, ghToken)))
-    ? { mode: "direct", ...direct }
+    ? { mode: "direct", direct }
     : { mode: "proxy" };
 }

@@ -33,7 +33,6 @@ import {
   type AuthProvider,
   CopilotEnvState,
   credentialProvider,
-  expectedDirectHost,
   type ProfileMode,
   storedCredentialKind,
 } from "../copilot_api/env_state.ts";
@@ -181,7 +180,7 @@ export interface ProbeDeps {
   defaultGhUser(): string | null;
   /** The github.com login an auto gh-cli slot follows right now, or null. */
   ghActiveLogin(): Promise<string | null>;
-  /** Named profiles: name -> recorded provider + mode + baked direct identity (never tokens). */
+  /** Named profiles: name -> recorded provider + mode (never tokens). */
   authProfiles(): Record<ProfileName, ProfileAuthFacts>;
   /** The `identity` config pin, or null when unset/`auto`. */
   pinnedIntegrationId(): string | null;
@@ -431,7 +430,6 @@ export function defaultProbeDeps(): ProbeDeps {
         mode: slot.mode,
         storedToken: slot.credential.kind === "stored",
         ghUser: slot.credential.kind === "gh-cli" ? slot.credential.ghUser : null,
-        integrationIdentity: store.slotIdentityForDisplay(name),
       };
     },
     profileHomeExists,
@@ -471,7 +469,6 @@ export function defaultProbeDeps(): ProbeDeps {
         profiles[name] = {
           provider: credentialProvider(slot.credential),
           mode: slot.mode,
-          integrationIdentity: store.slotIdentityForDisplay(name),
         };
       }
       return profiles;
@@ -969,7 +966,6 @@ export async function gatherFacts(
         facts.codex = {
           ...codexFacts,
           ...storeFacts(wiring.credential),
-          expectedDirectHost: wiring.providerMode === "direct" ? expectedDirectHost(profile) : null,
           ...(wiring.credential === "static"
             ? {
               bakedCredential: bakedFreshness(
@@ -1005,7 +1001,6 @@ export async function gatherFacts(
             profile,
           ),
           ...storeFacts(wiring.credential),
-          expectedDirectHost: wiring.providerMode === "direct" ? expectedDirectHost(profile) : null,
           ...(wiring.credential === "static"
             ? {
               bakedCredential: bakedFreshness(
@@ -1042,7 +1037,6 @@ export async function gatherFacts(
               ? {
                 provider: slot.provider,
                 mode: slot.mode,
-                integrationIdentity: slot.integrationIdentity,
               }
               : null,
             storedToken: slot.storedToken,

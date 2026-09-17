@@ -2,17 +2,9 @@
 // --check` and the health engine share these lines and repair commands so the two cannot disagree.
 import { basename, join } from "node:path";
 import type { CredentialWiring, ManagedMode } from "../agents/configure.ts";
+import { renderDirectWiring } from "../agents/profile_wiring.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import {
-  expectedDirectHost,
-  type ProfileMode,
-  replayableIdentity,
-} from "../copilot_api/env_state.ts";
-import {
-  DEFAULT_COPILOT_API_BASE,
-  INTEGRATION_ID_HEADER,
-  isDirectBaseUrl,
-} from "../copilot_api/integration_identity.ts";
+import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import type { Profile } from "../copilot_api/profile.ts";
@@ -42,8 +34,8 @@ import {
   sameBaseUrl,
 } from "./desktop.ts";
 
-/** `mode` is what the wiring's source of truth records: settings.json's managed mode for the
- *  default, the store slot for a profile. */
+/** `mode` is what the store records: the default slot's recorded mode for the default, the named
+ *  slot's mode for a profile; settings.json is an output and promises nothing. */
 export interface DesktopTarget {
   profile: Profile;
   mode: ProfileMode;
@@ -67,8 +59,8 @@ export interface DesktopClaim {
 /** The name is the user's. An orphan is an owned entry no current target promises. */
 export type DesktopOwnedEntry = DesktopClaim & { name: string };
 
-/** An unreadable or malformed settings.json is NOT "the default promises nothing": that reading is
- *  what would make the default's entry an orphan to delete. */
+/** An unreadable or malformed profile store is NOT "nothing is promised": that reading is what
+ *  would make every entry an orphan to delete. */
 export type DesktopTargetResolution =
   | { kind: "resolved"; targets: readonly DesktopTarget[] }
   | { kind: "unresolvable"; reason: string };
@@ -84,7 +76,7 @@ interface DesktopStatusBase {
 export type ClaudeDesktopStatus =
   | (DesktopStatusBase & { kind: "no-library" })
   | (DesktopStatusBase & { kind: "unreadable"; metaPath: string })
-  /** The targets could not be known (Claude's settings.json unreadable or unparseable) or an owned
+  /** The targets could not be known (the profile store unreadable or malformed) or an owned
    *  document could not be read: no entry is judged and none may be swept as an orphan. */
   | (DesktopStatusBase & { kind: "unjudged"; reason: string })
   | (DesktopStatusBase & {
@@ -106,7 +98,7 @@ export type ClaudeDesktopStatus =
   });
 
 /** Read-only port resolution: nothing is written or reserved. The caller supplies the targets (the
- *  default's mode lives in settings.json, read above this module); `dirOverride` as in
+ *  default's and the profiles' modes come from the store, read above this module); `dirOverride` as in
  *  removeAllClaudeDesktopWiring. */
 export function inspectClaudeDesktopWiring(
   promised: readonly DesktopTarget[] | DesktopTargetResolution,
@@ -210,23 +202,29 @@ function entryVerdict(
   }
   if (!isRecord(doc)) return stale("the config file is not a JSON object");
   const gateway = doc["inferenceGatewayBaseUrl"];
-  const expectedBase = target.mode === "direct"
-    ? expectedDirectGateway(target.profile, gateway)
-    : proxyLoopbackOrigin(copilotApiResolvePort(target.profile));
+  // What a rewire of this target bakes: renderDirectWiring, the same overlay-over-the-slot every
+  // re-render takes. A Direct slot holding no pair is stale by construction: nothing in the entry
+  // may vouch for itself, and the reconcile never lands the pair (the repair command does, together
+  // with both agents' files).
+  const rendered = target.mode === "direct" ? renderDirectWiring(target.profile) : null;
+  if (target.mode === "direct" && rendered === null) {
+    return stale(
+      "the slot holds no Direct pair (a credential landed since the last wiring); the repair " +
+        "lands it together with both agents' files",
+    );
+  }
+  const expectedBase = rendered?.directBaseUrl ??
+    proxyLoopbackOrigin(copilotApiResolvePort(target.profile));
   if (!sameBaseUrl(gateway, expectedBase)) {
     return stale(`gateway ${String(gateway)}, expected ${expectedBase}`);
   }
   const recordedCredential = expectedCredential(doc, target, rootHome, credential);
   if ("stale" in recordedCredential) return stale(recordedCredential.stale);
-  // Wired means the QUIET rewire (recorded rows, the replayed identity, the live codex User-Agent,
-  // no probe) would be a byte-identical no-op: the same bytes saveJsonIfChanged compares.
-  const write: ManagedMode = target.mode === "direct"
-    ? {
-      mode: "direct",
-      directIntegrationId: expectedIntegrationId(target.profile, doc),
-      directBaseUrl: expectedBase,
-    }
-    : { mode: "proxy" };
+  // Wired means the QUIET rewire (recorded rows, the pair above, no probe) would be a
+  // byte-identical no-op: the same bytes saveJsonIfChanged compares.
+  const write: ManagedMode = rendered === null
+    ? { mode: "proxy" }
+    : { mode: "direct", direct: rendered };
   const rewrite = desktopConfigPayload({
     ...write,
     profile: target.profile,
@@ -289,35 +287,8 @@ function expectedCredential(
   return { kind: "command", helperPath: helper };
 }
 
-/** The gateway a rewire would bake without probing (expectedDirectHost), else the recorded host
- *  while it has the Direct shape (nothing cached: a rewire would probe, and this read path does not). */
-function expectedDirectGateway(profile: Profile, gateway: unknown): string {
-  return expectedDirectHost(profile) ??
-    (typeof gateway === "string" && isDirectBaseUrl(gateway)
-      ? new URL(gateway).origin
-      : DEFAULT_COPILOT_API_BASE);
-}
-
-/** The identity a rewire would bake without probing (replayableIdentity): the config pin, else the
- *  slot's valid cached pair; anything else a rewire probes, so the header the document already
- *  carries stands as expected. */
-function expectedIntegrationId(profile: Profile, doc: Record<string, unknown>): string | null {
-  const config = new CopilotEnvConfig();
-  const pin = config.pinnedIntegrationId(profile);
-  if (pin !== null) return pin;
-  const rule = replayableIdentity(profile, null, config.copilotHost(profile));
-  return rule.kind === "replay"
-    ? rule.directIntegrationId
-    : recordedHeader(doc, INTEGRATION_ID_HEADER);
-}
-
-function recordedHeader(doc: Record<string, unknown>, name: string): string | null {
-  const headers = doc["inferenceCustomHeaders"];
-  const value = isRecord(headers) ? headers[name] : undefined;
-  return typeof value === "string" && value !== "" ? value : null;
-}
-
-/** A named profile repairs through its atomic re-add (mode sticky from the store). */
+/** A named profile repairs through its atomic re-add (mode sticky from the store); a flag-less
+ *  `agent claude` re-renders the default's recorded mode. */
 function desktopEntryFix(profile: Profile): string {
   return profile === null ? "agent claude" : `agent profile --add ${profile}`;
 }

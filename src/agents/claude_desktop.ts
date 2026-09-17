@@ -1,6 +1,6 @@
 // The whole-library Claude Desktop reconcile behind the `claude.desktop` key, and the
-// status `agent claude --check` and health judge. Cross-agent: the default entry's mode
-// comes from settings.json (src/agents/wiring.ts), the profiles' from the store.
+// status `agent claude --check` and health judge. Cross-agent: every promise comes from the store
+// (the default slot's recorded mode, the named slots), never from the agent files.
 import {
   claudeDesktopInstalled,
   claudeDesktopRunning,
@@ -24,34 +24,35 @@ import { profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { type ManagedWrite, resolveCredentialWiring, resolvedDirectToken } from "./configure.ts";
-import { resolveAndPersistDirectWiring } from "./profile_wiring.ts";
-import { readAgentWirings } from "./wiring.ts";
+import { renderDirectWiring } from "./profile_wiring.ts";
 
 const logger = createStderrLogger();
 
 /** Any read failure is `unresolvable`, never an empty target list: an empty list would sweep
- *  every live entry as an orphan. A custom provider is not a failure; it promises no default
- *  entry. */
+ *  every live entry as an orphan. A default slot with no recorded mode (nothing wired yet)
+ *  promises no default entry. */
 export function resolveClaudeDesktopTargets(): DesktopTargetResolution {
   const targets: DesktopTarget[] = [];
   try {
-    const claude = readAgentWirings().claude;
-    if (claude.providerMode === "direct" || claude.providerMode === "proxy") {
-      targets.push({ profile: null, mode: claude.providerMode });
-    } else if (claude.providerMode === "other" && claude.otherReason !== "custom") {
-      return { kind: "unresolvable", reason: `Claude's settings.json ${claude.otherReason}` };
-    }
+    // Every promise comes from copilot-env's own state: the default slot's recorded mode (the one
+    // mode both agents share, written by the default wiring commands; null until the first write)
+    // and each complete named slot. settings.json is an output, never read for this.
     const storeFile = new CopilotApiPaths().sharedStateFile;
     if (!profileStoreWellFormed(storeFile)) {
       return { kind: "unresolvable", reason: `the profile store ${storeFile} is malformed` };
     }
     const state = new CopilotEnvState();
+    const defaultMode = state.readProfileSlot(null).mode;
+    if (defaultMode !== null) targets.push({ profile: null, mode: defaultMode });
     for (const name of state.profileNames()) {
       const slot = state.readProfileSlot(name);
       if (slot.kind === "complete") targets.push({ profile: name, mode: slot.mode });
     }
   } catch (e) {
-    return { kind: "unresolvable", reason: `the wiring could not be read: ${errMessage(e)}` };
+    return {
+      kind: "unresolvable",
+      reason: `the profile store could not be read: ${errMessage(e)}`,
+    };
   }
   return { kind: "resolved", targets };
 }
@@ -157,19 +158,26 @@ async function reportClaudeDesktopReady(resolution: DesktopTargetResolution): Pr
 }
 
 /** Resilient like `agent profile --sync`. The default resolves its credential here for the
- *  catalog fetch; a named profile's wire resolves its own. */
+ *  catalog fetch; a named profile's wire resolves its own. A Direct slot holding no pair is left
+ *  as it is and named: the reconcile writes the Desktop entry alone, and the pair is landed only
+ *  together with both agents' files (the repair command). */
 async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
   try {
+    const rendered = mode === "direct" ? renderDirectWiring(profile) : null;
+    if (mode === "direct" && rendered === null) {
+      const repair = profile === null ? "agent claude" : "agent profile --sync";
+      logger.warn(
+        `  ${profileLabel(profile)}'s Direct pair is not stored; its Desktop entry is left as it ` +
+          `is. \`${repair}\` lands the pair together with both agents' files and the entry.`,
+      );
+      return;
+    }
     const ghToken = profile === null && mode === "direct" ? new Credential().resolve() : undefined;
     const credential = resolveCredentialWiring("claude", mode, profile, ghToken);
     // A static credential is already resolved: the identity probe and discovery reuse it.
     const token = ghToken ?? resolvedDirectToken(mode, credential);
     const write: ManagedWrite = mode === "direct"
-      ? {
-        mode: "direct",
-        ...(await resolveAndPersistDirectWiring(profile, token)),
-        credential,
-      }
+      ? { mode: "direct", direct: rendered, credential }
       : { mode: "proxy", credential };
     await syncClaudeDesktopWiring({ ...write, profile, directToken: token });
   } catch (e) {

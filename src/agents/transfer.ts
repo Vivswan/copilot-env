@@ -35,7 +35,6 @@ import {
   GLOBAL_CONFIG_SCHEMA,
   type GlobalConfigData,
   type GlobalMapKey,
-  INTEGRATION_ID_RE,
   PROFILE_CONFIG_SCHEMA,
   PROFILE_SETTINGS_DEFAULT_KEY,
   type ProfileConfigData,
@@ -66,13 +65,12 @@ import {
 } from "../utils/report_write.ts";
 import { configureDefaultAgents } from "./configure_defaults.ts";
 import { reconcileClaudeDesktopWiring } from "./claude_desktop.ts";
-import { wireBothAgents } from "./profile_wiring.ts";
+import { bothAgents, defaultDirectPairIncomplete, wireBothAgents } from "./profile_wiring.ts";
 import {
   AGENT_PROVIDER_MODES,
   type AgentProviderMode,
   type ManagedAgentMode,
 } from "./provider_mode.ts";
-import { readAgentModesSafe } from "./wiring.ts";
 
 /** The bundle format this copilot-env writes and reads; any other version is
  *  rejected outright (external contract). */
@@ -131,6 +129,7 @@ export function buildExportBundle(options: { withCredentials?: boolean } = {}): 
   const withCredentials = options.withCredentials ?? false;
   const store = new CopilotEnvState();
   const state = store.read();
+  const defaultMode: AgentProviderMode = store.readProfileSlot(null).mode ?? "none";
   const redact = (token: string | null): string | null =>
     token !== null && !withCredentials ? REDACTED_TOKEN : token;
   const profiles: Record<string, ProfileSlotData> = {};
@@ -138,11 +137,7 @@ export function buildExportBundle(options: { withCredentials?: boolean } = {}): 
     // Same trust boundary as CopilotEnvState.profileNames: a hand-edited key
     // that is not a valid profile name never travels.
     if (!isValidProfileName(name)) continue;
-    profiles[name] = {
-      ...slot,
-      githubToken: redact(slot.githubToken),
-      integrationIdentity: store.slotIdentityForDisplay(parseProfileName(name)),
-    };
+    profiles[name] = { ...slot, githubToken: redact(slot.githubToken) };
   }
   return {
     formatVersion: SETTINGS_BUNDLE_FORMAT_VERSION,
@@ -153,9 +148,9 @@ export function buildExportBundle(options: { withCredentials?: boolean } = {}): 
       ghUser: state.ghUser,
     },
     profiles,
-    // A wiring-read failure must not abort an export (or an import, via the pre-import
-    // backup); readAgentModesSafe collapses it to "other", which imports as "leave alone".
-    modes: readAgentModesSafe(),
+    // The default slot's recorded mode, the truth for both agents (the agent files are outputs);
+    // an unrecorded mode exports as "none", which imports as "leave alone".
+    modes: { codex: defaultMode, claude: defaultMode },
   };
 }
 
@@ -226,19 +221,6 @@ function parseNullableEnum<T extends string>(
   return hit;
 }
 
-// The identity is interpolated into the Copilot-Integration-Id header by the config writers;
-// INTEGRATION_ID_RE (env_config.ts, shared with the `identity` pin) owns the header-safe
-// shape.
-function parseNullableIdentity(value: unknown, path: string): string | null {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== "string" || !INTEGRATION_ID_RE.test(value)) {
-    throw bundleError(
-      `${path} must be a header-safe identity token (1-64 chars of [A-Za-z0-9._-]), or null`,
-    );
-  }
-  return value;
-}
-
 /** Three contradictions the store would otherwise carry dead or dangerous:
  *    token, no provider     -> could never resolve (resolution keys off authProvider)
  *    token + gh-cli         -> sits ignored until a --with-credentials export exposes it
@@ -273,7 +255,7 @@ function parseCredentialFields(doc: Record<string, unknown>, path: string): Prof
 }
 
 const CREDENTIAL_KEYS = ["githubToken", "authProvider", "ghUser"] as const;
-const PROFILE_SLOT_KEYS = [...CREDENTIAL_KEYS, "mode", "integrationIdentity"] as const;
+const PROFILE_SLOT_KEYS = [...CREDENTIAL_KEYS, "mode"] as const;
 
 /** A bundle travels between OS families, and `codex.home` is the one preference whose value is a
  *  machine path: an absolute path of the OTHER family (a Linux export read on Windows, or the
@@ -397,10 +379,6 @@ function parseProfilesSection(raw: unknown): Record<string, ProfileSlotData> {
     out[name] = {
       ...parseCredentialFields(slot, path),
       mode: parseNullableEnum(slot.mode, PROFILE_MODES, `${path}.mode`),
-      integrationIdentity: parseNullableIdentity(
-        slot.integrationIdentity,
-        `${path}.integrationIdentity`,
-      ),
     };
   }
   return out;
@@ -416,10 +394,21 @@ function parseModesSection(raw: unknown): { codex: AgentProviderMode; claude: Ag
     }
     return hit;
   };
-  return {
+  const modes = {
     codex: parseMode(doc.codex, "modes.codex"),
     claude: parseMode(doc.claude, "modes.claude"),
   };
+  // The default is a profile: one mode for both agents. Two managed modes cannot land, so a bundle
+  // carrying them is refused before any store or file is written (the single-agent writes would
+  // refuse the second anyway, after the first landed).
+  const managed = [modes.codex, modes.claude].filter((m) => m === "direct" || m === "proxy");
+  if (managed.length === 2 && managed[0] !== managed[1]) {
+    throw bundleError(
+      `modes names ${modes.codex} for Codex and ${modes.claude} for Claude; the default profile ` +
+        "is one mode for both agents",
+    );
+  }
+  return modes;
 }
 
 const BUNDLE_KEYS = ["formatVersion", "config", "credential", "profiles", "modes"] as const;
@@ -633,7 +622,14 @@ function planWrites(
   if (overwritten.length > 0) {
     lines.push(`profile slot${overwritten.length === 1 ? "" : "s"}: ${overwritten.join(", ")}`);
   }
-  const wired = profiles.filter((p) => p.landing.action !== "skip" && p.slot.mode !== null);
+  // A mode-less bundle slot landing a credential on a local Direct profile rebakes it too
+  // (importProfiles), so its files are named like a mode-bearing one's.
+  const wired = profiles.filter((p) =>
+    p.landing.action !== "skip" &&
+    (p.slot.mode !== null ||
+      (p.landing.action === "write" && Object.hasOwn(local.profiles, p.name) &&
+        local.profiles[p.name]?.mode === "direct"))
+  );
   // Named-profile wiring writes its provider table into config.toml and its selector into
   // `<name>.config.toml` of the effective home. The apply replaces the preference store before it
   // wires, so the home is resolved under the BUNDLE's codex-home and codex-host values, not the
@@ -705,6 +701,48 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
   };
   const profiles: PlannedProfile[] = [];
   const state = new CopilotEnvState();
+  const recorded = state.readProfileSlot(null).mode;
+  // The default is one mode for both agents, decided at PLAN time so planWrites names every file
+  // the apply touches and the outcome reports both agents. Three bundles land BOTH agents:
+  //   NO default wiring (`none` for both, never a skipped or unmanaged mode) on a recorded Direct
+  //   default whose pair will not be stored at apply time -> rebakes both, as a named profile's
+  //   slot does below (importProfiles): a landing is where the pair is probed and stored;
+  //   one managed mode on a default with no record -> the first landing wires both;
+  //   one Direct agent on a recorded Direct default whose pair will not be stored -> the one-agent
+  //   write would land both anyway (runAgentConfig): decided here, so the preview names the other
+  //   agent's file too.
+  // "Not stored at apply time" is the apply's own test (runAgentConfig's defaultDirectPairIncomplete,
+  // keyed on the STORED pair alone, never on a pin or literal: the apply replaces the preferences
+  // before it wires, so an overlay-dependent test would answer differently on the two sides), plus
+  // the one fact only the plan knows: this import lands the default credential, whose write takes
+  // the pair with it.
+  const named = modes.codex ?? modes.claude;
+  const oneNamed = named !== null && (modes.codex === null) !== (modes.claude === null);
+  /** A landing overrides a skip line for the OTHER agent (an unmanaged or gated mode there): the
+   *  write sets the mode both agents share, so the line says what lands instead. A plain `none`
+   *  for that agent is no event and gets no line. */
+  const landBoth = (mode: ManagedAgentMode, why: string): void => {
+    const other = modes.codex === null ? "Codex" : "Claude";
+    const overridden = skipped.findIndex((line) => line.startsWith(`${other} `));
+    if (overridden !== -1) {
+      skipped.splice(overridden, 1, `${other} wiring: ${why} (one mode for both)`);
+    }
+    modes.codex = mode;
+    modes.claude = mode;
+  };
+  const pairUnstored = recorded === "direct" &&
+    (defaultSlot.action === "write" || defaultDirectPairIncomplete());
+  if (bundle.modes.codex === "none" && bundle.modes.claude === "none" && pairUnstored) {
+    modes.codex = "direct";
+    modes.claude = "direct";
+  } else if (oneNamed && recorded === null) {
+    landBoth(
+      named,
+      `the default profile has no recorded mode, so the bundle's ${named} wiring lands for both agents`,
+    );
+  } else if (oneNamed && named === "direct" && pairUnstored) {
+    landBoth("direct", "the default's Direct pair is not stored, so both agents are rebaked");
+  }
   for (const [rawName, slot] of Object.entries(bundle.profiles)) {
     const name = parseProfileName(rawName);
     let landing = planSlotCredential(slot, name, gh);
@@ -767,12 +805,18 @@ async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise
   for (const { name, slot, landing } of plan.profiles) {
     if (landing.action === "skip") continue;
     if (slot.mode === null) {
-      // No mode: at most a re-auth. planImport skipped the no-profile case; the store's own
-      // guard still fires if a concurrent --del raced the plan, hence the try.
+      // No mode: a re-auth. planImport skipped the no-profile case; the store's own guard still
+      // fires if a concurrent --del raced the plan, hence the try. A complete Direct slot is rebaked
+      // with a fresh selection, as `agent auth --profile` does: the credential write took the
+      // previous pair with it, and the Desktop reconcile below renders the slot's pair.
       if (landing.action === "write") {
         try {
           state.setCredential(name, landing.credential);
-          replayBundledIdentity(state, name, slot, landing);
+          const landed = state.readProfileSlot(name);
+          if (landed.kind === "complete" && landed.mode === "direct") {
+            await wireBothAgents(name, "direct", false, "probe", landing.resolvedToken);
+            outcome.wiredProfiles.push(name);
+          }
         } catch (e) {
           outcome.failures.push(`profile '${name}': ${errMessage(e)}`);
         }
@@ -788,9 +832,16 @@ async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise
       continue;
     }
     try {
+      // A new credential probes (its stored pair went with the old one); a kept credential renders
+      // the slot's pair, or probes through the gap when none was stored.
       state.commitProfile(name, { credential, mode: slot.mode });
-      replayBundledIdentity(state, name, slot, landing);
-      await wireBothAgents(name, slot.mode, false, landing.resolvedToken);
+      await wireBothAgents(
+        name,
+        slot.mode,
+        false,
+        landing.action === "write" ? "probe" : "stored",
+        landing.resolvedToken,
+      );
       outcome.wiredProfiles.push(name);
     } catch (e) {
       outcome.failures.push(`profile '${name}': ${errMessage(e)}`);
@@ -803,27 +854,6 @@ async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise
 function keptCredential(state: CopilotEnvState, name: ProfileName): ProvisionedCredential | null {
   const credential = state.readProfileSlot(name).credential;
   return credential.kind === "none" ? null : credential;
-}
-
-/** The bundled identity was derived under the bundle's own credential, so it is carried over only
- *  when that exact token landed, keyed to that credential so a concurrent rotation drops it rather
- *  than misattaching it. It arrives without a host pair, so a direct profile tries it FIRST on the
- *  host in use and bakes it once accepted there (replayableIdentity `preferred`), never on trust.
- *  gh-cli and kept slots hold a DIFFERENT credential, so nothing is carried for them: a kept slot
- *  wires off the pair it already cached (commitProfile keeps it while the credential is unchanged),
- *  and only an uncached one costs a wire-time probe. */
-function replayBundledIdentity(
-  state: CopilotEnvState,
-  name: ProfileName,
-  slot: ProfileSlotData,
-  landing: SlotPlan,
-): void {
-  if (
-    landing.action === "write" && landing.credential.kind === "stored" &&
-    slot.integrationIdentity !== null
-  ) {
-    state.setProfileIntegrationIdentity(name, slot.integrationIdentity, landing.credential);
-  }
 }
 
 /** Stores first, then everything else is RE-DERIVED through the same machinery `agent init`
@@ -856,7 +886,7 @@ export async function applyImportPlan(
         // without a resolvable slot).
         ghToken: plan.defaultSlot.action === "skip" ? null : plan.defaultSlot.resolvedToken,
       },
-      deps.catalogDeps,
+      bothAgents(deps.catalogDeps),
     );
     outcome.modes = { codex, claude };
     outcome.failures.push(...failures);

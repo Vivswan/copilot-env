@@ -968,27 +968,44 @@ test("profile add/del keeps the Claude Desktop entry in lockstep when Desktop is
   mkdirSync(dataDir, { recursive: true });
   process.env[CLAUDE_DESKTOP_DIR_ENV] = dataDir;
   const library = desktopLibraryDirUnder(dataDir);
+  // The proxy entry's model discovery falls back to Copilot's catalog while the daemon is down:
+  // stub the global fetch it reaches (nothing leaves for the network) and pin what it asked.
+  const realFetch = globalThis.fetch;
+  const seen: string[] = [];
+  globalThis.fetch = ((input: string | URL | Request) => {
+    seen.push(String(input));
+    return String(input).startsWith("https://")
+      ? Promise.resolve(Response.json({ data: [{ id: "claude-fable-5" }] }))
+      : Promise.reject(new Error("offline"));
+  }) as typeof fetch;
 
-  await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
-  const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
-    entries: { id: string; name: string }[];
-  };
-  const entry = meta.entries.find((e) => e.name === "copilot-env: work");
-  expect(entry).toBeDefined();
-  const doc = JSON.parse(readFileSync(join(library, `${entry?.id}.json`), "utf8")) as Record<
-    string,
-    unknown
-  >;
-  // Proxy wiring: loopback gateway + discovery on (the daemon serves /v1/models).
-  expect(doc.inferenceGatewayBaseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-  expect(doc.modelDiscoveryEnabled).toBe(true);
+  try {
+    await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
+    const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+      entries: { id: string; name: string }[];
+    };
+    const entry = meta.entries.find((e) => e.name === "copilot-env: work");
+    expect(entry).toBeDefined();
+    const doc = JSON.parse(readFileSync(join(library, `${entry?.id}.json`), "utf8")) as Record<
+      string,
+      unknown
+    >;
+    // Proxy wiring: loopback gateway + discovery on (the daemon serves /v1/models).
+    expect(doc.inferenceGatewayBaseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(doc.modelDiscoveryEnabled).toBe(true);
+    expect(seen.filter((url) => url.startsWith("https://"))).toEqual([
+      "https://api.githubcopilot.com/models",
+    ]);
 
-  await runProfile({ del: "work", mode: "auto" });
-  const after = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
-    entries: unknown[];
-  };
-  expect(after.entries).toEqual([]);
-  expect(existsSync(join(library, `${entry?.id}.json`))).toBe(false);
+    await runProfile({ del: "work", mode: "auto" });
+    const after = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+      entries: unknown[];
+    };
+    expect(after.entries).toEqual([]);
+    expect(existsSync(join(library, `${entry?.id}.json`))).toBe(false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("claude-desktop false: profile add wires no Desktop entry and --sync removes a stale one", async () => {
@@ -1004,27 +1021,46 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
     };
     return meta.entries.map((e) => e.name);
   };
+  // The entry wires below fall back to Copilot's catalog while the daemon is down: stub the
+  // global fetch they reach (nothing leaves for the network) and pin what they asked.
+  const realFetch = globalThis.fetch;
+  const seen: string[] = [];
+  globalThis.fetch = ((input: string | URL | Request) => {
+    seen.push(String(input));
+    return String(input).startsWith("https://")
+      ? Promise.resolve(Response.json({ data: [{ id: "claude-fable-5" }] }))
+      : Promise.reject(new Error("offline"));
+  }) as typeof fetch;
 
-  // Key on (the default): the add wires the entry.
-  await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
-  expect(entryNames()).toEqual(["copilot-env: work"]);
-  const helper = desktopHelperPath(resolveRootHome(), "proxy", WORK);
-  expect(existsSync(helper)).toBe(true);
+  try {
+    // Key on (the default): the add wires the entry.
+    await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
+    expect(entryNames()).toEqual(["copilot-env: work"]);
+    const helper = desktopHelperPath(resolveRootHome(), "proxy", WORK);
+    expect(existsSync(helper)).toBe(true);
 
-  // Key off: the launcher-style --settings-for (the Claude adapter's profile write, the
-  // same path `cl --profile` takes) sweeps the entry -- no --sync or re-add needed.
-  new CopilotEnvConfig().set({ "claude.desktop": false });
-  await captureAllWrites(() => runProfile({ settingsFor: "work", mode: "auto" }));
-  expect(entryNames()).toEqual([]);
-  expect(existsSync(helper)).toBe(false);
-  // --sync (both agents) is a reconcile point too: idempotent on the swept library.
-  await runProfile({ sync: true, mode: "auto" });
-  expect(entryNames()).toEqual([]);
+    // Key off: the launcher-style --settings-for (the Claude adapter's profile write, the
+    // same path `cl --profile` takes) sweeps the entry -- no --sync or re-add needed.
+    new CopilotEnvConfig().set({ "claude.desktop": false });
+    await captureAllWrites(() => runProfile({ settingsFor: "work", mode: "auto" }));
+    expect(entryNames()).toEqual([]);
+    expect(existsSync(helper)).toBe(false);
+    // --sync (both agents) is a reconcile point too: idempotent on the swept library.
+    await runProfile({ sync: true, mode: "auto" });
+    expect(entryNames()).toEqual([]);
 
-  await runProfile({ add: "work", mode: "auto" });
-  expect(entryNames()).toEqual([]);
-  new CopilotEnvConfig().del("claude.desktop");
-  await runProfile({ sync: true, mode: "auto" });
-  expect(entryNames()).toEqual(["copilot-env: work"]);
-  expect(existsSync(helper)).toBe(true);
+    await runProfile({ add: "work", mode: "auto" });
+    expect(entryNames()).toEqual([]);
+    new CopilotEnvConfig().del("claude.desktop");
+    await runProfile({ sync: true, mode: "auto" });
+    expect(entryNames()).toEqual(["copilot-env: work"]);
+    expect(existsSync(helper)).toBe(true);
+    // The add asked Copilot's generic host for its catalog once; the quiet --sync re-wire
+    // discovers nothing. Nothing else left the stub.
+    expect(seen.filter((url) => url.startsWith("https://"))).toEqual([
+      "https://api.githubcopilot.com/models",
+    ]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

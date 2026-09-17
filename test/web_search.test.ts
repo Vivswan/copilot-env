@@ -96,28 +96,35 @@ function hostProbeOk(): Response {
 
 // --- parseResponsesOutput ----------------------------------------------------
 
-test("parseResponsesOutput concatenates message text and appends deduped sources", () => {
-  const text = parseResponsesOutput(responsesFixture());
-  expect(text).toBe(
-    "Bun 1.3 shipped.\nIt is faster." +
-      "\n\nSources:\n- Bun Blog: https://bun.sh/blog\n- https://example.com/x",
-  );
-});
-
-test("parseResponsesOutput returns plain text when there are no citations", () => {
-  const body = {
-    "output": [
-      { "type": "message", "content": [{ "type": "output_text", "text": "plain answer" }] },
-    ],
-  };
-  expect(parseResponsesOutput(body)).toBe("plain answer");
-});
-
-test("parseResponsesOutput throws when no message item carries text", () => {
-  expect(() => parseResponsesOutput({ "output": [{ "type": "web_search_call" }] })).toThrow(
-    /no answer text/,
-  );
-  expect(() => parseResponsesOutput({})).toThrow(/no answer text/);
+test("parseResponsesOutput: message text concatenated with deduped sources appended, plain text without citations, a throw when no message item carries text", () => {
+  const cases: { name: string; body: unknown; text?: string; throws?: RegExp }[] = [
+    {
+      name: "citations",
+      body: responsesFixture(),
+      text: "Bun 1.3 shipped.\nIt is faster." +
+        "\n\nSources:\n- Bun Blog: https://bun.sh/blog\n- https://example.com/x",
+    },
+    {
+      name: "no citations",
+      body: {
+        "output": [
+          { "type": "message", "content": [{ "type": "output_text", "text": "plain answer" }] },
+        ],
+      },
+      text: "plain answer",
+    },
+    {
+      name: "no message item",
+      body: { "output": [{ "type": "web_search_call" }] },
+      throws: /no answer text/,
+    },
+    { name: "no output at all", body: {}, throws: /no answer text/ },
+  ];
+  for (const c of cases) {
+    if (c.throws !== undefined) {
+      expect(() => parseResponsesOutput(c.body), c.name).toThrow(c.throws);
+    } else expect(parseResponsesOutput(c.body), c.name).toBe(c.text);
+  }
 });
 
 // --- webSearch request shape -------------------------------------------------
@@ -213,107 +220,81 @@ function catalogFixture(): unknown {
 const MODELS_URL = "https://api.githubcopilot.com/models";
 const RESPONSES_URL = "https://api.githubcopilot.com/responses";
 
-test("webSearch model precedence: explicit beats stored beats built-in default", async () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_stored");
-  new CopilotEnvConfig().set({ "proxy.message-websearch-model": "stored-model" });
+test("webSearch model resolution: the flag beats the stored key, aliases resolve against the live catalog (asked under the request's identity), an unknown value or a failed catalog fetch passes the raw value through", async () => {
+  // A configured model (flag or stored key) consults the live catalog first for alias resolution
+  // (the proxy's semantics); the catalog fetch reuses the selected pair, so the probes are the
+  // identity's and the host's alone, and a failed fetch is best-effort: the raw value goes out.
+  const cases: {
+    name: string;
+    stored?: string;
+    flag?: string;
+    catalog: () => Response;
+    model: string;
+  }[] = [
+    {
+      name: "stored unknown value passes through",
+      stored: "stored-model",
+      catalog: () => okJson(catalogFixture()),
+      model: "stored-model",
+    },
+    {
+      name: "the flag beats the stored key",
+      stored: "stored-model",
+      flag: "flag-model",
+      catalog: () => okJson(catalogFixture()),
+      model: "flag-model",
+    },
+    {
+      name: "a stored alias resolves",
+      stored: "gpt-latest",
+      catalog: () => okJson(catalogFixture()),
+      model: "gpt-6",
+    },
+    {
+      name: "a flag alias resolves",
+      flag: "claude-latest",
+      catalog: () => okJson(catalogFixture()),
+      model: "claude-fable-5",
+    },
+    {
+      name: "a failed catalog fetch sends the raw value",
+      stored: "gpt-latest",
+      catalog: () => new Response("nope", { status: 500, statusText: "Internal Server Error" }),
+      model: "gpt-latest",
+    },
+    {
+      name: "an exact catalog id passes through unchanged",
+      flag: "gpt-6",
+      catalog: () => okJson(catalogFixture()),
+      model: "gpt-6",
+    },
+  ];
+  for (const c of cases) {
+    dir = removeDir(dir);
+    tmpHome();
+    new Credential(undefined, null).store("gh-token", "gho_stored");
+    if (c.stored !== undefined) {
+      new CopilotEnvConfig().set({ "proxy.message-websearch-model": c.stored });
+    }
+    const stub = fetchStub([hostProbeOk(), hostProbeOk(), c.catalog(), okJson(responsesFixture())]);
 
-  // A configured model consults the live catalog first (alias resolution); an
-  // unknown value passes through to the POST unchanged. The catalog fetch reuses the selected
-  // pair, so the probes are the identity's and the host's alone.
-  const stored = fetchStub([
-    hostProbeOk(),
-    hostProbeOk(),
-    okJson(catalogFixture()),
-    okJson(responsesFixture()),
-  ]);
-  await webSearch("q", { fetchImpl: stored.fetchImpl });
-  expect(stored.calls.map((c) => c.url)).toEqual([
-    MODELS_URL,
-    MODELS_URL,
-    MODELS_URL,
-    RESPONSES_URL,
-  ]);
-  expect(JSON.parse(String(stored.calls[3]?.init.body)).model).toBe("stored-model");
+    const answer = await webSearch("q", { fetchImpl: stub.fetchImpl, model: c.flag });
 
-  const explicit = fetchStub([
-    hostProbeOk(),
-    hostProbeOk(),
-    okJson(catalogFixture()),
-    okJson(responsesFixture()),
-  ]);
-  await webSearch("q", { fetchImpl: explicit.fetchImpl, model: "flag-model" });
-  expect(JSON.parse(String(explicit.calls[3]?.init.body)).model).toBe("flag-model");
-});
-
-test("webSearch resolves catalog aliases for the stored model (the proxy's semantics)", async () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_stored");
-  new CopilotEnvConfig().set({ "proxy.message-websearch-model": "gpt-latest" });
-  const stub = fetchStub([
-    hostProbeOk(),
-    hostProbeOk(),
-    okJson(catalogFixture()),
-    okJson(responsesFixture()),
-  ]);
-
-  await webSearch("q", { fetchImpl: stub.fetchImpl });
-
-  // After the two probes: the catalog GET, asked under the SAME identity the /responses call
-  // sends (Copilot gates the list per identity), then the POST.
-  expect(stub.calls[2]?.url).toBe(MODELS_URL);
-  expect(stub.calls[2]?.init.headers).toEqual({
-    ...directClientHeaders(CODEX_EXEC_USER_AGENT),
-    Authorization: "Bearer gho_stored",
-  });
-  expect(JSON.parse(String(stub.calls[3]?.init.body)).model).toBe("gpt-6");
-});
-
-test("webSearch resolves aliases for the explicit --model flag too", async () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_stored");
-  const stub = fetchStub([
-    hostProbeOk(),
-    hostProbeOk(),
-    okJson(catalogFixture()),
-    okJson(responsesFixture()),
-  ]);
-
-  await webSearch("q", { fetchImpl: stub.fetchImpl, model: "claude-latest" });
-
-  expect(JSON.parse(String(stub.calls[3]?.init.body)).model).toBe("claude-fable-5");
-});
-
-test("webSearch sends the raw value when the catalog fetch fails (best-effort)", async () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_stored");
-  new CopilotEnvConfig().set({ "proxy.message-websearch-model": "gpt-latest" });
-  const stub = fetchStub([
-    hostProbeOk(),
-    hostProbeOk(),
-    new Response("nope", { status: 500, statusText: "Internal Server Error" }),
-    okJson(responsesFixture()),
-  ]);
-
-  const answer = await webSearch("q", { fetchImpl: stub.fetchImpl });
-
-  expect(answer).toContain("Bun 1.3 shipped.");
-  expect(JSON.parse(String(stub.calls[3]?.init.body)).model).toBe("gpt-latest");
-});
-
-test("webSearch passes an exact catalog id through unchanged", async () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_stored");
-  const stub = fetchStub([
-    hostProbeOk(),
-    hostProbeOk(),
-    okJson(catalogFixture()),
-    okJson(responsesFixture()),
-  ]);
-
-  await webSearch("q", { fetchImpl: stub.fetchImpl, model: "gpt-6" });
-
-  expect(JSON.parse(String(stub.calls[3]?.init.body)).model).toBe("gpt-6");
+    expect(answer, c.name).toContain("Bun 1.3 shipped.");
+    // After the two probes: the catalog GET, asked under the SAME identity the /responses call
+    // sends (Copilot gates the list per identity), then the POST.
+    expect(stub.calls.map((call) => call.url), c.name).toEqual([
+      MODELS_URL,
+      MODELS_URL,
+      MODELS_URL,
+      RESPONSES_URL,
+    ]);
+    expect(stub.calls[2]?.init.headers, c.name).toEqual({
+      ...directClientHeaders(CODEX_EXEC_USER_AGENT),
+      Authorization: "Bearer gho_stored",
+    });
+    expect(JSON.parse(String(stub.calls[3]?.init.body)).model, c.name).toBe(c.model);
+  }
 });
 
 test("the alias catalog is memoized per token, and a failed fetch is retried", async () => {
@@ -359,103 +340,119 @@ test("the alias catalog is memoized per token, and a failed fetch is retried", a
   ]);
 });
 
-test("webSearch surfaces non-2xx as a legible error", async () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_stored");
-  const stub = fetchStub([
-    hostProbeOk(),
-    hostProbeOk(),
-    new Response("model unsupported", { status: 400, statusText: "Bad Request" }),
-  ]);
-
-  await expect(webSearch("q", { fetchImpl: stub.fetchImpl })).rejects.toThrow(
-    "POST https://api.githubcopilot.com/responses returned 400 Bad Request model unsupported",
-  );
+test("webSearch surfaces a non-2xx as a legible error naming the request, and caps a huge upstream body before it reaches the tool error", async () => {
+  const cases: { name: string; response: () => Response; check: (message: string) => void }[] = [
+    {
+      name: "400 with a short body",
+      response: () => new Response("model unsupported", { status: 400, statusText: "Bad Request" }),
+      check: (message) =>
+        expect(message).toBe(
+          "POST https://api.githubcopilot.com/responses returned 400 Bad Request model unsupported",
+        ),
+    },
+    {
+      name: "502 with a huge body",
+      response: () => new Response("x".repeat(5000), { status: 502, statusText: "Bad Gateway" }),
+      check: (message) => {
+        expect(message).toContain("502 Bad Gateway");
+        expect(message.length).toBeLessThan(800);
+        expect(message.endsWith("...")).toBe(true);
+      },
+    },
+  ];
+  for (const c of cases) {
+    dir = removeDir(dir);
+    tmpHome();
+    new Credential(undefined, null).store("gh-token", "gho_stored");
+    const stub = fetchStub([hostProbeOk(), hostProbeOk(), c.response()]);
+    let message = "";
+    try {
+      await webSearch("q", { fetchImpl: stub.fetchImpl });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message.length, c.name).toBeGreaterThan(0);
+    c.check(message);
+  }
 });
 
 // --- credential resolution ---------------------------------------------------
 
-test("resolveWebSearchCredential prefers the store over the env fallback", () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_stored");
-  process.env.GH_TOKEN = "gho_env";
-  expect(resolveWebSearchCredential(null)).toBe("gho_stored");
-});
-
-test("resolveWebSearchCredential falls back to env ONLY when no provider is recorded", () => {
-  tmpHome();
-  process.env.GITHUB_TOKEN = "gho_env";
-  expect(resolveWebSearchCredential(null)).toBe("gho_env");
-});
-
-test("resolveWebSearchCredential errors with a pointer when nothing resolves", () => {
-  tmpHome();
-  expect(() => resolveWebSearchCredential(null)).toThrow(
-    /run `agent auth` to log in or set one of COPILOT_GITHUB_TOKEN \/ GH_TOKEN \/ GITHUB_TOKEN/,
-  );
-});
-
-test("a named profile hard-fails instead of using the default credential or env", () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_default");
-  process.env.GH_TOKEN = "gho_env";
-  expect(() => resolveWebSearchCredential(parseProfileName("work"))).toThrow(
-    /never falls back to the default credential/,
-  );
-});
-
-test("a huge upstream error body is capped before it reaches the tool error", async () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_stored");
-  const stub = fetchStub([
-    hostProbeOk(),
-    hostProbeOk(),
-    new Response("x".repeat(5000), { status: 502, statusText: "Bad Gateway" }),
-  ]);
-
-  let message = "";
-  try {
-    await webSearch("q", { fetchImpl: stub.fetchImpl });
-  } catch (e) {
-    message = (e as Error).message;
+test("resolveWebSearchCredential: the store beats the env fallback, env counts only with no provider recorded, nothing resolving points at `agent auth`, and a named profile hard-fails rather than borrowing either", () => {
+  const cases: {
+    name: string;
+    stored?: string;
+    env?: Record<string, string>;
+    profile: string | null;
+    expected: string | RegExp;
+  }[] = [
+    {
+      name: "store over env",
+      stored: "gho_stored",
+      env: { GH_TOKEN: "gho_env" },
+      profile: null,
+      expected: "gho_stored",
+    },
+    {
+      name: "env with no provider recorded",
+      env: { GITHUB_TOKEN: "gho_env" },
+      profile: null,
+      expected: "gho_env",
+    },
+    {
+      name: "nothing resolves",
+      profile: null,
+      expected:
+        /run `agent auth` to log in or set one of COPILOT_GITHUB_TOKEN \/ GH_TOKEN \/ GITHUB_TOKEN/,
+    },
+    {
+      name: "a named profile never falls back to the default credential or env",
+      stored: "gho_default",
+      env: { GH_TOKEN: "gho_env" },
+      profile: "work",
+      expected: /never falls back to the default credential/,
+    },
+  ];
+  for (const c of cases) {
+    dir = removeDir(dir);
+    tmpHome();
+    if (c.stored !== undefined) new Credential(undefined, null).store("gh-token", c.stored);
+    for (const [key, value] of Object.entries(c.env ?? {})) process.env[key] = value;
+    const profile = c.profile === null ? null : parseProfileName(c.profile);
+    if (typeof c.expected === "string") {
+      expect(resolveWebSearchCredential(profile), c.name).toBe(c.expected);
+    } else {
+      expect(() => resolveWebSearchCredential(profile), c.name).toThrow(c.expected);
+    }
   }
-  expect(message).toContain("502 Bad Gateway");
-  expect(message.length).toBeLessThan(800);
-  expect(message.endsWith("...")).toBe(true);
 });
 
-test("a cancelled call stops waiting for a cold PAT probe instead of sitting it out", async () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "ghp_forces_a_probe");
-  // A probe fetch that never resolves: without the abort race the call would hang.
+test("a cancelled call stops waiting for a hanging fetch instead of sitting it out: the cold PAT probe, and the alias catalog fetch a configured model routes through", async () => {
+  // A probe fetch that never resolves: without the abort race the call would hang. A CONFIGURED
+  // model routes through the alias-resolution race at the top of webSearch, so a hanging catalog
+  // fetch must not outlive the client's cancellation either.
   const neverFetch = () => new Promise<Response>(() => {});
-
-  // The caller's reason is preserved: MCP cancellations carry a plain string.
-  const plain = new AbortController();
-  plain.abort();
-  await expect(webSearch("q", { fetchImpl: neverFetch, signal: plain.signal })).rejects.toThrow(
-    /aborted|cancelled/i,
-  );
-  const reasoned = new AbortController();
-  reasoned.abort("client went away");
-  await expect(webSearch("q", { fetchImpl: neverFetch, signal: reasoned.signal })).rejects.toThrow(
-    "web_search was cancelled: client went away",
-  );
-});
-
-test("a cancelled call stops waiting for the alias catalog fetch too", async () => {
-  // A CONFIGURED model routes through the alias-resolution race at the top of
-  // webSearch; a hanging catalog fetch must not outlive the client's cancellation.
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_stored");
-  new CopilotEnvConfig().set({ "proxy.message-websearch-model": "gpt-latest" });
-  const neverFetch = () => new Promise<Response>(() => {});
-
-  const reasoned = new AbortController();
-  reasoned.abort("client went away");
-  await expect(webSearch("q", { fetchImpl: neverFetch, signal: reasoned.signal })).rejects.toThrow(
-    "web_search was cancelled: client went away",
-  );
+  const cases: { name: string; token: string; stored?: string }[] = [
+    { name: "the cold PAT probe", token: "ghp_forces_a_probe" },
+    { name: "the alias catalog fetch", token: "gho_stored", stored: "gpt-latest" },
+  ];
+  for (const c of cases) {
+    dir = removeDir(dir);
+    tmpHome();
+    new Credential(undefined, null).store("gh-token", c.token);
+    if (c.stored !== undefined) {
+      new CopilotEnvConfig().set({ "proxy.message-websearch-model": c.stored });
+    }
+    // The caller's reason is preserved: MCP cancellations carry a plain string.
+    const plain = new AbortController();
+    plain.abort();
+    await expect(webSearch("q", { fetchImpl: neverFetch, signal: plain.signal }), c.name).rejects
+      .toThrow(/aborted|cancelled/i);
+    const reasoned = new AbortController();
+    reasoned.abort("client went away");
+    await expect(webSearch("q", { fetchImpl: neverFetch, signal: reasoned.signal }), c.name)
+      .rejects.toThrow("web_search was cancelled: client went away");
+  }
 });
 
 test("DEFAULT_WEB_SEARCH_MODEL is a raw catalog id, never an alias", () => {

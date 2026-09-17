@@ -277,7 +277,7 @@ test("host rule: 2xx/400/401 keep the generic host; 403/404/5xx/network move to 
     lookedUp: true,
     probedAs: COPILOT_CLI_INTEGRATION_ID,
   });
-  // A literal and a missing token both skip every probe.
+  // A literal and a missing token both skip every probe; so does any pin, a custom id included.
   let called = false;
   const never: ProbeFetch = () => {
     called = true;
@@ -291,138 +291,128 @@ test("host rule: 2xx/400/401 keep the generic host; 403/404/5xx/network move to 
     }),
   ).toEqual({ integrationId: pinned, apiBase: CONFIGURED_API_BASE });
   expect(
+    await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
+      pinned: FOREIGN_ID,
+      fixedHost: DEFAULT_COPILOT_API_BASE,
+      fetchImpl: never,
+    }),
+  ).toEqual({ integrationId: FOREIGN_ID, apiBase: DEFAULT_COPILOT_API_BASE });
+  expect(
     await selectDirectIdentityAndHost(null, "codex_exec/1", { pinned, fetchImpl: never }),
   ).toEqual({ integrationId: pinned, apiBase: DEFAULT_COPILOT_API_BASE });
   expect(called).toBe(false);
 });
 
-test("probeIntegrationIdentity: a network error is inconclusive, not a rejection", async () => {
-  const res = await probeIntegrationIdentity("ghp_x", CANDIDATES, {
-    fetchImpl: () => Promise.reject(new Error("offline")),
-    apiBase: DEFAULT_COPILOT_API_BASE,
-  });
-  expect(res.identity).toBeNull();
-  expect(res.conclusive).toBe(false);
-});
-
-test("probeIntegrationIdentity: a transient 5xx/429 is inconclusive, a 400 is definitive", async () => {
-  const status = (code: number): ProbeFetch => () =>
-    Promise.resolve(new Response("nope", { status: code }));
-  for (const code of [500, 429, 503, 408, 404]) {
+test("probeIntegrationIdentity: a 400 is the definitive rejection; a network error, a transient 5xx/429/408/404, or a 403 (policy/seat, not identity) is inconclusive", async () => {
+  // 400 is the verified "PATs not supported" identity rejection (401, a bad token, is the other
+  // definitive answer); the statuses here say nothing about the identity, so no candidate is
+  // rejected on them.
+  const cases: { status: number | "network"; conclusive: boolean }[] = [
+    { status: "network", conclusive: false },
+    { status: 500, conclusive: false },
+    { status: 429, conclusive: false },
+    { status: 503, conclusive: false },
+    { status: 408, conclusive: false },
+    { status: 404, conclusive: false },
+    { status: 403, conclusive: false },
+    { status: 400, conclusive: true },
+  ];
+  for (const c of cases) {
     const res = await probeIntegrationIdentity("ghp_x", CANDIDATES, {
-      fetchImpl: status(code),
+      fetchImpl: () =>
+        c.status === "network"
+          ? Promise.reject(new Error("offline"))
+          : Promise.resolve(new Response("nope", { status: c.status })),
       apiBase: DEFAULT_COPILOT_API_BASE,
     });
-    expect(res.conclusive).toBe(false);
+    expect({ status: c.status, identity: res.identity, conclusive: res.conclusive }).toEqual({
+      status: c.status,
+      identity: null,
+      conclusive: c.conclusive,
+    });
   }
-  // 400 is the verified "PATs not supported" identity rejection.
-  const res = await probeIntegrationIdentity("ghp_x", CANDIDATES, {
-    fetchImpl: status(400),
-    apiBase: DEFAULT_COPILOT_API_BASE,
-  });
-  expect(res.conclusive).toBe(true);
 });
 
-test("probeIntegrationIdentity: a 403 on a candidate is inconclusive (policy/seat, not identity)", async () => {
-  const res = await probeIntegrationIdentity("ghp_x", CANDIDATES, {
-    fetchImpl: () => Promise.resolve(new Response("forbidden", { status: 403 })),
-    apiBase: DEFAULT_COPILOT_API_BASE,
-  });
-  expect(res.conclusive).toBe(false);
-});
-
-test("selectDirectIdentityAndHost: selects on the host it BAKES, with no account-host lookup", async () => {
-  resetIntegrationIdentityCache();
-  const probed: string[] = [];
-  await expect(
-    selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
-      fetchImpl: (input) => {
-        const url = typeof input === "string"
-          ? input
-          : input instanceof URL
-          ? input.href
-          : input.url;
-        probed.push(url);
-        return Promise.resolve(new Response("PATs not supported", { status: 400 }));
-      },
-    }),
-  ).rejects.toThrow(/rejects this credential/);
-  // Direct bakes DEFAULT_COPILOT_API_BASE as base_url, so the verdict must be rendered
-  // against THAT host -- never a separately discovered account host the agents won't use.
-  expect(probed.every((u) => u.startsWith(`${DEFAULT_COPILOT_API_BASE}/models`))).toBe(true);
-  expect(probed.some((u) => u.includes("/copilot_internal/user"))).toBe(false);
-});
-
-test("selectDirectIdentityAndHost: a transient probe and a failed account lookup degrade to the codex identity, never throw", async () => {
-  resetIntegrationIdentityCache();
-  // The daemon launch rides this: a 5xx on the generic host is inconclusive for every candidate
-  // (the codex identity stands) and moves the host rule to the account lookup, whose failure stays put.
-  const result = await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
-    fetchImpl: () => Promise.resolve(new Response("upstream", { status: 503 })),
-    narrator: { info: () => {} },
-  });
-  expect(result).toEqual({
-    integrationId: null,
-    apiBase: DEFAULT_COPILOT_API_BASE,
-  });
-});
-
-test("selectDirectIdentityAndHost: a transient failure degrades to the default, never throws", async () => {
-  resetIntegrationIdentityCache();
-  const { integrationId } = await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
-    fetchImpl: (input) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("/copilot_internal/user")) {
-        return Promise.resolve(new Response("{}", { status: 200 }));
-      }
-      return Promise.resolve(new Response("upstream", { status: 503 }));
+test("selectDirectIdentityAndHost: every credential is probed through the one candidate list; a transient answer degrades to the codex identity, a PAT the codex identity refuses lands on the CLI id, one rejected everywhere throws", async () => {
+  // The daemon launch rides the transient rows: a 5xx on the generic host is inconclusive for
+  // every candidate (the codex identity stands) and moves the host rule to the account lookup,
+  // whose own failure stays put.
+  const lookupOk: ProbeFetch = (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    return Promise.resolve(
+      url.includes("/copilot_internal/user")
+        ? new Response("{}", { status: 200 })
+        : new Response("upstream", { status: 503 }),
+    );
+  };
+  const cases: {
+    name: string;
+    token: string;
+    fixedHost?: string;
+    fetchImpl: ProbeFetch;
+    seen?: string[];
+    /** Every request stays on the generic host's /models: no account-host lookup. */
+    genericOnly?: true;
+    expected: { integrationId: string | null; apiBase: string } | RegExp;
+  }[] = [
+    {
+      name: "a transient probe and a failed account lookup",
+      token: "ghp_x",
+      fetchImpl: () => Promise.resolve(new Response("upstream", { status: 503 })),
+      expected: { integrationId: null, apiBase: DEFAULT_COPILOT_API_BASE },
     },
-    narrator: { info: () => {} },
-  });
-  expect(integrationId).toBeNull();
-});
-
-test("selectDirectIdentityAndHost: a non-PAT credential is probed too, and the codex identity accepted first is one request", async () => {
-  resetIntegrationIdentityCache();
-  const seen: string[] = [];
-  const { integrationId } = await selectDirectIdentityAndHost("gho_oauth", "codex_exec/1", {
-    fixedHost: DEFAULT_COPILOT_API_BASE,
-    fetchImpl: stubFetch({ accept: (id) => id === null, seen }),
-  });
-  expect(integrationId).toBeNull();
-  expect(seen).toEqual(["<none>"]);
-});
-
-test("selectDirectIdentityAndHost: a PAT the codex identity refuses lands on the CLI id", async () => {
-  resetIntegrationIdentityCache();
-  const { integrationId } = await selectDirectIdentityAndHost("github_pat_x", "codex_exec/1", {
-    fetchImpl: stubFetch({ accept: (i) => i === COPILOT_CLI_INTEGRATION_ID }),
-  });
-  expect(integrationId).toBe(COPILOT_CLI_INTEGRATION_ID);
-});
-
-test("selectDirectIdentityAndHost: the config pin wins without any identity probe", async () => {
-  resetIntegrationIdentityCache();
-  let called = false;
-  const { integrationId } = await selectDirectIdentityAndHost("ghp_x", "codex_exec/1", {
-    pinned: "my-custom-id",
-    fixedHost: DEFAULT_COPILOT_API_BASE,
-    fetchImpl: () => {
-      called = true;
-      return Promise.reject(new Error("should not be called"));
+    {
+      name: "a transient probe with the account lookup answering",
+      token: "ghp_x",
+      fetchImpl: lookupOk,
+      expected: { integrationId: null, apiBase: DEFAULT_COPILOT_API_BASE },
     },
-  });
-  expect(integrationId).toBe("my-custom-id");
-  expect(called).toBe(false);
-});
-
-test("selectDirectIdentityAndHost: a PAT rejected everywhere throws with the reason", async () => {
-  resetIntegrationIdentityCache();
-  await expect(
-    selectDirectIdentityAndHost("ghp_bad", "codex_exec/1", {
+    {
+      name: "a non-PAT credential: the codex identity accepted first is one request",
+      token: "gho_oauth",
+      fixedHost: DEFAULT_COPILOT_API_BASE,
+      fetchImpl: stubFetch({ accept: (id) => id === null }),
+      seen: ["<none>"],
+      expected: { integrationId: null, apiBase: DEFAULT_COPILOT_API_BASE },
+    },
+    {
+      name: "a PAT the codex identity refuses lands on the CLI id",
+      token: "github_pat_x",
+      fetchImpl: stubFetch({ accept: (i) => i === COPILOT_CLI_INTEGRATION_ID }),
+      expected: { integrationId: COPILOT_CLI_INTEGRATION_ID, apiBase: DEFAULT_COPILOT_API_BASE },
+    },
+    {
+      // Direct bakes DEFAULT_COPILOT_API_BASE as base_url, so the verdict is rendered against THAT
+      // host: never a separately discovered account host the agents would not use.
+      name: "a PAT rejected everywhere throws with the reason, selected on the host it bakes",
+      token: "ghp_bad",
       fetchImpl: stubFetch({ accept: () => false }),
-    }),
-  ).rejects.toThrow(/rejects this credential under every known client identity/);
+      genericOnly: true,
+      expected: /rejects this credential under every known client identity/,
+    },
+  ];
+  for (const c of cases) {
+    resetIntegrationIdentityCache();
+    const seen: string[] = [];
+    const urls: string[] = [];
+    const fetchImpl: ProbeFetch = (input, init) => {
+      urls.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      seen.push(new Headers(init?.headers).get(INTEGRATION_ID_HEADER) ?? "<none>");
+      return c.fetchImpl(input, init);
+    };
+    const run = selectDirectIdentityAndHost(c.token, "codex_exec/1", {
+      fixedHost: c.fixedHost,
+      fetchImpl,
+      narrator: { info: () => {} },
+    });
+    if (c.expected instanceof RegExp) await expect(run, c.name).rejects.toThrow(c.expected);
+    else expect(await run, c.name).toEqual(c.expected);
+    if (c.seen !== undefined) expect(seen, c.name).toEqual(c.seen);
+    if (c.genericOnly) {
+      expect(urls.length, c.name).toBeGreaterThan(0);
+      expect(urls.every((u) => u === `${DEFAULT_COPILOT_API_BASE}/models`), c.name).toBe(true);
+    }
+  }
 });
 
 /** A request's header set lower-cased the way `Headers` reports names, Authorization included. */

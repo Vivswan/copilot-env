@@ -9,7 +9,7 @@
 // into the profile file and drops it from config.toml. Foreign tables and the `profile` key are
 // the user's: left in place, reported with the Codex error they cause.
 import { consola } from "consola";
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { codexProviderId } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
@@ -17,6 +17,7 @@ import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { CopilotApiConfig, ensureDict, JSON_PARSE_DIAGNOSTIC } from "../copilot_api/config.ts";
 import { AUTOUPDATE_FILENAME, autoupdateDir } from "../autoupdate/paths.ts";
+import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import {
   CODEX_IDENTITY_NAME,
   type ConfigKey,
@@ -27,7 +28,20 @@ import {
   PROFILE_SETTINGS_DEFAULT_KEY,
 } from "../copilot_api/env_config.ts";
 import { GLOBAL_STATE_KEYS, PROFILE_STATE_KEYS } from "../copilot_api/env_state.ts";
-import { LOCKS_DIR_NAME, resolveRootHome, STATE_STORE_FILENAME } from "../copilot_api/paths.ts";
+import {
+  DEFAULT_PROFILE_DIR,
+  LOCKS_DIR_NAME,
+  LOGS_DIR_NAME,
+  PROFILES_DIR_NAME,
+  PROJECTIONS_FILENAME,
+  PROXY_CONFIG_FILENAME,
+  resolveRootHome,
+  ROOT_HOME_ENV,
+  RUN_DIR_NAME,
+  RUN_STATE_FILENAME,
+  STATE_STORE_FILENAME,
+} from "../copilot_api/paths.ts";
+import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { rootStateStore } from "../copilot_api/state_store.ts";
 import {
   isValidProfileName,
@@ -37,8 +51,9 @@ import {
 } from "../copilot_api/profile.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
-import { readTextResult } from "../utils/fs.ts";
-import { isRecord } from "../utils/json.ts";
+import { isEnoentOrNotdir, readTextResult } from "../utils/fs.ts";
+import { getSanitizedHostname } from "../utils/hostname.ts";
+import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { writeFileReported } from "../utils/report_write.ts";
 import { FENCE_LINES, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
 import type { Migration } from "./index.ts";
@@ -554,8 +569,7 @@ function foldInto(
   }
 }
 
-/** Exported for the migration test and the 3.5.6 home move (which folds the stores it moved in so
- *  its ledger-fed rewrites read them through the one store); `rootHome` isolates. Idempotent: a
+/** Exported for the migration test; `rootHome` isolates. Idempotent: a
  *  home already folded (no old store present) writes nothing. A store that is not a JSON object is
  *  left in place and named: the fold never discards content it cannot carry over. */
 export function foldRootStores(rootHome: string = resolveRootHome()): void {
@@ -647,9 +661,19 @@ export function foldRootStores(rootHome: string = resolveRootHome()): void {
 export function renameAutoupdateThrottle(autoupdateHome: string = autoupdateDir()): void {
   const oldAutoupdate = join(autoupdateHome, "state.json");
   const newAutoupdate = join(autoupdateHome, AUTOUPDATE_FILENAME);
-  if (existsSync(oldAutoupdate) && !existsSync(newAutoupdate)) {
+  if (!existsSync(oldAutoupdate)) return;
+  if (!existsSync(newAutoupdate)) {
     renameSync(oldAutoupdate, newAutoupdate);
     consola.info(`  moved ${oldAutoupdate} -> ${newAutoupdate}`);
+    return;
+  }
+  // Both present: the OLD process of a self-update writes its final throttle at ITS path after the
+  // new binary ran this step, so the old file and its lock sidecar reappear beside the new one. The
+  // re-run removes them; the new file (what the readers use) keeps its content.
+  for (const path of [oldAutoupdate, `${oldAutoupdate}.lock`, `${oldAutoupdate}.lock.oslock`]) {
+    if (!existsSync(path)) continue;
+    rmSync(path, { force: true });
+    consola.info(`  removed ${path} (superseded by ${newAutoupdate})`);
   }
 }
 
@@ -661,5 +685,126 @@ export const v409StateFold: Migration = {
   run: () => {
     foldRootStores();
     renameAutoupdateThrottle();
+  },
+};
+
+// --- the default daemon's home ----------------------------------------------------------
+
+/** The daemon files the pre-5.0.0 reader accepted AT the root as the default daemon's home, frozen
+ *  here: a device-flow login with COPILOT_API_HOME pinned left the proxy's config.json there, and
+ *  the first `agent start` followed it. Any one of them makes the root a daemon home to move (the
+ *  login alone leaves config.json and no `.run`); `.run` goes LAST, so a run interrupted mid-way
+ *  still finds it at the root and resumes. The usage database lives under `.run/<host>/` and travels
+ *  with it; a `copilot-api.sqlite` directly at the root predates 4.0.0 and has no reader. */
+const ROOT_DAEMON_ARTIFACTS: readonly string[] = [
+  PROXY_CONFIG_FILENAME,
+  PROJECTIONS_FILENAME,
+  LOGS_DIR_NAME,
+  RUN_DIR_NAME,
+];
+
+/** The `.run/<host>/.state.json` files that may belong to a live daemon: another host's recording a
+ *  pid (it means nothing on this host, so nothing here can stop it), or any host's that cannot be
+ *  read or parsed. Fail closed: a state this host cannot judge is never "no daemon". This host's
+ *  own readable record is stopTrackedProxy's to judge. */
+function occupiedRunStates(runDir: string, thisHost: string): string[] {
+  let hosts: string[];
+  try {
+    hosts = readdirSync(runDir);
+  } catch (e) {
+    if (isEnoentOrNotdir(e)) return [];
+    throw e;
+  }
+  const occupied: string[] = [];
+  for (const host of hosts) {
+    const file = join(runDir, host, RUN_STATE_FILENAME);
+    const read = readTextResult(file);
+    if (read.kind === "absent") continue;
+    if (read.kind === "text") {
+      const doc = parseJsonRecord(read.text);
+      if (doc !== null && (host === thisHost || typeof doc.pid !== "number")) continue;
+    }
+    occupied.push(file);
+  }
+  return occupied;
+}
+
+/** Exported for the migration test; `stopDaemon` is the seam (the real one stops the daemon tracked
+ *  under the root on this host) and `thisHost` the sanitized hostname. A refused stop, or a run
+ *  state that may be another daemon's (occupiedRunStates), throws before any move, so the files
+ *  never leave a running daemon. A file whose `profiles/default` counterpart already exists is kept
+ *  at the root and named, never merged. */
+export async function moveRootDaemonHome(
+  root: string,
+  stopDaemon: () => Promise<void>,
+  thisHost: string = getSanitizedHostname(),
+): Promise<void> {
+  const present = ROOT_DAEMON_ARTIFACTS.filter((name) => existsSync(join(root, name)));
+  if (present.length === 0) return;
+  const occupied = occupiedRunStates(join(root, RUN_DIR_NAME), thisHost);
+  if (occupied.length > 0) {
+    throw new Error(
+      `a daemon may still run at ${root}: ${occupied.join(", ")} ` +
+        `(a pid recorded by another machine, or a file this one cannot read). Run \`agent stop\` ` +
+        "there, or remove that .run/<host> dir if the machine is gone, then re-run",
+    );
+  }
+  await stopDaemon();
+  // Re-listed after the stop: stopping touches the run state under the root, so a `.run` it left
+  // behind travels too.
+  const moving = ROOT_DAEMON_ARTIFACTS.filter((name) => existsSync(join(root, name)));
+  const target = join(root, PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR);
+  mkdirSync(target, { recursive: true });
+  for (const name of moving) {
+    const from = join(root, name);
+    const to = join(target, name);
+    if (existsSync(to)) {
+      consola.warn(
+        `  both ${from} and ${to} exist - keeping ${to} (the one readers use); delete ${from} by ` +
+          "hand after checking it holds nothing newer",
+      );
+      continue;
+    }
+    renameSync(from, to);
+    consola.info(`  moved ${from} -> ${to}`);
+  }
+}
+
+/** The paths layer resolves the default home through the CURRENT rule (profiles/default), so the
+ *  root daemon is reached the way a daemon reaches its own home: with both env pins aimed at the
+ *  root for the duration of the stop. Restored whatever happens. */
+async function stopRootDaemon(root: string): Promise<void> {
+  const saved = { home: process.env.COPILOT_API_HOME, rootHome: process.env[ROOT_HOME_ENV] };
+  process.env.COPILOT_API_HOME = root;
+  process.env[ROOT_HOME_ENV] = root;
+  try {
+    const result = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, null);
+    if (!result.stopped) {
+      throw new Error(`the daemon (pid ${result.trackedPid}) running at ${root} would not stop`);
+    }
+    // A migration never starts a daemon (that is the launch pipeline's), so a live one stays down
+    // until the next `agent start`; said here because an autoupdate inside `agent start` reaches
+    // this step right after that start spawned it.
+    if (result.signalled) {
+      consola.warn(
+        `  the default daemon at ${root} was stopped for the move; the next \`agent start\` (or a ` +
+          "launcher) starts it under profiles/default",
+      );
+    }
+  } finally {
+    if (saved.home === undefined) delete process.env.COPILOT_API_HOME;
+    else process.env.COPILOT_API_HOME = saved.home;
+    if (saved.rootHome === undefined) delete process.env[ROOT_HOME_ENV];
+    else process.env[ROOT_HOME_ENV] = saved.rootHome;
+  }
+}
+
+export const v409RootDaemonHome: Migration = {
+  version: "4.0.9",
+  layout: true,
+  description: "move a default daemon still running at the root home into profiles/default",
+  run: () => {
+    const root = resolveRootHome();
+    return moveRootDaemonHome(root, () => stopRootDaemon(root));
   },
 };

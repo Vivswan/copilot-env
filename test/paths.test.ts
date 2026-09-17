@@ -44,20 +44,10 @@ test("a fresh root resolves the default daemon home to profiles/default", () => 
   expect(defaultDaemonHome()).toBe(join(dir, "profiles", "default"));
 });
 
-test("a root holding daemon files (a daemon home at the root itself) resolves to the root", () => {
+test("daemon files at the root never redirect the default home: the root is not a daemon home", () => {
   dir = isolateProxyHome("copilot-env-paths-");
-  // Any one daemon-home artifact at the root marks it; the account-wide files alone
-  // (state/config stores) must NOT.
-  writeFileSync(join(dir, "state.json"), "{}\n");
-  expect(defaultDaemonHome()).toBe(join(dir, "profiles", "default"));
   mkdirSync(join(dir, ".run"), { recursive: true });
-  expect(defaultDaemonHome()).toBe(dir);
-});
-
-test("profiles/default wins over lingering root daemon files once it exists", () => {
-  dir = isolateProxyHome("copilot-env-paths-");
-  mkdirSync(join(dir, ".run"), { recursive: true }); // root leftover
-  mkdirSync(join(dir, "profiles", "default"), { recursive: true });
+  writeFileSync(join(dir, "config.json"), "{}\n");
   expect(defaultDaemonHome()).toBe(join(dir, "profiles", "default"));
 });
 

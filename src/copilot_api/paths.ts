@@ -83,18 +83,6 @@ export const LOGS_DIR_NAME = "logs";
 /** ProxyProjectionState's record; lives beside the config.json it describes. */
 export const PROJECTIONS_FILENAME = ".copilot-env-projections.json";
 
-/** Their presence directly at the ROOT home marks a daemon home at the root itself (defaultDaemonHome):
- *  earlier releases ran the proxy against the root as its COPILOT_API_HOME, and its own setup wrote
- *  config.json there. daemon.lock is deliberately absent: a home that ever ran a daemon carries `.run/`
- *  (the CLI creates it before any spawn). */
-const DAEMON_HOME_ARTIFACTS = [
-  PROXY_CONFIG_FILENAME,
-  PROJECTIONS_FILENAME,
-  RUN_DIR_NAME,
-  LOGS_DIR_NAME,
-  SQLITE_DB_FILENAME,
-] as const;
-
 /** Env var carrying the ROOT home inside a profile daemon (set at spawn). */
 export const ROOT_HOME_ENV = "COPILOT_ENV_ROOT_HOME";
 
@@ -115,18 +103,13 @@ export function profileHome(name: ProfileName): string {
 }
 
 /**
- * THE one place the default daemon's home precedence is decided. Inside a daemon, COPILOT_API_HOME IS the
- * pinned home; nothing is derived.
- *   `profiles/default` exists                -> it
- *   root holds a DAEMON_HOME_ARTIFACTS entry  -> the root: a daemon home at the root itself
- *   otherwise                                 -> `profiles/default`
+ * THE one place the default daemon's home is decided. Inside a daemon, COPILOT_API_HOME IS the pinned
+ * home; nothing is derived. Outside one it is `profiles/default`, whatever else the root holds: the root
+ * anchors the account-wide files and is never a daemon home.
  */
 export function defaultDaemonHome(): string {
   if (process.env[ROOT_HOME_ENV]) return resolveHome();
-  const root = resolveHome();
-  const migrated = join(root, PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR);
-  if (existsSync(migrated)) return migrated;
-  return DAEMON_HOME_ARTIFACTS.some((name) => existsSync(join(root, name))) ? root : migrated;
+  return join(resolveHome(), PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR);
 }
 
 /** The sweep and corroboration sites' one list producer, so no caller enumerates homes with a different rule. */

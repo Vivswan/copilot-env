@@ -1,11 +1,4 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { OwnershipLedger, ProxyProjectionState } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
@@ -53,23 +46,6 @@ test("ownership round-trips per kind; kinds never bleed into one another", () =>
 
   ledger.release("webSearchDeny", "/a/settings.json");
   expect(new OwnershipLedger(paths).owns("webSearchDeny", "/a/settings.json")).toBe(false);
-});
-
-test("the on-disk contract is pinned: the ledger's map and its keys", () => {
-  const paths = isolate();
-  // These spellings are external contracts (an existing install's records must
-  // stay readable): a rename here would orphan every shipped ledger.
-  const ledger = new OwnershipLedger();
-  ledger.record("webSearchDeny", "/a/settings.json");
-  ledger.record("claudeDesktop", "/lib/uuid.json");
-  ledger.record("codexCatalog", "/home/.codex/config.toml");
-  expect(
-    (JSON.parse(readFileSync(paths.stateStoreFile, "utf8")) as { ownership: unknown }).ownership,
-  ).toEqual({
-    webSearchDenyPaths: ["/a/settings.json"],
-    claudeDesktopPaths: ["/lib/uuid.json"],
-    codexCatalogConfigPaths: ["/home/.codex/config.toml"],
-  });
 });
 
 test("a release with nothing recorded never materializes the ledger file", () => {

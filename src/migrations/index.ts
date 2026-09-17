@@ -8,7 +8,6 @@ import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { disableConsolaTimestamps } from "../utils/logger.ts";
 import { type SemverString, stripV, toSemverString, versionLessThan } from "../utils/semver.ts";
-import { v356, v356ClaudeWiring, v356CodexWiring, v356ShellFence } from "./3.5.6.ts";
 import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence } from "./4.0.0.ts";
 import { v402DesktopHelpers, v402GhAccountPin, v402RootLayout } from "./4.0.2.ts";
 import {
@@ -16,6 +15,7 @@ import {
   v409IdentityCache,
   v409IntegrationIdPin,
   v409LaunchersBlock,
+  v409RootDaemonHome,
   v409StateFold,
   v409StaticKeyScope,
 } from "./4.0.9.ts";
@@ -37,14 +37,9 @@ export interface Migration {
 }
 
 /** Ascending version order; a release with several INDEPENDENT fix-ups registers them all under
- *  its version, and registry order is their run order within it. No step predates the deno
- *  rewrite: a pre-rewrite install runs the OLD bun-based updater, which cannot load this file,
- *  so no such step could be reached. */
+ *  its version, and registry order is their run order within it. The earliest step leaves 4.0.0:
+ *  an install older than that is not migrated (reinstall). */
 const MIGRATIONS: Migration[] = [
-  v356,
-  v356ShellFence,
-  v356CodexWiring,
-  v356ClaudeWiring,
   v400ShellFence,
   v400CodexWiring,
   v400ClaudeWiring,
@@ -53,6 +48,7 @@ const MIGRATIONS: Migration[] = [
   v402RootLayout,
   v402DesktopHelpers,
   v409StateFold,
+  v409RootDaemonHome,
   v409CodexProfileFiles,
   v409IntegrationIdPin,
   v409StaticKeyScope,

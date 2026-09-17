@@ -25,7 +25,7 @@ flowchart TD
   direct["Direct: the agent config names the Copilot host and a resolver command"]
   proxy["proxy: the agent config names the local daemon, which holds the token in memory"]
   daemon["src/copilot_api/launch.ts<br>resolveLaunchCredential() DaemonLaunchAuth"]
-  proxycfg[("~/.local/share/copilot-env/profiles/{name}/config.json<br>the daemon's own auth.apiKeys<br>the default's is ~/.local/share/copilot-env/profiles/default, or the root home where a daemon first ran there")]
+  proxycfg[("~/.local/share/copilot-env/profiles/{name}/config.json<br>the daemon's own auth.apiKeys<br>the default's is ~/.local/share/copilot-env/profiles/default")]
   gh[["gh auth token, spawned for a gh-cli slot"]]
   claudejson[("~/.claude.json")]
   codexw["src/codex/config.ts<br>configureCodexConfig()"]
@@ -382,7 +382,6 @@ graph TD
   migrations --> claude
   migrations --> codex
   migrations --> copilot_api
-  migrations --> proxy_float
   migrations --> shell
   migrations --> utils
   scripts --> copilot_api

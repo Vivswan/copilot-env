@@ -13,12 +13,12 @@ import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import {
   applyInstallPlan,
+  bootstrapBinaryPaths,
   buildInstallPlan,
   BUNDLED_ONLY_ASSETS,
   CHECKOUT_MARKERS,
   CURRENT_LINK,
   currentLinkPath,
-  flatBinaryResiduePaths,
   INSTALL_ROOT_ENV,
   type InstallOptions,
   type InstallPlan,
@@ -31,7 +31,7 @@ import {
   POWERSHELL_CURRENT_SHIM,
   POWERSHELL_SHIM,
   readCurrentVersionName,
-  removeFlatBinaryResidue,
+  removeBootstrapBinary,
   removeVersionDirsExcept,
   versionDirName,
   VERSIONS_DIR,
@@ -330,7 +330,7 @@ describe("the versioned full-install plan", () => {
     const binarySource = writeFakeBinary(join(dest, "bin", installedBinaryName()), "BINARY");
     const plan = versionedPlan(QUIET, binarySource);
     if (plan.kind !== "versioned" || plan.binary === null) throw new Error("expected a binary");
-    expect(plan.flatBinaryRemovals).toEqual([binarySource]);
+    expect(plan.bootstrapBinaryRemovals).toEqual([binarySource]);
 
     const created = [
       ...plan.copies.map((c) => c.to),
@@ -353,7 +353,7 @@ describe("the versioned full-install plan", () => {
       ...dirs.map((d) => `created -> ${d}`),
       ...created.map((f) => `created -> ${f}`),
       `linked -> ${plan.currentLink.path} (to ${plan.currentLink.target})`,
-      ...plan.flatBinaryRemovals.map((p) => `deleted -> ${p}`),
+      ...plan.bootstrapBinaryRemovals.map((p) => `deleted -> ${p}`),
     ];
 
     deferWriteReports();
@@ -507,12 +507,12 @@ describe("the current link primitives", () => {
     removeVersionDirsExcept(join(root, "nowhere"), new Set());
   });
 
-  test("removeFlatBinaryResidue sweeps the bootstrap binary only", () => {
+  test("removeBootstrapBinary sweeps the bootstrap binary only", () => {
     const name = installedBinaryName();
     mkdirSync(join(dest, "bin"), { recursive: true });
     writeFileSync(join(dest, "bin", name), "bootstrap");
     writeFileSync(join(dest, "bin", "agent"), "shim");
-    removeFlatBinaryResidue(flatBinaryResiduePaths(dest));
+    removeBootstrapBinary(bootstrapBinaryPaths(dest));
     expect(existsSync(join(dest, "bin", name))).toBe(false);
     expect(existsSync(join(dest, "bin", "agent"))).toBe(true);
   });

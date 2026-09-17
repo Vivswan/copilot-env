@@ -72,7 +72,7 @@ test("no-unreported-fs-writes: scoped to src/, minus the seam, the lock layer an
   expect(lint(raw, "src/utils/report_write.ts")).toEqual([]);
   expect(lint(raw, "src/utils/file_lock.ts")).toEqual([]);
   expect(lint(raw, "src/scripts/log_mute_preload.ts")).toEqual([]);
-  expect(lint(raw, "src/migrations/3.5.6.ts")).toEqual([]);
+  expect(lint(raw, "src/migrations/4.0.0.ts")).toEqual([]);
   // Nested src paths and the windows-style separator are still in scope.
   expect(lint(raw, "src/scripts/inference_activity.ts")).toHaveLength(1);
   expect(lint(raw, "src\\install\\installer.ts")).toHaveLength(1);

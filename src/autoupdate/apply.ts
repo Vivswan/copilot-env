@@ -32,13 +32,13 @@ import {
   parseChecksums,
 } from "../install/checksums.ts";
 import {
+  bootstrapBinaryPaths,
   currentLinkPath,
-  flatBinaryResiduePaths,
   INSTALL_ROOT_ENV,
   isCheckoutShapedRoot,
   pointCurrentAt,
   readCurrentVersionName,
-  removeFlatBinaryResidue,
+  removeBootstrapBinary,
   removeVersionDirsExcept,
   runPostFlipMigrations,
   versionDirName,
@@ -452,7 +452,7 @@ export async function applyUpdate(
   );
   removeVersionDirsExcept(top, keep);
   // The bootstrap binary a Windows install could not unlink while it was the running image.
-  removeFlatBinaryResidue(flatBinaryResiduePaths(top));
+  removeBootstrapBinary(bootstrapBinaryPaths(top));
 
   logger.success(
     `Updated copilot-env ${current} -> ${target.tag}. Restart your agents to pick it up.`,

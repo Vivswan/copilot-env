@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify, TomlDate } from "smol-toml";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
@@ -6,13 +6,6 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import {
-  moveDataHome,
-  v356,
-  v356ClaudeWiring,
-  v356CodexWiring,
-  v356ShellFence,
-} from "../src/migrations/3.5.6.ts";
 import {
   dropLegacyAutoupdateFlag,
   fenceUnfencedBlocks,
@@ -40,6 +33,7 @@ import {
   dropSlotIdentityCache,
   foldRootStores,
   moveCodexProfileTables,
+  moveRootDaemonHome,
   renameAutoupdateThrottle,
   scopeStaticKeyBoolean,
   stripLaunchersBlocks,
@@ -47,20 +41,17 @@ import {
   v409IdentityCache,
   v409IntegrationIdPin,
   v409LaunchersBlock,
+  v409RootDaemonHome,
   v409StateFold,
   v409StaticKeyScope,
 } from "../src/migrations/4.0.9.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
-import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
-import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
-import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { MARKER, MARKER_END } from "../src/shell/integration.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
 import { consola } from "consola";
 import type { SemverString } from "../src/utils/semver.ts";
-import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, writeRunState } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
 // A synthetic registry: the real migrations' side effects never run here.
 const mig = (version: SemverString): Migration => ({
@@ -107,20 +98,17 @@ test("dueMigrations selects [from, to) in ascending order over the registry", ()
   }
 });
 
-test("the shipped registry holds exactly the named fix-ups in order, home move first", () => {
+test("the shipped registry holds exactly the named fix-ups in order, layout steps first", () => {
   // Pinned BY IDENTITY and in order: a count or a list of version strings could stay green while a
   // same-version fix-up was dropped in a merge. Each position has a reason:
-  //   layout steps first (home move, store rename, the state.json fold)
+  //   layout steps first (store rename, the state.json fold, the root daemon home)
   //                                                      -> later steps read stores at the new paths and
   //                                                         through the new preference shape
   //   Desktop helper move, then the Codex profile files  -> each needs the 4.0.0 rewrites done
   expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
-    v356,
     v402RootLayout,
     v409StateFold,
-    v356ShellFence,
-    v356CodexWiring,
-    v356ClaudeWiring,
+    v409RootDaemonHome,
     v400ShellFence,
     v400CodexWiring,
     v400ClaudeWiring,
@@ -133,8 +121,7 @@ test("the shipped registry holds exactly the named fix-ups in order, home move f
     v409IdentityCache,
     v409LaunchersBlock,
   ]);
-  // An install already on 4.0.0 (whose readers tolerated the 3.5.6 shapes) still gets
-  // every wiring rewrite on its way to the next release.
+  // A 4.0.0 install gets every wiring rewrite on its way to the next release.
   expect(dueMigrations("4.0.0", "4.0.1")).toEqual([
     v400ShellFence,
     v400CodexWiring,
@@ -147,7 +134,7 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
   dir = isolateProxyHome("copilot-migrate-pin-");
   const state = new CopilotEnvState();
   const solo = {
-    accounts: [{ host: "github.com", login: "vivswan", active: true, source: "keyring" }],
+    accounts: [{ host: "github.com", login: "octocat", active: true, source: "keyring" }],
   };
   state.setCredential(null, { kind: "gh-cli", ghUser: null });
   state.commitProfile(WORK, { credential: { kind: "gh-cli", ghUser: null }, mode: "direct" });
@@ -157,9 +144,9 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
     resolvable.push(login);
     return true;
   });
-  expect(resolvable).toEqual(["vivswan"]);
-  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: "vivswan" });
-  expect(state.readCredential(WORK)).toEqual({ kind: "gh-cli", ghUser: "vivswan" });
+  expect(resolvable).toEqual(["octocat"]);
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: "octocat" });
+  expect(state.readCredential(WORK)).toEqual({ kind: "gh-cli", ghUser: "octocat" });
   expect(state.readCredential(OTHER)).toEqual({ kind: "gh-cli", ghUser: "kept" });
   pinSoleGhAccount(() => {
     throw new Error("nothing left to pin - the look must not run");
@@ -619,243 +606,27 @@ test("runMigrations is best-effort: a failing step never stops the rest", async 
   expect(ran).toEqual(["first", "third"]);
 });
 
-// --- the 3.5.6 data-home move (injectable core; real dirs never touched) --------
-
-interface MoveFixture {
-  legacy: string;
-  next: string;
-  codexConfig: string;
-  desktopEntry: string;
-  stopped: { count: number };
-  run: () => Promise<void>;
-}
-
-function moveFixture(): MoveFixture {
-  dir = tempDir("copilot-migrate-");
-  delete process.env.COPILOT_API_HOME; // the unpinned path is the one under test
-  const legacy = join(dir, "copilot-api");
-  const next = join(dir, "copilot-env");
-  mkdirSync(legacy, { recursive: true });
-  writeFileSync(join(legacy, "config.json"), "{}\n");
-  const desktopEntry = join(dir, "entry.json");
-  // The stores ride the move under their pre-4.0.2 names, and the move must rename them BEFORE its
-  // ledger-fed rewrites: the entry below is only discoverable through the renamed and folded store (the ownership section of state.json).
-  writeFileSync(
-    join(legacy, ".copilot-env-ownership.json"),
-    `${JSON.stringify({ claudeDesktopPaths: [desktopEntry] })}\n`,
-  );
-  // The float record pins its deno cache by absolute path into the home.
-  writeResolvedVersionRecord(legacy, "2.3.3", 1_700_000_000_000, join(legacy, "proxy", "deno"));
-  const codexConfig = join(dir, "codex-config.toml");
-  writeFileSync(
-    codexConfig,
-    `model_provider = "copilot-env"\nmodel_catalog_json = "${
-      join(legacy, "codex-model-catalog.json").replaceAll("\\", "\\\\")
-    }"\n`,
-  );
-  writeFileSync(
-    desktopEntry,
-    `${
-      JSON.stringify({
-        "inferenceCredentialHelper": join(legacy, "claude-desktop-token.sh"),
-        "userKey": "keep",
-      })
-    }\n`,
-  );
-  const stopped = { count: 0 };
-  return {
-    legacy,
-    next,
-    codexConfig,
-    desktopEntry,
-    stopped,
-    run: () =>
-      moveDataHome({
-        legacyHome: legacy,
-        nextHome: next,
-        stopDaemons: () => {
-          stopped.count++;
-          return Promise.resolve();
-        },
-        codexConfigPaths: () => [codexConfig],
-        // The production binding: the ledger reader knows ONLY the renamed store, readable at the
-        // moved home once the in-move rename happened. Pinning the home at INVOKE time mirrors the
-        // real thunk.
-        desktopEntryPaths: () => {
-          process.env.COPILOT_API_HOME = next;
-          return new OwnershipLedger().ownedPaths("claudeDesktop");
-        },
-      }),
-  };
-}
-
-test("3.5.6 move: daemons stopped, dir renamed, both artifact kinds repointed", async () => {
-  const fx = moveFixture();
-  await fx.run();
-  expect(fx.stopped.count).toBe(1);
-  expect(existsSync(fx.legacy)).toBe(false);
-  expect(existsSync(join(fx.next, "config.json"))).toBe(true);
-  // The store rename AND the state.json fold happened INSIDE the move (before its ledger-fed
-  // rewrites, which read the ledger through the one store).
-  expect(existsSync(join(fx.next, "state.json"))).toBe(true);
-  expect(existsSync(join(fx.next, "ownership.json"))).toBe(false);
-  expect(existsSync(join(fx.next, ".copilot-env-ownership.json"))).toBe(false);
-  expect(readFileSync(fx.codexConfig, "utf8")).toContain(
-    join(fx.next, "codex-model-catalog.json").replaceAll("\\", "\\\\"),
-  );
-  const entry = JSON.parse(readFileSync(fx.desktopEntry, "utf8")) as Record<string, unknown>;
-  expect(entry["inferenceCredentialHelper"]).toBe(join(fx.next, "claude-desktop-token.sh"));
-  expect(entry["userKey"]).toBe("keep"); // foreign keys survive
-  // The float record's deno_dir followed the home; version/timestamp untouched.
-  expect(readResolvedVersionRecord(fx.next)).toEqual({
-    version: "2.3.3",
-    resolvedAtMs: 1_700_000_000_000,
-    denoDir: join(fx.next, "proxy", "deno"),
-  });
-
-  await fx.run();
-  expect(fx.stopped.count).toBe(1);
-});
-
-test("3.5.6 move: a re-run resuming after a crash mid-move still renames the stores first", async () => {
-  const fx = moveFixture();
-  // The crash point: the directory rename landed, the store rename did not.
-  renameSync(fx.legacy, fx.next);
-  await fx.run();
-  expect(fx.stopped.count).toBe(0);
-  expect(existsSync(join(fx.next, "state.json"))).toBe(true);
-  expect(existsSync(join(fx.next, ".copilot-env-ownership.json"))).toBe(false);
-  // The ledger-fed repoint found its entry through the renamed store.
-  const entry = JSON.parse(readFileSync(fx.desktopEntry, "utf8")) as Record<string, unknown>;
-  expect(entry["inferenceCredentialHelper"]).toBe(join(fx.next, "claude-desktop-token.sh"));
-});
-
-test("3.5.6 move: a stopDaemons refusal aborts the move -- the legacy home is untouched", async () => {
-  const fx = moveFixture();
-  // The production stopDaemons throws for a daemon it tried to stop and could not confirm stopped
-  // (a kill survivor, or a pid it could not corroborate), so the move never proceeds over such a
-  // writer. A lock holder with no recorded pid is not tried, and not refused.
-  await expect(
-    moveDataHome({
-      legacyHome: fx.legacy,
-      nextHome: fx.next,
-      stopDaemons: () =>
-        Promise.reject(new Error("a daemon (pid 123) under the legacy home would not stop")),
-      codexConfigPaths: () => [fx.codexConfig],
-      desktopEntryPaths: () => [fx.desktopEntry],
-    }),
-  ).rejects.toThrow("would not stop");
-  expect(existsSync(join(fx.legacy, "config.json"))).toBe(true);
-  expect(existsSync(fx.next)).toBe(false);
-});
-
-test(
-  "3.5.6 move: the REAL stopLegacyDaemons guard aborts on a refused stop (subprocess)",
-  async () => {
-    dir = tempDir("copilot-migrate-guard-");
-    const home = join(dir, "home");
-    // LEGACY_HOME is frozen from homedir() at module load, so the real guard is only
-    // reachable in a subprocess whose HOME points at the sandbox BEFORE the import.
-    const legacy = join(home, ".local", "share", "copilot-api");
-    const next = join(home, ".local", "share", "copilot-env");
-    mkdirSync(legacy, { recursive: true });
-    writeFileSync(join(legacy, "config.json"), "{}\n");
-    // The refusal, staged for real: THIS process holds legacy's daemon.lock (the marker names our
-    // pid, alive but nothing like a daemon) and legacy's run state tracks the same pid, so the
-    // child's stopTrackedProxy reads lock-alive, cannot corroborate, and refuses (stopped: false).
-    expect(acquireDaemonLockForLife(legacy, { waitMs: 0 })).toBe(true);
-    const savedApiHome = process.env.COPILOT_API_HOME;
-    process.env.COPILOT_API_HOME = legacy;
-    try {
-      writeRunState({ pid: process.pid, port: 4141 });
-    } finally {
-      if (savedApiHome === undefined) delete process.env.COPILOT_API_HOME;
-      else process.env.COPILOT_API_HOME = savedApiHome;
-    }
-    const worker = join(dir, "worker.ts");
-    writeFileSync(
-      worker,
-      `import { v356 } from ${importSpecifier(join(ROOT, "src", "migrations", "3.5.6.ts"))};\n` +
-        "try {\n" +
-        "  await v356.run();\n" +
-        "  console.log('guard-missed: the move ran');\n" +
-        "} catch (e) {\n" +
-        "  console.log(`aborted: ${(e as Error).message}`);\n" +
-        "}\n",
-    );
-    // Full parent env (Windows children need SystemRoot etc.) with HOME repointed and
-    // COPILOT_API_HOME removed -- set, it would opt the whole migration out.
-    const env: Record<string, string> = {
-      ...Deno.env.toObject(),
-      HOME: home,
-      USERPROFILE: home,
-    };
-    delete env.COPILOT_API_HOME;
-    delete env.COPILOT_ENV_ROOT_HOME;
-    try {
-      const child = spawnChild(Deno.execPath(), {
-        args: [...denoRunArgs(), worker],
-        env,
-        clearEnv: true,
-        stdout: "piped",
-        stderr: "piped",
-      });
-      const output = await child.output();
-      expect(new TextDecoder().decode(output.stdout)).toContain("would not stop");
-      expect(existsSync(join(legacy, "config.json"))).toBe(true);
-      expect(existsSync(next)).toBe(false);
-    } finally {
-      releaseFileLock(daemonLockPath(legacy));
-    }
-  },
-  60_000,
-);
-
-test("3.5.6 move: both dirs existing is a refusal, never a merge", async () => {
-  const fx = moveFixture();
-  mkdirSync(fx.next, { recursive: true });
-  await fx.run();
-  expect(existsSync(join(fx.legacy, "config.json"))).toBe(true); // untouched
-  expect(fx.stopped.count).toBe(0);
-  // The codex value still points at the (still live) legacy home.
-  expect(readFileSync(fx.codexConfig, "utf8")).toContain("copilot-api");
-});
-
-test("3.5.6 move: a pinned COPILOT_API_HOME opts the machine out entirely", async () => {
-  const fx = moveFixture();
-  process.env.COPILOT_API_HOME = fx.legacy;
-  await fx.run();
-  expect(existsSync(fx.legacy)).toBe(true);
-  expect(fx.stopped.count).toBe(0);
-});
-
-test("3.5.6 move: foreign helper paths are never repointed", async () => {
-  const fx = moveFixture();
-  writeFileSync(
-    fx.desktopEntry,
-    `${JSON.stringify({ "inferenceCredentialHelper": "/opt/own/helper.sh" })}\n`,
-  );
-  await fx.run();
-  const entry = JSON.parse(readFileSync(fx.desktopEntry, "utf8")) as Record<string, unknown>;
-  expect(entry["inferenceCredentialHelper"]).toBe("/opt/own/helper.sh");
-});
-
 // --- 4.0.9: Codex named profiles -----------------------------------------------------
 
 /** consola's lines at `level` for the span of `run`, restored after; the fix-ups report what they
  *  left and what they dropped. */
-function warningsDuring(run: () => void, level: "warn" | "info" = "warn"): string[] {
+function captureConsola(level: "warn" | "info"): { lines: string[]; restore: () => void } {
   const lines: string[] = [];
   const original = consola[level];
   consola[level] = ((...args: unknown[]) => {
     lines.push(args.map(String).join(" "));
   }) as typeof consola.warn;
+  return { lines, restore: () => void (consola[level] = original) };
+}
+
+function warningsDuring(run: () => void, level: "warn" | "info" = "warn"): string[] {
+  const captured = captureConsola(level);
   try {
     run();
   } finally {
-    consola[level] = original;
+    captured.restore();
   }
-  return lines;
+  return captured.lines;
 }
 
 test("4.0.9 fold of a flat preferences.json: the camelCase keys land grouped, the four profile keys in every profile's map", () => {
@@ -1305,4 +1076,105 @@ test("4.0.9 state fold: the three stores become one state.json (global, profiles
   expect(existsSync(join(home, "ownership.json"))).toBe(true);
   expect(existsSync(join(home, "preferences.json"))).toBe(true);
   expect(readFileSync(stateFile, "utf8")).toBe(bytes);
+});
+
+test("4.0.9 throttle rename: an old state.json back beside autoupdate.json is removed with its lock and named; the new file is untouched", () => {
+  dir = tempDir("copilot-mig-throttle-");
+  const autoupdateHome = join(dir, ".autoupdate");
+  mkdirSync(autoupdateHome, { recursive: true });
+  const kept = `${JSON.stringify({ lastCheckMs: 9 })}\n`;
+  writeFileSync(join(autoupdateHome, "autoupdate.json"), kept);
+  writeFileSync(join(autoupdateHome, "state.json"), `${JSON.stringify({ lastCheckMs: 7 })}\n`);
+  writeFileSync(join(autoupdateHome, "state.json.lock"), "");
+  const said = warningsDuring(() => renameAutoupdateThrottle(autoupdateHome), "info");
+  expect(said).toHaveLength(2);
+  expect(said.join("\n")).toContain(join(autoupdateHome, "state.json.lock"));
+  expect(existsSync(join(autoupdateHome, "state.json"))).toBe(false);
+  expect(existsSync(join(autoupdateHome, "state.json.lock"))).toBe(false);
+  expect(readFileSync(join(autoupdateHome, "autoupdate.json"), "utf8")).toBe(kept);
+});
+
+test("4.0.9 root daemon home: a default daemon at the root is stopped and its files move into profiles/default, each named; a refused stop or another host's tracked pid moves nothing; a leftover beside its moved twin is kept and named", async () => {
+  dir = tempDir("copilot-mig-root-home-");
+  const root = dir;
+  const runState = join(".run", "host-a", ".state.json");
+  mkdirSync(join(root, ".run", "host-a"), { recursive: true });
+  writeFileSync(join(root, runState), `${JSON.stringify({ pid: 4242 })}\n`);
+  writeFileSync(join(root, "config.json"), "{}\n");
+  writeFileSync(join(root, "state.json"), "{}\n"); // account-wide: stays at the root
+  const untouched = () => {
+    expect(existsSync(join(root, runState))).toBe(true);
+    expect(existsSync(join(root, "profiles", "default"))).toBe(false);
+  };
+  // A daemon that will not stop: nothing moves, the step fails for the runner to name the re-run.
+  await expect(
+    moveRootDaemonHome(root, () => Promise.reject(new Error("would not stop")), "host-a"),
+  )
+    .rejects.toThrow("would not stop");
+  untouched();
+  // Another machine's daemon over a shared home: its pid cannot be stopped from here, so the move
+  // refuses and names that host's state file; the local stop is never attempted.
+  await expect(moveRootDaemonHome(root, () => Promise.reject(new Error("must not stop")), "host-b"))
+    .rejects.toThrow(join(root, runState));
+  untouched();
+
+  let stops = 0;
+  const captured = captureConsola("info");
+  try {
+    await moveRootDaemonHome(root, () => {
+      stops++;
+      return Promise.resolve();
+    }, "host-a");
+  } finally {
+    captured.restore();
+  }
+  expect(stops).toBe(1);
+  const target = join(root, "profiles", "default");
+  for (const moved of [runState, "config.json"]) {
+    expect(existsSync(join(root, moved))).toBe(false);
+    expect(existsSync(join(target, moved))).toBe(true);
+  }
+  expect(existsSync(join(root, "state.json"))).toBe(true);
+  expect(captured.lines).toHaveLength(2);
+  // `.run` goes last, so an interrupted run still finds the daemon home at the root and resumes.
+  expect(captured.lines[1]).toContain(`${join(root, ".run")} -> ${join(target, ".run")}`);
+  // A leftover beside its moved twin is never merged over it: kept at the root and named.
+  writeFileSync(join(root, "config.json"), "{}\n");
+  const kept = captureConsola("warn");
+  try {
+    await moveRootDaemonHome(root, () => Promise.resolve(), "host-a");
+  } finally {
+    kept.restore();
+  }
+  expect(kept.lines).toHaveLength(1);
+  expect(kept.lines[0]).toContain(`keeping ${join(target, "config.json")}`);
+  expect(existsSync(join(root, "config.json"))).toBe(true);
+});
+
+test("4.0.9 root daemon home: a .run/<host>/.state.json that cannot be parsed is never 'no daemon': the move refuses and names the file", async () => {
+  dir = tempDir("copilot-mig-root-home-");
+  const file = join(dir, ".run", "host-a", ".state.json");
+  mkdirSync(join(dir, ".run", "host-a"), { recursive: true });
+  writeFileSync(file, '{"pid":');
+  writeFileSync(join(dir, "config.json"), "{}\n");
+  await expect(moveRootDaemonHome(dir, () => Promise.reject(new Error("must not stop")), "host-b"))
+    .rejects.toThrow(file);
+  expect(existsSync(join(dir, "config.json"))).toBe(true);
+  expect(existsSync(join(dir, "profiles", "default"))).toBe(false);
+});
+
+test("4.0.9 root daemon home: a login's config.json at the root with no .run still moves into profiles/default", async () => {
+  dir = tempDir("copilot-mig-root-home-");
+  writeFileSync(join(dir, "config.json"), '{"auth":{"apiKeys":["k"]}}\n');
+  const captured = captureConsola("info");
+  try {
+    await moveRootDaemonHome(dir, () => Promise.resolve(), "host-a");
+  } finally {
+    captured.restore();
+  }
+  expect(captured.lines).toHaveLength(1);
+  expect(existsSync(join(dir, "config.json"))).toBe(false);
+  expect(readFileSync(join(dir, "profiles", "default", "config.json"), "utf8")).toBe(
+    '{"auth":{"apiKeys":["k"]}}\n',
+  );
 });

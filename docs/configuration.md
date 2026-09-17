@@ -36,7 +36,9 @@ A `profile-default` row names where its value came from. Set without `--profile`
 profile itself it is starred `(overrides global <v>)`, or `(overrides the default <v>)` when the global map has no
 value; set at neither level it is unstarred.
 
-The key names below are also the stored JSON keys in `~/.local/share/copilot-env/state.json`, under `global` and `profiles.<name>`, beside the state keys the commands write into the same maps (a profile's credential slot, the Codex catalog throttle). Which a key is, is a per-key fact: `agent config --set` and `--del` refuse a state key by name, naming the command that owns it. The file's third map, `ownership`, is the wiring commands' ledger of the files they wrote.
+The key names below are also the stored JSON keys in `~/.local/share/copilot-env/state.json`, under `global` and `profiles.<name>`, beside the state keys the commands write into the same maps (a profile's credential slot, the Codex catalog throttle).
+
+Which a key is, is a per-key fact: `agent config --set` and `--del` refuse a state key by name, naming the command that owns it. The file's third map, `ownership`, is the wiring commands' ledger of the files they wrote.
 
 ## profile
 

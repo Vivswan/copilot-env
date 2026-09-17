@@ -174,7 +174,7 @@ function codexOtherLine(
       return {
         line:
           `config.toml carries a [profiles.${profile}] table, which Codex no longer supports (\`codex --profile ${profile}\` refuses to start)`,
-        repair: legacyTableRepair(basename(profileFile)),
+        repair: profileTableRepair(basename(profileFile)),
       };
     case "custom":
       return null;
@@ -187,7 +187,7 @@ function codexOtherLine(
  *  range (the runner's selection rule, src/migrations/index.ts; its module is not imported here
  *  because it loads the install-state .env at import), so that install gets no command to run.
  *  `agent update` is not the route: an already-updated install runs no migration. */
-export function legacyTableRepair(
+export function profileTableRepair(
   profileFile: string,
   installed: string = packageVersion(),
 ): string {

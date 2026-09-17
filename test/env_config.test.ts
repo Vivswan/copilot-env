@@ -306,11 +306,11 @@ test("resolveSetting: flag > profile > global > default, each layer only where t
   cfg.set({ "daemon.port": 4242 });
   expect(at("daemon.port", WORK)).toEqual({ value: 4242, source: "global" });
   writeFileSync(
-    new CopilotApiPaths().envConfigFile,
+    new CopilotApiPaths().stateStoreFile,
     JSON.stringify({ global: {}, profiles: { work: { "daemon.port": 9999 } } }),
   );
   expect(at("daemon.port", WORK)).toEqual({ value: 4141, source: "default" });
-  expect(cfg.read().profiles.work).toEqual({});
+  expect(cfg.read().profiles).not.toHaveProperty("work"); // stripped of every setting: no section
 });
 
 test("runConfig --profile: a profile key lands in that profile's section, never the global map; a global key refuses --profile by scope", () => {
@@ -505,13 +505,13 @@ test("update.auto: stored else default, degraded read like daemon.auto-start (th
   runConfig({ del: "update.auto" });
   expect(cfg.autoUpdateEnabled()).toBe(false);
   // An unreadable store degrades to "off" (the preflight must never act on an unproven on).
-  chmodSync(new CopilotApiPaths().envConfigFile, 0o000);
+  chmodSync(new CopilotApiPaths().stateStoreFile, 0o000);
   try {
     if (process.platform !== "win32" && process.getuid?.() !== 0) {
       expect(cfg.autoUpdateEnabled()).toBe(false);
     }
   } finally {
-    chmodSync(new CopilotApiPaths().envConfigFile, 0o600);
+    chmodSync(new CopilotApiPaths().stateStoreFile, 0o600);
   }
 });
 
@@ -1257,7 +1257,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     tmpHome();
     const cfg = new CopilotEnvConfig();
     cfg.set({ "daemon.auto-start": true, "daemon.idle-timeout": 30, "daemon.port": 5555 });
-    const file = new CopilotApiPaths().envConfigFile;
+    const file = new CopilotApiPaths().stateStoreFile;
     chmodSync(file, 0o000);
     try {
       expect(() => cfg.read()).toThrow("refusing to treat an unreadable store as empty");

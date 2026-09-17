@@ -19,7 +19,7 @@ import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 // reports. The port pin (4199) keeps a real proxy on 4141 out of the picture.
 function isolatedEnv(extra: Record<string, string> = {}): Record<string, string> {
   const home = tempDir("copilot-health-");
-  writeFileSync(join(home, "preferences.json"), JSON.stringify({ port: 4199 }));
+  writeFileSync(join(home, "state.json"), JSON.stringify({ global: { "daemon.port": 4199 } }));
   return {
     ...process.env,
     CONSOLA_LEVEL: "5",
@@ -118,7 +118,7 @@ test("cli.ts config --set writes only inside the data home, so it names no file"
   // The preference store is copilot-env's own bookkeeping: written, never reported.
   const home = tempDir("copilot-report-");
   const env = isolatedEnv({ COPILOT_API_HOME: home, HOME: home, USERPROFILE: home });
-  const store = join(home, "preferences.json");
+  const store = join(home, "state.json");
 
   const set = runCli(["config", "--set", "daemon.port", "4199"], { env });
   expect(set.exitCode).toBe(0);
@@ -377,8 +377,13 @@ test("agent claude reconciles the Desktop library after its write; --check repor
     `${JSON.stringify({ entries: [{ id: "old", name: "copilot-env: old" }] })}\n`,
   );
   writeFileSync(
-    join(env.COPILOT_API_HOME!, "ownership.json"),
-    `${JSON.stringify({ claudeDesktopPaths: [join(library, "old.json")] })}\n`,
+    join(env.COPILOT_API_HOME!, "state.json"),
+    `${
+      JSON.stringify({
+        global: { "daemon.port": 4199 },
+        ownership: { claudeDesktopPaths: [join(library, "old.json")] },
+      })
+    }\n`,
   );
 
   // Before any wiring: --check names the leftover as drift, on the proxy/none exit code.
@@ -682,10 +687,10 @@ function seededProfileEnv(): Record<string, string> {
   const root = tempDir("copilot-health-profile-");
   const home = join(root, "api-home");
   mkdirSync(home, { recursive: true });
-  writeFileSync(join(home, "preferences.json"), JSON.stringify({ port: 4199 }));
   writeFileSync(
-    join(home, "credentials.json"),
+    join(home, "state.json"),
     JSON.stringify({
+      global: { "daemon.port": 4199 },
       "profiles": {
         "p": { "githubToken": "fake-profile-token", "authProvider": "gh-token", "mode": "proxy" },
       },
@@ -929,7 +934,7 @@ test("update --auto-status reports the auto-update key honestly, on and off (off
   for (const [autoUpdate, word] of [[true, "enabled"], [false, "disabled"]] as const) {
     const home = tempDir("copilot-autostatus-");
     writeFileSync(
-      join(home, "preferences.json"),
+      join(home, "state.json"),
       JSON.stringify({ global: { "update.auto": autoUpdate, "update.cooldown": 3 } }),
     );
     const proc = runCli(["update", "--auto-status"], {
@@ -1006,8 +1011,10 @@ test("cli.ts cost prices at the stored pricing-url when the flag is omitted and 
   const flagUrl = "https://127.0.0.1:9/flag/models";
   const home = env.COPILOT_API_HOME ?? "";
   writeFileSync(
-    join(home, "preferences.json"),
-    JSON.stringify({ global: { "daemon.port": 4199, "cost.pricing-url": storedUrl } }),
+    join(home, "state.json"),
+    JSON.stringify({
+      global: { "daemon.port": 4199, "cost.pricing-url": storedUrl },
+    }),
   );
   // Two days old: expired, so the run refreshes (fails at 127.0.0.1:9) and falls back
   // to the cached copy; the two URLs carry different prompt rates.

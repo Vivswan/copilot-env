@@ -24,11 +24,11 @@ Expect an acknowledgement within a few days, and a fix in the next release once 
 
 **Secrets stay local**
 
-| What                      | Where                                                                                                                        |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| GitHub Copilot credential | `~/.local/share/copilot-env/credentials.json` (the `gh-cli` provider stores no token; it defers to the machine's `gh` login) |
-| Proxy API key             | `~/.local/share/copilot-env/profiles/<name>/config.json` (`default` for the default profile)                                 |
-| Agent configs             | no copy; they resolve the credential at fetch time via `agent auth --get`                                                    |
+| What                      | Where                                                                                                                                                 |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GitHub Copilot credential | `~/.local/share/copilot-env/state.json` (`profiles.<name>.githubToken`; the `gh-cli` provider stores no token; it defers to the machine's `gh` login) |
+| Proxy API key             | `~/.local/share/copilot-env/profiles/<name>/config.json` (`default` for the default profile)                                                          |
+| Agent configs             | no copy; they resolve the credential at fetch time via `agent auth --get`                                                                             |
 
 Both files are written `0600` on POSIX; on Windows they rely on the profile directory's ACLs. No secret is committed to this repository.
 

@@ -38,15 +38,16 @@ import {
 import {
   dropCodexIdentityPin,
   dropSlotIdentityCache,
+  foldRootStores,
   moveCodexProfileTables,
-  regroupPreferenceStore,
+  renameAutoupdateThrottle,
   scopeStaticKeyBoolean,
   stripLaunchersBlocks,
   v409CodexProfileFiles,
   v409IdentityCache,
   v409IntegrationIdPin,
   v409LaunchersBlock,
-  v409PreferenceGroups,
+  v409StateFold,
   v409StaticKeyScope,
 } from "../src/migrations/4.0.9.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
@@ -74,6 +75,15 @@ const OTHER = parseProfileName("other");
 const restoreEnv = envSnapshot();
 let dir = "";
 
+/** state.json written and read raw (fixtures the typed API cannot produce). */
+function writeStore(file: string, doc: unknown): void {
+  writeFileSync(file, `${JSON.stringify(doc)}\n`);
+}
+
+function readStore(file: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+}
+
 afterEach(() => {
   restoreEnv();
   dir = removeDir(dir);
@@ -100,14 +110,14 @@ test("dueMigrations selects [from, to) in ascending order over the registry", ()
 test("the shipped registry holds exactly the named fix-ups in order, home move first", () => {
   // Pinned BY IDENTITY and in order: a count or a list of version strings could stay green while a
   // same-version fix-up was dropped in a merge. Each position has a reason:
-  //   layout steps first (home move, store rename, then the preference regrouping)
+  //   layout steps first (home move, store rename, the state.json fold)
   //                                                      -> later steps read stores at the new paths and
   //                                                         through the new preference shape
   //   Desktop helper move, then the Codex profile files  -> each needs the 4.0.0 rewrites done
   expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
     v356,
     v402RootLayout,
-    v409PreferenceGroups,
+    v409StateFold,
     v356ShellFence,
     v356CodexWiring,
     v356ClaudeWiring,
@@ -629,7 +639,7 @@ function moveFixture(): MoveFixture {
   writeFileSync(join(legacy, "config.json"), "{}\n");
   const desktopEntry = join(dir, "entry.json");
   // The stores ride the move under their pre-4.0.2 names, and the move must rename them BEFORE its
-  // ledger-fed rewrites: the entry below is only discoverable through the renamed ownership.json.
+  // ledger-fed rewrites: the entry below is only discoverable through the renamed and folded store (the ownership section of state.json).
   writeFileSync(
     join(legacy, ".copilot-env-ownership.json"),
     `${JSON.stringify({ claudeDesktopPaths: [desktopEntry] })}\n`,
@@ -685,8 +695,10 @@ test("3.5.6 move: daemons stopped, dir renamed, both artifact kinds repointed", 
   expect(fx.stopped.count).toBe(1);
   expect(existsSync(fx.legacy)).toBe(false);
   expect(existsSync(join(fx.next, "config.json"))).toBe(true);
-  // The store rename happened INSIDE the move (before its ledger-fed rewrites).
-  expect(existsSync(join(fx.next, "ownership.json"))).toBe(true);
+  // The store rename AND the state.json fold happened INSIDE the move (before its ledger-fed
+  // rewrites, which read the ledger through the one store).
+  expect(existsSync(join(fx.next, "state.json"))).toBe(true);
+  expect(existsSync(join(fx.next, "ownership.json"))).toBe(false);
   expect(existsSync(join(fx.next, ".copilot-env-ownership.json"))).toBe(false);
   expect(readFileSync(fx.codexConfig, "utf8")).toContain(
     join(fx.next, "codex-model-catalog.json").replaceAll("\\", "\\\\"),
@@ -711,7 +723,7 @@ test("3.5.6 move: a re-run resuming after a crash mid-move still renames the sto
   renameSync(fx.legacy, fx.next);
   await fx.run();
   expect(fx.stopped.count).toBe(0);
-  expect(existsSync(join(fx.next, "ownership.json"))).toBe(true);
+  expect(existsSync(join(fx.next, "state.json"))).toBe(true);
   expect(existsSync(join(fx.next, ".copilot-env-ownership.json"))).toBe(false);
   // The ledger-fed repoint found its entry through the renamed store.
   const entry = JSON.parse(readFileSync(fx.desktopEntry, "utf8")) as Record<string, unknown>;
@@ -846,37 +858,35 @@ function warningsDuring(run: () => void, level: "warn" | "info" = "warn"): strin
   return lines;
 }
 
-test("4.0.9 preferences: the flat camelCase store becomes grouped keys, the four profile keys under profiles.default", () => {
-  // Readers know only the new shape, so an un-migrated store would read as empty: every key
-  // moves verbatim, and the two 4.0.9 value fix-ups that follow judge it at the new place.
+test("4.0.9 fold of a flat preferences.json: the camelCase keys land grouped, the four profile keys in every profile's map", () => {
+  // Readers know only the grouped shape, so an un-migrated store would read as empty: every key
+  // moves verbatim as it folds, and the 4.0.9 value fix-ups that follow judge it at the new place.
   const home = isolateProxyHome("copilot-mig-prefs-groups-");
   dir = home;
-  const prefs = join(home, "preferences.json");
-  writeFileSync(
-    prefs,
-    JSON.stringify({
-      autoStart: true,
-      port: 4199,
-      smallModel: "gpt-5",
-      useResponsesApiContextManagement: true,
-      codexHome: "/srv/codex",
-      wireMcp: false,
-      integrationId: "copilot-developer-cli",
-      copilotHost: "https://copilot-api.ghe.example",
-      passthrough: "on",
-      staticKey: true,
-    }),
-  );
+  writeStore(join(home, "preferences.json"), {
+    autoStart: true,
+    port: 4199,
+    smallModel: "gpt-5",
+    useResponsesApiContextManagement: true,
+    codexHome: "/srv/codex",
+    wireMcp: false,
+    integrationId: "copilot-developer-cli",
+    copilotHost: "https://copilot-api.ghe.example",
+    passthrough: "on",
+    staticKey: true,
+  });
   // Two named profiles read the global profile keys before: each keeps reading them, from its own
-  // section; a section that already holds its own value keeps it.
-  const state = new CopilotEnvState();
-  for (const name of ["work", "home"]) {
-    state.commitProfile(parseProfileName(name), {
-      credential: { kind: "stored", provider: "gh-token", token: `ghp_${name}` },
-      mode: "direct",
-    });
-  }
-  expect(warningsDuring(regroupPreferenceStore, "info")).toHaveLength(1);
+  // map, beside its credential slot.
+  const slot = (name: string) => ({
+    githubToken: `ghp_${name}`,
+    authProvider: "gh-token",
+    mode: "direct",
+  });
+  writeStore(join(home, "credentials.json"), {
+    profiles: { work: slot("work"), home: slot("home") },
+    codexCatalogLastAttemptMs: 5,
+  });
+  expect(warningsDuring(() => foldRootStores(home), "info")).toHaveLength(2);
   const moved = {
     identity: "copilot-developer-cli",
     host: "https://copilot-api.ghe.example",
@@ -885,6 +895,7 @@ test("4.0.9 preferences: the flat camelCase store becomes grouped keys, the four
   };
   const after = {
     global: {
+      codexCatalogLastAttemptMs: 5,
       "daemon.auto-start": true,
       "daemon.port": 4199,
       "proxy.small-model": "gpt-5",
@@ -892,20 +903,26 @@ test("4.0.9 preferences: the flat camelCase store becomes grouped keys, the four
       "codex.home": "/srv/codex",
       "claude.wire-mcp": false,
     },
-    profiles: { default: moved, work: moved, home: moved },
+    profiles: {
+      default: moved,
+      work: { ...slot("work"), ...moved },
+      home: { ...slot("home"), ...moved },
+    },
   };
-  expect(JSON.parse(readFileSync(prefs, "utf8"))).toEqual(after);
-  // The readers see the moved values through the precedence rule.
+  const stateFile = join(home, "state.json");
+  expect(readStore(stateFile)).toEqual(after);
+  // The readers see the moved values through the precedence rule, each picking its own keys.
   const config = new CopilotEnvConfig();
   expect(config.defaultPort()).toBe(4199);
   expect(config.pinnedIntegrationId(null)).toBe("copilot-developer-cli");
   expect(config.copilotHost(null)).toBe("https://copilot-api.ghe.example");
   expect(config.copilotHost(parseProfileName("work"))).toBe("https://copilot-api.ghe.example");
-  // Idempotent: a second run moves nothing and says nothing.
-  expect(warningsDuring(regroupPreferenceStore, "info")).toEqual([]);
-  expect(JSON.parse(readFileSync(prefs, "utf8"))).toEqual(after);
-  // The value fix-up that follows judges EVERY section the copy wrote, not the default's alone:
-  // the boolean becomes the scope for all three profiles.
+  expect(new CopilotEnvState().readProfileSlot(parseProfileName("home")).mode).toBe("direct");
+  // Idempotent: nothing left to fold, nothing said.
+  expect(warningsDuring(() => foldRootStores(home), "info")).toEqual([]);
+  expect(readStore(stateFile)).toEqual(after);
+  // The value fix-up that follows judges EVERY map the copy wrote, not the default's alone: the
+  // boolean becomes the scope for all three profiles.
   expect(warningsDuring(scopeStaticKeyBoolean, "info")).toHaveLength(3);
   for (const profile of [null, parseProfileName("work"), parseProfileName("home")]) {
     expect(config.staticKeyScope(profile)).toBe("all");
@@ -914,10 +931,10 @@ test("4.0.9 preferences: the flat camelCase store becomes grouped keys, the four
 
 test("4.0.9 identity: a stored `codex` pin is dropped and said so; any other value stays", () => {
   // The domain refused `codex` only from #228 on; a pin stored before then reads as unset but
-  // would sit in preferences.json forever, and its baked header outlives it until a rewire.
+  // would sit in the settings section forever, and its baked header outlives it until a rewire.
   const home = isolateProxyHome("copilot-mig-identity-pin-");
   dir = home;
-  const prefs = join(home, "preferences.json");
+  const prefs = join(home, "state.json");
   const cases: { stored: string | undefined; after: string | undefined; said: boolean }[] = [
     { stored: "codex", after: undefined, said: true },
     { stored: "Codex ", after: undefined, said: true },
@@ -929,9 +946,9 @@ test("4.0.9 identity: a stored `codex` pin is dropped and said so; any other val
     profiles: identity === undefined ? {} : { default: { identity } },
   });
   for (const { stored, after, said } of cases) {
-    writeFileSync(prefs, `${JSON.stringify(shape(stored))}\n`);
+    writeStore(prefs, shape(stored));
     const lines = warningsDuring(dropCodexIdentityPin, "info");
-    const raw = JSON.parse(readFileSync(prefs, "utf8")) as Record<string, unknown>;
+    const raw = readStore(prefs);
     expect({ stored, raw, said: lines.length }).toEqual({
       stored,
       raw: shape(after),
@@ -942,11 +959,11 @@ test("4.0.9 identity: a stored `codex` pin is dropped and said so; any other val
 });
 
 test("4.0.9 static-key: a stored boolean becomes the scope it meant, said once; a scope or nothing stays quiet", () => {
-  // The key became a scope; a boolean left in preferences.json fails the domain and reads as
+  // The key became a scope; a boolean left in the settings section fails the domain and reads as
   // `none`, so an install that baked both agents would silently stop baking at its next wiring.
   const home = isolateProxyHome("copilot-mig-static-key-");
   dir = home;
-  const prefs = join(home, "preferences.json");
+  const prefs = join(home, "state.json");
   const cases: { stored: unknown; after: string | undefined; said: boolean }[] = [
     { stored: true, after: "all", said: true },
     { stored: false, after: undefined, said: true },
@@ -958,9 +975,9 @@ test("4.0.9 static-key: a stored boolean becomes the scope it meant, said once; 
     profiles: staticKey === undefined ? {} : { default: { "static-key": staticKey } },
   });
   for (const { stored, after, said } of cases) {
-    writeFileSync(prefs, `${JSON.stringify(shape(stored))}\n`);
+    writeStore(prefs, shape(stored));
     const lines = warningsDuring(scopeStaticKeyBoolean, "info");
-    const raw = JSON.parse(readFileSync(prefs, "utf8")) as Record<string, unknown>;
+    const raw = readStore(prefs);
     expect({ stored, raw, said: lines.length }).toEqual({
       stored,
       raw: shape(after),
@@ -1089,7 +1106,7 @@ test("4.0.9 codex profiles: an unparseable <name>.config.toml keeps its table an
 test("4.0.9 identity cache: the four cached keys go from a slot in the old shape, said once, promoting nothing into the pair; a new-shape slot and a clean store are untouched", () => {
   const home = isolateProxyHome("copilot-mig-identity-cache-");
   dir = home;
-  const store = join(home, "credentials.json");
+  const store = join(home, "state.json");
   const carrying = {
     profiles: {
       // No validity key: indistinguishable from the pair the new wiring stores, so it stays.
@@ -1117,17 +1134,17 @@ test("4.0.9 identity cache: the four cached keys go from a slot in the old shape
     },
     codexCatalogLastAttemptMs: 5,
   };
-  writeFileSync(store, `${JSON.stringify(carrying)}\n`);
+  const { profiles, ...global } = carrying;
+  writeStore(store, { global, profiles });
   expect(warningsDuring(dropSlotIdentityCache, "info")).toHaveLength(1);
-  const after = JSON.parse(readFileSync(store, "utf8"));
-  expect(after).toEqual({
+  expect(readStore(store)).toEqual({
+    global: { codexCatalogLastAttemptMs: 5 },
     profiles: {
       default: { githubToken: "ghp_d", authProvider: "gh-token", integrationIdentity: "codex" },
       work: { githubToken: "ghp_w", authProvider: "gh-token", mode: "direct", futureKey: true },
       alt: { authProvider: "gh-cli", mode: "proxy" },
       half: { githubToken: "ghp_h", authProvider: "gh-token", mode: "direct" },
     },
-    codexCatalogLastAttemptMs: 5,
   });
   // No pair survives (the cache is not promoted into state), so the next Direct re-render of each
   // slot probes once through the gap and stores what it finds.
@@ -1142,4 +1159,144 @@ test("4.0.9 identity cache: the four cached keys go from a slot in the old shape
   expect(warningsDuring(dropSlotIdentityCache, "info")).toHaveLength(0);
   expect(readFileSync(store, "utf8")).toBe(bytes);
   expect(state.readProfileDirectPair(parseProfileName("work"))).toEqual(pair);
+});
+
+// A credentials.json that fails validation never costs preferences.json a profile's settings.
+test("4.0.9 state fold: a junk credentials.json loses nothing of preferences.json: grouped sections fold whole, a flat store is held until the slots can be read", () => {
+  const home = isolateProxyHome("copilot-mig-state-fold-junk-");
+  dir = home;
+  const GHE = "https://copilot-api.ghe.example";
+  const stateFile = join(home, "state.json");
+  writeFileSync(join(home, "credentials.json"), "{ not json\n");
+  // Grouped: every section preferences.json holds is carried, the slots unknown.
+  writeStore(join(home, "preferences.json"), {
+    global: { "daemon.port": 4199 },
+    profiles: { work: { host: GHE } },
+  });
+  expect(warningsDuring(() => foldRootStores(home), "warn")).toHaveLength(1); // credentials.json
+  expect(readStore(stateFile)).toEqual({
+    global: { "daemon.port": 4199 },
+    profiles: { work: { host: GHE } },
+  });
+  expect(existsSync(join(home, "preferences.json"))).toBe(false);
+  expect(existsSync(join(home, "credentials.json"))).toBe(true);
+  expect(new CopilotEnvConfig().copilotHost(parseProfileName("work"))).toBe(GHE);
+  // Flat: the profile keys copy into every profile credentials.json names, so the file is held
+  // (kept, named) until credentials.json can be read; nothing is folded of it.
+  rmSync(stateFile);
+  writeStore(join(home, "preferences.json"), { port: 4199, copilotHost: GHE });
+  const heldWarnings = warningsDuring(() => foldRootStores(home), "warn");
+  expect(heldWarnings).toHaveLength(2);
+  expect(heldWarnings.join("\n")).toContain("preferences.json kept");
+  expect(existsSync(join(home, "preferences.json"))).toBe(true);
+  expect(existsSync(stateFile)).toBe(false);
+  // credentials.json fixed: the flat keys land in the default AND every named slot, then the file goes.
+  writeStore(join(home, "credentials.json"), {
+    profiles: { work: { githubToken: "ghp_w", authProvider: "gh-token", mode: "direct" } },
+  });
+  expect(warningsDuring(() => foldRootStores(home), "warn")).toEqual([]);
+  expect(readStore(stateFile)).toEqual({
+    global: { "daemon.port": 4199 },
+    profiles: {
+      default: { host: GHE },
+      work: { githubToken: "ghp_w", authProvider: "gh-token", mode: "direct", host: GHE },
+    },
+  });
+  expect(existsSync(join(home, "preferences.json"))).toBe(false);
+  expect(existsSync(join(home, "credentials.json"))).toBe(false);
+});
+
+test("4.0.9 state fold: the three stores become one state.json (global, profiles, ownership); every removal is named; the root github_token and a foreign file stay; idempotent; a half-migrated store is kept and named", () => {
+  const home = isolateProxyHome("copilot-mig-state-fold-");
+  dir = home;
+  const autoupdateHome = join(home, ".autoupdate");
+  mkdirSync(join(home, "locks"), { recursive: true });
+  mkdirSync(join(home, "opencode"), { recursive: true });
+  mkdirSync(autoupdateHome, { recursive: true });
+  const slot = { githubToken: "ghp_d", authProvider: "gh-token", mode: "proxy" };
+  writeStore(join(home, "credentials.json"), {
+    profiles: { default: slot },
+    codexCatalogLastAttemptMs: 5,
+  });
+  writeStore(join(home, "preferences.json"), {
+    global: { "daemon.port": 4199 },
+    profiles: { default: { passthrough: "on" } },
+  });
+  writeStore(join(home, "ownership.json"), { claudeDesktopPaths: ["/lib/uuid.json"] });
+  const locks = [
+    "credentials.json.lock.oslock",
+    "preferences.json.lock",
+    "ownership.json.ops.lock.oslock",
+  ];
+  for (const lock of locks) writeFileSync(join(home, "locks", lock), "");
+  writeFileSync(join(home, "opencode", "github_token"), "gho_stale");
+  writeFileSync(join(home, "codex-model-catalog.json.bak"), "{}");
+  writeFileSync(join(home, "github_token"), "");
+  writeFileSync(join(home, "notes.txt"), "not ours");
+  writeFileSync(join(autoupdateHome, "state.json"), `${JSON.stringify({ lastCheckMs: 7 })}\n`);
+
+  const fold = () => {
+    foldRootStores(home);
+    renameAutoupdateThrottle(autoupdateHome);
+  };
+  const said = warningsDuring(fold, "info");
+  // Every file the pass touches, one line each: three folds, three lock sidecars, the opencode
+  // token and its emptied directory, the catalog backup, the throttle move.
+  expect(said).toHaveLength(10);
+  for (const lock of locks) expect(said.join("\n")).toContain(join(home, "locks", lock));
+  const stateFile = join(home, "state.json");
+  const merged = {
+    global: { codexCatalogLastAttemptMs: 5, "daemon.port": 4199 },
+    profiles: { default: { ...slot, passthrough: "on" } },
+    ownership: { claudeDesktopPaths: ["/lib/uuid.json"] },
+  };
+  expect(readStore(stateFile)).toEqual(merged);
+  for (
+    const gone of [
+      "credentials.json",
+      "preferences.json",
+      "ownership.json",
+      ...locks.map((lock) => join("locks", lock)),
+      join("opencode", "github_token"),
+      "opencode",
+      "codex-model-catalog.json.bak",
+      join(".autoupdate", "state.json"),
+    ]
+  ) expect(existsSync(join(home, gone))).toBe(false);
+  for (const kept of ["github_token", "notes.txt", join(".autoupdate", "autoupdate.json")]) {
+    expect(existsSync(join(home, kept))).toBe(true);
+  }
+  // The readers see the folded values through one file, each picking its own keys.
+  expect(new CopilotEnvConfig().defaultPort()).toBe(4199);
+  expect(new CopilotEnvConfig().read().profiles).toEqual({ default: { passthrough: "on" } });
+  expect(new CopilotEnvState().readProfileSlot(null).mode).toBe("proxy");
+  expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual(["/lib/uuid.json"]);
+  // Idempotent and quiet once folded.
+  const bytes = readFileSync(stateFile, "utf8");
+  expect(warningsDuring(fold, "info")).toEqual([]);
+  expect(readFileSync(stateFile, "utf8")).toBe(bytes);
+  // Half-migrated (a crash between the write and the delete): an old store beside its keys already
+  // in state.json is kept as it is and named, and nothing is folded twice. The other two stores
+  // are judged on their own, so a credentials.json reappearing beside the folded slot is kept too.
+  writeStore(join(home, "ownership.json"), { claudeDesktopPaths: ["/lib/other.json"] });
+  writeStore(join(home, "credentials.json"), { profiles: { default: { mode: "direct" } } });
+  const warned = warningsDuring(() => foldRootStores(home), "warn");
+  expect(warned).toHaveLength(2);
+  expect(warned.join("\n")).toContain("delete ownership.json by hand");
+  expect(warned.join("\n")).toContain("delete credentials.json by hand");
+  expect(existsSync(join(home, "ownership.json"))).toBe(true);
+  expect(existsSync(join(home, "credentials.json"))).toBe(true);
+  expect(readFileSync(stateFile, "utf8")).toBe(bytes);
+  rmSync(join(home, "ownership.json"));
+  rmSync(join(home, "credentials.json"));
+  // A store that is not a JSON object is left in place and named, and the parser's message (which
+  // can quote the file's text) is never echoed.
+  writeFileSync(join(home, "ownership.json"), "[1]\n");
+  writeFileSync(join(home, "preferences.json"), '{"githubToken": ghp_leak}\n');
+  const junk = warningsDuring(() => foldRootStores(home), "warn");
+  expect(junk).toHaveLength(2);
+  expect(junk.join("\n")).not.toContain("ghp_leak");
+  expect(existsSync(join(home, "ownership.json"))).toBe(true);
+  expect(existsSync(join(home, "preferences.json"))).toBe(true);
+  expect(readFileSync(stateFile, "utf8")).toBe(bytes);
 });

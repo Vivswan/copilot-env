@@ -1060,7 +1060,7 @@ test("sync reconciles from the key: on wires (every write announced), off remove
     `created -> ${metaPath} (Claude Desktop config-library index)`,
   ]);
   // The ledger is bookkeeping inside the data home: written, never named.
-  const ledgerFile = new CopilotApiPaths().ownershipFile;
+  const ledgerFile = new CopilotApiPaths().stateStoreFile;
   expect(existsSync(ledgerFile)).toBe(true);
   expect(linesNaming(wired, ledgerFile)).toEqual([]);
   expect(linesNaming(wired, configPath)).toEqual([
@@ -1107,21 +1107,22 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   // guard as the whole-library sweep), and says why. Control: well-formed, it removes.
   await wireClaudeDesktopEntry(directWire(WORK));
   const workPath = entryPathNamed(library, "copilot-env: work");
-  const storeFile = new CopilotApiPaths().sharedStateFile;
+  const storeFile = new CopilotApiPaths().stateStoreFile;
   const snapshot = () => ({
     meta: readFileSync(metaPath, "utf8"),
     config: readFileSync(workPath, "utf8"),
     helper: readFileSync(workHelper, "utf8"),
-    owned: new OwnershipLedger().ownedPaths("claudeDesktop"),
   });
   const before = snapshot();
+  // The key and the ledger's claims ride in the store the test corrupts: saved, restored below.
+  const storeBytes = readFileSync(storeFile, "utf8");
   writeFileSync(storeFile, "{ not json");
   const guarded = await captureAllWrites(() => syncClaudeDesktopWiring(directWire(WORK)));
   expect(guarded).toContain(
-    `the profile store ${storeFile} is malformed; leaving the config library alone`,
+    `the state store ${storeFile} is malformed; leaving the config library alone`,
   );
   expect(snapshot()).toEqual(before);
-  writeFileSync(storeFile, "{}\n");
+  writeFileSync(storeFile, storeBytes); // well-formed again: key off, the claim on the entry intact
   await syncClaudeDesktopWiring(directWire(WORK));
   expect(existsSync(workPath)).toBe(false);
 
@@ -1798,22 +1799,34 @@ test("a malformed profile store resolves nothing: no reconcile sweeps, key on or
   await wireClaudeDesktopEntry(directWire(WORK));
   const before = artifactsOf(library);
   expect(Object.values(before).every(Boolean)).toBe(true);
-  const storeFile = new CopilotApiPaths().sharedStateFile;
+  const storeFile = new CopilotApiPaths().stateStoreFile;
+  const storeBytes = readFileSync(storeFile, "utf8");
   // Each shape the lenient store reader degrades to "no profiles" -- which would make
   // every named entry an orphan -- must instead leave every artifact untouched.
   writeFileSync(storeFile, "{ not json");
   const warned = await captureAllWrites(() => reconcileClaudeDesktopWiring());
   expect(warned).toContain(
-    `the profile store ${storeFile} is malformed; leaving the config library alone`,
+    `the state store ${storeFile} is malformed; leaving the config library alone`,
   );
-  for (const junk of ["{ not json", "[]", `{"profiles": 5}`, `{"profiles": {"work": 7}}`]) {
+  // The key rides in the same file, so a junk profiles map is paired with each key value;
+  // whole-file junk cannot carry a key at all (and the store refuses to write one into it).
+  const junkStores = [
+    "{ not json",
+    "[]",
+    ...[5, { work: 7 }].flatMap((profiles) =>
+      [true, false].map((enabled) =>
+        JSON.stringify({
+          global: { "claude.desktop": enabled },
+          profiles,
+        })
+      )
+    ),
+  ];
+  for (const junk of junkStores) {
     writeFileSync(storeFile, junk);
     expect(resolveClaudeDesktopTargets().kind).toBe("unresolvable");
-    for (const enabled of [true, false]) {
-      new CopilotEnvConfig().set({ "claude.desktop": enabled });
-      await reconcileClaudeDesktopWiring();
-      expect(artifactsOf(library)).toEqual(before);
-    }
+    await reconcileClaudeDesktopWiring();
+    expect(artifactsOf(library)).toEqual(before);
   }
   // Controls: an EMPTY store -- blank or whitespace, what the canonical reader accepts as
   // `{}` -- and a well-formed one with no slots ARE resolved, and the same sweep runs.
@@ -1821,49 +1834,40 @@ test("a malformed profile store resolves nothing: no reconcile sweeps, key on or
     writeFileSync(storeFile, empty);
     expect(resolveClaudeDesktopTargets()).toEqual({ kind: "resolved", targets: [] });
   }
-  writeFileSync(storeFile, "{}\n");
-  new CopilotEnvConfig().del("claude.desktop");
+  // A well-formed store with no slots and the key at its default: the entries it still claims are
+  // orphans, and the same sweep removes them (the claims ride in the store, so they are kept).
+  const { ownership } = JSON.parse(storeBytes) as { ownership: unknown };
+  writeFileSync(storeFile, `${JSON.stringify({ ownership })}\n`);
   await reconcileClaudeDesktopWiring();
   expect(Object.keys(before).filter(existsSync)).toEqual([]);
 });
 
 test.skipIf(NO_CHMOD_FAULTS)(
-  "an unreadable ownership ledger leaves the --check tail unjudged and the exit code alone",
+  "an unreadable state store leaves the --check tail unjudged and the exit code alone",
   async () => {
     isolateWithDesktop();
     await wireClaudeDesktopEntry(directWire());
-    const ledgerFile = new CopilotApiPaths().ownershipFile;
-    chmodSync(ledgerFile, 0o000);
+    // One file holds the preference and the ledger: unreadable, the registry default travels with
+    // the failed look, and the reason names the preference read, the first one made.
+    const storeFile = new CopilotApiPaths().stateStoreFile;
+    chmodSync(storeFile, 0o000);
     try {
       const status = claudeDesktopStatus();
-      expect(status.kind).toBe("unjudged");
-      // The preference actually read travels with the failed look (health publishes it).
-      expect(status.enabled).toBe(true);
-      new CopilotEnvConfig().set({ "claude.desktop": false });
-      expect(claudeDesktopStatus()).toMatchObject({ kind: "unjudged", enabled: false });
-      // The preference store itself unreadable: the registry default, and the reason says so.
-      const prefsFile = new CopilotApiPaths().envConfigFile;
-      chmodSync(prefsFile, 0o000);
-      try {
-        const noPrefs = claudeDesktopStatus();
-        expect(noPrefs).toMatchObject({ kind: "unjudged", enabled: true });
-        if (noPrefs.kind === "unjudged") {
-          expect(noPrefs.reason).toContain("the claude.desktop preference could not be read");
-        }
-      } finally {
-        chmodSync(prefsFile, 0o600);
+      expect(status).toMatchObject({ kind: "unjudged", enabled: true });
+      if (status.kind === "unjudged") {
+        expect(status.reason).toContain("the claude.desktop preference could not be read");
       }
-      new CopilotEnvConfig().del("claude.desktop");
       const { lines, fix } = renderClaudeDesktopStatus(status);
-      expect(lines[0]).toContain("the Desktop wiring could not be checked");
-      expect(lines[0]).toContain(ledgerFile);
+      expect(lines[0]).toContain("the claude.desktop preference could not be read");
+      expect(lines[0]).toContain(storeFile);
+      expect(lines[0]).toContain("the Desktop entries were not judged");
       expect(fix).not.toBeNull();
       // The tail prints and returns; the provider-mode verdict `--check` set stands.
       process.exitCode = 2;
       printClaudeDesktopCheck();
       expect(process.exitCode).toBe(2);
     } finally {
-      chmodSync(ledgerFile, 0o600);
+      chmodSync(storeFile, 0o600);
     }
     // Control: readable again, the same call judges the entry.
     expect(claudeDesktopStatus().kind).toBe("inspected");

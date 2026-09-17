@@ -6,7 +6,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname } from "node:path";
+import { dirname } from "node:path";
 import { OwnershipLedger, ProxyProjectionState } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
@@ -55,16 +55,17 @@ test("ownership round-trips per kind; kinds never bleed into one another", () =>
   expect(new OwnershipLedger(paths).owns("webSearchDeny", "/a/settings.json")).toBe(false);
 });
 
-test("the on-disk contract is pinned: filename and ledger keys", () => {
+test("the on-disk contract is pinned: the ledger's map and its keys", () => {
   const paths = isolate();
   // These spellings are external contracts (an existing install's records must
   // stay readable): a rename here would orphan every shipped ledger.
-  expect(basename(paths.ownershipFile)).toBe("ownership.json");
   const ledger = new OwnershipLedger();
   ledger.record("webSearchDeny", "/a/settings.json");
   ledger.record("claudeDesktop", "/lib/uuid.json");
   ledger.record("codexCatalog", "/home/.codex/config.toml");
-  expect(JSON.parse(readFileSync(paths.ownershipFile, "utf8"))).toEqual({
+  expect(
+    (JSON.parse(readFileSync(paths.stateStoreFile, "utf8")) as { ownership: unknown }).ownership,
+  ).toEqual({
     webSearchDenyPaths: ["/a/settings.json"],
     claudeDesktopPaths: ["/lib/uuid.json"],
     codexCatalogConfigPaths: ["/home/.codex/config.toml"],
@@ -74,12 +75,12 @@ test("the on-disk contract is pinned: filename and ledger keys", () => {
 test("a release with nothing recorded never materializes the ledger file", () => {
   const paths = isolate();
   new OwnershipLedger().release("claudeDesktop", "/lib/uuid.json");
-  expect(existsSync(paths.ownershipFile)).toBe(false);
+  expect(existsSync(paths.stateStoreFile)).toBe(false);
 });
 
 test("reads write nothing on a fresh home (no lock sidecar); a mutation takes the lock", () => {
   const paths = isolate();
-  const before = readdirSync(dirname(paths.ownershipFile)).sort();
+  const before = readdirSync(dirname(paths.stateStoreFile)).sort();
   const ledger = new OwnershipLedger();
   const reported = (fn: () => void): string[] => {
     deferWriteReports();
@@ -95,26 +96,28 @@ test("reads write nothing on a fresh home (no lock sidecar); a mutation takes th
     expect(ledger.owns("claudeDesktop", "/lib/uuid.json")).toBe(false);
     expect(ledger.ownedPaths("codexCatalog")).toEqual([]);
   })).toEqual([]);
-  expect(readdirSync(dirname(paths.ownershipFile)).sort()).toEqual(before);
-  // The control, on disk: a mutation takes the ops lock (its sidecar lands under
+  expect(readdirSync(dirname(paths.stateStoreFile)).sort()).toEqual(before);
+  // The control, on disk: a mutation takes the store's one lock (its sidecar lands under
   // locks/) and writes the ledger -- bookkeeping inside the data home, so it
   // prints nothing either.
-  const sidecar = `${paths.ownershipOpsLock}.oslock`;
+  const sidecar = `${paths.stateStoreLock}.oslock`;
   expect(existsSync(sidecar)).toBe(false);
   expect(reported(() => ledger.record("claudeDesktop", "/lib/uuid.json"))).toEqual([]);
   expect(existsSync(sidecar)).toBe(true);
-  expect(existsSync(paths.ownershipFile)).toBe(true);
+  expect(existsSync(paths.stateStoreFile)).toBe(true);
 });
 
 test("a junk-degraded ledger owns less, never crashes; survivors come back trimmed", () => {
   const paths = isolate();
   writeFileSync(
-    paths.ownershipFile,
+    paths.stateStoreFile,
     `${
       JSON.stringify({
-        webSearchDenyPaths: ["/a/settings.json", 7, "", null, "  /b/settings.json  "],
-        codexCatalogConfigPaths: { bogus: true },
-        unknownKey: "ignored",
+        ownership: {
+          webSearchDenyPaths: ["/a/settings.json", 7, "", null, "  /b/settings.json  "],
+          codexCatalogConfigPaths: { bogus: true },
+          unknownKey: "ignored",
+        },
       })
     }\n`,
   );
@@ -185,16 +188,16 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     const projections = new ProxyProjectionState(paths);
     projections.setOwnedPaths([["smallModel"]]);
 
-    chmodSync(paths.ownershipFile, 0o000);
+    chmodSync(paths.stateStoreFile, 0o000);
     chmodSync(paths.projectionsFile, 0o000);
     try {
       expect(() => ledger.owns("webSearchDeny", "/a/settings.json")).toThrow(
         "refusing to treat an unreadable store as empty",
       );
-      expect(() => ledger.ownedPaths("webSearchDeny")).toThrow(paths.ownershipFile);
+      expect(() => ledger.ownedPaths("webSearchDeny")).toThrow(paths.stateStoreFile);
       expect(() => projections.ownedPaths()).toThrow(paths.projectionsFile);
     } finally {
-      chmodSync(paths.ownershipFile, 0o600);
+      chmodSync(paths.stateStoreFile, 0o600);
       chmodSync(paths.projectionsFile, 0o600);
     }
     // Control: readable again, the recorded claims still answer in full.

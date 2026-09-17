@@ -1,13 +1,15 @@
-// The account-wide credential store (`credentials.json`), the SINGLE source of truth for the Direct
-// credential and the proxy's `--github-token`. Account-wide, not per-host: the credential applies
-// whichever host runs an agent. The Codex catalog refresh throttle rides here too (src/codex/catalog.ts)
-// rather than in a second store for two small fields.
+// The state half of the account-wide store (`state.json`, src/copilot_api/state_store.ts): each
+// `profiles.<name>` map's credential slot, the SINGLE source of truth for the Direct credential and
+// the proxy's `--github-token`, and the account-wide state under `global` (the Codex catalog refresh
+// throttle, src/codex/catalog.ts, and the Claude model verdicts). Account-wide, not per-host: the
+// credential applies whichever host runs an agent. The settings keys sharing those maps are
+// CopilotEnvConfig's; this reader picks its own keys out and preserves the rest.
 import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
-import { CopilotApiConfig } from "./config.ts";
+import { type CopilotApiConfig, ensureDict } from "./config.ts";
 import { CODEX_IDENTITY_NAME, INTEGRATION_ID_RE, isLoopbackHostname } from "./env_config.ts";
 import { GH_LOGIN_RE } from "./gh_cli.ts";
-import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
+import { profileHomeNames } from "./paths.ts";
 import {
   isValidProfileName,
   parseProfileName,
@@ -15,6 +17,7 @@ import {
   profileLabel,
   type ProfileName,
 } from "./profile.ts";
+import { rootStateStore } from "./state_store.ts";
 
 // The provider vocabulary lives with the store that persists it: importing it from credential.ts
 // would cycle, since Credential wraps this store.
@@ -252,8 +255,8 @@ const STATE_SCHEMA = v.object({
     })),
     null,
   ),
-  // The pre-slot top-level credential pair and the pre-ledger ownership keys are deliberately NOT
-  // named here: update() preserves unnamed keys, so the 3.5.6 migrations that move them out still find them.
+  // Unnamed keys (a hand edit, a newer release's, the settings sharing the map) never surface here
+  // and survive every write: update() preserves what it does not name.
   claudeModelVerdicts: v.fallback(
     v.record(
       v.string(),
@@ -278,42 +281,6 @@ function emptyProfile(): ProfileSlotData {
 
 /** As parsed off disk: the reserved slot still inside `profiles`. */
 type RawStateData = v.InferOutput<typeof STATE_SCHEMA>;
-
-// The 3.5.6 default-slot lift. These helpers must accept exactly what STATE_SCHEMA's fallbacks accept,
-// so the lifted slot reads back as the same credential the legacy pair described.
-
-function rawToken(value: unknown): string | null {
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
-}
-
-function rawProvider(value: unknown): AuthProvider | null {
-  return typeof value === "string" && isAuthProvider(value) ? value : null;
-}
-
-function rawSlotHasCredential(slot: Record<string, unknown>): boolean {
-  return rawToken(slot.githubToken) !== null || rawProvider(slot.authProvider) !== null;
-}
-
-/** A slot already holding its own credential wins over the legacy pair (they can only disagree after
- *  a hand edit); the legacy keys are removed either way. */
-function liftLegacyDefaultPair(d: Record<string, unknown>): void {
-  const legacyToken = rawToken(d.githubToken);
-  const legacyProvider = rawProvider(d.authProvider);
-  delete d.githubToken;
-  delete d.authProvider;
-  if (legacyToken === null && legacyProvider === null) return;
-  const profiles = isRecord(d.profiles) ? d.profiles : {};
-  const raw = Object.hasOwn(profiles, DEFAULT_PROFILE_KEY)
-    ? profiles[DEFAULT_PROFILE_KEY]
-    : undefined;
-  const slot: Record<string, unknown> = isRecord(raw) ? raw : {};
-  if (!rawSlotHasCredential(slot)) {
-    if (legacyToken !== null) slot.githubToken = legacyToken;
-    if (legacyProvider !== null) slot.authProvider = legacyProvider;
-  }
-  profiles[DEFAULT_PROFILE_KEY] = slot;
-  d.profiles = profiles;
-}
 
 function tidyEmptySlot(
   d: Record<string, unknown>,
@@ -370,16 +337,22 @@ export function assertProfileSlot(name: ProfileName): ProfileSlot {
   return slot;
 }
 
+/** The state keys of a `profiles.<name>` map and of `global`, as the schemas spell them: what
+ *  `agent config` refuses to set by name (src/commands/config.ts). Derived, never restated. */
+export const PROFILE_STATE_KEYS: readonly string[] = [
+  ...Object.keys(PROFILE_SCHEMA.entries),
+  ...Object.keys(DIRECT_PAIR_SCHEMA.entries),
+];
+export const GLOBAL_STATE_KEYS: readonly string[] = Object.keys(STATE_SCHEMA.entries).filter(
+  (key) => key !== "profiles",
+);
+
 export class CopilotEnvState {
   private readonly store: CopilotApiConfig;
 
+  /** `path` = another `state.json` (the migration test's fixture). */
   constructor(path?: string) {
-    if (path === undefined) {
-      const paths = new CopilotApiPaths();
-      this.store = new CopilotApiConfig(paths.sharedStateFile, paths.sharedStateLock);
-    } else {
-      this.store = new CopilotApiConfig(path);
-    }
+    this.store = rootStateStore(path);
   }
 
   read(): CopilotEnvStateData {
@@ -397,12 +370,19 @@ export class CopilotEnvState {
   /** loadStrict: an unreadable credential store THROWS rather than reading as "no credential", so auth
    *  resolution and the named-profile hard-fail diagnose the failed read instead of fabricating an empty store. */
   private rawRead(): RawStateData {
-    return v.parse(STATE_SCHEMA, this.store.loadStrict());
+    const doc = this.store.loadStrict();
+    // The account-wide state keys sit in `global` beside the global settings; the schema picks
+    // its own out.
+    return v.parse(STATE_SCHEMA, {
+      ...(isRecord(doc.global) ? doc.global : {}),
+      profiles: doc.profiles,
+    });
   }
 
   /** A blank string deletes its key: a blank value is never meaningful, so it clears rather than persisting `""`. */
   set(patch: EnvStatePatch): void {
     this.store.update((d) => {
+      const global = ensureDict(d, "global");
       for (const key of Object.keys(patch) as (keyof EnvStatePatch)[]) {
         const value = patch[key];
         if (
@@ -410,11 +390,12 @@ export class CopilotEnvState {
           value === undefined ||
           (typeof value === "string" && value.trim() === "")
         ) {
-          delete d[key];
+          delete global[key];
         } else {
-          d[key] = typeof value === "string" ? value.trim() : value;
+          global[key] = typeof value === "string" ? value.trim() : value;
         }
       }
+      if (Object.keys(global).length === 0) delete d.global;
     });
   }
 
@@ -619,23 +600,16 @@ export class CopilotEnvState {
     });
   }
 
-  /** The 3.5.6 migration's entry point (src/migrations/3.5.6.ts), and the ONLY code that knows the
-   *  legacy pair. A store without legacy keys is not written or created. */
-  adoptLegacyDefaultCredential(): void {
-    // "no legacy keys" is the decision to skip the lift, so it must be proven, not flattened from a failed read.
-    const raw = this.store.loadStrict();
-    if (raw.githubToken === undefined && raw.authProvider === undefined) return;
-    this.store.update((d) => liftLegacyDefaultPair(d));
-  }
-
   readModelVerdict(key: string): ModelVerdict | null {
     return this.read().claudeModelVerdicts[key] ?? null;
   }
 
+  /** Account-wide state: lands in `global` beside the catalog throttle (see set()). */
   setModelVerdict(key: string, verdict: ModelVerdict): void {
     this.store.update((d) => {
-      const verdicts = isRecord(d.claudeModelVerdicts) ? d.claudeModelVerdicts : {};
-      d.claudeModelVerdicts = { ...verdicts, [key]: verdict };
+      const global = ensureDict(d, "global");
+      const verdicts = isRecord(global.claudeModelVerdicts) ? global.claudeModelVerdicts : {};
+      global.claudeModelVerdicts = { ...verdicts, [key]: verdict };
     });
   }
 }

@@ -1012,7 +1012,7 @@ test("disabled: steady-state sync is write-free", () => {
   mkdirSync(codexHome, { recursive: true });
   const clean = 'model_provider = "copilot-env"\n';
   writeFileSync(join(codexHome, "config.toml"), clean);
-  const stateFile = new CopilotApiPaths().sharedStateFile;
+  const stateFile = new CopilotApiPaths().stateStoreFile;
 
   syncCodexCatalogReference();
   const stateAfterFirst = existsSync(stateFile) ? readFileSync(stateFile, "utf8") : null;
@@ -1469,66 +1469,6 @@ test("the disabled sync names the file it deletes and every reference it strips;
   expect(existsSync(catalogFile)).toBe(false); // in the data home: removed, never named
   // A second disabled sync has nothing left to do, and says nothing.
   expect(stderrOfSync(() => syncCodexCatalogReference())).toBe("");
-});
-
-test("a reference whose ownership cannot be recorded is not added; the disabled sweep stays put too", () => {
-  isolate();
-  const codexHome = join(dir, ".codex");
-  process.env.CODEX_HOME = codexHome;
-  const configPath = join(codexHome, "config.toml");
-  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(codexHome, { recursive: true });
-  enableCatalog();
-  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
-  writeFileSync(configPath, 'model_provider = "copilot-env"\n');
-  // The ledger's file is a directory: every record/release throws.
-  const ledgerFile = new CopilotApiPaths().ownershipFile;
-  rmSync(ledgerFile, { force: true });
-  mkdirSync(ledgerFile);
-  // Unrecordable ownership: no reference is added (a later sweep could not find it).
-  const skipped = stderrOfSync(() => syncCodexCatalogReference({ acceptsCatalog: () => true }));
-  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBeUndefined();
-  expect(skipped).toContain(
-    `catalog reference not set in ${configPath}: ownership could not be recorded`,
-  );
-  // The disabled sweep reads the ledger FIRST (recorded claims extend it), so a
-  // broken ledger stops it before any write: nothing changes, and nothing is claimed.
-  new CopilotEnvConfig().set({ "codex.model-catalog": false });
-  const before = readFileSync(configPath, "utf8");
-  const cleaned = stderrOfSync(() => syncCodexCatalogReference());
-  expect(readFileSync(configPath, "utf8")).toBe(before);
-  expect(cleaned).not.toContain("removed");
-});
-
-test("the writer reports its config changes even when the ownership ledger cannot be written", () => {
-  isolate();
-  const codexHome = join(dir, ".codex");
-  process.env.CODEX_HOME = codexHome;
-  const configPath = join(codexHome, "config.toml");
-  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  enableCatalog();
-  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
-  const ledgerFile = new CopilotApiPaths().ownershipFile;
-  rmSync(ledgerFile, { force: true });
-  mkdirSync(ledgerFile);
-  const write = () =>
-    configureCodexConfig(codexHome, {
-      mode: "direct",
-      direct: null,
-      credential: COMMAND,
-    }, {
-      acceptsCatalog: () => true,
-    });
-  // The ledger throws AFTER the save: the write and its lines land, then the throw.
-  const narratedUntilThrow = (): string => stderrOfSync(() => expect(write).toThrow());
-  const set = narratedUntilThrow();
-  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBe(catalogFile);
-  expect(set).toContain(
-    `created -> ${configPath} (Codex config; model_catalog_json = "${catalogFile}" set)`,
-  );
-  new CopilotEnvConfig().set({ "codex.model-catalog": false });
-  narratedUntilThrow();
-  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBeUndefined();
 });
 
 test("past the refresh deadline the sync adds no reference it could not record, and says so", async () => {

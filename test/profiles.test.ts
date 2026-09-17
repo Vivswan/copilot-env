@@ -174,7 +174,7 @@ test("the default credential lives in the reserved default slot on disk", () => 
   tmpProxyHome();
   const state = new CopilotEnvState();
   new Credential(state).store("gh-token", "ghp_default");
-  const raw = JSON.parse(readFileSync(new CopilotApiPaths().sharedStateFile, "utf8")) as Record<
+  const raw = JSON.parse(readFileSync(new CopilotApiPaths().stateStoreFile, "utf8")) as Record<
     string,
     Record<string, unknown>
   >;
@@ -191,7 +191,7 @@ test("the default credential lives in the reserved default slot on disk", () => 
     mode: "proxy",
   });
   state.deleteProfile(WORK);
-  const raw2 = JSON.parse(readFileSync(new CopilotApiPaths().sharedStateFile, "utf8")) as Record<
+  const raw2 = JSON.parse(readFileSync(new CopilotApiPaths().stateStoreFile, "utf8")) as Record<
     string,
     Record<string, unknown>
   >;
@@ -210,8 +210,7 @@ test("profile paths isolate the daemon home but share the account-wide files", (
   expect(work.sqliteDb.startsWith(work.home)).toBe(true);
   expect(work.stateFile.startsWith(work.home)).toBe(true);
   // Account-wide files anchor at the ROOT home for every profile.
-  expect(work.sharedStateFile).toBe(def.sharedStateFile);
-  expect(work.envConfigFile).toBe(def.envConfigFile);
+  expect(work.stateStoreFile).toBe(def.stateStoreFile);
   expect(work.codexModelCatalogFile).toBe(def.codexModelCatalogFile);
   expect(work.githubTokenFile).toBe(def.githubTokenFile);
 });
@@ -222,8 +221,7 @@ test("COPILOT_ENV_ROOT_HOME re-anchors the shared files inside a profile daemon"
   process.env.COPILOT_ENV_ROOT_HOME = root;
   const p = new CopilotApiPaths();
   expect(p.home).toBe(join(root, "profiles", "work"));
-  expect(p.sharedStateFile).toBe(join(root, "credentials.json"));
-  expect(p.envConfigFile).toBe(join(root, "preferences.json"));
+  expect(p.stateStoreFile).toBe(join(root, "state.json"));
 });
 
 test("reserveProfilePort records stable, distinct ports; resolve peeks read-only", () => {
@@ -491,7 +489,7 @@ test("profile --check is store-driven: exit 1 unknown/incomplete, 2 proxy, 0 dir
   // it really arises -- a pre-atomic install's interrupted add / a hand edit.
   mkdirSync(proxyHome, { recursive: true });
   writeFileSync(
-    new CopilotApiPaths().sharedStateFile,
+    new CopilotApiPaths().stateStoreFile,
     `${JSON.stringify({ profiles: { fast: { mode: "proxy" } } })}\n`,
   );
   await runProfile({ check: "fast", mode: "auto" });
@@ -921,12 +919,12 @@ test("a Claude-only launch write wires BOTH agents from the slot: a pin change i
     credential: { kind: "stored", provider: "gh-token", token: "github_pat_worktoken" },
     mode: "direct",
   });
-  const raw = JSON.parse(readFileSync(new CopilotApiPaths().sharedStateFile, "utf8")) as {
+  const raw = JSON.parse(readFileSync(new CopilotApiPaths().stateStoreFile, "utf8")) as {
     profiles: Record<string, Record<string, unknown>>;
   };
   delete raw.profiles.work?.integrationIdentity;
   delete raw.profiles.work?.copilotHost;
-  writeFileSync(new CopilotApiPaths().sharedStateFile, `${JSON.stringify(raw)}\n`);
+  writeFileSync(new CopilotApiPaths().stateStoreFile, `${JSON.stringify(raw)}\n`);
   expect(state.readProfileDirectPair(WORK)).toEqual({});
   resetIntegrationIdentityCache();
   await runProfile({ settingsFor: "work", mode: "auto" });

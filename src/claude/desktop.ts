@@ -1059,15 +1059,16 @@ export async function planClaudeDesktopSync(opts: DesktopWireOptions): Promise<W
 }
 
 async function planClaudeDesktopSyncOrThrow(opts: DesktopWireOptions): Promise<WritePlan> {
-  if (new CopilotEnvConfig().claudeDesktopEnabled()) return await planClaudeDesktopEntry(opts);
-  if (opts.profile === null) return NO_WRITE;
-  const storeFile = new CopilotApiPaths().sharedStateFile;
+  // The one store holds the key AND the profiles: judged once, before either is read.
+  const storeFile = new CopilotApiPaths().stateStoreFile;
   if (!profileStoreWellFormed(storeFile)) {
     logger.warn(
-      `  Claude Desktop: the profile store ${storeFile} is malformed; leaving the config library alone.`,
+      `  Claude Desktop: the state store ${storeFile} is malformed; leaving the config library alone.`,
     );
     return NO_WRITE;
   }
+  if (new CopilotEnvConfig().claudeDesktopEnabled()) return await planClaudeDesktopEntry(opts);
+  if (opts.profile === null) return NO_WRITE;
   return planRemoveClaudeDesktopEntry(opts.profile);
 }
 

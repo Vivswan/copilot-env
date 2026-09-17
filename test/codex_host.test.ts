@@ -111,7 +111,7 @@ function build(): Promise<void> {
 
 function storeFiles(): { config: string; state: string } {
   const paths = new CopilotApiPaths();
-  return { config: paths.envConfigFile, state: paths.stateFile };
+  return { config: paths.stateStoreFile, state: paths.stateFile };
 }
 
 async function stderrDuring(run: () => Promise<void>): Promise<string> {

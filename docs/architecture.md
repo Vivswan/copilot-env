@@ -16,8 +16,8 @@ Braces mark a value the run fills in: `{name}` the profile, `{host}` the Copilot
 
 ```mermaid
 flowchart TD
-  credfile[("~/.local/share/copilot-env/credentials.json")]
-  prefs[("~/.local/share/copilot-env/preferences.json")]
+  credfile[("~/.local/share/copilot-env/state.json (profiles.<name>: the credential slot)")]
+  prefs[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)")]
   store["src/copilot_api/env_state.ts<br>CopilotEnvState StoredCredential ProvisionedCredential"]
   cred["src/copilot_api/credential.ts<br>Credential"]
   wiring["src/agents/configure.ts<br>resolveCredentialWiring() CredentialWiring ManagedMode ManagedWrite"]
@@ -63,8 +63,8 @@ Demonstrated by: [test/configure.test.ts](../test/configure.test.ts), [test/auth
 
 ```mermaid
 flowchart TD
-  prefs[("~/.local/share/copilot-env/preferences.json")]
-  slotin[("~/.local/share/copilot-env/credentials.json<br>the profile slot: token, mode, integrationIdentity, copilotHost")]
+  prefs[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)")]
+  slotin[("~/.local/share/copilot-env/state.json (profiles.<name>: the credential slot)<br>the profile slot: token, mode, integrationIdentity, copilotHost (read at the start)")]
   models[["GET https://{host}/models"]]
   user[["GET https://api.github.com/copilot_internal/user"]]
   config["src/copilot_api/env_config.ts<br>CopilotEnvConfig"]
@@ -74,7 +74,7 @@ flowchart TD
   select["src/copilot_api/integration_identity.ts<br>selectDirectIdentityAndHost() IdentityAndHost probeIntegrationIdentityCached()"]
   pair["src/copilot_api/direct_pair.ts<br>directOverlay() renderDirectPair() landDirectPair()"]
   launch["src/copilot_api/launch.ts<br>resolveLaunchCredential()"]
-  slotout[("~/.local/share/copilot-env/credentials.json<br>the profile slot, its pair rewritten")]
+  slotout[("~/.local/share/copilot-env/state.json (profiles.<name>: the credential slot)<br>the profile slot, its pair rewritten (written at the end)")]
   codexfile[("~/.codex/config.toml<br>base_url https://{host}, http_headers")]
   claudefile[("~/.claude/settings-{name}.json<br>env.ANTHROPIC_BASE_URL, env.ANTHROPIC_CUSTOM_HEADERS")]
   prefs -->|"reads the identity pin and the host literal"| config
@@ -98,6 +98,7 @@ flowchart TD
 
 - **The probe memo is process-lifetime and never invalidated** (`probeIntegrationIdentityCached()`): a CLI run ends in seconds, and the MCP server keeps its verdict until the transport closes. Injected I/O and a caller deadline bypass it.
 - **The slot is the truth, the agent files are outputs:** a re-render (`--sync`, `--settings-for`, the `cl --profile` hook, the Desktop reconcile and its status) renders the slot's pair under the pin and literal in force, never reading a file back. A credential landing (`agent auth --profile`, `agent profile --add`, a settings import) probes and stores.
+- **A re-render makes no request while the pair is stored.** A missing pair is landed once through the landing path; the Desktop reconcile alone never lands, it names the repair.
 - **A credential write takes the previous pair with it,** so a definitive refusal leaves the files as they were and an empty pair: a credential refused under every identity works under none, and the next Direct landing probes again.
 - **A pin is configuration, an overlay:** it is rendered over the stored pair and never enters it, so setting or clearing it applies at the next re-render; a landing under a pin or literal stores only the half the probe answered, and the other half is probed once when the overlay is cleared.
 
@@ -107,15 +108,15 @@ Demonstrated by: [test/integration_identity.test.ts](../test/integration_identit
 
 ```mermaid
 flowchart LR
-  credfile[("~/.local/share/copilot-env/credentials.json")]
-  prefs[("~/.local/share/copilot-env/preferences.json")]
+  credfile[("~/.local/share/copilot-env/state.json (profiles.<name>: the credential slot)")]
+  prefs[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)")]
   slot["src/copilot_api/env_state.ts<br>ProfileSlot ProfileMode partialSlotGap() assertProfileSlot()"]
   wire["src/agents/profile_wiring.ts<br>bothAgents() wireBothAgents()"]
   adapter["src/agents/configure.ts<br>AgentAdapter"]
   claude["src/claude/config.ts<br>claudeAdapter() configureClaudeConfig()"]
   codex["src/codex/config.ts<br>codexAdapter() configureCodexConfig()"]
   claudefile[("~/.claude/settings-{name}.json<br>settings.json for the default")]
-  desktop[("Claude Desktop's files: {Claude-3p data dir}/configLibrary/{uuid}.json and _meta.json, claude_desktop_config.json, developer_settings.json<br>plus the helper under ~/.local/share/copilot-env/helpers and the claim in ownership.json")]
+  desktop[("Claude Desktop's files: {Claude-3p data dir}/configLibrary/{uuid}.json and _meta.json, claude_desktop_config.json, developer_settings.json<br>plus the helper under ~/.local/share/copilot-env/helpers and the claim in state.json (the ownership map)")]
   codexfile[("~/.codex/{name}.config.toml and ~/.codex/config.toml<br>config.toml alone for the default")]
   credfile -->|"reads profiles.{name}: credential + mode"| slot
   prefs -->|"reads claude-desktop"| claude
@@ -124,7 +125,7 @@ flowchart LR
   adapter --> claude
   adapter --> codex
   claude -->|"writes env.ANTHROPIC_BASE_URL and the credential carrier"| claudefile
-  claude -->|"reconciles the entry it owns: reads _meta.json and ownership.json, then writes the entry, its row, the claim, and the app files"| desktop
+  claude -->|"reconciles the entry it owns: reads _meta.json and the ownership map of state.json, then writes the entry, its row, the claim, and the app files"| desktop
   codex -->|"writes model_provider, and the model_providers table: copilot-env-{name}, copilot-env for the default"| codexfile
 ```
 
@@ -139,7 +140,7 @@ Demonstrated by: [test/profiles.test.ts](../test/profiles.test.ts), [test/codex_
 ```mermaid
 flowchart LR
   registry[["GET https://registry.npmjs.org/@jeffreycao%2Fcopilot-api"]]
-  prefs[("~/.local/share/copilot-env/preferences.json")]
+  prefs[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)")]
   float["src/proxy_float.ts<br>floatProxy() selectProxyVersion() writeResolvedVersionRecord() readResolvedVersionRecord()"]
   shims["src/copilot_api/shims.ts<br>DAEMON_SHIM_FILES shimPath() allShimPaths()"]
   spawn["src/copilot_api/process.ts<br>DaemonSpec daemonArgv() daemonEnvironment() launchDaemon()"]
@@ -176,11 +177,11 @@ Demonstrated by: [test/proxy_float.test.ts](../test/proxy_float.test.ts), [test/
 flowchart LR
   flag[("an explicit flag or env var: agent update --no-verify here, COPILOT_API_VERSION for the proxy pin")]
   cmd["src/commands/config.ts<br>runConfig() configTable()"]
-  prefsin[("~/.local/share/copilot-env/preferences.json<br>as stored")]
+  prefsin[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)<br>as stored (read at the start)")]
   store["src/copilot_api/env_config.ts<br>CopilotEnvConfig CONFIG_REGISTRY ConfigKeyDef"]
   dflt["src/copilot_api/env_config.ts<br>configDefaultValue() configDefaultBoolean() configDefaultNumber() configDefaultString()"]
   site["src/autoupdate/apply.ts<br>resolveProvenanceDecision()"]
-  prefsout[("~/.local/share/copilot-env/preferences.json<br>rewritten whole")]
+  prefsout[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)<br>rewritten whole (written at the end)")]
   cmd -->|"--set, --del, --get"| store
   prefsin -->|"read()"| store
   store -->|"set(), del()"| prefsout
@@ -203,8 +204,8 @@ flowchart TD
   releases[["GET https://api.github.com/repos/Vivswan/copilot-env/releases?per_page=100"]]
   download[["https://github.com/Vivswan/copilot-env/releases/download/{tag}: copilot-env-{triple} (.exe on Windows), checksums.txt, attestation.json"]]
   tuf[["https://tuf-repo-cdn.sigstore.dev: the Sigstore trust root"]]
-  prefs[("~/.local/share/copilot-env/preferences.json")]
-  autostatein[("{top}/.autoupdate/state.json<br>as stored")]
+  prefs[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)")]
+  autostatein[("{top}/.autoupdate/autoupdate.json<br>as stored (read at the start)")]
   root["src/utils/root.ts<br>rootMode() RootMode isProtectedRoot() looksLikeInstallRoot()"]
   install["src/install/installer.ts<br>buildInstallPlan() applyInstallPlan() runInstall() pointCurrentAt()"]
   update["src/commands/update.ts<br>runUpdate() recheckVerdict()"]
@@ -215,7 +216,7 @@ flowchart TD
   att["src/install/attestation.ts<br>RELEASE_SIGNER_POLICY parseStatement() assertSubjectsAttested()"]
   layout[("{top}/versions/vX.Y.Z, {top}/current, {top}/bin/agent and agent.ps1")]
   rcfile[("~/.bashrc, ~/.zshrc, or the PowerShell $PROFILE")]
-  autostateout[("{top}/.autoupdate/state.json<br>rewritten")]
+  autostateout[("{top}/.autoupdate/autoupdate.json<br>rewritten (written at the end)")]
   root -->|"checkout or compiled, decided once"| install
   root -->|"a checkout refuses without --force"| update
   assets -->|"reads at plan time, materializes the payloads into the version root"| install
@@ -246,7 +247,7 @@ Demonstrated by: [test/installer.test.ts](../test/installer.test.ts), [test/upda
 flowchart LR
   rcfile[("~/.bashrc, ~/.zshrc, or the PowerShell $PROFILE")]
   settings[("~/.claude/settings.json<br>settings-{name}.json for a profile")]
-  prefs[("~/.local/share/copilot-env/preferences.json")]
+  prefs[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)")]
   env["src/commands/env.ts<br>launcherFunctionLines() runEnv()"]
   rc["shell/agents.bashrc<br>shell/agents.ps1"]
   bin["bin/agent<br>bin/agent.ps1"]

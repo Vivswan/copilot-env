@@ -11,13 +11,14 @@
 //   one exception, the Codex catalog reference  -> claims BEFORE its write (record(), src/codex/catalog_reference.ts),
 //                                                  so a crash there claims an unwritten path
 //   unreadable store                            -> loadStrict THROWS; "owns nothing" is a verdict, never a default
-//   mutations on ONE ops lock, reads on none    -> read-only commands write nothing; the lock covers the ledger
-//                                                  write alone, never a take-back's owns() decision
+//   mutations under the store's lock, reads on none -> read-only commands write nothing; the lock covers
+//                                                  the ledger write alone, never a take-back's owns() decision
+// The ledger is the `ownership` map of the one account-wide store (src/copilot_api/state_store.ts).
 import * as v from "valibot";
-import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
 import { CopilotApiConfig } from "./config.ts";
 import type { ProxyConfigPath } from "./env_config.ts";
-import { CopilotApiPaths } from "./paths.ts";
+import type { CopilotApiPaths } from "./paths.ts";
+import { rootStateStore, StateSection } from "./state_store.ts";
 
 /** The ledger's JSON key per ownership kind (external contracts: never rename). */
 const LEDGER_KEYS = {
@@ -27,6 +28,9 @@ const LEDGER_KEYS = {
 } as const;
 
 export type OwnedArtifactKind = keyof typeof LEDGER_KEYS;
+
+/** The ledger's keys as stored: what `agent config` refuses to set by name (src/commands/config.ts). */
+export const LEDGER_KEY_NAMES: readonly string[] = Object.values(LEDGER_KEYS);
 
 /** Junk entries are dropped INDIVIDUALLY, never the whole list, and survivors come back TRIMMED so a
  *  hand-padded entry still matches the exact-path checks. The read schema and every in-place update
@@ -48,14 +52,15 @@ const LEDGER_SCHEMA = v.object({
 });
 
 export class OwnershipLedger {
-  private readonly store: CopilotApiConfig;
-  /** Distinct from the store's own update `.lock`: release() decides on a lock-free read, then
-   *  writes, and a record() landing between the two must not be lost. */
-  private readonly opsLock: string;
+  private readonly store: StateSection;
 
-  constructor(paths: CopilotApiPaths = new CopilotApiPaths()) {
-    this.store = new CopilotApiConfig(paths.ownershipFile, paths.ownershipLock);
-    this.opsLock = paths.ownershipOpsLock;
+  constructor(paths?: CopilotApiPaths) {
+    this.store = new StateSection(
+      "ownership",
+      paths === undefined
+        ? rootStateStore()
+        : new CopilotApiConfig(paths.stateStoreFile, paths.stateStoreLock),
+    );
   }
 
   /** STRICT: this feeds owns(), the predicate every take-back gates on, and an unreadable store must
@@ -73,26 +78,23 @@ export class OwnershipLedger {
    *  write that must never leave an unrecorded artifact behind (the Codex catalog reference's auth-time
    *  sync); the next cleanup sweep releases a claim on an unwritten path. */
   record(kind: OwnedArtifactKind, artifactPath: string): void {
-    withFileLockSync(this.opsLock, BOUNDED_LOCK_POLICY, () => {
-      this.store.update((d) => {
-        const key = LEDGER_KEYS[kind];
-        const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
-        list.push(artifactPath);
-        d[key] = list;
-      });
+    this.store.update((d) => {
+      const key = LEDGER_KEYS[kind];
+      const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
+      list.push(artifactPath);
+      d[key] = list;
     });
   }
 
-  /** No write fires when nothing records the path, so steady-state sweeps stay write-free. */
+  /** No write fires when nothing records the path, so steady-state sweeps stay write-free; the
+   *  list is re-read under the lock, so a record() landing in between is kept. */
   release(kind: OwnedArtifactKind, artifactPath: string): void {
-    withFileLockSync(this.opsLock, BOUNDED_LOCK_POLICY, () => {
-      if (!this.ownedPaths(kind).includes(artifactPath)) return;
-      const key = LEDGER_KEYS[kind];
-      this.store.update((d) => {
-        const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
-        if (list.length === 0) delete d[key];
-        else d[key] = list;
-      });
+    if (!this.ownedPaths(kind).includes(artifactPath)) return;
+    const key = LEDGER_KEYS[kind];
+    this.store.update((d) => {
+      const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
+      if (list.length === 0) delete d[key];
+      else d[key] = list;
     });
   }
 }

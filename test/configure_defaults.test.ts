@@ -48,7 +48,7 @@ function childCliEnv(codexHome: string, claudeHome: string): Record<string, stri
 }
 
 function recordedMode(): string | undefined {
-  const statePath = join(dir, "credentials.json");
+  const statePath = join(dir, "state.json");
   if (!existsSync(statePath)) return undefined;
   const state = JSON.parse(readFileSync(statePath, "utf8")) as {
     profiles?: { default?: { mode?: string } };

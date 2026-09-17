@@ -366,7 +366,7 @@ describe("resolveMinimumReleaseAgeSeconds", () => {
     "an unreadable prefs store fails the version-pin and cooldown reads; the env override still wins first",
     () => {
       new CopilotEnvConfig().set({ "daemon.release-cooldown": 60, "daemon.version": "1.2.3" });
-      const file = new CopilotApiPaths().envConfigFile;
+      const file = new CopilotApiPaths().stateStoreFile;
       chmodSync(file, 0o000);
       try {
         expect(() => resolveProxyVersionOverride()).toThrow(file);

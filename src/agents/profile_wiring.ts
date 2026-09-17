@@ -4,8 +4,8 @@
 import { claudeAdapter } from "../claude/config.ts";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { codexAdapter, landDirectWiring } from "../codex/config.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
+import { renderDirectPair } from "../copilot_api/direct_pair.ts";
+import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import {
@@ -79,38 +79,40 @@ export async function wireBothAgents(
 }
 
 /**
+ * Whether `profile`'s next Direct write is a LANDING (the pair probed and stored) rather than a
+ * re-render: the STORED pair is missing a half. Keyed on the slot alone, never on the pin or
+ * literal in force: an overlay renders at read time and decides nothing here, so the import's plan
+ * (under the local preferences) and its apply (under the bundle's) agree, and the default (both
+ * agents through configureDefaultAgents) and a named profile (landDirectWiring) take one rule.
+ */
+export function directPairIncomplete(profile: Profile): boolean {
+  return renderDirectPair(profile, { pinned: null, literal: null }) === null;
+}
+
+/**
  * What a re-render bakes for `profile` (null = the default slot), read from copilot-env's own
  * state alone: the `identity` pin, else the slot's probed identity; the `host` literal, else the
  * slot's probed host. Zero requests and zero reads of the agent files (they are outputs). Null
- * when a half the overlays do not cover was never probed: the caller probes and stores it, or, for
- * a read-only status, reports the gap.
+ * when a half the overlays do not cover was never probed: the caller lands it (directPairIncomplete
+ * decides), or, for a read-only status, reports the gap.
  */
-/**
- * Whether the default's next Direct write is a LANDING (both agents, the pair committed with their
- * files) rather than a re-render: the STORED pair is missing a half. Keyed on the slot alone, never
- * on the pin or literal in force: an overlay renders at read time and decides nothing here, so the
- * import's plan (under the local preferences) and its apply (under the bundle's) agree.
- */
-export function defaultDirectPairIncomplete(): boolean {
-  const stored = new CopilotEnvState().readProfileDirectPair(null);
-  return stored.integrationId === undefined || stored.host === undefined;
-}
-
 export function renderDirectWiring(profile: Profile): DirectWiring | null {
-  const config = new CopilotEnvConfig();
-  const stored = new CopilotEnvState().readProfileDirectPair(profile);
-  const integrationId = config.pinnedIntegrationId(profile) ?? stored.integrationId;
-  const host = config.copilotHost(profile) ?? stored.host;
-  if (integrationId === undefined || host === undefined) return null;
-  return directWiring(integrationId, host);
+  const rendered = renderDirectPair(profile);
+  return rendered === null ? null : directWiring(rendered.integrationId, rendered.apiBase);
 }
 
-/** renderDirectWiring, else the one gap closed: landDirectWiring probes on the host in use and
- *  stores what it answered, completing the landing. Throws when the credential is rejected under
- *  every identity. */
+/** A named profile's re-render: the stored pair rendered under the overlays, or, when the stored
+ *  pair is incomplete (directPairIncomplete, the same rule the default takes), the one landing that
+ *  probes on the host in use and stores what it answered. Throws when the credential is rejected
+ *  under every identity. */
 export async function resolveDirectWiring(
   profile: Profile,
   credentialToken?: string | null,
 ): Promise<DirectWiring> {
-  return renderDirectWiring(profile) ?? await landDirectWiring(profile, credentialToken);
+  if (directPairIncomplete(profile)) return await landDirectWiring(profile, credentialToken);
+  const rendered = renderDirectWiring(profile);
+  if (rendered === null) {
+    throw new Error(`${profileLabel(profile)}'s stored Direct pair did not render`);
+  }
+  return rendered;
 }

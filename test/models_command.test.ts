@@ -185,11 +185,15 @@ function runModelsCli(
  *  regression to reach. */
 function seedDirectProfile(home: string, name: string): void {
   writeFileSync(
-    join(home, "credentials.json"),
+    join(home, "state.json"),
     JSON.stringify({
-      "githubToken": "gho_default-credential-must-never-be-used",
-      "authProvider": "gh-token",
-      "profiles": { [name]: { "mode": "direct" } },
+      profiles: {
+        default: {
+          "githubToken": "gho_default-credential-must-never-be-used",
+          "authProvider": "gh-token",
+        },
+        [name]: { "mode": "direct" },
+      },
     }),
   );
 }

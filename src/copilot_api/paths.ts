@@ -158,6 +158,9 @@ export function profileHomeExists(name: ProfileName): boolean {
 /** OUR per-host run state (port, pid, active CODEX_HOME) under `.run/<host>/`. */
 export const RUN_STATE_FILENAME = ".state.json";
 
+/** The one account-wide store at the ROOT home (src/copilot_api/state_store.ts). */
+export const STATE_STORE_FILENAME = "state.json";
+
 /** Lock sidecars are PERMANENT (file_lock.ts never unlinks one), so the root stores' locks park here
  *  instead of cluttering the home listing. Locks inside daemon homes stay beside their files: a daemon
  *  home is the proxy's territory, not ours to reorganize. */
@@ -184,21 +187,14 @@ export class CopilotApiPaths {
    *  liveness pings); the `daemon.logs` config key (off) discards writes here entirely. */
   logsDir: string;
   sqliteDb: string;
-  /** `credentials.json`: the provisioned GitHub credentials (default + named profile slots). Account-wide,
-   *  so it anchors at the ROOT home, never under `.run/<host>/` or a profile home. */
-  sharedStateFile: string;
-  /** `preferences.json`, the `agent config` store; account-wide, anchored at the ROOT home. */
-  envConfigFile: string;
-  /** `ownership.json` (OwnershipLedger). Root-anchored like the state file, and never exported by
-   *  `agent settings`: its records name THIS machine's files. */
-  ownershipFile: string;
+  /** `state.json`: the ONE account-wide store (src/copilot_api/state_store.ts): `global` and each
+   *  `profiles.<name>` hold the settings (`agent config`) beside the state (the credential slots,
+   *  the catalog throttle), and `ownership` holds the claims on files we wrote. Account-wide, so it
+   *  anchors at the ROOT home, never under `.run/<host>/` or a profile home. */
+  stateStoreFile: string;
   locksDir: string;
-  /** Derived from each store's basename so a store rename cannot silently orphan its lock. */
-  sharedStateLock: string;
-  envConfigLock: string;
-  ownershipLock: string;
-  /** The ownership ledger's MUTATION lock (see OwnershipLedger.opsLock). */
-  ownershipOpsLock: string;
+  /** The store's one lock, derived from its basename so a rename cannot silently orphan it. */
+  stateStoreLock: string;
   /** One root-wide mutex for reserveProfilePort (port.ts), best-effort: past its bounded wait a
    *  reserver proceeds UNLOCKED, so two racing reservers can still mint the same port. */
   profilePortsLock: string;
@@ -229,14 +225,9 @@ export class CopilotApiPaths {
     this.logFile = join(runDir, ".log");
     this.logsDir = join(this.home, LOGS_DIR_NAME);
     this.sqliteDb = join(runDir, SQLITE_DB_FILENAME);
-    this.sharedStateFile = join(rootHome, "credentials.json");
-    this.envConfigFile = join(rootHome, "preferences.json");
-    this.ownershipFile = join(rootHome, "ownership.json");
+    this.stateStoreFile = join(rootHome, STATE_STORE_FILENAME);
     this.locksDir = join(rootHome, LOCKS_DIR_NAME);
-    this.sharedStateLock = join(this.locksDir, `${basename(this.sharedStateFile)}.lock`);
-    this.envConfigLock = join(this.locksDir, `${basename(this.envConfigFile)}.lock`);
-    this.ownershipLock = join(this.locksDir, `${basename(this.ownershipFile)}.lock`);
-    this.ownershipOpsLock = join(this.locksDir, `${basename(this.ownershipFile)}.ops.lock`);
+    this.stateStoreLock = join(this.locksDir, `${STATE_STORE_FILENAME}.lock`);
     this.profilePortsLock = join(this.locksDir, "profile-ports.lock");
     this.githubTokenFile = join(rootHome, "github_token");
     this.githubTokenLoginLock = join(this.locksDir, `${basename(this.githubTokenFile)}.login.lock`);

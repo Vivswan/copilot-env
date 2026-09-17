@@ -18,9 +18,11 @@ import {
   type ConfigKey,
   type ConfigKeyDef,
   configKeyDef,
+  type ConfigScope,
   type ConfigValueTypes,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
+  formatConfigValue,
   GLOBAL_CONFIG_SCHEMA,
   isProxyProjected,
   OPENROUTER_MODELS_URL,
@@ -41,7 +43,7 @@ import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
 // CopilotEnvConfig reads/writes the SHARED prefs store under COPILOT_API_HOME, so isolate
 // each test in a temp home.
-const restoreEnv = envSnapshot();
+const restoreEnv = envSnapshot(["COLUMNS"]);
 let dir = "";
 
 afterEach(() => {
@@ -644,27 +646,37 @@ test("configTable() renders the header, the groups, and key=value rows with type
   };
   const data = stored(global);
   const rendered = configTable(data, { ...PLAIN_TABLE, platform: "win32" });
-  const [header = "", ...blocks] = rendered.split("\n\n");
-  expect(header).toBe(
-    `4 of ${CONFIG_REGISTRY.length} keys set (*).  agent config --set <key> <value>  |  --del <key> reverts`,
-  );
-  // Parsing the rows back pins the grouping and order (and that every group has keys), not just
-  // presence; the profile group names whose section it shows.
-  const rowRe = /^([* ]) (\S+)=/;
-  const parsed = blocks.map((block) => {
-    const [heading = "", ...lines] = block.split("\n");
-    return { heading, keys: lines.flatMap((l) => l.match(rowRe)?.[2] ?? []) };
-  });
-  expect(parsed.map((b) => b.heading)).toEqual(
-    CONFIG_GROUPS.map((g) => g === "profile" ? "profile [default]:" : `${g}:`),
-  );
-  expect(parsed.map((b) => b.keys)).toEqual(
-    CONFIG_GROUPS.map((g) =>
-      CONFIG_REGISTRY.filter((d) => configGroup(d.key) === g).map((d) => d.key)
+  const lines = rendered.split("\n");
+  // The header's halves pack to the width like words; at 80 the count and the set syntax share
+  // the first line, the rest the second.
+  expect(lines.slice(0, 4)).toEqual([
+    `4 of ${CONFIG_REGISTRY.length} keys set (*).  |  agent config --set <key> <value>`,
+    "--del <key> reverts  |  --profile <name> targets another profile",
+    "proxy.* set without --profile is every profile's default",
+    "",
+  ]);
+  // Under GLOBAL the group headings come in CONFIG_GROUPS order, each over its keys in registry
+  // order; parsing the rows back pins the grouping, not just presence.
+  const rowRe = /^ *([* ]) (\S+)=/;
+  const globalAt = lines.findIndex((l) => l.startsWith("GLOBAL"));
+  const groupRe = /^ {2}(\S+):/;
+  const headings = lines.slice(globalAt).flatMap((l) => groupRe.exec(l)?.[1] ?? []);
+  expect(headings).toEqual(
+    CONFIG_GROUPS.filter((g) =>
+      CONFIG_REGISTRY.some((d) => configGroup(d.key) === g && d.scope === "global")
     ),
   );
-  expect(configTable(data, { ...PLAIN_TABLE, profile: WORK })).toContain("profile [work]:");
-  const lines = rendered.split("\n");
+  const keysUnder = (group: string): string[] => {
+    const from = lines.findIndex((l, i) => i >= globalAt && groupRe.exec(l)?.[1] === group) + 1;
+    const to = lines.findIndex((l, i) => i >= from && groupRe.test(l));
+    return lines.slice(from, to < 0 ? undefined : to).flatMap((l) => l.match(rowRe)?.[2] ?? []);
+  };
+  for (const group of headings) {
+    expect(keysUnder(group)).toEqual(
+      CONFIG_REGISTRY.filter((d) => configGroup(d.key) === group && d.scope === "global")
+        .map((d) => d.key),
+    );
+  }
   const rowAt = (key: string): number => {
     const at = lines.findIndex((l) => rowRe.exec(l)?.[2] === key);
     if (at < 0) throw new Error(`no row for '${key}'`);
@@ -686,23 +698,25 @@ test("configTable() renders the header, the groups, and key=value rows with type
   ]);
   // A stored key: the star, the stored value, its type, and its bare default.
   expect(row("daemon.strict-port")).toBe(
-    `* daemon.strict-port=true`.padEnd(column) + "[bool] default false",
+    `  * daemon.strict-port=true`.padEnd(column) + "[bool] default false",
   );
   // An unset key shows its built-in default as the value, no star, no `default` cell.
-  expect(row("daemon.port")).toBe(`  daemon.port=4141`.padEnd(column) + "[1-65535]");
+  expect(row("daemon.port")).toBe(`    daemon.port=4141`.padEnd(column) + "[1-65535]");
   // No stored value and no built-in default: `<unset>`.
   expect(row("proxy.claude-auto-model")).toBe(
-    `  proxy.claude-auto-model=<unset>`.padEnd(column) + "[model id]",
+    `    proxy.claude-auto-model=<unset>`.padEnd(column) + "[model id]",
   );
   // A key=value too long for the column keeps its own line; its right column starts below,
   // and a cell that will not fit beside the type moves down again.
   const url = rowAt("cost.pricing-url");
-  expect(lines[url]).toBe(`* cost.pricing-url=${global["cost.pricing-url"]}`);
+  expect(lines[url]).toBe(`  * cost.pricing-url=${global["cost.pricing-url"]}`);
   expect(lines[url + 1]).toBe(" ".repeat(column) + "[url]");
   expect(lines[url + 2]).toBe(" ".repeat(column) + `default ${OPENROUTER_MODELS_URL}`);
   // A stored POSIX-only value on Windows is still starred (it IS stored) and named inert, the
   // note packed onto the next line where it does not fit beside the type and default.
-  expect(row("codex.host")).toBe(`* codex.host=true`.padEnd(column) + "[bool] default false");
+  expect(row("codex.host")).toBe(
+    `  * codex.host=true`.padEnd(column) + "[bool] default false",
+  );
   expect(lines[rowAt("codex.host") + 1]).toBe(" ".repeat(column) + "(inert on this platform)");
   // The description follows the type line at the column, wrapped on spaces to the width and
   // re-joining to the registry text; a long one takes more than one line.
@@ -729,21 +743,27 @@ test("configTable() renders the header, the groups, and key=value rows with type
   const live = configTable(data, { ...PLAIN_TABLE, platform: "win32", daemonUp: true }).split(
     "\n",
   );
-  const restartAfter = (key: string): boolean =>
-    live[live.findIndex((l) => rowRe.exec(l)?.[2] === key) + 1] ===
-      " ".repeat(column) + "restart the proxy to apply";
-  expect(restartAfter("daemon.strict-port")).toBe(true);
-  expect(restartAfter("shell.launchers")).toBe(false);
+  // The right column's cells may wrap before the restart line, so it is looked for anywhere
+  // under the row.
+  const restartUnder = (out: string[], key: string): boolean => {
+    const at = out.findIndex((l) => rowRe.exec(l)?.[2] === key);
+    const under = out.slice(at + 1).findIndex((l) => rowRe.test(l) || l === "");
+    return out.slice(at + 1, at + 1 + under).includes(
+      " ".repeat(column) + "restart the proxy to apply",
+    );
+  };
+  expect(restartUnder(live, "daemon.strict-port")).toBe(true);
+  expect(restartUnder(live, "shell.launchers")).toBe(false);
   // A restart line only when the proxy that runs next will read the key.
   //   proxy older than the key's gate  -> no line (`--set` suppresses its hint the same way)
   //   new enough                       -> line
   //   version unknown                  -> no line on any row
   const gated = stored({ ...global, "proxy.alpha-search.model": "gpt-5" });
-  const restartLineFor = (proxyVersion: string | null, key: string): boolean => {
-    const out = configTable(gated, { ...PLAIN_TABLE, daemonUp: true, proxyVersion }).split("\n");
-    const at = out.findIndex((l) => rowRe.exec(l)?.[2] === key);
-    return out[at + 1] === " ".repeat(column) + "restart the proxy to apply";
-  };
+  const restartLineFor = (proxyVersion: string | null, key: string): boolean =>
+    restartUnder(
+      configTable(gated, { ...PLAIN_TABLE, daemonUp: true, proxyVersion }).split("\n"),
+      key,
+    );
   expect(restartLineFor("1.14.21", "proxy.alpha-search.model")).toBe(false);
   expect(restartLineFor("1.16.3", "proxy.alpha-search.model")).toBe(true);
   expect(restartLineFor(null, "daemon.strict-port")).toBe(false);
@@ -757,20 +777,116 @@ test("configTable() renders the header, the groups, and key=value rows with type
       daemonUp: true,
       profileDaemonUp,
     }).split("\n");
-    const at = out.findIndex((l) => rowRe.exec(l)?.[2] === key);
-    return out[at + 1] === " ".repeat(column) + "restart the proxy to apply";
+    return restartUnder(out, key);
   };
   expect(lineFor(false, "proxy.small-model")).toBe(false);
   expect(lineFor(true, "proxy.small-model")).toBe(true);
   expect(lineFor(false, "daemon.strict-port")).toBe(true);
 });
 
-test("configTable() at width 60 packs the header onto two lines and keeps every row within the width", () => {
+test("configTable() by scope: PROFILE holds the profile keys and the profile-default groups as this profile resolves them, GLOBAL the rest", () => {
+  tmpHome();
+  createWorkProfile();
+  const firstOf = (scope: ConfigScope): ConfigKeyDef => {
+    const def = CONFIG_REGISTRY.find((d) =>
+      d.scope === scope && (scope !== "profile-default" || configDefaultValue(d) !== undefined)
+    );
+    if (def === undefined) throw new Error(`no ${scope} key with a default in the registry`);
+    return def;
+  };
+  const own = firstOf("profile");
+  const machine = firstOf("global");
+  const shared = firstOf("profile-default");
+  const sharedDefault = formatConfigValue(configDefaultValue(shared) ?? "");
+  // The command takes the terminal's width; a wide one keeps every heading on one line.
+  process.env.COLUMNS = "200";
+
+  const rowRe = /^ *[* ] (\S+)=/;
+  const sections = (out: string): { profile: string[]; global: string[] } => {
+    const lines = out.split("\n");
+    const profileAt = lines.findIndex((l) => l.startsWith("PROFILE "));
+    const globalAt = lines.findIndex((l) => l.startsWith("GLOBAL"));
+    expect(profileAt).toBeGreaterThan(0);
+    expect(globalAt).toBeGreaterThan(profileAt);
+    return { profile: lines.slice(profileAt, globalAt), global: lines.slice(globalAt) };
+  };
+  const keysIn = (lines: string[]): string[] => lines.flatMap((l) => l.match(rowRe)?.[1] ?? []);
+  const rowOf = (lines: string[], key: string): string =>
+    lines.slice(lines.findIndex((l) => rowRe.exec(l)?.[1] === key)).slice(0, 3).join("\n");
+  const view = (profile?: string) => sections(stdoutOf(() => runConfig({ get: true, profile })));
+  // Every profile's PROFILE section lists its own keys, then each profile-default group under a
+  // heading; GLOBAL lists the global keys group by group and nothing else.
+  const profileKeys = [
+    ...CONFIG_REGISTRY.filter((d) => d.scope === "profile").map((d) => d.key),
+    ...CONFIG_GROUPS.flatMap((g) =>
+      CONFIG_REGISTRY.filter((d) => configGroup(d.key) === g && d.scope === "profile-default")
+        .map((d) => d.key)
+    ),
+  ];
+  const globalKeys = CONFIG_GROUPS.flatMap((g) =>
+    CONFIG_REGISTRY.filter((d) => configGroup(d.key) === g && d.scope === "global")
+      .map((d) => d.key)
+  );
+  const headingRe = new RegExp(
+    `^  ${
+      configGroup(shared.key)
+    }: +\\(this profile's daemon; global rows set without --profile\\)$`,
+    "m",
+  );
+
+  // Nothing stored: the shared key sits under PROFILE unstarred, with no source cell.
+  const empty = view();
+  expect(keysIn(empty.profile)).toEqual(profileKeys);
+  expect(keysIn(empty.global)).toEqual(globalKeys);
+  expect(empty.profile.join("\n")).toMatch(headingRe);
+  expect(rowOf(empty.profile, shared.key).startsWith(`    ${shared.key}=`)).toBe(true);
+  expect(rowOf(empty.profile, shared.key)).not.toContain("(global)");
+  expect(keysIn(empty.profile)).toContain(own.key);
+  expect(keysIn(empty.global)).toContain(machine.key);
+
+  // Set globally (no --profile): every profile inherits it, starred and marked (global); the key
+  // still has no row under GLOBAL.
+  runConfig({ set: [shared.key, sharedDefault] });
+  for (const profile of [undefined, "work"]) {
+    const v = view(profile);
+    expect(v.profile[0]?.startsWith(`PROFILE ${profile ?? "default"}`)).toBe(true);
+    expect(rowOf(v.profile, shared.key)).toContain(`  * ${shared.key}=${sharedDefault}`);
+    expect(rowOf(v.profile, shared.key)).toContain("(global)");
+    expect(keysIn(v.global)).not.toContain(shared.key);
+  }
+  expect(stdoutOf(() => runConfig({ get: true }))).toMatch(
+    new RegExp(`^1 of ${CONFIG_REGISTRY.length} keys set`),
+  );
+
+  // Set on work too: work's row is its own value and names the global value it hides; default's
+  // row is unchanged. A key set at both levels is one row, so the count stays 1.
+  runConfig({ set: [shared.key, sharedDefault], profile: "work" });
+  const work = view("work");
+  expect(rowOf(work.profile, shared.key)).toContain(`  * ${shared.key}=${sharedDefault}`);
+  expect(rowOf(work.profile, shared.key)).toContain(`(overrides global ${sharedDefault})`);
+  expect(rowOf(work.profile, shared.key)).not.toContain("(global)");
+  expect(rowOf(view().profile, shared.key)).toContain("(global)");
+  expect(stdoutOf(() => runConfig({ get: true, profile: "work" }))).toMatch(
+    new RegExp(`^1 of ${CONFIG_REGISTRY.length} keys set`),
+  );
+
+  // With the global value gone the override hides the built-in default, named once: no
+  // `default` cell beside it.
+  runConfig({ del: shared.key });
+  const overrideRow = rowOf(view("work").profile, shared.key);
+  expect(overrideRow).toContain(`  * ${shared.key}=${sharedDefault}`);
+  expect(overrideRow).toContain(`(overrides the default ${sharedDefault})`);
+  expect(overrideRow).not.toContain(`default ${sharedDefault} `);
+});
+
+test("configTable() at width 60 packs the header's parts to the width and keeps every row within it", () => {
   const out = configTable(stored({ "daemon.strict-port": true }), { ...PLAIN_TABLE, width: 60 })
     .split("\n");
-  expect(out.slice(0, 3)).toEqual([
-    `1 of ${CONFIG_REGISTRY.length} keys set (*).`,
-    "agent config --set <key> <value>  |  --del <key> reverts",
+  expect(out.slice(0, 5)).toEqual([
+    `1 of ${CONFIG_REGISTRY.length} keys set (*).  |  agent config --set <key> <value>`,
+    "--del <key> reverts",
+    "--profile <name> targets another profile",
+    "proxy.* set without --profile is every profile's default",
     "",
   ]);
   expect(out.filter((l) => l.length > 60)).toEqual([]);
@@ -779,17 +895,37 @@ test("configTable() at width 60 packs the header onto two lines and keeps every 
 test("configTable() at width 40 stacks the right column under each key row at a six-space indent", () => {
   const out = configTable(stored({ "daemon.strict-port": true }), { ...PLAIN_TABLE, width: 40 })
     .split("\n");
-  const at = out.indexOf("* daemon.strict-port=true");
+  const at = out.indexOf("  * daemon.strict-port=true");
   expect(at).toBeGreaterThan(0);
   expect(out[at + 1]).toBe("      [bool] default false");
   expect(out[at + 2]?.startsWith("      Fail start on a busy port")).toBe(true);
-  // Only the unbreakable pieces run past the width: the header's syntax half, the two key=value
-  // leads longer than the width, and the URL value.
+  // A banner whose title leaves the note too little room stacks it under the title instead of
+  // running past the width: the longest profile name fills the width on its own.
+  const longName = parseProfileName("a".repeat(32));
+  const long = configTable(stored({}, { [longName]: {} }), {
+    ...PLAIN_TABLE,
+    width: 40,
+    profile: longName,
+  }).split("\n");
+  const bannerAt = long.findIndex((l) => l.startsWith("PROFILE "));
+  expect(long[bannerAt]).toBe(`PROFILE ${longName}`);
+  expect(long[bannerAt + 1]?.startsWith("      (per profile;")).toBe(true);
+  expect(long.slice(bannerAt, bannerAt + 4).filter((l) => l.length > 40)).toEqual([]);
+  // Only the unbreakable pieces run past the width: the key=value leads longer than the width
+  // and the URL value.
+  expect(out.slice(0, 6)).toEqual([
+    `1 of ${CONFIG_REGISTRY.length} keys set (*).`,
+    "agent config --set <key> <value>",
+    "--del <key> reverts",
+    "--profile <name> targets another profile",
+    "proxy.* set without --profile is every",
+    "profile's default",
+  ]);
   expect(out.filter((l) => l.length > 40)).toEqual([
-    "agent config --set <key> <value>  |  --del <key> reverts",
-    "  proxy.message-websearch-model=gpt-5-mini",
-    "  proxy.responses.context-management=false",
-    `  cost.pricing-url=${OPENROUTER_MODELS_URL}`,
+    "    proxy.alpha-search.codex-priority=true",
+    "    proxy.message-websearch-model=gpt-5-mini",
+    "    proxy.responses.context-management=false",
+    `    cost.pricing-url=${OPENROUTER_MODELS_URL}`,
   ]);
 });
 

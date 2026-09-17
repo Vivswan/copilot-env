@@ -10,13 +10,15 @@ import {
   configGroup,
   type ConfigKeyDef,
   configKeyDef,
+  type ConfigScope,
+  type ConfigValueTypes,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   formatConfigValue,
   isProxyProjected,
   isStoredSource,
   isStoredValueInert,
-  PROFILE_SETTINGS_DEFAULT_KEY,
+  profileSettingsKey,
   resolveSettingIn,
   type SettingTarget,
 } from "../copilot_api/env_config.ts";
@@ -225,12 +227,18 @@ function runGet(get: string | undefined, profile: Profile, platform: NodeJS.Plat
 const MIN_RIGHT_COLUMNS = 30;
 /** Indent of a right column stacked under its key row on a narrow terminal. */
 const STACKED_INDENT = 6;
+/** A group heading and its rows sit one level under the GLOBAL banner; the profile rows sit
+ *  directly under theirs. */
+const GROUP_INDENT = 2;
 /** For a key that is unset AND has no built-in default. */
 const UNSET_VALUE = "<unset>";
 const RESTART_LINE = "restart the proxy to apply";
+const PROFILE_FLAG = "--profile <name>";
+/** Between the header's parts, on one line. */
+const HEADER_GAP = "  |  ";
 
 /** Never splits an item: one longer than `columns` stands on its own line. The one wrap rule for
- *  the header's halves, the description's words, and the right column's cells alike. */
+ *  the header's parts, the description's words, and the right column's cells alike. */
 function packToWidth<T>(
   items: T[],
   length: (item: T) => number,
@@ -274,8 +282,10 @@ export interface ConfigTableOptions {
   color: boolean;
 }
 
-/** The one table `agent config` and `agent config --help` both print, grouped by the key's group
- *  with each row resolved for `opts.profile`. Nothing breaks mid-word. */
+/** The one table `agent config` and `agent config --help` both print: a PROFILE banner for every
+ *  key the selected profile's daemon and wiring consume (its own keys, then the profile-default
+ *  groups resolved for it), a GLOBAL banner for the machine's keys, grouped by the key's group.
+ *  Nothing breaks mid-word. */
 export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions): string {
   const plain = (text: string): string => text;
   const paint = opts.color ? { bold, cyan, dim, green } : {
@@ -289,29 +299,70 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     const stored = isStoredSource(resolved.source);
     const fallback = configDefaultValue(def);
     const value = resolved.value === undefined ? UNSET_VALUE : formatConfigValue(resolved.value);
-    return { def, resolved, stored, fallback, value, keyValue: `${def.key}=${value}` };
+    const indent = def.scope === "profile" ? 0 : GROUP_INDENT;
+    return {
+      def,
+      resolved,
+      stored,
+      fallback,
+      value,
+      indent,
+      leadLength: indent + 2 + `${def.key}=${value}`.length,
+    };
   });
-  // The key=value column is the longest key=value that still leaves the right column
+  // The key=value column is the longest lead that still leaves the right column
   // MIN_RIGHT_COLUMNS; a longer one (a URL) gets its own line with its right column below. When
   // none fits, every right column stacks at STACKED_INDENT, and when even that leaves fewer than
   // the floor, wrapping stops altogether.
   const fitting = rows
-    .map((row) => row.keyValue.length)
-    .filter((n) => 2 + n + 2 + MIN_RIGHT_COLUMNS <= opts.width);
-  const column = fitting.length > 0 ? 2 + Math.max(...fitting) + 2 : STACKED_INDENT;
+    .map((row) => row.leadLength)
+    .filter((n) => n + 2 + MIN_RIGHT_COLUMNS <= opts.width);
+  const column = fitting.length > 0 ? Math.max(...fitting) + 2 : STACKED_INDENT;
   const rightWidth = opts.width - column >= MIN_RIGHT_COLUMNS
     ? opts.width - column
     : Number.POSITIVE_INFINITY;
   const indent = " ".repeat(column);
+  /** A lead with its right column beside it when it fits, below it when not. */
+  const layout = (lead: string, leadLength: number, right: string[]): string[] => {
+    const [first = "", ...rest] = right;
+    if (leadLength + 2 > column) return [lead, ...right.map((line) => indent + line)];
+    return [
+      `${lead}${" ".repeat(column - leadLength)}${first}`,
+      ...rest.map((line) => indent + line),
+    ];
+  };
+  const wrapNote = (note: string): string[] =>
+    packToWidth(note.split(" "), (word) => word.length, rightWidth)
+      .map((words) => paint.dim(words.join(" ")));
 
+  // The global layer a profile override hides: the global map's value, else the built-in default.
+  const globalLayer: Partial<ConfigValueTypes> = data.global;
   const renderRow = (row: (typeof rows)[number]): string[] => {
     const { def } = row;
     const cells: Cell[] = [{ text: `[${def.type}]`, paint: plain }];
-    if (row.stored && row.fallback !== undefined) {
+    // A profile-default row names where its value came from: the global map (`(global)`), or its
+    // own section, which then names the layer it hides once: the global map's value, or the
+    // built-in default in place of the `default` cell.
+    const inherits = def.scope === "profile-default";
+    const overrides = inherits && row.resolved.source === "profile";
+    const shared = inherits ? globalLayer[def.key] : undefined;
+    if (row.stored && row.fallback !== undefined && !(overrides && shared === undefined)) {
       cells.push({
         text: `default ${formatConfigValue(row.fallback)}`,
         paint: (text) => paint.dim(paint.green(text)),
       });
+    }
+    if (overrides) {
+      cells.push({
+        text: shared !== undefined
+          ? `(overrides global ${formatConfigValue(shared)})`
+          : `(overrides the default ${
+            row.fallback === undefined ? UNSET_VALUE : formatConfigValue(row.fallback)
+          })`,
+        paint: paint.dim,
+      });
+    } else if (inherits && row.resolved.source === "global") {
+      cells.push({ text: "(global)", paint: paint.dim });
     }
     if (isStoredValueInert(def, row.resolved, opts.platform)) {
       cells.push({ text: "(inert on this platform)", paint: paint.dim });
@@ -326,43 +377,80 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     ) {
       right.push(paint.dim(paint.green(RESTART_LINE)));
     }
-    right.push(
-      ...packToWidth(def.describe.split(" "), (word) => word.length, rightWidth)
-        .map((words) => paint.dim(words.join(" "))),
-    );
+    right.push(...wrapNote(def.describe));
     const shownValue = row.value === UNSET_VALUE
       ? paint.dim(UNSET_VALUE)
       : row.stored
       ? paint.bold(paint.green(row.value))
       : paint.green(row.value);
-    const lead = `${row.stored ? paint.green("*") : " "} ${paint.cyan(def.key)}=${shownValue}`;
-    const leadLength = 2 + row.keyValue.length;
-    const [first = "", ...rest] = right;
-    if (leadLength + 2 > column) return [lead, ...right.map((line) => indent + line)];
-    return [
-      `${lead}${" ".repeat(column - leadLength)}${first}`,
-      ...rest.map((line) => indent + line),
-    ];
+    const lead = `${" ".repeat(row.indent)}${row.stored ? paint.green("*") : " "} ${
+      paint.cyan(def.key)
+    }=${shownValue}`;
+    return layout(lead, row.leadLength, right);
   };
 
+  // The groups the header and the PROFILE headings name are the ones whose scope every profile
+  // inherits, so a new profile-default group reaches them on its own.
+  const inherited = [
+    ...new Set(
+      CONFIG_REGISTRY.filter((def) => def.scope === "profile-default")
+        .map((def) => `${configGroup(def.key)}.*`),
+    ),
+  ].join(" / ");
   const storedCount = rows.filter((row) => row.stored).length;
-  const headerHalves = [
+  const headerParts = [
     `${storedCount} of ${rows.length} keys set (*).`,
-    "agent config --set <key> <value>  |  --del <key> reverts",
+    "agent config --set <key> <value>",
+    "--del <key> reverts",
+    `${PROFILE_FLAG} targets another profile`,
+    ...(inherited === "" ? [] : [`${inherited} set without --profile is every profile's default`]),
   ];
-  const header = packToWidth(headerHalves, (half) => half.length, opts.width, 2)
-    .map((halves) => paint.dim(halves.join("  ")))
+  // A part wider than the terminal stands alone on its line; its words then wrap like prose.
+  const header = packToWidth(headerParts, (part) => part.length, opts.width, HEADER_GAP.length)
+    .flatMap((parts) => {
+      const [only = ""] = parts;
+      return parts.length === 1 && only.length > opts.width
+        ? packToWidth(only.split(" "), (word) => word.length, opts.width)
+          .map((words) => words.join(" "))
+        : [parts.join(HEADER_GAP)];
+    })
+    .map((line) => paint.dim(line))
     .join("\n");
-  // The profile group names whose section it shows; the other groups are the machine's.
-  const heading = (group: ConfigGroup): string =>
-    group === "profile"
-      ? `${group} [${opts.profile ?? PROFILE_SETTINGS_DEFAULT_KEY}]:`
-      : `${group}:`;
-  const blocks = CONFIG_GROUPS.map((group) => {
-    const lines = rows.filter((row) => configGroup(row.def.key) === group).flatMap(renderRow);
-    return [paint.bold(heading(group)), ...lines].join("\n");
-  });
-  return [header, ...blocks].join("\n\n");
+
+  /** A bold title whose note is its right column: on the shared column, or under the title
+   *  when the title runs past it. */
+  const banner = (title: string, note: string): string =>
+    layout(paint.bold(title), title.length, wrapNote(`(${note})`)).join("\n");
+  const groupIndent = " ".repeat(GROUP_INDENT);
+
+  /** One block per group that has a key of `scope`, in CONFIG_GROUPS order. */
+  const groupBlocks = (scope: ConfigScope, heading: (group: ConfigGroup) => string): string[] =>
+    CONFIG_GROUPS.flatMap((group): string[] => {
+      const lines = rows
+        .filter((row) => row.def.scope === scope && configGroup(row.def.key) === group)
+        .flatMap(renderRow);
+      return lines.length === 0 ? [] : [[heading(group), ...lines].join("\n")];
+    });
+
+  const profileBlock = [
+    [
+      banner(
+        `PROFILE ${profileSettingsKey(opts.profile)}`,
+        `per profile; another profile: ${PROFILE_FLAG}`,
+      ),
+      ...rows.filter((row) => row.def.scope === "profile").flatMap(renderRow),
+    ].join("\n"),
+    ...groupBlocks("profile-default", (group) =>
+      banner(
+        `${groupIndent}${group}:`,
+        "this profile's daemon; global rows set without --profile",
+      )),
+  ].join("\n\n");
+  const globalBlock = [
+    banner("GLOBAL", "this machine, every profile"),
+    groupBlocks("global", (group) => paint.bold(`${groupIndent}${group}:`)).join("\n\n"),
+  ].join("\n");
+  return [header, profileBlock, globalBlock].join("\n\n");
 }
 
 /** The one string both `agent config` and `agent config --help` print, so their outputs are

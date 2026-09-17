@@ -28,6 +28,14 @@ Every key has one scope:
 
 Every read resolves one way: **explicit flag or env (per invocation) > the profile's own value > the global value > the built-in default**, each layer only where the key's scope admits it (a `global` key never resolves from a profile's section).
 
+`agent config` prints the store under two banners. `PROFILE <name>` holds every key that profile's daemon and wiring
+consume: its `profile` keys, then the `profile-default` groups with the value this profile resolves to. `GLOBAL` holds
+the `global` keys only.
+
+A `profile-default` row names where its value came from. Set without `--profile` it is starred `(global)`; set by the
+profile itself it is starred `(overrides global <v>)`, or `(overrides the default <v>)` when the global map has no
+value; set at neither level it is unstarred.
+
 The key names below are also the stored JSON keys in `~/.copilot-env/preferences.json`, under `global` and `profiles.<name>`.
 
 ## profile

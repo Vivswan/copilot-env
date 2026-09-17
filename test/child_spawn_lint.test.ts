@@ -10,32 +10,44 @@ const GUARDED = "test/example.test.ts";
 const lint = (source: string, file = GUARDED): string[] =>
   Deno.lint.runPlugin(childSpawnPlugin, file, source).map((d) => d.message);
 
-test("no-unmanaged-child-spawn: every spelling of the constructor is rejected", () => {
-  expect(lint('new Deno.Command("x", { args: [] }).spawn();')).toHaveLength(1);
-  expect(lint('await new Deno.Command("x", {}).output();')).toHaveLength(1);
-  expect(lint('new Deno.Command("x", {}).outputSync();')).toHaveLength(1);
+// Every route to a child process, and the sanctioned helper beside them: one diagnostic per
+// construction or import of the banned modules, none for anything else.
+const SOURCES: [source: string, diagnostics: number][] = [
+  // Every spelling of the constructor.
+  ['new Deno.Command("x", { args: [] }).spawn();', 1],
+  ['await new Deno.Command("x", {}).output();', 1],
+  ['new Deno.Command("x", {}).outputSync();', 1],
   // A spawn-shaped rule would miss these: stored first, then spawned; the constructor reached
   // without writing `Deno.Command` literally.
-  expect(lint('const cmd = new Deno.Command("x", {}); cmd.spawn();')).toHaveLength(1);
-  expect(lint('const C = Deno.Command; new C("x", {}).spawn();')).toHaveLength(1);
-  expect(lint('const C = Deno["Command"]; new C("x", {}).spawn();')).toHaveLength(1);
-  expect(lint('new globalThis.Deno.Command("x", {}).spawn();')).toHaveLength(1);
-  expect(lint("const { Command } = Deno;")).toHaveLength(1);
-});
-
-test("no-unmanaged-child-spawn: the other route, node:child_process, is banned wholesale", () => {
-  // Every import FORM, since enumerating entry points would miss `import * as cp`.
-  expect(lint('import { spawn } from "node:child_process";')).toHaveLength(1);
-  expect(lint('import * as cp from "node:child_process";')).toHaveLength(1);
-  expect(lint('import cp from "node:child_process";')).toHaveLength(1);
-  expect(lint('import "node:child_process";')).toHaveLength(1);
-  expect(lint('const cp = await import("node:child_process");')).toHaveLength(1);
+  ['const cmd = new Deno.Command("x", {}); cmd.spawn();', 1],
+  ['const C = Deno.Command; new C("x", {}).spawn();', 1],
+  ['const C = Deno["Command"]; new C("x", {}).spawn();', 1],
+  ['new globalThis.Deno.Command("x", {}).spawn();', 1],
+  ["const { Command } = Deno;", 1],
+  // The other route, node:child_process, banned wholesale: every import FORM, since enumerating
+  // entry points would miss `import * as cp`.
+  ['import { spawn } from "node:child_process";', 1],
+  ['import * as cp from "node:child_process";', 1],
+  ['import cp from "node:child_process";', 1],
+  ['import "node:child_process";', 1],
+  ['const cp = await import("node:child_process");', 1],
   // Even the synchronous entry points: run.ts is the suite's one process boundary, and
   // runSync is how a test reaches spawnSync.
-  expect(lint('import { spawnSync } from "node:child_process";')).toHaveLength(1);
+  ['import { spawnSync } from "node:child_process";', 1],
   // Type imports are erased, so they reach no API.
-  expect(lint('import type { spawnSync } from "node:child_process";')).toEqual([]);
-  expect(lint('import { spawn } from "./my_helper.ts";')).toEqual([]);
+  ['import type { spawnSync } from "node:child_process";', 0],
+  ['import { spawn } from "./my_helper.ts";', 0],
+  // The sanctioned helper and unrelated code are left alone.
+  ['const c = spawnChild("x", { args: [] });', 0],
+  ['new Foo.Command("x").spawn();', 0],
+  ["const { execPath } = Deno;", 0],
+  ["const v = Deno.execPath();", 0],
+];
+
+test("no-unmanaged-child-spawn: every route to a child process is rejected, and nothing else", () => {
+  for (const [source, diagnostics] of SOURCES) {
+    expect(lint(source), source).toHaveLength(diagnostics);
+  }
 });
 
 test("no-unmanaged-child-spawn: scoped to the test tree, and never to the helper itself", () => {
@@ -57,11 +69,4 @@ test("no-unmanaged-child-spawn: scoped to the test tree, and never to the helper
   // Nested test paths and the windows-style separator are still in scope.
   expect(lint(raw, "test/helpers/mcp.ts")).toHaveLength(1);
   expect(lint(raw, "test\\daemon_spawn.test.ts")).toHaveLength(1);
-});
-
-test("no-unmanaged-child-spawn: the sanctioned helper and unrelated code are left alone", () => {
-  expect(lint('const c = spawnChild("x", { args: [] });')).toEqual([]);
-  expect(lint('new Foo.Command("x").spawn();')).toEqual([]);
-  expect(lint("const { execPath } = Deno;")).toEqual([]);
-  expect(lint("const v = Deno.execPath();")).toEqual([]);
 });

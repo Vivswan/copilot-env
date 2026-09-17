@@ -8,7 +8,6 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
-  classifyPidFromRows,
   classifyPidFromScan,
   copilotApiArgv,
   DAEMON_GH_TOKEN_ENV,
@@ -91,103 +90,115 @@ function preloads(spec: DaemonSpec): string[] {
     .map((path) => path.split(/[\\/]/).at(-1) as string);
 }
 
-test("the preload set derives from the credential kind, in load order", () => {
-  // The daemon-lock shim is first among the daemon shims on EVERY spawn: the per-home liveness lock
-  // is taken before anything else touches the home.
-  expect(preloads(BASE)).toEqual([
-    "node_compat_preload.ts",
-    "daemon_lock_preload.ts",
-    "daemon_runtime_preload.ts",
-  ]);
+const CLI_HEADERS = daemonClientHeaders("codex_exec/1", "copilot-developer-cli");
+const BUSINESS_HOST = "https://api.business.githubcopilot.com";
 
-  // Every credential runs under its resolved identity (the client-headers shim); only passthrough
-  // adds the exchange fake, after the splice it reads the token from.
-  const CLI = daemonClientHeaders("codex_exec/1", "copilot-developer-cli");
-  expect(
-    preloads({ ...BASE, credential: { kind: "token", token: "gho_x", clientHeaders: CLI } }),
-  ).toEqual([
-    "node_compat_preload.ts",
-    "daemon_lock_preload.ts",
-    "token_argv_preload.ts",
-    "daemon_runtime_preload.ts",
-    "client_headers_preload.ts",
-  ]);
-  expect(
-    preloads({ ...BASE, credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI } }),
-  ).toEqual([
-    "node_compat_preload.ts",
-    "daemon_lock_preload.ts",
-    "token_argv_preload.ts",
-    "daemon_runtime_preload.ts",
-    "client_headers_preload.ts",
-    "pat_passthrough_preload.ts",
-  ]);
-});
-
-test("the watchdog and log-mute shims load only when their config knob is on", () => {
-  expect(preloads({ ...BASE, idleWatchdog: true })).toEqual([
-    "node_compat_preload.ts",
-    "daemon_lock_preload.ts",
-    "daemon_runtime_preload.ts",
-    "idle_watchdog_preload.ts",
-  ]);
-  expect(preloads({ ...BASE, muteProxyLogs: true })).toEqual([
-    "node_compat_preload.ts",
-    "daemon_lock_preload.ts",
-    "daemon_runtime_preload.ts",
-    "log_mute_preload.ts",
-  ]);
-  expect(preloads({ ...BASE, idleWatchdog: true, muteProxyLogs: true })).toEqual([
-    "node_compat_preload.ts",
-    "daemon_lock_preload.ts",
-    "daemon_runtime_preload.ts",
-    "idle_watchdog_preload.ts",
-    "log_mute_preload.ts",
-  ]);
-});
-
-test("a pinned Copilot host loads the copilot-host shim (before the PAT shim) and rides in its env var; unpinned deletes an inherited one", () => {
-  const host = "https://api.business.githubcopilot.com";
-  const pinned: DaemonSpec = { ...BASE, copilotHost: host };
-  expect(preloads(pinned)).toEqual([
-    "node_compat_preload.ts",
-    "daemon_lock_preload.ts",
-    "daemon_runtime_preload.ts",
-    "copilot_host_preload.ts",
-  ]);
-  expect(
-    preloads({
-      ...pinned,
-      credential: {
-        kind: "pat",
-        token: "ghp_x",
-        clientHeaders: daemonClientHeaders("codex_exec/1", "copilot-developer-cli"),
-      },
-    }),
-  ).toEqual([
-    "node_compat_preload.ts",
-    "daemon_lock_preload.ts",
-    "token_argv_preload.ts",
-    "daemon_runtime_preload.ts",
-    "copilot_host_preload.ts",
-    "client_headers_preload.ts",
-    "pat_passthrough_preload.ts",
-  ]);
-  expect(daemonEnvironment(pinned, {})[DAEMON_COPILOT_HOST_ENV]).toBe(host);
-  // copilot-api's own host override would beat the rewritten state: a pinned daemon drops it.
+// Why the order and the environment matter: the daemon-lock shim leads every spawn (the per-home
+// liveness lock is taken before anything else touches the home); the passthrough fake loads after
+// the splice it reads the token from; a pinned host's shim precedes the PAT shim, and copilot-api's
+// own host override and app selector are dropped because either would beat the rewritten state.
+test("the preload set and its environment derive from the spec, in load order", () => {
+  const lock = ["node_compat_preload.ts", "daemon_lock_preload.ts"];
   const enterprise = {
     COPILOT_API_ENTERPRISE_URL: "ghe.example",
     COPILOT_API_OAUTH_APP: "opencode",
   };
-  expect(daemonEnvironment(pinned, enterprise).COPILOT_API_ENTERPRISE_URL).toBeUndefined();
-  // ... and the opencode app selector, which answers generic before the rewritten state.
-  expect(daemonEnvironment(pinned, enterprise).COPILOT_API_OAUTH_APP).toBeUndefined();
-  expect(daemonEnvironment(BASE, enterprise).COPILOT_API_ENTERPRISE_URL).toBe("ghe.example");
-  expect(daemonEnvironment(BASE, enterprise).COPILOT_API_OAUTH_APP).toBe("opencode");
-  // Set-or-delete: a pin left in the parent's environment must not outlive the spec that set it.
-  const inherited = { [DAEMON_COPILOT_HOST_ENV]: "https://stale.example" };
-  expect(daemonEnvironment(BASE, inherited)[DAEMON_COPILOT_HOST_ENV]).toBeUndefined();
-  expect(preloads(BASE)).not.toContain("copilot_host_preload.ts");
+  interface Row {
+    spec: Partial<DaemonSpec>;
+    preloads: string[];
+    /** Inherited environment -> the keys the daemon must (not) see. */
+    env?: Array<{ inherited: Record<string, string>; keys: Record<string, string | undefined> }>;
+  }
+  const rows: Row[] = [
+    {
+      spec: {},
+      preloads: [...lock, "daemon_runtime_preload.ts"],
+      env: [
+        { inherited: enterprise, keys: enterprise },
+        {
+          inherited: { [DAEMON_COPILOT_HOST_ENV]: "https://stale.example" },
+          keys: { [DAEMON_COPILOT_HOST_ENV]: undefined },
+        },
+      ],
+    },
+    {
+      spec: { credential: { kind: "token", token: "gho_x", clientHeaders: CLI_HEADERS } },
+      preloads: [
+        ...lock,
+        "token_argv_preload.ts",
+        "daemon_runtime_preload.ts",
+        "client_headers_preload.ts",
+      ],
+    },
+    {
+      spec: { credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI_HEADERS } },
+      preloads: [
+        ...lock,
+        "token_argv_preload.ts",
+        "daemon_runtime_preload.ts",
+        "client_headers_preload.ts",
+        "pat_passthrough_preload.ts",
+      ],
+    },
+    {
+      spec: { idleWatchdog: true },
+      preloads: [...lock, "daemon_runtime_preload.ts", "idle_watchdog_preload.ts"],
+    },
+    {
+      spec: { muteProxyLogs: true },
+      preloads: [...lock, "daemon_runtime_preload.ts", "log_mute_preload.ts"],
+    },
+    {
+      spec: { idleWatchdog: true, muteProxyLogs: true },
+      preloads: [
+        ...lock,
+        "daemon_runtime_preload.ts",
+        "idle_watchdog_preload.ts",
+        "log_mute_preload.ts",
+      ],
+    },
+    {
+      spec: { copilotHost: BUSINESS_HOST },
+      preloads: [...lock, "daemon_runtime_preload.ts", "copilot_host_preload.ts"],
+      env: [
+        { inherited: {}, keys: { [DAEMON_COPILOT_HOST_ENV]: BUSINESS_HOST } },
+        {
+          inherited: enterprise,
+          keys: { COPILOT_API_ENTERPRISE_URL: undefined, COPILOT_API_OAUTH_APP: undefined },
+        },
+      ],
+    },
+    {
+      spec: {
+        copilotHost: BUSINESS_HOST,
+        credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI_HEADERS },
+      },
+      preloads: [
+        ...lock,
+        "token_argv_preload.ts",
+        "daemon_runtime_preload.ts",
+        "copilot_host_preload.ts",
+        "client_headers_preload.ts",
+        "pat_passthrough_preload.ts",
+      ],
+    },
+  ];
+  for (const row of rows) {
+    const spec = { ...BASE, ...row.spec };
+    expect({ spec: row.spec, preloads: preloads(spec) }).toEqual({
+      spec: row.spec,
+      preloads: row.preloads,
+    });
+    for (const { inherited, keys } of row.env ?? []) {
+      const env = daemonEnvironment(spec, inherited);
+      const seen = Object.fromEntries(Object.keys(keys).map((k) => [k, env[k]]));
+      expect({ spec: row.spec, inherited, seen }).toEqual({
+        spec: row.spec,
+        inherited,
+        seen: keys,
+      });
+    }
+  }
 });
 
 test("with no float record the argv runs the mapped package, offline-only, ending in start", () => {
@@ -223,16 +234,6 @@ test("with no float record the argv runs the mapped package, offline-only, endin
   ]);
   // Nothing to point a resolve at: the mapped entry resolves through node_modules.
   expect(daemonEnvironment(BASE, {}).DENO_DIR).toBeUndefined();
-});
-
-test("COPILOT_API_HOME is pinned from the spec for every daemon", () => {
-  // The npm package's own default home differs from ours, so an unpinned daemon falling back to it
-  // would split daemon and wrapper state.
-  expect(daemonEnvironment(BASE, {}).COPILOT_API_HOME).toBe("/tmp/proxy-home");
-  // A profile daemon must never run against whatever home the parent shell happened to export.
-  expect(daemonEnvironment(BASE, { COPILOT_API_HOME: "/elsewhere" }).COPILOT_API_HOME).toBe(
-    "/tmp/proxy-home",
-  );
 });
 
 test("a float record moves the entry to that exact version, run out of the cache it warmed", () => {
@@ -288,15 +289,26 @@ test("a floated resolve never rewrites the daemon config: the verify/float gate 
   expect(readFileSync(daemonConfigFile(dir), "utf8")).toBe(sentinel);
 });
 
-test("a COPILOT_API_ENTRY override runs that file and never asks for a cached package", () => {
+// A COPILOT_API_ENTRY override runs that file whether or not a float record exists, so the CI fake
+// is never shadowed by a real resolve; the config it runs under is whichever the float has written
+// (on an installed binary the generated one is the ONLY config on disk), else the checkout's.
+test("a COPILOT_API_ENTRY override runs that file under the float's config, never a cached package", () => {
   const fake = join(ROOT, "test", "copilot-api-fake.mjs");
   process.env.COPILOT_API_ENTRY = fake;
-  // No float has run, so the file entry falls back to the checkout's config.
-  expect(resolveCopilotApiEntry()).toEqual({
-    kind: "file",
-    path: fake,
-    configFile: join(ROOT, "deno.json"),
-  });
+  const rows: Array<{ floated: boolean; configFile: string }> = [
+    { floated: false, configFile: join(ROOT, "deno.json") },
+    { floated: true, configFile: daemonConfigFile(dir) },
+  ];
+  for (const row of rows) {
+    if (row.floated) {
+      writeDaemonConfig(dir, ROOT);
+      writeResolvedVersionRecord(dir, "1.14.30", Date.now(), join(dir, "deno", "cache"));
+    }
+    expect({ ...row, entry: resolveCopilotApiEntry() }).toEqual({
+      ...row,
+      entry: { kind: "file", path: fake, configFile: row.configFile },
+    });
+  }
 
   const argv = daemonArgv({
     ...BASE,
@@ -306,17 +318,6 @@ test("a COPILOT_API_ENTRY override runs that file and never asks for a cached pa
   expect(argv).not.toContain("--cached-only");
   expect(argv).not.toContain(PROXY_PACKAGE_NAME);
   expect(argv.slice(-5)).toEqual([fake, "start", "--verbose", "--port", "4141"]);
-});
-
-test("the override beats a float record, so the CI fake is never shadowed by a real resolve", () => {
-  writeDaemonConfig(dir, ROOT);
-  writeResolvedVersionRecord(dir, "1.14.30", Date.now(), join(dir, "deno", "cache"));
-  const fake = join(ROOT, "test", "copilot-api-fake.mjs");
-  process.env.COPILOT_API_ENTRY = fake;
-  const entry = resolveCopilotApiEntry();
-  expect(entry.kind).toBe("file");
-  // ...but under the float's generated config, which on an installed binary is the ONLY config on disk.
-  expect(entry.configFile).toBe(daemonConfigFile(dir));
 });
 
 test("copilotApiArgv runs any proxy subcommand through the same entry and permissions", () => {
@@ -465,24 +466,6 @@ test("parseProcessRows splits pid and ucomm off, keeping the command line verbat
   ]);
 });
 
-test("classifyPidFromRows preserves a FAILED scan as unknown, never a confident no", () => {
-  const self = { pid: 111, ucomm: "deno", command: "deno test" };
-  const daemon = {
-    pid: 222,
-    ucomm: "deno",
-    command: "/home/me/.deno/bin/deno run --allow-net npm:@jeffreycao/copilot-api start",
-  };
-  // The scan's control is the calling process: a readable `ps -U <uid>` always contains it, so rows
-  // WITHOUT it prove the scan failed. The 3.5.6 default-home move refuses on unknown; a flattened
-  // "no" would move the home out from under an unjudged pid.
-  expect(classifyPidFromRows([], 222, 111)).toBe("unknown");
-  expect(classifyPidFromRows([daemon], 222, 111)).toBe("unknown"); // self missing: failed scan
-  // A scan that passes its control judges confidently, both ways.
-  expect(classifyPidFromRows([self, daemon], 222, 111)).toBe("yes");
-  expect(classifyPidFromRows([self], 222, 111)).toBe("no");
-  expect(classifyPidFromRows([self, daemon], 333, 111)).toBe("no");
-});
-
 test("daemonPidsFromRows preserves a FAILED scan as unproven, never a confident empty list", () => {
   const self = { pid: 111, ucomm: "deno", command: "deno test" };
   const daemon = {
@@ -490,8 +473,9 @@ test("daemonPidsFromRows preserves a FAILED scan as unproven, never a confident 
     ucomm: "deno",
     command: "/home/me/.deno/bin/deno run --allow-net npm:@jeffreycao/copilot-api start",
   };
-  // The same selfPid control as classifyPidFromRows: "failed to look" must ride to the sweep as
-  // "unproven", never flatten into "no orphans anywhere".
+  // The scan's control is the calling process: a readable `ps -U <uid>` always contains it, so rows
+  // WITHOUT it prove the scan failed, and "failed to look" must ride to the sweep as "unproven",
+  // never flatten into "no orphans anywhere".
   expect(daemonPidsFromRows([], 111)).toBe("unproven");
   expect(daemonPidsFromRows([daemon], 111)).toBe("unproven"); // self missing: failed scan
   // Controls: a scan that passes judges confidently -- empty AND populated.

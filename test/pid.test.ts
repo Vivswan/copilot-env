@@ -16,13 +16,6 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-test("pidLiveness: alive for our own pid, dead for a never-assigned pid", () => {
-  expect(pidLiveness(process.pid)).toBe("alive");
-  expect(pidLiveness(DEAD_PID)).toBe("dead");
-  expect(pidAlive(process.pid)).toBe(true);
-  expect(pidAlive(DEAD_PID)).toBe(false);
-});
-
 test.skipIf(process.platform === "win32")(
   "pidLiveness: a denied signal (EPERM) is an EXISTING pid -- alive",
   () => {
@@ -66,7 +59,8 @@ test(
     // verdict, and the wrapper flattens both to true so no boolean consumer acts on an unproven death.
     expect(JSON.parse(restricted.stdout)).toEqual(["unproven", "unproven", true, true]);
     // Control: the identical script under the run-granted test permission set proves the
-    // reading above is the permission set's doing, not the harness's.
+    // reading above is the permission set's doing, not the harness's: our own pid reads alive
+    // and a never-assigned pid reads dead.
     const control = runSync(Deno.execPath(), [...denoRunArgs(), script]);
     expect(control.exitCode).toBe(0);
     expect(JSON.parse(control.stdout)).toEqual(["alive", "dead", true, false]);

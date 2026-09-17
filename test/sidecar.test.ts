@@ -60,144 +60,216 @@ function plantSidecar(rootHome: string, version: string, platform = "linux"): st
   return bin;
 }
 
-describe("parseAbsolutePath", () => {
-  test("accepts an absolute path, trimmed", () => {
-    expect(parseAbsolutePath(" /usr/bin/deno ")).toBe("/usr/bin/deno");
-  });
+/** A call's result as data, so a table row can expect a value or an error by its text. */
+type Outcome<T> = { value: T } | { error: string };
 
-  test("rejects relative and empty paths", () => {
-    expect(() => parseAbsolutePath("bin/deno")).toThrow("absolute path");
-    expect(() => parseAbsolutePath("  ")).toThrow("absolute path");
+function outcomeOf<T>(fn: () => T): Outcome<T> {
+  try {
+    return { value: fn() };
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+}
+
+/** The row's expected error is a fragment of the thrown message; a value is exact. */
+function expectOutcome<T>(label: string, actual: Outcome<T>, expected: Outcome<T>): void {
+  expect({ label, ...actual }).toEqual(
+    "error" in expected
+      ? { label, error: expect.stringContaining(expected.error) }
+      : { label, value: expected.value },
+  );
+}
+
+describe("parseAbsolutePath", () => {
+  // A relative or empty path is refused at the boundary: no caller may resolve it against a cwd it
+  // does not control.
+  test("accepts an absolute path trimmed; rejects relative and empty ones", () => {
+    const rows: { input: string; expected: Outcome<string> }[] = [
+      { input: " /usr/bin/deno ", expected: { value: "/usr/bin/deno" } },
+      { input: "bin/deno", expected: { error: "absolute path" } },
+      { input: "  ", expected: { error: "absolute path" } },
+    ];
+    for (const row of rows) {
+      expectOutcome(row.input, outcomeOf(() => parseAbsolutePath(row.input)), row.expected);
+    }
   });
 });
 
 describe("resolveDenoBin", () => {
-  test("the COPILOT_ENV_SIDECAR_DENO env override wins over everything", () => {
-    process.env[SIDECAR_DENO_ENV] = "/opt/deno/bin/deno";
-    expect(resolveDenoBin()).toBe("/opt/deno/bin/deno");
-  });
+  // The precedence ladder: override, then the running Deno, then a PATH deno, then the newest
+  // provisioned sidecar, else a hard error. A PATH deno beats a provisioned copy even when one
+  // exists (the user's toolchain always wins), and bare call sites default rootHome to the
+  // resolved root home, where ensureSidecar provisions (the compiled-install regression).
+  test("the precedence ladder: override, runtime, PATH, newest provisioned, else a hard error", () => {
+    const home = join(dir, "home");
+    const provisioned = plantSidecar(home, PIN);
+    const versions = join(dir, "versions");
+    plantSidecar(versions, "2.9.5");
+    const newest = plantSidecar(versions, "2.10.1");
+    plantSidecar(versions, "2.10.0");
+    const empty = join(dir, "empty");
+    mkdirSync(empty);
+    const live = runtimeExecPath() ?? "(not under deno)";
 
-  test("a relative override is rejected at the boundary", () => {
-    process.env[SIDECAR_DENO_ENV] = "deno";
-    expect(() => resolveDenoBin()).toThrow("absolute path");
-  });
-
-  test("without an override, the running Deno's own binary is used", () => {
-    // The suite runs under `deno test`, so the runtime fast path is live; the
-    // standalone branches are pinned via the runtimeExecPath seam below.
-    expect(resolveDenoBin()).toBe(runtimeExecPath() ?? "(not under deno)");
-  });
-
-  test("a checkout's own deno outranks a PATH deno: subprocesses match the parent", () => {
-    expect(
-      resolveDenoBin({}, dir, {
-        "runtimeExecPath": "/checkout/deno",
-        "findDeno": () => "/opt/homebrew/bin/deno",
-      }),
-    ).toBe("/checkout/deno");
-  });
-
-  test("a compiled standalone uses the deno already on PATH", () => {
-    // Even when a provisioned copy exists: the user's toolchain always wins.
-    plantSidecar(dir, PIN);
-    expect(
-      resolveDenoBin({}, dir, {
-        "runtimeExecPath": null,
-        "platform": "linux",
-        "findDeno": () => "/opt/homebrew/bin/deno",
-      }),
-    ).toBe("/opt/homebrew/bin/deno");
-  });
-
-  test("no PATH deno: the NEWEST provisioned sidecar under the root home answers", () => {
-    plantSidecar(dir, "2.9.5");
-    const newest = plantSidecar(dir, "2.10.1");
-    plantSidecar(dir, "2.10.0");
-    expect(
-      resolveDenoBin({}, dir, {
-        "runtimeExecPath": null,
-        "platform": "linux",
-        "findDeno": () => null,
-      }),
-    ).toBe(newest);
-  });
-
-  test("rootHome DEFAULTS to the resolved root home, so bare call sites find the sidecar", () => {
-    // The compiled-install regression: every production call site is bare, so the
-    // default must look where ensureSidecar provisions -- the root home, not nowhere.
-    process.env.COPILOT_API_HOME = dir;
+    const rows: {
+      label: string;
+      override?: string;
+      rootHome: string | undefined;
+      opts?: Omit<Parameters<typeof detectSidecar>[1], "env">;
+      expected: Outcome<string>;
+    }[] = [
+      {
+        label: "the COPILOT_ENV_SIDECAR_DENO env override wins over everything",
+        override: "/opt/deno/bin/deno",
+        rootHome: undefined,
+        expected: { value: "/opt/deno/bin/deno" },
+      },
+      {
+        label: "a relative override is rejected at the boundary, never resolved against a cwd",
+        override: "deno",
+        rootHome: undefined,
+        expected: { error: "absolute path" },
+      },
+      {
+        // The suite runs under `deno test`, so the runtime fast path is live.
+        label: "without an override, the running Deno's own binary is used",
+        rootHome: undefined,
+        expected: { value: live },
+      },
+      {
+        label: "a checkout's own deno outranks a PATH deno: subprocesses match the parent",
+        rootHome: home,
+        opts: { "runtimeExecPath": "/checkout/deno", "findDeno": () => "/opt/homebrew/bin/deno" },
+        expected: { value: "/checkout/deno" },
+      },
+      {
+        label: "a compiled standalone uses the deno already on PATH, over a provisioned copy",
+        rootHome: home,
+        opts: {
+          "runtimeExecPath": null,
+          "platform": "linux",
+          "findDeno": () => "/opt/homebrew/bin/deno",
+        },
+        expected: { value: "/opt/homebrew/bin/deno" },
+      },
+      {
+        label: "no PATH deno: the NEWEST provisioned sidecar under the root home answers",
+        rootHome: versions,
+        opts: { "runtimeExecPath": null, "platform": "linux", "findDeno": () => null },
+        expected: { value: newest },
+      },
+      {
+        label: "rootHome DEFAULTS to the resolved root home, so bare call sites find the sidecar",
+        rootHome: undefined,
+        opts: { "runtimeExecPath": null, "platform": "linux", "findDeno": () => null },
+        expected: { value: provisioned },
+      },
+      {
+        label: "a compiled standalone with no deno anywhere is a hard, actionable error",
+        rootHome: empty,
+        opts: { "runtimeExecPath": null, "platform": "linux", "findDeno": () => null },
+        expected: { error: "no usable deno binary" },
+      },
+    ];
+    // The default-rootHome row must look under the home this test provisioned.
+    process.env.COPILOT_API_HOME = home;
     delete process.env.COPILOT_ENV_ROOT_HOME;
-    const bin = plantSidecar(dir, PIN);
-    expect(
-      resolveDenoBin({}, undefined, {
-        "runtimeExecPath": null,
-        "platform": "linux",
-        "findDeno": () => null,
-      }),
-    ).toBe(bin);
-  });
-
-  test("a compiled standalone with no deno anywhere is a hard, actionable error", () => {
-    expect(() =>
-      resolveDenoBin({}, dir, {
-        "runtimeExecPath": null,
-        "platform": "linux",
-        "findDeno": () => null,
-      })
-    ).toThrow("no usable deno binary");
+    for (const row of rows) {
+      if (row.override === undefined) delete process.env[SIDECAR_DENO_ENV];
+      else process.env[SIDECAR_DENO_ENV] = row.override;
+      const outcome = outcomeOf(() =>
+        row.opts === undefined && row.rootHome === undefined
+          ? resolveDenoBin()
+          : resolveDenoBin({}, row.rootHome, row.opts)
+      );
+      expectOutcome(row.label, outcome, row.expected);
+    }
   });
 });
 
 describe("detectSidecar", () => {
-  test("env override reports its own kind and never probes PATH", () => {
-    const state = detectSidecar(dir, {
-      "env": { [SIDECAR_DENO_ENV]: "/opt/deno/deno" },
-      "findDeno": () => {
-        throw new Error("PATH must not be probed under an override");
+  // The same ladder as a whole state: each kind carries exactly its own fields. A provisioned
+  // binary lives at `<rootHome>/deno/<x.y.z>/deno`, `deno.exe` on win32 (the on-disk layout
+  // ensureSidecar writes and resolveDenoBin reads back).
+  test("each ladder rung reports its own kind and fields; a PATH deno outranks a provisioned copy", () => {
+    const provisionedHome = join(dir, "provisioned");
+    plantSidecar(provisionedHome, PIN, "darwin");
+    const windowsHome = join(dir, "windows");
+    plantSidecar(windowsHome, PIN, "win32");
+    const empty = join(dir, "empty");
+    mkdirSync(empty);
+    const neverProbed = (): never => {
+      throw new Error("PATH must not be probed under an override");
+    };
+
+    const rows: {
+      label: string;
+      rootHome: string;
+      opts: Parameters<typeof detectSidecar>[1];
+      state: ReturnType<typeof detectSidecar>;
+    }[] = [
+      {
+        label: "env override reports its own kind and never probes PATH",
+        rootHome: empty,
+        opts: { "env": { [SIDECAR_DENO_ENV]: "/opt/deno/deno" }, "findDeno": neverProbed },
+        state: { "kind": "override", "denoBin": parseAbsolutePath("/opt/deno/deno") },
       },
-    });
-    expect(state).toEqual({ "kind": "override", "denoBin": "/opt/deno/deno" });
-  });
-
-  test("a live Deno runtime reports dev with its own binary", () => {
-    const state = detectSidecar(dir, { "env": {}, "runtimeExecPath": "/checkout/deno" });
-    expect(state).toEqual({ "kind": "dev", "denoBin": "/checkout/deno" });
-  });
-
-  test("a PATH deno reports path, ahead of any provisioned copy", () => {
-    plantSidecar(dir, PIN, "darwin");
-    const state = detectSidecar(dir, {
-      "env": {},
-      "runtimeExecPath": null,
-      "platform": "darwin",
-      "findDeno": () => "/usr/local/bin/deno",
-    });
-    expect(state).toEqual({ "kind": "path", "denoBin": "/usr/local/bin/deno" });
-  });
-
-  test("a provisioned binary on disk is found when nothing else resolves", () => {
-    const bin = plantSidecar(dir, PIN, "darwin");
-    const state = detectSidecar(dir, {
-      "env": {},
-      "runtimeExecPath": null,
-      "platform": "darwin",
-      "findDeno": () => null,
-    });
-    expect(state).toEqual({ "kind": "provisioned", "denoBin": bin, "version": PIN });
-  });
-
-  test("nothing available is absent", () => {
-    const state = detectSidecar(dir, {
-      "env": {},
-      "runtimeExecPath": null,
-      "findDeno": () => null,
-    });
-    expect(state).toEqual({ "kind": "absent" });
+      {
+        label: "a live Deno runtime reports dev with its own binary",
+        rootHome: empty,
+        opts: { "env": {}, "runtimeExecPath": "/checkout/deno" },
+        state: { "kind": "dev", "denoBin": parseAbsolutePath("/checkout/deno") },
+      },
+      {
+        label: "a PATH deno reports path, ahead of any provisioned copy",
+        rootHome: provisionedHome,
+        opts: {
+          "env": {},
+          "runtimeExecPath": null,
+          "platform": "darwin",
+          "findDeno": () => "/usr/local/bin/deno",
+        },
+        state: { "kind": "path", "denoBin": parseAbsolutePath("/usr/local/bin/deno") },
+      },
+      {
+        label: "a provisioned binary on disk is found when nothing else resolves",
+        rootHome: provisionedHome,
+        opts: { "env": {}, "runtimeExecPath": null, "platform": "darwin", "findDeno": () => null },
+        state: {
+          "kind": "provisioned",
+          "denoBin": parseAbsolutePath(join(provisionedHome, "deno", PIN, "deno")),
+          "version": PIN,
+        },
+      },
+      {
+        label: "a provisioned binary on win32 carries the .exe suffix",
+        rootHome: windowsHome,
+        opts: { "env": {}, "runtimeExecPath": null, "platform": "win32", "findDeno": () => null },
+        state: {
+          "kind": "provisioned",
+          "denoBin": parseAbsolutePath(join(windowsHome, "deno", PIN, "deno.exe")),
+          "version": PIN,
+        },
+      },
+      {
+        label: "nothing available is absent",
+        rootHome: empty,
+        opts: { "env": {}, "runtimeExecPath": null, "findDeno": () => null },
+        state: { "kind": "absent" },
+      },
+    ];
+    for (const row of rows) {
+      expect({ label: row.label, state: detectSidecar(row.rootHome, row.opts) }).toEqual({
+        label: row.label,
+        state: row.state,
+      });
+    }
   });
 });
 
 describe("provisionedSidecar", () => {
-  test("the newest parseable, binary-carrying version wins the scan", () => {
+  test("the newest parseable, binary-carrying version wins the scan; no deno dir is null", () => {
+    expect(provisionedSidecar(dir, "darwin")).toBeNull(); // no deno dir at all: null, not an error
     plantSidecar(dir, "2.9.5", "darwin");
     const newest = plantSidecar(dir, "2.10.2", "darwin");
     mkdirSync(join(dir, "deno", "2.99.0"), { recursive: true }); // dir with no binary
@@ -208,33 +280,22 @@ describe("provisionedSidecar", () => {
       "version": "2.10.2",
     });
   });
-
-  test("no deno dir at all is null, not an error", () => {
-    expect(provisionedSidecar(dir, "darwin")).toBeNull();
-  });
-});
-
-describe("sidecarBinPath", () => {
-  test("appends .exe only on win32", () => {
-    expect(sidecarBinPath(dir, PIN, "darwin")).toBe(join(dir, "deno", PIN, "deno"));
-    expect(sidecarBinPath(dir, PIN, "win32")).toBe(join(dir, "deno", PIN, "deno.exe"));
-  });
 });
 
 describe(".dvmrc reference version", () => {
-  test("parses one trimmed x.y.z line", () => {
-    expect(parseDvmrcPin("2.9.5\n")).toBe("2.9.5");
-    expect(parseDvmrcPin("  2.9.5  ")).toBe("2.9.5");
-  });
-
-  test("rejects anything but a single exact version", () => {
-    expect(() => parseDvmrcPin("v2.9.5")).toThrow("x.y.z");
-    expect(() => parseDvmrcPin("2.9")).toThrow("x.y.z");
-    expect(() => parseDvmrcPin("2.9.5\n2.9.6")).toThrow("x.y.z");
-    expect(() => parseDvmrcPin("")).toThrow("x.y.z");
-  });
-
-  test("readDvmrcPin reads the project-root file; a missing file is actionable", () => {
+  // One trimmed x.y.z line and nothing else; the file read names a missing file actionably.
+  test("parses one trimmed x.y.z line, rejects anything else; readDvmrcPin reads the project-root file", () => {
+    const rows: { text: string; expected: Outcome<string> }[] = [
+      { text: "2.9.5\n", expected: { value: "2.9.5" } },
+      { text: "  2.9.5  ", expected: { value: "2.9.5" } },
+      { text: "v2.9.5", expected: { error: "x.y.z" } },
+      { text: "2.9", expected: { error: "x.y.z" } },
+      { text: "2.9.5\n2.9.6", expected: { error: "x.y.z" } },
+      { text: "", expected: { error: "x.y.z" } },
+    ];
+    for (const row of rows) {
+      expectOutcome(row.text, outcomeOf(() => parseDvmrcPin(row.text)), row.expected);
+    }
     writeFileSync(join(dir, DVMRC_FILENAME), "2.9.5\n");
     expect(readDvmrcPin(dir)).toBe("2.9.5");
     expect(() => readDvmrcPin(join(dir, "nowhere"))).toThrow("cannot read");
@@ -242,15 +303,12 @@ describe(".dvmrc reference version", () => {
 });
 
 describe("denoReleaseTarget", () => {
-  test("maps every supported platform-arch pair", () => {
+  test("maps every supported platform-arch pair; an unsupported pair throws, listing them", () => {
     expect(denoReleaseTarget("darwin", "arm64")).toBe("aarch64-apple-darwin");
     expect(denoReleaseTarget("darwin", "x64")).toBe("x86_64-apple-darwin");
     expect(denoReleaseTarget("linux", "arm64")).toBe("aarch64-unknown-linux-gnu");
     expect(denoReleaseTarget("linux", "x64")).toBe("x86_64-unknown-linux-gnu");
     expect(denoReleaseTarget("win32", "x64")).toBe("x86_64-pc-windows-msvc");
-  });
-
-  test("an unsupported pair throws, listing the supported ones", () => {
     expect(() => denoReleaseTarget("linux", "ia32")).toThrow("linux-ia32");
     expect(() => denoReleaseTarget("linux", "ia32")).toThrow(
       Object.keys(DENO_RELEASE_TARGETS).join(", "),
@@ -283,14 +341,11 @@ describe("latest-release resolution", () => {
     return { calls, fetchLike };
   }
 
-  test("fetchLatestDenoVersion parses the one-line pointer and strips the v", async () => {
+  test("fetchLatestDenoVersion parses the one-line pointer and strips the v; a dead endpoint or garbage names the manual escapes", async () => {
     const { fetchLike } = fetchServing({ [DENO_LATEST_URL]: "v2.11.3\n" });
     expect(await fetchLatestDenoVersion(fetchLike)).toBe("2.11.3");
-  });
-
-  test("a dead endpoint (or garbage) is a clear error naming the manual escapes", async () => {
-    const { fetchLike } = fetchServing({ [DENO_LATEST_URL]: { "status": 500 } });
-    await expect(fetchLatestDenoVersion(fetchLike)).rejects.toThrow(SIDECAR_DENO_ENV);
+    const { fetchLike: dead } = fetchServing({ [DENO_LATEST_URL]: { "status": 500 } });
+    await expect(fetchLatestDenoVersion(dead)).rejects.toThrow(SIDECAR_DENO_ENV);
     // A malformed 200 body carries the SAME recovery guidance as a dead endpoint
     // (a deno-less machine has nothing else to act on), plus the parse detail.
     const { fetchLike: garbage } = fetchServing({ [DENO_LATEST_URL]: "<html>oops</html>" });
@@ -391,67 +446,86 @@ describe("downloadSidecar", () => {
     expect(leftovers).toEqual([]);
   });
 
-  test("a failing extractor is surfaced with its stderr", async () => {
-    const { fetchLike } = fakeFetch("hello");
-    await expect(
-      downloadSidecar(PIN, dir, HELLO_SHA256, {
+  // Every failure after the download is loud and names its cause: the extractor's stderr, a
+  // zip with no binary in it, or the HTTP status of a failed fetch.
+  test("a failing extractor, a binary-less extraction, and an HTTP error each fail naming the cause", async () => {
+    const rows: {
+      label: string;
+      body: string | null;
+      status: number;
+      runner?: (command: string, args: readonly string[]) => { status: number; stderr: string };
+      error: string;
+    }[] = [
+      {
+        label: "a failing extractor is surfaced with its stderr",
+        body: "hello",
+        status: 200,
+        runner: () => ({ "status": 9, "stderr": "bad zip" }),
+        error: "bad zip",
+      },
+      {
+        label: "an extractor that does not produce the binary fails loud",
+        body: "hello",
+        status: 200,
+        runner: () => ({ "status": 0, "stderr": "" }),
+        error: "did not produce",
+      },
+      {
+        label: "an HTTP error is surfaced with its status",
+        body: null,
+        status: 404,
+        error: "HTTP 404",
+      },
+    ];
+    for (const row of rows) {
+      const { fetchLike } = fakeFetch(row.body, row.status);
+      const failure = await downloadSidecar(PIN, dir, HELLO_SHA256, {
         "fetchLike": fetchLike,
         "platform": "darwin",
         "arch": "arm64",
-        "runner": () => ({ "status": 9, "stderr": "bad zip" }),
-      }),
-    ).rejects.toThrow("bad zip");
-  });
-
-  test("an extractor that does not produce the binary fails loud", async () => {
-    const { fetchLike } = fakeFetch("hello");
-    await expect(
-      downloadSidecar(PIN, dir, HELLO_SHA256, {
-        "fetchLike": fetchLike,
-        "platform": "darwin",
-        "arch": "arm64",
-        "runner": () => ({ "status": 0, "stderr": "" }),
-      }),
-    ).rejects.toThrow("did not produce");
-  });
-
-  test("an HTTP error is surfaced with its status", async () => {
-    const { fetchLike } = fakeFetch(null, 404);
-    await expect(
-      downloadSidecar(PIN, dir, HELLO_SHA256, {
-        "fetchLike": fetchLike,
-        "platform": "darwin",
-        "arch": "arm64",
-      }),
-    ).rejects.toThrow("HTTP 404");
+        ...(row.runner === undefined ? {} : { "runner": row.runner }),
+      }).then(() => "(resolved)", (err: Error) => err.message);
+      expect({ label: row.label, failure }).toEqual({
+        label: row.label,
+        failure: expect.stringContaining(row.error),
+      });
+    }
   });
 });
 
 describe("ensureSidecar", () => {
-  test("running under a real deno is a no-op: our own runtime IS the answer", async () => {
-    // Never downloads from a checkout -- a fetch here would be a live network call on
-    // every `agent start`.
-    const bin = await ensureSidecar(dir, {
-      fetchLike: () => Promise.reject(new Error("must not fetch")),
-    });
-    expect(bin).toBe(runtimeExecPath() ?? "(not under deno)");
-  });
-
-  test("an env override wins and still never downloads", async () => {
-    process.env[SIDECAR_DENO_ENV] = "/opt/deno/bin/deno";
-    const bin = await ensureSidecar(dir, {
-      fetchLike: () => Promise.reject(new Error("must not fetch")),
-    });
-    expect(bin).toBe("/opt/deno/bin/deno");
-  });
-
-  test("a PATH deno answers with no download -- the user's toolchain wins", async () => {
-    const bin = await ensureSidecar(dir, {
-      "runtimeExecPath": null,
-      "findDeno": () => "/opt/homebrew/bin/deno",
-      fetchLike: () => Promise.reject(new Error("must not fetch")),
-    });
-    expect(bin).toBe("/opt/homebrew/bin/deno");
+  // A fetch from any rung above "absent" would be a live network call on every `agent start`.
+  test("the running deno, an env override, or a PATH deno answers with no download", async () => {
+    const mustNotFetch = (): Promise<Response> => Promise.reject(new Error("must not fetch"));
+    const rows: {
+      label: string;
+      override?: string;
+      opts: Omit<Parameters<typeof ensureSidecar>[1], "fetchLike">;
+      bin: string;
+    }[] = [
+      {
+        label: "running under a real deno is a no-op: our own runtime IS the answer",
+        opts: {},
+        bin: runtimeExecPath() ?? "(not under deno)",
+      },
+      {
+        label: "an env override wins and still never downloads",
+        override: "/opt/deno/bin/deno",
+        opts: {},
+        bin: "/opt/deno/bin/deno",
+      },
+      {
+        label: "a PATH deno answers with no download -- the user's toolchain wins",
+        opts: { "runtimeExecPath": null, "findDeno": () => "/opt/homebrew/bin/deno" },
+        bin: "/opt/homebrew/bin/deno",
+      },
+    ];
+    for (const row of rows) {
+      if (row.override === undefined) delete process.env[SIDECAR_DENO_ENV];
+      else process.env[SIDECAR_DENO_ENV] = row.override;
+      const bin = await ensureSidecar(dir, { ...row.opts, fetchLike: mustNotFetch });
+      expect({ label: row.label, bin }).toEqual({ label: row.label, bin: row.bin });
+    }
   });
 
   test("nothing anywhere: resolves the LATEST release, verifies its published sha256, provisions", async () => {

@@ -18,8 +18,8 @@ const CONFIG: ProjectConfig = {
   "proxyMaxVersion": "1.10.30",
 };
 
-function writeProxyPackage(versionJson: string): void {
-  const pkgDir = join(dir, "node_modules", "@jeffreycao", "copilot-api");
+function writeProxyPackage(root: string, versionJson: string): void {
+  const pkgDir = join(root, "node_modules", "@jeffreycao", "copilot-api");
   mkdirSync(pkgDir, { recursive: true });
   writeFileSync(join(pkgDir, "package.json"), versionJson);
 }
@@ -36,20 +36,21 @@ afterEach(() => {
 });
 
 describe("installedProxyVersion", () => {
-  test("reads the installed proxy package version", () => {
-    writeProxyPackage(JSON.stringify({ "version": "1.10.30" }));
-
-    expect(installedProxyVersion(dir)).toBe("1.10.30");
-  });
-
-  test("returns null for missing, malformed, or versionless package metadata", () => {
-    expect(installedProxyVersion(dir)).toBeNull();
-
-    writeProxyPackage("{ nope");
-    expect(installedProxyVersion(dir)).toBeNull();
-
-    writeProxyPackage(JSON.stringify({ "name": "@jeffreycao/copilot-api" }));
-    expect(installedProxyVersion(dir)).toBeNull();
+  // Only a parseable package.json carrying a version answers; a missing package, unparseable
+  // metadata, or metadata without a version all read as "not installed", never a throw.
+  test("reads the installed version, or null for missing, malformed, or versionless metadata", () => {
+    const rows: { pkg: string | null; version: string | null }[] = [
+      { pkg: JSON.stringify({ "version": "1.10.30" }), version: "1.10.30" },
+      { pkg: null, version: null },
+      { pkg: "{ nope", version: null },
+      { pkg: JSON.stringify({ "name": "@jeffreycao/copilot-api" }), version: null },
+    ];
+    for (const [i, { pkg, version }] of rows.entries()) {
+      const root = join(dir, String(i));
+      mkdirSync(root);
+      if (pkg !== null) writeProxyPackage(root, pkg);
+      expect({ pkg, version: installedProxyVersion(root) }).toEqual({ pkg, version });
+    }
   });
 });
 

@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
-import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import {
+  CopilotEnvConfig,
+  type GlobalMapKey,
+  type GlobalPatch,
+} from "../src/copilot_api/env_config.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
   daemonClientHeaders,
@@ -217,69 +221,149 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
   );
 });
 
-test("resolveLaunchCredential: the copilot device-flow token skips passthrough but still runs under the probed identity", async () => {
-  tmpHome();
-  new Credential().store("copilot", "gho_device_flow");
-  const probe = probeSpy(null);
+// One decision table over the single-step launches: (profile, stored credential, passthrough
+// config, TTY, identity selector) -> the credential handed to the daemon, the tokens probed, the
+// logins run. A wrong row is a PAT sent raw, a daemon under the wrong identity, or an interactive
+// login where a resolved token (or a headless run) forbids one.
+test("resolveLaunchCredential: the credential, probe, and login decision per stored credential, config, and TTY", async () => {
+  type Launched = Awaited<ReturnType<typeof resolveLaunchCredential>>["credential"];
+  const acceptingProbe = (): Promise<Response> =>
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+  const rows: Array<{
+    name: string;
+    profile: Profile;
+    /** The DEFAULT slot's stored credential. */
+    stored: { provider: "gh-token" | "copilot"; token: string } | null;
+    passthrough?: "on" | "off";
+    isTTY: boolean;
+    /** A spy answering this id, or the real selector over a probe fetch that accepts. */
+    identity: { spy: string | null } | "real";
+    /** What the interactive login stores when it runs. */
+    loginStores?: { provider: "copilot"; token: string };
+    credential: Launched;
+    probedTokens: string[];
+    logins: Profile[];
+  }> = [
+    {
+      // The daemon exchanges the token itself, and the codex identity (no id header) is what the
+      // client-headers shim applies upstream: one identity per credential, passthrough or not.
+      name: "copilot device-flow token: no passthrough, probed identity",
+      profile: null,
+      stored: { provider: "copilot", token: "gho_device_flow" },
+      isTTY: false,
+      identity: { spy: null },
+      credential: {
+        kind: "token",
+        token: "gho_device_flow",
+        clientHeaders: daemonClientHeaders(UA, null),
+      },
+      probedTokens: ["gho_device_flow"],
+      logins: [],
+    },
+    {
+      name: "passthrough off overrides even a PAT; the identity is selected all the same",
+      profile: null,
+      stored: { provider: "gh-token", token: "ghp_forced_off" },
+      passthrough: "off",
+      isTTY: false,
+      identity: { spy: COPILOT_CLI_INTEGRATION_ID },
+      credential: {
+        kind: "token",
+        token: "ghp_forced_off",
+        clientHeaders: daemonClientHeaders(UA, COPILOT_CLI_INTEGRATION_ID),
+      },
+      probedTokens: ["ghp_forced_off"],
+      logins: [],
+    },
+    {
+      // The real selector: every credential is probed, and the codex identity is accepted first.
+      name: "passthrough on forces the shim for a non-PAT token, probed like any credential",
+      profile: null,
+      stored: { provider: "gh-token", token: "ghu_user_to_server" },
+      passthrough: "on",
+      isTTY: false,
+      identity: "real",
+      credential: {
+        kind: "pat",
+        token: "ghu_user_to_server",
+        clientHeaders: daemonClientHeaders(UA, null),
+      },
+      probedTokens: [],
+      logins: [],
+    },
+    {
+      name: "nothing resolved + no TTY: no login, no token, no shim",
+      profile: null,
+      stored: null,
+      isTTY: false,
+      identity: { spy: null },
+      credential: { kind: "none" },
+      probedTokens: [],
+      logins: [],
+    },
+    {
+      // copilot provider: exchange-capable, so a plain token and no passthrough shim; the fresh
+      // credential is the one probed.
+      name: "nothing resolved + TTY: logs in, then resolves the fresh credential",
+      profile: null,
+      stored: null,
+      isTTY: true,
+      identity: { spy: null },
+      loginStores: { provider: "copilot", token: "gho_after_login" },
+      credential: {
+        kind: "token",
+        token: "gho_after_login",
+        clientHeaders: daemonClientHeaders(UA, null),
+      },
+      probedTokens: ["gho_after_login"],
+      logins: [null],
+    },
+    {
+      // Hard-empty, not the default token: a named profile NEVER falls back to the default credential.
+      name: "a named profile never falls back to the default credential",
+      profile: WORK,
+      stored: { provider: "gh-token", token: "ghp_default_only" },
+      isTTY: false,
+      identity: { spy: COPILOT_CLI_INTEGRATION_ID },
+      credential: { kind: "none" },
+      probedTokens: [],
+      logins: [],
+    },
+  ];
+  for (const row of rows) {
+    dir = removeDir(dir);
+    resetIntegrationIdentityCache();
+    setIntegrationProbeFetch(null);
+    tmpHome();
+    if (row.stored) new Credential().store(row.stored.provider, row.stored.token);
+    if (row.passthrough) new CopilotEnvConfig().setProfile(null, { passthrough: row.passthrough });
+    const probe = probeSpy(row.identity === "real" ? null : row.identity.spy);
+    if (row.identity === "real") setIntegrationProbeFetch(acceptingProbe);
+    const logins: Profile[] = [];
 
-  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: loginMustNotRun,
-    userAgent: UA,
-    isTTY: false,
-    selectIdentity: probe.resolve,
-  })).credential;
+    const { credential } = await resolveLaunchCredential(row.profile, new CopilotEnvConfig(), {
+      interactiveLogin: (profile) => {
+        logins.push(profile);
+        if (row.loginStores) {
+          new Credential().store(row.loginStores.provider, row.loginStores.token);
+        }
+        return Promise.resolve();
+      },
+      userAgent: UA,
+      isTTY: row.isTTY,
+      ...(row.identity === "real" ? {} : { selectIdentity: probe.resolve }),
+    });
 
-  // The daemon exchanges the token itself, and the codex identity (no id header) is what the
-  // client-headers shim applies upstream: one identity per credential, passthrough or not.
-  expect(result).toEqual({
-    kind: "token",
-    token: "gho_device_flow",
-    clientHeaders: daemonClientHeaders(UA, null),
-  });
-  expect(probe.calls).toEqual([{ token: "gho_device_flow", userAgent: UA, pinned: null }]);
-});
-
-test("resolveLaunchCredential: `passthrough off` overrides even a PAT; the identity is selected all the same", async () => {
-  tmpHome();
-  new Credential().store("gh-token", "ghp_forced_off");
-  new CopilotEnvConfig().setProfile(null, { passthrough: "off" });
-  const probe = probeSpy(COPILOT_CLI_INTEGRATION_ID);
-
-  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: loginMustNotRun,
-    userAgent: UA,
-    isTTY: false,
-    selectIdentity: probe.resolve,
-  })).credential;
-
-  expect(result).toEqual({
-    kind: "token",
-    token: "ghp_forced_off",
-    clientHeaders: daemonClientHeaders(UA, COPILOT_CLI_INTEGRATION_ID),
-  });
-  expect(probe.calls).toEqual([{ token: "ghp_forced_off", userAgent: UA, pinned: null }]);
-});
-
-test("resolveLaunchCredential: `passthrough on` forces the shim for a non-PAT token, probed like any credential", async () => {
-  tmpHome();
-  new Credential().store("gh-token", "ghu_user_to_server");
-  new CopilotEnvConfig().setProfile(null, { passthrough: "on" });
-  // The real selector: every credential is probed, and the codex identity is accepted first.
-  setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
-  );
-
-  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: loginMustNotRun,
-    userAgent: UA,
-    isTTY: false,
-  })).credential;
-
-  expect(result).toEqual({
-    kind: "pat",
-    token: "ghu_user_to_server",
-    clientHeaders: daemonClientHeaders(UA, null),
-  });
+    expect({ name: row.name, credential, probedTokens: probe.calls.map((c) => c.token), logins })
+      .toEqual({
+        name: row.name,
+        credential: row.credential,
+        probedTokens: row.probedTokens,
+        logins: row.logins,
+      });
+    // Every probe runs under the daemon's User-Agent, unpinned.
+    for (const call of probe.calls) expect(call).toMatchObject({ userAgent: UA, pinned: null });
+  }
 });
 
 test("resolveLaunchCredential: a pinned integration-id reaches the probe as the pin", async () => {
@@ -375,74 +459,7 @@ test("resolveLaunchCredential: PAT + real probe -- the injected fetch's accepted
   });
 });
 
-test("resolveLaunchCredential: nothing resolved + no TTY -> no login, no token, no shim", async () => {
-  tmpHome();
-  let loginCalls = 0;
-
-  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: async () => {
-      loginCalls++;
-    },
-    userAgent: UA,
-    isTTY: false,
-  })).credential;
-
-  expect(loginCalls).toBe(0);
-  expect(result).toEqual({ kind: "none" });
-});
-
-test("resolveLaunchCredential: nothing resolved + TTY -> logs in, then resolves the fresh credential", async () => {
-  tmpHome();
-  const loggedInto: Profile[] = [];
-  const probe = probeSpy(null);
-
-  const result = (await resolveLaunchCredential(null, new CopilotEnvConfig(), {
-    interactiveLogin: async (profile) => {
-      loggedInto.push(profile);
-      new Credential().store("copilot", "gho_after_login");
-    },
-    userAgent: UA,
-    isTTY: true,
-    selectIdentity: probe.resolve,
-  })).credential;
-
-  expect(loggedInto).toEqual([null]);
-  // copilot provider: exchange-capable, so a plain token and no passthrough shim; the fresh
-  // credential is the one probed.
-  expect(result).toEqual({
-    kind: "token",
-    token: "gho_after_login",
-    clientHeaders: daemonClientHeaders(UA, null),
-  });
-  expect(probe.calls.map((c) => c.token)).toEqual(["gho_after_login"]);
-});
-
-test("resolveLaunchCredential: a named profile NEVER falls back to the default credential", async () => {
-  tmpHome();
-  new Credential().store("gh-token", "ghp_default_only");
-  let loginCalls = 0;
-
-  const result = (await resolveLaunchCredential(WORK, new CopilotEnvConfig(), {
-    interactiveLogin: async () => {
-      loginCalls++;
-    },
-    userAgent: UA,
-    isTTY: false,
-  })).credential;
-
-  expect(result).toEqual({ kind: "none" }); // hard-empty, not the default token
-  expect(loginCalls).toBe(0);
-});
-
 // --- the orphan-sweep exclusion set --------------------------------------------------
-
-test("listUntrackedOrphans: pids in the keep set are never listed", async () => {
-  tmpHome(); // the lock keep-signal scans the effective home, so it must be isolated
-  const listPids = () => Promise.resolve([100, 200, 300]);
-  expect(await listUntrackedOrphans(1, 2, new Set([200]), listPids)).toEqual([100, 300]);
-  expect(await listUntrackedOrphans(1, 2, new Set(), listPids)).toEqual([100, 200, 300]);
-  expect(await listUntrackedOrphans(1, 2, new Set([100, 200, 300]), listPids)).toEqual([]);
-});
 
 test("an UNPROVEN process scan skips the sweep and SAYS so; a proven-empty scan is silent", async () => {
   tmpHome();
@@ -461,84 +478,84 @@ test("an UNPROVEN process scan skips the sweep and SAYS so; a proven-empty scan 
   expect(provenEmpty).not.toContain("Skipping the orphan sweep");
 });
 
-test("a live daemon.lock holder is never listed for the sweep, whatever its argv", async () => {
+// The lock keep-signal reads every daemon home, default and profile alike: a daemon whose run-state
+// tracking was lost is protected by its lock alone, so a home the scan skipped would let the sweep
+// list it. This test process holds the lock, standing in for that daemon under an empty keep set.
+test("a live daemon.lock holder in any daemon home is never listed for the sweep, whatever its argv", async () => {
   const home = tmpHome();
-  // This test process holds the DEFAULT home's daemon lock, standing in for a daemon whose
-  // run-state tracking was lost -- with an empty keep set, only the lock protects it.
-  expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
-  try {
-    const listPids = () => Promise.resolve([process.pid, 333]);
-    expect(lockProtectedDaemonPids()).toEqual({ kind: "pids", pids: new Set([process.pid]) });
-    expect(await listUntrackedOrphans(1, 2, new Set(), listPids)).toEqual([333]);
-  } finally {
-    releaseFileLock(daemonLockPath(home));
-  }
-  // Control: with the lock released, the same pid IS sweepable again.
-  expect(lockProtectedDaemonPids()).toEqual({ kind: "pids", pids: new Set() });
-  expect(
-    await listUntrackedOrphans(1, 2, new Set(), () => Promise.resolve([process.pid, 333])),
-  ).toEqual([process.pid, 333]);
-});
-
-test("the lock keep-signal covers profile homes too", async () => {
-  tmpHome();
+  const listPids = () => Promise.resolve([process.pid, 333]);
   // Acquiring creates the profile home dir, which is what profileHomeNames enumerates.
-  const workHome = profileHome(WORK);
-  expect(acquireDaemonLockForLife(workHome, { waitMs: 0 })).toBe(true);
-  try {
-    expect(lockProtectedDaemonPids()).toEqual({ kind: "pids", pids: new Set([process.pid]) });
-    expect(
-      await listUntrackedOrphans(1, 2, new Set(), () => Promise.resolve([process.pid, 444])),
-    ).toEqual([444]);
-  } finally {
-    releaseFileLock(daemonLockPath(workHome));
+  for (const lockedHome of [home, profileHome(WORK)]) {
+    expect(acquireDaemonLockForLife(lockedHome, { waitMs: 0 })).toBe(true);
+    try {
+      expect({ lockedHome, spares: lockProtectedDaemonPids() }).toEqual({
+        lockedHome,
+        spares: { kind: "pids", pids: new Set([process.pid]) },
+      });
+      expect(await listUntrackedOrphans(1, 2, new Set(), listPids), lockedHome).toEqual([333]);
+    } finally {
+      releaseFileLock(daemonLockPath(lockedHome));
+    }
+    // Control: with the lock released, the same pid IS sweepable again.
+    expect(lockProtectedDaemonPids(), lockedHome).toEqual({ kind: "pids", pids: new Set() });
+    expect(await listUntrackedOrphans(1, 2, new Set(), listPids), lockedHome).toEqual([
+      process.pid,
+      333,
+    ]);
   }
 });
 
-test("an unreadable lock probe makes the sweep fail closed instead of reading as unprotected", async () => {
+// Two ways the lock probe fails to name a holder, one verdict: indeterminate, so the sweep lists
+// nothing and the holder stop skips. Reading either as "nobody there" would sweep a protected daemon.
+test("a lock probe that cannot name a holder reads indeterminate: the sweep lists nothing, the holder stop skips", async () => {
   const home = tmpHome();
   const listPids = () => Promise.resolve([333]);
   // Control: with no lock at all, 333 is sweepable.
   expect(await listUntrackedOrphans(1, 2, new Set(), listPids)).toEqual([333]);
 
-  // A directory at the marker path: the probe's marker read fails with a non-ENOENT error,
-  // so the home's lock state is "failed to look", not "nobody there".
-  mkdirSync(daemonLockPath(home), { recursive: true });
-  expect(lockProtectedDaemonPids()).toEqual({ kind: "indeterminate", home });
-  expect(await listUntrackedOrphans(1, 2, new Set(), listPids)).toEqual([]);
-});
-
-test("a held lock whose marker names nobody also reads indeterminate, and the holder stop skips", async () => {
-  const home = tmpHome();
-  // Hold the lock, then corrupt the marker: the OS lock proves SOMEONE lives, but no pid
-  // can be named -- neither the sweep nor the holder stop may act on that.
-  expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
-  try {
-    writeFileSync(daemonLockPath(home), "not a marker\n");
-    expect(daemonLockHolderPid(home)).toBe(null); // nobody NAMEABLE to signal
-    expect(lockProtectedDaemonPids()).toEqual({ kind: "indeterminate", home });
-    expect(await listUntrackedOrphans(1, 2, new Set(), () => Promise.resolve([333]))).toEqual([]);
-
-    // The full cleanup neither signals us (the anonymous holder) nor throws.
-    await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
-  } finally {
-    releaseFileLock(daemonLockPath(home));
+  const rows: Array<{ name: string; arrange: () => void; restore: () => void }> = [
+    {
+      // A directory at the marker path: the probe's marker read fails with a non-ENOENT error,
+      // so the home's lock state is "failed to look", not "nobody there".
+      name: "unreadable marker",
+      arrange: () => mkdirSync(daemonLockPath(home), { recursive: true }),
+      restore: () => rmSync(daemonLockPath(home), { recursive: true, force: true }),
+    },
+    {
+      // Hold the lock, then corrupt the marker: the OS lock proves SOMEONE lives, but no pid can
+      // be named.
+      name: "held lock whose marker names nobody",
+      arrange: () => {
+        expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
+        writeFileSync(daemonLockPath(home), "not a marker\n");
+        expect(daemonLockHolderPid(home)).toBe(null); // nobody NAMEABLE to signal
+      },
+      restore: () => releaseFileLock(daemonLockPath(home)),
+    },
+  ];
+  for (const row of rows) {
+    row.arrange();
+    try {
+      expect({ name: row.name, spares: lockProtectedDaemonPids() }).toEqual({
+        name: row.name,
+        spares: { kind: "indeterminate", home },
+      });
+      expect(await listUntrackedOrphans(1, 2, new Set(), listPids), row.name).toEqual([]);
+      // The full cleanup neither signals anyone (the anonymous holder is us) nor throws.
+      await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
+    } finally {
+      row.restore();
+    }
   }
 });
 
-test("trackedDaemonPids collects the default AND every profile's tracked pid", () => {
+// The keep set spans the default daemon AND every profile's; a port-only reservation tracks no pid.
+test("the exclusion set end-to-end: the default's and another profile's tracked daemons are not orphans", async () => {
   tmpHome();
   writeRunState({ pid: 111 });
   writeRunState({ pid: 222, port: 4242 }, WORK);
   writeRunState({ port: 4343 }, parseProfileName("portonly"));
-
-  expect(trackedDaemonPids()).toEqual(new Set([111, 222]));
-});
-
-test("the exclusion set end-to-end: another profile's tracked daemon is not an orphan", async () => {
-  tmpHome();
-  writeRunState({ pid: 222, port: 4242 }, WORK);
-  const listPids = () => Promise.resolve([222, 333]);
+  const listPids = () => Promise.resolve([111, 222, 333]);
   const orphans = await listUntrackedOrphans(
     process.pid,
     process.ppid,
@@ -1146,78 +1163,107 @@ test.skipIf(process.platform === "win32")(
 
 // --- resolveStartPort: the branch table -----------------------------------------------
 
-test("resolveStartPort: an inverted range (min > max) is a clear error", async () => {
-  tmpHome();
-  new CopilotEnvConfig().set({ "daemon.min-port": 5000, "daemon.max-port": 4000 });
-  await expect(
-    resolveStartPort(undefined, false, null, false, new CopilotEnvConfig()),
-  ).rejects.toThrow(
-    "invalid port range: daemon.min-port (5000) is greater than daemon.max-port (4000); fix it with " +
-      "`agent config --set daemon.min-port <n>` / `agent config --set daemon.max-port <n>`.",
-  );
-});
-
-test("resolveStartPort: a pinned out-of-range port fails with the range message", async () => {
-  tmpHome();
-  new CopilotEnvConfig().set({ "daemon.min-port": 4000, "daemon.max-port": 5000 });
-  await expect(resolveStartPort(3999, false, null, false, new CopilotEnvConfig())).rejects.toThrow(
-    "requested port 3999 is out of range; the proxy port must be between 4000 and 5000 " +
-      "(`agent config --set daemon.min-port <n>` / `agent config --set daemon.max-port <n>` change the range).",
-  );
-});
-
-test("resolveStartPort: a pinned busy port fails -- never silently moves off the pin", async () => {
-  tmpHome();
-  await withBusyPort(async (busy) => {
+// (config, requested port) -> the range error naming the fix. A wrong row is a start that silently
+// picks a port outside the operator's range.
+test("resolveStartPort: a port outside the configured range is a clear error, whichever side asks", async () => {
+  const rows: Array<{ config: GlobalPatch; requested: number | undefined; error: string }> = [
+    {
+      config: { "daemon.min-port": 5000, "daemon.max-port": 4000 },
+      requested: undefined,
+      error:
+        "invalid port range: daemon.min-port (5000) is greater than daemon.max-port (4000); fix it with " +
+        "`agent config --set daemon.min-port <n>` / `agent config --set daemon.max-port <n>`.",
+    },
+    {
+      config: { "daemon.min-port": 4000, "daemon.max-port": 5000 },
+      requested: 3999,
+      error: "requested port 3999 is out of range; the proxy port must be between 4000 and 5000 " +
+        "(`agent config --set daemon.min-port <n>` / `agent config --set daemon.max-port <n>` change the range).",
+    },
+    {
+      config: { "daemon.port": 1500, "daemon.min-port": 2000, "daemon.max-port": 3000 },
+      requested: undefined,
+      error: "configured port 1500 is outside the allowed range 2000-3000; run " +
+        "`agent config --set daemon.port <n>` within the range, or adjust daemon.min-port/daemon.max-port.",
+    },
+  ];
+  for (const row of rows) {
+    dir = removeDir(dir);
+    tmpHome();
+    new CopilotEnvConfig().set(row.config);
     await expect(
-      resolveStartPort(busy, false, null, false, new CopilotEnvConfig()),
-    ).rejects.toThrow(
-      `requested port ${busy} is busy (held by another process). Free it or pick another --port.`,
-    );
-  });
+      resolveStartPort(row.requested, false, null, false, new CopilotEnvConfig()),
+    ).rejects.toThrow(row.error);
+  }
 });
 
-test("resolveStartPort: a pinned free port is used as-is", async () => {
-  tmpHome();
-  const port = await freePort();
-  expect(await resolveStartPort(port, false, null, false, new CopilotEnvConfig())).toBe(port);
-});
-
-test("resolveStartPort: strict-port makes a busy DEFAULT port fatal instead of auto-incrementing", async () => {
-  tmpHome();
-  await withBusyPort(async (busy) => {
-    new CopilotEnvConfig().set({ "daemon.port": busy, "daemon.strict-port": true });
-    await expect(
-      resolveStartPort(undefined, false, null, false, new CopilotEnvConfig()),
-    ).rejects.toThrow(
-      `port ${busy} is busy and auto-increment is disabled (\`daemon.strict-port\`); free it, pick another \`--port\`, or set \`agent config --set daemon.strict-port false\`.`,
-    );
-  });
-});
-
-test("resolveStartPort: a busy default WITHOUT strict-port auto-increments to a free port", async () => {
-  tmpHome();
-  await withBusyPort(async (busy) => {
-    new CopilotEnvConfig().set({ "daemon.port": busy });
-    const resolved = await resolveStartPort(undefined, false, null, false, new CopilotEnvConfig());
-    expect(resolved).not.toBe(busy);
-    expect(resolved).toBeGreaterThan(busy);
-  });
-});
-
-test("resolveStartPort: a configured default port outside the range is a clear error", async () => {
-  tmpHome();
-  new CopilotEnvConfig().set({
-    "daemon.port": 1500,
-    "daemon.min-port": 2000,
-    "daemon.max-port": 3000,
-  });
-  await expect(
-    resolveStartPort(undefined, false, null, false, new CopilotEnvConfig()),
-  ).rejects.toThrow(
-    "configured port 1500 is outside the allowed range 2000-3000; run " +
-      "`agent config --set daemon.port <n>` within the range, or adjust daemon.min-port/daemon.max-port.",
-  );
+// (pinned or configured default, busy or free, strict-port) -> the port used or the refusal. A wrong
+// row moves a start off its pinned port, or auto-increments where the operator forbade it.
+test("resolveStartPort: a pin is used or refused as-is; a busy default moves unless strict-port forbids it", async () => {
+  const rows: Array<{
+    name: string;
+    pinned: boolean;
+    busy: boolean;
+    strict: boolean;
+    outcome: "same" | "moved" | ((port: number) => string);
+  }> = [
+    { name: "pinned free port", pinned: true, busy: false, strict: false, outcome: "same" },
+    {
+      name: "pinned busy port",
+      pinned: true,
+      busy: true,
+      strict: false,
+      outcome: (busy) =>
+        `requested port ${busy} is busy (held by another process). Free it or pick another --port.`,
+    },
+    {
+      name: "busy default under strict-port",
+      pinned: false,
+      busy: true,
+      strict: true,
+      outcome: (busy) =>
+        `port ${busy} is busy and auto-increment is disabled (\`daemon.strict-port\`); free it, pick another \`--port\`, or set \`agent config --set daemon.strict-port false\`.`,
+    },
+    {
+      name: "busy default without strict-port",
+      pinned: false,
+      busy: true,
+      strict: false,
+      outcome: "moved",
+    },
+  ];
+  for (const row of rows) {
+    dir = removeDir(dir);
+    tmpHome();
+    const run = async (port: number): Promise<void> => {
+      if (!row.pinned) {
+        new CopilotEnvConfig().set({
+          "daemon.port": port,
+          ...(row.strict ? { "daemon.strict-port": true } : {}),
+        });
+      }
+      const resolved = resolveStartPort(
+        row.pinned ? port : undefined,
+        false,
+        null,
+        false,
+        new CopilotEnvConfig(),
+      );
+      if (typeof row.outcome === "function") {
+        await expect(resolved).rejects.toThrow(row.outcome(port));
+        return;
+      }
+      const chosen = await resolved;
+      if (row.outcome === "same") {
+        expect({ name: row.name, chosen }).toEqual({ name: row.name, chosen: port });
+      } else {
+        expect(chosen).not.toBe(port);
+        expect(chosen).toBeGreaterThan(port);
+      }
+    };
+    if (row.busy) await withBusyPort(run);
+    else await run(await freePort());
+  }
 });
 
 test("resolveStartPort: a named profile's reservation is honored, even after the range narrowed past it", async () => {
@@ -1245,14 +1291,9 @@ test("resolveStartPort: strict-port is DEFAULT-daemon-only -- a profile's busy r
   });
 });
 
-test("resolveStartPort: reserve=false peeks at a profile's candidate without recording it", async () => {
-  tmpHome();
-  const peeked = await resolveStartPort(undefined, false, WORK, false, new CopilotEnvConfig());
-  expect(peeked).toBeGreaterThan(0);
-  expect(CopilotEnvRunState.forProfile(WORK).read().port).toBeUndefined();
-});
-
-test("resolveStartPort: reserve=true persists a profile's reservation", async () => {
+// The reserve flag decides whether a profile's candidate is recorded: a peek that recorded would pin
+// a port the start never used; a reservation that did not would lose the profile's stable port.
+test("resolveStartPort: reserve=false peeks at a profile's candidate, reserve=true records it", async () => {
   tmpHome();
   // A one-port range keeps the candidate equal to the recorded reservation. The port must be free:
   // the scan clamps to the range, so a busy sole port throws (after reserve=true has already
@@ -1261,9 +1302,21 @@ test("resolveStartPort: reserve=true persists a profile's reservation", async ()
   // 4141 always seeds the scan's used set, so a pick colliding with it would exhaust the range.
   expect(free).not.toBe(4141);
   new CopilotEnvConfig().set({ "daemon.min-port": free, "daemon.max-port": free });
-  const reserved = await resolveStartPort(undefined, false, WORK, true, new CopilotEnvConfig());
-  expect(reserved).toBe(free);
-  expect(CopilotEnvRunState.forProfile(WORK).read().port).toBe(reserved);
+  for (const reserve of [false, true]) {
+    const resolved = await resolveStartPort(
+      undefined,
+      false,
+      WORK,
+      reserve,
+      new CopilotEnvConfig(),
+    );
+    expect({ reserve, resolved, recorded: CopilotEnvRunState.forProfile(WORK).read().port })
+      .toEqual({
+        reserve,
+        resolved: free,
+        recorded: reserve ? free : undefined,
+      });
+  }
 });
 
 // --- awaitReadiness: the EADDRINUSE bind race ------------------------------------------
@@ -1274,46 +1327,63 @@ function seedLog(home: string, content: string): string {
   return logFile;
 }
 
-test("awaitReadiness: a pinned port that loses the bind race fails, never relaunches", async () => {
-  const home = tmpHome();
-  const logFile = seedLog(home, "error: EADDRINUSE address already in use\n");
-  let relaunches = 0;
-  await expect(
-    awaitReadiness({
-      pid: DEAD_PID,
+// (log content, pin, strict-port) -> the failure's own wording, and never a relaunch. A wrong row
+// relaunches off a pinned port, or reports a lost bind race as a plain start failure.
+test("awaitReadiness: a lost bind race under a pin or strict-port, or a dead daemon, fails in its own words and never relaunches", async () => {
+  const rows: Array<{
+    log: string;
+    port: number;
+    pinnedPort: number | undefined;
+    strict: boolean;
+    error: (logFile: string) => string;
+  }> = [
+    {
+      log: "error: EADDRINUSE address already in use\n",
       port: 4545,
-      logFile,
-      profile: null,
       pinnedPort: 4545,
-      state: new CopilotEnvRunState(),
-      relaunch: () => {
-        relaunches++;
-        return DEAD_PID;
-      },
-      config: new CopilotEnvConfig(),
-    }),
-  ).rejects.toThrow(`port 4545 was taken by another process just before launch. See ${logFile}`);
-  expect(relaunches).toBe(0);
-});
-
-test("awaitReadiness: strict-port turns the default daemon's bind race fatal, with the strict wording", async () => {
-  const home = tmpHome();
-  new CopilotEnvConfig().set({ "daemon.strict-port": true });
-  const logFile = seedLog(home, "EADDRINUSE\n");
-  await expect(
-    awaitReadiness({
-      pid: DEAD_PID,
+      strict: false,
+      error: (logFile) =>
+        `port 4545 was taken by another process just before launch. See ${logFile}`,
+    },
+    {
+      log: "EADDRINUSE\n",
       port: 4646,
-      logFile,
-      profile: null,
       pinnedPort: undefined,
-      state: new CopilotEnvRunState(),
-      relaunch: () => DEAD_PID,
-      config: new CopilotEnvConfig(),
-    }),
-  ).rejects.toThrow(
-    `port 4646 was taken by another process just before launch (daemon.strict-port is on, so no auto-increment). See ${logFile}`,
-  );
+      strict: true,
+      error: (logFile) =>
+        `port 4646 was taken by another process just before launch (daemon.strict-port is on, so no auto-increment). See ${logFile}`,
+    },
+    {
+      log: "Failed to get Copilot token: 403\n",
+      port: 4747,
+      pinnedPort: undefined,
+      strict: false,
+      error: (logFile) => `the proxy failed to start. See ${logFile}`,
+    },
+  ];
+  for (const row of rows) {
+    dir = removeDir(dir);
+    const home = tmpHome();
+    if (row.strict) new CopilotEnvConfig().set({ "daemon.strict-port": true });
+    const logFile = seedLog(home, row.log);
+    let relaunches = 0;
+    await expect(
+      awaitReadiness({
+        pid: DEAD_PID,
+        port: row.port,
+        logFile,
+        profile: null,
+        pinnedPort: row.pinnedPort,
+        state: new CopilotEnvRunState(),
+        relaunch: () => {
+          relaunches++;
+          return DEAD_PID;
+        },
+        config: new CopilotEnvConfig(),
+      }),
+    ).rejects.toThrow(row.error(logFile));
+    expect({ port: row.port, relaunches }).toEqual({ port: row.port, relaunches: 0 });
+  }
 });
 
 test("awaitReadiness: an unpinned bind race retries on a different port and tails to readiness", async () => {
@@ -1348,23 +1418,6 @@ test("awaitReadiness: an unpinned bind race retries on a different port and tail
   expect(state.read().pid).toBe(process.pid);
   expect(state.read().port).toBe(live.port);
   expect(readFileSync(logFile, "utf-8")).toContain("Listening on:");
-});
-
-test("awaitReadiness: a dead daemon without a bind race fails with the plain start error", async () => {
-  const home = tmpHome();
-  const logFile = seedLog(home, "Failed to get Copilot token: 403\n");
-  await expect(
-    awaitReadiness({
-      pid: DEAD_PID,
-      port: 4747,
-      logFile,
-      profile: null,
-      pinnedPort: undefined,
-      state: new CopilotEnvRunState(),
-      relaunch: () => DEAD_PID,
-      config: new CopilotEnvConfig(),
-    }),
-  ).rejects.toThrow(`the proxy failed to start. See ${logFile}`);
 });
 
 // --- the unprovable-liveness posture (probe cannot run: every pid reads "unproven") ------
@@ -1446,21 +1499,61 @@ test("applyDefaultConfig: a nested projection merges into contextManagement", ()
   ]);
 });
 
-test("applyDefaultConfig: --del of an opt-in key clears OUR recorded write on the next apply", () => {
-  const { paths, config } = projectionFixture();
-  const envConfig = new CopilotEnvConfig();
-  envConfig.set({ "proxy.responses.context-management": true });
-  config.save({ contextManagement: { messages: true } });
-  applyDefaultConfig(null, paths);
-  expect(config.load().contextManagement).toEqual({ messages: true, responses: true });
+// The ownership record covers every opt-in key, nested or top-level: after --del the next apply
+// removes OUR write and nothing else. A key the clearing missed would outlive the operator's unset.
+test("applyDefaultConfig: --del of any opt-in key clears OUR recorded write on the next apply", () => {
+  const rows: Array<{
+    key: GlobalMapKey;
+    set: GlobalPatch;
+    seed: Record<string, unknown>;
+    projected: (doc: Record<string, unknown>) => unknown;
+    afterSet: unknown;
+    afterDel: unknown;
+    /** A top-level key the clear must remove outright, not leave as undefined. */
+    absentKey?: string;
+  }> = [
+    {
+      key: "proxy.responses.context-management",
+      set: { "proxy.responses.context-management": true },
+      seed: { contextManagement: { messages: true } },
+      projected: (doc) => doc.contextManagement,
+      afterSet: { messages: true, responses: true },
+      afterDel: { messages: true },
+    },
+    {
+      key: "proxy.claude-token-multiplier",
+      set: { "proxy.claude-token-multiplier": 1.3 },
+      seed: {},
+      projected: (doc) => doc.claudeTokenMultiplier,
+      afterSet: 1.3,
+      afterDel: undefined,
+      absentKey: "claudeTokenMultiplier",
+    },
+  ];
+  for (const row of rows) {
+    dir = removeDir(dir);
+    const { paths, config } = projectionFixture();
+    const envConfig = new CopilotEnvConfig();
+    envConfig.set(row.set);
+    config.save(row.seed);
+    applyDefaultConfig(null, paths);
+    expect({ key: row.key, value: row.projected(config.load()) }).toEqual({
+      key: row.key,
+      value: row.afterSet,
+    });
 
-  envConfig.del("proxy.responses.context-management");
-  applyDefaultConfig(null, paths);
+    envConfig.del(row.key);
+    applyDefaultConfig(null, paths);
 
-  const doc = config.load();
-  expect(doc.contextManagement).toEqual({ messages: true });
-  expect(doc.smallModel).toBe("gpt-5-mini");
-  expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
+    const doc = config.load();
+    expect({ key: row.key, value: row.projected(doc) }).toEqual({
+      key: row.key,
+      value: row.afterDel,
+    });
+    if (row.absentKey !== undefined) expect(row.absentKey in doc).toBe(false);
+    expect(doc.smallModel).toBe("gpt-5-mini");
+    expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
+  }
 });
 
 test("applyDefaultConfig: with the opt-in key unset, a hand-edited value we never projected survives", () => {
@@ -1514,20 +1607,6 @@ test("applyDefaultConfig: a non-record in a nested path's way is replaced, not c
   applyDefaultConfig(null, paths);
 
   expect(config.load().contextManagement).toEqual({ responses: false });
-});
-
-test("applyDefaultConfig: ownership clearing covers every opt-in key (claude-token-multiplier)", () => {
-  const { paths, config } = projectionFixture();
-  const envConfig = new CopilotEnvConfig();
-  envConfig.set({ "proxy.claude-token-multiplier": 1.3 });
-  applyDefaultConfig(null, paths);
-  expect(config.load().claudeTokenMultiplier).toBe(1.3);
-
-  envConfig.del("proxy.claude-token-multiplier");
-  applyDefaultConfig(null, paths);
-
-  expect("claudeTokenMultiplier" in config.load()).toBe(false);
-  expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
 });
 
 // --- withStartLock: the ONE owning scope of the global start lock ------------------------

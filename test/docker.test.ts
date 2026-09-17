@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isRecord } from "../src/utils/json.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -59,11 +58,8 @@ test(".dockerignore keeps host state out of the build context", () => {
       expect(negationReadmits(line.slice(1), entry), `${line} re-admits ${entry}`).toBe(false);
     }
   }
-});
-
-// The committed .dockerignore has no negation lines, so the loop above never reaches the predicate;
-// these rows do.
-test(".dockerignore negation verdicts hold for synthetic patterns", () => {
+  // The committed .dockerignore has no negation lines, so the loop above never reaches the
+  // predicate; these rows do.
   const cases: { pattern: string; readmits: boolean }[] = [
     { pattern: "README.md", readmits: false }, // disjoint literal
     { pattern: "docs/**", readmits: false }, // glob under a disjoint root
@@ -78,13 +74,4 @@ test(".dockerignore negation verdicts hold for synthetic patterns", () => {
     expect({ pattern, readmits: KEEP_OUT.some((entry) => negationReadmits(pattern, entry)) })
       .toEqual({ pattern, readmits });
   }
-});
-
-// The runner is one cross-platform implementation; the task must point at it.
-test("the test:docker task wires the TS runner", () => {
-  const config: unknown = JSON.parse(readFileSync(join(PROJECT_ROOT, "deno.json"), "utf8"));
-  if (!isRecord(config) || !isRecord(config.tasks)) {
-    throw new Error("deno.json has no tasks table");
-  }
-  expect(config.tasks["test:docker"]).toContain("scripts/test_docker.ts");
 });

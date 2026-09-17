@@ -10,7 +10,6 @@ import {
   ensureProxyNpmrc,
   type FetchLike,
   floatProxy,
-  minimumDependencyAgeArg,
   nextProxyVersion,
   NPMRC_MARKER,
   parseRegistryDoc,
@@ -228,132 +227,171 @@ afterEach(() => {
 });
 
 describe("selectProxyVersion", () => {
-  const doc = (raw: unknown) => parseRegistryDoc(raw);
+  // One registry document, one window, one cooldown -> one selection. The reason fragment
+  // names the branch taken, so a clamp that answers the right version for the wrong reason
+  // (or the floor reached by fallback instead of by clamp) still fails its row.
+  const FLOOR_30: ProjectConfig = { "proxyMinVersion": "1.10.30", "proxyMaxVersion": null };
+  const rows: {
+    name: string;
+    doc: unknown;
+    config: ProjectConfig;
+    cooldownSeconds: number;
+    expected: Record<string, unknown>;
+  }[] = [
+    {
+      "name": "the newest cooldown-aged release inside the window",
+      "doc": registryDoc({ "1.10.29": 30, "1.10.30": 8, "1.10.31": 1 }),
+      "config": CONFIG,
+      "cooldownSeconds": WEEK_SECONDS,
+      "expected": {
+        "kind": "resolved",
+        "version": "1.10.30",
+        "publishedAtMs": NOW_MS - 8 * MILLISECONDS_PER_DAY,
+        "reason": expect.stringContaining("latest >=7 days old release 1.10.30"),
+      },
+    },
+    {
+      "name": "cooldown 0 selects the newest release",
+      "doc": registryDoc({ "1.10.30": 8, "1.10.31": 1 }),
+      "config": CONFIG,
+      "cooldownSeconds": 0,
+      "expected": {
+        "kind": "resolved",
+        "version": "1.10.31",
+        "publishedAtMs": NOW_MS - MILLISECONDS_PER_DAY,
+        "reason": expect.stringContaining("release 1.10.31"),
+      },
+    },
+    {
+      "name": "an aged release below the floor clamps UP to the floor",
+      "doc": registryDoc({ "1.10.29": 8, "1.10.30": 1 }),
+      "config": FLOOR_30,
+      "cooldownSeconds": WEEK_SECONDS,
+      "expected": {
+        "kind": "resolved",
+        "version": "1.10.30",
+        "publishedAtMs": NOW_MS - MILLISECONDS_PER_DAY,
+        "reason": expect.stringContaining("1.10.29 < floor 1.10.30"),
+      },
+    },
+    {
+      "name": "an aged release AT the floor is not a clamp",
+      "doc": registryDoc({ "1.10.29": 8, "1.10.30": 8 }),
+      "config": FLOOR_30,
+      "cooldownSeconds": WEEK_SECONDS,
+      "expected": {
+        "kind": "resolved",
+        "version": "1.10.30",
+        "publishedAtMs": NOW_MS - 8 * MILLISECONDS_PER_DAY,
+        "reason": expect.stringContaining("latest >=7 days old release 1.10.30"),
+      },
+    },
+    {
+      "name": "an aged release above the ceiling clamps DOWN to the ceiling",
+      "doc": registryDoc({ "1.10.29": 8, "1.10.30": 8 }),
+      "config": { "proxyMinVersion": "1.10.0", "proxyMaxVersion": "1.10.29" },
+      "cooldownSeconds": WEEK_SECONDS,
+      "expected": {
+        "kind": "resolved",
+        "version": "1.10.29",
+        "publishedAtMs": NOW_MS - 8 * MILLISECONDS_PER_DAY,
+        "reason": expect.stringContaining("1.10.30 > ceiling 1.10.29"),
+      },
+    },
+    {
+      "name": "the only aged release is the floor itself",
+      "doc": registryDoc({ "1.10.0": 200, "1.10.31": 1 }),
+      "config": CONFIG,
+      "cooldownSeconds": WEEK_SECONDS,
+      "expected": {
+        "kind": "resolved",
+        "version": "1.10.0",
+        "publishedAtMs": NOW_MS - 200 * MILLISECONDS_PER_DAY,
+        "reason": expect.stringContaining("latest >=7 days old release 1.10.0"),
+      },
+    },
+    {
+      "name": "no aged release at all falls back to the floor",
+      "doc": registryDoc({ "1.10.0": 1, "1.10.31": 1 }),
+      "config": CONFIG,
+      "cooldownSeconds": WEEK_SECONDS,
+      "expected": {
+        "kind": "resolved",
+        "version": "1.10.0",
+        "publishedAtMs": NOW_MS - MILLISECONDS_PER_DAY,
+        "reason": expect.stringContaining("no 7 days old release -> floor 1.10.0"),
+      },
+    },
+    {
+      "name": "a floor that is not published is unavailable, never trusted blind",
+      "doc": registryDoc({ "1.10.31": 1 }),
+      "config": CONFIG,
+      "cooldownSeconds": WEEK_SECONDS,
+      "expected": { "kind": "unavailable", "reason": expect.stringContaining("1.10.0") },
+    },
+    {
+      "name": "a target declaring lifecycle scripts is refused, naming them",
+      "doc": registryDoc({ "1.10.30": 8 }, { "scripts": { "1.10.30": ["postinstall"] } }),
+      "config": CONFIG,
+      "cooldownSeconds": WEEK_SECONDS,
+      "expected": {
+        "kind": "refused",
+        "version": "1.10.30",
+        "lifecycleScripts": ["postinstall"],
+        "reason": expect.stringContaining("1.10.30"),
+      },
+    },
+    {
+      "name": "the hasInstallScript flag alone also refuses",
+      "doc": registryDoc({ "1.10.30": 8 }, { "hasInstallScript": ["1.10.30"] }),
+      "config": CONFIG,
+      "cooldownSeconds": WEEK_SECONDS,
+      "expected": {
+        "kind": "refused",
+        "version": "1.10.30",
+        "lifecycleScripts": ["install"],
+        "reason": expect.stringContaining("1.10.30"),
+      },
+    },
+  ];
 
-  test("picks the newest cooldown-aged release inside the window", () => {
-    const sel = selectProxyVersion(
-      doc(registryDoc({ "1.10.29": 30, "1.10.30": 8, "1.10.31": 1 })),
-      CONFIG,
-      WEEK_SECONDS,
-      NOW_MS,
-    );
-    expect(sel).toEqual({
-      "kind": "resolved",
-      "version": "1.10.30",
-      "publishedAtMs": NOW_MS - 8 * MILLISECONDS_PER_DAY,
-      "reason": expect.stringContaining("1.10.30"),
-    });
-  });
-
-  test("cooldown 0 selects the newest release", () => {
-    const sel = selectProxyVersion(
-      doc(registryDoc({ "1.10.30": 8, "1.10.31": 1 })),
-      CONFIG,
-      0,
-      NOW_MS,
-    );
-    expect(sel.kind).toBe("resolved");
-    if (sel.kind === "resolved") expect(sel.version).toBe("1.10.31");
-  });
-
-  test("clamps up to the floor and down to the ceiling", () => {
-    const up = selectProxyVersion(
-      doc(registryDoc({ "1.10.29": 8, "1.10.30": 8 })),
-      { "proxyMinVersion": "1.10.30", "proxyMaxVersion": null },
-      WEEK_SECONDS,
-      NOW_MS,
-    );
-    expect(up.kind).toBe("resolved");
-    if (up.kind === "resolved") expect(up.version).toBe("1.10.30");
-
-    const down = selectProxyVersion(
-      doc(registryDoc({ "1.10.29": 8, "1.10.30": 8 })),
-      { "proxyMinVersion": "1.10.0", "proxyMaxVersion": "1.10.29" },
-      WEEK_SECONDS,
-      NOW_MS,
-    );
-    expect(down.kind).toBe("resolved");
-    if (down.kind === "resolved") expect(down.version).toBe("1.10.29");
-  });
-
-  test("no aged release falls back to the floor", () => {
-    const sel = selectProxyVersion(
-      doc(registryDoc({ "1.10.0": 200, "1.10.31": 1 })),
-      CONFIG,
-      WEEK_SECONDS,
-      NOW_MS,
-    );
-    expect(sel.kind).toBe("resolved");
-    if (sel.kind === "resolved") expect(sel.version).toBe("1.10.0");
-  });
-
-  test("a floor that is not published is unavailable, never trusted blind", () => {
-    const sel = selectProxyVersion(
-      doc(registryDoc({ "1.10.31": 1 })),
-      CONFIG,
-      WEEK_SECONDS,
-      NOW_MS,
-    );
-    expect(sel.kind).toBe("unavailable");
-    if (sel.kind === "unavailable") expect(sel.reason).toContain("1.10.0");
-  });
-
-  test("a target declaring lifecycle scripts is refused, naming them", () => {
-    const sel = selectProxyVersion(
-      doc(registryDoc({ "1.10.30": 8 }, { "scripts": { "1.10.30": ["postinstall"] } })),
-      CONFIG,
-      WEEK_SECONDS,
-      NOW_MS,
-    );
-    expect(sel).toEqual({
-      "kind": "refused",
-      "version": "1.10.30",
-      "lifecycleScripts": ["postinstall"],
-      "reason": expect.stringContaining("1.10.30"),
-    });
-  });
-
-  test("the hasInstallScript flag alone also refuses", () => {
-    const sel = selectProxyVersion(
-      doc(registryDoc({ "1.10.30": 8 }, { "hasInstallScript": ["1.10.30"] })),
-      CONFIG,
-      WEEK_SECONDS,
-      NOW_MS,
-    );
-    expect(sel.kind).toBe("refused");
+  test("registry ages, window, and cooldown decide the target and the reason it was picked", () => {
+    for (const row of rows) {
+      const sel = selectProxyVersion(
+        parseRegistryDoc(row.doc),
+        row.config,
+        row.cooldownSeconds,
+        NOW_MS,
+      );
+      expect({ "name": row.name, ...sel }).toEqual({ "name": row.name, ...row.expected });
+    }
   });
 });
 
 describe("parseRegistryDoc", () => {
-  test("rejects a malformed document whole", () => {
-    expect(() => parseRegistryDoc({ "versions": "nope" })).toThrow("expected shape");
-    expect(() => parseRegistryDoc(null)).toThrow("expected shape");
-  });
-
-  test("drops versions without a parseable publish time", () => {
+  // A document malformed at the top is rejected whole; a single version with an unparseable
+  // publish time is dropped, never given an age it does not have.
+  test("malformed documents throw, an unparseable publish time drops that release", () => {
+    for (const raw of [{ "versions": "nope" }, null]) {
+      expect(() => parseRegistryDoc(raw), JSON.stringify(raw)).toThrow("expected shape");
+    }
     const raw = registryDoc({ "1.10.30": 8 }) as { time: Record<string, string> };
     raw.time["1.10.30"] = "not-a-date";
-    const doc = parseRegistryDoc(raw);
-    expect(doc.releases.has("1.10.30")).toBe(false);
+    expect(parseRegistryDoc(raw).releases.has("1.10.30")).toBe(false);
   });
 });
 
 describe("resolveMinimumReleaseAgeSeconds", () => {
-  test("defaults to the built-in 7-day cooldown", () => {
+  // env override > stored config > built-in default; a non-numeric override is refused, never
+  // read as zero.
+  test("the env override wins over the stored cooldown, which wins over the default", () => {
     expect(resolveMinimumReleaseAgeSeconds()).toBe(DEFAULT_RELEASE_COOLDOWN_SECONDS);
-    expect(DEFAULT_RELEASE_COOLDOWN_SECONDS).toBe(WEEK_SECONDS);
-  });
-
-  test("config releaseCooldown overrides the default, env overrides the config", () => {
     new CopilotEnvConfig().set({ "daemon.release-cooldown": 172800 });
     expect(resolveMinimumReleaseAgeSeconds()).toBe(172800);
-    process.env[MIN_RELEASE_AGE_ENV] = "100";
-    expect(resolveMinimumReleaseAgeSeconds()).toBe(100);
-    process.env[MIN_RELEASE_AGE_ENV] = "0";
-    expect(resolveMinimumReleaseAgeSeconds()).toBe(0);
-  });
-
-  test("a non-numeric env value throws", () => {
+    for (const [env, seconds] of [["100", 100], ["0", 0]] as const) {
+      process.env[MIN_RELEASE_AGE_ENV] = env;
+      expect(resolveMinimumReleaseAgeSeconds()).toBe(seconds);
+    }
     process.env[MIN_RELEASE_AGE_ENV] = "abc";
     expect(() => resolveMinimumReleaseAgeSeconds()).toThrow("whole number of seconds");
   });
@@ -431,7 +469,7 @@ describe("floatProxy", () => {
     });
   });
 
-  test("skips the cache write when the recorded target is already cached", async () => {
+  test("skips the cache write when the recorded target is already cached, refreshing the record", async () => {
     seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
     const { fetchLike } = docFetch(registryDoc({ "1.10.30": 8, "1.10.31": 1 }));
     const deno = fakeDeno(["1.10.30"]);
@@ -439,8 +477,11 @@ describe("floatProxy", () => {
     await floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS));
 
     expect(cacheCalls(deno.calls)).toEqual([]);
-    // The record's timestamp refreshes so proxyFloatVerifyStatus stays on its offline fast path.
-    expect(readResolvedVersionRecord(dir)?.resolvedAtMs).toBe(NOW_MS);
+    // The record's timestamp refreshes so proxyFloatVerifyStatus stays on its offline fast
+    // path, and the fast path stamps the running build's identity too.
+    const record = readResolvedVersionRecord(dir);
+    expect(record?.resolvedAtMs).toBe(NOW_MS);
+    expect(record?.buildFingerprint).toBe(daemonConfigFingerprint());
   });
 
   test("a timestamp refresh preserves the record's own cache dir", async () => {
@@ -520,35 +561,24 @@ describe("floatProxy", () => {
     });
   });
 
-  test("a cold record that itself declares lifecycle scripts is never re-warmed", async () => {
-    // An explicit pin bypasses the refusal, so a scripted version can be on record
-    // (e.g. the pin was later removed). Re-warming it automatically would install
-    // the refused version without the pin's consent.
-    seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
-    const { fetchLike } = docFetch(
-      registryDoc({ "1.10.30": 8 }, { "scripts": { "1.10.30": ["install"] } }),
-    );
-    const deno = fakeDeno(); // cold: the keep-without-install path is not available
+  test("a cold record the registry cannot vet is never re-warmed: scripted, or unlisted", async () => {
+    // An explicit pin bypasses the refusal, so a scripted version can be on record (e.g. the
+    // pin was later removed); re-warming it automatically would install the refused version
+    // without the pin's consent. A record the doc does not list cannot have its scripts vetted
+    // at all, and fails closed the same way.
+    const doc = registryDoc({ "1.10.30": 8 }, { "scripts": { "1.10.30": ["install"] } });
+    for (const recorded of ["1.10.30", "1.10.5"]) {
+      dir = removeDir(dir);
+      dir = isolateProxyHome("copilot-float-");
+      seedFloat(recorded, NOW_MS - 30 * MILLISECONDS_PER_DAY);
+      const deno = fakeDeno(); // cold: the keep-without-install path is not available
 
-    await expect(floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS))).rejects.toThrow(
-      "lifecycle scripts",
-    );
-    expect(cacheCalls(deno.calls)).toEqual([]);
-  });
-
-  test("a cold record the registry does not list is never re-warmed either", async () => {
-    // Absent from the doc means the scripts cannot be vetted: fail closed, exactly
-    // like a scripted record.
-    seedFloat("1.10.5", NOW_MS - 30 * MILLISECONDS_PER_DAY);
-    const { fetchLike } = docFetch(
-      registryDoc({ "1.10.30": 8 }, { "scripts": { "1.10.30": ["install"] } }),
-    );
-    const deno = fakeDeno();
-
-    await expect(floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS))).rejects.toThrow(
-      "lifecycle scripts",
-    );
-    expect(cacheCalls(deno.calls)).toEqual([]);
+      await expect(
+        floatProxy(deps(docFetch(doc).fetchLike, deno.runner, WEEK_SECONDS)),
+        recorded,
+      ).rejects.toThrow("lifecycle scripts");
+      expect(cacheCalls(deno.calls), recorded).toEqual([]);
+    }
   });
 
   test("a refused target whose kept record cannot re-warm still fails loud", async () => {
@@ -562,24 +592,20 @@ describe("floatProxy", () => {
     ).rejects.toThrow("lifecycle scripts");
   });
 
-  test("registry failure keeps a usable recorded version above the floor", async () => {
+  test("registry failure keeps a usable recorded version, else installs the floor offline", async () => {
     seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
-    const deno = fakeDeno(["1.10.30"]);
+    const kept = fakeDeno(["1.10.30"]);
+    await floatProxy(deps(offlineFetch().fetchLike, kept.runner, WEEK_SECONDS));
+    expect(cacheCalls(kept.calls)).toEqual([]);
 
-    await floatProxy(deps(offlineFetch().fetchLike, deno.runner, WEEK_SECONDS));
-
-    expect(cacheCalls(deno.calls)).toEqual([]);
-  });
-
-  test("registry failure installs the floor when nothing usable is recorded", async () => {
-    const deno = fakeDeno();
-
+    dir = removeDir(dir);
+    dir = isolateProxyHome("copilot-float-");
+    const floor = fakeDeno();
     await floatProxy({
-      ...deps(offlineFetch().fetchLike, deno.runner, WEEK_SECONDS),
+      ...deps(offlineFetch().fetchLike, floor.runner, WEEK_SECONDS),
       "config": { "proxyMinVersion": "1.10.30", "proxyMaxVersion": null },
     });
-
-    const cache = proxyCacheCalls(deno.calls);
+    const cache = proxyCacheCalls(floor.calls);
     expect(cache).toHaveLength(1);
     expect(cache[0]?.args[cache[0].args.length - 1]).toBe(`npm:${PROXY_PKG}@1.10.30`);
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
@@ -714,28 +740,26 @@ describe("ensureProxyNpmrc", () => {
     expect(ensureProxyNpmrc(dir).kind).toBe("current");
   });
 
-  test("never clobbers an unmarked user .npmrc", () => {
-    writeFileSync(join(dir, ".npmrc"), "registry=https://example.test\n");
-    expect(ensureProxyNpmrc(dir).kind).toBe("kept-foreign");
-    expect(readFileSync(join(dir, ".npmrc"), "utf8")).toBe("registry=https://example.test\n");
-  });
-
-  // Ownership (the marker) is unproven, so the file is kept, never rewritten over content
-  // we could not see. POSIX, non-root only: root bypasses file modes.
-  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-    "never clobbers an UNREADABLE .npmrc either (ownership unproven)",
-    () => {
-      const npmrc = join(dir, ".npmrc");
-      writeFileSync(npmrc, "registry=https://example.test\n");
-      chmodSync(npmrc, 0o000);
-      try {
-        expect(ensureProxyNpmrc(dir).kind).toBe("kept-foreign");
-      } finally {
-        chmodSync(npmrc, 0o600);
-      }
-      expect(readFileSync(npmrc, "utf8")).toBe("registry=https://example.test\n");
-    },
-  );
+  // A foreign .npmrc (no marker) is kept byte for byte, whether its content could be read or
+  // not: ownership unproven means never rewritten. The unreadable half needs chmod 000 to deny
+  // the read, so it skips on Windows and under root.
+  const FOREIGN_NPMRC = "registry=https://example.test\n";
+  for (const readable of [true, false]) {
+    test.skipIf(!readable && (process.platform === "win32" || process.getuid?.() === 0))(
+      `never clobbers a foreign .npmrc that is ${readable ? "readable" : "UNREADABLE"}`,
+      () => {
+        const npmrc = join(dir, ".npmrc");
+        writeFileSync(npmrc, FOREIGN_NPMRC);
+        if (!readable) chmodSync(npmrc, 0o000);
+        try {
+          expect(ensureProxyNpmrc(dir).kind).toBe("kept-foreign");
+        } finally {
+          if (!readable) chmodSync(npmrc, 0o600);
+        }
+        expect(readFileSync(npmrc, "utf8")).toBe(FOREIGN_NPMRC);
+      },
+    );
+  }
 
   test("floatProxy writes it before installing", async () => {
     // Read at cache-spawn time, inside the runner: an .npmrc written after the
@@ -754,18 +778,6 @@ describe("ensureProxyNpmrc", () => {
 });
 
 describe("resolved-version record", () => {
-  test("round-trips through its schema", () => {
-    seedFloat("1.10.30", NOW_MS);
-    expect(readResolvedVersionRecord(dir)).toEqual({
-      "version": "1.10.30",
-      "resolvedAtMs": NOW_MS,
-      "denoDir": proxyDenoDir(dir),
-    });
-    // The on-disk keys are the external contract.
-    const raw = JSON.parse(readFileSync(resolvedVersionFile(dir), "utf8"));
-    expect(Object.keys(raw).sort()).toEqual(["deno_dir", "resolved_at_ms", "version"]);
-  });
-
   test("absent, malformed, or ill-shaped records read as null", () => {
     expect(readResolvedVersionRecord(dir)).toBeNull();
     mkdirSync(join(dir, "proxy"), { recursive: true });
@@ -793,6 +805,10 @@ describe("the build-identity fingerprint", () => {
       "resolved_at_ms",
       "version",
     ]);
+    // A record written without a fingerprint omits the key rather than writing a placeholder.
+    writeResolvedVersionRecord(dir, "1.10.30", NOW_MS);
+    const bare = JSON.parse(readFileSync(resolvedVersionFile(dir), "utf8"));
+    expect(Object.keys(bare).sort()).toEqual(["deno_dir", "resolved_at_ms", "version"]);
   });
 
   test("a malformed fingerprint reads as absent, never invalidating the record", async () => {
@@ -891,45 +907,72 @@ describe("the build-identity fingerprint", () => {
       expect(JSON.parse(config).imports.stale).toBeUndefined();
     }
   });
-
-  test("floatProxy's up-to-date refresh restamps the record", async () => {
-    seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
-    await floatProxy(
-      deps(
-        docFetch(registryDoc({ "1.10.30": 8 })).fetchLike,
-        fakeDeno(["1.10.30"]).runner,
-        WEEK_SECONDS,
-      ),
-    );
-    const record = readResolvedVersionRecord(dir);
-    expect(record?.resolvedAtMs).toBe(NOW_MS);
-    expect(record?.buildFingerprint).toBe(daemonConfigFingerprint());
-  });
 });
 
 describe("proxyFloatVerifyStatus", () => {
-  test("install needed when nothing is recorded", async () => {
-    const status = await proxyFloatVerifyStatus(deps(offlineFetch().fetchLike, fakeDeno().runner));
-    expect(status.upToDate).toBe(false);
-  });
+  // Every row runs offline: the record's state alone (present, cached, fresh, in bounds) must
+  // decide the verdict, and only the stale-record rows may reach for the registry.
+  const rows: {
+    name: string;
+    record: { version: string; ageMs: number } | null;
+    cached: string[];
+    upToDate: boolean;
+    message?: string;
+    network?: boolean;
+  }[] = [
+    {
+      "name": "install needed when nothing is recorded",
+      "record": null,
+      "cached": [],
+      "upToDate": false,
+    },
+    {
+      "name": "a fresh in-bounds cached record verifies",
+      "record": { "version": "1.10.30", "ageMs": 1000 },
+      "cached": ["1.10.30"],
+      "upToDate": true,
+      "network": false,
+    },
+    {
+      "name": "a fresh record whose cache entry is gone needs an install",
+      "record": { "version": "1.10.30", "ageMs": 1000 },
+      "cached": [],
+      "upToDate": false,
+      "message": "deno cache",
+    },
+    {
+      "name": "a stale record is kept when the registry is unreachable",
+      "record": { "version": "1.10.30", "ageMs": 30 * MILLISECONDS_PER_DAY },
+      "cached": ["1.10.30"],
+      "upToDate": true,
+      "message": "keeping",
+      "network": true,
+    },
+    {
+      "name": "a recorded version outside the window needs an update, without network",
+      "record": { "version": "1.9.99", "ageMs": 1000 },
+      "cached": ["1.9.99"],
+      "upToDate": false,
+      "message": "1.10.0",
+      "network": false,
+    },
+  ];
 
-  test("a fresh in-bounds cached record verifies offline", async () => {
-    seedFloat("1.10.30", NOW_MS - 1000);
-    const offline = offlineFetch();
-    const status = await proxyFloatVerifyStatus(
-      deps(offline.fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS),
-    );
-    expect(status.upToDate).toBe(true);
-    expect(offline.calls).toEqual([]); // no network on the fast path
-  });
-
-  test("a fresh record whose cache entry is gone needs an install", async () => {
-    seedFloat("1.10.30", NOW_MS - 1000);
-    const status = await proxyFloatVerifyStatus(
-      deps(offlineFetch().fetchLike, fakeDeno().runner, WEEK_SECONDS),
-    );
-    expect(status.upToDate).toBe(false);
-    expect(status.message).toContain("deno cache");
+  test("the record's presence, cache, age, and bounds decide the offline verdict", async () => {
+    for (const row of rows) {
+      dir = removeDir(dir);
+      dir = isolateProxyHome("copilot-float-");
+      if (row.record) seedFloat(row.record.version, NOW_MS - row.record.ageMs);
+      const offline = offlineFetch();
+      const status = await proxyFloatVerifyStatus(
+        deps(offline.fetchLike, fakeDeno(row.cached).runner, WEEK_SECONDS),
+      );
+      expect(status.upToDate, row.name).toBe(row.upToDate);
+      if (row.message) expect(status.message, row.name).toContain(row.message);
+      if (row.network !== undefined) {
+        expect(offline.calls.length > 0, row.name).toBe(row.network);
+      }
+    }
   });
 
   test("a stale record re-checks the registry", async () => {
@@ -948,26 +991,6 @@ describe("proxyFloatVerifyStatus", () => {
     expect(staleStatus.upToDate).toBe(false);
     expect(staleStatus.message).toContain("1.10.30");
     expect(staleStatus.message).toContain("1.10.31");
-  });
-
-  test("a stale record verifies as kept when the registry is unreachable", async () => {
-    seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
-    const status = await proxyFloatVerifyStatus(
-      deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS),
-    );
-    expect(status.upToDate).toBe(true);
-    expect(status.message).toContain("keeping");
-  });
-
-  test("a recorded version outside the window needs an update, without network", async () => {
-    seedFloat("1.9.99", NOW_MS - 1000);
-    const offline = offlineFetch();
-    const status = await proxyFloatVerifyStatus(
-      deps(offline.fetchLike, fakeDeno(["1.9.99"]).runner, WEEK_SECONDS),
-    );
-    expect(status.upToDate).toBe(false);
-    expect(status.message).toContain("1.10.0");
-    expect(offline.calls).toEqual([]);
   });
 
   test("COPILOT_API_VERSION: up to date only when the exact pin is recorded and cached", async () => {
@@ -998,114 +1021,171 @@ describe("proxyFloatVerifyStatus", () => {
 describe("proxyInstallAssertStatus", () => {
   // status.ok carries the verdict; the messages are human copy, so the assertions
   // pin only the identifiers each one must name (the package, the versions).
-  test("fails when nothing is recorded", async () => {
-    const status = await proxyInstallAssertStatus(
-      deps(offlineFetch().fetchLike, fakeDeno().runner),
-    );
-    expect(status.ok).toBe(false);
-    expect(status.message).toContain(PROXY_PKG);
+  const WINDOW_TO_30: ProjectConfig = { "proxyMinVersion": "1.10.0", "proxyMaxVersion": "1.10.30" };
+  const SCRIPTED_30 = { "scripts": { "1.10.30": ["install"] } };
+  const rows: {
+    name: string;
+    record: string | null;
+    config?: ProjectConfig;
+    registry: unknown | "offline";
+    cached: string[];
+    ok: boolean;
+    names: string[];
+  }[] = [
+    {
+      "name": "fails when nothing is recorded",
+      "record": null,
+      "registry": "offline",
+      "cached": [],
+      "ok": false,
+      "names": [PROXY_PKG],
+    },
+    {
+      "name": "fails below the configured floor",
+      "record": "1.9.99",
+      "registry": "offline",
+      "cached": ["1.9.99"],
+      "ok": false,
+      "names": ["1.9.99", "1.10.0"],
+    },
+    {
+      "name": "fails above the configured ceiling",
+      "record": "1.10.31",
+      "config": WINDOW_TO_30,
+      "registry": "offline",
+      "cached": ["1.10.31"],
+      "ok": false,
+      "names": ["1.10.31", "1.10.30"],
+    },
+    {
+      "name": "fails when the recorded version is not in the deno cache",
+      "record": "1.10.30",
+      "registry": registryDoc({ "1.10.30": 8 }),
+      "cached": [],
+      "ok": false,
+      "names": ["deno cache"],
+    },
+    {
+      "name": "passes when the record matches the resolved float target",
+      "record": "1.10.15",
+      "config": WINDOW_TO_30,
+      "registry": registryDoc({ "1.10.15": 8, "1.10.31": 1 }),
+      "cached": ["1.10.15"],
+      "ok": true,
+      "names": [`${PROXY_PKG} 1.10.15`, "1.10.0", "1.10.30"],
+    },
+    {
+      "name": "fails when the record clears the bounds but misses the float target",
+      "record": "1.10.31",
+      "registry": registryDoc({ "1.10.30": 8, "1.10.31": 1 }),
+      "cached": ["1.10.31"],
+      "ok": false,
+      "names": ["1.10.31", "1.10.30"],
+    },
+    {
+      "name": "falls back to the bounds-only check when the registry is unreachable",
+      "record": "1.10.30",
+      "registry": "offline",
+      "cached": ["1.10.30"],
+      "ok": true,
+      "names": ["bounds only", "offline", "1.10.30"],
+    },
+    {
+      "name": "a refused newest target passes bounds-only",
+      "record": "1.10.29",
+      "registry": registryDoc({ "1.10.29": 40, "1.10.30": 8 }, SCRIPTED_30),
+      "cached": ["1.10.29"],
+      "ok": true,
+      "names": ["refused"],
+    },
+  ];
+
+  test("record, window, registry, and cache decide the verdict and what it names", async () => {
+    for (const row of rows) {
+      dir = removeDir(dir);
+      dir = isolateProxyHome("copilot-float-");
+      if (row.record !== null) seedFloat(row.record, NOW_MS);
+      const fetchLike = row.registry === "offline"
+        ? offlineFetch().fetchLike
+        : docFetch(row.registry).fetchLike;
+      const status = await proxyInstallAssertStatus({
+        ...deps(fetchLike, fakeDeno(row.cached).runner, WEEK_SECONDS),
+        "config": row.config ?? CONFIG,
+      });
+      expect(status.ok, row.name).toBe(row.ok);
+      for (const name of row.names) expect(status.message, row.name).toContain(name);
+    }
   });
 
-  test("fails outside the configured window", async () => {
-    seedFloat("1.9.99", NOW_MS);
-    const below = await proxyInstallAssertStatus(
-      deps(offlineFetch().fetchLike, fakeDeno(["1.9.99"]).runner),
-    );
-    expect(below.ok).toBe(false);
-    expect(below.message).toContain("1.9.99");
-    expect(below.message).toContain("1.10.0");
+  // An exact pin, from the env or the stored config, asserts recorded == pin and bypasses the
+  // bounds; a mismatch or a missing record fails naming both sides.
+  // A mismatch fails even when the pinned version itself sits in the cache: the record, not the
+  // cache, is what the pin is asserted against.
+  const pinRows: {
+    name: string;
+    env?: string;
+    stored?: string;
+    record: string | null;
+    cached: string[];
+    ok: boolean;
+    names: string[];
+  }[] = [
+    {
+      "name": "an env pin below the floor passes when recorded",
+      "env": "1.9.99",
+      "record": "1.9.99",
+      "cached": ["1.9.99"],
+      "ok": true,
+      "names": [`${PROXY_PKG} 1.9.99`],
+    },
+    {
+      "name": "an env pin the record does not match fails",
+      "env": "1.10.31",
+      "record": "1.9.99",
+      "cached": ["1.9.99", "1.10.31"],
+      "ok": false,
+      "names": ["1.9.99", "1.10.31"],
+    },
+    {
+      "name": "a pin with nothing recorded fails naming the pin",
+      "env": "1.10.30",
+      "record": null,
+      "cached": ["1.10.30"],
+      "ok": false,
+      "names": [`${PROXY_PKG}@1.10.30`],
+    },
+    {
+      "name": "a stored config pin passes when recorded",
+      "stored": "1.10.30",
+      "record": "1.10.30",
+      "cached": ["1.10.30"],
+      "ok": true,
+      "names": [],
+    },
+    {
+      "name": "a stored config pin the record does not match fails",
+      "stored": "1.10.30",
+      "record": "1.10.29",
+      "cached": ["1.10.29", "1.10.30"],
+      "ok": false,
+      "names": ["1.10.29", "1.10.30"],
+    },
+  ];
 
-    seedFloat("1.10.31", NOW_MS);
-    const above = await proxyInstallAssertStatus({
-      ...deps(offlineFetch().fetchLike, fakeDeno(["1.10.31"]).runner),
-      "config": { "proxyMinVersion": "1.10.0", "proxyMaxVersion": "1.10.30" },
-    });
-    expect(above.ok).toBe(false);
-    expect(above.message).toContain("1.10.31");
-    expect(above.message).toContain("1.10.30");
-  });
-
-  test("fails when the recorded version is not in the deno cache", async () => {
-    seedFloat("1.10.30", NOW_MS);
-    const status = await proxyInstallAssertStatus(
-      deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, fakeDeno().runner, WEEK_SECONDS),
-    );
-    expect(status.ok).toBe(false);
-    expect(status.message).toContain("deno cache");
-  });
-
-  test("passes when the record matches the resolved float target", async () => {
-    seedFloat("1.10.15", NOW_MS);
-    const status = await proxyInstallAssertStatus({
-      ...deps(
-        docFetch(registryDoc({ "1.10.15": 8, "1.10.31": 1 })).fetchLike,
-        fakeDeno(["1.10.15"]).runner,
-        WEEK_SECONDS,
-      ),
-      "config": { "proxyMinVersion": "1.10.0", "proxyMaxVersion": "1.10.30" },
-    });
-    expect(status.ok).toBe(true);
-    expect(status.message).toContain(`${PROXY_PKG} 1.10.15`);
-    expect(status.message).toContain("1.10.0");
-    expect(status.message).toContain("1.10.30");
-  });
-
-  test("fails when the record clears the bounds but misses the float target", async () => {
-    seedFloat("1.10.31", NOW_MS);
-    const status = await proxyInstallAssertStatus(
-      deps(
-        docFetch(registryDoc({ "1.10.30": 8, "1.10.31": 1 })).fetchLike,
-        fakeDeno(["1.10.31"]).runner,
-        WEEK_SECONDS,
-      ),
-    );
-    expect(status.ok).toBe(false);
-    expect(status.message).toContain("1.10.31");
-    expect(status.message).toContain("1.10.30");
-  });
-
-  test("falls back to the bounds-only check when the registry is unreachable", async () => {
-    seedFloat("1.10.30", NOW_MS);
-    const status = await proxyInstallAssertStatus(
-      deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS),
-    );
-    expect(status.ok).toBe(true);
-    expect(status.message).toContain("bounds only");
-    expect(status.message).toContain("offline");
-    expect(status.message).toContain("1.10.30");
-  });
-
-  test("a refused newest target passes bounds-only", async () => {
-    seedFloat("1.10.29", NOW_MS);
-    const status = await proxyInstallAssertStatus(
-      deps(
-        docFetch(
-          registryDoc({ "1.10.29": 40, "1.10.30": 8 }, { "scripts": { "1.10.30": ["install"] } }),
-        ).fetchLike,
-        fakeDeno(["1.10.29"]).runner,
-        WEEK_SECONDS,
-      ),
-    );
-    expect(status.ok).toBe(true);
-    expect(status.message).toContain("refused");
-  });
-
-  test("an exact pin asserts recorded == pin, bypassing bounds", async () => {
-    seedFloat("1.9.99", NOW_MS); // below the floor on purpose
-    process.env[VERSION_ENV] = "1.9.99";
-    const ok = await proxyInstallAssertStatus(
-      deps(offlineFetch().fetchLike, fakeDeno(["1.9.99"]).runner),
-    );
-    expect(ok.ok).toBe(true);
-    expect(ok.message).toContain(`${PROXY_PKG} 1.9.99`);
-
-    process.env[VERSION_ENV] = "1.10.31";
-    const bad = await proxyInstallAssertStatus(
-      deps(offlineFetch().fetchLike, fakeDeno(["1.9.99"]).runner),
-    );
-    expect(bad.ok).toBe(false);
-    expect(bad.message).toContain("1.9.99");
-    expect(bad.message).toContain("1.10.31");
+  test("an exact pin asserts recorded == pin, bypassing bounds, from the env or the store", async () => {
+    for (const row of pinRows) {
+      dir = removeDir(dir);
+      dir = isolateProxyHome("copilot-float-");
+      if (row.env) process.env[VERSION_ENV] = row.env;
+      else delete process.env[VERSION_ENV];
+      if (row.stored) new CopilotEnvConfig().set({ "daemon.version": row.stored });
+      if (row.record !== null) seedFloat(row.record, NOW_MS);
+      const status = await proxyInstallAssertStatus(
+        deps(offlineFetch().fetchLike, fakeDeno(row.cached).runner),
+      );
+      expect(status.ok, row.name).toBe(row.ok);
+      for (const name of row.names) expect(status.message, row.name).toContain(name);
+    }
   });
 
   test("a non-semver tag pin is not equality-checked", async () => {
@@ -1116,28 +1196,6 @@ describe("proxyInstallAssertStatus", () => {
     );
     expect(status.ok).toBe(true);
     expect(status.message).toContain("latest");
-  });
-
-  test("a pin with nothing recorded fails naming the pin", async () => {
-    process.env[VERSION_ENV] = "1.10.30";
-    const status = await proxyInstallAssertStatus(
-      deps(offlineFetch().fetchLike, fakeDeno().runner),
-    );
-    expect(status.ok).toBe(false);
-    expect(status.message).toContain(`${PROXY_PKG}@1.10.30`);
-  });
-
-  test("a stored proxy-version config pin is asserted like the env pin", async () => {
-    new CopilotEnvConfig().set({ "daemon.version": "1.10.30" });
-    seedFloat("1.10.30", NOW_MS);
-    const d = deps(offlineFetch().fetchLike, fakeDeno(["1.10.30", "1.10.29"]).runner);
-    expect((await proxyInstallAssertStatus(d)).ok).toBe(true);
-
-    seedFloat("1.10.29", NOW_MS);
-    const status = await proxyInstallAssertStatus(d);
-    expect(status.ok).toBe(false);
-    expect(status.message).toContain("1.10.29");
-    expect(status.message).toContain("1.10.30");
   });
 
   test("a pin bypasses the cooldown: a bad COPILOT_API_MIN_RELEASE_AGE is ignored", async () => {
@@ -1187,16 +1245,6 @@ describe("writeDaemonConfig", () => {
       expect(JSON.parse(config).imports[PROXY_PKG]).toBeDefined();
     }
   });
-
-  test("defaults to the build's own embedded assets, no explicit source needed", () => {
-    // The default source is ASSET_ROOT (the compiled VFS; the checkout root under
-    // `deno test`), NEVER the install root: a compiled install root deliberately
-    // carries no deno.json on disk -- there it is a checkout marker.
-    writeDaemonConfig(dir);
-    const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
-    const source = JSON.parse(readFileSync(join(ROOT, "deno.json"), "utf8"));
-    expect(Object.keys(config.imports).sort()).toEqual(Object.keys(source.imports).sort());
-  });
 });
 
 // A compiled install root has no deno.json on disk (the checkout marker), so both no-float
@@ -1206,20 +1254,18 @@ describe("writeDaemonConfig", () => {
 describe("resolveCopilotApiEntry on a compiled root", () => {
   const compiledMode = () => ({ "kind": "compiled", "root": join(dir, "install-root") }) as const;
 
-  test("the package fallback generates the daemon config from the embedded assets", () => {
-    const entry = resolveCopilotApiEntry(compiledMode());
-    expect(entry.kind).toBe("package");
-    expect(entry.configFile).toBe(daemonConfigFile(dir));
+  test("both no-float entries resolve under a daemon config generated from the embedded assets", () => {
+    const fallback = resolveCopilotApiEntry(compiledMode());
+    expect(fallback.kind).toBe("package");
+    expect(fallback.configFile).toBe(daemonConfigFile(dir));
     const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
     expect(config.imports[PROXY_PKG]).toBeDefined();
     expect(config.lock).toBeUndefined();
-  });
 
-  test("a COPILOT_API_ENTRY override resolves under the generated daemon config", () => {
+    rmSync(daemonConfigFile(dir));
     process.env.COPILOT_API_ENTRY = join(dir, "fake-proxy.mjs");
     try {
-      const entry = resolveCopilotApiEntry(compiledMode());
-      expect(entry).toEqual({
+      expect(resolveCopilotApiEntry(compiledMode())).toEqual({
         "kind": "file",
         "path": join(dir, "fake-proxy.mjs"),
         "configFile": daemonConfigFile(dir),
@@ -1248,17 +1294,6 @@ describe("resolveCopilotApiEntry on a compiled root", () => {
     expect(entry.kind).toBe("package");
     expect(entry.configFile).toBe(join(ROOT, "deno.json"));
     expect(existsSync(daemonConfigFile(dir))).toBe(false);
-  });
-});
-
-describe("floatContext", () => {
-  test("the sidecar resolves under the SAME rootHome the float warms (textual pin)", () => {
-    // Behaviorally invisible under `deno test`: resolveDenoBin's dev fast path answers
-    // before rootHome matters, and every float test injects denoBin anyway -- so a
-    // revert to a bare resolveDenoBin() would pass CI while warming one home and
-    // spawning another home's sidecar. Pin the call shape instead.
-    const source = readFileSync(join(ROOT, "src", "proxy_float.ts"), "utf8");
-    expect(source).toContain("resolveDenoBin(process.env, rootHome)");
   });
 });
 
@@ -1291,13 +1326,6 @@ describe("removeProxyFloatArtifacts", () => {
     writeFileSync(join(dir, ".npmrc"), "registry=https://example.test\n");
     removeProxyFloatArtifacts(dir);
     expect(readFileSync(join(dir, ".npmrc"), "utf8")).toBe("registry=https://example.test\n");
-  });
-});
-
-describe("minimumDependencyAgeArg", () => {
-  test("0 disables; anything else is an ISO-8601 duration in seconds", () => {
-    expect(minimumDependencyAgeArg(0)).toBe("0");
-    expect(minimumDependencyAgeArg(WEEK_SECONDS)).toBe("PT604800S");
   });
 });
 

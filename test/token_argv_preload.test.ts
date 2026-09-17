@@ -10,7 +10,10 @@ import { expect, tempDir, test } from "./helpers/testing.ts";
 const SHIM = join(ROOT, "src", "scripts", "token_argv_preload.ts");
 const ENV_KEY = DAEMON_GH_TOKEN_ENV;
 
-function runPreloaded(token: string | undefined): { argv: string[]; envHadKey: boolean } {
+function runPreloaded(
+  token: string | undefined,
+  argv: string[],
+): { argv: string[]; envHadKey: boolean } {
   const dir = tempDir("copilot-tokenargv-");
   try {
     const target = join(dir, "target.ts");
@@ -27,11 +30,9 @@ function runPreloaded(token: string | undefined): { argv: string[]; envHadKey: b
     const env: Record<string, string> = { ...process.env } as Record<string, string>;
     if (token === undefined) delete env[ENV_KEY];
     else env[ENV_KEY] = token;
-    const res = runSync(
-      Deno.execPath(),
-      [...denoRunArgs("--preload", SHIM), target, "start", "--port", "4141"],
-      { env },
-    );
+    const res = runSync(Deno.execPath(), [...denoRunArgs("--preload", SHIM), target, ...argv], {
+      env,
+    });
     if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr}`);
     return JSON.parse(res.stdout.trim());
   } finally {
@@ -42,34 +43,30 @@ function runPreloaded(token: string | undefined): { argv: string[]; envHadKey: b
 // The shim's copied env-var literal is pinned against launchDaemon's DAEMON_GH_TOKEN_ENV
 // (with formatting-tolerant extraction) by test/daemon_env_keys.test.ts.
 
-test("splices the token from the env var into argv as --github-token, then scrubs the env", () => {
-  // Fake-token fixtures stay short and low-entropy: gitleaks' generic-api-key rule only
-  // matches secrets of 10+ chars AND entropy >= 3.5, so neither gate can trip on them.
-  const out = runPreloaded("ghp_test");
-  expect(out.argv).toEqual(["start", "--port", "4141", "--github-token", "ghp_test"]);
-  // The env var is deleted so it cannot leak to a child process.
-  expect(out.envHadKey).toBe(false);
-});
-
-test("with no env var set, argv is unchanged and no flag is added", () => {
-  const out = runPreloaded(undefined);
-  expect(out.argv).toEqual(["start", "--port", "4141"]);
-  expect(out.envHadKey).toBe(false);
-});
-
-test("does not double-add when --github-token is already present in argv", () => {
-  const dir = tempDir("copilot-tokenargv-");
-  try {
-    const target = join(dir, "target.ts");
-    writeFileSync(target, "console.log(JSON.stringify(process.argv.slice(2)));");
-    const res = runSync(
-      Deno.execPath(),
-      [...denoRunArgs("--preload", SHIM), target, "--github-token", "existing", "start"],
-      { env: { ...process.env, [ENV_KEY]: "ghp_env" } },
-    );
-    if (res.exitCode !== 0) throw new Error(res.stderr);
-    expect(JSON.parse(res.stdout.trim())).toEqual(["--github-token", "existing", "start"]);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+// A token in the env is spliced onto argv as --github-token unless the flag is already there; the
+// env var is scrubbed either way so a child the daemon spawns never inherits it.
+// Fake-token fixtures stay short and low-entropy: gitleaks' generic-api-key rule only matches
+// secrets of 10+ chars AND entropy >= 3.5, so neither gate can trip on them.
+test("the env token becomes --github-token exactly once, and the env var never survives", () => {
+  const rows: { token: string | undefined; argv: string[]; out: string[] }[] = [
+    {
+      token: "ghp_test",
+      argv: ["start", "--port", "4141"],
+      out: ["start", "--port", "4141", "--github-token", "ghp_test"],
+    },
+    { token: undefined, argv: ["start", "--port", "4141"], out: ["start", "--port", "4141"] },
+    {
+      token: "ghp_env",
+      argv: ["--github-token", "existing", "start"],
+      out: ["--github-token", "existing", "start"],
+    },
+  ];
+  for (const { token, argv, out } of rows) {
+    expect({ token, given: argv, ...runPreloaded(token, argv) }).toEqual({
+      token,
+      given: argv,
+      argv: out,
+      envHadKey: false,
+    });
   }
 });

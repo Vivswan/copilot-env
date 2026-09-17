@@ -39,7 +39,7 @@ async function spawnTermIgnoringChild(): Promise<Deno.ChildProcess> {
     stdout: "null",
     stderr: "inherit",
   });
-  expect(await until(10_000, () => existsSync(ready))).toBe(true);
+  await until(() => existsSync(ready));
   return child;
 }
 
@@ -117,7 +117,7 @@ test.skipIf(process.platform === "win32")(
       const { calls, classify } = classifyStub("yes");
       expect(await terminatePid(child.pid, 300, classify)).toBe("killed");
       expect(calls).toEqual([child.pid]);
-      expect(await until(5_000, () => !pidAlive(child.pid))).toBe(true);
+      await until(() => !pidAlive(child.pid));
     } finally {
       await killAndAwaitExit(child.pid);
     }
@@ -138,7 +138,7 @@ test.skipIf(process.platform === "win32")(
       // so it earns no separate arm.
       expect(await terminatePid(child.pid, 300, classify)).toBe("killed");
       expect(calls).toEqual([child.pid]);
-      expect(await until(5_000, () => !pidAlive(child.pid))).toBe(true);
+      await until(() => !pidAlive(child.pid));
     } finally {
       await killAndAwaitExit(child.pid);
     }
@@ -168,7 +168,7 @@ test(
       stderr: "inherit",
     });
     try {
-      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      await until(() => existsSync(ready));
       // Observe the exit eagerly so the child is reaped as soon as the SIGTERM lands --
       // a lingering zombie would still read pidAlive at the boundary.
       const exited = child.status;
@@ -204,7 +204,7 @@ test(
       stderr: "inherit",
     });
     try {
-      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      await until(() => existsSync(ready));
       const exited = child.status;
       const { calls, classify } = classifyStub("no");
       expect(await terminatePid(child.pid, 0, classify)).toBe("term-only");
@@ -241,7 +241,7 @@ test(
       stderr: "inherit",
     });
     try {
-      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      await until(() => existsSync(ready));
       const { calls, classify } = classifyStub("yes");
       let verdict: TerminateVerdict | undefined;
       await withUnprovablePidProbe(async () => {

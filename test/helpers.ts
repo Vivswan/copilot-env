@@ -13,7 +13,7 @@ import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_
 import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { pidAlive } from "../src/utils/pid.ts";
 import { denoRunArgs, ROOT, spawnChild } from "./helpers/run.ts";
-import { removeDir, tempDir } from "./helpers/testing.ts";
+import { removeDir, tempDir, testAbortSignal } from "./helpers/testing.ts";
 
 // --- GitHub login lookups -----------------------------------------------------
 
@@ -228,16 +228,40 @@ export function launchFakeDaemon(home: string, port: number): number {
   });
 }
 
-export async function until(deadlineMs: number, probe: () => boolean): Promise<boolean> {
-  const deadline = Date.now() + deadlineMs;
-  while (Date.now() < deadline) {
-    if (probe()) return true;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+/**
+ * Resolves once `probe` answers true. No clock of its own: the test deadline is the one budget.
+ * A pending probe or sleep rejects the moment it fires, so a `finally` behind the wait runs before
+ * the runner can exit; a sync probe already true is still answered after it, so an abandoned
+ * body's `finally` finishes the cleanup it can.
+ */
+export async function until(probe: () => boolean | Promise<boolean>): Promise<void> {
+  const signal = testAbortSignal();
+  if (signal === undefined) throw new Error("until: no test deadline to bound the wait");
+  for (;;) {
+    const answer = probe();
+    if (typeof answer === "boolean" ? answer : await unlessAborted(answer, signal)) return;
+    await unlessAborted(new Promise((resolve) => setTimeout(resolve, 50)), signal);
   }
-  return probe();
 }
 
-/** Throws if the pid survives: a daemon outliving its test would hold the temp home open into
+/** Settles as `pending` does, or rejects with the signal's reason the moment it aborts, probe and
+ *  sleep alike: the runner exits once the last test settles, and a wait still pending then would
+ *  miss its cleanup. */
+function unlessAborted<T>(pending: T | Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = (): void => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(pending)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+/** Returns once the pid is gone: a daemon outliving its test would hold the temp home open into
  *  removeDir. */
 export async function killAndAwaitExit(pid: number): Promise<void> {
   try {
@@ -245,9 +269,7 @@ export async function killAndAwaitExit(pid: number): Promise<void> {
   } catch {
     // already gone
   }
-  if (!(await until(5_000, () => !pidAlive(pid)))) {
-    throw new Error(`pid ${pid} did not exit after SIGKILL`);
-  }
+  await until(() => !pidAlive(pid));
 }
 
 /**
@@ -305,11 +327,9 @@ export function stageRefusedStop(home: string, profile?: ProfileName): RefusedSt
       } catch {
         // already gone
       }
-      const deadline = Date.now() + 5_000;
-      while (pidAlive(child.pid) && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
+      // Our own lock first: the wait below can end with the deadline's error.
       releaseFileLock(daemonLockPath(home));
+      await until(() => !pidAlive(child.pid));
     },
   };
 }

@@ -107,9 +107,14 @@ test(
       stdout: "null",
       stderr: "null",
     });
+    let exited = false;
+    child.status.then(() => {
+      exited = true;
+    });
     try {
-      const deadline = Date.now() + 30_000;
-      while (gone(record) && Date.now() < deadline) {
+      // No clock of its own: the test deadline is the one budget, and the harness kills this
+      // child when it fires, which settles its status and ends the wait.
+      while (gone(record) && !exited) {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       const made = readFileSync(record, "utf8");

@@ -500,7 +500,7 @@ test(
     const home = tmpHome();
     const pid = launchFakeDaemon(home, await freePort());
     try {
-      expect(await until(20_000, () => daemonLockVerdict(home, pid) === "alive")).toBe(true);
+      await until(() => daemonLockVerdict(home, pid) === "alive");
       writeRunState({ pid, port: 4141 });
 
       // The lock's "alive" verdict defers the tracked stop to the holder stop, and the
@@ -530,7 +530,7 @@ test(
     const home = tmpHome();
     const pid = launchFakeDaemon(home, await freePort());
     try {
-      expect(await until(20_000, () => daemonLockVerdict(home, pid) === "alive")).toBe(true);
+      await until(() => daemonLockVerdict(home, pid) === "alive");
       writeRunState({ pid, port: 4141 });
       writeRunState({ pid, port: 4242 }, WORK); // the surviving second claim
 
@@ -600,10 +600,7 @@ test(
     });
     try {
       // Wait until the argv scan can actually see the spawn (the plan's identity gate).
-      const deadline = Date.now() + 10_000;
-      while (!(await isCopilotApiPid(child.pid)) && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
+      await until(() => isCopilotApiPid(child.pid));
       writeRunState({ pid: child.pid, port: 4141 });
 
       expect(await planCleanup(home, null, new CopilotEnvRunState(), NO_ORPHANS)).toEqual(
@@ -629,7 +626,7 @@ test(
     const oldPid = launchFakeDaemon(home, await freePort());
     let newPid: number | null = null;
     try {
-      expect(await until(20_000, () => daemonLockVerdict(home, oldPid) === "alive")).toBe(true);
+      await until(() => daemonLockVerdict(home, oldPid) === "alive");
       // The lost-run-state premise: nothing tracked, so the tracked stop cannot reach the
       // holder and the sweep (inert here regardless) would only spare it.
       expect(new CopilotEnvRunState().read().pid).toBeUndefined();
@@ -638,18 +635,23 @@ test(
 
       // The holder was stopped and its lock reads dead by pid -- genuinely released, not
       // merely unobserved.
-      expect(await until(5_000, () => !pidAlive(oldPid))).toBe(true);
-      expect(await until(5_000, () => daemonLockVerdict(home, oldPid) === "dead")).toBe(true);
+      await until(() => !pidAlive(oldPid));
+      await until(() => daemonLockVerdict(home, oldPid) === "dead");
 
       // And the recovery is real: a NEW daemon launches and re-acquires this home's lock
       // (what the preload's bounded acquisition does at every `agent start`).
       newPid = launchFakeDaemon(home, await freePort());
       const started = newPid;
-      expect(await until(20_000, () => daemonLockVerdict(home, started) === "alive")).toBe(true);
+      await until(() => daemonLockVerdict(home, started) === "alive");
       expect(daemonLockHolderPid(home)).toBe(started);
     } finally {
-      await killAndAwaitExit(oldPid);
-      if (newPid !== null) await killAndAwaitExit(newPid);
+      // Nested: the first wait can end with the deadline's error, and neither daemon is the
+      // harness's to kill.
+      try {
+        await killAndAwaitExit(oldPid);
+      } finally {
+        if (newPid !== null) await killAndAwaitExit(newPid);
+      }
     }
   },
   60_000,
@@ -661,9 +663,7 @@ test(
     const home = tmpHome();
     const workPid = launchFakeDaemon(profileHome(WORK), await freePort());
     try {
-      expect(
-        await until(20_000, () => daemonLockVerdict(profileHome(WORK), workPid) === "alive"),
-      ).toBe(true);
+      await until(() => daemonLockVerdict(profileHome(WORK), workPid) === "alive");
       // Control: the DEFAULT home (the one this start cleans) holds no lock, and the
       // machine-wide scan DOES see the profile's daemon -- only the lock spares it.
       expect(daemonLockHolderPid(home)).toBe(null);
@@ -764,12 +764,12 @@ test(
     const port = await freePort();
     const pid = launchFakeDaemon(home, port);
     try {
-      expect(await until(20_000, () => daemonLockVerdict(home, pid) === "alive")).toBe(true);
+      await until(() => daemonLockVerdict(home, pid) === "alive");
       writeRunState({ pid, port });
 
       await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
 
-      expect(await until(5_000, () => !pidAlive(pid))).toBe(true);
+      await until(() => !pidAlive(pid));
       const after = new CopilotEnvRunState().read();
       expect(after.pid).toBeUndefined();
       expect(after.port).toBeUndefined(); // the default daemon releases its port on stop
@@ -838,15 +838,15 @@ test.skipIf(process.platform === "win32")(
       stderr: "inherit",
     });
     try {
-      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      await until(() => existsSync(ready));
       expect(daemonLockHolderPid(home)).toBe(child.pid);
 
       await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
 
       // SIGTERM was ignored, so only the SIGKILL escalation explains the death -- and the
       // lock reads dead by pid afterwards (released by the OS at process death).
-      expect(await until(5_000, () => !pidAlive(child.pid))).toBe(true);
-      expect(await until(5_000, () => daemonLockVerdict(home, child.pid) === "dead")).toBe(true);
+      await until(() => !pidAlive(child.pid));
+      await until(() => daemonLockVerdict(home, child.pid) === "dead");
     } finally {
       await killAndAwaitExit(child.pid);
     }
@@ -880,7 +880,7 @@ test.skipIf(process.platform === "win32")(
       stderr: "inherit",
     });
     try {
-      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      await until(() => existsSync(ready));
       expect(daemonLockHolderPid(home)).toBe(child.pid);
 
       await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
@@ -928,8 +928,9 @@ test(
       expect(pidAlive(child.pid)).toBe(true);
       expect(daemonLockHolderPid(home)).toBe(child.pid);
     } finally {
-      await killAndAwaitExit(child.pid);
+      // Our own lock first: the wait can end with the deadline's error.
       releaseFileLock(daemonLockPath(home));
+      await killAndAwaitExit(child.pid);
     }
   },
   30_000,
@@ -966,8 +967,9 @@ test(
       expect(daemonLockHolderPid(home)).toBe(child.pid);
       expect(new CopilotEnvRunState().read().pid).toBeUndefined();
     } finally {
-      await killAndAwaitExit(child.pid);
+      // Our own lock first: the wait can end with the deadline's error.
       releaseFileLock(daemonLockPath(home));
+      await killAndAwaitExit(child.pid);
     }
   },
   30_000,
@@ -979,7 +981,7 @@ test(
     const home = tmpHome();
     const pid = launchFakeDaemon(home, await freePort());
     try {
-      expect(await until(20_000, () => daemonLockVerdict(home, pid) === "alive")).toBe(true);
+      await until(() => daemonLockVerdict(home, pid) === "alive");
       // Another profile home whose lock state cannot be read: corroboration can no longer
       // prove the holder is not THAT home's daemon, so nothing may be signalled.
       mkdirSync(daemonLockPath(profileHome(WORK)), { recursive: true });
@@ -992,7 +994,7 @@ test(
       // Control: with the other home readable again, the same start recovers as usual.
       rmSync(daemonLockPath(profileHome(WORK)), { recursive: true, force: true });
       await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
-      expect(await until(5_000, () => !pidAlive(pid))).toBe(true);
+      await until(() => !pidAlive(pid));
     } finally {
       await killAndAwaitExit(pid);
     }
@@ -1027,7 +1029,7 @@ test.skipIf(process.platform === "win32")(
       stderr: "inherit",
     });
     try {
-      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      await until(() => existsSync(ready));
       expect(daemonLockHolderPid(home)).toBe(child.pid);
 
       await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
@@ -1522,11 +1524,7 @@ describe("unproven tracked-pid identity scans", () => {
         stderr: "null",
       });
       try {
-        const deadline = Date.now() + 10_000;
-        while ((await classifyOwnedDaemonPid(child.pid)) !== "yes" && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-        expect(await classifyOwnedDaemonPid(child.pid)).toBe("yes");
+        await until(async () => (await classifyOwnedDaemonPid(child.pid)) === "yes");
         // Controls: a live NON-daemon (this test process) and a dead pid read "no".
         expect(await classifyOwnedDaemonPid(process.pid)).toBe("no");
         expect(await classifyOwnedDaemonPid(DEAD_PID)).toBe("no");
@@ -1643,7 +1641,7 @@ describe("unproven tracked-pid identity scans", () => {
         );
         expect(out).toContain(`Stopping tracked proxy (pid=${child.pid})`);
         expect(out).not.toContain("Skipping the tracked-pid stop");
-        expect(await until(5_000, () => !pidAlive(child.pid))).toBe(true);
+        await until(() => !pidAlive(child.pid));
         expect(new CopilotEnvRunState().read().pid).toBeUndefined();
       } finally {
         await killAndAwaitExit(child.pid);
@@ -1671,7 +1669,7 @@ describe("unproven tracked-pid identity scans", () => {
         stderr: "null",
       });
       try {
-        expect(await until(10_000, () => existsSync(ready))).toBe(true);
+        await until(() => existsSync(ready));
         writeRunState({ pid: child.pid, port: 4141 });
         let calls = 0;
         await captureAllWrites(() =>
@@ -1685,7 +1683,7 @@ describe("unproven tracked-pid identity scans", () => {
         // The seam saw the plan, the signal boundary, AND the escalation's re-proof --
         // an escalation judging through the owner-blind default would leave calls at 2.
         expect(calls).toBeGreaterThanOrEqual(3);
-        expect(await until(5_000, () => !pidAlive(child.pid))).toBe(true); // SIGKILLed
+        await until(() => !pidAlive(child.pid)); // SIGKILLed
       } finally {
         await killAndAwaitExit(child.pid);
       }

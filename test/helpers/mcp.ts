@@ -100,10 +100,8 @@ export class McpClient {
   }
 
   async waitFor(id: number | string): Promise<JsonRpcMessage> {
-    const deadline = Date.now() + 10_000;
     for (;;) {
-      const line = await this.nextLine(deadline);
-      const msg = JSON.parse(line) as JsonRpcMessage;
+      const msg = JSON.parse(await this.nextLine()) as JsonRpcMessage;
       if (msg.id === id) return msg;
     }
   }
@@ -112,7 +110,7 @@ export class McpClient {
     this.send({ "jsonrpc": "2.0", "method": method });
   }
 
-  private async nextLine(deadline: number): Promise<string> {
+  private async nextLine(): Promise<string> {
     for (;;) {
       const nl = this.buffer.indexOf("\n");
       if (nl >= 0) {
@@ -122,28 +120,11 @@ export class McpClient {
         this.stdoutLines.push(line);
         return line;
       }
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) throw new Error("timed out waiting for a server response");
-      // Race the read against the deadline: a live-but-silent server must fail
-      // fast here, not wait out the whole per-test timeout on a blocked read.
-      const chunk = await this.readWithTimeout(remaining);
+      // No clock of its own: the test deadline is the one budget for a slow server, and the
+      // harness kills this child when it fires, which closes stdout and ends a blocked read.
+      const chunk = await this.reader.read();
       if (chunk.done) throw new Error("server stdout closed early");
       this.buffer += this.decoder.decode(chunk.value);
-    }
-  }
-
-  private async readWithTimeout(ms: number): Promise<{ done: boolean; value?: Uint8Array }> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error("server is alive but silent: no stdout within the deadline")),
-        ms,
-      );
-    });
-    try {
-      return await Promise.race([this.reader.read(), timeout]);
-    } finally {
-      clearTimeout(timer);
     }
   }
 

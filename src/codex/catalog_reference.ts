@@ -169,7 +169,7 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
 /** The exact value match alone proves ownership, with no provider check: a reference left behind
  *  while the file goes breaks Codex startup, and a user-pinned custom path survives.
  *
- *  the ledger     -> only EXTENDS the known homes; pre-ledger installs recorded nothing
+ *  the ledger     -> only EXTENDS the known homes
  *  `deletionSafe` -> the sweep's proof that no readable config still references the file */
 function stripCodexCatalogReferences(
   catalogFile: string,

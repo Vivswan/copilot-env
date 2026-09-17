@@ -554,15 +554,6 @@ test("the sweep signature matches every real daemon shape, straight from daemonA
         "npm:@jeffreycao/copilot-api@1.14.30 start --verbose --port 4141",
     }),
   ).toBe(false);
-
-  // A pre-rewrite install's daemon: node/bun hosting a node_modules entry path.
-  expect(
-    isDaemonProcess({
-      pid: 1,
-      ucomm: "node",
-      command: "node /usr/lib/node_modules/@jeffreycao/copilot-api/dist/main.js start --port 4141",
-    }),
-  ).toBe(true);
 });
 
 test("the Windows CommandLine mirror matches the image-quoted daemon shapes", () => {

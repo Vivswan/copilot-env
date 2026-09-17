@@ -29,7 +29,10 @@ import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { runMcp } from "../src/commands/mcp.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
-import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
+import {
+  DEFAULT_COPILOT_API_BASE,
+  setIntegrationProbeFetch,
+} from "../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
@@ -59,6 +62,7 @@ let dir = "";
 
 afterEach(() => {
   restoreEnv();
+  setIntegrationProbeFetch(null);
   dir = removeDir(dir);
 });
 
@@ -483,24 +487,35 @@ test("direct helper invokes `agent auth --get` and never bakes a token, still cl
   expect(helperCommand).not.toContain("gh auth token");
 });
 
-test("runClaude --direct with static-key covering Claude fails closed without a credential, and bakes a stored one", async () => {
+test("runClaude --direct with static-key covering Claude fails closed without a credential, before any probe, and bakes a stored one", async () => {
   const home = tmpHome();
   new CopilotEnvConfig().setProfile(null, { "static-key": "claude" });
   directDefault(); // the mode this re-render bakes
+  // Hermetic: the landing below probes Copilot for the identity and host. Nothing here may reach
+  // the real service (a fake token would draw real 401s online and an accidental pass offline).
+  let probes = 0;
+  setIntegrationProbeFetch(() => {
+    probes++;
+    return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+  });
 
-  // Nothing resolves: the write is refused outright (never a silent fall back to the command shape).
+  // Nothing resolves: the write is refused outright (never a silent fall back to the command shape),
+  // and refused BEFORE any probe: a selection made without a credential would bake the fallback pair.
   await expect(runClaude({ kind: "configure", mode: "direct" })).rejects.toThrow(
     /static-key is claude but no credential resolves[\s\S]*agent auth/,
   );
   expect(existsSync(join(home, "settings.json"))).toBe(false);
+  expect(probes).toBe(0);
 
-  // Control: the same preference with a stored credential writes the static shape.
+  // Control: the same preference with a stored credential writes the static shape. The credential
+  // write took the stored pair with it, so this re-render is the landing that probes it again.
   new CopilotEnvState().setCredential(null, {
     kind: "stored",
     provider: "gh-token",
     token: "ghu_stored",
   });
   await runClaude({ kind: "configure", mode: "direct" });
+  expect(probes).toBeGreaterThan(0);
   expect(inspectHome(home)).toMatchObject({ providerMode: "direct", credential: "static" });
   expect(envOf(home)[AUTH_TOKEN_ENV]).toBe("ghu_stored");
 });

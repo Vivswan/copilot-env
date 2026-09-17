@@ -8,7 +8,7 @@
 //                                                    answer (no codex, spent probe budget) still
 //                                                    writes and references it, unverified
 //   one ATTEMPT per day, not one success          -> a broken upstream never retries inside every
-//                                                    300s Codex auth refresh
+//                                                    launch
 //   `agent config --set codex.model-catalog true` -> opt-in; off, config.ts and
 //                                                    catalog_reference.ts remove it
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
@@ -19,7 +19,6 @@ import * as path from "node:path";
 import { codexConfigPath } from "./paths.ts";
 import { stringify } from "smol-toml";
 import { isDue } from "../autoupdate/due.ts";
-import { BOUNDED_LOCK_POLICY } from "../utils/file_lock.ts";
 import { type CatalogSource, fetchRawModels } from "../copilot_api/catalog.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
@@ -53,7 +52,7 @@ export const CATALOG_PATCH_VERSION = 3;
 // A local-only run (no network) that may still cold-start the CLI.
 const BUNDLED_DUMP_TIMEOUT_MS = 5000;
 // One budget for EVERY probe spawn in this process (candidates and their controls, across
-// generation and the auth-time sync); see probeBudgetLeftMs.
+// generation and the reference sync); see probeBudgetLeftMs.
 const CATALOG_PROBE_TIMEOUT_MS = 5000;
 // One deadline over the whole Copilot fetch, identity probes included (a PAT can chain several
 // probes before the GET).
@@ -62,12 +61,6 @@ const COPILOT_FETCH_BUDGET_MS = 5000;
 // skipped: they are caches.
 const REFRESH_DEADLINE_MS = CODEX_VERSION_TIMEOUT_MS + COPILOT_FETCH_BUDGET_MS +
   BUNDLED_DUMP_TIMEOUT_MS + CATALOG_PROBE_TIMEOUT_MS;
-
-/** The longest a due refresh can hold up `agent auth --get`: the attempt write's lock wait, the
- *  deadline, and one cache write begun just before it. The direct provider's auth timeout
- *  (DIRECT_AUTH_TIMEOUT_MS) must stay above it. */
-export const AUTH_REFRESH_WORST_CASE_MS = BOUNDED_LOCK_POLICY.waitMs + REFRESH_DEADLINE_MS +
-  BOUNDED_LOCK_POLICY.waitMs;
 
 // Null outside a refresh: writes allowed.
 let refreshDeadline: { at: number; clock: () => number } | null = null;
@@ -132,8 +125,8 @@ export interface CodexCatalogDeps {
    *  rejection, null when it cannot be verified (no codex, or a failure unrelated to the catalog).
    */
   acceptsCatalog?: (catalogJson: string) => boolean | null;
-  /** `auth --get` has just resolved a credential; re-resolving inside the refresh would re-run `gh
-   *  auth token` (up to 5s) and eat into Codex's auth timeout budget for nothing. */
+  /** The caller (a Direct wiring write) has already resolved the credential; re-resolving inside the
+   *  refresh would re-run `gh auth token` (up to 5s) for nothing. */
   directToken?: string;
   /** The installed codex CLI version (spawned by default; injected in tests). */
   codexVersion?: () => string | null;
@@ -463,12 +456,12 @@ function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-// Verdicts by catalog content, per process: generation and the auth-time sync judge the same bytes,
+// Verdicts by catalog content, per process: generation and the reference sync judge the same bytes,
 // and the codex binary does not change under one run.
 const probeVerdicts = new Map<string, boolean | null>();
 
 // Every probe spawn draws on this, so however many files are judged, probing costs at most one
-// budget per `agent auth --get`. Exhausted, verdicts are null (unverifiable).
+// budget per process (a wiring write, a launch). Exhausted, verdicts are null (unverifiable).
 let probeBudgetLeftMs = CATALOG_PROBE_TIMEOUT_MS;
 
 /** The suffix a reporting line carries when the installed codex could not judge the catalog (no
@@ -548,7 +541,7 @@ async function defaultFetchCopilotModels(
   directToken?: string,
 ): Promise<Map<string, CopilotCatalogModel> | null> {
   // The deadline aborts the requests themselves (identity probes included), so a slow Copilot
-  // cannot keep the auth process alive past the budget. The catalog feeds Codex's OWN requests,
+  // cannot hold a wiring write or a launch past the budget. The catalog feeds Codex's OWN requests,
   // so the direct fetch asks as Codex does (identity-exact gating, copilot_api/catalog.ts); the
   // proxy fetch names no identity, and never resolves the User-Agent, whose version lookup can
   // spawn `codex --version` and `npm view` for seconds with no codex installed.
@@ -609,7 +602,7 @@ export async function generateCodexModelCatalog(
 }
 
 /** A (content, codex version) pair this codex already parsed is accepted from the persisted record
- *  without a spawn, so the auth-time sync asks again only when the file or the codex changed.
+ *  without a spawn, so the reference sync asks again only when the file or the codex changed.
  *  Recorded only on a positive verdict with a known version: a rejection is re-asked, since the
  *  next regeneration replaces it. */
 function judgeCatalog(catalogJson: string, deps: CodexCatalogDeps): boolean | null {
@@ -665,7 +658,7 @@ export function inspectCatalogFile(
   return accepted === null ? "unverifiable" : accepted ? "accepted" : "rejected";
 }
 
-/** At most one ATTEMPT per day, recorded before generating so a failure cannot retry every 300s;
+/** At most one ATTEMPT per day, recorded before generating so a failure cannot retry on every launch;
  *  bypassed by a codex version or patch change (the file REPLACES the bundled catalog). Never
  *  throws. */
 export async function refreshCodexModelCatalogIfStale(

@@ -38,8 +38,8 @@ export interface ProxyTokenDeps {
   /** Prompts on stderr; EOF resolves "". */
   readAnswer(query: string): Promise<string>;
   recordHeartbeat(profile: Profile): void;
-  /** runPrintProxyToken in production. `agent launch` injects a keyless variant that keeps only the
-   *  catalog-freshness side effect: launch needs reachability, not the credential. */
+  /** runPrintProxyToken in production. `agent launch` injects a keyless variant that runs the
+   *  Codex catalog refresh instead: launch needs reachability, not the credential. */
   printProxyToken(profile: Profile): Promise<void>;
   /** stderr, never stdout. */
   notify(line: string): void;
@@ -148,7 +148,10 @@ function commandDeps(): ProxyTokenDeps {
     launchProxy,
     readAnswer: readStartAnswer,
     recordHeartbeat,
-    printProxyToken: (profile) => runPrintProxyToken(profile),
+    printProxyToken: (profile) => {
+      runPrintProxyToken(profile);
+      return Promise.resolve();
+    },
     notify: (line) => {
       printWrappedToStderr(line);
     },

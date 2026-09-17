@@ -585,8 +585,8 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
       runProbe: (_cli: string, _args: string[], env: Record<string, string>, cwd: string) => {
         const home = env.CODEX_HOME ?? "";
         spawn = { cwd, home };
-        // The table's auth.command runs `agent auth --get` with this env, and its catalog self-heal
-        // writes the home $CODEX_HOME names: it must neither add the reference here nor ledger it.
+        // A reference sync run with this env (a wiring write or a launch under this $CODEX_HOME)
+        // must neither add the reference to the throwaway config nor ledger it.
         process.env.CODEX_HOME = home;
         syncCodexCatalogReference();
         probeDoc = asRecord(parse(readFileSync(join(home, "config.toml"), "utf8")));
@@ -1333,7 +1333,7 @@ test("past the refresh deadline the sync adds no reference it could not record, 
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(false);
   expect(late).toContain(
     `catalog reference not set in ${configPath}: ownership could not be recorded; ` +
-      "the next auth refresh retries",
+      "the next wiring or direct launch retries",
   );
   // Control: inside the deadline the same sync records the claim.
   writeFileSync(configPath, 'model_provider = "copilot-env"\n');

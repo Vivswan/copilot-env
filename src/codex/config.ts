@@ -82,9 +82,9 @@ const logger = createStderrLogger();
 // `env.ts` exports; the inspector reports whether the user's `.env` or environment carries it as a
 // fact about the home (no managed wiring needs it).
 export const CODEX_ENV_KEY = "OPENAI_API_KEY";
-/** What one `agent auth --get` (the `gh` look, the token print, a due catalog refresh) has before
- *  Codex gives up. It sits in every install's config, so the refresh budgets bend to it (pinned by
- *  test). */
+/** What one `agent auth --get` (the `gh` look and the token print, nothing else) has before Codex
+ *  gives up. It sits in every install's config; the gh look's own budget (GH_AUTH_TIMEOUT_MS) stays
+ *  far under it. */
 export const DIRECT_AUTH_TIMEOUT_MS = 30000;
 
 /** A named profile is selected by its own `<name>.config.toml` (`codex --profile <name>` layers it
@@ -177,9 +177,8 @@ function managedDirectProvider(
     "wire_api": "responses",
     "supports_websockets": false,
     "requires_openai_auth": false,
-    // The launcher may cold-start deno, and a due (at most daily) catalog refresh runs after the
-    // token prints (AUTH_REFRESH_WORST_CASE_MS, src/codex/catalog.ts); warm calls take well under
-    // a second, and Codex refreshes lazily.
+    // The launcher may cold-start deno; warm calls take well under a second, and Codex refreshes
+    // lazily. The catalog refresh runs at wiring and launch, never inside this command.
     ...credentialTables(
       credential,
       { command, args, timeoutMs: DIRECT_AUTH_TIMEOUT_MS },
@@ -860,7 +859,7 @@ export async function applyCodexConfig(
   const { port, request } = codexWriteRequest(write, profile);
 
   // Seeded (best-effort, unthrottled) BEFORE the config write, so the very first wiring can already
-  // reference the file; the auth-time refresh (src/commands/auth.ts) keeps it fresh afterwards.
+  // reference the file; the launch-time refresh (src/commands/launch.ts) keeps it fresh afterwards.
   // Account-wide, keyed to the default credential, so named-profile writes never touch it.
   if (profile === null) await generateCodexModelCatalog(write.mode, catalogDeps);
 
@@ -1084,12 +1083,10 @@ export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
 };
 
 /** The throwaway config's selector, NOT the managed id. The table's `auth.command` runs `agent auth
- *  --get` in the child, and with neither Codex-home key set (the default) that child's Codex home is
- *  $CODEX_HOME = the throwaway home (defaultCodexHome; codex.home or a codex.host farm wins over it).
- *  Its catalog self-heal (src/codex/catalog_reference.ts) adds `model_catalog_json` to, and ledgers,
- *  any config there that selects the managed provider: the next attempt would then run under the
- *  user's catalog, and the ledger would keep a path removeScratchDir deletes. A foreign selector is
- *  left alone by that self-heal's own contract. */
+ *  --get` in the child, which prints the token and writes nothing. The distinct selector keeps the
+ *  reference sync (a wiring write or a launch run with $CODEX_HOME pointing here) from adding
+ *  `model_catalog_json` to, and ledgering, a config removeScratchDir deletes: the sync touches only
+ *  configs that select the managed provider, by its own contract. */
 const CODEX_PROBE_PROVIDER_ID = `${CODEX_PROVIDER_ID}-probe`;
 
 /** The detect probe's throwaway config: the Direct provider table and its selector, nothing else.

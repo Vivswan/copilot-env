@@ -9,6 +9,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { CONFIG_REGISTRY } from "../src/copilot_api/env_config.ts";
 import { PREFERENCE_RENAMES } from "../src/migrations/4.0.9.ts";
+import { escapeRegExp } from "../src/utils/regexp.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -122,11 +123,13 @@ const OLD_KEY_NAMES = PREFERENCE_RENAMES.filter(([, cli, key]) => cli !== key).m
   cli
 );
 
-/** A key is cited in backticks, alone or with one value word: `` `codex-host` ``, `` `claude-desktop false` ``,
- *  the backticks escaped inside a template literal or not. A template literal's own opening backtick
- *  (`` `port ${n} is busy` ``) is not a citation: `${` is no word. */
+/** A key is cited in backticks, alone or with one value word (`` `codex-host` ``, `` `claude-desktop false` ``,
+ *  the backticks escaped inside a template literal or not), or named by an `agent config` flag
+ *  (`--set codex-host true`, even when the hint wraps onto a comment's next line). A template literal's
+ *  own opening backtick (`` `port ${n} is busy` ``) is not a citation: `${` is no word. */
 const OLD_KEY_CITATION = new RegExp(
-  "\\\\?`(" + OLD_KEY_NAMES.map((k) => k.replace(/[.-]/g, "\\$&")).join("|") + ")( [\\w-]+)?\\\\?`",
+  `\\\\?\`(?:${OLD_KEY_NAMES.map(escapeRegExp).join("|")})( [\\w-]+)?\\\\?\`` +
+    `|--(?:set|del|get) (?:${OLD_KEY_NAMES.map(escapeRegExp).join("|")})\\b`,
   "g",
 );
 
@@ -144,6 +147,10 @@ test("no source file, comments included, cites a config key by a spelling the 4.
   // Negative controls: the citation shapes are seen, a template literal's opening backtick and a
   // dotted or flag spelling are not, and the list really comes from the migration's table.
   expect("the `codex-host` key".match(OLD_KEY_CITATION)).toEqual(["`codex-host`"]);
+  expect(" *  --set update-cooldown N` takes effect".match(OLD_KEY_CITATION))
+    .toEqual(["--set update-cooldown"]);
+  expect("run `agent config --set update.cooldown 3` or pass `--port`".match(OLD_KEY_CITATION))
+    .toBeNull();
   expect("busy (\\`strict-port\\`); free it".match(OLD_KEY_CITATION)).toEqual([
     "\\`strict-port\\`",
   ]);

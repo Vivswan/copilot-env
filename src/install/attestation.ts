@@ -11,6 +11,7 @@
 //   "cannot verify"        -> the bundle or trust root could not be fetched; names the opt-outs
 //   "verification FAILED"  -> the bytes are not attested or the signer is wrong; never names them
 import { configSetCommand } from "../copilot_api/env_config.ts";
+import { escapeRegExp } from "../utils/regexp.ts";
 
 /** The release asset carrying the Sigstore bundle (uploaded by the release workflow's publish
  *  stage). */
@@ -79,10 +80,6 @@ export const RELEASE_SIGNER_POLICY: SignerPolicy = {
   sourceRepositoryId: SOURCE_REPOSITORY_ID,
   sourceRepositoryRef: SOURCE_REPOSITORY_REF,
 };
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 /** sigstore-js matches the SAN as a regular expression even when given a string, so the
  *  workflow URLs are escaped and the whole pattern anchored. */

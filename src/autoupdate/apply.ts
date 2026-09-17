@@ -256,7 +256,7 @@ async function verify(downloaded: Downloaded): Promise<Verified> {
 
 /**
  * Stage 2b: prove ORIGIN, not just integrity. The binary AND the manifest must both be attested
- * subjects, signed by our release workflow.
+ * subjects, signed by a GitHub Actions workflow of Vivswan's account.
  *
  * after the checksum stage -> a corrupt download reads as the cheap integrity failure, never as a
  *                             provenance verdict

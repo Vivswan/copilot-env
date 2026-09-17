@@ -18,14 +18,10 @@ import {
   ATTESTATION_NAME,
   type AttestedSubject,
   cannotVerifyMessage,
-  derUtf8String,
-  FULCIO_OID_SOURCE_REPOSITORY_ID,
-  FULCIO_OID_SOURCE_REPOSITORY_REF,
   IN_TOTO_PAYLOAD_TYPE,
   parseStatement,
   RELEASE_SIGNER_POLICY,
   type SignerPolicy,
-  signerSanPattern,
   verificationFailedMessage,
 } from "./attestation.ts";
 
@@ -42,7 +38,7 @@ export function tufCachePath(rootHome: string = resolveRootHome()): string {
 export interface VerifyProvenanceOptions {
   /** A trust root to verify against instead of refreshing one over TUF (tests). */
   trustedRoot?: TrustedRoot;
-  /** Who may have signed (default: the release workflow). */
+  /** Who may have signed (default: any GitHub Actions workflow of Vivswan's account). */
   policy?: SignerPolicy;
   /** Where the TUF client keeps its metadata cache. */
   cachePath?: string;
@@ -105,19 +101,8 @@ export async function verifyReleaseProvenance(
   let signerIdentity: string;
   try {
     const signer = new Verifier(toTrustMaterial(trustedRoot)).verify(toSignedEntity(bundle), {
-      subjectAlternativeName: signerSanPattern(policy),
+      subjectAlternativeName: policy.signerSan,
       extensions: { issuer: policy.issuer },
-      // Byte-for-byte against the certificate's extension values (DER UTF8Strings).
-      oids: [
-        {
-          oid: { id: [...FULCIO_OID_SOURCE_REPOSITORY_ID] },
-          value: Buffer.from(derUtf8String(policy.sourceRepositoryId)),
-        },
-        {
-          oid: { id: [...FULCIO_OID_SOURCE_REPOSITORY_REF] },
-          value: Buffer.from(derUtf8String(policy.sourceRepositoryRef)),
-        },
-      ],
     });
     const identity = signer.identity?.subjectAlternativeName;
     if (identity === undefined) {

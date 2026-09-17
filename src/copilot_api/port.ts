@@ -2,7 +2,8 @@ import * as net from "node:net";
 
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
 import { configSetCommand, CopilotEnvConfig, isLoopbackHostname } from "./env_config.ts";
-import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
+import { allProfileNames } from "./env_state.ts";
+import { CopilotApiPaths } from "./paths.ts";
 import type { Profile, ProfileName } from "./profile.ts";
 import { CopilotEnvRunState } from "./state.ts";
 
@@ -137,11 +138,14 @@ export function copilotApiFallbackPort(profile: Profile): number {
   return port.source === "config" ? defaultProxyPort() : candidateProfilePort(port.name);
 }
 
+/** Every profile the store or the disk knows (allProfileNames): a slot whose daemon home does not
+ *  exist yet still holds its reservation once planned, so a dry run allocating two profiles in a
+ *  row gives them distinct ports, as the real run does. */
 function recordedPorts(excluding: Profile): Set<number> {
   const ports = new Set<number>([defaultProxyPort()]);
   const defaultPort = new CopilotEnvRunState().read().port;
   if (defaultPort !== undefined) ports.add(defaultPort);
-  for (const name of profileHomeNames()) {
+  for (const name of allProfileNames()) {
     if (name === excluding) continue;
     const port = CopilotEnvRunState.forProfile(name).read().port;
     if (port !== undefined) ports.add(port);

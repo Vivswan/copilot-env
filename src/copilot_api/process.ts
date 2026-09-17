@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "../proxy_float.ts";
+import { runPowershell } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { type RootMode, rootMode } from "../utils/root.ts";
@@ -326,12 +327,7 @@ async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "un
     "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { 'unknown' } " +
     `elseif ($p.CommandLine -match '${DAEMON_CMDLINE_PATTERN}') { 'yes' } ` +
     "else { 'no' }";
-  const { exitCode, stdout } = await runCaptured("powershell", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    script,
-  ]);
+  const { exitCode, stdout } = await runPowershell(script);
   if (exitCode !== 0) return "unknown";
   const verdict = stdout.trim();
   return verdict === "yes" || verdict === "no" ? verdict : "unknown";
@@ -375,12 +371,7 @@ async function scanCopilotApiPidsWindows(): Promise<number[] | "unproven"> {
     "$o -and $o.ReturnValue -eq 0 -and $o.User -eq $env:USERNAME -and $o.Domain -eq $env:USERDOMAIN " +
     "} | ForEach-Object { $_.ProcessId } " +
     "} catch { exit 1 }";
-  const { exitCode, stdout } = await runCaptured("powershell", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    script,
-  ]);
+  const { exitCode, stdout } = await runPowershell(script);
   if (exitCode !== 0) return "unproven";
 
   const pids: number[] = [];

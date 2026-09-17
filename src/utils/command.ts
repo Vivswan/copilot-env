@@ -3,7 +3,9 @@
 // a cycle (setup -> codex/claude config -> agents/live_probe -> setup).
 import { execFile, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, isAbsolute, win32 } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, win32 } from "node:path";
+import { removeScratchDir, scratchDir } from "./report_write.ts";
 
 const POSIX_NVM_SH = '"$' + '{NVM_DIR:-$HOME/.nvm}/nvm.sh"';
 
@@ -26,18 +28,43 @@ export function commandLookFromSpawn(
   return { path: resolvedPath() };
 }
 
+/** A PowerShell process writes its profile scaffolding (AppData\\Roaming, the PSReadLine history)
+ *  under the profile directories it inherits, so every PowerShell spawn of ours that launches
+ *  nothing for the user runs under a scratch profile: the user's HOME (or a test's fingerprinted
+ *  one) sees none of it. `dispose` removes the profile once the spawn has returned. */
+export function scratchPowershellProfile(): {
+  env: Record<string, string | undefined>;
+  dispose(): void;
+} {
+  const profile = scratchDir(join(tmpdir(), "copilot-env-ps-"));
+  return {
+    env: {
+      ...process.env,
+      USERPROFILE: profile,
+      APPDATA: join(profile, "AppData", "Roaming"),
+      LOCALAPPDATA: join(profile, "AppData", "Local"),
+    },
+    dispose: () => removeScratchDir(profile),
+  };
+}
+
 export function findCommand(command: string): CommandLook {
   if (process.platform === "win32") {
-    const result = spawnSync(
-      "powershell",
-      [
-        "-NoProfile",
-        "-Command",
-        `if (Get-Command ${command} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }`,
-      ],
-      { stdio: "ignore" },
-    );
-    return commandLookFromSpawn(result, () => command);
+    const profile = scratchPowershellProfile();
+    try {
+      const result = spawnSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          `if (Get-Command ${command} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }`,
+        ],
+        { stdio: "ignore", env: profile.env },
+      );
+      return commandLookFromSpawn(result, () => command);
+    } finally {
+      profile.dispose();
+    }
   }
 
   const result = spawnSync(
@@ -110,7 +137,7 @@ export function childEnvWithPath(
 export function runCaptured(
   file: string,
   args: readonly string[],
-  opts: { maxBuffer?: number } = {},
+  opts: { maxBuffer?: number; env?: Record<string, string | undefined> } = {},
 ): Promise<{ exitCode: number; stdout: string; launchFailed?: true }> {
   return new Promise((resolve) => {
     // `windowsHide` keeps a no-console Windows parent from flashing a console window. An overflow
@@ -119,7 +146,7 @@ export function runCaptured(
     execFile(
       file,
       args,
-      { windowsHide: true, maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024 },
+      { windowsHide: true, maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024, env: opts.env },
       (error, stdout) => {
         if (error === null) return resolve({ exitCode: 0, stdout });
         if (typeof error.code === "number" && error.code !== 0) {

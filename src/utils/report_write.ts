@@ -12,6 +12,7 @@
 //   scratch this process creates and removes     -> silent
 //   a recipe's transient side (a temp file)      -> silent
 //   a write that failed                          -> only what a before/after look PROVES changed
+import { randomBytes } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -27,10 +28,18 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
-import { isEnoentOrNotdir } from "./fs.ts";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { isEnoentOrNotdir, missingDirectories } from "./fs.ts";
 import { terminalWidth, wrapMessage } from "./table.ts";
 import { sleepSync } from "./time.ts";
+import {
+  dryRunActive,
+  filePlan,
+  type FileVerdict,
+  landPlan,
+  shadowedText,
+} from "./write_session.ts";
 
 export type WriteKind = "created" | "rewritten" | "deleted" | "moved" | "linked";
 
@@ -216,12 +225,47 @@ export function flushWriteReports(): string[] {
 
 // --- the wrappers ----------------------------------------------------------------------
 
+/**
+ * The seam's own dry-run gate: every wrapper below records the write as a plan and touches nothing
+ * while a dry run collects, unless the path is scratch this process minted (a probe's throwaway
+ * config must exist for the probe to run). So a mutation reached outside a plan's apply (a daemon's
+ * activity mark cleared on stop) is previewed like one inside it, and nothing in src/ can write
+ * behind a dry run: the fs-write lint keeps every raw write out of everything but this file, the
+ * lock protocol (which takes no lock in a dry run), and the migrations.
+ */
+function planned(
+  kind: FileVerdict,
+  path: string,
+  content?: string,
+  directory?: true,
+): boolean {
+  if (!dryRunActive() || underScratch(path)) return false;
+  const before = kind === "create" ? null : undefined;
+  landPlan({
+    files: [
+      filePlan(path, kind, {
+        before,
+        ...(content === undefined ? {} : { content }),
+        ...(directory === undefined ? {} : { directory }),
+      }),
+    ],
+    apply() {},
+  });
+  return true;
+}
+
+/** A write's verdict from the look that precedes it. */
+function verdictOf(was: Look): FileVerdict {
+  return was.kind === "absent" ? "create" : "rewrite";
+}
+
 export function writeFileReported(
   path: string,
   data: string | Uint8Array,
   options?: { mode?: number; detail?: string },
 ): void {
   const was = look(path);
+  if (planned(verdictOf(was), path, typeof data === "string" ? data : undefined)) return;
   try {
     writeFileSync(path, data, { mode: options?.mode });
   } catch (err) {
@@ -233,6 +277,7 @@ export function writeFileReported(
 
 export function copyFileReported(from: string, to: string, detail?: string): void {
   const was = look(to);
+  if (planned(verdictOf(was), to)) return;
   try {
     copyFileSync(from, to);
   } catch (err) {
@@ -243,12 +288,12 @@ export function copyFileReported(from: string, to: string, detail?: string): voi
 }
 
 /** Names every directory actually created, outermost first; `detail` rides on the directory asked
- *  for. */
+ *  for. An ancestor that exists as a regular file is mkdir's ENOTDIR, in a dry run too. */
 export function mkdirReported(path: string, mode?: number, detail?: string): void {
-  const missing: string[] = [];
-  for (let cur = path; look(cur).kind === "absent"; cur = dirname(cur)) {
-    missing.unshift(cur);
-    if (dirname(cur) === cur) break;
+  const missing = missingDirectories(path);
+  if (dryRunActive() && !underScratch(path)) {
+    for (const made of missing) planned("create", made, undefined, true);
+    return;
   }
   try {
     mkdirSync(path, { recursive: true, mode });
@@ -262,23 +307,46 @@ export function mkdirReported(path: string, mode?: number, detail?: string): voi
 /** A mode change is a rewrite of the entry, deduped away when this process already announced the
  *  path. */
 export function chmodReported(path: string, mode: number, detail?: string): void {
+  if (planned("rewrite", path)) return;
   chmodSync(path, mode);
   reportWrite("rewritten", path, detail);
 }
 
-/** A directory at the path throws, as rmSync does without `recursive`: a caller that meant a file
- *  must never take a tree. */
+/** A directory at the path is refused (a caller that meant a file must never take a tree; a
+ *  symlink is the link, not what it points at) by the seam itself and before any plan, so a dry run
+ *  refuses where the real run does. A path this dry run already landed reads through its plan:
+ *  planned written is present, planned deleted is gone. */
 export function removeReported(path: string, detail?: string): boolean {
-  if (look(path).kind === "absent") return false;
+  const shadow = shadowedText(path);
+  if (shadow === null) return false;
+  if (shadow === undefined) {
+    if (look(path).kind === "absent") return false;
+    assertNotDirectory(path);
+  }
+  if (planned("delete", path)) return true;
   rmSync(path, { force: true });
   reportWrite("deleted", path, detail);
   return true;
+}
+
+/** removeReported's refusal, for a caller that plans a removal ahead of its apply: raised at plan
+ *  time, a dry run refuses where the real run does instead of previewing a delete the apply would
+ *  refuse. A symlink is the link, not what it points at. */
+export function assertNotDirectory(path: string): void {
+  let directory: boolean;
+  try {
+    directory = lstatSync(path).isDirectory();
+  } catch {
+    return;
+  }
+  if (directory) throw new Error(`${path} is a directory; only a file can be removed here`);
 }
 
 /** A removal that fails partway is named for what it provably changed. */
 export function removeTreeReported(path: string, detail?: string): boolean {
   const was = look(path, true);
   if (was.kind === "absent") return false;
+  if (planned("delete", path)) return true;
   try {
     rmSync(path, { recursive: true, force: true });
   } catch (err) {
@@ -302,6 +370,7 @@ function dropTransient(path: string, was: Look, recursive = false): void {
 
 export function removeEmptyDirReported(path: string): void {
   if (look(path).kind === "absent") return;
+  if (planned("delete", path)) return;
   rmdirSync(path);
   reportWrite("deleted", path);
 }
@@ -310,6 +379,11 @@ export function removeEmptyDirReported(path: string): void {
  *  move INTO one is the deletion of `from`. */
 export function renameReported(from: string, to: string): void {
   const was = look(to, true);
+  if (dryRunActive() && !underScratch(to)) {
+    planned(verdictOf(was), to);
+    planned("delete", from);
+    return;
+  }
   try {
     renameSync(from, to);
   } catch (e) {
@@ -345,6 +419,7 @@ export function renameReported(from: string, to: string): void {
 }
 
 export function symlinkReported(target: string, path: string, type?: "junction"): void {
+  if (planned(verdictOf(look(path)), path)) return;
   symlinkSync(target, path, type);
   reportWrite("linked", path, `to ${target}`);
 }
@@ -352,6 +427,7 @@ export function symlinkReported(target: string, path: string, type?: "junction")
 /** The replacement link is built aside and renamed over `link`, so a concurrent reader never sees a
  *  missing link. */
 export function atomicSymlink(target: string, link: string): void {
+  if (planned(verdictOf(look(link)), link)) return;
   const staged = join(dirname(link), `.${basename(link)}-next-${process.pid}`);
   rmSync(staged, { force: true });
   const was = look(staged);
@@ -380,6 +456,94 @@ export function removeScratchDir(dir: ScratchDir): void {
   dropTransient(dir, { kind: "absent" }, true);
 }
 
+// --- the dry-run marker ------------------------------------------------------------------
+
+/** Set in the environment of every process a dry run spawns (the Direct probes' agent CLIs, whose
+ *  auth helper is this CLI again) so a child that finds it runs as a silent dry run, and nothing
+ *  this CLI does on the child's behalf lands behind the plan either. The value is the marker the
+ *  spawning run minted (underDryRunMarker): the path of a scratch directory named with a fresh
+ *  nonce, whose hold file that run keeps under an exclusive OS lock for as long as it collects. A
+ *  child honours the value only while a live process holds that lock (spawnedByDryRun), so a
+ *  value that reached an environment any other way (`=1` exported in a shell, a pid, a nonce with
+ *  no run behind it, a directory made by hand, a marker a crashed run left behind) names nothing
+ *  and changes nothing: liveness of some process is not authorship of this one. */
+export const DRY_RUN_ENV = "COPILOT_ENV_DRY_RUN";
+
+const DRY_RUN_MARKER_PREFIX = "copilot-env-dry-run-";
+const DRY_RUN_MARKER_NAME = new RegExp(`^${DRY_RUN_MARKER_PREFIX}[0-9a-f]{32}$`);
+/** The file inside the marker the minting run holds locked (flock/LockFileEx, which a crashed
+ *  holder releases automatically). */
+const DRY_RUN_MARKER_HOLD = "held";
+
+/** The marker this process minted, while its run collects: the OS may report a same-process
+ *  attempt on our own lock either way, so our own marker answers from the record. */
+let minted: string | null = null;
+
+/**
+ * Runs `body` with a dry run's marker minted, held, and exported (DRY_RUN_ENV), so every process
+ * the body spawns inherits it and runs as a silent dry run. When the body ends the lock is
+ * released, the marker removed, and the variable restored, so no value outlives the run that
+ * minted it.
+ */
+export async function underDryRunMarker<T>(body: () => Promise<T>): Promise<T> {
+  const marker = join(tmpdir(), `${DRY_RUN_MARKER_PREFIX}${randomBytes(16).toString("hex")}`);
+  mkdirSync(marker, { mode: 0o700 });
+  SCRATCH_ROOTS.add(marker);
+  const hold = Deno.openSync(join(marker, DRY_RUN_MARKER_HOLD), {
+    read: true,
+    write: true,
+    create: true,
+  });
+  if (!hold.tryLockSync(true)) {
+    hold.close();
+    removeScratchDir(marker as ScratchDir);
+    throw new Error(`the dry-run marker ${marker} is held by another process`);
+  }
+  const inherited = process.env[DRY_RUN_ENV];
+  process.env[DRY_RUN_ENV] = marker;
+  minted = marker;
+  try {
+    return await body();
+  } finally {
+    minted = null;
+    if (inherited === undefined) delete process.env[DRY_RUN_ENV];
+    else process.env[DRY_RUN_ENV] = inherited;
+    hold.unlockSync();
+    hold.close();
+    removeScratchDir(marker as ScratchDir);
+  }
+}
+
+/** Whether `env` carries a dry run's marker this process must honour (see DRY_RUN_ENV). */
+export function spawnedByDryRun(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env[DRY_RUN_ENV];
+  if (value === undefined || !isAbsolute(value) || !DRY_RUN_MARKER_NAME.test(basename(value))) {
+    return false;
+  }
+  return value === minted || markerHeld(value);
+}
+
+/** A SHARED try-lock on the hold file that succeeds means no run holds the marker (a directory
+ *  made by hand, a run that ended or crashed); only the minting run's EXCLUSIVE lock reads held. A
+ *  hold file that cannot be opened is no marker either. */
+function markerHeld(marker: string): boolean {
+  let file: Deno.FsFile;
+  try {
+    file = Deno.openSync(join(marker, DRY_RUN_MARKER_HOLD), { read: true, write: true });
+  } catch {
+    return false;
+  }
+  try {
+    if (!file.tryLockSync(false)) return true;
+    file.unlockSync();
+    return false;
+  } catch {
+    return false;
+  } finally {
+    file.close();
+  }
+}
+
 /** A same-directory temp file (`<name>.tmp.<pid>`: one writer per process at a time, so the pid
  *  alone keeps writers apart) renamed over the target, so a reader never sees a torn file. `mode`
  *  restricts the temp file from creation, so the rename publishes an already-restricted inode. */
@@ -391,6 +555,7 @@ export function atomicWriteFile(
 ): void {
   mkdirReported(dirname(path));
   const was = look(path);
+  if (planned(verdictOf(was), path, text)) return;
   const tmp = join(dirname(path), `${basename(path)}.tmp.${process.pid}`);
   // A stale temp from a crashed run under this pid goes first: `mode` applies only to a fresh
   // inode, so writing into it would publish its old permissions. Through the seam, because with pid

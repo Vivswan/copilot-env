@@ -36,6 +36,7 @@ import { errMessage } from "../utils/error.ts";
 import { versionLessThan } from "../utils/semver.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import stringWidth from "string-width";
+import { runDryRun } from "./dry_run.ts";
 
 export interface ConfigArgs {
   /** A Commander variadic; exactly two strings when well-formed. */
@@ -45,6 +46,8 @@ export interface ConfigArgs {
   /** The profile a profile-scoped key is set, deleted, or read for; absent = the default profile
    *  (and, for a profile-default key, the global value). */
   profile?: string;
+  /** With --set/--del: print the store key the write would change, old -> new, and write nothing. */
+  dryRun?: boolean;
 }
 
 /** The state keys sharing the store's maps with the settings, each with the commands that write
@@ -130,6 +133,9 @@ export function parseConfigAction(args: ConfigArgs): ConfigAction {
   if (args.get !== undefined && (args.set !== undefined || args.del !== undefined)) {
     throw new Error("--get reads a preference and cannot combine with --set/--del");
   }
+  if (args.dryRun && args.set === undefined && args.del === undefined) {
+    throw new Error("--dry-run previews a write (--set or --del); a read has nothing to preview");
+  }
   // A named profile must exist: a section for a profile the store never created would be a
   // hidden value with no reader.
   const profile = parseProfileFlag(args.profile);
@@ -146,22 +152,29 @@ export function parseConfigAction(args: ConfigArgs): ConfigAction {
   return { kind: "get", key: typeof args.get === "string" ? args.get : undefined, profile };
 }
 
-/** `platform` is the POSIX-only key guard's test seam. */
-export function runConfig(args: ConfigArgs, platform: NodeJS.Platform = process.platform): void {
+/** `platform` is the POSIX-only key guard's test seam. Synchronous unless it is a dry run (the
+ *  plan print awaits the recording), so a flag error still throws at the call. A write handler
+ *  returns what to say once it landed; a dry run prints the plan in its place. */
+export function runConfig(
+  args: ConfigArgs,
+  platform: NodeJS.Platform = process.platform,
+): void | Promise<void> {
   const action = parseConfigAction(args);
-  switch (action.kind) {
-    case "set":
-      runSet(action.key, action.value, action.profile, platform);
-      return;
-    case "del":
-      runDel(action.key, action.profile);
-      return;
-    case "get":
-      runGet(action.key, action.profile, platform);
-      return;
-    default:
-      assertNever(action);
-  }
+  const run = (): () => void => {
+    switch (action.kind) {
+      case "set":
+        return runSet(action.key, action.value, action.profile, platform);
+      case "del":
+        return runDel(action.key, action.profile);
+      case "get":
+        runGet(action.key, action.profile, platform);
+        return () => {};
+      default:
+        return assertNever(action);
+    }
+  };
+  if (args.dryRun) return runDryRun(() => Promise.resolve(run()));
+  run()();
 }
 
 /** Where a write landed, for the set/del lines: empty for the global map. */
@@ -174,7 +187,7 @@ function runSet(
   raw: string,
   profile: Profile | undefined,
   platform: NodeJS.Platform,
-): void {
+): () => void {
   refuseStateKey(key);
   const def = configKeyDef(key);
   if (def === undefined) throw unknownKeyError(key);
@@ -190,12 +203,14 @@ function runSet(
     throw new Error(`invalid value for '${def.key}': ${errMessage(e)}`);
   }
   const target = new CopilotEnvConfig().assign(def, value, profile);
-  consola.success(`set ${def.key} = ${formatConfigValue(value)}${targetSuffix(target)}`);
-  const warning = sinceProxyVersionWarning(def, nextProxyVersion());
-  if (warning !== null) consola.warn(warning);
-  // The warning supersedes only the generic restart hint (a restart cannot make an old proxy read
-  // the key); a bespoke applyHint often covers a non-proxy surface and still applies.
-  if (def.applyHint !== undefined || warning === null) noteHowItApplies(def, target);
+  return () => {
+    consola.success(`set ${def.key} = ${formatConfigValue(value)}${targetSuffix(target)}`);
+    const warning = sinceProxyVersionWarning(def, nextProxyVersion());
+    if (warning !== null) consola.warn(warning);
+    // The warning supersedes only the generic restart hint (a restart cannot make an old proxy read
+    // the key); a bespoke applyHint often covers a non-proxy surface and still applies.
+    if (def.applyHint !== undefined || warning === null) noteHowItApplies(def, target);
+  };
 }
 
 /** `agent start` prints these after projecting for ITS profile, passing the version its resolved
@@ -216,7 +231,7 @@ export function unreadProjectedKeyWarnings(
   return warnings;
 }
 
-function runDel(key: string, profile: Profile | undefined): void {
+function runDel(key: string, profile: Profile | undefined): () => void {
   refuseStateKey(key);
   const def = configKeyDef(key);
   if (def === undefined) throw unknownKeyError(key);
@@ -230,8 +245,10 @@ function runDel(key: string, profile: Profile | undefined): void {
   const reads = now.value === undefined
     ? "unset"
     : `${formatConfigValue(now.value)} (${now.source})`;
-  consola.success(`deleted ${def.key}${targetSuffix(target)}; now ${reads}`);
-  noteHowItApplies(def, target);
+  return () => {
+    consola.success(`deleted ${def.key}${targetSuffix(target)}; now ${reads}`);
+    noteHowItApplies(def, target);
+  };
 }
 
 function runGet(get: string | undefined, profile: Profile, platform: NodeJS.Platform): void {

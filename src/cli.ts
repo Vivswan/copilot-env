@@ -13,7 +13,10 @@ import { runCodexMobile } from "./codex/mobile.ts";
 import { ensureAuthenticated, runAuth } from "./commands/auth.ts";
 import { configTableOutput, runConfig } from "./commands/config.ts";
 import { runCredits } from "./commands/credits.ts";
+import { runDryRun } from "./commands/dry_run.ts";
 import { runEnv } from "./commands/env.ts";
+import { spawnedByDryRun } from "./utils/report_write.ts";
+import { collectDryRun } from "./utils/write_session.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";
 import { parseLaunchAction, runLaunch } from "./commands/launch.ts";
@@ -45,6 +48,10 @@ configureConsolaOutput();
 
 /** Commander hands action callbacks an options bag of mixed-typed values. */
 type Opts = Record<string, unknown>;
+
+/** The one wording of `--dry-run` on every writing command (the plan is src/commands/dry_run.ts). */
+const DRY_RUN_HELP =
+  "Print every file and store key the command would change (old -> new, secrets redacted) and write nothing.";
 
 // Keyed exhaustively on AuthProvider so a membership change in env_state.ts fails the compile here
 // instead of drifting the help.
@@ -161,7 +168,8 @@ program
   .description("Set up both Codex and Claude (auto-detect GitHub Copilot Direct vs the proxy).")
   .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
   .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
-  .action((opts: Opts) => runInit({ mode: parseModeFlags(opts) }));
+  .option("--dry-run", DRY_RUN_HELP)
+  .action((opts: Opts) => runInit({ mode: parseModeFlags(opts), dryRun: Boolean(opts.dryRun) }));
 
 program
   .command("launch")
@@ -242,6 +250,10 @@ program
     }\`); ` +
       "`auto` restores probing; no value => interactive choice from the probe.",
   )
+  .option(
+    "--dry-run",
+    `${DRY_RUN_HELP} No login runs: the slot write is planned from --set or --gh-user (a device flow is named, not run), so --provider is required when no credential resolves.`,
+  )
   .action((opts: Opts) =>
     runAuth({
       provider: opts.provider as string | undefined,
@@ -255,6 +267,7 @@ program
       list: Boolean(opts.list),
       identities: Boolean(opts.identities),
       identity: opts.identity as string | boolean | undefined,
+      dryRun: Boolean(opts.dryRun),
     })
   );
 
@@ -298,6 +311,7 @@ program
     "--gh-user <login>",
     "With --add: pin gh-cli to this logged-in gh account (omit = follow gh's active account).",
   )
+  .option("--dry-run", `${DRY_RUN_HELP} With --add, --del, --sync, or --settings-for.`)
   .action((opts: Opts) =>
     runProfile({
       add: opts.add as string | undefined,
@@ -313,6 +327,7 @@ program
       provider: opts.provider as string | undefined,
       set: opts.set as string | undefined,
       ghUser: opts.ghUser as string | undefined,
+      dryRun: Boolean(opts.dryRun),
     })
   );
 
@@ -398,6 +413,7 @@ program
     "--profile <name>",
     "The profile a profile-scoped key (identity, host, passthrough, static-key, proxy.*) is set, deleted, or read for; default: the default profile.",
   )
+  .option("--dry-run", `${DRY_RUN_HELP} With --set or --del.`)
   // A function, not a string baked at startup, so the values are the store's at help-render time,
   // for the profile a `--profile` before `--help` named.
   .addHelpText(
@@ -416,6 +432,7 @@ program
       get: opts.get as string | boolean | undefined,
       del: opts.del as string | undefined,
       profile: opts.profile as string | undefined,
+      dryRun: Boolean(opts.dryRun),
     })
   );
 
@@ -445,6 +462,7 @@ program
   )
   .option("--force", "With --import: skip the confirmation prompt (headless use).")
   .option("--no-backup", "With --import: skip the automatic pre-import settings backup.")
+  .option("--dry-run", `${DRY_RUN_HELP} With --import; no confirmation.`)
   .addHelpText(
     "after",
     () =>
@@ -461,6 +479,7 @@ program
       withCredentials: Boolean(opts.withCredentials),
       force: Boolean(opts.force),
       noBackup: opts.backup === false,
+      dryRun: Boolean(opts.dryRun),
     })
   );
 
@@ -636,21 +655,24 @@ program
     "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
   )
   .option("--mobile", "Interactive: pair the Codex desktop app with its phone remote-control flow.")
+  .option("--dry-run", DRY_RUN_HELP)
   .action((opts: Opts) => {
     const action = parseCodexAction({
       check: Boolean(opts.check),
       mode: parseModeFlags(opts),
       mobile: Boolean(opts.mobile),
+      dryRun: Boolean(opts.dryRun),
     });
     switch (action.kind) {
       case "mobile":
         return runCodexMobile();
       case "check":
         return runCodex(action);
-      case "configure":
+      case "configure": {
         // A re-render of the recorded default mode; `agent init` is what sets or moves it.
-        return ensureAuthenticated()
-          .then(() => runCodex(action));
+        const land = () => ensureAuthenticated().then(() => runCodex(action));
+        return opts.dryRun ? runDryRun(land) : land();
+      }
       default:
         return assertNever(action);
     }
@@ -675,21 +697,26 @@ program
     "--check",
     "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
   )
+  .option("--dry-run", DRY_RUN_HELP)
   .action((opts: Opts) => {
     const action = parseClaudeAction({
       check: Boolean(opts.check),
       mode: parseModeFlags(opts),
+      dryRun: Boolean(opts.dryRun),
     });
     switch (action.kind) {
       case "check":
         // The exit code stays the provider-mode contract; the Desktop status only prints.
         return runClaude(action).then(() => printClaudeDesktopCheck());
-      case "configure":
+      case "configure": {
         // The default's Desktop entry rode on the write itself; the reconcile covers the named
         // profiles.
-        return ensureAuthenticated()
-          .then(() => runClaude(action))
-          .then(() => reconcileClaudeDesktopWiring());
+        const land = () =>
+          ensureAuthenticated()
+            .then(() => runClaude(action))
+            .then(() => reconcileClaudeDesktopWiring());
+        return opts.dryRun ? runDryRun(land) : land();
+      }
       default:
         return assertNever(action);
     }
@@ -712,12 +739,14 @@ program
     "--model <id>",
     "With --serve: web-search model for this process (overrides proxy.message-websearch-model).",
   )
+  .option("--dry-run", `${DRY_RUN_HELP} With --remove.`)
   .action((opts: Opts) =>
     runMcp({
       serve: Boolean(opts.serve),
       remove: Boolean(opts.remove),
       profile: opts.profile === undefined ? undefined : String(opts.profile),
       model: opts.model === undefined ? undefined : String(opts.model),
+      dryRun: Boolean(opts.dryRun),
     })
   );
 
@@ -849,7 +878,12 @@ program
   .action((from: string, to: string) => runMigrations(from, to));
 
 if (import.meta.main) {
-  program.parseAsync(process.argv).catch((e: unknown) => {
+  // A child of a dry run (the Direct probes' agent CLIs run this CLI as their auth helper) is a
+  // silent dry run: its bookkeeping lands nothing, and it prints no plan of its own. The marker is
+  // the one the spawning dry run minted (DRY_RUN_ENV), so a value that reached the environment any
+  // other way changes nothing here.
+  const run = (): Promise<unknown> => program.parseAsync(process.argv);
+  (spawnedByDryRun() ? collectDryRun(run) : run()).catch((e: unknown) => {
     consola.error(errMessage(e));
     // exitCode, not process.exit, so pending stderr writes flush.
     process.exitCode = 1;

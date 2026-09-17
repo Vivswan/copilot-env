@@ -8,10 +8,26 @@ import { entryAbsent, isEnoentOrNotdir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { atomicWriteFile, chmodReported } from "../utils/report_write.ts";
 import { sleepSync } from "../utils/time.ts";
+import {
+  landPlan,
+  planDocReplace,
+  readPlannedText,
+  shadowedText,
+  textVerdict,
+} from "../utils/write_session.ts";
 import { CopilotApiPaths, PROXY_CONFIG_FILENAME } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 
 const logger = taggedLogger("copilot_api.config");
+
+/** The leaves a dry run redacts across every store this class fronts: a slot's GitHub token, the
+ *  daemon's API keys, and the pricing URL (it may embed a key). */
+const SECRET_STORE_LEAF = /(^|\.)(githubToken|adminApiKey|apiKeys|"cost\.pricing-url")$/;
+
+/** The bytes save() lands, keys sorted; also what a dry run's plan compares and shadows. */
+function storeText(data: Record<string, unknown>): string {
+  return `${JSON.stringify(sortKeys(data), null, 2)}\n`;
+}
 
 /** One read of a store file; see CopilotApiConfig.read() for the kinds' meaning. */
 type StoreRead =
@@ -81,6 +97,13 @@ export class CopilotApiConfig {
    *   unreadable   -> the read FAILED: neither absence nor contents were established
    */
   private read(): StoreRead {
+    // A dry run's earlier landing on this store is the state its later readers judge (a profile
+    // committed, then wired from its slot).
+    const planned = shadowedText(this.path);
+    if (planned !== undefined) {
+      const data: unknown = planned === null ? {} : JSON.parse(planned);
+      return { kind: "doc", data: isRecord(data) ? data : {} };
+    }
     // The daemon owns config.json and its write path floats with the version (the 2.3.14 build renames
     // atomically, the 2.0.1 floor truncates in place), so a read can still land mid-write; accepting that
     // would let update() WIPE the daemon's keys.
@@ -153,10 +176,9 @@ export class CopilotApiConfig {
   }
 
   save(data: Record<string, unknown>): void {
-    const sorted = sortKeys(data);
     // Created 0600 from the start, so a secret it may hold (the GitHub token, the proxy admin key)
     // is never briefly readable at the default umask.
-    atomicWriteFile(this.path, `${JSON.stringify(sorted, null, 2)}\n`, 0o600);
+    atomicWriteFile(this.path, storeText(data), 0o600);
     try {
       chmodReported(this.path, 0o600);
     } catch {
@@ -186,12 +208,33 @@ export class CopilotApiConfig {
     return read.data;
   }
 
+  /**
+   * The read-modify-write, as a plan landed through landPlan: the mutation runs on a copy, the rows
+   * are the leaves it changed (secrets marked), and the save is the step. A dry run therefore
+   * records the store's slot keys like any other file and writes nothing (withFileLockSync takes
+   * no lock in one either).
+   */
   update(mutate: (d: Record<string, unknown>) => void): Record<string, unknown> {
     return withFileLockSync(this.lockPath, BOUNDED_LOCK_POLICY, () => {
-      const data = this.loadForUpdate();
-      mutate(data);
-      this.save(data);
-      return data;
+      const current = this.loadForUpdate();
+      const next = structuredClone(current);
+      mutate(next);
+      const text = storeText(next);
+      // The bytes on disk (or the run's planned bytes), not a re-serialization of the parse: a
+      // hand-compacted store is rewritten formatted, and the verdict says so.
+      const raw = readPlannedText(this.path);
+      const before = raw.kind === "text" ? raw.text : null;
+      landPlan({
+        files: [{
+          path: this.path,
+          verdict: textVerdict(before, text),
+          attributes: planDocReplace(current, next, (key) => SECRET_STORE_LEAF.test(key)),
+          before,
+          content: text,
+        }],
+        apply: () => this.save(next),
+      });
+      return next;
     });
   }
 

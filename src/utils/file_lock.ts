@@ -15,6 +15,7 @@ import { isRecord } from "./json.ts";
 import { pidAlive } from "./pid.ts";
 import { mkdirReported } from "./report_write.ts";
 import { sleepSync } from "./time.ts";
+import { dryRunActive } from "./write_session.ts";
 
 // --- the shared bounded-wait acquisition policy --------------------------------
 //
@@ -419,7 +420,9 @@ function assertNotThenable(result: unknown): void {
   }
 }
 
-/** Released exactly once, by the last scope out, on every exit path. */
+/** Released exactly once, by the last scope out, on every exit path. A dry run takes no lock: it
+ *  writes nothing, so it excludes no one, and the marker file a lock leaves would itself be a
+ *  write; `fn` then runs as the holder. */
 export function withFileLockSync<T>(
   lockPath: string,
   policy: LockPolicy,
@@ -427,6 +430,11 @@ export function withFileLockSync<T>(
 ): T {
   if (isAsyncFn(fn)) {
     throw new Error("withFileLockSync fn is async; use withFileLock instead");
+  }
+  if (dryRunActive()) {
+    const result = fn(HELD_OUTCOME);
+    assertNotThenable(result);
+    return result;
   }
   const startedMs = Date.now();
   const state = { noticed: false };

@@ -77,6 +77,8 @@ import {
   wrapLine,
   wrapMessage,
 } from "../utils/table.ts";
+import { dryRunActive, PLANNED_SECRET } from "../utils/write_session.ts";
+import { runDryRun } from "./dry_run.ts";
 
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
 const logger = createStderrLogger();
@@ -97,6 +99,12 @@ export interface AuthArgs {
   identities?: boolean;
   /** `true` is the bare flag (interactive choice); a string is the id to pin, or `auto`. */
   identity?: string | boolean;
+  /** Print what the credential landing would write (the slot, a Direct profile's rebake) and write
+   *  nothing. No login and no prompt run; the read-only lookups do (gh-cli's `gh auth token`
+   *  resolve and the saved-account look, gh-env's env read), so the slot is planned from what the
+   *  flags and those reads carry (plannedAcquisition), and the flow the real command would run is
+   *  named. */
+  dryRun?: boolean;
 }
 
 function asProvider(provider: string): AuthProvider {
@@ -221,9 +229,15 @@ async function chooseProvider(): Promise<AuthProvider> {
  *   several, TTY     -> the picker lists the accounts first, auto as the explicit LAST option
  * `look` is a test seam.
  */
+/** How the chooser may settle: `interactive` asks; `headless` (no TTY) and `dry-run` (a preview
+ *  never asks) pin the active account or refuse with the flag that answers. */
+export type GhAccountChooserMode = "interactive" | "headless" | "dry-run";
+
 export async function chooseGhAccount(
   look: () => GhAccountsLook = ghAccountsLook,
+  mode: GhAccountChooserMode = process.stdin.isTTY ? "interactive" : "headless",
 ): Promise<SettledGhAccount> {
+  const interactive = mode === "interactive";
   const { accounts, unproven } = look();
   if (unproven) {
     throw new Error(
@@ -261,11 +275,11 @@ export async function chooseGhAccount(
     // A sole env-only login's pin can fail verification with no other account to escape to;
     // interactively the user decides, without a TTY the pin proceeds and a failure names the
     // recovery.
-    if (!process.stdin.isTTY || envOnly(only) === null) {
+    if (!interactive || envOnly(only) === null) {
       return { kind: "pinned", login: only };
     }
   }
-  if (!process.stdin.isTTY) {
+  if (!interactive) {
     // Anything but the active account would guess whose credit to spend, so it is an error, never a
     // fallback.
     if (active !== null && logins.includes(active)) {
@@ -277,8 +291,10 @@ export async function chooseGhAccount(
     }
     throw new Error(
       `gh has ${allLogins.length} logged-in accounts and no pinnable active one - pass ` +
-        `--gh-user <login> (pinnable: ${logins.join(", ")}), or run ` +
-        "`agent auth --provider gh-cli` in a terminal",
+        `--gh-user <login> (pinnable: ${logins.join(", ")})` +
+        (mode === "dry-run"
+          ? " to plan that landing (a dry run never prompts)"
+          : ", or run `agent auth --provider gh-cli` in a terminal"),
     );
   }
   // The active account leads (the default selection); auto is LAST and explicit.
@@ -383,11 +399,22 @@ async function promptForGhToken(): Promise<string> {
 // --add` commits later, atomically with the profile's mode, and which could still fail after this
 // prints.
 async function loginWithGhToken(inline: string | null): Promise<string> {
-  const token = (inline ?? await promptForGhToken()).trim();
-  if (token === "") throw new Error("the provided GitHub token is empty");
+  const token = providedToken(inline ?? await promptForGhToken());
   const look = await githubLoginLook(token);
   logger.success(`  Using ${tokenLabel("the provided GitHub token", token, look)}.`);
   return token;
+}
+
+/** The one reading of a `--set` (or typed) token, shared by the login and the dry run's plan so a
+ *  blank refuses in both before anything else runs. */
+function providedToken(raw: string): string {
+  const token = raw.trim();
+  if (token === "") throw new Error("the provided GitHub token is empty");
+  return token;
+}
+
+function noEnvTokenError(): Error {
+  return new Error(`no GitHub token in the environment: set one of ${ghTokenEnvVarsList()}`);
 }
 
 /** A terminal sees the var and its account before the token is used; headless cannot ask, so it takes
@@ -395,9 +422,7 @@ async function loginWithGhToken(inline: string | null): Promise<string> {
 async function chooseEnvToken(): Promise<GhEnvToken & { look: GithubLoginLook }> {
   const found = ghTokensInEnv();
   const first = found[0];
-  if (first === undefined) {
-    throw new Error(`no GitHub token in the environment: set one of ${ghTokenEnvVarsList()}`);
-  }
+  if (first === undefined) throw noEnvTokenError();
   if (!process.stdin.isTTY) {
     if (found.length > 1) {
       logger.info(
@@ -444,11 +469,26 @@ export function loginWithGhCli(
   look: (ghUser: string | null) => GhTokenLook = ghAuthTokenLook,
   activeLogin: string | null = null,
 ): void {
-  // Verified BEFORE recording, or a failed check would point `--get` at a `gh` that cannot produce
-  // a token. An UNPROVEN look wears its own words: "not authenticated" and the `gh auth login`
-  // advice are wrong when gh was never asked. Every miss quotes the gh call and its stderr: the
-  // fix differs by cause (an old gh, a missing login, a switched account, an env token), and the
-  // look named it.
+  assertGhCliResolves(ghUser, look);
+  logger.success(
+    ghUser !== null
+      ? `  Using the gh CLI login (account ${ghUser}) as the Direct credential.`
+      : activeLogin !== null
+      ? `  Using the gh CLI login on AUTO (currently account ${activeLogin}; follows gh ` +
+        "account switches) as the Direct credential."
+      : "  Using the gh CLI login on AUTO (follows gh account switches) as the Direct credential.",
+  );
+}
+
+/** Verified BEFORE recording, or a failed check would point `--get` at a `gh` that cannot produce
+ *  a token. An UNPROVEN look wears its own words: "not authenticated" and the `gh auth login`
+ *  advice are wrong when gh was never asked. Every miss quotes the gh call and its stderr: the
+ *  fix differs by cause (an old gh, a missing login, a switched account, an env token), and the
+ *  look named it. Read-only, so a dry run runs it too. */
+function assertGhCliResolves(
+  ghUser: string | null,
+  look: (ghUser: string | null) => GhTokenLook,
+): void {
   const gh = look(ghUser);
   if (gh.token === null) {
     const detail = gh.detail ?? "`gh auth token` gave no token";
@@ -463,26 +503,104 @@ export function loginWithGhCli(
           "or choose auto interactively via `agent auth --provider gh-cli`",
     );
   }
-  logger.success(
-    ghUser !== null
-      ? `  Using the gh CLI login (account ${ghUser}) as the Direct credential.`
-      : activeLogin !== null
-      ? `  Using the gh CLI login on AUTO (currently account ${activeLogin}; follows gh ` +
-        "account switches) as the Direct credential."
-      : "  Using the gh CLI login on AUTO (follows gh account switches) as the Direct credential.",
-  );
+}
+
+/** Whether `credential` is a dry run's stand-in for a login that did not run (PLANNED_SECRET).
+ *  Only inside a dry run: a real token spelled like the placeholder is a token. */
+export function isPlannedCredential(credential: ProvisionedCredential): boolean {
+  return dryRunActive() && credential.kind === "stored" && credential.token === PLANNED_SECRET;
+}
+
+/** A dry run acquires nothing: no device flow, no GitHub lookup, no prompt. It plans the slot
+ *  write from what the flags carry (a `--set` token, a gh-cli pin), from the same read-only account
+ *  resolution the real command runs (gh-cli's saved accounts, never a prompt), or from
+ *  PLANNED_SECRET, and says what the real command would do for `profile`'s slot. A bare
+ *  acquisition names no provider to plan from. */
+async function plannedAcquisition(
+  acquisition: CredentialAcquisition,
+  profile: Profile,
+  look: (ghUser: string | null) => GhTokenLook,
+  chooseAccount: () => Promise<SettledGhAccount>,
+): Promise<ProvisionedCredential> {
+  const slot = profile === null
+    ? "the default profile's credential slot"
+    : `${profileLabel(profile)}'s credential slot`;
+  switch (acquisition.kind) {
+    case "choose":
+      throw new Error(
+        `a dry run never prompts: pass --provider <${PROVIDER_CHOICES}> (or --set <token>) to ` +
+          `plan the credential landing for ${slot}`,
+      );
+    case "gh-token": {
+      if (acquisition.token === null) {
+        throw new Error(
+          `a dry run never prompts: pass --set <token> to plan the landing for ${slot}`,
+        );
+      }
+      // The login's own reading, refusal included, before any plan row is landed.
+      const token = providedToken(acquisition.token);
+      logger.log(
+        `  Would store the provided token in ${slot} (its GitHub account is looked up when the landing is real).`,
+      );
+      return { kind: "stored", provider: "gh-token", token };
+    }
+    case "gh-env": {
+      // The same environment read as the real command, refused the same way when nothing is set;
+      // with several set, the headless rule (the most specific) rather than a prompt.
+      const found = ghTokensInEnv();
+      const first = found[0];
+      if (first === undefined) throw noEnvTokenError();
+      logger.log(
+        `  Would take the token from $${first.name}${
+          found.length > 1 ? ` (the most specific of ${found.length} set)` : ""
+        } and land it in ${slot}; its GitHub account is looked up when the landing is real.`,
+      );
+      return { kind: "stored", provider: "gh-env", token: first.token };
+    }
+    case "copilot":
+      logger.log(`  Would run GitHub's device flow and land the token in ${slot}.`);
+      return { kind: "stored", provider: "copilot", token: PLANNED_SECRET };
+    case "gh-cli": {
+      // The real command's pin resolution, off gh's saved accounts (a read); the arm that would
+      // prompt says to pass --gh-user instead.
+      const account = acquisition.account.kind === "choose"
+        ? await chooseAccount()
+        : acquisition.account;
+      const pinned = account.kind === "pinned" ? account.login : null;
+      // The same read-only `gh auth token` check, refused the same way (an env-only account has no
+      // saved credential to pin).
+      assertGhCliResolves(pinned, look);
+      logger.log(
+        `  Would record the gh CLI login (${
+          pinned === null ? "the active account" : `account ${pinned}`
+        }) as ${slot}.`,
+      );
+      return { kind: "gh-cli", ghUser: pinned };
+    }
+    default:
+      return assertNever(acquisition);
+  }
 }
 
 /** Never persists: the caller owns the single store write (`authenticate` into an existing slot,
- *  `agent profile --add` atomically with the profile's mode). `seams` are test substitutes for the
- *  gh lookups. */
+ *  `agent profile --add` atomically with the profile's mode). `profile` names the slot a dry
+ *  run's narration speaks of; `seams` are test substitutes for the gh lookups. */
 export async function acquireCredential(
   acquisition: CredentialAcquisition,
+  profile: Profile = null,
   seams: {
     look?: (ghUser: string | null) => GhTokenLook;
     chooseAccount?: () => Promise<SettledGhAccount>;
   } = {},
 ): Promise<ProvisionedCredential> {
+  if (dryRunActive()) {
+    return plannedAcquisition(
+      acquisition,
+      profile,
+      seams.look ?? ghAuthTokenLook,
+      seams.chooseAccount ?? (() => chooseGhAccount(undefined, "dry-run")),
+    );
+  }
   const resolved = acquisition.kind === "choose"
     ? acquisitionForProvider(await chooseProvider())
     : acquisition;
@@ -517,12 +635,22 @@ export async function authenticate(
   profile: Profile,
 ): Promise<AuthProvider> {
   if (profile !== null) assertProfileSlot(profile);
-  const credential = await acquireCredential(acquisition);
+  const credential = await acquireCredential(acquisition, profile);
   new Credential(undefined, profile).record(credential);
   if (profile !== null) {
     const slot = new CopilotEnvState().readProfileSlot(profile);
     if (slot.kind === "complete" && slot.mode === "direct") {
-      await wireBothAgents(profile, "direct", false, "probe");
+      // The rebake selects the identity WITH the token; a dry run's stand-in selects nothing.
+      if (isPlannedCredential(credential)) {
+        logger.log(
+          `  Would rebake ${
+            profileLabel(profile)
+          }'s Direct wiring for the landed token (both agents, ` +
+            "the identity selected with it).",
+        );
+      } else {
+        await wireBothAgents(profile, "direct", false, "probe");
+      }
     }
   }
   return credential.kind === "gh-cli" ? "gh-cli" : credential.provider;
@@ -1214,6 +1342,14 @@ async function runIdentity(
  *  proceed unauthenticated; `agent start` never asks, it refuses (readLaunchToken). */
 export async function ensureAuthenticated(profile: Profile = null): Promise<void> {
   if (new Credential(undefined, profile).isAuthenticated()) return;
+  // A dry run never logs in, and the wiring it previews is decided with the credential.
+  if (dryRunActive()) {
+    const flag = profile === null ? "" : ` --profile ${profile}`;
+    throw new Error(
+      `${profileLabel(profile)} is not authenticated, and a dry run never logs in; run ` +
+        `\`agent auth${flag}\` first, then re-run with --dry-run`,
+    );
+  }
   logger.log(
     profile === null
       ? "  Not authenticated yet - let's log in to GitHub Copilot."
@@ -1230,7 +1366,12 @@ export type AuthAction =
   | { kind: "list" }
   | { kind: "identities"; profile: Profile }
   | { kind: "identity"; profile: Profile; choice: IdentityChoice }
-  | { kind: "authenticate"; profile: Profile; acquisition: CredentialAcquisition };
+  | {
+    kind: "authenticate";
+    profile: Profile;
+    acquisition: CredentialAcquisition;
+    dryRun: boolean;
+  };
 
 const SUB_ACTION_FLAGS = "--get/--del/--check/--list/--identities/--identity/--print-proxy-token";
 
@@ -1264,6 +1405,11 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
   if (args.set !== undefined && subActions > 0) {
     throw new Error(`--set provisions a token and cannot combine with ${SUB_ACTION_FLAGS}`);
   }
+  if (args.dryRun && subActions > 0) {
+    throw new Error(
+      `--dry-run previews the credential landing and cannot combine with ${SUB_ACTION_FLAGS}`,
+    );
+  }
   if (args.list) {
     if (args.profile !== undefined) {
       throw new Error("--list reports every profile; it does not combine with --profile");
@@ -1293,6 +1439,7 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
     kind: "authenticate",
     profile,
     acquisition: parseAcquisition(args.provider, args.set, args.ghUser),
+    dryRun: Boolean(args.dryRun),
   };
 }
 
@@ -1320,9 +1467,15 @@ export async function runAuth(args: AuthArgs): Promise<void> {
     case "identity":
       await runIdentity(action.profile, action.choice);
       return;
-    case "authenticate":
-      await runAuthenticate(action.profile, action.acquisition);
+    case "authenticate": {
+      // The landing narrates only once it landed: a dry run prints the plan in its place.
+      if (action.dryRun) {
+        await runDryRun(() => runAuthenticate(action.profile, action.acquisition));
+      } else {
+        (await runAuthenticate(action.profile, action.acquisition))();
+      }
       return;
+    }
     default:
       assertNever(action);
   }
@@ -1330,31 +1483,32 @@ export async function runAuth(args: AuthArgs): Promise<void> {
 
 /** Bare `agent auth` is idempotent only while the recorded provider STILL RESOLVES; a broken one
  *  (gh-cli after gh logout) re-prompts. An explicit `--provider` always runs, so it can switch the
- *  source. */
+ *  source. Returns what to say once the landing is real. */
 async function runAuthenticate(
   profile: Profile,
   acquisition: CredentialAcquisition,
-): Promise<void> {
+): Promise<() => void> {
   if (acquisition.kind === "choose") {
     const credential = new Credential(undefined, profile);
     const { provider, resolves } = credential.status();
     if (provider !== null && resolves) {
       const source = liveCredentialSourceLabel(credential.read()) ?? provider;
-      if (profile === null) {
-        // The default wording is an output contract -- keep it byte-identical.
-        logger.success(
-          `Already authenticated (${source}). Switch with ` +
-            `\`agent auth --provider <${PROVIDER_CHOICES}>\`, or clear it with \`agent auth --del\`.`,
-        );
-      } else {
-        logger.success(
-          `Already authenticated (${source}, ${profileLabel(profile)}). Switch with ` +
-            `\`agent auth --profile ${profile} --provider <${PROVIDER_CHOICES}>\`, or clear it ` +
-            `with \`agent auth --profile ${profile} --del\`.`,
-        );
-      }
-      noteStaticKeyStale(profile);
-      return;
+      return () => {
+        if (profile === null) {
+          // The default wording is an output contract -- keep it byte-identical.
+          logger.success(
+            `Already authenticated (${source}). Switch with ` +
+              `\`agent auth --provider <${PROVIDER_CHOICES}>\`, or clear it with \`agent auth --del\`.`,
+          );
+        } else {
+          logger.success(
+            `Already authenticated (${source}, ${profileLabel(profile)}). Switch with ` +
+              `\`agent auth --profile ${profile} --provider <${PROVIDER_CHOICES}>\`, or clear it ` +
+              `with \`agent auth --profile ${profile} --del\`.`,
+          );
+        }
+        noteStaticKeyStale(profile);
+      };
     }
   }
 
@@ -1363,16 +1517,20 @@ async function runAuthenticate(
   const rebakes = profile !== null &&
     new CopilotEnvState().readProfileSlot(profile).mode === "direct";
   const provider = await authenticate(acquisition, profile);
-  logger.success(
-    profile === null
-      ? `Authenticated (${provider}). Run \`agent init\` to configure Codex and Claude.`
-      : rebakes
-      ? `Authenticated ${profileLabel(profile)} (${provider}); its Direct wiring is rebaked for ` +
-        "this credential."
-      : `Authenticated ${profileLabel(profile)} (${provider}). Wire it into both agents with ` +
-        `\`agent profile --add ${profile} --direct|--proxy\`.`,
-  );
-  if (!rebakes) noteStaticKeyStale(profile);
+  return () => {
+    logger.success(
+      profile === null
+        ? `Authenticated (${provider}). Run \`agent init\` to configure Codex and Claude.`
+        : rebakes
+        ? `Authenticated ${
+          profileLabel(profile)
+        } (${provider}); its Direct wiring is rebaked for ` +
+          "this credential."
+        : `Authenticated ${profileLabel(profile)} (${provider}). Wire it into both agents with ` +
+          `\`agent profile --add ${profile} --direct|--proxy\`.`,
+    );
+    if (!rebakes) noteStaticKeyStale(profile);
+  };
 }
 
 /** A baked value (static-key) never follows the store, so only the rewire brings it up to date. */

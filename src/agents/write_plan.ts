@@ -1,39 +1,20 @@
 // The plan half of every managed wiring write (config.toml, settings.json, the Claude Desktop
 // library): a writer expresses what it enforces as a PATCH over the file's document, and the same
 // patch both mutates the document the apply saves and yields the attribute rows a preview prints.
-// A key a writer sets can therefore never be written without appearing in its plan. Domain layer:
-// no command imports; rendering lives in src/commands/.
+// A key a writer sets can therefore never be written without appearing in its plan. The plan
+// vocabulary and the landing (landPlan, the dry-run ledger) live in src/utils/write_session.ts so
+// the JSON store can land through them too; this module holds the patch algebra and the ONE
+// renderer every `--dry-run` prints through. Domain layer: no command imports.
+import { sep } from "node:path";
 import { isRecord } from "../utils/json.ts";
-
-export type FileVerdict = "create" | "rewrite" | "same" | "delete";
-
-export type AttributeStatus = "set" | "change" | "same" | "remove";
-
-/** One managed attribute of one file, keyed by its dotted path in the file's own syntax
- *  (`model_providers.copilot-env.base_url`, `env.ANTHROPIC_BASE_URL`). `current` and `next` are the
- *  leaf values as the file holds them (undefined = absent); the renderer decides how a value
- *  prints, and redacts a `secret` one. */
-export interface AttributeRow {
-  key: string;
-  status: AttributeStatus;
-  current: unknown;
-  next: unknown;
-  secret: boolean;
-}
-
-/** One file the write touches. A whole-file artifact (a helper script, a directory) carries no
- *  attributes, only the verdict. */
-export interface FilePlan {
-  path: string;
-  verdict: FileVerdict;
-  attributes: AttributeRow[];
-}
-
-/** A computed write: the files it touches, and the one step that performs it. */
-export interface WritePlan {
-  files: FilePlan[];
-  apply(): void;
-}
+import {
+  type AttributeRow,
+  type AttributeStatus,
+  dottedKey,
+  type FilePlan,
+  type FileVerdict,
+  textVerdict,
+} from "../utils/write_session.ts";
 
 export type Doc = Record<string, unknown>;
 
@@ -53,11 +34,6 @@ export function remove(path: readonly string[] | string): PatchOp {
 
 function segments(path: readonly string[] | string): readonly string[] {
   return typeof path === "string" ? [path] : path;
-}
-
-/** A segment carrying a dot is quoted, so a dotted key never reads as two levels. */
-export function dottedKey(path: readonly string[]): string {
-  return path.map((s) => (s.includes(".") || s.includes(" ") ? JSON.stringify(s) : s)).join(".");
 }
 
 /** A node the patch descends into. Anything else is a leaf, a Date included: smol-toml parses a
@@ -183,16 +159,112 @@ export function planPatch(
   return rows;
 }
 
-/** How a text file's content changes: byte comparison, so a same-content rewrite reads `same`. */
-export function textVerdict(currentText: string | null, nextText: string): FileVerdict {
-  if (currentText === null) return "create";
-  return currentText === nextText ? "same" : "rewrite";
+// --- the dry-run print ---------------------------------------------------------------------------
+
+/** What a dry run says a value is: JSON, so a string is told from a number or a boolean, an absent
+ *  leaf reads `(absent)`, and a secret never prints. */
+function renderValue(value: unknown, secret: boolean): string {
+  if (value === undefined) return "(absent)";
+  if (secret) return "<redacted>";
+  return JSON.stringify(value) ?? String(value);
 }
 
-/** A whole-file artifact with no attribute rows. */
-export function filePlan(path: string, verdict: FileVerdict): FilePlan {
-  return { path, verdict, attributes: [] };
+/**
+ * One path's plans folded into the file as the run leaves it: the FIRST plan's `current` and the
+ * LAST plan's `next` per key (a slot committed then re-probed is one row), and the verdict of the
+ * first `before` against the last `content` when both are known (a value cleared and restored is
+ * `same`), else of the landings' own verdicts. A path created and deleted within the run folds to
+ * nothing.
+ */
+export function foldFilePlans(files: readonly FilePlan[]): FilePlan[] {
+  const byPath = new Map<string, FilePlan[]>();
+  for (const file of files) byPath.set(file.path, [...(byPath.get(file.path) ?? []), file]);
+  const folded: FilePlan[] = [];
+  for (const [path, plans] of byPath) {
+    const first = plans[0];
+    const last = plans[plans.length - 1];
+    if (first === undefined || last === undefined) continue;
+    // Created and deleted inside the run (a backup the same import's prune removes as the oldest):
+    // the path exists neither before nor after, so the run leaves nothing to say about it.
+    if (first.verdict === "create" && last.verdict === "delete") continue;
+    const rows = new Map<string, AttributeRow>();
+    for (const plan of plans) {
+      for (const row of plan.attributes) {
+        const seen = rows.get(row.key);
+        rows.set(row.key, {
+          key: row.key,
+          status: row.status,
+          current: seen === undefined ? row.current : seen.current,
+          next: row.next,
+          secret: row.secret || (seen?.secret ?? false),
+        });
+      }
+    }
+    const attributes = [...rows.values()].map((row) => ({ ...row, status: statusOf(row) }));
+    // A plan that rewrites identical bytes changes something the bytes do not show (a helper's
+    // executable bit), so the byte comparison never demotes it to `same`.
+    const beyondBytes = plans.some(
+      (plan) => plan.verdict === "rewrite" && plan.before === plan.content,
+    );
+    const verdict: FileVerdict = last.verdict === "delete"
+      ? "delete"
+      : first.verdict === "create"
+      ? "create"
+      : beyondBytes
+      ? "rewrite"
+      : first.before !== undefined && last.content !== undefined
+      ? textVerdict(first.before, last.content)
+      : plans.some((plan) => plan.verdict !== "same")
+      ? "rewrite"
+      : "same";
+    folded.push({
+      path,
+      verdict,
+      attributes,
+      ...(plans.some((plan) => plan.directory) ? { directory: true as const } : {}),
+    });
+  }
+  return folded;
 }
 
-/** A write with nothing to do (Desktop absent, a write refused and reported). */
-export const NO_WRITE: WritePlan = { files: [], apply() {} };
+function statusOf(row: AttributeRow): AttributeStatus {
+  if (row.current === undefined && row.next === undefined) return "same";
+  if (row.current === undefined) return "set";
+  if (row.next === undefined) return "remove";
+  return sameValue(row.current, row.next) ? "same" : "change";
+}
+
+const VERDICT_LABEL: Record<FileVerdict, string> = {
+  create: "create",
+  rewrite: "rewrite",
+  same: "unchanged",
+  delete: "delete",
+};
+
+/**
+ * The lines a `--dry-run` prints: per file its verdict and path, then every attribute that changes
+ * as `key  old -> new` (secrets redacted, an absent leaf `(absent)`); a file the run would leave
+ * byte-identical prints `unchanged`. The one renderer, so a command's dry run and its real
+ * narration come from the same plan objects.
+ */
+export function renderDryRun(files: readonly FilePlan[]): string[] {
+  const folded = foldFilePlans(files);
+  if (folded.length === 0) return ["Nothing would be written."];
+  const lines: string[] = [];
+  for (const file of folded) {
+    lines.push(`${VERDICT_LABEL[file.verdict]} ${file.path}${file.directory ? sep : ""}`);
+    if (file.verdict === "same" || file.verdict === "delete") continue;
+    const changed = file.attributes.filter((row) => row.status !== "same");
+    if (changed.length === 0 && file.attributes.length > 0) {
+      lines.push("  (every managed attribute already holds its value)");
+    }
+    for (const row of changed) {
+      lines.push(
+        `  ${row.key}  ${renderValue(row.current, row.secret)} -> ${
+          renderValue(row.next, row.secret)
+        }`,
+      );
+    }
+  }
+  return lines;
+}

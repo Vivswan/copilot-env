@@ -13,6 +13,9 @@ The `agent` subcommands and the mechanisms behind the ones that need more than a
 ```bash
 agent init                 # set up BOTH Codex + Claude (auto-detect direct vs proxy) + next steps
                            #   --direct | --proxy forces one mode for both
+                           #   --dry-run prints every file and store key a write would change, old -> new,
+                           #   and writes nothing (also on auth, profile, config, settings --import,
+                           #   codex, claude, mcp --remove)
 agent launch <cli>         # launch claude|codex|copilot with managed flags + provider wiring
                            #   --profile <name>, --relaxed; agent args after --
 agent auth                 # manage the GitHub Copilot credential

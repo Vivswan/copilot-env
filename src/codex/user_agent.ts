@@ -3,6 +3,9 @@
 import { spawnSync } from "node:child_process";
 import { CODEX_EXEC_USER_AGENT } from "../copilot_api/integration_identity.ts";
 import { cliSpawn } from "../utils/command.ts";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { removeScratchDir, scratchDir } from "../utils/report_write.ts";
 
 // Local-only runs (no network) that may still cold-start the CLI.
 export const CODEX_VERSION_TIMEOUT_MS = 1000;
@@ -53,16 +56,31 @@ function latestNpmCodexVersion(): string | null {
   if (liveLookupsDisabled()) return null;
   if (cachedNpmCodexVersion !== undefined) return cachedNpmCodexVersion;
   const s = cliSpawn("npm", ["view", "@openai/codex", "version"]);
-  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  const result = spawnSync(s.file, s.args, {
-    encoding: "utf8",
-    timeout: NPM_VERSION_TIMEOUT_MS,
-    windowsHide: true,
-    shell: s.shell,
-  });
-  cachedNpmCodexVersion = result.error || result.status !== 0
-    ? null
-    : parseCodexVersion(result.stdout ?? "");
+  // npm writes its cache, its debug logs (under the cache, or the logs-dir an .npmrc names), and
+  // its update-notifier stamp under the user's home on every call; a read-only version lookup gets
+  // a scratch cache and logs dir of its own and no notifier, so the home sees none of it (a dry
+  // run's fingerprint included).
+  const cache = scratchDir(join(tmpdir(), "copilot-env-npm-"));
+  try {
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+    const result = spawnSync(s.file, s.args, {
+      encoding: "utf8",
+      timeout: NPM_VERSION_TIMEOUT_MS,
+      windowsHide: true,
+      shell: s.shell,
+      env: {
+        ...process.env,
+        npm_config_cache: cache,
+        npm_config_logs_dir: join(cache, "_logs"),
+        npm_config_update_notifier: "false",
+      },
+    });
+    cachedNpmCodexVersion = result.error || result.status !== 0
+      ? null
+      : parseCodexVersion(result.stdout ?? "");
+  } finally {
+    removeScratchDir(cache);
+  }
   return cachedNpmCodexVersion;
 }
 

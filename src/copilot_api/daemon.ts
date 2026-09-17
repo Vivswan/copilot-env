@@ -5,6 +5,7 @@ import { consola } from "consola";
 import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
 import { daemonLockVerdict } from "../scripts/daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
+import { dryRunActive } from "../utils/write_session.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { daemonPolicy, defaultProxyPort } from "./port.ts";
 import { classifyDaemonPid, isCopilotApiPid, pidAlive, terminatePid } from "./process.ts";
@@ -153,6 +154,12 @@ export async function stopTrackedProxy(
     }
     default:
       signalled = assertNever(lock);
+  }
+  // A dry run takes the same path to here (the refusal above is the real command's) and sends no
+  // signal; the tracking write below records like every store write.
+  if (signalled && dryRunActive()) {
+    consola.info(`Would stop the tracked proxy daemon (pid ${trackedPid}).`);
+    signalled = false;
   }
   let stopped: boolean;
   if (signalled) {

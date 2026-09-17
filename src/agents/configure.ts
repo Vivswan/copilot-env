@@ -11,6 +11,7 @@ import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { resolveDirectMode } from "./direct_detect.ts";
 import type { ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
+import { landPlan, type WritePlan } from "../utils/write_session.ts";
 
 const logger = createStderrLogger();
 
@@ -133,6 +134,19 @@ export function reservePlannedPort(profile: Profile, plannedPort: string): void 
   }
 }
 
+/** A wiring plan landed with its proxy port reserved first (`plannedPort` null: a Direct write
+ *  reserves none). The reservation is a run-state write and lands through the store's own plan,
+ *  so a dry run records it and the next profile's peek allocates past it, as the real run would;
+ *  a plan that threw before this point left no reservation behind. */
+export function landWithReservedPort(
+  plan: WritePlan,
+  profile: Profile,
+  plannedPort: string | null,
+): void {
+  if (plannedPort !== null) reservePlannedPort(profile, plannedPort);
+  landPlan(plan);
+}
+
 /** Contradictory flag pairs (`--check --direct`, `--mobile --check`) are rejected at the
  *  parse below, so no arm carries another arm's knobs and dispatch order never decides. */
 export type AgentConfigAction =
@@ -161,31 +175,36 @@ export interface AgentRunOptions {
   ghToken?: string | null;
 }
 
-function assertCheckStandsAlone(mode: RequestedMode): void {
+function assertCheckStandsAlone(mode: RequestedMode, dryRun: boolean | undefined): void {
   if (mode !== "auto") {
     throw new Error(
       "--check only reports the configured provider; it does not combine with --direct/--proxy",
     );
   }
+  if (dryRun) {
+    throw new Error("--dry-run previews the configure write; --check writes nothing to preview");
+  }
 }
 
 /** `mode` arrives already parsed (parseModeFlags), so the `--direct --proxy` conflict is
- *  rejected before any combination here is considered. */
+ *  rejected before any combination here is considered. `dryRun` rides beside the action (the CLI
+ *  boundary wraps the configure arm in it); it is validated here so `--check`/`--mobile` refuse it. */
 export function parseCodexAction(flags: {
   check?: boolean;
   mode: RequestedMode;
   mobile?: boolean;
+  dryRun?: boolean;
 }): CodexCliAction {
   if (flags.mobile) {
-    if (flags.check || flags.mode !== "auto") {
+    if (flags.check || flags.mode !== "auto" || flags.dryRun) {
       throw new Error(
-        "--mobile is an interactive pairing flow; it does not combine with --check/--direct/--proxy",
+        "--mobile is an interactive pairing flow; it does not combine with --check/--direct/--proxy/--dry-run",
       );
     }
     return { kind: "mobile" };
   }
   if (flags.check) {
-    assertCheckStandsAlone(flags.mode);
+    assertCheckStandsAlone(flags.mode, flags.dryRun);
     return { kind: "check" };
   }
   return { kind: "configure", mode: flags.mode };
@@ -194,9 +213,10 @@ export function parseCodexAction(flags: {
 export function parseClaudeAction(flags: {
   check?: boolean;
   mode: RequestedMode;
+  dryRun?: boolean;
 }): ClaudeCliAction {
   if (flags.check) {
-    assertCheckStandsAlone(flags.mode);
+    assertCheckStandsAlone(flags.mode, flags.dryRun);
     return { kind: "check" };
   }
   return { kind: "configure", mode: flags.mode };
@@ -256,9 +276,11 @@ export interface AgentAdapter {
     write: ManagedWrite,
     options: AgentProfileWriteOptions,
   ): void | Promise<void>;
-  /** `keepDesktopEntry` leaves the Claude Desktop entry and helper scripts to a caller whose
-   *  own plan removes them (uninstall). */
-  removeProfile(name: ProfileName, options?: RemoveProfileOptions): void;
+  /** The profile's removal, computed: the files it takes (the settings file, the provider table's
+   *  keys, the Desktop entry) and the step that takes them; the caller lands it. `keepDesktopEntry`
+   *  leaves the Claude Desktop entry and helper scripts to a caller whose own plan removes them
+   *  (uninstall). */
+  planRemoveProfile(name: ProfileName, options?: RemoveProfileOptions): WritePlan;
 }
 
 /** Every "Configuring X for <backend> ..." line goes through here so the backend phrasing

@@ -25,12 +25,16 @@ import { parseProfileFlag, profileLabel, type ProfileName } from "../copilot_api
 import { COLOR_ENABLED, gray, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
+import { entryAbsent } from "../utils/fs.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { removeTreeReported } from "../utils/report_write.ts";
 import { formatTable, printKeyValue, printWrapped, terminalWidth } from "../utils/table.ts";
+import { filePlan, landPlan } from "../utils/write_session.ts";
+import { runDryRun } from "./dry_run.ts";
 import {
   acquireCredential,
   type CredentialAcquisition,
+  isPlannedCredential,
   liveCredentialSourceLabel,
   parseAcquisition,
 } from "./auth.ts";
@@ -49,6 +53,8 @@ export interface ProfileArgs {
   provider?: string;
   set?: string;
   ghUser?: string;
+  /** Print what the write would change, attribute by attribute, and write nothing. */
+  dryRun?: boolean;
 }
 
 export type ProfileAction =
@@ -68,6 +74,11 @@ export function parseProfileAction(args: ProfileArgs): ProfileAction {
     throw new Error(
       "pass exactly one of --add <name>, --del <name>, --list, --check <name>, " +
         "--settings-for <name>, --sync",
+    );
+  }
+  if (args.dryRun && (args.list || args.check !== undefined)) {
+    throw new Error(
+      "--dry-run previews a write (--add, --del, --sync, --settings-for); --list and --check write nothing",
     );
   }
   if (args.mode !== "auto" && args.add === undefined) {
@@ -104,11 +115,15 @@ export function parseProfileAction(args: ProfileArgs): ProfileAction {
   return { kind: "list" };
 }
 
+/** What a handler says once its writes landed, held back until the dispatcher knows they did: a
+ *  dry run prints the plan and drops the narration, so no handler carries a mode flag. */
+type Narration = () => void;
+
 async function runAdd(
   name: ProfileName,
   requested: RequestedMode,
   acquisition: CredentialAcquisition,
-): Promise<void> {
+): Promise<Narration> {
   const state = new CopilotEnvState();
   const slot = state.readProfileSlot(name);
   const previous = slot.mode;
@@ -120,7 +135,18 @@ async function runAdd(
     );
   }
   const credential = await profileCredential(name, slot, acquisition);
-  // Switching away from proxy strands the profile's daemon: nothing will route to it anymore.
+  // A wiring uses the token: a Direct write selects its identity with it, and Claude Desktop's
+  // model discovery fetches with it in either mode. A dry run's stand-in for a login that did not
+  // run selects and fetches nothing, so no wiring is planned from it.
+  if (isPlannedCredential(credential)) {
+    throw new Error(
+      `a dry run cannot plan ${profileLabel(name)}'s wiring before its credential lands (the ` +
+        "Direct identity and Claude Desktop's model rows are selected with it); pass --set " +
+        `<token>, or run \`agent profile --add ${name} --${mode}\` for real`,
+    );
+  }
+  // Switching away from proxy strands the profile's daemon: nothing will route to it anymore (a dry
+  // run takes the same path and sends no signal: stopTrackedProxy).
   if (previous === "proxy" && mode === "direct") {
     const { signalled } = await stopTrackedProxy(0, name);
     if (signalled) logger.log(`  Stopped ${profileLabel(name)}'s proxy daemon (now direct).`);
@@ -131,14 +157,16 @@ async function runAdd(
   // re-derives.
   state.commitProfile(name, { credential, mode });
   await wireBothAgents(name, mode, false, "probe");
-  const switched = previous !== null && previous !== mode ? ` (switched from ${previous})` : "";
-  logger.success(`${profileLabel(name)} is ready${switched}.`);
-  logger.log(`  Launch it:  cl --profile ${name}  /  cx --profile ${name}`);
-  if (mode === "proxy") {
-    logger.log(
-      `  Its proxy daemon starts on demand; manage it with \`agent start/stop --profile ${name}\`.`,
-    );
-  }
+  return () => {
+    const switched = previous !== null && previous !== mode ? ` (switched from ${previous})` : "";
+    logger.success(`${profileLabel(name)} is ready${switched}.`);
+    logger.log(`  Launch it:  cl --profile ${name}  /  cx --profile ${name}`);
+    if (mode === "proxy") {
+      logger.log(
+        `  Its proxy daemon starts on demand; manage it with \`agent start/stop --profile ${name}\`.`,
+      );
+    }
+  };
 }
 
 /** Never the default's credential: a named profile never falls back. Reuse is judged on the one
@@ -162,12 +190,13 @@ async function profileCredential(
       return existing;
     }
   }
-  return acquireCredential(acquisition);
+  return acquireCredential(acquisition, name);
 }
 
 /** Dependency order: the daemon holds the credential in memory and an unstoppable one throws before
- *  anything is deleted; the store slot goes in one atomic write, credential and mode together.
- *  Shared with `agent uninstall`. */
+ *  anything is deleted (a dry run takes the same refusal and otherwise sends no signal); the store
+ *  slot goes in one atomic write, credential and mode together. Every removal lands through
+ *  landPlan, so a dry run names each file and slot key it would take. Shared with `agent uninstall`. */
 export async function deleteProfileEverywhere(
   name: ProfileName,
   options: RemoveProfileOptions = {},
@@ -182,13 +211,17 @@ export async function deleteProfileEverywhere(
         `(\`agent stop --profile ${name}\`) before deleting`,
     );
   }
-  for (const agent of bothAgents()) agent.removeProfile(name, options);
+  for (const agent of bothAgents()) landPlan(agent.planRemoveProfile(name, options));
   new CopilotEnvState().deleteProfile(name);
   new CopilotEnvConfig().deleteProfile(name);
-  removeTreeReported(profileHome(name));
+  const home = profileHome(name);
+  landPlan({
+    files: entryAbsent(home) ? [] : [filePlan(home, "delete")],
+    apply: () => void removeTreeReported(home),
+  });
 }
 
-async function runDel(name: ProfileName): Promise<void> {
+async function runDel(name: ProfileName): Promise<Narration> {
   // A foreign same-named settings-<name>.json or a hand-made [model_providers.copilot-env-<name>]
   // is not ours to delete unless the store or home says the profile was real.
   const existed = new CopilotEnvState().profileSlotStatus(name).exists ||
@@ -197,10 +230,10 @@ async function runDel(name: ProfileName): Promise<void> {
   if (!existed) {
     consola.info(`${profileLabel(name)} does not exist - nothing to delete.`);
     process.exitCode = 1;
-    return;
+    return () => {};
   }
   await deleteProfileEverywhere(name);
-  consola.success(`Deleted ${profileLabel(name)} (credential, wiring, daemon home).`);
+  return () => consola.success(`Deleted ${profileLabel(name)} (credential, wiring, daemon home).`);
 }
 
 /** `daemon` is null for a direct profile, which has none. */
@@ -282,18 +315,19 @@ function runCheck(name: ProfileName): void {
  *  write can never leave the two disagreeing); the profile's Desktop entry
  *  follows the `claude.desktop` key through the adapter. The printed path is what `cl --profile`
  *  evals into `--settings`. */
-async function runSettingsFor(name: ProfileName): Promise<void> {
+async function runSettingsFor(name: ProfileName): Promise<Narration> {
   const slot = new CopilotEnvState().readProfileSlot(name);
   if (slot.kind === "partial") {
     throw new Error(partialSlotGap(name, slot));
   }
   await wireBothAgents(name, slot.mode, true, "stored");
-  process.stdout.write(`${settingsPathFor(resolveClaudeHome(), name)}\n`);
+  // The path is the `cl --profile` eval contract, said once the file is real.
+  return () => process.stdout.write(`${settingsPathFor(resolveClaudeHome(), name)}\n`);
 }
 
 /** Reached only from `agent profile --sync`; what heals a committed-but-unwired `--add`. One
  *  broken profile never blocks the rest, but any failure exits non-zero so callers can warn. */
-async function runSync(): Promise<void> {
+async function runSync(): Promise<Narration> {
   let synced = 0;
   let failed = 0;
   const state = new CopilotEnvState();
@@ -311,26 +345,34 @@ async function runSync(): Promise<void> {
   // Cleanup only: the profile writes above landed their own entries, and the launcher hot path
   // never probes or discovers. Zero complete profiles still sweep.
   await reconcileClaudeDesktopWiring({ quiet: true });
-  logger.log(`  ✓ Synced ${synced} profile${synced === 1 ? "" : "s"}.`);
   if (failed > 0) process.exitCode = 1;
+  return () => logger.log(`  ✓ Synced ${synced} profile${synced === 1 ? "" : "s"}.`);
 }
 
 export async function runProfile(args: ProfileArgs): Promise<void> {
   const action = parseProfileAction(args);
-  switch (action.kind) {
-    case "add":
-      return runAdd(action.name, action.mode, action.acquisition);
-    case "del":
-      return runDel(action.name);
-    case "check":
-      return runCheck(action.name);
-    case "settings-for":
-      return runSettingsFor(action.name);
-    case "sync":
-      return runSync();
-    case "list":
-      return runList();
-    default:
-      assertNever(action);
+  const run = (): Promise<Narration> => {
+    switch (action.kind) {
+      case "add":
+        return runAdd(action.name, action.mode, action.acquisition);
+      case "del":
+        return runDel(action.name);
+      case "check":
+        runCheck(action.name);
+        return Promise.resolve(() => {});
+      case "settings-for":
+        return runSettingsFor(action.name);
+      case "sync":
+        return runSync();
+      case "list":
+        return runList().then(() => () => {});
+      default:
+        return assertNever(action);
+    }
+  };
+  if (args.dryRun) {
+    await runDryRun(run);
+    return;
   }
+  (await run())();
 }

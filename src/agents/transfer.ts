@@ -16,7 +16,7 @@
 //   profile absent from the bundle      -> untouched
 //   bundle mode "none"                  -> that agent left alone
 import { readdirSync } from "node:fs";
-import { join, posix, win32 } from "node:path";
+import { basename, join, posix, win32 } from "node:path";
 import * as v from "valibot";
 import { claudeJsonPath } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
@@ -935,11 +935,13 @@ const BACKUP_FILE_RE = /^settings-.*\.json$/;
 // prune's lexicographic sort chronological within one process.
 let backupSeq = 0;
 
-/** Best-effort prune: keep only the newest SETTINGS_BACKUP_KEEP backups. */
-function pruneSettingsBackups(dir: string): void {
+/** Best-effort prune: keep only the newest SETTINGS_BACKUP_KEEP backups. `landed` is the backup
+ *  this run just wrote, counted whether or not it is on disk yet (a dry run plans it), so the
+ *  planned prune is the real one. */
+function pruneSettingsBackups(dir: string, landed: string): void {
   let names: string[];
   try {
-    names = readdirSync(dir)
+    names = [...new Set([...readdirSync(dir), basename(landed)])]
       .filter((name) => BACKUP_FILE_RE.test(name))
       .sort();
   } catch {
@@ -976,6 +978,6 @@ export function writeSettingsBackup(): string | null {
     mode: 0o600,
     detail: `pre-import settings backup; roll back with: ${rollbackCommand(path)}`,
   });
-  pruneSettingsBackups(dir);
+  pruneSettingsBackups(dir, path);
   return path;
 }

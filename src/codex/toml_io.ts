@@ -7,6 +7,7 @@ import { parse, stringify } from "smol-toml";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
 import { writeFileReported } from "../utils/report_write.ts";
+import { shadowedText } from "../utils/write_session.ts";
 
 export type CodexTomlRead =
   | { kind: "absent" }
@@ -21,14 +22,21 @@ const BLANK_TOML = /^(?:[ \t\n]|\r\n)*$/;
 /** ENOENT reads as "absent"; any other filesystem error (EISDIR, permission, I/O) THROWS raw, so a
  *  caller cannot mistake an unreadable config for a missing one. An empty or whitespace-only file
  *  also reads as "absent": a blank TOML document carries nothing worth preserving, and the
- *  seed-a-default site (loadOrCreateConfig) treats it like a missing file. */
+ *  seed-a-default site (loadOrCreateConfig) treats it like a missing file. A dry run's planned
+ *  content for the path is read in place of the disk. */
 export function readCodexToml(path: string): CodexTomlRead {
   let text: string;
-  try {
-    text = fs.readFileSync(path, "utf8");
-  } catch (e) {
-    if (isEnoent(e)) return { kind: "absent" };
-    throw e;
+  const planned = shadowedText(path);
+  if (planned !== undefined) {
+    if (planned === null) return { kind: "absent" };
+    text = planned;
+  } else {
+    try {
+      text = fs.readFileSync(path, "utf8");
+    } catch (e) {
+      if (isEnoent(e)) return { kind: "absent" };
+      throw e;
+    }
   }
   if (BLANK_TOML.test(text)) return { kind: "absent" };
   try {

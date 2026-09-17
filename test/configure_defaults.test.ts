@@ -6,6 +6,7 @@ import { parse } from "smol-toml";
 import { type AgentAdapter, directWiring, type ManagedAgentId } from "../src/agents/configure.ts";
 import { configureDefaultAgents, runAgentConfig } from "../src/agents/configure_defaults.ts";
 import { bothAgents } from "../src/agents/profile_wiring.ts";
+import { NO_WRITE } from "../src/utils/write_session.ts";
 import { AUTH_TOKEN_ENV, claudeAdapter, proxyHelperCommand } from "../src/claude/config.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
@@ -123,7 +124,7 @@ function probeAdapter(id: ManagedAgentId, verdict: boolean, trace: string[]): Ag
       return Promise.resolve();
     },
     configureProfile: () => {},
-    removeProfile: () => {},
+    planRemoveProfile: () => NO_WRITE,
   };
 }
 

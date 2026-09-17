@@ -45,7 +45,7 @@ flowchart TD
   proxy -->|"base_url http://127.0.0.1:{port}/v1"| codexw
   proxy -->|"the loopback base URL"| claudew
   codexw -->|"writes model_providers.copilot-env: base_url, then auth.command or http_headers.Authorization"| codexfile
-  claudew -->|"writes env.ANTHROPIC_BASE_URL and apiKeyHelper"| claudefile
+  claudew -->|"writes env.ANTHROPIC_BASE_URL, then apiKeyHelper or env.ANTHROPIC_AUTH_TOKEN"| claudefile
   claudew -->|"Direct with wire-mcp: registers mcpServers.copilot-env"| claudejson
   cred --> daemon
   daemon -->|"DaemonCredential: the token rides in env, spliced into argv in-process"| daemonenv
@@ -131,12 +131,12 @@ flowchart LR
   preloads["src/scripts/node_compat_preload.ts<br>src/scripts/daemon_lock_preload.ts<br>src/scripts/token_argv_preload.ts<br>src/scripts/daemon_runtime_preload.ts<br>src/scripts/copilot_host_preload.ts<br>src/scripts/pat_passthrough_preload.ts<br>src/scripts/idle_watchdog_preload.ts<br>src/scripts/log_mute_preload.ts"]
   cache[("~/.local/share/copilot-env/deno/cache<br>the daemon's DENO_DIR")]
   record[("~/.local/share/copilot-env/proxy/resolved-version.json")]
-  pcfg[("copilot-env.config, embedded in the binary: PROXY_MIN_VERSION, PROXY_MAX_VERSION")]
+  pcfg[("copilot-env.config and deno.json, embedded in the binary: PROXY_MIN_VERSION, PROXY_MAX_VERSION, the import map")]
   dcfg[("~/.local/share/copilot-env/proxy/deno.json and deno.lock, ~/.local/share/copilot-env/.npmrc<br>the daemon's import map, its transitive pins, trust-policy=no-downgrade")]
   daemonproc[["the daemon: deno run --config ... --preload ... npm:@jeffreycao/copilot-api@{version}, COPILOT_API_HOME={the profile's daemon home}"]]
   registry -->|"reads versions and publish times"| float
   prefs -->|"reads proxy-version, release-cooldown"| float
-  pcfg -->|"reads the version bounds"| float
+  pcfg -->|"reads the version bounds, and imports plus compilerOptions for the daemon's config"| float
   shims -->|"every shim, warmed into the cache"| float
   float -->|"writes the import map and a marked .npmrc once, deno cache pins the lock"| dcfg
   float -->|"deno cache: the package and the shims"| cache
@@ -238,7 +238,7 @@ flowchart LR
   token["src/commands/proxy_token.ts<br>resolveProxyToken() launchProxy()"]
   wire["src/agents/profile_wiring.ts<br>wireBothAgents()"]
   daemonproc[["agent start, a child, when the proxy is down"]]
-  configs[("~/.codex/{name}.config.toml and ~/.claude/settings-{name}.json<br>a default repair rewrites config.toml and settings.json through the agent commands instead")]
+  configs[("~/.codex/config.toml with ~/.codex/{name}.config.toml, and ~/.claude/settings-{name}.json<br>a default repair rewrites config.toml and settings.json through the agent commands instead")]
   catalog[("~/.local/share/copilot-env/codex-model-catalog.json")]
   agentcli[["the agent CLI: claude, codex, or copilot, a child with inherited stdio"]]
   rcfile -->|"the copilot-env block sources it"| rc
@@ -249,9 +249,10 @@ flowchart LR
   bin --> cli
   cli --> launch
   launch -->|"ensureProxy"| token
-  launch -->|"syncProfileWiring"| wire
+  launch -->|"syncProfileWiring, on a named Codex launch"| wire
+  launch -->|"writeClaudeProfileSettings, on a named Claude launch: settings-{name}.json alone"| configs
   token -->|"launchProxy(): spawns it"| daemonproc
-  wire -->|"rewrites the pair on a named launch"| configs
+  wire -->|"rewrites both agents' files"| configs
   launch -->|"refreshCodexCatalog: a due Codex refresh"| catalog
   launch -->|"LaunchPlan: command, args, env, scrub"| agentcli
 ```

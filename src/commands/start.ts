@@ -3,6 +3,7 @@ import { type PreflightOptions, runPreflight } from "../autoupdate/preflight.ts"
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { assertProfileSlot } from "../copilot_api/env_state.ts";
 import {
   applyDefaultConfig,
   awaitReadiness,
@@ -33,7 +34,6 @@ import { PROJECT_ROOT } from "../utils/root.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
 import { mkdirReported } from "../utils/report_write.ts";
-import { ensureAuthenticated } from "./auth.ts";
 import { unreadProjectedKeyWarnings } from "./config.ts";
 
 export interface StartFlags {
@@ -307,6 +307,9 @@ export async function runStart(
     recordHeartbeat(profile);
     return;
   }
+  // Before any directory is made: a launch of a profile that does not exist must not leave a
+  // half-created daemon home behind its refusal.
+  if (profile !== null) assertProfileSlot(profile);
   /** Resolved together so paths and stores can never disagree. */
   const launchContext = (): LaunchContext => {
     const paths = new CopilotApiPaths(profile);
@@ -371,7 +374,6 @@ async function launchUnderLock(
 
   const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);
   const { credential, copilotHost } = await resolveLaunchCredential(profile, ctx.envConfig, {
-    interactiveLogin: ensureAuthenticated,
     // The daemon sends the codex User-Agent the agent configs bake, so it is probed under it.
     userAgent: codexUserAgent(),
   });

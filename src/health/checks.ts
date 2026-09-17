@@ -857,7 +857,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
       status: "warn",
       detail: [
         "not authenticated: no credential provider is configured",
-        "run `agent auth` (Direct won't work; the proxy can still device-login on `agent start`)",
+        "run `agent auth` (neither Direct nor `agent start` works without one)",
         ...profilesLine,
         ...identityLine,
       ].join("\n"),

@@ -47,7 +47,13 @@ import {
   spawnChild,
 } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, until } from "./helpers.ts";
+import {
+  envSnapshot,
+  FAKE_DAEMON_CREDENTIAL,
+  FAKE_DAEMON_HOST,
+  isolateProxyHome,
+  until,
+} from "./helpers.ts";
 
 // Every daemon spawn derives from ONE DaemonSpec, so argv and environment are pinned against the
 // spec rather than a pile of optional arguments.
@@ -71,10 +77,10 @@ const BASE: DaemonSpec = {
   logFile: "/tmp/proxy.log",
   home: "/tmp/proxy-home",
   env: {},
-  credential: { kind: "none" },
+  credential: FAKE_DAEMON_CREDENTIAL,
   idleWatchdog: false,
   muteProxyLogs: false,
-  copilotHost: null,
+  copilotHost: FAKE_DAEMON_HOST,
   entry: {
     kind: "package",
     specifier: PROXY_PACKAGE_NAME,
@@ -98,7 +104,16 @@ const BUSINESS_HOST = "https://api.business.githubcopilot.com";
 // the splice it reads the token from; a pinned host's shim precedes the PAT shim, and copilot-api's
 // own host override and app selector are dropped because either would beat the rewritten state.
 test("the preload set and its environment derive from the spec, in load order", () => {
-  const lock = ["node_compat_preload.ts", "daemon_lock_preload.ts"];
+  // Every daemon carries a credential and a host, so the token, host, and client-header shims are
+  // always loaded, in this order; the optional shims append.
+  const base = [
+    "node_compat_preload.ts",
+    "daemon_lock_preload.ts",
+    "token_argv_preload.ts",
+    "daemon_runtime_preload.ts",
+    "copilot_host_preload.ts",
+    "client_headers_preload.ts",
+  ];
   const enterprise = {
     COPILOT_API_ENTERPRISE_URL: "ghe.example",
     COPILOT_API_OAUTH_APP: "opencode",
@@ -112,75 +127,47 @@ test("the preload set and its environment derive from the spec, in load order", 
   const rows: Row[] = [
     {
       spec: {},
-      preloads: [...lock, "daemon_runtime_preload.ts"],
+      preloads: base,
       env: [
-        { inherited: enterprise, keys: enterprise },
-        {
-          inherited: { [DAEMON_COPILOT_HOST_ENV]: "https://stale.example" },
-          keys: { [DAEMON_COPILOT_HOST_ENV]: undefined },
-        },
-      ],
-    },
-    {
-      spec: { credential: { kind: "token", token: "gho_x", clientHeaders: CLI_HEADERS } },
-      preloads: [
-        ...lock,
-        "token_argv_preload.ts",
-        "daemon_runtime_preload.ts",
-        "client_headers_preload.ts",
-      ],
-    },
-    {
-      spec: { credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI_HEADERS } },
-      preloads: [
-        ...lock,
-        "token_argv_preload.ts",
-        "daemon_runtime_preload.ts",
-        "client_headers_preload.ts",
-        "pat_passthrough_preload.ts",
-      ],
-    },
-    {
-      spec: { idleWatchdog: true },
-      preloads: [...lock, "daemon_runtime_preload.ts", "idle_watchdog_preload.ts"],
-    },
-    {
-      spec: { muteProxyLogs: true },
-      preloads: [...lock, "daemon_runtime_preload.ts", "log_mute_preload.ts"],
-    },
-    {
-      spec: { idleWatchdog: true, muteProxyLogs: true },
-      preloads: [
-        ...lock,
-        "daemon_runtime_preload.ts",
-        "idle_watchdog_preload.ts",
-        "log_mute_preload.ts",
-      ],
-    },
-    {
-      spec: { copilotHost: BUSINESS_HOST },
-      preloads: [...lock, "daemon_runtime_preload.ts", "copilot_host_preload.ts"],
-      env: [
-        { inherited: {}, keys: { [DAEMON_COPILOT_HOST_ENV]: BUSINESS_HOST } },
+        // copilot-api's own host selectors answer before the rewritten state: always scrubbed.
         {
           inherited: enterprise,
           keys: { COPILOT_API_ENTERPRISE_URL: undefined, COPILOT_API_OAUTH_APP: undefined },
         },
+        {
+          inherited: { [DAEMON_COPILOT_HOST_ENV]: "https://stale.example" },
+          keys: { [DAEMON_COPILOT_HOST_ENV]: FAKE_DAEMON_HOST },
+        },
       ],
+    },
+    {
+      spec: { credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI_HEADERS } },
+      preloads: [...base, "pat_passthrough_preload.ts"],
+    },
+    {
+      spec: { idleWatchdog: true },
+      preloads: [...base, "idle_watchdog_preload.ts"],
+    },
+    {
+      spec: { muteProxyLogs: true },
+      preloads: [...base, "log_mute_preload.ts"],
+    },
+    {
+      spec: { idleWatchdog: true, muteProxyLogs: true },
+      preloads: [...base, "idle_watchdog_preload.ts", "log_mute_preload.ts"],
+    },
+    {
+      spec: { copilotHost: BUSINESS_HOST },
+      preloads: base,
+      env: [{ inherited: {}, keys: { [DAEMON_COPILOT_HOST_ENV]: BUSINESS_HOST } }],
     },
     {
       spec: {
         copilotHost: BUSINESS_HOST,
         credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI_HEADERS },
+        idleWatchdog: true,
       },
-      preloads: [
-        ...lock,
-        "token_argv_preload.ts",
-        "daemon_runtime_preload.ts",
-        "copilot_host_preload.ts",
-        "client_headers_preload.ts",
-        "pat_passthrough_preload.ts",
-      ],
+      preloads: [...base, "pat_passthrough_preload.ts", "idle_watchdog_preload.ts"],
     },
   ];
   for (const row of rows) {
@@ -373,19 +360,13 @@ test("launchDaemon spawns exactly the spec's denoBin, never a re-derived one", a
 
 // --- the daemon environment ----------------------------------------------------------
 
-test("the credential environment is set-or-DELETE, so a stale value can never leak in", () => {
+test("the credential environment is always set from the spec, so a stale value can never leak in", () => {
   // Our own environment already carries both keys (an earlier launch in this shell).
   const stale = {
     [DAEMON_GH_TOKEN_ENV]: "gho_from_an_earlier_run",
     [DAEMON_CLIENT_HEADERS_ENV]: '{"User-Agent":"stale"}',
     COPILOT_API_OAUTH_APP: "opencode",
   };
-
-  const none = daemonEnvironment(BASE, stale);
-  expect(none[DAEMON_GH_TOKEN_ENV]).toBeUndefined();
-  expect(none[DAEMON_CLIENT_HEADERS_ENV]).toBeUndefined();
-  // Without a credential the proxy logs in itself, under whatever app the user selected.
-  expect(none.COPILOT_API_OAUTH_APP).toBe("opencode");
 
   // Every credential rides with its identity's header set, as the shim parses it back: the codex
   // identity names the id header as a deletion, so the proxy's own cannot stand in.

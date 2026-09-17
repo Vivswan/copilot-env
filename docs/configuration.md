@@ -40,12 +40,12 @@ The key names below are also the stored JSON keys in `~/.local/share/copilot-env
 
 ## profile
 
-| Key           | Scope     | Default                       | Effect                                                                                                                                                                                                                                        |
-| ------------- | --------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `host`        | `profile` | `auto`                        | The Copilot API host every mode uses (Direct configs, Claude Desktop, the proxy, every probe): `auto` probes per credential (a proxy with no stored credential is not pinned), or an `https://` origin (a GitHub Enterprise Server host, say) |
-| `identity`    | `profile` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`)                                                                                                                                                                                    |
-| `passthrough` | `profile` | `auto`                        | PAT passthrough: `auto` / `on` / `off`                                                                                                                                                                                                        |
-| `static-key`  | `profile` | `none`                        | Whose config carries the credential value itself: `none` / `claude` / `codex` / `all`                                                                                                                                                         |
+| Key           | Scope     | Default                       | Effect                                                                                                                                                                                      |
+| ------------- | --------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host`        | `profile` | `auto`                        | The Copilot API host every mode uses (Direct configs, Claude Desktop, the proxy, every probe): `auto` probes per credential, or an `https://` origin (a GitHub Enterprise Server host, say) |
+| `identity`    | `profile` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`)                                                                                                                                  |
+| `passthrough` | `profile` | `auto`                        | PAT passthrough: `auto` / `on` / `off`                                                                                                                                                      |
+| `static-key`  | `profile` | `none`                        | Whose config carries the credential value itself: `none` / `claude` / `codex` / `all`                                                                                                       |
 
 `identity` is surveyed and pinned by `agent auth --identities` / `--identity` ([client identity](authentication.md#client-identity)), per profile; `passthrough` is explained under [PAT passthrough](authentication.md#pat-passthrough) and `static-key` under [static key](authentication.md#static-key).
 
@@ -84,7 +84,7 @@ A failed write leaves the previous record and names the agent that did not move.
 
 `agent auth --identities` shows the hosts as columns and marks the one in use.
 
-Applies at the next wiring pass (`agent init`, `agent codex`, `agent claude`, `agent profile`) and the next proxy start. A proxy started with no stored credential (it logs in itself) keeps the host GitHub names for that login unless a literal is set.
+Applies at the next wiring pass (`agent init`, `agent codex`, `agent claude`, `agent profile`) and the next proxy start.
 
 ## daemon
 

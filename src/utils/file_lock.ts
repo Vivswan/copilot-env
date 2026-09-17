@@ -332,7 +332,7 @@ const NOT_HELD_OUTCOME: LockOutcome = Object.freeze({ held: false });
  *  much waiting. */
 export interface LockPolicy extends FileLockOptions {
   /** Infinity reclaims ONLY a dead holder and never age-steals a live one, for a lock a live
-   *  process may hold a long time (`agent start` blocking on interactive auth). */
+   *  process may hold a long time (`agent start` across the float and the cleanup). */
   readonly staleMs: number;
   readonly waitMs: number;
   readonly retryMs?: number;

@@ -1,7 +1,9 @@
 // The one run that floats the REAL @jeffreycao/copilot-api against the live registry and runs
 // the daemon; the container suite launches the real proxy too, but offline from the warmed
-// fixture, and the lifecycle smoke uses test/copilot-api-fake.mjs. There is no credential here,
-// so the daemon dying for want of one is the expected end state, not a failure.
+// fixture, and the lifecycle smoke uses test/copilot-api-fake.mjs. The credential is a fake
+// (`agent start` refuses without one; the identity pin and host literal keep the launch from
+// probing Copilot with it), so the daemon dying at upstream auth is the expected end state, not
+// a failure.
 //
 //   float resolves + installs a version -> daemon spawns under the production permission set
 //   with its `--preload` shims -> reaches auth-provider resolution
@@ -76,8 +78,12 @@ if (import.meta.main) {
   requireDisposableHome("floated-smoke.ts", "floats a real proxy into", "--floated-lifecycle");
   const home = Deno.env.get("HOME") ?? fail("HOME is unset");
 
-  // Expected to exit nonzero: no credential. The assertions are on what it got
-  // through first, so the exit code alone tells us nothing.
+  // A fake credential: the daemon spawns and fails upstream auth, so `start` is expected to exit
+  // nonzero. The assertions are on what it got through first, so the exit code alone tells us
+  // nothing.
+  cli(["config", "--set", "identity", "copilot-developer-cli"]);
+  cli(["config", "--set", "host", "https://copilot.invalid"]);
+  cli(["auth", "--set", "fake-default-token"]);
   const start = cli(["start"], { stdout: "piped", stderr: "piped" });
   const startOutput = start.stdout + start.stderr;
   console.log("--- agent start output ---");

@@ -463,7 +463,6 @@ export const DAEMON_GH_TOKEN_ENV = "COPILOT_ENV_DAEMON_GH_TOKEN";
  * identity resolved for it, daemonClientHeaders): a daemon never runs under the proxy's own.
  */
 export type DaemonCredential =
-  | { kind: "none" }
   | { kind: "token"; token: string; clientHeaders: DaemonClientHeaders }
   | { kind: "pat"; token: string; clientHeaders: DaemonClientHeaders };
 
@@ -479,9 +478,8 @@ export interface DaemonSpec {
   env: Record<string, string>;
   credential: DaemonCredential;
   /** The Copilot host the daemon is pinned to (`host`, resolveLaunchCredential in launch.ts); the
-   *  copilot-host preload rewrites the `endpoints.api` GitHub names. Null = unpinned: a credential-less
-   *  daemon has nothing to probe with, so the proxy keeps the host GitHub names for its login. */
-  copilotHost: string | null;
+   *  copilot-host preload rewrites the `endpoints.api` GitHub names. */
+  copilotHost: string;
   /** The `daemon.auto-start` config key. */
   idleWatchdog: boolean;
   /** The `daemon.logs` config key. */
@@ -501,11 +499,11 @@ function daemonPreloadFlags(spec: DaemonSpec): string[] {
   // before anything else touches the home.
   const shims: DaemonShimFile[] = ["daemon_lock_preload.ts"];
   // Must precede the PAT shim, which reads the spliced token back from argv.
-  if (spec.credential.kind !== "none") shims.push("token_argv_preload.ts");
+  shims.push("token_argv_preload.ts");
   shims.push("daemon_runtime_preload.ts");
-  if (spec.copilotHost !== null) shims.push("copilot_host_preload.ts");
+  shims.push("copilot_host_preload.ts");
   // Every credential runs under its resolved client identity; only passthrough fakes the exchange.
-  if (spec.credential.kind !== "none") shims.push("client_headers_preload.ts");
+  shims.push("client_headers_preload.ts");
   if (spec.credential.kind === "pat") shims.push("pat_passthrough_preload.ts");
   if (spec.idleWatchdog) shims.push("idle_watchdog_preload.ts");
   if (spec.muteProxyLogs) shims.push("log_mute_preload.ts");
@@ -513,18 +511,12 @@ function daemonPreloadFlags(spec: DaemonSpec): string[] {
 }
 
 /**
- * Always set-OR-DELETE: the daemon starts from a copy of our own environment, so a value left by an
- * earlier run would leak into a daemon whose credential does not want it. The token travels through
- * the ENVIRONMENT (owner-only: /proc/<pid>/environ is 0600, `ps e` shows only your own processes),
- * never argv; the token-argv shim splices it back in-process, so the proxy uses it in memory and never
- * writes its own github_token file.
+ * The token travels through the ENVIRONMENT (owner-only: /proc/<pid>/environ is 0600, `ps e` shows
+ * only your own processes), never argv; the token-argv shim splices it back in-process, so the proxy
+ * uses it in memory and never writes its own github_token file. Every daemon carries one: a launch
+ * without a credential is refused before the spawn (resolveLaunchCredential).
  */
 function applyCredentialEnv(env: NodeJS.ProcessEnv, credential: DaemonCredential): void {
-  if (credential.kind === "none") {
-    delete env[DAEMON_GH_TOKEN_ENV];
-    delete env[DAEMON_CLIENT_HEADERS_ENV];
-    return;
-  }
   env[DAEMON_GH_TOKEN_ENV] = credential.token;
   env[DAEMON_CLIENT_HEADERS_ENV] = JSON.stringify(credential.clientHeaders);
   // The client-headers preload rewrites copilot-api's DEFAULT upstream path; an inherited
@@ -550,16 +542,11 @@ export function daemonEnvironment(spec: DaemonSpec, base: NodeJS.ProcessEnv): No
   const env: NodeJS.ProcessEnv = { ...base, ...copilotApiEnv(spec.entry), ...spec.env };
   env.COPILOT_API_HOME = spec.home;
   applyCredentialEnv(env, spec.credential);
-  // Set-or-delete like the credential keys: an inherited pin must not outlive the spec that set it.
   // copilot-api's own host selectors (COPILOT_API_ENTERPRISE_URL, COPILOT_API_OAUTH_APP=opencode)
   // answer before the rewritten state, so a pinned daemon never inherits either.
-  if (spec.copilotHost === null) {
-    delete env[DAEMON_COPILOT_HOST_ENV];
-  } else {
-    env[DAEMON_COPILOT_HOST_ENV] = spec.copilotHost;
-    delete env.COPILOT_API_ENTERPRISE_URL;
-    delete env.COPILOT_API_OAUTH_APP;
-  }
+  env[DAEMON_COPILOT_HOST_ENV] = spec.copilotHost;
+  delete env.COPILOT_API_ENTERPRISE_URL;
+  delete env.COPILOT_API_OAUTH_APP;
   // Both spellings are written so the exemption holds whichever name the HTTP client consults first.
   const noProxy = noProxyWithLoopback(env.NO_PROXY ?? env.no_proxy);
   env.NO_PROXY = noProxy;

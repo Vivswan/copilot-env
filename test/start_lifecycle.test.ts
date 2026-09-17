@@ -8,6 +8,7 @@ import { AutoupdateState } from "../src/autoupdate/state.ts";
 import { parseStartAction, renderStartSummary, runStart } from "../src/commands/start.ts";
 import { portListening } from "../src/copilot_api/daemon.ts";
 import { startLockPath } from "../src/copilot_api/launch.ts";
+import { profileHome } from "../src/copilot_api/paths.ts";
 import { classifyDaemonPid, pidAlive } from "../src/copilot_api/process.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -439,3 +440,37 @@ test("start --check stays DOWN for a live pid + listening port that is not a cop
     await closeServer(server);
   }
 });
+
+// No credential: the launch is refused naming the login, and the proxy is never spawned into a
+// login of its own (a token it minted would live in its files, outside the store).
+test(
+  "start with no stored credential refuses with the `agent auth` hint and spawns no daemon",
+  async () => {
+    const home = tmpHome();
+    process.env.COPILOT_API_ENTRY = join(ROOT, "test", "copilot-api-fake.mjs");
+    const preflight = () => Promise.resolve();
+    const launch = {
+      kind: "launch",
+      dryRun: false,
+      force: false,
+      port: undefined,
+      profile: null,
+    } as const;
+
+    await expect(runStart(launch, preflight)).rejects.toThrow(
+      "cannot start the proxy without a credential: no GitHub credential configured - run `agent auth` to log in",
+    );
+
+    // Nothing was spawned: no tracked pid, no daemon.lock holder, and the start lock is released.
+    expect(new CopilotEnvRunState().read().pid).toBeUndefined();
+    expect(daemonLockHolderPid(home)).toBeNull();
+    expect(existsSync(startLockPath())).toBe(false);
+
+    // A profile that was never created is refused by name, before its daemon home is made.
+    await expect(runStart({ ...launch, profile: WORK }, preflight)).rejects.toThrow(
+      "no such profile 'work'",
+    );
+    expect(existsSync(profileHome(WORK))).toBe(false);
+  },
+  30_000,
+);

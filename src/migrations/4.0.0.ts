@@ -115,7 +115,6 @@ export function fenceUnfencedBlocks(content: string): string {
   return out.join("\n");
 }
 
-/** Shared with the 3.5.6 step (v356ShellFence). */
 export function fenceShellBlocks(): void {
   const failed: string[] = [];
   for (const file of shellTargetFiles()) {
@@ -243,7 +242,7 @@ export function rewriteLegacyCodexTables(doc: Record<string, unknown>): boolean 
 }
 
 /** Every known Codex home: the managed provider tables move to the current auth block, and the
- *  baked direct bearer leaves `.env`. Shared with the 3.5.6 registration (see v356ShellFence). */
+ *  baked direct bearer leaves `.env`. */
 export function rewriteCodexWiring(): void {
   const { homes, complete } = knownCodexHomes();
   if (!complete) {
@@ -385,7 +384,6 @@ export function rewriteLegacyClaudeHelper(claudeHome: string, profile: Profile):
   return true;
 }
 
-/** Shared with the 3.5.6 registration (see v356ShellFence). */
 export function rewriteClaudeWiring(): void {
   const claudeHome = resolveClaudeHome();
   const failed: string[] = [];

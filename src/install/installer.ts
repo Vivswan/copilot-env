@@ -283,7 +283,7 @@ export function isCheckoutShapedRoot(root: string): boolean {
 
 /** The bootstrap `copilot-env(.exe)` install.sh / install.ps1 downloaded to `<top>/bin`, superseded
  *  once the plan copied it into `versions/<v>/bin/...`. */
-export function flatBinaryResiduePaths(top: string): string[] {
+export function bootstrapBinaryPaths(top: string): string[] {
   const binDir = join(top, "bin");
   let entries: string[];
   try {
@@ -296,7 +296,7 @@ export function flatBinaryResiduePaths(top: string): string[] {
 }
 
 /** Best-effort: a still-running image refuses deletion and is swept by a later update. */
-export function removeFlatBinaryResidue(paths: readonly string[]): void {
+export function removeBootstrapBinary(paths: readonly string[]): void {
   for (const path of paths) {
     try {
       removeReported(path);
@@ -435,7 +435,7 @@ export type InstallPlan =
     currentLink: { path: string; target: string };
     topShims: ShimWrite[];
     /** The bootstrap binary at `<top>/bin`, swept once the top shims dispatch through the link. */
-    flatBinaryRemovals: string[];
+    bootstrapBinaryRemovals: string[];
     /** The version range this install leaves behind, run post-flip by runPostFlipMigrations: the
      *  version `current` named before (`from`) to this one (`to`). Null when nothing was live
      *  (a fresh install) or the same version is refreshed in place. */
@@ -646,7 +646,7 @@ export function buildInstallPlan(
     binary,
     currentLink: { path: currentLinkPath(top), target: currentLinkTarget(top, versionName) },
     topShims: topLevelShims(top),
-    flatBinaryRemovals: flatBinaryResiduePaths(top),
+    bootstrapBinaryRemovals: bootstrapBinaryPaths(top),
     migration: previous === null || previous === versionName
       ? null
       : { from: previous, to: versionName },
@@ -681,7 +681,7 @@ export interface WarnLogger {
  * `agent update` (src/autoupdate/apply.ts) and a full `agent install` over a prior version. Runs
  * `agent migrate <from> <to>` on the INSTALLED binary aimed at `<top>/current`: the migrations must
  * load from the new code and see the finished layout, and this process may be the OLD binary (an
- * update) or the bootstrap rooted at the flat top (an install). Best-effort by contract: `current`
+ * update) or the bootstrap rooted at the top itself (an install). Best-effort by contract: `current`
  * has already moved, so a failure warns with the manual command and never fails the run.
  */
 export function runPostFlipMigrations(
@@ -769,7 +769,7 @@ export function applyInstallPlan(plan: InstallPlan): void {
       );
     }
     wireShellsThroughInstalledBinary(plan.top, plan.versionRoot, plan.shellWires);
-    removeFlatBinaryResidue(plan.flatBinaryRemovals);
+    removeBootstrapBinary(plan.bootstrapBinaryRemovals);
     return;
   }
 

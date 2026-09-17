@@ -526,15 +526,15 @@ export class CopilotEnvState {
     });
   }
 
+  /** The slot's state keys go with the profile (`agent profile --del`); its settings keys are
+   *  CopilotEnvConfig.deleteProfile's. A map left with nothing is dropped. */
   deleteProfile(name: ProfileName): void {
     this.store.update((d) => {
-      const profiles = isRecord(d.profiles) ? d.profiles : {};
-      delete profiles[name];
-      if (Object.keys(profiles).length === 0) {
-        delete d.profiles;
-      } else {
-        d.profiles = profiles;
-      }
+      const profiles = d.profiles;
+      if (!isRecord(profiles) || !isRecord(profiles[name])) return;
+      const section = profiles[name];
+      for (const key of PROFILE_STATE_KEYS) delete section[key];
+      if (Object.keys(section).length === 0) delete profiles[name];
     });
   }
 

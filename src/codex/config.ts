@@ -806,8 +806,8 @@ export function planCodexConfig(
       }
       // Ownership lands only AFTER the successful save (the ledger's crash-direction contract), and
       // only for a KNOWN Codex home (the set the cleanup sweep visits), so a write to a foreign home
-      // never enters the ledger. Recording on every enabled write also ADOPTS a pre-ledger install's
-      // reference the next time it rewires; the cleared branch drops any claim, ours or stale.
+      // never enters the ledger. Recording on every enabled write keeps the claim current; the cleared
+      // branch drops any claim, ours or stale.
       if (catalogRef !== null && knownHome) {
         if (catalogRef === "written") new OwnershipLedger().record("codexCatalog", hostConfig);
         else new OwnershipLedger().release("codexCatalog", hostConfig);

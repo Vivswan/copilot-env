@@ -488,7 +488,8 @@ test(
 
 /** Every entry under `root`, relative path -> sha256 of a file's bytes, a directory recorded as
  *  itself (so an empty run or daemon directory counts): the "nothing written" detector for a
- *  refused start, lock markers, run files, and daemon homes included. */
+ *  refused start, lock markers, run files, and daemon homes included. An `.oslock` sidecar is
+ *  recorded by name only: the running daemon holds it and Windows refuses to read a held lock. */
 function fingerprint(root: string): Record<string, string> {
   const hashes: Record<string, string> = {};
   const walk = (at: string): void => {
@@ -497,6 +498,8 @@ function fingerprint(root: string): Record<string, string> {
       if (entry.isDirectory()) {
         hashes[`${relative(root, path)}/`] = "directory";
         walk(path);
+      } else if (entry.name.endsWith(".oslock")) {
+        hashes[relative(root, path)] = "lock";
       } else {
         hashes[relative(root, path)] = createHash("sha256").update(readFileSync(path)).digest(
           "hex",

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { stringify } from "smol-toml";
 import { configureClaudeConfig } from "../src/claude/config.ts";
 import {
+  type AuthArgs,
   chooseGhAccount,
   credentialSourceLabel,
   type IdentityTableInput,
@@ -12,7 +13,6 @@ import {
   liveCredentialSourceLabel,
   loginWithGhCli,
   parseAcquisition,
-  parseAuthAction,
   runAuth,
 } from "../src/commands/auth.ts";
 import {
@@ -141,20 +141,64 @@ async function captureLog(fn: () => Promise<void>): Promise<string> {
   return out;
 }
 
-test("auth: --get / --del / --check are mutually exclusive", async () => {
-  await expect(runAuth({ get: true, del: true })).rejects.toThrow("mutually exclusive");
-  await expect(runAuth({ get: true, check: true })).rejects.toThrow("mutually exclusive");
-});
+const PROVIDER_CONFLICT = "--provider selects how to authenticate and cannot combine with " +
+  "--get/--del/--check/--list/--identities/--identity/--print-proxy-token";
 
-test("auth: --provider rejects unknown values", async () => {
-  await expect(runAuth({ provider: "bogus" })).rejects.toThrow("--provider must be one of");
-});
-
-test("auth --get prints the stored token to stdout (nothing else)", async () => {
+// Every rejection fires at the parse, before any state read, probe, or prompt: the probe seam
+// counts here, and a rejected flag set that probed first fails its row on the count. The bug
+// pinned by the --provider rows: `--get --provider bogus` once ran --get and dropped the provider
+// unvalidated.
+test("auth: every conflicting or malformed flag set is refused at the parse, before any probe", async () => {
   isolate();
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
-  const out = await captureStdout(() => runAuth({ get: true }));
-  expect(out).toBe("ghu_stored123\n");
+  let probes = 0;
+  setIntegrationProbeFetch(() => {
+    probes++;
+    return Promise.reject(new Error("a flag rejection must precede any probe"));
+  });
+  const rows: { args: AuthArgs; error: string | RegExp }[] = [
+    { args: { get: true, del: true }, error: "mutually exclusive" },
+    { args: { get: true, check: true }, error: "mutually exclusive" },
+    { args: { identity: true, list: true }, error: "mutually exclusive" },
+    { args: { provider: "bogus" }, error: "--provider must be one of" },
+    {
+      args: { set: "ghu_x", provider: "copilot" },
+      error: "--set only applies to `--provider gh-token`",
+    },
+    { args: { set: "ghu_x", get: true }, error: "cannot combine" },
+    { args: { get: true, provider: "bogus" }, error: PROVIDER_CONFLICT },
+    { args: { del: true, provider: "copilot" }, error: PROVIDER_CONFLICT },
+    { args: { check: true, provider: "gh-cli" }, error: PROVIDER_CONFLICT },
+    { args: { printProxyToken: true, provider: "gh-token" }, error: PROVIDER_CONFLICT },
+    { args: { list: true, provider: "copilot" }, error: PROVIDER_CONFLICT },
+    { args: { identities: true, provider: "copilot" }, error: PROVIDER_CONFLICT },
+    { args: { identity: "copilot-developer-cli", provider: "copilot" }, error: PROVIDER_CONFLICT },
+    // Other rejections keep precedence over the conflict: --list/--profile and an invalid name
+    // still report themselves.
+    {
+      args: { list: true, profile: "work", provider: "copilot" },
+      error: "--list reports every profile; it does not combine with --profile",
+    },
+    {
+      args: { get: true, profile: "NOT valid", provider: "copilot" },
+      error: /invalid profile name/,
+    },
+    // The id is validated at the flag like --provider.
+    { args: { identity: CODEX_IDENTITY_NAME }, error: /cannot be pinned/ },
+    { args: { identity: "evil\nX: 1" }, error: /header-safe/ },
+    { args: { ghUser: "x", get: true }, error: "--gh-user pins the gh account" },
+    { args: { ghUser: "x", del: true }, error: "--gh-user pins the gh account" },
+    { args: { ghUser: "x", check: true }, error: "--gh-user pins the gh account" },
+    { args: { ghUser: "x", printProxyToken: true }, error: "--gh-user pins the gh account" },
+    { args: { ghUser: "x", list: true }, error: "--gh-user pins the gh account" },
+  ];
+  try {
+    for (const row of rows) {
+      await expect(runAuth(row.args), JSON.stringify(row.args)).rejects.toThrow(row.error);
+      expect(probes, JSON.stringify(row.args)).toBe(0);
+    }
+  } finally {
+    setIntegrationProbeFetch(null);
+  }
 });
 
 test(
@@ -174,21 +218,68 @@ test(
   30_000,
 );
 
-test("auth --del clears the stored token and provider", async () => {
-  isolate();
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
-  await runAuth({ del: true });
-  expect(state().read()).toEqual({
-    githubToken: null,
-    authProvider: null,
-    ghUser: null,
-    profiles: {},
-    codexCatalogLastAttemptMs: 0,
-    codexCatalogPatchVersion: 0,
-    codexCatalogAccepted: null,
-    claudeModelVerdicts: {},
-    codexCatalogCodexVersion: null,
-  });
+test("auth --del, --provider gh-env, and --set land exactly in the store and write no agent file", async () => {
+  const rows: {
+    name: string;
+    arrange: () => void;
+    args: AuthArgs;
+    githubToken: string | null;
+    authProvider: string | null;
+  }[] = [
+    {
+      name: "--del clears the stored token and provider",
+      arrange: () =>
+        state().setCredential(null, {
+          kind: "stored",
+          provider: "gh-token",
+          token: "ghu_stored123",
+        }),
+      args: { del: true },
+      githubToken: null,
+      authProvider: null,
+    },
+    {
+      // A recorded, RESOLVING credential under another provider: an explicit provider must still
+      // run (never short-circuited by "already authenticated").
+      name: "--provider gh-env stores the env token + provider over a recorded credential",
+      arrange: () => {
+        state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_old" });
+        process.env.GH_TOKEN = "ghu_new_from_env";
+      },
+      args: { provider: "gh-env" },
+      githubToken: "ghu_new_from_env",
+      authProvider: "gh-env",
+    },
+    {
+      name: "--set <token> stores it verbatim (no env, no UI) and records gh-token",
+      arrange: () => {
+        delete process.env.GH_TOKEN;
+        delete process.env.GITHUB_TOKEN;
+      },
+      args: { set: "ghu_inline_value" },
+      githubToken: "ghu_inline_value",
+      authProvider: "gh-token",
+    },
+  ];
+  for (const row of rows) {
+    dir = removeDir(dir);
+    const { claudeHome } = isolate();
+    row.arrange();
+    await runAuth(row.args);
+    expect(state().read(), row.name).toEqual({
+      githubToken: row.githubToken,
+      authProvider: row.authProvider,
+      ghUser: null,
+      profiles: {},
+      codexCatalogLastAttemptMs: 0,
+      codexCatalogPatchVersion: 0,
+      codexCatalogAccepted: null,
+      claudeModelVerdicts: {},
+      codexCatalogCodexVersion: null,
+    });
+    // auth only manages the credential -- configuring Codex/Claude is `agent init`'s job.
+    expect(existsSync(join(claudeHome, "settings.json")), row.name).toBe(false);
+  }
 });
 
 test("auth --check: a configured provider reports authenticated, exit 0", async () => {
@@ -201,19 +292,17 @@ test("auth --check: a configured provider reports authenticated, exit 0", async 
   expect(process.exitCode).toBe(0);
 });
 
-test("auth (bare) is idempotent on a RECORDED provider - no re-auth, no config writes", async () => {
+test("auth (bare) keys idempotency on the RECORDED provider: recorded, nothing runs; none, the flow runs even when gh works", async () => {
   const { claudeHome } = isolate();
   state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_stored123" });
   await runAuth({});
   expect(state().read().githubToken).toBe("ghu_stored123");
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
-});
-
-test("auth (bare) with NO recorded provider re-runs the flow even when gh works (no idempotency loop)", async () => {
-  isolate();
   // Idempotency keys on the RECORDED choice, not on whether gh works: otherwise a machine with a gh
   // login could never reach a fresh login. The non-TTY throw proves the flow ran, not a gh
   // short-circuit.
+  dir = removeDir(dir);
+  isolate();
   await expect(runAuth({})).rejects.toThrow("not a terminal");
 });
 
@@ -227,53 +316,6 @@ test("headless gh-token never reads the env: that is gh-env's job", async () => 
   delete process.env.GH_TOKEN;
   delete process.env.GITHUB_TOKEN;
   await expect(runAuth({ provider: "gh-env" })).rejects.toThrow(/GH_TOKEN/);
-});
-
-test("auth --provider gh-env stores the env token + provider, and does NOT configure agents", async () => {
-  const { claudeHome } = isolate();
-  // A recorded, RESOLVING credential under another provider: an explicit
-  // provider must still run (never short-circuited by "already authenticated").
-  state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_old" });
-  process.env.GH_TOKEN = "ghu_new_from_env";
-  await runAuth({ provider: "gh-env" });
-  expect(state().read()).toEqual({
-    githubToken: "ghu_new_from_env",
-    authProvider: "gh-env",
-    ghUser: null,
-    profiles: {},
-    codexCatalogLastAttemptMs: 0,
-    codexCatalogPatchVersion: 0,
-    codexCatalogAccepted: null,
-    claudeModelVerdicts: {},
-    codexCatalogCodexVersion: null,
-  });
-  // auth only manages the credential -- configuring Codex/Claude is `agent init`'s job.
-  expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
-});
-
-test("auth --set <token> stores it verbatim (no env, no UI) and records gh-token", async () => {
-  isolate();
-  delete process.env.GH_TOKEN;
-  delete process.env.GITHUB_TOKEN;
-  await runAuth({ set: "ghu_inline_value" });
-  expect(state().read()).toEqual({
-    githubToken: "ghu_inline_value",
-    authProvider: "gh-token",
-    ghUser: null,
-    profiles: {},
-    codexCatalogLastAttemptMs: 0,
-    codexCatalogPatchVersion: 0,
-    codexCatalogAccepted: null,
-    claudeModelVerdicts: {},
-    codexCatalogCodexVersion: null,
-  });
-});
-
-test("auth --set rejects a conflicting --provider", async () => {
-  isolate();
-  await expect(runAuth({ set: "ghu_x", provider: "copilot" })).rejects.toThrow(
-    "--set only applies to `--provider gh-token`",
-  );
 });
 
 test("auth --profile <unknown> errors instead of creating a half profile", async () => {
@@ -310,11 +352,6 @@ test("auth --profile <unknown> errors instead of creating a half profile", async
     host: "https://api.githubcopilot.com",
   });
   expect(state().read().githubToken).toBeNull(); // default slot untouched
-});
-
-test("auth --set cannot combine with --get/--del/--check", async () => {
-  isolate();
-  await expect(runAuth({ set: "ghu_x", get: true })).rejects.toThrow("cannot combine");
 });
 
 test("token acquisition narrates 'Using' + the account, never 'Stored' (persistence is the caller's write)", async () => {
@@ -435,35 +472,6 @@ test("auth --get/--del/--check on a HALF-CREATED profile reuse the store's missi
   expect(checked).toContain(storeMessage);
   expect(process.exitCode).toBe(1);
   resetExitCode();
-});
-
-test("auth: --provider cannot combine with a sub-action (never silently dropped)", async () => {
-  isolate();
-  // The bug pinned: `--get --provider bogus` once ran --get and dropped the provider unvalidated.
-  for (
-    const args of [
-      { get: true, provider: "bogus" },
-      { del: true, provider: "copilot" },
-      { check: true, provider: "gh-cli" },
-      { printProxyToken: true, provider: "gh-token" },
-      { list: true, provider: "copilot" },
-      { identities: true, provider: "copilot" },
-      { identity: "copilot-developer-cli", provider: "copilot" },
-    ]
-  ) {
-    await expect(runAuth(args)).rejects.toThrow(
-      "--provider selects how to authenticate and cannot combine with " +
-        "--get/--del/--check/--list/--identities/--identity/--print-proxy-token",
-    );
-  }
-  // Other rejections keep precedence over the conflict: --list/--profile and an invalid name still
-  // report themselves.
-  await expect(runAuth({ list: true, profile: "work", provider: "copilot" })).rejects.toThrow(
-    "--list reports every profile; it does not combine with --profile",
-  );
-  await expect(runAuth({ get: true, profile: "NOT valid", provider: "copilot" })).rejects.toThrow(
-    /invalid profile name/,
-  );
 });
 
 // --- integration identities -------------------------------------------------
@@ -940,13 +948,6 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
   } finally {
     setIntegrationProbeFetch(null);
   }
-});
-
-test("auth --identity <id> validates the id at the flag like --provider, before any probe", async () => {
-  isolate();
-  await expect(runAuth({ identity: CODEX_IDENTITY_NAME })).rejects.toThrow(/cannot be pinned/);
-  await expect(runAuth({ identity: "evil\nX: 1" })).rejects.toThrow(/header-safe/);
-  await expect(runAuth({ identity: true, list: true })).rejects.toThrow("mutually exclusive");
 });
 
 test("auth --get and --print-proxy-token return the credential without a catalog refresh or a Codex config rewrite: a due catalog and a healable Codex config stay byte-identical", async () => {
@@ -1631,21 +1632,6 @@ test("parseAcquisition: --gh-user implies gh-cli and rejects every conflicting f
   for (const bad of ["   ", "%USERNAME%", "a b", "x;rm", "why'd"]) {
     expect(() => parseAcquisition(undefined, undefined, bad)).toThrow(
       "--gh-user must be a GitHub login (1-39 letters, digits, dashes, or underscores)",
-    );
-  }
-});
-
-test("auth: --gh-user cannot combine with a sub-action (never silently dropped)", () => {
-  const subs = [
-    { get: true },
-    { del: true },
-    { check: true },
-    { printProxyToken: true },
-    { list: true },
-  ];
-  for (const sub of subs) {
-    expect(() => parseAuthAction({ ghUser: "x", ...sub })).toThrow(
-      "--gh-user pins the gh account",
     );
   }
 });

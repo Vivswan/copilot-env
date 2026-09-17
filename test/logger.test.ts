@@ -12,7 +12,7 @@ function capture(width: number): { log: ReturnType<typeof createConsola>; seen: 
   const seen: LogObject[] = [];
   const log = createConsola({ level: 5 });
   log.options.reporters = [
-    new WrappingReporter([{ log: (obj) => seen.push(obj) }], true, () => width),
+    new WrappingReporter([{ log: (obj) => seen.push(obj) }], true, () => width, false),
   ];
   return { log, seen };
 }
@@ -40,7 +40,10 @@ test("the wrapping reporter leaves room for the icon on the first line and hangs
 });
 
 /** consola's own fancy reporter writing to a sink, so the decorated lines are measured. */
-function fancyAt(width: number): { log: ReturnType<typeof createConsola>; lines: () => string[] } {
+function fancyAt(
+  width: number,
+  color = false,
+): { log: ReturnType<typeof createConsola>; lines: () => string[] } {
   const out: string[] = [];
   const sink = { write: (s: string) => (out.push(s), true) } as unknown as NodeJS.WriteStream;
   const log = wrapToTerminal(
@@ -51,6 +54,7 @@ function fancyAt(width: number): { log: ReturnType<typeof createConsola>; lines:
       stderr: sink,
       formatOptions: { date: false, colors: false, columns: width },
     }),
+    color,
     () => width,
   );
   return { log, lines: () => out.join("").split("\n").filter((l) => l !== "") };
@@ -68,6 +72,51 @@ test("with consola's fancy reporter no decorated line exceeds the width: icon, W
   // The badge lines really carry the badge, so the width they respect is the decorated one.
   expect(lines().some((l) => l.includes(" WARN ") && l.includes("one two"))).toBe(true);
   expect(lines().some((l) => l.includes(" ERROR ") && l.includes("one two"))).toBe(true);
+});
+
+test("with color on, the whole wrapped warning body is yellow, an inline backtick command is cyan and the yellow re-opens after it, and info stays unpainted", () => {
+  const seen: LogObject[] = [];
+  const log = createConsola({ level: 5 });
+  log.options.reporters = [
+    new WrappingReporter([{ log: (obj) => seen.push(obj) }], true, () => 40, true),
+  ];
+  const esc = String.fromCharCode(27);
+  const yellow = `${esc}[33m`;
+  const cyan = `${esc}[36m`;
+  const close = `${esc}[39m`;
+  log.warn("one two three four five six seven eight; run `agent health` next");
+  // Each wrapped line is its own yellow span (consola closes the foreground after the first
+  // line's tag); the command is cyan, then yellow again.
+  expect(seen[0]?.args).toEqual([
+    `${yellow}one two three four five six seven${close}\n${yellow}  eight; run ${cyan}agent health${close}${yellow} next${close}`,
+  ]);
+  log.info("plain");
+  expect(seen[1]?.args).toEqual(["plain"]);
+  // Through consola's own reporter with a tag: the tag's gray close lands on the first line, and
+  // every continuation line still opens yellow.
+  const fancy = fancyAt(40, true);
+  fancy.log.withTag("copilot_api.config").warn(
+    "one two three four five six seven eight nine ten eleven twelve",
+  );
+  const all = fancy.lines();
+  const body = all.slice(all.findIndex((l) => l.includes("one two")));
+  expect(body.length).toBeGreaterThan(1);
+  expect(body.every((l) => l.includes(yellow))).toBe(true);
+  // A command split by the wrap is cyan on both of its lines (wrap-ansi re-opens the span).
+  const split = capture(25);
+  split.log.options.reporters = [
+    new WrappingReporter([{ log: (obj) => split.seen.push(obj) }], true, () => 25, true),
+  ];
+  split.log.warn("Run `agent health --scope full` next");
+  const [first = "", second = "", ...rest] = String(split.seen[0]?.args[0]).split("\n");
+  expect(first).toContain(`${cyan}agent health`);
+  expect(second).toContain(`${yellow}  ${cyan}--scope full${close}`);
+  expect(rest.some((l) => l.startsWith(yellow) && l.includes("next"))).toBe(true);
+  // A caller's own span across a raw newline is re-opened on the second line.
+  split.log.warn(`${cyan}agent\nhealth${close} next`);
+  expect(String(split.seen[1]?.args[0]).split("\n")[1]).toBe(
+    `${yellow}${cyan}health${close}${yellow} next${close}`,
+  );
 });
 
 test("promptLayout wraps the question under Clack's three-column lead and select labels under five, keeping every option's value", () => {

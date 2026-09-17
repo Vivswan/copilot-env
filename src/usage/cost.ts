@@ -1,6 +1,7 @@
 import { consola } from "consola";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { errMessage } from "../utils/error.ts";
+import { COLOR_ENABLED } from "../utils/ansi.ts";
 import { type Align, printTable, printWrapped, printWrappedToStderr } from "../utils/table.ts";
 import { formatDuration, MILLISECONDS_PER_DAY, startOfLocalDay } from "../utils/time.ts";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
@@ -901,6 +902,7 @@ function printCostReport(
     header: ["Model", ...COST_TABLE_COLUMNS],
     aligns: COST_TABLE_ALIGNS,
     footer: cells.footer,
+    color: COLOR_ENABLED,
   });
   if (estimate.unpriced.length > 0) {
     console.log("");
@@ -970,6 +972,7 @@ function printPerDayReport(
     header: ["Day", ...COST_TABLE_COLUMNS],
     aligns: COST_TABLE_ALIGNS,
     footer: cells.footer,
+    color: COLOR_ENABLED,
   });
   console.log("");
 }

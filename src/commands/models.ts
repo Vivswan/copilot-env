@@ -9,7 +9,7 @@ import { codexUserAgent } from "../codex/user_agent.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { agentStartCommand, parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
-import { bold, cyan, gray } from "../utils/ansi.ts";
+import { COLOR_ENABLED, palette } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { formatTable, type TableRow, terminalWidth } from "../utils/table.ts";
 import { mergeUnlistedModels, type ModelListEntry, parseModelList } from "../copilot_api/models.ts";
@@ -50,6 +50,7 @@ function entryDetail(entry: ModelListEntry): string {
 export function renderModelTable(
   models: ModelListEntry[],
   width: number | null = terminalWidth(),
+  color = COLOR_ENABLED,
 ): string {
   const byVendor = new Map<string, ModelListEntry[]>();
   for (const model of models) {
@@ -64,17 +65,21 @@ export function renderModelTable(
   );
   const rows: TableRow[] = [];
   for (const vendor of vendors) {
-    rows.push({ heading: bold(vendor) });
+    rows.push({ heading: vendor });
     const ordered = [...(byVendor.get(vendor) ?? [])].sort(
       (a, b) => chatFirst(a) - chatFirst(b) || a.id.localeCompare(b.id),
     );
     for (const entry of ordered) {
-      // gray("") would leave ANSI codes in an empty cell and defeat the trailing-space trim.
+      // A painted "" would leave ANSI codes in an empty cell and defeat the trailing-space trim.
       const detail = entryDetail(entry);
-      rows.push([cyan(entry.id), entry.name ?? "", detail === "" ? "" : gray(detail)]);
+      rows.push([
+        entry.id,
+        entry.name ?? "",
+        detail === "" || !color ? detail : palette.dim(detail),
+      ]);
     }
   }
-  return formatTable(rows, { indent: "   ", wrap: [false, false, true], width }).join("\n");
+  return formatTable(rows, { indent: "   ", wrap: [false, false, true], width, color }).join("\n");
 }
 
 type ResolvedSource = { source: "direct" } | { source: "proxy"; port: number };

@@ -729,7 +729,7 @@ function runList(): void {
       describe(liveCredentialSourceLabel(cred.read(), look), cred.isAuthenticated()),
     ]);
   }
-  printTable(rows, { indent: "", wrap: [false, true] });
+  printTable(rows, { indent: "", wrap: [false, true], color: COLOR_ENABLED });
 }
 
 // --- integration identities -------------------------------------------------

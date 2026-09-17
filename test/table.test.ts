@@ -1,3 +1,4 @@
+import stringWidth from "string-width";
 import { formatTable, terminalWidth, wrapLine } from "../src/utils/table.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -245,4 +246,24 @@ test("wrapLine breaks at word boundaries under the indent with a hanging continu
     "    endpoint",
   ]);
   expect(wrapLine(text, null, "  ", "    ")).toEqual([`  ${text}`]);
+});
+
+test("a colored table paints the header bold and the key column cyan without widening a row, and color off leaves no escape code", () => {
+  const esc = String.fromCharCode(27);
+  const ansi = new RegExp(`${esc}\\[[0-9;]*m`, "g");
+  const options = { ...IDENTITIES.options, width: 80 };
+  const colored = formatTable(IDENTITIES.body, { ...options, color: true });
+  const plain = formatTable(IDENTITIES.body, { ...options, color: false });
+  expect(colored.map((l) => l.replace(ansi, ""))).toEqual(plain);
+  expect(plain.some((l) => ansi.test(l))).toBe(false);
+  expect(Math.max(...colored.map((l) => stringWidth(l)))).toBeLessThanOrEqual(80);
+  // The stacked layout at 80: the header label bold, the record's first cell cyan.
+  expect(colored[0]).toBe(`${esc}[1midentity${esc}[22m: ${esc}[36mcodex${esc}[39m`);
+  // The columnar layout: a row is the plain row with only its key cell painted, padding intact.
+  const wide = formatTable(IDENTITIES.body, { ...options, width: 200, color: true });
+  const plainWide = formatTable(IDENTITIES.body, { ...options, width: 200, color: false });
+  expect(wide[2]).toBe(plainWide[2]?.replace(/^codex/, `${esc}[36mcodex${esc}[39m`));
+  expect(wide[0]).toBe(
+    plainWide[0]?.replace(/(\S[^ ]*(?: \S[^ ]*)*)/g, (cell) => `${esc}[1m${cell}${esc}[22m`),
+  );
 });

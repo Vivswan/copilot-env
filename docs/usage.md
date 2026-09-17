@@ -79,6 +79,10 @@ The lines under the identities table wrap the same way, with a hanging indent. A
 
 Every other line wraps at the logger: a consola message is wrapped before its icon or frame goes on, each line under its own indent with the continuation one step deeper; a word wider than the line splits at the width. Reports printed without a logger (`agent health`, `agent cost`, the installer's next steps) and every prompt use the same wrapper. Down a pipe nothing wraps unless `COLUMNS` is set.
 
+### Color
+
+Every table and report uses `agent config`'s palette: headers and headings bold, the key column cyan, status words by tone (green healthy, yellow needs a hand, red failed, dim idle), notes dim; a warning prints yellow, an error red, a success green. Color is on in a TTY and off down a pipe, under `NO_COLOR=1`, or with `TERM=dumb`; widths are always measured on the visible text.
+
 ## Shell integration
 
 The installer wires the `agent` wrapper into your shell and exports the proxy env.

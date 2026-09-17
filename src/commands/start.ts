@@ -30,6 +30,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger, withConsolaOnStderr } from "../utils/logger.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
+import { COLOR_ENABLED } from "../utils/ansi.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
 import { mkdirReported } from "../utils/report_write.ts";
@@ -212,11 +213,13 @@ async function proxyLine(entry: FloorCheckedEntry): Promise<string> {
 export function renderStartSummary(
   summary: ReadonlyArray<readonly [label: string, value: string]>,
   width: number | null = terminalWidth(),
+  color = COLOR_ENABLED,
 ): string {
   return formatTable(summary.map(([label, value]) => [`${label}:`, value]), {
     indent: "   ",
     wrap: [false, "hard"],
     width,
+    color,
   }).join("\n");
 }
 

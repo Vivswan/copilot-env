@@ -784,7 +784,7 @@ test("configTable() renders the header, the groups, and key=value rows with type
   expect(lineFor(false, "daemon.strict-port")).toBe(true);
 });
 
-test("configTable() seats each key by its registry scope: PROFILE holds the profile keys and the profile-default groups as this profile resolves them, GLOBAL the global keys", () => {
+test("configTable() by scope: PROFILE holds the profile keys and the profile-default groups as this profile resolves them, GLOBAL the rest", () => {
   tmpHome();
   createWorkProfile();
   const firstOf = (scope: ConfigScope): ConfigKeyDef => {

@@ -38,6 +38,7 @@ import {
 } from "./paths.ts";
 import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "../scripts/daemon_lock.ts";
 import { isStandaloneBinary } from "../utils/root.ts";
+import { formatTable } from "../utils/table.ts";
 import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
 import { ensureSidecar, resolveDenoBin } from "./sidecar.ts";
 import {
@@ -1031,12 +1032,11 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
     byTarget.set(target, list);
   }
   const targets = [...byTarget.keys()].sort();
-  const width = targets.reduce((m, t) => Math.max(m, t.length), 0);
   // One message, one consola timestamp: a stamp per row wraps and interleaves at terminal width.
-  const rows = targets.map((target) => {
-    const aliases = (byTarget.get(target) ?? []).sort();
-    return `   ${target.padEnd(width)}  <-  ${aliases.join(", ")}`;
-  });
+  const rows = formatTable(
+    targets.map((target) => [target, "<-", (byTarget.get(target) ?? []).sort().join(", ")]),
+    { indent: "   " },
+  );
   consola.info(
     `Model aliases (${sources.length} -> ${targets.length} models):\n${rows.join("\n")}`,
   );

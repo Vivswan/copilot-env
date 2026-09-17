@@ -2,11 +2,12 @@
 // gathered by probe.ts, so each check is independently unit-testable.
 import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
 import { configGetCommand, configSetCommand } from "../copilot_api/env_config.ts";
-import { compareDenoVersions, SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
+import { SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
 import { agentStartCommand, type ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../scripts/idle_watchdog.ts";
 import type { CommandLook } from "../utils/command.ts";
+import { versionLessThan } from "../utils/semver.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import {
@@ -223,8 +224,7 @@ export function checkProxySidecar(f: ProxyFacts): CheckResult {
   }
   // A PATH/override deno older than the tested reference still works: warn, never block
   // (upgrading is the user's job). An unreadable version is not a verdict, so it reads ok.
-  const behind = version !== null &&
-    (compareDenoVersions(version, referenceVersion) ?? 0) < 0;
+  const behind = version !== null && versionLessThan(version, referenceVersion);
   const named = version === null ? "deno (version unknown)" : `deno ${version}`;
   const source = kind === "dev"
     ? "running on this checkout's own deno"
@@ -608,7 +608,7 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
     ? f.portPersisted
       ? "store slot (proxy) and daemon home agree"
       : "store slot (proxy) and daemon home agree; no port recorded on this host yet, " +
-        `so the daemon was not probed (agent start --profile ${name} records one)`
+        `so the daemon was not probed (${agentStartCommand(name)} records one)`
     : homeExists
     ? "store slot (direct); the leftover daemon home is unused"
     : "store slot (direct); no daemon home needed";
@@ -708,8 +708,9 @@ export function checkProfileAuth(
       : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
     : "stored GitHub token";
   const identity = slot.integrationIdentity === null ? "" : `, ${slot.integrationIdentity}`;
+  const start = agentStartCommand(name);
   const usage = slot.mode === "proxy"
-    ? `resolved by \`agent auth --get --profile ${name}\`; passed to the profile's daemon on \`agent start --profile ${name}\``
+    ? `resolved by \`agent auth --get --profile ${name}\`; passed to the profile's daemon on \`${start}\``
     : slot.mode === "direct"
     ? `resolved by \`agent auth --get --profile ${name}\` for Direct`
     : `resolved by \`agent auth --get --profile ${name}\``;

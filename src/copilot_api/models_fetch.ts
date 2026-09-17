@@ -3,6 +3,7 @@
 // so the URL, the bearer, the timeout, the body drain, and the parse are decided once. The
 // identity headers ride in from THE header builders (directClientHeaders, passthroughIdentity):
 // this module never chooses a client identity, so each consumer's bytes stay its own.
+import { defaultFetch } from "../utils/fetch.ts";
 import type { ProbeFetch } from "./integration_identity.ts";
 import { type ModelListEntry, parseModelList } from "./models.ts";
 
@@ -36,7 +37,7 @@ export type ModelCatalogOutcome =
 export async function fetchModelCatalog(
   opts: FetchModelCatalogOptions,
 ): Promise<ModelCatalogOutcome> {
-  const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
+  const fetchImpl: ProbeFetch = opts.fetchImpl ?? defaultFetch;
   const timeout = AbortSignal.timeout(opts.timeoutMs ?? MODELS_TIMEOUT_MS);
   let res: Response;
   try {

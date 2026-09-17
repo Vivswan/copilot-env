@@ -50,6 +50,7 @@ import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../
 import type { HeldUpdateLock } from "./lock.ts";
 import { errMessage } from "../utils/error.ts";
 import { installStateRoot, PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
+import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import {
   chmodReported,
   copyFileReported,
@@ -201,7 +202,7 @@ async function fetchReleaseFile(source: DownloadSource, name: string, dest: stri
     return;
   }
   const url = `${source.base}/${name}`;
-  const res = await fetch(url, { headers: { "User-Agent": "copilot-env" } });
+  const res = await fetch(url, { headers: { "User-Agent": COPILOT_ENV_USER_AGENT } });
   if (!res.ok || !res.body) {
     throw new Error(`failed to download ${name} (HTTP ${res.status})`);
   }

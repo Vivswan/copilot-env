@@ -1,8 +1,10 @@
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Profile } from "../copilot_api/profile.ts";
+import { entryAbsent, readTextResult } from "./fs.ts";
+import { parseJsonRecord } from "./json.ts";
 import { hideWritesUnder } from "./report_write.ts";
 
 /** `kind` is the single source of the checkout/installed distinction: nothing downstream re-derives
@@ -29,17 +31,6 @@ export const VERSIONS_DIR = "versions";
  *  updates and version GC, so it IS the compiled root in a versioned layout. */
 export const CURRENT_LINK = "current";
 
-/** lstat, no link-following: a dangling `current` link still marks a versioned layout, broken but
- *  repairable by the next install, never a flat root. */
-function entryExists(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Names alone must never qualify: a flat install that happens to sit at `<x>/versions/<name>`
  *  beside an unrelated `<x>/current` directory would be misrooted, and the destructive gates would
  *  then aim at `<x>`. A dangling link still qualifies: readlink works without a target, and a
@@ -65,7 +56,7 @@ export function isVersionedInstallTop(top: string): boolean {
   const sameDir = process.platform === "win32"
     ? parent.toLowerCase() === versionsDir.toLowerCase()
     : parent === versionsDir;
-  return sameDir && entryExists(versionsDir);
+  return sameDir && !entryAbsent(versionsDir);
 }
 
 /** No fixed dirname() hop count, so moving this file does not break resolution; bounded so a
@@ -191,32 +182,10 @@ export type InstallManifestReading =
   | { kind: "valid"; manifest: InstallManifest };
 
 export function readInstallManifest(root: string): InstallManifestReading {
-  const path = join(root, INSTALL_MANIFEST_FILE);
-  let text: string;
-  try {
-    text = readFileSync(path, "utf-8");
-  } catch (error) {
-    if ((error as { code?: string }).code !== "ENOENT") return { kind: "unreadable" };
-    // A dangling symlink also reads as ENOENT; only a missing directory entry is genuinely absent.
-    try {
-      lstatSync(path);
-      return { kind: "unreadable" };
-    } catch (statError) {
-      return (statError as { code?: string }).code === "ENOENT"
-        ? { kind: "absent" }
-        : { kind: "unreadable" };
-    }
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return { kind: "invalid" };
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { kind: "invalid" };
-  }
-  const record = parsed as Record<string, unknown>;
+  const read = readTextResult(join(root, INSTALL_MANIFEST_FILE));
+  if (read.kind !== "text") return { kind: read.kind };
+  const record = parseJsonRecord(read.text);
+  if (record === null) return { kind: "invalid" };
   const { version, kind, assets } = record;
   if (typeof version !== "string" || kind !== "installed" || !Array.isArray(assets)) {
     return { kind: "invalid" };

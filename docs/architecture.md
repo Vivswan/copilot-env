@@ -8,7 +8,9 @@ order: 1
 
 How copilot-env's code is arranged: the decisions a reader would otherwise reverse, each as one diagram over real files, then the layer map. Not a user guide (the other pages are), and the checks behind it prove existence only: every path a box names exists, every symbol after a path is exported by that file, and every `Demonstrated by:` link resolves. No check tests the claim a diagram makes.
 
-Every concept diagram starts at what the flow reads and ends at what it writes or launches. A cylinder is a file or store on this machine, a double-edged box is a network endpoint or a process, and a plain box is code; `{name}`, `{host}`, `{top}` stand for the profile, the Copilot host, and the install root.
+Every concept diagram starts at what the flow reads and ends at what it writes or launches. A cylinder is a file or store on this machine, a double-edged box is a network endpoint or a process, and a plain box is code.
+
+Braces mark a value the run fills in: `{name}` the profile, `{host}` the Copilot host, `{port}` the daemon's port, `{top}` the install root, `{tag}` and `{triple}` the release and its build target; the rest (`{version}`, `{uuid}`, a spelled-out directory) read as written.
 
 ## The two wiring modes and the one credential
 

@@ -830,7 +830,7 @@ test("configTable() by scope: PROFILE holds the profile keys and the profile-def
   const headingRe = new RegExp(
     `^  ${
       configGroup(shared.key)
-    }: +\\(this profile's daemon; \\(global\\) rows inherit the value set without --profile, unstarred rows the built-in default\\)$`,
+    }: +\\(this profile's daemon; global rows set without --profile\\)$`,
     "m",
   );
 

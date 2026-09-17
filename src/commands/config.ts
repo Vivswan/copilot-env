@@ -443,7 +443,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     ...groupBlocks("profile-default", (group) =>
       banner(
         `${groupIndent}${group}:`,
-        "this profile's daemon; (global) rows inherit the value set without --profile, unstarred rows the built-in default",
+        "this profile's daemon; global rows set without --profile",
       )),
   ].join("\n\n");
   const globalBlock = [

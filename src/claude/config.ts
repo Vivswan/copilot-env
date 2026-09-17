@@ -535,13 +535,8 @@ function stripManagedWebSearchDenyPatch(
 /**
  * Registration first, and the deny stands only while the registration is confirmed: a machine is
  * never left with the builtin denied and no replacement. The proxy serves web search itself, so it
- * takes both back.
- *   `~/.claude.json` is global, deny rules UNION across layers -> default profile only; a named
- *                                                                proxy profile could never un-deny
- *                                                                a direct default's rule
- * The `.claude.json` half is planned here; `land()` performs it and returns the settings half for
- * what the registration actually answered (`predicted` is that half for the answer the plan
- * expects: the entry lands unless the write itself fails).
+ * takes both back. Default profile only: `~/.claude.json` is global and deny rules UNION across
+ * layers, so a named proxy profile could never un-deny a direct default's rule.
  */
 interface WebSearchPairPlan {
   /** The `.claude.json` files the pair touches, either way. */

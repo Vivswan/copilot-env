@@ -676,16 +676,8 @@ function validateProxyOptions(
  * The write, computed but not performed: every managed key is a patch over config.toml (and a named
  * profile's `<name>.config.toml`), folded into the plan's rows and applied to the in-memory
  * documents the returned step saves, so no key can be written without appearing in the plan.
- * Throws when the write cannot proceed (unusable proxy options, unparseable existing config); an
- * uncreatable directory throws from the apply.
- *
- * DEFAULT profile -> the top-level `model_provider` selects `copilot-env`, plus the top-level
- *                    managed keys (web_search, catalog reference)
- * NAMED profile   -> `[model_providers.copilot-env-<name>]` in config.toml plus the selector as the
- *                    top-level `model_provider` of `<name>.config.toml`, so `codex --profile
- *                    <name>` and plain `codex` coexist
- * either, proxy   -> also the GLOBAL `sandbox_workspace_write.network_access`, which auth.command
- *                    needs
+ * A named profile's selector lives in `<name>.config.toml`, never at the top level of config.toml,
+ * so `codex --profile <name>` and plain `codex` coexist.
  */
 export function planCodexConfig(
   codexHome: string,

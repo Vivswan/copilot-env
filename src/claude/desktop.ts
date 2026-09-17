@@ -1199,16 +1199,8 @@ export function removeAllClaudeDesktopWiring(
 }
 
 /** The `claude.desktop false` sweep. Fail closed: only a claim POSITIVELY attributed to a named
- *  profile goes, since anything else may be the default's. Listed entries and unlisted leftovers
- *  are judged by their document alike.
- *
- *    named profile                -> the entry and its claim go
- *    the default's                -> entry and helper stay, unmanaged, named unless `quiet`
- *    missing, damaged, not ours   -> warned, left: file and claim
- *    unreadable                   -> warned, left: file and claim
- *
- *  Helper scripts go by FILENAME: a named profile's script goes even when its entry was left.
- */
+ *  profile goes, since anything else may be the default's. Helper scripts go by FILENAME, so a
+ *  named profile's script goes even when its entry was left. */
 export function planRemoveUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {}): WritePlan {
   const sweepable = (path: string): boolean => {
     let profile: Profile | undefined;

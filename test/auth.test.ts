@@ -8,6 +8,8 @@ import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import {
   chooseGhAccount,
   credentialSourceLabel,
+  type IdentityTableInput,
+  identityTableLines,
   liveCredentialSourceLabel,
   loginWithGhCli,
   parseAcquisition,
@@ -528,6 +530,8 @@ test("auth --identities: one column per host, ONE mark on the slot's identity un
     // The account lookup (no id, copilot-env's own User-Agent) happened exactly once.
     expect(requests.get("https://api.github.com/copilot_internal/user - copilot-env")).toBe(1);
     setIntegrationProbeFetch(stubbedSurveyFetch);
+    // Color is a TTY affordance: the survey a pipe or a test reads is plain text.
+    expect(fresh).not.toContain("\x1b");
     // Four candidate rows, nothing more; vscode-chat is the last candidate.
     expect(fresh).toMatch(
       /^vscode-chat\s+rejected \(400\)\s+rejected \(400\)\s+copilot-api's former default$/m,
@@ -648,6 +652,80 @@ test("auth --identities: one column per host, ONE mark on the slot's identity un
     );
   } finally {
     setIntegrationProbeFetch(null);
+    if (columns === undefined) delete process.env.COLUMNS;
+    else process.env.COLUMNS = columns;
+  }
+});
+
+/** Every verdict kind on the host in use, an absent cell on the account's host, and the would-be
+ *  pick, so every color the palette has lands somewhere. */
+const SURVEY_TABLE: IdentityTableInput = {
+  survey: {
+    hosts: [
+      {
+        apiBase: GENERIC_HOST,
+        role: "generic",
+        verdicts: [
+          { name: CODEX_IDENTITY_NAME, verdict: { kind: "rejected", detail: PAT_REJECTION } },
+          { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 5 } },
+          {
+            name: VSCODE_CHAT_INTEGRATION_ID,
+            verdict: { kind: "inconclusive", detail: "503 upstream unavailable", status: 503 },
+          },
+        ],
+      },
+      {
+        apiBase: "https://api.enterprise.githubcopilot.com",
+        role: "designated",
+        verdicts: [
+          { name: CODEX_IDENTITY_NAME, verdict: { kind: "rejected", detail: PAT_REJECTION } },
+          { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 37 } },
+        ],
+      },
+    ],
+    designatedUnknown: false,
+  },
+  pinned: null,
+  configuredHost: null,
+  stored: {},
+  hostInUse: GENERIC_HOST,
+  slot: { kind: "empty", wouldPick: COPILOT_CLI_INTEGRATION_ID },
+  daemonRunning: false,
+  profile: null,
+  color: false,
+};
+
+const ESC = "\x1b";
+
+test("identityTableLines: with color on, the palette paints the survey like agent config and strips back to the plain layout", () => {
+  const columns = process.env.COLUMNS;
+  process.env.COLUMNS = "160";
+  try {
+    const plain = identityTableLines(SURVEY_TABLE);
+    const colored = identityTableLines({ ...SURVEY_TABLE, color: true });
+    expect(plain.join("\n")).not.toContain("\x1b");
+    // Escapes never move a cell: stripped, the painted table IS the plain one, line for line.
+    const sgr = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
+    expect(colored.map((line) => line.replace(sgr, ""))).toEqual(plain);
+    const painted = colored.join("\n");
+    expect(painted).toContain("\x1b[1midentity\x1b[22m");
+    expect(painted).toContain(`\x1b[36m${COPILOT_CLI_INTEGRATION_ID}\x1b[39m`);
+    expect(painted).toContain("\x1b[32maccepted (5 models)\x1b[39m \x1b[32m>\x1b[39m");
+    expect(painted).toContain("\x1b[33mrejected (400)\x1b[39m");
+    expect(painted).toContain("\x1b[2munclear (503)\x1b[22m");
+    expect(painted).toContain("\x1b[2m-\x1b[22m");
+    expect(painted).toContain("api.githubcopilot.com \x1b[2m(in use)\x1b[22m");
+    // The legend, every note, and every reason are dim end to end: one open, one close, so the
+    // host label inside a reason never nests a dim of its own.
+    const dimWhole = (line: string | undefined, indent = ""): boolean =>
+      line !== undefined && line.startsWith(`${indent}\x1b[2m`) && line.endsWith("\x1b[22m") &&
+      line.split(ESC).length === 3;
+    expect(dimWhole(colored.find((line) => line.includes("* = in use")))).toBe(true);
+    expect(dimWhole(colored.find((line) => line.includes("Nothing stored yet")))).toBe(true);
+    const reason = colored.find((line) => line.includes("codex on api.enterprise."));
+    expect(reason).toContain("(account)");
+    expect(dimWhole(reason, "  ")).toBe(true);
+  } finally {
     if (columns === undefined) delete process.env.COLUMNS;
     else process.env.COLUMNS = columns;
   }

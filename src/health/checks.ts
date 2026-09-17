@@ -32,6 +32,7 @@ import type {
   ShellFacts,
 } from "./facts.ts";
 import type { CheckOutcome, CheckResult, HealthScope } from "./types.ts";
+import { ghCouldNotCheck } from "./checks_agents.ts";
 import { meta, profileAddFix, SETUP_SCOPES as SETUP } from "./types.ts";
 
 /** THE predicate shared by checkAuth and checkProfileAuth: a stored token resolves by presence,
@@ -640,6 +641,8 @@ export function checkProfileAuth(
     ghAuthenticated: boolean;
     ghUser?: string | null;
     ghActiveLogin?: string | null;
+    ghCommand?: string;
+    ghDetail?: string;
     ghAuthUnproven?: true;
   },
 ): CheckResult {
@@ -689,8 +692,7 @@ export function checkProfileAuth(
           : `provider '${slot.provider}' is recorded for profile '${name}' but no credential resolves`,
         slot.provider === "gh-cli"
           ? unproven
-            ? "could not check gh authentication " +
-              `(\`gh auth token\` did not run to completion; ${accountClause})`
+            ? ghCouldNotCheck(resolution.ghDetail, accountClause)
             : pin === null
             ? `\`gh\` is unauthenticated (${accountClause}) - run \`gh auth login\`, or re-provision the profile`
             : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or re-provision the profile`
@@ -701,7 +703,9 @@ export function checkProfileAuth(
   }
   const how = slot.provider === "gh-cli"
     ? pin !== null
-      ? `gh CLI (\`gh auth token --user ${pin}\`)`
+      ? resolution.ghCommand === undefined
+        ? `gh CLI (\`gh auth token --user ${pin}\`)`
+        : `gh CLI (\`${resolution.ghCommand}\`, account ${pin})`
       : followed !== null
       ? `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`
       : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
@@ -872,7 +876,9 @@ export function checkAuth(f: AuthFacts): CheckResult {
   if (resolves) {
     const how = f.provider === "gh-cli"
       ? pin !== null
-        ? `gh CLI (\`gh auth token --user ${pin}\`)`
+        ? f.ghCommand === undefined
+          ? `gh CLI (\`gh auth token --user ${pin}\`)`
+          : `gh CLI (\`${f.ghCommand}\`, account ${pin})`
         : followed !== null
         ? `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`
         : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
@@ -901,8 +907,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
         : `provider '${f.provider}' is selected but no credential resolves`,
       f.provider === "gh-cli"
         ? unproven
-          ? "could not check gh authentication " +
-            `(\`gh auth token\` did not run to completion; ${ghAccountClause(pin, followed)})`
+          ? ghCouldNotCheck(f.ghDetail, ghAccountClause(pin, followed))
           : pin === null
           ? `\`gh\` is unauthenticated (${
             ghAccountClause(pin, followed)

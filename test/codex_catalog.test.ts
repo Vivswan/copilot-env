@@ -1063,7 +1063,8 @@ onPosix("a spent probe budget judges nothing and spawns nothing", () => {
 });
 
 test("the refresh's worst case (derived from its real timeouts and lock waits) plus the gh look fits the direct auth timeout", () => {
-  // Constant arithmetic on purpose: AUTH_REFRESH_WORST_CASE_MS is built from the
+  // Constant arithmetic on purpose: GH_AUTH_TIMEOUT_MS is the budget of the WHOLE gh look (its
+  // chain of gh calls shares it), and AUTH_REFRESH_WORST_CASE_MS is built from the
   // budgets the code passes to its spawns, fetches, and lock waits, so a raised
   // budget that would overrun Codex's auth deadline fails here.
   const STARTUP_MARGIN_MS = 1000;

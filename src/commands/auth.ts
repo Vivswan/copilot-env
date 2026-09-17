@@ -441,20 +441,20 @@ export function loginWithGhCli(
 ): void {
   // Verified BEFORE recording, or a failed check would point `--get` at a `gh` that cannot produce
   // a token. An UNPROVEN look wears its own words: "not authenticated" and the `gh auth login`
-  // advice are wrong when gh was never asked.
+  // advice are wrong when gh was never asked. Every miss quotes the gh call and its stderr: the
+  // fix differs by cause (an old gh, a missing login, a switched account, an env token), and the
+  // look named it.
   const gh = look(ghUser);
   if (gh.token === null) {
+    const detail = gh.detail ?? "`gh auth token` gave no token";
     if (gh.unproven) {
-      throw new Error(
-        "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`",
-      );
+      throw new Error(`could not check gh authentication (${detail}) - retry \`agent auth\``);
     }
     throw new Error(
       ghUser === null
-        ? "gh is not authenticated - run `gh auth login`, then retry `agent auth`"
-        : `gh has no saved credential for account '${ghUser}' (pinning needs a saved ` +
-          "login; an env GH_TOKEN cannot serve `gh auth token --user`) - run " +
-          `\`gh auth login\` for that account, pass --gh-user <login> for another, ` +
+        ? `gh is not authenticated (${detail}) - run \`gh auth login\`, then retry \`agent auth\``
+        : `gh has no saved credential for account '${ghUser}' (${detail}) - ` +
+          `run \`gh auth login\` for that account, pass --gh-user <login> for another, ` +
           "or choose auto interactively via `agent auth --provider gh-cli`",
     );
   }

@@ -24,6 +24,16 @@ import type {
 } from "./facts.ts";
 import { type CheckResult, meta, profileAddFix } from "./types.ts";
 
+/** The one could-not-check line for every gh-cli verdict (the default, a named profile, both
+ *  agents' Direct checks). `detail` is the look's own account of what happened: the completed
+ *  calls' answers and the call that did not complete, so a killed fallback status probe is never
+ *  reported as "`gh auth token` did not run" when that call did. Absent detail keeps the generic
+ *  line. */
+export function ghCouldNotCheck(detail: string | undefined, accountClause: string): string {
+  const why = detail ?? "`gh auth token` did not run to completion";
+  return `could not check gh authentication (${why}; ${accountClause})`;
+}
+
 /**
  * Shared by the Codex and Claude Direct checks: both mint the bearer via `gh auth token`.
  * Callers wrap `ghFix` in their own fix selection (a base-URL/provider fix takes precedence). An
@@ -51,8 +61,7 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
       ok: false,
       detail: a.command === null
         ? "gh auth: could not check for the GitHub CLI (the command probe failed to run)"
-        : "gh auth: could not check gh authentication " +
-          `(\`gh auth token\` did not run to completion; ${accountClause})`,
+        : `gh auth: ${ghCouldNotCheck(a.ghDetail, accountClause)}`,
       ghFix: "re-run `agent health` (the gh check did not run to completion)",
     };
   }

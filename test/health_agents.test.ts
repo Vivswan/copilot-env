@@ -13,7 +13,13 @@ import {
   checkCodexLive,
   legacyTableRepair,
 } from "../src/health/checks_agents.ts";
-import type { ClaudeFacts, CodexFacts, CodexHostFacts } from "../src/health/facts.ts";
+import type {
+  ClaudeFacts,
+  CodexFacts,
+  CodexHostFacts,
+  LiveProbeFacts,
+} from "../src/health/facts.ts";
+import type { CheckResult, CheckStatus } from "../src/health/types.ts";
 import { v409CodexProfileFiles } from "../src/migrations/4.0.9.ts";
 import { dueMigrations } from "../src/migrations/index.ts";
 import { expect, test } from "./helpers/testing.ts";
@@ -274,11 +280,11 @@ test("codex: not configured is ok; each broken part warns with a precise message
     envKeyInDotenv: false,
     envKeyInEnviron: false,
     tokenAvailable: false,
-    directAuth: { command: "/bin/gh", authenticated: true, ghActiveLogin: "vivswan" },
+    directAuth: { command: "/bin/gh", authenticated: true, ghActiveLogin: "octocat" },
   });
   expect(directAutoNamed.status).toBe("ok");
   expect(directAutoNamed.detail).toContain(
-    "gh auth: authenticated via /bin/gh (AUTO - currently account vivswan)",
+    "gh auth: authenticated via /bin/gh (AUTO - currently account octocat)",
   );
 
   // Non-gh-cli provider with no stored token: gh is NOT a fallback, so the warn points at
@@ -339,12 +345,12 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
       command: "/bin/gh",
       authenticated: false,
       unproven: true,
-      ghActiveLogin: "vivswan",
+      ghActiveLogin: "octocat",
     },
   });
   expect(codexUnprovenNamed.detail).toContain(
     "gh auth: could not check gh authentication " +
-      "(`gh auth token` did not run to completion; AUTO - currently account vivswan)",
+      "(`gh auth token` did not run to completion; AUTO - currently account octocat)",
   );
   // The gh LOOKUP itself failed to run: not a proven "GitHub CLI not found".
   const lookupUnproven = checkCodex({
@@ -691,56 +697,86 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
 
 // --- live (--live) checks ---------------------------------------------------
 
-test("checkCodexLive/checkClaudeLive: ok responds, fail warns, missing skips", () => {
-  expect(checkCodexLive({ kind: "ok", cli: "/bin/codex" }).status).toBe("ok");
-  const codexFail = checkCodexLive({ kind: "failed", cli: "/bin/codex", detail: "exit 1" });
-  expect(codexFail.status).toBe("warn");
-  expect(codexFail.fix).toBe("agent codex");
-  const codexSkip = checkCodexLive({ kind: "skipped" });
-  expect(codexSkip.status).toBe("ok");
-  expect(codexSkip.detail).toContain("skipped");
-
-  // The captured output is surfaced verbatim (a failed probe ALWAYS carries it).
-  const codexFailWithDetail = checkCodexLive({
-    kind: "failed",
-    cli: "/bin/codex",
-    detail: '{"type":"turn.failed","error":{"message":"401 Unauthorized"}}',
-  });
-  expect(codexFailWithDetail.status).toBe("warn");
-  expect(codexFailWithDetail.detail).toContain("401 Unauthorized");
-  expect(codexFailWithDetail.detail).not.toContain("did not answer");
-
-  expect(checkClaudeLive({ kind: "ok", cli: "/bin/claude" }).status).toBe("ok");
-  const claudeFail = checkClaudeLive({ kind: "failed", cli: "/bin/claude", detail: "exit 1" });
-  expect(claudeFail.status).toBe("warn");
-  expect(claudeFail.fix).toBe("agent claude");
-  // Claude surfaces the full captured error too (symmetric with codex).
-  const claudeFailWithDetail = checkClaudeLive({
-    kind: "failed",
-    cli: "/bin/claude",
-    detail: "API Error: 401 invalid x-api-key",
-  });
-  expect(claudeFailWithDetail.detail).toContain("401 invalid x-api-key");
-  expect(claudeFailWithDetail.detail).not.toContain("did not answer");
-  expect(checkClaudeLive({ kind: "skipped" }).status).toBe("ok");
-});
-
-test("live checks: a skip off a FAILED look says could-not-check, never 'not installed'", () => {
-  const codexSkip = checkCodexLive({ kind: "skipped", lookFailed: true });
-  expect(codexSkip.status).toBe("ok");
-  expect(codexSkip.detail).toBe(
-    "skipped (could not check for the codex CLI - the command probe failed to run)",
-  );
-  expect(codexSkip.value).toEqual({ ran: false, ok: false, cli: null, lookFailed: true });
-  const claudeSkip = checkClaudeLive({ kind: "skipped", lookFailed: true });
-  expect(claudeSkip.status).toBe("ok");
-  expect(claudeSkip.detail).toBe(
-    "skipped (could not check for the claude CLI - the command probe failed to run)",
-  );
-  // The proven-absent skip keeps the landed wording, unmarked.
-  const proven = checkCodexLive({ kind: "skipped" });
-  expect(proven.detail).toBe("skipped (codex CLI not installed)");
-  expect(proven.value).toEqual({ ran: false, ok: false, cli: null });
+test("checkCodexLive/checkClaudeLive: the probe outcome decides status, fix, detail, and value", () => {
+  const rows: {
+    check: (f: LiveProbeFacts) => CheckResult;
+    outcome: LiveProbeFacts;
+    status: CheckStatus;
+    fix?: string;
+    detail?: string;
+    exactDetail?: string;
+    notDetail?: string;
+    value?: Record<string, unknown>;
+  }[] = [
+    { check: checkCodexLive, outcome: { kind: "ok", cli: "/bin/codex" }, status: "ok" },
+    {
+      check: checkCodexLive,
+      outcome: { kind: "failed", cli: "/bin/codex", detail: "exit 1" },
+      status: "warn",
+      fix: "agent codex",
+    },
+    // The captured output is surfaced verbatim (a failed probe ALWAYS carries it).
+    {
+      check: checkCodexLive,
+      outcome: {
+        kind: "failed",
+        cli: "/bin/codex",
+        detail: '{"type":"turn.failed","error":{"message":"401 Unauthorized"}}',
+      },
+      status: "warn",
+      detail: "401 Unauthorized",
+      notDetail: "did not answer",
+    },
+    // A proven absence keeps the plain wording, unmarked; a skip off a FAILED look says
+    // could-not-check, never "not installed".
+    {
+      check: checkCodexLive,
+      outcome: { kind: "skipped" },
+      status: "ok",
+      exactDetail: "skipped (codex CLI not installed)",
+      value: { ran: false, ok: false, cli: null },
+    },
+    {
+      check: checkCodexLive,
+      outcome: { kind: "skipped", lookFailed: true },
+      status: "ok",
+      exactDetail: "skipped (could not check for the codex CLI - the command probe failed to run)",
+      value: { ran: false, ok: false, cli: null, lookFailed: true },
+    },
+    { check: checkClaudeLive, outcome: { kind: "ok", cli: "/bin/claude" }, status: "ok" },
+    {
+      check: checkClaudeLive,
+      outcome: { kind: "failed", cli: "/bin/claude", detail: "exit 1" },
+      status: "warn",
+      fix: "agent claude",
+    },
+    {
+      check: checkClaudeLive,
+      outcome: { kind: "failed", cli: "/bin/claude", detail: "API Error: 401 invalid x-api-key" },
+      status: "warn",
+      detail: "401 invalid x-api-key",
+      notDetail: "did not answer",
+    },
+    { check: checkClaudeLive, outcome: { kind: "skipped" }, status: "ok" },
+    {
+      check: checkClaudeLive,
+      outcome: { kind: "skipped", lookFailed: true },
+      status: "ok",
+      exactDetail: "skipped (could not check for the claude CLI - the command probe failed to run)",
+    },
+  ];
+  for (const row of rows) {
+    const name = `${row.check === checkCodexLive ? "codex" : "claude"} ${
+      JSON.stringify(row.outcome)
+    }`;
+    const r = row.check(row.outcome);
+    expect(r.status, name).toBe(row.status);
+    if (row.fix !== undefined) expect(r.fix, name).toBe(row.fix);
+    if (row.detail !== undefined) expect(r.detail, name).toContain(row.detail);
+    if (row.exactDetail !== undefined) expect(r.detail, name).toBe(row.exactDetail);
+    if (row.notDetail !== undefined) expect(r.detail, name).not.toContain(row.notDetail);
+    if (row.value !== undefined) expect(r.value, name).toEqual(row.value);
+  }
 });
 
 // --- codex host farm --------------------------------------------------------

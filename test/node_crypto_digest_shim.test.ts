@@ -35,40 +35,36 @@ describe("node:crypto digest shim", () => {
     );
   });
 
-  test("infers Node's default digest per key type", () => {
-    // Node uses SHA-256 for every EC curve, not the curve-matched hash.
-    for (const curve of ["prime256v1", "secp384r1", "secp521r1"]) {
-      expect(defaultDigestFor(ecPair(curve).publicKey), curve).toBe("sha256");
-    }
+  test("defaultDigestFor infers Node's default per key type, from every key form verify() accepts", () => {
+    const ec = ecPair("prime256v1").publicKey;
     const rsa = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
-    expect(defaultDigestFor(rsa.publicKey)).toBe("sha256");
-    expect(
-      defaultDigestFor({ key: rsa.publicKey, padding: crypto.constants.RSA_PKCS1_PSS_PADDING }),
-    ).toBe("sha256");
-    // A restricted RSA-PSS key dictates its own hash; SHA-256 would be rejected.
-    const pss = rsaPssPair("sha384");
-    expect(defaultDigestFor(pss.publicKey)).toBe("sha384");
-    const ed = crypto.generateKeyPairSync("ed25519");
-    expect(defaultDigestFor(ed.publicKey)).toBeUndefined();
-    expect(defaultDigestFor(dsaPair().publicKey)).toBe("sha256");
-  });
-
-  test("reads every key form verify() accepts: PEM, DER wrapper, JWK wrapper", () => {
-    const { publicKey } = ecPair("prime256v1");
-    expect(defaultDigestFor(publicKey.export({ type: "spki", format: "pem" }) as string)).toBe(
-      "sha256",
-    );
-    expect(
-      defaultDigestFor({
-        key: publicKey.export({ type: "spki", format: "der" }),
-        format: "der",
-        type: "spki",
-      }),
-    ).toBe("sha256");
-    expect(defaultDigestFor({ key: publicKey.export({ format: "jwk" }), format: "jwk" })).toBe(
-      "sha256",
-    );
-    expect(defaultDigestFor("not a key")).toBeUndefined();
+    const rows: Array<[string, Parameters<typeof defaultDigestFor>[0], string | undefined]> = [
+      // Node uses SHA-256 for every EC curve, not the curve-matched hash.
+      ["prime256v1", ec, "sha256"],
+      ["secp384r1", ecPair("secp384r1").publicKey, "sha256"],
+      ["secp521r1", ecPair("secp521r1").publicKey, "sha256"],
+      ["rsa", rsa.publicKey, "sha256"],
+      [
+        "rsa pss padding",
+        { key: rsa.publicKey, padding: crypto.constants.RSA_PKCS1_PSS_PADDING },
+        "sha256",
+      ],
+      // A restricted RSA-PSS key dictates its own hash; SHA-256 would be rejected.
+      ["rsa-pss sha384", rsaPssPair("sha384").publicKey, "sha384"],
+      ["ed25519", crypto.generateKeyPairSync("ed25519").publicKey, undefined],
+      ["dsa", dsaPair().publicKey, "sha256"],
+      ["pem", ec.export({ type: "spki", format: "pem" }) as string, "sha256"],
+      [
+        "der",
+        { key: ec.export({ type: "spki", format: "der" }), format: "der", type: "spki" },
+        "sha256",
+      ],
+      ["jwk", { key: ec.export({ format: "jwk" }), format: "jwk" }, "sha256"],
+      ["not a key", "not a key", undefined],
+    ];
+    for (const [label, key, digest] of rows) {
+      expect(defaultDigestFor(key), label).toBe(digest);
+    }
   });
 
   test("shimmed verify accepts an unspecified digest for every key type Node does", () => {

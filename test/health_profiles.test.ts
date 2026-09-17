@@ -7,7 +7,7 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { profileHome } from "../src/copilot_api/paths.ts";
 import { openaiBaseUrl, proxyLoopbackOrigin } from "../src/copilot_api/port.ts";
 import { parseProfileName, type Profile, type ProfileName } from "../src/copilot_api/profile.ts";
-import { exitCodeFor, worstStatus } from "../src/health/aggregate.ts";
+import { worstStatus } from "../src/health/aggregate.ts";
 import {
   checkProfileAuth,
   checkProfileConsistency,
@@ -34,6 +34,7 @@ import {
   type LiveLaunch,
 } from "../src/health/live_launch.ts";
 import { gatherFacts, type ProbeDeps, runLiveCli } from "../src/health/probe.ts";
+import type { CheckId, CheckResult, CheckStatus } from "../src/health/types.ts";
 import { type LaunchDeps, prepareLaunch } from "../src/commands/launch.ts";
 import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, writeRunState } from "./helpers.ts";
@@ -140,189 +141,203 @@ function offlineDeps(extra: Partial<ProbeDeps> = {}): Partial<ProbeDeps> {
 
 // --- profile.consistency (pure) -----------------------------------------------
 
-test("profile.consistency: slot + home agreement per mode", () => {
-  const proxyOk = checkProfileConsistency(namedTarget("p"));
-  expect(proxyOk.status).toBe("ok");
-  expect(proxyOk.profile).toBe(P);
-  expect(proxyOk.scopes).toContain("runtime");
-
-  // Direct slot: no home needed (with or without a leftover one).
-  const direct = checkProfileConsistency(
-    namedTarget("p", {
-      slot: {
-        exists: true,
-        provider: "gh-token",
-        mode: "direct",
-        storedToken: true,
-        ghUser: null,
-      },
-      homeExists: false,
-      proxyExpected: false,
-    }),
-  );
-  expect(direct.status).toBe("ok");
-  expect(direct.detail).toContain("direct");
-});
-
-test("profile.consistency: home without a slot warns half-created with both repair paths", () => {
-  const half = checkProfileConsistency(
-    namedTarget("p", {
-      slot: {
-        exists: false,
-        provider: null,
-        mode: null,
-        storedToken: false,
-        ghUser: null,
-      },
-      homeExists: true,
-    }),
-  );
-  expect(half.status).toBe("warn");
-  expect(half.detail).toContain("half-created");
-  expect(half.fix).toContain("agent profile --add p");
-  expect(half.fix).toContain("agent profile --del p");
-});
-
-test("profile.consistency: proxy slot without a home warns wiring-incomplete", () => {
-  const homeless = checkProfileConsistency(
-    namedTarget("p", { homeExists: false, portPersisted: false }),
-  );
-  expect(homeless.status).toBe("warn");
-  expect(homeless.detail).toContain("no daemon home");
-  expect(homeless.fix).toBe("agent profile --add p");
-});
-
-test("profile.consistency: a slot with no recorded mode warns", () => {
-  const modeless = checkProfileConsistency(
-    namedTarget("p", {
-      slot: {
-        exists: true,
-        provider: "gh-token",
-        mode: null,
-        storedToken: true,
-        ghUser: null,
-      },
-    }),
-  );
-  expect(modeless.status).toBe("warn");
-  expect(modeless.detail).toContain("no mode recorded");
-  expect(modeless.fix).toContain("agent profile --add p");
+test("profile.consistency: the slot and home shape decide status, detail, and fix", () => {
+  const slot = (mode: ProfileSlotFacts["mode"], exists = true): ProfileSlotFacts => ({
+    exists,
+    provider: exists ? "gh-token" : null,
+    mode,
+    storedToken: exists,
+    ghUser: null,
+  });
+  const rows: {
+    name: string;
+    overrides: NamedOverrides;
+    status: CheckStatus;
+    detail?: string;
+    fix?: string;
+    fixContains?: string[];
+  }[] = [
+    { name: "proxy slot with its home", overrides: {}, status: "ok" },
+    {
+      // A direct slot needs no home, leftover or not.
+      name: "direct slot, no home",
+      overrides: { slot: slot("direct"), homeExists: false, proxyExpected: false },
+      status: "ok",
+      detail: "direct",
+    },
+    {
+      name: "home without a slot",
+      overrides: { slot: slot(null, false), homeExists: true },
+      status: "warn",
+      detail: "half-created",
+      fixContains: ["agent profile --add p", "agent profile --del p"],
+    },
+    {
+      name: "proxy slot without a home",
+      overrides: { homeExists: false, portPersisted: false },
+      status: "warn",
+      detail: "no daemon home",
+      fix: "agent profile --add p",
+    },
+    {
+      name: "slot with no recorded mode",
+      overrides: { slot: slot(null) },
+      status: "warn",
+      detail: "no mode recorded",
+      fixContains: ["agent profile --add p"],
+    },
+  ];
+  for (const row of rows) {
+    const r = checkProfileConsistency(namedTarget("p", row.overrides));
+    expect(r.status, row.name).toBe(row.status);
+    expect(r.profile, row.name).toBe(P);
+    expect(r.scopes, row.name).toContain("runtime");
+    if (row.detail !== undefined) expect(r.detail, row.name).toContain(row.detail);
+    if (row.fix !== undefined) expect(r.fix, row.name).toBe(row.fix);
+    for (const needle of row.fixContains ?? []) expect(r.fix, row.name).toContain(needle);
+  }
 });
 
 // A default target cannot reach checkProfileConsistency: the RuntimeTarget union makes it a compile error.
 
 // --- named-target severity (pure) ---------------------------------------------
 
-test("named target down + auto-start off fails with the profile-addressed start fix", () => {
-  const down = namedTarget("p", {
+test("named daemon verdicts address the profile on every fix", () => {
+  const down: NamedOverrides = {
     reachable: false,
     trackedPid: null,
     pidTracked: false,
     pidAlive: false,
     identityConfirmed: null,
-  });
-  const port = runPort(down);
-  expect(port.status).toBe("fail");
-  expect(port.fix).toBe("agent start --profile p");
-  expect(port.profile).toBe(P);
-  const pid = runPid(down);
-  expect(pid.status).toBe("fail");
-  expect(pid.fix).toBe("agent start --profile p");
-});
-
-test("named target down + auto-start on reads ok (starts on demand)", () => {
-  const down = namedTarget("p", {
-    reachable: false,
-    trackedPid: null,
-    pidTracked: false,
-    pidAlive: false,
-    identityConfirmed: null,
-  });
-  down.watchdog = { ...down.watchdog, autoStart: true };
-  const port = runPort(down);
-  expect(port.status).toBe("ok");
-  expect(port.detail).toContain("starts on demand (daemon.auto-start on)");
-  expect(port.fix).toBeUndefined();
-  expect(runPid(down).status).toBe("ok");
-});
-
-test("a foreign listener on a named profile's port is a real misroute warning", () => {
-  // The profile's configs bake THIS port, so a foreign occupant genuinely captures its traffic.
-  const foreign = runIdentity(namedTarget("p", { identityConfirmed: false }));
-  expect(foreign.status).toBe("warn");
-  expect(foreign.detail).toContain("misroute");
-  expect(foreign.fix).toBe(
-    "free the port (stop the foreign process), then agent start --profile p",
-  );
-});
-
-test("an orphaned named daemon's fix addresses the profile on both commands", () => {
-  const orphan = runOrphan(
-    namedTarget("p", { pidTracked: false, trackedPid: null, identityConfirmed: true }),
-  );
-  expect(orphan.status).toBe("warn");
-  expect(orphan.fix).toBe(
-    "agent stop --profile p, then agent start --profile p (re-tracks the daemon)",
-  );
+  };
+  const autoStartOn = { ...namedTarget("p").watchdog, autoStart: true };
+  const rows: {
+    name: string;
+    check: (t: RuntimeTarget) => CheckResult;
+    overrides: NamedOverrides;
+    status: CheckStatus;
+    fix: string | undefined;
+    detail?: string;
+  }[] = [
+    {
+      name: "port: down, auto-start off",
+      check: runPort,
+      overrides: down,
+      status: "fail",
+      fix: "agent start --profile p",
+    },
+    {
+      name: "pid: down, auto-start off",
+      check: runPid,
+      overrides: down,
+      status: "fail",
+      fix: "agent start --profile p",
+    },
+    {
+      name: "port: down, auto-start on",
+      check: runPort,
+      overrides: { ...down, watchdog: autoStartOn },
+      status: "ok",
+      fix: undefined,
+      detail: "starts on demand (daemon.auto-start on)",
+    },
+    {
+      name: "pid: down, auto-start on",
+      check: runPid,
+      overrides: { ...down, watchdog: autoStartOn },
+      status: "ok",
+      fix: undefined,
+    },
+    {
+      // The profile's configs bake THIS port, so a foreign occupant genuinely captures its traffic.
+      name: "identity: foreign listener",
+      check: runIdentity,
+      overrides: { identityConfirmed: false },
+      status: "warn",
+      fix: "free the port (stop the foreign process), then agent start --profile p",
+      detail: "misroute",
+    },
+    {
+      name: "orphan: untracked daemon of ours",
+      check: runOrphan,
+      overrides: { pidTracked: false, trackedPid: null, identityConfirmed: true },
+      status: "warn",
+      fix: "agent stop --profile p, then agent start --profile p (re-tracks the daemon)",
+    },
+  ];
+  for (const row of rows) {
+    const r = row.check(namedTarget("p", row.overrides));
+    expect(r.status, row.name).toBe(row.status);
+    expect(r.fix, row.name).toBe(row.fix);
+    expect(r.profile, row.name).toBe(P);
+    if (row.detail !== undefined) expect(r.detail, row.name).toContain(row.detail);
+  }
 });
 
 // --- evaluateAll row gating -----------------------------------------------------
 
-test("a named DIRECT profile yields only the consistency check, no daemon rows", () => {
-  const direct = namedTarget("p", {
-    slot: {
-      exists: true,
-      provider: "gh-token",
-      mode: "direct",
-      storedToken: true,
-      ghUser: null,
+test("evaluateAll gates the daemon rows on a probed proxy target", () => {
+  const rows: {
+    name: string;
+    overrides: NamedOverrides;
+    ids: CheckId[];
+    worst?: CheckStatus;
+    detail?: string[];
+  }[] = [
+    {
+      name: "direct profile",
+      overrides: {
+        slot: {
+          exists: true,
+          provider: "gh-token",
+          mode: "direct",
+          storedToken: true,
+          ghUser: null,
+        },
+        homeExists: false,
+        proxyExpected: false,
+        portPersisted: false,
+        skipped: "no daemon expected (not a proxy-mode target)",
+      },
+      ids: ["profile.consistency"],
+      worst: "ok",
     },
-    homeExists: false,
-    proxyExpected: false,
-    portPersisted: false,
-    skipped: "no daemon expected (not a proxy-mode target)",
-  });
-  const results = evaluateAll("full", { runtimes: [direct] });
-  expect(results.map((r) => r.id)).toEqual(["profile.consistency"]);
-  expect(exitCodeFor(results)).toBe(0);
-});
-
-test("a homeless proxy slot yields only the consistency warn (no probes of a candidate port)", () => {
-  const homeless = namedTarget("p", {
-    homeExists: false,
-    portPersisted: false,
-    skipped: "no daemon home on disk",
-  });
-  const results = evaluateAll("full", { runtimes: [homeless] });
-  expect(results.map((r) => r.id)).toEqual(["profile.consistency"]);
-  expect(worstStatus(results)).toBe("warn");
-});
-
-test("a homed proxy profile whose port is not persisted here says so instead of plain agreement", () => {
-  // The daemon was never probed, so its consistency line must not read as "daemon fine".
-  const unstarted = namedTarget("p", {
-    portPersisted: false,
-    skipped: "no persisted port on this host",
-  });
-  const results = evaluateAll("full", { runtimes: [unstarted] });
-  expect(results.map((r) => r.id)).toEqual(["profile.consistency"]);
-  expect(results[0]?.status).toBe("ok");
-  expect(results[0]?.detail).toContain("no port recorded on this host");
-  expect(results[0]?.detail).toContain("agent start --profile p");
-});
-
-test("a homed proxy profile with a persisted port yields the full daemon row block", () => {
-  const results = evaluateAll("full", { runtimes: [namedTarget("p")] });
-  expect(results.map((r) => r.id)).toEqual([
-    "profile.consistency",
-    "runtime.port",
-    "runtime.pid",
-    "runtime.paths",
-    "runtime.watchdog",
-    "runtime.identity",
-    "runtime.orphan",
-  ]);
-  for (const r of results) expect(r.profile).toBe(P);
+    {
+      // No probes of a candidate port.
+      name: "homeless proxy slot",
+      overrides: { homeExists: false, portPersisted: false, skipped: "no daemon home on disk" },
+      ids: ["profile.consistency"],
+      worst: "warn",
+    },
+    {
+      // The daemon was never probed, so its consistency line must not read as "daemon fine".
+      name: "homed proxy profile whose port is not persisted here",
+      overrides: { portPersisted: false, skipped: "no persisted port on this host" },
+      ids: ["profile.consistency"],
+      worst: "ok",
+      detail: ["no port recorded on this host", "agent start --profile p"],
+    },
+    {
+      name: "homed proxy profile with a persisted port",
+      overrides: {},
+      ids: [
+        "profile.consistency",
+        "runtime.port",
+        "runtime.pid",
+        "runtime.paths",
+        "runtime.watchdog",
+        "runtime.identity",
+        "runtime.orphan",
+      ],
+    },
+  ];
+  for (const row of rows) {
+    const results = evaluateAll("full", { runtimes: [namedTarget("p", row.overrides)] });
+    expect(results.map((r) => r.id), row.name).toEqual(row.ids);
+    for (const r of results) expect(r.profile, row.name).toBe(P);
+    if (row.worst !== undefined) expect(worstStatus(results), row.name).toBe(row.worst);
+    for (const needle of row.detail ?? []) expect(results[0]?.detail, row.name).toContain(needle);
+  }
 });
 
 test("the sweep renders default rows before profile rows (gather order preserved)", () => {
@@ -346,130 +361,139 @@ test("the sweep renders default rows before profile rows (gather order preserved
 
 const RESOLVES = { storedToken: true, ghAuthenticated: false };
 
-test("checkProfileAuth: a provisioned slot reads ok with provider + mode", () => {
-  const ok = checkProfileAuth(
-    P,
+test("checkProfileAuth: the slot and its credential resolution decide status, detail, and fix", () => {
+  const none = { storedToken: false, ghAuthenticated: false };
+  const ghSlot = { provider: "gh-cli" as const, mode: "direct" as const };
+  const rows: {
+    name: string;
+    slot: Parameters<typeof checkProfileAuth>[1];
+    resolves: Parameters<typeof checkProfileAuth>[2];
+    status: CheckStatus;
+    detail?: string[];
+    exactDetail?: string;
+    notDetail?: string;
+    fix?: string;
+    value?: Record<string, unknown>;
+  }[] = [
     {
-      provider: "gh-token",
-      mode: "proxy",
+      name: "provisioned proxy slot",
+      slot: { provider: "gh-token", mode: "proxy" },
+      resolves: RESOLVES,
+      status: "ok",
+      detail: ["gh-token", "agent auth --get --profile p", "agent start --profile p"],
     },
-    RESOLVES,
-  );
-  expect(ok.status).toBe("ok");
-  expect(ok.profile).toBe(P);
-  expect(ok.group).toBe("auth");
-  expect(ok.detail).toContain("gh-token");
-  expect(ok.detail).toContain("agent auth --get --profile p");
-  expect(ok.detail).toContain("agent start --profile p");
-
-  const direct = checkProfileAuth(
-    P,
-    { provider: "gh-token", mode: "direct" },
-    RESOLVES,
-  );
-  expect(direct.status).toBe("ok");
-  expect(direct.detail).toContain("for Direct");
-  expect(direct.detail).not.toContain("daemon");
-});
-
-test("checkProfileAuth: a missing credential warns and never falls back to the default", () => {
-  const noProvider = checkProfileAuth(
-    P,
-    { provider: null, mode: "proxy" },
-    { storedToken: false, ghAuthenticated: false },
-  );
-  expect(noProvider.status).toBe("warn");
-  expect(noProvider.detail).toContain("never fall back");
-  expect(noProvider.fix).toBe("agent profile --add p");
-
-  const noSlot = checkProfileAuth(P, null, { storedToken: false, ghAuthenticated: false });
-  expect(noSlot.status).toBe("warn");
-  expect(noSlot.fix).toContain("agent profile --add p --direct|--proxy");
-
-  // A slot with no recorded mode needs the explicit-mode re-add (a bare --add
-  // has no previous mode to stick to).
-  const noMode = checkProfileAuth(
-    P,
-    { provider: null, mode: null },
-    { storedToken: false, ghAuthenticated: false },
-  );
-  expect(noMode.fix).toBe("agent profile --add p --direct|--proxy");
-});
-
-test("checkProfileAuth: a recorded provider whose credential does not resolve warns", () => {
-  // Token provider with no stored token: the slot is provisioned on paper only.
-  const tokenGone = checkProfileAuth(
-    P,
-    { provider: "gh-token", mode: "proxy" },
-    { storedToken: false, ghAuthenticated: false },
-  );
-  expect(tokenGone.status).toBe("warn");
-  expect(tokenGone.detail).toContain("no credential resolves");
-  expect(tokenGone.fix).toBe("agent auth --profile p");
-
-  // gh-cli provider resolves via a live gh login, not a stored token.
-  const ghSlot = {
-    provider: "gh-cli" as const,
-    mode: "direct" as const,
-  };
-  expect(checkProfileAuth(P, ghSlot, { storedToken: false, ghAuthenticated: true }).status).toBe(
-    "ok",
-  );
-  const ghDown = checkProfileAuth(P, ghSlot, { storedToken: false, ghAuthenticated: false });
-  expect(ghDown.status).toBe("warn");
-  expect(ghDown.detail).toContain("gh auth login");
-  // A failing AUTO slot names the account it follows: the failure is about vivswan's credential.
-  const ghDownNamed = checkProfileAuth(P, ghSlot, {
-    storedToken: false,
-    ghAuthenticated: false,
-    ghActiveLogin: "vivswan",
-  });
-  expect(ghDownNamed.detail).toContain(
-    "`gh` is unauthenticated (AUTO - currently account vivswan) - run `gh auth login`",
-  );
-
-  // A PINNED slot's proven miss names its account; gh's active login may be fine.
-  const ghPinnedDown = checkProfileAuth(P, ghSlot, {
-    storedToken: false,
-    ghAuthenticated: false,
-    ghUser: "work-bot",
-  });
-  expect(ghPinnedDown.status).toBe("warn");
-  expect(ghPinnedDown.detail).toContain(
-    "`gh` is not authenticated as account 'work-bot' - run `gh auth login` for that account",
-  );
-  const ghPinnedOk = checkProfileAuth(P, ghSlot, {
-    storedToken: false,
-    ghAuthenticated: true,
-    ghUser: "work-bot",
-  });
-  expect(ghPinnedOk.status).toBe("ok");
-  expect(ghPinnedOk.detail).toContain("gh CLI (`gh auth token --user work-bot`)");
-  // An AUTO slot names the account it follows right now (no hidden information).
-  const ghAutoNamed = checkProfileAuth(P, ghSlot, {
-    storedToken: false,
-    ghAuthenticated: true,
-    ghActiveLogin: "vivswan",
-  });
-  expect(ghAutoNamed.status).toBe("ok");
-  expect(ghAutoNamed.detail).toContain(
-    "gh CLI (`gh auth token`, AUTO - currently account vivswan)",
-  );
-
-  // gh was never actually asked, so the confident wording and its advice never render.
-  const ghUnproven = checkProfileAuth(P, ghSlot, {
-    storedToken: false,
-    ghAuthenticated: false,
-    ghAuthUnproven: true,
-  });
-  expect(ghUnproven.status).toBe("warn");
-  expect(ghUnproven.detail).toBe([
-    "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
-    "could not check gh authentication " +
-    "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
-  ].join("\n"));
-  expect(ghUnproven.fix).toBe("agent auth --profile p");
-  expect(ghUnproven.value).toMatchObject({ ghAuthUnproven: true });
+    {
+      name: "provisioned direct slot",
+      slot: { provider: "gh-token", mode: "direct" },
+      resolves: RESOLVES,
+      status: "ok",
+      detail: ["for Direct"],
+      notDetail: "daemon",
+    },
+    {
+      // A missing credential never falls back to the default's.
+      name: "no provider recorded",
+      slot: { provider: null, mode: "proxy" },
+      resolves: none,
+      status: "warn",
+      detail: ["never fall back"],
+      fix: "agent profile --add p",
+    },
+    {
+      name: "no slot at all",
+      slot: null,
+      resolves: none,
+      status: "warn",
+      fix: "agent profile --add p --direct|--proxy",
+    },
+    {
+      // A bare --add has no previous mode to stick to, so the re-add names the mode.
+      name: "no provider and no mode recorded",
+      slot: { provider: null, mode: null },
+      resolves: none,
+      status: "warn",
+      fix: "agent profile --add p --direct|--proxy",
+    },
+    {
+      // Token provider with no stored token: the slot is provisioned on paper only.
+      name: "gh-token slot whose token is gone",
+      slot: { provider: "gh-token", mode: "proxy" },
+      resolves: none,
+      status: "warn",
+      detail: ["no credential resolves"],
+      fix: "agent auth --profile p",
+    },
+    // gh-cli resolves via a live gh login, not a stored token; the wording names the account.
+    {
+      name: "gh-cli AUTO, authenticated",
+      slot: ghSlot,
+      resolves: { ...none, ghAuthenticated: true },
+      status: "ok",
+    },
+    {
+      name: "gh-cli AUTO, unauthenticated",
+      slot: ghSlot,
+      resolves: none,
+      status: "warn",
+      detail: ["gh auth login"],
+    },
+    {
+      name: "gh-cli AUTO following octocat, unauthenticated",
+      slot: ghSlot,
+      resolves: { ...none, ghActiveLogin: "octocat" },
+      status: "warn",
+      detail: ["`gh` is unauthenticated (AUTO - currently account octocat) - run `gh auth login`"],
+    },
+    {
+      // A PINNED slot's proven miss names its account; gh's active login may be fine.
+      name: "gh-cli pinned to work-bot, unauthenticated",
+      slot: ghSlot,
+      resolves: { ...none, ghUser: "work-bot" },
+      status: "warn",
+      detail: [
+        "`gh` is not authenticated as account 'work-bot' - run `gh auth login` for that account",
+      ],
+    },
+    {
+      name: "gh-cli pinned to work-bot, authenticated",
+      slot: ghSlot,
+      resolves: { ...none, ghAuthenticated: true, ghUser: "work-bot" },
+      status: "ok",
+      detail: ["gh CLI (`gh auth token --user work-bot`)"],
+    },
+    {
+      name: "gh-cli AUTO following octocat, authenticated",
+      slot: ghSlot,
+      resolves: { ...none, ghAuthenticated: true, ghActiveLogin: "octocat" },
+      status: "ok",
+      detail: ["gh CLI (`gh auth token`, AUTO - currently account octocat)"],
+    },
+    {
+      // gh was never actually asked, so the confident wording and its advice never render.
+      name: "gh-cli with an UNPROVEN gh probe",
+      slot: ghSlot,
+      resolves: { ...none, ghAuthUnproven: true },
+      status: "warn",
+      exactDetail: [
+        "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
+        "could not check gh authentication " +
+        "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
+      ].join("\n"),
+      fix: "agent auth --profile p",
+      value: { ghAuthUnproven: true },
+    },
+  ];
+  for (const row of rows) {
+    const r = checkProfileAuth(P, row.slot, row.resolves);
+    expect(r.status, row.name).toBe(row.status);
+    expect(r.profile, row.name).toBe(P);
+    expect(r.group, row.name).toBe("auth");
+    for (const needle of row.detail ?? []) expect(r.detail, row.name).toContain(needle);
+    if (row.exactDetail !== undefined) expect(r.detail, row.name).toBe(row.exactDetail);
+    if (row.notDetail !== undefined) expect(r.detail, row.name).not.toContain(row.notDetail);
+    if (row.fix !== undefined) expect(r.fix, row.name).toBe(row.fix);
+    if (row.value !== undefined) expect(r.value, row.name).toMatchObject(row.value);
+  }
 });
 
 // --- per-agent wiring checks, named ---------------------------------------------
@@ -791,7 +815,7 @@ test("a named Claude live probe scrubs ANTHROPIC_BASE_URL; the default scrubs no
 
 // --- gatherFacts seams (seeded profile fixtures) --------------------------------
 
-test("the default sweep gathers the default target first, then sorted named targets", async () => {
+test("the sweep gathers the default target first, then sorted named targets; the fast runtime scope stops at the default", async () => {
   const home = isolateProxyHome("copilot-health-sweep-");
   try {
     const store = new CopilotEnvState();
@@ -810,18 +834,15 @@ test("the default sweep gathers the default target first, then sorted named targ
     mkdirSync(join(home, "profiles", "c-half"), { recursive: true });
 
     const probed: string[] = [];
-    const facts = await gatherFacts(
-      "proxy",
-      {},
-      offlineDeps({
-        reach: async (url) => {
-          probed.push(url);
-          return false;
-        },
-        codexHome: () => join(home, "no-codex"),
-        claudeHome: () => join(home, "no-claude"),
-      }),
-    );
+    const deps = offlineDeps({
+      reach: async (url) => {
+        probed.push(url);
+        return false;
+      },
+      codexHome: () => join(home, "no-codex"),
+      claudeHome: () => join(home, "no-claude"),
+    });
+    const facts = await gatherFacts("proxy", {}, deps);
     expect(facts.runtimes?.map((t) => t.profile)).toEqual([null, a, b, parseProfileName("c-half")]);
 
     const [, aTarget, bTarget, cTarget] = facts.runtimes ?? [];
@@ -841,24 +862,10 @@ test("the default sweep gathers the default target first, then sorted named targ
     // Never a-direct's or c-half's unpersisted candidates.
     expect(probed.some((u) => u.includes(":4555/"))).toBe(true);
     expect(probed).toHaveLength(2);
-  } finally {
-    restoreEnv();
-    removeDir(home);
-  }
-});
 
-test("the launchers' fast runtime scope never sweeps named profiles", async () => {
-  const home = isolateProxyHome("copilot-health-fastscope-");
-  try {
-    const b = parseProfileName("b-proxy");
-    new CopilotEnvState().commitProfile(b, {
-      credential: { kind: "stored", provider: "gh-token", token: "tok-b" },
-      mode: "proxy",
-    });
-    mkdirSync(profileHome(b), { recursive: true });
-    writeRunState({ port: 4555 }, b);
-    const facts = await gatherFacts("runtime", {}, offlineDeps());
-    expect(facts.runtimes?.map((t) => t.profile)).toEqual([null]);
+    // The launchers' fast probe never pays for the named sweep.
+    const fast = await gatherFacts("runtime", {}, deps);
+    expect(fast.runtimes?.map((t) => t.profile)).toEqual([null]);
   } finally {
     restoreEnv();
     removeDir(home);
@@ -1121,76 +1128,46 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
 
 // --- --live narrowing --------------------------------------------------------------
 
-test("--live --profile routes both live probes through the profile's wiring", async () => {
-  const home = isolateProxyHome("copilot-health-livenarrow-");
+test("--live probes run for the narrowed profile alone, else for the default alone", async () => {
+  const home = isolateProxyHome("copilot-health-live-");
   try {
-    new CopilotEnvState().commitProfile(P, {
+    const store = new CopilotEnvState();
+    store.commitProfile(P, {
       credential: { kind: "stored", provider: "gh-token", token: "tok-p" },
       mode: "direct",
     });
-    const seen: { agent: string; home: string; profile: Profile }[] = [];
-    const facts = await gatherFacts(
-      "full",
-      { live: true, profile: P },
-      offlineDeps({
-        codexHome: () => join(home, "codex-home"),
-        claudeHome: () => join(home, "claude-home"),
-        codexLive: async (h, profile) => {
-          seen.push({ agent: "codex", home: h, profile });
-          return { kind: "skipped" };
-        },
-        claudeLive: async (h, profile) => {
-          seen.push({ agent: "claude", home: h, profile });
-          return { kind: "skipped" };
-        },
-      }),
-    );
-    expect(seen).toHaveLength(2);
-    for (const call of seen) expect(call.profile).toBe(P);
-    expect(facts.codexLive?.kind).toBe("skipped");
-    expect(facts.claudeLive?.kind).toBe("skipped");
-  } finally {
-    restoreEnv();
-    removeDir(home);
-  }
-});
-
-test("the default sweep never runs per-profile live probes", async () => {
-  const home = isolateProxyHome("copilot-health-livesweep-");
-  try {
     const b = parseProfileName("b-proxy");
-    new CopilotEnvState().commitProfile(b, {
+    store.commitProfile(b, {
       credential: { kind: "stored", provider: "gh-token", token: "tok-b" },
       mode: "proxy",
     });
     mkdirSync(profileHome(b), { recursive: true });
-    const liveProfiles: Profile[] = [];
-    await gatherFacts(
-      "full",
-      { live: true },
-      offlineDeps({
-        codexHome: () => join(home, "no-codex"),
-        claudeHome: () => join(home, "no-claude"),
-        shellTargets: () => [],
-        commandLook: () => ({ path: null }),
-        readAutoupdate: () => ({
-          enabled: false,
-          lastCheckMs: 0,
-          lastResult: "",
-          cooldownDays: 7,
-        }),
-        codexLive: async (_h, profile) => {
-          liveProfiles.push(profile);
-          return { kind: "skipped" };
-        },
-        claudeLive: async (_h, profile) => {
-          liveProfiles.push(profile);
-          return { kind: "skipped" };
-        },
-      }),
-    );
-    // Exactly the default's two probes -- never one per named profile.
-    expect(liveProfiles).toEqual([null, null]);
+    const seen: { agent: string; home: string; profile: Profile }[] = [];
+    const deps = offlineDeps({
+      codexHome: () => join(home, "no-codex"),
+      claudeHome: () => join(home, "no-claude"),
+      shellTargets: () => [],
+      commandLook: () => ({ path: null }),
+      readAutoupdate: () => ({ enabled: false, lastCheckMs: 0, lastResult: "", cooldownDays: 7 }),
+      codexLive: async (h, profile) => {
+        seen.push({ agent: "codex", home: h, profile });
+        return { kind: "skipped" };
+      },
+      claudeLive: async (h, profile) => {
+        seen.push({ agent: "claude", home: h, profile });
+        return { kind: "skipped" };
+      },
+    });
+
+    const narrowed = await gatherFacts("full", { live: true, profile: P }, deps);
+    expect(seen.map((call) => call.profile)).toEqual([P, P]);
+    expect(narrowed.codexLive?.kind).toBe("skipped");
+    expect(narrowed.claudeLive?.kind).toBe("skipped");
+
+    // The default sweep runs exactly the default's two probes, never one per named profile.
+    seen.length = 0;
+    await gatherFacts("full", { live: true }, deps);
+    expect(seen.map((call) => call.profile)).toEqual([null, null]);
   } finally {
     restoreEnv();
     removeDir(home);
@@ -1359,44 +1336,63 @@ describe("unproven tracked-pid scans", () => {
     }
   });
 
-  test("runtime.pid renders could-not-verify (warn), never the confident stale-or-foreign fail", () => {
-    const pid = runPid(namedTarget("p", { pidTracked: false, pidScanUnproven: true }));
-    expect(pid.status).toBe("warn");
-    expect(pid.detail).toBe("tracked pid 4321 could not be verified (the process scan failed)");
-    expect(pid.detail).not.toContain("stale or foreign");
-    expect(pid.value?.scanUnproven).toBe(true);
-
-    // Control: the same facts WITHOUT the unproven mark keep the confident fail.
-    const confident = runPid(namedTarget("p", { pidTracked: false }));
-    expect(confident.status).toBe("fail");
-    expect(confident.detail).toBe("tracked pid 4321 is stale or foreign");
-    expect(confident.value?.scanUnproven).toBeUndefined();
-  });
-
-  test("runtime.pid excused arms stay ok under an unproven scan (verdict-invariant), worded honestly", () => {
-    // Both-direct: a tracked pid would also read ok, so the unknown decides nothing; the detail and
-    // value still carry the failed look.
-    const bothDirect = runPid(
-      namedTarget("p", { pidTracked: false, pidScanUnproven: true, proxyExpected: false }),
-    );
-    expect(bothDirect.status).toBe("ok");
-    expect(bothDirect.detail).toContain("could not be verified");
-    expect(bothDirect.detail).not.toContain("stale or foreign");
-    expect(bothDirect.value?.scanUnproven).toBe(true);
-
-    // Down + auto-start: same invariance, same honest wording.
-    const onDemand = namedTarget("p", {
-      pidTracked: false,
-      pidScanUnproven: true,
-      reachable: false,
-      identityConfirmed: null,
-    });
-    onDemand.watchdog = { ...onDemand.watchdog, autoStart: true };
-    const excused = runPid(onDemand);
-    expect(excused.status).toBe("ok");
-    expect(excused.detail).toContain("could not be verified");
-    expect(excused.detail).toContain("starts on demand");
-    expect(excused.value?.scanUnproven).toBe(true);
+  test("runtime.pid under an unproven scan: could-not-verify replaces the confident fail, the excused arms stay ok", () => {
+    const rows: {
+      name: string;
+      overrides: NamedOverrides;
+      status: CheckStatus;
+      detail: string[];
+      exactDetail?: string;
+      scanUnproven: true | undefined;
+    }[] = [
+      {
+        name: "unproven scan, nothing excuses",
+        overrides: { pidTracked: false, pidScanUnproven: true },
+        status: "warn",
+        detail: [],
+        exactDetail: "tracked pid 4321 could not be verified (the process scan failed)",
+        scanUnproven: true,
+      },
+      {
+        // Control: the same facts WITHOUT the unproven mark keep the confident fail.
+        name: "completed scan",
+        overrides: { pidTracked: false },
+        status: "fail",
+        detail: [],
+        exactDetail: "tracked pid 4321 is stale or foreign",
+        scanUnproven: undefined,
+      },
+      {
+        // A tracked pid would also read ok here, so the unknown decides nothing; the detail and value
+        // still carry the failed look.
+        name: "unproven scan, both agents direct",
+        overrides: { pidTracked: false, pidScanUnproven: true, proxyExpected: false },
+        status: "ok",
+        detail: ["could not be verified"],
+        scanUnproven: true,
+      },
+      {
+        name: "unproven scan, down with auto-start on",
+        overrides: {
+          pidTracked: false,
+          pidScanUnproven: true,
+          reachable: false,
+          identityConfirmed: null,
+          watchdog: { ...namedTarget("p").watchdog, autoStart: true },
+        },
+        status: "ok",
+        detail: ["could not be verified", "starts on demand"],
+        scanUnproven: true,
+      },
+    ];
+    for (const row of rows) {
+      const pid = runPid(namedTarget("p", row.overrides));
+      expect(pid.status, row.name).toBe(row.status);
+      if (row.exactDetail !== undefined) expect(pid.detail, row.name).toBe(row.exactDetail);
+      for (const needle of row.detail) expect(pid.detail, row.name).toContain(needle);
+      if (row.status !== "fail") expect(pid.detail, row.name).not.toContain("stale or foreign");
+      expect(pid.value?.scanUnproven, row.name).toBe(row.scanUnproven);
+    }
   });
 
   test("runtime.orphan on an unproven scan says the daemon may be tracked, not that it is an orphan", () => {

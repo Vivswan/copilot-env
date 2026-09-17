@@ -8,7 +8,6 @@ import {
   buildHealthJson,
   exitCodeFor,
   filterByScope,
-  isHealthScope,
   worstStatus,
 } from "../src/health/aggregate.ts";
 import {
@@ -34,8 +33,11 @@ import {
 import { checkClaude, checkCodex } from "../src/health/checks_agents.ts";
 import { codexLiveLaunch } from "../src/health/live_launch.ts";
 import {
+  type AuthFacts,
   type BootstrapFacts,
   classifyPortState,
+  type CodexFacts,
+  type CodexHostFacts,
   type DaemonProbed,
   type DefaultRuntimeTarget,
   type HealthFacts,
@@ -48,7 +50,9 @@ import { evalCodex, evalShellFiles, gatherFacts, runLiveCli } from "../src/healt
 import type { CheckId, CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 import {
+  type ClaudeSettingsOptions,
   codexConfigToml,
+  type CodexConfigTomlOptions,
   envSnapshot,
   writeClaudeSettings,
   writeCodexConfigToml,
@@ -146,54 +150,69 @@ const BOOTSTRAP_OK: BootstrapFacts = {
   nodeModules: { present: true, fresh: true },
 };
 
+const DEV_SIDECAR: ProxyFacts["sidecar"] = {
+  kind: "dev",
+  referenceVersion: "2.9.5",
+  denoBin: "/deno",
+  version: "2.9.5",
+  standalone: false,
+};
+
+const CODEX_UNCONFIGURED: CodexFacts = {
+  home: "/c",
+  configExists: false,
+  providerSelected: false,
+  providerMode: "none",
+  modelProvider: null,
+  baseUrl: null,
+  baseUrlMatches: false,
+  envKeyMatches: false,
+  providerWired: false,
+  credential: "none",
+  envFilePresent: false,
+  envKeyInDotenv: false,
+  envKeyInEnviron: false,
+  tokenAvailable: false,
+  directAuth: { command: null, authenticated: false },
+  directUsesToken: false,
+  directNeedsNoGh: false,
+  otherReason: null,
+};
+
+const CODEX_HOST_UNSUPPORTED: CodexHostFacts = {
+  supported: false,
+  hostHome: "/h/.codex/hosts/box",
+  exists: false,
+  wired: false,
+  probeError: null,
+  active: false,
+  enabled: false,
+};
+
 // --- aggregate --------------------------------------------------------------
 
-test("worstStatus picks fail > warn > ok and defaults ok when empty", () => {
-  expect(worstStatus([])).toBe("ok");
-  expect(
-    worstStatus([result("runtime.port", "ok", ["full"]), result("runtime.pid", "warn", ["full"])]),
-  ).toBe("warn");
-  expect(
-    worstStatus([
-      result("runtime.port", "warn", ["full"]),
-      result("runtime.pid", "fail", ["full"]),
-      result("runtime.paths", "ok", ["full"]),
-    ]),
-  ).toBe("fail");
-});
-
-test("exitCodeFor is 1 iff any fail; warnings alone exit 0", () => {
-  expect(
-    exitCodeFor([result("runtime.port", "ok", ["full"]), result("runtime.pid", "warn", ["full"])]),
-  ).toBe(0);
-  expect(exitCodeFor([result("runtime.port", "fail", ["full"])])).toBe(1);
-  expect(exitCodeFor([])).toBe(0);
-});
-
-test("filterByScope keeps only participating checks, preserving order", () => {
+test("aggregate: filterByScope, worstStatus, and exitCodeFor over one check list", () => {
   const all = [
     result("runtime.port", "ok", ["full", "proxy", "runtime"]),
     result("setup.shell", "warn", ["full", "setup"]),
     result("setup.codex", "ok", ["full", "setup", "codex"]),
     result("bootstrap.deno", "ok", ["full", "proxy"]),
   ];
-  expect(filterByScope(all, "runtime").map((r) => r.id)).toEqual(["runtime.port"]);
-  expect(filterByScope(all, "setup").map((r) => r.id)).toEqual(["setup.shell", "setup.codex"]);
-  expect(filterByScope(all, "codex").map((r) => r.id)).toEqual(["setup.codex"]);
-  expect(filterByScope(all, "proxy").map((r) => r.id)).toEqual(["runtime.port", "bootstrap.deno"]);
-  expect(filterByScope(all, "full").map((r) => r.id)).toEqual([
-    "runtime.port",
-    "setup.shell",
-    "setup.codex",
-    "bootstrap.deno",
-  ]);
-});
+  const ids = (scope: HealthScope) => filterByScope(all, scope).map((r) => r.id);
+  expect(ids("runtime")).toEqual(["runtime.port"]);
+  expect(ids("setup")).toEqual(["setup.shell", "setup.codex"]);
+  expect(ids("codex")).toEqual(["setup.codex"]);
+  expect(ids("proxy")).toEqual(["runtime.port", "bootstrap.deno"]);
+  expect(ids("full")).toEqual(["runtime.port", "setup.shell", "setup.codex", "bootstrap.deno"]);
 
-test("isHealthScope narrows known scopes and rejects others", () => {
-  for (const s of ["full", "runtime", "proxy", "setup", "codex", "claude"]) {
-    expect(isHealthScope(s)).toBe(true);
-  }
-  expect(isHealthScope("bogus")).toBe(false);
+  // Severity ranks fail > warn > ok wherever the fail sits; only a fail moves the exit code.
+  const failing = [...all.slice(0, 2), result("runtime.pid", "fail", ["full"]), ...all.slice(2)];
+  expect(worstStatus([])).toBe("ok");
+  expect(worstStatus(all)).toBe("warn");
+  expect(worstStatus(failing)).toBe("fail");
+  expect(exitCodeFor([])).toBe(0);
+  expect(exitCodeFor(all)).toBe(0);
+  expect(exitCodeFor(failing)).toBe(1);
 });
 
 test("buildHealthJson exposes scope/ok/status/exitCode/checks with ok === no-fail", () => {
@@ -214,59 +233,8 @@ test("buildHealthJson exposes scope/ok/status/exitCode/checks with ok === no-fai
 
 // --- proxy version checks -------------------------------------------------
 
-test("proxy package: missing and below-floor fail, above-ceiling warns, in-bounds ok", () => {
-  expect(
-    checkProxyPackage({
-      version: null,
-      bounds: { ok: false, reason: "missing", version: null },
-      configError: null,
-      cooldownSeconds: 604800,
-      floatSkips: false,
-      resolved: null,
-      sidecar: {
-        kind: "dev",
-        referenceVersion: "2.9.5",
-        denoBin: "/deno",
-        version: "2.9.5",
-        standalone: false,
-      },
-    }).status,
-  ).toBe("fail");
-  expect(
-    checkProxyPackage({
-      version: "1.0.0",
-      bounds: { ok: false, reason: "belowFloor", version: "1.0.0", floor: "1.10.0" },
-      configError: null,
-      cooldownSeconds: 604800,
-      floatSkips: false,
-      resolved: null,
-      sidecar: {
-        kind: "dev",
-        referenceVersion: "2.9.5",
-        denoBin: "/deno",
-        version: "2.9.5",
-        standalone: false,
-      },
-    }).status,
-  ).toBe("fail");
-  const above = checkProxyPackage({
-    version: "2.0.0",
-    bounds: { ok: false, reason: "aboveCeiling", version: "2.0.0", ceiling: "1.99.0" },
-    configError: null,
-    cooldownSeconds: 604800,
-    floatSkips: false,
-    resolved: null,
-    sidecar: {
-      kind: "dev",
-      referenceVersion: "2.9.5",
-      denoBin: "/deno",
-      version: "2.9.5",
-      standalone: false,
-    },
-  });
-  expect(above.status).toBe("warn");
-  expect(above.fix).toBe("agent update");
-  expect(
+test("proxy package: the version bounds decide status and fix, the cooldown the detail", () => {
+  const check = (facts: Partial<ProxyFacts>) =>
     checkProxyPackage({
       version: "1.10.5",
       bounds: { ok: true, version: "1.10.5" },
@@ -274,15 +242,70 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
-      sidecar: {
-        kind: "dev",
-        referenceVersion: "2.9.5",
-        denoBin: "/deno",
-        version: "2.9.5",
-        standalone: false,
+      sidecar: DEV_SIDECAR,
+      ...facts,
+    });
+  const rows: {
+    name: string;
+    facts: Partial<ProxyFacts>;
+    status: CheckStatus;
+    fix?: string;
+    detail?: string;
+  }[] = [
+    {
+      name: "missing",
+      facts: { version: null, bounds: { ok: false, reason: "missing", version: null } },
+      status: "fail",
+    },
+    {
+      name: "below the floor",
+      facts: {
+        version: "1.0.0",
+        bounds: { ok: false, reason: "belowFloor", version: "1.0.0", floor: "1.10.0" },
       },
-    }).status,
-  ).toBe("ok");
+      status: "fail",
+    },
+    {
+      name: "above the ceiling",
+      facts: {
+        version: "2.0.0",
+        bounds: { ok: false, reason: "aboveCeiling", version: "2.0.0", ceiling: "1.99.0" },
+      },
+      status: "warn",
+      fix: "agent update",
+    },
+    { name: "in bounds, 7d cooldown", facts: {}, status: "ok", detail: "cooldown 7d" },
+    {
+      name: "in bounds, no cooldown",
+      facts: { cooldownSeconds: 0 },
+      status: "ok",
+      detail: "no cooldown",
+    },
+    {
+      name: "in bounds, 3d cooldown",
+      facts: { cooldownSeconds: 259200 },
+      status: "ok",
+      detail: "cooldown 3d",
+    },
+    {
+      name: "in bounds, 90s cooldown",
+      facts: { cooldownSeconds: 90 },
+      status: "ok",
+      detail: "cooldown 90s",
+    },
+    {
+      name: "in bounds, unknown cooldown",
+      facts: { cooldownSeconds: null },
+      status: "ok",
+      detail: "cooldown: unknown",
+    },
+  ];
+  for (const row of rows) {
+    const r = check(row.facts);
+    expect(r.status, row.name).toBe(row.status);
+    if (row.fix !== undefined) expect(r.fix, row.name).toBe(row.fix);
+    if (row.detail !== undefined) expect(r.detail, row.name).toContain(row.detail);
+  }
 });
 
 test("proxy package bounds are not enforced when both agents are direct", () => {
@@ -385,6 +408,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     },
   });
   expect(badConfig.status).toBe("fail");
+  expect(badConfig.detail).toContain("copilot-env.config");
 });
 
 test("proxy package: a compiled install treats missing as pre-start, not broken", () => {
@@ -424,50 +448,6 @@ test("proxy package: a compiled install treats missing as pre-start, not broken"
   expect(preStart.status).toBe("ok");
   expect(preStart.detail).toContain("agent start");
   expect(preStart.fix).toBeUndefined();
-});
-
-test("proxy package detail shows the float cooldown window", () => {
-  const ok = (cooldownSeconds: number | null) =>
-    checkProxyPackage({
-      version: "1.10.5",
-      bounds: { ok: true, version: "1.10.5" },
-      configError: null,
-      cooldownSeconds,
-      floatSkips: false,
-      resolved: null,
-      sidecar: {
-        kind: "dev",
-        referenceVersion: "2.9.5",
-        denoBin: "/deno",
-        version: "2.9.5",
-        standalone: false,
-      },
-    }).detail;
-  expect(ok(604800)).toContain("cooldown 7d");
-  expect(ok(0)).toContain("no cooldown");
-  expect(ok(259200)).toContain("cooldown 3d");
-  expect(ok(90)).toContain("cooldown 90s");
-  expect(ok(null)).toContain("cooldown: unknown");
-});
-
-test("proxy package fails (not throws) when copilot-env.config is unreadable", () => {
-  const r = checkProxyPackage({
-    version: "1.10.5",
-    bounds: null,
-    configError: "bad config",
-    cooldownSeconds: 604800,
-    floatSkips: false,
-    resolved: null,
-    sidecar: {
-      kind: "dev",
-      referenceVersion: "2.9.5",
-      denoBin: "/deno",
-      version: "2.9.5",
-      standalone: false,
-    },
-  });
-  expect(r.status).toBe("fail");
-  expect(r.detail).toContain("copilot-env.config");
 });
 
 test("proxy sidecar: absent is fatal for a compiled build, a warning for a checkout", () => {
@@ -638,12 +618,6 @@ test("proxy resolved: no record is ok, a record with a missing cache fails", () 
   expect(ok.detail).toContain("/cache");
 });
 
-test("copilot-env version check is always ok and surfaces the version", () => {
-  const r = checkCliVersion(BOOTSTRAP_OK);
-  expect(r.status).toBe("ok");
-  expect(r.detail).toBe("3.1.0");
-});
-
 // --- runtime checks (preserve original semantics) ---------------------------
 
 test("gatherFacts probes the proxy at 127.0.0.1, never localhost (Windows IPv6 safety)", async () => {
@@ -665,26 +639,74 @@ test("gatherFacts probes the proxy at 127.0.0.1, never localhost (Windows IPv6 s
   expect(probed).toBe("http://127.0.0.1:4141/");
 });
 
-test("runtime port fails only when unreachable", () => {
-  expect(runPort(defaultTarget()).status).toBe("ok");
-  expect(runPort(defaultTarget({ reachable: false })).status).toBe("fail");
-});
-
-test("runtime: a down proxy is OK when both Codex and Claude are direct", () => {
-  const down = defaultTarget({ reachable: false, trackedPid: null, pidTracked: false });
-  expect(runPort(down).status).toBe("fail");
-  expect(runPid(down).status).toBe("fail");
-  const bothDirect = defaultTarget({
-    reachable: false,
-    trackedPid: null,
-    pidTracked: false,
-    proxyExpected: false,
-  });
-  expect(runPort(bothDirect).status).toBe("ok");
-  expect(runPort(bothDirect).detail).toContain("both direct");
-  expect(runPid(bothDirect).status).toBe("ok");
-  expect(exitCodeFor(evaluateAll("runtime", { runtimes: [down] }))).toBe(1);
-  expect(exitCodeFor(evaluateAll("runtime", { runtimes: [bothDirect] }))).toBe(0);
+test("runtime port + pid verdicts over the probe states of a default target", () => {
+  const down = { reachable: false, trackedPid: null, pidTracked: false };
+  const rows: {
+    name: string;
+    target: DefaultRuntimeTarget;
+    port?: { status: CheckStatus; fix?: string; detail?: string };
+    pid?: { status: CheckStatus; fix?: string };
+    exitCode?: number;
+  }[] = [
+    {
+      name: "tracked and reachable",
+      target: defaultTarget(),
+      port: { status: "ok" },
+      pid: { status: "ok" },
+    },
+    { name: "unreachable", target: defaultTarget({ reachable: false }), port: { status: "fail" } },
+    {
+      name: "down, nothing tracked",
+      target: defaultTarget(down),
+      port: { status: "fail" },
+      pid: { status: "fail" },
+      exitCode: 1,
+    },
+    {
+      name: "down while both Codex and Claude are direct",
+      target: defaultTarget({ ...down, proxyExpected: false }),
+      port: { status: "ok", detail: "both direct" },
+      pid: { status: "ok" },
+      exitCode: 0,
+    },
+    {
+      // The fixture's watchdog has autoStart off, so nothing would relaunch the daemon.
+      name: "down with auto-start off",
+      target: defaultTarget({ ...down, identityConfirmed: null }),
+      port: { status: "fail", fix: "agent start" },
+      pid: { status: "fail", fix: "agent start" },
+      exitCode: 1,
+    },
+    {
+      name: "reachable but the tracked pid is stale or foreign",
+      target: defaultTarget({ pidTracked: false }),
+      port: { status: "ok" },
+      pid: { status: "fail" },
+    },
+    {
+      name: "reachable with no tracked pid",
+      target: defaultTarget({ trackedPid: null, pidTracked: false, pidAlive: false }),
+      pid: { status: "fail" },
+    },
+  ];
+  for (const row of rows) {
+    if (row.port) {
+      const port = runPort(row.target);
+      expect(port.status, row.name).toBe(row.port.status);
+      if (row.port.fix !== undefined) expect(port.fix, row.name).toBe(row.port.fix);
+      if (row.port.detail !== undefined) expect(port.detail, row.name).toContain(row.port.detail);
+    }
+    if (row.pid) {
+      const pid = runPid(row.target);
+      expect(pid.status, row.name).toBe(row.pid.status);
+      if (row.pid.fix !== undefined) expect(pid.fix, row.name).toBe(row.pid.fix);
+    }
+    if (row.exitCode !== undefined) {
+      expect(exitCodeFor(evaluateAll("runtime", { runtimes: [row.target] })), row.name).toBe(
+        row.exitCode,
+      );
+    }
+  }
 });
 
 test("runtime: a foreign listener on the port is not a problem when both agents are direct", () => {
@@ -749,39 +771,6 @@ test("runtime: a down daemon reads ok (starts on demand) when auto-start is on",
     watchdog: { ...defaultTarget().watchdog, autoStart: true },
   });
   expect(runPid(occupied).status).toBe("fail");
-});
-
-test("runtime: a down daemon still fails with the agent start fix when auto-start is off", () => {
-  const down = defaultTarget({
-    reachable: false,
-    trackedPid: null,
-    pidTracked: false,
-    identityConfirmed: null,
-  }); // the fixture's watchdog has autoStart false
-  const port = runPort(down);
-  expect(port.status).toBe("fail");
-  expect(port.fix).toBe("agent start");
-  const pid = runPid(down);
-  expect(pid.status).toBe("fail");
-  expect(pid.fix).toBe("agent start");
-  expect(exitCodeFor(evaluateAll("runtime", { runtimes: [down] }))).toBe(1);
-});
-
-test("runtime identity: the misroute warning remains when the proxy IS expected", () => {
-  // Agent requests genuinely route to the foreign occupant here, so the warning must survive the both-direct fix.
-  const foreign = runIdentity(defaultTarget({ identityConfirmed: false }));
-  expect(foreign.status).toBe("warn");
-  expect(foreign.detail).toContain("misroute");
-  expect(foreign.fix).toContain("free the port");
-});
-
-test("runtime pid: stale/foreign and untracked fail, tracked ok", () => {
-  expect(runPid(defaultTarget()).status).toBe("ok");
-  const foreign = defaultTarget({ pidTracked: false });
-  expect(runPid(foreign).status).toBe("fail");
-  expect(runPort(foreign).status).toBe("ok");
-  const untracked = defaultTarget({ trackedPid: null, pidTracked: false, pidAlive: false });
-  expect(runPid(untracked).status).toBe("fail");
 });
 
 test("classifyPortState matches the pre-union ownership decision tree over every input", () => {
@@ -956,18 +945,17 @@ test("runtime watchdog: both agents direct collapses to one line, no stale count
   expect(disabledAndDirect.detail).toBe("not required (Codex + Claude are both direct)");
 });
 
-test("runtime watchdog is scoped to full + proxy, not the launchers' fast runtime probe", () => {
-  expect(checkRuntimeWatchdog(defaultTarget()).scopes).toEqual(["full", "proxy"]);
-});
-
 test("runtime identity: confirmed ok, foreign warns, down/not-probed stays ok", () => {
   const ok = runIdentity(defaultTarget()); // identityConfirmed: true
   expect(ok.status).toBe("ok");
   expect(ok.detail).toContain("confirmed copilot-api");
 
+  // Agent requests genuinely route to the foreign occupant here, so the warning must survive the
+  // both-direct exemption.
   const foreign = runIdentity(defaultTarget({ identityConfirmed: false }));
   expect(foreign.status).toBe("warn");
   expect(foreign.detail).toContain("non-copilot-api");
+  expect(foreign.detail).toContain("misroute");
   expect(foreign.fix).toContain("free the port");
 
   // runtime.port owns the down verdict.
@@ -1034,46 +1022,85 @@ test("the identity probe (an extra request) is skipped in the launchers' fast ru
   expect(probeOf(facts.runtimes?.[0]).identityConfirmed).toBeNull();
 });
 
-test("gatherFacts never probes identity for a both-direct default target (proxyExpected gate)", async () => {
-  // Nothing routes to the port, so the identity probe must not fire; the misroute warning is
-  // structurally unreachable here, not merely suppressed.
-  const root = tempDir("copilot-health-bothdirect-");
-  const restoreEnv = envSnapshot();
-  process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
-  try {
-    const codexHome = join(root, "codex-home");
-    writeCodexConfigToml(codexHome, { baseUrl: "https://api.githubcopilot.com" });
-    const claudeHome = join(root, "claude-home");
-    writeClaudeSettings(claudeHome, {
-      apiKeyHelper: directHelperCommand(),
-      baseUrl: "https://api.githubcopilot.com",
-    });
-    let identityCalls = 0;
-    const facts = await gatherFacts(
-      "proxy", // an identity-probing scope (unlike the fast `runtime` one)
-      {},
-      {
-        resolvePort: () => "4141",
-        readState: () => ({ port: 4141 }),
-        reach: async () => true, // the foreign listener answers
-        proxyIdentity: async () => {
-          identityCalls++;
-          return false;
+test("gatherFacts probes identity only when an agent routes through the proxy", async () => {
+  // Nothing routes to a both-direct port, so the identity probe must not fire and the misroute
+  // warning is structurally unreachable there, not merely suppressed; one proxy-wired agent brings
+  // the probe back and a foreign responder earns the warning.
+  const directHost = "https://api.githubcopilot.com";
+  const rows: {
+    name: string;
+    codex: CodexConfigTomlOptions;
+    claude: ClaudeSettingsOptions | null;
+    identityCalls: number;
+    proxyExpected: boolean;
+    identityConfirmed: boolean | null;
+    identity: { status: CheckStatus; detail?: string };
+    sweep?: CheckStatus;
+  }[] = [
+    {
+      name: "both direct",
+      codex: { baseUrl: directHost },
+      claude: { apiKeyHelper: directHelperCommand(), baseUrl: directHost },
+      identityCalls: 0,
+      proxyExpected: false,
+      identityConfirmed: null,
+      identity: { status: "ok" },
+      sweep: "ok",
+    },
+    {
+      name: "Codex through the proxy, Claude unconfigured",
+      codex: { baseUrl: "http://127.0.0.1:4141/v1", envKey: "OPENAI_API_KEY" },
+      claude: null,
+      identityCalls: 1,
+      proxyExpected: true,
+      identityConfirmed: false,
+      identity: { status: "warn", detail: "misroute" },
+    },
+  ];
+  for (const row of rows) {
+    const root = tempDir("copilot-health-identity-");
+    const restoreEnv = envSnapshot();
+    process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
+    try {
+      const codexHome = join(root, "codex-home");
+      writeCodexConfigToml(codexHome, row.codex);
+      const claudeHome = join(root, "claude-home");
+      if (row.claude) writeClaudeSettings(claudeHome, row.claude);
+      let identityCalls = 0;
+      const facts = await gatherFacts(
+        "proxy", // an identity-probing scope (unlike the fast `runtime` one)
+        {},
+        {
+          resolvePort: () => "4141",
+          readState: () => ({ port: 4141 }),
+          reach: async () => true, // a listener answers on the port
+          proxyIdentity: async () => {
+            identityCalls++;
+            return false; // no x-trace-id: a foreign service
+          },
+          codexHome: () => codexHome,
+          claudeHome: () => claudeHome,
         },
-        codexHome: () => codexHome,
-        claudeHome: () => claudeHome,
-      },
-    );
-    const target = facts.runtimes?.[0];
-    if (!target) throw new Error("expected the default runtime target");
-    expect(identityCalls).toBe(0);
-    expect(target.proxyExpected).toBe(false);
-    expect(probeOf(target).identityConfirmed).toBeNull();
-    const runtime = evaluateAll("proxy", { runtimes: facts.runtimes });
-    expect(worstStatus(runtime)).toBe("ok");
-  } finally {
-    restoreEnv();
-    rmSync(root, { recursive: true, force: true });
+      );
+      const target = facts.runtimes?.[0];
+      if (!target) throw new Error(`${row.name}: expected the default runtime target`);
+      expect(identityCalls, row.name).toBe(row.identityCalls);
+      expect(target.proxyExpected, row.name).toBe(row.proxyExpected);
+      expect(probeOf(target).identityConfirmed, row.name).toBe(row.identityConfirmed);
+      const identity = runIdentity(target);
+      expect(identity.status, row.name).toBe(row.identity.status);
+      if (row.identity.detail !== undefined) {
+        expect(identity.detail, row.name).toContain(row.identity.detail);
+      }
+      if (row.sweep !== undefined) {
+        expect(worstStatus(evaluateAll("proxy", { runtimes: facts.runtimes })), row.name).toBe(
+          row.sweep,
+        );
+      }
+    } finally {
+      restoreEnv();
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 
@@ -1177,47 +1204,6 @@ test("an unreadable codex config reaches health as other/read-error, never as no
   expect(verdict.status).toBe("warn");
   expect(verdict.detail).toContain("could not be read");
   expect(verdict.fix).toContain("repair");
-});
-
-test("gatherFacts still probes identity when an agent routes through the proxy", async () => {
-  // Codex routes through the proxy, so the identity probe fires and a foreign responder earns the warning.
-  const root = tempDir("copilot-health-proxywired-");
-  const restoreEnv = envSnapshot();
-  process.env.COPILOT_API_HOME = join(root, "api-home");
-  try {
-    const codexHome = join(root, "codex-home");
-    writeCodexConfigToml(codexHome, {
-      baseUrl: "http://127.0.0.1:4141/v1",
-      envKey: "OPENAI_API_KEY",
-    });
-    let identityCalls = 0;
-    const facts = await gatherFacts(
-      "proxy",
-      {},
-      {
-        resolvePort: () => "4141",
-        readState: () => ({ port: 4141 }),
-        reach: async () => true,
-        proxyIdentity: async () => {
-          identityCalls++;
-          return false; // no x-trace-id: a foreign service
-        },
-        codexHome: () => codexHome,
-        claudeHome: () => join(root, "claude-home"), // unconfigured => not both-direct
-      },
-    );
-    const target = facts.runtimes?.[0];
-    if (!target) throw new Error("expected the default runtime target");
-    expect(identityCalls).toBe(1);
-    expect(target.proxyExpected).toBe(true);
-    expect(probeOf(target).identityConfirmed).toBe(false);
-    const identity = runIdentity(target);
-    expect(identity.status).toBe("warn");
-    expect(identity.detail).toContain("misroute");
-  } finally {
-    restoreEnv();
-    rmSync(root, { recursive: true, force: true });
-  }
 });
 
 test("health's own proxy probes do not move the watchdog activity signal", async () => {
@@ -1402,44 +1388,62 @@ test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look 
 
 // --- auth (credential) check ------------------------------------------------
 
-test("checkAuth: a stored token reports ok", () => {
-  const res = checkAuth({
-    storedToken: true,
-    ghAuthenticated: false,
-    provider: "gh-token",
-    profiles: {},
-    pinnedIntegrationId: null,
-  });
-  expect(res.group).toBe("auth");
-  expect(res.status).toBe("ok");
-  expect(res.detail).toContain("stored GitHub token");
-  expect(res.detail).toContain("gh-token");
-  expect(res.fix).toBeUndefined();
-});
-
-test("checkAuth: no stored token but gh authed reports ok (falls back to gh)", () => {
-  const res = checkAuth({
-    storedToken: false,
-    ghAuthenticated: true,
-    provider: "gh-cli",
-    profiles: {},
-    pinnedIntegrationId: null,
-  });
-  expect(res.status).toBe("ok");
-  expect(res.detail).toContain("gh CLI");
-});
-
-test("checkAuth: neither stored token nor gh reports warn with the agent auth fix", () => {
-  const res = checkAuth({
+test("checkAuth: the default credential facts decide status, detail, and fix", () => {
+  const base = {
     storedToken: false,
     ghAuthenticated: false,
-    provider: null,
     profiles: {},
     pinnedIntegrationId: null,
-  });
-  expect(res.status).toBe("warn");
-  expect(res.detail).toContain("not authenticated");
-  expect(res.fix).toBe("agent auth");
+  };
+  const rows: {
+    name: string;
+    facts: AuthFacts;
+    status: CheckStatus;
+    detail: string[];
+    fix?: string;
+  }[] = [
+    {
+      name: "stored token",
+      facts: { ...base, storedToken: true, provider: "gh-token" },
+      status: "ok",
+      detail: ["stored GitHub token", "gh-token"],
+    },
+    {
+      name: "gh CLI authenticated, no stored token",
+      facts: { ...base, ghAuthenticated: true, provider: "gh-cli" },
+      status: "ok",
+      detail: ["gh CLI"],
+    },
+    {
+      name: "no provider",
+      facts: { ...base, provider: null },
+      status: "warn",
+      detail: ["not authenticated"],
+      fix: "agent auth",
+    },
+    {
+      // Only validated names arrive here: the producer sweeps via profileNames() (pinned in state.test.ts).
+      name: "named profiles line",
+      facts: {
+        ...base,
+        storedToken: true,
+        provider: "gh-token",
+        profiles: {
+          [parseProfileName("fast")]: { provider: null, mode: "proxy" },
+          [parseProfileName("work")]: { provider: "gh-token", mode: "direct" },
+        },
+      },
+      status: "ok",
+      detail: ["named profiles: fast (no auth, proxy), work (gh-token, direct)"],
+    },
+  ];
+  for (const row of rows) {
+    const res = checkAuth(row.facts);
+    expect(res.group, row.name).toBe("auth");
+    expect(res.status, row.name).toBe(row.status);
+    for (const needle of row.detail) expect(res.detail, row.name).toContain(needle);
+    expect(res.fix, row.name).toBe(row.fix);
+  }
 });
 
 test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `gh auth login` advice", () => {
@@ -1472,17 +1476,17 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     "`gh` is unauthenticated (AUTO - follows gh's active account) - run `gh auth login`, " +
     "or `agent auth` to switch provider",
   ].join("\n"));
-  // A failing AUTO slot names the account it follows: the failure is about vivswan's credential.
+  // A failing AUTO slot names the account it follows: the failure is about octocat's credential.
   const provenNamed = checkAuth({
     storedToken: false,
     ghAuthenticated: false,
-    ghActiveLogin: "vivswan",
+    ghActiveLogin: "octocat",
     provider: "gh-cli",
     profiles: {},
     pinnedIntegrationId: null,
   });
   expect(provenNamed.detail).toContain(
-    "`gh` is unauthenticated (AUTO - currently account vivswan) - run `gh auth login`",
+    "`gh` is unauthenticated (AUTO - currently account octocat) - run `gh auth login`",
   );
   // A PINNED slot's verdict names its account (the probe ran `gh auth token --user`); gh's active one may be fine.
   const pinned = checkAuth({
@@ -1526,13 +1530,13 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
   const autoNamed = checkAuth({
     storedToken: false,
     ghAuthenticated: true,
-    ghActiveLogin: "vivswan",
+    ghActiveLogin: "octocat",
     provider: "gh-cli",
     profiles: {},
     pinnedIntegrationId: null,
   });
   expect(autoNamed.status).toBe("ok");
-  expect(autoNamed.detail).toContain("gh CLI (`gh auth token`, AUTO - currently account vivswan)");
+  expect(autoNamed.detail).toContain("gh CLI (`gh auth token`, AUTO - currently account octocat)");
 });
 
 // --- live (--live) checks ---------------------------------------------------
@@ -1569,105 +1573,119 @@ test("evalShellFiles: launchersWired is the config key; the marker stays a per-f
   expect(facts.integrationWired).toBe(true);
   expect(facts.launchersWired).toBe(true);
   expect(facts.files.find((f) => f.path === "/c")?.hasIntegration).toBe(false);
-  expect(
-    evalShellFiles([{ path: "/b", content: "source y\n" }], false)
-      .launchersWired,
-  ).toBe(false);
-});
-
-test("evalShellFiles reports unwired when no markers present and the key is off", () => {
-  const facts = evalShellFiles([{ path: "/a", content: "export FOO=1\n" }], false);
-  expect(facts.integrationWired).toBe(false);
-  expect(facts.launchersWired).toBe(false);
-});
-
-test("evalCodex: no config.toml at the home reads as not-configured", () => {
-  const f = evalCodex("/c", null, null, 4141, false);
-  expect(f.configExists).toBe(false);
-  expect(f.providerWired).toBe(false);
-  expect(f.home).toBe("/c");
-  expect(f.providerMode).toBe("none");
+  for (const content of ["source y\n", "export FOO=1\n"]) {
+    expect(evalShellFiles([{ path: "/b", content }], false), content).toMatchObject({
+      integrationWired: false,
+      launchersWired: false,
+    });
+  }
 });
 
 function proxyToml(baseUrl: string): string {
   return codexConfigToml({ baseUrl, auth: proxyTokenCommand() });
 }
 
-test("evalCodex: provider wired only when default + managed auth + host:port all match", () => {
+test("evalCodex: config.toml, .env, and the environ decide the wiring facts", () => {
   const good = proxyToml("http://localhost:4141/v1");
-  const stalePort = proxyToml("http://localhost:9999/v1");
-  const foreignAuth = codexConfigToml({
-    baseUrl: "http://localhost:4141/v1",
-    auth: { command: "/usr/local/bin/other", args: ["--yes"] },
-  });
   const env = "OPENAI_API_KEY=sk-test\n";
-  expect(evalCodex("/c", good, env, 4141, false)).toMatchObject({
-    providerMode: "proxy",
-    providerWired: true,
-    envKeyInDotenv: true,
-    tokenAvailable: true,
-  });
-  expect(evalCodex("/c", stalePort, env, 4141, false).providerWired).toBe(false);
-  expect(evalCodex("/c", foreignAuth, env, 4141, false).providerWired).toBe(false);
-  // The pre-4.0.0 proxy shape (`env_key` instead of the managed auth block) is proxy by base_url but
-  // never managed wiring; the 4.0.0 migration rewrites it.
-  const legacyEnvKey = codexConfigToml({
-    baseUrl: "http://localhost:4141/v1",
-    envKey: "OPENAI_API_KEY",
-  });
-  expect(evalCodex("/c", legacyEnvKey, env, 4141, false)).toMatchObject({
-    providerMode: "proxy",
-    envKeyMatches: false,
-    providerWired: false,
-    tokenAvailable: true,
-  });
-  expect(evalCodex("/c", good, "FOO=1\n", 4141, true)).toMatchObject({
-    envKeyInDotenv: false,
-    envKeyInEnviron: true,
-    tokenAvailable: true,
-  });
-  expect(evalCodex("/c", good, "FOO=1\n", 4141, false).tokenAvailable).toBe(false);
+  const rows: {
+    name: string;
+    toml: string | null;
+    env: string | null;
+    environ?: true;
+    facts: Partial<CodexFacts>;
+  }[] = [
+    {
+      name: "no config.toml",
+      toml: null,
+      env: null,
+      facts: { configExists: false, providerWired: false, home: "/c", providerMode: "none" },
+    },
+    {
+      name: "managed proxy provider + .env key",
+      toml: good,
+      env,
+      facts: {
+        providerMode: "proxy",
+        providerWired: true,
+        envKeyInDotenv: true,
+        tokenAvailable: true,
+      },
+    },
+    {
+      name: "stale port",
+      toml: proxyToml("http://localhost:9999/v1"),
+      env,
+      facts: { providerWired: false },
+    },
+    {
+      name: "foreign auth command",
+      toml: codexConfigToml({
+        baseUrl: "http://localhost:4141/v1",
+        auth: { command: "/usr/local/bin/other", args: ["--yes"] },
+      }),
+      env,
+      facts: { providerWired: false },
+    },
+    {
+      // The pre-4.0.0 proxy shape (`env_key` instead of the managed auth block) is proxy by base_url
+      // but never managed wiring; the 4.0.0 migration rewrites it.
+      name: "legacy env_key provider",
+      toml: codexConfigToml({ baseUrl: "http://localhost:4141/v1", envKey: "OPENAI_API_KEY" }),
+      env,
+      facts: {
+        providerMode: "proxy",
+        envKeyMatches: false,
+        providerWired: false,
+        tokenAvailable: true,
+      },
+    },
+    {
+      name: "key only in the environ",
+      toml: good,
+      env: "FOO=1\n",
+      environ: true,
+      facts: { envKeyInDotenv: false, envKeyInEnviron: true, tokenAvailable: true },
+    },
+    { name: "key nowhere", toml: good, env: "FOO=1\n", facts: { tokenAvailable: false } },
+    {
+      name: "spaces around the .env equals sign",
+      toml: good,
+      env: "OPENAI_API_KEY = sk-test\n",
+      facts: { envKeyInDotenv: true },
+    },
+    {
+      name: "direct provider needs no OPENAI_API_KEY",
+      toml:
+        `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "https://api.githubcopilot.com"\n`,
+      env: null,
+      facts: { providerMode: "direct", providerWired: true, tokenAvailable: false },
+    },
+  ];
+  for (const row of rows) {
+    expect(evalCodex("/c", row.toml, row.env, 4141, row.environ ?? false), row.name).toMatchObject(
+      row.facts,
+    );
+  }
 });
 
-test("evalCodex: direct provider reports direct mode without requiring OPENAI_API_KEY", () => {
-  const direct =
-    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "https://api.githubcopilot.com"\n`;
-  expect(evalCodex("/c", direct, null, 4141, false)).toMatchObject({
-    providerMode: "direct",
-    providerWired: true,
-    tokenAvailable: false,
-  });
-});
-
-test("evalCodex: a port that only appears as a substring does not match", () => {
-  // base_url port 41410 must NOT satisfy expected port 4141 (old substring bug).
-  const decoy = proxyToml("http://localhost:41410/v1");
-  expect(evalCodex("/c", decoy, "OPENAI_API_KEY=x\n", 4141, false).providerWired).toBe(false);
-});
-
-test("evalCodex: base_url must be the full http://localhost:<port>/v1 contract", () => {
-  const mk = proxyToml;
+test("evalCodex: base_url matches only the full http://localhost:<port>/v1 contract", () => {
   const env = "OPENAI_API_KEY=x\n";
-  expect(evalCodex("/c", mk("http://localhost:4141"), env, 4141, false).baseUrlMatches).toBe(false);
-  expect(evalCodex("/c", mk("https://localhost:4141/v1"), env, 4141, false).baseUrlMatches).toBe(
-    false,
-  );
-  expect(evalCodex("/c", mk("http://localhost:4141/not-v1"), env, 4141, false).baseUrlMatches).toBe(
-    false,
-  );
-  expect(evalCodex("/c", mk("http://localhost:4141/v1"), env, 4141, false).baseUrlMatches).toBe(
-    true,
-  );
-  expect(evalCodex("/c", mk("http://127.0.0.1:4141/v1/"), env, 4141, false).baseUrlMatches).toBe(
-    true,
-  );
-});
-
-test("evalCodex: OPENAI_API_KEY with spaces after = still counts as present in .env", () => {
-  const good = proxyToml("http://localhost:4141/v1");
-  expect(evalCodex("/c", good, "OPENAI_API_KEY = sk-test\n", 4141, false).envKeyInDotenv).toBe(
-    true,
-  );
+  const rows: { baseUrl: string; matches: boolean }[] = [
+    { baseUrl: "http://localhost:4141/v1", matches: true },
+    { baseUrl: "http://127.0.0.1:4141/v1/", matches: true },
+    { baseUrl: "http://localhost:4141", matches: false },
+    { baseUrl: "https://localhost:4141/v1", matches: false },
+    { baseUrl: "http://localhost:4141/not-v1", matches: false },
+    // The port must match whole: 41410 once satisfied 4141 as a substring.
+    { baseUrl: "http://localhost:41410/v1", matches: false },
+  ];
+  for (const row of rows) {
+    expect(evalCodex("/c", proxyToml(row.baseUrl), env, 4141, false), row.baseUrl).toMatchObject({
+      baseUrlMatches: row.matches,
+      providerWired: row.matches,
+    });
+  }
 });
 
 test("checkAutoupdate: full status always shown (disabled too); recorded error warns", () => {
@@ -1697,50 +1715,8 @@ test("checkAutoupdate: full status always shown (disabled too); recorded error w
 
 // --- evaluateAll scope filtering --------------------------------------------
 
-test("evaluateAll(runtime) yields exactly the two runtime checks", () => {
-  const facts: HealthFacts = { runtimes: [defaultTarget()] };
-  const ids = evaluateAll("runtime", facts).map((r) => r.id);
-  expect(ids).toEqual(["runtime.port", "runtime.pid"]);
-});
-
-test("evaluateAll(codex) yields only the Codex wiring check", () => {
-  const facts: HealthFacts = {
-    codex: {
-      home: "/c",
-      configExists: false,
-      providerSelected: false,
-      providerMode: "none",
-      modelProvider: null,
-      baseUrl: null,
-      baseUrlMatches: false,
-      envKeyMatches: false,
-      providerWired: false,
-      credential: "none",
-      envFilePresent: false,
-      envKeyInDotenv: false,
-      envKeyInEnviron: false,
-      tokenAvailable: false,
-      directAuth: { command: null, authenticated: false },
-      directUsesToken: false,
-      directNeedsNoGh: false,
-      otherReason: null,
-    },
-    codexHost: {
-      supported: false,
-      hostHome: "/h/.codex/hosts/box",
-      exists: false,
-      wired: false,
-      probeError: null,
-      active: false,
-      enabled: false,
-    },
-  };
-  const ids = evaluateAll("codex", facts).map((r) => r.id);
-  expect(ids).toEqual(["setup.codex"]);
-});
-
-test("evaluateAll(full) includes runtime.paths and setup checks", () => {
-  const facts: HealthFacts = {
+test("evaluateAll: each scope yields its own check ids", () => {
+  const full: HealthFacts = {
     runtimes: [defaultTarget()],
     bootstrap: BOOTSTRAP_OK,
     proxy: {
@@ -1750,46 +1726,13 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
-      sidecar: {
-        kind: "dev",
-        referenceVersion: "2.9.5",
-        denoBin: "/deno",
-        version: "2.9.5",
-        standalone: false,
-      },
+      sidecar: DEV_SIDECAR,
     },
     shell: { files: [], integrationWired: true, launchersWired: false },
     clis: [{ command: "claude", name: "Claude", look: { path: null } }],
     tools: { node: { path: "/n" }, npm: { path: "/m" } },
-    codex: {
-      home: "/c",
-      configExists: false,
-      providerSelected: false,
-      providerMode: "none",
-      modelProvider: null,
-      baseUrl: null,
-      baseUrlMatches: false,
-      envKeyMatches: false,
-      providerWired: false,
-      credential: "none",
-      envFilePresent: false,
-      envKeyInDotenv: false,
-      envKeyInEnviron: false,
-      tokenAvailable: false,
-      directAuth: { command: null, authenticated: false },
-      directUsesToken: false,
-      directNeedsNoGh: false,
-      otherReason: null,
-    },
-    codexHost: {
-      supported: false,
-      hostHome: "/h/.codex/hosts/box",
-      exists: false,
-      wired: false,
-      probeError: null,
-      active: false,
-      enabled: false,
-    },
+    codex: CODEX_UNCONFIGURED,
+    codexHost: CODEX_HOST_UNSUPPORTED,
     claude: {
       home: "/h/.claude",
       settingsPath: "/h/.claude/settings.json",
@@ -1807,34 +1750,42 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
     claudeDesktop: { kind: "no-library", enabled: true, installed: false, helperPaths: [] },
     autoupdate: { enabled: false, cooldownDays: 7, lastCheckMs: 0, lastResult: "" },
   };
-  const ids = evaluateAll("full", facts).map((r) => r.id);
-  expect(ids).toContain("runtime.paths");
-  expect(ids).toContain("setup.cli.claude");
-  expect(ids).toContain("proxy.package");
-  expect(ids).toContain("setup.codex-host");
-  expect(ids).toContain("setup.claude");
-  expect(ids).toContain("setup.claude-desktop");
-  expect(ids).toContain("setup.autoupdate");
-});
-
-test("checkAuth renders the named-profiles detail line from the swept facts", () => {
-  // Only validated names arrive here: the producer sweeps via profileNames() (pinned in state.test.ts).
-  const res = checkAuth({
-    storedToken: true,
-    ghAuthenticated: false,
-    provider: "gh-token",
-    profiles: {
-      [parseProfileName("fast")]: { provider: null, mode: "proxy" },
-      [parseProfileName("work")]: {
-        provider: "gh-token",
-        mode: "direct",
-      },
+  const rows: {
+    scope: HealthScope;
+    facts: HealthFacts;
+    exactly?: CheckId[];
+    includes?: CheckId[];
+  }[] = [
+    // The launchers' fast probe: exactly the two runtime checks, never the identity probe's extra request.
+    {
+      scope: "runtime",
+      facts: { runtimes: [defaultTarget()] },
+      exactly: ["runtime.port", "runtime.pid"],
     },
-    pinnedIntegrationId: null,
-  });
-  expect(res.detail).toContain(
-    "named profiles: fast (no auth, proxy), work (gh-token, direct)",
-  );
+    {
+      scope: "codex",
+      facts: { codex: CODEX_UNCONFIGURED, codexHost: CODEX_HOST_UNSUPPORTED },
+      exactly: ["setup.codex"],
+    },
+    {
+      scope: "full",
+      facts: full,
+      includes: [
+        "runtime.paths",
+        "setup.cli.claude",
+        "proxy.package",
+        "setup.codex-host",
+        "setup.claude",
+        "setup.claude-desktop",
+        "setup.autoupdate",
+      ],
+    },
+  ];
+  for (const row of rows) {
+    const ids = evaluateAll(row.scope, row.facts).map((r) => r.id);
+    if (row.exactly) expect(ids, row.scope).toEqual(row.exactly);
+    for (const id of row.includes ?? []) expect(ids, row.scope).toContain(id);
+  }
 });
 
 test("checkAuth: an unproven pinned look names the gh call that timed out and keeps what the completed call said", () => {

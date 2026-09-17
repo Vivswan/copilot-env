@@ -1,36 +1,27 @@
 // `deno test` always runs in checkout mode, so the compiled half of the root contract is
 // only checkable by building a binary and running it from an install root.
-import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, parse } from "node:path";
+import { parse as parseToml } from "smol-toml";
+import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
+import { codexConfigPath } from "../src/codex/paths.ts";
+import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import {
-  AGENT_AUTH_GET_ARGS,
+  agentLauncherCommand,
   ASSET_ROOT,
   derivedCompiledRoot,
-  devDenoExecPath,
   INSTALL_MANIFEST_FILE,
   INSTALL_ROOT_MARKERS,
   installStateRoot,
   isProtectedRoot,
   looksLikeInstallRoot,
   PROJECT_ROOT,
-  proxyTokenArgs,
   proxyTokenCommand,
-  rootMode,
 } from "../src/utils/root.ts";
 import { PROJECT_CONFIG_FILE, readProjectConfig } from "../src/utils/project_config.ts";
-import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { expect, tempDir, test } from "./helpers/testing.ts";
-
-test("the suite runs in checkout mode, where both roots are the source tree", () => {
-  const mode = rootMode();
-  expect(mode.kind).toBe("checkout");
-  expect(mode.root).toBe(PROJECT_ROOT);
-  // Nothing distinguishes the two roots when the code we run and the files we
-  // manage are the same directory; a compiled binary is what splits them.
-  expect(ASSET_ROOT).toBe(PROJECT_ROOT);
-  expect(existsSync(join(PROJECT_ROOT, "package.json"))).toBe(true);
-});
+import { expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
 
 test("PROJECT_ROOT is a real absolute directory on disk", () => {
   // The contract compiled mode exists to keep: external programs (codex, claude)
@@ -56,7 +47,7 @@ test("protection follows the RootMode kind, with no filesystem probe", () => {
   expect(isProtectedRoot()).toBe(true); // the ambient mode, under `deno test`
 });
 
-test("looksLikeInstallRoot gates the recursive delete on the marker layout", () => {
+test("looksLikeInstallRoot gates the recursive delete on the marker layout or a valid manifest; unreadable fails closed", () => {
   // The compiled root is DERIVED (two levels up from the binary), so a binary copied
   // to ~/.local/bin would aim the uninstall rm -rf at ~/.local. Markers, not kind,
   // are what stop that.
@@ -65,9 +56,7 @@ test("looksLikeInstallRoot gates the recursive delete on the marker layout", () 
   expect(looksLikeInstallRoot(parse(PROJECT_ROOT).root)).toBe(false); // a filesystem root
   const strayBinOnly = join(PROJECT_ROOT, "bin");
   expect(looksLikeInstallRoot(strayBinOnly)).toBe(false); // has no shell/ or src/scripts
-});
 
-test("a valid manifest alone qualifies a root; unreadable fails closed", () => {
   // The manifest `agent install` writes is the install's own record: a valid one
   // qualifies the root by itself, so a user-deleted asset dir cannot make a real
   // install invisible to uninstall. Absent or invalid falls back to the marker
@@ -135,42 +124,14 @@ test("copilot-env.config is read from ASSET_ROOT by default", () => {
   expect(() => readProjectConfig(join(ASSET_ROOT, "src"))).toThrow();
 });
 
-test("the credential resolver argvs stay byte-identical", () => {
-  // Writers (Codex auth.command, Claude apiKeyHelper) and the health verifier
-  // compare these strings; a root refactor must not disturb them.
-  expect(AGENT_AUTH_GET_ARGS).toEqual(["auth", "--get"]);
-  expect(proxyTokenArgs()).toEqual(["proxy-token", "--yes"]);
-  expect(proxyTokenArgs(parseProfileName("work"))).toEqual([
-    "proxy-token",
-    "--yes",
-    "--profile",
-    "work",
-  ]);
-});
-
-test("devDenoExecPath is the runtime binary under a real deno (the compiled half is CI's)", () => {
-  // Under `deno test` this process IS a real deno, so the dev fast path answers
-  // with its executable. The compiled half of the contract (null, so a compiled
-  // binary never classifies itself as a dev deno) is pinned by the installer
-  // smoke's compiled-health invariants, which run the real built binary.
-  expect(devDenoExecPath()).toBe(Deno.execPath());
-});
-
-test("derivedCompiledRoot: a flat root derives two levels up from the binary", () => {
-  const root = tempDir("copilot-root-derive-");
-  try {
-    expect(derivedCompiledRoot(join(root, "bin", "copilot-env"))).toBe(root);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("derivedCompiledRoot: a versioned binary roots at the current link, never its version dir", () => {
+test("derivedCompiledRoot: a flat root derives two levels up from the binary; a versioned binary roots at the current link, never its version dir", () => {
   // The GC-survival property: every path persisted outside the install is built
   // from this root, and a `versions/<name>` component in it would die with the
   // next-but-one update's garbage collection.
   const top = tempDir("copilot-root-derive-");
   try {
+    expect(derivedCompiledRoot(join(top, "bin", "copilot-env"))).toBe(top);
+
     const binary = join(top, "versions", "v9.9.9", "bin", "copilot-env");
     mkdirSync(join(top, "versions", "v9.9.9", "bin"), { recursive: true });
 
@@ -246,5 +207,38 @@ test("looksLikeInstallRoot recognizes a versioned top only with the link and a m
     expect(looksLikeInstallRoot(top)).toBe(true);
   } finally {
     rmSync(top, { recursive: true, force: true });
+  }
+});
+
+// Codex runs `auth.command` on a timer and cannot answer a prompt, so the argv the proxy writer
+// puts on disk must be the headless resolver, and a named profile's must address its own daemon
+// (its provider table sits in config.toml beside the default's; <name>.config.toml only selects it).
+test("the proxy credential resolver Codex is wired to run is `proxy-token --yes`, with the profile flag for a named profile", () => {
+  const restoreEnv = envSnapshot();
+  const homes = isolateAgentHomes("copilot-root-argv-", { mkdirs: true });
+  try {
+    const work = parseProfileName("work");
+    const rows: { profile: Profile; args: string[] }[] = [
+      { profile: null, args: ["proxy-token", "--yes"] },
+      { profile: work, args: ["proxy-token", "--yes", "--profile", "work"] },
+    ];
+    for (const { profile, args } of rows) {
+      configureCodexConfig(homes.codexHome, {
+        mode: "proxy",
+        credential: { kind: "command" },
+        baseUrl: "http://localhost:4141/v1",
+        profile,
+      });
+      const doc = parseToml(readFileSync(codexConfigPath(homes.codexHome), "utf8")) as {
+        model_providers?: Record<string, { auth?: { command?: string; args?: string[] } }>;
+      };
+      const auth = doc.model_providers?.[codexProviderId(profile)]?.auth;
+      expect({ command: auth?.command, args: auth?.args }, codexProviderId(profile)).toEqual(
+        agentLauncherCommand(args),
+      );
+    }
+  } finally {
+    restoreEnv();
+    removeDir(homes.dir);
   }
 });

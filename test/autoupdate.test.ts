@@ -48,36 +48,41 @@ test("autoupdate state lives at the TOP of a versioned root, never through the l
 
 // --- AutoupdateState --------------------------------------------------------
 
-test("AutoupdateState defaults to never-checked when absent", () => {
-  const s = new AutoupdateState(tmp("autoupdate.json")).read();
-  expect(s).toEqual({ lastCheckMs: 0, lastResult: "" });
-});
-
-test("AutoupdateState round-trips the check record and preserves unknown keys", () => {
-  const path = tmp("autoupdate.json");
-  writeFileSync(path, JSON.stringify({ keep: "me" }));
-  const state = new AutoupdateState(path);
-  state.set({ lastCheckMs: 1234, lastResult: "updated v1.2.3" });
-  expect(new AutoupdateState(path).read()).toEqual({
-    lastCheckMs: 1234,
-    lastResult: "updated v1.2.3",
-  });
-  // Unknown keys survive the read-modify-write.
-  expect(JSON.parse(readFileSync(path, "utf-8")).keep).toBe("me");
-});
-
-test("AutoupdateState coerces ill-typed fields back to safe defaults", () => {
-  const path = tmp("autoupdate.json");
-  // `cooldownDays` and `enabled` are retired keys older state files still carry; the lenient
-  // schema ignores them.
-  writeFileSync(
-    path,
-    JSON.stringify({ enabled: "yes", cooldownDays: 14, lastCheckMs: "soon", lastResult: 42 }),
-  );
-  expect(new AutoupdateState(path).read()).toEqual({
-    lastCheckMs: 0, // non-number -> 0
-    lastResult: "", // non-string -> ""
-  });
+test("AutoupdateState reads a lenient 0600 record: absent and ill-typed fields default, unknown keys survive", () => {
+  const rows: {
+    name: string;
+    seed?: Record<string, unknown>;
+    set?: Parameters<AutoupdateState["set"]>[0];
+    read: ReturnType<AutoupdateState["read"]>;
+    raw?: Record<string, unknown>;
+  }[] = [
+    { name: "absent file", read: { lastCheckMs: 0, lastResult: "" } },
+    {
+      // `cooldownDays` and `enabled` are retired keys older state files still carry; the
+      // lenient schema ignores them.
+      name: "ill-typed fields",
+      seed: { enabled: "yes", cooldownDays: 14, lastCheckMs: "soon", lastResult: 42 },
+      read: { lastCheckMs: 0, lastResult: "" },
+    },
+    {
+      name: "round-trip preserving unknown keys",
+      seed: { keep: "me" },
+      set: { lastCheckMs: 1234, lastResult: "updated v1.2.3" },
+      read: { lastCheckMs: 1234, lastResult: "updated v1.2.3" },
+      raw: { keep: "me", lastCheckMs: 1234, lastResult: "updated v1.2.3" },
+    },
+  ];
+  for (const { name, seed, set, read, raw } of rows) {
+    const path = tmp("autoupdate.json");
+    if (seed) writeFileSync(path, JSON.stringify(seed));
+    if (set) {
+      new AutoupdateState(path).set(set);
+      if (process.platform !== "win32") expect(statSync(path).mode & 0o777, name).toBe(0o600);
+    }
+    expect(new AutoupdateState(path).read(), name).toEqual(read);
+    if (raw) expect(JSON.parse(readFileSync(path, "utf-8")), name).toEqual(raw);
+    dir = removeDir(dir);
+  }
 });
 
 function isolatedConfig(): CopilotEnvConfig {
@@ -180,14 +185,6 @@ test("effectiveUpdateCooldownDays: the live update-cooldown config, else the 7-d
   expect(effectiveUpdateCooldownDays()).toBe(3); // read live, never snapshotted
 });
 
-test("AutoupdateState writes a 0600 file (POSIX)", () => {
-  const path = tmp("autoupdate.json");
-  new AutoupdateState(path).set({ lastResult: "up to date" });
-  if (process.platform !== "win32") {
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-  }
-});
-
 // --- isDue (pure, nowMs injected) --------------------------------------------
 
 test("isDue is false under a day, true at/after a day", () => {
@@ -228,35 +225,44 @@ test("withUpdateLock holds across fn, reports a nested acquire not-held, release
   });
 });
 
-test("withUpdateLock steals a lock older than 30 minutes", async () => {
-  const path = tmp("update.lock");
+test("withUpdateLock steals stale, dead-owner, and malformed locks; a stolen-from release leaves the successor's lock", async () => {
   const now = 100_000_000;
-  writeFileSync(path, JSON.stringify({ pid: process.pid, ts: now - 31 * 60 * 1000 }));
-  await withUpdateLockForTests(path, now, (outcome) => {
-    expect(outcome.held).toBe(true);
-    expect(JSON.parse(readFileSync(path, "utf-8")).pid).toBe(process.pid);
-  });
-});
-
-test("withUpdateLock steals a lock owned by a dead pid even if recent", async () => {
-  const path = tmp("update.lock");
-  const now = 100_000_000;
-  writeFileSync(path, JSON.stringify({ pid: DEAD_PID, ts: now }));
-  await withUpdateLockForTests(path, now, (outcome) => expect(outcome.held).toBe(true));
-});
-
-test("withUpdateLock steals a malformed lock file", async () => {
-  const path = tmp("update.lock");
-  writeFileSync(path, "not json");
-  await withUpdateLockForTests(path, 1_000, (outcome) => expect(outcome.held).toBe(true));
-});
-
-test("release leaves a lock a successor stole (marker no longer ours) in place", async () => {
-  const path = tmp("update.lock");
-  await withUpdateLockForTests(path, 1_000, (outcome) => {
-    expect(outcome.held).toBe(true);
-    // A successor stole our slot and now owns the lock under its own (alive) pid.
-    writeFileSync(path, JSON.stringify({ pid: process.pid + 1, ts: 1_000 }));
-  });
-  expect(existsSync(path)).toBe(true); // not ours -> not deleted
+  const rows: {
+    name: string;
+    seed: string;
+    // Runs inside the held scope; the successor row overwrites the marker there.
+    inside?: (path: string) => void;
+    leftBehind: boolean;
+  }[] = [
+    {
+      name: "older than 30 minutes, holder alive",
+      seed: JSON.stringify({ pid: process.pid, ts: now - 31 * 60 * 1000 }),
+      leftBehind: false,
+    },
+    {
+      name: "recent, holder dead",
+      seed: JSON.stringify({ pid: DEAD_PID, ts: now }),
+      leftBehind: false,
+    },
+    { name: "malformed", seed: "not json", leftBehind: false },
+    {
+      // A successor stole our slot and now owns the lock under its own (alive) pid: not ours,
+      // so release must not delete it.
+      name: "stolen by a successor before release",
+      seed: JSON.stringify({ pid: DEAD_PID, ts: now }),
+      inside: (path) => writeFileSync(path, JSON.stringify({ pid: process.pid + 1, ts: now })),
+      leftBehind: true,
+    },
+  ];
+  for (const { name, seed, inside, leftBehind } of rows) {
+    const path = tmp("update.lock");
+    writeFileSync(path, seed);
+    await withUpdateLockForTests(path, now, (outcome) => {
+      expect(outcome.held, name).toBe(true);
+      expect(JSON.parse(readFileSync(path, "utf-8")).pid, name).toBe(process.pid);
+      inside?.(path);
+    });
+    expect(existsSync(path), name).toBe(leftBehind);
+    dir = removeDir(dir);
+  }
 });

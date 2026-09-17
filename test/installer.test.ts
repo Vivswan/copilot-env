@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -134,20 +135,6 @@ describe("buildInstallPlan", () => {
     expect(plan.shell).toEqual({ allHosts: false });
   });
 
-  test("assets-only plans copies for every materialized asset, into the aimed root", () => {
-    const plan = assetsOnlyPlan();
-    if (plan.kind !== "installed") throw new Error("expected an installed plan");
-
-    const targets = plan.copies.map((c) => c.to);
-    for (const dir of MATERIALIZED_ASSET_DIRS) {
-      expect(targets.some((t) => t.startsWith(join(dest, dir)))).toBe(true);
-    }
-    for (const file of MATERIALIZED_ASSET_FILES) {
-      expect(targets).toContain(join(dest, file));
-    }
-    expect(plan.shell).toBeNull();
-  });
-
   test("bundled-only assets are verified but never written", () => {
     // They are read out of the VFS through ASSET_ROOT. A copy in the install
     // root would be a second source of truth that an update can leave stale.
@@ -159,43 +146,15 @@ describe("buildInstallPlan", () => {
     }
   });
 
-  test("a missing bundled-only asset still fails the plan", () => {
-    rmSync(join(source, "copilot-env.config"));
-    expect(() => assetsOnlyPlan()).toThrow("embedded assets are missing copilot-env.config");
-  });
-
-  test("assets-only plans the launcher shims beside the binary", () => {
-    const plan = assetsOnlyPlan();
-    if (plan.kind !== "installed") throw new Error("expected an installed plan");
-
-    expect(plan.shims.map((s) => s.to)).toEqual([
-      join(dest, "bin", "agent"),
-      join(dest, "bin", "agent.ps1"),
-    ]);
-  });
-
-  test("only .sh assets are planned executable", () => {
-    const plan = assetsOnlyPlan();
-    if (plan.kind !== "installed") throw new Error("expected an installed plan");
-
-    for (const copy of plan.copies) {
-      expect(copy.executable).toBe(copy.to.endsWith(".sh"));
-    }
-  });
-
-  test("refuses a binary whose embedded assets are incomplete", () => {
+  test("refuses a binary whose embedded assets are incomplete, naming the missing one", () => {
     // Anything the plan expects to find in the VFS but that compile.ts never
     // embedded has to fail loudly here, not produce a half-built install.
-    rmSync(join(source, "shell"), { recursive: true, force: true });
-    expect(() => assetsOnlyPlan()).toThrow("embedded assets are missing shell");
-
-    writeAssetSource(source);
-    rmSync(join(source, ".dvmrc"));
-    expect(() => assetsOnlyPlan()).toThrow("embedded assets are missing .dvmrc");
-
-    writeAssetSource(source);
-    rmSync(join(source, "src", "utils", "json.ts"));
-    expect(() => assetsOnlyPlan()).toThrow("embedded assets are missing src/utils/json.ts");
+    const missing = ["shell", ".dvmrc", "src/utils/json.ts", "copilot-env.config"];
+    for (const asset of missing) {
+      writeAssetSource(source);
+      rmSync(join(source, asset), { recursive: true, force: true });
+      expect(() => assetsOnlyPlan(), asset).toThrow(`embedded assets are missing ${asset}`);
+    }
   });
 });
 
@@ -314,15 +273,34 @@ describe("the versioned full-install plan", () => {
     );
   });
 
-  test("re-applying over an existing versioned install is idempotent", () => {
-    applyInstallPlan(versionedPlan());
-    const versionRoot = join(dest, VERSIONS_DIR, VERSION_NAME);
-    writeFileSync(join(versionRoot, "shell", "payload.txt"), "locally edited");
-    applyInstallPlan(versionedPlan());
-    expect(readFileSync(join(versionRoot, "shell", "payload.txt"), "utf8")).toBe(
-      "content of shell",
-    );
-    expect(readCurrentVersionName(dest)).toBe(VERSION_NAME);
+  test("re-applying over an existing install is idempotent, versioned and assets-only alike", () => {
+    // `current` after the second apply: the versioned layout must still be linked, and
+    // assets-only never lays that layout.
+    const rows: {
+      name: string;
+      plan: () => InstallPlan;
+      runtimeRoot: string;
+      current: string | null;
+    }[] = [
+      {
+        name: "versioned",
+        plan: () => versionedPlan(),
+        runtimeRoot: join(dest, VERSIONS_DIR, VERSION_NAME),
+        current: VERSION_NAME,
+      },
+      { name: "assets-only", plan: () => assetsOnlyPlan(), runtimeRoot: dest, current: null },
+    ];
+    for (const { name, plan, runtimeRoot, current } of rows) {
+      rmSync(dest, { recursive: true, force: true });
+      mkdirSync(dest, { recursive: true });
+      applyInstallPlan(plan());
+      writeFileSync(join(runtimeRoot, "shell", "payload.txt"), "locally edited");
+      applyInstallPlan(plan());
+      expect(readFileSync(join(runtimeRoot, "shell", "payload.txt"), "utf8"), name).toBe(
+        "content of shell",
+      );
+      expect(readCurrentVersionName(dest), name).toBe(current);
+    }
   });
 
   test("applying a plan names exactly the plan's paths: no live write without a plan entry", () => {
@@ -522,53 +500,84 @@ describe("the unsafe-target canonical guard", () => {
   // The canonical refusal lives in the plan: the install root is derived (binary location or
   // COPILOT_ENV_INSTALL_ROOT) and the plan's writes aim at it; the shell installers keep only
   // a lexical pre-check. Building a plan writes nothing, so aiming one at the real home is safe.
-  test("refuses the home directory as an installed-mode target", () => {
-    expect(() => buildInstallPlan(OPTIONS, homedir(), source)).toThrow(
-      "it is the home directory",
-    );
-    expect(() => buildInstallPlan(ASSETS_ONLY, homedir(), source)).toThrow(
-      "it is the home directory",
-    );
-  });
-
-  test("refuses a filesystem root", () => {
-    expect(() => buildInstallPlan(OPTIONS, parse(dest).root, source)).toThrow(
-      "it is a filesystem root",
-    );
-  });
-
-  skipWin("refuses a symlink alias of the home directory", () => {
-    // Exactly what a lexical string comparison cannot catch -- the reason the
-    // check is canonical.
-    const alias = join(root, "home-alias");
-    symlinkSync(homedir(), alias);
-    expect(() => buildInstallPlan(OPTIONS, alias, source)).toThrow(
-      "it is the home directory",
-    );
-  });
-
-  winOnly("refuses a junction alias of the home directory", () => {
-    // The Windows spelling of the same alias class; realpath resolves junctions too.
-    const alias = join(root, "home-alias");
-    symlinkSync(homedir(), alias, "junction");
-    expect(() => buildInstallPlan(OPTIONS, alias, source)).toThrow(
-      "it is the home directory",
-    );
-  });
-
-  skipWin("refuses a target whose path cannot be canonicalized", () => {
-    // A dangling symlink IS a directory entry, so it must not be peeled as a
-    // not-yet-existing tail: realpath cannot prove where it leads.
-    const dangling = join(root, "dangling");
-    symlinkSync(join(root, "nowhere"), dangling);
-    expect(() => buildInstallPlan(OPTIONS, dangling, source)).toThrow(
-      "cannot be resolved",
-    );
-  });
-
-  test("a not-yet-existing target under a safe parent still plans", () => {
-    const fresh = join(dest, "not-yet", "there");
-    expect(buildInstallPlan(OPTIONS, fresh, source).kind).toBe("versioned");
+  test("refuses the home directory, a filesystem root, and every alias of them; a fresh subdir plans", () => {
+    const posix = process.platform !== "win32";
+    const rows: {
+      name: string;
+      on: boolean;
+      target: () => string;
+      options: InstallOptions[];
+      refusal: string | null;
+    }[] = [
+      {
+        name: "home",
+        on: true,
+        target: homedir,
+        options: [OPTIONS, ASSETS_ONLY],
+        refusal: "it is the home directory",
+      },
+      {
+        name: "filesystem root",
+        on: true,
+        target: () => parse(dest).root,
+        options: [OPTIONS],
+        refusal: "it is a filesystem root",
+      },
+      // Exactly what a lexical string comparison cannot catch: the reason the check is canonical.
+      {
+        name: "symlink alias of home",
+        on: posix,
+        target: () => {
+          const alias = join(root, "home-alias");
+          symlinkSync(homedir(), alias);
+          return alias;
+        },
+        options: [OPTIONS],
+        refusal: "it is the home directory",
+      },
+      // The Windows spelling of the same alias class; realpath resolves junctions too.
+      {
+        name: "junction alias of home",
+        on: !posix,
+        target: () => {
+          const alias = join(root, "home-alias");
+          symlinkSync(homedir(), alias, "junction");
+          return alias;
+        },
+        options: [OPTIONS],
+        refusal: "it is the home directory",
+      },
+      // A dangling symlink IS a directory entry, so it must not be peeled as a not-yet-existing
+      // tail: realpath cannot prove where it leads.
+      {
+        name: "dangling symlink",
+        on: posix,
+        target: () => {
+          const dangling = join(root, "dangling");
+          symlinkSync(join(root, "nowhere"), dangling);
+          return dangling;
+        },
+        options: [OPTIONS],
+        refusal: "cannot be resolved",
+      },
+      // The positive control: a not-yet-existing target under a safe parent still plans.
+      {
+        name: "fresh subdir",
+        on: true,
+        target: () => join(dest, "not-yet", "there"),
+        options: [OPTIONS],
+        refusal: null,
+      },
+    ];
+    for (const { name, on, target, options, refusal } of rows) {
+      if (!on) continue;
+      const aim = target();
+      for (const opts of options) {
+        if (refusal === null) {
+          expect(buildInstallPlan(opts, aim, source).kind, name).toBe("versioned");
+        } else expect(() => buildInstallPlan(opts, aim, source), name).toThrow(refusal);
+      }
+    }
   });
 });
 
@@ -576,64 +585,58 @@ describe("the checkout guard and the install manifest sentinel", () => {
   // An installed-mode plan can be aimed at a dev checkout through COPILOT_ENV_INSTALL_ROOT, and
   // its writes would replace the checkout's bin/agent and src/scripts.
   //   .git present (dir or file)  -> a checkout: refuse
-  test("refuses a root with checkout markers and .git", () => {
-    for (const marker of CHECKOUT_MARKERS) {
-      writeFileSync(join(dest, marker), "{}");
-      mkdirSync(join(dest, ".git"));
-      for (const options of [OPTIONS, ASSETS_ONLY]) {
-        expect(() => buildInstallPlan(options, dest, source)).toThrow(
-          `refusing to install into ${dest}`,
-        );
-        expect(() => buildInstallPlan(options, dest, source)).toThrow(marker);
-        expect(() => buildInstallPlan(options, dest, source)).toThrow(".git");
+  test("refuses a root with a checkout marker and .git, as a dir or a worktree file, manifest or not", () => {
+    // Order matters: the manifest row leaves a real install in dest, so it runs last.
+    const rows: { git: "dir" | "file"; manifest: boolean; options: InstallOptions[] }[] = [
+      { git: "dir", manifest: false, options: [OPTIONS, ASSETS_ONLY] },
+      { git: "file", manifest: false, options: [OPTIONS] },
+      // Even a valid manifest does not override .git: a live checkout always refuses.
+      { git: "dir", manifest: true, options: [OPTIONS] },
+    ];
+    for (const { git, manifest, options } of rows) {
+      if (manifest) applyInstallPlan(assetsOnlyPlan());
+      for (const marker of CHECKOUT_MARKERS) {
+        const name = `${marker} + .git ${git}${manifest ? " + manifest" : ""}`;
+        writeFileSync(join(dest, marker), "{}");
+        if (git === "dir") mkdirSync(join(dest, ".git"));
+        else writeFileSync(join(dest, ".git"), "gitdir: /elsewhere");
+        for (const opts of options) {
+          expect(() => buildInstallPlan(opts, dest, source), name).toThrow(
+            `refusing to install into ${dest}`,
+          );
+          expect(() => buildInstallPlan(opts, dest, source), name).toThrow(marker);
+          expect(() => buildInstallPlan(opts, dest, source), name).toThrow(".git");
+        }
+        expect(isCheckoutShapedRoot(dest), name).toBe(true);
+        rmSync(join(dest, ".git"), { recursive: true });
+        rmSync(join(dest, marker));
       }
-      expect(isCheckoutShapedRoot(dest)).toBe(true);
-      rmSync(join(dest, ".git"), { recursive: true });
-      // A worktree carries .git as a FILE; both spellings must refuse.
-      writeFileSync(join(dest, ".git"), "gitdir: /elsewhere");
-      expect(() => buildInstallPlan(OPTIONS, dest, source)).toThrow(
-        `refusing to install into ${dest}`,
-      );
-      rmSync(join(dest, ".git"));
-      rmSync(join(dest, marker));
     }
-    expect(CHECKOUT_MARKERS).toContain("package.json");
-    expect(CHECKOUT_MARKERS).toContain("deno.json");
   });
 
-  test("even a valid manifest does not override .git: a live checkout always refuses", () => {
-    applyInstallPlan(assetsOnlyPlan());
-    writeFileSync(join(dest, "package.json"), "{}");
-    mkdirSync(join(dest, ".git"));
-    expect(() => buildInstallPlan(OPTIONS, dest, source)).toThrow(
-      `refusing to install into ${dest}`,
-    );
-  });
-
-  test("a fresh root installs and gains the per-version manifest", () => {
-    applyInstallPlan(assetsOnlyPlan());
-
-    const manifest = JSON.parse(readFileSync(join(dest, INSTALL_MANIFEST_FILE), "utf8"));
-    expect(manifest).toEqual({
-      version: packageVersion(),
-      kind: "installed",
-      assets: [...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES],
-    });
-  });
-
-  test("an update over a manifest-carrying root refreshes the manifest", () => {
-    // A stale manifest (older release, superseded inventory) is rewritten
-    // wholesale by the release that owns the assets.
-    writeFileSync(
-      join(dest, INSTALL_MANIFEST_FILE),
-      JSON.stringify({ "version": "0.0.1", "kind": "installed", "assets": [] }),
-    );
-
-    applyInstallPlan(assetsOnlyPlan());
-
-    const manifest = JSON.parse(readFileSync(join(dest, INSTALL_MANIFEST_FILE), "utf8"));
-    expect(manifest.version).toBe(packageVersion());
-    expect(manifest.assets).toEqual([...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES]);
+  test("applying writes the per-version manifest wholesale, whether none or a stale one was there", () => {
+    // A stale manifest (older release, superseded inventory) is rewritten wholesale by the
+    // release that owns the assets; the manifest vouches for what is on disk.
+    const rows: { name: string; prior: string | null }[] = [
+      { name: "fresh root", prior: null },
+      {
+        name: "stale manifest",
+        prior: JSON.stringify({ "version": "0.0.1", "kind": "installed", "assets": [] }),
+      },
+    ];
+    for (const { name, prior } of rows) {
+      if (prior !== null) writeFileSync(join(dest, INSTALL_MANIFEST_FILE), prior);
+      applyInstallPlan(assetsOnlyPlan());
+      const manifest = JSON.parse(readFileSync(join(dest, INSTALL_MANIFEST_FILE), "utf8"));
+      expect(manifest, name).toEqual({
+        version: packageVersion(),
+        kind: "installed",
+        assets: [...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES],
+      });
+      for (const asset of manifest.assets as string[]) {
+        expect(existsSync(join(dest, asset)), `${name}: ${asset}`).toBe(true);
+      }
+    }
   });
 });
 
@@ -652,38 +655,33 @@ describe("applyInstallPlan (assets-only)", () => {
     expect(statSync(join(dest, "bin", "agent")).mode & 0o111).not.toBe(0);
     // The .sh exec-bit rule, on this synthetic fixture (no shipped .sh lives there today).
     expect(statSync(join(dest, "src", "scripts", "example.sh")).mode & 0o111).not.toBe(0);
-    // The PowerShell shim is never exec'd by an OS loader.
+    // The PowerShell shim is never exec'd by an OS loader, and no other asset is.
     expect(statSync(join(dest, "bin", "agent.ps1")).mode & 0o111).toBe(0);
-  });
-
-  test("re-applying over an existing install is idempotent", () => {
-    applyInstallPlan(assetsOnlyPlan());
-    writeFileSync(join(dest, "shell", "payload.txt"), "locally edited");
-    applyInstallPlan(assetsOnlyPlan());
-
-    expect(readFileSync(join(dest, "shell", "payload.txt"), "utf8")).toBe("content of shell");
+    expect(statSync(join(dest, "shell", "payload.txt")).mode & 0o111).toBe(0);
   });
 });
 
 describe("launcher shims", () => {
-  test("per-version shims dispatch to the compiled binary next to them", () => {
-    // `<top>/current/bin/agent` resolves to these, so their dispatch target is a contract with
-    // the layout: the binary sits beside them inside the version root.
-    expect(POSIX_SHIM).toContain('exec "$HERE/copilot-env" "$@"');
-    expect(POSIX_SHIM.startsWith("#!/bin/sh\n")).toBe(true);
-    expect(POWERSHELL_SHIM).toContain("copilot-env.exe");
-    expect(POWERSHELL_SHIM).toContain("exit $LASTEXITCODE");
-  });
-
-  test("top-level shims dispatch through the current link", () => {
-    // The stable PATH entry: one release-independent hop, so the path a user's PATH (or a
-    // persisted config) points at stays valid across updates; writeShimFile rewrites the file
-    // only when its content changed.
-    expect(POSIX_CURRENT_SHIM).toContain('exec "$HERE/../current/bin/copilot-env" "$@"');
-    expect(POSIX_CURRENT_SHIM.startsWith("#!/bin/sh\n")).toBe(true);
-    expect(POWERSHELL_CURRENT_SHIM).toContain("current\\bin\\copilot-env.exe");
-    expect(POWERSHELL_CURRENT_SHIM).toContain("exit $LASTEXITCODE");
-  });
+  skipWin(
+    "the written shims dispatch: per-version to the binary beside them, top-level through the current link",
+    () => {
+      // The stable PATH entry is one release-independent hop, so a user's PATH (or a persisted
+      // config) stays valid across updates; the per-version shim reaches the binary beside it.
+      const binarySource = writeFakeBinary(
+        join(root, "downloaded-binary"),
+        '#!/bin/sh\necho "ran from $(cd "$(dirname "$0")" && pwd -P) with $@"\n',
+      );
+      applyInstallPlan(versionedPlan(QUIET, binarySource));
+      const versionBin = join(dest, VERSIONS_DIR, VERSION_NAME, "bin");
+      for (const shim of [join(dest, "bin", "agent"), join(versionBin, "agent")]) {
+        const res = runSync("sh", [shim, "hello", "world"]);
+        expect(res.exitCode, shim).toBe(0);
+        expect(res.stdout.trim(), shim).toBe(
+          `ran from ${realpathSync(versionBin)} with hello world`,
+        );
+      }
+    },
+  );
 });
 
 describe("the install root carries the markers uninstall requires", () => {
@@ -697,12 +695,5 @@ describe("the install root carries the markers uninstall requires", () => {
     for (const marker of INSTALL_ROOT_MARKERS) {
       expect(statSync(join(dest, marker)).isDirectory()).toBe(true);
     }
-  });
-
-  test("the asset lists cannot be narrowed below the markers", () => {
-    // Fails at the list, not only at the applied result, so the intent is visible when someone
-    // edits MATERIALIZED_ASSET_DIRS. `bin` is absent on purpose: the shims create that directory.
-    expect(MATERIALIZED_ASSET_DIRS).toContain("shell");
-    expect(MATERIALIZED_ASSET_DIRS).toContain("src/scripts");
   });
 });

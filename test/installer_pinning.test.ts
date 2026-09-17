@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join, parse, posix } from "node:path";
 import { INSTALLER_PINS } from "../.github/scripts/release-assets.ts";
 import { compiledHealthFailures } from "../.github/scripts/installer-smoke.ts";
@@ -15,6 +22,9 @@ import {
   RELEASE_TARGETS,
   releaseAssetName,
 } from "../src/install/targets.ts";
+import { readDvmrcPin } from "../src/copilot_api/sidecar.ts";
+import { writeDaemonConfig } from "../src/proxy_float.ts";
+import { readProjectConfig } from "../src/utils/project_config.ts";
 import { ROOT, runSync } from "./helpers/run.ts";
 import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
@@ -30,15 +40,17 @@ describe("release-assets.ts pin needles", () => {
   // The release pipeline rewrites these installer lines by byte-exact needle and nothing runs
   // it at PR time, so a cosmetic reformat would merge green and break the release with
   // "placeholder not found".
-  test("match install.sh byte-for-byte", () => {
-    for (const { needle } of INSTALLER_PINS["install.sh"]) {
-      expect(installSh).toContain(needle);
-    }
-  });
-
-  test("match install.ps1 byte-for-byte", () => {
-    for (const { needle } of INSTALLER_PINS["install.ps1"]) {
-      expect(installPs1).toContain(needle);
+  test("match each installer byte-for-byte", () => {
+    const installers: Record<string, string> = {
+      "install.sh": installSh,
+      "install.ps1": installPs1,
+    };
+    for (const [file, pins] of Object.entries(INSTALLER_PINS)) {
+      const text = installers[file];
+      expect(text, file).toBeDefined();
+      for (const { needle } of pins) {
+        expect(text, file).toContain(needle);
+      }
     }
   });
 
@@ -59,21 +71,27 @@ describe("compile targets match the installers", () => {
   // A platform mapped onto a triple outside RELEASE_TARGETS is an install that 404s.
   const triples = RELEASE_TARGETS.map((t) => t.triple).sort();
 
-  test("install.sh maps its platforms onto RELEASE_TARGETS triples", () => {
-    const mapped = [...installSh.matchAll(/TARGET="([a-z0-9_-]+)"/g)].map((m) => m[1] ?? "");
-    expect(mapped.length).toBeGreaterThan(0);
-    for (const triple of mapped) {
-      expect(triples).toContain(triple);
-    }
-    for (const target of RELEASE_TARGETS.filter((t) => t.os !== "win32")) {
-      expect(mapped).toContain(target.triple);
-    }
-  });
-
-  test("install.ps1 maps Windows onto a RELEASE_TARGETS triple", () => {
-    const mapped = [...installPs1.matchAll(/return '([a-z0-9_-]+)'/g)].map((m) => m[1] ?? "");
-    for (const target of RELEASE_TARGETS.filter((t) => t.os === "win32")) {
-      expect(mapped).toContain(target.triple);
+  test("install.sh and install.ps1 map their platforms onto RELEASE_TARGETS triples", () => {
+    const rows: { file: string; mapped: string[]; os: (os: string) => boolean }[] = [
+      {
+        file: "install.sh",
+        mapped: [...installSh.matchAll(/TARGET="([a-z0-9_-]+)"/g)].map((m) => m[1] ?? ""),
+        os: (os) => os !== "win32",
+      },
+      {
+        file: "install.ps1",
+        mapped: [...installPs1.matchAll(/return '([a-z0-9_-]+)'/g)].map((m) => m[1] ?? ""),
+        os: (os) => os === "win32",
+      },
+    ];
+    for (const { file, mapped, os } of rows) {
+      expect(mapped.length, file).toBeGreaterThan(0);
+      for (const triple of mapped) {
+        expect(triples, file).toContain(triple);
+      }
+      for (const target of RELEASE_TARGETS.filter((t) => os(t.os))) {
+        expect(mapped, file).toContain(target.triple);
+      }
     }
   });
 });
@@ -113,13 +131,6 @@ describe("compile.include matches what the binary actually needs", () => {
     const code = compileTs.split("\n").filter((line) => !line.trim().startsWith("//"));
     expect(code.some((line) => line.includes("--include"))).toBe(false);
   });
-
-  test("deno.json itself stays bundled-only", () => {
-    // writeDaemonConfig (src/proxy_float.ts) reads the embedded deno.json; dropping it breaks
-    // every compiled install's proxy launch while `deno test` stays green on the checkout copy.
-    // It can never be materialized either: on disk, deno.json is a CHECKOUT_MARKERS entry.
-    expect(BUNDLED_ONLY_ASSETS).toContain("deno.json");
-  });
 });
 
 describe("bundled-only assets are never read through PROJECT_ROOT", () => {
@@ -156,6 +167,32 @@ describe("bundled-only assets are never read through PROJECT_ROOT", () => {
     // or the loop above was comparing nothing.
     expect(projectRootLines).toBeGreaterThan(0);
   });
+
+  test("a VFS holding exactly the bundled-only assets satisfies every run-time reader", () => {
+    // The converse guard: an asset a reader takes from ASSET_ROOT at run time (the daemon's
+    // import map, the sidecar's Deno pin, the project config) that left BUNDLED_ONLY_ASSETS
+    // breaks every compiled install while `deno test` stays green on the checkout copy.
+    const vfs = tempDir("ce-vfs-");
+    const home = tempDir("ce-vfs-home-");
+    try {
+      for (const asset of BUNDLED_ONLY_ASSETS) {
+        copyFileSync(join(ROOT, asset), join(vfs, asset));
+      }
+      const readers: Record<string, (root: string) => unknown> = {
+        "daemon import map": (root) => writeDaemonConfig(home, root),
+        "Deno version pin": readDvmrcPin,
+        "project config": readProjectConfig,
+      };
+      for (const [name, read] of Object.entries(readers)) {
+        expect(() => read(vfs), name).not.toThrow();
+        // Control: each reader really depends on the VFS, or the loop above proves nothing.
+        expect(() => read(join(vfs, "missing")), name).toThrow();
+      }
+    } finally {
+      removeDir(vfs);
+      removeDir(home);
+    }
+  });
 });
 
 describe("the materialized files are the shims' import closure", () => {
@@ -181,6 +218,12 @@ describe("the materialized files are the shims' import closure", () => {
   }
 
   test("MATERIALIZED_ASSET_FILES is exactly the closure outside the materialized dirs", () => {
+    // Arm the walk first: a closure of only the seeds would mean the regex matched nothing and
+    // the comparison below was checking empty sets of "outside" files by accident.
+    const control = localImportClosure(["src/scripts/daemon_runtime_preload.ts"]);
+    expect(control.size).toBeGreaterThan(1);
+    expect(control.has("src/copilot_api/config.ts")).toBe(true);
+
     const seeds = readdirSync(join(ROOT, "src", "scripts"))
       .filter((name) => name.endsWith(".ts"))
       .map((name) => `src/scripts/${name}`);
@@ -191,14 +234,6 @@ describe("the materialized files are the shims' import closure", () => {
     );
     expect(outside.sort()).toEqual([...MATERIALIZED_ASSET_FILES].sort());
   });
-
-  test("negative control: the closure walk actually follows imports", () => {
-    // A closure of only the seeds would mean the regex matched nothing and the
-    // pin above was comparing empty sets of "outside" files by accident.
-    const closure = localImportClosure(["src/scripts/daemon_runtime_preload.ts"]);
-    expect(closure.size).toBeGreaterThan(1);
-    expect(closure.has("src/copilot_api/config.ts")).toBe(true);
-  });
 });
 
 describe("installers mirror the binary's checkout refusal markers", () => {
@@ -206,15 +241,16 @@ describe("installers mirror the binary's checkout refusal markers", () => {
   // the contract: the refusal names the first present marker.
   const expected = [...CHECKOUT_MARKERS];
 
-  test("install.sh guard markers match CHECKOUT_MARKERS in order", () => {
-    const list = installSh.match(/^\s*for _marker in ([^;]+); do$/m)?.[1] ?? "";
-    expect(list.split(/\s+/).filter(Boolean)).toEqual(expected);
-  });
-
-  test("install.ps1 guard markers match CHECKOUT_MARKERS in order", () => {
-    const body = installPs1.match(/foreach \(\$marker in @\(([^)]*)\)\)/)?.[1] ?? "";
-    const names = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1] ?? "");
-    expect(names).toEqual(expected);
+  test("install.sh and install.ps1 guard markers match CHECKOUT_MARKERS in order", () => {
+    const sh = installSh.match(/^\s*for _marker in ([^;]+); do$/m)?.[1] ?? "";
+    const ps1 = installPs1.match(/foreach \(\$marker in @\(([^)]*)\)\)/)?.[1] ?? "";
+    const rows: Record<string, string[]> = {
+      "install.sh": sh.split(/\s+/).filter(Boolean),
+      "install.ps1": [...ps1.matchAll(/'([^']+)'/g)].map((m) => m[1] ?? ""),
+    };
+    for (const [file, names] of Object.entries(rows)) {
+      expect(names, file).toEqual(expected);
+    }
   });
 });
 
@@ -222,7 +258,6 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
   // The real installer scripts against throwaway roots, fed by a directory download source:
   // the guard's point is ordering, so it must fire before the bin write touches the root.
   const skipWin = test.skipIf(Deno.build.os === "windows");
-  const winOnly = test.skipIf(Deno.build.os !== "windows");
 
   /** Sorted relative paths + content hashes: byte-level proof a root was not touched. */
   function snapshotTree(dir: string, prefix = ""): string[] {
@@ -322,7 +357,13 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     ].join("\n");
   }
 
-  skipWin("install.sh refuses a checkout root and leaves it byte-identical", () => {
+  /** install.sh exits 2 on a refusal; install.ps1's exit code is only known to be non-zero. */
+  function expectRefused(res: ReturnType<typeof runSync>, why: string): void {
+    if (Deno.build.os === "windows") expect(res.exitCode, why).not.toBe(0);
+    else expect(res.exitCode, why).toBe(2);
+  }
+
+  test("the installer refuses a checkout root and leaves it byte-identical", () => {
     const downloadDir = makeDownloadDir();
     try {
       for (const git of ["dir", "file"] as const) {
@@ -331,7 +372,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
           const before = snapshotTree(root);
           const res = runInstaller(root, downloadDir);
           const why = evidence(res, root);
-          expect(res.exitCode, why).toBe(2);
+          expectRefused(res, why);
           expect(res.stderr, why).toContain("source checkout");
           expect(snapshotTree(root), why).toEqual(before);
         } finally {
@@ -343,28 +384,31 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     }
   });
 
-  skipWin(
-    "install.sh proceeds on a marker-only root (no .git) and hands off to the binary",
-    () => {
-      const downloadDir = makeDownloadDir();
-      const root = makeRoot("deno.json", "none");
-      try {
-        const res = runInstaller(root, downloadDir);
-        const why = evidence(res, root);
+  test("the installer proceeds on a marker-only root (no .git) and hands off to the binary", () => {
+    const downloadDir = makeDownloadDir();
+    const root = makeRoot("deno.json", "none");
+    try {
+      const res = runInstaller(root, downloadDir);
+      const why = evidence(res, root);
+      // The installer sweeps nothing itself (it hands off to `agent install`), so the root's own
+      // files must survive the handoff.
+      expect(existsSync(join(root, "node_modules")), why).toBe(true);
+      expect(existsSync(join(root, "deno.json")), why).toBe(true);
+      expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
+      if (Deno.build.os === "windows") {
+        // The stand-in .exe cannot run, so the non-zero exit proves the handoff was attempted
+        // and the mutations above prove the guard let the marker-only root through.
+        expect(res.exitCode, why).not.toBe(0);
+      } else {
         expect(res.exitCode, why).toBe(0);
-        // The installer sweeps nothing itself (it hands off to `agent install`) and the stand-in
-        // does nothing, so the root's own files must survive the handoff.
-        expect(existsSync(join(root, "node_modules")), why).toBe(true);
-        expect(existsSync(join(root, "deno.json")), why).toBe(true);
-        expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
         // An installer that never invoked the binary would pass the assertions above while
         // installing nothing.
         expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(true);
-      } finally {
-        cleanup(root, downloadDir);
       }
-    },
-  );
+    } finally {
+      cleanup(root, downloadDir);
+    }
+  });
 
   // POSIX only: the Windows stand-in asset is deliberately not executable (the refusal
   // tests never reach the handoff), and this case needs the handoff to succeed.
@@ -396,119 +440,44 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     },
   );
 
-  winOnly("install.ps1 refuses a checkout root and leaves it byte-identical", () => {
-    const downloadDir = makeDownloadDir();
-    try {
-      for (const git of ["dir", "file"] as const) {
-        const root = makeRoot("package.json", git);
-        try {
-          const before = snapshotTree(root);
-          const res = runInstaller(root, downloadDir);
-          const why = evidence(res, root);
-          expect(res.exitCode, why).not.toBe(0);
-          expect(res.stderr, why).toContain("source checkout");
-          expect(snapshotTree(root), why).toEqual(before);
-        } finally {
-          cleanup(root);
-        }
-      }
-    } finally {
-      cleanup(downloadDir);
-    }
-  });
-
-  winOnly(
-    "install.ps1 proceeds on a marker-only root (no .git) and hands off to the binary",
-    () => {
-      const downloadDir = makeDownloadDir();
-      const root = makeRoot("deno.json", "none");
-      try {
-        // The stand-in .exe cannot run, so the non-zero exit proves the handoff was attempted
-        // and the mutations before it prove the guard let the marker-only root through. The
-        // installer sweeps nothing, so the root's own files survive.
-        const res = runInstaller(root, downloadDir);
-        const why = evidence(res, root);
-        expect(res.exitCode, why).not.toBe(0);
-        expect(existsSync(join(root, "node_modules")), why).toBe(true);
-        expect(existsSync(join(root, "deno.json")), why).toBe(true);
-        expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
-      } finally {
-        cleanup(root, downloadDir);
-      }
-    },
-  );
-
-  skipWin("install.sh refuses the lexically unsafe targets before any other work", () => {
+  test("the installer refuses the lexically unsafe targets before any other work", () => {
     // The installer keeps only a lexical pre-check (the canonical one is in the binary); it
-    // must still stop the worst spellings before the first network call or write.
-    //   "/Users//me"                  -> distinct from home unless separators collapse first
-    //   internal-only doubled slash   -> pinned apart, or a leading-"//" rejection alone passes
-    //   empty download source         -> a regressed run fails at the local copy, off the network
-    const home = process.env.HOME ?? "";
+    // must still stop the worst spellings before the first network call or write. The empty
+    // download source keeps a regressed run off the network: it fails at the local copy.
+    const win = Deno.build.os === "windows";
+    const home = (win ? process.env.USERPROFILE : process.env.HOME) ?? "";
     expect(home.length).toBeGreaterThan(0);
-    const unsafe = [
-      "/",
-      "//",
-      home,
-      `${home}/`,
-      home.replaceAll("/", "//"),
-      home.replace(/\/(?=[^/]*$)/, "//"), // internal-only: double just the last slash
-      "/tmp/..",
-      `${home}/.`,
-      ".",
-    ];
+    const unsafe = win
+      // The ps1 guard collapses separators and dot components via GetFullPath, so those
+      // spellings land on the same refusals.
+      ? [
+        parse(home).root, // the filesystem root, e.g. C:\
+        home,
+        `${home}\\`, // trailing separator must not defeat the compare
+        `${home}/`, // the alt separator spelling of the same
+        home.replaceAll("\\", "\\\\"), // internal doubled separators
+        `${home}\\.`, // GetFullPath collapses the dot component back to home
+        `${home}\\*`, // wildcard rejection
+      ]
+      //   "/Users//me"                  -> distinct from home unless separators collapse first
+      //   internal-only doubled slash   -> pinned apart, or a leading-"//" rejection alone passes
+      : [
+        "/",
+        "//",
+        home,
+        `${home}/`,
+        home.replaceAll("/", "//"),
+        home.replace(/\/(?=[^/]*$)/, "//"), // internal-only: double just the last slash
+        "/tmp/..",
+        `${home}/.`,
+        ".",
+      ];
     const emptyDownloadDir = tempDir("ce-lexical-dl-");
     try {
       for (const dir of unsafe) {
-        const res = runSync("bash", [join(ROOT, "install.sh"), "--dir", dir], {
-          env: { ...process.env, "CI": "1", "COPILOT_ENV_DOWNLOAD_BASE": emptyDownloadDir },
-        });
-        const why = `--dir '${dir}' exit=${res.exitCode}:\n${res.stderr}`;
-        expect(res.exitCode, why).toBe(2);
-        expect(res.stderr, why).toContain("unsafe install directory");
-      }
-    } finally {
-      removeDir(emptyDownloadDir);
-    }
-  });
-
-  winOnly("install.ps1 refuses the lexically unsafe targets before any other work", () => {
-    // The ps1 guard collapses separators and dot components via GetFullPath, so those spellings
-    // land on the same refusals. The empty download source keeps a regressed run off the network.
-    const home = process.env.USERPROFILE ?? "";
-    expect(home.length).toBeGreaterThan(0);
-    const unsafe = [
-      parse(home).root, // the filesystem root, e.g. C:\
-      home,
-      `${home}\\`, // trailing separator must not defeat the compare
-      `${home}/`, // the alt separator spelling of the same
-      home.replaceAll("\\", "\\\\"), // internal doubled separators
-      `${home}\\.`, // GetFullPath collapses the dot component back to home
-      `${home}\\*`, // wildcard rejection
-    ];
-    const emptyDownloadDir = tempDir("ce-lexical-dl-");
-    try {
-      for (const dir of unsafe) {
-        const env: Record<string, string | undefined> = {
-          ...process.env,
-          "CI": "1",
-          "COPILOT_ENV_DOWNLOAD_BASE": emptyDownloadDir,
-        };
-        for (const key of Object.keys(env)) {
-          if (key.toLowerCase() === "psmodulepath") delete env[key];
-        }
-        const res = runSync("powershell", [
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-File",
-          join(ROOT, "install.ps1"),
-          "-InstallDir",
-          dir,
-        ], { env });
-        const why = `-InstallDir '${dir}' exit=${res.exitCode}:\n${res.stderr}`;
-        expect(res.exitCode, why).not.toBe(0);
+        const res = runInstaller(dir, emptyDownloadDir);
+        const why = `target '${dir}' exit=${res.exitCode}:\n${res.stderr}`;
+        expectRefused(res, why);
         expect(res.stderr, why).toContain("unsafe install directory");
       }
     } finally {
@@ -597,35 +566,55 @@ describe("compiled-health smoke invariants fail closed", () => {
     ],
   });
 
-  test("a healthy compiled report passes (provisioned or absent sidecar)", () => {
-    expect(compiledHealthFailures(good())).toEqual([]);
-    const provisioned = good();
-    provisioned.checks[2] = { id: "proxy.sidecar", status: "ok", value: { kind: "provisioned" } };
-    expect(compiledHealthFailures(provisioned)).toEqual([]);
-  });
-
-  test("negative controls: dev/unknown sidecar kind, non-ok package, non-embedded deps", () => {
-    for (const kind of ["dev", "future-kind"]) {
-      const bad = good();
-      bad.checks[2] = { id: "proxy.sidecar", status: "ok", value: { kind } };
-      expect(compiledHealthFailures(bad)).toHaveLength(1);
+  test("healthy reports pass; every reshaped, missing, or non-ok row is one failure", () => {
+    const sidecar = (kind: string) => {
+      const report = good();
+      report.checks[2] = { id: "proxy.sidecar", status: "ok", value: { kind } };
+      return report;
+    };
+    const pkg = (status: string | undefined) => {
+      const report = good();
+      report.checks[1] = { id: "proxy.package", status: status as string, value: {} };
+      return report;
+    };
+    const rows: { name: string; report: unknown; failures: number | string[] }[] = [
+      { name: "absent sidecar", report: good(), failures: [] },
+      { name: "provisioned sidecar", report: sidecar("provisioned"), failures: [] },
+      { name: "dev sidecar", report: sidecar("dev"), failures: 1 },
+      { name: "unknown sidecar kind", report: sidecar("future-kind"), failures: 1 },
+      { name: "package fail", report: pkg("fail"), failures: 1 },
+      { name: "package warn", report: pkg("warn"), failures: 1 },
+      { name: "package status missing", report: pkg(undefined), failures: 1 },
+      {
+        name: "non-embedded deps",
+        report: (() => {
+          const report = good();
+          report.checks[0] = { id: "bootstrap.nodeModules", status: "fail", value: {} };
+          return report;
+        })(),
+        failures: 1,
+      },
+      { name: "every row missing", report: { checks: [] }, failures: 3 },
+      {
+        name: "no checks array",
+        report: {},
+        failures: ["health --json did not produce a checks array"],
+      },
+      { name: "null", report: null, failures: 1 },
+      {
+        name: "sidecar value reshaped",
+        report: (() => {
+          const report = good();
+          report.checks[2] = { id: "proxy.sidecar", status: "ok", value: {} as { kind: string } };
+          return report;
+        })(),
+        failures: 1,
+      },
+    ];
+    for (const { name, report, failures } of rows) {
+      const got = compiledHealthFailures(report);
+      if (typeof failures === "number") expect(got, name).toHaveLength(failures);
+      else expect(got, name).toEqual(failures);
     }
-    for (const status of ["fail", "warn", undefined] as const) {
-      const bad = good();
-      bad.checks[1] = { id: "proxy.package", status: status as string, value: {} };
-      expect(compiledHealthFailures(bad)).toHaveLength(1);
-    }
-    const deps = good();
-    deps.checks[0] = { id: "bootstrap.nodeModules", status: "fail", value: {} };
-    expect(compiledHealthFailures(deps)).toHaveLength(1);
-  });
-
-  test("negative controls: missing rows, reshaped values, and non-report JSON all fail", () => {
-    expect(compiledHealthFailures({ checks: [] })).toHaveLength(3);
-    expect(compiledHealthFailures({})).toEqual(["health --json did not produce a checks array"]);
-    expect(compiledHealthFailures(null)).toHaveLength(1);
-    const reshaped = good();
-    reshaped.checks[2] = { id: "proxy.sidecar", status: "ok", value: {} as { kind: string } };
-    expect(compiledHealthFailures(reshaped)).toHaveLength(1);
   });
 });

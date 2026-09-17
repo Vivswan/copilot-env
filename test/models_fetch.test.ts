@@ -6,17 +6,20 @@ import { fetchRawModels } from "../src/copilot_api/catalog.ts";
 import { discoverServableClaudeModels } from "../src/copilot_api/discovery.ts";
 import { directSmoke } from "../src/copilot_api/endpoint_smoke.ts";
 import {
+  CODEX_EXEC_USER_AGENT,
   COPILOT_CLI_INTEGRATION_ID,
   COPILOT_SANDBOX_INTEGRATION_ID,
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
-  passthroughIdentity,
+  directIdentity,
   type ProbeFetch,
   probeIntegrationIdentity,
   selectDirectIdentityAndHost,
   surveyIntegrationIdentities,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseModelList } from "../src/copilot_api/models.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
@@ -53,7 +56,7 @@ function recordingFetch(seen: SeenRequest[]): ProbeFetch {
 test("the survey's model count is the listing's parse: one owner, one number", async () => {
   const survey = await surveyIntegrationIdentities(
     "ghp_x",
-    [passthroughIdentity(VSCODE_CHAT_INTEGRATION_ID)],
+    [directIdentity("codex_exec/1", COPILOT_CLI_INTEGRATION_ID)],
     { fetchImpl: recordingFetch([]) },
   );
   const listed = parseModelList(SEAM_BODY).length;
@@ -80,16 +83,15 @@ test("every consumer's GET /models carries its own identity pair and the bearer,
       return identity;
     });
   };
-  // The raw catalog fetch: the daemon's bytes, the id header alone (a non-PAT lands on
-  // vscode-chat unprobed).
+  // The raw catalog fetch with no consumer named: the one header set under the version-free codex
+  // UA, probed (the codex identity accepted first, on the `host` literal so the host rule has
+  // nothing to ask) and then fetched with.
+  new CopilotEnvConfig().setProfile(null, { host: DEFAULT_COPILOT_API_BASE });
+  const passthroughUA = directClientHeaders(CODEX_EXEC_USER_AGENT, null);
   expect(
-    await pairsDuring("gho_x", () =>
-      fetchRawModels("direct", {
-        directToken: "gho_x",
-        apiBase: DEFAULT_COPILOT_API_BASE,
-        fetchImpl,
-      })),
-  ).toEqual([pair(passthroughIdentity(VSCODE_CHAT_INTEGRATION_ID).headers)]);
+    await pairsDuring("gho_x", () => fetchRawModels("direct", { directToken: "gho_x", fetchImpl })),
+  ).toEqual([pair(passthroughUA), pair(passthroughUA)]);
+  new CopilotEnvConfig().delProfile(null, "host");
   // Discovery: the agents' exact Direct bytes for the wiring's own identity (the default sends no
   // id header), then the same bytes under each sibling identity it consults.
   expect(
@@ -119,12 +121,12 @@ test("every consumer's GET /models carries its own identity pair and the bearer,
     await pairsDuring(
       "ghp_x",
       () =>
-        probeIntegrationIdentity("ghp_x", [passthroughIdentity(COPILOT_CLI_INTEGRATION_ID)], {
+        probeIntegrationIdentity("ghp_x", [directIdentity(ua, COPILOT_CLI_INTEGRATION_ID)], {
           fetchImpl,
           apiBase: DEFAULT_COPILOT_API_BASE,
         }),
     ),
-  ).toEqual([pair(passthroughIdentity(COPILOT_CLI_INTEGRATION_ID).headers)]);
+  ).toEqual([pair(directClientHeaders(ua, COPILOT_CLI_INTEGRATION_ID))]);
   expect(
     await pairsDuring(
       "ghp_x",
@@ -138,4 +140,30 @@ test("every consumer's GET /models carries its own identity pair and the bearer,
     ),
   ).toEqual([pair(directClientHeaders(ua, COPILOT_CLI_INTEGRATION_ID))]);
   expect(seen.every((s) => s.url === `${DEFAULT_COPILOT_API_BASE}/models`)).toBe(true);
+});
+
+test("fetchRawModels(direct) reads the slot's stored pair: no probe, the GET on the stored host under the stored id", async () => {
+  dir = isolateProxyHome("copilot-models-fetch-stored-");
+  // The slot holds the sandbox id on the account's host; a fresh selection would land on the codex
+  // identity on the generic host (accepted there too), an identity the agents and the daemon never
+  // send for this profile.
+  const enterprise = "https://api.enterprise.githubcopilot.com";
+  new CopilotEnvState().setProfileDirectPair(null, {
+    integrationId: COPILOT_SANDBOX_INTEGRATION_ID,
+    host: enterprise,
+  });
+  const seen: SeenRequest[] = [];
+  await fetchRawModels("direct", { directToken: "ghp_x", fetchImpl: recordingFetch(seen) });
+  expect(seen.map((r) => [r.url, r.headers["copilot-integration-id"]])).toEqual([
+    [`${enterprise}/models`, COPILOT_SANDBOX_INTEGRATION_ID],
+  ]);
+  // The `host` literal overlays the stored host the way a Direct re-render bakes it: the stored
+  // identity, on the literal, still with no probe.
+  const literal = "https://copilot.example";
+  new CopilotEnvConfig().setProfile(null, { host: literal });
+  seen.length = 0;
+  await fetchRawModels("direct", { directToken: "ghp_x", fetchImpl: recordingFetch(seen) });
+  expect(seen.map((r) => [r.url, r.headers["copilot-integration-id"]])).toEqual([
+    [`${literal}/models`, COPILOT_SANDBOX_INTEGRATION_ID],
+  ]);
 });

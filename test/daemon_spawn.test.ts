@@ -27,8 +27,9 @@ import {
 } from "../src/copilot_api/process.ts";
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
 import {
+  DAEMON_CLIENT_HEADERS_ENV,
   DAEMON_COPILOT_HOST_ENV,
-  DAEMON_INTEGRATION_ID_ENV,
+  daemonClientHeaders,
 } from "../src/copilot_api/integration_identity.ts";
 import { DRAIN_DEADLINE_MS } from "../src/scripts/daemon_shutdown.ts";
 import { PROXY_PACKAGE_NAME } from "../src/copilot_api/version.ts";
@@ -99,24 +100,26 @@ test("the preload set derives from the credential kind, in load order", () => {
     "daemon_runtime_preload.ts",
   ]);
 
-  expect(preloads({ ...BASE, credential: { kind: "token", token: "gho_x" } })).toEqual([
-    "node_compat_preload.ts",
-    "daemon_lock_preload.ts",
-    "token_argv_preload.ts",
-    "daemon_runtime_preload.ts",
-  ]);
-
-  // The splice precedes the PAT shim, which reads the token from argv.
+  // Every credential runs under its resolved identity (the client-headers shim); only passthrough
+  // adds the exchange fake, after the splice it reads the token from.
+  const CLI = daemonClientHeaders("codex_exec/1", "copilot-developer-cli");
   expect(
-    preloads({
-      ...BASE,
-      credential: { kind: "pat", token: "ghp_x", integrationId: "copilot-developer-cli" },
-    }),
+    preloads({ ...BASE, credential: { kind: "token", token: "gho_x", clientHeaders: CLI } }),
   ).toEqual([
     "node_compat_preload.ts",
     "daemon_lock_preload.ts",
     "token_argv_preload.ts",
     "daemon_runtime_preload.ts",
+    "client_headers_preload.ts",
+  ]);
+  expect(
+    preloads({ ...BASE, credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI } }),
+  ).toEqual([
+    "node_compat_preload.ts",
+    "daemon_lock_preload.ts",
+    "token_argv_preload.ts",
+    "daemon_runtime_preload.ts",
+    "client_headers_preload.ts",
     "pat_passthrough_preload.ts",
   ]);
 });
@@ -155,7 +158,11 @@ test("a pinned Copilot host loads the copilot-host shim (before the PAT shim) an
   expect(
     preloads({
       ...pinned,
-      credential: { kind: "pat", token: "ghp_x", integrationId: "copilot-developer-cli" },
+      credential: {
+        kind: "pat",
+        token: "ghp_x",
+        clientHeaders: daemonClientHeaders("codex_exec/1", "copilot-developer-cli"),
+      },
     }),
   ).toEqual([
     "node_compat_preload.ts",
@@ -163,6 +170,7 @@ test("a pinned Copilot host loads the copilot-host shim (before the PAT shim) an
     "token_argv_preload.ts",
     "daemon_runtime_preload.ts",
     "copilot_host_preload.ts",
+    "client_headers_preload.ts",
     "pat_passthrough_preload.ts",
   ]);
   expect(daemonEnvironment(pinned, {})[DAEMON_COPILOT_HOST_ENV]).toBe(host);
@@ -368,30 +376,36 @@ test("the credential environment is set-or-DELETE, so a stale value can never le
   // Our own environment already carries both keys (an earlier launch in this shell).
   const stale = {
     [DAEMON_GH_TOKEN_ENV]: "gho_from_an_earlier_run",
-    [DAEMON_INTEGRATION_ID_ENV]: "copilot-developer-cli",
+    [DAEMON_CLIENT_HEADERS_ENV]: '{"User-Agent":"stale"}',
     COPILOT_API_OAUTH_APP: "opencode",
   };
 
   const none = daemonEnvironment(BASE, stale);
   expect(none[DAEMON_GH_TOKEN_ENV]).toBeUndefined();
-  expect(none[DAEMON_INTEGRATION_ID_ENV]).toBeUndefined();
+  expect(none[DAEMON_CLIENT_HEADERS_ENV]).toBeUndefined();
+  // Without a credential the proxy logs in itself, under whatever app the user selected.
+  expect(none.COPILOT_API_OAUTH_APP).toBe("opencode");
 
+  // Every credential rides with its identity's header set, as the shim parses it back: the codex
+  // identity names the id header as a deletion, so the proxy's own cannot stand in.
+  const codex = daemonClientHeaders("codex_exec/1", null);
   const token = daemonEnvironment(
-    { ...BASE, credential: { kind: "token", token: "gho_new" } },
+    { ...BASE, credential: { kind: "token", token: "gho_new", clientHeaders: codex } },
     stale,
   );
   expect(token[DAEMON_GH_TOKEN_ENV]).toBe("gho_new");
-  expect(token[DAEMON_INTEGRATION_ID_ENV]).toBeUndefined(); // no passthrough -> no identity
-  // Only passthrough depends on copilot-api's default editor headers, so only it scrubs
-  // the oauth-app switch.
-  expect(token.COPILOT_API_OAUTH_APP).toBe("opencode");
+  expect(JSON.parse(token[DAEMON_CLIENT_HEADERS_ENV] ?? "")).toEqual(codex);
+  // The rewrite rides copilot-api's default upstream path, so the opencode app switch is scrubbed
+  // for every credential.
+  expect(token.COPILOT_API_OAUTH_APP).toBeUndefined();
 
+  const cli = daemonClientHeaders("codex_exec/1", "copilot-developer-cli");
   const pat = daemonEnvironment(
-    { ...BASE, credential: { kind: "pat", token: "ghp_new", integrationId: "vscode-chat" } },
+    { ...BASE, credential: { kind: "pat", token: "ghp_new", clientHeaders: cli } },
     stale,
   );
   expect(pat[DAEMON_GH_TOKEN_ENV]).toBe("ghp_new");
-  expect(pat[DAEMON_INTEGRATION_ID_ENV]).toBe("vscode-chat");
+  expect(JSON.parse(pat[DAEMON_CLIENT_HEADERS_ENV] ?? "")).toEqual(cli);
   expect(pat.COPILOT_API_OAUTH_APP).toBeUndefined();
 });
 

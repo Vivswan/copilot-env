@@ -8,7 +8,11 @@ import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "
 import { runCaptured } from "../utils/command.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { type RootMode, rootMode } from "../utils/root.ts";
-import { DAEMON_COPILOT_HOST_ENV, DAEMON_INTEGRATION_ID_ENV } from "./integration_identity.ts";
+import {
+  DAEMON_CLIENT_HEADERS_ENV,
+  DAEMON_COPILOT_HOST_ENV,
+  type DaemonClientHeaders,
+} from "./integration_identity.ts";
 import { resolveRootHome } from "./paths.ts";
 import { type DaemonShimFile, NODE_COMPAT_SHIM, shimPath } from "./shims.ts";
 import type { AbsolutePath } from "./sidecar.ts";
@@ -453,15 +457,15 @@ export function daemonPidsFromRows(
 export const DAEMON_GH_TOKEN_ENV = "COPILOT_ENV_DAEMON_GH_TOKEN";
 
 /**
- * `pat` is a variant, not a boolean beside an optional token: the shim reads the token back from argv,
- * so passthrough-without-a-token would load a shim that can do nothing. It always carries an
- * `integrationId` too, since selectPassthroughIdentityAndHost falls back to the daemon's own vscode-chat
- * default rather than returning nothing.
+ * `pat` is a variant, not a boolean beside an optional token: the passthrough shim reads the token
+ * back from argv, so passthrough-without-a-token would load a shim that can do nothing. Every
+ * credential carries the `clientHeaders` the client-headers preload applies upstream (the one
+ * identity resolved for it, daemonClientHeaders): a daemon never runs under the proxy's own.
  */
 export type DaemonCredential =
   | { kind: "none" }
-  | { kind: "token"; token: string }
-  | { kind: "pat"; token: string; integrationId: string };
+  | { kind: "token"; token: string; clientHeaders: DaemonClientHeaders }
+  | { kind: "pat"; token: string; clientHeaders: DaemonClientHeaders };
 
 /** The preload set and the credential environment are DERIVED from this, never passed alongside it,
  *  so no caller can hand over a combination the credential does not support. */
@@ -500,6 +504,8 @@ function daemonPreloadFlags(spec: DaemonSpec): string[] {
   if (spec.credential.kind !== "none") shims.push("token_argv_preload.ts");
   shims.push("daemon_runtime_preload.ts");
   if (spec.copilotHost !== null) shims.push("copilot_host_preload.ts");
+  // Every credential runs under its resolved client identity; only passthrough fakes the exchange.
+  if (spec.credential.kind !== "none") shims.push("client_headers_preload.ts");
   if (spec.credential.kind === "pat") shims.push("pat_passthrough_preload.ts");
   if (spec.idleWatchdog) shims.push("idle_watchdog_preload.ts");
   if (spec.muteProxyLogs) shims.push("log_mute_preload.ts");
@@ -516,17 +522,14 @@ function daemonPreloadFlags(spec: DaemonSpec): string[] {
 function applyCredentialEnv(env: NodeJS.ProcessEnv, credential: DaemonCredential): void {
   if (credential.kind === "none") {
     delete env[DAEMON_GH_TOKEN_ENV];
-  } else {
-    env[DAEMON_GH_TOKEN_ENV] = credential.token;
+    delete env[DAEMON_CLIENT_HEADERS_ENV];
+    return;
   }
-  if (credential.kind === "pat") {
-    env[DAEMON_INTEGRATION_ID_ENV] = credential.integrationId;
-    // The passthrough shim relies on copilot-api's DEFAULT path, which sends the vscode-chat editor
-    // headers the token needs; an inherited COPILOT_API_OAUTH_APP=opencode would strip them.
-    delete env.COPILOT_API_OAUTH_APP;
-  } else {
-    delete env[DAEMON_INTEGRATION_ID_ENV];
-  }
+  env[DAEMON_GH_TOKEN_ENV] = credential.token;
+  env[DAEMON_CLIENT_HEADERS_ENV] = JSON.stringify(credential.clientHeaders);
+  // The client-headers preload rewrites copilot-api's DEFAULT upstream path; an inherited
+  // COPILOT_API_OAUTH_APP=opencode would route around it with another header set entirely.
+  delete env.COPILOT_API_OAUTH_APP;
 }
 
 /** Deno honours HTTP_PROXY for loopback too, so a corporate proxy would otherwise swallow the daemon's

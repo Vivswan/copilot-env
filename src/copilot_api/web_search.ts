@@ -7,15 +7,15 @@ import { errMessage } from "../utils/error.ts";
 import { defaultFetch } from "../utils/fetch.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { fetchRawModels } from "./catalog.ts";
+import { directRequestIdentity, fetchRawModels } from "./catalog.ts";
 import { Credential } from "./credential.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
 import { ghTokenEnvVarsList, ghTokenFromEnv } from "./gh_cli.ts";
 import {
   CODEX_EXEC_USER_AGENT,
   directClientHeaders,
+  type IdentityAndHost,
   type ProbeFetch,
-  selectDirectIdentityAndHost,
 } from "./integration_identity.ts";
 import { generateAliases, parseCatalogModels } from "./models.ts";
 import type { Profile } from "./profile.ts";
@@ -91,16 +91,19 @@ export function resetWebSearchAliasCache(): void {
 }
 
 function catalogAliases(
+  profile: Profile,
   token: string,
-  apiBase: string,
+  pair: IdentityAndHost,
   fetchImpl?: ProbeFetch,
 ): Promise<Record<string, string>> {
+  const { apiBase, integrationId } = pair;
   const build = async () =>
     generateAliases(
       parseCatalogModels(
         await fetchRawModels("direct", {
+          profile,
           directToken: token,
-          apiBase,
+          pair,
           fetchImpl,
           // The aliases name models for the /responses call below, so the catalog is asked on that
           // call's host under that call's own identity (the version-free UA it sends).
@@ -109,7 +112,9 @@ function catalogAliases(
       ),
     );
   if (fetchImpl !== undefined) return build();
-  const key = `${apiBase}|${token}`;
+  // Copilot gates the catalog per identity, so two profiles on one token and host with different
+  // stored identities must not read each other's aliases.
+  const key = `${apiBase}|${integrationId ?? ""}|${token}`;
   let pending = aliasMemo.get(key);
   if (pending === undefined) {
     pending = build();
@@ -129,12 +134,13 @@ function catalogAliases(
  */
 async function resolveWebSearchModel(
   model: string,
+  profile: Profile,
   token: string,
-  apiBase: string,
+  pair: IdentityAndHost,
   fetchImpl?: ProbeFetch,
 ): Promise<string> {
   try {
-    return (await catalogAliases(token, apiBase, fetchImpl))[model] ?? model;
+    return (await catalogAliases(profile, token, pair, fetchImpl))[model] ?? model;
   } catch (e) {
     logger.warn(
       `could not resolve '${model}' against the live catalog (${errMessage(e)}); sending it as-is`,
@@ -163,28 +169,27 @@ export function resolveWebSearchCredential(profile: Profile = null): string {
 export async function webSearch(query: string, opts: WebSearchOptions = {}): Promise<string> {
   const profile = opts.profile ?? null;
   const token = resolveWebSearchCredential(profile);
-  // No fetch is injected in production, so the probes stay MEMOIZED: a cancelled tool call stops
-  // WAITING for a cold PAT probe while the probe runs on and fills its memo for the next call.
+  // No fetch is injected in production, so a probe stays MEMOIZED: a cancelled tool call stops
+  // WAITING for a cold probe while the probe runs on and fills its memo for the next call.
   // The User-Agent is deliberately VERSION-FREE: the versioned codexUserAgent lives in the codex
-  // layer, which this module must not import. Identity and host come as one pair
-  // (selectDirectIdentityAndHost), and the catalog fetch below reuses the host, so one host and one
-  // identity serve every request here.
+  // layer, which this module must not import. Identity and host come as one pair, the profile's
+  // stored pair under the pin and literal (directRequestIdentity), and the catalog fetch below
+  // reuses the host, so one host and one identity serve every request here.
   const config = new CopilotEnvConfig();
-  const { integrationId, apiBase } = await raceWithAbort(
-    selectDirectIdentityAndHost(token, CODEX_EXEC_USER_AGENT, {
-      pinned: config.pinnedIntegrationId(profile),
-      fixedHost: config.copilotHost(profile),
+  const pair = await raceWithAbort(
+    directRequestIdentity(profile, token, CODEX_EXEC_USER_AGENT, {
       fetchImpl: opts.fetchImpl,
       narrator: logger,
     }),
     opts.signal,
   );
+  const { integrationId, apiBase } = pair;
   const clientHeaders = directClientHeaders(CODEX_EXEC_USER_AGENT, integrationId);
   const configured = opts.model ?? config.messageApiWebSearchModel(profile);
   // Only a configured value can be an alias; the built-in default is a raw catalog id, so the default
   // path stays catalog-free.
   const model = configured === null ? DEFAULT_WEB_SEARCH_MODEL : await raceWithAbort(
-    resolveWebSearchModel(configured, token, apiBase, opts.fetchImpl),
+    resolveWebSearchModel(configured, profile, token, pair, opts.fetchImpl),
     opts.signal,
   );
   const headers: Record<string, string> = {

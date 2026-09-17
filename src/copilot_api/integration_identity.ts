@@ -1,13 +1,19 @@
-// Copilot's inference hosts gate each request on a client identity (the `Copilot-Integration-Id` header
-// plus editor/user-agent headers), and which identities accept which credential class is undocumented
-// server behavior that has changed over time. So instead of per-token-shape rules we PROBE an ordered
-// candidate list (GET /models, first 2xx wins), each mode against the host its result is USED on, with
-// each mode's long-standing default FIRST so a credential the default accepts stays byte-identical.
+// Copilot's inference hosts gate each request on a client identity, and which identities accept
+// which credential class is undocumented server behavior that has changed over time. So instead of
+// per-token-shape rules we PROBE an ordered candidate list (GET /models, first 2xx wins) on the host
+// the result is USED on. An identity is a HEADER SET, not an id: the `User-Agent` and the
+// `Copilot-Integration-Id` (or its absence) decide together what the host serves. ONE identity per
+// credential serves every mode: the Direct configs bake it, and the daemon's client-headers preload
+// applies the same set to the proxy's upstream requests, so both see one catalog.
 // Verified July 2026, on individual AND enterprise-plan seats:
 //   fine-grained PAT under `vscode-chat`            -> 400 "Personal Access Tokens are not supported for this endpoint"
 //   fine-grained PAT under `copilot-developer-cli`  -> accepted
 //   `gho_` OAuth token under either                 -> accepted
 //   any PAT at the editor token exchange            -> 403, so a passthrough token lives or dies by this header alone
+// Verified September 2026 (the catalog is gated on the PAIR):
+//   codex_exec UA, no id                            -> 50 models, Fable included
+//   codex_exec UA with any id                       -> 33-41 models, no Fable
+//   the proxy's own editor UA, with or without id   -> 40-41 models, no Fable
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
@@ -17,7 +23,8 @@ import { fetchModelCatalog, type ModelCatalogOutcome } from "./models_fetch.ts";
 
 /** The gating header. Its VALUES below are external contracts: never rename. */
 export const INTEGRATION_ID_HEADER = "Copilot-Integration-Id";
-/** copilot-api's own upstream identity (the VS Code Chat extension). */
+/** copilot-api's own upstream identity (the VS Code Chat extension): never a candidate, since the
+ *  daemon's preload replaces it; discovery still consults its catalog for unadvertised models. */
 export const VSCODE_CHAT_INTEGRATION_ID = "vscode-chat";
 /** GitHub Copilot CLI's identity, the one verified to accept fine-grained PATs. */
 export const COPILOT_CLI_INTEGRATION_ID = "copilot-developer-cli";
@@ -27,9 +34,10 @@ export const COPILOT_SANDBOX_INTEGRATION_ID = "copilot-developer-sandbox";
  *  /responses web-search client (this layer, version-free) derive from ONE spelling. */
 export const CODEX_EXEC_USER_AGENT = "codex_exec";
 
-/** The passthrough preload (src/scripts/pat_passthrough_preload.ts) reads this and rewrites
- *  INTEGRATION_ID_HEADER on requests to *.githubcopilot.com hosts. Not a secret, so plain env, no argv splice. */
-export const DAEMON_INTEGRATION_ID_ENV = "COPILOT_ENV_DAEMON_INTEGRATION_ID";
+/** The client-headers preload (src/scripts/client_headers_preload.ts) reads this JSON header set
+ *  (daemonClientHeaders) and applies it to the daemon's fetch and WebSocket requests to the Copilot
+ *  API hosts. Not a secret, so plain env, no argv splice. */
+export const DAEMON_CLIENT_HEADERS_ENV = "COPILOT_ENV_DAEMON_CLIENT_HEADERS";
 
 /** Where the account's designated API base is discovered (best-effort). */
 export const COPILOT_USER_URL = "https://api.github.com/copilot_internal/user";
@@ -77,29 +85,10 @@ export function setIntegrationProbeFetch(fetchImpl: ProbeFetch | null): void {
 const PROBE_USER_AGENT = "copilot-env";
 
 export interface IntegrationIdentity {
-  /** For passthrough candidates it IS the identity value. */
+  /** The id header's value, or CODEX_IDENTITY_NAME for the set that sends none. */
   name: string;
   /** Authorization is added by callers. */
   headers: Record<string, string>;
-}
-
-/**
- * vscode-chat first: no daemon rewrite when it works. The verdict is gated solely on the integration id
- * (verified: reproducing the daemon's full editor headers and flipping ONLY this field flips
- * acceptance), so the probe sends just that id and has no editor/plugin version to drift against a client release.
- */
-export const PASSTHROUGH_IDENTITY_CANDIDATES: readonly [
-  IntegrationIdentity,
-  ...IntegrationIdentity[],
-] = [
-  passthroughIdentity(VSCODE_CHAT_INTEGRATION_ID),
-  passthroughIdentity(COPILOT_CLI_INTEGRATION_ID),
-  passthroughIdentity(COPILOT_SANDBOX_INTEGRATION_ID),
-];
-
-/** The header set the daemon rewrite sends for `id` (src/scripts/pat_passthrough_preload.ts). */
-export function passthroughIdentity(id: string): IntegrationIdentity {
-  return { name: id, headers: { [INTEGRATION_ID_HEADER]: id } };
 }
 
 /** The header set a Direct agent bakes for `id`, through THE single builder. */
@@ -107,20 +96,12 @@ export function directIdentity(userAgent: string, id: string): IntegrationIdenti
   return { name: id, headers: directClientHeaders(userAgent, id) };
 }
 
-/** What an agent's Direct wiring sends today, read off its config by the agent's own layer
- *  (bakedCodexDirectIntegrationId, bakedClaudeDirectIntegrationId). `integrationId` null = the
- *  header is absent, the codex identity. A config that cannot be read or parsed is `unreadable`,
- *  never `not-direct`: "failed to look" must not read as "not wired". */
-export type BakedDirectIdentity =
-  | { kind: "direct"; integrationId: string | null; baseUrl: string }
-  | { kind: "not-direct" }
-  | { kind: "unreadable"; reason: string };
-
 /**
- * THE single builder: the DIRECT probe candidates and every writer that bakes the result (Codex `http_headers`,
- * Claude ANTHROPIC_CUSTOM_HEADERS, the /responses web-search client) go through it, so the probe can
- * never validate a header set the agents do not actually send. The id is omitted when null so the
- * default identity stays byte-identical.
+ * THE single builder: the probe candidates and every writer that applies the result (Codex `http_headers`,
+ * Claude ANTHROPIC_CUSTOM_HEADERS, the /responses web-search client, the daemon's client-headers
+ * preload through daemonClientHeaders) go through it, so the probe can never validate a header set
+ * nothing actually sends. The id is omitted when null: that absence, beside the codex User-Agent, IS
+ * the codex identity (the file header's catalog facts).
  */
 export function directClientHeaders(
   userAgent: string,
@@ -134,9 +115,26 @@ export function directClientHeaders(
   return headers;
 }
 
-/** `userAgent` rides in as a parameter because this module must not import the codex layer: callers pass
- *  either the detected codexUserAgent() or the version-free CODEX_EXEC_USER_AGENT (web_search.ts). */
-export function directIdentityCandidates(
+/** What the daemon's preload applies to an upstream request: every header of the identity's set is
+ *  SET, and a null names a header to DELETE, so the proxy's own `vscode-chat` cannot stand in for
+ *  the codex identity. Derived from directClientHeaders, never spelled apart from it. */
+export type DaemonClientHeaders = Record<string, string | null>;
+
+export function daemonClientHeaders(
+  userAgent: string,
+  integrationId: string | null,
+): DaemonClientHeaders {
+  return { [INTEGRATION_ID_HEADER]: null, ...directClientHeaders(userAgent, integrationId) };
+}
+
+/**
+ * THE candidate list, one for every mode, in probe order: the codex identity (no id header) first,
+ * since it is the set the widest catalog was verified under, then the CLI and sandbox ids that
+ * accept credentials the codex set refuses (a fine-grained PAT). `userAgent` rides in as a parameter
+ * because this module must not import the codex layer: callers pass either the detected
+ * codexUserAgent() or the version-free CODEX_EXEC_USER_AGENT (web_search.ts).
+ */
+export function identityCandidates(
   userAgent: string,
 ): [IntegrationIdentity, ...IntegrationIdentity[]] {
   return [
@@ -146,8 +144,7 @@ export function directIdentityCandidates(
   ];
 }
 
-/** What a pin of `id` sends, for the pin's pre-check: the Direct bytes, since acceptance is gated on
- *  the id alone (PASSTHROUGH_IDENTITY_CANDIDATES) and the daemon's rewrite carries the same id. */
+/** What a pin of `id` sends, for the pin's pre-check: the one header set every mode sends. */
 export function pinnedIdentityCandidates(id: string, userAgent: string): IntegrationIdentity[] {
   return [directIdentity(userAgent, id)];
 }
@@ -178,8 +175,8 @@ export interface IdentityProbeDeps {
   timeoutMs?: number;
   /** A caller deadline over the WHOLE probe chain, combined with each request's own timeout. */
   signal?: AbortSignal;
-  /** The host the verdict is used on: always the caller's, never discovered here (the
-   *  select*IdentityAndHost pair owns the host question). */
+  /** The host the verdict is used on: always the caller's, never discovered here
+   *  (selectDirectIdentityAndHost owns the host question). */
   apiBase: string;
 }
 
@@ -261,9 +258,10 @@ function genericHostBlockedBy(status: number): boolean {
   return status === 403 || status === 404 || status >= 500;
 }
 
-// One verdict per (token, host, header set) in a process, shared by the survey and the selectors: the
-// table `agent auth --identities` prints and the picks it marks come from the SAME responses, so a
-// status that flips between two request rounds cannot show an accepted cell beside a refusal.
+// One verdict per (token, host, header set) in a process, shared by the survey, the selectors, and
+// the host rule: the table `agent auth --identities` prints and a selection in the same process come
+// from the SAME responses, so a status that flips between two request rounds cannot show an
+// accepted cell beside a refusal.
 // Process-lifetime like probeMemo; injected I/O bypasses it (see probeIntegrationIdentityCached).
 const verdictMemo = new Map<string, Promise<IdentityVerdict>>();
 
@@ -384,9 +382,6 @@ export interface IdentitySurvey {
 export interface IdentitySurveyDeps extends Omit<IdentityProbeDeps, "apiBase"> {
   /** The `host` literal, or null for `auto`. */
   configuredHost?: string | null;
-  /** Another survey's columns to reuse verbatim (one account lookup for a second header set), so two
-   *  surveys rendered side by side can never differ in their hosts. Skips the lookup. */
-  hosts?: IdentitySurvey;
 }
 
 /** The full picture behind the first-accepted probe: every candidate on every host that matters,
@@ -416,12 +411,6 @@ export async function surveyIntegrationIdentities(
     })));
     return { apiBase, role, verdicts };
   };
-  if (deps.hosts !== undefined) {
-    return {
-      hosts: await Promise.all(deps.hosts.hosts.map((h) => surveyHost(h.apiBase, h.role))),
-      designatedUnknown: deps.hosts.designatedUnknown,
-    };
-  }
   const designated = await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
   const hosts: { apiBase: string; role: SurveyHostRole }[] = [
     { apiBase: DEFAULT_COPILOT_API_BASE, role: "generic" },
@@ -481,9 +470,10 @@ interface ResolveHostOptions extends Omit<IdentityProbeDeps, "apiBase"> {
 const hostMemo = new Map<string, Promise<string>>();
 
 /**
- * THE `host auto` rule, for every mode. `headers` is the identity the caller will bake, resolved
- * BEFORE this. Module-private: only the select*IdentityAndHost pair may call it, so no consumer can
- * select an identity on one host and bake another.
+ * THE `host auto` rule, for every mode. `headers` is the identity's header set the caller
+ * will send (the selected identity, or the pin), resolved BEFORE this. Module-private, like the
+ * identity step below: only selectDirectIdentityAndHost may call it, so no consumer can select an
+ * identity on one host and send to another.
  *
  *   literal set                     -> the literal
  *   no token                        -> the generic host, nothing probed
@@ -582,10 +572,10 @@ export interface ResolveIdentityOptions extends IdentityProbeDeps {
 }
 
 /**
- * THE single PAT-shape predicate, shared by the passthrough shim and the identity probe gates. A PAT is
- * the only credential the DEFAULT identity was seen to refuse (July 2026: gho_/ghu_ OAuth, device-flow and
- * gh-cli were all accepted), so nothing else is worth a probe's network round.
- * Unprefixed 40-hex classic PATs are NOT detectable by shape: use the `passthrough` (on) or `identity` config key.
+ * THE single PAT-shape predicate, behind the passthrough decision (usePatPassthrough): a PAT cannot
+ * perform copilot-api's editor token exchange. It decides nothing about the identity: every
+ * credential is probed.
+ * Unprefixed 40-hex classic PATs are NOT detectable by shape: use the `passthrough` (on) config key.
  */
 export function isPatShapedToken(token: string): boolean {
   const t = token.trim();
@@ -613,9 +603,9 @@ export function usePatPassthrough(opts: {
 }
 
 /**
- * THROWS with the real reason when every candidate is definitively rejected (the caller's mode cannot
- * work with this credential); returns the mode's default identity (the first candidate) on an
- * inconclusive result, so a transient failure degrades to today's behavior instead of blocking a launch.
+ * THROWS with the real reason when every candidate is definitively rejected (no mode can work with
+ * this credential); returns the codex identity (the first candidate) on an inconclusive result, so
+ * a transient failure degrades to the default instead of blocking a launch.
  */
 async function acceptedIdentity(
   token: string,
@@ -641,8 +631,8 @@ async function acceptedIdentity(
 }
 
 /** Every known identity was definitively rejected on `apiBase`, the host in use at that point (the
- *  generic host, a literal, or the host `auto` moved to): the mode refuses this credential. A launch
- *  fails with the message; the survey renders it as "nothing" on that host instead. */
+ *  generic host, a literal, or the host `auto` moved to): no mode can use this credential, and the
+ *  landing (a rewire, a daemon start) fails with the message. */
 export class IdentityRejectedError extends Error {
   constructor(readonly apiBase: string, message: string) {
     super(message);
@@ -652,49 +642,46 @@ export class IdentityRejectedError extends Error {
 /** Narrated once, so `agent start`/`init` explain a surprising id. */
 function narrateIdentity(
   chosen: string,
-  defaultName: string,
   pinned: boolean,
   narrator: HostNarrator = consola,
 ): void {
   if (pinned) {
-    // Pinning the mode's own default (the daemon's fixed vscode-chat) is nothing to explain.
-    if (chosen === defaultName) return;
     narrator.info(
       `Copilot integration identity: ${chosen} (pinned via the \`identity\` config key).`,
     );
-  } else if (chosen !== defaultName) {
+  } else if (chosen !== CODEX_IDENTITY_NAME) {
     narrator.info(
-      `Copilot integration identity: ${chosen} (the default ${defaultName} rejected this credential).`,
+      `Copilot integration identity: ${chosen} (the default ${CODEX_IDENTITY_NAME} rejected this credential).`,
     );
   }
 }
 
 /**
- * null = the default Codex identity, which every gho_/device credential accepts. A null token (nothing
- * resolved) cannot be probed, so the pin (or null) is returned as-is.
+ * null = the codex identity (no id header). A null token (nothing resolved) cannot be probed, so the
+ * pin (or the codex identity) is returned as-is.
  */
-async function resolveDirectIntegrationId(
+async function resolveIntegrationId(
   token: string | null,
   userAgent: string,
   opts: ResolveIdentityOptions,
 ): Promise<string | null> {
   const { pinned = null, narrator, ...deps } = opts;
   if (pinned !== null) {
-    narrateIdentity(pinned, CODEX_IDENTITY_NAME, true, narrator);
+    narrateIdentity(pinned, true, narrator);
     return pinned;
   }
-  // Only PATs are rejected by the default identity, so only they justify a probe's network round.
-  if (token === null || !isPatShapedToken(token)) return null;
+  if (token === null) return null;
   // Probed on the host the caller passes (the host in use); the first accepted candidate wins.
-  const identity = await acceptedIdentity(token, directIdentityCandidates(userAgent), deps);
-  narrateIdentity(identity.name, CODEX_IDENTITY_NAME, false, narrator);
+  const identity = await acceptedIdentity(token, identityCandidates(userAgent), deps);
+  narrateIdentity(identity.name, false, narrator);
   return bakedIntegrationId(identity);
 }
 
-/** One identity and the one host it was accepted on: what every Direct or passthrough consumer
- *  bakes, fetches with, or pins to. */
-export interface IdentityAndHost<Id extends string | null> {
-  integrationId: Id;
+/** One identity and the one host it was accepted on: what every consumer, Direct config or daemon
+ *  launch, sends to, fetches with, or pins to. */
+export interface IdentityAndHost {
+  /** The id header's value; null = the codex identity, which sends none. */
+  integrationId: string | null;
   apiBase: string;
 }
 
@@ -705,20 +692,22 @@ export interface IdentityAndHostOptions extends Omit<ResolveIdentityOptions, "ap
 }
 
 /**
- * THE one rule for pairing an identity with a host, so no consumer selects on one host and sends
- * to another: identity selection on the host in use (`fixedHost`, else the generic host), then the
- * host under that identity's exact headers (resolveCopilotHost), then, when `auto` moved the host,
- * selection AGAIN there: the first run's answer was the generic host's (a blocked host leaves it at
- * the default), and the moved host is where the identity must be accepted. A pin never re-selects.
+ * THE one rule for pairing an identity with a host, for every mode, so no consumer selects on one
+ * host and sends to another: identity selection on the host in use (`fixedHost`, else the generic
+ * host), then the host under that identity's exact headers (resolveCopilotHost), then, when `auto`
+ * moved the host, selection AGAIN there: the first run's answer was the generic host's (a blocked
+ * host leaves it at the default), and the moved host is where the identity must be accepted. A pin
+ * never re-selects. `userAgent` is the one the caller sends (codexUserAgent() for the agent configs
+ * and the daemon; CODEX_EXEC_USER_AGENT for the version-free web-search client).
  */
 export async function selectDirectIdentityAndHost(
   token: string | null,
   userAgent: string,
   opts: IdentityAndHostOptions = {},
-): Promise<IdentityAndHost<string | null>> {
+): Promise<IdentityAndHost> {
   const { fixedHost = null, ...identityOpts } = opts;
   const identityOn = (apiBase: string): Promise<string | null> =>
-    resolveDirectIntegrationId(token, userAgent, { ...identityOpts, apiBase });
+    resolveIntegrationId(token, userAgent, { ...identityOpts, apiBase });
   const first = await identityOn(fixedHost ?? DEFAULT_COPILOT_API_BASE);
   const apiBase = await resolveCopilotHost(token, directClientHeaders(userAgent, first), {
     literal: fixedHost,
@@ -729,42 +718,4 @@ export async function selectDirectIdentityAndHost(
   const moved = fixedHost === null && (identityOpts.pinned ?? null) === null &&
     apiBase !== DEFAULT_COPILOT_API_BASE;
   return { integrationId: moved ? await identityOn(apiBase) : first, apiBase };
-}
-
-/** The passthrough twin of selectDirectIdentityAndHost (the daemon's id-header-alone set). */
-export async function selectPassthroughIdentityAndHost(
-  token: string,
-  opts: IdentityAndHostOptions = {},
-): Promise<IdentityAndHost<string>> {
-  const { fixedHost = null, ...identityOpts } = opts;
-  const identityOn = (apiBase: string): Promise<string> =>
-    resolvePassthroughIntegrationId(token, { ...identityOpts, apiBase });
-  const first = await identityOn(fixedHost ?? DEFAULT_COPILOT_API_BASE);
-  const apiBase = await resolveCopilotHost(token, passthroughIdentity(first).headers, {
-    literal: fixedHost,
-    fetchImpl: identityOpts.fetchImpl,
-    signal: identityOpts.signal,
-    narrator: identityOpts.narrator,
-  });
-  const moved = fixedHost === null && (identityOpts.pinned ?? null) === null &&
-    apiBase !== DEFAULT_COPILOT_API_BASE;
-  return { integrationId: moved ? await identityOn(apiBase) : first, apiBase };
-}
-
-/** Always returns an id (the proxy sends one); `agent start` only overrides the daemon default when it
- *  differs from vscode-chat. */
-async function resolvePassthroughIntegrationId(
-  token: string,
-  opts: ResolveIdentityOptions,
-): Promise<string> {
-  const { pinned = null, narrator, ...deps } = opts;
-  if (pinned !== null) {
-    narrateIdentity(pinned, VSCODE_CHAT_INTEGRATION_ID, true, narrator);
-    return pinned;
-  }
-  // Only PATs are rejected under the daemon's default vscode-chat identity, so only they justify a probe.
-  if (!isPatShapedToken(token)) return VSCODE_CHAT_INTEGRATION_ID;
-  const identity = await acceptedIdentity(token, PASSTHROUGH_IDENTITY_CANDIDATES, deps);
-  narrateIdentity(identity.name, VSCODE_CHAT_INTEGRATION_ID, false, narrator);
-  return bakedIntegrationId(identity) ?? VSCODE_CHAT_INTEGRATION_ID;
 }

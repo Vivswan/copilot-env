@@ -26,6 +26,7 @@
     "npm:consola@^3.4.2": "3.4.2",
     "npm:smol-toml@^1.8.0": "1.8.0",
     "npm:string-width@^8.2.2": "8.2.2",
+    "npm:undici@^7.29.1": "7.29.1",
     "npm:valibot@^1.4.2": "1.4.2",
     "npm:wrap-ansi@^10.0.1": "10.0.1"
   },
@@ -1026,6 +1027,7 @@
       "npm:consola@^3.4.2",
       "npm:smol-toml@^1.8.0",
       "npm:string-width@^8.2.2",
+      "npm:undici@^7.29.1",
       "npm:valibot@^1.4.2",
       "npm:wrap-ansi@^10.0.1"
     ]

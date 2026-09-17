@@ -65,7 +65,11 @@ cliOrExit(["health", "--scope", "runtime"]);
 cliOrExit(["config", "--del", "daemon.auto-start"]);
 
 // Every wiring command logs in first; the fake proxy never reads the token, so any string
-// satisfies the gate headless.
+// satisfies the gate headless. A daemon launch with a credential selects its client identity
+// and host by probing Copilot, which refuses a fake token; the pin and the literal are the two
+// knobs that skip both probes (the token-label lookup at api.github.com still runs, best-effort).
+cliOrExit(["config", "--set", "identity", "copilot-developer-cli"]);
+cliOrExit(["config", "--set", "host", "https://copilot.invalid"]);
 cliOrExit(["auth", "--set", "fake-default-token"]);
 cliOrExit(["codex", "--proxy"]);
 cliOrExit(["claude", "--proxy"]);
@@ -93,6 +97,10 @@ if (!cliOrExit(["auth", "--list"], { stdout: "piped" }).includes(PROFILE)) {
 }
 const checkCode = cli(["profile", "--check", PROFILE]).code;
 if (checkCode !== 2) failOn(`profile --check work should exit 2 (proxy), got ${checkCode}`);
+// The identity and host keys are per profile: the work daemon's launch needs its own pin and
+// literal, or its fake token is probed like the default's would have been.
+cliOrExit(["config", "--set", "identity", "copilot-developer-cli", "--profile", PROFILE]);
+cliOrExit(["config", "--set", "host", "https://copilot.invalid", "--profile", PROFILE]);
 cliOrExit(["start", "--profile", PROFILE]);
 cliOrExit(["start", "--check", "--profile", PROFILE]);
 cliOrExit(["start", "--check"]);

@@ -634,12 +634,13 @@ const BUNDLED = JSON.stringify({
 });
 const GPT55_ONLY = modelsOf([["gpt-5.5", copilotModel(GPT55_LIMITS)]]);
 
-test("the Copilot seed asks the direct catalog as Codex itself, not as the proxy daemon", async () => {
+test("the Copilot seed asks the direct catalog with the exact header set Codex bakes", async () => {
   // The generated catalog is what Codex's OWN requests are then pinned to, and Copilot gates the
-  // list per identity: a list fetched as the daemon (vscode-chat) can advertise models Codex is
+  // list per identity: a list fetched under another header set can advertise models Codex is
   // refused, or miss ones it is served. So the seed's GET carries the exact header set the baked
-  // config sends: the versioned codex_exec UA, Openai-Intent, no id for the default identity; the
-  // `copilot-host auto` probe before it sends the same set (the host is judged as Codex too).
+  // config sends: the versioned codex_exec UA, Openai-Intent, no id for the codex identity; the
+  // identity probe and the `host auto` probe before it send the same set (the deadline
+  // signal keeps them off the process memo, so each is its own request here).
   isolate();
   const sent: unknown[] = [];
   const realFetch = globalThis.fetch;
@@ -660,7 +661,7 @@ test("the Copilot seed asks the direct catalog as Codex itself, not as the proxy
     globalThis.fetch = realFetch;
   }
   const asCodex = { ...directClientHeaders(codexUserAgent()), Authorization: "Bearer gho_x" };
-  expect(sent).toEqual([asCodex, asCodex]);
+  expect(sent).toEqual([asCodex, asCodex, asCodex]);
 });
 
 test("generateCodexModelCatalog writes the patched catalog file", async () => {

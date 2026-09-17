@@ -13,6 +13,7 @@
 export const SHIM_FILES = [
   "src/scripts/token_argv_preload.ts",
   "src/scripts/pat_passthrough_preload.ts",
+  "src/scripts/client_headers_preload.ts",
   "src/scripts/copilot_host_preload.ts",
 ] as const;
 

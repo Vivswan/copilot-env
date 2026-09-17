@@ -32,10 +32,8 @@ import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.t
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { isReducedGpt } from "../copilot_api/models.ts";
 import {
-  type BakedDirectIdentity,
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
-  INTEGRATION_ID_HEADER,
   isDirectBaseUrl,
   selectDirectIdentityAndHost,
 } from "../copilot_api/integration_identity.ts";
@@ -406,39 +404,6 @@ export type CodexWiringStatus =
 /** Path `/v1`, what openaiBaseUrl writes; the grammar lives in port.ts next to the writers. */
 function baseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
   return matchesProxyOrigin(baseUrl, expectedPort, "/v1");
-}
-
-/** The Copilot-Integration-Id the selection's Direct table bakes in `http_headers`, for `agent auth
- *  --identities`: like bakedClaudeToken, a side reader sharing the inspector's classification, so
- *  the status type stays free of it. */
-export function bakedCodexDirectIntegrationId(
-  configToml: TextReadResult,
-  expectedPort: number,
-  selection: CodexSelectionRead = { profile: null },
-): BakedDirectIdentity {
-  if (configToml.kind === "absent") return { kind: "not-direct" };
-  if (configToml.kind === "unreadable") return { kind: "unreadable", reason: configToml.error };
-  if (selection.profile !== null && selection.profileToml.kind === "unreadable") {
-    return { kind: "unreadable", reason: selection.profileToml.error };
-  }
-  const wiring = inspectCodexWiring(configToml, null, expectedPort, false, selection);
-  if (
-    wiring.providerMode === "other" &&
-    (wiring.otherReason === "malformed" || wiring.otherReason === "profile-malformed")
-  ) {
-    return { kind: "unreadable", reason: codexOtherDetail(wiring.otherReason) };
-  }
-  if (wiring.providerMode !== "direct") return { kind: "not-direct" };
-  const doc: unknown = parse(configToml.text);
-  const providers = isRecord(doc) ? doc.model_providers : undefined;
-  const table = isRecord(providers) ? providers[codexProviderId(selection.profile)] : undefined;
-  const headers = isRecord(table) ? table.http_headers : undefined;
-  const id = isRecord(headers) ? headers[INTEGRATION_ID_HEADER] : undefined;
-  return {
-    kind: "direct",
-    integrationId: typeof id === "string" ? id : null,
-    baseUrl: wiring.baseUrl,
-  };
 }
 
 /**

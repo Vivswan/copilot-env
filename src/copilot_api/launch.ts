@@ -14,6 +14,7 @@ import { type ProjectConfig, readProjectConfig } from "../utils/project_config.t
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig, ensureDict } from "./config.ts";
 import { Credential } from "./credential.ts";
+import { directOverlay, landDirectPair, renderDirectPair } from "./direct_pair.ts";
 import {
   configSetCommand,
   type ConfigValue,
@@ -23,9 +24,9 @@ import {
   type ProxyConfigPath,
 } from "./env_config.ts";
 import {
-  selectPassthroughIdentityAndHost,
+  daemonClientHeaders,
+  type selectDirectIdentityAndHost,
   usePatPassthrough,
-  VSCODE_CHAT_INTEGRATION_ID,
 } from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
 import {
@@ -609,13 +610,16 @@ export async function cleanupExistingProxies(
 // --- credential resolution ---------------------------------------------------------
 
 /** `interactiveLogin` is REQUIRED: the login flow lives in src/commands/auth.ts, which this domain
- *  module must not import, so the orchestrator hands it down. */
+ *  module must not import, so the orchestrator hands it down. So is `userAgent`: the daemon sends
+ *  the codex User-Agent the agent configs bake (codexUserAgent(), the codex layer), and the probe
+ *  must run under the bytes the daemon then sends. */
 export interface LaunchCredentialDeps {
   interactiveLogin: (profile: Profile) => Promise<void>;
+  userAgent: string;
   credential?: Credential;
   /** Default: process.stdin.isTTY. */
   isTTY?: boolean;
-  selectIdentity?: typeof selectPassthroughIdentityAndHost;
+  selectIdentity?: typeof selectDirectIdentityAndHost;
 }
 
 /** What a daemon launch resolved: the credential it runs with and the Copilot host it is pinned
@@ -630,7 +634,9 @@ export interface DaemonLaunchAuth {
 /**
  * A named profile resolves ONLY its own slot, never the default credential. The result is the
  * daemon's DaemonCredential itself, so the launch never carries a passthrough decision apart from the
- * token it applies to.
+ * token it applies to. The client identity is THE one per credential, read and landed through
+ * direct_pair.ts like every Direct re-render; the daemon then applies it upstream through the
+ * client-headers preload, so the proxy serves the catalog the Direct configs see.
  */
 export async function resolveLaunchCredential(
   profile: Profile,
@@ -639,8 +645,7 @@ export async function resolveLaunchCredential(
 ): Promise<DaemonLaunchAuth> {
   const credential = deps.credential ?? new Credential(undefined, profile);
   const isTTY = deps.isTTY ?? Boolean(process.stdin.isTTY);
-  const selectIdentity = deps.selectIdentity ?? selectPassthroughIdentityAndHost;
-  const literal = config.copilotHost(profile);
+  const overlay = directOverlay(profile, config);
   // Passed as `--github-token`, copilot-api holds the token in memory and writes no github_token file
   // of its own, so the proxy stays on our single source of truth.
   let githubToken = credential.resolve() ?? undefined;
@@ -665,27 +670,23 @@ export async function resolveLaunchCredential(
   } else if (forcePassthrough === false) {
     consola.info("Token passthrough off: using the standard editor token exchange.");
   }
-  if (githubToken === undefined) return { credential: { kind: "none" }, copilotHost: literal };
-  if (!patPassthrough) {
-    // The daemon exchanges the token itself and sends its own vscode-chat whatever the pin, so the
-    // host is judged under that identity alone (the pin is the daemon's default: no selection).
-    const { apiBase } = await selectIdentity(githubToken, {
-      pinned: VSCODE_CHAT_INTEGRATION_ID,
-      fixedHost: literal,
-    });
-    return { credential: { kind: "token", token: githubToken }, copilotHost: apiBase };
+  if (githubToken === undefined) {
+    return { credential: { kind: "none" }, copilotHost: overlay.literal };
   }
-  // A passthrough bearer is accepted only under an identity matching its token class (a fine-grained
-  // PAT needs `copilot-developer-cli`; copilot-api sends `vscode-chat`). Selected BEFORE launching, so
-  // an unusable credential fails here with the real reason instead of an opaque daemon-side
-  // "Failed to get models"; the passthrough preload rewrites the header on the daemon's upstream calls.
-  // Identity and host come as one pair (selectPassthroughIdentityAndHost): the host in use, and the
-  // identity that host accepts.
-  const { integrationId, apiBase } = await selectIdentity(githubToken, {
-    pinned: config.pinnedIntegrationId(profile),
-    fixedHost: literal,
-  });
-  return { credential: { kind: "pat", token: githubToken, integrationId }, copilotHost: apiBase };
+  // A half the slot never probed is landed here, BEFORE launching, so an unusable credential fails
+  // with the real reason instead of an opaque daemon-side "Failed to get models".
+  const { integrationId, apiBase } = renderDirectPair(profile, overlay) ??
+    await landDirectPair(profile, githubToken, deps.userAgent, {
+      ...overlay,
+      selectIdentity: deps.selectIdentity,
+    });
+  const clientHeaders = daemonClientHeaders(deps.userAgent, integrationId);
+  return {
+    credential: patPassthrough
+      ? { kind: "pat", token: githubToken, clientHeaders }
+      : { kind: "token", token: githubToken, clientHeaders },
+    copilotHost: apiBase,
+  };
 }
 
 // --- the configured daemon spawn ------------------------------------------------------

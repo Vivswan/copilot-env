@@ -7,11 +7,7 @@ import { join } from "node:path";
 import { parse } from "smol-toml";
 import { directWiring } from "../src/agents/configure.ts";
 import { configureDefaultAgents, runAgentConfig } from "../src/agents/configure_defaults.ts";
-import {
-  bakedClaudeDirectIntegrationId,
-  claudeAdapter,
-  configureClaudeConfig,
-} from "../src/claude/config.ts";
+import { claudeAdapter, configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { codexAdapter, inspectCodexWiring, probeDirectWiring } from "../src/codex/config.ts";
 import { runConfig } from "../src/commands/config.ts";
@@ -20,10 +16,11 @@ import { configKeyDef, CopilotEnvConfig } from "../src/copilot_api/env_config.ts
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
+  COPILOT_SANDBOX_INTEGRATION_ID,
+  daemonClientHeaders,
   DEFAULT_COPILOT_API_BASE,
   INTEGRATION_ID_HEADER,
   setIntegrationProbeFetch,
-  VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
 import { resolveLaunchCredential } from "../src/copilot_api/launch.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
@@ -123,10 +120,11 @@ test("a Direct wiring bakes the copilot-host into both agents' base URLs; detect
     }
   };
 
-  // A literal: nothing probed, both configs carry it.
+  // A literal: the identity is probed ON the literal (the codex identity accepted first: one
+  // request, shared by both adapters), the host itself never; both configs carry it.
   new CopilotEnvConfig().setProfile(null, { host: GHE });
   await wire();
-  expect(seen).toEqual([]);
+  expect(seen).toEqual([{ host: GHE, id: null }]);
   expect(codexBaseUrl(homes.codexHome)).toBe(GHE);
   expect(claudeBaseUrl(homes.claudeHome)).toBe(GHE);
   // Recognised as Direct by our markers and the https shape, with the literal standing OR gone: a
@@ -136,17 +134,22 @@ test("a Direct wiring bakes the copilot-host into both agents' base URLs; detect
   for (const literal of [GHE, null]) {
     new CopilotEnvConfig().setProfile(null, { host: literal });
     expect(inspectCodexWiring(codexToml, null, 4141, false).providerMode).toBe("direct");
-    expect(bakedClaudeDirectIntegrationId({ kind: "text", text: claudeJson }, 4141)).toEqual({
-      kind: "direct",
-      integrationId: null,
-      baseUrl: GHE,
-    });
+    const claude = inspectClaudeWiring({ kind: "text", text: claudeJson }, 4141);
+    expect([claude.providerMode, claude.baseUrl]).toEqual(["direct", GHE]);
   }
 
-  // `auto` with the generic host blocked: one probe under the identity the wiring bakes (no header,
-  // the codex identity), then the account's host lands in both configs and reads as Direct.
+  // `auto` with the generic host blocked: the candidates are probed there in the one order (every
+  // answer 403, inconclusive, so the codex identity stands for the host rule), the host moves to
+  // the account's, the selection re-runs there and the codex identity is accepted; then that host
+  // lands in both configs and reads as Direct. The second adapter's pass is answered by the memo.
+  seen.length = 0;
   await wire();
-  expect(seen).toEqual([{ host: DEFAULT_COPILOT_API_BASE, id: null }]);
+  expect(seen).toEqual([
+    { host: DEFAULT_COPILOT_API_BASE, id: null },
+    { host: DEFAULT_COPILOT_API_BASE, id: COPILOT_CLI_INTEGRATION_ID },
+    { host: DEFAULT_COPILOT_API_BASE, id: COPILOT_SANDBOX_INTEGRATION_ID },
+    { host: ENTERPRISE, id: null },
+  ]);
   expect(codexBaseUrl(homes.codexHome)).toBe(ENTERPRISE);
   expect(claudeBaseUrl(homes.claudeHome)).toBe(ENTERPRISE);
   expect(
@@ -252,13 +255,15 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
   expect(seen.every((s) => s.host === GHE)).toBe(true);
 });
 
-test("a daemon launch resolves its identity and host as one pair: re-selected where auto moves, judged under vscode-chat without passthrough, unpinned without a credential", async () => {
+test("a daemon launch pairs identity and host: re-selected where auto moves, passthrough or not, unpinned without a credential", async () => {
   dir = isolateAgentHomes("copilot-host-daemon-").dir;
   const state = new CopilotEnvState();
+  const UA = "codex_exec/1";
   const seen: { host: string; id: string | null }[] = [];
   const launch = () =>
     resolveLaunchCredential(null, new CopilotEnvConfig(), {
       interactiveLogin: () => Promise.reject(new Error("no login in this test")),
+      userAgent: UA,
       isTTY: false,
     });
   // No credential: nothing to probe with, so the daemon is not pinned (GitHub's login answer stands).
@@ -285,29 +290,52 @@ test("a daemon launch resolves its identity and host as one pair: re-selected wh
     );
   });
   expect(await launch()).toEqual({
-    credential: { kind: "pat", token: "github_pat_x", integrationId: COPILOT_CLI_INTEGRATION_ID },
+    credential: {
+      kind: "pat",
+      token: "github_pat_x",
+      clientHeaders: daemonClientHeaders(UA, COPILOT_CLI_INTEGRATION_ID),
+    },
     copilotHost: ENTERPRISE,
   });
+  // The one candidate order, the codex identity (no id) first; the landing stored the pair.
   expect(seen.filter((s) => s.host === ENTERPRISE).map((s) => s.id)).toEqual([
-    VSCODE_CHAT_INTEGRATION_ID,
+    null,
     COPILOT_CLI_INTEGRATION_ID,
   ]);
-  // Passthrough off: the daemon sends its own vscode-chat whatever the pin, so only the host is
-  // judged, under that identity.
+  expect(state.readProfileDirectPair(null)).toEqual({
+    integrationId: COPILOT_CLI_INTEGRATION_ID,
+    host: ENTERPRISE,
+  });
+  // Passthrough off (the device-flow token exchanges itself): the credential write took the pair
+  // with it, so the SAME selection runs again and the daemon runs under the identity the credential
+  // is accepted under, not the proxy's own.
   seen.length = 0;
   new Credential(state).store("copilot", "gho_x");
   expect(await launch()).toEqual({
-    credential: { kind: "token", token: "gho_x" },
+    credential: {
+      kind: "token",
+      token: "gho_x",
+      clientHeaders: daemonClientHeaders(UA, COPILOT_CLI_INTEGRATION_ID),
+    },
     copilotHost: ENTERPRISE,
   });
-  expect(seen.map((s) => s.id)).toEqual([VSCODE_CHAT_INTEGRATION_ID]);
-  // A literal pins every kind; the PAT's identity selection probes the literal and nothing else.
+  expect(seen.filter((s) => s.host === ENTERPRISE).map((s) => s.id)).toEqual([
+    null,
+    COPILOT_CLI_INTEGRATION_ID,
+  ]);
+  // A literal overlays the stored host without a request; a new credential (its pair gone) probes
+  // the literal and nothing else.
   new CopilotEnvConfig().setProfile(null, { host: GHE });
   seen.length = 0;
   expect((await launch()).copilotHost).toBe(GHE);
+  expect(seen).toEqual([]);
   new Credential(state).store("gh-token", "github_pat_x");
   expect(await launch()).toEqual({
-    credential: { kind: "pat", token: "github_pat_x", integrationId: COPILOT_CLI_INTEGRATION_ID },
+    credential: {
+      kind: "pat",
+      token: "github_pat_x",
+      clientHeaders: daemonClientHeaders(UA, COPILOT_CLI_INTEGRATION_ID),
+    },
     copilotHost: GHE,
   });
   expect(seen.every((s) => s.host === GHE)).toBe(true);

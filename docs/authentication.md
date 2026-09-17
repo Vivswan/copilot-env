@@ -29,47 +29,53 @@ This page is about the credential and the profiles that carry one each. The wiri
 
 Classic and fine-grained PATs can't perform the proxy's editor token exchange. So `agent start` transparently enables a passthrough shim for PAT-shaped tokens, using the PAT as the bearer directly. Force it either way with `agent config --set passthrough on|off` ([key](configuration.md#profile)).
 
+Passthrough decides only the exchange; the proxy's [client identity](#client-identity) is the credential's whatever the decision.
+
 ## Client identity
 
-Copilot reads the client from two things on every request: the `Copilot-Integration-Id` header (or its absence, which is Direct's `codex` default) and the `User-Agent`. Which identity a credential is accepted under differs per host and per token kind, so `agent auth` surveys them.
+Copilot reads the client from two things on every request: the `Copilot-Integration-Id` header (or its absence) and the `User-Agent`. Together they decide which credentials are accepted and which catalog is served, so copilot-env resolves ONE client identity per credential and every mode sends it:
+
+- **Candidates, in probe order:** `codex` (the codex User-Agent with no `Copilot-Integration-Id`; the identity that lists the widest catalog), then `copilot-developer-cli`, then `copilot-developer-sandbox`. The first `GET /models` that answers 2xx on the host in use wins.
+- **Probed at a landing, stored in the slot:** a credential landing (`agent init`, `agent profile --add`, `agent auth --profile <name>`) probes on the host in use and stores the halves the probe answered; a pinned identity or a literal host is an overlay, never stored.
+- **Read back everywhere else:** every Direct re-render and every daemon start read the slot under the `identity` pin and `host` literal, with no request; a half still unknown is probed once and stored.
+- **Direct** bakes the header set into the agent configs (Codex `http_headers`, Claude `ANTHROPIC_CUSTOM_HEADERS`).
+- **Proxy** applies the same header set inside the daemon: a preload rewrites `User-Agent` and `Copilot-Integration-Id` on every fetch and WebSocket to the Copilot API hosts, deleting the id for `codex`, so the proxy serves the catalog Direct sees. The proxy's own `agent models --proxy` list is copilot-api's trimmed view of that catalog.
 
 ```text
 $ agent auth --identities
-integration-id: auto
-* = in effect today: Direct as the agent configs bake it, Proxy as a fresh daemon launch sends it
-identity                   Direct (api.githubcopilot.com)  Proxy (api.enterprise.githubcopilot.com)  note
--------------------------  ------------------------------  ----------------------------------------  ------------------------------------------------------------
-codex                      rejected (400)                  -                                         Direct default: no Copilot-Integration-Id header (auto only)
-copilot-developer-cli      accepted (5 models)             accepted (37 models) *                    GitHub Copilot CLI; accepts fine-grained PATs
+identity: auto
+host: auto (api.githubcopilot.com in use)
+* = in use: the pin, else the slot's probed identity; what every Direct re-render bakes and a daemon launch sends, on the host in use
+identity                   api.githubcopilot.com (in use)  api.enterprise.githubcopilot.com (account)  note
+-------------------------  ------------------------------  ------------------------------------------  ------------------------------------------------------
+codex                      rejected (400)                  rejected (400)                              the default: no Copilot-Integration-Id header (auto only)
+copilot-developer-cli      accepted (5 models) *           accepted (37 models)                        GitHub Copilot CLI; accepts fine-grained PATs
 copilot-developer-sandbox  accepted (2 models)             rejected (400)
-vscode-chat                -                               rejected (400)                            proxy default (copilot-api's own identity)
-Direct: no agent is wired Direct; `agent init` would bake copilot-developer-cli.
-  codex on Direct: 400 Personal Access Tokens are not supported for this endpoint
-  copilot-developer-sandbox on Proxy: 400 Personal Access Tokens are not supported for this endpoint
-  vscode-chat on Proxy: 400 Personal Access Tokens are not supported for this endpoint
+  codex on api.githubcopilot.com: 400 Personal Access Tokens are not supported for this endpoint
+  codex on api.enterprise.githubcopilot.com (account): 400 Personal Access Tokens are not supported for this endpoint
+  copilot-developer-sandbox on api.enterprise.githubcopilot.com (account): 400 Personal Access Tokens are not supported for this endpoint
 ```
 
-- **Rows** are the identities: each host's built-in candidates (Direct: `codex`, `copilot-developer-cli`, `copilot-developer-sandbox`; Proxy: `vscode-chat`, `copilot-developer-cli`, `copilot-developer-sandbox`), plus a pinned id and whatever the agent configs bake today. The rows are probed concurrently, and the survey never stops at the first acceptance.
-- **Columns** are the two hosts: Direct (`api.githubcopilot.com`, what the agent configs call) and Proxy (the API host the credential's account reports, `api.enterprise.githubcopilot.com` above; what the daemon's PAT passthrough calls).
-- **Cells:** `accepted (N models)` is a 2xx with the `/models` catalog size; `rejected (400)` a 400/401; `unclear (403)` or `unclear (network error)` a non-definitive status or a blip; `-` an identity not probed on that host, because it is neither one of the host's candidates nor pinned nor baked there.
-- **The `*`** marks what is in effect today, per host. Direct: the header the agent configs bake right now (a pin lands there only at the next rewire; a config that cannot be read is reported as unknown, never as "not wired"). Proxy: what a fresh daemon launch sends; a running daemon keeps its launch-time identity until restarted.
-- **Lines under the table:** the reason for every rejected or unclear cell (trimmed to 160 characters), and a note for each gap.
-- **The gaps a note can name:** the Direct wiring sends one identity until `agent init` (or `agent profile --add <name>`) rebakes the next pick; Codex and Claude disagree; passthrough is off for the credential, so the proxy exchanges the token itself and always sends `vscode-chat`; a daemon is running and needs `agent stop`, then `agent start`.
+- **Rows** are the identities: the three candidates, plus the pin and the slot's stored identity when they are neither. Every row is probed with exactly the header set every mode sends; the rows are probed concurrently, and the survey never stops at the first acceptance. The survey never reads the agent files and never stores a pair.
+- **Columns** are the hosts: `api.githubcopilot.com`, the API host the credential's account reports when it differs (`api.enterprise.githubcopilot.com` above), and the host in use when it is neither: the `host` literal (tagged `host`) or the slot's stored host (tagged `stored`).
+- **Cells:** `accepted (N models)` is a 2xx with the `/models` catalog size; `rejected (400)` a 400/401; `unclear (403)` or `unclear (network error)` a non-definitive status or a blip; `-` an identity not probed on that host.
+- **The `*`** marks the one identity in use for this credential, on the host in use: the pin, else the slot's stored identity, on the literal, else the slot's stored host. Nothing is marked while either half is unknown.
+- **Lines under the table:** the reason for every rejected or unclear cell (trimmed to 160 characters), and a note for each gap: a half is not probed yet and the next landing or daemon start stores it; a pin overlays the stored identity; a daemon is running and keeps its launch-time identity until `agent stop`, then `agent start`.
 
 `agent auth --identity <id>` pins one; the store is the [`identity`](configuration.md#profile) key, so `agent config --set identity <id>` is the same write.
 
 ```text
 $ agent auth --identity copilot-developer-cli
-integration-id = copilot-developer-cli (pinned; `agent auth --identity auto` restores probing).
+identity = copilot-developer-cli (pinned; `agent auth --identity auto` restores probing).
 ```
 
-- The pin is probed once on both hosts with exactly the headers it would send. A definitive rejection on both hosts refuses the pin; a one-sided or unclear result pins with a warning naming what carried it; with no credential resolving, the pin is stored unverified and the warning says so.
+- The pin is probed once on every host with exactly the headers it would send. A definitive rejection on the host in use, or on every host, refuses the pin; a one-sided or unclear result pins with a warning naming what carried it; with no credential resolving, the pin is stored unverified and the warning says so.
 - `--identity auto` clears the pin and needs no credential. A bare `--identity` in a terminal prints the table, then offers every identity at least one host accepted, plus `auto`.
-- `codex` cannot be pinned: Direct's default identity is the absence of the header, and a pin is always sent as the header's value. `auto` already selects it whenever Direct accepts the credential under it.
-- A pin applies to Direct at the next `agent init` / `agent profile --add` and to the proxy at its next daemon launch.
-- `--profile <name>` probes with that profile's credential and names `agent profile --add <name> --direct` as the rewire; the pin itself is one store-wide key.
+- `codex` cannot be pinned: it is the absence of the header, and a pin is always sent as the header's value. `auto` already selects it whenever the credential is accepted under it.
+- A pin overlays the stored identity: it applies to Direct at the next re-render and to the proxy at its next daemon launch.
+- `--profile <name>` surveys with that profile's credential and slot; the pin is that profile's `identity` key.
 
-**User-Agent.** Direct wiring for both agents sends `codex_exec/<version>`, and the version is resolved once per process, in this order: the installed `codex --version`, else npm's current `@openai/codex` release (`npm view @openai/codex version`), else the version baked into this copilot-env build. A machine without Codex and without network still sends a versioned header, since Copilot rejects some models for the bare shape.
+**User-Agent.** Every mode sends `codex_exec/<version>`, and the version is resolved once per process, in this order: the installed `codex --version`, else npm's current `@openai/codex` release (`npm view @openai/codex version`), else the version baked into this copilot-env build. A machine without Codex and without network still sends a versioned header, since Copilot rejects some models for the bare shape.
 
 ## Static key
 

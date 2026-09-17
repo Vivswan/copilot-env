@@ -3,7 +3,6 @@
 // every default Codex wiring pass.
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import { homedir } from "node:os";
 import * as path from "node:path";
 import { type CodexHomePrefs, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
@@ -23,7 +22,7 @@ import {
   symlinkReported,
   writeFileReported,
 } from "../utils/report_write.ts";
-import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome } from "./paths.ts";
+import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome, plainCodexHome } from "./paths.ts";
 import { readCodexToml } from "./toml_io.ts";
 
 const logger = createStderrLogger();
@@ -155,7 +154,7 @@ export function effectiveCodexHomeFor(prefs: CodexHomePrefs): string {
  *  passes the bundle's, so its line and the apply's write agree. */
 export function unmanagedCodexHome(prefs: CodexHomePrefs = codexHomePrefsOrDerived()): string {
   if (isManagedFarmExport(process.env.CODEX_HOME, prefs)) {
-    return path.join(homedir(), ".codex");
+    return plainCodexHome();
   }
   return defaultCodexHome();
 }
@@ -737,7 +736,7 @@ export function knownCodexHomes(): { homes: string[]; complete: boolean } {
   // (codexFarmHostsDir on homeDir, process.env.HOME first). They can differ (HOME set on Windows),
   // so BOTH are swept; the Set dedupes the common case. A `codex.home` root is a third: its own
   // farm hosts dir is swept beside the default one, since a key change leaves the other behind.
-  homes.add(path.join(homedir(), ".codex"));
+  homes.add(plainCodexHome());
   const hostsDirs = [codexFarmHostsDir()];
   if (prefs.explicit !== null) {
     homes.add(prefs.explicit);

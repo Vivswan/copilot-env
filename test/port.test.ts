@@ -87,6 +87,9 @@ test("parseLoopbackProxyUrl: the loopback-http grammar, host/protocol/garbage ta
     ["http://localhost:4141", { port: "4141", path: "" }],
     // The URL parser lowercases scheme and host, so shouty hand-edits normalize too.
     ["HTTP://LOCALHOST:4141", { port: "4141", path: "" }],
+    // The rest of the loopback block and ::1: the same rule the Copilot host validator applies.
+    ["http://127.0.0.2:4141", { port: "4141", path: "" }],
+    ["http://[::1]:4141", { port: "4141", path: "" }],
     // Trailing slash tolerated (on the bare origin and on /v1).
     ["http://127.0.0.1:4141/", { port: "4141", path: "" }],
     ["http://localhost:4141/v1/", { port: "4141", path: "/v1" }],
@@ -97,7 +100,6 @@ test("parseLoopbackProxyUrl: the loopback-http grammar, host/protocol/garbage ta
     ["https://127.0.0.1:4141", null],
     ["https://api.githubcopilot.com", null],
     ["http://example.com:4141", null],
-    ["http://[::1]:4141", null],
     ["not a url", null],
     ["", null],
   ];

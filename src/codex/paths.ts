@@ -8,7 +8,13 @@ import type { ProfileName } from "../copilot_api/profile.ts";
  *  HOME may be a Git-for-Windows/MSYS path. path.join, not string concat, so every writer and
  *  checker produces byte-identical paths; `||` (not `??`) treats an empty CODEX_HOME as unset. */
 export function defaultCodexHome(): string {
-  return process.env.CODEX_HOME || path.join(homedir(), ".codex");
+  return process.env.CODEX_HOME || plainCodexHome();
+}
+
+/** `~/.codex` with no `$CODEX_HOME` precedence: where unmanagedCodexHome lands once the export is
+ *  recognised as our own farm's, and a home the cleanup sweep always visits. */
+export function plainCodexHome(): string {
+  return path.join(homedir(), ".codex");
 }
 
 /** The `model_provider` a copilot-env-written config.toml selects, direct and proxy alike (the mode

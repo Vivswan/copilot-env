@@ -565,6 +565,18 @@ test("proxy sidecar: absent is fatal for a compiled build, a warning for a check
   expect(older.status).toBe("warn");
   expect(older.detail).toContain("deno 2.8.1 on PATH is older than the tested 2.9.5");
   expect(older.fix).toContain("upgrade deno");
+  // A canary build (`x.y.z+<hash>`) is semver: its core compares, so an old canary warns too.
+  const canary = checkProxySidecar(
+    facts({
+      kind: "path",
+      referenceVersion: "2.9.5",
+      denoBin: "/opt/homebrew/bin/deno",
+      version: "2.8.1+a1b2c3d",
+      standalone: true,
+    }),
+  );
+  expect(canary.status).toBe("warn");
+  expect(canary.detail).toContain("deno 2.8.1+a1b2c3d on PATH is older than the tested 2.9.5");
   const unknownVersion = checkProxySidecar(
     facts({
       kind: "path",

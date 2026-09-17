@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  compareDenoVersions,
   DENO_LATEST_URL,
   DENO_RELEASE_TARGETS,
   denoReleaseTarget,
@@ -197,15 +196,7 @@ describe("detectSidecar", () => {
   });
 });
 
-describe("compareDenoVersions / provisionedSidecar", () => {
-  test("numeric x.y.z order; unparseable versions never compare", () => {
-    expect(compareDenoVersions("2.9.5", "2.10.0")).toBeLessThan(0);
-    expect(compareDenoVersions("2.10.0", "2.9.5")).toBeGreaterThan(0);
-    expect(compareDenoVersions("2.9.5", "2.9.5")).toBe(0);
-    expect(compareDenoVersions("v2.9.5", "2.9.5")).toBeNull();
-    expect(compareDenoVersions("2.9.5", "canary")).toBeNull();
-  });
-
+describe("provisionedSidecar", () => {
   test("the newest parseable, binary-carrying version wins the scan", () => {
     plantSidecar(dir, "2.9.5", "darwin");
     const newest = plantSidecar(dir, "2.10.2", "darwin");

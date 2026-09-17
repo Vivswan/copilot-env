@@ -9,6 +9,7 @@ import { COPILOT_USER_URL } from "../copilot_api/integration_identity.ts";
 import { blue, cyan, green, red } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { MILLISECONDS_PER_DAY as DAY_MS } from "../utils/time.ts";
+import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
 export interface CopilotCredits {
   /** The login the endpoint reports, when it does. */
@@ -122,7 +123,7 @@ export async function fetchCopilotCredits(
   fetchImpl: CreditsFetch,
 ): Promise<CopilotCredits> {
   const res = await fetchImpl(COPILOT_USER_URL, {
-    headers: { Authorization: `token ${token}`, "User-Agent": "copilot-env" },
+    headers: { Authorization: `token ${token}`, "User-Agent": COPILOT_ENV_USER_AGENT },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`GET ${COPILOT_USER_URL} returned ${res.status}`);

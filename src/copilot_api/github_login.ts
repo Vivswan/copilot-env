@@ -2,23 +2,22 @@
 // token kind (a device-flow gho_, a classic or fine-grained PAT) reads the same way.
 import { isRecord } from "../utils/json.ts";
 import { errMessage } from "../utils/error.ts";
+import { defaultFetch } from "../utils/fetch.ts";
+import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
 export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 const VIEWER_QUERY = "query { viewer { login } }";
 const LOOKUP_TIMEOUT_MS = 5000;
 
-/** Version-free like the integration probe: never sent by an agent, so nothing drifts against a client release. */
-const LOOKUP_USER_AGENT = "copilot-env";
-
 export type LoginFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 // A module-level seam so `runAuth` and `runProfile` stay hermetic in tests without threading a fetch through
 // every layer; the interactive pickers reach this through several calls.
-let defaultLoginFetch: LoginFetch = (input, init) => globalThis.fetch(input, init);
+let defaultLoginFetch: LoginFetch = defaultFetch;
 
 /** Test hook. */
 export function setGithubLoginFetch(fetchImpl: LoginFetch | null): void {
-  defaultLoginFetch = fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
+  defaultLoginFetch = fetchImpl ?? defaultFetch;
 }
 
 /** STRICTLY a label input, never a gate: a missed look names why, and the caller still proceeds. */
@@ -51,7 +50,7 @@ export async function githubLoginLook(
       headers: {
         "Authorization": `Bearer ${token}`,
         "Content-Type": "application/json",
-        "User-Agent": LOOKUP_USER_AGENT,
+        "User-Agent": COPILOT_ENV_USER_AGENT,
       },
       body: JSON.stringify({ query: VIEWER_QUERY }),
       signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),

@@ -9,6 +9,7 @@
 //   POST <agent's wire> -> a minimal capped call when no CLI ran; 200 is the Direct verdict,
 //                          anything else the proxy
 import { errMessage } from "../utils/error.ts";
+import { defaultFetch } from "../utils/fetch.ts";
 import { directClientHeaders, type ProbeFetch } from "./integration_identity.ts";
 import { fetchModelCatalog } from "./models_fetch.ts";
 
@@ -20,7 +21,8 @@ const WIRE_PATHS: Record<DirectWire, string> = {
   "responses": "/responses",
 };
 
-const PING_TIMEOUT_MS = 20_000;
+/** One ping's budget, shared with discovery.ts. */
+export const PING_TIMEOUT_MS = 20_000;
 
 /** One agent's endpoint smoke: its wire plus its own "can I drive this model" filter. */
 export interface EndpointSmoke {
@@ -57,7 +59,7 @@ export function directSmoke(
   apiBase: string,
   opts: { fetchImpl?: ProbeFetch } = {},
 ): DirectSmoke {
-  const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
+  const fetchImpl: ProbeFetch = opts.fetchImpl ?? defaultFetch;
   const identity = directClientHeaders(userAgent, integrationId);
   const headers = { ...identity, "Authorization": `Bearer ${token}` };
   return {

@@ -29,6 +29,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger, withConsolaOnStderr } from "../utils/logger.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
+import { formatTable } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
 import { mkdirReported } from "../utils/report_write.ts";
 import { ensureAuthenticated } from "./auth.ts";
@@ -220,11 +221,10 @@ async function reportStartSummary(
     ["SQLite", paths.sqliteDb],
     ["Install root", PROJECT_ROOT],
   ];
-  const labelWidth = summary.reduce((m, [label]) => Math.max(m, label.length), 0);
   consola.info(
-    summary
-      .map(([label, value]) => `   ${`${label}:`.padEnd(labelWidth + 1)}  ${value}`)
-      .join("\n"),
+    formatTable(summary.map(([label, value]) => [`${label}:`, value]), { indent: "   " }).join(
+      "\n",
+    ),
   );
   // The default box is an output contract.
   consola.log("");

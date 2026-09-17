@@ -9,6 +9,7 @@ import { PROBE_PROMPT } from "../agents/live_probe.ts";
 import { BASE_URL_ENV } from "../claude/config.ts";
 import { settingsPathFor } from "../claude/paths.ts";
 import type { Profile } from "../copilot_api/profile.ts";
+import { isRecord } from "../utils/json.ts";
 
 /** The launcher's LaunchPlan shape plus the success postcondition; tests pin the composition
  *  without spawning. */
@@ -34,7 +35,7 @@ function jsonEvents(stdout: string): JsonEvent[] {
     if (!line.startsWith("{")) continue;
     try {
       const parsed: unknown = JSON.parse(line);
-      if (typeof parsed === "object" && parsed !== null) events.push(parsed as JsonEvent);
+      if (isRecord(parsed)) events.push(parsed);
     } catch {
       // not an event line
     }
@@ -100,8 +101,7 @@ export function codexLiveLaunch(home: string, profile: Profile): LiveLaunch {
     answered: (stdout) =>
       jsonEvents(stdout).some((e) => {
         const item = e.item;
-        return e.type === "item.completed" && typeof item === "object" && item !== null &&
-          (item as JsonEvent).type === "agent_message";
+        return e.type === "item.completed" && isRecord(item) && item.type === "agent_message";
       }),
   };
 }

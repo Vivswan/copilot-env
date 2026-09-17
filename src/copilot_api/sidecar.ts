@@ -8,6 +8,7 @@ import { basename, isAbsolute, join } from "node:path";
 import { ASSET_ROOT, devDenoExecPath, isStandaloneBinary } from "../utils/root.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
+import { versionLessThan } from "../utils/semver.ts";
 import {
   chmodReported,
   mkdirReported,
@@ -120,18 +121,6 @@ export function detectSidecar(
 
 const DENO_VERSION_RE = /^\d+\.\d+\.\d+$/;
 
-/** null when either side is not x.y.z, so an unparseable version never compares and never warns. */
-export function compareDenoVersions(a: string, b: string): number | null {
-  if (!DENO_VERSION_RE.test(a) || !DENO_VERSION_RE.test(b)) return null;
-  const pa = a.split(".");
-  const pb = b.split(".");
-  for (let i = 0; i < 3; i++) {
-    const diff = Number(pa[i] ?? 0) - Number(pb[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-}
-
 /** Highest version wins, so a copy provisioned under an older release stays usable and a fresh
  *  download supersedes it without any cleanup step. */
 export function provisionedSidecar(
@@ -147,7 +136,7 @@ export function provisionedSidecar(
   const best = entries
     .filter((name) => DENO_VERSION_RE.test(name))
     .filter((version) => existsSync(sidecarBinPath(rootHome, version, platform)))
-    .sort((a, b) => compareDenoVersions(b, a) ?? 0)[0];
+    .sort((a, b) => versionLessThan(a, b) ? 1 : versionLessThan(b, a) ? -1 : 0)[0];
   if (best === undefined) return null;
   return {
     "kind": "provisioned",

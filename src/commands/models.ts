@@ -7,7 +7,7 @@ import { probeDirectWiring } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
-import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
+import { agentStartCommand, parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { bold, cyan, gray } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { formatTable, type TableRow, terminalWidth } from "../utils/table.ts";
@@ -87,11 +87,9 @@ async function resolveSource(mode: RequestedMode, profile: Profile): Promise<Res
   const status = await proxyStatus(profile);
   if (mode === "proxy") {
     if (!status.up) {
-      throw new Error(
-        profile === null
-          ? "the local proxy is not running (run `agent start`, or use --direct)"
-          : `the local proxy for profile '${profile}' is not running (run \`agent start --profile ${profile}\`, or use --direct)`,
-      );
+      const whose = profile === null ? "" : ` for profile '${profile}'`;
+      const start = agentStartCommand(profile);
+      throw new Error(`the local proxy${whose} is not running (run \`${start}\`, or use --direct)`);
     }
     return { source: "proxy", port: status.port };
   }
@@ -143,7 +141,7 @@ export async function runModels(args: ModelsArgs): Promise<void> {
     const hint = source === "proxy"
       ? profile === null
         ? "check `agent health` (or use --direct)"
-        : `check \`agent start --profile ${profile} --check\` (or use --direct)`
+        : `check \`${agentStartCommand(profile)} --check\` (or use --direct)`
       : `see \`agent auth --check${profileFlag}\``;
     throw new Error(`could not list models via ${label}: ${errMessage(e)}; ${hint}`);
   }

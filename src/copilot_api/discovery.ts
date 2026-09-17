@@ -16,15 +16,16 @@ import {
   VSCODE_CHAT_INTEGRATION_ID,
 } from "./integration_identity.ts";
 import { type CatalogModel, ONE_M_SUFFIX, parseCatalogModels } from "./models.ts";
+import { PING_TIMEOUT_MS } from "./endpoint_smoke.ts";
 import { fetchModelCatalog } from "./models_fetch.ts";
 import { CopilotEnvState } from "./env_state.ts";
 import { isDue } from "../autoupdate/due.ts";
 import { errMessage } from "../utils/error.ts";
+import { defaultFetch } from "../utils/fetch.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
 const logger = createStderrLogger();
 
-const PING_TIMEOUT_MS = 20_000;
 /** Above every 200k window, comfortably below the 1M prompt caps. */
 const ONE_M_PROBE_TOKENS = 230_000;
 const ORACLE_ATTEMPTS = 3;
@@ -66,7 +67,7 @@ export async function discoverServableClaudeModels(
   apiBase: string,
   opts: DiscoveryOptions = {},
 ): Promise<DiscoveredClaudeModels> {
-  const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
+  const fetchImpl: ProbeFetch = opts.fetchImpl ?? defaultFetch;
   const own = wireHeaders(token, userAgent, integrationId);
 
   const catalogBody = await fetchCatalog(

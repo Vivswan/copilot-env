@@ -1,7 +1,7 @@
 import * as net from "node:net";
 
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
-import { configSetCommand, CopilotEnvConfig } from "./env_config.ts";
+import { configSetCommand, CopilotEnvConfig, isLoopbackHostname } from "./env_config.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import type { Profile, ProfileName } from "./profile.ts";
 import { CopilotEnvRunState } from "./state.ts";
@@ -220,13 +220,14 @@ export function openaiBaseUrl(port: string): string {
   return `${proxyLoopbackOrigin(port)}/v1`;
 }
 
-/** `localhost` is accepted on read: a hand-edit that still means the local proxy. Each read site
- *  layers its own port/path expectation on top (matchesProxyOrigin, or a bare null-test in `agent env`). */
+/** Any loopback hostname (isLoopbackHostname, THE one rule) is accepted on read: a hand-edit that
+ *  still means the local proxy. Each read site layers its own port/path expectation on top
+ *  (matchesProxyOrigin, or a bare null-test in `agent env`). */
 export function parseLoopbackProxyUrl(url: string): { port: string; path: string } | null {
   try {
     const u = new URL(url);
     if (u.protocol !== "http:") return null;
-    if (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") return null;
+    if (!isLoopbackHostname(u.hostname)) return null;
     return { port: u.port, path: u.pathname.replace(/\/$/, "") };
   } catch {
     return null;

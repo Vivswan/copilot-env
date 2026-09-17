@@ -4,6 +4,7 @@
 // `web_search` tool; it lives here, not in the MCP server, so that server stays a thin protocol adapter.
 
 import { errMessage } from "../utils/error.ts";
+import { defaultFetch } from "../utils/fetch.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { fetchRawModels } from "./catalog.ts";
@@ -192,7 +193,7 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
     ...clientHeaders,
   };
   const url = `${apiBase}/responses`;
-  const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
+  const fetchImpl: ProbeFetch = opts.fetchImpl ?? defaultFetch;
   const timeout = AbortSignal.timeout(opts.timeoutMs ?? WEB_SEARCH_TIMEOUT_MS);
   const res = await fetchImpl(url, {
     method: "POST",

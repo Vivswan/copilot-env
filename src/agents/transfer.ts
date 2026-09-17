@@ -227,7 +227,7 @@ function parseNullableEnum<T extends string>(
 }
 
 // The identity is interpolated into the Copilot-Integration-Id header by the config writers;
-// INTEGRATION_ID_RE (env_config.ts, shared with the `integration-id` pin) owns the header-safe
+// INTEGRATION_ID_RE (env_config.ts, shared with the `identity` pin) owns the header-safe
 // shape.
 function parseNullableIdentity(value: unknown, path: string): string | null {
   if (value === undefined || value === null) return null;
@@ -275,7 +275,7 @@ function parseCredentialFields(doc: Record<string, unknown>, path: string): Prof
 const CREDENTIAL_KEYS = ["githubToken", "authProvider", "ghUser"] as const;
 const PROFILE_SLOT_KEYS = [...CREDENTIAL_KEYS, "mode", "integrationIdentity"] as const;
 
-/** A bundle travels between OS families, and `codex-home` is the one preference whose value is a
+/** A bundle travels between OS families, and `codex.home` is the one preference whose value is a
  *  machine path: an absolute path of the OTHER family (a Linux export read on Windows, or the
  *  reverse) is left out with a warning instead of failing the whole import. Anything else the
  *  domain rejects (a relative path, `~`) is still a rejection. */
@@ -862,7 +862,7 @@ export async function applyImportPlan(
     outcome.failures.push(...failures);
   }
   await importProfiles(plan, outcome);
-  // The imported `claude-desktop` preference lands even when no wiring was re-derived.
+  // The imported `claude.desktop` preference lands even when no wiring was re-derived.
   await reconcileClaudeDesktopWiring();
   return outcome;
 }

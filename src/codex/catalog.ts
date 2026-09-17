@@ -573,7 +573,7 @@ async function defaultFetchCopilotModels(
 /** Never throws, never deletes or truncates an existing file: a stale catalog serves until a
  *  refresh succeeds.
  *
- *  opt-in `codex-model-catalog` off -> a no-op
+ *  opt-in `codex.model-catalog` off -> a no-op
  *  Copilot fetched FIRST            -> no credential, or the proxy down, skips the codex spawn
  *  the installed CLI rejects it     -> the candidate is not written; an unjudgeable one is */
 export async function generateCodexModelCatalog(

@@ -1,12 +1,14 @@
-// Every user-facing mention of a config key must be the registry's spelling. Two ways a stale name
-// slips in after a rename, both caught here rather than by a reader:
+// Every mention of a config key must be the registry's spelling. Three ways a stale name slips in
+// after a rename, all caught here rather than by a reader:
 //   an `agent config --set|--del|--get <key>` hint spelled by hand -> must go through the
 //     configSetCommand / configDelCommand / configGetCommand helpers (typed key)
 //   a dotted key named bare in a string ("(daemon.auto-start on)")   -> must be a registry key
-// The registry file owns the helpers and the descriptions, so it is the one file exempt.
+//   a retired spelling cited anywhere, comments included             -> the migration's table says which
+// The registry file owns the helpers and the descriptions, so it is exempt from the string scans.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { CONFIG_REGISTRY } from "../src/copilot_api/env_config.ts";
+import { PREFERENCE_RENAMES } from "../src/migrations/4.0.9.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -100,4 +102,56 @@ test("no source string spells an `agent config` hint by hand or names a dotted k
   expect([...'"the `launchers` config key"'.matchAll(KEY_MENTION)].map((m) => m[1] ?? m[2]))
     .toEqual(["launchers"]);
   expect([...'"unknown config key"'.matchAll(KEY_MENTION)]).toEqual([]);
+});
+
+/** Every file under src/ except src/migrations/, the one directory where the old spellings live. */
+function everyFile(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) {
+      if (path !== join(SRC, "migrations")) out.push(...everyFile(path));
+    } else out.push(path);
+  }
+  return out;
+}
+
+/** The old CLI spellings the 4.0.9 migration renames, from its own table; a spelling the rename kept
+ *  (`passthrough`, `static-key`) is not old. */
+const OLD_KEY_NAMES = PREFERENCE_RENAMES.filter(([, cli, key]) => cli !== key).map(([, cli]) =>
+  cli
+);
+
+/** A key is cited in backticks, alone or with one value word: `` `codex-host` ``, `` `claude-desktop false` ``,
+ *  the backticks escaped inside a template literal or not. A template literal's own opening backtick
+ *  (`` `port ${n} is busy` ``) is not a citation: `${` is no word. */
+const OLD_KEY_CITATION = new RegExp(
+  "\\\\?`(" + OLD_KEY_NAMES.map((k) => k.replace(/[.-]/g, "\\$&")).join("|") + ")( [\\w-]+)?\\\\?`",
+  "g",
+);
+
+test("no source file, comments included, cites a config key by a spelling the 4.0.9 migration retired", () => {
+  const offences: string[] = [];
+  for (const file of everyFile(SRC)) {
+    const lines = readFileSync(file, "utf8").split("\n");
+    lines.forEach((line, i) => {
+      for (const hit of line.match(OLD_KEY_CITATION) ?? []) {
+        offences.push(`${relative(PROJECT_ROOT, file)}:${i + 1}: ${hit} is a retired spelling`);
+      }
+    });
+  }
+  expect(offences).toEqual([]);
+  // Negative controls: the citation shapes are seen, a template literal's opening backtick and a
+  // dotted or flag spelling are not, and the list really comes from the migration's table.
+  expect("the `codex-host` key".match(OLD_KEY_CITATION)).toEqual(["`codex-host`"]);
+  expect("busy (\\`strict-port\\`); free it".match(OLD_KEY_CITATION)).toEqual([
+    "\\`strict-port\\`",
+  ]);
+  expect("the `claude-desktop false` sweep".match(OLD_KEY_CITATION)).toEqual([
+    "`claude-desktop false`",
+  ]);
+  expect("`port ${def} is busy (`daemon.strict-port`); pass `--port`".match(OLD_KEY_CITATION))
+    .toBeNull();
+  expect(OLD_KEY_NAMES).toContain("integration-id");
+  expect(OLD_KEY_NAMES).not.toContain("passthrough");
 });

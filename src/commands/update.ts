@@ -21,7 +21,7 @@ export interface UpdateArgs {
   force?: boolean;
   autoStatus?: boolean;
   /** Commander folds `--verify`/`--no-verify` into one option (last wins), so it arrives as one
-   *  optional boolean; absent defers to the stored `verify-provenance` key. */
+   *  optional boolean; absent defers to the stored `update.verify-provenance` key. */
   verify?: boolean;
 }
 

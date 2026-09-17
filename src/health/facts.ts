@@ -315,7 +315,7 @@ export interface CodexHostFacts {
   enabled: boolean;
 }
 
-/** The persisted state plus the effective cooldown, which is the LIVE `update-cooldown` config
+/** The persisted state plus the effective cooldown, which is the LIVE `update.cooldown` config
  *  (never snapshotted into state), so `agent health` matches `agent update --auto-status`. */
 export type AutoupdateStatus = AutoupdateData & { enabled: boolean; cooldownDays: number };
 

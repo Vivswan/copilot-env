@@ -1,5 +1,5 @@
-// The Codex home derivation (the `codex-home` root, the per-host farm under it, else ~/.codex) and
-// the per-host CODEX_HOME symlink farm (Linux/macOS), DERIVED from the `codex-host` config key by
+// The Codex home derivation (the `codex.home` root, the per-host farm under it, else ~/.codex) and
+// the per-host CODEX_HOME symlink farm (Linux/macOS), DERIVED from the `codex.host` config key by
 // every default Codex wiring pass.
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -29,7 +29,7 @@ import { readCodexToml } from "./toml_io.ts";
 const logger = createStderrLogger();
 
 // Resolved absolute at its one source: it is recorded, exported into shells, and removed by this
-// path, so a relative HOME must never make it cwd-dependent. The farm lives under the `codex-home`
+// path, so a relative HOME must never make it cwd-dependent. The farm lives under the `codex.home`
 // root when that key is set (`<codex-home>/hosts/<hostname>`), else under ~/.codex.
 export function getHostLocalCodexHome(
   root: string | null = codexHomePrefsOrDerived().explicit,
@@ -101,10 +101,10 @@ export function isManagedFarmExport(
  *  the one note the writer, `--check`, and the launcher print (the other readers stay silent). */
 export interface CodexHomeResolution {
   home: string;
-  /** What decided the home: the `codex-host` farm, the `codex-home` root, or the shell/default
+  /** What decided the home: the `codex.host` farm, the `codex.home` root, or the shell/default
    *  convention (which is never stale). The note's wording follows it. */
   by: "farm" | "codex-home" | "default";
-  /** The shell's CODEX_HOME when copilot-env decided the home (the farm, or the `codex-home` root)
+  /** The shell's CODEX_HOME when copilot-env decided the home (the farm, or the `codex.home` root)
    *  and the export names another directory: an rc file, a shell `agent env` never refreshed. Null
    *  when the shell is silent or agrees; with neither key the export IS the home, so never stale. */
   staleExport: string | null;
@@ -218,7 +218,7 @@ function codexHomePrefsOrDerived(): CodexHomePrefs {
   }
 }
 
-/** The farm's disagreement with the `codex-host` key (each kind's line says what the next wiring
+/** The farm's disagreement with the `codex.host` key (each kind's line says what the next wiring
  *  pass does about it), or null when they agree. */
 export type CodexHostDrift = { kind: "missing" | "inactive" | "disabled"; hostHome: string };
 
@@ -667,7 +667,7 @@ function buildCodexSymlinkFarm(codexHome: string): void {
   }
 }
 
-/** ONE default Codex config write with the farm derived from the `codex-host` key around it
+/** ONE default Codex config write with the farm derived from the `codex.host` key around it
  *  (planCodexHostFarm decides). The activation record lands only AFTER a successful write and is
  *  cleared BEFORE a rebuild, so it never outlives a proven farm; `agent uninstall` deletes by it. */
 export async function withCodexHostFarm(
@@ -726,7 +726,7 @@ export async function withCodexHostFarm(
  *  false when the farm directory exists but cannot be enumerated: unseen homes may still hold
  *  state. */
 export function knownCodexHomes(): { homes: string[]; complete: boolean } {
-  // An unreadable store hides a `codex-home` root and its farms, so the sweep says so rather than
+  // An unreadable store hides a `codex.home` root and its farms, so the sweep says so rather than
   // reporting the default homes as the whole set.
   let prefs: CodexHomePrefs = { explicit: null, hostFarm: false };
   let complete = true;
@@ -738,7 +738,7 @@ export function knownCodexHomes(): { homes: string[]; complete: boolean } {
   const homes = new Set<string>([effectiveCodexHomeFor(prefs)]);
   // The default home resolves via homedir(); the farm root via its creator's contract
   // (codexFarmHostsDir on homeDir, process.env.HOME first). They can differ (HOME set on Windows),
-  // so BOTH are swept; the Set dedupes the common case. A `codex-home` root is a third: its own
+  // so BOTH are swept; the Set dedupes the common case. A `codex.home` root is a third: its own
   // farm hosts dir is swept beside the default one, since a key change leaves the other behind.
   homes.add(path.join(homedir(), ".codex"));
   const hostsDirs = [codexFarmHostsDir()];

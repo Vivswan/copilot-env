@@ -111,7 +111,7 @@ export async function stopTrackedProxy(
   classify: (pid: number) => Promise<"yes" | "no" | "unknown"> = classifyDaemonPid,
 ): Promise<{ trackedPid?: number; signalled: boolean; stopped: boolean }> {
   const state = CopilotEnvRunState.forProfile(profile);
-  // A named profile's `port` is its stable reservation (the baked agent wiring points at it), so only
+  // A named profile's port reservation (CopilotEnvRunStateData.port) is stable (the baked agent wiring points at it), so only
   // the default's port tracking reverts on stop.
   const clearPort = daemonPolicy(profile).releasesPortOnStop ? { port: null } : {};
   const trackedPid = state.read().pid;

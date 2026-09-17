@@ -1,4 +1,4 @@
-// The whole-library Claude Desktop reconcile behind the `claude-desktop` key, and the
+// The whole-library Claude Desktop reconcile behind the `claude.desktop` key, and the
 // status `agent claude --check` and health judge. Cross-agent: the default entry's mode
 // comes from settings.json (src/agents/wiring.ts), the profiles' from the store.
 import {

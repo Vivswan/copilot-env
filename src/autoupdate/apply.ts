@@ -91,7 +91,7 @@ export type ProvenanceDecision =
   | { kind: "verify"; verifier?: ProvenanceVerifier }
   | { kind: "skip"; via: "--no-verify" | "verify-provenance" };
 
-/** flag (`--verify` / `--no-verify`) > the resolved `verify-provenance` config
+/** flag (`--verify` / `--no-verify`) > the resolved `update.verify-provenance` config
  *  (stored value, else its default: verify). */
 export function resolveProvenanceDecision(
   flag: boolean | undefined,

@@ -563,9 +563,9 @@ export class CopilotEnvState {
 
   /**
    * The Copilot host the slot's Direct wiring resolved, cached with the identity NAME it was
-   * resolved under and how (`auto` probe or the `copilot-host` literal of the time), cleared on every
+   * resolved under and how (`auto` probe or the `host` literal of the time), cleared on every
    * credential change. It reads back only while BOTH still hold: the identity in force (the
-   * `integration-id` pin, else the slot's own verdict) is the cached one, and the host in force is
+   * `identity` pin, else the slot's own verdict) is the cached one, and the host in force is
    * the cached one (under a literal, the literal itself; under `auto`, an `auto` answer). A pin is
    * configuration, never written into the verdict, so `--identity auto` returns to the probed
    * identity. Read off the raw slot: a derived cache, never part of the exported slot shape.
@@ -693,7 +693,7 @@ export class CopilotEnvState {
 }
 
 /**
- * The Copilot host a Direct rewire of `profile` would bake WITHOUT probing: the `copilot-host`
+ * The Copilot host a Direct rewire of `profile` would bake WITHOUT probing: the `host`
  * literal, else the slot's cached host under the pin in force. Null = only a probe can say (`auto`,
  * nothing cached): read paths (health, Desktop status) then take the baked host as expected. The
  * one rule for every "expected host" question, so no reader derives its own.
@@ -747,7 +747,7 @@ export type CachedCopilotHostRead =
   | { kind: "valid"; host: string };
 
 /** A resolved host beside the identity it was resolved under and how: `auto` (select*IdentityAndHost)
- *  or `literal` (the `copilot-host` value of the time). */
+ *  or `literal` (the `host` value of the time). */
 export interface CachedCopilotHost {
   host: string;
   identity: string;

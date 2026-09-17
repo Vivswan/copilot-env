@@ -292,7 +292,7 @@ function runCheck(name: ProfileName): void {
   }
 }
 
-/** Through the adapter so the profile's Desktop entry follows the `claude-desktop` key; the printed
+/** Through the adapter so the profile's Desktop entry follows the `claude.desktop` key; the printed
  *  path is what `cl --profile` evals into `--settings`. */
 async function runSettingsFor(name: ProfileName): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(name);

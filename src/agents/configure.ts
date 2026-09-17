@@ -216,7 +216,7 @@ export interface AgentAdapter {
    *  machine, pings the wire itself; null (nothing stored) is the proxy verdict. */
   detectDirect(direct: DirectWiring, ghToken: string | null): Promise<boolean>;
   /** The DEFAULT credential's Direct client identity (config pin, else probe) and host
-   *  (`copilot-host` literal, else probe). On the adapter because this module must not import the
+   *  (`host` literal, else probe). On the adapter because this module must not import the
    *  per-agent probe machinery. */
   resolveDirectWiring(ghToken: string | null): Promise<DirectWiring>;
   /** `ghToken` is the credential runAgentConfig already resolved (null = none stored). Only

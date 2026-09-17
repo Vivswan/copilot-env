@@ -734,7 +734,7 @@ export function spawnConfiguredDaemon(opts: {
   const denoBin = resolveDenoBin();
   const daemonEnv = daemonLifecycleEnv(profile, paths);
   // The idle watchdog lives in the daemon process, so server and watchdog are one unit (no orphan
-  // either way) and every (re)start re-attaches it. With `auto-start` off there is no watchdog.
+  // either way) and every (re)start re-attaches it. With `daemon.auto-start` off there is no watchdog.
   const idleWatchdog = config.autoStartEnabled();
   // Activity detection is unaffected by the mute: the always-loaded inference observer watches inbound
   // requests, not log files.
@@ -780,7 +780,7 @@ function copilotTokenFailureHint(log: string, profile: Profile): string | null {
 
 /**
  * A lost bind race (EADDRINUSE in the log) retries ONCE on another port, unless the port was pinned by
- * `--port` or `strict-port` steers the DEFAULT daemon; a named profile's reservation is soft, so its
+ * `--port` or `daemon.strict-port` steers the DEFAULT daemon; a named profile's reservation is soft, so its
  * bind race always retries. Readiness is the "Listening on:" log line.
  */
 export async function awaitReadiness(opts: {
@@ -810,7 +810,7 @@ export async function awaitReadiness(opts: {
       logContent = "";
     }
     if (/address already in use|EADDRINUSE|bind.*failed/i.test(logContent)) {
-      // Same exemption as resolveStartPort: `strict-port` gates only the policy-eligible daemon.
+      // Same exemption as resolveStartPort: `daemon.strict-port` gates only the policy-eligible daemon.
       const strictPort = daemonPolicy(profile).strictPortEligible && config.strictPortEnabled();
       if (pinnedPort !== undefined || strictPort) {
         printLogTail(logFile, 20);

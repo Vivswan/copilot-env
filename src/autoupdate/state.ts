@@ -2,7 +2,7 @@
 // so autoupdate adds no second I/O implementation.
 //
 //   this file            -> throttle only: when the last check ran and how it went
-//   `auto-update` config -> the preference itself, never copied here
+//   `update.auto` config -> the preference itself, never copied here
 import * as v from "valibot";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -11,7 +11,7 @@ import { autoupdateStateFile } from "./paths.ts";
 /** Default release cooldown for autoupdate: adopt releases at least this old. */
 export const DEFAULT_AUTOUPDATE_COOLDOWN_DAYS = 7;
 
-/** Always the live `update-cooldown` config, never snapshotted into state, so `agent config
+/** Always the live `update.cooldown` config, never snapshotted into state, so `agent config
  *  --set update-cooldown N` takes effect on the next run. */
 export function effectiveUpdateCooldownDays(): number {
   return new CopilotEnvConfig().updateCooldownDays() ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;

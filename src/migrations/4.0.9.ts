@@ -160,42 +160,48 @@ export const v409CodexProfileFiles: Migration = {
 // follow the credential (identity, host, passthrough, static-key) live only in a profile's
 // section. A reader knows only the new shape, so this is the one place the old names exist.
 
-/** Old flat key -> new key. Every old key moves; the four profile keys land in `profiles.default`. */
-const PREFERENCE_RENAMES: ReadonlyArray<readonly [string, ConfigKey]> = [
-  ["alphaSearchCodexPriority", "proxy.alpha-search.codex-priority"],
-  ["alphaSearchModel", "proxy.alpha-search.model"],
-  ["autoStart", "daemon.auto-start"],
-  ["autoUpdate", "update.auto"],
-  ["claudeAutoModel", "proxy.claude-auto-model"],
-  ["claudeDesktop", "claude.desktop"],
-  ["claudeTokenMultiplier", "proxy.claude-token-multiplier"],
-  ["codexHome", "codex.home"],
-  ["codexHost", "codex.host"],
-  ["codexModelCatalog", "codex.model-catalog"],
-  ["copilotHost", "host"],
-  ["creditsTarget", "cost.credits-target"],
-  ["idleTimeout", "daemon.idle-timeout"],
-  ["integrationId", "identity"],
-  ["launchers", "shell.launchers"],
-  ["maxPort", "daemon.max-port"],
-  ["messageApiWebSearchModel", "proxy.message-websearch-model"],
-  ["minPort", "daemon.min-port"],
-  ["passthrough", "passthrough"],
-  ["port", "daemon.port"],
-  ["pricingUrl", "cost.pricing-url"],
-  ["proxyLogs", "daemon.logs"],
-  ["proxyVersion", "daemon.version"],
-  ["releaseCooldown", "daemon.release-cooldown"],
-  ["smallModel", "proxy.small-model"],
-  ["staticKey", "static-key"],
-  ["strictPort", "daemon.strict-port"],
-  ["updateCooldown", "update.cooldown"],
-  ["useMessagesApi", "proxy.messages-api"],
-  ["useResponsesApiContextManagement", "proxy.responses.context-management"],
-  ["useResponsesApiWebSearch", "proxy.responses.websearch"],
-  ["useResponsesApiWebSocket", "proxy.responses.websocket"],
-  ["verifyProvenance", "update.verify-provenance"],
-  ["wireMcp", "claude.wire-mcp"],
+/** Old stored key, its old CLI spelling, new key. Every old key moves; the profile keys land in the
+ *  profile sections. Exported so test/config_key_lint.test.ts can refuse the old spellings anywhere
+ *  outside this directory, the one place they legitimately live. */
+export const PREFERENCE_RENAMES: ReadonlyArray<readonly [string, string, ConfigKey]> = [
+  ["alphaSearchCodexPriority", "alpha-search-codex-priority", "proxy.alpha-search.codex-priority"],
+  ["alphaSearchModel", "alpha-search-model", "proxy.alpha-search.model"],
+  ["autoStart", "auto-start", "daemon.auto-start"],
+  ["autoUpdate", "auto-update", "update.auto"],
+  ["claudeAutoModel", "claude-auto-model", "proxy.claude-auto-model"],
+  ["claudeDesktop", "claude-desktop", "claude.desktop"],
+  ["claudeTokenMultiplier", "claude-token-multiplier", "proxy.claude-token-multiplier"],
+  ["codexHome", "codex-home", "codex.home"],
+  ["codexHost", "codex-host", "codex.host"],
+  ["codexModelCatalog", "codex-model-catalog", "codex.model-catalog"],
+  ["copilotHost", "copilot-host", "host"],
+  ["creditsTarget", "credits-target", "cost.credits-target"],
+  ["idleTimeout", "idle-timeout", "daemon.idle-timeout"],
+  ["integrationId", "integration-id", "identity"],
+  ["launchers", "launchers", "shell.launchers"],
+  ["maxPort", "max-port", "daemon.max-port"],
+  ["messageApiWebSearchModel", "message-websearch-model", "proxy.message-websearch-model"],
+  ["minPort", "min-port", "daemon.min-port"],
+  ["passthrough", "passthrough", "passthrough"],
+  ["port", "port", "daemon.port"],
+  ["pricingUrl", "pricing-url", "cost.pricing-url"],
+  ["proxyLogs", "proxy-logs", "daemon.logs"],
+  ["proxyVersion", "proxy-version", "daemon.version"],
+  ["releaseCooldown", "release-cooldown", "daemon.release-cooldown"],
+  ["smallModel", "small-model", "proxy.small-model"],
+  ["staticKey", "static-key", "static-key"],
+  ["strictPort", "strict-port", "daemon.strict-port"],
+  ["updateCooldown", "update-cooldown", "update.cooldown"],
+  ["useMessagesApi", "messages-api", "proxy.messages-api"],
+  [
+    "useResponsesApiContextManagement",
+    "responses-context-management",
+    "proxy.responses.context-management",
+  ],
+  ["useResponsesApiWebSearch", "responses-websearch", "proxy.responses.websearch"],
+  ["useResponsesApiWebSocket", "responses-websocket", "proxy.responses.websocket"],
+  ["verifyProvenance", "verify-provenance", "update.verify-provenance"],
+  ["wireMcp", "wire-mcp", "claude.wire-mcp"],
 ];
 
 /** Pure over the raw document, so the fixture test can see the whole before/after. Values move
@@ -210,7 +216,7 @@ export function regroupPreferences(
 ): Record<string, unknown> {
   const out = structuredClone(doc);
   let moved = false;
-  for (const [oldKey, key] of PREFERENCE_RENAMES) {
+  for (const [oldKey, , key] of PREFERENCE_RENAMES) {
     if (!Object.hasOwn(out, oldKey)) continue;
     const value = out[oldKey];
     delete out[oldKey];

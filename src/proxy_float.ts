@@ -5,7 +5,7 @@
 //
 // npm lifecycle scripts never run for global-cache `npm:` execution, so a target declaring them
 // would misbehave silently at runtime: the default float REFUSES it (a recorded in-bounds version
-// is kept; otherwise it fails loud), while an explicit COPILOT_API_VERSION or `proxy-version` pin
+// is kept; otherwise it fails loud), while an explicit COPILOT_API_VERSION or `daemon.version` pin
 // installs it with a warning. The cache warm passes the cooldown as --minimum-dependency-age, so
 // TRANSITIVE deps get the window too.
 
@@ -1167,7 +1167,7 @@ export async function proxyInstallAssertStatus(
 
 // --- the Direct-only skip predicate -------------------------------------------
 
-/** An env pin is per-invocation intent and forces the normal path; a stored `proxy-version` pin
+/** An env pin is per-invocation intent and forces the normal path; a stored `daemon.version` pin
  *  does NOT, since the config only matters once an agent is wired to the proxy again.
  *  src/health/probe.ts reports a skipped float instead of a stale one. */
 export function proxyFloatSkips(codexHome?: string, claudeHome?: string): boolean {

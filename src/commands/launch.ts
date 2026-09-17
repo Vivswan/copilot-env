@@ -300,7 +300,7 @@ export function commandDeps(): LaunchDeps {
           credential,
         }
         : { mode, credential };
-      // Through the adapter so the profile's Desktop entry follows the `claude-desktop` key, like
+      // Through the adapter so the profile's Desktop entry follows the `claude.desktop` key, like
       // `--settings-for`.
       await claudeAdapter().configureProfile(name, write, { quiet: true });
       return settingsPathFor(resolveClaudeHome(), name);

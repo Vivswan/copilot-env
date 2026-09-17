@@ -121,7 +121,7 @@ function catalogAliases(
 
 /**
  * Resolves an alias the way the proxy does for the same stored key (start.ts), so ONE
- * `message-websearch-model` value drives both surfaces.
+ * `proxy.message-websearch-model` value drives both surfaces.
  *
  *   the catalog fetch fails  -> warn and send the raw value
  *   no alias for the value   -> sent as-is; generateAliases skips identity mappings

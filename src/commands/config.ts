@@ -35,6 +35,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { versionLessThan } from "../utils/semver.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
+import stringWidth from "string-width";
 
 export interface ConfigArgs {
   /** A Commander variadic; exactly two strings when well-formed. */
@@ -338,7 +339,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
       fallback,
       value,
       indent,
-      leadLength: indent + 2 + `${def.key}=${value}`.length,
+      leadLength: indent + 2 + stringWidth(`${def.key}=${value}`),
     };
   });
   // The key=value column is the longest lead that still leaves the right column
@@ -366,7 +367,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     ];
   };
   const wrapNote = (note: string): string[] =>
-    packToWidth(note.split(" "), (word) => word.length, rightWidth)
+    packToWidth(note.split(" "), stringWidth, rightWidth)
       .map((words) => paint.dim(words.join(" ")));
 
   // The global layer a profile override hides: the global map's value, else the built-in default.
@@ -401,7 +402,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     if (isStoredValueInert(def, row.resolved, opts.platform)) {
       cells.push({ text: "(inert on this platform)", paint: paint.dim });
     }
-    const right = packToWidth(cells, (cell) => cell.text.length, rightWidth)
+    const right = packToWidth(cells, (cell) => stringWidth(cell.text), rightWidth)
       .map((line) => line.map((cell) => cell.paint(cell.text)).join(" "));
     const daemonReads = isProxyProjected(def) || def.restartToApply === true;
     const up = row.resolved.source === "profile" ? opts.profileDaemonUp : opts.daemonUp;
@@ -440,11 +441,11 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     ...(inherited === "" ? [] : [`${inherited} set without --profile is every profile's default`]),
   ];
   // A part wider than the terminal stands alone on its line; its words then wrap like prose.
-  const header = packToWidth(headerParts, (part) => part.length, opts.width, HEADER_GAP.length)
+  const header = packToWidth(headerParts, stringWidth, opts.width, HEADER_GAP.length)
     .flatMap((parts) => {
       const [only = ""] = parts;
       return parts.length === 1 && only.length > opts.width
-        ? packToWidth(only.split(" "), (word) => word.length, opts.width)
+        ? packToWidth(only.split(" "), stringWidth, opts.width)
           .map((words) => words.join(" "))
         : [parts.join(HEADER_GAP)];
     })
@@ -454,7 +455,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
   /** A bold title whose note is its right column: on the shared column, or under the title
    *  when the title runs past it. */
   const banner = (title: string, note: string): string =>
-    layout(paint.bold(title), title.length, wrapNote(`(${note})`)).join("\n");
+    layout(paint.bold(title), stringWidth(title), wrapNote(`(${note})`)).join("\n");
   const groupIndent = " ".repeat(GROUP_INDENT);
 
   /** One block per group that has a key of `scope`, in CONFIG_GROUPS order. */

@@ -109,6 +109,11 @@ export async function withConsolaOnStderr<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** The one place a question is asked: consola's prompt bypasses the reporters, so its text is
+ *  wrapped here to the terminal the answer is typed in. */
+export const prompt: ConsolaInstance["prompt"] = (message, options) =>
+  consola.prompt(wrapMessage(message, terminalWidth()), options);
+
 export function createStderrLogger(): ConsolaInstance {
   return wrapToTerminal(createConsola({
     stdout: process.stderr,

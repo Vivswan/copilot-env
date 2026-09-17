@@ -32,7 +32,7 @@ import {
   profileLabel,
 } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
-import { createStderrLogger } from "../utils/logger.ts";
+import { createStderrLogger, prompt } from "../utils/logger.ts";
 import { atomicWriteFile, writeFileReported } from "../utils/report_write.ts";
 import { PROXY_RESTART_HINT_ALL, unreadProjectedKeyWarnings } from "./config.ts";
 
@@ -144,7 +144,7 @@ async function confirmImport(writeLines: string[], file: string): Promise<boolea
   if (!process.stdin.isTTY) {
     throw new Error("not a terminal - pass --force to import non-interactively");
   }
-  const confirmed = await consola.prompt("Overwrite these settings with the bundle?", {
+  const confirmed = await prompt("Overwrite these settings with the bundle?", {
     type: "confirm",
     initial: false,
   });

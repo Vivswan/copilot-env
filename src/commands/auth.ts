@@ -3,7 +3,6 @@
 // time, so this command is also their resolver.
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
-import { consola } from "consola";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
@@ -71,8 +70,15 @@ import {
 } from "../copilot_api/profile.ts";
 import { COLOR_ENABLED, cyan, palette } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
-import { createStderrLogger } from "../utils/logger.ts";
-import { formatTable, printTable, terminalWidth, wrapLine } from "../utils/table.ts";
+import { createStderrLogger, prompt } from "../utils/logger.ts";
+import {
+  formatTable,
+  printTable,
+  printWrapped,
+  terminalWidth,
+  wrapLine,
+  wrapMessage,
+} from "../utils/table.ts";
 
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
 const logger = createStderrLogger();
@@ -197,7 +203,7 @@ async function chooseProvider(): Promise<AuthProvider> {
         "(e.g. `agent auth --provider gh-env`) or `agent auth --set <token>`",
     );
   }
-  const value = await consola.prompt("How should GitHub Copilot authenticate?", {
+  const value = await prompt("How should GitHub Copilot authenticate?", {
     type: "select",
     options: AUTH_PROVIDERS.map((provider) => ({
       label: `${provider} - ${PROVIDER_PICKER_DETAIL[provider]}`,
@@ -280,7 +286,7 @@ export async function chooseGhAccount(
   // The active account leads (the default selection); auto is LAST and explicit.
   const ordered = [...logins].sort((a, b) => Number(b === active) - Number(a === active));
   const activeLabel = active === null ? "" : ` (currently ${active})`;
-  const value = await consola.prompt("Which gh account should Direct auth use?", {
+  const value = await prompt("Which gh account should Direct auth use?", {
     type: "select",
     options: [
       ...ordered.map((login) => {
@@ -325,7 +331,8 @@ async function loginWithCopilot(): Promise<string> {
 /** consola's text prompt echoes input and has no masked variant, and its confirm takes two lines, so
  *  readline serves both: `secret` mutes the echo. The query goes to stderr, keeping `--get`'s stdout
  *  contract untouched. */
-function readAnswer(query: string, secret: boolean): Promise<string> {
+function readAnswer(rawQuery: string, secret: boolean): Promise<string> {
+  const query = wrapMessage(rawQuery, terminalWidth(process.stderr));
   return new Promise((resolve, reject) => {
     const muted = new Writable({
       write(_chunk, _encoding, callback) {
@@ -415,7 +422,7 @@ async function chooseEnvToken(): Promise<GhEnvToken & { look: GithubLoginLook }>
     if (!(await confirmLine(`Use ${row(only)}?`))) throw new Error("cancelled");
     return only;
   }
-  const value = await consola.prompt("Which token should GitHub Copilot use?", {
+  const value = await prompt("Which token should GitHub Copilot use?", {
     type: "select",
     options: looked.map((candidate) => ({ label: row(candidate), value: candidate.name })),
     cancel: "reject",
@@ -682,20 +689,20 @@ function runCheck(profile: Profile): void {
   const label = profile === null ? "" : ` (${profileLabel(profile)})`;
   if (provider === null) {
     if (profile !== null && profileSlotMissing(profile)) {
-      console.log(noSuchProfileHint(profile));
+      printWrapped(noSuchProfileHint(profile));
     } else {
-      console.log(`not authenticated${label} - run \`agent auth${flag}\``);
+      printWrapped(`not authenticated${label} - run \`agent auth${flag}\``);
     }
     process.exitCode = 1;
     return;
   }
   const source = liveCredentialSourceLabel(credential.read()) ?? provider;
   if (resolves) {
-    console.log(`authenticated (${source})${label}`);
+    printWrapped(`authenticated (${source})${label}`);
     process.exitCode = 0;
   } else {
     // e.g. gh-cli selected but `gh` is no longer authenticated (as the pinned account).
-    console.log(
+    printWrapped(
       `provider '${source}' selected but no credential resolves${label} - run \`agent auth${flag}\``,
     );
     process.exitCode = 1;
@@ -1076,7 +1083,7 @@ async function chooseIdentity(
     return verdict === undefined ? "not probed" : verdictCell(verdict, "", PLAIN_PAINT);
   };
   const current = (name: string): string => name === pinned ? " (current pin)" : "";
-  const value = await consola.prompt("Which Copilot client identity should be pinned?", {
+  const value = await prompt("Which Copilot client identity should be pinned?", {
     type: "select",
     options: [
       {

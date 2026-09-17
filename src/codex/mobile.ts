@@ -2,7 +2,6 @@
 // temporarily removes the managed `model_provider`, walks the user through pairing in the app, then
 // restores it. There is no Linux Codex app, so it is gated to macOS/Windows.
 import * as fs from "node:fs";
-import { consola } from "consola";
 import { parse, stringify } from "smol-toml";
 import {
   appRunning,
@@ -13,7 +12,7 @@ import {
 } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
 import { isRecord } from "../utils/json.ts";
-import { createStderrLogger } from "../utils/logger.ts";
+import { createStderrLogger, prompt } from "../utils/logger.ts";
 import { removeReported, writeFileReported } from "../utils/report_write.ts";
 import { inspectCatalogFile } from "./catalog.ts";
 import { effectiveCodexHome } from "./host.ts";
@@ -244,7 +243,7 @@ export class CodexAppController {
   }
 
   private manualPromptOpen(): Promise<unknown> {
-    return consola.prompt(`Open the ${APP_NAME} app, then press Enter.`, { type: "text" });
+    return prompt(`Open the ${APP_NAME} app, then press Enter.`, { type: "text" });
   }
 }
 
@@ -299,7 +298,7 @@ export async function runCodexMobile(): Promise<void> {
   }
   if (installGate.kind === "confirm") {
     logger.warn(installGate.warn);
-    const cont = await consola.prompt(installGate.prompt, {
+    const cont = await prompt(installGate.prompt, {
       type: "confirm",
       initial: true,
     });
@@ -313,7 +312,7 @@ export async function runCodexMobile(): Promise<void> {
   const gate = closeGateFromScan(await app.runningState());
   if (gate.close) {
     if (gate.warn !== null) logger.warn(gate.warn);
-    const close = await consola.prompt(gate.prompt, {
+    const close = await prompt(gate.prompt, {
       type: "confirm",
       initial: true,
     });
@@ -396,7 +395,7 @@ export async function runCodexMobile(): Promise<void> {
         "  2. When your phone is connected, come back here.",
       ].join("\n"),
     );
-    await consola.prompt("Press Enter once you've finished pairing on your phone.", {
+    await prompt("Press Enter once you've finished pairing on your phone.", {
       type: "text",
     });
 

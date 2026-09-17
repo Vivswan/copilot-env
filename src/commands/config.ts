@@ -452,7 +452,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     const heading = overridable.includes(group)
       ? banner(
         `${groupIndent}${group}:`,
-        `global default; a profile may override with ${PROFILE_FLAG} --set`,
+        "global default; a profile may override",
       )
       : paint.bold(`${groupIndent}${group}:`);
     return [[heading, ...lines].join("\n")];

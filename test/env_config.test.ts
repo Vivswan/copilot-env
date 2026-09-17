@@ -864,9 +864,7 @@ test("configTable() seats each key by its registry scope: PROFILE holds profile 
   expect(keysIn(defaultView.global)).toContain(shared.key);
   expect(defaultView.global.join("\n")).toMatch(
     new RegExp(
-      `^  ${
-        configGroup(shared.key)
-      }: +\\(global default; a profile may override with --profile <name> --set\\)$`,
+      `^  ${configGroup(shared.key)}: +\\(global default; a profile may override\\)$`,
       "m",
     ),
   );

@@ -1,6 +1,6 @@
-// The backend an agent's config selects, shared by the Codex and Claude writers so the type and
-// the `--check` exit code (a `cl`/`cx` launcher contract) cannot drift apart. The per-agent
-// detail strings stay in each writer; they legitimately differ.
+// The backend an agent's config selects, shared by the Codex and Claude writers so the type, the
+// `--check` exit code (a `cl`/`cx` launcher contract), and the two managed-mode detail strings
+// cannot drift apart. The `other` and `none` details stay in each writer; those differ per agent.
 //   direct -> GitHub Copilot directly           proxy -> the local copilot-api proxy
 //   other  -> a foreign config we do not manage  none  -> unconfigured (the proxy is the default)
 
@@ -12,6 +12,12 @@ export type AgentProviderMode = (typeof AGENT_PROVIDER_MODES)[number];
 
 /** The two modes copilot-env actively manages (writes). */
 export type ManagedAgentMode = Extract<AgentProviderMode, "direct" | "proxy">;
+
+/** What `--check` says a managed mode is, the same words for both agents. */
+export const MANAGED_MODE_DETAIL: Record<ManagedAgentMode, string> = {
+  direct: "GitHub Copilot Direct",
+  proxy: "local copilot-api proxy",
+};
 
 /** The ONLY shape the `--direct`/`--proxy` pair takes past the CLI boundary, so "both flags"
  *  is unrepresentable downstream. What "auto" means stays per-command (init/codex/claude probe

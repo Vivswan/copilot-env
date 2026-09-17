@@ -13,7 +13,11 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } 
 import { join } from "node:path";
 import { codexProviderId } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
-import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
+import {
+  CODEX_PROFILE_TABLES_LAST_VERSION,
+  codexConfigPath,
+  codexProfileConfigPath,
+} from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { CopilotApiConfig, ensureDict, JSON_PARSE_DIAGNOSTIC } from "../copilot_api/config.ts";
 import { AUTOUPDATE_FILENAME, autoupdateDir } from "../autoupdate/paths.ts";
@@ -168,7 +172,7 @@ export function moveCodexProfileTablesEverywhere(): void {
 }
 
 export const v409CodexProfileFiles: Migration = {
-  version: "4.0.9",
+  version: CODEX_PROFILE_TABLES_LAST_VERSION,
   description: "move Codex named profiles from [profiles.<name>] to <name>.config.toml",
   run: moveCodexProfileTablesEverywhere,
 };

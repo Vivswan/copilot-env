@@ -105,7 +105,7 @@ export function configGroup(key: ConfigKey): ConfigGroup {
 type ProxyGroupKey = Extract<ConfigKey, `proxy.${string}`>;
 
 // Generous ceilings: anything larger is a typo, not a setting.
-const MAX_SECONDS = 365 * 24 * 60 * 60;
+const MAX_SECONDS = 365 * SECONDS_PER_DAY;
 const MAX_CREDITS = 1_000_000_000_000;
 const MAX_TOKEN_MULTIPLIER = 1000;
 const MAX_DAYS = 3650;
@@ -1106,6 +1106,21 @@ function applyPatch(map: Record<string, unknown>, patch: Record<string, unknown>
   }
 }
 
+/** The `host` literal in force for `profile` in one read of the store (`auto` and unset read as
+ *  null), so a caller judging a not-yet-stored document (an import's plan) applies the same rule as
+ *  the live store. */
+export function copilotHostIn(data: CopilotEnvConfigData, profile: Profile): string | null {
+  const value = resolveSettingIn(data, "host", { profile }).value;
+  return value === undefined || value === COPILOT_HOST_AUTO ? null : value;
+}
+
+/** The `identity` pin in force, likewise; `auto` reads as null so `--set identity auto` restores
+ *  probing without a separate `--del`. */
+export function pinnedIntegrationIdIn(data: CopilotEnvConfigData, profile: Profile): string | null {
+  const value = resolveSettingIn(data, "identity", { profile }).value;
+  return value === undefined || value.toLowerCase() === "auto" ? null : value;
+}
+
 export class CopilotEnvConfig {
   private readonly store: CopilotApiConfig;
 
@@ -1206,14 +1221,11 @@ export class CopilotEnvConfig {
   /** `profile`'s `host` literal, or null for `auto`: the caller then resolves the host per credential
    *  (the select*IdentityAndHost pair, integration_identity.ts). */
   copilotHost(profile: Profile): string | null {
-    const value = this.resolve("host", { profile }).value;
-    return value === undefined || value === COPILOT_HOST_AUTO ? null : value;
+    return copilotHostIn(this.read(), profile);
   }
 
-  /** `auto` reads as null so `--set identity auto` restores probing without a separate `--del`. */
   pinnedIntegrationId(profile: Profile): string | null {
-    const value = this.resolve("identity", { profile }).value;
-    return value === undefined || value.toLowerCase() === "auto" ? null : value;
+    return pinnedIntegrationIdIn(this.read(), profile);
   }
 
   /** undefined = `auto` or unset; the caller decides from the credential's provider and token shape. */

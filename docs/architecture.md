@@ -359,7 +359,6 @@ graph TD
   health --> claude
   health --> codex
   health --> copilot_api
-  health --> migrations
   health --> proxy_float
   health --> scripts
   health --> shell

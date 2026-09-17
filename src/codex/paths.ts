@@ -3,6 +3,7 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
 import type { ProfileName } from "../copilot_api/profile.ts";
+import type { SemverString } from "../utils/semver.ts";
 
 /** No process.env.HOME precedence: on Windows homedir() is %USERPROFILE%, where Codex reads, while
  *  HOME may be a Git-for-Windows/MSYS path. path.join, not string concat, so every writer and
@@ -25,6 +26,11 @@ export const CODEX_PROVIDER_ID = "copilot-env";
 export function codexConfigPath(codexHome: string): string {
   return path.join(codexHome, "config.toml");
 }
+
+/** The copilot-env release that still wrote a named profile as a `[profiles.<name>]` table; the
+ *  update away from it moves the tables (src/migrations/4.0.9.ts), and `agent health` spells that
+ *  repair with this version. */
+export const CODEX_PROFILE_TABLES_LAST_VERSION: SemverString = "4.0.9";
 
 /** A named profile's own file, `<name>.config.toml`, which `codex --profile <name>` layers over
  *  config.toml (Codex >= 0.134 reads no `[profiles.<name>]` table and refuses one at startup). */

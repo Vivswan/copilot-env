@@ -66,6 +66,7 @@ import {
 import { configureDefaultAgents } from "./configure_defaults.ts";
 import { reconcileClaudeDesktopWiring } from "./claude_desktop.ts";
 import { bothAgents, directPairIncomplete, wireBothAgents } from "./profile_wiring.ts";
+import { directOverlayIn } from "../copilot_api/direct_pair.ts";
 import {
   AGENT_PROVIDER_MODES,
   type AgentProviderMode,
@@ -711,11 +712,11 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
   //   one Direct agent on a recorded Direct default whose pair will not be stored -> the one-agent
   //   write would land both anyway (runAgentConfig): decided here, so the preview names the other
   //   agent's file too.
-  // "Not stored at apply time" is the apply's own test (runAgentConfig's directPairIncomplete,
-  // keyed on the STORED pair alone, never on a pin or literal: the apply replaces the preferences
-  // before it wires, so an overlay-dependent test would answer differently on the two sides), plus
-  // the one fact only the plan knows: this import lands the default credential, whose write takes
-  // the pair with it.
+  // "Not stored at apply time" is the apply's own test (runAgentConfig's directPairIncomplete: a half
+  // is present when stored OR covered by the pin or literal in force), judged here under the overlay
+  // the BUNDLE puts in force (the apply replaces the preferences before it wires, so the local ones
+  // would answer for the wrong document), plus the one fact only the plan knows: this import lands
+  // the default credential, whose write takes the pair with it.
   const named = modes.codex ?? modes.claude;
   const oneNamed = named !== null && (modes.codex === null) !== (modes.claude === null);
   /** A landing overrides a skip line for the OTHER agent (an unmanaged or gated mode there): the
@@ -731,7 +732,8 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
     modes.claude = mode;
   };
   const pairUnstored = recorded === "direct" &&
-    (defaultSlot.action === "write" || directPairIncomplete(null));
+    (defaultSlot.action === "write" ||
+      directPairIncomplete(null, directOverlayIn(bundle.config, null)));
   if (bundle.modes.codex === "none" && bundle.modes.claude === "none" && pairUnstored) {
     modes.codex = "direct";
     modes.claude = "direct";

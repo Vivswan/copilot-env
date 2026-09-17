@@ -686,10 +686,10 @@ test("a Direct default whose pair will not be stored at apply time rebakes both 
   expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(true);
   expect(state.readProfileDirectPair(null).host).toBe(DEFAULT_COPILOT_API_BASE);
 
-  // The landing rule keys on the STORED pair, never on an overlay: with a local pin and literal
-  // covering both halves, a render would succeed under the local preferences and fail under the
-  // bundle's (the apply replaces them before it wires; this bundle's profile sections are empty).
-  // The pair dropped again, so the plan and the apply must both say "both agents".
+  // The landing rule counts a half as present when it is stored OR pinned, judged from the same
+  // snapshot the pair came from: the plan reads the BUNDLE's config (empty profile sections), not
+  // the local pin and literal the apply is about to replace. The pair dropped again, so the plan
+  // and the apply must both say "both agents".
   state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghp_rotated_twice" });
   new CopilotEnvConfig().setProfile(null, {
     identity: "copilot-developer-cli",
@@ -711,7 +711,8 @@ test("a Direct default whose pair will not be stored at apply time rebakes both 
   });
   expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(true);
   // The control the rule protects: the apply replaced the preferences, so the local pin and literal
-  // are gone; a render-keyed rule would have found no overlay here and disagreed with the plan.
+  // are gone; the render-keyed rule, judged under the BUNDLE's overlay at plan time, agrees with
+  // what the apply found here.
   expect(new CopilotEnvConfig().read().profiles).toEqual({});
 });
 

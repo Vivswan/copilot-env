@@ -4,7 +4,7 @@
 import { claudeAdapter } from "../claude/config.ts";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { codexAdapter, landDirectWiring } from "../codex/config.ts";
-import { renderDirectPair } from "../copilot_api/direct_pair.ts";
+import { type DirectOverlay, directOverlay, renderDirectPair } from "../copilot_api/direct_pair.ts";
 import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
@@ -80,13 +80,18 @@ export async function wireBothAgents(
 
 /**
  * Whether `profile`'s next Direct write is a LANDING (the pair probed and stored) rather than a
- * re-render: the STORED pair is missing a half. Keyed on the slot alone, never on the pin or
- * literal in force: an overlay renders at read time and decides nothing here, so the import's plan
- * (under the local preferences) and its apply (under the bundle's) agree, and the default (both
- * agents through configureDefaultAgents) and a named profile (landDirectWiring) take one rule.
+ * re-render: a half is present when it is STORED or covered by the pin or literal in `overlay`,
+ * read from the same store the pair comes from. A pin is never stored, so a half it covers stays
+ * unprobed by design and must not read as a gap: a pinned profile probes once, at its landing, and
+ * every re-render after that makes zero requests. The default (configureDefaultAgents) and a named
+ * profile (landDirectWiring) take this one rule; an import's plan passes the overlay the bundle
+ * WILL put in force (directOverlayIn), so plan and apply judge the same document.
  */
-export function directPairIncomplete(profile: Profile): boolean {
-  return renderDirectPair(profile, { pinned: null, literal: null }) === null;
+export function directPairIncomplete(
+  profile: Profile,
+  overlay: DirectOverlay = directOverlay(profile),
+): boolean {
+  return renderDirectPair(profile, overlay) === null;
 }
 
 /**

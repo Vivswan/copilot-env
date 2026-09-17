@@ -11,6 +11,7 @@
 //   "cannot verify"        -> the bundle or trust root could not be fetched; names the opt-outs
 //   "verification FAILED"  -> the bytes are not attested or the signer is wrong; never names them
 import { configSetCommand } from "../copilot_api/env_config.ts";
+import { isRecord } from "../utils/json.ts";
 import { escapeRegExp } from "../utils/regexp.ts";
 
 /** The release asset carrying the Sigstore bundle (uploaded by the release workflow's publish
@@ -123,10 +124,10 @@ export function parseStatement(payload: Uint8Array): ProvenanceStatement {
   } catch {
     throw new Error("the attestation payload is not JSON");
   }
-  if (typeof parsed !== "object" || parsed === null) {
+  if (!isRecord(parsed)) {
     throw new Error("the attestation payload is not an in-toto statement");
   }
-  const statement = parsed as Record<string, unknown>;
+  const statement = parsed;
   if (statement._type !== IN_TOTO_STATEMENT_V1) {
     throw new Error(
       `unexpected statement type ${String(statement._type)} (expected ${IN_TOTO_STATEMENT_V1})`,
@@ -144,11 +145,9 @@ export function parseStatement(payload: Uint8Array): ProvenanceStatement {
   }
   const subjects: AttestedSubject[] = [];
   for (const entry of statement.subject as unknown[]) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const { name, digest } = entry as { name?: unknown; digest?: unknown };
-    const sha256 = typeof digest === "object" && digest !== null
-      ? (digest as { sha256?: unknown }).sha256
-      : undefined;
+    if (!isRecord(entry)) continue;
+    const { name, digest } = entry;
+    const sha256 = isRecord(digest) ? digest.sha256 : undefined;
     if (typeof name !== "string" || typeof sha256 !== "string") continue;
     subjects.push({ name, sha256: sha256.toLowerCase() });
   }

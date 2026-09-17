@@ -1836,3 +1836,22 @@ test("checkAuth renders the named-profiles detail line from the swept facts", ()
     "named profiles: fast (no auth, proxy), work (gh-token, direct)",
   );
 });
+
+test("checkAuth: an unproven pinned look names the gh call that timed out and keeps what the completed call said", () => {
+  // The pinned call completed (a miss); the status call behind the fallback was the one killed.
+  const detail = "`gh auth token --user work-bot --hostname github.com` exited 1: no oauth token " +
+    "found; `gh auth status --hostname github.com` did not complete";
+  const unproven = checkAuth({
+    storedToken: false,
+    ghAuthenticated: false,
+    ghAuthUnproven: true,
+    ghUser: "work-bot",
+    ghDetail: detail,
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect(unproven.status).toBe("warn");
+  expect(unproven.detail).toContain(`could not check gh authentication (${detail}; `);
+  expect(unproven.detail).not.toContain("`gh auth token` did not run to completion");
+});

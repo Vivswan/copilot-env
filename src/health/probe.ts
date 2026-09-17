@@ -234,9 +234,12 @@ export function directAuthFromLook(
   ghUser: string | null = null,
 ): CodexDirectAuthFacts {
   const pinned = ghUser === null ? {} : { ghUser };
-  if (look.unproven) return { command, authenticated: false, unproven: true, ...pinned };
+  const why = look.detail === undefined ? {} : { ghDetail: look.detail };
+  if (look.unproven) {
+    return { command, authenticated: false, unproven: true, ...pinned, ...why };
+  }
   const served = look.command === undefined ? {} : { ghCommand: look.command };
-  return { command, authenticated: look.token !== null, ...pinned, ...served };
+  return { command, authenticated: look.token !== null, ...pinned, ...served, ...why };
 }
 
 /** Null when gh is absent, has no account, or the look never completed: naming only, never a
@@ -1005,6 +1008,7 @@ export async function gatherFacts(
             ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
             ...(gh?.ghActiveLogin != null ? { ghActiveLogin: gh.ghActiveLogin } : {}),
             ...(gh?.ghCommand !== undefined ? { ghCommand: gh.ghCommand } : {}),
+            ...(gh?.ghDetail !== undefined ? { ghDetail: gh.ghDetail } : {}),
             ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
           };
         })(),
@@ -1025,6 +1029,7 @@ export async function gatherFacts(
             ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
             ...(gh?.ghActiveLogin != null ? { ghActiveLogin: gh.ghActiveLogin } : {}),
             ...(gh?.ghCommand !== undefined ? { ghCommand: gh.ghCommand } : {}),
+            ...(gh?.ghDetail !== undefined ? { ghDetail: gh.ghDetail } : {}),
             ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
             provider,
             profiles: deps.authProfiles(),

@@ -283,9 +283,10 @@ export function ghAuthToken(ghUser: string | null = null): string | null {
 }
 
 /** The account listing: a choice-menu and naming input, and the pinned look's gate for trying the
- *  plain token (is the pin gh's active account?). The token verdict itself always comes from a
- *  `gh auth token` call, so an unproven or empty listing reads as "follow gh's active account" in
- *  a menu and as a miss in the pinned look, never as advice. */
+ *  plain token (is the pin gh's active account?). In the pinned look an unproven listing ends the
+ *  look unproven ("could not check"), and a completed listing that does not name the pin as active
+ *  is a proven miss, which loginWithGhCli renders with `gh auth login` advice. chooseGhAccount
+ *  refuses both: an unproven listing asks for a retry, an empty one for `gh auth login`. */
 export interface GhAccountsLook {
   accounts: GhAccount[];
   unproven?: true;

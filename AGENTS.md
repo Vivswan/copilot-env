@@ -37,7 +37,7 @@ copilot-env wires the Codex and Claude CLIs to GitHub Copilot, either through a 
 
 - **Cross-platform is non-negotiable**: Linux, macOS, and Windows. Every POSIX/PowerShell pair stays feature-matched, and PowerShell must run on Windows PowerShell 5.1 as well as pwsh 7.
 - **Nothing hidden**: every command names every file it writes or deletes outside copilot-env's own homes (`~/.copilot-env`, `~/.local/share/copilot-env`).
-- **A personal utility, not a product**: no backwards compatibility except `src/migrations/` (one-time fix-ups run by `agent update`); no compatibility shims or legacy-state adoption in read sites; no production hardening. Delete old surfaces outright; a flag removal is a plain `feat:`/`fix:`.
+- **A personal utility, not a product**: no backwards compatibility except `src/migrations/` (one-time fix-ups run after `agent update` or a reinstall); no compatibility shims or legacy-state adoption in read sites; no production hardening. Delete old surfaces outright; a flag removal is a plain `feat:`/`fix:`.
 - **Tests are minimal and highest-quality**: pin behaviour, never tooling internals; no tautological or one-off asserts.
 - **String literals are external contracts** (model ids, JSON keys, env var names, log markers): never rename them in a refactor.
 - **ASCII source**: non-ASCII only inside string literal text.

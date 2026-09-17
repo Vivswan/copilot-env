@@ -40,6 +40,7 @@ import {
   readCurrentVersionName,
   removeFlatBinaryResidue,
   removeVersionDirsExcept,
+  runPostFlipMigrations,
   versionDirName,
   versionRootPath,
   writeTopLevelShims,
@@ -49,7 +50,6 @@ import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../
 import type { HeldUpdateLock } from "./lock.ts";
 import { errMessage } from "../utils/error.ts";
 import { installStateRoot, PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
-import { stripV } from "../utils/semver.ts";
 import {
   chmodReported,
   copyFileReported,
@@ -360,43 +360,19 @@ function provision(staged: Staged, stdio: StdioOptions): Provisioned {
 
 /**
  * Stage 5, THE commit: the `current` flip is what lands the update, so nothing after it may fail
- * the run.
+ * the run (the shim refresh is best-effort by construction, writeTopLevelShims).
  *
  *   shim text already identical  -> no-op on a healthy install, a repair after a crashed commit
- *   shim write throws            -> warned, not raised: a locked shim must not undo a landed flip
  *   checkout-shaped root         -> keeps its own bin/agent; that file is source
  */
 function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Committed {
   pointCurrentAt(top, provisioned.versionName);
-  if (!isCheckoutShapedRoot(top)) {
-    try {
-      writeTopLevelShims(top, logger);
-    } catch (error) {
-      logger.warn(`Could not refresh the launcher shims: ${errMessage(error)}`);
-    }
-  }
+  if (!isCheckoutShapedRoot(top)) writeTopLevelShims(top, logger);
   return {
     binary: provisioned.binary,
     versionName: provisioned.versionName,
     previous: provisioned.previous,
   } as Committed;
-}
-
-/** Run the COMMITTED binary for a post-flip step, rooted at the `current` link: a
- *  checkout-shaped top would derive wrong, and the migrations must see the finished layout. */
-function runNewBinary(
-  committed: Committed,
-  top: string,
-  args: string[],
-  stdio: StdioOptions,
-): number | null {
-  const result = spawnSync(committed.binary, args, {
-    cwd: top,
-    stdio,
-    env: { ...process.env, [INSTALL_ROOT_ENV]: currentLinkPath(top) },
-  });
-  if (result.error) throw result.error;
-  return result.status;
 }
 
 export interface ApplyUpdateOptions {
@@ -465,15 +441,7 @@ export async function applyUpdate(
 
   // Everything after the flip is best-effort: `current` has moved forward, so a later `agent
   // update` would see "up to date" and never retry; failing here would strand the install.
-  try {
-    if (
-      runNewBinary(committed, top, ["migrate", stripV(current), stripV(target.tag)], stdio) !== 0
-    ) {
-      logger.warn("Post-update migrations reported a problem; see the output above.");
-    }
-  } catch (error) {
-    logger.warn(`Post-update migrations could not run: ${errMessage(error)}`);
-  }
+  runPostFlipMigrations(top, committed.binary, current, target.tag, stdio, logger);
 
   // GC keeps the new version plus ONE previous (the rollback candidate).
   const keep = new Set(

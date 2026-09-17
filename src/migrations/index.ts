@@ -1,7 +1,7 @@
 // The migration runner: selects and runs version-to-version fix-ups after an update. Reached
-// through `agent migrate <from> <to>`: `agent update` spawns it on the NEW binary so the
-// migrations load from the new code, not the already-running old process. A dev checkout may
-// run it directly:
+// through `agent migrate <from> <to>`: runPostFlipMigrations (src/install/installer.ts) spawns it
+// on the NEW binary after `agent update` or a reinstall flips `current`, so the migrations load
+// from the new code, not the already-running old process. A dev checkout may run it directly:
 //   deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>
 import "../utils/dotenv.ts";
 import { consola } from "consola";

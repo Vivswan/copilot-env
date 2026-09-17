@@ -38,13 +38,13 @@ powershell -c "irm https://github.com/Vivswan/copilot-env/releases/download/vX.X
 
 ### Install flags
 
-| macOS / Linux            | Windows               | Effect                                                                                                                             |
-| ------------------------ | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `--dir DIR`              | `-InstallDir DIR`     | Install target (default `~/.copilot-env`; overrides `COPILOT_ENV_DIR`)                                                             |
-| `--version TAG`          | `-Version TAG`        | Install an exact release tag instead of the default                                                                                |
-| `--no-shell-integration` | `-NoShellIntegration` | Don't touch your rc / `$PROFILE`                                                                                                   |
-| `--no-exec-shell`        | `-NoExecShell`        | Don't offer to reload your shell at the end (also skipped when non-interactive, under CI, or with `COPILOT_ENV_NO_EXEC_SHELL` set) |
-|                          | `-AllHosts`           | Wire the CurrentUserAllHosts PowerShell profile instead of the current host's                                                      |
+| macOS / Linux            | Windows               | Effect                                                                                                                                                                                                                                |
+| ------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--dir DIR`              | `-InstallDir DIR`     | Install target (default `~/.copilot-env`; overrides `COPILOT_ENV_DIR`)                                                                                                                                                                |
+| `--version TAG`          | `-Version TAG`        | Install an exact release tag instead of the default                                                                                                                                                                                   |
+| `--no-shell-integration` | `-NoShellIntegration` | Skip the shell wiring pass: no block is added to your rc / `$PROFILE`. A reinstall over an older release still runs its migrations, which may rewrite or remove a copilot-env block already in `~/.bashrc`, `~/.zshrc`, or `$PROFILE` |
+| `--no-exec-shell`        | `-NoExecShell`        | Don't offer to reload your shell at the end (also skipped when non-interactive, under CI, or with `COPILOT_ENV_NO_EXEC_SHELL` set)                                                                                                    |
+|                          | `-AllHosts`           | Wire the CurrentUserAllHosts PowerShell profile instead of the current host's                                                                                                                                                         |
 
 ## The first `agent init`
 

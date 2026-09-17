@@ -26,7 +26,13 @@ import {
 import { type CodexHostFarm, codexHostFarm, effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { Credential, ghAuthTokenLookAsync, type GhTokenLook } from "../copilot_api/credential.ts";
+import {
+  Credential,
+  ghAccountsLookFromSpawn,
+  ghAuthTokenLookAsync,
+  type GhTokenLook,
+  runGhSpecAsync,
+} from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   allProfileNames,
@@ -36,11 +42,7 @@ import {
   type ProfileMode,
   storedCredentialKind,
 } from "../copilot_api/env_state.ts";
-import {
-  activeGhLogin,
-  ghAuthStatusSpawnSpec,
-  parseGhAuthStatusAccounts,
-} from "../copilot_api/gh_cli.ts";
+import { activeGhLogin, ghAuthStatusSpawnSpec } from "../copilot_api/gh_cli.ts";
 import { CopilotApiPaths, profileHomeExists, resolveRootHome } from "../copilot_api/paths.ts";
 import {
   copilotApiFallbackPort,
@@ -225,7 +227,7 @@ async function proxyIdentity(url: string, timeoutMs: number): Promise<boolean | 
 
 /** Exported for tests. A look's `unproven` (a spawn error, the timeout kill) marks the facts
  *  instead of flattening into a confident authenticated:false. `ghUser` records which pinned
- *  account the probe asked about. */
+ *  account the probe asked about; `ghCommand` the call that served a found token. */
 export function directAuthFromLook(
   command: string,
   look: GhTokenLook,
@@ -233,40 +235,19 @@ export function directAuthFromLook(
 ): CodexDirectAuthFacts {
   const pinned = ghUser === null ? {} : { ghUser };
   if (look.unproven) return { command, authenticated: false, unproven: true, ...pinned };
-  return { command, authenticated: look.token !== null, ...pinned };
+  const served = look.command === undefined ? {} : { ghCommand: look.command };
+  return { command, authenticated: look.token !== null, ...pinned, ...served };
 }
 
 /** Null when gh is absent, has no account, or the look never completed: naming only, never a
  *  verdict, so the flatten is safe. Async like codexDirectAuth so the status spawn overlaps the
- *  other probes; stdout and stderr are both captured (older gh wrote the status to stderr). */
-function ghActiveLoginProbe(): Promise<string | null> {
+ *  other probes; runGhSpecAsync captures both streams (older gh wrote the status to stderr) and a
+ *  timeout kill reads as unproven, so a truncated list can never name the wrong account. */
+async function ghActiveLoginProbe(): Promise<string | null> {
   const look = findCommand("gh");
-  if (look.path === null) return Promise.resolve(null);
-  const s = ghAuthStatusSpawnSpec(look.path);
-  return new Promise((resolve) => {
-    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-    const child = spawn(s.file, s.args, {
-      "stdio": ["ignore", "pipe", "pipe"],
-      "timeout": s.timeout,
-      "windowsHide": true,
-      "shell": s.shell,
-      "env": s.env,
-    });
-    let output = "";
-    child.stdout?.on("data", (chunk) => {
-      output += String(chunk);
-    });
-    child.stderr?.on("data", (chunk) => {
-      output += String(chunk);
-    });
-    child.on("error", () => resolve(null));
-    // Only a COMPLETED exit parses (any code, matching ghAccountsLookFromSpawn); a timeout kill
-    // closes with code null mid-output, and naming an account off a truncated list could name
-    // the wrong one.
-    child.on("close", (code) => {
-      resolve(code === null ? null : activeGhLogin(parseGhAuthStatusAccounts(output)));
-    });
-  });
+  if (look.path === null) return null;
+  const listing = ghAccountsLookFromSpawn(await runGhSpecAsync(ghAuthStatusSpawnSpec(look.path)));
+  return listing.unproven ? null : activeGhLogin(listing.accounts);
 }
 
 async function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts> {
@@ -282,8 +263,8 @@ async function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFa
     };
   }
   // The SAME recipe `agent auth` and every resolve run (the pinned look and its fallback), off the
-  // event loop so it overlaps the other probes under gatherFacts' Promise.all. Only the verdict
-  // is kept; the token itself is dropped here.
+  // event loop so it overlaps the other probes under gatherFacts' Promise.all. The token is read
+  // into memory with the rest of gh's output and only the verdict and the serving call are kept.
   return directAuthFromLook(look.path, await ghAuthTokenLookAsync(ghUser, look.path), ghUser);
 }
 
@@ -1023,6 +1004,7 @@ export async function gatherFacts(
             ghAuthenticated: gh?.authenticated ?? false,
             ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
             ...(gh?.ghActiveLogin != null ? { ghActiveLogin: gh.ghActiveLogin } : {}),
+            ...(gh?.ghCommand !== undefined ? { ghCommand: gh.ghCommand } : {}),
             ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
           };
         })(),
@@ -1042,6 +1024,7 @@ export async function gatherFacts(
             ghAuthenticated: gh?.authenticated ?? false,
             ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
             ...(gh?.ghActiveLogin != null ? { ghActiveLogin: gh.ghActiveLogin } : {}),
+            ...(gh?.ghCommand !== undefined ? { ghCommand: gh.ghCommand } : {}),
             ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
             provider,
             profiles: deps.authProfiles(),

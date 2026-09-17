@@ -230,6 +230,9 @@ export interface CodexDirectAuthFacts {
    *  list was readable, so the report names the account an auto slot follows. Naming only,
    *  never a verdict. */
   ghActiveLogin?: string | null;
+  /** The gh call that served the token (a pin may be served by the plain host-scoped call when gh
+   *  cannot answer `--user`), so the report names the one that ran. Token found only. */
+  ghCommand?: string;
   /** The gh look never RAN to completion (the command probe failed, or `gh auth token` spawned
    *  but errored / was timeout-killed): the two fields above are then UNPROVEN, and renderers
    *  say "could not check", never a confident "not found"/"not authenticated" or `gh auth
@@ -336,6 +339,8 @@ export interface HealthFacts {
     ghUser?: string | null;
     /** An auto slot's followed account (see AuthFacts.ghActiveLogin). */
     ghActiveLogin?: string | null;
+    /** The gh call that served the token (see CodexDirectAuthFacts.ghCommand). */
+    ghCommand?: string;
     /** The gh probe never ran to completion (see AuthFacts.ghAuthUnproven). */
     ghAuthUnproven?: true;
   };
@@ -370,6 +375,8 @@ export interface AuthFacts {
   ghUser?: string | null;
   /** An auto slot's followed account (see CodexDirectAuthFacts.ghActiveLogin). */
   ghActiveLogin?: string | null;
+  /** The gh call that served the token (see CodexDirectAuthFacts.ghCommand). */
+  ghCommand?: string;
   /** The gh probe never ran to completion (CodexDirectAuthFacts.unproven): ghAuthenticated false
    *  is then UNPROVEN, so the check says "could not check", never "gh is unauthenticated" plus
    *  `gh auth login` advice. Optional so hand-built fixtures stay valid. */

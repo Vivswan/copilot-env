@@ -137,7 +137,8 @@ export function activeGhLogin(accounts: GhAccount[]): string | null {
 }
 
 /**
- * STRICTLY a choice-menu and naming input, never an auth verdict (that stays with ghAuthVerdict).
+ * A choice-menu and naming input, and the gate for the pinned look's plain-token fallback (is the pin
+ * gh's active account?); the token verdict itself always comes from `gh auth token` (ghAuthVerdict).
  * Broken logins are kept and marked; unrecognized output parses as no accounts.
  */
 export function parseGhAuthStatusAccounts(output: string): GhAccount[] {

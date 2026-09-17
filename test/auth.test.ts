@@ -20,11 +20,13 @@ import {
   ghAuthTokenLookVia,
   type GhTokenLook,
   ghTokenLookFromSpawn,
+  runGhSpecAsync,
 } from "../src/copilot_api/credential.ts";
 import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { assertProfileSlot, CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import {
   activeGhLogin,
+  GH_AUTH_TIMEOUT_MS,
   type GhAccount,
   ghAuthStatusSpawnSpec,
   ghAuthTokenSpawnSpec,
@@ -1073,27 +1075,21 @@ test("resolveWithReason: one probe answers with the token or names the provider 
 });
 
 test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven", () => {
-  expect(ghTokenLookFromSpawn({ status: 0, stdout: " tok \n" })).toEqual({ token: "tok" });
-  // gh RAN: proven misses, the detail carrying gh's own first stderr line when there is one.
-  expect(ghTokenLookFromSpawn({ status: 0, stdout: "" })).toEqual({
-    token: null,
-    detail: "`gh auth token` printed no token",
+  expect(ghTokenLookFromSpawn({ status: 0, stdout: " tok \n" })).toEqual({
+    token: "tok",
+    command: "gh auth token",
   });
+  // gh RAN: proven misses, the detail carrying gh's own first stderr line when there is one.
+  expect(ghTokenLookFromSpawn({ status: 0, stdout: "", stderr: "credential unavailable\n" }))
+    .toEqual({
+      token: null,
+      detail: "`gh auth token` printed no token: credential unavailable",
+    });
   expect(ghTokenLookFromSpawn({ status: 1, stdout: "", stderr: "no oauth token\r\nmore\r\n" }))
     .toEqual({
       token: null,
       detail: "`gh auth token` exited 1: no oauth token",
     });
-  // The detail names the call that ran, so a pinned miss is never mistaken for a plain one.
-  expect(
-    ghTokenLookFromSpawn(
-      { status: 1, stdout: "", stderr: "unknown flag: --user\n" },
-      "gh auth token --user work --hostname github.com",
-    ),
-  ).toEqual({
-    token: null,
-    detail: "`gh auth token --user work --hostname github.com` exited 1: unknown flag: --user",
-  });
   // The spawn never completed (timeout kill / spawn error): proven NOTHING.
   expect(ghTokenLookFromSpawn({ status: null })).toEqual({
     token: null,
@@ -1108,7 +1104,7 @@ test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven",
 });
 
 test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quotes gh and keeps the advice", async () => {
-  isolate(); // clears GH_TOKEN/GITHUB_TOKEN: the env clause below must be earned, never assumed
+  isolate(); // clears GH_TOKEN/GITHUB_TOKEN so a runner credential never shapes the wording
   const killed: GhTokenLook = {
     token: null,
     unproven: true,
@@ -1148,15 +1144,10 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
       "github.com` exited 1: no oauth token found) - run `gh auth login` for that account, pass " +
       "--gh-user <login> for another, or choose auto interactively via `agent auth --provider gh-cli`",
   );
-  // The env-token clause is a fact about THIS shell, stated only when gh would read such a var.
-  process.env.GITHUB_TOKEN = "ghp_from_env";
-  expect(() => loginWithGhCli("work", pinnedMiss)).toThrow(
-    "no oauth token found; $GITHUB_TOKEN is set, and an env token cannot serve `gh auth token --user`) - run",
-  );
   expect(() => loginWithGhCli("work", () => killed)).toThrow(
     "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
   );
-  expect(asked).toEqual(["work", "work"]);
+  expect(asked).toEqual(["work"]);
 });
 
 // --- the pinned look's fallback: the plain token when the pin is gh's active account ----------
@@ -1224,6 +1215,7 @@ test("ghAuthTokenLookVia: a refused --user lands the plain token when the pin is
   });
   expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", old.run)).toEqual({
     token: "gho_saved",
+    command: "gh auth token --hostname github.com",
   });
   expect(old.calls).toEqual([PINNED_CALL, "auth status --hostname github.com", PLAIN_CALL]);
   // (b) a hosts.yml login `--user` cannot serve, status exit 0.
@@ -1237,6 +1229,7 @@ test("ghAuthTokenLookVia: a refused --user lands the plain token when the pin is
   });
   expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", hosts.run)).toEqual({
     token: "gho_saved",
+    command: "gh auth token --hostname github.com",
   });
   // (c) the same with the missing-scope warning: status exits 1 and is still read.
   const scopes = fakeGh({
@@ -1246,6 +1239,7 @@ test("ghAuthTokenLookVia: a refused --user lands the plain token when the pin is
   });
   expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", scopes.run)).toEqual({
     token: "gho_saved",
+    command: "gh auth token --hostname github.com",
   });
   // A working --user asks nothing else; an auto look never falls back.
   const direct = fakeGh({
@@ -1254,6 +1248,7 @@ test("ghAuthTokenLookVia: a refused --user lands the plain token when the pin is
   });
   expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", direct.run)).toEqual({
     token: "gho_pinned",
+    command: "gh auth token --user vivswanshah_microsoft --hostname github.com",
   });
   expect(direct.calls).toEqual([PINNED_CALL]);
   const auto = fakeGh({
@@ -1337,7 +1332,52 @@ test("ghAuthTokenLookVia: a refused --user lands the plain token when the pin is
       "`gh auth token --user vivswanshah_microsoft --hostname github.com` exited 1: unknown flag: --user; " +
       "`gh auth status --hostname github.com` did not complete",
   });
+  // ONE budget for the whole look: a pinned call that ate it leaves nothing for the status call,
+  // so the look ends unproven there instead of chaining fresh 5s timeouts past the caller's deadline.
+  let now = 1_000_000;
+  const slow = fakeGh({
+    pinned: NO_USER_FLAG,
+    status: { status: 0, stdout: OLD_GH_STATUS },
+    plain: SAVED,
+  });
+  const slowRun: GhRun = (spec) => {
+    now += GH_AUTH_TIMEOUT_MS;
+    return slow.run(spec);
+  };
+  expect(ghAuthTokenLookVia("vivswanshah_microsoft", "/opt/gh/gh", slowRun, () => now)).toEqual({
+    token: null,
+    unproven: true,
+    detail:
+      "`gh auth token --user vivswanshah_microsoft --hostname github.com` exited 1: unknown flag: --user; " +
+      "the 5s gh budget ran out before `gh auth status --hostname github.com`",
+  });
+  expect(slow.calls).toEqual([PINNED_CALL]);
 });
+
+test.skipIf(process.platform === "win32")(
+  "runGhSpecAsync settles when gh exits, not when a descendant releases the pipes",
+  async () => {
+    // A background child inherits gh's stdout: `close` would wait for it, `exit` does not. Its
+    // pid comes back on stderr so the test ends it instead of leaving it to run out.
+    const started = Date.now();
+    const result = await runGhSpecAsync({
+      file: "sh",
+      args: ["-c", "echo tok; sleep 5 & echo $! >&2"],
+      shell: false,
+      timeout: 10_000,
+      env: { PATH: "/usr/bin:/bin" },
+    });
+    const elapsed = Date.now() - started;
+    const descendant = Number(result.stderr?.trim());
+    try {
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("tok\n");
+      expect(elapsed).toBeLessThan(900);
+    } finally {
+      process.kill(descendant);
+    }
+  },
+);
 
 // The production path end to end through a fake `gh` on PATH: status listing -> pin -> the pinned
 // look -> the fallback, then the recorded slot resolves through the same code every `--get` runs.

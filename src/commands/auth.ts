@@ -485,15 +485,6 @@ async function loginWithGhEnv(): Promise<string> {
   return chosen.token;
 }
 
-/** gh itself reads only these two; naming the set one turns "an env token cannot be pinned" from a
- *  guess into a fact about THIS shell. */
-function ghEnvTokenNote(env: NodeJS.ProcessEnv = process.env): string {
-  const set = ["GH_TOKEN", "GITHUB_TOKEN"].find((name) => (env[name] ?? "").trim() !== "");
-  return set === undefined
-    ? ""
-    : `; $${set} is set, and an env token cannot serve \`gh auth token --user\``;
-}
-
 /** `activeLogin` names the account an auto slot follows right now, when the account list was
  *  readable: the user sees WHICH account their credential follows whenever that is known. `look` is
  *  a test seam; exported for the wording tests. */
@@ -505,7 +496,8 @@ export function loginWithGhCli(
   // Verified BEFORE recording, or a failed check would point `--get` at a `gh` that cannot produce
   // a token. An UNPROVEN look wears its own words: "not authenticated" and the `gh auth login`
   // advice are wrong when gh was never asked. Every miss quotes the gh call and its stderr: the
-  // fix differs by cause (an old gh, a missing login, a switched account), and gh named it.
+  // fix differs by cause (an old gh, a missing login, a switched account, an env token), and the
+  // look named it.
   const gh = look(ghUser);
   if (gh.token === null) {
     const detail = gh.detail ?? "`gh auth token` gave no token";
@@ -515,7 +507,7 @@ export function loginWithGhCli(
     throw new Error(
       ghUser === null
         ? `gh is not authenticated (${detail}) - run \`gh auth login\`, then retry \`agent auth\``
-        : `gh has no saved credential for account '${ghUser}' (${detail}${ghEnvTokenNote()}) - ` +
+        : `gh has no saved credential for account '${ghUser}' (${detail}) - ` +
           `run \`gh auth login\` for that account, pass --gh-user <login> for another, ` +
           "or choose auto interactively via `agent auth --provider gh-cli`",
     );

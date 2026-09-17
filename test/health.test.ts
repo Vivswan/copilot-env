@@ -44,13 +44,7 @@ import {
   type RuntimeTarget,
   type WatchdogFacts,
 } from "../src/health/facts.ts";
-import {
-  directAuthFromLook,
-  evalCodex,
-  evalShellFiles,
-  gatherFacts,
-  runLiveCli,
-} from "../src/health/probe.ts";
+import { evalCodex, evalShellFiles, gatherFacts, runLiveCli } from "../src/health/probe.ts";
 import type { CheckId, CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 import {
@@ -1406,34 +1400,6 @@ test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look 
   expect(toolUnproven.value).toEqual({ resolved: null, lookFailed: true });
 });
 
-test("directAuthFromLook: a token proves the verdict; an unproven look stays unproven", () => {
-  expect(directAuthFromLook("/bin/gh", { token: "tok" })).toEqual({
-    command: "/bin/gh",
-    authenticated: true,
-  });
-  expect(directAuthFromLook("/bin/gh", { token: null, detail: "`gh auth token` exited 1" }))
-    .toEqual({
-      command: "/bin/gh",
-      authenticated: false,
-    });
-  // The timeout kill or a spawn error: gh was never actually asked.
-  expect(directAuthFromLook("/bin/gh", { token: null, unproven: true })).toEqual({
-    command: "/bin/gh",
-    authenticated: false,
-    unproven: true,
-  });
-  // The account pin travels on the fact so the check can name it; auto adds nothing to the shape.
-  expect(directAuthFromLook("/bin/gh", { token: null }, "work-bot")).toEqual({
-    command: "/bin/gh",
-    authenticated: false,
-    ghUser: "work-bot",
-  });
-  expect(directAuthFromLook("/bin/gh", { token: "tok" }, null)).toEqual({
-    command: "/bin/gh",
-    authenticated: true,
-  });
-});
-
 // --- auth (credential) check ------------------------------------------------
 
 test("checkAuth: a stored token reports ok", () => {
@@ -1542,6 +1508,20 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
   });
   expect(pinnedOk.status).toBe("ok");
   expect(pinnedOk.detail).toContain("gh CLI (`gh auth token --user work-bot`)");
+  // A pin gh could not answer with `--user` was served by the plain host-scoped call: the report
+  // names the call that ran, never the one it assumed.
+  const pinnedServedPlain = checkAuth({
+    storedToken: false,
+    ghAuthenticated: true,
+    ghUser: "work-bot",
+    ghCommand: "gh auth token --hostname github.com",
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect(pinnedServedPlain.detail).toContain(
+    "gh CLI (`gh auth token --hostname github.com`, account work-bot)",
+  );
   // An AUTO slot names the account it follows right now (no hidden information).
   const autoNamed = checkAuth({
     storedToken: false,

@@ -15,6 +15,7 @@ import {
 } from "./env_state.ts";
 import {
   activeGhLogin,
+  GH_AUTH_TIMEOUT_MS,
   GH_COPILOT_HOST,
   type GhAccount,
   ghAuthHostTokenSpawnSpec,
@@ -46,6 +47,9 @@ export interface GhTokenLook {
   unproven?: true;
   /** Why there is no token: what the spawn or the `gh` probe reported (null token only). */
   detail?: string;
+  /** The gh call that produced the token (token only): a pin is served by `--user` or, when gh
+   *  cannot, by the plain host-scoped call, and a report names the one that ran. */
+  command?: string;
 }
 
 function firstStderrLine(stderr: string | null | undefined): string {
@@ -70,14 +74,12 @@ export function ghTokenLookFromSpawn(
     return { token: null, unproven: true, detail: `\`${command}\` did not complete (${cause})` };
   }
   const stderr = firstStderrLine(result.stderr);
-  if (!verdict) {
-    return {
-      token: null,
-      detail: `\`${command}\` exited ${result.status}${stderr ? `: ${stderr}` : ""}`,
-    };
-  }
+  const said = stderr ? `: ${stderr}` : "";
+  if (!verdict) return { token: null, detail: `\`${command}\` exited ${result.status}${said}` };
   const token = (result.stdout ?? "").trim();
-  return token ? { token } : { token: null, detail: `\`${command}\` printed no token` };
+  return token
+    ? { token, command }
+    : { token: null, detail: `\`${command}\` printed no token${said}` };
 }
 
 function runGhSpec(s: GhSpawnSpec): GhSpawnResult {
@@ -91,7 +93,17 @@ function runGhSpec(s: GhSpawnSpec): GhSpawnResult {
   });
 }
 
-function runGhSpecAsync(s: GhSpawnSpec): Promise<GhSpawnResult> {
+/** How long a settled child's pipes get to hand over their last bytes when something else still
+ *  holds them open. */
+const PIPE_HANDOVER_GRACE_MS = 100;
+
+/**
+ * Exported for tests. Settles on `exit`, never on `close`: a descendant gh left behind holding the
+ * pipes (a credential helper, a browser opener) keeps `close` from firing for seconds while gh's
+ * answer is already here. The streams then end on their own right after the exit; when they do
+ * not, a short grace hands over what was read and the rest is the descendant's, not gh's.
+ */
+export function runGhSpecAsync(s: GhSpawnSpec): Promise<GhSpawnResult> {
   return new Promise((resolve) => {
     // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     const child = spawn(s.file, s.args, {
@@ -103,14 +115,36 @@ function runGhSpecAsync(s: GhSpawnSpec): Promise<GhSpawnResult> {
     });
     let stdout = "";
     let stderr = "";
+    let exited: Pick<GhSpawnResult, "status" | "error"> | null = null;
+    let openStreams = 2;
+    let settled = false;
+    const finish = (): void => {
+      if (settled || exited === null) return;
+      settled = true;
+      // Our ends of the pipes close with the answer; a descendant's writes are not gh's.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      resolve({ ...exited, stdout, stderr });
+    };
+    const streamEnded = (): void => {
+      openStreams--;
+      if (openStreams === 0) finish();
+    };
     child.stdout?.on("data", (chunk) => {
       stdout += String(chunk);
     });
     child.stderr?.on("data", (chunk) => {
       stderr += String(chunk);
     });
-    child.on("error", (error) => resolve({ status: null, error, stdout, stderr }));
-    child.on("close", (status) => resolve({ status, stdout, stderr }));
+    child.stdout?.on("end", streamEnded);
+    child.stderr?.on("end", streamEnded);
+    const onExit = (result: Pick<GhSpawnResult, "status" | "error">): void => {
+      exited = result;
+      if (openStreams === 0) finish();
+      else setTimeout(finish, PIPE_HANDOVER_GRACE_MS).unref();
+    };
+    child.on("error", (error) => onExit({ status: null, error }));
+    child.on("exit", (code, signal) => onExit({ status: signal === null ? code : null }));
   });
 }
 
@@ -133,71 +167,87 @@ const GH_OWN_TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
  * status listing is read off ANY exit code (a missing-scope warning exits 1 while the token is
  * fine). An env token is never adopted for a pin: it is not a saved login and vanishes with the
  * shell, so a set GH_TOKEN/GITHUB_TOKEN, or gh reporting such a var as the login's source, is a miss.
+ *
+ * GH_AUTH_TIMEOUT_MS is the budget of the WHOLE look: the first call gets all of it and every call
+ * after runs on what is left, so gh's own running time across the chain can never outlast the
+ * single call the callers' deadlines budget for. Outside the budget: the async path's hand-over
+ * grace, and on the sync path a descendant of gh holding the pipes (spawnSync waits for them).
  */
-export function ghAuthTokenLookStart(ghUser: string | null, ghPath: string): GhLookStep {
+export function ghAuthTokenLookStart(
+  ghUser: string | null,
+  ghPath: string,
+  clock: () => number = Date.now,
+): GhLookStep {
   const done = (look: GhTokenLook): GhLookStep => ({ kind: "done", look });
-  const pinnedSpec = ghAuthTokenSpawnSpec(ghPath, ghUser);
-  return {
-    kind: "run",
-    spec: pinnedSpec,
-    then: (pinnedResult) => {
-      const pinned = ghTokenLookFromSpawn(pinnedResult, ghCommandLabel(pinnedSpec));
-      if (ghUser === null || pinned.token !== null || pinned.unproven) return done(pinned);
-      const why = pinned.detail ?? "gh gave no token";
-      const envVar = GH_OWN_TOKEN_VARS.find((name) => (pinnedSpec.env[name] ?? "").trim() !== "");
-      if (envVar !== undefined) {
-        return done({ token: null, detail: `${why}; $${envVar} is set, not a saved login` });
-      }
-      const statusSpec = ghAuthStatusSpawnSpec(ghPath);
-      return {
-        kind: "run",
-        spec: statusSpec,
-        then: (statusResult) => {
-          const listing = ghAccountsLookFromSpawn(statusResult);
-          if (listing.unproven) {
-            return done({
-              token: null,
-              unproven: true,
-              detail: `${why}; \`${ghCommandLabel(statusSpec)}\` did not complete`,
-            });
-          }
-          const active = activeGhLogin(listing.accounts);
-          if (active !== ghUser) {
-            const who = active === null ? "no active account" : `active account ${active}`;
-            return done({ token: null, detail: `${why}; \`gh auth status\` reports ${who}` });
-          }
-          const envSource = listing.accounts.find((a) =>
-            a.host === GH_COPILOT_HOST && a.login === ghUser && /_TOKEN$/.test(a.source)
-          )?.source;
-          if (envSource !== undefined) {
-            return done({
-              token: null,
-              detail: `${why}; gh serves ${ghUser} from $${envSource}, not a saved login`,
-            });
-          }
-          const plainSpec = ghAuthHostTokenSpawnSpec(ghPath);
-          return {
-            kind: "run",
-            spec: plainSpec,
-            then: (plainResult) => {
-              const plain = ghTokenLookFromSpawn(plainResult, ghCommandLabel(plainSpec));
-              if (plain.token !== null) return done(plain);
-              return done({ ...plain, detail: `${why}; ${plain.detail ?? "gh gave no token"}` });
-            },
-          };
-        },
-      };
-    },
+  const deadline = clock() + GH_AUTH_TIMEOUT_MS;
+  const run = (
+    spec: GhSpawnSpec,
+    why: string | null,
+    then: (result: GhSpawnResult) => GhLookStep,
+  ): GhLookStep => {
+    const left = why === null ? GH_AUTH_TIMEOUT_MS : deadline - clock();
+    if (left <= 0) {
+      return done({
+        token: null,
+        unproven: true,
+        detail: `${why}; the ${GH_AUTH_TIMEOUT_MS / 1000}s gh budget ran out before \`${
+          ghCommandLabel(spec)
+        }\``,
+      });
+    }
+    return { kind: "run", spec: { ...spec, timeout: left }, then };
   };
+  const pinnedSpec = ghAuthTokenSpawnSpec(ghPath, ghUser);
+  return run(pinnedSpec, null, (pinnedResult) => {
+    const pinned = ghTokenLookFromSpawn(pinnedResult, ghCommandLabel(pinnedSpec));
+    if (ghUser === null || pinned.token !== null || pinned.unproven) return done(pinned);
+    const why = pinned.detail ?? "gh gave no token";
+    const envVar = GH_OWN_TOKEN_VARS.find((name) => (pinnedSpec.env[name] ?? "").trim() !== "");
+    if (envVar !== undefined) {
+      return done({ token: null, detail: `${why}; $${envVar} is set, not a saved login` });
+    }
+    const statusSpec = ghAuthStatusSpawnSpec(ghPath);
+    return run(statusSpec, why, (statusResult) => {
+      const listing = ghAccountsLookFromSpawn(statusResult);
+      if (listing.unproven) {
+        return done({
+          token: null,
+          unproven: true,
+          detail: `${why}; \`${ghCommandLabel(statusSpec)}\` did not complete`,
+        });
+      }
+      const active = activeGhLogin(listing.accounts);
+      if (active !== ghUser) {
+        const who = active === null ? "no active account" : `active account ${active}`;
+        return done({ token: null, detail: `${why}; \`gh auth status\` reports ${who}` });
+      }
+      const envSource = listing.accounts.find((a) =>
+        a.host === GH_COPILOT_HOST && a.login === ghUser && /_TOKEN$/.test(a.source)
+      )?.source;
+      if (envSource !== undefined) {
+        return done({
+          token: null,
+          detail: `${why}; gh serves ${ghUser} from $${envSource}, not a saved login`,
+        });
+      }
+      const plainSpec = ghAuthHostTokenSpawnSpec(ghPath);
+      return run(plainSpec, why, (plainResult) => {
+        const plain = ghTokenLookFromSpawn(plainResult, ghCommandLabel(plainSpec));
+        if (plain.token !== null) return done(plain);
+        return done({ ...plain, detail: `${why}; ${plain.detail ?? "gh gave no token"}` });
+      });
+    });
+  });
 }
 
-/** Exported for tests (`run` is the spawn seam). */
+/** Exported for tests (`run` is the spawn seam, `clock` the budget's). */
 export function ghAuthTokenLookVia(
   ghUser: string | null,
   ghPath: string,
   run: (spec: GhSpawnSpec) => GhSpawnResult = runGhSpec,
+  clock: () => number = Date.now,
 ): GhTokenLook {
-  let step = ghAuthTokenLookStart(ghUser, ghPath);
+  let step = ghAuthTokenLookStart(ghUser, ghPath, clock);
   while (step.kind === "run") step = step.then(run(step.spec));
   return step.look;
 }
@@ -232,8 +282,10 @@ export function ghAuthToken(ghUser: string | null = null): string | null {
   return ghAuthTokenLook(ghUser).token;
 }
 
-/** STRICTLY a choice-menu input, never an auth verdict: every consumer degrades an unproven or empty
- *  look to "follow gh's active account" instead of rendering advice off it. */
+/** The account listing: a choice-menu and naming input, and the pinned look's gate for trying the
+ *  plain token (is the pin gh's active account?). The token verdict itself always comes from a
+ *  `gh auth token` call, so an unproven or empty listing reads as "follow gh's active account" in
+ *  a menu and as a miss in the pinned look, never as advice. */
 export interface GhAccountsLook {
   accounts: GhAccount[];
   unproven?: true;

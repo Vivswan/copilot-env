@@ -229,14 +229,17 @@ export function launchFakeDaemon(home: string, port: number): number {
 }
 
 /**
- * Resolves once `probe` answers true. No clock of its own: the test deadline is the one budget,
- * and the wait rejects the moment it fires, so a `finally` behind it runs before the runner can
- * exit (the harness kills only the children it spawned; a detached daemon is the caller's kill).
+ * Resolves once `probe` answers true. No clock of its own: the test deadline is the one budget.
+ * A pending probe or sleep rejects the moment it fires, so a `finally` behind the wait runs before
+ * the runner can exit; a sync probe already true is still answered after it, so an abandoned
+ * body's `finally` finishes the cleanup it can.
  */
 export async function until(probe: () => boolean | Promise<boolean>): Promise<void> {
   const signal = testAbortSignal();
   if (signal === undefined) throw new Error("until: no test deadline to bound the wait");
-  while (!(await unlessAborted(probe(), signal))) {
+  for (;;) {
+    const answer = probe();
+    if (typeof answer === "boolean" ? answer : await unlessAborted(answer, signal)) return;
     await unlessAborted(new Promise((resolve) => setTimeout(resolve, 50)), signal);
   }
 }

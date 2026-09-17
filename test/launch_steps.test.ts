@@ -645,8 +645,13 @@ test(
       await until(() => daemonLockVerdict(home, started) === "alive");
       expect(daemonLockHolderPid(home)).toBe(started);
     } finally {
-      await killAndAwaitExit(oldPid);
-      if (newPid !== null) await killAndAwaitExit(newPid);
+      // Nested: the first wait can end with the deadline's error, and neither daemon is the
+      // harness's to kill.
+      try {
+        await killAndAwaitExit(oldPid);
+      } finally {
+        if (newPid !== null) await killAndAwaitExit(newPid);
+      }
     }
   },
   60_000,
@@ -923,8 +928,9 @@ test(
       expect(pidAlive(child.pid)).toBe(true);
       expect(daemonLockHolderPid(home)).toBe(child.pid);
     } finally {
-      await killAndAwaitExit(child.pid);
+      // Our own lock first: the wait can end with the deadline's error.
       releaseFileLock(daemonLockPath(home));
+      await killAndAwaitExit(child.pid);
     }
   },
   30_000,
@@ -961,8 +967,9 @@ test(
       expect(daemonLockHolderPid(home)).toBe(child.pid);
       expect(new CopilotEnvRunState().read().pid).toBeUndefined();
     } finally {
-      await killAndAwaitExit(child.pid);
+      // Our own lock first: the wait can end with the deadline's error.
       releaseFileLock(daemonLockPath(home));
+      await killAndAwaitExit(child.pid);
     }
   },
   30_000,

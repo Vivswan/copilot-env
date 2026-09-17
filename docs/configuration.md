@@ -132,7 +132,7 @@ Applies at the next wiring pass (`agent init`, `agent codex`, `agent claude`, `a
 
 ### Codex model catalog
 
-`codex.model-catalog` applies at the next `agent codex` / `agent init` wiring or the next direct `cx` launch; `agent auth --get` and `agent proxy-token` return the credential and write nothing else. Turning it off also removes the generated `codex-model-catalog.json` and the managed `model_catalog_json` reference from the Codex config.
+`codex.model-catalog` applies at the next `agent codex` / `agent init` wiring or the next default-profile launch (`cl` / `cx` on a proxy default, or a direct `cx`); `cx --profile <name>` never refreshes it. Credential printing (`agent auth --get`, `agent proxy-token`) never refreshes the catalog or rewrites an agent file. Turning it off also removes the generated `codex-model-catalog.json` and the managed `model_catalog_json` reference from the Codex config.
 
 What the generated catalog holds:
 

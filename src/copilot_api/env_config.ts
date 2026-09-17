@@ -528,7 +528,8 @@ const CONFIG_REGISTRY_LITERAL = [
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint:
-      "Applies at the next `agent codex`/`agent init` wiring or the next direct `cx` launch.",
+      "Applies at the next `agent codex`/`agent init` wiring or the next default-profile launch " +
+      "(`cl`/`cx` on a proxy default, or a direct `cx`); `cx --profile <name>` never refreshes it.",
   },
   {
     key: "cost.credits-target",

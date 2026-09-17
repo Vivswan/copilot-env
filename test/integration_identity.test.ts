@@ -425,9 +425,9 @@ function wireHeaders(headers: Record<string, string>, token: string): Record<str
 }
 
 test("fetchRawModels(direct): a caller deadline aborts the identity probe chain itself", async () => {
-  // The Codex catalog refresh runs inside `agent auth --get`'s bounded budget: its
+  // The Codex catalog refresh runs under a bounded budget (a wiring write, a launch): its
   // deadline must end the pending REQUESTS (a PAT chains identity probes before the
-  // GET), not just stop awaiting them, or the auth process outlives the budget.
+  // GET), not just stop awaiting them, or the caller outlives the budget.
   const { fetchRawModels } = await import("../src/copilot_api/catalog.ts");
   // Every request also carries its own 5s timeout, so the proof is the REASON the
   // pending request saw: the caller's sentinel, not a timeout.

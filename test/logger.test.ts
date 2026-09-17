@@ -1,6 +1,6 @@
 import { createConsola, type LogObject } from "consola";
 import stringWidth from "string-width";
-import { WrappingReporter, wrapToTerminal } from "../src/utils/logger.ts";
+import { promptLayout, WrappingReporter, wrapToTerminal } from "../src/utils/logger.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 const LEGEND =
@@ -68,4 +68,27 @@ test("with consola's fancy reporter no decorated line exceeds the width: icon, W
   // The badge lines really carry the badge, so the width they respect is the decorated one.
   expect(lines().some((l) => l.includes(" WARN ") && l.includes("one two"))).toBe(true);
   expect(lines().some((l) => l.includes(" ERROR ") && l.includes("one two"))).toBe(true);
+});
+
+test("promptLayout wraps the question under Clack's three-column lead and select labels under five, keeping every option's value", () => {
+  const laid = promptLayout(
+    "Which Copilot client identity should be pinned for this profile?",
+    {
+      type: "select",
+      options: [
+        "gh-env",
+        { label: "copilot-developer-cli (GitHub Copilot CLI; accepts PATs)", value: "cli" },
+      ],
+    },
+    40,
+  );
+  expect(laid.message.split("\n")[0]?.length).toBeLessThanOrEqual(37);
+  const [bare, rich] = laid.options?.options ?? [];
+  expect(bare).toEqual({ label: "gh-env", value: "gh-env" });
+  expect(typeof rich === "object" && rich.value).toBe("cli");
+  expect(typeof rich === "object" && rich.label.split("\n")[0]?.length).toBeLessThanOrEqual(35);
+  expect(promptLayout("short?", { type: "confirm" }, null)).toEqual({
+    message: "short?",
+    options: { type: "confirm" },
+  });
 });

@@ -109,10 +109,36 @@ export async function withConsolaOnStderr<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Clack's frame: a marker and two spaces before the question, the bar, marker and spaces before
+ *  a select label. */
+const PROMPT_LEAD = 3;
+const OPTION_LEAD = 5;
+
+type PromptOptions = NonNullable<Parameters<ConsolaInstance["prompt"]>[1]>;
+
+/** The question and every select label wrapped under Clack's frame; a bare string option keeps
+ *  its value (Clack returns the value, which was the string). */
+export function promptLayout<T extends PromptOptions>(
+  message: string,
+  options: T | undefined,
+  width: number | null,
+): { message: string; options: T | undefined } {
+  const question = wrapMessage(message, width, PROMPT_LEAD);
+  if (options === undefined || !("options" in options)) return { message: question, options };
+  const labeled = options.options.map((option) =>
+    typeof option === "string"
+      ? { label: wrapMessage(option, width, OPTION_LEAD), value: option }
+      : { ...option, label: wrapMessage(option.label, width, OPTION_LEAD) }
+  );
+  return { message: question, options: { ...options, options: labeled } };
+}
+
 /** The one place a question is asked: consola's prompt bypasses the reporters, so its text is
  *  wrapped here to the terminal the answer is typed in. */
-export const prompt: ConsolaInstance["prompt"] = (message, options) =>
-  consola.prompt(wrapMessage(message, terminalWidth()), options);
+export const prompt: ConsolaInstance["prompt"] = (message, options) => {
+  const laid = promptLayout(message, options, terminalWidth());
+  return consola.prompt(laid.message, laid.options);
+};
 
 export function createStderrLogger(): ConsolaInstance {
   return wrapToTerminal(createConsola({

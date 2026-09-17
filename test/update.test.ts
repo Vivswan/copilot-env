@@ -24,116 +24,123 @@ const rel = (tag: string, date: string, over: Record<string, unknown> = {}): unk
   prerelease: false,
   ...over,
 });
+const parsed = (tag: string, date: string): Release => ({ tag, dateSeconds: secs(date) });
 
 // The flags parse ONCE into an UpdateAction, so a combination like `--auto-status --check` is
 // a rejection instead of an if-order pick.
-describe("parseUpdateAction", () => {
-  test("each single-intent invocation maps to its own arm", () => {
-    expect(parseUpdateAction({})).toEqual({ kind: "apply", force: false, verify: undefined });
-    expect(parseUpdateAction({ force: true })).toEqual({
-      kind: "apply",
-      force: true,
-      verify: undefined,
-    });
-    expect(parseUpdateAction({ verify: false })).toEqual({
-      kind: "apply",
-      force: false,
-      verify: false,
-    });
-    expect(parseUpdateAction({ verify: true, force: true })).toEqual({
-      kind: "apply",
-      force: true,
-      verify: true,
-    });
-    expect(parseUpdateAction({ check: true })).toEqual({ kind: "check" });
-    expect(parseUpdateAction({ autoStatus: true })).toEqual({ kind: "auto-status" });
-  });
-
-  test("two report flags together are a rejection, never an if-order pick", () => {
-    expect(() => parseUpdateAction({ autoStatus: true, check: true })).toThrow(
-      "--check and --auto-status are mutually exclusive",
-    );
-  });
-
-  test("--force lives on the apply arm alone", () => {
-    for (
-      const args of [
-        { check: true, force: true },
-        { autoStatus: true, force: true },
-      ]
-    ) {
-      expect(() => parseUpdateAction(args)).toThrow("--force only applies to the manual update");
-    }
-  });
-
-  test("--verify/--no-verify live on the apply arm alone", () => {
-    for (
-      const args of [
-        { check: true, verify: false },
-        { autoStatus: true, verify: false },
-      ]
-    ) {
-      expect(() => parseUpdateAction(args)).toThrow(
-        "--verify/--no-verify only apply to the manual update",
-      );
-    }
-  });
+test("parseUpdateAction maps each flag set to one arm or one rejection", () => {
+  const rows: {
+    args: Parameters<typeof parseUpdateAction>[0];
+    result: ReturnType<typeof parseUpdateAction> | { throws: string };
+  }[] = [
+    { args: {}, result: { kind: "apply", force: false, verify: undefined } },
+    { args: { force: true }, result: { kind: "apply", force: true, verify: undefined } },
+    { args: { verify: false }, result: { kind: "apply", force: false, verify: false } },
+    { args: { verify: true, force: true }, result: { kind: "apply", force: true, verify: true } },
+    { args: { check: true }, result: { kind: "check" } },
+    { args: { autoStatus: true }, result: { kind: "auto-status" } },
+    {
+      args: { autoStatus: true, check: true },
+      result: { throws: "--check and --auto-status are mutually exclusive" },
+    },
+    // --force and --verify/--no-verify live on the apply arm alone.
+    {
+      args: { check: true, force: true },
+      result: { throws: "--force only applies to the manual update" },
+    },
+    {
+      args: { autoStatus: true, force: true },
+      result: { throws: "--force only applies to the manual update" },
+    },
+    {
+      args: { check: true, verify: false },
+      result: { throws: "--verify/--no-verify only apply to the manual update" },
+    },
+    {
+      args: { autoStatus: true, verify: false },
+      result: { throws: "--verify/--no-verify only apply to the manual update" },
+    },
+  ];
+  for (const { args, result } of rows) {
+    const why = JSON.stringify(args);
+    if ("throws" in result) expect(() => parseUpdateAction(args), why).toThrow(result.throws);
+    else expect(parseUpdateAction(args), why).toEqual(result);
+  }
 });
 
-describe("parseReleasesJson", () => {
-  test("parses published vX.Y.Z releases, sorted newest-first", () => {
-    const json = JSON.stringify([
-      rel("v1.9.0", "2026-05-27T00:00:00Z"),
-      rel("v3.0.0", "2026-06-05T00:00:00Z"),
-    ]);
-    const r = parseReleasesJson(json);
-    expect(r.map((x) => x.tag)).toEqual(["v3.0.0", "v1.9.0"]);
-    expect(r[0]?.dateSeconds).toBe(secs("2026-06-05T00:00:00Z"));
-  });
-
-  test("skips drafts, prereleases, and non-vX.Y.Z tags", () => {
-    const json = JSON.stringify([
-      rel("v1.0.0", "2026-06-01T00:00:00Z"),
-      rel("v1.1.0", "2026-06-02T00:00:00Z", { draft: true }),
-      rel("v1.2.0", "2026-06-03T00:00:00Z", { prerelease: true }),
-      rel("v1.3.0-rc1", "2026-06-04T00:00:00Z"),
-      rel("nightly", "2026-06-05T00:00:00Z"),
-    ]);
-    expect(parseReleasesJson(json).map((x) => x.tag)).toEqual(["v1.0.0"]);
-  });
-
-  test("can include prereleases for an exact-tag resolve", () => {
-    const json = JSON.stringify([
-      rel("v3.0.0", "2026-06-05T00:00:00Z", { prerelease: true }),
-      rel("v1.9.0", "2026-05-27T00:00:00Z"),
-    ]);
-    expect(parseReleasesJson(json).map((x) => x.tag)).toEqual(["v1.9.0"]);
-    expect(parseReleasesJson(json, true).map((x) => x.tag)).toEqual(["v3.0.0", "v1.9.0"]);
-  });
-
-  test("a draft is never eligible, even for an exact tag", () => {
-    // Draft assets are not publicly downloadable, so a draft can never be a
-    // valid update target however it was asked for.
-    const json = JSON.stringify([rel("v3.0.0", "2026-06-05T00:00:00Z", { draft: true })]);
-    expect(parseReleasesJson(json)).toEqual([]);
-    expect(parseReleasesJson(json, true)).toEqual([]);
-  });
-
-  test("falls back to created_at when published_at is absent", () => {
-    const json = JSON.stringify([{ tag_name: "v1.0.0", created_at: "2026-06-01T00:00:00Z" }]);
-    expect(parseReleasesJson(json)).toEqual([
-      { tag: "v1.0.0", dateSeconds: secs("2026-06-01T00:00:00Z") },
-    ]);
-  });
-
-  test("returns [] for invalid JSON or a non-array (e.g. an API error object)", () => {
-    expect(parseReleasesJson("not json")).toEqual([]);
-    expect(parseReleasesJson('{"message":"Not Found"}')).toEqual([]);
-    expect(parseReleasesJson("[]")).toEqual([]);
-  });
+test("parseReleasesJson keeps published vX.Y.Z releases newest-first and drops the rest", () => {
+  const rows: { name: string; json: string; prereleases?: boolean; releases: Release[] }[] = [
+    {
+      name: "sorted newest-first",
+      json: JSON.stringify([
+        rel("v1.9.0", "2026-05-27T00:00:00Z"),
+        rel("v3.0.0", "2026-06-05T00:00:00Z"),
+      ]),
+      releases: [
+        parsed("v3.0.0", "2026-06-05T00:00:00Z"),
+        parsed("v1.9.0", "2026-05-27T00:00:00Z"),
+      ],
+    },
+    {
+      name: "drafts, prereleases, and non-vX.Y.Z tags are skipped",
+      json: JSON.stringify([
+        rel("v1.0.0", "2026-06-01T00:00:00Z"),
+        rel("v1.1.0", "2026-06-02T00:00:00Z", { draft: true }),
+        rel("v1.2.0", "2026-06-03T00:00:00Z", { prerelease: true }),
+        rel("v1.3.0-rc1", "2026-06-04T00:00:00Z"),
+        rel("nightly", "2026-06-05T00:00:00Z"),
+      ]),
+      releases: [parsed("v1.0.0", "2026-06-01T00:00:00Z")],
+    },
+    // An exact-tag resolve may opt prereleases in ...
+    {
+      name: "prereleases excluded by default",
+      json: JSON.stringify([
+        rel("v3.0.0", "2026-06-05T00:00:00Z", { prerelease: true }),
+        rel("v1.9.0", "2026-05-27T00:00:00Z"),
+      ]),
+      releases: [parsed("v1.9.0", "2026-05-27T00:00:00Z")],
+    },
+    {
+      name: "prereleases included on request",
+      json: JSON.stringify([
+        rel("v3.0.0", "2026-06-05T00:00:00Z", { prerelease: true }),
+        rel("v1.9.0", "2026-05-27T00:00:00Z"),
+      ]),
+      prereleases: true,
+      releases: [
+        parsed("v3.0.0", "2026-06-05T00:00:00Z"),
+        parsed("v1.9.0", "2026-05-27T00:00:00Z"),
+      ],
+    },
+    // ... but a draft's assets are not publicly downloadable, so it is never a target however
+    // it was asked for.
+    {
+      name: "a draft is skipped even when prereleases are included",
+      json: JSON.stringify([rel("v3.0.0", "2026-06-05T00:00:00Z", { draft: true })]),
+      prereleases: true,
+      releases: [],
+    },
+    {
+      name: "a draft is skipped by default",
+      json: JSON.stringify([rel("v3.0.0", "2026-06-05T00:00:00Z", { draft: true })]),
+      releases: [],
+    },
+    {
+      name: "created_at stands in for a missing published_at",
+      json: JSON.stringify([{ tag_name: "v1.0.0", created_at: "2026-06-01T00:00:00Z" }]),
+      releases: [parsed("v1.0.0", "2026-06-01T00:00:00Z")],
+    },
+    { name: "invalid JSON", json: "not json", releases: [] },
+    { name: "an API error object", json: '{"message":"Not Found"}', releases: [] },
+    { name: "an empty array", json: "[]", releases: [] },
+  ];
+  for (const { name, json, prereleases, releases } of rows) {
+    expect(parseReleasesJson(json, prereleases), name).toEqual(releases);
+  }
 });
 
-describe("pickLatest / pickAged", () => {
+test("pickLatest, pickAged, and pickTag select one release from the parsed list", () => {
   const now = secs("2026-06-06T00:00:00Z");
   const releases: Release[] = parseReleasesJson(
     JSON.stringify([
@@ -142,21 +149,32 @@ describe("pickLatest / pickAged", () => {
       rel("v1.8.0", "2026-05-07T00:00:00Z"), // 30 days old
     ]),
   );
-
-  test("pickLatest = newest release", () => expect(pickLatest(releases)?.tag).toBe("v3.0.0"));
-  test("pickAged(7) skips the too-fresh release", () =>
-    expect(pickAged(releases, now, 7)?.tag).toBe("v1.9.0"));
-  test("pickAged(0) = latest", () => expect(pickAged(releases, now, 0)?.tag).toBe("v3.0.0"));
-  test("pickAged falls back to the oldest when none is old enough", () => {
-    const fresh = parseReleasesJson(JSON.stringify([rel("v4.0.0", "2026-06-05T23:00:00Z")]));
-    expect(pickAged(fresh, now, 7)?.tag).toBe("v4.0.0");
-  });
-  test("pickTag resolves exact releases with or without a leading v", () => {
-    expect(pickTag(releases, "v1.9.0")?.tag).toBe("v1.9.0");
-    expect(pickTag(releases, "1.9.0")?.tag).toBe("v1.9.0");
-    expect(pickTag(releases, "v9.9.9")).toBeNull();
-  });
-  test("pickLatest is null on empty", () => expect(pickLatest([])).toBeNull());
+  const fresh = parseReleasesJson(JSON.stringify([rel("v4.0.0", "2026-06-05T23:00:00Z")]));
+  const rows: { name: string; pick: () => Release | null; tag: string | null }[] = [
+    { name: "pickLatest is the newest", pick: () => pickLatest(releases), tag: "v3.0.0" },
+    { name: "pickLatest of nothing", pick: () => pickLatest([]), tag: null },
+    {
+      name: "pickAged(7) skips the too-fresh release",
+      pick: () => pickAged(releases, now, 7),
+      tag: "v1.9.0",
+    },
+    { name: "pickAged(0) is the latest", pick: () => pickAged(releases, now, 0), tag: "v3.0.0" },
+    {
+      name: "pickAged falls back to the oldest when none is old enough",
+      pick: () => pickAged(fresh, now, 7),
+      tag: "v4.0.0",
+    },
+    { name: "pickTag with the leading v", pick: () => pickTag(releases, "v1.9.0"), tag: "v1.9.0" },
+    {
+      name: "pickTag without the leading v",
+      pick: () => pickTag(releases, "1.9.0"),
+      tag: "v1.9.0",
+    },
+    { name: "pickTag of an unknown tag", pick: () => pickTag(releases, "v9.9.9"), tag: null },
+  ];
+  for (const { name, pick, tag } of rows) {
+    expect(pick()?.tag ?? null, name).toBe(tag);
+  }
 });
 
 describe("resolveTarget retry (de-flakes the release lookup)", () => {
@@ -173,37 +191,41 @@ describe("resolveTarget retry (de-flakes the release lookup)", () => {
 
   const releasesJson = JSON.stringify([rel("v1.0.0", "2026-06-01T00:00:00Z")]);
 
-  test("retries transient failures (a thrown error, then a 503) then succeeds", async () => {
-    let calls = 0;
-    globalThis.fetch = (async () => {
-      calls++;
-      if (calls === 1) throw new Error("ECONNRESET");
-      if (calls === 2) return new Response("", { status: 503 });
-      return new Response(releasesJson, { status: 200 });
-    }) as unknown as typeof fetch;
-    const target = await resolveTarget(null);
-    expect(target?.tag).toBe("v1.0.0");
-    expect(calls).toBe(3);
-  });
-
-  test("gives up immediately on a non-retryable status (404)", async () => {
-    let calls = 0;
-    globalThis.fetch = (async () => {
-      calls++;
-      return new Response("", { status: 404 });
-    }) as unknown as typeof fetch;
-    expect(await resolveTarget(null)).toBeNull();
-    expect(calls).toBe(1); // no retry on a 404
-  });
-
-  test("returns null after exhausting retries on a persistent 503", async () => {
-    let calls = 0;
-    globalThis.fetch = (async () => {
-      calls++;
-      return new Response("", { status: 503 });
-    }) as unknown as typeof fetch;
-    expect(await resolveTarget(null)).toBeNull();
-    expect(calls).toBe(4); // MAX_FETCH_ATTEMPTS
+  test("retries transient failures, gives up at once on a 404, and stops after the last attempt", async () => {
+    // Each row is the fetch outcome per attempt; "throw" is a network error, a number a status.
+    const rows: {
+      name: string;
+      attempts: (number | "throw")[];
+      tag: string | null;
+      calls: number;
+    }[] = [
+      {
+        name: "a thrown error, then a 503, then success",
+        attempts: ["throw", 503, 200],
+        tag: "v1.0.0",
+        calls: 3,
+      },
+      { name: "a 404 is not retried", attempts: [404], tag: null, calls: 1 },
+      {
+        name: "a persistent 503 exhausts the attempts",
+        attempts: [503, 503, 503, 503],
+        tag: null,
+        calls: 4,
+      },
+    ];
+    for (const { name, attempts, tag, calls } of rows) {
+      let seen = 0;
+      globalThis.fetch = (() => {
+        const outcome = attempts[seen] ?? 200;
+        seen++;
+        if (outcome === "throw") return Promise.reject(new Error("ECONNRESET"));
+        return Promise.resolve(
+          new Response(outcome === 200 ? releasesJson : "", { status: outcome }),
+        );
+      }) as unknown as typeof fetch;
+      expect((await resolveTarget(null))?.tag ?? null, name).toBe(tag);
+      expect(seen, name).toBe(calls);
+    }
   });
 
   // The lookup is anonymous: a shell GH_TOKEN for another account or the stored Copilot
@@ -240,34 +262,43 @@ describe("resolveTarget retry (de-flakes the release lookup)", () => {
 // above swallows a persistent 503 or a 404 into null). The pre-lock resolve already proved an
 // eligible release exists, so under the lock a null can only be a failed look; `unproven`
 // keeps it off the green up-to-date line that would otherwise cover a SKIPPED update.
-describe("recheckVerdict (the under-lock re-validate)", () => {
+test("recheckVerdict (the under-lock re-validate): unproven, up-to-date, or apply", () => {
   const target = (tag: string): Release => ({ tag, dateSeconds: secs("2026-06-01T00:00:00Z") });
-
-  test("a failed re-check is unproven, NOT up-to-date", () => {
-    expect(recheckVerdict("v1.0.0", null)).toEqual({ kind: "unproven" });
-  });
-
-  test("a genuine up-to-date re-check still reports up-to-date", () => {
-    expect(recheckVerdict("v1.2.3", target("v1.2.3"))).toEqual({ kind: "up-to-date" });
+  const rows: {
+    name: string;
+    installed: string;
+    target: Release | null;
+    verdict: ReturnType<typeof recheckVerdict>;
+  }[] = [
+    {
+      name: "a failed re-check is unproven, NOT up-to-date",
+      installed: "v1.0.0",
+      target: null,
+      verdict: { kind: "unproven" },
+    },
+    {
+      name: "same version",
+      installed: "v1.2.3",
+      target: target("v1.2.3"),
+      verdict: { kind: "up-to-date" },
+    },
     // A concurrent updater having moved us PAST the target is up-to-date too: the downgrade
     // guard this re-validate exists to be.
-    expect(recheckVerdict("v2.0.0", target("v1.2.3"))).toEqual({ kind: "up-to-date" });
-  });
-
-  test("a newer release still applies, carrying the re-resolved target", () => {
+    {
+      name: "already past the target",
+      installed: "v2.0.0",
+      target: target("v1.2.3"),
+      verdict: { kind: "up-to-date" },
+    },
     // The target applied is the one resolved UNDER the lock, not the pre-lock one.
-    expect(recheckVerdict("v1.0.0", target("v1.5.0"))).toEqual({
-      kind: "apply",
+    {
+      name: "a newer release applies, carrying the re-resolved target",
+      installed: "v1.0.0",
       target: target("v1.5.0"),
-    });
-  });
-
-  test("the three arms are distinct, so no failure can wear a verdict's words", () => {
-    const kinds = [
-      recheckVerdict("v1.0.0", null).kind,
-      recheckVerdict("v1.2.3", target("v1.2.3")).kind,
-      recheckVerdict("v1.0.0", target("v1.5.0")).kind,
-    ];
-    expect(new Set(kinds).size).toBe(3);
-  });
+      verdict: { kind: "apply", target: target("v1.5.0") },
+    },
+  ];
+  for (const row of rows) {
+    expect(recheckVerdict(row.installed, row.target), row.name).toEqual(row.verdict);
+  }
 });

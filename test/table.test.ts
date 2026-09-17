@@ -1,46 +1,34 @@
 import { formatTable, terminalWidth, wrapLine } from "../src/utils/table.ts";
 import { expect, test } from "./helpers/testing.ts";
 
-test("formatTable pads columns and aligns per column", () => {
-  const lines = formatTable(
-    [
-      ["a", "10"],
-      ["longer", "5"],
-    ],
-    { header: ["name", "count"], aligns: ["left", "right"] },
-  );
-  expect(lines).toEqual([
-    "  name    count",
-    "  ------  -----",
-    "  a          10",
-    "  longer      5",
-  ]);
-});
-
-test("formatTable renders footer rows below a second separator", () => {
-  const lines = formatTable([["row", "1"]], {
-    header: ["h", "n"],
-    footer: [["sum", "1"]],
-  });
-  expect(lines).toEqual(["  h    n", "  ---  -", "  row  1", "  ---  -", "  sum  1"]);
-});
-
-test("formatTable trims every line, including separators", () => {
-  // A zero-width final column: no line may carry trailing whitespace.
-  const lines = formatTable([["x", ""]], { header: ["h", ""], footer: [["f", ""]] });
-  for (const line of lines) {
-    expect(line).toBe(line.trimEnd());
+test("formatTable pads and aligns per column, separates header and footer rows, trims every line, and takes ragged rows, an empty body, and a custom indent", () => {
+  const rows: Array<
+    { body: string[][]; options?: Parameters<typeof formatTable>[1]; lines: string[] }
+  > = [
+    {
+      body: [["a", "10"], ["longer", "5"]],
+      options: { header: ["name", "count"], aligns: ["left", "right"] },
+      lines: ["  name    count", "  ------  -----", "  a          10", "  longer      5"],
+    },
+    {
+      body: [["row", "1"]],
+      options: { header: ["h", "n"], footer: [["sum", "1"]] },
+      lines: ["  h    n", "  ---  -", "  row  1", "  ---  -", "  sum  1"],
+    },
+    // A zero-width final column: no line carries trailing whitespace, separators included.
+    {
+      body: [["x", ""]],
+      options: { header: ["h", ""], footer: [["f", ""]] },
+      lines: ["  h", "  -", "  x", "  -", "  f"],
+    },
+    { body: [["only"], ["two", "cells"]], lines: ["  only", "  two   cells"] },
+    { body: [], options: { footer: [["f"]] }, lines: ["  -", "  f"] },
+    { body: [], lines: [] },
+    { body: [["a"]], options: { indent: "" }, lines: ["a"] },
+  ];
+  for (const { body, options, lines } of rows) {
+    expect(formatTable(body, options)).toEqual(lines);
   }
-});
-
-test("formatTable handles ragged rows and an empty body", () => {
-  expect(formatTable([["only"], ["two", "cells"]])).toEqual(["  only", "  two   cells"]);
-  expect(formatTable([], { footer: [["f"]] })).toEqual(["  -", "  f"]);
-  expect(formatTable([])).toEqual([]);
-});
-
-test("formatTable honors a custom indent", () => {
-  expect(formatTable([["a"]], { indent: "" })).toEqual(["a"]);
 });
 
 // --- terminal width ---------------------------------------------------------------------------

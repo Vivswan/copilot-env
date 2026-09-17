@@ -1,5 +1,5 @@
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   discoverUsageDbs,
@@ -384,7 +384,9 @@ test("mergeUsageReports sums models, unions days, and keeps day-less usage in th
   expect(b.perDay.get("2026-06-01")?.get("m")?.input).toBe(100);
 });
 
-test("readUsage drops an unattributable DB row instead of reporting a phantom model", () => {
+// A column a live daemon never writes badly, but a torn write or a hand edit can: no model, hostile
+// counts, no timestamp. The row is dropped, clamped, or kept out of the day split, never a phantom.
+test("readUsage: an unattributable row is dropped, hostile counts clamp, an undated row reaches the totals only", () => {
   dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   // No column constraints: the reader must survive a corrupt file, not just the daemon's.
@@ -394,10 +396,14 @@ test("readUsage drops an unattributable DB row instead of reporting a phantom mo
     cache_creation_input_tokens, created_at_ms, created_at_utc
   )`);
   const insert = db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)");
-  const t = ms("2026-06-01T00:00:00Z");
-  insert.run("gpt-5.5", 100, 50, 0, 0, t, "x");
-  insert.run(null, 999, 999, 0, 0, t, "x"); // no model: cannot be attributed
-  insert.run("negative", -5, -5, 0, 0, t, "x"); // hostile counts: clamped, row kept
+  const at = "2026-06-01T00:00:00Z";
+  insert.run("gpt-5.5", 100, 50, 0, 0, ms(at), at);
+  insert.run(null, 999, 999, 0, 0, ms(at), at); // no model: cannot be attributed
+  insert.run("negative", -5, -5, 0, 0, ms(at), at); // hostile counts: clamped, row kept
+  // The daemon writes created_at_ms on every row, so this is defensive: the schema belongs to a
+  // floating third-party package. A row without it cannot be placed on a local day, but its
+  // tokens must still reach the totals.
+  insert.run("gpt-5.5", 7, 0, 0, 0, null, at);
   db.close();
 
   const report = readUsage([path]);
@@ -410,8 +416,16 @@ test("readUsage drops an unattributable DB row instead of reporting a phantom mo
     cacheCreation: 0,
     events: 1,
   });
-  expect(report.byModel.get("gpt-5.5")?.input).toBe(100);
-  expect(report.perDay.get(day("2026-06-01T00:00:00Z"))?.size).toBe(2);
+  expect(report.byModel.get("gpt-5.5")).toEqual({
+    input: 107,
+    output: 50,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 2,
+  });
+  expect(report.perDay.size).toBe(1);
+  expect(report.perDay.get(day(at))?.size).toBe(2);
+  expect(report.perDay.get(day(at))?.get("gpt-5.5")?.input).toBe(100);
 });
 
 function seedUsageDb(path: string): void {
@@ -434,7 +448,7 @@ function seedUsageDb(path: string): void {
   db.close();
 }
 
-test("readUsage sums tokens per model and counts distinct active days", () => {
+test("readUsage sums tokens per model and splits them by local day, the split reconciling with byModel", () => {
   dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   seedUsageDb(path);
@@ -449,21 +463,10 @@ test("readUsage sums tokens per model and counts distinct active days", () => {
     events: 2,
   });
   expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
-  expect(report.perDay.size).toBe(2);
-});
-
-test("readUsage exposes a per-day, per-model breakdown that reconciles with byModel", () => {
-  dir = tempDir("copilot-usage-");
-  const path = join(dir, "copilot-api.sqlite");
-  seedUsageDb(path);
-
-  const report = readUsage([path]);
-
   expect([...report.perDay.keys()].sort()).toEqual([
     day("2026-06-01T00:00:00Z"),
     day("2026-06-02T00:00:00Z"),
   ]);
-
   expect(report.perDay.get(day("2026-06-01T00:00:00Z"))?.get("claude-opus-4.8")).toEqual({
     input: 200,
     output: 100,
@@ -600,151 +603,107 @@ test("readUsage rejects an unknown zone before it opens a single database", () =
   expect(() => readUsage([], undefined, "Not/AZone")).toThrow();
 });
 
-test("a null created_at_ms row counts in byModel but is dropped from perDay", () => {
-  // The daemon writes created_at_ms on every row, so this is defensive: the
-  // schema belongs to a floating third-party package. A row without it can't
-  // be placed on a local day, but its tokens must still reach the totals.
-  dir = tempDir("copilot-usage-");
-  const path = join(dir, "copilot-api.sqlite");
-  const db = new DatabaseSync(path);
-  db.exec(`CREATE TABLE token_usage_events (
-    model TEXT NOT NULL,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    cache_read_input_tokens INTEGER,
-    cache_creation_input_tokens INTEGER,
-    created_at_ms INTEGER,
-    created_at_utc TEXT
-  )`);
-  const insert = db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)");
-  insert.run("gpt-5.5", 7, 0, 0, 0, null, "2026-06-01T00:00:00Z");
-  insert.run("gpt-5.5", 1, 0, 0, 0, ms("2026-06-01T00:00:00Z"), "2026-06-01T00:00:00Z");
-  db.close();
+/** A set of database paths, some unreadable, and the report the readable ones give. */
+const UNREADABLE_SETS: {
+  name: string;
+  files: (dir: string) => string[];
+  inputs: Record<string, number>;
+  days: number;
+}[] = [
+  {
+    name: "a missing file",
+    files: (dir) => {
+      const good = join(dir, "good.sqlite");
+      seedUsageDb(good);
+      return [join(dir, "does-not-exist.sqlite"), good];
+    },
+    inputs: { "claude-opus-4.8": 200, "gpt-5.5": 200 },
+    days: 2,
+  },
+  {
+    name: "a corrupt file",
+    files: (dir) => {
+      const good = join(dir, "good.sqlite");
+      const corrupt = join(dir, "corrupt.sqlite");
+      seedUsageDb(good);
+      writeFileSync(corrupt, "this is not a sqlite database");
+      return [corrupt, good];
+    },
+    inputs: { "claude-opus-4.8": 200, "gpt-5.5": 200 },
+    days: 2,
+  },
+  {
+    name: "nothing but corrupt files",
+    files: (dir) => {
+      const corrupt = join(dir, "corrupt.sqlite");
+      writeFileSync(corrupt, "garbage");
+      return [corrupt];
+    },
+    inputs: {},
+    days: 0,
+  },
+];
 
-  const report = readUsage([path]);
-
-  expect(report.byModel.get("gpt-5.5")).toEqual({
-    input: 8,
-    output: 0,
-    cacheRead: 0,
-    cacheCreation: 0,
-    events: 2,
+for (const { name, files, inputs, days } of UNREADABLE_SETS) {
+  test(`readUsage skips ${name} without throwing and reports the readable ones`, () => {
+    dir = tempDir("copilot-usage-");
+    const report = readUsage(files(dir));
+    expect(Object.fromEntries([...report.byModel].map(([m, u]) => [m, u.input]))).toEqual(inputs);
+    expect(report.perDay.size).toBe(days);
   });
-  expect(report.perDay.size).toBe(1);
-  expect(report.perDay.get(day("2026-06-01T00:00:00Z"))?.get("gpt-5.5")?.input).toBe(1);
-});
+}
 
-test("readUsage skips a missing DB and still reports the readable ones", () => {
-  dir = tempDir("copilot-usage-");
-  const good = join(dir, "good.sqlite");
-  const missing = join(dir, "does-not-exist.sqlite");
-  seedUsageDb(good);
+/** A home's directory tree (paths relative to the home) and the databases the sweep must find. */
+const LAYOUTS: { name: string; dirs?: string[]; files: string[]; found: string[] }[] = [
+  {
+    name: "the per-host DBs under .run",
+    files: [".run/host-a/copilot-api.sqlite"],
+    found: [".run/host-a/copilot-api.sqlite"],
+  },
+  {
+    // A profile home with no DB yet contributes nothing.
+    name: "named profile daemon homes too",
+    dirs: ["profiles/fresh"],
+    files: [".run/host-a/copilot-api.sqlite", "profiles/work/.run/host-a/copilot-api.sqlite"],
+    found: [".run/host-a/copilot-api.sqlite", "profiles/work/.run/host-a/copilot-api.sqlite"],
+  },
+  {
+    // The default daemon's DBs live under profiles/default (a name isValidProfileName REJECTS as
+    // reserved, so the sweep must admit it explicitly). Control: a stray non-profile dir under
+    // profiles/ carrying a DB must NOT be swept, proving the default is admitted by name, not
+    // by the filter having gone permissive.
+    name: "the DEFAULT profile's home, never a stray invalid dir",
+    files: [
+      "profiles/default/.run/host-a/copilot-api.sqlite",
+      "profiles/.stray/.run/host-a/copilot-api.sqlite",
+    ],
+    found: ["profiles/default/.run/host-a/copilot-api.sqlite"],
+  },
+  {
+    name: "neither a stray .run file nor a host dir missing the sqlite",
+    files: [".run/stray.txt", ".run/host-empty/other.txt", ".run/host-good/copilot-api.sqlite"],
+    found: [".run/host-good/copilot-api.sqlite"],
+  },
+  {
+    // Absence is the PROVEN "nothing here" and must keep flowing silently: a fresh home has
+    // neither .run nor profiles/, and `agent cost` must not raise on it.
+    name: "nothing in a fresh home: absent dirs read as empty, never as a failure",
+    files: [],
+    found: [],
+  },
+];
 
-  const report = readUsage([missing, good]);
-
-  expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
-  expect(report.perDay.size).toBe(2);
-});
-
-test("readUsage skips a corrupt DB file without throwing", () => {
-  dir = tempDir("copilot-usage-");
-  const good = join(dir, "good.sqlite");
-  const corrupt = join(dir, "corrupt.sqlite");
-  seedUsageDb(good);
-  writeFileSync(corrupt, "this is not a sqlite database");
-
-  const report = readUsage([corrupt, good]);
-
-  expect(report.byModel.get("claude-opus-4.8")?.input).toBe(200);
-  expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
-  expect(report.perDay.size).toBe(2);
-});
-
-test("readUsage on an all-corrupt set returns an empty report, no throw", () => {
-  dir = tempDir("copilot-usage-");
-  const corrupt = join(dir, "corrupt.sqlite");
-  writeFileSync(corrupt, "garbage");
-
-  const report = readUsage([corrupt]);
-
-  expect(report.byModel.size).toBe(0);
-  expect(report.perDay.size).toBe(0);
-});
-
-test("discoverUsageDbs finds the per-host DBs", () => {
-  dir = tempDir("copilot-usage-");
-  const hostDir = join(dir, ".run", "host-a");
-  mkdirSync(hostDir, { recursive: true });
-  const hostDb = join(hostDir, "copilot-api.sqlite");
-  writeFileSync(hostDb, "");
-
-  expect(discoverUsageDbs(dir)).toEqual([hostDb]);
-});
-
-test("discoverUsageDbs also sweeps named profile daemon homes", () => {
-  dir = tempDir("copilot-usage-");
-
-  const defaultHost = join(dir, ".run", "host-a");
-  mkdirSync(defaultHost, { recursive: true });
-  const defaultDb = join(defaultHost, "copilot-api.sqlite");
-  writeFileSync(defaultDb, "");
-
-  const profileHost = join(dir, "profiles", "work", ".run", "host-a");
-  mkdirSync(profileHost, { recursive: true });
-  const profileDb = join(profileHost, "copilot-api.sqlite");
-  writeFileSync(profileDb, "");
-
-  // A profile home with no DB yet contributes nothing.
-  mkdirSync(join(dir, "profiles", "fresh"), { recursive: true });
-
-  const found = discoverUsageDbs(dir);
-
-  expect(found).toContain(defaultDb);
-  expect(found).toContain(profileDb);
-  expect(found).toHaveLength(2);
-});
-
-test("discoverUsageDbs sweeps the DEFAULT profile's home; a stray invalid dir stays out", () => {
-  dir = tempDir("copilot-usage-");
-
-  // The default daemon's DBs live under profiles/default (a name isValidProfileName REJECTS as
-  // reserved, so the sweep must admit it explicitly).
-  const defaultHost = join(dir, "profiles", "default", ".run", "host-a");
-  mkdirSync(defaultHost, { recursive: true });
-  const defaultDb = join(defaultHost, "copilot-api.sqlite");
-  writeFileSync(defaultDb, "");
-
-  // Control: a stray non-profile dir under profiles/ carrying a DB must NOT be swept -- proving
-  // the default is admitted by name, not by the filter having gone permissive.
-  const strayHost = join(dir, "profiles", ".stray", ".run", "host-a");
-  mkdirSync(strayHost, { recursive: true });
-  writeFileSync(join(strayHost, "copilot-api.sqlite"), "");
-
-  expect(discoverUsageDbs(dir)).toEqual([defaultDb]);
-});
-
-test("discoverUsageDbs excludes a stray .run file and a host dir missing the sqlite", () => {
-  dir = tempDir("copilot-usage-");
-
-  const runDir = join(dir, ".run");
-  mkdirSync(runDir, { recursive: true });
-  const strayFile = join(runDir, "stray.txt");
-  writeFileSync(strayFile, "not a host dir");
-
-  const emptyHost = join(runDir, "host-empty");
-  mkdirSync(emptyHost, { recursive: true });
-  writeFileSync(join(emptyHost, "other.txt"), "no db here");
-
-  const goodHost = join(runDir, "host-good");
-  mkdirSync(goodHost, { recursive: true });
-  const goodDb = join(goodHost, "copilot-api.sqlite");
-  writeFileSync(goodDb, "");
-
-  const found = discoverUsageDbs(dir);
-
-  expect(found).toEqual([goodDb]);
-  expect(found).not.toContain(strayFile);
-});
+for (const { name, dirs = [], files, found } of LAYOUTS) {
+  test(`discoverUsageDbs finds ${name}`, () => {
+    dir = tempDir("copilot-usage-");
+    for (const rel of dirs) mkdirSync(join(dir, rel), { recursive: true });
+    for (const rel of files) {
+      mkdirSync(dirname(join(dir, rel)), { recursive: true });
+      writeFileSync(join(dir, rel), "");
+    }
+    expect(discoverUsageDbs(dir).sort()).toEqual(found.map((rel) => join(dir, rel)).sort());
+  });
+}
 
 // A scan that FAILED must not read as an empty one: discoverUsageDbs backs a "no databases
 // found" line and a summed cost TOTAL, so a silently short answer under-reports money. Only a
@@ -755,54 +714,27 @@ test("discoverUsageDbs excludes a stray .run file and a host dir missing the sql
 // POSIX, non-root only: 0000 blocks the readdir, and root bypasses file modes.
 const skipUnreadableDir = process.platform === "win32" || process.getuid?.() === 0;
 
-test.skipIf(skipUnreadableDir)(
-  "an UNREADABLE .run dir raises instead of reporting no databases",
-  () => {
-    dir = tempDir("copilot-usage-");
-    const runDir = join(dir, ".run");
-    mkdirSync(runDir, { recursive: true });
-    chmodSync(runDir, 0o000);
-    try {
-      let threw = "";
+for (const scanned of [".run", "profiles"]) {
+  test.skipIf(skipUnreadableDir)(
+    `an UNREADABLE ${scanned} dir raises instead of reporting nothing found`,
+    () => {
+      dir = tempDir("copilot-usage-");
+      const blocked = join(dir, scanned);
+      mkdirSync(blocked, { recursive: true });
+      chmodSync(blocked, 0o000);
       try {
-        discoverUsageDbs(dir);
-      } catch (e) {
-        threw = e instanceof Error ? e.message : String(e);
+        let threw = "";
+        try {
+          discoverUsageDbs(dir);
+        } catch (e) {
+          threw = e instanceof Error ? e.message : String(e);
+        }
+        // Positive assertion: a call that did NOT throw fails here rather than
+        // passing on an empty string.
+        expect(threw).toContain("EACCES");
+      } finally {
+        chmodSync(blocked, 0o755);
       }
-      // Positive assertion: a call that did NOT throw fails here rather than
-      // passing on an empty string.
-      expect(threw).toContain("EACCES");
-    } finally {
-      chmodSync(runDir, 0o755);
-    }
-  },
-);
-
-test.skipIf(skipUnreadableDir)(
-  "an UNREADABLE profiles dir raises instead of reporting no profiles",
-  () => {
-    dir = tempDir("copilot-usage-");
-    const profilesDir = join(dir, "profiles");
-    mkdirSync(profilesDir, { recursive: true });
-    chmodSync(profilesDir, 0o000);
-    try {
-      let threw = "";
-      try {
-        discoverUsageDbs(dir);
-      } catch (e) {
-        threw = e instanceof Error ? e.message : String(e);
-      }
-      expect(threw).toContain("EACCES");
-    } finally {
-      chmodSync(profilesDir, 0o755);
-    }
-  },
-);
-
-test("both scans still read ABSENT dirs as empty, never as a failure (the control)", () => {
-  // Absence is the PROVEN "nothing here" and must keep flowing silently: a fresh home has
-  // neither .run nor profiles/, and `agent cost` must not raise on it.
-  dir = tempDir("copilot-usage-");
-
-  expect(discoverUsageDbs(dir)).toEqual([]);
-});
+    },
+  );
+}

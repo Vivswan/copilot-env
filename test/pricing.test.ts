@@ -7,6 +7,7 @@ import {
   estimateCost,
   fetchPricing,
   loadPricing,
+  type ModelCost,
   pricingCachePath,
   type PricingTier,
   resolvePricingId,
@@ -30,26 +31,110 @@ const CATALOG = new Set<string>([
   "openai/gpt-5.5",
 ]);
 
-test("resolves a fully-qualified id directly", () => {
-  expect(resolvePricingId("anthropic/claude-opus-4.8", CATALOG)).toBe("anthropic/claude-opus-4.8");
-});
+/** A usage model id against a price catalog, and the catalog entry it prices at. */
+const RESOLUTIONS: { name: string; id: string; catalog: Set<string>; resolved: string | null }[] = [
+  {
+    name: "a fully-qualified id resolves directly",
+    id: "anthropic/claude-opus-4.8",
+    catalog: CATALOG,
+    resolved: "anthropic/claude-opus-4.8",
+  },
+  {
+    name: "a bare claude id infers its provider",
+    id: "claude-opus-4.8",
+    catalog: CATALOG,
+    resolved: "anthropic/claude-opus-4.8",
+  },
+  {
+    name: "a gpt id infers its provider",
+    id: "gpt-5.5",
+    catalog: CATALOG,
+    resolved: "openai/gpt-5.5",
+  },
+  {
+    name: "[1m] and digit-dash are normalized before matching",
+    id: "claude-opus-4-8[1m]",
+    catalog: CATALOG,
+    resolved: "anthropic/claude-opus-4.8",
+  },
+  {
+    name: "a dated Anthropic snapshot id lands on its base model",
+    id: "claude-haiku-4-5-20251001",
+    catalog: new Set(["anthropic/claude-haiku-4.5"]),
+    resolved: "anthropic/claude-haiku-4.5",
+  },
+  {
+    name: "a -1m-internal id lands on its base model",
+    id: "claude-opus-4-7-1m-internal",
+    catalog: new Set(["anthropic/claude-opus-4.7"]),
+    resolved: "anthropic/claude-opus-4.7",
+  },
+  {
+    name: "the opus shorthand prefix-matches a claude-opus entry",
+    id: "opus",
+    catalog: CATALOG,
+    resolved: "anthropic/claude-opus-4.8",
+  },
+  {
+    name: "the fable shorthand prefix-matches a claude-fable entry",
+    id: "fable",
+    catalog: new Set(["anthropic/claude-fable-5", "anthropic/claude-opus-4.8"]),
+    resolved: "anthropic/claude-fable-5",
+  },
+  {
+    // Single-number version: the [1m] strip applies, digit-dash-digit does not.
+    name: "a single-number version keeps its [1m] strip",
+    id: "claude-fable-5[1m]",
+    catalog: new Set(["anthropic/claude-fable-5", "anthropic/claude-opus-4.8"]),
+    resolved: "anthropic/claude-fable-5",
+  },
+  {
+    name: "nothing matches",
+    id: "totally-unknown-model",
+    catalog: CATALOG,
+    resolved: null,
+  },
+  {
+    name: "the bare flagship beats -fast/-mini siblings sharing a prefix",
+    id: "opus",
+    catalog: new Set([
+      "anthropic/claude-opus-4.8-fast",
+      "anthropic/claude-opus-4.8",
+      "anthropic/claude-opus-4.8-mini",
+    ]),
+    resolved: "anthropic/claude-opus-4.8",
+  },
+  {
+    name: "the newest version wins among prefix matches",
+    id: "opus",
+    catalog: new Set(["anthropic/claude-opus-4.1", "anthropic/claude-opus-4.8"]),
+    resolved: "anthropic/claude-opus-4.8",
+  },
+  {
+    name: "an exact sort tie breaks by id (forward insertion order)",
+    id: "opus",
+    catalog: new Set(["anthropic/claude-opus-4.8-a", "anthropic/claude-opus-4.8-b"]),
+    resolved: "anthropic/claude-opus-4.8-a",
+  },
+  {
+    name: "an exact sort tie breaks by id (reversed insertion order)",
+    id: "opus",
+    catalog: new Set(["anthropic/claude-opus-4.8-b", "anthropic/claude-opus-4.8-a"]),
+    resolved: "anthropic/claude-opus-4.8-a",
+  },
+  {
+    name: "an inferable provider with no catalog match is null",
+    id: "gpt-9.9",
+    catalog: new Set(["anthropic/claude-opus-4.8"]),
+    resolved: null,
+  },
+];
 
-test("infers the provider for a bare claude id", () => {
-  expect(resolvePricingId("claude-opus-4.8", CATALOG)).toBe("anthropic/claude-opus-4.8");
-});
-
-test("infers the provider for a gpt id", () => {
-  expect(resolvePricingId("gpt-5.5", CATALOG)).toBe("openai/gpt-5.5");
-});
-
-test("normalizes [1m] and digit-dash before matching", () => {
-  expect(resolvePricingId("claude-opus-4-8[1m]", CATALOG)).toBe("anthropic/claude-opus-4.8");
-});
-
-test("resolves a dated Anthropic snapshot id onto its base model", () => {
-  const catalog = new Set<string>(["anthropic/claude-haiku-4.5"]);
-  expect(resolvePricingId("claude-haiku-4-5-20251001", catalog)).toBe("anthropic/claude-haiku-4.5");
-});
+for (const { name, id, catalog, resolved } of RESOLUTIONS) {
+  test(`resolvePricingId: ${name}`, () => {
+    expect(resolvePricingId(id, catalog)).toBe(resolved);
+  });
+}
 
 test("canonicalModelName unifies the source spellings of one model", () => {
   // Anthropic dashed vs Copilot dotted vs dated snapshot: one canonical key.
@@ -72,131 +157,114 @@ test("canonicalModelName unifies the source spellings of one model", () => {
   expect(canonicalModelName("vendor/widget-20251001")).toBe("vendor/widget-20251001");
 });
 
-test("resolves a -1m-internal id onto its base model", () => {
-  const catalog = new Set<string>(["anthropic/claude-opus-4.7"]);
-  expect(resolvePricingId("claude-opus-4-7-1m-internal", catalog)).toBe(
-    "anthropic/claude-opus-4.7",
-  );
-});
+/** A price list and a usage map, and the estimate they must produce; USD amounts are
+ *  compared to 10 places, well inside what pre-rounding to 4 would move. */
+const ESTIMATES: {
+  name: string;
+  pricing: Map<string, PricingTier>;
+  usage: Map<string, UsageTokens>;
+  perModel: Record<string, Partial<ModelCost>>;
+  totalUsd: number;
+  unpriced: string[];
+}[] = [
+  {
+    name: "cache buckets are priced and included in the totals",
+    pricing: new Map([
+      ["anthropic/claude-opus-4.8", {
+        input: 15,
+        output: 75,
+        cacheRead: 1.5,
+        cacheCreation: 18.75,
+      }],
+    ]),
+    usage: new Map([
+      [
+        "claude-opus-4.8",
+        { input: 2_000_000, output: 1_000_000, cacheRead: 4_000_000, cacheCreation: 1_000_000 },
+      ],
+    ]),
+    // input: 2M * 15/M ; output: 1M * 75/M ; cacheRead: 4M * 1.5/M ; cacheCreation: 1M * 18.75/M
+    perModel: {
+      "claude-opus-4.8": {
+        inputCostUsd: 30,
+        outputCostUsd: 75,
+        cacheReadCostUsd: 6,
+        cacheCreationCostUsd: 18.75,
+        estimatedCostUsd: 129.75,
+      },
+    },
+    totalUsd: 129.75,
+    unpriced: [],
+  },
+  {
+    // 333_333 / 1M * 1.5 = 0.4999995, stored EXACT and never pre-rounded to 0.5: per-model
+    // costs feed the per-day sums, so rounding here would make the by-model and per-day
+    // tables disagree. roundUsd applies once, at the boundary.
+    name: "USD amounts stay exact; rounding belongs to the boundary",
+    pricing: new Map([["anthropic/claude-opus-4.8", { input: 15, cacheRead: 1.5 }]]),
+    usage: new Map([
+      ["claude-opus-4.8", { input: 0, output: 0, cacheRead: 333_333, cacheCreation: 0 }],
+    ]),
+    perModel: { "claude-opus-4.8": { cacheReadCostUsd: 0.4999995, estimatedCostUsd: 0.4999995 } },
+    totalUsd: 0.4999995,
+    unpriced: [],
+  },
+  {
+    name: "known models are priced and unpriceable ones listed",
+    pricing: new Map([
+      ["anthropic/claude-opus-4.8", {
+        input: 15,
+        output: 75,
+        cacheRead: 1.5,
+        cacheCreation: 18.75,
+      }],
+    ]),
+    usage: new Map([
+      ["claude-opus-4.8", { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreation: 0 }],
+      ["mystery-model", { input: 500, output: 0, cacheRead: 0, cacheCreation: 0 }],
+    ]),
+    perModel: {
+      "claude-opus-4.8": {
+        pricingReference: "anthropic/claude-opus-4.8",
+        inputCostUsd: 15,
+        outputCostUsd: 75,
+        estimatedCostUsd: 90,
+      },
+    },
+    totalUsd: 90,
+    unpriced: ["mystery-model"],
+  },
+  {
+    name: "a model whose used bucket has no rate is excluded",
+    pricing: new Map([["anthropic/claude-opus-4.8", { input: 15, output: 75 }]]),
+    usage: new Map([
+      ["claude-opus-4.8", { input: 0, output: 0, cacheRead: 1_000, cacheCreation: 0 }],
+    ]),
+    perModel: {},
+    totalUsd: 0,
+    unpriced: ["claude-opus-4.8"],
+  },
+];
 
-test("opus shorthand prefix-matches a claude-opus entry", () => {
-  expect(resolvePricingId("opus", CATALOG)).toBe("anthropic/claude-opus-4.8");
-});
-
-test("fable shorthand prefix-matches a claude-fable entry", () => {
-  const catalog = new Set<string>(["anthropic/claude-fable-5", "anthropic/claude-opus-4.8"]);
-  expect(resolvePricingId("fable", catalog)).toBe("anthropic/claude-fable-5");
-  // Single-number version: the [1m] strip applies, digit-dash-digit does not.
-  expect(resolvePricingId("claude-fable-5[1m]", catalog)).toBe("anthropic/claude-fable-5");
-});
-
-test("returns null when nothing matches", () => {
-  expect(resolvePricingId("totally-unknown-model", CATALOG)).toBeNull();
-});
-
-test("prefers the bare flagship over -fast/-mini siblings sharing a prefix", () => {
-  const catalog = new Set<string>([
-    "anthropic/claude-opus-4.8-fast",
-    "anthropic/claude-opus-4.8",
-    "anthropic/claude-opus-4.8-mini",
-  ]);
-  expect(resolvePricingId("opus", catalog)).toBe("anthropic/claude-opus-4.8");
-});
-
-test("picks the newest version among prefix matches", () => {
-  const catalog = new Set<string>(["anthropic/claude-opus-4.1", "anthropic/claude-opus-4.8"]);
-  expect(resolvePricingId("opus", catalog)).toBe("anthropic/claude-opus-4.8");
-});
-
-test("breaks an exact sort tie by id, whatever the catalog's insertion order", () => {
-  const forward = new Set<string>(["anthropic/claude-opus-4.8-a", "anthropic/claude-opus-4.8-b"]);
-  const reversed = new Set<string>(["anthropic/claude-opus-4.8-b", "anthropic/claude-opus-4.8-a"]);
-  expect(resolvePricingId("opus", forward)).toBe("anthropic/claude-opus-4.8-a");
-  expect(resolvePricingId("opus", reversed)).toBe("anthropic/claude-opus-4.8-a");
-});
-
-test("returns null when the provider is inferable but the catalog has no match", () => {
-  const catalog = new Set<string>(["anthropic/claude-opus-4.8"]);
-  expect(resolvePricingId("gpt-9.9", catalog)).toBeNull();
-});
-
-test("estimateCost computes and includes cache bucket costs in totals", () => {
-  const pricing = new Map<string, PricingTier>([
-    ["anthropic/claude-opus-4.8", { input: 15, output: 75, cacheRead: 1.5, cacheCreation: 18.75 }],
-  ]);
-  const usage = new Map<string, UsageTokens>([
-    [
-      "claude-opus-4.8",
-      { input: 2_000_000, output: 1_000_000, cacheRead: 4_000_000, cacheCreation: 1_000_000 },
-    ],
-  ]);
-
-  const result = estimateCost(usage, pricing);
-  const cost = result.perModel["claude-opus-4.8"];
-
-  // input: 2M * 15/M = 30 ; output: 1M * 75/M = 75
-  expect(cost?.inputCostUsd).toBe(30);
-  expect(cost?.outputCostUsd).toBe(75);
-  // cacheRead: 4M * 1.5/M = 6 ; cacheCreation: 1M * 18.75/M = 18.75
-  expect(cost?.cacheReadCostUsd).toBe(6);
-  expect(cost?.cacheCreationCostUsd).toBe(18.75);
-  // total = 30 + 75 + 6 + 18.75 = 129.75
-  expect(cost?.estimatedCostUsd).toBe(129.75);
-  expect(result.totalUsd).toBe(129.75);
-});
-
-test("estimateCost keeps USD amounts exact; rounding belongs to the boundary", () => {
-  const pricing = new Map<string, PricingTier>([
-    ["anthropic/claude-opus-4.8", { input: 15, cacheRead: 1.5 }],
-  ]);
-  // 333_333 / 1M * 1.5 = 0.4999995 -- stored EXACT, never pre-rounded to 0.5:
-  // per-model costs feed the per-day sums, so rounding here would make the
-  // by-model and per-day tables disagree. roundUsd applies once, at the boundary.
-  const usage = new Map<string, UsageTokens>([
-    ["claude-opus-4.8", { input: 0, output: 0, cacheRead: 333_333, cacheCreation: 0 }],
-  ]);
-
-  const result = estimateCost(usage, pricing);
-  const cost = result.perModel["claude-opus-4.8"];
-
-  expect(cost?.cacheReadCostUsd).toBeCloseTo(0.4999995, 10);
-  expect(cost?.cacheReadCostUsd).not.toBe(0.5);
-  expect(result.totalUsd).toBe(cost?.estimatedCostUsd);
-  expect(roundUsd(cost?.estimatedCostUsd ?? 0)).toBe(0.5);
-});
-
-test("estimateCost prices known models and lists unpriceable ones", () => {
-  const pricing = new Map<string, PricingTier>([
-    ["anthropic/claude-opus-4.8", { input: 15, output: 75, cacheRead: 1.5, cacheCreation: 18.75 }],
-  ]);
-  const usage = new Map<string, UsageTokens>([
-    ["claude-opus-4.8", { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreation: 0 }],
-    ["mystery-model", { input: 500, output: 0, cacheRead: 0, cacheCreation: 0 }],
-  ]);
-
-  const result = estimateCost(usage, pricing);
-
-  expect(result.perModel["claude-opus-4.8"]?.pricingReference).toBe("anthropic/claude-opus-4.8");
-  expect(result.perModel["claude-opus-4.8"]?.inputCostUsd).toBe(15);
-  expect(result.perModel["claude-opus-4.8"]?.outputCostUsd).toBe(75);
-  expect(result.perModel["claude-opus-4.8"]?.estimatedCostUsd).toBe(90);
-  expect(result.totalUsd).toBe(90);
-  expect(result.unpriced).toEqual(["mystery-model"]);
-});
-
-test("estimateCost excludes a model whose used bucket has no rate", () => {
-  const pricing = new Map<string, PricingTier>([
-    ["anthropic/claude-opus-4.8", { input: 15, output: 75 }],
-  ]);
-  const usage = new Map<string, UsageTokens>([
-    ["claude-opus-4.8", { input: 0, output: 0, cacheRead: 1_000, cacheCreation: 0 }],
-  ]);
-
-  const result = estimateCost(usage, pricing);
-
-  expect(result.totalUsd).toBe(0);
-  expect(result.unpriced).toEqual(["claude-opus-4.8"]);
-});
+for (const { name, pricing, usage, perModel, totalUsd, unpriced } of ESTIMATES) {
+  test(`estimateCost: ${name}`, () => {
+    const result = estimateCost(usage, pricing);
+    expect(Object.keys(result.perModel).sort()).toEqual(Object.keys(perModel).sort());
+    for (const [model, expected] of Object.entries(perModel)) {
+      const cost = result.perModel[model];
+      for (const [field, value] of Object.entries(expected)) {
+        const actual = cost?.[field as keyof ModelCost];
+        if (typeof value === "number") expect(actual, `${model}.${field}`).toBeCloseTo(value, 10);
+        else expect(actual, `${model}.${field}`).toBe(value);
+      }
+    }
+    expect(result.totalUsd).toBeCloseTo(totalUsd, 10);
+    expect(result.unpriced).toEqual(unpriced);
+    // The total is the sum of the per-model estimates, exact doubles on both sides.
+    const summed = Object.values(result.perModel).reduce((s, c) => s + c.estimatedCostUsd, 0);
+    expect(result.totalUsd).toBe(summed);
+  });
+}
 
 // ---------- the on-disk price-list cache ----------
 
@@ -204,6 +272,7 @@ const PRICE_URL = "https://pricing.example/models";
 const OTHER_URL = "https://pricing.example/other-models";
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+const NOW = 1_700_000_000_000;
 
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
@@ -288,108 +357,89 @@ test("loadPricing fetches on a cold cache, persists the list, and reports `fetch
     });
   }));
 
-test("loadPricing answers a fresh cache without touching the network", () =>
-  withCacheDir(async (cacheDir) => {
-    const now = 1_700_000_000_000;
-    const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
-    await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: seed.fetch });
+/** A cache stamped at `seededAt`, read at `readAt`: fresh answers from disk, expired refreshes,
+ *  and either way the stamp on disk is the last successful fetch. */
+const CACHE_AGES: {
+  name: string;
+  seededAt: number;
+  readAt: number;
+  ttlMs?: number;
+  fresh: boolean;
+}[] = [
+  { name: "inside the default ttl", seededAt: NOW, readAt: NOW + DAY_MS - 1, fresh: true },
+  { name: "at the default ttl", seededAt: NOW, readAt: NOW + DAY_MS, fresh: false },
+  {
+    name: "inside a caller-supplied ttl",
+    seededAt: NOW,
+    readAt: NOW + HOUR_MS - 1,
+    ttlMs: HOUR_MS,
+    fresh: true,
+  },
+  {
+    name: "at a caller-supplied ttl",
+    seededAt: NOW,
+    readAt: NOW + HOUR_MS,
+    ttlMs: HOUR_MS,
+    fresh: false,
+  },
+  // The clock moved back: a "fresh" stamp from the future must not be trusted.
+  { name: "stamped in the future", seededAt: NOW + HOUR_MS, readAt: NOW, fresh: false },
+];
 
-    // A second fetch would serve a DIFFERENT rate: a cache hit must not see it.
-    const net = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000099"));
-    const loaded = await loadPricing(PRICE_URL, {
-      cacheDir,
-      nowMs: now + DAY_MS - 1,
-      fetchImpl: net.fetch,
-    });
+for (const { name, seededAt, readAt, ttlMs, fresh } of CACHE_AGES) {
+  test(`loadPricing: a cache ${name} is ${fresh ? "answered from disk" : "refreshed"}`, () =>
+    withCacheDir(async (cacheDir) => {
+      const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
+      await loadPricing(PRICE_URL, { cacheDir, nowMs: seededAt, fetchImpl: seed.fetch });
+      const path = pricingCachePath(PRICE_URL, cacheDir);
+      /** What the file on disk says: when it was fetched and the one tier's input rate. */
+      const onDisk = (): { stamp: number; input: number } => {
+        const record = JSON.parse(readFileSync(path, "utf8"));
+        return {
+          stamp: record.fetched_at_ms,
+          input: record.tiers["anthropic/claude-opus-4.8"].input,
+        };
+      };
 
-    expect(loaded.source).toBe("cache");
-    expect(loaded.fetchedAtMs).toBe(now);
-    expect(net.calls).toBe(0);
-    expect(loaded.pricing.get("anthropic/claude-opus-4.8")).toEqual({
-      input: 15,
-      output: 75,
-      cacheRead: 1.5,
-      cacheCreation: 18.75,
-    });
-  }));
+      // A failing refresh: a fresh cache is the answer; an expired one is the fallback, and
+      // the failed refresh leaves the stale file untouched.
+      const down = fakeFetch(null, { fail: true });
+      const fallback = await loadPricing(PRICE_URL, {
+        cacheDir,
+        nowMs: readAt,
+        ttlMs,
+        fetchImpl: down.fetch,
+      });
+      expect(fallback.source).toBe(fresh ? "cache" : "stale-cache");
+      expect(fallback.fetchedAtMs).toBe(seededAt);
+      expect(fallback.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(15);
+      expect(down.calls).toBe(fresh ? 0 : 1);
+      expect(onDisk()).toEqual({ stamp: seededAt, input: 15 });
 
-test("loadPricing refreshes an expired cache and rewrites it", () =>
-  withCacheDir(async (cacheDir) => {
-    const now = 1_700_000_000_000;
-    const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
-    await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: seed.fetch });
-
-    const net = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000099"));
-    const later = now + DAY_MS;
-    const loaded = await loadPricing(PRICE_URL, { cacheDir, nowMs: later, fetchImpl: net.fetch });
-
-    expect(loaded.source).toBe("fetched");
-    expect(loaded.fetchedAtMs).toBe(later);
-    expect(net.calls).toBe(1);
-    expect(loaded.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(99);
-    const record = JSON.parse(readFileSync(pricingCachePath(PRICE_URL, cacheDir), "utf8"));
-    expect(record.fetched_at_ms).toBe(later);
-    expect(record.tiers["anthropic/claude-opus-4.8"].input).toBe(99);
-  }));
-
-test("loadPricing honours a caller-supplied ttl", () =>
-  withCacheDir(async (cacheDir) => {
-    const now = 1_700_000_000_000;
-    const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
-    await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: seed.fetch });
-
-    const net = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000099"));
-    const hit = await loadPricing(PRICE_URL, {
-      cacheDir,
-      nowMs: now + HOUR_MS - 1,
-      ttlMs: HOUR_MS,
-      fetchImpl: net.fetch,
-    });
-    expect(hit.source).toBe("cache");
-    const miss = await loadPricing(PRICE_URL, {
-      cacheDir,
-      nowMs: now + HOUR_MS,
-      ttlMs: HOUR_MS,
-      fetchImpl: net.fetch,
-    });
-    expect(miss.source).toBe("fetched");
-    expect(net.calls).toBe(1);
-  }));
-
-test("loadPricing falls back to the expired cache when the refresh fails", () =>
-  withCacheDir(async (cacheDir) => {
-    const now = 1_700_000_000_000;
-    const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
-    await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: seed.fetch });
-
-    const net = fakeFetch(null, { fail: true });
-    const loaded = await loadPricing(PRICE_URL, {
-      cacheDir,
-      nowMs: now + 3 * DAY_MS,
-      fetchImpl: net.fetch,
-    });
-
-    expect(loaded).toMatchObject({
-      source: "stale-cache",
-      fetchedAtMs: now,
-      fetchError: "pricing request failed",
-    });
-    expect(net.calls).toBe(1);
-    expect(loaded.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(15);
-    // The failed refresh must not have touched the stale file.
-    const record = JSON.parse(readFileSync(pricingCachePath(PRICE_URL, cacheDir), "utf8"));
-    expect(record.fetched_at_ms).toBe(now);
-  }));
-
-test("loadPricing rejects when the fetch fails and no cache exists", () =>
-  withCacheDir(async (cacheDir) => {
-    const net = fakeFetch(null, { fail: true });
-
-    await expect(loadPricing(PRICE_URL, { cacheDir, nowMs: 1, fetchImpl: net.fetch })).rejects
-      .toThrow("pricing request failed");
-    expect(net.calls).toBe(1);
-    expect(readdirSync(cacheDir)).toEqual([]);
-  }));
+      // A working refresh would serve a DIFFERENT rate: a cache hit must not see it.
+      const net = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000099"));
+      const loaded = await loadPricing(PRICE_URL, {
+        cacheDir,
+        nowMs: readAt,
+        ttlMs,
+        fetchImpl: net.fetch,
+      });
+      expect(loaded.source).toBe(fresh ? "cache" : "fetched");
+      expect(loaded.fetchedAtMs).toBe(fresh ? seededAt : readAt);
+      expect(net.calls).toBe(fresh ? 0 : 1);
+      expect(loaded.pricing.get("anthropic/claude-opus-4.8")).toEqual({
+        input: fresh ? 15 : 99,
+        output: 75,
+        cacheRead: 1.5,
+        cacheCreation: 18.75,
+      });
+      // A refresh rewrites the file with the new list under the new stamp; a hit leaves it.
+      expect(onDisk()).toEqual(
+        fresh ? { stamp: seededAt, input: 15 } : { stamp: readAt, input: 99 },
+      );
+      expect(readdirSync(cacheDir)).toEqual([basename(path)]);
+    }));
+}
 
 test("loadPricing treats a corrupt or invalid cache file as absent", () =>
   withCacheDir(async (cacheDir) => {
@@ -467,25 +517,7 @@ test("loadPricing treats a corrupt or invalid cache file as absent", () =>
     expect(net.calls).toBe(0);
   }));
 
-test("loadPricing keeps one cache file per url", () =>
-  withCacheDir(async (cacheDir) => {
-    const now = 1_700_000_000_000;
-    const a = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
-    const b = fakeFetch(openRouterBody("openai/gpt-5.5", "0.000002"));
-    await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: a.fetch });
-    await loadPricing(OTHER_URL, { cacheDir, nowMs: now, fetchImpl: b.fetch });
-
-    expect(pricingCachePath(PRICE_URL, cacheDir)).not.toBe(pricingCachePath(OTHER_URL, cacheDir));
-    expect(readdirSync(cacheDir).length).toBe(2);
-    const down = fakeFetch(null, { fail: true });
-    const first = await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: down.fetch });
-    const second = await loadPricing(OTHER_URL, { cacheDir, nowMs: now, fetchImpl: down.fetch });
-    expect([...first.pricing.keys()]).toEqual(["anthropic/claude-opus-4.8"]);
-    expect([...second.pricing.keys()]).toEqual(["openai/gpt-5.5"]);
-    expect(down.calls).toBe(0);
-  }));
-
-test("fetchPricing reads only string or number rates; other types and blank strings are absent", () =>
+test("fetchPricing reads only string or number rates; absent rates round-trip through the cache", () =>
   withCacheDir(async (cacheDir) => {
     const net = fakeFetch({
       data: [
@@ -495,6 +527,7 @@ test("fetchPricing reads only string or number rates; other types and blank stri
         { id: "a/blank", pricing: { prompt: "", completion: "   " } },
         { id: "a/padded", pricing: { prompt: " 0.000001 ", completion: "0.000002" } },
         { id: "a/garbage", pricing: { prompt: "abc", completion: "0.000002" } },
+        { id: "vendor/bare", pricing: { prompt: "0.000001" } },
       ],
     });
     const loaded = await loadPricing(PRICE_URL, { cacheDir, nowMs: 1, fetchImpl: net.fetch });
@@ -510,64 +543,15 @@ test("fetchPricing reads only string or number rates; other types and blank stri
     expect(loaded.pricing.get("a/padded")).toEqual({ input: 1, output: 2 });
     // A string that is neither blank nor a number is not a price: the model is dropped.
     expect(loaded.pricing.has("a/garbage")).toBe(false);
-  }));
+    // A rate the response never named stays absent.
+    expect(loaded.pricing.get("vendor/bare")).toEqual({ input: 1, output: undefined });
 
-test("loadPricing round-trips a tier with absent rates", () =>
-  withCacheDir(async (cacheDir) => {
-    const now = 1_700_000_000_000;
-    const net = fakeFetch({ data: [{ id: "vendor/bare", pricing: { prompt: "0.000001" } }] });
-    const fetched = await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: net.fetch });
-    const cached = await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: net.fetch });
-
+    // The cache writer and reader agree on every absent rate.
+    const cached = await loadPricing(PRICE_URL, { cacheDir, nowMs: 1, fetchImpl: net.fetch });
     expect(net.calls).toBe(1);
-    expect(cached.pricing.get("vendor/bare")).toEqual(fetched.pricing.get("vendor/bare"));
-    expect(cached.pricing.get("vendor/bare")?.input).toBe(1);
+    expect(cached.source).toBe("cache");
+    expect(cached.pricing).toEqual(loaded.pricing);
     expect(cached.pricing.get("vendor/bare")?.output).toBeUndefined();
-  }));
-
-test("loadPricing treats a cache stamped in the future as expired, but still as a fallback", () =>
-  withCacheDir(async (cacheDir) => {
-    const now = 1_700_000_000_000;
-    const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
-    await loadPricing(PRICE_URL, { cacheDir, nowMs: now + HOUR_MS, fetchImpl: seed.fetch });
-
-    // The clock moved back: a "fresh" stamp from the future must not be trusted.
-    const net = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000099"));
-    const refreshed = await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: net.fetch });
-    expect(refreshed.source).toBe("fetched");
-    expect(net.calls).toBe(1);
-
-    // ... yet when the refresh fails, the future-stamped copy beats no prices at all.
-    await loadPricing(PRICE_URL, { cacheDir, nowMs: now + 2 * DAY_MS, fetchImpl: seed.fetch });
-    expect(seed.calls).toBe(2);
-    const down = fakeFetch(null, { fail: true });
-    const stale = await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: down.fetch });
-    expect(stale.source).toBe("stale-cache");
-    expect(stale.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(15);
-  }));
-
-test("loadPricing treats an empty 200 response as a failed refresh", () =>
-  withCacheDir(async (cacheDir) => {
-    const now = 1_700_000_000_000;
-    // No cache yet: an empty list is an error, not a price list, and nothing is written.
-    const empty = fakeFetch({ data: [] });
-    await expect(loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: empty.fetch })).rejects
-      .toThrow("pricing response has no priced models");
-    expect(readdirSync(cacheDir)).toEqual([]);
-
-    // With an expired cache: the stale list wins over the empty response and stays on disk.
-    const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
-    await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: seed.fetch });
-    const bodyless = fakeFetch({});
-    const loaded = await loadPricing(PRICE_URL, {
-      cacheDir,
-      nowMs: now + 2 * DAY_MS,
-      fetchImpl: bodyless.fetch,
-    });
-    expect(loaded.source).toBe("stale-cache");
-    expect(loaded.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(15);
-    const record = JSON.parse(readFileSync(pricingCachePath(PRICE_URL, cacheDir), "utf8"));
-    expect(record.fetched_at_ms).toBe(now);
   }));
 
 test("loadPricing serves a fetched list even when the cache cannot be written", () =>
@@ -647,9 +631,25 @@ test("loadPricing drops the entries that are not prices and keeps the rest of th
 test("loadPricing treats a response with no priced model as a failed refresh", () =>
   withCacheDir(async (cacheDir) => {
     const now = 1_700_000_000_000;
+    // No cache yet: an empty list is an error, not a price list, and nothing is written.
+    const empty = fakeFetch({ data: [] });
+    await expect(loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: empty.fetch })).rejects
+      .toThrow("pricing response has no priced models");
+    expect(readdirSync(cacheDir)).toEqual([]);
+
     const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
     await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: seed.fetch });
     const later = now + 2 * DAY_MS;
+
+    // With an expired cache: the stale list wins over a body with no list at all.
+    const bodyless = fakeFetch({});
+    const loaded = await loadPricing(PRICE_URL, {
+      cacheDir,
+      nowMs: later,
+      fetchImpl: bodyless.fetch,
+    });
+    expect(loaded.source).toBe("stale-cache");
+    expect(loaded.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(15);
 
     // Router entries only, models with no rates at all, and unroutable ids
     // (empty or with whitespace): nothing here is a priced model.
@@ -676,7 +676,7 @@ test("loadPricing treats a response with no priced model as a failed refresh", (
     expect(kept.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(15);
     expect(kept.pricing.has("openai/gpt-5.5")).toBe(false);
 
-    // The stale file is untouched by the failed refresh.
+    // The stale file is untouched by the failed refreshes.
     const record = JSON.parse(readFileSync(pricingCachePath(PRICE_URL, cacheDir), "utf8"));
     expect(record.fetched_at_ms).toBe(now);
     expect(Object.keys(record.tiers)).toEqual(["anthropic/claude-opus-4.8"]);
@@ -689,7 +689,7 @@ test("loadPricing treats a response with no priced model as a failed refresh", (
     expect(fresh.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(20);
   }));
 
-test("the flag and the stored key share one URL rule: https only, canonical before the cache digest", () =>
+test("the flag and the stored key share one URL rule: https only, canonical before the cache digest, one file per url", () =>
   withCacheDir(async (cacheDir) => {
     const now = 1_700_000_000_000;
     // Two spellings of one list -> one cache file, one fetch (the second run is a hit).
@@ -703,6 +703,18 @@ test("the flag and the stored key share one URL rule: https only, canonical befo
     const hit = await loadPricing(quiet, { cacheDir, nowMs: now + 1, fetchImpl: net.fetch });
     expect(hit.source).toBe("cache");
     expect(net.calls).toBe(1);
+
+    // Another list is another file: each url answers from its own cache.
+    const other = fakeFetch(openRouterBody("openai/gpt-5.5", "0.000002"));
+    await loadPricing(OTHER_URL, { cacheDir, nowMs: now, fetchImpl: other.fetch });
+    expect(pricingCachePath(quiet, cacheDir)).not.toBe(pricingCachePath(OTHER_URL, cacheDir));
+    expect(readdirSync(cacheDir).length).toBe(2);
+    const down = fakeFetch(null, { fail: true });
+    const first = await loadPricing(quiet, { cacheDir, nowMs: now, fetchImpl: down.fetch });
+    const second = await loadPricing(OTHER_URL, { cacheDir, nowMs: now, fetchImpl: down.fetch });
+    expect([...first.pricing.keys()]).toEqual(["anthropic/claude-opus-4.8"]);
+    expect([...second.pricing.keys()]).toEqual(["openai/gpt-5.5"]);
+    expect(down.calls).toBe(0);
 
     // fetchPricing itself accepts the loud spelling and requests the canonical one.
     let requested = "";
@@ -782,7 +794,11 @@ test("loadPricing never echoes the URL in its errors", () =>
       nowMs: now + 2 * DAY_MS,
       fetchImpl: down.fetch,
     });
-    expect(stale.source).toBe("stale-cache");
+    expect(stale).toMatchObject({
+      source: "stale-cache",
+      fetchedAtMs: now,
+      fetchError: "pricing request failed",
+    });
     const text = JSON.stringify(stale) +
       readFileSync(pricingCachePath(secretUrl, cacheDir), "utf8");
     expect(text).not.toContain("SECRET-TOKEN");

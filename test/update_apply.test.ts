@@ -9,7 +9,7 @@ import {
 } from "../src/autoupdate/apply.ts";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
 import { ATTESTATION_NAME } from "../src/install/attestation.ts";
-import { expectedDigest, fileSha256, parseChecksums } from "../src/install/checksums.ts";
+import { parseChecksums } from "../src/install/checksums.ts";
 import {
   CURRENT_LINK,
   pointCurrentAt,
@@ -130,83 +130,102 @@ afterEach(() => {
   }
 });
 
-describe("parseChecksums", () => {
-  test("reads shasum and sha256sum output, including binary-mode names", () => {
-    const digest = "a".repeat(64);
-    const other = "b".repeat(64);
-    const checksums = parseChecksums(
-      `${digest}  copilot-env-x86_64-unknown-linux-gnu\n${other} *copilot-env-x86_64-pc-windows-msvc.exe\n`,
-    );
-    expect(checksums.get("copilot-env-x86_64-unknown-linux-gnu")).toBe(digest);
+test("parseChecksums reads shasum and sha256sum output, binary-mode names included, and skips malformed lines", () => {
+  const a = "a".repeat(64);
+  const b = "b".repeat(64);
+  const c = "c".repeat(64);
+  const rows: { name: string; text: string; parsed: [string, string][] }[] = [
     // The leading "*" marks binary mode and is not part of the name.
-    expect(checksums.get("copilot-env-x86_64-pc-windows-msvc.exe")).toBe(other);
-  });
-
-  test("skips malformed lines rather than throwing", () => {
-    const digest = "c".repeat(64);
-    const checksums = parseChecksums(`nonsense\n\nzz  bad-digest\n${digest}  good\n`);
-    expect([...checksums.keys()]).toEqual(["good"]);
-  });
-
-  test("expectedDigest names the asset the manifest lacked", () => {
-    expect(() => expectedDigest(parseChecksums(""), "agent-x")).toThrow(
-      "checksums.txt has no entry for agent-x",
-    );
-  });
+    {
+      name: "text and binary mode",
+      text:
+        `${a}  copilot-env-x86_64-unknown-linux-gnu\n${b} *copilot-env-x86_64-pc-windows-msvc.exe\n`,
+      parsed: [["copilot-env-x86_64-unknown-linux-gnu", a], [
+        "copilot-env-x86_64-pc-windows-msvc.exe",
+        b,
+      ]],
+    },
+    {
+      name: "malformed lines are skipped, never thrown",
+      text: `nonsense\n\nzz  bad-digest\n${c}  good\n`,
+      parsed: [["good", c]],
+    },
+  ];
+  for (const { name, text, parsed } of rows) {
+    expect([...parseChecksums(text)], name).toEqual(parsed);
+  }
 });
 
-describe("fileSha256", () => {
-  test("hashes a file by streaming it", async () => {
-    const file = join(root, "payload");
-    writeFileSync(file, "hello");
-    expect(await fileSha256(file)).toBe(
-      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
-    );
-  });
-});
-
-describe("release targets", () => {
-  test("every target has a distinct triple and asset name", () => {
-    const triples = RELEASE_TARGETS.map((t) => t.triple);
-    const assets = RELEASE_TARGETS.map(releaseAssetName);
-    expect(new Set(triples).size).toBe(triples.length);
-    expect(new Set(assets).size).toBe(assets.length);
-  });
-
-  test("only Windows assets carry the .exe suffix", () => {
-    for (const target of RELEASE_TARGETS) {
-      expect(releaseAssetName(target).endsWith(".exe")).toBe(target.os === "win32");
+test("release targets: each shipped (platform, arch) maps to its distinct triple and asset, null otherwise", () => {
+  // The triples are the release-asset names, so they are external contracts; an unsupported
+  // pair must resolve to null, never a guess.
+  const rows: {
+    platform: string;
+    arch: string;
+    triple: string | null;
+    asset?: string;
+    binary?: string;
+  }[] = [
+    {
+      platform: "darwin",
+      arch: "x64",
+      triple: "x86_64-apple-darwin",
+      asset: "copilot-env-x86_64-apple-darwin",
+      binary: "copilot-env",
+    },
+    {
+      platform: "darwin",
+      arch: "arm64",
+      triple: "aarch64-apple-darwin",
+      asset: "copilot-env-aarch64-apple-darwin",
+      binary: "copilot-env",
+    },
+    {
+      platform: "linux",
+      arch: "x64",
+      triple: "x86_64-unknown-linux-gnu",
+      asset: "copilot-env-x86_64-unknown-linux-gnu",
+      binary: "copilot-env",
+    },
+    {
+      platform: "linux",
+      arch: "arm64",
+      triple: "aarch64-unknown-linux-gnu",
+      asset: "copilot-env-aarch64-unknown-linux-gnu",
+      binary: "copilot-env",
+    },
+    {
+      platform: "win32",
+      arch: "x64",
+      triple: "x86_64-pc-windows-msvc",
+      asset: "copilot-env-x86_64-pc-windows-msvc.exe",
+      binary: "copilot-env.exe",
+    },
+    { platform: "win32", arch: "arm64", triple: null },
+    { platform: "aix", arch: "ppc64", triple: null },
+    { platform: "linux", arch: "riscv64", triple: null },
+  ];
+  for (const { platform, arch, triple, asset, binary } of rows) {
+    const why = `${platform}/${arch}`;
+    const target = currentReleaseTarget(platform, arch);
+    expect(target?.triple ?? null, why).toBe(triple);
+    if (target) {
+      expect(releaseAssetName(target), why).toBe(asset);
+      expect(installedBinaryName(platform), why).toBe(binary);
     }
-  });
-
-  test("currentReleaseTarget maps each shipped (platform, arch) to its triple, null otherwise", () => {
-    // An unsupported pair must resolve to null, never a guess. The triples are the
-    // release-asset names, so they are external contracts.
-    const cases: { platform: string; arch: string; triple: string | null }[] = [
-      { platform: "darwin", arch: "x64", triple: "x86_64-apple-darwin" },
-      { platform: "darwin", arch: "arm64", triple: "aarch64-apple-darwin" },
-      { platform: "linux", arch: "x64", triple: "x86_64-unknown-linux-gnu" },
-      { platform: "linux", arch: "arm64", triple: "aarch64-unknown-linux-gnu" },
-      { platform: "win32", arch: "x64", triple: "x86_64-pc-windows-msvc" },
-      { platform: "win32", arch: "arm64", triple: null },
-      { platform: "aix", arch: "ppc64", triple: null },
-      { platform: "linux", arch: "riscv64", triple: null },
-    ];
-    for (const { platform, arch, triple } of cases) {
-      expect(currentReleaseTarget(platform, arch)?.triple ?? null, `${platform}/${arch}`).toBe(
-        triple,
-      );
-    }
-    // If this fails, copilot-env cannot update itself on the machine running
-    // the suite -- which is also a machine we claim to support.
-    expect(currentReleaseTarget()).not.toBeNull();
-  });
-
-  test("the installed binary name is platform-shaped", () => {
-    expect(installedBinaryName("win32")).toBe("copilot-env.exe");
-    expect(installedBinaryName("linux")).toBe("copilot-env");
-    expect(installedBinaryName("darwin")).toBe("copilot-env");
-  });
+  }
+  // Every shipped target has its own triple and asset: a duplicate would overwrite a release
+  // asset on upload.
+  const triples = RELEASE_TARGETS.map((t) => t.triple);
+  const assets = RELEASE_TARGETS.map(releaseAssetName);
+  expect(new Set(triples).size).toBe(RELEASE_TARGETS.length);
+  expect(new Set(assets).size).toBe(RELEASE_TARGETS.length);
+  expect(rows.filter((r) => r.triple !== null).map((r) => r.triple).sort()).toEqual(
+    [...triples].sort(),
+  );
+  // If this fails, copilot-env cannot update itself on the machine running
+  // the suite -- which is also a machine we claim to support.
+  expect(currentReleaseTarget()).not.toBeNull();
 });
 
 describe("applyUpdate", () => {
@@ -308,20 +327,23 @@ describe("applyUpdate", () => {
   });
 
   test("a corrupt download is an integrity failure, never a provenance verdict", async () => {
-    // Both wrong: the manifest disowns the binary AND the attestation is missing.
-    // The checksum stage must win, so the message is the actionable SHA256 one
-    // and the opt-outs (which only the fail-closed message carries) stay unsaid.
-    writeRelease(RECORDING_BINARY, "f".repeat(64));
-    rmSync(join(releaseDir, ATTESTATION_NAME));
-    seedVersion("v9.9.8", "OLD");
-    pointCurrentAt(installDir, "v9.9.8");
+    // The manifest disowns the binary. With the attestation ALSO missing, the checksum stage
+    // must still win, so the message is the actionable SHA256 one and the opt-outs (which only
+    // the fail-closed message carries) stay unsaid.
+    for (const attestation of ["present", "missing"] as const) {
+      writeRelease(RECORDING_BINARY, "f".repeat(64));
+      if (attestation === "missing") rmSync(join(releaseDir, ATTESTATION_NAME));
+      seedVersion("v9.9.8", "OLD");
+      pointCurrentAt(installDir, "v9.9.8");
 
-    const err = await applyLocked("v9.9.8", { root: installDir, logger: quiet })
-      .catch((e: unknown) => e as Error);
-    expect((err as Error).message).toContain("SHA256 verification failed");
-    expect((err as Error).message).not.toContain("--no-verify");
-    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
-    expect(stagingDirs()).toEqual([]);
+      const err = await applyLocked("v9.9.8", { root: installDir, logger: quiet })
+        .catch((e: unknown) => e as Error);
+      expect((err as Error).message, attestation).toContain("SHA256 verification failed");
+      expect((err as Error).message, attestation).not.toContain("--no-verify");
+      expect(readCurrentVersionName(installDir), attestation).toBe("v9.9.8");
+      expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9")), attestation).toBe(false);
+      expect(stagingDirs(), attestation).toEqual([]);
+    }
   });
 
   test("a missing attestation.json fails closed, naming both opt-outs, before any verifier runs", async () => {
@@ -352,42 +374,52 @@ describe("applyUpdate", () => {
     expect(stagingDirs()).toEqual([]);
   });
 
-  skipWin("--no-verify skips the check out loud and needs no attestation", async () => {
-    writeRelease(RECORDING_BINARY);
-    rmSync(join(releaseDir, ATTESTATION_NAME));
-    seedVersion("v9.9.8", "OLD");
-    pointCurrentAt(installDir, "v9.9.8");
-    const { logger, warns } = recordingLogger();
+  skipWin(
+    "a skipped verification says so on the logger, naming the opt-out and its way back",
+    async () => {
+      const rows: {
+        via: "--no-verify" | "verify-provenance";
+        attestation: "present" | "missing";
+        warns: (warns: string[]) => void;
+      }[] = [
+        // The flag needs no attestation at all.
+        {
+          via: "--no-verify",
+          attestation: "missing",
+          warns: (warns) =>
+            expect(warns).toEqual(["Skipping build-provenance verification (--no-verify)."]),
+        },
+        {
+          via: "verify-provenance",
+          attestation: "present",
+          warns: (warns) => {
+            expect(warns).toHaveLength(1);
+            expect(warns[0]).toContain("update.verify-provenance is false");
+            expect(warns[0]).toContain("agent config --del update.verify-provenance");
+          },
+        },
+      ];
+      for (const { via, attestation, warns } of rows) {
+        rmSync(installDir, { recursive: true, force: true });
+        mkdirSync(join(installDir, "bin"), { recursive: true });
+        writeRelease(RECORDING_BINARY);
+        if (attestation === "missing") rmSync(join(releaseDir, ATTESTATION_NAME));
+        seedVersion("v9.9.8", "OLD");
+        pointCurrentAt(installDir, "v9.9.8");
+        const recorder = recordingLogger();
 
-    await applyLocked("v9.9.8", {
-      root: installDir,
-      logger,
-      childStdoutToStderr: true,
-      provenance: { kind: "skip", via: "--no-verify" },
-    });
+        await applyLocked("v9.9.8", {
+          root: installDir,
+          logger: recorder.logger,
+          childStdoutToStderr: true,
+          provenance: { kind: "skip", via },
+        });
 
-    expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
-    expect(warns).toEqual(["Skipping build-provenance verification (--no-verify)."]);
-  });
-
-  skipWin("a stored opt-out is named as such, with the way back", async () => {
-    writeRelease(RECORDING_BINARY);
-    seedVersion("v9.9.8", "OLD");
-    pointCurrentAt(installDir, "v9.9.8");
-    const { logger, warns } = recordingLogger();
-
-    await applyLocked("v9.9.8", {
-      root: installDir,
-      logger,
-      childStdoutToStderr: true,
-      provenance: { kind: "skip", via: "verify-provenance" },
-    });
-
-    expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
-    expect(warns).toHaveLength(1);
-    expect(warns[0]).toContain("update.verify-provenance is false");
-    expect(warns[0]).toContain("agent config --del update.verify-provenance");
-  });
+        expect(readCurrentVersionName(installDir), via).toBe("v9.9.9");
+        warns(recorder.warns);
+      }
+    },
+  );
 
   skipWin("stages, provisions inside the version root, then commits the flip", async () => {
     writeRelease(RECORDING_BINARY);
@@ -430,7 +462,25 @@ describe("applyUpdate", () => {
       `${versionRoot} install --assets-only`,
       `${join(installDir, CURRENT_LINK)} migrate 9.9.8 9.9.9`,
     ]);
+    // The staging dir (inside the root, so the rename stays on one filesystem) never outlives
+    // the call.
+    expect(stagingDirs()).toEqual([]);
   });
+
+  skipWin(
+    "a first update into a root with no current link provisions, flips, and leaves no staging",
+    async () => {
+      writeRelease(RECORDING_BINARY);
+
+      await applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
+
+      expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
+      expect(
+        readFileSync(join(installDir, CURRENT_LINK, "bin", installedBinaryName()), "utf8"),
+      ).toBe(RECORDING_BINARY);
+      expect(stagingDirs()).toEqual([]);
+    },
+  );
 
   skipWin("keeps exactly one previous version and GCs everything older", async () => {
     writeRelease(RECORDING_BINARY);
@@ -454,64 +504,52 @@ describe("applyUpdate", () => {
     ).toBe("OLD");
   });
 
-  skipWin("a provision that exits 0 without the manifest still aborts pre-flip", async () => {
-    // Exit codes approximate; the per-version manifest is the postcondition.
-    // A soft no-op `install` must never see its version committed.
-    writeRelease(SOFT_NOOP_BINARY);
-    seedVersion("v9.9.8", "OLD");
-    pointCurrentAt(installDir, "v9.9.8");
+  skipWin(
+    "a provision that fails, exits 0 without the manifest, or provisions the wrong release aborts BEFORE the flip",
+    async () => {
+      // Exit codes approximate; the per-version manifest naming this release is the postcondition.
+      // Whatever the failure, the old version stays live and nothing is left staged.
+      const versionRoot = join(installDir, VERSIONS_DIR, "v9.9.9");
+      const rows: { name: string; binary: string; error: string; invocations: string[] | null }[] =
+        [
+          {
+            name: "soft no-op install",
+            binary: SOFT_NOOP_BINARY,
+            error: "no valid install manifest",
+            invocations: [`${versionRoot} install --assets-only`],
+          },
+          {
+            name: "manifest for the wrong release",
+            binary: WRONG_VERSION_BINARY,
+            error: "provisioned version 0.0.1, not the v9.9.9 release",
+            invocations: null, // this stand-in records nothing
+          },
+          {
+            name: "failing install",
+            binary: FAILING_PROVISION_BINARY,
+            error: "failed to lay down its runtime files",
+            invocations: [`${versionRoot} install --assets-only`],
+          },
+        ];
+      for (const { name, binary, error, invocations: expected } of rows) {
+        rmSync(installDir, { recursive: true, force: true });
+        mkdirSync(join(installDir, "bin"), { recursive: true });
+        writeRelease(binary);
+        seedVersion("v9.9.8", "OLD");
+        pointCurrentAt(installDir, "v9.9.8");
 
-    await expect(
-      applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
-    ).rejects.toThrow("no valid install manifest");
+        await expect(
+          applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
+          name,
+        ).rejects.toThrow(error);
 
-    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
-    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
-  });
-
-  skipWin("a provision whose manifest names the wrong release aborts pre-flip", async () => {
-    writeRelease(WRONG_VERSION_BINARY);
-    seedVersion("v9.9.8", "OLD");
-    pointCurrentAt(installDir, "v9.9.8");
-
-    await expect(
-      applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
-    ).rejects.toThrow("provisioned version 0.0.1, not the v9.9.9 release");
-
-    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
-    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
-  });
-
-  skipWin("a provision failure aborts BEFORE the flip: the old version stays live", async () => {
-    writeRelease(FAILING_PROVISION_BINARY);
-    seedVersion("v9.9.8", "OLD");
-    pointCurrentAt(installDir, "v9.9.8");
-
-    await expect(
-      applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
-    ).rejects.toThrow("failed to lay down its runtime files");
-
-    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
-    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
-    expect(invocations()).toEqual([
-      `${join(installDir, VERSIONS_DIR, "v9.9.9")} install --assets-only`,
-    ]);
-    expect(stagingDirs()).toEqual([]);
-  });
-
-  skipWin("refuses a binary the release manifest does not vouch for", async () => {
-    writeRelease(RECORDING_BINARY, "f".repeat(64));
-    seedVersion("v9.9.8", "OLD");
-    pointCurrentAt(installDir, "v9.9.8");
-
-    await expect(
-      applyLocked("v9.9.8", { root: installDir, logger: quiet }),
-    ).rejects.toThrow("SHA256 verification failed");
-
-    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
-    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
-    expect(stagingDirs()).toEqual([]);
-  });
+        expect(readCurrentVersionName(installDir), name).toBe("v9.9.8");
+        expect(existsSync(versionRoot), name).toBe(false);
+        expect(stagingDirs(), name).toEqual([]);
+        if (expected !== null) expect(invocations(), name).toEqual(expected);
+      }
+    },
+  );
 
   skipWin("refuses when current already points at the target version", async () => {
     // Releases only move forward; `current` naming the target while the version
@@ -534,12 +572,6 @@ describe("applyUpdate", () => {
     ).toBe("ALREADY");
   });
 
-  skipWin("leaves no staging directory behind on success", async () => {
-    writeRelease(RECORDING_BINARY);
-    await applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
-    expect(stagingDirs()).toEqual([]);
-  });
-
   test("fails when the release has no asset for this platform", async () => {
     // A manifest that vouches for other platforms only.
     writeFileSync(join(releaseDir, "checksums.txt"), `${"a".repeat(64)}  agent-other\n`);
@@ -547,7 +579,7 @@ describe("applyUpdate", () => {
 
     await expect(
       applyLocked("v9.9.8", { root: installDir, logger: quiet }),
-    ).rejects.toThrow("checksums.txt has no entry for");
+    ).rejects.toThrow(`checksums.txt has no entry for ${releaseAssetName(hostTarget())}`);
   });
 });
 

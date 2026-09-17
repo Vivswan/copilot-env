@@ -23,10 +23,25 @@ import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 // runShell's flag validation throws BEFORE any install or rc wiring, so these
 // need no filesystem/network isolation.
 
-test("shell: the CLI-install tuning flags require --clis", () => {
-  expect(() => runShell({ cooldown: 7 })).toThrow("require --clis");
-  expect(() => runShell({ noSudo: true })).toThrow("require --clis");
-  expect(() => runShell({ noPrereqs: true })).toThrow("require --clis");
+test("shell: the CLI-install tuning flags require --clis, --no-prereqs excludes --no-sudo and --cooldown, the cooldown is a non-negative integer, and --clis never combines with --remove", () => {
+  const rows: Array<[Parameters<typeof runShell>[0], string]> = [
+    [{ cooldown: 7 }, "require --clis"],
+    [{ noSudo: true }, "require --clis"],
+    [{ noPrereqs: true }, "require --clis"],
+    [{ clis: true, noSudo: true, noPrereqs: true }, "mutually exclusive"],
+    // --no-prereqs installs nothing, so a cooldown has nothing to steer; the boundary
+    // rejects the pair instead of silently dropping the cooldown.
+    [
+      { clis: true, cooldown: 7, noPrereqs: true },
+      "--cooldown and --no-prereqs are mutually exclusive",
+    ],
+    [{ clis: true, cooldown: 1.5 }, "--cooldown"],
+    [{ clis: true, cooldown: -1 }, "--cooldown"],
+    [{ clis: true, remove: true }, "cannot be combined with --remove"],
+  ];
+  for (const [opts, message] of rows) {
+    expect(() => runShell(opts), JSON.stringify(opts)).toThrow(message);
+  }
 });
 
 test("parseShellAction: remove vs wire arms, with the CLI install inside the wire arm", () => {
@@ -46,29 +61,6 @@ test("parseShellAction: remove vs wire arms, with the CLI install inside the wir
     allHosts: false,
     clis: { mode: "verify-only" },
   });
-});
-
-test("shell --clis: --no-sudo and --no-prereqs are mutually exclusive", () => {
-  expect(() => runShell({ clis: true, noSudo: true, noPrereqs: true })).toThrow(
-    "mutually exclusive",
-  );
-});
-
-test("shell --clis: --cooldown and --no-prereqs are mutually exclusive", () => {
-  // --no-prereqs installs nothing, so a cooldown has nothing to steer; the boundary
-  // rejects the pair instead of silently dropping the cooldown.
-  expect(() => runShell({ clis: true, cooldown: 7, noPrereqs: true })).toThrow(
-    "--cooldown and --no-prereqs are mutually exclusive",
-  );
-});
-
-test("shell --clis: a non-integer/negative cooldown is rejected", () => {
-  expect(() => runShell({ clis: true, cooldown: 1.5 })).toThrow("--cooldown");
-  expect(() => runShell({ clis: true, cooldown: -1 })).toThrow("--cooldown");
-});
-
-test("shell --clis cannot combine with --remove", () => {
-  expect(() => runShell({ clis: true, remove: true })).toThrow("cannot be combined with --remove");
 });
 
 // The rc writes ride the suite's rc-dir/Documents seams, so this runs for real on every OS.
@@ -222,217 +214,184 @@ function captureRun(fn: () => void): string {
 
 const CLI_ENV_EXTRAS = ["PATH", "Path", "NVM_DIR"] as const;
 
+const [FIRST, SECOND, THIRD] = AGENT_CLIS;
+
+interface CliInstallRow {
+  name: string;
+  opts: Parameters<typeof stageCliInstallFixture>[0];
+  /** Lines the run must print, and lines it must never print. */
+  lines: readonly string[];
+  never: readonly string[];
+  /** CLI commands the fake npm must have laid down under the global bin, and must not have. */
+  installed: readonly string[];
+  absent: readonly string[];
+  /** The install spec a shim must name: the readback proves WHICH version npm was told. */
+  shimSpec?: readonly [command: string, spec: string];
+  /** syncNpmGlobalBinToPath prepended npm's global bin, so fresh installs resolve in THIS process. */
+  pathPrepended?: true;
+}
+
+const CLI_INSTALL_ROWS: readonly CliInstallRow[] = [
+  {
+    name: "one CLI's npm failure warns as itself, the rest still install",
+    opts: { failInstalls: [FIRST.packageName] },
+    // The genuine npm failure warns as ITSELF (which CLI, why, and that the run goes on),
+    // never dressed in the could-not-check look-failure wording.
+    lines: [
+      `Could not install ${FIRST.name} (npm install -g ${FIRST.packageName}@${FAKE_LATEST} failed); continuing.`,
+    ],
+    never: ["probe failed to run"],
+    installed: [SECOND.command, THIRD.command],
+    absent: [FIRST.command],
+  },
+  {
+    name: "a failed npm PATH sync warns, the CLIs are still checked",
+    opts: { prefixFails: true, preinstalled: AGENT_CLIS.map((cli) => cli.command) },
+    // Each CLI is on PATH but absent from the fake `npm ls`, so it reads as a non-npm install;
+    // the sync failure must never be dressed as a per-CLI install or could-not-check failure.
+    lines: [
+      "Could not sync npm's global bin dir to PATH (npm prefix -g failed); continuing.",
+      ...AGENT_CLIS.map((cli) => `${cli.name} is installed outside npm; leaving it as it is.`),
+    ],
+    never: ["Could not install", "probe failed to run"],
+    installed: [],
+    absent: [],
+  },
+  {
+    name: "the all-good run installs every CLI and extends PATH, warn-free",
+    opts: {},
+    lines: AGENT_CLIS.map((cli) =>
+      `Installing ${cli.name} (${cli.packageName}@${FAKE_LATEST}) ...`
+    ),
+    never: ["Could not"],
+    installed: AGENT_CLIS.map((cli) => cli.command),
+    absent: [],
+    pathPrepended: true,
+  },
+  {
+    name: "an outdated npm-installed CLI is updated; a current or newer one is kept",
+    opts: {
+      preinstalled: AGENT_CLIS.map((cli) => cli.command),
+      npmInstalled: {
+        [FIRST.packageName]: "1.0.0",
+        [SECOND.packageName]: FAKE_LATEST,
+        [THIRD.packageName]: "3.0.0",
+      },
+    },
+    lines: [
+      `Updating ${FIRST.name} 1.0.0 -> ${FAKE_LATEST} ...`,
+      `${SECOND.name} is current (${FAKE_LATEST}).`,
+      `${THIRD.name} 3.0.0 is newer than the target ${FAKE_LATEST}; keeping it.`,
+    ],
+    never: ["Could not"],
+    installed: [FIRST.command],
+    // The current and the newer CLI were never reinstalled, let alone downgraded.
+    absent: [SECOND.command, THIRD.command],
+    shimSpec: [FIRST.command, `${FIRST.packageName}@${FAKE_LATEST}`],
+  },
+  {
+    name:
+      "an npm-installed CLI whose command is off PATH, or whose version is unreadable, is never downgraded",
+    opts: { npmInstalled: { [FIRST.packageName]: null, [THIRD.packageName]: "3.0.0" } },
+    lines: [
+      `${THIRD.name} 3.0.0 is installed by npm, but '${THIRD.command}' is not on PATH; leaving it as it is.`,
+      `${FIRST.name} is installed by npm, but its version could not be read; leaving it as it is.`,
+      `Installing ${SECOND.name} (${SECOND.packageName}@${FAKE_LATEST}) ...`,
+    ],
+    never: ["Could not"],
+    installed: [SECOND.command],
+    absent: [FIRST.command, THIRD.command],
+  },
+  {
+    name: "a failed npm package list installs nothing",
+    opts: { lsFails: true },
+    // Nothing on PATH would once have meant "install"; with npm's list unreadable the run
+    // cannot rule out a newer install whose bin dir is off PATH, so it installs nothing.
+    lines: [
+      "Could not read npm's global package list (npm ls -g failed); skipping the CLI installs.",
+    ],
+    never: ["Installing"],
+    installed: [],
+    absent: AGENT_CLIS.map((cli) => cli.command),
+  },
+];
+
 test.skipIf(process.platform === "win32")(
-  "shell --clis: one CLI's npm failure warns, the rest still install, the wiring lands",
+  "shell --clis: every npm outcome is reported as itself, the other CLIs still install, and the wiring lands",
   () => {
-    const restore = envSnapshot(CLI_ENV_EXTRAS);
-    const [broken, ...others] = AGENT_CLIS;
-    let dir = "";
-    try {
-      const fixture = stageCliInstallFixture({ failInstalls: [broken.packageName] });
-      dir = fixture.dir;
-      const output = captureRun(() => runShell({ clis: true }));
-      // The genuine npm failure warns as ITSELF (which CLI, why, and that the run
-      // goes on) -- never dressed in the could-not-check look-failure wording.
-      expect(output).toContain(
-        `Could not install ${broken.name} (npm install -g ${broken.packageName}@${FAKE_LATEST} failed); continuing.`,
-      );
-      expect(output).not.toContain("probe failed to run");
-      expect(existsSync(join(fixture.globalBin, broken.command))).toBe(false);
-      for (const cli of others) {
-        expect(existsSync(join(fixture.globalBin, cli.command))).toBe(true);
+    for (const row of CLI_INSTALL_ROWS) {
+      const restore = envSnapshot(CLI_ENV_EXTRAS);
+      let dir = "";
+      try {
+        const fixture = stageCliInstallFixture(row.opts);
+        dir = fixture.dir;
+        const output = captureRun(() => runShell({ clis: true }));
+        for (const line of row.lines) expect(output, row.name).toContain(line);
+        for (const line of row.never) expect(output, row.name).not.toContain(line);
+        for (const command of row.installed) {
+          expect(existsSync(join(fixture.globalBin, command)), `${row.name}: ${command}`).toBe(
+            true,
+          );
+        }
+        for (const command of row.absent) {
+          expect(existsSync(join(fixture.globalBin, command)), `${row.name}: ${command}`).toBe(
+            false,
+          );
+        }
+        if (row.shimSpec) {
+          const [command, spec] = row.shimSpec;
+          expect(readFileSync(join(fixture.globalBin, command), "utf-8"), row.name).toContain(spec);
+        }
+        if (row.pathPrepended) {
+          expect(process.env.PATH?.startsWith(`${fixture.globalBin}:`), row.name).toBe(true);
+        }
+        expect(readFileSync(fixture.bashrc, "utf-8"), row.name).toContain(MARKER);
+      } finally {
+        restore();
+        dir = removeDir(dir);
       }
-      expect(readFileSync(fixture.bashrc, "utf-8")).toContain(MARKER);
-    } finally {
-      restore();
-      dir = removeDir(dir);
     }
   },
 );
 
-test.skipIf(process.platform === "win32")(
-  "shell --clis: a failed npm PATH sync warns, the CLIs are still checked, the wiring lands",
-  () => {
-    const restore = envSnapshot(CLI_ENV_EXTRAS);
-    let dir = "";
-    try {
-      const fixture = stageCliInstallFixture({
-        prefixFails: true,
-        preinstalled: AGENT_CLIS.map((cli) => cli.command),
-      });
-      dir = fixture.dir;
-      const output = captureRun(() => runShell({ clis: true }));
-      expect(output).toContain(
-        "Could not sync npm's global bin dir to PATH (npm prefix -g failed); continuing.",
-      );
-      // Each CLI is on PATH but absent from the fake `npm ls`, so it reads as a non-npm install;
-      // the sync failure must never be dressed as a per-CLI install or could-not-check failure.
-      for (const cli of AGENT_CLIS) {
-        expect(output).toContain(`${cli.name} is installed outside npm; leaving it as it is.`);
-      }
-      expect(output).not.toContain("Could not install");
-      expect(output).not.toContain("probe failed to run");
-      expect(readFileSync(fixture.bashrc, "utf-8")).toContain(MARKER);
-    } finally {
-      restore();
-      dir = removeDir(dir);
-    }
-  },
-);
-
-test.skipIf(process.platform === "win32")(
-  "shell --clis: the all-good run installs every CLI, extends PATH, and wires -- warn-free",
-  () => {
-    const restore = envSnapshot(CLI_ENV_EXTRAS);
-    let dir = "";
-    try {
-      const fixture = stageCliInstallFixture({});
-      dir = fixture.dir;
-      const output = captureRun(() => runShell({ clis: true }));
-      expect(output).not.toContain("Could not");
-      for (const cli of AGENT_CLIS) {
-        expect(output).toContain(`Installing ${cli.name} (${cli.packageName}@${FAKE_LATEST}) ...`);
-        expect(existsSync(join(fixture.globalBin, cli.command))).toBe(true);
-      }
-      // syncNpmGlobalBinToPath prepended npm's global bin, so the fresh installs
-      // resolved in THIS process.
-      expect(process.env.PATH?.startsWith(`${fixture.globalBin}:`)).toBe(true);
-      expect(readFileSync(fixture.bashrc, "utf-8")).toContain(MARKER);
-    } finally {
-      restore();
-      dir = removeDir(dir);
-    }
-  },
-);
-
-test.skipIf(process.platform === "win32")(
-  "shell --clis: an outdated npm-installed CLI is updated; a current or newer one is kept",
-  () => {
-    const restore = envSnapshot(CLI_ENV_EXTRAS);
-    const [outdated, current, newer] = AGENT_CLIS;
-    let dir = "";
-    try {
-      const fixture = stageCliInstallFixture({
-        preinstalled: AGENT_CLIS.map((cli) => cli.command),
-        npmInstalled: {
-          [outdated.packageName]: "1.0.0",
-          [current.packageName]: FAKE_LATEST,
-          [newer.packageName]: "3.0.0",
-        },
-      });
-      dir = fixture.dir;
-      const output = captureRun(() => runShell({ clis: true }));
-      expect(output).not.toContain("Could not");
-      expect(output).toContain(`Updating ${outdated.name} 1.0.0 -> ${FAKE_LATEST} ...`);
-      expect(output).toContain(`${current.name} is current (${FAKE_LATEST}).`);
-      expect(output).toContain(
-        `${newer.name} 3.0.0 is newer than the target ${FAKE_LATEST}; keeping it.`,
-      );
-      // The fake shim names the spec it was installed at, so the readback proves WHICH version;
-      // the current and the newer CLI were never reinstalled, let alone downgraded.
-      expect(readFileSync(join(fixture.globalBin, outdated.command), "utf-8")).toContain(
-        `${outdated.packageName}@${FAKE_LATEST}`,
-      );
-      expect(existsSync(join(fixture.globalBin, current.command))).toBe(false);
-      expect(existsSync(join(fixture.globalBin, newer.command))).toBe(false);
-    } finally {
-      restore();
-      dir = removeDir(dir);
-    }
-  },
-);
-
-test.skipIf(process.platform === "win32")(
-  "shell --clis: an npm-installed CLI whose command is off PATH is never downgraded",
-  () => {
-    const restore = envSnapshot(CLI_ENV_EXTRAS);
-    const [unreadable, absent, offPath] = AGENT_CLIS;
-    let dir = "";
-    try {
-      const fixture = stageCliInstallFixture({
-        npmInstalled: { [unreadable.packageName]: null, [offPath.packageName]: "3.0.0" },
-      });
-      dir = fixture.dir;
-      const output = captureRun(() => runShell({ clis: true }));
-      expect(output).not.toContain("Could not");
-      expect(output).toContain(
-        `${offPath.name} 3.0.0 is installed by npm, but '${offPath.command}' is not on PATH; leaving it as it is.`,
-      );
-      expect(output).toContain(
-        `${unreadable.name} is installed by npm, but its version could not be read; leaving it as it is.`,
-      );
-      expect(output).toContain(
-        `Installing ${absent.name} (${absent.packageName}@${FAKE_LATEST}) ...`,
-      );
-      expect(existsSync(join(fixture.globalBin, absent.command))).toBe(true);
-      expect(existsSync(join(fixture.globalBin, offPath.command))).toBe(false);
-      expect(existsSync(join(fixture.globalBin, unreadable.command))).toBe(false);
-    } finally {
-      restore();
-      dir = removeDir(dir);
-    }
-  },
-);
-
-test.skipIf(process.platform === "win32")(
-  "shell --clis: a failed npm package list installs nothing, the wiring still lands",
-  () => {
-    const restore = envSnapshot(CLI_ENV_EXTRAS);
-    let dir = "";
-    try {
-      const fixture = stageCliInstallFixture({ lsFails: true });
-      dir = fixture.dir;
-      const output = captureRun(() => runShell({ clis: true }));
-      // Nothing on PATH would once have meant "install"; with npm's list unreadable the run
-      // cannot rule out a newer install whose bin dir is off PATH, so it installs nothing.
-      expect(output).toContain(
-        "Could not read npm's global package list (npm ls -g failed); skipping the CLI installs.",
-      );
-      expect(output).not.toContain("Installing");
-      for (const cli of AGENT_CLIS) {
-        expect(existsSync(join(fixture.globalBin, cli.command))).toBe(false);
-      }
-      expect(readFileSync(fixture.bashrc, "utf-8")).toContain(MARKER);
-    } finally {
-      restore();
-      dir = removeDir(dir);
-    }
-  },
-);
 // computePathRefresh takes the platform as a parameter so the win32 arm runs on POSIX CI.
 
-test("computePathRefresh on win32 writes BOTH Path and PATH with ';' and prepends the prefix", () => {
-  const prefix = "C:\\Users\\me\\AppData\\Roaming\\npm";
-  const old = "C:\\Windows;C:\\Windows\\System32";
-  const { bin, separator, assignments } = computePathRefresh("win32", prefix, old);
-
-  // On Windows the npm prefix IS the bin dir (no /bin suffix).
-  expect(bin).toBe(prefix);
-  expect(separator).toBe(";");
-  expect(Object.keys(assignments).sort()).toEqual(["PATH", "Path"]);
-  expect(assignments.Path).toBe(assignments.PATH);
-  expect(assignments.PATH).toBe(`${prefix};${old}`);
-  expect(assignments.PATH?.startsWith(`${prefix};`)).toBe(true);
-});
-
-test("computePathRefresh on POSIX uses ':' and a <prefix>/bin dir, prepended", () => {
+test("computePathRefresh: win32 writes BOTH Path and PATH with ';' off the prefix itself, POSIX uses ':' and <prefix>/bin, each prepended, and a bin dir already on PATH is a no-op", () => {
+  const winPrefix = "C:\\Users\\me\\AppData\\Roaming\\npm";
+  const winOld = "C:\\Windows;C:\\Windows\\System32";
   const prefix = "/home/me/.npm-global";
   const old = "/usr/bin:/bin";
-  const { bin, separator, assignments } = computePathRefresh("linux", prefix, old);
-
-  expect(bin).toBe(`${prefix}/bin`);
-  expect(separator).toBe(":");
-  expect(assignments.PATH).toBe(`${prefix}/bin:${old}`);
-  expect(assignments.Path).toBe(assignments.PATH);
-  // darwin behaves like linux (any non-win32 platform).
-  expect(computePathRefresh("darwin", prefix, old).separator).toBe(":");
-});
-
-test("computePathRefresh is a no-op when the bin dir is already on PATH", () => {
-  const prefix = "/home/me/.npm-global";
-  const old = `/home/me/.npm-global/bin:/usr/bin`;
-  const { assignments } = computePathRefresh("linux", prefix, old);
-  expect(assignments).toEqual({});
+  const rows: Array<
+    [NodeJS.Platform, string, string, ReturnType<typeof computePathRefresh>]
+  > = [
+    // On Windows the npm prefix IS the bin dir (no /bin suffix).
+    ["win32", winPrefix, winOld, {
+      bin: winPrefix,
+      separator: ";",
+      assignments: { PATH: `${winPrefix};${winOld}`, Path: `${winPrefix};${winOld}` },
+    }],
+    ["linux", prefix, old, {
+      bin: `${prefix}/bin`,
+      separator: ":",
+      assignments: { PATH: `${prefix}/bin:${old}`, Path: `${prefix}/bin:${old}` },
+    }],
+    // darwin behaves like linux (any non-win32 platform).
+    ["darwin", prefix, old, {
+      bin: `${prefix}/bin`,
+      separator: ":",
+      assignments: { PATH: `${prefix}/bin:${old}`, Path: `${prefix}/bin:${old}` },
+    }],
+    ["linux", prefix, `${prefix}/bin:/usr/bin`, {
+      bin: `${prefix}/bin`,
+      separator: ":",
+      assignments: {},
+    }],
+  ];
+  for (const [platform, npmPrefix, oldPath, expected] of rows) {
+    expect(computePathRefresh(platform, npmPrefix, oldPath), `${platform} ${oldPath}`).toEqual(
+      expected,
+    );
+  }
 });
 
 // A `default` aliased at the remote `lts/*` meta-alias resolves to N/A offline, so sourcing

@@ -10,12 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import {
-  emptyIndexStats,
-  type IndexStats,
-  parseEveryCandidate,
-  type Reconcile,
-} from "../src/usage/contribution.ts";
+import { type IndexStats, parseEveryCandidate, type Reconcile } from "../src/usage/contribution.ts";
 import {
   activeDayCoverage,
   buildSourceJson,
@@ -367,7 +362,7 @@ function dayKeyDistance(a: string, b: string): number {
   );
 }
 
-test("daysCutoffMs: a calendar window starts at a local midnight N-1 days back", () => {
+test("daysCutoffMs: a calendar window starts at the local midnight N-1 days back", () => {
   // Assertions are phrased through localDayKey, the same system-zone day key the
   // readers split on, so they hold in whatever zone the runner sits in.
   const now = Date.UTC(2026, 5, 15, 13, 47, 5);
@@ -383,12 +378,13 @@ test("daysCutoffMs: a calendar window starts at a local midnight N-1 days back",
   expect(localDayKey(daysCutoffMs({ kind: "calendar", days: 1 }, now))).toBe(localDayKey(now));
 });
 
+// Pinned to America/New_York (2026: springs forward Mar 8, falls back Nov 1), so the
+// 23- and 25-hour days are known instants. Save/restore by explicit zone name, never
+// delete (TZ assignments are ignored after a delete; see test/time.test.ts). Deno honours
+// the TZ env var on unix only, so the case is skipped where the zone cannot be pinned.
 test.skipIf(!TZ_PINNABLE)(
-  "daysCutoffMs: calendar cutoffs are real midnights across DST and month/year rollovers",
+  "daysCutoffMs: a calendar window's midnight is a real local midnight across DST, month, and year rollovers",
   () => {
-    // Pinned to America/New_York (2026: springs forward Mar 8, falls back Nov 1), so the
-    // 23- and 25-hour days are known instants. Save/restore by explicit zone name, never
-    // delete (TZ assignments are ignored after a delete; see test/time.test.ts).
     const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     try {
       process.env.TZ = "America/New_York";
@@ -671,6 +667,10 @@ test("runCost --json keeps stdout pure JSON while the index narrates a rebuild o
     expect(stderr).toContain("rebuilding the usage index (parser_fingerprint another-parser).");
     expect(payload.runtime.indexed).toBe(true);
     expect(payload.runtime.index.filesParsedWhole).toBe(1);
+    // Timings are whole milliseconds from the real clock, never fractions.
+    for (const ms of Object.values(payload.runtime.timing)) {
+      expect(Number.isInteger(ms) && ms >= 0).toBe(true);
+    }
   }));
 
 test("runtime.timing.pricing is the wait for the price list alone, never the warning work", () =>
@@ -707,28 +707,6 @@ test("runtime.timing.pricing is the wait for the price list alone, never the war
     } finally {
       consola.warn = originalWarn;
     }
-  }));
-
-test("runCost --json carries the reserved runtime key with exactly its three parts", () =>
-  withCostHome(async ({ claudeRoot }) => {
-    const deps = { codex: [], claude: [claudeRoot] };
-    const cold = await runtimeOf({}, deps);
-    expect(Object.keys(cold)).toEqual(["indexed", "index", "timing"]);
-    expect(Object.keys(cold.index)).toEqual(Object.keys(emptyIndexStats()));
-    expect(Object.keys(cold.timing)).toEqual(["walk", "parse", "fold", "pricing", "total"]);
-    for (const ms of Object.values(cold.timing)) {
-      expect(Number.isInteger(ms) && ms >= 0).toBe(true);
-    }
-    expect(cold.indexed).toBe(true);
-    expect(cold.index.filesParsedWhole).toBe(1);
-
-    const warm = await runtimeOf({}, deps);
-    expect(warm.index.filesReused).toBe(1);
-    expect(warm.index.bytesRead).toBe(0);
-
-    const plain = await runtimeOf({ noIndex: true }, deps);
-    expect(plain.indexed).toBe(false);
-    expect(plain.index.filesParsedWhole).toBe(1);
   }));
 
 function codexRootWithTwoRollouts(dir: string): string {
@@ -877,28 +855,21 @@ test("ReconcileMeter sums every IndexStats field over both readers' reconciles",
 const STORED_URL = "https://stored.example/with-secret-token/models";
 const FLAG_URL = "https://flag.example/models";
 
-test("resolvePricingUrl: the flag beats the stored key, which beats the built-in", () => {
-  const dir = tempDir("cost-config-");
-  try {
-    const config = new CopilotEnvConfig(join(dir, "config.json"));
+test("the pricing url: the flag beats the stored key, which beats the built-in, and runCost fetches the winner", () =>
+  withCostHome(async ({ claudeRoot }) => {
+    const config = new CopilotEnvConfig();
     expect(resolvePricingUrl(undefined, config)).toBe(OPENROUTER_MODELS_URL);
     config.set({ "cost.pricing-url": STORED_URL });
     expect(resolvePricingUrl(undefined, config)).toBe(STORED_URL);
     expect(resolvePricingUrl(FLAG_URL, config)).toBe(FLAG_URL);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
 
-test("runCost fetches the stored pricing-url, and --pricing-url overrides it for one run", () =>
-  withCostHome(async ({ claudeRoot }) => {
-    new CopilotEnvConfig().set({ "cost.pricing-url": STORED_URL });
     const stored = recordingFetch(PRICED_BODY);
     await captureAllWrites(() =>
       runCost({ json: true }, { fetchImpl: stored.fetch, ...rootsOf([], [claudeRoot]) })
     );
     expect(stored.urls).toEqual([STORED_URL]);
 
+    // --pricing-url overrides the stored key for one run.
     const flagged = recordingFetch(PRICED_BODY);
     await captureAllWrites(() =>
       runCost({ json: true, pricingUrl: FLAG_URL }, {

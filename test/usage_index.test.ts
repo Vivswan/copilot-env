@@ -6,6 +6,7 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -281,142 +282,128 @@ test("round trip: a second run reuses every row and reads no bytes", () => {
   expect(second.records[1]?.contribution).toEqual(expectedContribution(b));
 });
 
-test("an appended file is parsed from its tail with the prior contribution", () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  const b = join(logs, "b.jsonl");
-  writeLines(a, 0, 4, "alpha");
-  writeLines(b, 0, 2, "beta");
-  const index = open();
-  const first = runReconcile(index.reconcile, [walked(a), walked(b)]);
-  const sizeBefore = statSync(a).size;
-  const priorA = first.records[0]?.contribution;
+/** One way a session file can differ from its stored row, and how the next run must read it:
+ *  from its tail (prior contribution + new bytes) or whole. `change` returns the bytes that run
+ *  must read; a sibling file `b` is walked alongside and always reused. */
+const FILE_CHANGES: {
+  name: string;
+  file?: string;
+  resumable?: boolean;
+  initial?: (a: string) => void;
+  change: (a: string, before: { size: number; mtimeMs: number }) => number;
+  parsed: "tail" | "whole";
+}[] = [
+  {
+    name: "an appended file is parsed from its tail with the prior contribution",
+    initial: (a) => writeLines(a, 0, 4, "alpha"),
+    change: (a) => appendLines(a, 4, 3, "alpha") + TAIL_PROBE_BYTES,
+    parsed: "tail",
+  },
+  {
+    name: "a short file's probe is the whole prefix and still counts in bytesRead",
+    initial: (a) => {
+      writeFileSync(a, "tiny ts=1\n");
+      expect(statSync(a).size).toBeLessThan(TAIL_PROBE_BYTES);
+    },
+    change: (a, before) => appendLines(a, 1, 1, "more") + before.size,
+    parsed: "tail",
+  },
+  {
+    name: "a shrunk file is parsed whole",
+    initial: (a) => writeLines(a, 0, 6, "alpha"),
+    change: (a) => {
+      writeLines(a, 0, 2, "alpha");
+      return statSync(a).size;
+    },
+    parsed: "whole",
+  },
+  {
+    name: "the same size with another mtime is parsed whole",
+    change: (a, before) => {
+      writeLines(a, 0, 3, "bravo");
+      expect(statSync(a).size).toBe(before.size);
+      const later = new Date(before.mtimeMs + 5_000);
+      utimesSync(a, later, later);
+      return statSync(a).size;
+    },
+    parsed: "whole",
+  },
+  {
+    name: "an mtime-only change (same bytes, same size) is parsed whole",
+    change: (a, before) => {
+      const bytesBefore = readFileSync(a);
+      const later = new Date(before.mtimeMs + 5_000);
+      utimesSync(a, later, later);
+      expect(readFileSync(a)).toEqual(bytesBefore);
+      expect(statSync(a).mtimeMs).not.toBe(before.mtimeMs);
+      return statSync(a).size;
+    },
+    parsed: "whole",
+  },
+  {
+    // Same prefix length, one byte inside the probe window differs, then more lines: the
+    // probe bytes are read before the whole parse reads the file again.
+    name: "a grown file whose old tail changed fails the probe and is parsed whole",
+    change: (a, before) => {
+      const rewritten = Buffer.from(readFileSync(a));
+      rewritten[before.size - 2] = "X".charCodeAt(0);
+      writeFileSync(a, rewritten);
+      appendLines(a, 3, 2, "alpha");
+      return TAIL_PROBE_BYTES + statSync(a).size;
+    },
+    parsed: "whole",
+  },
+  {
+    name: "a grown non-resumable file is parsed whole without a probe read",
+    file: "a.jsonl.zst",
+    resumable: false,
+    change: (a) => {
+      appendLines(a, 3, 2, "alpha");
+      return statSync(a).size;
+    },
+    parsed: "whole",
+  },
+];
 
-  const appended = appendLines(a, 4, 3, "alpha");
-  const second = runReconcile(index.reconcile, [walked(a), walked(b)]);
-  expect(second.stats).toEqual(fullStats({
-    filesSeen: 2,
-    filesReused: 1,
-    filesParsedTail: 1,
-    bytesRead: appended + TAIL_PROBE_BYTES,
-  }));
-  expect(second.calls.whole).toEqual([]);
-  expect(second.calls.tail).toEqual([{ path: a, fromByte: sizeBefore, prior: priorA }]);
-  expect(second.records[0]?.contribution).toEqual(expectedContribution(a));
+for (const { name, file = "a.jsonl", resumable = true, initial, change, parsed } of FILE_CHANGES) {
+  test(name, () => {
+    setup();
+    const a = join(logs, file);
+    const b = join(logs, "b.jsonl");
+    if (initial) initial(a);
+    else writeLines(a, 0, 3, "alpha");
+    writeLines(b, 0, 2, "beta");
+    const files = () => [walked(a, { resumable }), walked(b)];
+    const index = open();
+    const first = runReconcile(index.reconcile, files());
+    const before = statSync(a);
+    const priorA = first.records[0]?.contribution;
 
-  const third = runReconcile(index.reconcile, [walked(a), walked(b)]);
-  expect(third.stats).toEqual(fullStats({ filesSeen: 2, filesReused: 2 }));
-  expect(third.records[0]?.contribution).toEqual(expectedContribution(a));
-});
+    const bytesRead = change(a, { size: before.size, mtimeMs: before.mtimeMs });
+    const second = runReconcile(index.reconcile, files());
+    expect(second.stats).toEqual(fullStats({
+      filesSeen: 2,
+      filesReused: 1,
+      ...(parsed === "tail" ? { filesParsedTail: 1 } : { filesParsedWhole: 1 }),
+      bytesRead,
+    }));
+    if (parsed === "tail") {
+      expect(second.calls.whole).toEqual([]);
+      expect(second.calls.tail).toEqual([{ path: a, fromByte: before.size, prior: priorA }]);
+    } else {
+      expect(second.calls.whole).toEqual([a]);
+      expect(second.calls.tail).toEqual([]);
+    }
+    expect(second.records.map((r) => r.path)).toEqual([a, b]);
+    expect(second.records[0]?.contribution).toEqual(expectedContribution(a));
+    expect(second.records[1]?.contribution).toEqual(first.records[1]?.contribution);
 
-test("a short file's probe is the whole prefix and still counts in bytesRead", () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  writeFileSync(a, "tiny ts=1\n");
-  const shortSize = statSync(a).size;
-  expect(shortSize).toBeLessThan(TAIL_PROBE_BYTES);
-  const index = open();
-  runReconcile(index.reconcile, [walked(a)]);
-  const appended = appendLines(a, 1, 1, "more");
-  const second = runReconcile(index.reconcile, [walked(a)]);
-  expect(second.stats).toEqual(
-    fullStats({ filesSeen: 1, filesParsedTail: 1, bytesRead: appended + shortSize }),
-  );
-});
-
-test("a shrunk file is parsed whole", () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  writeLines(a, 0, 6, "alpha");
-  const index = open();
-  runReconcile(index.reconcile, [walked(a)]);
-  writeLines(a, 0, 2, "alpha");
-  const second = runReconcile(index.reconcile, [walked(a)]);
-  expect(second.stats).toEqual(
-    fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
-  );
-  expect(second.calls.tail).toEqual([]);
-  expect(second.records[0]?.contribution).toEqual(expectedContribution(a));
-});
-
-test("the same size with another mtime is parsed whole", () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  const index = open();
-  const first = runReconcile(index.reconcile, [walked(a)]);
-  const before = statSync(a);
-  writeLines(a, 0, 3, "bravo");
-  expect(statSync(a).size).toBe(before.size);
-  const later = new Date(before.mtimeMs + 5_000);
-  utimesSync(a, later, later);
-  const second = runReconcile(index.reconcile, [walked(a)]);
-  expect(second.stats).toEqual(
-    fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
-  );
-  expect(second.records[0]?.contribution).not.toEqual(first.records[0]?.contribution);
-  expect(second.records[0]?.contribution).toEqual(expectedContribution(a));
-});
-
-test("an mtime-only change (same bytes, same size) is parsed whole", () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  const index = open();
-  const first = runReconcile(index.reconcile, [walked(a)]);
-  const before = statSync(a);
-  const bytesBefore = readFileSync(a);
-  const later = new Date(before.mtimeMs + 5_000);
-  utimesSync(a, later, later);
-  expect(readFileSync(a)).toEqual(bytesBefore);
-  expect(statSync(a).mtimeMs).not.toBe(before.mtimeMs);
-  const second = runReconcile(index.reconcile, [walked(a)]);
-  expect(second.stats).toEqual(
-    fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
-  );
-  expect(second.calls.whole).toEqual([a]);
-  expect(second.records).toEqual(first.records);
-  // The rewritten row carries the new mtime: a third run reuses it.
-  expect(runReconcile(index.reconcile, [walked(a)]).stats).toEqual(
-    fullStats({ filesSeen: 1, filesReused: 1 }),
-  );
-});
-
-test("a grown file whose old tail changed fails the probe and is parsed whole", () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  const index = open();
-  runReconcile(index.reconcile, [walked(a)]);
-  const oldSize = statSync(a).size;
-  // Same prefix length, one byte inside the probe window differs, then more lines.
-  const rewritten = Buffer.from(readFileSync(a));
-  rewritten[oldSize - 2] = "X".charCodeAt(0);
-  writeFileSync(a, rewritten);
-  appendLines(a, 3, 2, "alpha");
-  const second = runReconcile(index.reconcile, [walked(a)]);
-  // The probe bytes were read before the whole parse read the file again.
-  expect(second.stats).toEqual(fullStats({
-    filesSeen: 1,
-    filesParsedWhole: 1,
-    bytesRead: TAIL_PROBE_BYTES + statSync(a).size,
-  }));
-  expect(second.calls.tail).toEqual([]);
-  expect(second.records[0]?.contribution).toEqual(expectedContribution(a));
-});
-
-test("a grown non-resumable file is parsed whole without a probe read", () => {
-  setup();
-  const a = join(logs, "a.jsonl.zst");
-  writeLines(a, 0, 3, "alpha");
-  const index = open();
-  runReconcile(index.reconcile, [walked(a, { resumable: false })]);
-  appendLines(a, 3, 2, "alpha");
-  const second = runReconcile(index.reconcile, [walked(a, { resumable: false })]);
-  expect(second.stats).toEqual(
-    fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
-  );
-});
+    // The rewritten row describes the file as it is now: a third run reuses both.
+    const third = runReconcile(index.reconcile, files());
+    expect(third.stats).toEqual(fullStats({ filesSeen: 2, filesReused: 2 }));
+    expect(third.records).toEqual(second.records);
+  });
+}
 
 test("a walked non-candidate is neither parsed nor deleted", () => {
   setup();
@@ -500,106 +487,89 @@ test("a parse that throws is one failure: warned, row deleted, others untouched"
   );
 });
 
-test("a corrupt database is rebuilt with one info line and the run still succeeds", async () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  mkdirSync(indexDir, { recursive: true });
-  writeFileSync(dbPath(), "this is not a database, not even close to one\n".repeat(20));
+/** A stored database and the stamp the next opener carries: the rows are adopted only when the
+ *  file is a sound database this parser stamped; anything else is rebuilt, with one info line. */
+const OPENERS: {
+  name: string;
+  seedFingerprint?: string;
+  sabotage?: () => void;
+  openFingerprint?: string;
+  rebuilds: boolean;
+  line?: string;
+}[] = [
+  {
+    name: "the same parser fingerprint adopts the rows",
+    seedFingerprint: "parsers-1",
+    openFingerprint: "parsers-1",
+    rebuilds: false,
+  },
+  {
+    name: "a file that is not a database is rebuilt",
+    sabotage: () =>
+      writeFileSync(dbPath(), "this is not a database, not even close to one\n".repeat(20)),
+    rebuilds: true,
+    line: "rebuilding the usage index",
+  },
+  {
+    name: "another parser fingerprint is rebuilt, naming the stale one",
+    seedFingerprint: "parsers-1",
+    openFingerprint: "parsers-2",
+    rebuilds: true,
+    line: "rebuilding the usage index (parser_fingerprint parsers-1)",
+  },
+  {
+    // The default stamp is a different fingerprint too.
+    name: "the default fingerprint after a named one is rebuilt",
+    seedFingerprint: "parsers-2",
+    sabotage: () => expect(DEFAULT_PARSER_FINGERPRINT).not.toBe("parsers-2"),
+    rebuilds: true,
+    line: "rebuilding the usage index (parser_fingerprint parsers-2)",
+  },
+  {
+    name: "rows without stamps are rebuilt, never adopted",
+    sabotage: () => {
+      const db = new DatabaseSync(dbPath());
+      try {
+        db.exec(`DELETE FROM "meta"`);
+      } finally {
+        db.close();
+      }
+    },
+    rebuilds: true,
+    line: "rebuilding the usage index (unstamped rows).",
+  },
+];
 
-  let index: UsageIndex | undefined;
-  const out = await captureAllWrites(() => {
-    index = open();
+for (const { name, seedFingerprint, sabotage, openFingerprint, rebuilds, line } of OPENERS) {
+  test(`opening a stored index: ${name}`, async () => {
+    setup();
+    const a = join(logs, "a.jsonl");
+    const b = join(logs, "b.jsonl");
+    writeLines(a, 0, 3, "alpha");
+    writeLines(b, 0, 3, "beta");
+    const seed = open({ fingerprint: seedFingerprint });
+    runReconcile(seed.reconcile, [walked(a), walked(b)]);
+    seed.close();
+    sabotage?.();
+
+    let reopened: UsageIndex | undefined;
+    const out = await captureAllWrites(() => {
+      reopened = open({ fingerprint: openFingerprint });
+    });
+    expect(out.split("rebuilding the usage index").length - 1).toBe(rebuilds ? 1 : 0);
+    if (line !== undefined) expect(out).toContain(line);
+    const result = runReconcile(reopened!.reconcile, [walked(a), walked(b)]);
+    expect(result.stats).toEqual(fullStats(
+      rebuilds
+        ? { filesSeen: 2, filesParsedWhole: 2, bytesRead: statSync(a).size + statSync(b).size }
+        : { filesSeen: 2, filesReused: 2 },
+    ));
+    expect(result.records[0]?.contribution).toEqual(expectedContribution(a));
+    expect(result.records[1]?.contribution).toEqual(expectedContribution(b));
+    reopened!.close();
+    expect(storedRows().map((r) => r.path)).toEqual([a, b]);
   });
-  expect(out.split("rebuilding the usage index").length - 1).toBe(1);
-  const result = runReconcile(index!.reconcile, [walked(a)]);
-  expect(result.stats).toEqual(
-    fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
-  );
-  expect(result.records[0]?.contribution).toEqual(expectedContribution(a));
-  index!.close();
-  expect(storedRows().map((r) => r.path)).toEqual([a]);
-});
-
-test("a parser fingerprint change re-parses everything once", async () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  const b = join(logs, "b.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  writeLines(b, 0, 3, "beta");
-  const first = open({ fingerprint: "parsers-1" });
-  runReconcile(first.reconcile, [walked(a), walked(b)]);
-  first.close();
-
-  const same = open({ fingerprint: "parsers-1" });
-  expect(runReconcile(same.reconcile, [walked(a), walked(b)]).stats).toEqual(
-    fullStats({ filesSeen: 2, filesReused: 2 }),
-  );
-  same.close();
-
-  let changed: UsageIndex | undefined;
-  const out = await captureAllWrites(() => {
-    changed = open({ fingerprint: "parsers-2" });
-  });
-  expect(out).toContain("rebuilding the usage index");
-  expect(out).toContain("parser_fingerprint parsers-1");
-  const result = runReconcile(changed!.reconcile, [walked(a), walked(b)]);
-  expect(result.stats).toEqual(
-    fullStats({
-      filesSeen: 2,
-      filesParsedWhole: 2,
-      bytesRead: statSync(a).size + statSync(b).size,
-    }),
-  );
-  changed!.close();
-
-  // The default stamp is a different fingerprint too.
-  let defaulted: UsageIndex | undefined;
-  const out2 = await captureAllWrites(() => {
-    defaulted = open();
-  });
-  expect(out2).toContain(`rebuilding the usage index`);
-  expect(DEFAULT_PARSER_FINGERPRINT).not.toBe("parsers-2");
-  expect(runReconcile(defaulted!.reconcile, [walked(a)]).stats).toEqual(
-    fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
-  );
-});
-
-test("a row with another contribution version is parsed whole; the rest reuse", () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  const b = join(logs, "b.jsonl");
-  const c = join(logs, "c.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  writeLines(b, 0, 3, "beta");
-  writeLines(c, 0, 3, "gamma");
-  const index = open();
-  runReconcile(index.reconcile, [walked(a), walked(b), walked(c)]);
-  index.close();
-  const rowA = storedRows().find((r) => r.path === a);
-  const stale = JSON.parse(rowA?.record ?? "") as { v: number };
-  stale.v = CONTRIBUTION_VERSION + 1;
-  rewriteRecord(a, JSON.stringify(stale));
-  rewriteRecord(b, "{not json");
-
-  const reopened = open();
-  const result = runReconcile(reopened.reconcile, [walked(a), walked(b), walked(c)]);
-  expect(result.stats).toEqual(fullStats({
-    filesSeen: 3,
-    filesReused: 1,
-    filesParsedWhole: 2,
-    bytesRead: statSync(a).size + statSync(b).size,
-  }));
-  expect(result.calls.whole).toEqual([a, b]);
-  expect(result.calls.tail).toEqual([]);
-  for (const [i, path] of [a, b, c].entries()) {
-    expect(result.records[i]).toEqual({ path, contribution: expectedContribution(path) });
-  }
-  reopened.close();
-  expect(storedRows().map((r) => (JSON.parse(r.record) as { v: number }).v)).toEqual(
-    [CONTRIBUTION_VERSION, CONTRIBUTION_VERSION, CONTRIBUTION_VERSION],
-  );
-});
+}
 
 for (const corrupt of [-1, 1e20]) {
   test(`a row with resume offset ${corrupt} reads as no row: whole parse, row healed`, async () => {
@@ -742,29 +712,6 @@ test("opening while another run holds the lock yields no index, with one info li
   // Lock free: the same call opens and creates the database.
   expect(open({ lockPolicy: { staleMs: 60_000, waitMs: 0 } })).not.toBeNull();
   expect(existsSync(dbPath())).toBe(true);
-});
-
-test("a database with rows but no stamps is rebuilt, never adopted", async () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  const index = open();
-  runReconcile(index.reconcile, [walked(a)]);
-  index.close();
-  const db = new DatabaseSync(dbPath());
-  try {
-    db.exec(`DELETE FROM "meta"`);
-  } finally {
-    db.close();
-  }
-  let reopened: UsageIndex | undefined;
-  const out = await captureAllWrites(() => {
-    reopened = open();
-  });
-  expect(out).toContain("rebuilding the usage index (unstamped rows).");
-  expect(runReconcile(reopened!.reconcile, [walked(a)]).stats).toEqual(
-    fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
-  );
 });
 
 for (const when of ["before the run", "between two candidates"] as const) {
@@ -951,42 +898,104 @@ test("an extra property on a contribution is stripped, never stored", () => {
   expect(rawIndexBytes()).not.toContain(marker);
 });
 
-test("a stale database still open elsewhere is never removed; the opener runs index-less", async () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  const live = open({ fingerprint: "parsers-1" });
-  const seeded = runReconcile(live.reconcile, [walked(a)]);
-  const quick = { staleMs: 60_000, waitMs: 0 };
+/** A database another connection holds while an opener arrives: the opener runs index-less and
+ *  removes nothing, whatever the holder's journal mode; `hold` returns the release. */
+const HOLDERS: {
+  name: string;
+  seedFingerprint?: string;
+  openFingerprint?: string;
+  hold: (seed: UsageIndex) => () => void;
+  held?: (out: string, seed: UsageIndex, seeded: ReturnType<typeof runReconcile>) => void;
+  released: "rebuilds" | "reuses";
+}[] = [
+  {
+    // A stale database (another parser's) a live handle still has open: never removed.
+    name: "a live WAL handle on a stale database",
+    seedFingerprint: "parsers-1",
+    openFingerprint: "parsers-2",
+    hold: (seed) => () => seed.close(),
+    held: (out, seed, seeded) => {
+      expect(out).toContain("parser_fingerprint parsers-1");
+      // The live handle's files and rows are intact, and it keeps working.
+      expect(existsSync(`${dbPath()}-wal`)).toBe(true);
+      const again = runReconcile(seed.reconcile, [walked(join(logs, "a.jsonl"))]);
+      expect(again.stats).toEqual(fullStats({ filesSeen: 1, filesReused: 1 }));
+      expect(again.records).toEqual(seeded.records);
+    },
+    released: "rebuilds",
+  },
+  {
+    // A foreign holder takes the file out of WAL mode and keeps a write transaction open, so
+    // our own WAL entry cannot be established: in use, not exclusive.
+    name: "a rollback-mode write transaction",
+    hold: (seed) => {
+      seed.close();
+      const holder = new DatabaseSync(dbPath());
+      try {
+        expect(holder.prepare("PRAGMA journal_mode = DELETE").get()).toEqual({
+          journal_mode: "delete",
+        });
+        holder.exec("BEGIN IMMEDIATE");
+      } catch (error) {
+        holder.close();
+        throw error;
+      }
+      return () => {
+        try {
+          holder.exec("COMMIT");
+        } finally {
+          holder.close();
+        }
+      };
+    },
+    released: "reuses",
+  },
+];
 
-  let other: UsageIndex | null = null;
-  const out = await captureAllWrites(() => {
-    other = openUsageIndex({ dir: indexDir, fingerprint: "parsers-2", lockPolicy: quick });
-  });
-  expect(other).toBeNull();
-  expect(out.split("usage index in use by another run").length - 1).toBe(1);
-  expect(out).toContain("parser_fingerprint parsers-1");
-  expect(out).not.toContain("rebuilding the usage index");
-  // The live handle's files and rows are intact, and it keeps working.
-  expect(existsSync(dbPath())).toBe(true);
-  expect(existsSync(`${dbPath()}-wal`)).toBe(true);
-  const again = runReconcile(live.reconcile, [walked(a)]);
-  expect(again.stats).toEqual(fullStats({ filesSeen: 1, filesReused: 1 }));
-  expect(again.records).toEqual(seeded.records);
-  live.close();
+for (const { name, seedFingerprint, openFingerprint, hold, held, released } of HOLDERS) {
+  test(`${name} is in use: the opener runs index-less and removes nothing`, async () => {
+    setup();
+    const a = join(logs, "a.jsonl");
+    writeLines(a, 0, 3, "alpha");
+    const quick = { staleMs: 60_000, waitMs: 0 };
+    const seed = open({ fingerprint: seedFingerprint });
+    const seeded = runReconcile(seed.reconcile, [walked(a)]);
+    let release: (() => void) | undefined;
+    try {
+      release = hold(seed);
+      let other: UsageIndex | null = null;
+      const out = await captureAllWrites(() => {
+        other = openUsageIndex({ dir: indexDir, fingerprint: openFingerprint, lockPolicy: quick });
+      });
+      expect(other).toBeNull();
+      expect(out.split("usage index in use by another run").length - 1).toBe(1);
+      expect(out).not.toContain("rebuilding the usage index");
+      expect(existsSync(dbPath())).toBe(true);
+      held?.(out, seed, seeded);
+    } finally {
+      release?.();
+    }
 
-  // Once the live handle is gone the same open rebuilds (the control).
-  let rebuilt: UsageIndex | undefined;
-  const out2 = await captureAllWrites(() => {
-    rebuilt = open({ fingerprint: "parsers-2", lockPolicy: quick });
+    // Released, the same open goes through (the control): a stale database rebuilds, a
+    // current one reuses its rows.
+    let reopened: UsageIndex | undefined;
+    const out2 = await captureAllWrites(() => {
+      reopened = open({ fingerprint: openFingerprint, lockPolicy: quick });
+    });
+    const again = runReconcile(reopened!.reconcile, [walked(a)]);
+    if (released === "rebuilds") {
+      expect(out2.split("rebuilding the usage index (parser_fingerprint parsers-1)").length - 1)
+        .toBe(1);
+      expect(again.stats).toEqual(
+        fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
+      );
+    } else {
+      expect(out2).not.toContain("rebuilding the usage index");
+      expect(again.stats).toEqual(fullStats({ filesSeen: 1, filesReused: 1 }));
+      expect(again.records).toEqual(seeded.records);
+    }
   });
-  expect(out2.split("rebuilding the usage index (parser_fingerprint parsers-1)").length - 1).toBe(
-    1,
-  );
-  expect(runReconcile(rebuilt!.reconcile, [walked(a)]).stats).toEqual(
-    fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
-  );
-});
+}
 
 /** Ways a stored row can carry text the schema does not declare. */
 const PLANTED: { name: string; plant: (row: StoredRow, marker: string) => void }[] = [
@@ -1052,40 +1061,6 @@ for (const { name, plant } of PLANTED) {
   });
 }
 
-test("a rollback-mode database held by another connection is in use, not exclusive", async () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  const index = open();
-  const seeded = runReconcile(index.reconcile, [walked(a)]);
-  index.close();
-  // A foreign holder: takes the file out of WAL mode and keeps a write transaction
-  // open, so our own WAL entry cannot be established.
-  const holder = new DatabaseSync(dbPath());
-  try {
-    expect(holder.prepare("PRAGMA journal_mode = DELETE").get()).toEqual({
-      journal_mode: "delete",
-    });
-    holder.exec("BEGIN IMMEDIATE");
-    let other: UsageIndex | null = null;
-    const out = await captureAllWrites(() => {
-      other = openUsageIndex({ dir: indexDir, lockPolicy: { staleMs: 60_000, waitMs: 0 } });
-    });
-    expect(other).toBeNull();
-    expect(out.split("usage index in use by another run").length - 1).toBe(1);
-    expect(out).not.toContain("rebuilding the usage index");
-    expect(existsSync(dbPath())).toBe(true);
-    holder.exec("COMMIT");
-  } finally {
-    holder.close();
-  }
-  // Released: the same database opens again with its rows intact (the control).
-  const reopened = open();
-  const again = runReconcile(reopened.reconcile, [walked(a)]);
-  expect(again.stats).toEqual(fullStats({ filesSeen: 1, filesReused: 1 }));
-  expect(again.records).toEqual(seeded.records);
-});
-
 test("rows are scoped per source: a claude walk never deletes codex rows", () => {
   setup();
   const c = join(logs, "rollout.jsonl");
@@ -1114,55 +1089,23 @@ test("rows are scoped per source: a claude walk never deletes codex rows", () =>
   expect(storedRows().map((r) => r.path)).toEqual([a, c]);
 });
 
-test("a codex row with an inherited-name property in its state is not reused", () => {
-  setup();
-  const marker = "PLANTED-STATE-PLAINTEXT-8e1c";
-  const c = join(logs, "rollout.jsonl");
-  writeLines(c, 0, 2, "codex");
-  const wholeCalls: string[] = [];
-  const codexWhole: ParseWhole<CodexContribution> = (file) => {
-    wholeCalls.push(file.path);
-    return {
-      contribution: {
-        v: CONTRIBUTION_VERSION,
-        state: { provider: "openai", model: "gpt" },
-        events: [[BASE_TS, "openai", "gpt", dedupKey(file.path), 1, 2, 3]],
-      },
-      parsedThrough: file.size,
-      tailProbeHex: "",
-      bytesRead: file.size,
-    };
-  };
-  const noTail = (): never => {
-    throw new Error("no tail");
-  };
-  const index = open();
-  index.reconcile("codex", [walked(c)], codexWhole, noTail);
-  index.close();
-  const row = storedRows()[0];
-  const doc = JSON.parse(row?.record ?? "") as { state: Record<string, unknown> };
-  rewriteRecord(c, JSON.stringify({ ...doc, state: { ...doc.state, toString: marker } }));
-  expect(rawIndexBytes()).toContain(marker);
-
-  const reopened = open();
-  const result = reopened.reconcile("codex", [walked(c)], codexWhole, noTail);
-  expect(result.stats).toEqual(
-    fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(c).size }),
-  );
-  expect(wholeCalls).toEqual([c, c]);
-  reopened.close();
-  expect(JSON.parse(storedRows()[0]?.record ?? "")).toEqual(doc);
-  expect(rawIndexBytes()).not.toContain(marker);
-});
-
 // The stored-row reader is hand-written for speed; these hold it to exactly what the
 // write side admits. Every mutation of a valid row must read as "no row" (a whole
 // parse); the identity re-serialization is the control that still reuses.
 /** A corruption of a stored record: of the parsed document (re-serialized), or of the
  *  raw text, for values JSON.stringify cannot produce (`1e999` parses to Infinity). */
 type Mutation =
-  | { name: string; mutate(doc: Record<string, unknown>): unknown; raw?: undefined }
-  | { name: string; raw(record: string): string; mutate?: undefined };
+  | {
+    name: string;
+    mutate(doc: Record<string, unknown>): unknown;
+    raw?: undefined;
+    plants?: string;
+  }
+  | { name: string; raw(record: string): string; mutate?: undefined; plants?: string };
+
+/** Plaintext a mutation plants in a stored state: the repair must erase it from the index
+ *  files, not merely stop reading it. */
+const PLANTED_STATE_MARKER = "PLANTED-STATE-PLAINTEXT-8e1c";
 
 /** The last count of the last tuple (`...,3]]`) as an out-of-range literal. */
 const INFINITE_LAST_COUNT = (record: string): string => record.replace(/\d+\]\]/, "1e999]]");
@@ -1214,6 +1157,14 @@ const CODEX_MUTATIONS: Mutation[] = [
   {
     name: "a string metaTsMs",
     mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), metaTsMs: "1" } }),
+  },
+  {
+    name: "an inherited-name state key",
+    mutate: (doc) => ({
+      ...doc,
+      state: { ...(doc.state as object), toString: PLANTED_STATE_MARKER },
+    }),
+    plants: PLANTED_STATE_MARKER,
   },
   {
     name: "a negative fork knownAfter",
@@ -1306,6 +1257,7 @@ const CLAUDE_MUTATIONS: Mutation[] = [
     }),
   },
   { name: "an infinite count in the raw record", raw: INFINITE_LAST_COUNT },
+  { name: "text that is not JSON", raw: () => "{not json" },
 ];
 
 function replaceAt(tuple: unknown[], at: number, value: unknown): unknown[] {
@@ -1345,11 +1297,12 @@ for (const mutation of CLAUDE_MUTATIONS) {
     ));
     expect(result.records[0]?.contribution).toEqual(expectedContribution(a));
     reopened.close();
+    expect(JSON.parse(storedRows()[0]?.record ?? "")).toEqual(expectedContribution(a));
   });
 }
 
 for (const mutation of CODEX_MUTATIONS) {
-  const { name } = mutation;
+  const { name, plants } = mutation;
   const reused = name.includes("control");
   test(`a stored codex row with ${name} is ${reused ? "reused" : "parsed whole"}`, () => {
     setup();
@@ -1378,6 +1331,7 @@ for (const mutation of CODEX_MUTATIONS) {
     index.reconcile("codex", [walked(c)], codexWhole, noTail);
     index.close();
     rewriteRecord(c, mutated(storedRows()[0]?.record ?? "", mutation));
+    if (plants) expect(rawIndexBytes()).toContain(plants);
 
     const reopened = open();
     const result = reopened.reconcile("codex", [walked(c)], codexWhole, noTail);
@@ -1389,6 +1343,8 @@ for (const mutation of CODEX_MUTATIONS) {
     expect(wholeCalls).toEqual(reused ? [c] : [c, c]);
     expect(result.records[0]?.contribution).toEqual(contribution);
     reopened.close();
+    expect(JSON.parse(storedRows()[0]?.record ?? "")).toEqual(contribution);
+    if (plants) expect(rawIndexBytes()).not.toContain(plants);
   });
 }
 
@@ -1436,7 +1392,16 @@ test("a row another run rewrote between the identity read and the record read is
   index.close();
 });
 
-/** Files that fail to open as OUR database without proving they are nobody's. */
+/** Everything under `path` as SQLite and we left it: directory listings and file bytes. */
+function diskState(path: string): unknown {
+  if (!existsSync(path)) return null;
+  if (!statSync(path).isDirectory()) return readFileSync(path).toString("hex");
+  return Object.fromEntries(
+    readdirSync(path).sort().map((name) => [name, diskState(join(path, name))]),
+  );
+}
+
+/** Index locations that fail to open as OUR database without proving they are nobody's. */
 const UNREMOVABLE: { name: string; sabotage: () => void; line: () => string }[] = [
   {
     name: "a corrupt database (valid header, garbage pages)",
@@ -1459,6 +1424,14 @@ const UNREMOVABLE: { name: string; sabotage: () => void; line: () => string }[] 
     line: () =>
       `could not open the usage index (unable to open database file: ${dbPath()}); running without it.`,
   },
+  {
+    name: "a directory that cannot be created",
+    sabotage: () => {
+      rmSync(indexDir, { recursive: true, force: true });
+      writeFileSync(indexDir, "a file where the directory should go");
+    },
+    line: () => `could not create the usage index directory ${indexDir}`,
+  },
 ];
 
 for (const { name, sabotage, line } of UNREMOVABLE) {
@@ -1470,8 +1443,7 @@ for (const { name, sabotage, line } of UNREMOVABLE) {
     runReconcile(index.reconcile, [walked(a)]);
     index.close();
     sabotage();
-    const before = statSync(dbPath());
-    const bytesBefore = before.isFile() ? readFileSync(dbPath()) : null;
+    const before = diskState(indexDir);
 
     let other: UsageIndex | null = null;
     const out = await captureAllWrites(() => {
@@ -1480,9 +1452,7 @@ for (const { name, sabotage, line } of UNREMOVABLE) {
     expect(other).toBeNull();
     expect(out.split(line()).length - 1).toBe(1);
     expect(out).not.toContain("rebuilding the usage index");
-    const after = statSync(dbPath());
-    expect(after.isDirectory()).toBe(before.isDirectory());
-    if (bytesBefore !== null) expect(readFileSync(dbPath())).toEqual(bytesBefore);
+    expect(diskState(indexDir)).toEqual(before);
   });
 }
 
@@ -1508,16 +1478,4 @@ test("the contract's no-index reconcile parses every candidate whole and stores 
   );
   expect(result?.records.map((r) => r.path)).toEqual([a]);
   expect(existsSync(indexDir)).toBe(false);
-});
-
-test("openUsageIndex returns null when the directory cannot be created", async () => {
-  setup();
-  const blocker = join(root, "blocker");
-  writeFileSync(blocker, "a file where the directory should go");
-  let index: UsageIndex | null = null;
-  const out = await captureAllWrites(() => {
-    index = openUsageIndex({ dir: join(blocker, "usage-index") });
-  });
-  expect(index).toBeNull();
-  expect(out).toContain("could not create the usage index directory");
 });

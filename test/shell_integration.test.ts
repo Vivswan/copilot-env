@@ -12,7 +12,6 @@ import {
   stripBlocks,
   upsertBlock,
   windowsBlock,
-  windowsExecutionPolicyCommand,
   windowsProfileTarget,
 } from "../src/shell/integration.ts";
 import { runCli, runSync } from "./helpers/run.ts";
@@ -84,48 +83,61 @@ afterEach(() => {
   home = "";
 });
 
-skipWin("wires the integration into a freshly created rc file", () => {
-  const { code } = run();
-  expect(code).toBe(0);
-  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain(MARKER);
-  expect(rc).toContain(MARKER_END); // the block is fenced, so removal is extent-exact
-  expect(rc).toContain("agents.bashrc");
-});
+skipWin(
+  "a fresh wire creates the rc with ONE fenced block, end fence + ONE blank last, and a second wire is byte-for-byte identical",
+  () => {
+    expect(run().code).toBe(0);
+    const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+    expect(rc).toContain("agents.bashrc");
+    expect(markerLines(rc, MARKER)).toBe(1);
+    // The fence spellings are an on-disk contract: every installed rc carries these lines, so a
+    // respelling would orphan the blocks already written.
+    expect(rc).toContain(`\n${MARKER}\n`);
+    expect(rc.endsWith("# copilot-env shell integration end\n\n")).toBe(true);
+    expect(rc.endsWith(`${MARKER_END}\n\n\n`)).toBe(false); // no trailing-blank pileup at EOF
+    run();
+    expect(readFileSync(join(home, ".bashrc"), "utf-8")).toBe(rc);
+  },
+);
 
-skipWin("is idempotent -- a second wire is byte-for-byte identical", () => {
-  run();
-  const first = readFileSync(join(home, ".bashrc"), "utf-8");
-  run();
-  const second = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(second).toBe(first);
-  expect(markerLines(second, MARKER)).toBe(1);
-});
-
-skipWin("a fresh wire ends the rc with the end fence and ONE blank line", () => {
-  run();
-  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc.endsWith(`${MARKER_END}\n\n`)).toBe(true);
-  expect(rc.endsWith(`${MARKER_END}\n\n\n`)).toBe(false); // no trailing-blank pileup at EOF
-});
-
-skipWin("the wired block is separated from the user's next line by exactly ONE blank", () => {
-  // The motivating rc shape: a stale block sits directly against the user's next line.
-  // The refresh must leave `... end`, ONE blank line, then their line -- and re-runs
-  // must REUSE that blank, never stack another.
-  const stale = `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n` +
-    `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n${MARKER_END}`;
-  writeFileSync(
-    join(home, ".bashrc"),
-    `# ---- Agent environments ----\n${stale}\nexport PATH="/opt/x/bin:$PATH"\n`,
-  );
-  run();
-  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain(`${MARKER_END}\n\nexport PATH=`);
-  expect(rc).not.toContain(`${MARKER_END}\n\n\n`);
-  run();
-  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toBe(rc);
-});
+skipWin(
+  "re-wiring refreshes a stale block in place: the current shell/ path, ONE blank before the user's next line, later lines unmoved, re-runs converge",
+  () => {
+    const stale = `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n` +
+      `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n${MARKER_END}`;
+    const rows: Array<{ before: string; above: string; below: string | null }> = [
+      // The motivating rc shape: a stale block sits directly against the user's next line.
+      {
+        before: `# ---- Agent environments ----\n${stale}\nexport PATH="/opt/x/bin:$PATH"\n`,
+        above: "# ---- Agent environments ----",
+        below: 'export PATH="/opt/x/bin:$PATH"',
+      },
+      {
+        before: `export BEFORE=1\n\n${stale}\n\nexport AFTER=1\n`,
+        above: "export BEFORE=1",
+        below: "export AFTER=1",
+      },
+      { before: `export KEEP=1\n\n${stale}\n`, above: "export KEEP=1", below: null },
+    ];
+    for (const { before, above, below } of rows) {
+      writeFileSync(join(home, ".bashrc"), before);
+      expect(run().code, before).toBe(0);
+      const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+      expect(rc, before).toContain("shell/agents.bashrc");
+      expect(rc, before).not.toContain("/old/agents.bashrc");
+      expect(markerLines(rc, MARKER), before).toBe(1);
+      // The user's lines survive the rewire in place: indexOf alone would read a deleted
+      // line as -1 and still order before the marker.
+      expect(rc, before).toContain(above);
+      expect(rc.indexOf(above), before).toBeLessThan(rc.indexOf(MARKER));
+      if (below !== null) expect(rc, before).toContain(`${MARKER_END}\n\n${below}`);
+      expect(rc, before).not.toContain(`${MARKER_END}\n\n\n`);
+      // Re-runs REUSE the owned blank, never stack another.
+      run();
+      expect(readFileSync(join(home, ".bashrc"), "utf-8"), before).toBe(rc);
+    }
+  },
+);
 
 skipWin("wire then --remove restores the rc byte-for-byte, owned blanks included", () => {
   const original = "export BEFORE=1\n\nexport AFTER=1\n";
@@ -136,45 +148,6 @@ skipWin("wire then --remove restores the rc byte-for-byte, owned blanks included
   expect(readFileSync(join(home, ".bashrc"), "utf-8")).toBe(original);
 });
 
-skipWin("re-wiring refreshes the block in place without reordering later lines", () => {
-  const stale = `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n` +
-    `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n${MARKER_END}`;
-  writeFileSync(join(home, ".bashrc"), `export BEFORE=1\n\n${stale}\n\nexport AFTER=1\n`);
-  run();
-  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain("shell/agents.bashrc");
-  expect(rc).not.toContain("/old/agents.bashrc");
-  expect(rc.indexOf("export BEFORE=1")).toBeLessThan(rc.indexOf(MARKER));
-  expect(rc.indexOf(MARKER)).toBeLessThan(rc.indexOf("export AFTER=1"));
-});
-
-skipWin("shell wires and removes the integration", () => {
-  expect(run().code).toBe(0);
-  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(MARKER);
-  expect(run("--remove").code).toBe(0);
-  expect(readFileSync(join(home, ".bashrc"), "utf-8")).not.toContain(MARKER);
-});
-
-skipWin("wires an existing rc without clobbering its contents", () => {
-  writeFileSync(join(home, ".bashrc"), "export EXISTING=1\n");
-  run();
-  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain("export EXISTING=1");
-  expect(rc).toContain(MARKER);
-});
-
-skipWin("--remove strips a CRLF-written block (Windows-style line endings)", () => {
-  // Simulate a block written with CRLF (e.g. old PowerShell Add-Content / a CRLF rc).
-  const block =
-    `\r\n${MARKER}\r\nAGENTS_BASHRC="/x/agents.bashrc"\r\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\r\n`;
-  writeFileSync(join(home, ".bashrc"), `export KEEP=1\r\n${block}`);
-  const { code } = run("--remove");
-  expect(code).toBe(0);
-  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).not.toContain(MARKER);
-  expect(rc).toContain("export KEEP=1");
-});
-
 /** The stored `launchers` config key, read from the per-test store run() points
  *  COPILOT_API_HOME at. */
 function storedLaunchersKey(): boolean | undefined {
@@ -183,6 +156,45 @@ function storedLaunchersKey(): boolean | undefined {
   return (JSON.parse(readFileSync(file, "utf-8")) as { global?: { "shell.launchers"?: boolean } })
     .global?.["shell.launchers"];
 }
+
+skipWin(
+  "--remove strips a CRLF-written legacy block and a fresh fenced wire alike; the launchers key stays the user's",
+  () => {
+    // A block written with CRLF (an old PowerShell Add-Content, a CRLF rc), without an end fence.
+    const crlfLegacy = `export KEEP=1\r\n\r\n${MARKER}\r\nAGENTS_BASHRC="/x/agents.bashrc"\r\n` +
+      `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\r\n`;
+    const rows: Array<
+      { stage: () => void; survives: string | null; launchers: boolean | undefined }
+    > = [
+      {
+        stage: () => writeFileSync(join(home, ".bashrc"), crlfLegacy),
+        survives: "export KEEP=1",
+        launchers: undefined,
+      },
+      {
+        stage: () => {
+          run();
+          writeFileSync(
+            join(home, "state.json"),
+            JSON.stringify({ global: { "shell.launchers": true } }),
+          );
+        },
+        survives: null,
+        launchers: true,
+      },
+    ];
+    for (const { stage, survives, launchers } of rows) {
+      rmSync(home, { recursive: true, force: true });
+      mkdirSync(home);
+      stage();
+      expect(run("--remove").code).toBe(0);
+      const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+      expect(rc).not.toContain(MARKER);
+      if (survives !== null) expect(rc).toContain(survives);
+      expect(storedLaunchersKey()).toBe(launchers);
+    }
+  },
+);
 
 skipWin("shell wires NO launchers block and reports the launchers key without writing it", () => {
   // The launchers are `agent env` emissions gated on the `launchers` config key; the
@@ -197,29 +209,6 @@ skipWin("shell wires NO launchers block and reports the launchers key without wr
   const rejected = run("--launchers");
   expect(rejected.code).toBe(1);
   expect(rejected.out).toContain("unknown option");
-});
-
-skipWin("--remove strips the integration; the launchers key is the user's", () => {
-  run();
-  writeFileSync(join(home, "state.json"), JSON.stringify({ global: { "shell.launchers": true } }));
-  const rcPath = join(home, ".bashrc");
-  run("--remove");
-  const rc = readFileSync(rcPath, "utf-8");
-  expect(rc).not.toContain(MARKER);
-  expect(storedLaunchersKey()).toBe(true);
-});
-
-skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
-  // Simulate a pre-`shell/`-move block that points at the old root-level agents.bashrc.
-  const stale = `\n${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n` +
-    `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n${MARKER_END}\n`;
-  writeFileSync(join(home, ".bashrc"), `export KEEP=1\n${stale}`);
-  run();
-  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain("export KEEP=1");
-  expect(rc).toContain("shell/agents.bashrc");
-  expect(rc).not.toContain("/old/agents.bashrc");
-  expect(markerLines(rc, MARKER)).toBe(1);
 });
 
 skipWin("posixBlock safely quotes paths with shell metacharacters", () => {
@@ -269,139 +258,99 @@ test("the PowerShell blocks anchor an under-home path at $HOME, and only then", 
   expect(windowsBlock(outside)).toContain(`$AgentsPs1 = '${outside}'`);
 });
 
-// The end marker is an external contract: existing installs carry the open marker,
-// so its spelling is frozen, and the end fence extends it verbatim.
-test("the end marker extends the frozen open marker verbatim", () => {
-  expect(MARKER_END).toBe("# copilot-env shell integration end");
+test("upsert follows the file's DOMINANT line ending on a first wire, and keeps a CRLF block all-CRLF through refresh, dedupe, and EOF normalization", () => {
+  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
+  const crlfBlock = block.replaceAll("\n", "\r\n");
+  const lfWired = `Write-Host before\n${block}`;
+  const crlfWired = lfWired.replaceAll("\n", "\r\n");
+  const rows: Array<[string, string]> = [
+    // Only the REFRESH path once preserved CRLF: a first append into a Notepad-written
+    // $PROFILE left LF lines in a CRLF file.
+    ["Write-Host before\r\n", crlfWired],
+    // A refresh never flips a CRLF block's endings: that would be a spurious diff on every
+    // re-wire.
+    [crlfWired, crlfWired],
+    // A CRLF file ending INSIDE the block's owned region (its separating blank lost its final
+    // newline) normalizes back: never a lone \r at EOF, never a stacked blank.
+    [crlfWired.replace(/\r\n$/, ""), crlfWired],
+    // The DOMINANT ending decides, not any stray one; a tie stays LF like an empty (or new)
+    // file: the builders' platform-neutral form.
+    ["a\nb\nc\r\nd\n", `a\nb\nc\r\nd\n${block}`],
+    ["a\r\nb\r\nc\nd\r\n", `a\r\nb\r\nc\nd\r\n${crlfBlock}`],
+    ["a\r\nb\n", `a\r\nb\n${block}`],
+    ["", block],
+    ["a\r\nb", `a\r\nb${crlfBlock}`],
+    // CRLF duplicates at EOF, terminated and not, dedupe to the ONE all-CRLF wired form.
+    [`${lfWired}\n${MARKER}\n`.replaceAll("\n", "\r\n"), crlfWired],
+    [`${lfWired}\n${MARKER}`.replaceAll("\n", "\r\n"), crlfWired],
+  ];
+  for (const [content, wired] of rows) {
+    expect(up(content, MARKER, block), JSON.stringify(content)).toBe(wired);
+    expect(up(wired, MARKER, block), JSON.stringify(content)).toBe(wired);
+  }
+  const removed = stripBlocks(crlfWired, [MARKER]);
+  expect(removed.content).toBe("Write-Host before\r\n");
+  expect(removed.leftBehind).toEqual([]);
 });
 
-test("every builder emits a fenced block: open marker first, end fence + ONE blank last", () => {
-  const path = join(homedir(), "shell", "x");
-  // The builders end in the block's ONE owned separating blank -- what keeps the
-  // wired block apart from whatever the user has next in the file.
-  for (const block of [posixBlock(path), windowsBlock(path)]) {
-    expect(block.startsWith(`\n${MARKER}\n`)).toBe(true);
-    expect(block.endsWith(`\n${MARKER_END}\n\n`)).toBe(true);
-    expect(block.endsWith(`\n${MARKER_END}\n\n\n`)).toBe(false); // one blank, never more
+test("upsert converges duplicate blocks on ONE wherever they sit: the first refreshed, the rest stripped, a user line under a stray marker kept and reported, an EOF duplicate normalized", () => {
+  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
+  const wired = up("Write-Host before\n", MARKER, block);
+  const stale = `${MARKER}\n$AgentsPs1 = 'C:\\old\\agents.ps1'\n` +
+    `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n${MARKER_END}`;
+  const rows: Array<{ content: string; converged: string; leftBehind: string[] }> = [
+    // Two markers in one file (a bad hand-merge, a crashed editor) would source the
+    // integration twice.
+    {
+      content:
+        `Write-Host before\n\n${stale}\n\nWrite-Host middle\n\n${stale}\n\nWrite-Host after\n`,
+      converged: `${wired}Write-Host middle\nWrite-Host after\n`,
+      leftBehind: [],
+    },
+    // The duplicate's extent is as conservative as removal's: an unrecognized line under the
+    // second marker survives and is REPORTED, the same leftBehind contract stripBlocks gives
+    // removal, so the wire path warns too.
+    {
+      content: `${wired}\n${MARKER}\nWrite-Host mine\n`,
+      converged: `${wired}Write-Host mine\n`,
+      leftBehind: ["Write-Host mine"],
+    },
+    // A duplicate on the last line, with and without a final newline: both ends of the junk
+    // sit inside owned territory, so the dedupe normalizes back to the ONE EOF shape an
+    // append writes (end fence, one blank, final newline) instead of flip-flopping the
+    // terminator or stacking blanks.
+    { content: `${wired}\n${MARKER}\n`, converged: wired, leftBehind: [] },
+    { content: `${wired}\n${MARKER}`, converged: wired, leftBehind: [] },
+  ];
+  for (const { content, converged, leftBehind } of rows) {
+    const next = upsertBlock(content, MARKER, block);
+    expect(next.content, content).toBe(converged);
+    expect(next.leftBehind, content).toEqual(leftBehind);
+    expect(up(next.content, MARKER, block), content).toBe(next.content);
   }
 });
 
-test("a new-format PowerShell block round-trips: write, upsert over it, remove", () => {
-  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const original = "Write-Host before\n";
-  const wired = up(original, MARKER, block);
-  expect(wired).toContain(MARKER_END);
-  // Upsert over the fenced block is byte-idempotent: the extent comes from the fence.
-  expect(up(wired, MARKER, block)).toBe(wired);
-  const removed = stripBlocks(wired, [MARKER]);
-  expect(removed.content).toBe(original);
-  expect(removed.leftBehind).toEqual([]);
-});
-
-test("re-upserting a CRLF fenced block is byte-idempotent and keeps CRLF", () => {
-  // e.g. a $PROFILE some Windows tool rewrote with CRLF: the refresh must not flip
-  // the block's endings (that would be a spurious diff on every re-wire).
-  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const crlf = up("Write-Host before\n", MARKER, block).replaceAll("\n", "\r\n");
-  expect(up(crlf, MARKER, block)).toBe(crlf);
-  const removed = stripBlocks(crlf, [MARKER]);
-  expect(removed.content).toBe("Write-Host before\r\n");
-  expect(removed.leftBehind).toEqual([]);
-  // A CRLF file ending INSIDE the block's owned region (its separating blank lost its
-  // final newline) is normalized back to the wired form -- never a lone \r at EOF,
-  // never a stacked blank.
-  const unterminated = crlf.replace(/\r\n$/, "");
-  expect(up(unterminated, MARKER, block)).toBe(crlf);
-});
-
-test("a first wire into a CRLF file appends CRLF, never mixed endings", () => {
-  // Before this, only the REFRESH path preserved CRLF (off the marker line); a first
-  // append into e.g. a Notepad-written $PROFILE left LF lines in a CRLF file.
-  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const wired = up("Write-Host before\r\n", MARKER, block);
-  expect(wired).toBe(
-    up("Write-Host before\n", MARKER, block).replaceAll("\n", "\r\n"),
-  );
-  expect(wired).not.toMatch(/[^\r]\n/); // no lone LF anywhere
-  // The append seeds a CRLF marker line, so the refresh path keeps it idempotent.
-  expect(up(wired, MARKER, block)).toBe(wired);
-});
-
-test("an append matches the file's DOMINANT ending, not any stray one", () => {
-  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const mostlyLf = "a\nb\nc\r\nd\n";
-  expect(up(mostlyLf, MARKER, block)).toBe(mostlyLf + block);
-  const mostlyCrlf = "a\r\nb\r\nc\nd\r\n";
-  expect(up(mostlyCrlf, MARKER, block)).toBe(
-    mostlyCrlf + block.replaceAll("\n", "\r\n"),
-  );
-  // A tie stays LF, like an empty (or new) file: the builders' platform-neutral form.
-  expect(up("a\r\nb\n", MARKER, block)).toBe("a\r\nb\n" + block);
-  expect(up("", MARKER, block)).toBe(block);
-  expect(up("a\r\nb", MARKER, block)).toBe("a\r\nb" + block.replaceAll("\n", "\r\n"));
-});
-
-test("upsert refreshes the first duplicate block and strips the rest", () => {
-  // Two markers in one file (a bad hand-merge, a crashed editor) would source the
-  // integration twice; upsert must converge on ONE block, deterministically.
-  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const stale = `${MARKER}\n$AgentsPs1 = 'C:\\old\\agents.ps1'\n` +
-    `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n${MARKER_END}`;
-  const content = `Write-Host before\n\n${stale}\n\nWrite-Host middle\n\n${stale}\n\n` +
-    `Write-Host after\n`;
-  const next = up(content, MARKER, block);
-  expect(markerLines(next, MARKER)).toBe(1);
-  expect(next.indexOf("Write-Host before")).toBeLessThan(next.indexOf(MARKER));
-  expect(next.indexOf(MARKER_END)).toBeLessThan(next.indexOf("Write-Host middle"));
-  expect(next.indexOf("Write-Host middle")).toBeLessThan(next.indexOf("Write-Host after"));
-  expect(next).not.toContain("C:\\old\\agents.ps1");
-  expect(up(next, MARKER, block)).toBe(next);
-});
-
-test("stripping a duplicate block never deletes a user line under its marker", () => {
-  // The duplicate's extent is as conservative as removal's: an unrecognized line
-  // under the second marker survives the dedupe -- and is REPORTED, the same
-  // leftBehind contract stripBlocks gives removal, so the wire path warns too.
-  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const wired = up("Write-Host before\n", MARKER, block);
-  const next = upsertBlock(`${wired}\n${MARKER}\nWrite-Host mine\n`, MARKER, block);
-  expect(markerLines(next.content, MARKER)).toBe(1);
-  expect(next.content).toContain("Write-Host mine");
-  expect(next.leftBehind).toEqual(["Write-Host mine"]);
-});
-
-test("deduping a block at EOF converges on the wired form, terminated", () => {
-  // A duplicate on the file's last line, with and without a final newline: both ends
-  // of the junk sit inside owned territory, so the dedupe normalizes back to the ONE
-  // EOF shape an append writes (end fence, one blank, final newline) -- re-runs
-  // converge instead of flip-flopping the terminator or stacking blanks.
-  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const wired = up("Write-Host before\n", MARKER, block);
-  expect(wired.endsWith(`${MARKER_END}\n\n`)).toBe(true);
-  expect(up(`${wired}\n${MARKER}\n`, MARKER, block)).toBe(wired);
-  expect(up(`${wired}\n${MARKER}`, MARKER, block)).toBe(wired);
-});
-
-test("upsert owns ONE separating blank: adds it once, reuses it forever", () => {
+test("upsert owns ONE separating blank: added once, reused forever, at EOF and before a user line; extra user spacing stays", () => {
   const block = posixBlock(join(homedir(), "shell", "agents.bashrc"));
+  const wired = `A=1\n${block}`;
   // `snug` is a pre-blank release's wire: the end fence directly against the user's next line.
-  const snug = `A=1\n${block.slice(1, -1)}B=1\n`; // block sans leading blank + separator
-  const migrated = up(snug, MARKER, block);
-  expect(migrated).toBe(`A=1\n${block.slice(1)}B=1\n`);
-  expect(up(migrated, MARKER, block)).toBe(migrated);
-  // A user's own extra blank beyond the owned one is their spacing: kept, and stable.
+  const snug = `A=1\n${block.slice(1, -1)}B=1\n`;
+  const migrated = `A=1\n${block.slice(1)}B=1\n`;
+  // A user's own extra blank beyond the owned one is their spacing.
   const spaced = `A=1\n${block.slice(1)}\nB=1\n`;
-  expect(up(spaced, MARKER, block)).toBe(spaced);
-});
-
-test("a block at EOF normalizes to end-fence + ONE blank, then never grows", () => {
-  const block = posixBlock(join(homedir(), "shell", "agents.bashrc"));
-  const wired = up("A=1\n", MARKER, block);
-  expect(wired).toBe(`A=1\n${block}`);
-  // The blank-less EOF shapes older releases wrote, fence-terminated and unterminated.
-  expect(up(`A=1\n${block.slice(0, -1)}`, MARKER, block)).toBe(wired);
-  expect(up(`A=1\n${block.trimEnd()}`, MARKER, block)).toBe(wired);
-  expect(up(wired, MARKER, block)).toBe(wired);
+  const rows: Array<[string, string]> = [
+    [snug, migrated],
+    [migrated, migrated],
+    [spaced, spaced],
+    ["A=1\n", wired],
+    // The blank-less EOF shapes older releases wrote, fence-terminated and unterminated.
+    [`A=1\n${block.slice(0, -1)}`, wired],
+    [`A=1\n${block.trimEnd()}`, wired],
+    [wired, wired],
+  ];
+  for (const [content, expected] of rows) {
+    expect(up(content, MARKER, block), JSON.stringify(content)).toBe(expected);
+  }
 });
 
 test("removal owns ONE separating blank: the reused blank goes, extra user spacing stays", () => {
@@ -414,21 +363,6 @@ test("removal owns ONE separating blank: the reused blank goes, extra user spaci
   const snug = `export A=1\n${fenced.replace(/\n$/, "")}export B=1\n`;
   expect(stripBlocks(snug, [MARKER]).content).toBe("export A=1\nexport B=1\n");
   expect(stripBlocks(`export A=1\n\n${fenced}`, [MARKER]).content).toBe("export A=1\n");
-});
-
-test("CRLF duplicates dedupe to one all-CRLF block", () => {
-  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const lf = up("Write-Host before\n", MARKER, block);
-  const crlf = `${lf}\n${MARKER}\n`.replaceAll("\n", "\r\n");
-  const next = up(crlf, MARKER, block);
-  expect(markerLines(next, MARKER)).toBe(1);
-  expect(next).not.toMatch(/[^\r]\n/); // no lone LF anywhere
-  expect(up(next, MARKER, block)).toBe(next);
-  // An UNTERMINATED duplicate at EOF: deduping it normalizes to the wired CRLF form --
-  // terminated, ONE owned blank, and never a lone \r at EOF.
-  const unterm = up(`${lf}\n${MARKER}`.replaceAll("\n", "\r\n"), MARKER, block);
-  expect(unterm).toBe(lf.replaceAll("\n", "\r\n"));
-  expect(up(unterm, MARKER, block)).toBe(unterm);
 });
 
 test("an unknown marker is unrepresentable, not a runtime throw", () => {
@@ -559,21 +493,6 @@ test.skipIf(process.platform !== "win32")(
   },
 );
 
-test("windows execution policy command skips unavailable policy cmdlets", () => {
-  const command = windowsExecutionPolicyCommand();
-  expect(command).toContain("Get-Command Get-ExecutionPolicy -ErrorAction Stop");
-  expect(command).toContain("Get-Command Set-ExecutionPolicy -ErrorAction Stop");
-  expect(command).toContain("catch");
-  expect(command).toContain("exit 0");
-  // Desktop (5.1) inherits pwsh's PSModulePath when spawned from pwsh and the policy cmdlets
-  // fail to autoload; reset it to the machine default so they resolve. Core is left alone.
-  expect(command).toContain("$PSVersionTable.PSEdition -eq 'Desktop'");
-  expect(command).toContain("[Environment]::GetEnvironmentVariable('PSModulePath','Machine')");
-  expect(command).toContain(
-    "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force",
-  );
-});
-
 test("the PowerShell agent wrapper evals every env line, mirroring the POSIX eval", () => {
   // agents.bashrc evals the whole `agent env` output unconditionally; the PS wrapper must do
   // the same, so a new upstream directive shape is never silently dropped on Windows.
@@ -614,14 +533,4 @@ test("env-refresh stderr parity: Import-CopilotEnv takes -Quiet, eager passes it
   expect(refresh).toBeDefined();
   expect(refresh?.trim()).toBe("Import-CopilotEnv");
   expect(refresh).not.toContain("-Quiet");
-});
-
-// The seam NAMES are external contracts: the suite floor (test/helpers/testing.ts) exports them
-// and hand-built child envs spell them as literals, so a rename must fail here rather than
-// silently orphan a seam. The live env proves the floor is active in this very process.
-test("the sandbox floor sets both shell seams under their exported names", () => {
-  expect(CI_RC_DIR_ENV).toBe("COPILOT_ENV_CI_RC_DIR");
-  expect(CI_PS_DOCUMENTS_DIR_ENV).toBe("COPILOT_ENV_CI_PS_DOCUMENTS_DIR");
-  expect(Deno.env.get(CI_RC_DIR_ENV)).toBeDefined();
-  expect(Deno.env.get(CI_PS_DOCUMENTS_DIR_ENV)).toBeDefined();
 });

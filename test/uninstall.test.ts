@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -257,27 +258,19 @@ test("uninstall removes everything managed and preserves user config", async () 
   expect(existsSync(join(ROOT, "package.json"))).toBe(true);
 });
 
-test("uninstall leaves a source-checkout root in place without --force", async () => {
+test("a source-checkout root survives the uninstall unless --force is given", async () => {
   const { codexHome } = tmpHomes();
-  const deps = tmpDeps(codexHome);
-  deps.installRoot = sandboxRoot("checkout");
+  for (const force of [false, true]) {
+    const deps = tmpDeps(codexHome);
+    deps.installRoot = sandboxRoot("checkout");
 
-  await runUninstall({ yes: true }, deps);
+    await runUninstall({ yes: true, force }, deps);
 
-  // Protection follows the injected RootMode's kind, not any ambient .git probe:
-  // nothing was created or removed inside the sandbox to make it look like a clone.
-  expect(existsSync(deps.installRoot.root)).toBe(true);
-  expect(existsSync(join(deps.installRoot.root, ".git"))).toBe(false);
-});
-
-test("uninstall --force deletes a source-checkout root", async () => {
-  const { codexHome } = tmpHomes();
-  const deps = tmpDeps(codexHome);
-  deps.installRoot = sandboxRoot("checkout");
-
-  await runUninstall({ yes: true, force: true }, deps);
-
-  expect(existsSync(deps.installRoot.root)).toBe(false);
+    // Protection follows the injected RootMode's kind, not any ambient .git probe:
+    // nothing was created or removed inside the sandbox to make it look like a clone.
+    expect(existsSync(deps.installRoot.root), `force ${force}`).toBe(!force);
+    if (!force) expect(existsSync(join(deps.installRoot.root, ".git"))).toBe(false);
+  }
 });
 
 test("uninstall refuses a root that does not look like a copilot-env install", async () => {
@@ -411,7 +404,7 @@ test("uninstall without --yes on a non-TTY refuses and deletes nothing", async (
   expect(existsSync(proxyHome)).toBe(true);
 });
 
-test("uninstall --dry-run changes nothing and narrates every step", async () => {
+test("uninstall --dry-run narrates every step and every path it would delete, and changes nothing", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
   configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", direct: null });
@@ -422,9 +415,35 @@ test("uninstall --dry-run changes nothing and narrates every step", async () => 
   });
   new Credential().store("gh-token", "ghp_default");
 
-  const deps = tmpDeps(codexHome);
-  // The registry must describe EVERY execution step; a step missing from the narration is
-  // the drift this guards against.
+  // Owned and foreign Claude Desktop entries side by side, through the injected library dir.
+  const library = join(dir, "desktop-library");
+  mkdirSync(library, { recursive: true });
+  writeFileSync(join(library, "ours.json"), '{"inferenceGatewayBaseUrl":"x"}\n');
+  writeFileSync(join(library, "theirs.json"), '{"userKey":1}\n');
+  writeFileSync(
+    join(library, "_meta.json"),
+    `${
+      JSON.stringify({
+        entries: [{ id: "ours", name: "copilot-env" }, { id: "theirs", name: "Mine" }],
+      })
+    }\n`,
+  );
+  new OwnershipLedger().record("claudeDesktop", join(library, "ours.json"));
+  const helper = desktopHelperPath(resolveRootHome(), "direct", null);
+  mkdirSync(dirname(helper), { recursive: true });
+  writeFileSync(helper, "#!/bin/sh\n");
+
+  const deps = { ...tmpDeps(codexHome), claudeDesktopLibraryDir: library };
+  // The farm record is POSIX only (Windows builds no farm). No farm seam there, so the
+  // narration reflects the REAL removal it describes (it reads the redirected run state).
+  const farm = join(dir, "farm");
+  const posix = process.platform !== "win32";
+  if (posix) {
+    configureCodexConfig(farm, { credential: COMMAND, mode: "direct", direct: null });
+    new CopilotEnvRunState().set({ codexHome: farm });
+    delete deps.removeCodexHostFarm;
+  }
+
   const written: string[] = [];
   const savedLevel = consola.level;
   const origOut = process.stdout.write.bind(process.stdout);
@@ -446,19 +465,34 @@ test("uninstall --dry-run changes nothing and narrates every step", async () => 
     consola.level = savedLevel;
   }
   const narration = written.join("");
-  expect(narration).toContain("Would stop the default proxy daemon");
-  expect(narration).toContain("Would remove the copilot-env MCP registration");
-  expect(narration).toContain("Would stop any proxy daemon relaunched in the meantime");
-  expect(narration).toContain(
-    `Would delete the copilot-api home: ${proxyHome} (including the usage index and the price-list cache).`,
-  );
-  expect(narration).toContain(`Would delete the install directory: ${deps.installRoot.root}`);
+  // The registry must describe EVERY execution step; a step missing from the narration is
+  // the drift this guards against.
+  for (
+    const line of [
+      "Would stop the default proxy daemon",
+      "Would remove the copilot-env MCP registration",
+      "Would stop any proxy daemon relaunched in the meantime",
+      `Would delete the copilot-api home: ${proxyHome} (including the usage index and the price-list cache).`,
+      `Would delete the install directory: ${deps.installRoot.root}`,
+      "Would remove the copilot-env entries from Claude Desktop's config library:",
+      join(library, "ours.json"),
+      helper,
+      ...(posix ? [`Would delete the CODEX_HOME host farm: ${farm}`] : []),
+    ]
+  ) {
+    expect(narration).toContain(line);
+  }
+  // The foreign sibling is never named: it would never be deleted.
+  expect(narration).not.toContain(join(library, "theirs.json"));
 
   expect(existsSync(deps.installRoot.root)).toBe(true);
   expect(existsSync(settingsPathFor(claudeHome))).toBe(true);
   expect(readToml(codexHome).model_provider).toBe("copilot-env");
   expect(new Credential().resolve()).toBe("ghp_default");
   expect(existsSync(proxyHome)).toBe(true);
+  expect(existsSync(join(library, "ours.json"))).toBe(true);
+  expect(existsSync(helper)).toBe(true);
+  if (posix) expect(existsSync(farm)).toBe(true);
   expect(deps.calls).toEqual([]);
 });
 
@@ -481,43 +515,6 @@ test.skipIf(process.platform === "win32")(
 
     expect(existsSync(farm)).toBe(false);
     expect(existsSync(untracked)).toBe(true);
-  },
-);
-
-test.skipIf(process.platform === "win32")(
-  "uninstall --dry-run narrates the codex host-farm delete and leaves the farm alone",
-  async () => {
-    const { codexHome } = tmpHomes();
-    const farm = join(dir, "farm");
-    configureCodexConfig(farm, { credential: COMMAND, mode: "direct", direct: null });
-    new CopilotEnvRunState().set({ codexHome: farm });
-
-    // No farm seam, so the narration reflects the REAL removal it describes.
-    const deps = tmpDeps(codexHome);
-    delete deps.removeCodexHostFarm;
-    const written: string[] = [];
-    const savedLevel = consola.level;
-    const origOut = process.stdout.write.bind(process.stdout);
-    const origErr = process.stderr.write.bind(process.stderr);
-    process.stdout.write = (s: string | Uint8Array) => {
-      written.push(String(s));
-      return true;
-    };
-    process.stderr.write = (s: string | Uint8Array) => {
-      written.push(String(s));
-      return true;
-    };
-    try {
-      consola.level = 3;
-      await runUninstall({ dryRun: true }, deps);
-    } finally {
-      process.stdout.write = origOut;
-      process.stderr.write = origErr;
-      consola.level = savedLevel;
-    }
-
-    expect(written.join("")).toContain(`Would delete the CODEX_HOME host farm: ${farm}`);
-    expect(existsSync(farm)).toBe(true);
   },
 );
 
@@ -715,95 +712,44 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
 });
 
 test.skipIf(process.platform === "win32")(
-  "a dangling rc symlink refuses the uninstall: an entry is there, its block cannot be read",
+  "an rc entry whose block cannot be read refuses the uninstall before anything is removed: a dangling symlink, an unreadable file",
   async () => {
     const { proxyHome, codexHome } = tmpHomes();
     new Credential().store("gh-token", "ghp_default");
     const rcDir = join(dir, "rc");
     process.env[CI_RC_DIR_ENV] = rcDir;
     mkdirSync(rcDir, { recursive: true });
-    const rc = join(rcDir, ".zshrc");
-    symlinkSync(join(rcDir, "gone"), rc); // existsSync would follow it and say "absent"
+    const dangling = join(rcDir, ".zshrc");
+    const unreadable = join(rcDir, ".bashrc");
+    const rows: Array<{ rc: string; stage: () => void; unstage: () => void }> = [
+      {
+        rc: dangling,
+        stage: () => symlinkSync(join(rcDir, "gone"), dangling), // existsSync follows it: "absent"
+        unstage: () => rmSync(dangling),
+      },
+    ];
+    // mode 000 stops a user, never root (the container suite).
+    if (process.getuid?.() !== 0) {
+      rows.push({
+        rc: unreadable,
+        stage: () => {
+          writeFileSync(unreadable, `${SHELL_MARKER}\nsource ours\n${MARKER_END}\n`);
+          chmodSync(unreadable, 0o000);
+        },
+        unstage: () => chmodSync(unreadable, 0o644),
+      });
+    }
     const { removeShellIntegration: _real, ...deps } = tmpDeps(codexHome);
-    await expect(runUninstall({ yes: true }, deps)).rejects.toThrow(rc);
-    expect(new Credential().resolve()).toBe("ghp_default");
-    expect(existsSync(proxyHome)).toBe(true);
-    expect(existsSync(deps.installRoot.root)).toBe(true);
-  },
-);
-
-// mode 000 stops a user, never root (the container suite); Windows has no such mode.
-test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-  "an unreadable rc file refuses the uninstall before anything is removed",
-  async () => {
-    const { proxyHome, codexHome } = tmpHomes();
-    new Credential().store("gh-token", "ghp_default");
-    const rcDir = join(dir, "rc");
-    process.env[CI_RC_DIR_ENV] = rcDir;
-    mkdirSync(rcDir, { recursive: true });
-    const rc = join(rcDir, ".bashrc");
-    writeFileSync(rc, `${SHELL_MARKER}\nsource ours\n${MARKER_END}\n`);
-    chmodSync(rc, 0o000);
-    const { removeShellIntegration: _real, ...deps } = tmpDeps(codexHome);
-    try {
-      await expect(runUninstall({ yes: true }, deps)).rejects.toThrow(rc);
-      expect(new Credential().resolve()).toBe("ghp_default");
-      expect(existsSync(proxyHome)).toBe(true);
-      expect(existsSync(deps.installRoot.root)).toBe(true);
-    } finally {
-      chmodSync(rc, 0o644);
+    for (const { rc, stage, unstage } of rows) {
+      stage();
+      try {
+        await expect(runUninstall({ yes: true }, deps)).rejects.toThrow(rc);
+        expect(new Credential().resolve(), rc).toBe("ghp_default");
+        expect(existsSync(proxyHome), rc).toBe(true);
+        expect(existsSync(deps.installRoot.root), rc).toBe(true);
+      } finally {
+        unstage();
+      }
     }
   },
 );
-
-test("uninstall --dry-run names every Claude Desktop path the sweep would delete", async () => {
-  const { codexHome } = tmpHomes();
-  const library = join(dir, "desktop-library");
-  mkdirSync(library, { recursive: true });
-  writeFileSync(join(library, "ours.json"), '{"inferenceGatewayBaseUrl":"x"}\n');
-  writeFileSync(join(library, "theirs.json"), '{"userKey":1}\n');
-  writeFileSync(
-    join(library, "_meta.json"),
-    `${
-      JSON.stringify({
-        entries: [{ id: "ours", name: "copilot-env" }, { id: "theirs", name: "Mine" }],
-      })
-    }\n`,
-  );
-  new OwnershipLedger().record("claudeDesktop", join(library, "ours.json"));
-  const helper = desktopHelperPath(resolveRootHome(), "direct", null);
-  mkdirSync(dirname(helper), { recursive: true });
-  writeFileSync(helper, "#!/bin/sh\n");
-
-  const deps = { ...tmpDeps(codexHome), claudeDesktopLibraryDir: library };
-  const written: string[] = [];
-  const savedLevel = consola.level;
-  const origOut = process.stdout.write.bind(process.stdout);
-  const origErr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = (s: string | Uint8Array) => {
-    written.push(String(s));
-    return true;
-  };
-  process.stderr.write = (s: string | Uint8Array) => {
-    written.push(String(s));
-    return true;
-  };
-  try {
-    consola.level = 3;
-    await runUninstall({ dryRun: true }, deps);
-  } finally {
-    process.stdout.write = origOut;
-    process.stderr.write = origErr;
-    consola.level = savedLevel;
-  }
-  const out = written.join("");
-  expect(out).toContain(
-    "Would remove the copilot-env entries from Claude Desktop's config library:",
-  );
-  expect(out).toContain(join(library, "ours.json"));
-  expect(out).toContain(helper);
-  // The foreign sibling is never named: it would never be deleted.
-  expect(out).not.toContain(join(library, "theirs.json"));
-  expect(existsSync(join(library, "ours.json"))).toBe(true);
-  expect(existsSync(helper)).toBe(true);
-});

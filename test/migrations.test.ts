@@ -1206,7 +1206,7 @@ test("4.0.9 state fold: a junk credentials.json loses nothing of preferences.jso
   expect(existsSync(join(home, "credentials.json"))).toBe(false);
 });
 
-test("4.0.9 state fold: the three stores become one state.json (global, profiles, ownership); every removal is named; the root github_token and a foreign file stay; idempotent; a half-migrated store is kept and named", () => {
+test("4.0.9 state fold: the three stores become one state.json (global, profiles, ownership); every removal is named; the root github_token and its login lock go, a foreign file stays; idempotent; a half-migrated store is kept and named", () => {
   const home = isolateProxyHome("copilot-mig-state-fold-");
   dir = home;
   const autoupdateHome = join(home, ".autoupdate");
@@ -1232,6 +1232,8 @@ test("4.0.9 state fold: the three stores become one state.json (global, profiles
   writeFileSync(join(home, "opencode", "github_token"), "gho_stale");
   writeFileSync(join(home, "codex-model-catalog.json.bak"), "{}");
   writeFileSync(join(home, "github_token"), "");
+  writeFileSync(join(home, "locks", "github_token.login.lock"), "");
+  writeFileSync(join(home, "locks", "github_token.login.lock.oslock"), "");
   writeFileSync(join(home, "notes.txt"), "not ours");
   writeFileSync(join(autoupdateHome, "state.json"), `${JSON.stringify({ lastCheckMs: 7 })}\n`);
 
@@ -1241,8 +1243,9 @@ test("4.0.9 state fold: the three stores become one state.json (global, profiles
   };
   const said = warningsDuring(fold, "info");
   // Every file the pass touches, one line each: three folds, three lock sidecars, the opencode
-  // token and its emptied directory, the catalog backup, the throttle move.
-  expect(said).toHaveLength(10);
+  // token and its emptied directory, the catalog backup, the root github_token and its two login
+  // lock files, the throttle move.
+  expect(said).toHaveLength(13);
   for (const lock of locks) expect(said.join("\n")).toContain(join(home, "locks", lock));
   const stateFile = join(home, "state.json");
   const merged = {
@@ -1260,10 +1263,13 @@ test("4.0.9 state fold: the three stores become one state.json (global, profiles
       join("opencode", "github_token"),
       "opencode",
       "codex-model-catalog.json.bak",
+      "github_token",
+      join("locks", "github_token.login.lock"),
+      join("locks", "github_token.login.lock.oslock"),
       join(".autoupdate", "state.json"),
     ]
   ) expect(existsSync(join(home, gone))).toBe(false);
-  for (const kept of ["github_token", "notes.txt", join(".autoupdate", "autoupdate.json")]) {
+  for (const kept of ["notes.txt", join(".autoupdate", "autoupdate.json")]) {
     expect(existsSync(join(home, kept))).toBe(true);
   }
   // The readers see the folded values through one file, each picking its own keys.

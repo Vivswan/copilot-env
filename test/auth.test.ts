@@ -30,7 +30,15 @@ import {
   ghAuthTokenSpawnSpec,
   parseGhAuthStatusAccounts,
 } from "../src/copilot_api/gh_cli.ts";
-import { githubLoginLook, setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
+import {
+  COPILOT_OAUTH_CLIENT_ID,
+  COPILOT_OAUTH_SCOPE,
+  GITHUB_ACCESS_TOKEN_URL,
+  GITHUB_DEVICE_CODE_URL,
+  githubDeviceFlowLogin,
+  githubLoginLook,
+  setGithubLoginFetch,
+} from "../src/copilot_api/github_login.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
   COPILOT_SANDBOX_INTEGRATION_ID,
@@ -1554,3 +1562,67 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     expect(state().profileSlotStatus(work).exists).toBe(true);
   },
 );
+
+// --- the device flow -----------------------------------------------------------------------------
+
+/** GitHub's two device-flow endpoints, answering per `polls` in order (the last answer repeats). */
+function stubDeviceFlow(polls: Array<Record<string, unknown>>): void {
+  let poll = 0;
+  setGithubLoginFetch((input, init) => {
+    const body = JSON.parse(String(init?.body));
+    if (input === GITHUB_DEVICE_CODE_URL) {
+      expect(body).toEqual({ client_id: COPILOT_OAUTH_CLIENT_ID, scope: COPILOT_OAUTH_SCOPE });
+      return Promise.resolve(Response.json({
+        device_code: "dev-123",
+        user_code: "ABCD-EFGH",
+        verification_uri: "https://github.com/login/device",
+        expires_in: 900,
+        interval: 0,
+      }));
+    }
+    if (input === GITHUB_ACCESS_TOKEN_URL) {
+      expect(body).toEqual({
+        client_id: COPILOT_OAUTH_CLIENT_ID,
+        device_code: "dev-123",
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      });
+      const answer = polls[Math.min(poll, polls.length - 1)] ?? {};
+      poll++;
+      return Promise.resolve(Response.json(answer));
+    }
+    throw new Error(`unexpected fetch of ${input}`);
+  });
+}
+
+test("auth --provider copilot lands the device-flow token in the slot and leaves no token file behind", async () => {
+  const { claudeHome } = isolate();
+  stubDeviceFlow([{ error: "authorization_pending" }, { access_token: "gho_device" }]);
+  const announced = await captureStderr(() => runAuth({ provider: "copilot" }));
+  expect(announced).toContain("https://github.com/login/device");
+  expect(announced).toContain("ABCD-EFGH");
+  expect(state().read()).toMatchObject({ githubToken: "gho_device", authProvider: "copilot" });
+  // The store is the ONLY landing: nothing under the root home or the daemon home carries the token.
+  const root = new CopilotApiPaths();
+  for (const home of [dir, root.home]) {
+    expect(existsSync(join(home, "github_token"))).toBe(false);
+  }
+  expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
+});
+
+test("githubDeviceFlowLogin: waits through slow_down at GitHub's longer interval, and ends on any other refusal", async () => {
+  isolate();
+  const waits: number[] = [];
+  const sleep = (ms: number) => {
+    waits.push(ms);
+    return Promise.resolve();
+  };
+  const announce = () => {};
+  stubDeviceFlow([{ error: "slow_down" }, { access_token: "gho_late" }]);
+  expect(await githubDeviceFlowLogin({ sleep, announce })).toBe("gho_late");
+  // interval 0 -> 0 ms, then +5 s after slow_down.
+  expect(waits).toEqual([0, 5000]);
+  stubDeviceFlow([{ error: "access_denied", error_description: "The user denied the request." }]);
+  await expect(githubDeviceFlowLogin({ sleep, announce })).rejects.toThrow(
+    "device-flow login failed: The user denied the request.",
+  );
+});

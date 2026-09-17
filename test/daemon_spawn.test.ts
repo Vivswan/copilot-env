@@ -322,11 +322,11 @@ test("a COPILOT_API_ENTRY override runs that file under the float's config, neve
 
 test("copilotApiArgv runs any proxy subcommand through the same entry and permissions", () => {
   delete process.env.COPILOT_API_ENTRY;
-  const argv = copilotApiArgv(["auth", "login", "--provider", "copilot"]);
-  // Without the node-compat shim the proxy dies at module load on Linux, device-flow login included.
+  const argv = copilotApiArgv(["debug", "models"]);
+  // Without the node-compat shim the proxy dies at module load on Linux, whatever the subcommand.
   const loaded = argv.filter((_a, i) => argv[i - 1] === "--preload");
   expect(loaded.map((p) => p.split(/[\\/]/).at(-1))).toEqual(["node_compat_preload.ts"]);
-  expect(argv.slice(-4)).toEqual(["auth", "login", "--provider", "copilot"]);
+  expect(argv.slice(-2)).toEqual(["debug", "models"]);
   expect(argv).toContain(PROXY_PACKAGE_NAME);
 });
 

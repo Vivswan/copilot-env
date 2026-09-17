@@ -56,8 +56,8 @@ function sidecarFastPath(
 }
 
 /**
- * `rootHome` defaults to the resolved root so every bare call site (the daemon spawn, the proxy float,
- * the device-flow login) finds the sidecar a compiled install provisioned there. The standalone case
+ * `rootHome` defaults to the resolved root so every bare call site (the daemon spawn, the proxy float)
+ * finds the sidecar a compiled install provisioned there. The standalone case
  * is why the sidecar exists: a compiled binary IS a deno runtime but not a deno CLI, so it can neither
  * warm the float's cache nor spawn the proxy.
  */

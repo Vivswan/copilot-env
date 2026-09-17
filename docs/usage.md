@@ -1,3 +1,9 @@
+---
+title: Usage
+group: Start here
+order: 2
+---
+
 # Usage
 
 The `agent` subcommands and the mechanisms behind the ones that need more than a line. Installing is on the [getting started page](getting-started.md); every preference key is on the [configuration page](configuration.md).

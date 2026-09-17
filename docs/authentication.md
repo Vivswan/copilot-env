@@ -1,3 +1,9 @@
+---
+title: Authentication
+group: Reference
+order: 2
+---
+
 # Authentication
 
 `agent auth` is the credential front door: one GitHub Copilot credential, resolved at fetch time. Agent configs never store a copy, and `gh-cli` holds no token of its own; `static-key` ([below](#static-key)) is the one opt-out.

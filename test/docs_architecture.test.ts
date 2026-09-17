@@ -76,6 +76,8 @@ const PATH_ROOTS = readdirSync(ROOT, { withFileTypes: true })
   .map((entry) => entry.name);
 const PATH_TOKEN = new RegExp(`^(?:${PATH_ROOTS.join("|")})/[\\w./-]+$`);
 const SYMBOL_TOKEN = /^[A-Za-z_$][\w$]*(?:\(\))?$/;
+/** A token shaped like a repository path: a bare first segment, then a slash. */
+const REPO_PATH_SHAPE = /^[A-Za-z_][\w.-]*\//;
 
 interface Claim {
   label: string;
@@ -103,8 +105,10 @@ function readLabel(label: string): { claims: Claim[]; problems: string[] } {
       path = bound;
       names = tokens;
     } else {
-      // A caption; a slash or a call shape in one is a mistyped path, not a caption.
-      if (segment.includes("()") || segment.includes("/")) {
+      // A caption; a call shape or a repo-relative path shape (`srcc/engine/x.ts`) in one is a
+      // mistyped path, not a caption. A user-facing path (`~/.codex/config.toml`, `<home>/x`,
+      // `https://...`, `.run/<host>/`) is a boundary the diagram names and stays a caption.
+      if (segment.includes("()") || tokens.some((token) => REPO_PATH_SHAPE.test(token))) {
         problems.push(`"${label}": "${segment.trim()}" looks like code but reads as a caption`);
       }
       continue;
@@ -145,6 +149,16 @@ function exportedNames(files: readonly string[]): Map<string, Set<string>> {
 }
 
 // --- the tests -------------------------------------------------------------------
+
+test("a caption reads as code only when a token is shaped like a repository path", () => {
+  expect(
+    readLabel("~/.codex/config.toml<br>GET https://api.github.com/copilot_internal/user").problems,
+  )
+    .toEqual([]);
+  expect(readLabel("srcc/engine/x.ts").problems).toEqual([
+    '"srcc/engine/x.ts": "srcc/engine/x.ts" looks like code but reads as a caption',
+  ]);
+});
 
 test("every mermaid box names a file that exists and symbols it exports", () => {
   const problems: string[] = [];

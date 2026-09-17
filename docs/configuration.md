@@ -1,3 +1,9 @@
+---
+title: Configuration
+group: Reference
+order: 1
+---
+
 # Configuration
 
 `agent config` is the typed preference store, and this page is its reference: every key, its default, and what it changes. Every read site applies the same precedence: **explicit flag/env (per-invocation) > stored config > built-in default**. The commands that read these keys are on the [usage page](usage.md).

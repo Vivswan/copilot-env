@@ -649,9 +649,10 @@ test("configTable() renders the header, the groups, and key=value rows with type
   const lines = rendered.split("\n");
   // The header's halves pack to the width like words; at 80 the count and the set syntax share
   // the first line, the rest the second.
-  expect(lines.slice(0, 3)).toEqual([
+  expect(lines.slice(0, 4)).toEqual([
     `4 of ${CONFIG_REGISTRY.length} keys set (*).  |  agent config --set <key> <value>`,
     "--del <key> reverts  |  --profile <name> targets another profile",
+    "proxy.* set without --profile is every profile's default",
     "",
   ]);
   // Under GLOBAL the group headings come in CONFIG_GROUPS order, each over its keys in registry
@@ -662,17 +663,18 @@ test("configTable() renders the header, the groups, and key=value rows with type
   const headings = lines.slice(globalAt).flatMap((l) => groupRe.exec(l)?.[1] ?? []);
   expect(headings).toEqual(
     CONFIG_GROUPS.filter((g) =>
-      CONFIG_REGISTRY.some((d) => configGroup(d.key) === g && d.scope !== "profile")
+      CONFIG_REGISTRY.some((d) => configGroup(d.key) === g && d.scope === "global")
     ),
   );
   const keysUnder = (group: string): string[] => {
-    const from = lines.findIndex((l) => groupRe.exec(l)?.[1] === group) + 1;
+    const from = lines.findIndex((l, i) => i >= globalAt && groupRe.exec(l)?.[1] === group) + 1;
     const to = lines.findIndex((l, i) => i >= from && groupRe.test(l));
     return lines.slice(from, to < 0 ? undefined : to).flatMap((l) => l.match(rowRe)?.[2] ?? []);
   };
   for (const group of headings) {
     expect(keysUnder(group)).toEqual(
-      CONFIG_REGISTRY.filter((d) => configGroup(d.key) === group).map((d) => d.key),
+      CONFIG_REGISTRY.filter((d) => configGroup(d.key) === group && d.scope === "global")
+        .map((d) => d.key),
     );
   }
   const rowAt = (key: string): number => {
@@ -741,21 +743,27 @@ test("configTable() renders the header, the groups, and key=value rows with type
   const live = configTable(data, { ...PLAIN_TABLE, platform: "win32", daemonUp: true }).split(
     "\n",
   );
-  const restartAfter = (key: string): boolean =>
-    live[live.findIndex((l) => rowRe.exec(l)?.[2] === key) + 1] ===
-      " ".repeat(column) + "restart the proxy to apply";
-  expect(restartAfter("daemon.strict-port")).toBe(true);
-  expect(restartAfter("shell.launchers")).toBe(false);
+  // The right column's cells may wrap before the restart line, so it is looked for anywhere
+  // under the row.
+  const restartUnder = (out: string[], key: string): boolean => {
+    const at = out.findIndex((l) => rowRe.exec(l)?.[2] === key);
+    const under = out.slice(at + 1).findIndex((l) => rowRe.test(l) || l === "");
+    return out.slice(at + 1, at + 1 + under).includes(
+      " ".repeat(column) + "restart the proxy to apply",
+    );
+  };
+  expect(restartUnder(live, "daemon.strict-port")).toBe(true);
+  expect(restartUnder(live, "shell.launchers")).toBe(false);
   // A restart line only when the proxy that runs next will read the key.
   //   proxy older than the key's gate  -> no line (`--set` suppresses its hint the same way)
   //   new enough                       -> line
   //   version unknown                  -> no line on any row
   const gated = stored({ ...global, "proxy.alpha-search.model": "gpt-5" });
-  const restartLineFor = (proxyVersion: string | null, key: string): boolean => {
-    const out = configTable(gated, { ...PLAIN_TABLE, daemonUp: true, proxyVersion }).split("\n");
-    const at = out.findIndex((l) => rowRe.exec(l)?.[2] === key);
-    return out[at + 1] === " ".repeat(column) + "restart the proxy to apply";
-  };
+  const restartLineFor = (proxyVersion: string | null, key: string): boolean =>
+    restartUnder(
+      configTable(gated, { ...PLAIN_TABLE, daemonUp: true, proxyVersion }).split("\n"),
+      key,
+    );
   expect(restartLineFor("1.14.21", "proxy.alpha-search.model")).toBe(false);
   expect(restartLineFor("1.16.3", "proxy.alpha-search.model")).toBe(true);
   expect(restartLineFor(null, "daemon.strict-port")).toBe(false);
@@ -769,20 +777,14 @@ test("configTable() renders the header, the groups, and key=value rows with type
       daemonUp: true,
       profileDaemonUp,
     }).split("\n");
-    // The override's right column carries the global value it hides before the restart line,
-    // so the line is looked for anywhere under the row.
-    const at = out.findIndex((l) => rowRe.exec(l)?.[2] === key);
-    const under = out.slice(at + 1).findIndex((l) => rowRe.test(l) || l === "");
-    return out.slice(at + 1, at + 1 + under).includes(
-      " ".repeat(column) + "restart the proxy to apply",
-    );
+    return restartUnder(out, key);
   };
   expect(lineFor(false, "proxy.small-model")).toBe(false);
   expect(lineFor(true, "proxy.small-model")).toBe(true);
   expect(lineFor(false, "daemon.strict-port")).toBe(true);
 });
 
-test("configTable() seats each key by its registry scope: PROFILE holds profile keys and the selected profile's overrides, GLOBAL the rest", () => {
+test("configTable() seats each key by its registry scope: PROFILE holds the profile keys and the profile-default groups as this profile resolves them, GLOBAL the global keys", () => {
   tmpHome();
   createWorkProfile();
   const firstOf = (scope: ConfigScope): ConfigKeyDef => {
@@ -796,8 +798,6 @@ test("configTable() seats each key by its registry scope: PROFILE holds profile 
   const machine = firstOf("global");
   const shared = firstOf("profile-default");
   const sharedDefault = formatConfigValue(configDefaultValue(shared) ?? "");
-  // The override the way it is typed: the shared key, for one profile.
-  runConfig({ set: [shared.key, sharedDefault], profile: "work" });
   // The command takes the terminal's width; a wide one keeps every heading on one line.
   process.env.COLUMNS = "200";
 
@@ -811,72 +811,82 @@ test("configTable() seats each key by its registry scope: PROFILE holds profile 
     return { profile: lines.slice(profileAt, globalAt), global: lines.slice(globalAt) };
   };
   const keysIn = (lines: string[]): string[] => lines.flatMap((l) => l.match(rowRe)?.[1] ?? []);
-  const profileKeys = CONFIG_REGISTRY.filter((d) => d.scope === "profile").map((d) => d.key);
-  // The line names every overridable group; the shared key's is one of them.
-  const noOverridesLine = (lines: string[]): string | undefined =>
-    lines.find((l) => /^ {2}\S+ overrides: none( |$)/.test(l));
-
-  // The work profile's view: its banner, its own keys, then the override with the global value it
-  // hides; the shared key is gone from GLOBAL, and the count is this profile's.
-  const work = stdoutOf(() => runConfig({ get: true, profile: "work" }));
-  expect(work.startsWith(`1 of ${CONFIG_REGISTRY.length} keys set (*).`)).toBe(true);
-  const workView = sections(work);
-  expect(workView.profile[0]?.startsWith("PROFILE work ")).toBe(true);
-  expect(keysIn(workView.profile)).toEqual([...profileKeys, shared.key]);
-  expect(workView.profile.find((l) => rowRe.exec(l)?.[1] === shared.key)).toContain(
-    `* ${shared.key}=${sharedDefault}`,
+  const rowOf = (lines: string[], key: string): string =>
+    lines.slice(lines.findIndex((l) => rowRe.exec(l)?.[1] === key)).slice(0, 3).join("\n");
+  const view = (profile?: string) => sections(stdoutOf(() => runConfig({ get: true, profile })));
+  // Every profile's PROFILE section lists its own keys, then each profile-default group under a
+  // heading; GLOBAL lists the global keys group by group and nothing else.
+  const profileKeys = [
+    ...CONFIG_REGISTRY.filter((d) => d.scope === "profile").map((d) => d.key),
+    ...CONFIG_GROUPS.flatMap((g) =>
+      CONFIG_REGISTRY.filter((d) => configGroup(d.key) === g && d.scope === "profile-default")
+        .map((d) => d.key)
+    ),
+  ];
+  const globalKeys = CONFIG_GROUPS.flatMap((g) =>
+    CONFIG_REGISTRY.filter((d) => configGroup(d.key) === g && d.scope === "global")
+      .map((d) => d.key)
   );
-  // The global map does not set the key, so the override names the built-in default it hides,
-  // once: no `default` cell beside it.
-  const overrideRow = workView.profile.slice(
-    workView.profile.findIndex((l) => rowRe.exec(l)?.[1] === shared.key),
-  ).slice(0, 3).join("\n");
+  const headingRe = new RegExp(
+    `^  ${
+      configGroup(shared.key)
+    }: +\\(this profile's daemon; \\(global\\) rows inherit the value set without --profile, unstarred rows the built-in default\\)$`,
+    "m",
+  );
+
+  // Nothing stored: the shared key sits under PROFILE unstarred, with no source cell.
+  const empty = view();
+  expect(keysIn(empty.profile)).toEqual(profileKeys);
+  expect(keysIn(empty.global)).toEqual(globalKeys);
+  expect(empty.profile.join("\n")).toMatch(headingRe);
+  expect(rowOf(empty.profile, shared.key).startsWith(`    ${shared.key}=`)).toBe(true);
+  expect(rowOf(empty.profile, shared.key)).not.toContain("(global)");
+  expect(keysIn(empty.profile)).toContain(own.key);
+  expect(keysIn(empty.global)).toContain(machine.key);
+
+  // Set globally (no --profile): every profile inherits it, starred and marked (global); the key
+  // still has no row under GLOBAL.
+  runConfig({ set: [shared.key, sharedDefault] });
+  for (const profile of [undefined, "work"]) {
+    const v = view(profile);
+    expect(v.profile[0]?.startsWith(`PROFILE ${profile ?? "default"}`)).toBe(true);
+    expect(rowOf(v.profile, shared.key)).toContain(`  * ${shared.key}=${sharedDefault}`);
+    expect(rowOf(v.profile, shared.key)).toContain("(global)");
+    expect(keysIn(v.global)).not.toContain(shared.key);
+  }
+  expect(stdoutOf(() => runConfig({ get: true }))).toMatch(
+    new RegExp(`^1 of ${CONFIG_REGISTRY.length} keys set`),
+  );
+
+  // Set on work too: work's row is its own value and names the global value it hides; default's
+  // row is unchanged. A key set at both levels is one row, so the count stays 1.
+  runConfig({ set: [shared.key, sharedDefault], profile: "work" });
+  const work = view("work");
+  expect(rowOf(work.profile, shared.key)).toContain(`  * ${shared.key}=${sharedDefault}`);
+  expect(rowOf(work.profile, shared.key)).toContain(`(overrides global ${sharedDefault})`);
+  expect(rowOf(work.profile, shared.key)).not.toContain("(global)");
+  expect(rowOf(view().profile, shared.key)).toContain("(global)");
+  expect(stdoutOf(() => runConfig({ get: true, profile: "work" }))).toMatch(
+    new RegExp(`^1 of ${CONFIG_REGISTRY.length} keys set`),
+  );
+
+  // With the global value gone the override hides the built-in default, named once: no
+  // `default` cell beside it.
+  runConfig({ del: shared.key });
+  const overrideRow = rowOf(view("work").profile, shared.key);
+  expect(overrideRow).toContain(`  * ${shared.key}=${sharedDefault}`);
   expect(overrideRow).toContain(`(overrides the default ${sharedDefault})`);
   expect(overrideRow).not.toContain(`default ${sharedDefault} `);
-  expect(noOverridesLine(workView.profile)).toBeUndefined();
-  // GLOBAL is grouped, so the keys come group by group, in registry order within a group.
-  expect(keysIn(workView.global)).toEqual(
-    CONFIG_GROUPS.flatMap((group) =>
-      CONFIG_REGISTRY.filter((d) =>
-        configGroup(d.key) === group && d.scope !== "profile" && d.key !== shared.key
-      ).map((d) => d.key)
-    ),
-  );
-  expect(keysIn(workView.global)).toContain(machine.key);
-  expect(keysIn(workView.profile)).toContain(own.key);
-
-  // The default profile's view of the same store: no override, so the shared key sits under
-  // GLOBAL with the note that a profile may override it, and PROFILE says none does.
-  const dflt = stdoutOf(() => runConfig({ get: true }));
-  expect(dflt.startsWith(`0 of ${CONFIG_REGISTRY.length} keys set (*).`)).toBe(true);
-  const defaultView = sections(dflt);
-  expect(defaultView.profile[0]?.startsWith("PROFILE default ")).toBe(true);
-  expect(keysIn(defaultView.profile)).toEqual(profileKeys);
-  // The default profile can never hold an override (a profile-default key set without
-  // --profile lands in the global map), so it gets no "overrides: none" line; a named profile
-  // with none does, naming the command that fills it.
-  expect(noOverridesLine(defaultView.profile)).toBeUndefined();
-  runConfig({ del: shared.key, profile: "work" });
-  const bare = sections(stdoutOf(() => runConfig({ get: true, profile: "work" })));
-  expect(noOverridesLine(bare.profile)).toContain(configGroup(shared.key));
-  expect(bare.profile.join("\n")).toContain("(set with --profile work --set ");
-  expect(keysIn(bare.global)).toContain(shared.key);
-  expect(keysIn(defaultView.global)).toContain(shared.key);
-  expect(defaultView.global.join("\n")).toMatch(
-    new RegExp(
-      `^  ${configGroup(shared.key)}: +\\(global default; a profile may override\\)$`,
-      "m",
-    ),
-  );
 });
 
 test("configTable() at width 60 packs the header's parts to the width and keeps every row within it", () => {
   const out = configTable(stored({ "daemon.strict-port": true }), { ...PLAIN_TABLE, width: 60 })
     .split("\n");
-  expect(out.slice(0, 4)).toEqual([
+  expect(out.slice(0, 5)).toEqual([
     `1 of ${CONFIG_REGISTRY.length} keys set (*).  |  agent config --set <key> <value>`,
     "--del <key> reverts",
     "--profile <name> targets another profile",
+    "proxy.* set without --profile is every profile's default",
     "",
   ]);
   expect(out.filter((l) => l.length > 60)).toEqual([]);
@@ -903,6 +913,14 @@ test("configTable() at width 40 stacks the right column under each key row at a 
   expect(long.slice(bannerAt, bannerAt + 4).filter((l) => l.length > 40)).toEqual([]);
   // Only the unbreakable pieces run past the width: the key=value leads longer than the width
   // and the URL value.
+  expect(out.slice(0, 6)).toEqual([
+    `1 of ${CONFIG_REGISTRY.length} keys set (*).`,
+    "agent config --set <key> <value>",
+    "--del <key> reverts",
+    "--profile <name> targets another profile",
+    "proxy.* set without --profile is every",
+    "profile's default",
+  ]);
   expect(out.filter((l) => l.length > 40)).toEqual([
     "    proxy.alpha-search.codex-priority=true",
     "    proxy.message-websearch-model=gpt-5-mini",

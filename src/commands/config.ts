@@ -6,9 +6,11 @@ import {
   CONFIG_GROUPS,
   CONFIG_REGISTRY,
   configDefaultValue,
+  type ConfigGroup,
   configGroup,
   type ConfigKeyDef,
   configKeyDef,
+  type ConfigScope,
   type ConfigValueTypes,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
@@ -18,16 +20,10 @@ import {
   isStoredValueInert,
   profileSettingsKey,
   resolveSettingIn,
-  type SettingSource,
   type SettingTarget,
 } from "../copilot_api/env_config.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
-import {
-  parseProfileFlag,
-  type Profile,
-  profileLabel,
-  type ProfileName,
-} from "../copilot_api/profile.ts";
+import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { nextProxyVersion } from "../proxy_float.ts";
 import { bold, COLOR_ENABLED, cyan, dim, green } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -286,15 +282,10 @@ export interface ConfigTableOptions {
   color: boolean;
 }
 
-/** A profile-default key is the selected profile's only while its own section sets it. */
-function rowBanner(def: ConfigKeyDef, source: SettingSource): "profile" | "global" {
-  if (def.scope === "profile") return "profile";
-  return def.scope === "profile-default" && source === "profile" ? "profile" : "global";
-}
-
-/** The one table `agent config` and `agent config --help` both print: a PROFILE banner for the
- *  selected profile's own keys, a GLOBAL banner for the machine's, grouped by the key's group,
- *  each row resolved for `opts.profile`. Nothing breaks mid-word. */
+/** The one table `agent config` and `agent config --help` both print: a PROFILE banner for every
+ *  key the selected profile's daemon and wiring consume (its own keys, then the profile-default
+ *  groups resolved for it), a GLOBAL banner for the machine's keys, grouped by the key's group.
+ *  Nothing breaks mid-word. */
 export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions): string {
   const plain = (text: string): string => text;
   const paint = opts.color ? { bold, cyan, dim, green } : {
@@ -308,15 +299,13 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     const stored = isStoredSource(resolved.source);
     const fallback = configDefaultValue(def);
     const value = resolved.value === undefined ? UNSET_VALUE : formatConfigValue(resolved.value);
-    const banner = rowBanner(def, resolved.source);
-    const indent = banner === "profile" ? 0 : GROUP_INDENT;
+    const indent = def.scope === "profile" ? 0 : GROUP_INDENT;
     return {
       def,
       resolved,
       stored,
       fallback,
       value,
-      banner,
       indent,
       leadLength: indent + 2 + `${def.key}=${value}`.length,
     };
@@ -351,10 +340,12 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
   const renderRow = (row: (typeof rows)[number]): string[] => {
     const { def } = row;
     const cells: Cell[] = [{ text: `[${def.type}]`, paint: plain }];
-    // An override names the layer it hides once: the global map's value, or the built-in default
-    // in place of the `default` cell.
-    const overrides = def.scope === "profile-default" && row.banner === "profile";
-    const shared = overrides ? globalLayer[def.key] : undefined;
+    // A profile-default row names where its value came from: the global map (`(global)`), or its
+    // own section, which then names the layer it hides once: the global map's value, or the
+    // built-in default in place of the `default` cell.
+    const inherits = def.scope === "profile-default";
+    const overrides = inherits && row.resolved.source === "profile";
+    const shared = inherits ? globalLayer[def.key] : undefined;
     if (row.stored && row.fallback !== undefined && !(overrides && shared === undefined)) {
       cells.push({
         text: `default ${formatConfigValue(row.fallback)}`,
@@ -370,6 +361,8 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
           })`,
         paint: paint.dim,
       });
+    } else if (inherits && row.resolved.source === "global") {
+      cells.push({ text: "(global)", paint: paint.dim });
     }
     if (isStoredValueInert(def, row.resolved, opts.platform)) {
       cells.push({ text: "(inert on this platform)", paint: paint.dim });
@@ -396,15 +389,32 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     return layout(lead, row.leadLength, right);
   };
 
+  // The groups the header and the PROFILE headings name are the ones whose scope every profile
+  // inherits, so a new profile-default group reaches them on its own.
+  const inherited = [
+    ...new Set(
+      CONFIG_REGISTRY.filter((def) => def.scope === "profile-default")
+        .map((def) => `${configGroup(def.key)}.*`),
+    ),
+  ].join(" / ");
   const storedCount = rows.filter((row) => row.stored).length;
   const headerParts = [
     `${storedCount} of ${rows.length} keys set (*).`,
     "agent config --set <key> <value>",
     "--del <key> reverts",
     `${PROFILE_FLAG} targets another profile`,
+    ...(inherited === "" ? [] : [`${inherited} set without --profile is every profile's default`]),
   ];
+  // A part wider than the terminal stands alone on its line; its words then wrap like prose.
   const header = packToWidth(headerParts, (part) => part.length, opts.width, HEADER_GAP.length)
-    .map((parts) => paint.dim(parts.join(HEADER_GAP)))
+    .flatMap((parts) => {
+      const [only = ""] = parts;
+      return parts.length === 1 && only.length > opts.width
+        ? packToWidth(only.split(" "), (word) => word.length, opts.width)
+          .map((words) => words.join(" "))
+        : [parts.join(HEADER_GAP)];
+    })
+    .map((line) => paint.dim(line))
     .join("\n");
 
   /** A bold title whose note is its right column: on the shared column, or under the title
@@ -413,53 +423,32 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     layout(paint.bold(title), title.length, wrapNote(`(${note})`)).join("\n");
   const groupIndent = " ".repeat(GROUP_INDENT);
 
-  // The groups the notes name are the ones whose scope admits an override, so a new
-  // profile-default group reaches them on its own.
-  const ownRows = rows.filter((row) => row.def.scope === "profile");
-  const overrides = rows.filter((row) => row.banner === "profile" && row.def.scope !== "profile");
-  const overridable = [
-    ...new Set(
-      CONFIG_REGISTRY.filter((def) => def.scope === "profile-default")
-        .map((def) => configGroup(def.key)),
-    ),
-  ];
-  // A profile-default key set without --profile lands in the global map (settingTarget), so
-  // only a named profile can hold an override and only it gets the line.
-  const noOverrides = (profile: ProfileName): string[] => {
-    // Two in: the star slot, so the line sits under the keys.
-    const lead = `  ${overridable.join("/")} overrides: none`;
-    const note = `(set with --profile ${profile} --set ${
-      overridable.map((g) => `${g}.<key>`).join(" / ")
-    } <value>)`;
-    return layout(paint.dim(lead), lead.length, wrapNote(note));
-  };
-  const profileBlock = [
-    banner(
-      `PROFILE ${profileSettingsKey(opts.profile)}`,
-      `per profile; another profile: ${PROFILE_FLAG}`,
-    ),
-    ...ownRows.flatMap(renderRow),
-    ...overrides.flatMap(renderRow),
-    ...(overrides.length === 0 && overridable.length > 0 && opts.profile !== null
-      ? noOverrides(opts.profile)
-      : []),
-  ].join("\n");
+  /** One block per group that has a key of `scope`, in CONFIG_GROUPS order. */
+  const groupBlocks = (scope: ConfigScope, heading: (group: ConfigGroup) => string): string[] =>
+    CONFIG_GROUPS.flatMap((group): string[] => {
+      const lines = rows
+        .filter((row) => row.def.scope === scope && configGroup(row.def.key) === group)
+        .flatMap(renderRow);
+      return lines.length === 0 ? [] : [[heading(group), ...lines].join("\n")];
+    });
 
-  const globalRows = rows.filter((row) => row.banner === "global");
-  const groupBlocks = CONFIG_GROUPS.flatMap((group): string[] => {
-    const lines = globalRows.filter((row) => configGroup(row.def.key) === group).flatMap(renderRow);
-    if (lines.length === 0) return [];
-    const heading = overridable.includes(group)
-      ? banner(
+  const profileBlock = [
+    [
+      banner(
+        `PROFILE ${profileSettingsKey(opts.profile)}`,
+        `per profile; another profile: ${PROFILE_FLAG}`,
+      ),
+      ...rows.filter((row) => row.def.scope === "profile").flatMap(renderRow),
+    ].join("\n"),
+    ...groupBlocks("profile-default", (group) =>
+      banner(
         `${groupIndent}${group}:`,
-        "global default; a profile may override",
-      )
-      : paint.bold(`${groupIndent}${group}:`);
-    return [[heading, ...lines].join("\n")];
-  });
+        "this profile's daemon; (global) rows inherit the value set without --profile, unstarred rows the built-in default",
+      )),
+  ].join("\n\n");
   const globalBlock = [
     banner("GLOBAL", "this machine, every profile"),
-    groupBlocks.join("\n\n"),
+    groupBlocks("global", (group) => paint.bold(`${groupIndent}${group}:`)).join("\n\n"),
   ].join("\n");
   return [header, profileBlock, globalBlock].join("\n\n");
 }

@@ -1,5 +1,6 @@
 import stringWidth from "string-width";
 import wrapAnsi from "wrap-ansi";
+import { COLOR_ENABLED, paintFor, palette, statusPaint } from "./ansi.ts";
 
 export type Align = "left" | "right";
 
@@ -18,6 +19,9 @@ export interface TableOptions {
   indent?: string;
   /** Visible columns to fit; null never wraps. Defaults to the terminal's. */
   width?: number | null;
+  /** `agent config`'s palette by construction: the header and headings bold, the key column (the
+   *  first) cyan. Defaults to the command edge's COLOR_ENABLED; the argument is the test override. */
+  color?: boolean;
 }
 
 const GAP = "  ";
@@ -87,6 +91,16 @@ export function printWrapped(text: string): void {
   console.log(wrapMessage(text, terminalWidth()));
 }
 
+/** A `key: value` status line (`agent mcp`, the `--check` reports): the key cyan, a status word in
+ *  its tone. Defaults to the command edge's COLOR_ENABLED; the argument is the test override. */
+export function keyValueLine(key: string, value: string, color = COLOR_ENABLED): string {
+  return `${paintFor(color).cyan(key)}: ${statusPaint(value, color)}`;
+}
+
+export function printKeyValue(key: string, value: string, color = COLOR_ENABLED): void {
+  printWrapped(keyValueLine(key, value, color));
+}
+
 /** The stderr twin, for narration beside a command's stdout payload. */
 export function printWrappedToStderr(text: string): void {
   process.stderr.write(`${wrapMessage(text, terminalWidth(process.stderr))}\n`);
@@ -127,7 +141,9 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
     wrap = [],
     indent = GAP,
     width = terminalWidth(),
+    color = COLOR_ENABLED,
   } = options;
+  const tint = tintFor(color);
   const records = body.filter((row): row is string[] => !isHeading(row));
   const cellRows = [...(header === undefined ? [] : [header]), ...records, ...footer];
   const columns = cellRows.reduce((m, r) => Math.max(m, r.length), 0);
@@ -151,7 +167,7 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
   const widths = width === null || total <= width
     ? natural
     : fitWidths(natural, floors, total - width);
-  if (widths === null) return formatStacked(body, footer, header, indent, rowIndent, width);
+  if (widths === null) return formatStacked(body, footer, header, indent, rowIndent, width, tint);
 
   const fmt = (row: string[]): string[] => {
     const cells = widths.map((w, i) => {
@@ -182,18 +198,36 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
 
   const lines: string[] = [];
   if (header !== undefined) {
-    lines.push(...fmt(header), sep);
+    lines.push(...fmt(header.map(tint.head)), sep);
   }
   for (const row of body) {
-    lines.push(...(isHeading(row) ? wrapLine(row.heading, width, indent, rowIndent) : fmt(row)));
+    lines.push(
+      ...(isHeading(row)
+        ? wrapLine(tint.head(row.heading), width, indent, rowIndent)
+        : fmt(tint.keyed(row))),
+    );
   }
   if (footer.length > 0) {
     lines.push(sep);
     for (const row of footer) {
-      lines.push(...fmt(row));
+      lines.push(...fmt(tint.keyed(row)));
     }
   }
   return lines;
+}
+
+/** What `color` paints: headers and headings bold, a record's first cell cyan; plain otherwise. */
+interface Tint {
+  head: (text: string) => string;
+  keyed: (row: string[]) => string[];
+}
+
+function tintFor(color: boolean): Tint {
+  if (!color) return { head: (text) => text, keyed: (row) => row };
+  return {
+    head: (text) => (text === "" ? text : palette.bold(text)),
+    keyed: (row) => row.map((cell, i) => (i === 0 && cell !== "" ? palette.cyan(cell) : cell)),
+  };
 }
 
 /** The layout for a terminal narrower than the column floors: one block per record. */
@@ -204,19 +238,20 @@ function formatStacked(
   indent: string,
   rowIndent: string,
   width: number | null,
+  tint: Tint,
 ): string[] {
   const label = (i: number, cell: string): string =>
-    header?.[i] === undefined ? cell : `${header[i]}: ${cell}`;
+    header?.[i] === undefined ? cell : `${tint.head(header[i])}: ${cell}`;
   const lines: string[] = [];
   let previous: "none" | "heading" | "record" = "none";
   for (const row of [...body, ...footer]) {
     if (previous === "record") lines.push("");
     if (isHeading(row)) {
-      lines.push(...wrapLine(row.heading, width, indent, rowIndent));
+      lines.push(...wrapLine(tint.head(row.heading), width, indent, rowIndent));
       previous = "heading";
       continue;
     }
-    const [first = "", ...rest] = row;
+    const [first = "", ...rest] = tint.keyed(row);
     lines.push(...wrapLine(label(0, first), width, rowIndent, `${rowIndent}${GAP}`));
     rest.forEach((cell, j) => {
       if (cell === "") return;

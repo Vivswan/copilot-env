@@ -1129,3 +1129,10 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     expect(cfg.autoUpdateEnabled()).toBe(true);
   },
 );
+
+test("configTable colors through the ungated palette: `color: true` paints even where the environment says no color", () => {
+  const esc = String.fromCharCode(27);
+  const out = configTable(stored({ "daemon.strict-port": true }), { ...PLAIN_TABLE, color: true });
+  expect(out).toContain(`${esc}[36mdaemon.strict-port${esc}[39m`);
+  expect(configTable(stored({}), PLAIN_TABLE)).not.toContain(esc);
+});

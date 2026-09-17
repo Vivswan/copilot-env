@@ -1,6 +1,7 @@
 import { consola } from "consola";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { errMessage } from "../utils/error.ts";
+import { COLOR_ENABLED, paintFor } from "../utils/ansi.ts";
 import { type Align, printTable, printWrapped, printWrappedToStderr } from "../utils/table.ts";
 import { formatDuration, MILLISECONDS_PER_DAY, startOfLocalDay } from "../utils/time.ts";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
@@ -894,7 +895,9 @@ function printCostReport(
     } (${coverage.percent}% of a ${coverage.spanDays}-day span)`
     : "0 active days";
   printWrapped(
-    `${opts.title} - ${period} | ${opts.sourceLabel} | ${sum.reqs} requests | ${activeDaysLabel}`,
+    paintFor(COLOR_ENABLED).bold(
+      `${opts.title} - ${period} | ${opts.sourceLabel} | ${sum.reqs} requests | ${activeDaysLabel}`,
+    ),
   );
   console.log("");
   printTable(cells.body, {
@@ -904,7 +907,11 @@ function printCostReport(
   });
   if (estimate.unpriced.length > 0) {
     console.log("");
-    printWrapped(`  Unpriced (excluded from total): ${estimate.unpriced.join(", ")}`);
+    printWrapped(
+      paintFor(COLOR_ENABLED).dim(
+        `  Unpriced (excluded from total): ${estimate.unpriced.join(", ")}`,
+      ),
+    );
   }
   console.log("");
 }
@@ -964,7 +971,7 @@ function printPerDayReport(
     [dayRow("TOTAL", sumDayTotals(rows, estimate))],
   );
 
-  printWrapped(title);
+  printWrapped(paintFor(COLOR_ENABLED).bold(title));
   console.log("");
   printTable(cells.body, {
     header: ["Day", ...COST_TABLE_COLUMNS],

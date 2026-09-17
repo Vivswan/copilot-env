@@ -22,12 +22,12 @@ import {
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { parseProfileFlag, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
-import { cyan, gray, green, yellow } from "../utils/ansi.ts";
+import { COLOR_ENABLED, gray, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { removeTreeReported } from "../utils/report_write.ts";
-import { formatTable, printWrapped, terminalWidth } from "../utils/table.ts";
+import { formatTable, printKeyValue, printWrapped, terminalWidth } from "../utils/table.ts";
 import {
   acquireCredential,
   type CredentialAcquisition,
@@ -214,27 +214,24 @@ export interface ProfileListRow {
 export function renderProfileTable(
   rows: ProfileListRow[],
   width: number | null = terminalWidth(),
+  color = COLOR_ENABLED,
 ): string {
+  const status = (word: string): string => statusPaint(word, color);
   const cells = rows.map((r) => {
-    const mode = r.mode ?? "incomplete";
-    const provider = r.provider ?? "no credential";
     // A direct profile has no daemon: "-", never a blank that reads as missing data.
-    const daemon = r.daemon === null
-      ? gray("-")
-      : r.daemon.up
-      ? green(`up (port ${r.daemon.port})`)
-      : gray("down");
+    const daemon = r.daemon === null ? "-" : r.daemon.up ? `up (port ${r.daemon.port})` : "down";
     return [
-      cyan(r.name),
-      r.mode === null ? yellow(mode) : mode,
-      r.provider === null ? yellow(provider) : provider,
-      daemon,
+      r.name,
+      status(r.mode ?? "incomplete"),
+      status(r.provider ?? "no credential"),
+      status(daemon),
     ];
   });
   return formatTable(cells, {
-    header: ["NAME", "MODE", "PROVIDER", "DAEMON"].map(gray),
+    header: ["NAME", "MODE", "PROVIDER", "DAEMON"],
     indent: "     ",
     width,
+    color,
   }).join("\n");
 }
 
@@ -273,7 +270,7 @@ function runCheck(name: ProfileName): void {
       process.exitCode = providerModeExitCode("other");
       return;
     case "complete":
-      printWrapped(`${profileLabel(name)}: ${slot.mode}`);
+      printKeyValue(profileLabel(name), slot.mode);
       process.exitCode = providerModeExitCode(slot.mode);
       return;
     default:

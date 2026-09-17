@@ -64,7 +64,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, readTextResult, type TextReadResult } from "../utils/fs.ts";
 import { escapeRegExp } from "../utils/regexp.ts";
-import { printWrapped } from "../utils/table.ts";
+import { printKeyValue } from "../utils/table.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { mkdirReported, removeReported, writeFileReported } from "../utils/report_write.ts";
@@ -710,17 +710,15 @@ function checkClaudeConfig(): void {
   const claudeHome = resolveClaudeHome();
   const settingsPath = settingsPathFor(claudeHome);
   const status = inspectClaudeWiring(readTextResult(settingsPath), Number(copilotApiResolvePort()));
-  printWrapped(
-    `Claude provider mode: ${status.providerMode} (${providerModeDetail(status.providerMode)})`,
+  printKeyValue(
+    "Claude provider mode",
+    `${status.providerMode} (${providerModeDetail(status.providerMode)})`,
   );
-  printWrapped(`settings.json: ${settingsPath}`);
+  printKeyValue("settings.json", settingsPath);
   if (status.providerMode === "direct" || status.providerMode === "proxy") {
-    printWrapped(
-      status.credential === "command"
-        ? `apiKeyHelper: ${status.helperPath}`
-        : `credential: static ${AUTH_TOKEN_ENV} (static-key; no apiKeyHelper)`,
-    );
-    printWrapped(`${BASE_URL_ENV}: ${status.baseUrl}`);
+    if (status.credential === "command") printKeyValue("apiKeyHelper", status.helperPath);
+    else printKeyValue("credential", `static ${AUTH_TOKEN_ENV} (static-key; no apiKeyHelper)`);
+    printKeyValue(BASE_URL_ENV, String(status.baseUrl));
   }
   process.exitCode = providerModeExitCode(status.providerMode);
 }

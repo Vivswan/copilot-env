@@ -2,12 +2,12 @@
 // exit code.
 import { claudeDesktopStatus } from "../agents/claude_desktop.ts";
 import { renderClaudeDesktopStatus } from "../claude/desktop_status.ts";
-import { printWrapped } from "../utils/table.ts";
+import { printKeyValue, printWrapped } from "../utils/table.ts";
 
 export function printClaudeDesktopCheck(): void {
   const { lines, fix } = renderClaudeDesktopStatus(claudeDesktopStatus());
   const [head, ...rest] = lines;
-  printWrapped(`Claude Desktop: ${head}`);
+  printKeyValue("Claude Desktop", head ?? "");
   for (const line of rest) printWrapped(`  ${line}`);
   if (fix !== null) printWrapped(`  fix: ${fix}`);
 }

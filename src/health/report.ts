@@ -2,7 +2,7 @@
 // owns process.exitCode), like the builder/printer split in src/usage/cost.ts. The `--json` path
 // bypasses this entirely.
 import type { ProfileMode } from "../copilot_api/env_state.ts";
-import { bold, gray, green, red, yellow } from "../utils/ansi.ts";
+import { COLOR_ENABLED, paintFor, statusPaint, type Tone } from "../utils/ansi.ts";
 import { printWrapped } from "../utils/table.ts";
 import { worstStatus } from "./aggregate.ts";
 import type { CheckGroup, CheckResult, CheckStatus, HealthScope } from "./types.ts";
@@ -26,10 +26,12 @@ const GROUP_LABEL: Record<CheckGroup, string> = {
   runtime: "Runtime",
 };
 
-function glyph(status: CheckStatus): string {
-  if (status === "ok") return green("✔");
-  if (status === "warn") return yellow("!");
-  return red("✘");
+type Paint = Record<Tone, (text: string) => string>;
+
+function glyph(status: CheckStatus, paint: Paint): string {
+  if (status === "ok") return paint.green("✔");
+  if (status === "warn") return paint.yellow("!");
+  return paint.red("✘");
 }
 
 /** `profileModes` carries each named runtime target's recorded mode (from its store slot, null =
@@ -39,8 +41,10 @@ export function renderReport(
   scope: HealthScope,
   results: CheckResult[],
   profileModes: ReadonlyMap<string, ProfileMode | null> = new Map(),
+  color = COLOR_ENABLED,
 ): void {
-  printWrapped(bold(`copilot-env health - scope: ${scope}`));
+  const paint = paintFor(color);
+  printWrapped(paint.bold(`copilot-env health - scope: ${scope}`));
   for (const group of GROUP_ORDER) {
     const inGroup = results.filter((r) => r.group === group);
     // Sections are keyed on (group, profile): default-target (null) checks render under the
@@ -58,27 +62,29 @@ export function renderReport(
       } else {
         heading = `${GROUP_LABEL[group]} - profile '${profile}'`;
       }
-      printWrapped(`\n${bold(heading)}`);
+      printWrapped(`\n${paint.bold(heading)}`);
       for (const r of section) {
         const lines = r.detail.split("\n");
         if (lines.length <= 1) {
           // Single fact -> one row: `ok label: value`.
-          printWrapped(`  ${glyph(r.status)} ${r.label}: ${lines[0] ?? ""}`);
+          printWrapped(`  ${glyph(r.status, paint)} ${r.label}: ${lines[0] ?? ""}`);
         } else {
           // Multiple facts -> a label row, then each fact as a `-` sub-item.
-          printWrapped(`  ${glyph(r.status)} ${r.label}`);
-          for (const line of lines) printWrapped(`      ${gray("•")} ${line}`);
+          printWrapped(`  ${glyph(r.status, paint)} ${r.label}`);
+          for (const line of lines) printWrapped(`      ${paint.gray("•")} ${line}`);
         }
         // The CheckOutcome union: every warn/fail carries a fix, ok never does.
-        if (r.status !== "ok") printWrapped(`      ${gray(`→ fix: ${r.fix}`)}`);
+        if (r.status !== "ok") printWrapped(`      ${paint.gray(`→ fix: ${r.fix}`)}`);
       }
     }
   }
   const counts = { ok: 0, warn: 0, fail: 0 };
   for (const r of results) counts[r.status]++;
-  const summary = `${counts.ok} ok, ${counts.warn} warn, ${counts.fail} fail`;
+  const summary = (["ok", "warn", "fail"] as const)
+    .map((status) => `${counts[status]} ${statusPaint(status, color)}`)
+    .join(", ");
   const overall = worstStatus(results);
-  printWrapped(`\n${glyph(overall)} ${bold(summary)}`);
+  printWrapped(`\n${glyph(overall, paint)} ${paint.bold(summary)}`);
 }
 
 /** First-appearance (evaluation) order: the default (null) target evaluates first, so it leads. */

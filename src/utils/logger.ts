@@ -8,6 +8,8 @@ import {
   createConsola,
   type LogObject,
 } from "consola";
+import { format } from "node:util";
+import { COLOR_ENABLED, FG_CLOSE, palette, sgrOpen, type Tone } from "./ansi.ts";
 import { terminalWidth, wrapMessage } from "./table.ts";
 
 const NO_DATE = { date: false } as const;
@@ -34,28 +36,40 @@ function firstLineLead(logObj: LogObject, fancy: boolean): number {
 }
 
 /** Wraps a message's lines to the width of the stream consola will write it to (stderr below
- *  level 2, stdout otherwise) before the inner reporters decorate and print it; off a TTY (width
- *  null) the message is untouched, so captured output never wraps. */
+ *  level 2, stdout otherwise) before the inner reporters decorate and print it, and paints the
+ *  message by level (warn yellow, error red, success green) when `color` is on; off a TTY (width
+ *  null) the text is untouched, so captured output never wraps. */
 export class WrappingReporter implements ConsolaReporter {
   constructor(
     private readonly inner: ConsolaReporter[],
     private readonly fancy: boolean,
     private readonly widthOf: WidthOf,
+    private readonly color: boolean,
   ) {}
 
   log(logObj: LogObject, ctx: ReporterContext): void {
+    if (!logObj.args.every((a): a is string => typeof a === "string")) {
+      for (const reporter of this.inner) reporter.log(logObj, ctx);
+      return;
+    }
     const stream = (logObj.level < 2 ? ctx.options.stderr : ctx.options.stdout) ?? process.stdout;
     const width = this.widthOf(stream as NodeJS.WriteStream);
-    const wrapped = width === null || !logObj.args.every((a) => typeof a === "string")
-      ? logObj
-      : { ...logObj, args: [this.wrapArgs(logObj, width)] };
-    for (const reporter of this.inner) reporter.log(wrapped, ctx);
+    // One string as consola would make it (printf substitution included), formatted here so the
+    // wrap sees the final text; a lone string is left for consola's own pass.
+    const [only] = logObj.args;
+    const text = logObj.args.length === 1 ? only ?? "" : format(...logObj.args);
+    const tone = this.color ? LEVEL_TONES[logObj.type] : undefined;
+    const body = tone === undefined ? text : inlinePaint(text, tone);
+    const wrapped = this.wrapArgs(logObj, body, width);
+    const painted = tone === undefined ? wrapped : perLine(wrapped, tone);
+    const shaped = { ...logObj, args: [painted] };
+    for (const reporter of this.inner) reporter.log(shaped, ctx);
   }
 
   /** A box frames every line, so its frame comes off every line; any other message loses only
    *  its first line's decoration. */
-  private wrapArgs(logObj: LogObject, width: number): string {
-    const text = logObj.args.join(" ");
+  private wrapArgs(logObj: LogObject, text: string, width: number | null): string {
+    if (width === null) return text;
     if (logObj.type === "box") {
       return wrapMessage(text, width - (this.fancy ? BOX_FRAME : BASIC_BOX_LEAD));
     }
@@ -63,16 +77,63 @@ export class WrappingReporter implements ConsolaReporter {
   }
 }
 
+/** Before the wrap: an inline close (a caller's own paint) re-opens the tone, and the backticks
+ *  consola would paint cyan are painted here, closed by re-opening the tone, so consola's
+ *  characterFormat finds none; wrap-ansi re-opens a span it splits across lines. */
+function inlinePaint(text: string, tone: Tone): string {
+  const open = sgrOpen(tone);
+  const body = text
+    .replaceAll(FG_CLOSE, `${FG_CLOSE}${open}`)
+    .replace(/`([^`]+)`/g, (_, code: string) => `${sgrOpen("cyan")}${code}${FG_CLOSE}${open}`);
+  // A close that ended the text needs no re-open: it would leave an empty span at the end.
+  return body.endsWith(open) ? body.slice(0, -open.length) : body;
+}
+
+/** After the wrap: every line in its own span, since consola appends a gray tag, closing the
+ *  foreground, to the first line; a caller's own span still open at a line's end (wrap-ansi
+ *  closes the ones it splits, a raw newline does not) is re-opened on the next. */
+function perLine(text: string, tone: Tone): string {
+  let carried = "";
+  return text.split("\n").map((line) => {
+    const body = `${carried}${line}`;
+    carried = openForeground(body);
+    return body === "" ? body : palette[tone](body);
+  }).join("\n");
+}
+
+const SGR_CODE = new RegExp(`${String.fromCharCode(27)}\\[(\\d+)m`, "g");
+
+/** The foreground open code still in force at the end of `line`, or "" when it was closed. */
+function openForeground(line: string): string {
+  let open = "";
+  for (const match of line.matchAll(SGR_CODE)) {
+    const code = Number(match[1]);
+    if (code === 39) open = "";
+    else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) open = match[0];
+  }
+  return open;
+}
+
+/** The message body's tone by type; every other type keeps the caller's own paint. */
+const LEVEL_TONES: Partial<Record<LogObject["type"], Tone>> = {
+  warn: "yellow",
+  error: "red",
+  fatal: "red",
+  success: "green",
+  ready: "green",
+};
+
 /** Puts the wrapping reporter in front of the instance's own, budgeting for the one consola chose
- *  (fancy in a plain TTY; basic under CI, off a TTY, or for a `fancy: false` instance). `widthOf`
- *  is the test seam. */
+ *  (fancy in a plain TTY; basic under CI, off a TTY, or for a `fancy: false` instance). `color`
+ *  is the command edge's COLOR_ENABLED; `widthOf` is the test seam. */
 export function wrapToTerminal(
   instance: ConsolaInstance,
+  color = COLOR_ENABLED,
   widthOf: WidthOf = terminalWidth,
 ): ConsolaInstance {
   const inner = instance.options.reporters;
   const fancy = inner.some((reporter) => reporter.constructor.name === "FancyReporter");
-  instance.options.reporters = [new WrappingReporter(inner, fancy, widthOf)];
+  instance.options.reporters = [new WrappingReporter(inner, fancy, widthOf, color)];
   return instance;
 }
 

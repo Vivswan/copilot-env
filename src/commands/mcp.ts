@@ -9,6 +9,7 @@ import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { runMcpServer } from "../mcp/server.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { keyValueLine } from "../utils/table.ts";
 
 const logger = createStderrLogger();
 
@@ -72,11 +73,11 @@ const STATUS_LINES: Record<McpRegistrationStatus, string> = {
 function printStatus(): void {
   const { path, status } = inspectMcpRegistration();
   const line = status === "unreadable" ? `could not read ${path}` : STATUS_LINES[status];
-  logger.log(`Claude registration: ${line}`);
+  logger.log(keyValueLine("Claude registration", line));
   logger.log(`  (${path})`);
   // One accessor, so value and provenance come from the same config read.
   const wireMcp = new CopilotEnvConfig().wireMcpResolved();
-  logger.log(`claude.wire-mcp: ${wireMcp.value} (${wireMcp.source})`);
+  logger.log(keyValueLine("claude.wire-mcp", `${wireMcp.value} (${wireMcp.source})`));
   logger.log("");
   logger.log("agent mcp --serve   run the MCP stdio server (what registered clients spawn)");
   logger.log("agent mcp --remove  unregister from Claude Code and opt out (claude.wire-mcp false)");

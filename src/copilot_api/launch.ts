@@ -39,6 +39,7 @@ import {
 } from "./paths.ts";
 import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "../scripts/daemon_lock.ts";
 import { isStandaloneBinary } from "../utils/root.ts";
+import { COLOR_ENABLED, paintFor } from "../utils/ansi.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
 import { ensureSidecar, resolveDenoBin } from "./sidecar.ts";
@@ -1029,6 +1030,7 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
 export function renderModelAliases(
   mappings: Record<string, string>,
   width: number | null = terminalWidth(),
+  color = COLOR_ENABLED,
 ): string {
   const sources = Object.keys(mappings);
   const byTarget = new Map<string, string[]>();
@@ -1044,9 +1046,12 @@ export function renderModelAliases(
   const targets = [...byTarget.keys()].sort();
   const rows = formatTable(
     targets.map((target) => [target, "<-", (byTarget.get(target) ?? []).sort().join(", ")]),
-    { indent: "   ", wrap: [false, false, true], width },
+    { indent: "   ", wrap: [false, false, true], width, color },
   );
-  return `Model aliases (${sources.length} -> ${targets.length} models):\n${rows.join("\n")}`;
+  const heading = paintFor(color).bold(
+    `Model aliases (${sources.length} -> ${targets.length} models):`,
+  );
+  return `${heading}\n${rows.join("\n")}`;
 }
 
 /** The extraPrompts blank must precede the alias sync: the setModelMappings POST triggers the daemon's

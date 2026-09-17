@@ -68,7 +68,7 @@ import {
   profileLabel,
   type ProfileName,
 } from "../copilot_api/profile.ts";
-import { COLOR_ENABLED, cyan, palette } from "../utils/ansi.ts";
+import { COLOR_ENABLED, cyan, palette, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
 import {
@@ -713,7 +713,9 @@ function runList(): void {
   const state = new CopilotEnvState();
   const rows: Array<[string, string]> = [];
   const describe = (source: string | null, resolves: boolean): string =>
-    source === null ? "not authenticated" : `${source}${resolves ? "" : " (does not resolve)"}`;
+    source === null
+      ? statusPaint("not authenticated", COLOR_ENABLED)
+      : `${source}${resolves ? "" : " (does not resolve)"}`;
   // One memoized account look serves every auto gh-cli row (one spawn, not N).
   let accounts: GhAccountsLook | undefined;
   const look = (): GhAccountsLook => (accounts ??= ghAccountsLook());
@@ -954,6 +956,7 @@ export function identityTableLines(input: IdentityTableInput): string[] {
       wrap: [false, ...survey.hosts.map(() => false), true],
       indent: "",
       width,
+      color: input.color,
     }),
     ...notes.flatMap((note) => wrapLine(paint.dim(note), width, "", "  ")),
     ...reasons,

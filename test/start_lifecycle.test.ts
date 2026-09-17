@@ -149,11 +149,15 @@ test("start --record-event writes the lastEnsureAt heartbeat to the named run st
 
 test("renderStartSummary keeps the label column and splits a long path inside the value column at width 80", () => {
   const logs = "/home/me/.local/share/copilot-env/logs/copilot-api-default-profile-very-long.log";
-  const lines = renderStartSummary([
-    ["Logs", logs],
-    ["PID", "48213"],
-    ["Install root", "/home/me/Projects/copilot-env"],
-  ], 80).split("\n");
+  const lines = renderStartSummary(
+    [
+      ["Logs", logs],
+      ["PID", "48213"],
+      ["Install root", "/home/me/Projects/copilot-env"],
+    ],
+    80,
+    false,
+  ).split("\n");
   expect(lines.length).toBeGreaterThan(3);
   for (const line of lines) {
     expect(line.length).toBeLessThanOrEqual(80);

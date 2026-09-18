@@ -10,8 +10,9 @@
 //   parent pid  polled: reparented on unix (Deno.ppid moves to the reaper) or gone by the signal-0
 //               probe, which is the Windows path, where a dead parent's pid is all there is to read
 //
-// Both are armed from an unref'd timer, never at load: deno drains the event loop after a preload
-// and before the main module, so a read pending here would hold aimock's start until the EOF.
+// Both are armed on the `load` event, which deno dispatches once the main module has evaluated,
+// never at preload time: deno drains the event loop between a preload and the main module, so a
+// read pending here would hold aimock's start until the EOF.
 import { pidLiveness } from "../../src/utils/pid.ts";
 
 const PARENT_POLL_MS = 1_000;
@@ -28,9 +29,8 @@ function exitOnParentGone(): void {
   if (Deno.ppid !== parent || pidLiveness(parent) === "dead") Deno.exit(0);
 }
 
-const arm = setTimeout(() => {
+globalThis.addEventListener("load", () => {
   exitOnStdinEof();
   // The poll never keeps aimock's process alive on its own; the server does that.
   Deno.unrefTimer(setInterval(exitOnParentGone, PARENT_POLL_MS));
-}, 0);
-Deno.unrefTimer(arm);
+});

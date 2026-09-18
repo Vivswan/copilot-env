@@ -18,6 +18,10 @@ jobs:
   check:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # Backstop for the steps with no ceiling of their own (checkout, setup, deno ci, the lints).
+    # Five minutes above the step ceilings summed with a normal setup (2 + 20 + 25 + 3 = 50), so
+    # unless setup itself runs long a hung step hits its own ceiling first and its log is kept.
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
@@ -51,7 +55,10 @@ jobs:
         if: runner.os == 'Linux'
         run: deno task lint
 
+      # Test's 20 is about 2x its 6-9 min on windows-latest, the slowest leg (3-5 on the POSIX
+      # legs). The lifecycle smoke's 3 is a floor: it runs under a minute everywhere.
       - name: Test
+        timeout-minutes: 20
         env:
           COPILOT_ENV_LIVE_CLIS: "1"
         run: deno task test
@@ -67,6 +74,7 @@ jobs:
 
       # .github/scripts/lifecycle-smoke.ts against the fake proxy, so no Copilot auth is needed.
       - name: Start/stop + health lifecycle (fake proxy)
+        timeout-minutes: 3
         env:
           COPILOT_API_ENTRY: ${{ github.workspace }}/test/copilot-api-fake.mjs
         run: >-

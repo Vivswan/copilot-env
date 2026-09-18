@@ -412,7 +412,12 @@ function reachVisitor(
   context: Deno.lint.RuleContext,
   direction: Direction,
   on: (
-    locals: { fsNamespaces: Set<string>; denoAliases: Set<string>; fsOpens: Set<string> },
+    locals: {
+      fsNamespaces: Set<string>;
+      denoAliases: Set<string>;
+      fsOpens: Set<string>;
+      denoOpens: Set<string>;
+    },
   ) => Deno.lint.LintVisitor = () => ({}),
 ): Deno.lint.LintVisitor {
   /** Local names bound to a whole node:fs module (`import * as fs`, `import fs`, the `promises`
@@ -420,9 +425,10 @@ function reachVisitor(
   const fsNamespaces = new Set<string>();
   /** Local aliases of the Deno global. */
   const denoAliases = new Set<string>();
-  /** Local names bound to node:fs `open`/`openSync`. */
+  /** Local names bound to node:fs `open`/`openSync`, and to `Deno.open`/`Deno.openSync`. */
   const fsOpens = new Set<string>();
-  const extra = on({ fsNamespaces, denoAliases, fsOpens });
+  const denoOpens = new Set<string>();
+  const extra = on({ fsNamespaces, denoAliases, fsOpens, denoOpens });
   return {
     ...extra,
     "ImportDeclaration"(node) {
@@ -510,6 +516,11 @@ function reachVisitor(
           fromFs && FS_OPEN_NAMES.has(property.key.name) && property.value.type === "Identifier"
         ) {
           fsOpens.add(property.value.name);
+        } else if (
+          fromDeno && DENO_OPEN_NAMES.has(property.key.name) &&
+          property.value.type === "Identifier"
+        ) {
+          denoOpens.add(property.value.name);
         }
       }
     },
@@ -525,7 +536,7 @@ const plugin: Deno.lint.Plugin = {
         return reachVisitor(
           context,
           { fs: FS_WRITE_NAMES, deno: DENO_WRITE_NAMES, message: WRITE_MESSAGE },
-          ({ fsNamespaces, denoAliases, fsOpens }) => {
+          ({ fsNamespaces, denoAliases, fsOpens, denoOpens }) => {
             /** Local names bound to a child_process spawn entry point, by kind. */
             const spawns = new Set<string>();
             const execs = new Set<string>();
@@ -558,6 +569,8 @@ const plugin: Deno.lint.Plugin = {
                 if (first === undefined) return;
                 if (callee.type === "Identifier") {
                   if (fsOpens.has(callee.name) && fsFlagWrites(second)) {
+                    context.report({ node, message: HANDLE_MESSAGE });
+                  } else if (denoOpens.has(callee.name) && denoOptionsWrite(second)) {
                     context.report({ node, message: HANDLE_MESSAGE });
                   } else if (spawns.has(callee.name) && spawnMutates(first, second)) {
                     context.report({ node, message: SPAWN_MESSAGE });

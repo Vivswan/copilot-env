@@ -39,7 +39,7 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger, withConsolaOnStderr } from "../utils/logger.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
-import { COLOR_ENABLED, statusPaint } from "../utils/ansi.ts";
+import { colorEnabled, statusPaint } from "../utils/ansi.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -241,7 +241,7 @@ async function proxyLine(entry: FloorCheckedEntry): Promise<string> {
 export function renderStartSummary(
   summary: ReadonlyArray<readonly [label: string, value: string]>,
   width: number | null = terminalWidth(),
-  color = COLOR_ENABLED,
+  color = colorEnabled(),
 ): string {
   return formatTable(summary.map(([label, value]) => [`${label}:`, value]), {
     indent: "   ",
@@ -297,9 +297,9 @@ async function reportStartSummary(
 async function reportCheckProbe(profile: Profile): Promise<void> {
   const status = await proxyStatus(profile);
   if (status.up) {
-    consola.success(`proxy is ${statusPaint("running", COLOR_ENABLED)} on port ${status.port}`);
+    consola.success(`proxy is ${statusPaint("running", colorEnabled())} on port ${status.port}`);
   } else {
-    consola.info(`proxy is ${statusPaint("not running", COLOR_ENABLED)}`);
+    consola.info(`proxy is ${statusPaint("not running", colorEnabled())}`);
   }
   process.exitCode = status.up ? 0 : 1;
 }

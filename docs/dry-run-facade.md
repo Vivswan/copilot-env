@@ -131,6 +131,8 @@ Modes land as Deno lands them: a file's explicit mode exactly, a directory's and
 
 Keys are canonical paths, so an alias and its target are one entry and a read through either sees the planned state; a staged write lands over the link itself. The report prints the path the run spelled.
 
+On Windows a key is folded to lower case, so `C:\Temp\File` and `c:\temp\FILE` are one entry. A listing prints each entry's own name (the disk's spelling, or the run's for a planned entry), and `realpath` returns the OS's own spelling of the part the disk holds.
+
 A link the run plans (`symlink`, `atomicSymlink`, or a disk link a `rename` moves) is a link in the volume: a lookup through it restarts at its target, `lstat` and `readdir` see the link, and `readlink` reads its target text. The report says `create`, `rewrite` (anything else at the path), or `same` (a disk link with the same target).
 
 **Accepted residual:** permission-class failures (`EACCES`, `ENOSPC`) are not simulated. A dry run reports what the real run would attempt; at most one cheap access probe may be added, nothing more.

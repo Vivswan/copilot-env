@@ -131,6 +131,20 @@ describe("compile.include matches what the binary actually needs", () => {
     const code = compileTs.split("\n").filter((line) => !line.trim().startsWith("//"));
     expect(code.some((line) => line.includes("--include"))).toBe(false);
   });
+
+  test("the compile task's module graph loads under the task's own permissions", () => {
+    // The task grants no env permission; a module on the graph that reads the environment at
+    // import (the ansi helpers once did) fails every release build at "Compile this tree's host
+    // binary". `--help` loads every module and exits before anything is compiled.
+    const task: string = JSON.parse(readFileSync(join(ROOT, "deno.json"), "utf8")).tasks.compile;
+    const [bin, ...args] = task.split(/\s+/);
+    expect(bin).toBe("deno");
+    expect(args.some((arg) => arg.startsWith("--allow-env"))).toBe(false);
+    const res = runSync(Deno.execPath(), [...args, "--help"]);
+    expect(res.stderr).not.toContain("NotCapable");
+    expect(res.stdout).toContain("Usage: deno task compile");
+    expect(res.exitCode).toBe(0);
+  });
 });
 
 describe("bundled-only assets are never read through PROJECT_ROOT", () => {

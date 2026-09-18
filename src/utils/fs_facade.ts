@@ -7,7 +7,7 @@
 //
 // The overlay is one per process and entered once per command (src/utils/dry_run.ts); a run's
 // children learn of the dry run through the marker that module hands them, not through here.
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import * as disk from "./fs_disk.ts";
 import { openOverlay, type Overlay } from "./fs_overlay.ts";
 import { underScratch } from "./report_write.ts";
@@ -148,7 +148,7 @@ export function writeText(path: string, text: string, options: disk.WriteOptions
     disk.writeText(path, text, options);
     return;
   }
-  if (options.atomic !== false) run.mkdir(dirname(path));
+  if (options.atomic !== false) stageInOverlay(run, path);
   run.writeText(path, text, {
     mode: options.mode,
     replace: options.atomic !== false,
@@ -163,8 +163,16 @@ export function writeBytes(path: string, bytes: Uint8Array, options: disk.WriteO
     disk.writeBytes(path, bytes, options);
     return;
   }
-  if (options.atomic !== false) run.mkdir(dirname(path));
+  if (options.atomic !== false) stageInOverlay(run, path);
   run.writeBytes(path, bytes, { mode: options.mode, replace: options.atomic !== false });
+}
+
+/** What the disk's staged write does before it writes: the parent made, and the stale temp under
+ *  this pid removed (a directory there is rm's own refusal, so a dry run refuses where the real
+ *  write does). */
+function stageInOverlay(run: Overlay, path: string): void {
+  run.mkdir(dirname(path));
+  run.rm(join(dirname(path), `${basename(path)}.tmp.${process.pid}`), { force: true });
 }
 
 /** The bytes of `from` land at `to`. A dry run plans them and prints the verdict alone; the copy is

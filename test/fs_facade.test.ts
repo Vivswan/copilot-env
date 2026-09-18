@@ -9,6 +9,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -132,6 +133,12 @@ const ERROR_CASES: Array<{
     setup: (r) => facade.writeText(join(r, "f"), "x"),
     op: (r) => facade.mkdir(join(r, "f")),
     code: "EEXIST",
+  },
+  {
+    name: "staged write whose temp path holds a directory",
+    setup: (r) => facade.mkdir(join(r, `f.tmp.${process.pid}`)),
+    op: (r) => facade.writeText(join(r, "f"), "x"),
+    code: "ERR_FS_EISDIR",
   },
   {
     name: "rm of a path already removed",
@@ -477,6 +484,9 @@ test.skipIf(WINDOWS)(
     writeFileSync(join(real, "keep.txt"), "same");
     symlinkSync(real, alias);
     symlinkSync(join(real, "keep.txt"), link);
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "own.txt"), "own");
+    symlinkSync(join(dir, "src", "own.txt"), join(dir, "via"));
     const lines = await dryRun(() => {
       facade.writeText(join(alias, "f.txt"), "new");
       expect(facade.readText(join(real, "f.txt"))).toBe("new");
@@ -498,6 +508,10 @@ test.skipIf(WINDOWS)(
       // Removing the link removes the alias, not what it pointed at.
       facade.rm(alias);
       expect([facade.exists(alias), facade.exists(real)]).toEqual([false, true]);
+      // A file touched through an alias keeps its own name when its parent moves.
+      facade.chmod(join(dir, "via"), 0o600);
+      facade.rename(join(dir, "src"), join(dir, "dst"));
+      expect(facade.readdirEntries(join(dir, "dst")).map((e) => e.name)).toEqual(["own.txt"]);
     });
     expect(lines).toEqual([
       `rewrite ${link}`,
@@ -507,6 +521,9 @@ test.skipIf(WINDOWS)(
       `delete ${join(real, "f.txt")}`,
       `delete ${join(real, "keep.txt")}`,
       `delete ${alias}`,
+      `delete ${join(dir, "src")}${sep}`,
+      `create ${join(dir, "dst")}${sep}`,
+      `create ${join(dir, "dst", "own.txt")}`,
     ]);
     expect(readFileSync(join(real, "f.txt"), "utf8")).toBe("old");
   },
@@ -659,12 +676,18 @@ test("readTextResult tells absent from unreadable by lstat, in a dry run from th
   expect(readFileSync(file, "utf8")).toBe("disk");
 });
 
-test("writeText is staged by default: a stale temp under this pid goes first and none survives, and an explicit mode lands exactly", () => {
+test("writeText is staged by default: a stale temp under this pid goes first and none survives, and an explicit mode lands exactly; a dry run plans the same removal", async () => {
   dir = tempDir("copilot-facade-");
   const file = join(dir, "nested", "f.json");
   const stale = join(dir, "nested", `f.json.tmp.${process.pid}`);
   mkdirSync(join(dir, "nested"));
   writeFileSync(stale, "stale");
+  const lines = await dryRun(() => {
+    facade.writeText(file, "{}", { mode: 0o600 });
+    expect(facade.readdir(join(dir, "nested"))).toEqual(["f.json"]);
+  });
+  expect(lines).toEqual([`delete ${stale}`, `create ${file}`, `  + {}`]);
+  expect(readFileSync(stale, "utf8")).toBe("stale");
   facade.writeText(file, "{}", { mode: 0o600 });
   expect([readFileSync(file, "utf8"), existsSync(stale), facade.readdir(join(dir, "nested"))])
     .toEqual(["{}", false, ["f.json"]]);
@@ -751,6 +774,97 @@ test.skipIf(WINDOWS)(
   },
 );
 
+// A case-insensitive filesystem with 8.3 short names: only Windows has one on the runners.
+test.skipIf(!WINDOWS)(
+  "on Windows every spelling of a path is one entry: a planned file reads back through a case variant, and realpath keeps the OS's own spelling",
+  async () => {
+    dir = tempDir("copilot-facade-");
+    const onDisk = join(dir, "Disk.txt");
+    writeFileSync(onDisk, "disk");
+    mkdirSync(join(dir, "Source"));
+    writeFileSync(join(dir, "Source", "Child.txt"), "child");
+    writeFileSync(join(dir, "Plain.txt"), "plain");
+    mkdirSync(join(dir, "Linked"));
+    writeFileSync(join(dir, "Linked", "Target.txt"), "target");
+    const native = realpathSync.native(onDisk);
+    // The drive letter, the directory and the file name in the other case.
+    const variant = (path: string): string =>
+      path.replace(/^[A-Za-z]:/, (drive) => drive.toLowerCase()).toUpperCase().replace(
+        /^[A-Z]:/,
+        (drive) => drive.toLowerCase(),
+      );
+    const lines = await dryRun(() => {
+      facade.writeText(join(dir, "Mixed", "File.txt"), "planned");
+      expect(facade.readText(variant(join(dir, "Mixed", "File.txt")))).toBe("planned");
+      expect(facade.readdir(join(dir, "MIXED"))).toEqual(["File.txt"]);
+      facade.rm(variant(onDisk));
+      expect(facade.exists(onDisk)).toBe(false);
+      facade.writeText(join(dir, "Other.txt"), "other");
+      expect(facade.realpath(variant(join(dir, "Other.txt")))).toBe(
+        join(native.slice(0, -"Disk.txt".length), "other.txt"),
+      );
+      facade.writeText(join(dir, "Kept.txt"), "kept", { atomic: false });
+      expect(facade.realpath(variant(join(dir, "Kept.txt")))).toBe(
+        join(native.slice(0, -"Disk.txt".length), "kept.txt"),
+      );
+      // A moved disk tree keeps its children readable through any spelling, listed as the disk
+      // spelled them.
+      facade.rename(join(dir, "Source"), variant(join(dir, "Moved")));
+      expect(facade.readText(join(dir, "Moved", "Child.txt"))).toBe("child");
+      expect(facade.readdir(variant(join(dir, "Moved")))).toEqual(["Child.txt"]);
+      // A file created through a link alias is listed by its own name; a write over a disk file
+      // keeps the disk's spelling; a case-only rename takes the new one.
+      facade.mkdir(join(dir, "Alias"));
+      facade.symlink(join(dir, "Alias", "Own.txt"), join(dir, "Via"));
+      facade.writeText(join(dir, "Via"), "planned", { atomic: false });
+      expect(facade.readdirEntries(join(dir, "Alias")).map((e) => e.name)).toEqual(["Own.txt"]);
+      facade.writeText(variant(join(dir, "Plain.txt")), "rewritten", { atomic: false });
+      expect(facade.readdir(dir)).toContain("Plain.txt");
+      facade.rename(join(dir, "Kept.txt"), join(dir, "KEPT.txt"));
+      expect([facade.readText(join(dir, "kept.txt")), facade.readdir(dir)]).toEqual([
+        "kept",
+        expect.arrayContaining(["KEPT.txt"]),
+      ]);
+      // A lookup names nothing: the create after it takes its own spelling.
+      expect(facade.exists(join(dir, "LATER.txt"))).toBe(false);
+      facade.writeText(join(dir, "Later.txt"), "later", { atomic: false });
+      expect(facade.readdir(dir)).toContain("Later.txt");
+      // A disk directory renamed by case alone, holding a planned link, still moves afterwards.
+      facade.symlink(join(dir, "Linked", "Target.txt"), join(dir, "Linked", "Ln"));
+      facade.rename(join(dir, "Linked"), join(dir, "LINKED"));
+      facade.rename(join(dir, "LINKED"), join(dir, "Elsewhere"));
+      expect(facade.readdir(join(dir, "Elsewhere"))).toEqual(["Ln", "Target.txt"]);
+    });
+    expect(lines).toEqual([
+      `create ${join(dir, "Mixed")}${sep}`,
+      `create ${join(dir, "Mixed", "File.txt")}`,
+      `  + planned`,
+      `delete ${variant(onDisk)}`,
+      `create ${join(dir, "Other.txt")}`,
+      `  + other`,
+      `create ${join(dir, "Kept.txt")}`,
+      `  + kept`,
+      `delete ${join(dir, "Source")}${sep}`,
+      `create ${variant(join(dir, "Moved"))}${sep}`,
+      `create ${join(variant(join(dir, "Moved")), "Child.txt")}`,
+      `create ${join(dir, "Alias")}${sep}`,
+      `create ${join(dir, "Via")}`,
+      `create ${join(dir, "Via")}`,
+      `  + planned`,
+      `rewrite ${variant(join(dir, "Plain.txt"))}`,
+      `  - plain`,
+      `  + rewritten`,
+      `create ${join(dir, "Later.txt")}`,
+      `  + later`,
+      `delete ${join(dir, "LINKED")}${sep}`,
+      `create ${join(dir, "Elsewhere")}${sep}`,
+      `create ${join(dir, "Elsewhere", "Ln")}`,
+      `create ${join(dir, "Elsewhere", "Target.txt")}`,
+    ]);
+    expect(readFileSync(onDisk, "utf8")).toBe("disk");
+  },
+);
+
 test("a store update in a dry run takes no lock: the store's home keeps only what it had", async () => {
   dir = tempDir("copilot-facade-");
   const home = join(dir, "copilot-env");
@@ -779,53 +893,59 @@ test("a stale staging file at the link's staging path is planned removed before 
   expect(readFileSync(staging, "utf8")).toBe("left by a crashed run");
 });
 
-test("a dropped empty TOML table is a row and a JSON map is not; a document that does not parse prints its path alone; a symlink never replaces a planned file; planned bytes decode as node decodes a file; a carried declaration governs a later rewrite", async () => {
-  dir = tempDir("copilot-facade-");
-  const config = join(dir, "config.toml");
-  const dropped = join(dir, "dropped.json");
-  const broken = join(dir, "settings.json");
-  const planned = join(dir, "planned");
-  const keyed = join(dir, "keyed.json");
-  const copy = join(dir, "keyed-copy.json");
-  const moved = join(dir, "moved.json");
-  writeFileSync(
-    config,
-    '[model_providers.copilot-env]\nbase_url = "https://x"\nhttp_headers = {}\n',
-  );
-  writeFileSync(dropped, '{"count":1,"profiles":{}}\n');
-  writeFileSync(broken, "{broken");
-  const lines = await dryRun(() => {
-    facade.writeText(config, '[model_providers.copilot-env]\nbase_url = "https://x"\n');
-    facade.writeText(dropped, '{"count":1}\n');
-    facade.writeText(broken, '{"env":{"TOKEN":"example-secret"}}\n', { secretKeys: ["env.TOKEN"] });
-    facade.writeText(planned, "x");
-    expect(outcome(() => facade.symlink("target", planned))).toBe("EEXIST");
-    // A byte-order mark stays, as readFileSync leaves it.
-    facade.writeBytes(join(dir, "bom.txt"), new Uint8Array([239, 187, 191, 97]));
-    expect(facade.readText(join(dir, "bom.txt"))).toBe("\uFEFFa");
-    // A copied or moved declaration redacts the destination's later rewrite, declared or not.
-    facade.writeText(keyed, '{"token":"t","n":1}\n', { secretKeys: ["token"] });
-    facade.copyFile(keyed, copy);
-    facade.writeText(copy, '{"token":"u","n":2}\n');
-    facade.writeText(join(dir, "whole.json"), '{"token":"t"}\n', { secret: true });
-    facade.rename(join(dir, "whole.json"), moved);
-    facade.writeText(moved, '{"x":1}\n', { secretKeys: [] });
-  });
-  expect(lines).toEqual([
-    `rewrite ${config}`,
-    `  model_providers.copilot-env.http_headers  {} -> (absent)`,
-    `rewrite ${dropped}`,
-    `  (every managed attribute already holds its value)`,
-    `rewrite ${broken}`,
-    `create ${planned}`,
-    `  + x`,
-    `create ${join(dir, "bom.txt")}`,
-    `create ${keyed}`,
-    `  token  (absent) -> <redacted>`,
-    `  n  (absent) -> 1`,
-    `create ${copy}`,
-    `  token  (absent) -> <redacted>`,
-    `  n  (absent) -> 2`,
-    `create ${moved}`,
-  ]);
-});
+test(
+  "a dropped empty TOML table is a row and a JSON map is not; a document that does not parse prints its path alone; " +
+    "a symlink never replaces a planned file; planned bytes decode as node decodes a file; a carried declaration governs a later rewrite",
+  async () => {
+    dir = tempDir("copilot-facade-");
+    const config = join(dir, "config.toml");
+    const dropped = join(dir, "dropped.json");
+    const broken = join(dir, "settings.json");
+    const planned = join(dir, "planned");
+    const keyed = join(dir, "keyed.json");
+    const copy = join(dir, "keyed-copy.json");
+    const moved = join(dir, "moved.json");
+    writeFileSync(
+      config,
+      '[model_providers.copilot-env]\nbase_url = "https://x"\nhttp_headers = {}\n',
+    );
+    writeFileSync(dropped, '{"count":1,"profiles":{}}\n');
+    writeFileSync(broken, "{broken");
+    const lines = await dryRun(() => {
+      facade.writeText(config, '[model_providers.copilot-env]\nbase_url = "https://x"\n');
+      facade.writeText(dropped, '{"count":1}\n');
+      facade.writeText(broken, '{"env":{"TOKEN":"example-secret"}}\n', {
+        secretKeys: ["env.TOKEN"],
+      });
+      facade.writeText(planned, "x");
+      expect(outcome(() => facade.symlink("target", planned))).toBe("EEXIST");
+      // A byte-order mark stays, as readFileSync leaves it.
+      facade.writeBytes(join(dir, "bom.txt"), new Uint8Array([239, 187, 191, 97]));
+      expect(facade.readText(join(dir, "bom.txt"))).toBe("\uFEFFa");
+      // A copied or moved declaration redacts the destination's later rewrite, declared or not.
+      facade.writeText(keyed, '{"token":"t","n":1}\n', { secretKeys: ["token"] });
+      facade.copyFile(keyed, copy);
+      facade.writeText(copy, '{"token":"u","n":2}\n');
+      facade.writeText(join(dir, "whole.json"), '{"token":"t"}\n', { secret: true });
+      facade.rename(join(dir, "whole.json"), moved);
+      facade.writeText(moved, '{"x":1}\n', { secretKeys: [] });
+    });
+    expect(lines).toEqual([
+      `rewrite ${config}`,
+      `  model_providers.copilot-env.http_headers  {} -> (absent)`,
+      `rewrite ${dropped}`,
+      `  (every managed attribute already holds its value)`,
+      `rewrite ${broken}`,
+      `create ${planned}`,
+      `  + x`,
+      `create ${join(dir, "bom.txt")}`,
+      `create ${keyed}`,
+      `  token  (absent) -> <redacted>`,
+      `  n  (absent) -> 1`,
+      `create ${copy}`,
+      `  token  (absent) -> <redacted>`,
+      `  n  (absent) -> 2`,
+      `create ${moved}`,
+    ]);
+  },
+);

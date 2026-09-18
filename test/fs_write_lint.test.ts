@@ -76,6 +76,8 @@ const CASES: readonly (readonly [string, number, number])[] = [
   ['await Deno.open("x", opts);', 1, 1],
   ['const flag = "write"; await Deno.open("x", { [flag]: true });', 1, 1],
   ['await Deno.open("x", { read: true }); Deno.openSync("y", { write: false });', 0, 2],
+  ['const { open } = Deno; await open("x", { write: true, create: true });', 1, 1],
+  ['const { openSync: o } = Deno; o("x", { read: true });', 0, 1],
   // Type imports, the seam itself, and unrelated modules are left alone.
   ['import type { WriteFileOptions, Stats } from "node:fs";', 0, 0],
   ['import * as fs from "../utils/fs_facade.ts"; fs.writeText("x", "y"); fs.readText("x");', 0, 0],

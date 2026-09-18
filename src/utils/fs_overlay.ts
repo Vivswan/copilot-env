@@ -122,7 +122,18 @@ function umask(): number {
  *  name. */
 function split(abs: string): { root: string; parts: string[] } {
   const { root } = parse(abs);
-  return { root, parts: abs.slice(root.length).split(sep).filter((part) => part !== "") };
+  return {
+    root: foldKey(root),
+    parts: abs.slice(root.length).split(sep).filter((part) => part !== ""),
+  };
+}
+
+/** A key as the run's tables hold it. Windows names an entry whatever the case of its path, so a
+ *  key there is folded to lower case (the root too) and every spelling of a path is one entry; the
+ *  spelling the run used lives in `names` for the report, an entry's own name in `spellings` for
+ *  the listings. */
+function foldKey(key: string): string {
+  return WINDOWS ? key.toLowerCase() : key;
 }
 
 export class Overlay {
@@ -143,6 +154,15 @@ export class Overlay {
   /** The path as the first write to each key spelled it: what the report prints, so a user sees
    *  the path the command named rather than where a link led. */
   private readonly names = new Map<string, string>();
+  /** Windows only: each planned key's own name in its true case, what a listing and a moved
+   *  tree's rows print. Two owners: the disk's spelling for an entry the disk holds (absorbed, or
+   *  written over), and the mutation's own walk for one the run creates (`walked`: the component
+   *  that produced the key, so a link's target names the entry, never the alias). A lookup never
+   *  names anything; a case-only rename and a move set it outright. */
+  private readonly spellings = new Map<string, string>();
+  /** Windows only: the component each key was last walked through, the spelling `set()` takes
+   *  for a key the run creates. Scratch: every walk overwrites it. */
+  private readonly walked = new Map<string, string>();
   /** Per key, every attribute a write declared secret, kept across the run's later writes to the
    *  same path: a key once declared never prints, whether or not a later writer repeats it. */
   private readonly secrets = new Map<string, Set<string>>();
@@ -200,11 +220,38 @@ export class Overlay {
 
   /** Whether the run planned or tombstoned `key` itself. */
   touched(key: string): boolean {
-    return this.rows.has(key);
+    return this.rows.has(foldKey(key));
   }
 
   nameOf(key: string): string {
     return this.names.get(key) ?? key;
+  }
+
+  /** The entry's own name as a listing prints it. */
+  private basenameOf(key: string): string {
+    return WINDOWS ? this.spellings.get(key) ?? basename(key) : basename(key);
+  }
+
+  /** The disk's own spelling of a non-link entry it holds at `key` (realpath restores the case a
+   *  folded key lost); a key the run already planned keeps the name the run gave it. */
+  private diskSpelling(key: string): void {
+    if (!WINDOWS || this.rows.has(key)) return;
+    try {
+      this.spellings.set(key, basename(disk.realpath(key)));
+    } catch {
+      // Gone from the disk since it was seen: nothing to spell it by.
+    }
+  }
+
+  /** Whether the volume holds an entry at `path` (a link counts, unfollowed). */
+  private volHas(path: string): boolean {
+    try {
+      this.vol.lstatSync(path);
+      return true;
+    } catch (e) {
+      if (isEnoent(e)) return false;
+      throw e;
+    }
   }
 
   /** Marks what stands at `path` (and below) as the run's own scratch, off the report. */
@@ -263,17 +310,20 @@ export class Overlay {
   private absorb(key: string, stats: Stats, deep: boolean): void {
     const path = volPath(key);
     this.scaffold(dirname(key));
+    if (!stats.isSymbolicLink()) this.diskSpelling(key);
+    // An entry an earlier absorb loaded (a case-only rename of its parent) is loaded once.
+    const held = this.volHas(path);
     if (stats.isSymbolicLink()) {
-      this.vol.symlinkSync(disk.readlink(key), path);
+      if (!held) this.vol.symlinkSync(disk.readlink(key), path);
       return;
     }
     if (stats.isDirectory()) {
-      if (!this.vol.existsSync(path)) this.vol.mkdirSync(path);
+      if (!held) this.vol.mkdirSync(path);
       this.modes.set(key, stats.mode & 0o777);
       if (deep) this.absorbChildren(key);
       return;
     }
-    this.vol.writeFileSync(path, disk.readBytes(key));
+    if (!held) this.vol.writeFileSync(path, disk.readBytes(key));
     this.modes.set(key, stats.mode & 0o777);
   }
 
@@ -281,8 +331,10 @@ export class Overlay {
    *  disk still speaks below (a chmod'd one) carries its own disk children the same way. */
   private absorbChildren(key: string): void {
     for (const name of disk.readdir(key)) {
-      const child = join(key, name);
+      const child = foldKey(join(key, name));
       if (this.gone.has(child)) continue;
+      // The disk's spelling of an entry the run left alone; a planned one keeps the run's.
+      if (WINDOWS && !this.rows.has(child)) this.spellings.set(child, name);
       if (this.rows.has(child)) {
         if (this.vol.lstatSync(volPath(child)).isDirectory() && !this.fresh.has(child)) {
           this.absorbChildren(child);
@@ -298,6 +350,9 @@ export class Overlay {
   /** The name a key prints under is the spelling of the first write that touched it. */
   private set(key: string, spelled: string): void {
     if (!this.names.has(key)) this.names.set(key, spelled);
+    if (WINDOWS && !this.spellings.has(key)) {
+      this.spellings.set(key, this.walked.get(key) ?? basename(spelled));
+    }
     this.gone.delete(key);
     this.rows.add(key);
   }
@@ -308,6 +363,7 @@ export class Overlay {
     this.fresh.delete(key);
     this.texts.delete(key);
     this.modes.delete(key);
+    this.spellings.delete(key);
     this.rows.add(key);
     this.gone.add(key);
   }
@@ -328,8 +384,10 @@ export class Overlay {
       this.fresh.delete(recorded);
       this.texts.delete(recorded);
     }
-    for (const recorded of [...this.modes.keys()]) {
-      if (isBelow(recorded, key)) this.modes.delete(recorded);
+    for (const table of [this.modes, this.spellings]) {
+      for (const recorded of [...table.keys()]) {
+        if (isBelow(recorded, key)) table.delete(recorded);
+      }
     }
   }
 
@@ -345,7 +403,8 @@ export class Overlay {
     let hops = 0;
     while (pending.length > 0) {
       const part = pending.shift() as string;
-      const next = join(cur, part);
+      const next = foldKey(join(cur, part));
+      if (WINDOWS) this.walked.set(next, part);
       let target: string | null = null;
       if (this.gone.has(next)) {
         diskSpeaks = false;
@@ -461,14 +520,22 @@ export class Overlay {
     const seen = this.view(key, "scandir", path);
     if (seen === null) throw errno("ENOENT", "scandir", path);
     if (!seen.stats.isDirectory()) throw errno("ENOTDIR", "scandir", path);
-    const names = new Set<string>(this.fresh.has(key) ? [] : disk.readdir(key));
+    // By folded name, so Windows lists one entry per spelling: the disk's for an entry the run
+    // left alone (a scaffold stand-in included), the entry's own for one the run planned.
+    const listed = new Map<string, string>();
+    if (!this.fresh.has(key)) {
+      for (const name of disk.readdir(key)) listed.set(foldKey(name), name);
+    }
     if (this.vol.existsSync(volPath(key))) {
-      for (const name of this.volNames(volPath(key))) names.add(name);
+      for (const name of this.volNames(volPath(key))) {
+        const child = join(key, name);
+        if (this.rows.has(child) || !listed.has(name)) listed.set(name, this.basenameOf(child));
+      }
     }
     for (const recorded of this.gone) {
-      if (dirname(recorded) === key) names.delete(basename(recorded));
+      if (dirname(recorded) === key) listed.delete(basename(recorded));
     }
-    return [...names].sort();
+    return [...listed.values()].sort();
   }
 
   /** Each name with its own kind (a link is the link), as `readdir` with file types lists them. */
@@ -493,11 +560,23 @@ export class Overlay {
     return seen.kind === "own" ? String(this.vol.readlinkSync(volPath(key))) : disk.readlink(key);
   }
 
-  /** The canonical path, every link (planned or on the disk) resolved; absent is node's ENOENT. */
+  /** The canonical path, every link (planned or on the disk) resolved; absent is node's ENOENT.
+   *  On Windows the key is folded, so the part the disk holds takes the OS's own spelling
+   *  (`realpathSync.native`: case and 8.3 names) and the planned tail follows it as keyed. */
   realpath(path: string): string {
     const key = this.key(path, "lstat");
     if (this.view(key, "lstat", path) === null) throw errno("ENOENT", "lstat", path);
-    return key;
+    if (!WINDOWS) return key;
+    const tail: string[] = [];
+    for (let cur = key;; cur = dirname(cur)) {
+      try {
+        return join(disk.realpath(cur), ...tail);
+      } catch {
+        // Not on the disk (planned, or under a fresh directory): its parent may be.
+      }
+      if (dirname(cur) === cur) return key;
+      tail.unshift(basename(cur));
+    }
   }
 
   // --- writes ------------------------------------------------------------------------------------
@@ -550,6 +629,8 @@ export class Overlay {
     // A staged write over a planned link replaces the link itself.
     if (seen?.kind === "own" && seen.stats.isSymbolicLink()) this.vol.unlinkSync(target);
     this.vol.writeFileSync(target, bytes);
+    // A write over a disk file keeps the disk's name, as Windows does.
+    if (seen?.kind === "disk" && !seen.stats.isSymbolicLink()) this.diskSpelling(key);
     this.modes.set(key, mode);
     if (text) this.texts.add(key);
     else this.texts.delete(key);
@@ -696,6 +777,14 @@ export class Overlay {
     if (source === null) throw errno("ENOENT", "rename", from, to);
     this.landingParent(dst, "rename", from, to);
     if (isBelow(dst, src)) throw errno("EINVAL", "rename", from, to);
+    if (src === dst) {
+      // One key: a case-only rename on Windows (or a path renamed onto itself), which the disk
+      // performs as a no-op that takes the new spelling.
+      if (source.kind === "disk") this.absorb(src, source.stats, true);
+      if (WINDOWS) this.spellings.set(src, basename(resolve(to)));
+      this.set(src, resolve(to));
+      return;
+    }
     if (source.kind === "disk") this.absorb(src, source.stats, true);
     else if (source.stats.isDirectory() && !this.fresh.has(src)) this.absorbChildren(src);
     const moved = this.subtree(src);
@@ -716,7 +805,8 @@ export class Overlay {
     for (const entry of moved) {
       const was = entry.rel === "" ? src : join(src, entry.rel);
       const key = entry.rel === "" ? dst : join(dst, entry.rel);
-      this.set(key, entry.rel === "" ? spelled : join(spelled, entry.rel));
+      this.set(key, entry.rel === "" ? spelled : join(spelled, entry.name));
+      if (WINDOWS && entry.rel !== "") this.spellings.set(key, basename(entry.name));
       // The destination's own flags go with what stood there: the moved entry's are the truth.
       if (entry.dir) this.fresh.add(key);
       else this.fresh.delete(key);
@@ -730,18 +820,24 @@ export class Overlay {
     }
   }
 
-  /** Every volume entry at and below `key`, keyed by path relative to it (the root is ""), in the
-   *  order the report lists a moved tree: each directory before its children, children sorted. */
+  /** Every volume entry at and below `key`: its key relative to `key` (`rel`; the root is ""), the
+   *  same path in the entries' own names (`name`), and its flags, in the order the report lists a
+   *  moved tree: each directory before its children, children sorted. */
   private subtree(
     key: string,
     rel = "",
-  ): { rel: string; dir: boolean; text: boolean; mode: number | undefined }[] {
+    name = "",
+  ): { rel: string; name: string; dir: boolean; text: boolean; mode: number | undefined }[] {
     const path = volPath(key);
     const dir = this.vol.lstatSync(path).isDirectory();
-    const out = [{ rel, dir, text: this.texts.has(key), mode: this.modes.get(key) }];
+    const out = [{ rel, name, dir, text: this.texts.has(key), mode: this.modes.get(key) }];
     if (!dir) return out;
-    for (const name of this.volNames(path).sort()) {
-      out.push(...this.subtree(join(key, name), rel === "" ? name : join(rel, name)));
+    for (const child of this.volNames(path).sort()) {
+      const childKey = join(key, child);
+      const childName = this.basenameOf(childKey);
+      out.push(
+        ...this.subtree(childKey, rel === "" ? child : join(rel, child), join(name, childName)),
+      );
     }
     return out;
   }

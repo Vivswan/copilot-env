@@ -44,7 +44,7 @@ import {
   profileLabel,
   type ProfileName,
 } from "../copilot_api/profile.ts";
-import { COLOR_ENABLED, gray, statusPaint } from "../utils/ansi.ts";
+import { colorEnabled, gray, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
@@ -297,7 +297,7 @@ export interface ProfileListRow {
 export function renderProfileTable(
   rows: ProfileListRow[],
   width: number | null = terminalWidth(),
-  color = COLOR_ENABLED,
+  color = colorEnabled(),
 ): string {
   const status = (word: string): string => statusPaint(word, color);
   const cells = rows.map((r) => {

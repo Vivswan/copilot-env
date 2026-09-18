@@ -36,7 +36,7 @@ import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { nextProxyVersion } from "../src/proxy_float.ts";
-import { COLOR_ENABLED } from "../src/utils/ansi.ts";
+import { colorEnabled } from "../src/utils/ansi.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
@@ -817,7 +817,7 @@ test("configTableOutput() takes the terminal's width from the one table seam: CO
       daemonUp: anyTrackedDaemonAlive(),
       profileDaemonUp: trackedDaemonAlive(null),
       proxyVersion: nextProxyVersion(),
-      color: COLOR_ENABLED,
+      color: colorEnabled(),
     });
   const stdout = process.stdout as unknown as Record<string, unknown>;
   const orig = {

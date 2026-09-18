@@ -49,6 +49,9 @@ export interface FilePlan {
   /** The landing's text is secret (a bundle, a move, a copy of declared content): the renderer
    *  prints the path's verdict alone, whatever text an earlier landing of the path compared. */
   secret?: true;
+  /** Leaves this landing declares secret for the path (its own, or carried by a move or a copy):
+   *  every row of the path, an earlier landing's included, redacts them. */
+  secretKeys?: readonly string[];
 }
 
 /**

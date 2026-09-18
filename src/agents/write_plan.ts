@@ -218,12 +218,16 @@ export function foldFilePlans(files: readonly FilePlan[]): FilePlan[] {
       ? "rewrite"
       : "same";
     // A secret landing prints the verdict alone: no earlier landing's text is diffed against it,
-    // and no earlier landing's rows print beneath it.
+    // and no earlier landing's rows print beneath it. Keys a landing declares (its own, or carried
+    // by a move or a copy) redact every row of the path, earlier ones included.
     const secret = plans.some((plan) => plan.secret);
+    const declared = new Set(plans.flatMap((plan) => plan.secretKeys ?? []));
     folded.push({
       path,
       verdict,
-      attributes: secret ? [] : attributes,
+      attributes: secret
+        ? []
+        : attributes.map((row) => (declared.has(row.key) ? { ...row, secret: true } : row)),
       ...(secret ? { secret: true as const } : { before: first.before, content: last.content }),
       ...(plans.some((plan) => plan.directory) ? { directory: true as const } : {}),
     });

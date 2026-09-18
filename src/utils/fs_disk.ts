@@ -192,6 +192,8 @@ function planned(
     /** The landing's text is secret: the renderer prints the verdict alone, whatever an earlier
      *  landing of the path compared or declared. */
     secret?: boolean;
+    /** Leaves declared secret for the path by this landing (carried by a move or a copy). */
+    secretKeys?: readonly string[];
   } = { render: "diff" },
   refusals?: PlanRefusals,
 ): boolean {
@@ -240,6 +242,9 @@ function planned(
       files: [{
         ...filePlan(path, kind, text.content === undefined ? {} : { content: text.content }),
         ...(text.secret ? { secret: true } : {}),
+        ...(text.secretKeys !== undefined && text.secretKeys.length > 0
+          ? { secretKeys: text.secretKeys }
+          : {}),
       }],
       apply() {},
     });
@@ -546,10 +551,15 @@ export function copyFile(from: string, to: string, detail?: string): void {
   // and on a later write: a diff row would read the copied text as the text it replaces.
   const carried = secretOf(from);
   // A copy of declared content prints its path alone (a diff would read the copied text); a
-  // whole-file secret also silences every row an earlier landing of the destination declared.
+  // whole-file secret also silences every row an earlier landing of the destination declared, and
+  // carried keys redact them.
   const render: PlannedRender = carried.whole || carried.keys.size > 0 ? "path-only" : "diff";
   if (
-    planned(verdictOf(was), to, { render, secret: carried.whole }, {
+    planned(verdictOf(was), to, {
+      render,
+      secret: carried.whole,
+      secretKeys: [...carried.keys],
+    }, {
       syscall: `copyfile '${from}' -> '${to}'`,
       directory: "followed",
     })
@@ -677,8 +687,14 @@ export function rename(from: string, to: string): void {
       throw errno("ENOENT", `no such file or directory, rename '${from}' -> '${to}'`);
     }
     // The plan names the move, never the text (a moved store holds its tokens); the moved content,
-    // as the run sees it, lands at `to` for the run's later readers with its secret declarations.
-    planned(verdictOf(was), to, { render: "path-only" }, {
+    // as the run sees it, lands at `to` for the run's later readers with its secret declarations,
+    // which also govern every row the destination already has.
+    const carried = secretOf(from);
+    planned(verdictOf(was), to, {
+      render: "path-only",
+      secret: carried.whole,
+      secretKeys: [...carried.keys],
+    }, {
       syscall: `rename '${from}' -> '${to}'`,
       directory: isDirectoryEntry(from) ? "none" : "entry",
     });

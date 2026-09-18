@@ -1,0 +1,107 @@
+# Nightly CI: written once from repo-platform's starter (files/nightly/.github/workflows/nightly.yml
+# at `stable`), repo-owned from then on and never overwritten by a sync. The `checks` job is this
+# repository's: the CURRENT claude and codex releases against the fake model endpoint
+# (test/fake_model_endpoint.ts), no credential and no network past the installs.
+#
+# What a red night points at, in order of likelihood:
+#   the test step red        -> a claude or codex release changed the output shape our Direct probe
+#                               and health checks parse (the `nightly-evidence` artifact holds the
+#                               CLI versions and the test log)
+#   the install step red     -> npm could not download or install a CLI release; the versions were
+#                               never recorded, so there is no artifact
+#   `deno ci` or setup red   -> the registry or the runner, not the CLIs
+#   the job CANCELLED        -> a hang hit timeout-minutes; the report job reads it as red too
+# The report job files one label-deduplicated tracking issue for any of these and closes it on
+# the next green (repo-platform docs/nightly.md, docs/tracking-issues.md). It gates no merge; the
+# same tests run inside checks.yml on every PR against that day's releases.
+name: Nightly
+
+on:
+  schedule:
+    # A minute of its own, so the fleet's nightlies do not all land at once.
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DENO_NO_UPDATE_CHECK: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version-file: .dvmrc
+          cache: true
+
+      - name: Install dependencies
+        run: deno ci
+
+      # UNPINNED on purpose: the latest release is the drift this run exists to catch. The same
+      # install checks.yml runs, so the nightly and the PR gate never install differently.
+      - uses: ./.github/actions/install-agent-clis
+
+      - name: Record the CLI versions under test
+        run: |
+          mkdir -p nightly-evidence
+          { echo "claude: $(claude --version)"; echo "codex: $(codex --version)"; } | tee nightly-evidence/cli-versions.txt
+
+      # Opted in: a missing binary is a failure, never a skip that lets the night pass vacuously.
+      # A hard timeout well under the job's: a hung CLI turns into a red, not a 60-minute hang
+      # (a job killed at timeout-minutes is CANCELLED, which the report job also reads as red).
+      - name: Run the real-CLI tests against the fake model endpoint
+        env:
+          COPILOT_ENV_LIVE_CLIS: "1"
+        run: |
+          set -o pipefail
+          timeout --kill-after=30 10m deno test -P=test test/claude_cli_live.test.ts test/codex_cli_live.test.ts 2>&1 \
+            | tee nightly-evidence/test-log.txt
+
+      # The tracking issue links this run; the run carries the evidence.
+      - name: Upload the CLI versions and the test log
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-evidence
+          path: nightly-evidence/
+          if-no-files-found: ignore
+
+  # A CANCELLED checks job counts as red: hitting the timeout cancels
+  # rather than fails, and a hang is exactly what a nightly exists to
+  # catch.
+  report:
+    needs: [checks]
+    if: always()
+    runs-on: ubuntu-latest
+    # A hung reporter is the residual silence window; keep this tight.
+    timeout-minutes: 5
+    # issues: write is for the fuzz-issue action; an issue it creates fires no issues:opened event, so it assigns the owner itself.
+    permissions:
+      issues: write
+    steps:
+      - name: File or update the nightly issue
+        if: needs.checks.result == 'failure' || needs.checks.result == 'cancelled'
+        uses: Vivswan/repo-platform/actions/fuzz-issue@stable
+        with:
+          mode: report
+          label: "nightly-failure"
+          title: Nightly CI failures
+          label-color: "D93F0B"
+          label-description: "Automated nightly CI failure"
+          stream: generic
+
+      - name: Close the nightly issue on a green night
+        if: needs.checks.result == 'success'
+        uses: Vivswan/repo-platform/actions/fuzz-issue@stable
+        with:
+          mode: resolve
+          label: "nightly-failure"
+          stream: generic

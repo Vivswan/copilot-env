@@ -1,0 +1,17 @@
+# Repo-owned. The ONE install of the agent CLIs that CI runs tests against: the matrix test job
+# (checks.yml) and the fleet nightly (nightly.yml) both call this action, so the
+# two can never install differently. Latest releases on purpose: the tests that need these
+# binaries exist to catch a CLI release changing the output shape our probe parses.
+
+name: Install agent CLIs
+description: Installs the current Claude Code and Codex CLI releases with npm and prints their versions.
+
+runs:
+  using: composite
+  steps:
+    - name: Install the current Claude Code and Codex CLI releases
+      shell: bash
+      run: |
+        npm install -g @anthropic-ai/claude-code @openai/codex
+        echo "claude: $(claude --version)"
+        echo "codex: $(codex --version)"

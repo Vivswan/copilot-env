@@ -68,7 +68,7 @@ export async function recordCodex(
     }
   }
   const extra = { CODEX_HOME: codexHome };
-  // No -C (resume/fork lack it; the cwd is the spawn's); `-` reads the prompt from stdin; plugins
+  // No -C (resume/fork lack it; the cwd is the spawn's); the prompt is positional (runTurn); plugins
   // off because their marketplace sync spawns a background `git ls-remote` to github.com that
   // outlives the turn.
   const base = ["--disable", "plugins", "--skip-git-repo-check", "--json"];
@@ -76,7 +76,7 @@ export async function recordCodex(
     const result = await runTurn(
       label,
       "codex",
-      [...args, "-"],
+      args,
       prompt,
       home,
       work,

@@ -22,6 +22,10 @@ const PREFERRED_TOOLS = [
 const TOOL_WORD = /\btool\b/i;
 const TOOL_NAME_MARKER = /tool-name:\s*([A-Za-z0-9_.-]+)/;
 const TOOL_ARGS_MARKER = /tool-args:\s*(\{[^\n]*\})/;
+/** The same JSON, base64-encoded: a prompt that travels through npm's PowerShell shim on Windows
+ *  PowerShell 5.1 loses its embedded double quotes (legacy native argument passing), so a driver
+ *  that pins arguments carries them quote-free. */
+const TOOL_ARGS64_MARKER = /tool-args64:\s*([A-Za-z0-9+/=]+)/;
 
 // ---------- deterministic derivation ----------
 
@@ -142,12 +146,15 @@ function fillFromSchema(schema) {
 }
 
 /** The tool call the request asks for (tools offered AND the whole word "tool" in the last user
- *  text), or null. `tool-name:`/`tool-args:` markers pin it; else the first preferred tool
- *  offered, else the first tool offered. */
+ *  text), or null. `tool-name:` and `tool-args:` (or `tool-args64:`) markers pin it; else the
+ *  first preferred tool offered, else the first tool offered. */
 function selectToolCall(text, tools) {
   if (tools.length === 0 || !TOOL_WORD.test(text)) return null;
   const pinnedName = TOOL_NAME_MARKER.exec(text)?.[1];
-  const pinnedArgsText = TOOL_ARGS_MARKER.exec(text)?.[1];
+  const pinned64 = TOOL_ARGS64_MARKER.exec(text)?.[1];
+  const pinnedArgsText = pinned64 !== undefined
+    ? Buffer.from(pinned64, "base64").toString("utf8")
+    : TOOL_ARGS_MARKER.exec(text)?.[1];
   let pinnedArgs = null;
   if (pinnedArgsText !== undefined) {
     try {

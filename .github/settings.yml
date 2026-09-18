@@ -58,6 +58,9 @@ labels:
     - name: merge-when-green
       color: 0e8a16
       description: "Owner approved: merge once every gate is green"
+    - name: nightly-failure
+      color: D93F0B
+      description: Automated nightly CI failure
     - name: release-blocker
       color: B60205
       description: Blocks releases while open - release-health fails release PRs and

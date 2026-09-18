@@ -98,7 +98,7 @@ class ChildRegistry {
       shell: opts.shell,
       env: opts.env,
       cwd: opts.cwd,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
       detached: Deno.build.os !== "windows",
       windowsHide: true,
     });
@@ -172,7 +172,9 @@ class ChildRegistry {
 
 export const registry = new ChildRegistry();
 
-/** Run one CLI turn: prompt on stdin, stdout/stderr captured to files under `turnsDir` (the
+/** Run one CLI turn: the prompt POSITIONAL as the last argument (never on stdin: npm's PowerShell
+ *  shims reject a stdin-piped invocation on Windows, codex.ps1 with a PSArgumentException and
+ *  claude with a silent exit 1), stdout/stderr captured to files under `turnsDir` (the
  *  kept home is un-scrubbed by contract; the log gets the label only). Never throws, and the
  *  child is dead by the time this returns, whatever happened. */
 export async function runTurn(
@@ -188,7 +190,7 @@ export async function runTurn(
 ): Promise<TurnResult> {
   if (registry.stopping) return { ok: false, stdout: "", stuck: false };
   log(`${label}: running`);
-  const spec = verbatimCliSpawn(command, args);
+  const spec = verbatimCliSpawn(command, [...args, prompt]);
   const env = childEnvironment(process.env, home, spec.binDir, real, extraEnv);
   let child: ChildProcess | undefined;
   const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
@@ -210,8 +212,6 @@ export async function runTurn(
         void Promise.race([streamsClosed, sleep(KILL_GRACE_MS)]).then(() => resolve(code));
       });
     });
-    spawned.stdin?.on("error", () => {}); // a child that exits early closes the pipe first
-    spawned.stdin?.end(prompt);
     // The deadline path is bounded by the kill's own grace: a tree that will not die ends the
     // turn as "stuck" instead of waiting on a close that never comes.
     let deadlineHit = false;

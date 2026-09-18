@@ -46,6 +46,9 @@ export interface FilePlan {
   content?: string;
   /** A directory (a home, a config library): rendered with a trailing separator. */
   directory?: true;
+  /** The landing's text is secret (a bundle, a move, a copy of declared content): the renderer
+   *  prints the path's verdict alone, whatever text an earlier landing of the path compared. */
+  secret?: true;
 }
 
 /**

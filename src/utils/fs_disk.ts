@@ -234,7 +234,10 @@ function planned(
   }
   if (text.render === "path-only") {
     landPlan({
-      files: [filePlan(path, kind, text.content === undefined ? {} : { content: text.content })],
+      files: [{
+        ...filePlan(path, kind, text.content === undefined ? {} : { content: text.content }),
+        secret: true,
+      }],
       apply() {},
     });
     return true;

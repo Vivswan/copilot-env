@@ -221,8 +221,10 @@ export function foldFilePlans(files: readonly FilePlan[]): FilePlan[] {
       path,
       verdict,
       attributes,
-      before: first.before,
-      content: last.content,
+      // A secret landing prints the verdict alone: no earlier landing's text is diffed against it.
+      ...(plans.some((plan) => plan.secret)
+        ? { secret: true as const }
+        : { before: first.before, content: last.content }),
       ...(plans.some((plan) => plan.directory) ? { directory: true as const } : {}),
     });
   }

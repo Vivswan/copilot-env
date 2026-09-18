@@ -183,6 +183,11 @@ test("under the plan collector a moved or copied secret keeps its declaration th
     facade.writeText(keyedCopy, '{"n":2}\n', { secretKeys: [] });
     facade.copyFile(keyed, join(dir, "keyed-plain.json"));
     writeFileReported(join(dir, "keyed-plain.json"), '{"token":"t","n":3}\n');
+    // An earlier plain write of the destination does not bring its text back into the diff.
+    const early = join(dir, "early.json");
+    facade.writeText(early, "{}\n");
+    facade.copyFile(keyed, early);
+    writeFileReported(early, '{"token":"t","n":4}\n');
     // Planned bytes decode as node decodes a file: a byte-order mark stays.
     facade.writeBytes(join(dir, "bom.txt"), new Uint8Array([239, 187, 191, 97]));
     expect(facade.readText(join(dir, "bom.txt"))).toBe("\uFEFFa");
@@ -208,6 +213,7 @@ test("under the plan collector a moved or copied secret keeps its declaration th
     `  token  <redacted> -> (absent)`,
     `  n  1 -> 2`,
     `create ${join(dir, "keyed-plain.json")}`,
+    `create ${join(dir, "early.json")}`,
     `create ${join(dir, "bom.txt")}`,
     `create ${binaryCopy}`,
     `create ${blob}`,

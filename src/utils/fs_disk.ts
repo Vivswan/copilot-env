@@ -54,15 +54,19 @@ import { sleepSync } from "./time.ts";
 import {
   type AttributeRow,
   bridgeRows,
+  carrySecretPath,
   dryRunActive as planCollecting,
   filePlan,
   type FileVerdict,
+  isSecretPath,
   landPlan,
+  plannedContent,
   plannedMissingDirectories,
   plannedState,
   readPlannedDir,
   recordBytes,
   recordPlannedMode,
+  recordSecretPath,
   recordShadow,
   shadowedText,
   textVerdict,
@@ -387,8 +391,13 @@ function bridgedRender(
   text: string,
   options: WriteOptions,
 ): { render: PlannedRender; attributes?: AttributeRow[]; verdict?: FileVerdict } {
-  if (!planCollecting() || options.secretKeys === undefined || options.secret) {
-    return { render: renderOf(options.secret) };
+  if (!planCollecting()) return { render: renderOf(options.secret) };
+  const declared = options.secret === true || options.secretKeys !== undefined;
+  if (declared) recordSecretPath(path);
+  if (options.secretKeys === undefined || options.secret) {
+    // An undeclared write over content the run declared secret (a copy of a settings bundle)
+    // prints its path alone: a line diff would print the old text.
+    return { render: options.secret || isSecretPath(path) ? "path-only" : "diff" };
   }
   // The bytes the write replaces, as the run sees them. An entry that stands but cannot be read
   // (a dangling link the real write lands through) is a rewrite of unknown bytes, never a create.
@@ -402,11 +411,13 @@ function bridgedRender(
     : { render: "diff", attributes: rows, verdict };
 }
 
-function plannedBefore(path: string): string | null {
-  const shadow = shadowedText(path);
-  if (shadow !== undefined) return shadow;
-  const read = readTextResult(path);
-  return read.kind === "text" ? read.text : null;
+/** A moved or copied file's content, as the run sees it, lands at `to` for the run's later
+ *  readers, and its secret declarations travel with it. */
+function carryContent(from: string, to: string): void {
+  const content = plannedContent(from);
+  if (content instanceof Uint8Array) recordBytes(to, content);
+  else if (content !== null) recordShadow(to, content);
+  carrySecretPath(from, to);
 }
 
 /** The mode a fresh file takes with no explicit one: 0666 under the umask (none on Windows). */
@@ -515,26 +526,23 @@ function writeStaged(path: string, data: string | Uint8Array, options: WriteOpti
 
 export function copyFile(from: string, to: string, detail?: string): void {
   const was = plannedLook(to);
+  // A copy of content the run declared secret prints its path alone, now and on a later write.
+  const render: PlannedRender = isSecretPath(from) ? "path-only" : "diff";
   if (
-    planned(verdictOf(was), to, undefined, {
+    planned(verdictOf(was), to, { render }, {
       syscall: `copyfile '${from}' -> '${to}'`,
       directory: "followed",
     })
   ) {
-    // The row is the wrapper's (the verdict alone); the source's text or bytes, as the run sees
-    // them, still land at `to` for the run's later readers.
-    const state = plannedState(from);
-    if (state?.kind === "bytes") recordBytes(to, state.bytes);
-    else {
-      const source = plannedBefore(from);
-      if (source !== null) recordShadow(to, source);
-    }
+    // The row is the wrapper's (the verdict alone); the source's content, as the run sees it, still
+    // lands at `to` for the run's later readers, and its secret declarations travel with it.
+    carryContent(from, to);
     return;
   }
   if (planCollecting() && underScratch(to) && plannedState(from) !== null) {
     // A probe's scratch copy of a file this run planned: the planned bytes land for real under
     // scratch (silent, as every scratch write), never the disk's stale ones.
-    const source = plannedBefore(from);
+    const source = plannedContent(from);
     if (source === null) {
       throw errno("ENOENT", `no such file or directory, copyfile '${from}' -> '${to}'`);
     }
@@ -645,18 +653,16 @@ export function rename(from: string, to: string): void {
   // Real only between scratch paths: a move touching anything else is planned whole, so a dry run
   // never takes a real source away.
   if (planCollecting() && !(underScratch(from) && underScratch(to))) {
-    // The moved file's text or bytes, as the run sees them, land at `to` for the run's later
-    // readers; the plan names the move, never the text (a moved store holds its tokens).
-    const state = plannedState(from);
-    const source = state?.kind === "bytes" ? null : plannedBefore(from);
-    planned(verdictOf(was), to, {
-      content: source ?? undefined,
-      render: "path-only",
-    }, {
+    if (plannedLook(from).kind === "absent") {
+      throw errno("ENOENT", `no such file or directory, rename '${from}' -> '${to}'`);
+    }
+    // The plan names the move, never the text (a moved store holds its tokens); the moved content,
+    // as the run sees it, lands at `to` for the run's later readers with its secret declarations.
+    planned(verdictOf(was), to, { render: "path-only" }, {
       syscall: `rename '${from}' -> '${to}'`,
       directory: isDirectoryEntry(from) ? "none" : "entry",
     });
-    if (state?.kind === "bytes") recordBytes(to, state.bytes);
+    carryContent(from, to);
     planned("delete", from);
     return;
   }

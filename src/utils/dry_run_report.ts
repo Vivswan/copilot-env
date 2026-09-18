@@ -181,8 +181,9 @@ function leaves(
   for (const [k, v] of Object.entries(value)) leaves(v, [...prefix, k], out, empties);
 }
 
-/** An empty table stands as a leaf (`{}`) where the other side has nothing at or under its key: a
- *  table set to `{}` and later dropped prints `{} -> (absent)`. */
+/** An empty table the run DROPS stands as a leaf (`{} -> (absent)`) when the other side has nothing
+ *  at or under its key; one gained or kept is no row, and a map emptied slot by slot prints only
+ *  its slots. */
 function emptyLeaves(
   empties: ReadonlySet<string>,
   own: Map<string, unknown>,
@@ -218,8 +219,8 @@ function docRows(
   const afterEmpties = new Set<string>();
   leaves(beforeDoc, [], before, beforeEmpties);
   leaves(afterDoc, [], after, afterEmpties);
+  for (const key of afterEmpties) beforeEmpties.delete(key);
   emptyLeaves(beforeEmpties, before, after);
-  emptyLeaves(afterEmpties, after, before);
   const rows: AttributeRow[] = [];
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const status: AttributeStatus = !before.has(key)

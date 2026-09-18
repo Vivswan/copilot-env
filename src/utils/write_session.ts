@@ -114,6 +114,9 @@ interface DryRunSession {
   opaqueFiles: Set<string>;
   /** Planned bytes by path (a byte write, a copied binary), for the run's later readers. */
   bytes: Map<string, Uint8Array>;
+  /** Paths whose planned content holds declared secrets (a whole-file secret, or declared keys):
+   *  a later undeclared write of one prints its path alone, never a line diff of the old text. */
+  secretPaths: Set<string>;
 }
 
 let session: DryRunSession | null = null;
@@ -158,7 +161,7 @@ export function landPlan(plan: WritePlan): void {
       }
       for (const key of [...session.modes.keys()]) if (below(key)) session.modes.delete(key);
       for (const key of [...session.bytes.keys()]) if (below(key)) session.bytes.delete(key);
-      for (const set of [session.dirs, session.fresh, session.opaqueFiles]) {
+      for (const set of [session.dirs, session.fresh, session.opaqueFiles, session.secretPaths]) {
         for (const key of [...set]) if (below(key)) set.delete(key);
       }
     } else if (file.content !== undefined) {
@@ -266,6 +269,7 @@ export async function collectDryRun<T>(
     fresh: new Set(),
     opaqueFiles: new Set(),
     bytes: new Map(),
+    secretPaths: new Set(),
   };
   try {
     const result = await body();
@@ -320,6 +324,31 @@ export function recordBytes(path: string, bytes: Uint8Array): void {
   if (session === null) return;
   session.bytes.set(path, bytes.slice());
   if (session.shadows.get(path) !== null) session.shadows.delete(path);
+}
+
+/** The content a landing left at `path` as the run sees it: planned bytes, planned text, the
+ *  disk's text, or null (absent, or a planned deletion). */
+export function plannedContent(path: string): string | Uint8Array | null {
+  const state = plannedState(path);
+  if (state?.kind === "bytes") return state.bytes;
+  if (state?.kind === "text") return state.text;
+  if (state?.kind === "gone") return null;
+  const read = readTextResult(path);
+  return read.kind === "text" ? read.text : null;
+}
+
+/** A path whose planned content holds declared secrets; the declaration travels with a move or a
+ *  copy, so a later undeclared write of the destination prints its path alone. */
+export function recordSecretPath(path: string): void {
+  session?.secretPaths.add(path);
+}
+
+export function carrySecretPath(from: string, to: string): void {
+  if (session?.secretPaths.has(from)) session.secretPaths.add(to);
+}
+
+export function isSecretPath(path: string): boolean {
+  return session?.secretPaths.has(path) ?? false;
 }
 
 /** Whether `path` exists as the run has planned it, landing by landing: true after a planned
@@ -397,9 +426,11 @@ export function readPlannedDir(dir: string): string[] {
 }
 
 /** readTextResult, with a dry run's planned content in front of the disk: a file this run planned
- *  to write reads as written, one it planned to delete reads as absent. Readers that decide a
- *  later write on a file an earlier landing touched read through here. */
+ *  to write reads as written (planned bytes decoded), one it planned to delete reads as absent.
+ *  Readers that decide a later write on a file an earlier landing touched read through here. */
 export function readPlannedText(path: string): TextReadResult {
+  const state = plannedState(path);
+  if (state?.kind === "bytes") return { kind: "text", text: new TextDecoder().decode(state.bytes) };
   const shadow = shadowedText(path);
   if (shadow === undefined) return readTextResult(path);
   return shadow === null ? { kind: "absent" } : { kind: "text", text: shadow };
@@ -428,9 +459,9 @@ function leaves(
   for (const [k, v] of Object.entries(value)) leaves(v, [...prefix, k], out, empties);
 }
 
-/** An empty record stands as a leaf (`{}`) where the other side has nothing at or under its key:
- *  a table set to `{}` and later dropped prints `{} -> (absent)`, as the patch writers printed it,
- *  while a map emptied slot by slot prints only its slots. */
+/** An empty record the run DROPS stands as a leaf (`{} -> (absent)`), as the patch writers printed
+ *  it, when the other side has nothing at or under its key; a map emptied slot by slot prints only
+ *  its slots, and an empty record gained or kept is no row (the store never printed one). */
 export function emptyLeaves(
   empties: ReadonlySet<string>,
   own: Map<string, unknown>,
@@ -460,8 +491,9 @@ export function planDocReplace(
   const afterEmpties = new Set<string>();
   leaves(current, [], before, beforeEmpties);
   leaves(next, [], after, afterEmpties);
+  // Only a dropped empty record is a row; one kept on both sides is neither.
+  for (const key of afterEmpties) beforeEmpties.delete(key);
   emptyLeaves(beforeEmpties, before, after);
-  emptyLeaves(afterEmpties, after, before);
   const rows: AttributeRow[] = [];
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const was = before.get(key);

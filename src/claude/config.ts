@@ -346,8 +346,8 @@ function settingsText(doc: Record<string, unknown>): string {
   return `${JSON.stringify(doc, null, 2)}\n`;
 }
 
-/** The one Claude value a preview must redact. */
-const SETTINGS_SECRETS: readonly string[] = [`env.${AUTH_TOKEN_ENV}`];
+/** The settings leaves a dry run redacts; every writer of a profile's settings file declares them. */
+export const SETTINGS_SECRETS: readonly string[] = [`env.${AUTH_TOKEN_ENV}`];
 
 /** In place, as Claude Code itself writes it: a user's symlinked settings.json stays a link, and an
  *  unwritable file refuses the write instead of being replaced beside its permissions. */

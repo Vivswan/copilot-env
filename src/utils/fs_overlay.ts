@@ -532,6 +532,10 @@ export class Overlay {
   /** A link built aside and renamed over `link`: a file or a link there is replaced, a directory
    *  is the rename's own refusal (EISDIR; EPERM on Windows), raw, as the disk side raises it. */
   atomicSymlink(target: string, link: string): void {
+    // A stale staging entry from a crashed run under this pid goes first, with its own row, as the
+    // disk side removes it before building the link beside the target.
+    const staged = join(dirname(link), `.${basename(link)}-next-${process.pid}`);
+    this.rm(staged, { force: true });
     const key = this.key(link, false);
     this.landingParent(key, "rename", link);
     const seen = this.view(key, "rename", link, false);

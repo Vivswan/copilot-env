@@ -199,7 +199,7 @@ function planned(
   refusals?: PlanRefusals,
 ): boolean {
   if (!planCollecting() || underScratch(path)) return false;
-  if (refusals !== undefined && kind !== "delete" && text.directory === undefined) {
+  if (refusals !== undefined && kind !== "delete") {
     // Only a mkdir makes a parent: a create under one that is neither present nor planned by this
     // run is the syscall's ENOENT. A directory at a file's target is its EISDIR.
     // An open follows a link, so the parent that must be there is the link target's; the parent
@@ -241,7 +241,10 @@ function planned(
   if (text.render === "path-only") {
     landPlan({
       files: [{
-        ...filePlan(path, kind, text.content === undefined ? {} : { content: text.content }),
+        ...filePlan(path, kind, {
+          ...(text.content === undefined ? {} : { content: text.content }),
+          ...(text.directory === undefined ? {} : { directory: text.directory }),
+        }),
         ...(text.secret ? { secret: true } : {}),
         ...(text.secretKeys !== undefined && text.secretKeys.length > 0
           ? { secretKeys: text.secretKeys }
@@ -712,13 +715,21 @@ export function rename(from: string, to: string): void {
     // as the run sees it, lands at `to` for the run's later readers with its secret declarations,
     // which also govern every row the destination already has.
     const carried = secretOf(from);
+    // A moved directory lands as one: the run's later mkdir and reads below it meet a directory
+    // there, as they do on the disk after the real move. The source's kind is the run's own first
+    // (a file planned where the disk holds a directory moves as a file), the disk's otherwise.
+    const source = plannedState(from);
+    const directory = source === null || (source.kind === "opaque" && !source.file)
+      ? isDirectoryEntry(from)
+      : source.kind === "dir";
     planned(verdictOf(was), to, {
       render: "path-only",
       secret: carried.whole,
       secretKeys: [...carried.keys],
+      ...(directory ? { directory: true as const } : {}),
     }, {
       syscall: `rename '${from}' -> '${to}'`,
-      directory: isDirectoryEntry(from) ? "none" : "entry",
+      directory: directory ? "none" : "entry",
     });
     carryContent(from, to);
     planned("delete", from);

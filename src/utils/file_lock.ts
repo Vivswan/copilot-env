@@ -12,10 +12,10 @@ import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
 import { isEnoentOrNotdir } from "./fs.ts";
 import * as fs from "./fs_facade.ts";
+import { dryRunActive } from "./fs_facade.ts";
 import { isRecord } from "./json.ts";
 import { pidAlive } from "./pid.ts";
 import { sleepSync } from "./time.ts";
-import { dryRunActive } from "./write_session.ts";
 
 // --- the shared bounded-wait acquisition policy --------------------------------
 //

@@ -15,7 +15,7 @@ import { configTableOutput, runConfig } from "./commands/config.ts";
 import { runCredits } from "./commands/credits.ts";
 import { runDryRun } from "./commands/dry_run.ts";
 import { runEnv } from "./commands/env.ts";
-import { spawnedByDryRun } from "./utils/report_write.ts";
+import { spawnedByDryRun } from "./utils/dry_run.ts";
 import { collectDryRun } from "./utils/write_session.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";

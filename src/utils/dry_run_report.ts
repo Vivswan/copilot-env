@@ -3,9 +3,10 @@
 // diff, never a record of the operations: a file rewritten with its own bytes is `same`, a path
 // created and deleted within the run is nothing, and a tree removed is one `delete` row (as the real
 // run's one `deleted ->` line), unless the run made the directory again, when the disk's children
-// it no longer lists are named. A disk file the run carried by path (a rename, a chmod) prints its
-// verdict alone: its bytes were never decoded.
-import { lstatSync, readdirSync, readFileSync, type Stats, statSync } from "node:fs";
+// it no longer lists are named. A disk file the run carried by path (a rename, a chmod, a copy), a
+// planned link, and a file declared secret as a whole print their verdict alone: no bytes of theirs
+// were decoded, or none may print.
+import { lstatSync, readdirSync, readFileSync, readlinkSync, type Stats, statSync } from "node:fs";
 import { extname, join, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import type { FileContent, Overlay, OverlayEntry } from "./fs_overlay.ts";
@@ -46,7 +47,8 @@ function diskStat(key: string, follow: boolean): Stats | null {
 }
 
 /** A delete is judged by lstat (the link itself goes); a planned file or directory by stat, and a
- *  link at its path is replaced by the plain entry, which is a rewrite whatever the bytes. */
+ *  link at its path is replaced by the plain entry, which is a rewrite whatever the bytes; a
+ *  planned link by lstat, against the disk link's target. */
 export function diffOverlay(overlay: Overlay): FileChange[] {
   const changes: FileChange[] = [];
   for (const [key, entry] of overlay.entries) {
@@ -56,9 +58,23 @@ export function diffOverlay(overlay: Overlay): FileChange[] {
       if (raw !== null) changes.push(change(name, "delete", raw.isDirectory()));
       continue;
     }
+    if (entry.kind === "link") {
+      changes.push(change(name, linkVerdict(key, entry.target, raw), false));
+      continue;
+    }
     const link = raw?.isSymbolicLink() ?? false;
     const disk = link ? diskStat(key, true) : raw;
-    changes.push(entryChange(key, name, entry, disk, link, overlay.secretKeysOf(key)));
+    changes.push(
+      entryChange(
+        key,
+        name,
+        entry,
+        disk,
+        link,
+        overlay.secretKeysOf(key),
+        overlay.isSecretFile(key),
+      ),
+    );
     // The children a fresh directory no longer lists went with the tree.
     if (entry.kind === "dir" && entry.fresh && disk?.isDirectory()) {
       for (const child of readdirSync(key).sort()) {
@@ -71,6 +87,18 @@ export function diffOverlay(overlay: Overlay): FileChange[] {
   return changes;
 }
 
+/** A link is the same only as a disk link with the same target text; anything else there is
+ *  replaced. */
+function linkVerdict(key: string, target: string, disk: Stats | null): FileVerdict {
+  if (disk === null) return "create";
+  if (!disk.isSymbolicLink()) return "rewrite";
+  try {
+    return readlinkSync(key) === target ? "same" : "rewrite";
+  } catch {
+    return "rewrite";
+  }
+}
+
 function change(path: string, verdict: FileVerdict, directory: boolean): FileChange {
   return { path, verdict, directory, attributes: [] };
 }
@@ -78,26 +106,29 @@ function change(path: string, verdict: FileVerdict, directory: boolean): FileCha
 /** Whether the bytes the run leaves at `key` differ from the disk's there. */
 function bytesDiffer(key: string, content: FileContent, before: string | null): boolean {
   if ("text" in content) return before !== content.text;
+  if ("bytes" in content) return !readFileSync(key).equals(content.bytes);
   if (content.disk === key) return false;
   return !readFileSync(key).equals(readFileSync(content.disk));
 }
 
 /** A disk entry of the other kind (a file where a directory is planned, or the reverse) is a
  *  rewrite whose rows read as a create's: nothing of the old inode carries over. A mode-only
- *  change is a rewrite with no row, as a helper's executable-bit repair prints. */
+ *  change is a rewrite with no row, as a helper's executable-bit repair prints. A file declared
+ *  secret as a whole has no rows and no text: nothing of it may print. */
 function entryChange(
   key: string,
   name: string,
-  entry: Exclude<OverlayEntry, { kind: "gone" }>,
+  entry: Exclude<OverlayEntry, { kind: "gone" | "link" }>,
   disk: Stats | null,
   replacesLink: boolean,
   secretKeys: ReadonlySet<string>,
+  secretFile: boolean,
 ): FileChange {
   const directory = entry.kind === "dir";
   const sameKind = disk !== null && disk.isDirectory() === directory;
   const planned = entry.kind === "file" && "text" in entry.content ? entry.content.text : null;
   const before = sameKind && planned !== null ? readFileSync(key, "utf8") : null;
-  const rows = planned === null ? [] : docRows(key, before, planned, secretKeys);
+  const rows = planned === null || secretFile ? [] : docRows(key, before, planned, secretKeys);
   const differs = !sameKind || replacesLink ||
     (entry.kind === "file" && bytesDiffer(key, entry.content, before)) ||
     (disk !== null && (disk.mode & 0o777) !== entry.mode);
@@ -108,14 +139,15 @@ function entryChange(
     : "same";
   // A line diff cannot redact a value inside a line, so a file with a declared secret prints its
   // verdict alone when it has no leaf rows.
-  const text = planned !== null && rows.length === 0 && secretKeys.size === 0
+  const text = planned !== null && rows.length === 0 && secretKeys.size === 0 && !secretFile
     ? { before, after: planned }
     : undefined;
   return { path: name, verdict, directory, attributes: rows, ...(text ? { text } : {}) };
 }
 
+/** A blank file is the empty document, as the store and settings readers read it. */
 function parseDoc(path: string, text: string | null): Doc | null {
-  if (text === null) return {};
+  if (text === null || text.trim() === "") return {};
   const ext = extname(path).toLowerCase();
   if (ext === ".json") return parseJsonRecord(text);
   if (ext !== ".toml") return null;

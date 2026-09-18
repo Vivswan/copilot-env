@@ -2,7 +2,7 @@
 // landPlan records instead of applying) and prints the folded plan on stdout. One printer for
 // every `--dry-run`, so a command's preview and its real writes come from the same plan objects.
 import { renderDryRun } from "../agents/write_plan.ts";
-import { underDryRunMarker } from "../utils/report_write.ts";
+import { underDryRunMarker } from "../utils/dry_run.ts";
 import { terminalWidth, wrapLine } from "../utils/table.ts";
 import { collectDryRun, type FilePlan } from "../utils/write_session.ts";
 

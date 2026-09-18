@@ -6,8 +6,10 @@
 // a config.toml re-inspected after its write) sees the planned state, not the disk. utils layer:
 // the JSON store (src/copilot_api/config.ts) lands through here too.
 import { readdirSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, extname } from "node:path";
+import { parse as parseToml } from "smol-toml";
 import { isEnoent, missingDirectories, readTextResult, type TextReadResult } from "./fs.ts";
+import { parseJsonRecord } from "./json.ts";
 
 export type FileVerdict = "create" | "rewrite" | "same" | "delete";
 
@@ -95,6 +97,9 @@ interface DryRunSession {
   shadows: Map<string, string | null>;
   /** Directories the run has planned to create, so an ancestor is listed once. */
   dirs: Set<string>;
+  /** The mode a planned chmod or an explicit-mode write left at a path (the facade's stat reads
+   *  it; a plan row carries no mode). */
+  modes: Map<string, number>;
 }
 
 let session: DryRunSession | null = null;
@@ -121,8 +126,13 @@ export function landPlan(plan: WritePlan): void {
     if (file.verdict === "create") session.files.push(...missingAncestors(file.path));
     if (file.directory) session.dirs.add(file.path);
     session.files.push(file);
-    if (file.verdict === "delete") session.shadows.set(file.path, null);
-    else if (file.content !== undefined) session.shadows.set(file.path, file.content);
+    if (file.verdict === "delete") {
+      session.shadows.set(file.path, null);
+      session.modes.delete(file.path);
+    } else if (file.content !== undefined) session.shadows.set(file.path, file.content);
+    // A landing whose bytes the plan does not carry (a copy, a link) still ends an earlier
+    // planned deletion: presence is then judged from the files, not from a stale tombstone.
+    else session.shadows.delete(file.path);
   }
   plan.commit?.();
 }
@@ -151,7 +161,7 @@ export async function collectDryRun<T>(
   files: FilePlan[] = [],
 ): Promise<{ files: FilePlan[]; result: T }> {
   if (session !== null) throw new Error("a dry run is already collecting");
-  session = { files, shadows: new Map(), dirs: new Set() };
+  session = { files, shadows: new Map(), dirs: new Set(), modes: new Map() };
   try {
     const result = await body();
     return { files: session.files, result };
@@ -191,9 +201,22 @@ export function plannedDirectory(path: string): boolean {
   return session?.dirs.has(path) ?? false;
 }
 
+/** The mode a landing of this run left at `path` (a chmod, an explicit-mode write), for the
+ *  facade's stat under the collector; a planned deletion forgets it. */
+export function recordPlannedMode(path: string, mode: number | null): void {
+  if (session === null) return;
+  if (mode === null) session.modes.delete(path);
+  else session.modes.set(path, mode & 0o777);
+}
+
+export function plannedMode(path: string): number | undefined {
+  return session?.modes.get(path);
+}
+
 /** readdirSync, with a dry run's landings in front of the disk: an entry this run planned to
- *  delete is gone, one it planned to create (a file or a directory) is there. Absent reads as
- *  empty; a regular file at the path is readdir's own ENOTDIR, never an empty directory. */
+ *  delete is gone, one it planned to create (a file, a copy, a link, or a directory) is there.
+ *  Absent reads as empty; a regular file at the path is readdir's own ENOTDIR, never an empty
+ *  directory. */
 export function readPlannedDir(dir: string): string[] {
   let names: string[];
   try {
@@ -204,6 +227,11 @@ export function readPlannedDir(dir: string): string[] {
   }
   if (session === null) return names;
   const present = new Set(names);
+  for (const file of session.files) {
+    if (dirname(file.path) !== dir) continue;
+    if (file.verdict === "delete") present.delete(basename(file.path));
+    else present.add(basename(file.path));
+  }
   for (const [path, content] of session.shadows) {
     if (dirname(path) !== dir) continue;
     if (content === null) present.delete(basename(path));
@@ -266,4 +294,35 @@ export function planDocReplace(
     rows.push({ key, status, current: was, next: now, secret: secret(key) });
   }
   return rows;
+}
+
+// --- the transition bridge ---------------------------------------------------------------------
+// The rows a write through the fs facade lands while this collector is active (fs_disk.ts): the
+// file's leaves before and after, by its syntax. Goes with this module.
+
+/** A parsed JSON or TOML document, `{}` for an absent or blank file (what the store and settings
+ *  readers make of blank content), null when the text is neither or does not parse (the verdict
+ *  alone is then what can be said). */
+function parseDoc(path: string, text: string | null): Record<string, unknown> | null {
+  if (text === null || text.trim() === "") return {};
+  const ext = extname(path).toLowerCase();
+  if (ext === ".json") return parseJsonRecord(text);
+  if (ext !== ".toml") return null;
+  try {
+    return parseToml(text);
+  } catch {
+    return null;
+  }
+}
+
+export function bridgeRows(
+  path: string,
+  before: string | null,
+  after: string,
+  secretKeys: ReadonlySet<string>,
+): AttributeRow[] {
+  const current = parseDoc(path, before);
+  const next = parseDoc(path, after);
+  if (current === null || next === null) return [];
+  return planDocReplace(current, next, (key) => secretKeys.has(key));
 }

@@ -100,14 +100,16 @@ test("no-unreported-fs-writes: every way of reaching a write API, and nothing el
   }
 });
 
-test("no-unreported-fs-writes: scoped to src/, minus the seam, the lock layer and migrations", () => {
+test("no-unreported-fs-writes: scoped to src/, minus the seam's disk side, the marker, the lock layer and migrations", () => {
   const raw = 'import { writeFileSync } from "node:fs";';
   // The absolute spellings deno lint passes, built the way the plugin builds its scope.
   const abs = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url));
   expect(lint(raw, abs("../src/commands/example.ts"))).toHaveLength(1);
-  expect(lint(raw, abs("../src/utils/report_write.ts"))).toEqual([]);
+  expect(lint(raw, abs("../src/utils/fs_disk.ts"))).toEqual([]);
 
-  expect(lint(raw, "src/utils/report_write.ts")).toEqual([]);
+  expect(lint(raw, "src/utils/fs_disk.ts")).toEqual([]);
+  expect(lint(raw, "src/utils/dry_run.ts")).toEqual([]);
+  expect(lint(raw, "src/utils/report_write.ts")).toHaveLength(1);
   expect(lint(raw, "src/utils/file_lock.ts")).toEqual([]);
   expect(lint(raw, "src/scripts/log_mute_preload.ts")).toEqual([]);
   expect(lint(raw, "src/migrations/4.0.0.ts")).toEqual([]);

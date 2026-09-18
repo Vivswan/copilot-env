@@ -1,139 +1,339 @@
-// The one seam for every file the CLI reads or writes. A real run passes through to node:fs for
-// reads and to the reporting wrappers (report_write.ts) for writes, so every write outside
-// copilot-env's homes is still named on stderr; a dry run routes both to the overlay, so nothing
-// touches the disk and every later read in the same run sees the planned state. Synchronous and
-// node:fs-shaped, so a caller's error handling (`code === "ENOENT"`) is the same in both modes.
+// The one seam for every file the CLI reads or writes. A real run passes reads through to node:fs
+// and writes to fs_disk.ts, which names each one on stderr; a dry run routes both to the overlay,
+// so nothing touches the disk and every later read in the same run sees the planned state.
+// Synchronous and node:fs-shaped, so a caller's error handling (`code === "ENOENT"`) is the same
+// in both modes. Scratch this process minted (scratchDir) is real in every mode: a probe's
+// throwaway config must exist for the spawned CLI to read it.
 //
-// The overlay is one per process and entered once per command by the command layer; a run's
-// children learn of the dry run through the marker report_write.ts hands them, not through here.
-import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname } from "node:path";
-import { diffOverlay, type FileChange } from "./dry_run_report.ts";
-import { isEnoent } from "./fs.ts";
-import { type EntryStats, errno, Overlay, rmDirectoryRefused } from "./fs_overlay.ts";
+// The overlay is one per process and entered once per command (src/utils/dry_run.ts); a run's
+// children learn of the dry run through the marker that module hands them, not through here.
+//
+// TRANSITION BRIDGE. Until the command layer enters withDryRun, `--dry-run` runs under the plan
+// collector (collectDryRun, write_session.ts): the writes then record plan rows (fs_disk.ts), and
+// the reads here answer from the plan's shadows first, so a writer already on the facade previews
+// as one still on the wrappers. The bridge goes with write_session.ts.
 import {
-  atomicWriteFile,
-  chmodReported,
-  mkdirReported,
-  removeReported,
-  removeTreeReported,
-  renameReported,
-  writeFileReported,
-} from "./report_write.ts";
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import * as disk from "./fs_disk.ts";
+import { type DirEntry, type EntryStats, errno, Overlay } from "./fs_overlay.ts";
+import { underScratch } from "./report_write.ts";
+import {
+  dryRunActive as planCollecting,
+  plannedDirectory,
+  plannedMode,
+  plannedPresence,
+  readPlannedDir,
+  shadowedText,
+} from "./write_session.ts";
 
-export type { EntryStats, FileChange };
+export type { DirEntry, EntryStats };
+export type { RemoveOptions, ScratchDir, WriteOptions } from "./fs_disk.ts";
+export { assertNotDirectory, RenameRefusedError } from "./fs_disk.ts";
 
 let overlay: Overlay | null = null;
 
+/** True inside withDryRun, and under the plan collector while the bridge stands. */
 export function dryRunActive(): boolean {
-  return overlay !== null;
+  return overlay !== null || planCollecting();
 }
 
-/** A body that fails partway has planned what precedes the failure, as the real command would have
- *  landed it, so the changes travel with the error instead of being lost to a throw. */
-export type DryRunOutcome<T> =
-  | { status: "done"; result: T; changes: FileChange[] }
-  | { status: "failed"; error: unknown; changes: FileChange[] };
-
-export async function withDryRun<T>(body: () => Promise<T>): Promise<DryRunOutcome<T>> {
+/** Runs `body` with every call on this seam answered by a fresh overlay, and hands the overlay back
+ *  with the outcome: a body that fails partway has planned what precedes the failure, as the real
+ *  command would have landed it, so the changes travel with the error instead of being lost to a
+ *  throw. The report of it is src/utils/dry_run.ts's. */
+export async function underOverlay<T>(
+  body: () => Promise<T>,
+): Promise<
+  | { status: "done"; result: T; overlay: Overlay }
+  | { status: "failed"; error: unknown; overlay: Overlay }
+> {
   if (overlay !== null) throw new Error("a dry run is already active");
   const run = new Overlay();
   overlay = run;
   try {
-    const result = await body();
-    return { status: "done", result, changes: diffOverlay(run) };
+    return { status: "done", result: await body(), overlay: run };
   } catch (error) {
-    return { status: "failed", error, changes: diffOverlay(run) };
+    return { status: "failed", error, overlay: run };
   } finally {
     overlay = null;
   }
 }
 
-export function readText(path: string): string {
-  return overlay === null ? readFileSync(path, "utf8") : overlay.readText(path);
+/** The overlay a write to `path` lands in: none for scratch, which stays real in every mode. */
+function overlayFor(path: string): Overlay | null {
+  return overlay !== null && !underScratch(path) ? overlay : null;
 }
 
-export interface WriteOptions {
-  /** Set on the file whether it is fresh or exists (Deno chmods after the write). */
-  mode?: number;
-  /** Staged beside the target and renamed over it; a missing parent directory is created. */
-  atomic?: boolean;
-  /** Rides on the stderr write line. */
-  detail?: string;
-  /** Dotted keys of this file whose values a dry run prints as `<redacted>`. */
-  secretKeys?: Iterable<string>;
-}
+// --- the transition bridge for reads -------------------------------------------------------------
 
-export function writeText(path: string, text: string, options: WriteOptions = {}): void {
-  if (overlay !== null) {
-    if (options.atomic) overlay.mkdir(dirname(path));
-    overlay.writeText(path, text, {
-      mode: options.mode,
-      replace: options.atomic,
-      secretKeys: options.secretKeys,
-    });
-    return;
+const S_IFREG = 0o100000;
+const S_IFDIR = 0o040000;
+
+/** What the plan collector says about `path`: planned text, a planned file whose bytes the plan
+ *  does not carry (a copy, a byte write, a link), a planned directory, a planned deletion, or
+ *  nothing (the disk speaks). */
+type Shadow = { kind: "text"; text: string } | "opaque" | "dir" | "gone" | null;
+
+function shadow(path: string): Shadow {
+  if (!planCollecting()) return null;
+  const text = shadowedText(path);
+  if (text === null) return "gone";
+  if (text !== undefined) return { kind: "text", text };
+  if (plannedDirectory(path)) return "dir";
+  if (plannedPresence(path) !== true) return null;
+  // A plan without bytes (a chmod, a copy, a link): the disk says which kind stands there.
+  try {
+    return statSync(path).isDirectory() ? "dir" : "opaque";
+  } catch {
+    return "opaque";
   }
-  if (options.atomic) atomicWriteFile(path, text, options.mode, options.detail);
-  else writeFileReported(path, text, { mode: options.mode, detail: options.detail });
+}
+
+function shadowStats(seen: Exclude<Shadow, "gone" | null>, path: string): EntryStats {
+  const file = seen !== "dir";
+  let mode: number;
+  let size = 0;
+  try {
+    const disk = statSync(path);
+    mode = disk.mode & 0o777;
+    size = disk.size;
+  } catch {
+    mode = file ? 0o644 : 0o755;
+  }
+  // A planned chmod, or a write's explicit mode, is what the run leaves there.
+  mode = plannedMode(path) ?? mode;
+  if (typeof seen === "object") size = new TextEncoder().encode(seen.text).length;
+  return {
+    isFile: () => file,
+    isDirectory: () => !file,
+    isSymbolicLink: () => false,
+    mode: (file ? S_IFREG : S_IFDIR) | mode,
+    size: file ? size : 0,
+    mtimeMs: Date.now(),
+  };
+}
+
+// --- reads -------------------------------------------------------------------------------------
+
+export function readText(path: string): string {
+  if (overlay !== null) return overlay.readText(path);
+  const seen = shadow(path);
+  if (seen === "gone") throw errno("ENOENT", "open", path);
+  if (seen === "dir") throw errno("EISDIR", "open", path);
+  // The plan carries no bytes for an opaque file: the disk is the nearest answer.
+  return seen === null || seen === "opaque" ? readFileSync(path, "utf8") : seen.text;
+}
+
+export function readBytes(path: string): Uint8Array {
+  if (overlay !== null) return overlay.readBytes(path);
+  const seen = shadow(path);
+  if (seen === null || seen === "opaque") return new Uint8Array(readFileSync(path));
+  return new TextEncoder().encode(readText(path));
+}
+
+/** "absent" and "unreadable" stay apart: a caller that authorizes destructive action on "absent"
+ *  must never see a permission error or a directory collapsed into it. */
+export type TextReadResult =
+  | { kind: "text"; text: string }
+  | { kind: "absent" }
+  | { kind: "unreadable"; error: string };
+
+/** A dangling symlink reads ENOENT through the read but the entry itself exists (lstat), so it is
+ *  unreadable, never absent. */
+export function readTextResult(path: string): TextReadResult {
+  try {
+    return { kind: "text", text: readText(path) };
+  } catch (e) {
+    if (isEnoentOrNotdir(e) && entryAbsent(path)) return { kind: "absent" };
+    return { kind: "unreadable", error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function isEnoentOrNotdir(e: unknown): boolean {
+  const code = (e as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/** Fail-closed: only lstat's own ENOENT/ENOTDIR confirms absence; EACCES or a transient error reads
+ *  as "something may be there". */
+function entryAbsent(path: string): boolean {
+  try {
+    lstat(path);
+    return false;
+  } catch (e) {
+    return isEnoentOrNotdir(e);
+  }
 }
 
 export function stat(path: string): EntryStats {
-  return overlay === null ? statSync(path) : overlay.stat(path);
+  if (overlay !== null) return overlay.stat(path);
+  const seen = shadow(path);
+  if (seen === "gone") throw errno("ENOENT", "stat", path);
+  return seen === null ? statSync(path) : shadowStats(seen, path);
 }
 
 export function lstat(path: string): EntryStats {
-  return overlay === null ? lstatSync(path) : overlay.stat(path, false);
+  if (overlay !== null) return overlay.stat(path, false);
+  const seen = shadow(path);
+  if (seen === "gone") throw errno("ENOENT", "lstat", path);
+  return seen === null ? lstatSync(path) : shadowStats(seen, path);
 }
 
 export function exists(path: string): boolean {
-  return overlay === null ? existsSync(path) : overlay.exists(path);
+  if (overlay !== null) return overlay.exists(path);
+  const seen = shadow(path);
+  if (seen === null) return existsSync(path);
+  return seen !== "gone";
 }
 
 export function readdir(path: string): string[] {
-  return overlay === null ? readdirSync(path) : overlay.readdir(path);
+  if (overlay !== null) return overlay.readdir(path);
+  if (!planCollecting()) return readdirSync(path);
+  const seen = shadow(path);
+  if (seen === "gone") throw errno("ENOENT", "scandir", path);
+  if (seen !== null && seen !== "dir") throw errno("ENOTDIR", "scandir", path);
+  if (seen === null && !existsSync(path)) throw errno("ENOENT", "scandir", path);
+  return readPlannedDir(path);
+}
+
+/** Each name with its kind (a link is the link, never what it points at). */
+export function readdirEntries(path: string): DirEntry[] {
+  if (overlay !== null) return overlay.readdirEntries(path);
+  if (!planCollecting()) return readdirSync(path, { withFileTypes: true });
+  return readdir(path).map((name) => {
+    const stats = lstat(join(path, name));
+    return {
+      name,
+      isFile: () => stats.isFile(),
+      isDirectory: () => stats.isDirectory(),
+      isSymbolicLink: () => stats.isSymbolicLink(),
+    };
+  });
+}
+
+export function readlink(path: string): string {
+  return overlay === null ? readlinkSync(path) : overlay.readlink(path);
+}
+
+export function realpath(path: string): string {
+  return overlay === null ? realpathSync(path) : overlay.realpath(path);
+}
+
+// --- writes ------------------------------------------------------------------------------------
+
+/** Atomic by default: staged beside the target, fsynced, renamed over it, the parent made. */
+export function writeText(path: string, text: string, options: disk.WriteOptions = {}): void {
+  const run = overlayFor(path);
+  if (run === null) {
+    disk.writeText(path, text, options);
+    return;
+  }
+  if (options.atomic !== false) run.mkdir(dirname(path));
+  run.writeText(path, text, {
+    mode: options.mode,
+    replace: options.atomic !== false,
+    secretKeys: options.secretKeys,
+    secret: options.secret,
+  });
+}
+
+export function writeBytes(path: string, bytes: Uint8Array, options: disk.WriteOptions = {}): void {
+  const run = overlayFor(path);
+  if (run === null) {
+    disk.writeBytes(path, bytes, options);
+    return;
+  }
+  if (options.atomic !== false) run.mkdir(dirname(path));
+  run.writeBytes(path, bytes, { mode: options.mode, replace: options.atomic !== false });
+}
+
+/** The bytes of `from` land at `to`; a dry run carries them by path and prints the verdict alone. */
+export function copyFile(from: string, to: string, detail?: string): void {
+  const run = overlayFor(to);
+  if (run === null) disk.copyFile(from, to, detail);
+  else run.copyFile(from, to);
 }
 
 /** Always `mkdir -p`. */
 export function mkdir(path: string, options: { mode?: number; detail?: string } = {}): void {
-  if (overlay === null) mkdirReported(path, options.mode, options.detail);
-  else overlay.mkdir(path, options.mode);
+  const run = overlayFor(path);
+  if (run === null) disk.mkdir(path, options.mode, options.detail);
+  else run.mkdir(path, options.mode);
 }
 
-export interface RemoveOptions {
-  recursive?: boolean;
-  /** An absent path is no error, as in node. */
-  force?: boolean;
-  detail?: string;
+/** node's rmSync: a directory needs `recursive` (ERR_FS_EISDIR), an absent path needs `force`
+ *  (ENOENT). Returns whether anything was there. */
+export function rm(path: string, options: disk.RemoveOptions = {}): boolean {
+  const run = overlayFor(path);
+  return run === null ? disk.rm(path, options) : run.rm(path, options);
 }
 
-export function rm(path: string, options: RemoveOptions = {}): void {
-  if (overlay !== null) {
-    overlay.rm(path, options);
-    return;
-  }
-  // The wrappers read an absent path as "nothing to do" and refuse a directory with their own
-  // error; node's rmSync reads them as ENOENT and ERR_FS_EISDIR, and a lookup under a regular file
-  // as ENOTDIR whatever `force` says.
-  let directory: boolean;
-  try {
-    directory = lstatSync(path).isDirectory();
-  } catch (e) {
-    if (!isEnoent(e)) throw e;
-    if (options.force) return;
-    throw errno("ENOENT", "lstat", path);
-  }
-  if (directory && !options.recursive) throw rmDirectoryRefused(path);
-  if (options.recursive) removeTreeReported(path, options.detail);
-  else removeReported(path, options.detail);
+/** node's rmdir: an empty directory (or a Windows junction) goes; entries, a file, and an absent
+ *  path are its own refusals. */
+export function rmdir(path: string): void {
+  const run = overlayFor(path);
+  if (run === null) disk.rmdir(path);
+  else run.rmdir(path);
 }
 
 export function chmod(path: string, mode: number, detail?: string): void {
-  if (overlay === null) chmodReported(path, mode, detail);
-  else overlay.chmod(path, mode);
+  const run = overlayFor(path);
+  if (run === null) disk.chmod(path, mode, detail);
+  else run.chmod(path, mode);
 }
 
 export function rename(from: string, to: string): void {
-  if (overlay === null) renameReported(from, to);
-  else overlay.rename(from, to);
+  const run = overlayFor(to);
+  if (run === null) disk.rename(from, to);
+  else run.rename(from, to);
+}
+
+export function symlink(target: string, path: string, type?: "junction"): void {
+  const run = overlayFor(path);
+  if (run === null) disk.symlink(target, path, type);
+  else run.symlink(target, path);
+}
+
+/** The replacement link is built aside and renamed over `link`, so a concurrent reader never sees
+ *  a missing link. */
+export function atomicSymlink(target: string, link: string): void {
+  const run = overlayFor(link);
+  if (run === null) disk.atomicSymlink(target, link);
+  else run.atomicSymlink(target, link);
+}
+
+/** A file opened for writing (created or truncated at the open): the one way runtime code streams
+ *  bytes to a path (a release download, the daemon's log). A dry run has no handle to hand back
+ *  and refuses outside scratch. */
+export function openWritable(path: string, detail?: string): Promise<Deno.FsFile> {
+  refuseHandle(path);
+  return disk.openWritable(path, detail);
+}
+
+/** openWritable as a node fd, for a child's stdio. */
+export function openWriteFd(path: string, detail?: string): number {
+  refuseHandle(path);
+  return disk.openWriteFd(path, detail);
+}
+
+function refuseHandle(path: string): void {
+  if (overlayFor(path) !== null) throw new Error(`${path}: a dry run opens no file for writing`);
+}
+
+/** A process-transient directory: real in every mode, never reported or planned, and taken away
+ *  whole by removeScratchDir before exit. */
+export function scratchDir(prefix: string): disk.ScratchDir {
+  return disk.scratchDir(prefix);
+}
+
+export function removeScratchDir(dir: disk.ScratchDir): void {
+  disk.removeScratchDir(dir);
 }

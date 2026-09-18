@@ -1,17 +1,16 @@
-# Repo-owned: generated once by Vivswan/repo-platform, never
-# overwritten by sync. ci.yml's `site` leg runs this action on the judged
-# commit before the fleet renders docs/ and deploys: build this repository's
-# own website here. Contract and examples: repo-platform's docs/site.md.
+# Repo-owned: seeded once by the fleet sync, never overwritten by a later sync. ci.yml's `site` leg runs this action
+# on the judged commit before the fleet renders docs/ and deploys: build this repository's own website here.
+# Contract and examples: the fleet's docs/site.md.
 
 name: Site Build
 description: Builds this repository's own website for the fleet's Pages deploy.
 
 inputs:
   base-path:
-    description: The URL path the site is served under ("/" with a custom domain, else "/<repo>/")
+    description: The URL path the site is served under, "/<repo>/"
     required: true
   origin:
-    description: The site's origin (https://<owner>.github.io, or https://<domain>)
+    description: The site's origin, https://<owner>.github.io
     required: true
 
 outputs:
@@ -22,16 +21,13 @@ outputs:
 runs:
   using: composite
   steps:
-    # A bun repository replaces the no-op step below with, for example:
-    #   - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-    #     with: {bun-version-file: .bun-version}
-    #   - {run: bun install --frozen-lockfile, shell: bash}
+    # A repository with a website replaces the no-op step below with its toolchain setup and, for example:
     #   - id: build
     #     shell: bash
     #     env: {PAGES_BASE_PATH: "${{ inputs.base-path }}", PAGES_ORIGIN: "${{ inputs.origin }}"}
     #     run: |
-    #       bun run build:web
-    #       echo "dist=apps/web/dist" >> "$GITHUB_OUTPUT"
+    #       <your build command>
+    #       echo "dist=<the built site directory>" >> "$GITHUB_OUTPUT"
     - id: build
       shell: bash
       run: |

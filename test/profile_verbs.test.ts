@@ -3,7 +3,7 @@
 // spelling printed (stdout, exit code) in a scratch HOME, and the new spelling must print the same.
 // The two kept aliases (`agent init`, `agent auth`) are proven against their verbs live, in twin
 // homes. The verbs are reserved names, pinned at the CLI.
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { runCli } from "./helpers/run.ts";
@@ -300,14 +300,16 @@ test(
     const scratch = scratchHome();
     const before = treeContents(scratch.home);
     // Headless, no credential, no flag: refused BEFORE the mode lands (named and default alike).
+    // The needles stop at the backticked command: consola's CI reporter keeps the backticks, the
+    // interactive one strips them.
     const named = observe(["profile", "work", "add", "--proxy"], scratch);
     expect(named.exitCode).toBe(1);
-    expect(named.stderr).toContain(
-      "pass --no-auth to record the mode alone, then agent profile work auth",
-    );
+    expect(named.stderr).toContain("pass --no-auth to record the mode alone");
+    expect(named.stderr).toContain("agent profile work auth --provider");
     const init = observe(["init", "--proxy"], scratch);
     expect(init.exitCode).toBe(1);
-    expect(init.stderr).toContain("pass --no-auth to record the mode alone, then agent auth");
+    expect(init.stderr).toContain("pass --no-auth to record the mode alone");
+    expect(init.stderr).toContain("agent auth --provider");
     expect(treeContents(scratch.home)).toEqual(before);
     // --dry-run: the mode's plan and the planned step, nothing run.
     const dry = observe(["profile", "work", "add", "--proxy", "--dry-run"], scratch);
@@ -338,4 +340,20 @@ test(
     // Eight cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
   240_000,
+);
+
+test(
+  "`agent sync` re-renders the default profile too: a deleted settings.json comes back from the slot",
+  () => {
+    const scratch = scratchHome();
+    expect(observe(["auth", "--set", "ghu_test"], scratch).exitCode).toBe(0);
+    expect(observe(["init", "--proxy"], scratch).exitCode).toBe(0);
+    const settings = join(scratch.home, ".claude", "settings.json");
+    const before = readFileSync(settings, "utf8");
+    rmSync(settings);
+    const sync = observe(["sync"], scratch);
+    expect(sync.exitCode).toBe(0);
+    expect(readFileSync(settings, "utf8")).toBe(before);
+  },
+  120_000,
 );

@@ -636,16 +636,25 @@ export function registerListCommand(program: Command): void {
 }
 
 /** `agent sync`: every profile's re-render (the `cx --profile` hook). */
+/** `agent sync`: every profile's re-render. The default's is `profile sync`'s (each agent's own,
+ *  the Desktop entry discovered); the named loop (`runProfile({ sync })`) is the launcher's quiet
+ *  hook and stays discovery-free, so the default is not folded into it. */
 export function registerSyncCommand(program: Command): void {
   program
     .command("sync")
     .helpGroup("Settings:")
     .description(
-      "Refresh every profile's wiring against the live proxy ports; one profile is " +
-        "`agent profile <name> sync`.",
+      "Re-render every profile's agent files from the store, the default's included; one " +
+        "profile is `agent profile [<name>] sync`.",
     )
     .option("--dry-run", DRY_RUN_HELP)
-    .action((opts: Opts) => runProfile({ sync: true, mode: "auto", dryRun: Boolean(opts.dryRun) }));
+    .action(async (opts: Opts) => {
+      const dryRun = Boolean(opts.dryRun);
+      if (new CopilotEnvState().readProfileSlot(null).kind === "complete") {
+        await (dryRun ? runDryRun(syncDefault) : syncDefault());
+      }
+      await runProfile({ sync: true, mode: "auto", dryRun });
+    });
 }
 
 /** The default's add (`agent init` and `agent profile add` with no name): both agents, the

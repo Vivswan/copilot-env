@@ -165,5 +165,5 @@ export function meta(id: RegisteredCheckId): {
 
 /** The re-wire fix for a NAMED profile (mode is sticky from the store on a re-add). */
 export function profileAddFix(name: ProfileName): string {
-  return `agent profile --add ${name}`;
+  return `agent profile ${name} add`;
 }

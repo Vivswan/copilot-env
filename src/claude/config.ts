@@ -535,7 +535,7 @@ function planWebSearchPair(
       logger.warn(
         "copilot-env MCP registration failed; removing the managed WebSearch deny so the " +
           "builtin stays reachable (it will 400 on Copilot Direct) - fix ~/.claude.json, " +
-          "then rewire with `agent claude --direct`",
+          "then rewire with `agent init --direct`",
       );
       return stripManagedWebSearchDenyPatch(doc, settingsPath);
     };
@@ -620,7 +620,7 @@ export type ClaudeWriteRequest = ManagedWrite & {
 export function planClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): ClaudeWritePlan {
   const profile = request.profile ?? null;
   // read(), not resolve(): no `gh` spawn (runClaude already resolved and fail-fasted; this
-  // backstops direct callers like --settings-for). read() is fail-closed, so a recorded provider
+  // backstops the `cl --profile` launcher's re-render). read() is fail-closed, so a recorded provider
   // whose token is gone reads "none" and a broken slot is refused too.
   if (
     profile !== null &&
@@ -629,7 +629,7 @@ export function planClaudeConfig(claudeHome: string, request: ClaudeWriteRequest
   ) {
     throw new Error(
       `${profileLabel(profile)} has no credential of its own (a named profile never falls back ` +
-        `to the default credential) - run \`agent auth --profile ${profile}\` first.`,
+        `to the default credential) - run \`agent profile ${profile} auth\` first.`,
     );
   }
 

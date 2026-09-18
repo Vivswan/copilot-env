@@ -14,6 +14,7 @@ import {
   loginWithGhCli,
   parseAcquisition,
   runAuth,
+  runPrintProxyToken,
 } from "../src/commands/auth.ts";
 import {
   Credential,
@@ -142,7 +143,7 @@ async function captureLog(fn: () => Promise<void>): Promise<string> {
 }
 
 const PROVIDER_CONFLICT = "--provider selects how to authenticate and cannot combine with " +
-  "--get/--del/--check/--list/--identities/--identity/--print-proxy-token";
+  "--get/--del/--check";
 
 // Every rejection fires at the parse, before any state read, probe, or prompt: the probe seam
 // counts here, and a rejected flag set that probed first fails its row on the count. The bug
@@ -158,7 +159,7 @@ test("auth: every conflicting or malformed flag set is refused at the parse, bef
   const rows: { args: AuthArgs; error: string | RegExp }[] = [
     { args: { get: true, del: true }, error: "mutually exclusive" },
     { args: { get: true, check: true }, error: "mutually exclusive" },
-    { args: { identity: true, list: true }, error: "mutually exclusive" },
+    { args: { identity: true, identities: true }, error: "mutually exclusive" },
     { args: { provider: "bogus" }, error: "--provider must be one of" },
     {
       args: { set: "ghu_x", provider: "copilot" },
@@ -168,16 +169,9 @@ test("auth: every conflicting or malformed flag set is refused at the parse, bef
     { args: { get: true, provider: "bogus" }, error: PROVIDER_CONFLICT },
     { args: { del: true, provider: "copilot" }, error: PROVIDER_CONFLICT },
     { args: { check: true, provider: "gh-cli" }, error: PROVIDER_CONFLICT },
-    { args: { printProxyToken: true, provider: "gh-token" }, error: PROVIDER_CONFLICT },
-    { args: { list: true, provider: "copilot" }, error: PROVIDER_CONFLICT },
     { args: { identities: true, provider: "copilot" }, error: PROVIDER_CONFLICT },
     { args: { identity: "copilot-developer-cli", provider: "copilot" }, error: PROVIDER_CONFLICT },
-    // Other rejections keep precedence over the conflict: --list/--profile and an invalid name
-    // still report themselves.
-    {
-      args: { list: true, profile: "work", provider: "copilot" },
-      error: "--list reports every profile; it does not combine with --profile",
-    },
+    // Other rejections keep precedence over the conflict: an invalid name still reports itself.
     {
       args: { get: true, profile: "NOT valid", provider: "copilot" },
       error: /invalid profile name/,
@@ -188,8 +182,6 @@ test("auth: every conflicting or malformed flag set is refused at the parse, bef
     { args: { ghUser: "x", get: true }, error: "--gh-user pins the gh account" },
     { args: { ghUser: "x", del: true }, error: "--gh-user pins the gh account" },
     { args: { ghUser: "x", check: true }, error: "--gh-user pins the gh account" },
-    { args: { ghUser: "x", printProxyToken: true }, error: "--gh-user pins the gh account" },
-    { args: { ghUser: "x", list: true }, error: "--gh-user pins the gh account" },
   ];
   try {
     for (const row of rows) {
@@ -318,9 +310,9 @@ test("headless gh-token never reads the env: that is gh-env's job", async () => 
   await expect(runAuth({ provider: "gh-env" })).rejects.toThrow(/GH_TOKEN/);
 });
 
-test("auth --profile <unknown> errors instead of creating a half profile", async () => {
+test("a named auth on an unknown profile errors instead of creating a half profile", async () => {
   isolate();
-  // A profile is created ONLY by `agent profile --add`'s atomic commit, so re-auth refuses an
+  // A profile is created ONLY by `agent profile <name> add`'s atomic commit, so re-auth refuses an
   // unknown name BEFORE any acquisition runs.
   await expect(runAuth({ set: "ghu_x", profile: "ghost" })).rejects.toThrow(
     /no such profile 'ghost'/,
@@ -356,7 +348,7 @@ test("auth --profile <unknown> errors instead of creating a half profile", async
 
 test("token acquisition narrates 'Using' + the account, never 'Stored' (persistence is the caller's write)", async () => {
   isolate();
-  // The token is only ACQUIRED here -- `agent profile --add` commits it later,
+  // The token is only ACQUIRED here -- `agent profile <name> add` commits it later,
   // atomically with the profile's mode, so a "Stored" claim at this point would
   // be false on that path (and premature even on the plain auth path).
   const inline = await captureStderr(() => runAuth({ set: "ghu_inline_value" }));
@@ -396,17 +388,17 @@ test("githubLoginLook asks GraphQL for the viewer and reads a login, a 401, or a
   });
 });
 
-test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile --add`", async () => {
+test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile <name> add`", async () => {
   isolate();
   // Recommending a re-auth would hit the no-store-slot gate, so the hint reuses the store's
   // no-such-profile phrasing. Asserted without backticks: consola renders code spans, stripping
   // them.
   const addHint = "no such profile 'ghost' - create it with ";
-  const addCommand = "agent profile --add ghost --direct|--proxy";
+  const addCommand = "agent profile ghost add --direct|--proxy";
   const got = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
   expect(got).toContain(addHint);
   expect(got).toContain(addCommand);
-  expect(got).not.toContain("agent auth --profile");
+  expect(got).not.toContain("ghost auth");
   expect(process.exitCode).toBe(1);
   resetExitCode();
   const deleted = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
@@ -419,7 +411,7 @@ test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile -
   resetExitCode();
 
   // A partial slot (de-authed, mode kept) re-auths in place, so the hint stays
-  // `agent auth --profile`.
+  // `agent profile <name> auth`.
   const ghost = parseProfileName("ghost");
   state().commitProfile(ghost, {
     credential: { kind: "stored", provider: "gh-token", token: "ghu_old" },
@@ -427,14 +419,14 @@ test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile -
   });
   state().clearCredential(ghost);
   const gotExisting = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
-  expect(gotExisting).toContain("agent auth --profile ghost");
-  expect(gotExisting).not.toContain("profile --add");
+  expect(gotExisting).toContain("agent profile ghost auth");
+  expect(gotExisting).not.toContain("ghost add");
   const deletedExisting = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
   expect(deletedExisting).toContain("Nothing to clear for profile 'ghost'");
-  expect(deletedExisting).toContain("agent auth --profile ghost");
-  expect(deletedExisting).not.toContain("profile --add");
+  expect(deletedExisting).toContain("agent profile ghost auth");
+  expect(deletedExisting).not.toContain("ghost add");
   const checkedExisting = await captureLog(() => runAuth({ check: true, profile: "ghost" }));
-  expect(checkedExisting).toContain("run `agent auth --profile ghost`");
+  expect(checkedExisting).toContain("run `agent profile ghost auth`");
 });
 
 test("auth --get/--del/--check on a HALF-CREATED profile reuse the store's missing-slot phrasing", async () => {
@@ -444,7 +436,7 @@ test("auth --get/--del/--check on a HALF-CREATED profile reuse the store's missi
   const ghost = parseProfileName("ghost");
   mkdirSync(profileHome(ghost), { recursive: true });
   const phrase = "profile 'ghost' has no store slot (half-created; its daemon home exists)";
-  const addCommand = "agent profile --add ghost --direct|--proxy";
+  const addCommand = "agent profile ghost add --direct|--proxy";
   // Alignment pin: the store's own gate renders the same phrase + command, so a
   // rewording on either side fails here.
   let storeMessage = "";
@@ -523,7 +515,7 @@ const PAT_REJECTION = "400 Personal Access Tokens are not supported for this end
 
 const GENERIC_HOST = "https://api.githubcopilot.com";
 
-test("auth --identities: one column per host, ONE mark on the slot's identity under the pin, and never a read of the agent files", async () => {
+test("identity survey: one column per host, ONE mark on the slot's identity under the pin, and never a read of the agent files", async () => {
   const { claudeHome } = isolate();
   const credential = { kind: "stored", provider: "gh-token", token: "github_pat_x" } as const;
   state().setCredential(null, credential);
@@ -751,7 +743,7 @@ test("identityTableLines: with color on, the palette paints the survey like agen
   }
 });
 
-test("auth --identities: columns are the generic host, the account's when it differs, and the host in use (the literal, else the stored host)", async () => {
+test("identity survey: columns are the generic host, the account's when it differs, and the host in use (the literal, else the stored host)", async () => {
   isolate();
   const credential = { kind: "stored", provider: "gh-token", token: "github_pat_x" } as const;
   state().setCredential(null, credential);
@@ -821,7 +813,7 @@ test("auth --identities: columns are the generic host, the account's when it dif
   }
 });
 
-test("auth --identities: at 80 columns the note wraps inside its own column, never under the identity", async () => {
+test("identity survey: at 80 columns the note wraps inside its own column, never under the identity", async () => {
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
   // One host column (the account is served on the generic host), so the columns fit and wrap.
@@ -846,7 +838,7 @@ test("auth --identities: at 80 columns the note wraps inside its own column, nev
   }
 });
 
-test("auth --identity <id>: refused only when EVERY host rejects; one acceptance pins and names the other verdicts; auto clears", async () => {
+test("set identity <id>: refused only when EVERY host rejects; one acceptance pins and names the other verdicts; auto clears", async () => {
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
   stubIdentitySurvey();
@@ -950,7 +942,7 @@ test("auth --identity <id>: refused only when EVERY host rejects; one acceptance
   }
 });
 
-test("auth --get and --print-proxy-token return the credential without a catalog refresh or a Codex config rewrite: a due catalog and a healable Codex config stay byte-identical", async () => {
+test("auth --get and the proxy-token resolver return the credential without a catalog refresh or a Codex config rewrite: a due catalog and a healable Codex config stay byte-identical", async () => {
   isolate();
   enableCatalog();
   // What a refresh would act on: a config with our provider and no catalog
@@ -965,7 +957,7 @@ test("auth --get and --print-proxy-token return the credential without a catalog
 
   expect(await captureStdout(() => runAuth({ get: true }))).toBe("ghu_stored123\n");
   expect(process.exitCode).toBe(0);
-  expect(await captureStdout(() => runAuth({ printProxyToken: true }))).toMatch(
+  expect(await captureStdout(() => Promise.resolve(runPrintProxyToken(null)))).toMatch(
     /^[0-9a-f]{64}\n$/,
   );
 
@@ -1008,7 +1000,7 @@ test("resolveWithReason: one probe answers with the token or names the provider 
   expect(refused).not.toContain("minimal PATH");
   const named = new Credential(state(), parseProfileName("p1"));
   expect(named.resolveWithReason(() => ({ token: null })).reason).toContain(
-    "for profile 'p1' - run `agent auth --profile p1` to log in (a named profile never falls back",
+    "for profile 'p1' - run `agent profile p1 auth` to log in (a named profile never falls back",
   );
 });
 

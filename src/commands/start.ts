@@ -278,7 +278,7 @@ async function reportStartSummary(
         "Next steps",
         "",
         `  • Launch an agent under this profile:  \`cl --profile ${profile}\` / \`cx --profile ${profile}\``,
-        `    ...or \`claude --settings <path from agent profile --settings-for ${profile}>\` / \`codex --profile ${profile}\`.`,
+        `    ...or \`claude --settings <the path cl --profile ${profile} resolves>\` / \`codex --profile ${profile}\`.`,
         `  • \`agent stop --profile ${profile}\` stops this daemon (\`agent stop --all\` stops every one).`,
       ].join("\n"),
   );

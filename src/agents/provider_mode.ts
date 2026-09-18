@@ -21,7 +21,7 @@ export const MANAGED_MODE_DETAIL: Record<ManagedAgentMode, string> = {
 
 /** The ONLY shape the `--direct`/`--proxy` pair takes past the CLI boundary, so "both flags"
  *  is unrepresentable downstream. What "auto" means stays per-command (init/codex/claude probe
- *  live, models prefers a running proxy, profile --add is sticky). */
+ *  live, models prefers a running proxy, profile <name> add is sticky). */
 export type RequestedMode = ManagedAgentMode | "auto";
 
 /** The single place the `--direct --proxy` conflict is rejected. `message` lets a command keep

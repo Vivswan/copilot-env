@@ -78,7 +78,7 @@ function lowercaseKeys(headers: Record<string, string>): Record<string, string> 
   return Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
 }
 
-/** The survey's row shape (`agent auth --identities`): the candidates in the one header set every
+/** The survey's row shape (`agent profile identity`): the candidates in the one header set every
  *  mode sends, plus an id no candidate list carries (a pin, or the slot's stored identity). */
 const FOREIGN_ID = "my-custom-id";
 const SURVEY_ROWS = [

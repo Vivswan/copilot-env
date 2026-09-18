@@ -34,7 +34,7 @@ Two loopback fakes let the suite and CI run with no Copilot credential and no ne
 
 ### The fake model endpoint
 
-[aimock](https://github.com/CopilotKit/aimock) (`npm:@copilotkit/aimock`, pinned in `deno.json`, zero runtime deps) behind a thin front. aimock's request and stream shapes are validated daily against the real vendors by its own drift job (`.github/workflows/test-drift.yml` in CopilotKit/aimock).
+[aimock](https://github.com/CopilotKit/aimock) (`npm:@copilotkit/aimock`, pinned in `deno.json`, zero runtime deps) behind a thin front. aimock's request and stream shapes are validated daily against the real vendors by its own drift job (the `test-drift.yml` workflow in CopilotKit/aimock).
 
 The front serves the one route aimock lacks in Copilot's shape, the root `/models` catalog with the picker fields both smoke pickers read, and proxies everything else byte for byte. The real `claude` and `codex` binaries talk to it over `ANTHROPIC_BASE_URL` / a Codex provider `base_url`.
 

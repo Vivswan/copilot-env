@@ -26,9 +26,9 @@ export function bothAgents(catalogDeps?: CodexCatalogDeps): AgentAdapter[] {
 }
 
 /** How a Direct wiring gets its identity and host. `probe`: select afresh on the host in use and
- *  store the pair in the slot (a credential landing: `--add`, `agent auth --profile`, an import).
- *  `stored`: render the slot's pair under the pin and literal in force (a re-render: `--sync`,
- *  `--settings-for`, the Desktop reconcile, the `cl --profile` hook); a slot never probed is the
+ *  store the pair in the slot (a credential landing: `add`, `agent profile <name> auth`, an import).
+ *  `stored`: render the slot's pair under the pin and literal in force (a re-render: `sync`,
+ *  the `cl --profile` hook's re-render, the Desktop reconcile); a slot never probed is the
  *  one gap, closed by probing and storing at that re-render. */
 export type DirectResolution = "probe" | "stored";
 

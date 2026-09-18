@@ -87,7 +87,7 @@ function printStatus(): void {
   logger.log("");
   logger.log("agent mcp --serve   run the MCP stdio server (what registered clients spawn)");
   logger.log("agent mcp --remove  unregister from Claude Code and opt out (claude.wire-mcp false)");
-  logger.log("rewire: `agent claude --direct` or `agent init`");
+  logger.log("rewire: `agent init --direct` or `agent init`");
 }
 
 /** `claude.wire-mcp false` is stored first so a later direct write respects it; the deny and the

@@ -6,7 +6,6 @@ import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
 import { configuringLine, type RemoveProfileOptions } from "../agents/configure.ts";
 import { bothAgents, wireBothAgents } from "../agents/profile_wiring.ts";
 import { providerModeExitCode, type RequestedMode } from "../agents/provider_mode.ts";
-import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { ghAuthToken } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -16,12 +15,15 @@ import {
   credentialProvider,
   partialSlotGap,
   type ProfileMode,
-  type ProfileSlot,
-  type ProvisionedCredential,
 } from "../copilot_api/env_state.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
-import { parseProfileFlag, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import {
+  parseProfileFlag,
+  type Profile,
+  profileLabel,
+  type ProfileName,
+} from "../copilot_api/profile.ts";
 import { COLOR_ENABLED, gray, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
@@ -31,15 +33,8 @@ import { removeTreeReported } from "../utils/report_write.ts";
 import { formatTable, printKeyValue, printWrapped, terminalWidth } from "../utils/table.ts";
 import { filePlan, landPlan } from "../utils/write_session.ts";
 import { runDryRun } from "./dry_run.ts";
-import {
-  acquireCredential,
-  type CredentialAcquisition,
-  isPlannedCredential,
-  liveCredentialSourceLabel,
-  parseAcquisition,
-} from "./auth.ts";
 
-// Narration to stderr so `--settings-for`'s stdout stays a clean machine-readable path.
+// Narration to stderr, so a verb whose stdout is a payload keeps it clean.
 const logger = createStderrLogger();
 
 export interface ProfileArgs {
@@ -47,70 +42,37 @@ export interface ProfileArgs {
   del?: string;
   list?: boolean;
   check?: string;
-  settingsFor?: string;
   sync?: boolean;
   mode: RequestedMode;
-  provider?: string;
-  set?: string;
-  ghUser?: string;
   /** Print what the write would change, attribute by attribute, and write nothing. */
   dryRun?: boolean;
 }
 
 export type ProfileAction =
-  | { kind: "add"; name: ProfileName; mode: RequestedMode; acquisition: CredentialAcquisition }
+  | { kind: "add"; name: ProfileName; mode: RequestedMode }
   | { kind: "del"; name: ProfileName }
   | { kind: "check"; name: ProfileName }
-  | { kind: "settings-for"; name: ProfileName }
   | { kind: "sync" }
   | { kind: "list" };
 
 export function parseProfileAction(args: ProfileArgs): ProfileAction {
-  const actions = [args.add, args.del, args.check, args.settingsFor].filter(
-    (v) => v !== undefined,
-  ).length;
+  const actions = [args.add, args.del, args.check].filter((v) => v !== undefined).length;
   const subActions = actions + (args.list ? 1 : 0) + (args.sync ? 1 : 0);
   if (subActions !== 1) {
-    throw new Error(
-      "pass exactly one of --add <name>, --del <name>, --list, --check <name>, " +
-        "--settings-for <name>, --sync",
-    );
+    throw new Error("runProfile takes exactly one action: add, del, check, sync, or list");
   }
   if (args.dryRun && (args.list || args.check !== undefined)) {
-    throw new Error(
-      "--dry-run previews a write (--add, --del, --sync, --settings-for); --list and --check write nothing",
-    );
+    throw new Error("--dry-run previews a write (add, del, sync); list and check write nothing");
   }
   if (args.mode !== "auto" && args.add === undefined) {
-    throw new Error("--direct/--proxy only apply to --add (a profile's mode is set there)");
-  }
-  if (
-    (args.provider !== undefined || args.set !== undefined || args.ghUser !== undefined) &&
-    args.add === undefined
-  ) {
-    throw new Error(
-      "--provider/--set/--gh-user only apply to --add (re-auth an existing profile with `agent auth --profile <name>`)",
-    );
+    throw new Error("a mode applies to add alone (a profile's mode is set there)");
   }
   const add = parseProfileFlag(args.add);
-  if (add !== null) {
-    // setConflictWins: unlike `agent auth`, the --set conflict is reported even over a bogus
-    // provider name.
-    return {
-      kind: "add",
-      name: add,
-      mode: args.mode,
-      acquisition: parseAcquisition(args.provider, args.set, args.ghUser, {
-        setConflictWins: true,
-      }),
-    };
-  }
+  if (add !== null) return { kind: "add", name: add, mode: args.mode };
   const del = parseProfileFlag(args.del);
   if (del !== null) return { kind: "del", name: del };
   const check = parseProfileFlag(args.check);
   if (check !== null) return { kind: "check", name: check };
-  const settingsFor = parseProfileFlag(args.settingsFor);
-  if (settingsFor !== null) return { kind: "settings-for", name: settingsFor };
   if (args.sync) return { kind: "sync" };
   return { kind: "list" };
 }
@@ -119,11 +81,7 @@ export function parseProfileAction(args: ProfileArgs): ProfileAction {
  *  dry run prints the plan and drops the narration, so no handler carries a mode flag. */
 type Narration = () => void;
 
-async function runAdd(
-  name: ProfileName,
-  requested: RequestedMode,
-  acquisition: CredentialAcquisition,
-): Promise<Narration> {
+async function runAdd(name: ProfileName, requested: RequestedMode): Promise<Narration> {
   const state = new CopilotEnvState();
   const slot = state.readProfileSlot(name);
   const previous = slot.mode;
@@ -134,31 +92,32 @@ async function runAdd(
         "always has exactly one mode",
     );
   }
-  const credential = await profileCredential(name, slot, acquisition);
-  // A wiring uses the token: a Direct write selects its identity with it, and Claude Desktop's
-  // model discovery fetches with it in either mode. A dry run's stand-in for a login that did not
-  // run selects and fetches nothing, so no wiring is planned from it.
-  if (isPlannedCredential(credential)) {
-    throw new Error(
-      `a dry run cannot plan ${profileLabel(name)}'s wiring before its credential lands (the ` +
-        "Direct identity and Claude Desktop's model rows are selected with it); pass --set " +
-        `<token>, or run \`agent profile --add ${name} --${mode}\` for real`,
-    );
-  }
   // Switching away from proxy strands the profile's daemon: nothing will route to it anymore (a dry
   // run takes the same path and sends no signal: stopTrackedProxy).
   if (previous === "proxy" && mode === "direct") {
     const { signalled } = await stopTrackedProxy(0, name);
     if (signalled) logger.log(`  Stopped ${profileLabel(name)}'s proxy daemon (now direct).`);
   }
+  const switched = previous !== null && previous !== mode ? ` (switched from ${previous})` : "";
+  // The credential is `auth`'s: with none, or one that no longer resolves, the mode lands alone
+  // and the wiring waits for the credential landing, which wires both agents itself.
+  const credential = slot.credential;
+  const resolves = credential.kind === "stored" ||
+    (credential.kind === "gh-cli" && ghAuthToken(credential.ghUser) !== null);
+  if (!resolves) {
+    state.recordProfileMode(name, mode);
+    return () => {
+      logger.success(
+        `${profileLabel(name)} records ${mode}${switched}; both agents wait for its credential.`,
+      );
+    };
+  }
   logger.log(configuringLine(profileLabel(name), mode, " (both agents)"));
   // One atomic commit of the whole slot BEFORE the wiring, so the store never holds a half profile;
-  // a wiring failure leaves a complete-but-unwired slot that a re-add or the launchers' `--sync`
-  // re-derives.
+  // a wiring failure leaves a complete-but-unwired slot that a re-add or `agent sync` re-derives.
   state.commitProfile(name, { credential, mode });
   await wireBothAgents(name, mode, false, "probe");
   return () => {
-    const switched = previous !== null && previous !== mode ? ` (switched from ${previous})` : "";
     logger.success(`${profileLabel(name)} is ready${switched}.`);
     logger.log(`  Launch it:  cl --profile ${name}  /  cx --profile ${name}`);
     if (mode === "proxy") {
@@ -167,30 +126,6 @@ async function runAdd(
       );
     }
   };
-}
-
-/** Never the default's credential: a named profile never falls back. Reuse is judged on the one
- *  slot snapshot the caller read, never a second store read, so the value returned is exactly the
- *  value judged. */
-async function profileCredential(
-  name: ProfileName,
-  slot: ProfileSlot,
-  acquisition: CredentialAcquisition,
-): Promise<ProvisionedCredential> {
-  const existing = slot.credential;
-  if (acquisition.kind === "choose" && existing.kind !== "none") {
-    // A gh-cli slot resolves via its own recorded account pin (null = the active account).
-    const resolves = existing.kind === "stored" || ghAuthToken(existing.ghUser) !== null;
-    if (resolves) {
-      logger.log(
-        `  Reusing ${profileLabel(name)}'s existing credential (${
-          liveCredentialSourceLabel(existing)
-        }).`,
-      );
-      return existing;
-    }
-  }
-  return acquireCredential(acquisition, name);
 }
 
 /** Dependency order: the daemon holds the credential in memory and an unstoppable one throws before
@@ -238,7 +173,7 @@ async function runDel(name: ProfileName): Promise<Narration> {
 
 /** `daemon` is null for a direct profile, which has none. */
 export interface ProfileListRow {
-  name: ProfileName;
+  name: string;
   provider: string | null;
   mode: ProfileMode | null;
   daemon: ProxyStatus | null;
@@ -270,18 +205,28 @@ export function renderProfileTable(
 
 async function runList(): Promise<void> {
   const state = new CopilotEnvState();
-  const names = allProfileNames();
-  if (names.length === 0) {
-    consola.info("No profiles yet. Create one: `agent profile --add <name> --direct|--proxy`.");
+  // The default is a profile too: a row as soon as its slot carries anything.
+  const defaultSlot = state.readProfileSlot(null);
+  const profiles: Profile[] = [
+    ...(defaultSlot.mode !== null || defaultSlot.credential.kind !== "none" ? [null] : []),
+    ...allProfileNames(),
+  ];
+  if (profiles.length === 0) {
+    consola.info("No profiles yet. Create one: `agent profile <name> add --direct|--proxy`.");
     return;
   }
   // Concurrent probes: each can spend the full connect timeout on a wedged daemon, and paid
-  // serially that would make --list crawl once a couple of profiles are down.
+  // serially that would make the list crawl once a couple of profiles are down.
   const rows: ProfileListRow[] = await Promise.all(
-    names.map(async (name): Promise<ProfileListRow> => {
-      const slot = state.readProfileSlot(name);
-      const daemon = slot.mode === "proxy" ? await proxyStatus(name) : null;
-      return { name, provider: credentialProvider(slot.credential), mode: slot.mode, daemon };
+    profiles.map(async (profile): Promise<ProfileListRow> => {
+      const slot = state.readProfileSlot(profile);
+      const daemon = slot.mode === "proxy" ? await proxyStatus(profile) : null;
+      return {
+        name: profile ?? "default",
+        provider: credentialProvider(slot.credential),
+        mode: slot.mode,
+        daemon,
+      };
     }),
   );
   // One message, so consola stamps one prefix instead of one per row.
@@ -311,23 +256,17 @@ function runCheck(name: ProfileName): void {
   }
 }
 
-/** Both agents through wireBothAgents (the slot's pair is rendered into both files, so a Claude-only
- *  write can never leave the two disagreeing); the profile's Desktop entry
- *  follows the `claude.desktop` key through the adapter. The printed path is what `cl --profile`
- *  evals into `--settings`. */
-async function runSettingsFor(name: ProfileName): Promise<Narration> {
-  const slot = new CopilotEnvState().readProfileSlot(name);
-  if (slot.kind === "partial") {
-    throw new Error(partialSlotGap(name, slot));
-  }
-  await wireBothAgents(name, slot.mode, true, "stored");
-  // The path is the `cl --profile` eval contract, said once the file is real.
-  return () => process.stdout.write(`${settingsPathFor(resolveClaudeHome(), name)}\n`);
-}
-
-/** Reached only from `agent profile --sync`; what heals a committed-but-unwired `--add`. One
+/** Reached only from `agent sync`; what heals a committed-but-unwired `add`. One
  *  broken profile never blocks the rest, but any failure exits non-zero so callers can warn. */
 async function runSync(): Promise<Narration> {
+  const { synced, failed } = await syncNamedProfiles();
+  if (failed > 0) process.exitCode = 1;
+  return () => logger.log(`  ✓ Synced ${synced} profile${synced === 1 ? "" : "s"}.`);
+}
+
+/** Every NAMED profile from its slot, quiet and discovery-free (the launcher's hook); the
+ *  default's re-render is the CLI's `agent sync`, which counts it in. */
+export async function syncNamedProfiles(): Promise<{ synced: number; failed: number }> {
   let synced = 0;
   let failed = 0;
   const state = new CopilotEnvState();
@@ -345,8 +284,7 @@ async function runSync(): Promise<Narration> {
   // Cleanup only: the profile writes above landed their own entries, and the launcher hot path
   // never probes or discovers. Zero complete profiles still sweep.
   await reconcileClaudeDesktopWiring({ quiet: true });
-  if (failed > 0) process.exitCode = 1;
-  return () => logger.log(`  ✓ Synced ${synced} profile${synced === 1 ? "" : "s"}.`);
+  return { synced, failed };
 }
 
 export async function runProfile(args: ProfileArgs): Promise<void> {
@@ -354,14 +292,12 @@ export async function runProfile(args: ProfileArgs): Promise<void> {
   const run = (): Promise<Narration> => {
     switch (action.kind) {
       case "add":
-        return runAdd(action.name, action.mode, action.acquisition);
+        return runAdd(action.name, action.mode);
       case "del":
         return runDel(action.name);
       case "check":
         runCheck(action.name);
         return Promise.resolve(() => {});
-      case "settings-for":
-        return runSettingsFor(action.name);
       case "sync":
         return runSync();
       case "list":

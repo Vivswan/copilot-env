@@ -66,16 +66,14 @@ function storeCredential(): void {
   });
 }
 
-// Profiles are atomic units, the default included: on a fresh default (no recorded mode) a
-// single-agent command is the first landing and wires BOTH agents, as `agent init --proxy` would.
-test("`agent codex --proxy` on a fresh default lands both agents and records the mode they share", () => {
+// Profiles are atomic units, the default included: a mode flag on a fresh default (no recorded
+// mode) is the first landing and wires BOTH agents, recording the mode they share.
+test("`agent init --proxy` on a fresh default lands both agents and records the mode they share", () => {
   storeCredential();
   const codexHome = join(dir, ".codex");
   const claudeHome = join(dir, ".claude");
-  const run = runCli(["codex", "--proxy"], { env: childCliEnv(codexHome, claudeHome) });
+  const run = runCli(["init", "--proxy"], { env: childCliEnv(codexHome, claudeHome) });
   expect(run.exitCode).toBe(0);
-  // consola keeps or strips the backticks by reporter, so the match allows both.
-  expect(run.stderr).toMatch(/wiring both, as `?agent init --proxy`? would/);
   expect(existsSync(join(codexHome, "config.toml"))).toBe(true);
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(true);
   expect(recordedMode()).toBe("proxy");
@@ -196,7 +194,10 @@ test("a Direct landing with no resolvable credential is refused before any write
     { codex: "direct", claude: "direct" },
     bothAgents(NOOP_CATALOG_DEPS),
   );
-  expect(direct.failures.map((f) => f.includes("run `agent auth` first"))).toEqual([true, true]);
+  expect(direct.failures.map((f) => f.includes("run `agent auth` first"))).toEqual([
+    true,
+    true,
+  ]);
   // `auto` is refused the same way: a proxy landing on that credential would serve nothing.
   await expect(
     configureDefaultAgents({ codex: "auto", claude: "auto" }, bothAgents(NOOP_CATALOG_DEPS)),
@@ -270,16 +271,24 @@ test("static-key scopes the baked value to the named agent; the other keeps its 
   }
 });
 
-// The gap this pins: `agent claude` on a fresh machine used to write proxy wiring that could
-// serve nothing, and only `agent init` asked for a login (and not for `--proxy`).
+// The gap this pins: a single-agent re-render on a fresh machine used to write proxy wiring that
+// could serve nothing, and only the both-agents landing asked for a login (and not for `--proxy`).
 test("a wiring command with no credential refuses headless and writes nothing", () => {
   const codexHome = join(dir, ".codex");
   const claudeHome = join(dir, ".claude");
   const env = childCliEnv(codexHome, claudeHome);
-  for (const argv of [["claude", "--proxy"], ["codex"], ["init", "--proxy"]]) {
-    const run = runCli(argv, { env });
-    expect(run.exitCode).toBe(1);
-    expect(run.stderr).toContain("Not authenticated yet");
+  // The re-renders reach the login gate; `init` refuses before its mode lands and names the flag
+  // that records the mode alone.
+  for (
+    const [argv, refusal] of [
+      [["profile", "sync", "--claude"], "Not authenticated yet"],
+      [["profile", "sync", "--codex"], "Not authenticated yet"],
+      [["init", "--proxy"], "pass --no-auth to record the mode alone"],
+    ] as const
+  ) {
+    const run = runCli([...argv], { env });
+    expect(run.exitCode, argv.join(" ")).toBe(1);
+    expect(run.stderr, argv.join(" ")).toContain(refusal);
   }
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
   expect(existsSync(join(codexHome, "config.toml"))).toBe(false);

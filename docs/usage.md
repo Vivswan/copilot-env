@@ -11,21 +11,33 @@ The `agent` subcommands and the mechanisms behind the ones that need more than a
 ## Commands
 
 ```bash
-agent init                 # set up BOTH Codex + Claude (auto-detect direct vs proxy) + next steps
-                           #   --direct | --proxy forces one mode for both
-                           #   --dry-run prints every file and store key a write would change, old -> new,
-                           #   and writes nothing (on every writing command: auth, profile, config,
-                           #   settings, codex, claude, mcp --remove, shell, migrate, proxy-token,
-                           #   stop, launch, update, install)
+agent profile [<name>] <verb>  # everything about ONE profile; no name = the default profile
+                           #   add --direct|--proxy [--yes] [--no-auth]  its mode (both agents), then the credential
+                           #                              step unless --no-auth; the default with no flag probes
+                           #                              direct vs proxy; a mode change asks first
+                           #   del [--yes]                delete the named profile everywhere (asks first)
+                           #   show                       mode, provider, daemon
+                           #   auth                       its credential: --provider copilot|gh-cli|gh-token|gh-env,
+                           #                              --set <token>, --get, --del, --check, --gh-user <login>;
+                           #                              a new named profile is wired here
+                           #   identity                   the client identity survey; --set <id|auto> = set identity,
+                           #                              --get = get identity, --del = unset identity
+                           #   set <key> <value>          its preference (identity <id|auto> pins the client identity;
+                           #                              no name: = agent config --set for a shared proxy.*/probe.* key)
+                           #   unset <key>                drop one (no name: = agent config --del)
+                           #   get [<key>]                the value in effect for it, or its table
+                           #   sync [--claude|--codex]    re-render its agent files (a named profile is written as a
+                           #                              pair: both files, and the line says so)
+                           #   check                      its recorded mode; exits 0 direct, 2 proxy, 1 none or partial
+                           #   check --claude|--codex     that agent's file; exits 0 direct, 2 proxy or none, 1 other
+                           #   reserved words, never a new profile's name: the verbs, help, list, identity, and the
+                           #   runtime commands (launch env proxy-token mcp start stop health models credits settings)
+agent list                 # every profile: NAME  MODE  PROVIDER  DAEMON (also bare `agent profile`)
+agent init [--direct|--proxy] [--yes] [--no-auth]  # = agent profile add for the default profile
+agent auth <flags>         # = agent profile auth for the default profile
+agent sync                 # every profile's sync, the default's included
 agent launch <cli>         # launch claude|codex|copilot with managed flags + provider wiring
                            #   --profile <name>, --relaxed; agent args after --
-agent auth                 # manage the GitHub Copilot credential
-                           #   --provider copilot|gh-cli|gh-token|gh-env, --set <token>, --get, --del, --check
-                           #   --gh-user <login> pins gh-cli to one logged-in account
-                           #   --profile <name> addresses one profile's slot, --list shows every slot
-                           #   --identities surveys the Copilot client identities, --identity <id|auto> pins one
-agent profile              # manage named profiles: one credential + one mode, both agents
-                           #   --add <name> --direct|--proxy, --del <name>, --list, --check <name>
 agent config               # get/set preferences (see the configuration page)
                            #   --set <key> <value>, --get [key], --del <key>
 agent settings             # export/import every portable setting as one JSON bundle
@@ -42,20 +54,16 @@ agent models               # list the model ids + names Copilot serves (--proxy,
 agent env                  # print shell directives for the calling shell
                            #   CODEX_HOME / proxy ANTHROPIC_BASE_URL exports + opt-in launchers
 agent mcp                  # MCP wiring status (--serve runs the stdio server, --remove unwires)
+agent codex-mobile         # pair the Codex desktop app with the phone remote-control flow
 agent cost                 # estimated token spend across proxy DBs + Codex/Claude logs
                            #   --days N, --json, --per-day, --sources, --no-index
 agent credits              # this month's Copilot AI credits: spent, projected, paced (--json, --target N)
 agent update               # update to the latest release (--check, --auto-status, --no-verify)
 agent shell                # wire rc / $PROFILE (--clis installs/updates the CLIs, --remove unwires)
 agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run, --force)
-agent codex                # configure Codex; no flag auto-detects the backend
-agent codex --direct       # force GitHub Copilot Direct (no auto-detect probe)
-agent codex --check        # print provider mode + a Direct config's service_tier line
-                           #   exits 0 direct, 2 proxy or unconfigured, 1 other
-agent codex --mobile       # pair the Codex desktop app with the phone remote-control flow
-agent claude               # configure Claude; no flag auto-detects the backend
-agent claude --direct      # force GitHub Copilot Direct for Claude (no auto-detect probe)
-agent claude --check       # print Claude provider mode; exits 0 direct, 2 proxy or unconfigured, 1 other
+agent <cmd> --dry-run      # print every file and store key a write would change, old -> new, and write
+                           #   nothing: profile add|del|auth|set|unset|sync, sync, config, settings,
+                           #   mcp --remove, shell, migrate, proxy-token, stop, launch, update, install
 agent --full-help          # help for agent and every subcommand, every flag included
 ```
 
@@ -67,19 +75,19 @@ On Windows the same commands run via `agent` once the profile is wired, or direc
 
 ### Terminal width
 
-Every table (`agent auth --identities`, `agent auth --list`, `agent models`, `agent profile --list`, the `agent start` summary and alias table, the `agent cost` tables) fits the terminal:
+Every table (`agent profile identity`, `agent profile`, `agent models`, the `agent start` summary and alias table, the `agent cost` tables) fits the terminal:
 
 ```text
 width = a TTY: its size (80 on a size-less pty) -> a pipe: COLUMNS if set, else unbounded, never wraps
 fits             -> the natural layout
 too wide         -> the widest column shrinks first, never below its floor; a free-text column
-                    (the identities `note`, the `--list` description, the models detail, the
+                    (the identities `note`, the models detail, the
                     alias list) wraps at word boundaries, a header wraps between its words; a
                     path column (the `agent start` summary) splits at its column edge
 floors too wide  -> one block per record: "identity: codex", then "  header: cell" per non-empty cell
 ```
 
-The lines under the identities table wrap the same way, with a hanging indent. An exported `COLUMNS` never overrides a TTY's own size. With `COLUMNS` unset, `agent auth --identities | cat` prints the full-width lines; `COLUMNS=80 agent auth --identities | cat` prints the 80-column layout.
+The lines under the identities table wrap the same way, with a hanging indent. An exported `COLUMNS` never overrides a TTY's own size. With `COLUMNS` unset, `agent profile identity | cat` prints the full-width lines; `COLUMNS=80 agent profile identity | cat` prints the 80-column layout.
 
 Every other line wraps at the logger: a consola message is wrapped before its icon or frame goes on, each line under its own indent with the continuation one step deeper; a word wider than the line splits at the width. Reports printed without a logger (`agent health`, `agent cost`, the installer's next steps) and every prompt use the same wrapper. Down a pipe nothing wraps unless `COLUMNS` is set.
 
@@ -153,7 +161,7 @@ With `daemon.auto-start` off, the launchers prompt before starting a downed prox
 
 - Exit 0 alone is not a pass: a `UserPromptSubmit` hook that stops the prompt exits 0 after zero model turns. The check passes only when the stream carries the model's answer (an `assistant` event from Claude, an `item.completed` `agent_message` from Codex); otherwise it reports `exit 0 without a model answer` with the stream.
 - `CLAUDE_CONFIG_DIR` is never added to the child's env (a value your shell already exports is inherited like the rest): Claude namespaces its keychain entry by that variable, and adding even the default dir hid a keychain-held key a real session reads.
-- The `agent init` Direct probe is the other intent: an isolated throwaway config (`--bare`), and it is unchanged.
+- The `agent profile add` Direct probe is the other intent: an isolated throwaway config (`--bare`), and it is unchanged.
 
 ## Web search for Claude Code
 
@@ -190,10 +198,10 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
 }
 ```
 
-- **Credential:** it resolves the `agent auth` credential. Only when no provider is stored at all does it fall back to `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, so a bare clone works: `GH_TOKEN=... bin/agent mcp --serve`. A stored provider that no longer resolves is an error, never a silent switch to the env.
+- **Credential:** it resolves the `agent profile auth` credential. Only when no provider is stored at all does it fall back to `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, so a bare clone works: `GH_TOKEN=... bin/agent mcp --serve`. A stored provider that no longer resolves is an error, never a silent switch to the env.
 - **Profiles:** the registered server uses the default credential. A named profile that needs its own registers a second entry with `--profile <name>`; the [profiles section](authentication.md#profiles) has the Direct-over-proxy caveat.
 - **Plugin + skill:** the repo doubles as a Claude Code plugin (`.claude-plugin/`, which bundles the MCP server inline) and a skills collection. `npx skills add Vivswan/copilot-env` installs the companion [`web-search` skill](../skills/web-search).
-- **Windows:** the plugin's bundled registration runs `bin/agent`, a POSIX script. Wire through `agent init` or register `bin\agent.ps1` by hand instead.
+- **Windows:** the plugin's bundled registration runs `bin/agent`, a POSIX script. Wire through `agent profile add` or register `bin\agent.ps1` by hand instead.
 
 ## Cost reporting
 

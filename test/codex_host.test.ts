@@ -1,4 +1,4 @@
-// `agent codex` is proxy-forced here so nothing probes the network, and PATH is an empty dir so the
+// `agent profile sync --codex` is proxy-forced here so nothing probes the network, and PATH is an empty dir so the
 // shared-home prime can never spawn a real codex CLI.
 
 import * as fs from "node:fs";
@@ -103,7 +103,7 @@ function configureCodex(): Promise<void> {
   return runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
 }
 
-/** What `agent config --set codex-host true` followed by `agent codex` does. */
+/** What `agent config --set codex-host true` followed by `agent profile sync --codex` does. */
 function build(): Promise<void> {
   new CopilotEnvConfig().set({ "codex.host": true });
   return configureCodex();
@@ -131,7 +131,7 @@ async function stderrDuring(run: () => Promise<void>): Promise<string> {
   return captured;
 }
 
-/** The console.log lines `run` prints (`agent codex --check` reports on stdout). */
+/** The console.log lines `run` prints (`agent profile check --codex` reports on stdout). */
 async function stdoutLinesDuring(run: () => Promise<void>): Promise<string[]> {
   const lines: string[] = [];
   const original = console.log;
@@ -978,14 +978,14 @@ skipWin(
   },
 );
 
-// --- drift reports (`agent codex --check`) ------------------------------------
+// --- drift reports (`agent profile check --codex`) ------------------------------------
 
 skipWin(
-  "codexHostDrift and `agent codex --check` report every key-vs-disk disagreement",
+  "codexHostDrift and `agent profile check --codex` report every key-vs-disk disagreement",
   async () => {
     const { hostHome } = isolate();
     const missingLine =
-      `codex.host is on but the per-host CODEX_HOME farm is missing at ${hostHome}; run \`agent codex\` to rebuild it`;
+      `codex.host is on but the per-host CODEX_HOME farm is missing at ${hostHome}; run \`agent profile sync --codex\` to rebuild it`;
     const check = () => stdoutLinesDuring(() => runCodex({ kind: "check" }));
 
     new CopilotEnvConfig().set({ "codex.host": true });
@@ -1017,7 +1017,7 @@ skipWin(
     new CopilotEnvConfig().set({ "codex.host": false });
     expect(codexHostDrift()).toEqual({ kind: "disabled", hostHome });
     expect((await check()).at(-1)).toBe(
-      `codex.host is off but a per-host CODEX_HOME farm is still present at ${hostHome}; run \`agent codex\` to remove it`,
+      `codex.host is off but a per-host CODEX_HOME farm is still present at ${hostHome}; run \`agent profile sync --codex\` to remove it`,
     );
   },
 );
@@ -1077,7 +1077,7 @@ skipWin(
 );
 
 skipWin(
-  "`agent codex --check` reports the farm as CODEX_HOME and names a differing export",
+  "`agent profile check --codex` reports the farm as CODEX_HOME and names a differing export",
   async () => {
     const { hostHome } = isolate();
     process.env.CODEX_HOME = hostHome;
@@ -1115,7 +1115,7 @@ skipWin(
       { codexHome: root, codexHost: true, home: rootFarm, by: "farm" },
     ] as const;
     // The keys alone decide: the farm rows hold with the farm missing, holding a foreign config, or
-    // ours (the next `agent codex` builds or repairs it there).
+    // ours (the next `agent profile sync --codex` builds or repairs it there).
     const farmStates: Record<string, (farm: string) => void> = {
       missing: (farm) => fs.rmSync(farm, { recursive: true, force: true }),
       foreign: (farm) => {
@@ -1161,7 +1161,7 @@ skipWin(
       if (line === null) throw new Error("a differing export must produce the note");
       return line;
     };
-    /** `agent codex --check`: its report (stdout) and what it narrates (stderr). */
+    /** `agent profile check --codex`: its report (stdout) and what it narrates (stderr). */
     const check = async (): Promise<{ lines: string[]; narrated: string }> => {
       let lines: string[] = [];
       const narrated = await stderrDuring(async () => {

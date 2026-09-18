@@ -96,7 +96,7 @@ export function isManagedFarmExport(
   return Boolean(envHome && envHome === getHostLocalCodexHome(prefs.explicit));
 }
 
-/** The home every Codex write, `agent codex --check`, `agent env`, and the launch pin agree on, plus
+/** The home every Codex write, `agent profile check --codex`, `agent env`, and the launch pin agree on, plus
  *  the one note the writer, `--check`, and the launcher print (the other readers stay silent). */
 export interface CodexHomeResolution {
   home: string;
@@ -112,7 +112,7 @@ export interface CodexHomeResolution {
 /**
  * The ONE precedence, over the folded keys (codexHomePrefsFor). The keys alone decide: neither the
  * run-state record nor the disk steers the home, so a farm not built yet (or hand-edited) is still
- * the home the user asked for, and the next `agent codex` builds or repairs it there.
+ * the home the user asked for, and the next `agent profile sync --codex` builds or repairs it there.
  *
  *   codex.host on   -> the farm, <root>/hosts/<hostname>; a differing export is noted, not honoured
  *   codex.home set  -> that path; a differing export is noted, not honoured
@@ -234,18 +234,18 @@ export function codexHostDriftFrom(enabled: boolean, farm: CodexHostFarm): Codex
   return farm.active ? null : { kind: "inactive", hostHome: farm.hostHome };
 }
 
-/** The one-line report of a drift, shared by `agent codex --check` and `agent health`. */
+/** The one-line report of a drift, shared by `agent profile check --codex` and `agent health`. */
 export function codexHostDriftLine(drift: CodexHostDrift): string {
   switch (drift.kind) {
     case "missing":
-      return `codex.host is on but the per-host CODEX_HOME farm is missing at ${drift.hostHome}; run \`agent codex\` to rebuild it`;
+      return `codex.host is on but the per-host CODEX_HOME farm is missing at ${drift.hostHome}; run \`agent profile sync --codex\` to rebuild it`;
     case "inactive":
       // A farm built under another root (or before a rebuild) is wired but unrecorded: `agent
       // uninstall` would not delete it until a pass records it again.
       return `codex.host is on but no completed wiring pass is recorded for the per-host CODEX_HOME ` +
-        `farm at ${drift.hostHome}; run \`agent codex\` to record it`;
+        `farm at ${drift.hostHome}; run \`agent profile sync --codex\` to record it`;
     case "disabled":
-      return `codex.host is off but a per-host CODEX_HOME farm is still present at ${drift.hostHome}; run \`agent codex\` to remove it`;
+      return `codex.host is off but a per-host CODEX_HOME farm is still present at ${drift.hostHome}; run \`agent profile sync --codex\` to remove it`;
   }
 }
 

@@ -57,6 +57,7 @@ import {
   parseProfileName,
   type Profile,
   profileLabel,
+  type ProfileName,
   WINDOWS_DEVICE_NAME_RE,
 } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
@@ -936,7 +937,7 @@ export async function planClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   const existing: Record<string, unknown> = parsedRecord(existingRaw) ?? {};
 
   // The launcher hot path (quiet) must NEVER run discovery: its probes are billed requests. It
-  // reuses the recorded rows; init, profile-add, and `agent claude` refresh live.
+  // reuses the recorded rows; `agent init`, `agent profile <name> add`, and `agent profile sync --claude` refresh live.
   const models = opts.quiet
     ? (owned ? recordedModelRows(existing) ?? undefined : undefined)
     : await wiringModels(opts);
@@ -1398,6 +1399,24 @@ export function listClaudeDesktopOwnedArtifacts(
 export interface OwnedDesktopEntry {
   entry: DesktopMetaEntry;
   path: string;
+}
+
+/** The rename's retarget of an entry's own MCP row (the `copilot-env` server, never another
+ *  program's): its `--profile <from>` becomes `--profile <to>`. True when a row changed. */
+export function retargetEntryProfile(
+  doc: Record<string, unknown>,
+  from: ProfileName,
+  to: ProfileName,
+): boolean {
+  const servers = doc["managedMcpServers"];
+  const ours = Array.isArray(servers)
+    ? servers.find((row) => isRecord(row) && row["name"] === MCP_SERVER_NAME)
+    : undefined;
+  if (!isRecord(ours) || !Array.isArray(ours.args)) return false;
+  const at = ours.args.indexOf("--profile");
+  if (at === -1 || ours.args[at + 1] !== from) return false;
+  ours.args[at + 1] = to;
+  return true;
 }
 
 /** Undefined when the document carries no wiring of ours (absent or damaged: no target can claim

@@ -54,7 +54,7 @@ flowchart TD
   daemon -->|"DaemonCredential: the token rides in env, spliced into argv in-process"| daemonenv
 ```
 
-- **No implicit `gh` fallback:** a `none` slot resolves to null and the caller asks (`agent auth`); a named profile's reason names the profile.
+- **No implicit `gh` fallback:** a `none` slot resolves to null and the caller asks (`agent profile auth`); a named profile's reason names the profile.
 - **`static-key` is the one opt-in that bakes the value** ([authentication: static key](authentication.md#static-key) owns it): `resolveCredentialWiring()` resolves it once per agent at the write, and an unresolvable static credential is a failed write, never a silent return to the command shape.
 
 Demonstrated by: [test/configure.test.ts](../test/configure.test.ts), [test/auth.test.ts](../test/auth.test.ts), [test/codex_config.test.ts](../test/codex_config.test.ts).
@@ -97,7 +97,7 @@ flowchart TD
 ```
 
 - **The probe memo is process-lifetime and never invalidated** (`probeIntegrationIdentityCached()`): a CLI run ends in seconds, and the MCP server keeps its verdict until the transport closes. Injected I/O and a caller deadline bypass it.
-- **The slot is the truth, the agent files are outputs:** a re-render (`--sync`, `--settings-for`, the `cl --profile` hook, the Desktop reconcile and its status) renders the slot's pair under the pin and literal in force, never reading a file back. A credential landing (`agent auth --profile`, `agent profile --add`, a settings import) probes and stores.
+- **The slot is the truth, the agent files are outputs:** a re-render (`sync`, the `cl --profile` hook, the Desktop reconcile and its status) renders the slot's pair under the pin and literal in force, never reading a file back. A credential landing (`agent profile <name> auth`, `agent profile <name> add`, a settings import) probes and stores.
 - **A re-render makes no request while the pair is stored.** A missing pair is landed once through the landing path; the Desktop reconcile alone never lands, it names the repair.
 - **A credential write takes the previous pair with it,** so a definitive refusal leaves the files as they were and an empty pair: a credential refused under every identity works under none, and the next Direct landing probes again.
 - **A pin is configuration, an overlay:** it is rendered over the stored pair and never enters it, so setting or clearing it applies at the next re-render; a landing under a pin or literal stores only the half the probe answered, and the other half is probed once when the overlay is cleared.
@@ -130,8 +130,8 @@ flowchart LR
 ```
 
 - **No fallback** ([authentication: profiles](authentication.md#profiles) owns the rule): `Credential.resolveWithReason()` names the profile in its reason, and a launch on a partial slot reports `partialSlotGap()` instead of guessing.
-- **The default is a profile too,** under the reserved `default` key. Its `mode` is the one mode both agents share, with one writer: `commitDefaultWiring()` in `src/agents/configure_defaults.ts`, which records it (and the probed pair) after BOTH agents' writes succeeded, so a failed write leaves the previous record.
-- **A single-agent command re-renders the default** and never moves its record: with a pair stored it renders that pair; with no record, or a Direct record whose pair a credential write took, it lands both agents as `agent init` would.
+- **The default is a profile too,** under the reserved `default` key. Its `mode` is the one mode both agents share. `commitDefaultWiring()` in `src/agents/configure_defaults.ts` records it (and the probed pair) after BOTH agents' writes succeeded, so a failed write leaves the previous record; `add` with no credential yet records the mode alone.
+- **A single-agent command re-renders the default** and never moves its record: with a pair stored it renders that pair; with no record, or a Direct record whose pair a credential write took, it lands both agents as `agent profile add` would. The record has two writers: the landing after both agents wrote, and `add` with no credential yet, which records the mode alone.
 
 Demonstrated by: [test/profiles.test.ts](../test/profiles.test.ts), [test/codex_profile_wiring.test.ts](../test/codex_profile_wiring.test.ts).
 

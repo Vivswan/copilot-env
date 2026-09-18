@@ -321,7 +321,9 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
       "copilot-env"
     ],
   );
-  expect(asRecord(provider.auth).args).toEqual(agentLauncherCommand(["auth", "--get"]).args);
+  expect(asRecord(provider.auth).args).toEqual(
+    agentLauncherCommand(["auth", "--get"]).args,
+  );
   expect(provider.http_headers).toBeDefined();
 
   // Proxy on the SAME table: the proxy auth replaces the direct auth, env_key stays absent,
@@ -392,7 +394,9 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
   expect(asRecord(table.http_headers)["User-Agent"]).toBe(
     `codex_exec/${FALLBACK_CODEX_UA_VERSION}`,
   );
-  expect(asRecord(table.auth).args).toEqual(agentLauncherCommand(["auth", "--get"]).args);
+  expect(asRecord(table.auth).args).toEqual(
+    agentLauncherCommand(["auth", "--get"]).args,
+  );
   expect(wiring(directHome).credential).toBe("command");
 
   // Proxy (a second home, since the seam names a path once per process): the bearer is the
@@ -1044,7 +1048,7 @@ function proxyConfigWithAuth(auth: { command: string; args: string[] }): string 
 
 test("a proxy auth block that is not the managed proxy-token command (the 3.5.6 script shape, a foreign resolver) reads proxy but unwired", () => {
   // The 4.0.0 migration rewrites the script shape; a config it never reached is proxy but unwired,
-  // so `agent health` says re-run `agent codex --proxy` instead of vouching for a resolver script
+  // so `agent health` says re-run `agent init --proxy` instead of vouching for a resolver script
   // no release ships. A genuinely foreign resolver is the same verdict.
   const script = process.platform === "win32"
     ? { command: "powershell", args: ["-File", "C:\\r\\src\\scripts\\proxy-token.ps1", "--yes"] }
@@ -1353,7 +1357,7 @@ test("past the refresh deadline the sync adds no reference it could not record, 
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(true);
 });
 
-test("agent codex --check reports a Direct config's service_tier line and never rewrites it", async () => {
+test("agent profile check --codex reports a Direct config's service_tier line and never rewrites it", async () => {
   isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;

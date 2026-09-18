@@ -170,21 +170,21 @@ test("profile.consistency: the slot and home shape decide status, detail, and fi
       overrides: { slot: slot(null, false), homeExists: true },
       status: "warn",
       detail: "half-created",
-      fixContains: ["agent profile --add p", "agent profile --del p"],
+      fixContains: ["agent profile p add", "agent profile p del"],
     },
     {
       name: "proxy slot without a home",
       overrides: { homeExists: false, portPersisted: false },
       status: "warn",
       detail: "no daemon home",
-      fix: "agent profile --add p",
+      fix: "agent profile p add",
     },
     {
       name: "slot with no recorded mode",
       overrides: { slot: slot(null) },
       status: "warn",
       detail: "no mode recorded",
-      fixContains: ["agent profile --add p"],
+      fixContains: ["agent profile p add"],
     },
   ];
   for (const row of rows) {
@@ -380,7 +380,7 @@ test("checkProfileAuth: the slot and its credential resolution decide status, de
       slot: { provider: "gh-token", mode: "proxy" },
       resolves: RESOLVES,
       status: "ok",
-      detail: ["gh-token", "agent auth --get --profile p", "agent start --profile p"],
+      detail: ["gh-token", "agent profile p auth --get", "agent start --profile p"],
     },
     {
       name: "provisioned direct slot",
@@ -397,22 +397,22 @@ test("checkProfileAuth: the slot and its credential resolution decide status, de
       resolves: none,
       status: "warn",
       detail: ["never fall back"],
-      fix: "agent profile --add p",
+      fix: "agent profile p add",
     },
     {
       name: "no slot at all",
       slot: null,
       resolves: none,
       status: "warn",
-      fix: "agent profile --add p --direct|--proxy",
+      fix: "agent profile p add --direct|--proxy",
     },
     {
-      // A bare --add has no previous mode to stick to, so the re-add names the mode.
+      // A bare `add` has no previous mode to stick to, so the re-add names the mode.
       name: "no provider and no mode recorded",
       slot: { provider: null, mode: null },
       resolves: none,
       status: "warn",
-      fix: "agent profile --add p --direct|--proxy",
+      fix: "agent profile p add --direct|--proxy",
     },
     {
       // Token provider with no stored token: the slot is provisioned on paper only.
@@ -421,7 +421,7 @@ test("checkProfileAuth: the slot and its credential resolution decide status, de
       resolves: none,
       status: "warn",
       detail: ["no credential resolves"],
-      fix: "agent auth --profile p",
+      fix: "agent profile p auth",
     },
     // gh-cli resolves via a live gh login, not a stored token; the wording names the account.
     {
@@ -479,7 +479,7 @@ test("checkProfileAuth: the slot and its credential resolution decide status, de
         "could not check gh authentication " +
         "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
       ].join("\n"),
-      fix: "agent auth --profile p",
+      fix: "agent profile p auth",
       value: { ghAuthUnproven: true },
     },
   ];
@@ -525,7 +525,7 @@ test("checkCodex(named): missing wiring warns with the profile re-add fix", () =
   expect(unwired.status).toBe("warn");
   expect(unwired.profile).toBe(P);
   expect(unwired.detail).toContain("profile 'p' is not wired into Codex");
-  expect(unwired.fix).toBe("agent profile --add p");
+  expect(unwired.fix).toBe("agent profile p add");
 
   const unselected = checkCodex(
     {
@@ -552,7 +552,7 @@ test("checkCodex(named): missing wiring warns with the profile re-add fix", () =
   );
   expect(unselected.status).toBe("warn");
   expect(unselected.detail).toContain('not "copilot-env-p"');
-  expect(unselected.fix).toBe("agent profile --add p");
+  expect(unselected.fix).toBe("agent profile p add");
 });
 
 test("checkClaude(named): missing wiring warns; a stale proxy port points at the profile re-add", () => {
@@ -575,7 +575,7 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
   expect(unwired.status).toBe("warn");
   expect(unwired.profile).toBe(P);
   expect(unwired.detail).toContain("profile 'p' is not wired into Claude");
-  expect(unwired.fix).toBe("agent profile --add p");
+  expect(unwired.fix).toBe("agent profile p add");
   // The default keeps its historical informational verdict.
   expect(checkClaude(base).status).toBe("ok");
 
@@ -593,7 +593,7 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
     P,
   );
   expect(stale.status).toBe("warn");
-  expect(stale.fix).toContain("agent profile --add p");
+  expect(stale.fix).toContain("agent profile p add");
 
   // Foreign wiring in the profile's settings file is drift: the profile promises managed wiring, and
   // the writer refuses to overwrite an unmanaged file, so the fix names the removal first.
@@ -610,7 +610,7 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
   expect(other.status).toBe("warn");
   expect(other.detail).toContain("expects managed wiring");
   expect(other.fix).toContain(join("/h/.claude", "settings-p.json"));
-  expect(other.fix).toContain("agent profile --add p");
+  expect(other.fix).toContain("agent profile p add");
   expect(
     checkClaude({
       ...base,
@@ -649,7 +649,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
   );
   expect(codexDirect.status).toBe("warn");
   expect(codexDirect.detail).toContain("recorded mode is proxy");
-  expect(codexDirect.fix).toBe("agent profile --add p");
+  expect(codexDirect.fix).toBe("agent profile p add");
   const codexMatch = checkCodex(
     {
       home: "/c",
@@ -696,7 +696,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
   );
   expect(claudeProxy.status).toBe("warn");
   expect(claudeProxy.detail).toContain("recorded mode is direct");
-  expect(claudeProxy.fix).toBe("agent profile --add p");
+  expect(claudeProxy.fix).toBe("agent profile p add");
 });
 
 // --- --live argv + env scrub -----------------------------------------------------
@@ -1119,7 +1119,7 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
     expect(staleResult?.status).toBe("warn");
     expect(staleResult?.detail).toContain("out of step with the store");
     expect(staleResult?.detail).not.toContain("tok-");
-    expect(staleResult?.fix).toBe(`agent profile --add ${P}`);
+    expect(staleResult?.fix).toBe(`agent profile ${P} add`);
     expect(ghProbes).toBe(1);
 
     // A PROXY static wiring skips gh the same way, but the direct-only JSON field stays false:

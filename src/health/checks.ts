@@ -572,7 +572,7 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
   };
   if (!slot.exists) {
     // No slot has no recorded mode, so a re-add must pick one explicitly.
-    const fix = `agent profile --add ${name} --direct|--proxy (or agent profile --del ${name})`;
+    const fix = `agent profile ${name} add --direct|--proxy (or agent profile ${name} del)`;
     return homeExists
       ? {
         ...base,
@@ -594,7 +594,7 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
       ...base,
       status: "warn",
       detail: "no mode recorded in the store slot (interrupted add)",
-      fix: `agent profile --add ${name} --direct|--proxy`,
+      fix: `agent profile ${name} add --direct|--proxy`,
     };
   }
   if (slot.mode === "proxy" && !homeExists) {
@@ -660,7 +660,7 @@ export function checkProfileAuth(
   // A slot with no recorded mode (or none at all) needs an explicit mode flag on the re-add;
   // with a mode recorded the bare re-add keeps it (sticky).
   const addFix = slot === null || slot.mode === null
-    ? `agent profile --add ${name} --direct|--proxy`
+    ? `agent profile ${name} add --direct|--proxy`
     : profileAddFix(name);
   if (slot === null || slot.provider === null) {
     return {
@@ -696,9 +696,9 @@ export function checkProfileAuth(
             : pin === null
             ? `\`gh\` is unauthenticated (${accountClause}) - run \`gh auth login\`, or re-provision the profile`
             : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or re-provision the profile`
-          : `the slot's stored token is missing - run \`agent auth --profile ${name}\` to re-provision`,
+          : `the slot's stored token is missing - run \`agent profile ${name} auth\` to re-provision`,
       ].join("\n"),
-      fix: `agent auth --profile ${name}`,
+      fix: `agent profile ${name} auth`,
     };
   }
   const how = slot.provider === "gh-cli"
@@ -712,10 +712,10 @@ export function checkProfileAuth(
     : "stored GitHub token";
   const start = agentStartCommand(name);
   const usage = slot.mode === "proxy"
-    ? `resolved by \`agent auth --get --profile ${name}\`; passed to the profile's daemon on \`${start}\``
+    ? `resolved by \`agent profile ${name} auth --get\`; passed to the profile's daemon on \`${start}\``
     : slot.mode === "direct"
-    ? `resolved by \`agent auth --get --profile ${name}\` for Direct`
-    : `resolved by \`agent auth --get --profile ${name}\``;
+    ? `resolved by \`agent profile ${name} auth --get\` for Direct`
+    : `resolved by \`agent profile ${name} auth --get\``;
   return {
     ...base,
     status: "ok",

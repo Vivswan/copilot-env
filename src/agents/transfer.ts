@@ -9,7 +9,7 @@
 //
 // The bundle wins where it resolves: a bundle credential this machine can resolve REPLACES the
 // local slot, and a store write is not rolled back when the wiring after it fails (the slot
-// stays committed-but-unwired for a re-add or `--sync`). Proxy wiring is the one
+// stays committed-but-unwired for a re-add or `agent sync`). Proxy wiring is the one
 // credential-free write: `agent start` resolves the credential itself and refuses without one.
 //
 //   bundle credential unresolvable here -> local slot kept; skipped whole when it is unresolvable too

@@ -758,8 +758,8 @@ async function runDel(profile: Profile): Promise<() => void> {
   };
 }
 
-/** BRACKET-FREE by contract: a surface that wants parens adds its own, and `--list` prints it
- *  bare. Exported for `agent profile`'s credential-reuse line. */
+/** BRACKET-FREE by contract: a surface that wants parens adds its own. Exported for `agent
+ *  profile`'s credential-reuse line. */
 export function credentialSourceLabel(credential: StoredCredential): string | null {
   switch (credential.kind) {
     case "none":
@@ -772,7 +772,7 @@ export function credentialSourceLabel(credential: StoredCredential): string | nu
 
 /** An AUTO gh-cli slot names the account it follows right now and every account it may use, so a
  *  read-back through here says whose credit the credential can spend; an unproven or empty look
- *  never guesses. Batch callers (--list) pass one memoized `look`. */
+ *  never guesses. A batch caller passes one memoized `look`. */
 export function liveCredentialSourceLabel(
   credential: StoredCredential,
   look: () => GhAccountsLook = ghAccountsLook,
@@ -799,7 +799,7 @@ export function liveCredentialSourceLabel(
 
 function runCheck(profile: Profile): void {
   // The exit code is the machine contract; the status line goes to stdout like its peers `agent
-  // codex/claude --check`. The default output is byte-identical to before profiles existed (flag
+  // profile check --codex|--claude`. The default output is byte-identical to before profiles existed (flag
   // and label are empty).
   const credential = new Credential(undefined, profile);
   const { provider, resolves } = credential.status();
@@ -830,7 +830,7 @@ function runCheck(profile: Profile): void {
 // --- integration identities -------------------------------------------------
 
 /** `auto` has its own variant so clearing the pin never depends on a credential resolving; `pin`
- *  carries a domain-validated id; `choose` is the bare `--identity` in a terminal. */
+ *  carries a domain-validated id; `choose` is the interactive pick in a terminal. */
 export type IdentityChoice = { kind: "pin"; id: string } | { kind: "auto" } | { kind: "choose" };
 
 export function parseIdentityChoice(raw: string): IdentityChoice {
@@ -1354,7 +1354,7 @@ export type AuthAction =
     dryRun: boolean;
   };
 
-const SUB_ACTION_FLAGS = "--get/--del/--check/--identities/--identity";
+const SUB_ACTION_FLAGS = "--get/--del/--check";
 
 function providerConflictError(): Error {
   return new Error(
@@ -1378,7 +1378,7 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
   ].filter(Boolean).length;
   if (subActions > 1) {
     throw new Error(
-      "--get, --del, --check, --identities, and --identity are mutually exclusive",
+      "--get, --del, and --check are mutually exclusive",
     );
   }
   if (args.set !== undefined && subActions > 0) {
@@ -1388,7 +1388,7 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
   if (args.dryRun && subActions > 0 && !args.del) {
     throw new Error(
       "--dry-run previews the credential landing or --del and cannot combine with the read-only " +
-        "--get/--check/--identities/--identity",
+        "--get/--check",
     );
   }
   // Ahead of the provider conflict, so an invalid name keeps reporting itself when a stray

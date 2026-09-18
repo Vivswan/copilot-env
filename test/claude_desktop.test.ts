@@ -816,7 +816,7 @@ test("Desktop status judges a Direct entry against the slot's stored pair: what 
     credential: { kind: "stored", provider: "gh-token", token: "github_pat_w" },
     mode: "direct",
   });
-  // The slot holds the pair a probing --add stored: the enterprise host under the CLI id. No CLI
+  // The slot holds the pair a probing credential landing stored: the enterprise host under the CLI id. No CLI
   // file exists for the profile at all, so nothing but the slot can be the source.
   state.setProfileDirectPair(WORK, { integrationId: "copilot-developer-cli", host: enterprise });
   // The Desktop entry still records the generic host with no header: what an earlier wiring wrote.
@@ -1510,7 +1510,7 @@ test("reconcileClaudeDesktopWiring: orphans go when the key is on, the profiles'
   expect(renderClaudeDesktopStatus(claudeDesktopStatus()).fix).toBeNull();
 
   // An orphan holding the applied slot hands it to the default's entry during the QUIET
-  // sweep too (the launcher / `profile --sync` path, which never upserts): an empty slot
+  // sweep too (the launcher / `agent sync` path, which never upserts): an empty slot
   // would boot the app into claude.ai sign-in until the next non-quiet wire.
   await wireClaudeDesktopEntry(directWire(WORK)); // first in: takes the applied slot
   new CopilotEnvState().recordDefaultMode("proxy"); // the default this re-render renders
@@ -1885,7 +1885,7 @@ test.skipIf(NO_CHMOD_FAULTS)(
   },
 );
 
-test("call sites reconcile the whole library: init, profile --sync, the launcher's profile write", async () => {
+test("call sites reconcile the whole library: init, agent sync, the launcher's profile write", async () => {
   const { library } = isolateWithDesktop();
   const names = () => (metaOf(library).entries as { name: string }[]).map((e) => e.name).sort();
   // The proxy wires below fall back to the direct catalog when the daemon is down: the stub

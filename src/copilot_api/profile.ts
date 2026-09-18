@@ -50,7 +50,7 @@ const RESERVED_PROFILE_WORDS = ["help", "list", ...PROFILE_VERBS, ...PROFILE_VER
 export type ProfileVerb = (typeof PROFILE_VERBS)[number];
 
 /** The words `agent profile <word>` routes as something other than a name: the verbs and
- *  Commander's `help`. Reserved at CREATION (CopilotEnvState.commitProfile and the `--add`
+ *  Commander's `help`. Reserved at CREATION (CopilotEnvState.commitProfile and the `add`
  *  boundary), not at the mint: a profile named before its word became a verb stays readable and
  *  reachable by `--profile <name>` until the 4.0.9 migration renames it. */
 export function isReservedProfileWord(name: string): boolean {

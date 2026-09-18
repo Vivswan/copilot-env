@@ -1,7 +1,7 @@
 // `--dry-run` on the writing commands: the command runs its own landing under the dry-run session,
 // so the printed plan IS the plan the apply would land (same objects), nothing on disk changes,
 // and a secret never prints. One test per command family; the disk is proven untouched by a
-// fingerprint of the whole scratch HOME before and after. The `--add` preview also proves the
+// fingerprint of the whole scratch HOME before and after. The named `add` preview also proves the
 // session's shadow: the wiring reads the slot the (recorded) commit landed a moment before.
 import { randomBytes } from "node:crypto";
 import {

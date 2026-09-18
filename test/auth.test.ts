@@ -143,7 +143,7 @@ async function captureLog(fn: () => Promise<void>): Promise<string> {
 }
 
 const PROVIDER_CONFLICT = "--provider selects how to authenticate and cannot combine with " +
-  "--get/--del/--check/--identities/--identity";
+  "--get/--del/--check";
 
 // Every rejection fires at the parse, before any state read, probe, or prompt: the probe seam
 // counts here, and a rejected flag set that probed first fails its row on the count. The bug

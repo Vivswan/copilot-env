@@ -366,7 +366,7 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
 }
 
 /** Any key-vs-disk drift warns with the wiring pass that resolves it (the same verdict `agent
- *  codex --check` prints). */
+ *  profile check --codex` prints). */
 export function checkCodexHost(f: CodexHostFacts): CheckResult {
   const configFile = codexConfigPath(f.hostHome);
   const detail = (summary: string) => f.exists ? `${summary}\nconfig.toml: ${configFile}` : summary;

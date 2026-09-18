@@ -24,7 +24,6 @@ import { runStart } from "../src/commands/start.ts";
 import { parseStopAction, runStop } from "../src/commands/stop.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import { wireBothAgents } from "../src/agents/profile_wiring.ts";
 import { CopilotEnvState, partialSlotGap } from "../src/copilot_api/env_state.ts";
 import { setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
 import {
@@ -58,12 +57,12 @@ import {
 // Branded fixture names: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
 
-/** What `cl --profile work` runs in-process before it launches (src/commands/launch.ts): the
- *  profile's re-render from its slot, no probe. */
+/** What `cl --profile work` runs in-process before it launches: the launcher's own hook
+ *  (src/commands/launch.ts), so these sites fail if the real hook changes. */
 async function launcherHook(): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(WORK);
   if (slot.kind !== "complete") throw new Error("launcherHook: the work slot is not complete");
-  await wireBothAgents(WORK, slot.mode, true, "stored");
+  await commandDeps().writeClaudeProfileSettings(WORK, slot.mode);
 }
 
 /** A named profile lands in two commands: `add` records the mode, `auth` lands the credential and
@@ -158,7 +157,7 @@ test("a home-only half profile gets the half-created repair message on re-auth",
   tmpProxyHome();
   mkdirSync(profileHome(WORK), { recursive: true });
   // The home makes the profile KNOWN (env/models/health address it), but the
-  // credential write still needs a store slot: only `--add` creates one.
+  // credential write still needs a store slot: only `add` creates one.
   expect(() => new Credential(undefined, WORK).store("gh-token", "ghp_x")).toThrow(
     /half-created.*agent profile work add/,
   );
@@ -699,7 +698,7 @@ test("parseProfileAction: one verb per invocation, the mode lives on the add arm
     /exactly one/,
   );
   expect(() => parseProfileAction({ del: "work", mode: "direct" })).toThrow(
-    "--direct/--proxy only apply to --add",
+    "a mode applies to add alone",
   );
 });
 
@@ -784,7 +783,7 @@ test("stop/record-event against a never-existing profile fabricate NOTHING", asy
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
   await runStart({ kind: "record-event", profile: TYPO });
-  // Neither command may materialize a phantom profile home (profile --list,
+  // Neither command may materialize a phantom profile home (agent list,
   // stop --all, and the proxy float all enumerate profile homes).
   expect(existsSync(profileHome(TYPO))).toBe(false);
   expect(profileHomeNames()).toEqual([]);
@@ -1045,7 +1044,7 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
   expect(existsSync(helper)).toBe(true);
 
   // Key off: the launcher-style re-render (the Claude adapter's profile write, the
-  // same path `cl --profile` takes) sweeps the entry -- no --sync or re-add needed.
+  // same path `cl --profile` takes) sweeps the entry -- no sync or re-add needed.
   new CopilotEnvConfig().set({ "claude.desktop": false });
   await captureAllWrites(() => launcherHook());
   expect(entryNames()).toEqual([]);

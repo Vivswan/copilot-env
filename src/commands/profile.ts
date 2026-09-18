@@ -65,7 +65,7 @@ export function parseProfileAction(args: ProfileArgs): ProfileAction {
     throw new Error("--dry-run previews a write (add, del, sync); list and check write nothing");
   }
   if (args.mode !== "auto" && args.add === undefined) {
-    throw new Error("--direct/--proxy only apply to --add (a profile's mode is set there)");
+    throw new Error("a mode applies to add alone (a profile's mode is set there)");
   }
   const add = parseProfileFlag(args.add);
   if (add !== null) return { kind: "add", name: add, mode: args.mode };

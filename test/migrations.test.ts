@@ -51,8 +51,13 @@ import { dueMigrations, type Migration, runMigrations } from "../src/migrations/
 import { MARKER, MARKER_END } from "../src/shell/integration.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
 import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../src/claude/desktop.ts";
+import {
+  resetIntegrationIdentityCache,
+  setIntegrationProbeFetch,
+} from "../src/copilot_api/integration_identity.ts";
 import { managedProxyProvider } from "../src/codex/config.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { runCli } from "./helpers/run.ts";
 import { consola } from "consola";
@@ -1228,13 +1233,9 @@ test(
             mode: "proxy",
             passthrough: "off",
           },
-          work: {
-            githubToken: "ghp_work",
-            authProvider: "gh-token",
-            mode: "direct",
-            integrationIdentity: "vscode-chat",
-            copilotHost: "https://api.githubcopilot.com",
-          },
+          // No stored pair, as on a real 4.0.9 store once the identity-cache step ran: the
+          // re-render probes for it (the stub accepts the first candidate) and stores it.
+          work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "direct" },
         },
         ownership: { claudeDesktopPaths: [entryPath] },
       });
@@ -1285,14 +1286,30 @@ test(
         entryPath,
         JSON.stringify({
           inferenceGatewayBaseUrl: "http://127.0.0.1:4555",
-          managedMcpServers: [{
-            name: "copilot-env",
-            args: ["mcp", "--serve", "--profile", "sync"],
-          }],
+          managedMcpServers: [
+            { name: "copilot-env", args: ["mcp", "--serve", "--profile", "sync"] },
+            // Another program's row, with a `--profile` of its own: never ours to retarget.
+            { name: "other-tool", args: ["--profile", "list"] },
+          ],
         }),
       );
 
-      await captureChannels(() => moveProfilesToVerbTree());
+      setIntegrationProbeFetch(() =>
+        Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+      );
+      resetIntegrationIdentityCache();
+      // Each move is reported once: the reporter's line (Deno.stderr, so it is deferred and read
+      // back), never a second narration line through consola.
+      deferWriteReports();
+      const run = await captureChannels(() => moveProfilesToVerbTree());
+      const reports = flushWriteReports();
+      expect(reports.filter((l) => l.startsWith("moved ->") && l.includes("settings-sync-2.json")))
+        .toHaveLength(1);
+      // The one narrated move is the daemon home, which the reporter hides (own-homes rule).
+      const narrated = run.all.split("\n").filter((l) => l.includes("moved"));
+      expect(narrated).toHaveLength(1);
+      expect(narrated[0]).toContain(join("profiles", "sync-2"));
+      expect(run.all).toContain("re-rendered profile 'work'");
 
       const store = readStore(join(homes.proxyHome, "state.json"));
       const profiles = store.profiles as Record<string, Record<string, unknown>>;
@@ -1341,8 +1358,15 @@ test(
       const meta = JSON.parse(readFileSync(join(library, META_FILENAME), "utf8"));
       expect(meta.appliedId).toBe("e1");
       expect(meta.entries).toEqual([{ id: "e1", name: "copilot-env: sync-2", pinned: true }]);
-      const entry = JSON.parse(readFileSync(entryPath, "utf8"));
-      expect(entry.managedMcpServers[0].args).toContain("sync-2");
+      const entry = JSON.parse(readFileSync(entryPath, "utf8")) as {
+        managedMcpServers: { name: string; args: string[] }[];
+      };
+      // By name: the re-render rebuilds our row and keeps the foreign one as it was.
+      const row = (name: string) => entry.managedMcpServers.find((r) => r.name === name);
+      expect(row("copilot-env")?.args).toContain("sync-2");
+      expect(row("other-tool")).toEqual({ name: "other-tool", args: ["--profile", "list"] });
+      // The re-render stored the pair it probed for.
+      expect(typeof profiles.work?.integrationIdentity).toBe("string");
 
       expect(new CopilotEnvState().profileNames()).toEqual([SYNC2, WORK]);
       const list = runCli(["profile"], {
@@ -1365,6 +1389,7 @@ test(
       ).toThrow(/reserved/);
     } finally {
       delete process.env[CLAUDE_DESKTOP_DIR_ENV];
+      setIntegrationProbeFetch(null);
     }
   },
   120_000,

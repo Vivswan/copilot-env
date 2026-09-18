@@ -407,7 +407,7 @@ test("checkProfileAuth: the slot and its credential resolution decide status, de
       fix: "agent profile p add --direct|--proxy",
     },
     {
-      // A bare --add has no previous mode to stick to, so the re-add names the mode.
+      // A bare `add` has no previous mode to stick to, so the re-add names the mode.
       name: "no provider and no mode recorded",
       slot: { provider: null, mode: null },
       resolves: none,

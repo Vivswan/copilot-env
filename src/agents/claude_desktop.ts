@@ -131,7 +131,7 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
     if (opts.quiet) return;
     // The default is upserted too: a key flipped back on by a config-only import has no
     // adapter write to ride on. A default already judged wired is skipped: init / `agent
-    // claude` just synced it, and re-discovering its models would be a network call for a
+    // profile sync --claude` just synced it, and re-discovering its models would be a network call for a
     // byte-identical no-op.
     const defaultWired = status.entries.some(
       (e) => e.profile === null && e.verdict.kind === "wired",

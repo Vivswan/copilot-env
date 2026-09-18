@@ -1357,7 +1357,7 @@ export class CopilotEnvConfig {
   assign(
     def: ConfigKeyDef,
     value: ConfigValue | null,
-    profile: Profile | undefined,
+    profile: Profile,
   ): SettingTarget {
     const target = settingTarget(def, profile);
     if (target.kind === "global") this.writeGlobal({ [def.key]: value });
@@ -1404,24 +1404,25 @@ export class CopilotEnvConfig {
 }
 
 /**
- * Which map a key lands in, from its scope:
+ * Which map a key lands in, from its scope; null is the default profile:
  *
- *   global key          -> the global map; a --profile is an error (the key has no profile value)
- *   profile key         -> the named profile's section, the default's without --profile
- *   profile-default key -> the named profile's section, the GLOBAL map without --profile
+ *   global key          -> the global map; a named profile is an error (the key has no profile value)
+ *   profile key         -> the profile's own section, the default's included
+ *   profile-default key -> the named profile's section; the default's is the GLOBAL map (the
+ *                          shared default every profile follows: the default never overrides it)
  */
-export function settingTarget(def: ConfigKeyDef, profile: Profile | undefined): SettingTarget {
+export function settingTarget(def: ConfigKeyDef, profile: Profile): SettingTarget {
   switch (def.scope) {
     case "global":
-      if (profile !== undefined) {
+      if (profile !== null) {
         throw new Error(
           `'${def.key}' is a global setting (scope ${def.scope}): it has no per-profile value, so --profile does not apply`,
         );
       }
       return { kind: "global" };
     case "profile":
-      return { kind: "profile", profile: profile ?? null };
+      return { kind: "profile", profile };
     case "profile-default":
-      return profile === undefined ? { kind: "global" } : { kind: "profile", profile };
+      return profile === null ? { kind: "global" } : { kind: "profile", profile };
   }
 }

@@ -26,8 +26,7 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #                              no name: = agent config --set for a shared proxy.*/probe.* key)
                            #   unset <key>                drop one (no name: = agent config --del)
                            #   get [<key>]                the value in effect for it, or its table
-                           #   sync [--claude|--codex]    re-render its agent files (a named profile is written as a
-                           #                              pair: both files, and the line says so)
+                           #   sync [--claude|--codex]    re-render its agent files from the store: both agents, or one
                            #   check                      its recorded mode; exits 0 direct, 2 proxy, 1 none or partial
                            #   check --claude|--codex     that agent's file; exits 0 direct, 2 proxy or none, 1 other
                            #   reserved words, never a new profile's name: the verbs, help, list, identity, and the

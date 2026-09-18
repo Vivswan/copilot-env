@@ -264,7 +264,7 @@ onlyWin("Windows: the key cannot be set, reads off, and the derivation is inert"
   const { sharedRoot, hostHome } = isolate();
   writeRunState({ codexHome: sharedRoot });
   fs.mkdirSync(sharedRoot, { recursive: true });
-  expect(() => runConfig({ set: ["codex.host", "true"] })).toThrow(
+  expect(() => runConfig({ set: ["codex.host", "true"], profile: null })).toThrow(
     "'codex.host' is only supported on Linux and macOS (this is win32)",
   );
   // Even a stored true (an imported bundle) reads as off here.

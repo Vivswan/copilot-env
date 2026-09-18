@@ -51,11 +51,9 @@ import {
   reconcileClaudeDesktopWiring,
   resolveClaudeDesktopTargets,
 } from "../src/agents/claude_desktop.ts";
-import { printClaudeDesktopCheck } from "../src/commands/claude.ts";
-import { runInit } from "../src/commands/init.ts";
+import { addProfile, printClaudeDesktopCheck, syncNamedProfiles } from "../src/commands/profile.ts";
 import { runClaude } from "../src/agents/configure_defaults.ts";
 import { commandDeps } from "../src/commands/launch.ts";
-import { runProfile } from "../src/commands/profile.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
@@ -1903,21 +1901,23 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
     token: "ghu_test",
   });
   await wireClaudeDesktopEntry(directWire(WORK));
-  const init = await captureAllWrites(() => runInit({ mode: "proxy" }));
+  const init = await captureAllWrites(() => addProfile(null, { mode: "proxy" }));
   expect(names()).toEqual(["copilot-env"]);
   expect(metaOf(library).appliedId).toBe(basename(firstEntryPath(library), ".json"));
   expect(count(init, "Claude Desktop is ready to use.")).toBe(1);
   // ... and with the key off, the same command names the default's entry exactly once:
   // the reconcile owns the notice, the default write itself stays silent.
   new CopilotEnvConfig().set({ "claude.desktop": false });
-  const off = await captureAllWrites(() => runInit({ mode: "proxy" }));
+  const off = await captureAllWrites(() => addProfile(null, { mode: "proxy" }));
   expect(count(off, "left in place, unmanaged")).toBe(1);
 
   // `agent sync` with ZERO complete profiles and the key off: the sweep still
   // runs (nothing depends on a profile write happening), and keeps the default's entry.
   await wireClaudeDesktopEntry(directWire(WORK));
   new CopilotEnvConfig().set({ "claude.desktop": false });
-  await captureAllWrites(() => runProfile({ sync: true, mode: "auto" }));
+  await captureAllWrites(async () => {
+    await syncNamedProfiles();
+  });
   expect(names()).toEqual(["copilot-env"]);
   // ... and with the key on, the launcher hot path never runs model discovery: a proxy
   // profile's reconcile issues no catalog fetch (the global fetch would throw here).
@@ -1931,7 +1931,9 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
   };
   let synced = "";
   try {
-    synced = await captureAllWrites(() => runProfile({ sync: true, mode: "auto" }));
+    synced = await captureAllWrites(async () => {
+      await syncNamedProfiles();
+    });
   } finally {
     globalThis.fetch = online;
   }

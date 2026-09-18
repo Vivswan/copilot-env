@@ -1,27 +1,13 @@
-import { configureDefaultAgents } from "../agents/configure_defaults.ts";
+// The box `agent init` (the default's `agent profile add`) closes with: what each agent was wired
+// to and the next steps. Stderr like the per-agent narration, so it never pollutes any stdout.
 import { configSetCommand } from "../copilot_api/env_config.ts";
 import type { ManagedAgentId } from "../agents/configure.ts";
-import type { AgentProviderMode, RequestedMode } from "../agents/provider_mode.ts";
+import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
-// Stderr like the per-agent narration, so the guidance box never pollutes any stdout.
 const logger = createStderrLogger();
-
-/** configureDefaultAgents owns the narration and per-agent resilience; init warns and continues, so
- *  the failures it reports are dropped here. */
-export async function configureBothAgents(mode: RequestedMode): Promise<{
-  failedAgents: ManagedAgentId[];
-  codex: AgentProviderMode;
-  claude: AgentProviderMode;
-}> {
-  const { codex, claude, failedAgents } = await configureDefaultAgents({
-    codex: mode,
-    claude: mode,
-  });
-  return { codex, claude, failedAgents };
-}
 
 function modeLabel(mode: AgentProviderMode): string {
   if (mode === "direct") return "GitHub Copilot Direct";

@@ -621,8 +621,8 @@ export interface LaunchToken {
  * The launch's refusal, and NOTHING else: reads of state.json alone (a recorded gh-cli's `gh auth
  * token` IS the credential), so `agent start` refuses before it takes the start lock, makes a
  * directory, stops the running daemon (`--force`), probes a port, or spawns anything, the codex
- * User-Agent's version lookup included. A named profile must exist (`agent profile --add` is its one
- * creator): its slot's own reason would otherwise send the user to an `agent auth --profile` that
+ * User-Agent's version lookup included. A named profile must exist (`agent profile <name> add` is its one
+ * creator): its slot's own reason would otherwise send the user to an `agent profile <name> auth` that
  * cannot create it. It resolves ONLY its own slot, never the default credential, and NO credential
  * refuses the launch: the daemon never logs in on its own (a token it minted would live in the
  * proxy's files, outside the store), so the refusal names the `agent auth` the slot needs.
@@ -783,13 +783,13 @@ export function spawnConfiguredDaemon(opts: {
  *  credential needs the passthrough; anything else needs a Copilot-capable login. */
 function copilotTokenFailureHint(log: string, profile: Profile): string | null {
   if (!/Failed to get Copilot token/i.test(log)) return null;
-  const flag = daemonPolicy(profile).flagSuffix;
+  const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
   return (
     "The credential was not accepted by Copilot's token exchange. For a gh-cli or PAT credential, " +
     `enable passthrough (\`${
       configSetCommand("passthrough", "on", profile)
     }\`); otherwise re-authenticate with a ` +
-    `Copilot-capable login (\`agent auth${flag} --provider copilot\`).`
+    `Copilot-capable login (\`${authCommand} --provider copilot\`).`
   );
 }
 

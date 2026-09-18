@@ -1,4 +1,4 @@
-// Codex's phone pairing needs the app on its DEFAULT OpenAI provider, so `agent codex --mobile`
+// Codex's phone pairing needs the app on its DEFAULT OpenAI provider, so `agent codex-mobile`
 // temporarily removes the managed `model_provider`, walks the user through pairing in the app, then
 // restores it. There is no Linux Codex app, so it is gated to macOS/Windows.
 import { parse, stringify } from "smol-toml";
@@ -117,7 +117,7 @@ export function installGateFromScan(
     return {
       kind: "abort",
       warn: `The ${APP_NAME} app does not appear to be installed.`,
-      info: `Install the ${APP_NAME} app, then re-run \`agent codex --mobile\`.`,
+      info: `Install the ${APP_NAME} app, then re-run \`agent codex-mobile\`.`,
     };
   }
   return {
@@ -277,7 +277,7 @@ export async function runCodexMobile(): Promise<void> {
     return;
   }
   if (!process.stdin.isTTY) {
-    throw new Error("`agent codex --mobile` is interactive - run it in a terminal.");
+    throw new Error("`agent codex-mobile` is interactive - run it in a terminal.");
   }
 
   const home = effectiveCodexHome();
@@ -286,13 +286,15 @@ export async function runCodexMobile(): Promise<void> {
   try {
     original = fs.readText(configPath);
   } catch {
-    throw new Error(`No Codex config at ${configPath}. Run \`agent codex\` first, then retry.`);
+    throw new Error(
+      `No Codex config at ${configPath}. Run \`agent profile sync --codex\` first, then retry.`,
+    );
   }
 
   const provider = readModelProvider(original);
   if (provider === null) {
     throw new Error(
-      "No model_provider is configured in config.toml - run `agent codex` first, then retry --mobile.",
+      "No model_provider is configured in config.toml - run `agent profile sync --codex` first, then retry --mobile.",
     );
   }
   // Captured alongside the provider so restore() puts BOTH keys back.

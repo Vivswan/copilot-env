@@ -73,32 +73,20 @@ if (pidAfter === pidForced) failOn("start --force did not relaunch a fresh daemo
 cliOrExit(["health", "--scope", "runtime"]);
 cliOrExit(["config", "--del", "daemon.auto-start"]);
 
-cliOrExit(["codex", "--proxy"]);
-cliOrExit(["claude", "--proxy"]);
+cliOrExit(["init", "--proxy"]);
 cliOrExit(["health", "--scope", "setup"]);
 console.log(`health OK while running on ${os}`);
 
-// Named-profile daemon BESIDE the default: one `agent profile --add` wires its own
-// credential + mode + BOTH agents; its daemon gets an isolated home and reserved
-// port; stopping/deleting it must leave the default daemon untouched.
-cliOrExit([
-  "profile",
-  "--add",
-  PROFILE,
-  "--proxy",
-  "--provider",
-  "gh-token",
-  "--set",
-  "fake-profile-token",
-]);
-if (!cliOrExit(["profile", "--list"], { stdout: "piped" }).includes(PROFILE)) {
-  failOn("profile --list did not report the work profile");
+// Named-profile daemon BESIDE the default: `add` records the mode, `auth` lands the credential
+// and wires BOTH agents; its daemon gets an isolated home and reserved port; stopping/deleting it
+// must leave the default daemon untouched.
+cliOrExit(["profile", PROFILE, "add", "--proxy", "--no-auth"]);
+cliOrExit(["profile", PROFILE, "auth", "--set", "fake-profile-token"]);
+if (!cliOrExit(["list"], { stdout: "piped" }).includes(PROFILE)) {
+  failOn("agent list did not report the work profile");
 }
-if (!cliOrExit(["auth", "--list"], { stdout: "piped" }).includes(PROFILE)) {
-  failOn("auth --list did not report the work profile");
-}
-const checkCode = cli(["profile", "--check", PROFILE]).code;
-if (checkCode !== 2) failOn(`profile --check work should exit 2 (proxy), got ${checkCode}`);
+const checkCode = cli(["profile", PROFILE, "check"]).code;
+if (checkCode !== 2) failOn(`profile work check should exit 2 (proxy), got ${checkCode}`);
 // The identity and host keys are per profile: the work daemon's launch needs its own pin and
 // literal, or its fake token is probed like the default's would have been.
 cliOrExit(["config", "--set", "identity", "copilot-developer-cli", "--profile", PROFILE]);
@@ -119,9 +107,9 @@ if (cli(["start", "--check", "--profile", PROFILE]).code === 0) {
   failOn("profile daemon still up after stop --profile");
 }
 if (cli(["start", "--check"]).code !== 0) failOn("default daemon died with the profile daemon");
-cliOrExit(["profile", "--del", PROFILE]);
-if (cli(["profile", "--check", PROFILE], { stdout: "null", stderr: "null" }).code === 0) {
-  failOn("profile still exists after profile --del");
+cliOrExit(["profile", PROFILE, "del", "--yes"]);
+if (cli(["profile", PROFILE, "check"], { stdout: "null", stderr: "null" }).code === 0) {
+  failOn("profile still exists after profile work del");
 }
 console.log(`profile daemon lifecycle OK on ${os}`);
 

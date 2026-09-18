@@ -1,0 +1,69 @@
+{
+  "seed": [
+    [
+      "auth",
+      "--set",
+      "ghu_test"
+    ],
+    [
+      "init",
+      "--proxy"
+    ],
+    [
+      "profile",
+      "work",
+      "add",
+      "--proxy",
+      "--no-auth"
+    ],
+    [
+      "profile",
+      "work",
+      "auth",
+      "--set",
+      "ghu_work"
+    ]
+  ],
+  "observed": {
+    "init --proxy --dry-run": {
+      "exitCode": 0,
+      "stdout": "DRY RUN: nothing was written. The command would:\n  unchanged <HOME>/.claude/settings.json\n  unchanged <HOME>/.codex/config.toml\n  unchanged <HOME>/state.json\n"
+    },
+    "profile add --proxy --dry-run": {
+      "exitCode": 0,
+      "stdout": "DRY RUN: nothing was written. The command would:\n  unchanged <HOME>/.claude/settings.json\n  unchanged <HOME>/.codex/config.toml\n  unchanged <HOME>/state.json\n"
+    },
+    "profile work add --proxy --dry-run": {
+      "exitCode": 0,
+      "stdout": "DRY RUN: nothing was written. The command would:\n  unchanged <HOME>/state.json\n  unchanged <HOME>/.claude/settings-work.json\n  unchanged <HOME>/.codex/config.toml\n  unchanged <HOME>/.codex/work.config.toml\n"
+    },
+    "profile sync --dry-run": {
+      "exitCode": 0,
+      "stdout": "DRY RUN: nothing was written. The command would:\n  unchanged <HOME>/.claude/settings.json\n  unchanged <HOME>/.codex/config.toml\n"
+    },
+    "profile sync --claude --dry-run": {
+      "exitCode": 0,
+      "stdout": "DRY RUN: nothing was written. The command would:\n  unchanged <HOME>/.claude/settings.json\n"
+    },
+    "profile sync --codex --dry-run": {
+      "exitCode": 0,
+      "stdout": "DRY RUN: nothing was written. The command would:\n  unchanged <HOME>/.codex/config.toml\n"
+    },
+    "profile work sync --dry-run": {
+      "exitCode": 0,
+      "stdout": "DRY RUN: nothing was written. The command would:\n  unchanged <HOME>/.claude/settings-work.json\n  unchanged <HOME>/.codex/config.toml\n  unchanged <HOME>/.codex/work.config.toml\n"
+    },
+    "sync --dry-run": {
+      "exitCode": 0,
+      "stdout": "DRY RUN: nothing was written. The command would:\n  unchanged <HOME>/.claude/settings.json\n  unchanged <HOME>/.codex/config.toml\n  unchanged <HOME>/.claude/settings-work.json\n  unchanged <HOME>/.codex/work.config.toml\n"
+    },
+    "profile show": {
+      "exitCode": 0,
+      "stdout": "default\n  mode: proxy\n  provider: gh-token\n  daemon: down\n"
+    },
+    "profile work show": {
+      "exitCode": 0,
+      "stdout": "profile 'work'\n  mode: proxy\n  provider: gh-token\n  daemon: down\n"
+    }
+  }
+}

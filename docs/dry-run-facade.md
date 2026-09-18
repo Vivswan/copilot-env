@@ -86,7 +86,9 @@ Every module under `src/` reads and writes files through `import * as fs from ".
 | `fs.scratchDir(prefix)` / `fs.removeScratchDir(dir)`         | a process-transient directory (`ScratchDir`): real in every mode (a probe's throwaway config must exist for the CLI it spawns), never reported, never planned; a move or copy is real only when both its paths are scratch |
 | `RenameRefusedError`                                         | the one failure a caller may answer with a direct write (`atomic: false`)                                                                                                                                                  |
 
-Secrets are declared at the write. `secretKeys` names the dotted leaves of a JSON or TOML file whose values print as `<redacted>` for the path's whole run (`fs.writeText(settingsPath, text, { secretKeys: SETTINGS_SECRETS })`); `secret: true` marks the whole file (a settings bundle, the Codex `config.toml` with a baked key, the Claude Desktop config), which prints its verdict alone. A declaration travels with the file through `rename` and `copyFile`, so the report at the new path redacts the same values. Nothing is redacted at read time, and no reader re-derives a secret.
+Secrets are declared at the write. `secretKeys` names the dotted leaves of a JSON or TOML file whose values print as `<redacted>` for the path's whole run (`fs.writeText(settingsPath, text, { secretKeys: SETTINGS_SECRETS })`); `secret: true` marks the whole file (a settings bundle, the Codex `config.toml` with a baked key, the Claude Desktop config), which prints its verdict alone.
+
+A declaration travels with the file through `rename` and `copyFile`, so the report at the new path redacts the same values, and it outlives a deletion of the path within the run. Nothing is redacted at read time, and no reader re-derives a secret.
 
 What replaces each `src/utils/report_write.ts` wrapper (the wrappers stay as thin aliases until every caller has moved; then they go):
 
@@ -170,6 +172,6 @@ At the end of the run every touched path is compared with the disk, in first-tou
 
 Three waves:
 
-1. The facade PR lands the seam complete (every call above, the bridge, the marker beside it, `atomicSymlink` and a link-honest overlay, the per-file secret flag) with every writer still on the wrappers and the plan API intact, so its dry-run output is main's.
+1. The facade PR lands the seam complete: every call above, the bridge, the marker beside it, `atomicSymlink` and a link-honest overlay, the per-file secret flag. Every writer stays on the wrappers and the plan API stays intact, so its dry-run output is main's.
 2. The rewire PRs move the writers (`src/agents`, `src/claude`, `src/codex` in one; the rest of `src/` in the other) onto the calls above and stack on it.
 3. The last PR switches `src/commands/dry_run.ts` to `withDryRun`, deletes `write_session.ts`, `write_plan.ts`, the wrappers and the bridge, and extends the fs lint from raw writes to raw reads.

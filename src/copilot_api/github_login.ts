@@ -22,7 +22,7 @@ const SLOW_DOWN_EXTRA_S = 5;
 
 export type LoginFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
-// A module-level seam so `runAuth` and `runProfile` stay hermetic in tests without threading a fetch through
+// A module-level seam so `runAuth` and `addProfile` stay hermetic in tests without threading a fetch through
 // every layer; the interactive pickers reach this through several calls.
 let defaultLoginFetch: LoginFetch = defaultFetch;
 

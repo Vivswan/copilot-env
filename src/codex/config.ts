@@ -295,7 +295,7 @@ export function bakedCodexToken(
 
 // === wiring inspection (inverse of the write contract above) ===
 //
-// Lives HERE, next to the managed provider tables, so `agent health` and `agent codex` share one
+// Lives HERE, next to the managed provider tables, so `agent health` and `agent profile sync --codex` share one
 // contract instead of shell/TOML copies.
 
 /** Minted with providerMode by inspectCodexWiring (mirrors ClaudeOtherReason). The profile-
@@ -708,7 +708,7 @@ export function configureCodexConfig(
 
   // `model_catalog_json` REPLACES Codex's bundled catalog, and a missing, empty, unparseable, or
   // schema-rejected file is a Codex STARTUP error: the key is written only when opted in, usable,
-  // and not rejected by the installed codex (re-judged on every write, so `agent codex` recovers
+  // and not rejected by the installed codex (re-judged on every write, so `agent profile sync --codex` recovers
   // from a codex upgrade); otherwise scrubbed, even over a user-pinned path. Only the DEFAULT write
   // owns it.
   let catalogRef: "written" | "cleared" | null = null;
@@ -723,7 +723,7 @@ export function configureCodexConfig(
     if (verdict === "rejected") {
       logger.warn(
         `  ! the installed codex rejects ${catalogFile}; leaving it out of the config ` +
-          "(regenerate with `agent codex`, or disable with " +
+          "(regenerate with `agent profile sync --codex`, or disable with " +
           `\`${configSetCommand("codex.model-catalog", "false")}\`)`,
       );
     }
@@ -855,7 +855,7 @@ export async function probeDirectWiring(
 
 /** The LANDING: landDirectPair (src/copilot_api/direct_pair.ts, the one probe-and-store owner) as
  *  the branded wiring the writers take. Only the commands that land a credential or wire a slot
- *  holding no pair reach it (`agent profile --add`, `agent auth --profile`, an import, and a named
+ *  holding no pair reach it (`agent profile <name> add`, `agent profile <name> auth`, an import, and a named
  *  profile's re-render whose slot holds no pair; the default's landing probes per agent and
  *  stores through commitDefaultWiring in configure_defaults.ts once both agents' files are
  *  written); a listing such as `agent models --direct` probes without it (probeDirectWiring), so a

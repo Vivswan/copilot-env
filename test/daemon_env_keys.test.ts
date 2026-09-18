@@ -216,7 +216,7 @@ test("no-shim-imports: rejects every runtime-import shape in a shim, allows type
     { source: 'import type { T } from "./cli.ts"; export {};', path: shim, diagnostics: 0 },
     { source: "export function f(): number { return 1; }", path: shim, diagnostics: 0 },
     // Outside the shim files the rule says nothing.
-    { source: importing, path: "src/commands/init.ts", diagnostics: 0 },
+    { source: importing, path: "src/commands/profile.ts", diagnostics: 0 },
   ];
   for (const row of rows) {
     const count = Deno.lint.runPlugin(shimImportsPlugin, row.path, row.source).length;

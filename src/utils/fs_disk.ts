@@ -63,6 +63,7 @@ import {
   plannedMissingDirectories,
   plannedState,
   readPlannedDir,
+  readPlannedText,
   recordBytes,
   recordPlannedMode,
   recordSecret,
@@ -215,7 +216,7 @@ function planned(
       parentState?.kind === "text" || parentState?.kind === "bytes" ||
       (parentState?.kind === "opaque" && parentState.file)
     ) {
-      throw errno("ENOTDIR", `not a directory, ${refusals.syscall}`);
+      throw underFileRefusal(refusals.syscall);
     }
     if (parentState === null || parentState.kind === "opaque") {
       const refusal = parentRefusal(parent, refusals.syscall);
@@ -251,8 +252,10 @@ function planned(
     return true;
   }
   // A file that is not text (a directory, a binary) carries no `before`, and the plan names the
-  // path alone.
-  const was = kind === "create" ? null : readTextResult(path);
+  // path alone. `before` is the text as the run sees it: an earlier landing's planned text, else
+  // the disk's. So a second landing that restores the disk bytes records `rewrite` against the
+  // first's text, and the fold (first `before`, last `content`) prints the path as unchanged.
+  const was = kind === "create" ? null : readPlannedText(path);
   const before = was === null ? null : was.kind === "text" ? was.text : undefined;
   landPlan({
     files: [{
@@ -316,6 +319,16 @@ function parentRefusal(parent: string, syscall: string): NodeJS.ErrnoException |
   }
 }
 
+/** What a lookup at or under a regular file raises: ENOTDIR on POSIX; Windows reports the path as
+ *  not found (the overlay's table, fs_overlay.ts), except that node's own recursive mkdir says
+ *  ENOTDIR. */
+function underFileRefusal(syscall: string): NodeJS.ErrnoException {
+  const notdir = process.platform !== "win32" || syscall.startsWith("mkdir");
+  return notdir
+    ? errno("ENOTDIR", `not a directory, ${syscall}`)
+    : errno("ENOENT", `no such file or directory, ${syscall}`);
+}
+
 /** The error node:fs raises for `code`, spelled as it spells it. */
 function errno(code: string, detail: string): NodeJS.ErrnoException {
   const err: NodeJS.ErrnoException = new Error(`${code}: ${detail}`);
@@ -357,7 +370,7 @@ export function refuseRmdir(path: string): void {
     state?.kind === "text" || state?.kind === "bytes" ||
     (state?.kind === "opaque" && state.file)
   ) {
-    throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
+    throw underFileRefusal(`rmdir '${path}'`);
   }
   if (state === null || state.kind === "opaque") {
     // A plan without bytes (a chmod on a disk directory): the disk says which kind stands there.
@@ -366,10 +379,10 @@ export function refuseRmdir(path: string): void {
       stat = lstatSync(path);
     } catch {
       if (state === null) return;
-      throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
+      throw underFileRefusal(`rmdir '${path}'`);
     }
     if (stat.isSymbolicLink()) return;
-    if (!stat.isDirectory()) throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
+    if (!stat.isDirectory()) throw underFileRefusal(`rmdir '${path}'`);
   }
   if (state?.kind !== "gone" && readPlannedDir(path).length > 0) {
     throw errno("ENOTEMPTY", `directory not empty, rmdir '${path}'`);
@@ -745,8 +758,13 @@ export function rename(from: string, to: string): void {
 }
 
 export function symlink(target: string, path: string, type?: "junction"): void {
+  // node's symlinkSync never replaces: an entry at the path, the disk's or one this run planned,
+  // is its EEXIST, in the plan too (atomicSymlink is the replacing shape).
+  if (planCollecting() && plannedLook(path).kind !== "absent") {
+    throw errno("EEXIST", `file already exists, symlink '${target}' -> '${path}'`);
+  }
   if (
-    planned(verdictOf(plannedLook(path)), path, undefined, {
+    planned("create", path, undefined, {
       syscall: `symlink '${target}' -> '${path}'`,
       directory: "none",
     })
@@ -759,13 +777,16 @@ export function symlink(target: string, path: string, type?: "junction"): void {
  *  missing link. */
 export function atomicSymlink(target: string, link: string): void {
   const staged = join(dirname(link), `.${basename(link)}-next-${process.pid}`);
+  // A stale staging entry from a crashed run under this pid goes first, through the seam: with
+  // pid reuse the path could be a file the user made, so its removal is named, and planned before
+  // the link is (a dry run prints what the real run does).
+  rm(staged, { force: true, detail: "stale staging file" });
   if (
     planned(verdictOf(plannedLook(link)), link, undefined, {
       syscall: `rename '${staged}' -> '${link}'`,
       directory: "entry",
     })
   ) return;
-  rmSync(staged, { force: true });
   const was = look(staged);
   symlinkSync(target, staged);
   try {

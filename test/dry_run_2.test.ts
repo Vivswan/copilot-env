@@ -513,11 +513,12 @@ test("the update preview takes the stage's and the flip's own refusals at `curre
   const file = join(dir, "file");
   mkdirSync(file, { recursive: true });
   writeFileSync(join(file, "current"), "");
-  const notDir = /ENOTDIR: not a directory, rmdir '/;
+  // The platform's own code for rmdir at a regular file: Windows reports it as not found.
+  const notDir = process.platform === "win32"
+    ? /ENOENT: no such file or directory, rmdir '/
+    : /ENOTDIR: not a directory, rmdir '/;
   await expect(preview(file)).rejects.toThrow(notDir);
-  if (process.platform !== "win32") {
-    expect(() => pointCurrentAt(file, versionName)).toThrow(notDir);
-  }
+  expect(() => pointCurrentAt(file, versionName)).toThrow(notDir);
   const repair = join(dir, "repair");
   mkdirSync(join(repair, "current"), { recursive: true });
   const { files } = await collectDryRun(() => Promise.resolve(pointCurrentAt(repair, versionName)));

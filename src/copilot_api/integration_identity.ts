@@ -260,7 +260,7 @@ function genericHostBlockedBy(status: number): boolean {
 }
 
 // One verdict per (token, host, header set) in a process, shared by the survey, the selectors, and
-// the host rule: the table `agent auth --identities` prints and a selection in the same process come
+// the host rule: the table `agent profile identity` prints and a selection in the same process come
 // from the SAME responses, so a status that flips between two request rounds cannot show an
 // accepted cell beside a refusal.
 // Process-lifetime like probeMemo; injected I/O bypasses it (see probeIntegrationIdentityCached).

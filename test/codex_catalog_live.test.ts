@@ -104,7 +104,7 @@ live(
     const bundledSlugs = new Set(bundled.map((m) => String(m.slug)));
     expect(bundledSlugs.has(FIXTURE_ONLY)).toBe(false);
 
-    // Generation exactly as `agent codex` runs it, minus the network: the fixture
+    // Generation exactly as `agent profile sync --codex` runs it, minus the network: the fixture
     // body stands in for Copilot's /models; dump and acceptance probe are the real CLI.
     const fixture = fixtureBodyFor(bundledSlugs);
     const fixtureModels: Map<string, CopilotCatalogModel> = parseCopilotModels(fixture);

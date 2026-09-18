@@ -1,5 +1,5 @@
-// The live "does Copilot Direct work for THIS credential?" probe behind `agent codex` /
-// `agent claude` auto-detect. Not every account or token may use Direct, so rather than guess it
+// The live "does Copilot Direct work for THIS credential?" probe behind `agent profile sync --codex` /
+// `agent profile sync --claude` auto-detect. Not every account or token may use Direct, so rather than guess it
 // writes a throwaway direct config into a temp home and runs the agent CLI's own read-only smoke
 // prompt against it; exit 0 means Direct works. The command boundary ensured a credential is
 // stored before this runs, and the temp config resolves it the way the real wiring will.

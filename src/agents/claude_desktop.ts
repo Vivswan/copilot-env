@@ -1,5 +1,5 @@
 // The whole-library Claude Desktop reconcile behind the `claude.desktop` key, and the
-// status `agent claude --check` and health judge. Cross-agent: every promise comes from the store
+// status `agent profile check --claude` and health judge. Cross-agent: every promise comes from the store
 // (the default slot's recorded mode, the named slots), never from the agent files.
 import {
   claudeDesktopInstalled,
@@ -57,7 +57,7 @@ export function resolveClaudeDesktopTargets(): DesktopTargetResolution {
   return { kind: "resolved", targets };
 }
 
-/** Never throws: a failed look anywhere is an `unjudged` status, so `agent claude --check`
+/** Never throws: a failed look anywhere is an `unjudged` status, so `agent profile check --claude`
  *  and health report it and keep their own verdicts. */
 export function claudeDesktopStatus(): ClaudeDesktopStatus {
   // The preference is read on its own first, so a later failed look still reports the
@@ -122,7 +122,7 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
     if (opts.quiet) return;
     // The default is upserted too: a key flipped back on by a config-only import has no
     // adapter write to ride on. A default already judged wired is skipped: init / `agent
-    // claude` just synced it, and re-discovering its models would be a network call for a
+    // profile sync --claude` just synced it, and re-discovering its models would be a network call for a
     // byte-identical no-op.
     const defaultWired = status.entries.some(
       (e) => e.profile === null && e.verdict.kind === "wired",
@@ -140,7 +140,7 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
 
 /** One line, only when the app WILL come up on the default entry at its next launch: the default is
  *  wired, `_meta.json` applies it, and the app boots third-party. Anything less is left to
- *  `agent claude --check`, whose lines name the gap. */
+ *  `agent profile check --claude`, whose lines name the gap. */
 async function reportClaudeDesktopReady(resolution: DesktopTargetResolution): Promise<void> {
   const status = inspectClaudeDesktopWiring(resolution);
   if (status.kind !== "inspected") return;
@@ -157,7 +157,7 @@ async function reportClaudeDesktopReady(resolution: DesktopTargetResolution): Pr
   logger.success("  Claude Desktop is ready to use.");
 }
 
-/** Resilient like `agent profile --sync`. The default resolves its credential here for the
+/** Resilient like `agent sync`. The default resolves its credential here for the
  *  catalog fetch; a named profile's wire resolves its own. A Direct slot holding no pair is left
  *  as it is and named: the reconcile writes the Desktop entry alone, and the pair is landed only
  *  together with both agents' files (the repair command). */
@@ -165,7 +165,7 @@ async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
   try {
     const rendered = mode === "direct" ? renderDirectWiring(profile) : null;
     if (mode === "direct" && rendered === null) {
-      const repair = profile === null ? "agent claude" : "agent profile --sync";
+      const repair = profile === null ? "agent profile sync --claude" : "agent sync";
       logger.warn(
         `  ${profileLabel(profile)}'s Direct pair is not stored; its Desktop entry is left as it ` +
           `is. \`${repair}\` lands the pair together with both agents' files and the entry.`,

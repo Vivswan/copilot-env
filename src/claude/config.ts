@@ -322,7 +322,7 @@ export function inspectClaudeWiring(
 // --- config writes ----------------------------------------------------------
 
 /**
- * Absence agrees with readTextState's "absent" (ENOENT or ENOTDIR), so a caller that classified
+ * Absence agrees with fs.readTextResult's "absent" (ENOENT or ENOTDIR), so a caller that classified
  * the read as none can never throw here. A malformed file throws: settings we could not read are
  * never overwritten. Read through the facade, so a dry run's planned content answers.
  */
@@ -549,7 +549,7 @@ function prepareWebSearchPair(
         logger.warn(
           "copilot-env MCP registration failed; removing the managed WebSearch deny so the " +
             "builtin stays reachable (it will 400 on Copilot Direct) - fix ~/.claude.json, " +
-            "then rewire with `agent claude --direct`",
+            "then rewire with `agent init --direct`",
         );
         landed = stripManagedWebSearchDeny(doc, settingsPath);
       },
@@ -597,7 +597,7 @@ export type ClaudeWriteRequest = ManagedWrite & {
 export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): void {
   const profile = request.profile ?? null;
   // read(), not resolve(): no `gh` spawn (runClaude already resolved and fail-fasted; this
-  // backstops direct callers like --settings-for). read() is fail-closed, so a recorded provider
+  // backstops the `cl --profile` launcher's re-render). read() is fail-closed, so a recorded provider
   // whose token is gone reads "none" and a broken slot is refused too.
   if (
     profile !== null &&
@@ -606,7 +606,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
   ) {
     throw new Error(
       `${profileLabel(profile)} has no credential of its own (a named profile never falls back ` +
-        `to the default credential) - run \`agent auth --profile ${profile}\` first.`,
+        `to the default credential) - run \`agent profile ${profile} auth\` first.`,
     );
   }
 

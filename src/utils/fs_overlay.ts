@@ -502,7 +502,7 @@ export class Overlay {
     if (isLink(seen)) {
       if (!WINDOWS) throw errno("ENOTDIR", "rmdir", path);
     } else {
-      if (!isDir(seen)) throw errno("ENOTDIR", "rmdir", path);
+      if (!isDir(seen)) throw errno(underFile("rmdir"), "rmdir", path);
       if (this.readdir(path).length > 0) throw errno("ENOTEMPTY", "rmdir", path);
     }
     this.set(key, { kind: "gone" }, resolve(path));

@@ -46,7 +46,7 @@ test("formatTable pads and aligns per column, separates header and footer rows, 
 
 // --- terminal width ---------------------------------------------------------------------------
 
-/** The `agent auth --identities` table: three fixed columns whose headers carry a host, and a
+/** The `agent profile identity` table: three fixed columns whose headers carry a host, and a
  *  free-text note column. */
 const IDENTITIES = {
   body: [

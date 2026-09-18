@@ -92,7 +92,9 @@ test("under the plan collector a planned directory takes rm's and rmdir's own re
     expect(() => facade.rm(home)).toThrow(/EISDIR/);
     facade.writeText(join(home, "child.txt"), "planned", { atomic: false });
     expect(() => facade.rmdir(home)).toThrow(/ENOTEMPTY/);
-    expect(() => facade.rmdir(join(home, "child.txt"))).toThrow(/ENOTDIR/);
+    // The platform's own code for a lookup at a file: Windows reports it as not found.
+    const underFile = Deno.build.os === "windows" ? /ENOENT/ : /ENOTDIR/;
+    expect(() => facade.rmdir(join(home, "child.txt"))).toThrow(underFile);
     facade.chmod(join(home, "child.txt"), 0o600);
     expect(facade.readText(join(home, "child.txt"))).toBe("planned");
     facade.rm(join(home, "child.txt"));
@@ -104,6 +106,46 @@ test("under the plan collector a planned directory takes rm's and rmdir's own re
     return Promise.resolve();
   });
   expect(renderDryRun(files)).toEqual([`rewrite ${settings}`]);
+});
+
+test("under the plan collector a store landed twice, the second restoring the disk bytes, prints unchanged; a secret declaration outlives a planned deletion; a table with an empty table below it is not absent", async () => {
+  dir = tempDir("copilot-bridge-");
+  const store = join(dir, "state.json");
+  const text = `{\n  "port": 4141\n}\n`;
+  writeFileSync(store, text);
+  const a = join(dir, "a.json");
+  const b = join(dir, "b.json");
+  const config = join(dir, "config.toml");
+  const grown = join(dir, "grown.toml");
+  writeFileSync(config, "[a]\n");
+  writeFileSync(grown, "[a]\n");
+  const { files } = await collectDryRun(() => {
+    const state = new CopilotApiConfig(store);
+    state.update((d) => {
+      d.lastEnsureAt = 1;
+    });
+    state.update((d) => {
+      delete d.lastEnsureAt;
+    });
+    facade.writeText(a, '{"token":"x"}\n', { secret: true });
+    facade.rm(a);
+    facade.writeText(a, '{"token":"x"}\n');
+    facade.copyFile(a, b);
+    facade.writeText(b, "{}\n", { secretKeys: [] });
+    facade.writeText(config, "[a.b]\n", { secretKeys: [] });
+    facade.writeText(grown, "[a]\n[a.b]\n", { secretKeys: [] });
+    return Promise.resolve();
+  });
+  expect(renderDryRun(files)).toEqual([
+    `unchanged ${store}`,
+    `create ${a}`,
+    `create ${b}`,
+    `rewrite ${config}`,
+    `  - [a]`,
+    `  + [a.b]`,
+    `rewrite ${grown}`,
+    `  + [a.b]`,
+  ]);
 });
 
 test("under the plan collector a same-content document write with declared secrets prints unchanged alone", async () => {
@@ -371,6 +413,9 @@ test("under the plan collector a directory removed and made again is fresh and e
     facade.writeText(swapped, "first", { atomic: false });
     facade.writeText(swapped, "second", { atomic: false });
     expect(() => facade.mkdir(join(swapped, "child"))).toThrow(/ENOTDIR/);
+    expect(() => facade.writeText(join(swapped, "under"), "x", { atomic: false })).toThrow(
+      Deno.build.os === "windows" ? /ENOENT/ : /ENOTDIR/,
+    );
     expect(facade.readText(swapped)).toBe("second");
     const plannerRoot = join(dir, "planned");
     mkdirSync(plannerRoot);
@@ -410,6 +455,53 @@ test("under the plan collector a directory removed and made again is fresh and e
     `create ${join(dir, "planned", "new.txt")}`,
   ]);
   expect(readFileSync(join(root, "stale.txt"), "utf8")).toBe("old");
+});
+
+test("under the plan collector a stale staging file at the link's staging path is planned removed before the link", async () => {
+  dir = tempDir("copilot-bridge-");
+  const link = join(dir, "current");
+  const staging = join(dir, `.current-next-${process.pid}`);
+  writeFileSync(staging, "left by a crashed run");
+  const { files } = await collectDryRun(() => {
+    facade.atomicSymlink("versions/v1", link);
+    return Promise.resolve();
+  });
+  expect(files.map((f) => `${f.verdict} ${f.path}`)).toEqual([
+    `delete ${staging}`,
+    `create ${link}`,
+  ]);
+  expect(readFileSync(staging, "utf8")).toBe("left by a crashed run");
+});
+
+test("a symlink never replaces: a disk entry or a planned file at the path is EEXIST under the collector as for real, and a fresh path records a create", async () => {
+  dir = tempDir("copilot-bridge-");
+  const onDisk = join(dir, "on-disk");
+  const plannedFile = join(dir, "planned");
+  const fresh = join(dir, "fresh");
+  writeFileSync(onDisk, "kept");
+  const exists = /EEXIST: file already exists, symlink/;
+  const { files } = await collectDryRun(() => {
+    facade.writeText(plannedFile, "x");
+    expect(() => facade.symlink("target", onDisk)).toThrow(exists);
+    expect(() => facade.symlink("target", plannedFile)).toThrow(exists);
+    facade.symlink("target", fresh);
+    return Promise.resolve();
+  });
+  expect(files.map((f) => `${f.verdict} ${f.path}`)).toEqual([
+    `create ${plannedFile}`,
+    `create ${fresh}`,
+  ]);
+  expect([readFileSync(onDisk, "utf8"), facade.exists(fresh)]).toEqual(["kept", false]);
+  // The real call refuses with the same code (its message is the runtime's own spelling).
+  if (Deno.build.os !== "windows") {
+    let code = "ok";
+    try {
+      facade.symlink("target", onDisk);
+    } catch (e) {
+      code = (e as NodeJS.ErrnoException).code ?? "";
+    }
+    expect([code, readFileSync(onDisk, "utf8")]).toEqual(["EEXIST", "kept"]);
+  }
 });
 
 test("under the plan collector a facade read answers from the plan: a planned write reads back, a planned delete reads as absent, a planned directory lists", async () => {

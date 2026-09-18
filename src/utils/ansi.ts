@@ -39,7 +39,7 @@ function sgr(tone: Tone): Paint {
 }
 
 /** The palette ungated: for a renderer that resolves COLOR_ENABLED once at its edge (the survey of
- *  `agent auth --identities`), so a test can force color on and pin what the escapes wrap. */
+ *  `agent profile identity`), so a test can force color on and pin what the escapes wrap. */
 export const palette: Record<Tone, Paint> = {
   bold: sgr("bold"),
   dim: sgr("dim"),

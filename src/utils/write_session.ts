@@ -170,10 +170,9 @@ export function landPlan(plan: WritePlan): void {
       }
       for (const key of [...session.modes.keys()]) if (below(key)) session.modes.delete(key);
       for (const key of [...session.bytes.keys()]) if (below(key)) session.bytes.delete(key);
-      for (const key of [...session.secretKeys.keys()]) {
-        if (below(key)) session.secretKeys.delete(key);
-      }
-      for (const set of [session.dirs, session.fresh, session.opaqueFiles, session.secretFiles]) {
+      // A secret declaration outlives the deletion: the report folds a path's landings across it,
+      // and a path once declared never prints (the overlay keeps its declarations the same way).
+      for (const set of [session.dirs, session.fresh, session.opaqueFiles]) {
         for (const key of [...set]) if (below(key)) set.delete(key);
       }
     } else if (file.content !== undefined) {
@@ -512,12 +511,14 @@ export function emptyLeaves(
   empties: ReadonlySet<string>,
   own: Map<string, unknown>,
   other: ReadonlyMap<string, unknown>,
+  otherEmpties: ReadonlySet<string>,
 ): void {
   for (const key of empties) {
-    if (other.has(key)) continue;
-    let below = false;
-    for (const k of other.keys()) if (k.startsWith(`${key}.`)) below = true;
-    if (!below) own.set(key, {});
+    if (other.has(key) || otherEmpties.has(key)) continue;
+    // A table whose subtree still stands (a leaf, or an empty table, below it) is not absent.
+    const under = (k: string): boolean => k.startsWith(`${key}.`);
+    if ([...other.keys()].some(under) || [...otherEmpties].some(under)) continue;
+    own.set(key, {});
   }
 }
 
@@ -541,7 +542,7 @@ export function planDocReplace(
   // A dropped empty table is a row where the writer's rows printed one (TOML); one kept on both
   // sides is neither; the JSON store never printed a container.
   for (const key of afterEmpties) beforeEmpties.delete(key);
-  if (emptyDrops) emptyLeaves(beforeEmpties, before, after);
+  if (emptyDrops) emptyLeaves(beforeEmpties, before, after, afterEmpties);
   const rows: AttributeRow[] = [];
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const was = before.get(key);

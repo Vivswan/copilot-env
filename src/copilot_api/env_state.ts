@@ -11,6 +11,7 @@ import { CODEX_IDENTITY_NAME, INTEGRATION_ID_RE, isLoopbackHostname } from "./en
 import { GH_LOGIN_RE } from "./gh_cli.ts";
 import { profileHomeNames } from "./paths.ts";
 import {
+  isReservedProfileWord,
   isValidProfileName,
   parseProfileName,
   type Profile,
@@ -115,6 +116,14 @@ export type ProfileMode = (typeof PROFILE_MODES)[number];
 /** parseProfileName rejects `default`, so no named profile can collide with this key. */
 export const DEFAULT_PROFILE_KEY = "default";
 
+/** The two creators refuse a word `agent profile` routes as a verb, so it can never become a
+ *  profile; a profile named before its word became a verb is read as it is. */
+function refuseReservedWord(name: ProfileName): void {
+  if (isReservedProfileWord(name)) {
+    throw new Error(`profile name '${name}' is reserved (it is a verb of \`agent profile\`)`);
+  }
+}
+
 function slotKey(profile: Profile): string {
   return profile ?? DEFAULT_PROFILE_KEY;
 }
@@ -156,9 +165,9 @@ export function partialSlotGap(
 ): string {
   return slot.mode === null
     ? `${profileLabel(name)} does not exist - create it with ` +
-      `\`agent profile --add ${name} --direct|--proxy\``
+      `\`agent profile ${name} add --direct|--proxy\``
     : `${profileLabel(name)} has no credential - repair it with ` +
-      `\`agent auth --profile ${name}\` or \`agent profile --add ${name}\``;
+      `\`agent profile ${name} auth\` or \`agent profile ${name} add\``;
 }
 
 /** The READ view, not the disk layout: the default slot's credential is projected to the top level
@@ -311,7 +320,7 @@ export function assertKnownProfile(name: ProfileName): ProfileSlot {
 function unknownProfileError(name: ProfileName): Error {
   const names = allProfileNames();
   const hint = names.length === 0
-    ? "no profiles exist - create one with `agent profile --add <name> --direct|--proxy`"
+    ? "no profiles exist - create one with `agent profile <name> add --direct|--proxy`"
     : `known profiles: ${names.join(", ")}`;
   return new Error(`no such profile '${name}' (${hint})`);
 }
@@ -320,7 +329,7 @@ function missingProfileSlotError(name: ProfileName): Error {
   if (profileHomeNames().includes(name)) {
     return new Error(
       `profile '${name}' has no store slot (half-created; its daemon home exists) - ` +
-        `re-create it with \`agent profile --add ${name} --direct|--proxy\``,
+        `re-create it with \`agent profile ${name} add --direct|--proxy\``,
     );
   }
   return unknownProfileError(name);
@@ -427,9 +436,10 @@ export class CopilotEnvState {
   }
 
   /**
-   * A NAMED slot must already exist (commitProfile is the only creator), checked INSIDE the same update
-   * as the write, so a racing deleteProfile resurrects no credential-only half slot under update()'s
-   * best-effort lock; past its bounded wait both writers proceed unlocked.
+   * A NAMED slot must already exist (commitProfile and recordProfileMode are the two creators),
+   * checked INSIDE the same update as the write, so a racing deleteProfile resurrects no
+   * credential-only half slot under update()'s best-effort lock; past its bounded wait both
+   * writers proceed unlocked.
    */
   setCredential(profile: Profile, credential: ProvisionedCredential): void {
     const patch = rawCredentialPatch(credential);
@@ -497,6 +507,7 @@ export class CopilotEnvState {
     name: ProfileName,
     slot: { credential: ProvisionedCredential; mode: ProfileMode },
   ): void {
+    refuseReservedWord(name);
     const next = rawCredentialPatch(slot.credential);
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
@@ -526,7 +537,22 @@ export class CopilotEnvState {
     });
   }
 
-  /** The slot's state keys go with the profile (`agent profile --del`); its settings keys are
+  /** `agent profile <name> add`: the mode lands first, the credential follows through `auth`
+   *  (setCredential), so a new profile is a partial slot until then. The one other creator
+   *  beside commitProfile; the raw slot is mutated, so a credential already there survives. */
+  recordProfileMode(name: ProfileName, mode: ProfileMode): void {
+    refuseReservedWord(name);
+    this.store.update((d) => {
+      const profiles = isRecord(d.profiles) ? d.profiles : {};
+      const raw = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
+      const slot: Record<string, unknown> = isRecord(raw) ? raw : {};
+      slot.mode = mode;
+      profiles[name] = slot;
+      d.profiles = profiles;
+    });
+  }
+
+  /** The slot's state keys go with the profile (`agent profile <name> del`); its settings keys are
    *  CopilotEnvConfig.deleteProfile's. A map left with nothing is dropped. */
   deleteProfile(name: ProfileName): void {
     this.store.update((d) => {
@@ -576,11 +602,12 @@ export class CopilotEnvState {
     });
   }
 
-  /** The mode both agents share, with ONE writer: commitDefaultWiring (src/agents/configure_defaults.ts),
+  /** The mode both agents share. Its writers: commitDefaultWiring (src/agents/configure_defaults.ts)
    *  after both agents' writes of a landing (`agent init`, an import naming both agents, the first
-   *  write on a fresh default) succeeded; a single-agent command re-renders it and never moves it.
-   *  The default Desktop entry's promise (resolveClaudeDesktopTargets). Never read back off the
-   *  agent files. */
+   *  write on a fresh default) succeeded, and the default's `add` with no credential to land with,
+   *  which records the mode alone for the landing that follows the credential; a single-agent
+   *  command re-renders it and never moves it. The default Desktop entry's promise
+   *  (resolveClaudeDesktopTargets). Never read back off the agent files. */
   recordDefaultMode(mode: ProfileMode | null): void {
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};

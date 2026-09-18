@@ -360,7 +360,7 @@ export class Credential {
       case "none": {
         const login = this.profile === null
           ? "run `agent auth` to log in"
-          : `run \`agent auth --profile ${this.profile}\` to log in ` +
+          : `run \`agent profile ${this.profile} auth\` to log in ` +
             "(a named profile never falls back to the default credential)";
         return { token: null, reason: `no GitHub credential configured${slot} - ${login}` };
       }
@@ -391,7 +391,7 @@ export class Credential {
     return { provider: this.provider(), resolves: this.resolve() !== null };
   }
 
-  /** A NAMED profile must already exist: creation is `agent profile --add`'s atomic commit, so this
+  /** A NAMED profile must already exist: creation is `agent profile <name> add`'s atomic commit, so this
    *  never leaves a half profile behind. */
   record(credential: ProvisionedCredential): void {
     this.state.setCredential(this.profile, credential);

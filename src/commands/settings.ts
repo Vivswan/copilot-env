@@ -97,7 +97,7 @@ export function parseSettingsAction(args: SettingsArgs): SettingsAction {
 }
 
 const ROLLBACK_SCOPE_NOTE =
-  "(restores the stores; profiles this import created stay until `agent profile --del`)";
+  "(restores the stores; profiles this import created stay until `agent profile <name> del`)";
 
 /** Projection happens at `agent start` per profile, and an auto-start no-op never re-projects, so a
  *  running daemon misses a projected key the bundle set or reset until it restarts. Hint first, then

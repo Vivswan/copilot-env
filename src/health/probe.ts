@@ -763,7 +763,7 @@ export async function gatherFacts(
   };
 
   // The (~5s) gh probe is skipped, and Direct reported as "uses token", only when the config is
-  // `managed` (execs `agent auth --get [--profile <name>]`) AND the credential classifies as a
+  // `managed` (execs `agent auth --get`, or `agent profile <name> auth --get`) AND the credential classifies as a
   // stored token; gh-cli means a live gh probe. Classification is storedCredentialKind()
   // (env_state.ts): a leftover token with no provider is "none", so no gh probe (no implicit
   // fallback) and Direct never reads green. A static shape asks the store nothing: the value is in
@@ -806,7 +806,7 @@ export async function gatherFacts(
   // The store facts the checks frame a credential miss with. A static wiring omits the provider:
   // it resolves nothing at request time, so an unreadable store must not fail its agent check. A
   // named profile's recorded mode stays whatever the shape: the slot DEFINES the profile, and an
-  // interrupted `profile --add` (slot flipped, agents not yet rewritten) must never read green.
+  // interrupted `profile <name> add` (slot flipped, agents not yet rewritten) must never read green.
   const storeFacts = (credential: "command" | "static" | "none" | null) => ({
     ...(credential === "static" ? {} : { provider: runCredential().provider }),
     ...(profile === null ? {} : { expectedMode: runCredential().mode }),

@@ -464,8 +464,8 @@ function canonicalizeForGuard(path: string): string | null {
     base = parent;
   }
   try {
-    // The OS's own canonical form (8.3 short names and junctions on Windows), which the facade's
-    // realpath does not resolve.
+    // The OS's own canonical form (8.3 short names and junctions on Windows); a read outside the
+    // seam, since a dry run resolves the same disk path.
     base = realpathSync.native(base);
   } catch {
     return null;

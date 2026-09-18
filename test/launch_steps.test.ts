@@ -295,7 +295,7 @@ test("a daemon launch: the credential, refusal, and probe decision per stored cr
       identity: { spy: COPILOT_CLI_INTEGRATION_ID },
       credential: {
         refused: "no such profile 'work' (no profiles exist - create one with " +
-          "`agent profile --add <name> --direct|--proxy`)",
+          "`agent profile <name> add --direct|--proxy`)",
       },
       probedTokens: [],
     },

@@ -28,7 +28,7 @@ import {
   PROFILE_STATE_KEYS,
 } from "../copilot_api/env_state.ts";
 import { LEDGER_KEY_NAMES } from "../copilot_api/ownership.ts";
-import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { nextProxyVersion } from "../proxy_float.ts";
 import { COLOR_ENABLED, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -43,9 +43,9 @@ export interface ConfigArgs {
   set?: string[];
   get?: string | boolean;
   del?: string;
-  /** The profile a profile-scoped key is set, deleted, or read for; absent = the default profile
-   *  (and, for a profile-default key, the global value). */
-  profile?: string;
+  /** The profile a profile-scoped key is set, deleted, or read for; null is the default profile,
+   *  whose profile-default keys (proxy.*, probe.*) are the shared default in the global map. */
+  profile: Profile;
   /** With --set/--del: print the store key the write would change, old -> new, and write nothing. */
   dryRun?: boolean;
 }
@@ -119,11 +119,10 @@ export function sinceProxyVersionWarning(
   );
 }
 
-/** `profile` is undefined when no --profile was given: a set/del then lands per the key's scope
- *  (settingTarget), and a get resolves for the default profile. */
+/** A set/del lands per the key's scope for `profile` (settingTarget); a get resolves for it. */
 export type ConfigAction =
-  | { kind: "set"; key: string; value: string; profile: Profile | undefined }
-  | { kind: "del"; key: string; profile: Profile | undefined }
+  | { kind: "set"; key: string; value: string; profile: Profile }
+  | { kind: "del"; key: string; profile: Profile }
   | { kind: "get"; key?: string; profile: Profile };
 
 export function parseConfigAction(args: ConfigArgs): ConfigAction {
@@ -138,17 +137,16 @@ export function parseConfigAction(args: ConfigArgs): ConfigAction {
   }
   // A named profile must exist: a section for a profile the store never created would be a
   // hidden value with no reader.
-  const profile = parseProfileFlag(args.profile);
+  const profile = args.profile;
   if (profile !== null) assertKnownProfile(profile);
-  const named = args.profile === undefined ? undefined : profile;
   if (args.set !== undefined) {
     const [key, value] = args.set;
     if (args.set.length !== 2 || key === undefined || value === undefined) {
       throw new Error("usage: agent config --set <key> <value>");
     }
-    return { kind: "set", key, value, profile: named };
+    return { kind: "set", key, value, profile };
   }
-  if (args.del !== undefined) return { kind: "del", key: args.del, profile: named };
+  if (args.del !== undefined) return { kind: "del", key: args.del, profile };
   return { kind: "get", key: typeof args.get === "string" ? args.get : undefined, profile };
 }
 
@@ -185,7 +183,7 @@ function targetSuffix(target: SettingTarget): string {
 function runSet(
   key: string,
   raw: string,
-  profile: Profile | undefined,
+  profile: Profile,
   platform: NodeJS.Platform,
 ): () => void {
   refuseStateKey(key);
@@ -231,7 +229,7 @@ export function unreadProjectedKeyWarnings(
   return warnings;
 }
 
-function runDel(key: string, profile: Profile | undefined): () => void {
+function runDel(key: string, profile: Profile): () => void {
   refuseStateKey(key);
   const def = configKeyDef(key);
   if (def === undefined) throw unknownKeyError(key);

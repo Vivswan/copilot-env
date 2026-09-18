@@ -7,6 +7,7 @@
 // proven against their verbs live, in twin homes. The verbs are reserved names, pinned at the CLI.
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { escapeRegExp } from "../src/utils/regexp.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { changedPaths } from "./helpers.ts";
 import { runCli } from "./helpers/run.ts";
@@ -51,12 +52,16 @@ function scratchHome(): { home: string; env: Record<string, string> } {
   };
 }
 
+/** The checkout path as a whole path segment: the container suite mounts the checkout at `/work`,
+ *  which is also the fixture profile's name (`/.codex/work.config.toml`). */
+const ROOT_SEGMENT = new RegExp(`${escapeRegExp(PROJECT_ROOT)}(?=[\\\\/"' ]|$)`, "gm");
+
 /** The oracle was captured on POSIX: a Windows run's separators and its PowerShell launcher
  *  spelling fold to the same tokens (the outputs compared here are paths and words). */
 function normalize(home: string, text: string): string {
   return text
     .replaceAll(home, "<HOME>")
-    .replaceAll(PROJECT_ROOT, "<ROOT>")
+    .replace(ROOT_SEGMENT, "<ROOT>")
     .replaceAll("\\", "/")
     .replace(
       /powershell -NoProfile -ExecutionPolicy Bypass -File "?<ROOT>\/bin\/agent\.ps1"?/g,

@@ -322,7 +322,9 @@ export function assertNotDirectory(path: string): void {
  *  update planner, whose `current` flip takes the same decision. */
 export function refuseRmdir(path: string): void {
   const state = plannedState(path);
-  if (state?.kind === "text") throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
+  if (state?.kind === "text" || (state?.kind === "opaque" && state.file)) {
+    throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
+  }
   if (state === null || state.kind === "opaque") {
     // A plan without bytes (a chmod on a disk directory): the disk says which kind stands there.
     let stat: Stats;
@@ -490,11 +492,14 @@ function writeStaged(path: string, data: string | Uint8Array, options: WriteOpti
 
 export function copyFile(from: string, to: string, detail?: string): void {
   const was = plannedLook(to);
+  // The source's text (as the run sees it) lands at `to` for the run's later readers; the plan
+  // names the copy alone, as the wrapper did.
+  const source = planCollecting() ? plannedBefore(from) : null;
   if (
-    planned(verdictOf(was), to, undefined, {
-      syscall: `copyfile '${from}' -> '${to}'`,
-      directory: "followed",
-    })
+    planned(verdictOf(was), to, {
+      content: source ?? undefined,
+      render: "path-only",
+    }, { syscall: `copyfile '${from}' -> '${to}'`, directory: "followed" })
   ) return;
   try {
     copyFileSync(from, to);
@@ -552,7 +557,7 @@ export function rm(path: string, options: RemoveOptions = {}): boolean {
   }
   let was: Look = { kind: "present", fingerprint: "" };
   if (state?.kind === "dir" && !recursive) throw rmDirectoryRefused(path);
-  if (state === null || state.kind === "opaque") {
+  if (state === null || (state.kind === "opaque" && !state.file)) {
     // The disk's entry (unplanned, or planned without bytes: a chmod on a disk directory):
     // node's own refusals, and a look that failed for another reason (EACCES) is left to the
     // removal itself.

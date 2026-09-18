@@ -533,6 +533,65 @@ test("a file declared secret as a whole prints its verdict alone, whatever its s
   expect(lines).toEqual([`create ${bundle}`, `rewrite ${config}`, `unchanged ${same}`]);
 });
 
+test("a path's secret declarations travel with a rename and a copy, so the report at the new path redacts the same values", async () => {
+  dir = tempDir("copilot-facade-");
+  const staged = join(dir, "staged.json");
+  const live = join(dir, "live.json");
+  const copy = join(dir, "copy.json");
+  const bundle = join(dir, "bundle.json");
+  const bundleCopy = join(dir, "bundle-copy.json");
+  const lines = await dryRun(() => {
+    facade.writeText(staged, '{"token":"t"}', { secretKeys: ["token"] });
+    facade.rename(staged, live);
+    facade.copyFile(live, copy);
+    facade.writeText(bundle, '{"token":"t"}', { secret: true });
+    facade.copyFile(bundle, bundleCopy);
+  });
+  expect(lines).toEqual([
+    `create ${live}`,
+    `  token  (absent) -> <redacted>`,
+    `create ${copy}`,
+    `  token  (absent) -> <redacted>`,
+    `create ${bundle}`,
+    `create ${bundleCopy}`,
+  ]);
+});
+
+test("a copy out of scratch survives the scratch dir's removal, and a byte write keeps its own copy of the buffer", async () => {
+  dir = tempDir("copilot-facade-");
+  const target = join(dir, "target.bin");
+  const written = join(dir, "written.bin");
+  writeFileSync(target, "old");
+  const lines = await dryRun(() => {
+    const scratch = facade.scratchDir(join(dir, "scratch-"));
+    facade.writeText(join(scratch, "seed"), "fresh");
+    facade.copyFile(join(scratch, "seed"), target);
+    facade.removeScratchDir(scratch);
+    const buffer = new Uint8Array([1, 2, 3]);
+    facade.writeBytes(written, buffer);
+    buffer.fill(9);
+    expect([facade.readText(target), facade.readBytes(written)]).toEqual([
+      "fresh",
+      new Uint8Array([1, 2, 3]),
+    ]);
+  });
+  expect(lines).toEqual([`rewrite ${target}`, `create ${written}`]);
+});
+
+// Creating a symlink needs a privilege Windows does not grant by default.
+test.skipIf(WINDOWS)("a link to itself is ELOOP in a dry run, as on the disk", async () => {
+  dir = tempDir("copilot-facade-");
+  const loop = join(dir, "loop");
+  symlinkSync(loop, loop);
+  expect(outcome(() => facade.readText(loop))).toBe("ELOOP");
+  await dryRun(() => {
+    expect([outcome(() => facade.readText(loop)), outcome(() => facade.stat(loop))]).toEqual([
+      "ELOOP",
+      "ELOOP",
+    ]);
+  });
+});
+
 test("readTextResult tells absent from unreadable by lstat, in a dry run from the planned state; scratch stays real in a dry run and prints nothing", async () => {
   dir = tempDir("copilot-facade-");
   const file = join(dir, "f.txt");

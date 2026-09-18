@@ -6,7 +6,7 @@
 // a config.toml re-inspected after its write) sees the planned state, not the disk. utils layer:
 // the JSON store (src/copilot_api/config.ts) lands through here too.
 import { lstatSync, readdirSync, type Stats, statSync } from "node:fs";
-import { basename, dirname, extname, sep } from "node:path";
+import { basename, dirname, extname, join, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import {
   isEnoent,
@@ -109,12 +109,24 @@ interface DryRunSession {
   /** Directories made where the run had planned a deletion: nothing the disk holds under one is
    *  visible, as after the real `rm -r d; mkdir d`. */
   fresh: Set<string>;
+  /** Files landed without their bytes (a copy, a byte write, a link) where the run had planned a
+   *  deletion: files, whatever the disk still holds at the path. */
+  opaqueFiles: Set<string>;
 }
 
 let session: DryRunSession | null = null;
 
 export function dryRunActive(): boolean {
   return session !== null;
+}
+
+/** A directory this run makes at `path`: fresh when made over a planned deletion (its own, or an
+ *  ancestor's tree), which is what hides the disk below it; its own tombstone is spent. */
+function noteDirectory(path: string): void {
+  if (session === null) return;
+  if (shadowedText(path) === null) session.fresh.add(path);
+  session.dirs.add(path);
+  if (session.shadows.get(path) === null) session.shadows.delete(path);
 }
 
 /**
@@ -133,24 +145,27 @@ export function landPlan(plan: WritePlan): void {
     // mkdir, which a dry run never runs), so the plan names the missing ancestors, outermost
     // first, the way the real run's own lines do.
     if (file.verdict === "create") session.files.push(...missingAncestors(file.path));
-    if (file.directory) {
-      // Made over a planned deletion (its own, or an ancestor's): fresh, hiding the disk below.
-      if (shadowedText(file.path) === null) session.fresh.add(file.path);
-      session.dirs.add(file.path);
-    }
+    if (file.directory) noteDirectory(file.path);
     session.files.push(file);
     if (file.verdict === "delete") {
+      // The tree goes: every landing below it is spent, and a later one starts over.
       session.shadows.set(file.path, null);
-      session.modes.delete(file.path);
-      for (const set of [session.dirs, session.fresh]) {
-        for (const dir of [...set]) {
-          if (dir === file.path || dir.startsWith(file.path + sep)) set.delete(dir);
-        }
+      const below = (key: string): boolean => key === file.path || key.startsWith(file.path + sep);
+      for (const key of [...session.shadows.keys()]) {
+        if (key !== file.path && below(key)) session.shadows.delete(key);
+      }
+      for (const key of [...session.modes.keys()]) if (below(key)) session.modes.delete(key);
+      for (const set of [session.dirs, session.fresh, session.opaqueFiles]) {
+        for (const key of [...set]) if (below(key)) set.delete(key);
       }
     } else if (file.content !== undefined) session.shadows.set(file.path, file.content);
-    // A landing whose bytes the plan does not carry (a directory, a copy, a link) ends an earlier
-    // planned deletion of the path; earlier planned text stays (a chmod carries none).
-    else if (session.shadows.get(file.path) === null) session.shadows.delete(file.path);
+    // A landing whose bytes the plan does not carry (a copy, a link, a byte write) over a planned
+    // deletion is a file there whatever the disk held, and ends the deletion of the path itself;
+    // earlier planned text stays (a chmod carries none).
+    else if (!file.directory && shadowedText(file.path) === null) {
+      session.opaqueFiles.add(file.path);
+      session.shadows.delete(file.path);
+    }
   }
   plan.commit?.();
 }
@@ -163,7 +178,7 @@ function missingAncestors(path: string): FilePlan[] {
   const made: FilePlan[] = [];
   for (const dir of plannedMissingDirectories(dirname(path))) {
     if (session.dirs.has(dir)) continue;
-    session.dirs.add(dir);
+    noteDirectory(dir);
     made.push(filePlan(dir, "create", { before: null, directory: true }));
   }
   return made;
@@ -233,7 +248,14 @@ export async function collectDryRun<T>(
   files: FilePlan[] = [],
 ): Promise<{ files: FilePlan[]; result: T }> {
   if (session !== null) throw new Error("a dry run is already collecting");
-  session = { files, shadows: new Map(), dirs: new Set(), modes: new Map(), fresh: new Set() };
+  session = {
+    files,
+    shadows: new Map(),
+    dirs: new Set(),
+    modes: new Map(),
+    fresh: new Set(),
+    opaqueFiles: new Set(),
+  };
   try {
     const result = await body();
     return { files: session.files, result };
@@ -264,7 +286,8 @@ export type PlannedState =
   | { kind: "dir" }
   | { kind: "text"; text: string }
   | { kind: "gone" }
-  | { kind: "opaque" }
+  /** `file` is certain when the landing replaced a planned deletion; otherwise the disk says. */
+  | { kind: "opaque"; file: boolean }
   | null;
 
 export function plannedState(path: string): PlannedState {
@@ -273,18 +296,21 @@ export function plannedState(path: string): PlannedState {
   const own = session.shadows.get(path);
   if (own === null) return { kind: "gone" };
   if (own !== undefined) return { kind: "text", text: own };
-  if (plannedPresence(path) === true) return { kind: "opaque" };
-  return shadowedText(path) === null ? { kind: "gone" } : null;
+  const present = plannedPresence(path);
+  if (present === true) return { kind: "opaque", file: session.opaqueFiles.has(path) };
+  return present === false || shadowedText(path) === null ? { kind: "gone" } : null;
 }
 
-/** Whether `path` exists as the run has planned it: true after a planned create or rewrite, false
- *  after a planned delete, undefined when no landing of this run touched it (a copied binary has
- *  no text to shadow, so a reader that checks existence asks this). */
+/** Whether `path` exists as the run has planned it, landing by landing: true after a planned
+ *  create or rewrite of the path, false after a planned delete of it or of a tree above it,
+ *  undefined when no landing of this run touched it (a copied binary has no text to shadow, so a
+ *  reader that checks existence asks this). */
 export function plannedPresence(path: string): boolean | undefined {
   if (session === null) return undefined;
   let present: boolean | undefined;
   for (const file of session.files) {
     if (file.path === path) present = file.verdict !== "delete";
+    else if (file.verdict === "delete" && path.startsWith(file.path + sep)) present = false;
   }
   return present;
 }
@@ -323,19 +349,22 @@ export function readPlannedDir(dir: string): string[] {
     }
   }
   if (session === null) return names;
-  const present = new Set(names);
+  // Every name the disk or a landing ever put under `dir`, kept when the run's state says it
+  // stands there now (a disk name with no plan stands; a planned one stands unless planned gone).
+  const candidates = new Set(names);
   for (const file of session.files) {
-    if (dirname(file.path) !== dir) continue;
-    if (file.verdict === "delete") present.delete(basename(file.path));
-    else present.add(basename(file.path));
+    if (dirname(file.path) === dir) candidates.add(basename(file.path));
   }
-  for (const [path, content] of session.shadows) {
-    if (dirname(path) !== dir) continue;
-    if (content === null) present.delete(basename(path));
-    else present.add(basename(path));
+  for (const path of session.shadows.keys()) {
+    if (dirname(path) === dir) candidates.add(basename(path));
   }
-  for (const path of session.dirs) if (dirname(path) === dir) present.add(basename(path));
-  return [...present].sort();
+  for (const path of session.dirs) if (dirname(path) === dir) candidates.add(basename(path));
+  const present: string[] = [];
+  for (const name of candidates) {
+    const state = plannedState(join(dir, name));
+    if (state === null ? names.includes(name) : state.kind !== "gone") present.push(name);
+  }
+  return present.sort();
 }
 
 /** readTextResult, with a dry run's planned content in front of the disk: a file this run planned

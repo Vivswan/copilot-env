@@ -73,7 +73,11 @@ const ERRNO_TEXT: Record<string, string> = {
   ENOTEMPTY: "directory not empty",
   EINVAL: "invalid argument",
   EPERM: "operation not permitted",
+  ELOOP: "too many symbolic links encountered",
 };
+
+/** The kernel's bound on a chain of links. */
+const MAX_LINK_HOPS = 40;
 
 /** An error shaped as node:fs throws it, so `(e as NodeJS.ErrnoException).code` reads the same. */
 export function errno(code: string, syscall: string, path: string, dest?: string): Error {
@@ -202,6 +206,7 @@ export class Overlay {
   private key(path: string, follow = true): string {
     let { root: cur, parts: pending } = split(resolve(path));
     let diskSpeaks = true;
+    let hops = 0;
     while (pending.length > 0) {
       const part = pending.shift() as string;
       const next = join(cur, part);
@@ -224,6 +229,8 @@ export class Overlay {
         }
         if (target === null) continue;
       }
+      // The kernel's own bound on a chain of links (a link to itself included).
+      if (++hops > MAX_LINK_HOPS) throw errno("ELOOP", follow ? "stat" : "lstat", path);
       const restart = split(resolve(dirname(next), target));
       cur = restart.root;
       pending = [...restart.parts, ...pending];
@@ -309,14 +316,20 @@ export class Overlay {
   }
 
   writeBytes(path: string, bytes: Uint8Array, write: OverlayWrite = {}): void {
-    this.land(path, { bytes }, write);
+    // The caller's buffer may be reused; the layer keeps its own copy.
+    this.land(path, { bytes: bytes.slice() }, write);
   }
 
-  /** The bytes of `from` as the run sees them, landed at `to` by path (never decoded) with the
-   *  source's mode, as copyFileSync lands them. */
-  copyFile(from: string, to: string): void {
+  /** The bytes of `from` as the run sees them, landed at `to` with the source's mode, as
+   *  copyFileSync lands them: by path (never decoded), or by value when the source will not
+   *  outlive the run (scratch). The source's secret declarations travel with them. */
+  copyFile(from: string, to: string, byValue = false): void {
     const content = this.fileAt(from, "copyfile");
-    this.land(to, content, { mode: this.stat(from).mode & 0o777 });
+    const carried = byValue && "disk" in content
+      ? { bytes: new Uint8Array(readFileSync(content.disk)) }
+      : content;
+    this.land(to, carried, { mode: this.stat(from).mode & 0o777 });
+    this.carrySecrets(this.key(from), this.key(to));
   }
 
   private land(path: string, content: FileContent, write: OverlayWrite): void {
@@ -528,8 +541,23 @@ export class Overlay {
     this.dropBelow(dst);
     const spelled = resolve(to);
     for (const [rel, entry] of moved) {
-      this.set(rel === "" ? dst : join(dst, rel), entry, rel === "" ? spelled : join(spelled, rel));
+      const key = rel === "" ? dst : join(dst, rel);
+      this.set(key, entry, rel === "" ? spelled : join(spelled, rel));
+      // What a path declared secret travels with its content, so the report at the new path
+      // redacts the same values.
+      this.carrySecrets(rel === "" ? src : join(src, rel), key);
     }
+  }
+
+  /** The secret declarations of `from` join `to`'s (a moved or copied file keeps its redaction). */
+  private carrySecrets(from: string, to: string): void {
+    const keys = this.secrets.get(from);
+    if (keys !== undefined) {
+      const declared = this.secrets.get(to) ?? new Set<string>();
+      for (const k of keys) declared.add(k);
+      this.secrets.set(to, declared);
+    }
+    if (this.secretFiles.has(from)) this.secretFiles.add(to);
   }
 
   /** Every entry of the subtree at `key`, keyed by path relative to it (the root is ""), as the run

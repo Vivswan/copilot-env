@@ -7,7 +7,7 @@ import { renderDryRun } from "../src/agents/write_plan.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import * as facade from "../src/utils/fs_facade.ts";
 import { removeEmptyDirReported } from "../src/utils/report_write.ts";
-import { collectDryRun } from "../src/utils/write_session.ts";
+import { collectDryRun, filePlan, landPlan } from "../src/utils/write_session.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
 let dir = "";
@@ -134,9 +134,12 @@ test("under the plan collector a directory removed and made again is fresh and e
       [],
     ]);
     expect(facade.exists(join(root, "stale.txt"))).toBe(false);
-    // The fresh directory is a directory to a write, hides the disk under a sub-directory it
-    // grows, and shows a byte write it takes.
-    expect(() => facade.writeText(root, "x", { atomic: false })).toThrow(/EISDIR/);
+    // The fresh directory is a directory to a write (the platform's own code: Windows opens a
+    // directory for writing with EINVAL), hides the disk under a sub-directory it grows, and shows
+    // a byte write it takes.
+    expect(() => facade.writeText(root, "x", { atomic: false })).toThrow(
+      Deno.build.os === "windows" ? /EINVAL/ : /EISDIR/,
+    );
     facade.mkdir(join(root, "sub"));
     expect(facade.readdir(join(root, "sub"))).toEqual([]);
     facade.writeBytes(join(root, "blob"), new Uint8Array([1]));
@@ -157,6 +160,27 @@ test("under the plan collector a directory removed and made again is fresh and e
     // A planned file is no directory to mkdir under.
     facade.writeText(join(dir, "leaf"), "x");
     expect(() => facade.mkdir(join(dir, "leaf", "child"))).toThrow(/ENOTDIR/);
+    // A tree removal spends the landings under it; a byte write over a removed directory is a
+    // file; a plan writer's create under a removed directory makes the parent fresh too.
+    const nest = join(dir, "nest");
+    facade.mkdir(nest);
+    facade.writeBytes(join(nest, "b"), new Uint8Array([2]));
+    facade.rm(nest, { recursive: true });
+    expect(facade.exists(join(nest, "b"))).toBe(false);
+    facade.mkdir(nest);
+    expect(facade.readdir(nest)).toEqual([]);
+    facade.rm(nest, { recursive: true });
+    facade.writeBytes(nest, new Uint8Array([3]));
+    expect([facade.stat(nest).isFile(), facade.rm(nest, { force: true })]).toEqual([true, true]);
+    const plannerRoot = join(dir, "planned");
+    mkdirSync(plannerRoot);
+    writeFileSync(join(plannerRoot, "old.txt"), "old");
+    facade.rm(plannerRoot, { recursive: true });
+    landPlan({
+      files: [filePlan(join(plannerRoot, "new.txt"), "create", { before: null, content: "new" })],
+      apply() {},
+    });
+    expect(facade.readdir(plannerRoot)).toEqual(["new.txt"]);
     return Promise.resolve();
   });
   expect(files.map((f) => `${f.verdict} ${f.path}${f.directory ? "/" : ""}`)).toEqual([
@@ -171,6 +195,16 @@ test("under the plan collector a directory removed and made again is fresh and e
     `create ${file}/`,
     `create ${join(file, "deep")}/`,
     `create ${join(dir, "leaf")}`,
+    `create ${join(dir, "nest")}/`,
+    `create ${join(dir, "nest", "b")}`,
+    `delete ${join(dir, "nest")}`,
+    `create ${join(dir, "nest")}/`,
+    `delete ${join(dir, "nest")}`,
+    `create ${join(dir, "nest")}`,
+    `delete ${join(dir, "nest")}`,
+    `delete ${join(dir, "planned")}`,
+    `create ${join(dir, "planned")}/`,
+    `create ${join(dir, "planned", "new.txt")}`,
   ]);
   expect(readFileSync(join(root, "stale.txt"), "utf8")).toBe("old");
 });
@@ -180,6 +214,7 @@ test("under the plan collector a facade read answers from the plan: a planned wr
   const file = join(dir, "f.txt");
   const made = join(dir, "made", "deep");
   writeFileSync(file, "disk");
+  writeFileSync(join(dir, "seed.txt"), "seed");
   mkdirSync(join(dir, "other"));
   await collectDryRun(() => {
     expect(facade.dryRunActive()).toBe(true);
@@ -189,12 +224,13 @@ test("under the plan collector a facade read answers from the plan: a planned wr
       facade.readTextResult(file),
       facade.stat(file).size,
       facade.readdir(dir),
-    ]).toEqual([
-      "planned",
-      { kind: "text", text: "planned" },
-      7,
-      ["f.txt", "other"],
-    ]);
+    ])
+      .toEqual([
+        "planned",
+        { kind: "text", text: "planned" },
+        7,
+        ["f.txt", "other", "seed.txt"],
+      ]);
     facade.mkdir(made);
     expect([facade.exists(made), facade.stat(made).isDirectory(), facade.readdir(made)]).toEqual([
       true,
@@ -204,7 +240,7 @@ test("under the plan collector a facade read answers from the plan: a planned wr
     facade.rm(file, { force: true });
     expect([facade.exists(file), facade.readdir(dir), facade.readTextResult(file)]).toEqual([
       false,
-      ["made", "other"],
+      ["made", "other", "seed.txt"],
       { kind: "absent" },
     ]);
     expect(() => facade.readText(file)).toThrow(/ENOENT/);
@@ -215,11 +251,12 @@ test("under the plan collector a facade read answers from the plan: a planned wr
     expect([facade.exists(blob), facade.stat(blob).isFile(), facade.readdir(dir)]).toEqual([
       true,
       true,
-      ["blob.bin", "made", "other"],
+      ["blob.bin", "made", "other", "seed.txt"],
     ]);
     expect([facade.rm(blob, { force: true }), facade.exists(blob)]).toEqual([true, false]);
-    facade.copyFile(join(dir, "other"), blob);
-    expect(facade.exists(blob)).toBe(true);
+    // A copy carries the source's text to the run's later readers.
+    facade.copyFile(join(dir, "seed.txt"), blob);
+    expect([facade.exists(blob), facade.readText(blob)]).toEqual([true, "seed"]);
     // A chmod on a directory the disk holds keeps it a directory.
     facade.chmod(join(dir, "other"), 0o700);
     expect([facade.stat(join(dir, "other")).isDirectory(), facade.readdir(join(dir, "other"))])

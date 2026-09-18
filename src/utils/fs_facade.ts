@@ -85,7 +85,8 @@ function shadow(path: string): Shadow {
   if (state === null) return null;
   if (state.kind === "text") return state;
   if (state.kind !== "opaque") return state.kind;
-  // A plan without bytes (a chmod, a copy, a link): the disk says which kind stands there.
+  if (state.file) return "opaque";
+  // A plan without bytes over what the disk holds (a chmod): the disk says which kind stands there.
   try {
     return statSync(path).isDirectory() ? "dir" : "opaque";
   } catch {
@@ -253,11 +254,12 @@ export function writeBytes(path: string, bytes: Uint8Array, options: disk.WriteO
   run.writeBytes(path, bytes, { mode: options.mode, replace: options.atomic !== false });
 }
 
-/** The bytes of `from` land at `to`; a dry run carries them by path and prints the verdict alone. */
+/** The bytes of `from` land at `to`; a dry run carries them by path (by value out of scratch, which
+ *  goes before the report) and prints the verdict alone. */
 export function copyFile(from: string, to: string, detail?: string): void {
   const run = overlayFor(to);
   if (run === null) disk.copyFile(from, to, detail);
-  else run.copyFile(from, to);
+  else run.copyFile(from, to, underScratch(from));
 }
 
 /** Always `mkdir -p`. */

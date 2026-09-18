@@ -86,7 +86,7 @@ Every module under `src/` reads and writes files through `import * as fs from ".
 | `fs.scratchDir(prefix)` / `fs.removeScratchDir(dir)`         | a process-transient directory (`ScratchDir`): real in every mode (a probe's throwaway config must exist for the CLI it spawns), never reported, never planned                               |
 | `RenameRefusedError`                                         | the one failure a caller may answer with a direct write (`atomic: false`)                                                                                                                   |
 
-Secrets are declared at the write. `secretKeys` names the dotted leaves of a JSON or TOML file whose values print as `<redacted>` for the path's whole run (`fs.writeText(settingsPath, text, { secretKeys: SETTINGS_SECRETS })`); `secret: true` marks the whole file (a settings bundle, the Codex `config.toml` with a baked key, the Claude Desktop config), which prints its verdict alone. Nothing is redacted at read time, and no reader re-derives a secret.
+Secrets are declared at the write. `secretKeys` names the dotted leaves of a JSON or TOML file whose values print as `<redacted>` for the path's whole run (`fs.writeText(settingsPath, text, { secretKeys: SETTINGS_SECRETS })`); `secret: true` marks the whole file (a settings bundle, the Codex `config.toml` with a baked key, the Claude Desktop config), which prints its verdict alone. A declaration travels with the file through `rename` and `copyFile`, so the report at the new path redacts the same values. Nothing is redacted at read time, and no reader re-derives a secret.
 
 What replaces each `src/utils/report_write.ts` wrapper (the wrappers stay as thin aliases until every caller has moved; then they go):
 
@@ -126,7 +126,7 @@ Reads answer from the plan's shadows first:
 
 - `readText` is `readPlannedText`; `exists`, `stat`, `lstat`, and `readdir` see a planned path as present and a planned deletion as absent (an absent, unplanned directory is `ENOENT`).
 - A directory the run removed and made again is fresh: present, and listing nothing the disk holds under it; `mkdir` over a planned deletion plans the directory instead of trusting the disk.
-- A byte write, a copy, a chmod, or a link the plan holds without its content is present, and its bytes read from the disk.
+- A byte write, a copy, a chmod, or a link the plan holds without its content is present, and its bytes read from the disk; a copy carries the source's text (as the run sees it) to the run's later readers.
 - A planned `chmod`, or a write's explicit `mode`, shows in `stat().mode`; a staged write without one shows the fresh inode's default.
 - `readlink` and `realpath` read the disk: the plan holds no link targets.
 

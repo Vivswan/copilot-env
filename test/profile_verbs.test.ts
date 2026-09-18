@@ -2,7 +2,7 @@
 // oracle is main's own output: test/fixtures/cli_redesign/main_oracle.json holds what each old
 // spelling printed (stdout, exit code) in a scratch HOME, and the new spelling must print the same.
 // The two kept aliases (`agent init`, `agent auth`) are proven against their verbs live, in twin
-// HOMEs. The verbs are reserved names, pinned at the CLI.
+// homes. The verbs are reserved names, pinned at the CLI.
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
@@ -86,7 +86,7 @@ function treeContents(home: string): Map<string, string> {
   return out;
 }
 
-/** Two spellings in twin HOMEs: same exit code, same stdout, same stderr, same files. Returns the
+/** Two spellings in twin homes: same exit code, same stdout, same stderr, same files. Returns the
  *  first observation so the caller can prove the pair did the thing (identical failures would pass
  *  the equality alone). */
 function expectIdentical(
@@ -156,9 +156,11 @@ test(
     expect(del.exitCode).toBe(1);
     expect(del.stderr).toContain("the default profile cannot be deleted");
 
+    // The default is a profile: with a credential stored it is the list's one row.
     const bare = observe(["profile"], scratch);
     expect(bare.exitCode).toBe(0);
-    expect(bare.stdout + bare.stderr).toContain("No profiles yet");
+    expect(bare.stdout + bare.stderr).toMatch(/default\s+incomplete\s+gh-token/);
+    expect(observe(["list"], scratch).stdout + "").toBe(bare.stdout);
 
     // `set identity auto` is the pin's one spelling; `auto` stores without a probe.
     const identity = observe(["profile", "set", "identity", "auto"], scratch);
@@ -169,7 +171,7 @@ test(
 );
 
 test(
-  "the kept aliases are one code path with their verbs: same exit code, output, and files in twin HOMEs",
+  "the kept aliases are one code path with their verbs: same exit code, output, and files in twin homes",
   () => {
     const fresh = [scratchHome(), scratchHome()] as const;
     const authed = expectIdentical(
@@ -204,7 +206,11 @@ test(
     expectOracle("claude --check", ["profile", "check", "--claude"], scratch);
     expectOracle("codex --check", ["profile", "check", "--codex"], scratch);
     // The old one-shot add is two commands now: the mode, then the credential that wires.
-    expectOracle("profile --add work", ["profile", "work", "add", "--proxy"], scratch);
+    expectOracle(
+      "profile --add work",
+      ["profile", "work", "add", "--proxy", "--no-auth"],
+      scratch,
+    );
     expect(observe(["profile", "work", "auth", "--set", "ghu_work"], scratch).exitCode).toBe(0);
     expect(existsSync(join(scratch.home, ".claude", "settings-work.json"))).toBe(true);
     expectOracle("profile --check work", ["profile", "work", "check"], scratch);
@@ -244,7 +250,7 @@ test(
     const scratch = scratchHome();
     expect(observe(["auth", "--set", "ghu_test"], scratch).exitCode).toBe(0);
     // A fresh profile and a same-mode re-add ask nothing.
-    expect(observe(["profile", "work", "add", "--proxy"], scratch).exitCode).toBe(0);
+    expect(observe(["profile", "work", "add", "--proxy", "--no-auth"], scratch).exitCode).toBe(0);
     expect(observe(["profile", "work", "auth", "--set", "ghu_work"], scratch).exitCode).toBe(0);
     expect(observe(["profile", "work", "add", "--proxy"], scratch).exitCode).toBe(0);
     // A mode change asks; headless, that is the refusal.
@@ -283,6 +289,50 @@ test(
       );
       expect(seen.exitCode, verb.join(" ")).toBe(0);
     }
+    // Eight cold CLI spawns; generous headroom for loaded Windows CI runners.
+  },
+  240_000,
+);
+
+test(
+  "add runs the credential step on a profile without one: headless it refuses naming --no-auth, --no-auth records the mode and prints the step, --dry-run plans it, a credential is never asked again",
+  () => {
+    const scratch = scratchHome();
+    const before = treeContents(scratch.home);
+    // Headless, no credential, no flag: refused BEFORE the mode lands (named and default alike).
+    const named = observe(["profile", "work", "add", "--proxy"], scratch);
+    expect(named.exitCode).toBe(1);
+    expect(named.stderr).toContain(
+      "pass --no-auth to record the mode alone, then agent profile work auth",
+    );
+    const init = observe(["init", "--proxy"], scratch);
+    expect(init.exitCode).toBe(1);
+    expect(init.stderr).toContain("pass --no-auth to record the mode alone, then agent auth");
+    expect(treeContents(scratch.home)).toEqual(before);
+    // --dry-run: the mode's plan and the planned step, nothing run.
+    const dry = observe(["profile", "work", "add", "--proxy", "--dry-run"], scratch);
+    expect(dry.exitCode).toBe(0);
+    expect(dry.stdout).toContain('profiles.work.mode  (absent) -> "proxy"');
+    expect(dry.stderr).toContain("Would run the credential step (agent profile work auth)");
+    expect(treeContents(scratch.home)).toEqual(before);
+    // --no-auth: the mode lands, the step is printed.
+    const noAuth = observe(["profile", "work", "add", "--proxy", "--no-auth"], scratch);
+    expect(noAuth.exitCode).toBe(0);
+    expect(noAuth.stderr).toContain("Next:  agent profile work auth --provider");
+    expect(observe(["profile", "work", "show"], scratch).stdout).toContain(
+      "provider: no credential",
+    );
+    // The default's --no-auth prints its two steps and lands nothing (its record follows its
+    // credential).
+    const initNoAuth = observe(["init", "--proxy", "--no-auth"], scratch);
+    expect(initNoAuth.exitCode).toBe(0);
+    expect(initNoAuth.stderr).toContain("Next:  agent auth --provider");
+    expect(initNoAuth.stderr).toContain("then:  agent init --proxy");
+    // With a credential, add never asks again: a headless re-add succeeds without the flag.
+    expect(observe(["profile", "work", "auth", "--set", "ghu_work"], scratch).exitCode).toBe(0);
+    const again = observe(["profile", "work", "add", "--proxy"], scratch);
+    expect(again.exitCode).toBe(0);
+    expect(again.stderr).not.toContain("--no-auth");
     // Eight cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
   240_000,

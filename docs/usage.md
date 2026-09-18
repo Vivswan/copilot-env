@@ -12,8 +12,9 @@ The `agent` subcommands and the mechanisms behind the ones that need more than a
 
 ```bash
 agent profile [<name>] <verb>  # everything about ONE profile; no name = the default profile
-                           #   add --direct|--proxy [--yes]  record its mode (both agents); the default with no flag
-                           #                              probes direct vs proxy; a mode change asks first
+                           #   add --direct|--proxy [--yes] [--no-auth]  its mode (both agents), then the credential
+                           #                              step unless --no-auth; the default with no flag probes
+                           #                              direct vs proxy; a mode change asks first
                            #   del [--yes]                delete the named profile everywhere (asks first)
                            #   show                       mode, provider, daemon
                            #   auth                       its credential: --provider copilot|gh-cli|gh-token|gh-env,
@@ -30,7 +31,7 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #   check [--claude|--codex]   its mode; exits 0 direct, 2 proxy, 1 none or other
                            #   the verbs and `help` are reserved words: a new profile is never named after one
 agent list                 # every profile: NAME  MODE  PROVIDER  DAEMON (also bare `agent profile`)
-agent init [--direct|--proxy] [--yes]  # = agent profile add for the default profile
+agent init [--direct|--proxy] [--yes] [--no-auth]  # = agent profile add for the default profile
 agent auth <flags>         # = agent profile auth for the default profile
 agent sync                 # every profile's sync
 agent launch <cli>         # launch claude|codex|copilot with managed flags + provider wiring

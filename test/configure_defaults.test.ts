@@ -277,16 +277,18 @@ test("a wiring command with no credential refuses headless and writes nothing", 
   const codexHome = join(dir, ".codex");
   const claudeHome = join(dir, ".claude");
   const env = childCliEnv(codexHome, claudeHome);
+  // The re-renders reach the login gate; `init` refuses before its mode lands and names the flag
+  // that records the mode alone.
   for (
-    const argv of [
-      ["profile", "sync", "--claude"],
-      ["profile", "sync", "--codex"],
-      ["init", "--proxy"],
-    ]
+    const [argv, refusal] of [
+      [["profile", "sync", "--claude"], "Not authenticated yet"],
+      [["profile", "sync", "--codex"], "Not authenticated yet"],
+      [["init", "--proxy"], "pass --no-auth to record the mode alone"],
+    ] as const
   ) {
-    const run = runCli(argv, { env });
-    expect(run.exitCode).toBe(1);
-    expect(run.stderr).toContain("Not authenticated yet");
+    const run = runCli([...argv], { env });
+    expect(run.exitCode, argv.join(" ")).toBe(1);
+    expect(run.stderr, argv.join(" ")).toContain(refusal);
   }
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
   expect(existsSync(join(codexHome, "config.toml"))).toBe(false);

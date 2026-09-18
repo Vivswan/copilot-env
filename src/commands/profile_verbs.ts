@@ -169,6 +169,37 @@ async function confirmModeChange(opts: Opts, rawProfile: string | null): Promise
   );
 }
 
+/** The credential step `add` runs on a profile that has none: `auth`'s interactive flow, which
+ *  then wires both agents. `--no-auth` leaves it to `auth` and says so; a dry run names it; a
+ *  script with neither is refused BEFORE the mode lands, so nothing is half done. A profile with
+ *  a credential is never asked again. */
+function credentialStep(profile: Profile, opts: Opts): () => Promise<void> {
+  if (new CopilotEnvState().readCredential(profile).kind !== "none") return () => Promise.resolve();
+  const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
+  const providers = `--provider <${
+    AUTH_PROVIDERS.join("|")
+  }>  (or --set <token>, --gh-user <login>)`;
+  // Commander stores a `--no-<x>` flag as `<x>: false`.
+  if (opts.auth === false) {
+    return () => {
+      logger.log(`  Next:  ${authCommand} ${providers}`);
+      return Promise.resolve();
+    };
+  }
+  if (opts.dryRun) {
+    return () => {
+      logger.log(`  Would run the credential step (${authCommand}); a dry run never logs in.`);
+      return Promise.resolve();
+    };
+  }
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      `not a terminal - pass --no-auth to record the mode alone, then \`${authCommand} ${providers}\``,
+    );
+  }
+  return () => ensureAuthenticated(profile);
+}
+
 function agentFlag(opts: Opts): "claude" | "codex" | null {
   if (opts.claude && opts.codex) throw new Error("--claude and --codex are mutually exclusive");
   if (opts.claude) return "claude";
@@ -371,19 +402,21 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     `Create or re-wire ${forWhom}: one mode for BOTH agents, the mode alone. The default: no ` +
       "flag probes GitHub Copilot Direct vs the proxy on a fresh default (a recorded mode is " +
       "re-wired as it is), and prints the next steps. A named " +
-      "profile: records the mode; its credential is `agent profile <name> auth`, which then " +
-      "wires both agents. Re-add with the other flag to switch modes (asks first).",
+      "profile: records the mode, then runs the credential step (`auth`'s flow, which wires " +
+      "both agents) unless --no-auth. Re-add with the other flag to switch modes (asks first).",
   )
     .option("--direct", "Wire to GitHub Copilot Direct.")
     .option("--proxy", "Wire to the local copilot-api proxy (a named profile: its own daemon).")
     .option("--yes", "Switch a recorded mode without asking (headless use).")
+    .option("--no-auth", "Record the mode alone; the credential step is left to `auth`.")
     .option("--dry-run", DRY_RUN_HELP)
     .action(async (opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "add", rawProfile);
       if (rawProfile === null) return runDefaultAdd(opts);
       if (isReservedProfileWord(rawProfile)) throw reservedWordError(rawProfile);
       await confirmModeChange(opts, rawProfile);
-      return runProfile({
+      const step = credentialStep(parseProfileName(rawProfile), opts);
+      await runProfile({
         add: rawProfile,
         mode: parseModeFlags(
           opts,
@@ -391,6 +424,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
         ),
         dryRun: Boolean(opts.dryRun),
       });
+      await step();
     });
 
   verb(
@@ -620,6 +654,18 @@ async function runDefaultAdd(opts: Opts): Promise<void> {
   // it, and asks), so no unflagged add can move a mode by a probe's answer.
   const requested = parseModeFlags(opts);
   const mode = requested === "auto" ? recordedMode(null) ?? "auto" : requested;
+  const step = credentialStep(null, opts);
+  // The default's mode record has one writer, the landing that follows its credential, so with
+  // no credential yet the step is all that runs here: the flow (runInit's own), the --no-auth next
+  // step, or the dry run's planned line.
+  if (
+    new CopilotEnvState().readCredential(null).kind === "none" &&
+    (opts.auth === false || opts.dryRun)
+  ) {
+    await step();
+    logger.log(`  then:  agent init${mode === "auto" ? "" : ` --${mode}`}`);
+    return;
+  }
   return runInit({ mode, dryRun: Boolean(opts.dryRun) });
 }
 
@@ -641,6 +687,7 @@ export function registerInitCommand(program: Command): void {
     .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
     .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
     .option("--yes", "Switch a recorded mode without asking (headless use).")
+    .option("--no-auth", "Print the credential step instead of running it; `agent auth` is it.")
     .option("--dry-run", DRY_RUN_HELP)
     .action((opts: Opts) => runDefaultAdd(opts));
 }

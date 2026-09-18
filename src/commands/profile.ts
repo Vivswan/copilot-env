@@ -12,7 +12,6 @@ import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   allProfileNames,
-  AUTH_PROVIDERS,
   CopilotEnvState,
   credentialProvider,
   partialSlotGap,
@@ -20,7 +19,12 @@ import {
 } from "../copilot_api/env_state.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
-import { parseProfileFlag, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import {
+  parseProfileFlag,
+  type Profile,
+  profileLabel,
+  type ProfileName,
+} from "../copilot_api/profile.ts";
 import { COLOR_ENABLED, gray, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
@@ -118,10 +122,6 @@ async function runAdd(name: ProfileName, requested: RequestedMode): Promise<Narr
       logger.success(
         `${profileLabel(name)} records ${mode}${switched}; both agents wait for its credential.`,
       );
-      logger.log(
-        `  Next:  agent profile ${name} auth --provider <${AUTH_PROVIDERS.join("|")}>` +
-          "  (or --set <token>, --gh-user <login>)",
-      );
     };
   }
   logger.log(configuringLine(profileLabel(name), mode, " (both agents)"));
@@ -185,7 +185,7 @@ async function runDel(name: ProfileName): Promise<Narration> {
 
 /** `daemon` is null for a direct profile, which has none. */
 export interface ProfileListRow {
-  name: ProfileName;
+  name: string;
   provider: string | null;
   mode: ProfileMode | null;
   daemon: ProxyStatus | null;
@@ -217,18 +217,28 @@ export function renderProfileTable(
 
 async function runList(): Promise<void> {
   const state = new CopilotEnvState();
-  const names = allProfileNames();
-  if (names.length === 0) {
+  // The default is a profile too: a row as soon as its slot carries anything.
+  const defaultSlot = state.readProfileSlot(null);
+  const profiles: Profile[] = [
+    ...(defaultSlot.mode !== null || defaultSlot.credential.kind !== "none" ? [null] : []),
+    ...allProfileNames(),
+  ];
+  if (profiles.length === 0) {
     consola.info("No profiles yet. Create one: `agent profile <name> add --direct|--proxy`.");
     return;
   }
   // Concurrent probes: each can spend the full connect timeout on a wedged daemon, and paid
-  // serially that would make --list crawl once a couple of profiles are down.
+  // serially that would make the list crawl once a couple of profiles are down.
   const rows: ProfileListRow[] = await Promise.all(
-    names.map(async (name): Promise<ProfileListRow> => {
-      const slot = state.readProfileSlot(name);
-      const daemon = slot.mode === "proxy" ? await proxyStatus(name) : null;
-      return { name, provider: credentialProvider(slot.credential), mode: slot.mode, daemon };
+    profiles.map(async (profile): Promise<ProfileListRow> => {
+      const slot = state.readProfileSlot(profile);
+      const daemon = slot.mode === "proxy" ? await proxyStatus(profile) : null;
+      return {
+        name: profile ?? "default",
+        provider: credentialProvider(slot.credential),
+        mode: slot.mode,
+        daemon,
+      };
     }),
   );
   // One message, so consola stamps one prefix instead of one per row.

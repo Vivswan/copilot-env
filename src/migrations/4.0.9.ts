@@ -22,6 +22,7 @@ import {
   readFileOrNull,
   resolveDesktopLibraryDir,
   saveJsonIfChanged,
+  writeDesktopHelperScript,
 } from "../claude/desktop.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { codexProviderId } from "../codex/config.ts";
@@ -1011,6 +1012,11 @@ function retargetDesktopEntry(from: ProfileName, to: ProfileName): void {
         if (at !== -1 && row.args[at + 1] === from) row.args[at + 1] = to;
       }
     }
+    for (const mode of PROFILE_MODES) {
+      if (doc.inferenceCredentialHelper === desktopHelperPath(resolveRootHome(), mode, from)) {
+        doc.inferenceCredentialHelper = desktopHelperPath(resolveRootHome(), mode, to);
+      }
+    }
     saveJsonIfChanged(path, doc, `Claude Desktop entry "${desktopEntryName(to)}"`);
     if (entry.name === desktopEntryName(from)) entry.name = desktopEntryName(to);
     changed = true;
@@ -1104,10 +1110,15 @@ async function moveProfile(
       consola.info(`  moved ${oldHome} -> ${profileHome(to)}`);
       changed = true;
     }
-    // The re-render writes the new name's helper scripts; the old name's have no reader left.
+    // The Desktop entry points at a helper script by path, and the script's body names the
+    // profile: the new name's script is written and the old one removed here, so the pointer
+    // retargeted below is valid whether or not the re-render runs.
     for (const mode of PROFILE_MODES) {
-      const helper = desktopHelperPath(resolveRootHome(), mode, from);
-      if (existsSync(helper)) removeReported(helper, `Claude Desktop helper of profile '${from}'`);
+      const oldHelper = desktopHelperPath(resolveRootHome(), mode, from);
+      if (!existsSync(oldHelper)) continue;
+      const newHelper = writeDesktopHelperScript(mode, to);
+      consola.info(`  moved ${oldHelper} -> ${newHelper}`);
+      removeReported(oldHelper, `Claude Desktop helper of profile '${from}'`);
     }
     consola.info(
       `  renamed ${profileLabel(from)} -> '${to}' (its name is a verb of agent profile)`,

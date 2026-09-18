@@ -105,7 +105,7 @@ agent config --set static-key all     # both agents and Claude Desktop
 
 - Claude Desktop follows Claude's scope (`claude` or `all`).
 - Direct bakes the GitHub credential (`gh-cli` is resolved once, at write time); proxy bakes the daemon's own API key.
-- The value does not follow a credential change: re-run `agent profile [<name>] add` after `agent profile [<name>] auth`, which notes that the agents in scope keep their baked value until that rewire.
+- The value does not follow a credential change. A named profile's `agent profile <name> auth` rewires both agents itself, so its baked value is fresh at once. The default's `agent auth` only stores the credential: re-run `agent init` after it, which notes that the agents in scope keep their baked value until that rewire.
 - Proxy mode loses the resolver's side effects for the agent in scope: the daemon is not auto-started and no idle heartbeat is recorded. Start it with `agent start`, or launch through `cl` / `cx`, which do.
 - `agent profile check` (`--claude` / `--codex`) and `agent health` report the static shape as wired. `agent health` also warns when the baked value no longer matches the store (or the daemon's key), naming the rewire.
 - The key was a boolean through 4.0.9. Updating past 4.0.9 runs the migration that turns a stored `true` into `all` and drops a stored `false`; `true` and `false` are now rejected.
@@ -115,7 +115,8 @@ agent config --set static-key all     # both agents and Claude Desktop
 A profile is an atomic unit: ONE credential + ONE mode (direct or proxy, never both), always wired into BOTH agents. Several sessions then run at once without touching the default setup.
 
 ```bash
-agent profile work add --proxy                # the mode; both agents wait for the credential
+agent profile work add --proxy                # the mode, then the credential step (it asks how)
+agent profile work add --proxy --no-auth      # headless: the mode alone, then
 agent profile work auth --provider gh-env     # the credential; wires both agents
 cl --profile work        # Claude under the profile (its own proxy daemon, own port)
 cx --profile work        # Codex under the same profile

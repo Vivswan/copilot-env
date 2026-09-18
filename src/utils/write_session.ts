@@ -5,8 +5,9 @@
 // have written is shadowed so a later reader in the same run (the store re-read after a commit,
 // a config.toml re-inspected after its write) sees the planned state, not the disk. utils layer:
 // the JSON store (src/copilot_api/config.ts) lands through here too.
-import { dirname } from "node:path";
-import { missingDirectories, readTextResult, type TextReadResult } from "./fs.ts";
+import { readdirSync } from "node:fs";
+import { basename, dirname } from "node:path";
+import { isEnoent, missingDirectories, readTextResult, type TextReadResult } from "./fs.ts";
 
 export type FileVerdict = "create" | "rewrite" | "same" | "delete";
 
@@ -79,6 +80,14 @@ export function dottedKey(path: readonly string[]): string {
  *  same run may bake or send it: a Direct wiring or a model discovery planned from it would select
  *  nothing. */
 export const PLANNED_SECRET = "<the value the real run lands>";
+
+/** The error a dry run raises where the real command would prompt: a preview never asks, and
+ *  guessing the answer would plan a run the user did not choose. `what` names the question. */
+export function promptRefusedInDryRun(what: string): Error {
+  return new Error(
+    `a dry run never prompts (${what}); pass the flag that answers it, or run for real`,
+  );
+}
 
 interface DryRunSession {
   files: FilePlan[];
@@ -163,6 +172,45 @@ export function shadowedText(path: string): string | null | undefined {
     if (session.shadows.get(cur) === null) return null;
   }
   return undefined;
+}
+
+/** Whether `path` exists as the run has planned it: true after a planned create or rewrite, false
+ *  after a planned delete, undefined when no landing of this run touched it (a copied binary has
+ *  no text to shadow, so a reader that checks existence asks this). */
+export function plannedPresence(path: string): boolean | undefined {
+  if (session === null) return undefined;
+  let present: boolean | undefined;
+  for (const file of session.files) {
+    if (file.path === path) present = file.verdict !== "delete";
+  }
+  return present;
+}
+
+/** Whether this dry run planned `path` as a directory (a home an earlier landing would create). */
+export function plannedDirectory(path: string): boolean {
+  return session?.dirs.has(path) ?? false;
+}
+
+/** readdirSync, with a dry run's landings in front of the disk: an entry this run planned to
+ *  delete is gone, one it planned to create (a file or a directory) is there. Absent reads as
+ *  empty; a regular file at the path is readdir's own ENOTDIR, never an empty directory. */
+export function readPlannedDir(dir: string): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (e) {
+    if (!isEnoent(e)) throw e;
+    names = [];
+  }
+  if (session === null) return names;
+  const present = new Set(names);
+  for (const [path, content] of session.shadows) {
+    if (dirname(path) !== dir) continue;
+    if (content === null) present.delete(basename(path));
+    else present.add(basename(path));
+  }
+  for (const path of session.dirs) if (dirname(path) === dir) present.add(basename(path));
+  return [...present].sort();
 }
 
 /** readTextResult, with a dry run's planned content in front of the disk: a file this run planned

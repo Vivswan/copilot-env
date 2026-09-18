@@ -9,7 +9,7 @@
 // into the profile file and drops it from config.toml. Foreign tables and the `profile` key are
 // the user's: left in place, reported with the Codex error they cause.
 import { consola } from "consola";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { codexProviderId } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
@@ -58,7 +58,14 @@ import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, readTextResult } from "../utils/fs.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
-import { writeFileReported } from "../utils/report_write.ts";
+import {
+  mkdirReported,
+  removeReported,
+  removeTreeReported,
+  renameReported,
+  writeFileReported,
+} from "../utils/report_write.ts";
+import { readPlannedDir } from "../utils/write_session.ts";
 import { FENCE_LINES, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
 import type { Migration } from "./index.ts";
 
@@ -630,7 +637,7 @@ export function foldRootStores(rootHome: string = resolveRootHome()): void {
         );
         continue;
       }
-      rmSync(oldPath, { force: true });
+      removeReported(oldPath);
       consola.info(`  folded ${name} into ${stateFile}`);
     }
   }
@@ -644,18 +651,19 @@ export function foldRootStores(rootHome: string = resolveRootHome()): void {
   for (const name of FOLDED_LOCKS) {
     const path = join(rootHome, LOCKS_DIR_NAME, name);
     if (!existsSync(path)) continue;
-    rmSync(path, { force: true });
+    removeReported(path);
     consola.info(`  removed ${path} (the store's one lock is ${STATE_STORE_FILENAME}.lock)`);
   }
   for (const rel of ROOT_DEBRIS) {
     const path = join(rootHome, rel);
     if (!existsSync(path)) continue;
-    rmSync(path, { force: true });
+    removeReported(path);
     consola.info(`  removed ${path} (nothing reads it)`);
   }
+  // readPlannedDir: the token removed a moment ago is gone for a dry run too.
   const opencodeDir = join(rootHome, "opencode");
-  if (existsSync(opencodeDir) && readdirSync(opencodeDir).length === 0) {
-    rmSync(opencodeDir, { recursive: true });
+  if (existsSync(opencodeDir) && readPlannedDir(opencodeDir).length === 0) {
+    removeTreeReported(opencodeDir);
     consola.info(`  removed ${opencodeDir} (empty)`);
   }
 }
@@ -667,7 +675,7 @@ export function renameAutoupdateThrottle(autoupdateHome: string = autoupdateDir(
   const newAutoupdate = join(autoupdateHome, AUTOUPDATE_FILENAME);
   if (!existsSync(oldAutoupdate)) return;
   if (!existsSync(newAutoupdate)) {
-    renameSync(oldAutoupdate, newAutoupdate);
+    renameReported(oldAutoupdate, newAutoupdate);
     consola.info(`  moved ${oldAutoupdate} -> ${newAutoupdate}`);
     return;
   }
@@ -676,7 +684,7 @@ export function renameAutoupdateThrottle(autoupdateHome: string = autoupdateDir(
   // re-run removes them; the new file (what the readers use) keeps its content.
   for (const path of [oldAutoupdate, `${oldAutoupdate}.lock`, `${oldAutoupdate}.lock.oslock`]) {
     if (!existsSync(path)) continue;
-    rmSync(path, { force: true });
+    removeReported(path);
     consola.info(`  removed ${path} (superseded by ${newAutoupdate})`);
   }
 }
@@ -755,10 +763,11 @@ export async function moveRootDaemonHome(
   }
   await stopDaemon();
   // Re-listed after the stop: stopping touches the run state under the root, so a `.run` it left
-  // behind travels too.
-  const moving = ROOT_DAEMON_ARTIFACTS.filter((name) => existsSync(join(root, name)));
+  // behind travels too (readPlannedDir: in a dry run, one the stop planned as well).
+  const rootEntries = new Set(readPlannedDir(root));
+  const moving = ROOT_DAEMON_ARTIFACTS.filter((name) => rootEntries.has(name));
   const target = join(root, PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR);
-  mkdirSync(target, { recursive: true });
+  mkdirReported(target);
   for (const name of moving) {
     const from = join(root, name);
     const to = join(target, name);
@@ -769,7 +778,7 @@ export async function moveRootDaemonHome(
       );
       continue;
     }
-    renameSync(from, to);
+    renameReported(from, to);
     consola.info(`  moved ${from} -> ${to}`);
   }
 }

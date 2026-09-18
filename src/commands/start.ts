@@ -1,6 +1,7 @@
 import { consola } from "consola";
 import { type PreflightOptions, runPreflight } from "../autoupdate/preflight.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { assertProfileSlot } from "../copilot_api/env_state.ts";
@@ -37,6 +38,9 @@ import { COLOR_ENABLED, statusPaint } from "../utils/ansi.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
 import { mkdirReported } from "../utils/report_write.ts";
+import { dryRunActive } from "../utils/write_session.ts";
+import { runDryRun } from "./dry_run.ts";
+import { credentialSourceLabel } from "./auth.ts";
 import { unreadProjectedKeyWarnings } from "./config.ts";
 
 export interface StartFlags {
@@ -131,23 +135,39 @@ async function reportDryRun(
   action: { force: boolean; port?: number },
   ctx: LaunchContext,
 ): Promise<void> {
-  const { profile, paths, config, envConfig, state, logFile } = ctx;
+  const { profile, paths, envConfig, state, logFile } = ctx;
+  // The launch's own gate, first here as it is first in the real run: no credential is the same
+  // refusal, and the plan names the source the daemon would run with.
+  const launch = readLaunchToken(profile);
+  const source = credentialSourceLabel(new Credential(undefined, profile).read());
   if (isIdempotentNoOp(action, envConfig) && (await proxyStatus(profile)).up) {
     consola.info(
       "DRY RUN: proxy already running (managed lifecycle); would leave it up. --force forces one.",
     );
     return;
   }
-  const port = await resolveStartPort(action.port, false, profile, false, envConfig);
-  const plan = await planCleanup(paths.home, profile, state);
-
   consola.info(`DRY RUN: no proxy runtime changes will be made (${profileLabel(profile)}).`);
-  consola.info(`   Would ensure runtime directories: ${paths.home}, ${paths.runDir}`);
-  consola.info(`   Would apply default configuration: ${config.path}`);
+  // In the real start's order, so a refusal leaves the plan the real run's writes up to it: the
+  // home and the projected configuration land (a config.json the real start refuses to rewrite
+  // refuses the preview too), then the cleanup plan, the port, and the credential resolution (the
+  // token judged under the daemon's identity, the pair landed in the slot: a rejected token is the
+  // same refusal, the landing store rows).
+  mkdirReported(paths.home);
+  applyDefaultConfig(profile, paths, envConfig);
+  const plan = await planCleanup(paths.home, profile, state);
+  const port = await resolveStartPort(action.port, false, profile, false, envConfig);
+  const { copilotHost } = await resolveLaunchCredential(profile, launch, envConfig, {
+    userAgent: codexUserAgent(),
+  });
+  // The real launch records the port it took before anything wires from it (a launcher's config
+  // reads copilotApiResolvePort), so the plan records it too; the pid beside it is minted at spawn.
+  state.set({ port });
+  consola.info(`   Would ensure the run directory: ${paths.runDir}`);
   for (const step of plan) {
     narrateCleanupAction(step);
   }
-  consola.info(`   Would launch the proxy on port ${port}.`);
+  consola.info(`   Would launch the proxy on port ${port} with the ${source} credential.`);
+  consola.info(`   Would send the daemon's requests to ${copilotHost}.`);
   consola.info(`   Would write runtime state + log: ${paths.stateFile}, ${logFile}`);
   consola.info("   Would wait for readiness, sync model aliases, and report proxy details.");
 }
@@ -329,7 +349,12 @@ export async function runStart(
   };
 
   if (action.dryRun) {
-    await reportDryRun(action, launchContext());
+    // Under a collecting dry run already (proxy-token's, a launcher's) the plan is the caller's;
+    // a bare `start --dry-run` collects its own, so its landings (the port, the credential pair)
+    // record instead of writing.
+    const preview = (): Promise<void> => reportDryRun(action, launchContext());
+    if (dryRunActive()) await preview();
+    else await runDryRun(preview);
     return;
   }
 

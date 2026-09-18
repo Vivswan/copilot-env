@@ -697,60 +697,71 @@ async function runGet(profile: Profile): Promise<void> {
 export function runPrintProxyToken(profile: Profile): void {
   const key = CopilotApiConfig.forProfile(profile).ensureApiKey();
   // codeql[js/clear-text-logging] -- emitting the proxy key on stdout IS this command's
-  // contract (the proxy-mode agents' auth.command / apiKeyHelper consume it).
-  process.stdout.write(`${key}\n`);
+  // contract (the proxy-mode agents' auth.command / apiKeyHelper consume it). A dry run minted a
+  // key its recorded store write never lands, so it prints none: the plan is the stdout.
+  if (!dryRunActive()) process.stdout.write(`${key}\n`);
 }
 
-async function runDel(profile: Profile): Promise<void> {
-  if (new Credential(undefined, profile).clear()) {
-    // A running daemon has already exchanged the token for a Copilot bearer and would keep serving
-    // until it idled out; the SIGKILL grace VERIFIES it died so access is never falsely reported as
-    // revoked.
-    const { signalled, stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, profile);
-    if (profile === null) {
-      // The wordings are an output contract. `stopped` first: a stop REFUSED (unprovable pid,
-      // nothing signalled) must report the still-running daemon, never the plain success.
-      if (!stopped) {
-        logger.warn(
-          "De-authenticated, but the proxy is still running and may keep serving the old " +
-            "credential -- stop it with `agent stop`.",
-        );
-      } else if (signalled) {
-        logger.success("De-authenticated and stopped the proxy. Run `agent auth` to log in again.");
+/** The de-auth and the daemon stop, with what to say once they are real (a dry run prints the plan
+ *  in their place). */
+async function runDel(profile: Profile): Promise<() => void> {
+  const cleared = new Credential(undefined, profile).clear();
+  // A running daemon has already exchanged the token for a Copilot bearer and would keep serving
+  // until it idled out; the SIGKILL grace VERIFIES it died so access is never falsely reported as
+  // revoked.
+  const stop = cleared ? await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, profile) : null;
+  return () => {
+    if (stop !== null) {
+      const { signalled, stopped } = stop;
+      if (profile === null) {
+        // The wordings are an output contract. `stopped` first: a stop REFUSED (unprovable pid,
+        // nothing signalled) must report the still-running daemon, never the plain success.
+        if (!stopped) {
+          logger.warn(
+            "De-authenticated, but the proxy is still running and may keep serving the old " +
+              "credential -- stop it with `agent stop`.",
+          );
+        } else if (signalled) {
+          logger.success(
+            "De-authenticated and stopped the proxy. Run `agent auth` to log in again.",
+          );
+        } else {
+          logger.success("De-authenticated. Run `agent auth` to log in again.");
+        }
       } else {
-        logger.success("De-authenticated. Run `agent auth` to log in again.");
+        const again = `\`agent auth --profile ${profile}\``;
+        if (!stopped) {
+          logger.warn(
+            `De-authenticated ${
+              profileLabel(profile)
+            }, but its proxy is still running and may keep ` +
+              `serving the old credential -- stop it with \`agent stop --profile ${profile}\`.`,
+          );
+        } else if (signalled) {
+          logger.success(
+            `De-authenticated ${
+              profileLabel(profile)
+            } and stopped its proxy. Run ${again} to log in again.`,
+          );
+        } else {
+          logger.success(
+            `De-authenticated ${profileLabel(profile)}. Run ${again} to log in again.`,
+          );
+        }
       }
+    } else if (profile === null) {
+      logger.info("Nothing to clear - not authenticated. Run `agent auth` to log in.");
+    } else if (profileSlotMissing(profile)) {
+      logger.info(`Nothing to clear - ${noSuchProfileHint(profile)}.`);
     } else {
-      const again = `\`agent auth --profile ${profile}\``;
-      if (!stopped) {
-        logger.warn(
-          `De-authenticated ${
-            profileLabel(profile)
-          }, but its proxy is still running and may keep ` +
-            `serving the old credential -- stop it with \`agent stop --profile ${profile}\`.`,
-        );
-      } else if (signalled) {
-        logger.success(
-          `De-authenticated ${
-            profileLabel(profile)
-          } and stopped its proxy. Run ${again} to log in again.`,
-        );
-      } else {
-        logger.success(`De-authenticated ${profileLabel(profile)}. Run ${again} to log in again.`);
-      }
+      logger.info(
+        `Nothing to clear for ${profileLabel(profile)} - not authenticated. Run ` +
+          `\`agent auth --profile ${profile}\` to log in.`,
+      );
     }
-  } else if (profile === null) {
-    logger.info("Nothing to clear - not authenticated. Run `agent auth` to log in.");
-  } else if (profileSlotMissing(profile)) {
-    logger.info(`Nothing to clear - ${noSuchProfileHint(profile)}.`);
-  } else {
-    logger.info(
-      `Nothing to clear for ${profileLabel(profile)} - not authenticated. Run ` +
-        `\`agent auth --profile ${profile}\` to log in.`,
-    );
-  }
-  // Whatever the store held, a baked copy may still sit in the agent configs.
-  noteStaticKeyStale(profile);
+    // Whatever the store held, a baked copy may still sit in the agent configs.
+    noteStaticKeyStale(profile);
+  };
 }
 
 /** BRACKET-FREE by contract: a surface that wants parens adds its own, and `--list` prints it
@@ -1360,7 +1371,7 @@ export async function ensureAuthenticated(profile: Profile = null): Promise<void
 
 export type AuthAction =
   | { kind: "get"; profile: Profile }
-  | { kind: "del"; profile: Profile }
+  | { kind: "del"; profile: Profile; dryRun: boolean }
   | { kind: "check"; profile: Profile }
   | { kind: "print-proxy-token"; profile: Profile }
   | { kind: "list" }
@@ -1405,9 +1416,11 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
   if (args.set !== undefined && subActions > 0) {
     throw new Error(`--set provisions a token and cannot combine with ${SUB_ACTION_FLAGS}`);
   }
-  if (args.dryRun && subActions > 0) {
+  // The two writers preview; the reads have nothing to preview.
+  if (args.dryRun && subActions > 0 && !args.del) {
     throw new Error(
-      `--dry-run previews the credential landing and cannot combine with ${SUB_ACTION_FLAGS}`,
+      "--dry-run previews the credential landing or --del and cannot combine with the read-only " +
+        "--get/--check/--list/--identities/--identity/--print-proxy-token",
     );
   }
   if (args.list) {
@@ -1425,7 +1438,7 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
   if (args.ghUser !== undefined && subActions > 0) throw ghUserConflictError();
   if (args.printProxyToken) return { kind: "print-proxy-token", profile };
   if (args.get) return { kind: "get", profile };
-  if (args.del) return { kind: "del", profile };
+  if (args.del) return { kind: "del", profile, dryRun: Boolean(args.dryRun) };
   if (args.check) return { kind: "check", profile };
   if (args.identities) return { kind: "identities", profile };
   if (args.identity !== undefined) {
@@ -1456,7 +1469,11 @@ export async function runAuth(args: AuthArgs): Promise<void> {
       await runGet(action.profile);
       return;
     case "del":
-      await runDel(action.profile);
+      if (action.dryRun) {
+        await runDryRun(() => runDel(action.profile));
+      } else {
+        (await runDel(action.profile))();
+      }
       return;
     case "check":
       runCheck(action.profile);

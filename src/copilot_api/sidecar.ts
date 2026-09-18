@@ -3,7 +3,6 @@
 //   no sha256 expected  -> a REFUSAL, never a skip; the archive is hashed as it streams, so an unverified byte never lands unpacked
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { open } from "node:fs/promises";
 import { basename, isAbsolute, join } from "node:path";
 import { ASSET_ROOT, devDenoExecPath, isStandaloneBinary } from "../utils/root.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
@@ -12,6 +11,7 @@ import { versionLessThan } from "../utils/semver.ts";
 import {
   chmodReported,
   mkdirReported,
+  openWritableReported,
   removeScratchDir,
   renameReported,
   scratchDir,
@@ -272,15 +272,10 @@ function defaultUnzipRunner(command: string, args: string[]): UnzipRunResult {
   return { "status": result.status ?? 1, "stderr": result.stderr?.toString() ?? "" };
 }
 
+/** pipeTo closes the file with the stream, on success and on abort alike. */
 async function writeStreamToFile(stream: ReadableStream<Uint8Array>, path: string): Promise<void> {
-  const file = await open(path, "w");
-  try {
-    for await (const chunk of stream) {
-      await file.write(chunk);
-    }
-  } finally {
-    await file.close();
-  }
+  const file = await openWritableReported(path);
+  await stream.pipeTo(file.writable);
 }
 
 function hexDigest(buffer: ArrayBuffer): string {

@@ -19,6 +19,7 @@ import {
   v409StateFold,
   v409StaticKeyScope,
 } from "./4.0.9.ts";
+import { dryRunActive } from "../utils/write_session.ts";
 
 /** One step, named for the release it migrates AWAY FROM (authored against the current release,
  *  with no future number to predict). It runs when an update leaves that version behind:
@@ -103,11 +104,15 @@ export async function runMigrations(
   const due = dueMigrations(from, to, migrations);
   if (due.length === 0) return;
   consola.info(`Running ${due.length} migration(s): ${stripV(from)} -> ${stripV(to)}`);
+  const preview = dryRunActive();
   for (const m of due) {
-    consola.start(`Migrating from ${m.version}: ${m.description}`);
+    consola.start(`${preview ? "Would migrate" : "Migrating"} from ${m.version}: ${m.description}`);
     try {
+      // A dry run runs the step too: its moves and removals record through the seam and print as
+      // the plan; nothing lands. The step narrates as it runs (a skip says what to do next), so a
+      // preview hears the step's own lines under its "Would migrate" header.
       await m.run();
-      consola.success(`Migration ${m.version} complete.`);
+      if (!preview) consola.success(`Migration ${m.version} complete.`);
     } catch (e) {
       consola.warn(
         `Migration ${m.version} did not complete (non-fatal): ${errMessage(e)}. ` +

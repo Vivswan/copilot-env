@@ -64,6 +64,7 @@ import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testin
 import {
   type AgentHomes,
   envSnapshot,
+  fingerprintTree,
   isolateAgentHomes,
   resetExitCode,
   stageRefusedStop,
@@ -106,22 +107,7 @@ function scratch(): AgentHomes {
   return homes;
 }
 
-/** Every entry under and including `dir` with its identity, size, mode, and mtime, so a write, a
- *  create, a delete, or a chmod anywhere in the scratch HOME changes the picture. */
-function fingerprint(dir: string, out = new Map<string, string>()): Map<string, string> {
-  const stamp = (path: string): boolean => {
-    const stat = lstatSync(path);
-    // A directory's mtime too: a file created and deleted inside the run moves it.
-    out.set(path, `${stat.ino}:${stat.size}:${stat.mode}:${stat.mtimeMs}`);
-    return stat.isDirectory();
-  };
-  if (out.size === 0) stamp(dir);
-  for (const name of readdirSync(dir).sort()) {
-    const path = join(dir, name);
-    if (stamp(path)) fingerprint(path, out);
-  }
-  return out;
-}
+const fingerprint = fingerprintTree;
 
 function storeCredential(): void {
   new CopilotEnvState().setCredential(null, {

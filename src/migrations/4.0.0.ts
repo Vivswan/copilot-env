@@ -163,8 +163,10 @@ export function removeEnvKey(envFile: string, key: string): boolean {
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
   const kept = lines.filter((line) => !matcher.test(line));
   if (kept.length === lines.length) return false;
+  // An env file holds tokens: a dry run names the path and prints neither side.
   writeFileReported(envFile, kept.length ? `${kept.join("\n")}\n` : "", {
     detail: `${key} removed`,
+    secret: true,
   });
   try {
     chmodReported(envFile, 0o600);
@@ -377,8 +379,10 @@ export function rewriteLegacyClaudeHelper(claudeHome: string, profile: Profile):
     return false;
   }
   doc.apiKeyHelper = mode === "direct" ? directHelperCommand(profile) : proxyHelperCommand(profile);
+  // settings.json may carry a baked ANTHROPIC_AUTH_TOKEN: a dry run names the path alone.
   writeFileReported(settingsPath, `${JSON.stringify(doc, null, 2)}\n`, {
     detail: "apiKeyHelper inlined",
+    secret: true,
   });
   removeReported(helper, "retired copilot-env helper file");
   return true;

@@ -41,6 +41,7 @@ import {
   removeBootstrapBinary,
   removeVersionDirsExcept,
   runPostFlipMigrations,
+  type ShimLogger,
   versionDirName,
   versionRootPath,
   writeTopLevelShims,
@@ -55,11 +56,14 @@ import {
   chmodReported,
   copyFileReported,
   mkdirReported,
+  openWritableReported,
+  refuseRmdir,
   removeScratchDir,
   removeTreeReported,
   renameReported,
   scratchDir,
 } from "../utils/report_write.ts";
+import { filePlan, landPlan } from "../utils/write_session.ts";
 
 const REPO = "Vivswan/copilot-env";
 const CHECKSUMS_NAME = "checksums.txt";
@@ -206,7 +210,7 @@ async function fetchReleaseFile(source: DownloadSource, name: string, dest: stri
   if (!res.ok || !res.body) {
     throw new Error(`failed to download ${name} (HTTP ${res.status})`);
   }
-  using file = await Deno.open(dest, { write: true, create: true, truncate: true });
+  using file = await openWritableReported(dest);
   await res.body.pipeTo(file.writable);
 }
 
@@ -298,17 +302,22 @@ async function attest(
   return { path: verified.path, sha256: verified.sha256 } as Attested;
 }
 
+/** `current` already at the target (a checkout updated with --force, then asked again from its old
+ *  embedded version): the stage's refusal, and the plan's. */
+function refuseAlreadyCurrent(top: string, versionName: string): void {
+  if (readCurrentVersionName(top) !== versionName) return;
+  throw new Error(
+    `refusing to update: ${currentLinkPath(top)} already points at ${versionName}; ` +
+      "to refresh this version in place, re-run `agent install`",
+  );
+}
+
 /** Stage 3: a rename, since the staging dir lives on the same filesystem. The OLD version's
  *  files are never touched, so there is no running-image problem on any platform; a stale dir
  *  from a crashed attempt is removed first (it is never `current`). */
 function stage(attested: Attested, top: string, versionName: string): Staged {
   const previous = readCurrentVersionName(top);
-  if (previous === versionName) {
-    throw new Error(
-      `refusing to update: ${currentLinkPath(top)} already points at ${versionName}; ` +
-        "to refresh this version in place, re-run `agent install`",
-    );
-  }
+  refuseAlreadyCurrent(top, versionName);
   const versionRoot = versionRootPath(top, versionName);
   removeTreeReported(versionRoot);
   const binDir = join(versionRoot, "bin");
@@ -374,6 +383,46 @@ function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Co
     versionName: provisioned.versionName,
     previous: provisioned.previous,
   } as Committed;
+}
+
+/**
+ * What applyUpdate would land for `target`, recorded into the collecting dry run in the commit's
+ * order: the version root it stages into and the `current` link it flips (judged from the install
+ * root alone: the release's own files are known only once downloaded, so the version root is one
+ * `create`), then the top-level shims through the writer the real commit runs (its refusals and
+ * its best-effort warnings are the plan's), then the GC. The download, the checksum and
+ * provenance checks, the new binary's asset pass, and the post-flip migrations are said, not
+ * listed. A real update never runs this.
+ */
+export function previewUpdate(
+  target: Release,
+  root: string = PROJECT_ROOT,
+  logger: ShimLogger = consola,
+): void {
+  const top = installStateRoot(root);
+  const versionName = versionDirName(target.tag);
+  refuseAlreadyCurrent(top, versionName);
+  const versionRoot = versionRootPath(top, versionName);
+  const link = currentLinkPath(top);
+  // pointCurrentAt's refusals: a regular file or a directory with entries at `current`.
+  refuseRmdir(link);
+  const previous = readCurrentVersionName(top);
+  landPlan({
+    files: [
+      filePlan(versionRoot, "create", { before: null }),
+      filePlan(link, previous === null ? "create" : "rewrite"),
+    ],
+    apply() {},
+  });
+  if (!isCheckoutShapedRoot(top)) writeTopLevelShims(top, logger);
+  // The GC the real update runs (the new version and its rollback candidate kept; the bootstrap
+  // binary a flat install left in <top>/bin swept), through the same sweepers, so what they refuse
+  // (a directory at the binary's name) is left out of the plan as it is left on disk.
+  removeVersionDirsExcept(
+    top,
+    new Set(previous === null ? [versionName] : [versionName, previous]),
+  );
+  removeBootstrapBinary(bootstrapBinaryPaths(top));
 }
 
 export interface ApplyUpdateOptions {

@@ -33,10 +33,19 @@ test("parseUpdateAction maps each flag set to one arm or one rejection", () => {
     args: Parameters<typeof parseUpdateAction>[0];
     result: ReturnType<typeof parseUpdateAction> | { throws: string };
   }[] = [
-    { args: {}, result: { kind: "apply", force: false, verify: undefined } },
-    { args: { force: true }, result: { kind: "apply", force: true, verify: undefined } },
-    { args: { verify: false }, result: { kind: "apply", force: false, verify: false } },
-    { args: { verify: true, force: true }, result: { kind: "apply", force: true, verify: true } },
+    { args: {}, result: { kind: "apply", force: false, verify: undefined, dryRun: false } },
+    {
+      args: { force: true },
+      result: { kind: "apply", force: true, verify: undefined, dryRun: false },
+    },
+    {
+      args: { verify: false },
+      result: { kind: "apply", force: false, verify: false, dryRun: false },
+    },
+    {
+      args: { verify: true, force: true },
+      result: { kind: "apply", force: true, verify: true, dryRun: false },
+    },
     { args: { check: true }, result: { kind: "check" } },
     { args: { autoStatus: true }, result: { kind: "auto-status" } },
     {

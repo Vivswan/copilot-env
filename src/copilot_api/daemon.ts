@@ -157,12 +157,11 @@ export async function stopTrackedProxy(
   }
   // A dry run takes the same path to here (the refusal above is the real command's) and sends no
   // signal; the tracking write below records like every store write.
+  let stopped: boolean;
   if (signalled && dryRunActive()) {
     consola.info(`Would stop the tracked proxy daemon (pid ${trackedPid}).`);
-    signalled = false;
-  }
-  let stopped: boolean;
-  if (signalled) {
+    stopped = true;
+  } else if (signalled) {
     const verdict = await terminatePid(trackedPid, graceMs, classify);
     switch (verdict) {
       case "refused-reused-pid":

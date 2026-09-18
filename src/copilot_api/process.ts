@@ -8,6 +8,7 @@ import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "
 import { runPowershell } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
 import { pidAlive } from "../utils/pid.ts";
+import { openWriteFdReported } from "../utils/report_write.ts";
 import { type RootMode, rootMode } from "../utils/root.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import {
@@ -557,7 +558,7 @@ export function daemonArgv(spec: DaemonSpec): string[] {
 }
 
 export function launchDaemon(spec: DaemonSpec): number {
-  const logFd = openSync(spec.logFile, "w");
+  const logFd = openWriteFdReported(spec.logFile);
   const devnull = openSync(devNull, "r");
   const proc = spawn(spec.denoBin, daemonArgv(spec), {
     stdio: [devnull, logFd, logFd],

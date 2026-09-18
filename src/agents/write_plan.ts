@@ -221,6 +221,8 @@ export function foldFilePlans(files: readonly FilePlan[]): FilePlan[] {
       path,
       verdict,
       attributes,
+      before: first.before,
+      content: last.content,
       ...(plans.some((plan) => plan.directory) ? { directory: true as const } : {}),
     });
   }
@@ -232,6 +234,70 @@ function statusOf(row: AttributeRow): AttributeStatus {
   if (row.current === undefined) return "set";
   if (row.next === undefined) return "remove";
   return sameValue(row.current, row.next) ? "same" : "change";
+}
+
+/** Past this many changed lines a text diff says how many changed instead of listing them. */
+const TEXT_DIFF_MAX_LINES = 40;
+
+/**
+ * The changed lines of a whole-text write (a file with no managed attributes: an rc block, a
+ * settings bundle), as `- old` and `+ new` rows. Only the lines that differ print: an unchanged
+ * line never does, wherever it sits (a token exported between two rc blocks stays off the
+ * preview when both blocks change around it). A change wider than TEXT_DIFF_MAX_LINES is counted.
+ */
+export function textDiffLines(before: string | null, content: string): string[] {
+  // The "" a trailing newline splits into is the terminator, not a line of the file.
+  const lines = (text: string): string[] => {
+    const parts = text.split("\n");
+    if (parts.at(-1) === "") parts.pop();
+    return parts;
+  };
+  const rows = lineDiff(before === null ? [] : lines(before), lines(content))
+    .filter(([kind]) => kind !== " ")
+    .map(([kind, line]) => `${kind} ${line}`);
+  if (rows.length > TEXT_DIFF_MAX_LINES) {
+    const removed = rows.filter((row) => row.startsWith("-")).length;
+    return [`(${removed} lines removed, ${rows.length - removed} lines added)`];
+  }
+  return rows;
+}
+
+type DiffKind = " " | "-" | "+";
+
+/** A line diff by longest common subsequence, in file order: `" "` kept, `"-"` removed from
+ *  `from`, `"+"` added in `to`. The texts are rc files and settings bundles, so the quadratic
+ *  table stays small. */
+function lineDiff(from: readonly string[], to: readonly string[]): [DiffKind, string][] {
+  // common(i, j) = the common subsequence length of from[i..] and to[j..], one row per i.
+  const width = to.length + 1;
+  const table = new Uint32Array((from.length + 1) * width);
+  const common = (i: number, j: number): number => table[i * width + j] ?? 0;
+  for (let i = from.length - 1; i >= 0; i--) {
+    for (let j = to.length - 1; j >= 0; j--) {
+      table[i * width + j] = from[i] === to[j]
+        ? common(i + 1, j + 1) + 1
+        : Math.max(common(i + 1, j), common(i, j + 1));
+    }
+  }
+  const rows: [DiffKind, string][] = [];
+  let i = 0;
+  let j = 0;
+  for (let a = from[i], b = to[j]; a !== undefined && b !== undefined; a = from[i], b = to[j]) {
+    if (a === b) {
+      rows.push([" ", a]);
+      i++;
+      j++;
+    } else if (common(i + 1, j) >= common(i, j + 1)) {
+      rows.push(["-", a]);
+      i++;
+    } else {
+      rows.push(["+", b]);
+      j++;
+    }
+  }
+  for (const line of from.slice(i)) rows.push(["-", line]);
+  for (const line of to.slice(j)) rows.push(["+", line]);
+  return rows;
 }
 
 const VERDICT_LABEL: Record<FileVerdict, string> = {
@@ -257,6 +323,9 @@ export function renderDryRun(files: readonly FilePlan[]): string[] {
     const changed = file.attributes.filter((row) => row.status !== "same");
     if (changed.length === 0 && file.attributes.length > 0) {
       lines.push("  (every managed attribute already holds its value)");
+    }
+    if (file.attributes.length === 0 && file.content !== undefined && file.before !== undefined) {
+      for (const line of textDiffLines(file.before, file.content)) lines.push(`  ${line}`);
     }
     for (const row of changed) {
       lines.push(

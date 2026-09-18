@@ -506,12 +506,12 @@ test("the CLI-install flag lives on shell, not init", () => {
   expect(init.output).not.toContain("--clis");
   // init keeps the agent-config flags; shell does not configure agents; credentials belong to
   // `agent auth`, so neither carries --gh-token. The agent-file and store writers preview with
-  // --dry-run; shell has no --dry-run.
+  // --dry-run, and so does every remaining writer, shell included.
   expect(init.output).toContain("--direct");
   expect(init.output).toContain("--dry-run");
   expect(init.output).not.toContain("--gh-token");
   expect(shell.output).not.toContain("--gh-token");
-  expect(shell.output).not.toContain("--dry-run");
+  expect(shell.output).toContain("--dry-run");
 });
 
 test("uninstall: help surfaces the flags; a non-TTY run without --yes refuses", () => {

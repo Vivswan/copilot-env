@@ -283,10 +283,12 @@ export function readFileOrNull(path: string): string | null {
   return read.text;
 }
 
+/** A Desktop entry can carry a baked `inferenceGatewayApiKey`, so a whole-document rewrite
+ *  reached in a dry run is planned path-only (the entry writer plans by attribute). */
 export function saveJsonIfChanged(path: string, doc: unknown, detail?: string): boolean {
   const text = `${JSON.stringify(doc, null, 2)}\n`;
   if (readFileOrNull(path) === text) return false;
-  atomicWriteFile(path, text, undefined, detail);
+  atomicWriteFile(path, text, undefined, detail, { secret: true });
   return true;
 }
 

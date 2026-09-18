@@ -64,6 +64,7 @@ import {
   INSTALLED_BINARY_WINDOWS,
   installedBinaryName,
 } from "./targets.ts";
+import { dryRunActive, plannedPresence } from "../utils/write_session.ts";
 
 /** Embedded AND materialized: something outside this process opens these by path (the daemon's
  *  `--preload` shims, the shell payload the rc block sources, the plugin/skill surface other
@@ -254,7 +255,7 @@ export interface ShimLogger {
 }
 
 /** The stable PATH entries at `<top>/bin`, dispatching through the `current` link. */
-function topLevelShims(top: string): ShimWrite[] {
+export function topLevelShims(top: string): ShimWrite[] {
   return [
     { to: join(top, "bin", "agent"), text: POSIX_CURRENT_SHIM, executable: true },
     { to: join(top, "bin", "agent.ps1"), text: POWERSHELL_CURRENT_SHIM, executable: false },
@@ -377,6 +378,9 @@ export interface InstallOptions {
    *  staged version root, so the release that owns the assets writes them before the `current`
    *  flip makes it live. */
   assetsOnly: boolean;
+  /** Print every runtime file, shim, and link the install would write and the passes it would
+   *  run through the installed binary; write nothing. */
+  dryRun?: boolean;
 }
 
 /** Files only a source checkout carries at its root. With `.git` beside them they mark a live
@@ -699,6 +703,14 @@ export function runPostFlipMigrations(
 ): void {
   const args = ["migrate", stripV(from), stripV(to)];
   const retry = `re-run it with \`agent ${args.join(" ")}\``;
+  if (dryRunActive()) {
+    logger.warn(
+      `Would run the new release's migrations through ${binary}: agent ${
+        args.join(" ")
+      } (preview them: agent ${args.join(" ")} --dry-run).`,
+    );
+    return;
+  }
   try {
     const result = spawnSync(binary, args, {
       cwd: top,
@@ -726,12 +738,20 @@ function wireShellsThroughInstalledBinary(
 ): void {
   if (wires.length === 0) return;
   const binary = join(versionRoot, "bin", installedBinaryName());
-  if (!existsSync(binary)) {
+  if (!(plannedPresence(binary) ?? existsSync(binary))) {
     consola.warn("No installed binary to wire the shell with; run 'agent shell' afterwards.");
     return;
   }
   for (const wire of wires) {
     const args = ["shell", ...(wire.allHosts ? ["--all-hosts"] : [])];
+    if (dryRunActive()) {
+      consola.info(
+        `Would wire the shell integration through ${binary}: agent ${
+          args.join(" ")
+        } (preview it: agent ${args.join(" ")} --dry-run).`,
+      );
+      continue;
+    }
     const result = spawnSync(binary, args, {
       cwd: top,
       stdio: "inherit",
@@ -810,7 +830,9 @@ function printEpilogue(options: InstallOptions): void {
 
 export function runInstall(options: InstallOptions): void {
   applyInstallPlan(buildInstallPlan(options));
-  if (options.assetsOnly) return;
+  // The CLI boundary collects a dry run (this layer never imports the command layer); the plan
+  // print stands in for the epilogue.
+  if (options.assetsOnly || options.dryRun) return;
   if (options.noShellIntegration) {
     consola.info("Skipping shell integration (--no-shell-integration).");
   }

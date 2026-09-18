@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
 import * as v from "valibot";
+import { readPlannedText } from "../utils/write_session.ts";
 import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile } from "./profile.ts";
@@ -73,7 +73,9 @@ export class CopilotEnvRunState {
    * port reservation wrote it.
    */
   setIfExists(patch: StatePatch): void {
-    if (this.profile !== null && !existsSync(this.store.path)) return;
+    // Through the dry run's landings: a state file the previewed start planned exists for the
+    // heartbeat that follows, as the real start's file does.
+    if (this.profile !== null && readPlannedText(this.store.path).kind === "absent") return;
     this.set(patch);
   }
 

@@ -193,6 +193,7 @@ program
     "Add the agent's most-relaxed flag: Claude --dangerously-skip-permissions " +
       "(with IS_SANDBOX=1), Codex --sandbox danger-full-access, Copilot --allow-all.",
   )
+  .option("--dry-run", `${DRY_RUN_HELP} The wiring the launch lands; the agent is not spawned.`)
   .action((cli: string, args: string[], opts: Opts) =>
     runLaunch(
       parseLaunchAction({
@@ -201,6 +202,8 @@ program
         profile: opts.profile as string | undefined,
         relaxed: Boolean(opts.relaxed),
       }),
+      undefined,
+      Boolean(opts.dryRun),
     )
   );
 
@@ -372,8 +375,13 @@ program
   .description("Stop the proxy on this host.")
   .option("--profile <name>", "Stop the named profile's daemon instead of the default.")
   .option("--all", "Stop the default daemon and every named profile's daemon.")
+  .option("--dry-run", `${DRY_RUN_HELP} The daemon is named, not signalled.`)
   .action((opts: Opts) =>
-    runStop({ profile: opts.profile as string | undefined, all: Boolean(opts.all) })
+    runStop({
+      profile: opts.profile as string | undefined,
+      all: Boolean(opts.all),
+      dryRun: Boolean(opts.dryRun),
+    })
   );
 
 program
@@ -393,10 +401,12 @@ program
     "--profile <name>",
     "Resolve against the named profile's isolated daemon instead of the default.",
   )
+  .option("--dry-run", `${DRY_RUN_HELP} No daemon starts and no key prints.`)
   .action((opts: Opts) =>
     runProxyToken({
       yes: Boolean(opts.yes),
       profile: opts.profile as string | undefined,
+      dryRun: Boolean(opts.dryRun),
     })
   );
 
@@ -462,7 +472,7 @@ program
   )
   .option("--force", "With --import: skip the confirmation prompt (headless use).")
   .option("--no-backup", "With --import: skip the automatic pre-import settings backup.")
-  .option("--dry-run", `${DRY_RUN_HELP} With --import; no confirmation.`)
+  .option("--dry-run", `${DRY_RUN_HELP} With --import (no confirmation) or --export <file>.`)
   .addHelpText(
     "after",
     () =>
@@ -776,12 +786,14 @@ program
     "Skip build-provenance verification for this run (the SHA256 check against checksums.txt " +
       "still applies).",
   )
+  .option("--dry-run", `${DRY_RUN_HELP} The release is resolved, nothing is downloaded.`)
   .action((opts: Opts) =>
     runUpdate({
       check: Boolean(opts.check),
       force: Boolean(opts.force),
       autoStatus: Boolean(opts.autoStatus),
       verify: opts.verify as boolean | undefined,
+      dryRun: Boolean(opts.dryRun),
     })
   );
 
@@ -808,6 +820,7 @@ program
   .option("--no-prereqs", "With --clis: verify prerequisites and CLIs only; install nothing.")
   .option("--all-hosts", "Windows only: target the CurrentUserAllHosts profile.")
   .option("--remove", "Unwire the integration (the `shell.launchers` config key is left as it is).")
+  .option("--dry-run", `${DRY_RUN_HELP} Each rc file with its block diff; no CLI installs.`)
   .action((opts: Opts) =>
     runShell({
       remove: Boolean(opts.remove),
@@ -816,6 +829,7 @@ program
       noSudo: opts.sudo === false,
       noPrereqs: opts.prereqs === false,
       allHosts: Boolean(opts.allHosts),
+      dryRun: Boolean(opts.dryRun),
     })
   );
 
@@ -836,14 +850,20 @@ program
     "--assets-only",
     "Refresh the runtime files and shims only - no shell wiring, no summary. Used by `agent update` after it swaps the binary.",
   )
-  .action((opts: Opts) =>
-    runInstall({
-      // Commander's --no-<x> sets opts.shellIntegration=false, so read the positive form.
+  .option("--dry-run", DRY_RUN_HELP)
+  .action((opts: Opts) => {
+    // Commander's --no-<x> sets opts.shellIntegration=false, so read the positive form.
+    const options = {
       noShellIntegration: opts.shellIntegration === false,
       allHosts: Boolean(opts.allHosts),
       assetsOnly: Boolean(opts.assetsOnly),
-    })
-  );
+      dryRun: Boolean(opts.dryRun),
+    };
+    // Collected here: the install layer never imports the command layer.
+    return options.dryRun
+      ? runDryRun(() => Promise.resolve(runInstall(options)))
+      : runInstall(options);
+  });
 
 program
   .command("uninstall")
@@ -875,7 +895,10 @@ program
   )
   .argument("<from>", "Version being updated away from.")
   .argument("<to>", "Version being updated to.")
-  .action((from: string, to: string) => runMigrations(from, to));
+  .option("--dry-run", `${DRY_RUN_HELP} Each step's moves and removals, by path.`)
+  .action((from: string, to: string, opts: Opts) =>
+    opts.dryRun ? runDryRun(() => runMigrations(from, to)) : runMigrations(from, to)
+  );
 
 if (import.meta.main) {
   // A child of a dry run (the Direct probes' agent CLIs run this CLI as their auth helper) is a

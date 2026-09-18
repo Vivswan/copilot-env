@@ -9,6 +9,7 @@ import { isEnoent, readTextResult } from "../utils/fs.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
+import { dryRunActive } from "../utils/write_session.ts";
 
 // `agent shell` owns wiring the copilot-env integration into the
 // user's shell startup -- the logic install.sh / install.ps1 used to duplicate.
@@ -66,10 +67,13 @@ const isBlankLine = (line: string | undefined): boolean => (line ?? "").replace(
 export function runShellIntegration(action: ShellIntegrationAction): void {
   const windows = process.platform === "win32";
 
+  // The restart hints follow a landed write; a dry run's plan stands in for them.
+  const hint = (line: string): void => {
+    if (!dryRunActive()) consola.info(line);
+  };
   if (action.kind === "remove") {
     const files = windows ? windowsProfileTarget(action.allHosts).paths : rcFiles(true);
-    const restartHint = windows ? "Restart PowerShell." : "Restart your shell.";
-    if (removeFrom(files)) consola.info(restartHint);
+    if (removeFrom(files)) hint(windows ? "Restart PowerShell." : "Restart your shell.");
     return;
   }
   if (windows) {
@@ -78,11 +82,11 @@ export function runShellIntegration(action: ShellIntegrationAction): void {
     // Only relax execution policy for a "system" target -- a redirected run owns no
     // machine state (the type enforces it).
     if (target.source === "system") relaxWindowsExecutionPolicy(target);
-    consola.info("Restart PowerShell or run: . $PROFILE");
+    hint("Restart PowerShell or run: . $PROFILE");
   } else {
     const files = rcFiles(false);
     wireBlocks(files, posixBlock(join(PROJECT_ROOT, "shell", "agents.bashrc")));
-    consola.info("Restart your shell or run: source ~/.bashrc (or ~/.zshrc)");
+    hint("Restart your shell or run: source ~/.bashrc (or ~/.zshrc)");
   }
 }
 
@@ -548,6 +552,10 @@ function psEval(command: string): string {
 // Takes the system target as proof this run owns the policy it is about to change.
 function relaxWindowsExecutionPolicy(_target: { source: "system" }): void {
   const command = windowsExecutionPolicyCommand();
+  if (dryRunActive()) {
+    consola.info(`Would relax the PowerShell execution policy: ${command}`);
+    return;
+  }
   for (const exe of PS_EXES) {
     const result = spawnSync(exe, ["-NoProfile", "-Command", command], {
       stdio: ["ignore", "inherit", "inherit"],

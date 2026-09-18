@@ -11,6 +11,8 @@ import { errMessage } from "../utils/error.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { versionLessThan } from "../utils/semver.ts";
 import { assertNonNegativeDays, MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import { dryRunActive } from "../utils/write_session.ts";
+import { runDryRun } from "./dry_run.ts";
 
 const NVM_VERSION = "v0.40.1";
 
@@ -34,6 +36,9 @@ export interface ShellArgs {
   noPrereqs?: boolean;
   /** Windows only: the CurrentUserAllHosts profile. */
   allHosts?: boolean;
+  /** Print each rc file the wiring would change with the block diff, and every install the
+   *  --clis pass would run; write and install nothing. */
+  dryRun?: boolean;
 }
 
 /** A union so the representation cannot carry the --no-sudo/--no-prereqs conflict the parser
@@ -140,14 +145,17 @@ function installNodePosix(): void {
   if (result.status !== 0) throw new Error("nvm failed to install/activate Node LTS.");
 }
 
+/** A FAILED winget look reads absent here and only aborts (nothing installs off it); ensureNpm's
+ *  npm look just completed through the same probe shell. A dry run refuses here too. */
+function assertWingetAvailable(): void {
+  if (commandExists("winget")) return;
+  throw new Error(
+    "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent shell --clis'.",
+  );
+}
+
 function installNodeWindows(): void {
-  // A FAILED winget look reads absent here and only aborts (nothing installs off it); ensureNpm's
-  // npm look just completed through the same probe shell.
-  if (!commandExists("winget")) {
-    throw new Error(
-      "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent shell --clis'.",
-    );
-  }
+  assertWingetAvailable();
   consola.info("Installing Node.js LTS and npm ...");
   const result = run("winget", [
     "install",
@@ -162,28 +170,40 @@ function installNodeWindows(): void {
   refreshWindowsPath();
 }
 
-function ensureNpm(options: CliInstall): boolean {
+/** `planned`: a dry run, which would install Node.js and npm here and stops at saying so. */
+function ensureNpm(options: CliInstall): "present" | "absent" | "planned" {
   const npmLook = findCommand(NPM_COMMAND);
-  if (npmLook.path !== null) return true;
+  if (npmLook.path !== null) return "present";
   if (npmLook.launchFailed) {
     // Never install off a failed look: npm may well be there already.
     consola.warn(
       "Could not check for npm (the command probe failed to run); skipping the CLI install.",
     );
-    return false;
+    return "absent";
   }
 
   if (process.platform === "win32" && options.noSudo) {
     consola.warn(
       "Node.js/npm are not installed; --no-sudo will not use winget. Install Node.js yourself, then rerun 'agent shell --clis'.",
     );
-    return false;
+    return "absent";
   }
 
+  if (dryRunActive()) {
+    if (process.platform === "win32") assertWingetAvailable();
+    consola.info(
+      `Would install Node.js and npm (${
+        process.platform === "win32" ? "winget" : "the Node.js installer"
+      }), then install or update the agent CLIs through npm: ${AGENT_CLIS_LINE}.`,
+    );
+    return "planned";
+  }
   if (process.platform === "win32") installNodeWindows();
   else installNodePosix();
-  return commandExists(NPM_COMMAND);
+  return commandExists(NPM_COMMAND) ? "present" : "absent";
 }
+
+const AGENT_CLIS_LINE = AGENT_CLIS.map((cli) => cli.name).join(", ");
 
 function resolveNpm(): string {
   // Every caller runs moments after ensureNpm proved npm through a completed look, and the miss
@@ -419,8 +439,17 @@ export function installAgentClis(setup: CliSetup): void {
       return;
     }
     case "install": {
-      if (!ensureNpm(setup)) {
+      // The npm decision is the real one in a dry run too (a look, and the --no-sudo refusal);
+      // only the installs are named, not run. npm's own listing is skipped as well: `npm ls -g`
+      // writes npm's cache under the home.
+      const npm = ensureNpm(setup);
+      if (npm === "planned") return;
+      if (npm === "absent") {
         for (const cli of AGENT_CLIS) warnMissing(cli.command, cli.name);
+        return;
+      }
+      if (dryRunActive()) {
+        consola.info(`Would install or update the agent CLIs through npm: ${AGENT_CLIS_LINE}.`);
         return;
       }
 
@@ -486,8 +515,13 @@ export function parseShellAction(args: ShellArgs): ShellAction {
   };
 }
 
-export function runShell(args: ShellArgs): void {
+export function runShell(args: ShellArgs): void | Promise<void> {
   const action = parseShellAction(args);
+  if (args.dryRun) return runDryRun(() => Promise.resolve(applyShell(action)));
+  applyShell(action);
+}
+
+function applyShell(action: ShellAction): void {
   if (action.kind === "remove") {
     runShellIntegration({ kind: "remove", allHosts: action.allHosts });
     return;

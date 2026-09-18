@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { renderDryRun } from "../src/agents/write_plan.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import * as facade from "../src/utils/fs_facade.ts";
+import { removeEmptyDirReported } from "../src/utils/report_write.ts";
 import { collectDryRun } from "../src/utils/write_session.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
@@ -133,17 +134,43 @@ test("under the plan collector a directory removed and made again is fresh and e
       [],
     ]);
     expect(facade.exists(join(root, "stale.txt"))).toBe(false);
+    // The fresh directory is a directory to a write, hides the disk under a sub-directory it
+    // grows, and shows a byte write it takes.
+    expect(() => facade.writeText(root, "x", { atomic: false })).toThrow(/EISDIR/);
+    facade.mkdir(join(root, "sub"));
+    expect(facade.readdir(join(root, "sub"))).toEqual([]);
+    facade.writeBytes(join(root, "blob"), new Uint8Array([1]));
+    expect([facade.exists(join(root, "blob")), facade.readdir(root)]).toEqual([true, [
+      "blob",
+      "sub",
+    ]]);
+    facade.rm(join(root, "blob"), { force: true });
+    facade.rmdir(join(root, "sub"));
+    removeEmptyDirReported(root);
+    expect(facade.exists(root)).toBe(false);
     facade.rm(file);
     facade.mkdir(join(file, "deep"));
-    expect(facade.readdir(dir)).toEqual(["marker", "version"]);
+    expect([facade.readdir(dir), facade.readdir(join(file, "deep"))]).toEqual([
+      ["marker"],
+      [],
+    ]);
+    // A planned file is no directory to mkdir under.
+    facade.writeText(join(dir, "leaf"), "x");
+    expect(() => facade.mkdir(join(dir, "leaf", "child"))).toThrow(/ENOTDIR/);
     return Promise.resolve();
   });
   expect(files.map((f) => `${f.verdict} ${f.path}${f.directory ? "/" : ""}`)).toEqual([
     `delete ${root}`,
     `create ${root}/`,
+    `create ${join(root, "sub")}/`,
+    `create ${join(root, "blob")}`,
+    `delete ${join(root, "blob")}`,
+    `delete ${join(root, "sub")}`,
+    `delete ${root}`,
     `delete ${file}`,
     `create ${file}/`,
     `create ${join(file, "deep")}/`,
+    `create ${join(dir, "leaf")}`,
   ]);
   expect(readFileSync(join(root, "stale.txt"), "utf8")).toBe("old");
 });

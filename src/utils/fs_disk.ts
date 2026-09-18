@@ -58,9 +58,8 @@ import {
   filePlan,
   type FileVerdict,
   landPlan,
-  plannedDirectory,
   plannedMissingDirectories,
-  plannedPresence,
+  plannedState,
   readPlannedDir,
   recordPlannedMode,
   shadowedText,
@@ -170,15 +169,11 @@ interface PlanRefusals {
 
 /** A look through the run's own landings: a path this dry run planned gone is absent, one it
  *  planned written (text, bytes, a copy, a link, a directory) is present, whatever the disk still
- *  shows. A planned directory stands over its own tombstone (removed and made again). */
+ *  shows. */
 function plannedLook(path: string, deep = false): Look {
-  if (plannedDirectory(path)) return { kind: "present", fingerprint: "" };
-  const shadow = shadowedText(path);
-  if (shadow === null) return { kind: "absent" };
-  if (shadow !== undefined || plannedPresence(path) === true) {
-    return { kind: "present", fingerprint: "" };
-  }
-  return look(path, deep);
+  const state = plannedState(path);
+  if (state === null) return look(path, deep);
+  return state.kind === "gone" ? { kind: "absent" } : { kind: "present", fingerprint: "" };
 }
 
 function planned(
@@ -202,17 +197,17 @@ function planned(
       ? followedTarget(path, refusals.syscall)
       : path;
     const parent = dirname(landing);
-    if (!plannedDirectory(parent)) {
+    if (plannedState(parent)?.kind !== "dir") {
       const refusal = parentRefusal(parent, refusals.syscall);
       if (refusal !== null) throw refusal;
     }
     // The target as the run leaves it: a directory this run planned gone is gone; one still there
-    // is the syscall's EISDIR.
-    const directory = refusals.directory === "none" || shadowedText(path) === null
+    // (the disk's, or one this run made) is the syscall's EISDIR.
+    const state = plannedState(path);
+    const directory = refusals.directory === "none" || state?.kind === "gone"
       ? false
-      : refusals.directory === "followed"
-      ? isDir(path)
-      : isDirectoryEntry(path);
+      : state?.kind === "dir" ||
+        (refusals.directory === "followed" ? isDir(path) : isDirectoryEntry(path));
     if (directory) {
       // Windows opens a directory for writing with EINVAL; every other refusal here is EISDIR.
       throw refusals.directory === "followed" && process.platform === "win32"
@@ -326,20 +321,21 @@ export function assertNotDirectory(path: string): void {
  *  junction at `current`) is the entry rmdir removes, never what it points at. Exported for the
  *  update planner, whose `current` flip takes the same decision. */
 export function refuseRmdir(path: string): void {
-  if (typeof shadowedText(path) === "string") {
-    throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
-  }
-  if (!plannedDirectory(path)) {
+  const state = plannedState(path);
+  if (state?.kind === "text") throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
+  if (state === null || state.kind === "opaque") {
+    // A plan without bytes (a chmod on a disk directory): the disk says which kind stands there.
     let stat: Stats;
     try {
       stat = lstatSync(path);
     } catch {
-      return;
+      if (state === null) return;
+      throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
     }
     if (stat.isSymbolicLink()) return;
     if (!stat.isDirectory()) throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
   }
-  if (readPlannedDir(path).length > 0) {
+  if (state?.kind !== "gone" && readPlannedDir(path).length > 0) {
     throw errno("ENOTEMPTY", `directory not empty, rmdir '${path}'`);
   }
 }
@@ -549,29 +545,30 @@ export interface RemoveOptions {
  *  whether anything was there. A removal that fails partway is named for what it provably changed. */
 export function rm(path: string, options: RemoveOptions = {}): boolean {
   const recursive = options.recursive ?? false;
-  const shadow = shadowedText(path);
-  if (shadow === null && !plannedDirectory(path)) {
+  const state = plannedState(path);
+  if (state?.kind === "gone") {
     if (options.force) return false;
     throw errno("ENOENT", `no such file or directory, lstat '${path}'`);
   }
   let was: Look = { kind: "present", fingerprint: "" };
-  if (plannedDirectory(path) && !recursive) throw rmDirectoryRefused(path);
-  if (shadow === undefined && !plannedDirectory(path) && plannedPresence(path) !== true) {
-    // The disk's entry, as the run has not planned it: node's own refusals, and a look that
-    // failed for another reason (EACCES) is left to the removal itself.
+  if (state?.kind === "dir" && !recursive) throw rmDirectoryRefused(path);
+  if (state === null || state.kind === "opaque") {
+    // The disk's entry (unplanned, or planned without bytes: a chmod on a disk directory):
+    // node's own refusals, and a look that failed for another reason (EACCES) is left to the
+    // removal itself.
     let entry: Stats | null = null;
     try {
       entry = lstatSync(path);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
+      if (code === "ENOENT" && state === null) {
         if (options.force) return false;
         throw errno("ENOENT", `no such file or directory, lstat '${path}'`);
       }
       if (code === "ENOTDIR") throw e;
     }
     if (entry !== null && entry.isDirectory() && !recursive) throw rmDirectoryRefused(path);
-    was = look(path, recursive);
+    if (state === null) was = look(path, recursive);
   }
   if (planned("delete", path)) return true;
   try {

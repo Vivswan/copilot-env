@@ -27,11 +27,9 @@ import { type DirEntry, type EntryStats, errno, Overlay } from "./fs_overlay.ts"
 import { underScratch } from "./report_write.ts";
 import {
   dryRunActive as planCollecting,
-  plannedDirectory,
   plannedMode,
-  plannedPresence,
+  plannedState,
   readPlannedDir,
-  shadowedText,
 } from "./write_session.ts";
 
 export type { DirEntry, EntryStats };
@@ -78,18 +76,15 @@ const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
 
 /** What the plan collector says about `path`: planned text, a planned file whose bytes the plan
- *  does not carry (a copy, a byte write, a link), a planned directory, a planned deletion, or
+ *  does not carry (a copy, a byte write, a chmod), a planned directory, a planned deletion, or
  *  nothing (the disk speaks). */
 type Shadow = { kind: "text"; text: string } | "opaque" | "dir" | "gone" | null;
 
 function shadow(path: string): Shadow {
-  if (!planCollecting()) return null;
-  // A planned directory stands even over its own tombstone (a directory removed and made again).
-  if (plannedDirectory(path)) return "dir";
-  const text = shadowedText(path);
-  if (text === null) return "gone";
-  if (text !== undefined) return { kind: "text", text };
-  if (plannedPresence(path) !== true) return null;
+  const state = plannedState(path);
+  if (state === null) return null;
+  if (state.kind === "text") return state;
+  if (state.kind !== "opaque") return state.kind;
   // A plan without bytes (a chmod, a copy, a link): the disk says which kind stands there.
   try {
     return statSync(path).isDirectory() ? "dir" : "opaque";

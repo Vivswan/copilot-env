@@ -5,10 +5,16 @@
 // have written is shadowed so a later reader in the same run (the store re-read after a commit,
 // a config.toml re-inspected after its write) sees the planned state, not the disk. utils layer:
 // the JSON store (src/copilot_api/config.ts) lands through here too.
-import { readdirSync } from "node:fs";
+import { lstatSync, readdirSync, type Stats, statSync } from "node:fs";
 import { basename, dirname, extname, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { isEnoent, missingDirectories, readTextResult, type TextReadResult } from "./fs.ts";
+import {
+  isEnoent,
+  isEnoentOrNotdir,
+  missingDirectories,
+  readTextResult,
+  type TextReadResult,
+} from "./fs.ts";
 import { parseJsonRecord } from "./json.ts";
 
 export type FileVerdict = "create" | "rewrite" | "same" | "delete";
@@ -100,6 +106,9 @@ interface DryRunSession {
   /** The mode a planned chmod or an explicit-mode write left at a path (the facade's stat reads
    *  it; a plan row carries no mode). */
   modes: Map<string, number>;
+  /** Directories made where the run had planned a deletion: nothing the disk holds under one is
+   *  visible, as after the real `rm -r d; mkdir d`. */
+  fresh: Set<string>;
 }
 
 let session: DryRunSession | null = null;
@@ -124,22 +133,24 @@ export function landPlan(plan: WritePlan): void {
     // mkdir, which a dry run never runs), so the plan names the missing ancestors, outermost
     // first, the way the real run's own lines do.
     if (file.verdict === "create") session.files.push(...missingAncestors(file.path));
-    if (file.directory) session.dirs.add(file.path);
+    if (file.directory) {
+      // Made over a planned deletion (its own, or an ancestor's): fresh, hiding the disk below.
+      if (shadowedText(file.path) === null) session.fresh.add(file.path);
+      session.dirs.add(file.path);
+    }
     session.files.push(file);
     if (file.verdict === "delete") {
       session.shadows.set(file.path, null);
       session.modes.delete(file.path);
-      for (const dir of [...session.dirs]) {
-        if (dir === file.path || dir.startsWith(file.path + sep)) session.dirs.delete(dir);
+      for (const set of [session.dirs, session.fresh]) {
+        for (const dir of [...set]) {
+          if (dir === file.path || dir.startsWith(file.path + sep)) set.delete(dir);
+        }
       }
     } else if (file.content !== undefined) session.shadows.set(file.path, file.content);
-    // A directory made where the run planned a deletion keeps the tombstone under it: the
-    // directory is fresh, and nothing the disk holds below it is visible (readers ask
-    // plannedDirectory before shadowedText). Any other landing whose bytes the plan does not carry
-    // (a copy, a link) ends the earlier deletion; earlier planned text stays (a chmod carries none).
-    else if (!file.directory && session.shadows.get(file.path) === null) {
-      session.shadows.delete(file.path);
-    }
+    // A landing whose bytes the plan does not carry (a directory, a copy, a link) ends an earlier
+    // planned deletion of the path; earlier planned text stays (a chmod carries none).
+    else if (session.shadows.get(file.path) === null) session.shadows.delete(file.path);
   }
   plan.commit?.();
 }
@@ -158,31 +169,57 @@ function missingAncestors(path: string): FilePlan[] {
   return made;
 }
 
-/** The directories a `mkdir -p` would make, this run's landings in front of the disk: a
- *  tombstoned path is absent (the mkdir re-creates it), a planned directory exists, a planned file
- *  is mkdir's own EEXIST (the path itself) or ENOTDIR (above it); where the plan says nothing, the
- *  disk's walk (missingDirectories) decides. Outside a dry run it is that walk. */
+/** The directories a `mkdir -p` would make, this run's landings in front of the disk, component
+ *  by component from `path` upward: a planned directory exists; planned text (or a planned file
+ *  without bytes) is mkdir's own EEXIST (the path itself) or ENOTDIR (above it); a tombstoned path,
+ *  or one under a tombstoned or fresh ancestor, is absent (the mkdir re-creates it); where the plan
+ *  says nothing, the disk entry decides as in missingDirectories. Outside a dry run it is that
+ *  walk. */
 export function plannedMissingDirectories(path: string): string[] {
   if (session === null) return missingDirectories(path);
   const missing: string[] = [];
   for (let cur = path;; cur = dirname(cur)) {
-    if (session.dirs.has(cur)) return missing;
-    const shadow = shadowedText(cur);
-    if (typeof shadow === "string") {
-      const code = cur === path ? "EEXIST" : "ENOTDIR";
-      const err: NodeJS.ErrnoException = new Error(
-        `${code}: ${
-          code === "EEXIST" ? "file already exists" : "not a directory"
-        }, mkdir '${path}'`,
-      );
-      err.code = code;
-      err.syscall = "mkdir";
-      err.path = path;
-      throw err;
+    const state = plannedState(cur);
+    if (state?.kind === "dir") return missing;
+    if (state?.kind === "text") throw mkdirRefusal(cur, path);
+    if (state === null || state.kind === "opaque") {
+      // A plan without bytes (a chmod on a disk directory, a copy): the disk says which kind.
+      const entry = lookEntry(cur);
+      if (entry === "unreadable" || entry === "dir") return missing;
+      if (entry !== "absent" || state !== null) throw mkdirRefusal(cur, path);
     }
-    if (shadow === undefined) return [...missingDirectories(cur), ...missing];
     missing.unshift(cur);
     if (dirname(cur) === cur) return missing;
+  }
+}
+
+/** mkdir's own error for a non-directory at `cur` on the way to `path`: EEXIST for the path
+ *  itself or a dangling link above it, ENOTDIR for a file above it. */
+function mkdirRefusal(cur: string, path: string): NodeJS.ErrnoException {
+  const code = cur === path || lookEntry(cur) === "dangling" ? "EEXIST" : "ENOTDIR";
+  const err: NodeJS.ErrnoException = new Error(
+    `${code}: ${code === "EEXIST" ? "file already exists" : "not a directory"}, mkdir '${path}'`,
+  );
+  err.code = code;
+  err.syscall = "mkdir";
+  err.path = path;
+  return err;
+}
+
+/** What mkdir meets on the disk at `path`: a directory (a symlink to one followed), another
+ *  entry, a dangling link, nothing, or a look that failed for another reason. */
+function lookEntry(path: string): "dir" | "other" | "dangling" | "absent" | "unreadable" {
+  let entry: Stats;
+  try {
+    entry = lstatSync(path);
+  } catch (e) {
+    return isEnoentOrNotdir(e) ? "absent" : "unreadable";
+  }
+  if (!entry.isSymbolicLink()) return entry.isDirectory() ? "dir" : "other";
+  try {
+    return statSync(path).isDirectory() ? "dir" : "other";
+  } catch (e) {
+    return isEnoentOrNotdir(e) ? "dangling" : "unreadable";
   }
 }
 
@@ -196,7 +233,7 @@ export async function collectDryRun<T>(
   files: FilePlan[] = [],
 ): Promise<{ files: FilePlan[]; result: T }> {
   if (session !== null) throw new Error("a dry run is already collecting");
-  session = { files, shadows: new Map(), dirs: new Set(), modes: new Map() };
+  session = { files, shadows: new Map(), dirs: new Set(), modes: new Map(), fresh: new Set() };
   try {
     const result = await body();
     return { files: session.files, result };
@@ -207,16 +244,37 @@ export async function collectDryRun<T>(
 
 /** A dry run's planned content for `path`: the text an earlier landing would have written, null
  *  for a planned deletion (the path's own, or that of a directory above it: a tree the run removes
- *  takes every descendant with it, as the real rm does), undefined when no landing of this run
- *  touched it. */
+ *  takes every descendant with it, as the real rm does, and a directory made fresh over one holds
+ *  nothing of the disk), undefined when no landing of this run touched it. */
 export function shadowedText(path: string): string | null | undefined {
   if (session === null) return undefined;
   const own = session.shadows.get(path);
   if (own !== undefined) return own;
   for (let cur = dirname(path); dirname(cur) !== cur; cur = dirname(cur)) {
-    if (session.shadows.get(cur) === null) return null;
+    if (session.shadows.get(cur) === null || session.fresh.has(cur)) return null;
   }
   return undefined;
+}
+
+/** What this run has planned at `path`, in one answer: a directory it made, text it wrote, a
+ *  deletion (its own, or an ancestor's tree, or a fresh ancestor hiding the disk), a file it landed
+ *  without carrying the bytes (a copy, a link, a chmod), or nothing (the disk speaks). The seam's
+ *  bridge reads through this alone. */
+export type PlannedState =
+  | { kind: "dir" }
+  | { kind: "text"; text: string }
+  | { kind: "gone" }
+  | { kind: "opaque" }
+  | null;
+
+export function plannedState(path: string): PlannedState {
+  if (session === null) return null;
+  if (session.dirs.has(path)) return { kind: "dir" };
+  const own = session.shadows.get(path);
+  if (own === null) return { kind: "gone" };
+  if (own !== undefined) return { kind: "text", text: own };
+  if (plannedPresence(path) === true) return { kind: "opaque" };
+  return shadowedText(path) === null ? { kind: "gone" } : null;
 }
 
 /** Whether `path` exists as the run has planned it: true after a planned create or rewrite, false
@@ -253,12 +311,11 @@ export function plannedMode(path: string): number | undefined {
 
 /** readdirSync, with a dry run's landings in front of the disk: an entry this run planned to
  *  delete is gone, one it planned to create (a file, a copy, a link, or a directory) is there, and
- *  a directory made where the run planned a deletion lists nothing the disk holds. Absent reads as
+ *  a directory made fresh over a planned deletion lists nothing the disk holds. Absent reads as
  *  empty; a regular file at the path is readdir's own ENOTDIR, never an empty directory. */
 export function readPlannedDir(dir: string): string[] {
   let names: string[] = [];
-  const fresh = session !== null && session.dirs.has(dir) && session.shadows.get(dir) === null;
-  if (!fresh) {
+  if (!(session?.fresh.has(dir) ?? false)) {
     try {
       names = readdirSync(dir);
     } catch (e) {
@@ -273,7 +330,7 @@ export function readPlannedDir(dir: string): string[] {
     else present.add(basename(file.path));
   }
   for (const [path, content] of session.shadows) {
-    if (dirname(path) !== dir || session.dirs.has(path)) continue;
+    if (dirname(path) !== dir) continue;
     if (content === null) present.delete(basename(path));
     else present.add(basename(path));
   }

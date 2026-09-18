@@ -13,7 +13,7 @@ import { resolve, sep } from "node:path";
 import { look, type ScratchDir } from "./fs_disk.ts";
 import * as fs from "./fs_facade.ts";
 import { terminalWidth, wrapMessage } from "./table.ts";
-import { shadowedText } from "./write_session.ts";
+import { plannedState } from "./write_session.ts";
 
 export {
   assertNotDirectory,
@@ -184,7 +184,7 @@ export function chmodReported(path: string, mode: number, detail?: string): void
  *  symlink is the link, not what it points at); a path this dry run already landed reads through
  *  its plan. */
 export function removeReported(path: string, detail?: string): boolean {
-  if (shadowedText(path) === undefined) {
+  if (plannedState(path) === null) {
     if (look(path).kind === "absent") return false;
     fs.assertNotDirectory(path);
   }
@@ -197,9 +197,11 @@ export function removeTreeReported(path: string, detail?: string): boolean {
   return fs.rm(path, { recursive: true, force: true, detail });
 }
 
+/** Absent (to the disk, or to the plan) is nothing to do, as the wrapper always read it. */
 export function removeEmptyDirReported(path: string): void {
-  if (shadowedText(path) === undefined && look(path).kind === "absent") return;
-  if (shadowedText(path) === null) return;
+  const state = plannedState(path);
+  if (state?.kind === "gone") return;
+  if (state === null && look(path).kind === "absent") return;
   fs.rmdir(path);
 }
 

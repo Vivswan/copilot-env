@@ -1,8 +1,9 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { CopilotApiPaths, resolveRootHome } from "../src/copilot_api/paths.ts";
 import {
+  atomicSymlink,
   atomicWriteFile,
   deferWriteReports,
   flushWriteReports,
@@ -217,6 +218,28 @@ test("a real store update into a fresh data home names the home and its parents,
     removeDir(dir);
   }
 });
+
+// Creating a symlink needs a privilege Windows does not grant by default.
+test.skipIf(process.platform === "win32")(
+  "a stale staging file at the link's staging path is named before the link lands",
+  () => {
+    const dir = tempDir("copilot-report-staging-");
+    try {
+      const link = join(dir, "current");
+      const staging = join(dir, `.current-next-${process.pid}`);
+      writeFileSync(staging, "left by a crashed run");
+      deferWriteReports();
+      atomicSymlink("versions/v1", link);
+      expect(flushWriteReports()).toEqual([
+        `deleted -> ${staging} (stale staging file)`,
+        `linked -> ${link} (to versions/v1)`,
+      ]);
+      expect(readlinkSync(link)).toBe("versions/v1");
+    } finally {
+      removeDir(dir);
+    }
+  },
+);
 
 test("writes inside copilot-env's own homes print nothing; the same write outside does", () => {
   const { dir: home, proxyHome } = isolateAgentHomes("copilot-report-scope-");

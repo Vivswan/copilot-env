@@ -778,7 +778,9 @@ export function atomicSymlink(target: string, link: string): void {
       directory: "entry",
     })
   ) return;
-  rmSync(staged, { force: true });
+  // A stale staging entry from a crashed run under this pid goes first, through the seam: with
+  // pid reuse the path could be a file the user made, and its removal is then named.
+  rm(staged, { force: true, detail: "stale staging file" });
   const was = look(staged);
   symlinkSync(target, staged);
   try {

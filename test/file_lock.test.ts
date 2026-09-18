@@ -410,3 +410,37 @@ test("withRequiredFileLockSync never runs fn unlocked: a holder past the wait is
     .toBe(true);
   expect(existsSync(path)).toBe(false);
 });
+
+// The OS lock operation itself can throw (ENOLCK on a filesystem without locking, EACCES): the
+// lock's own I/O failing, so it rides the bounded wait like a refused marker write.
+test("a throwing OS lock operation is retried through the wait, then rethrown as itself (required) or not-held (best-effort)", () => {
+  const path = tmp("nolock.lock");
+  const enolck = (): never => {
+    throw Object.assign(new Error("no locks available"), { code: "ENOLCK" });
+  };
+  // Throws once, then locks for real: a required writer that gave up at the throw would surface it.
+  let attempts = 0;
+  const once = (file: Deno.FsFile): boolean =>
+    (attempts += 1) === 1 ? enolck() : file.tryLockSync(true);
+  const held = withRequiredFileLockSync(
+    path,
+    { staleMs: 10_000, waitMs: Number.POSITIVE_INFINITY, retryMs: 5, osLock: once },
+    (lock) => lock.held,
+  );
+  expect({ held, attempts }).toEqual({ held: true, attempts: 2 });
+  expect(existsSync(path)).toBe(false); // released on the way out
+
+  // Never locks: past the wait a required writer rethrows the cause as itself and a best-effort
+  // caller sees not-held; nobody is told a holder is there, and no marker is written.
+  const never = { staleMs: 10_000, waitMs: 0, osLock: enolck };
+  let ran = false;
+  expect(() =>
+    withRequiredFileLockSync(path, never, () => {
+      ran = true;
+    })
+  ).toThrow("no locks available");
+  expect(ran).toBe(false);
+  expect(withFileLockSync(path, never, (o) => o))
+    .toEqual({ held: false, reason: "unavailable", cause: expect.any(Error) });
+  expect(existsSync(path)).toBe(false);
+});

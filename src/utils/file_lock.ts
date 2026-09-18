@@ -34,6 +34,13 @@ export interface FileLockOptions {
    *  and must still recognize a live holder during the upgrade window instead of stealing the lock
    *  as malformed. */
   jsonMarker?: boolean;
+  /** The OS lock operation on the open sidecar, replaceable so a test can make it fail the way a
+   *  filesystem without locking does (ENOLCK), which no scratch directory can. */
+  osLock?: (file: Deno.FsFile) => boolean;
+}
+
+function tryLockExclusive(file: Deno.FsFile): boolean {
+  return file.tryLockSync(true);
 }
 
 function renderMarker(nowMs: number, jsonMarker: boolean): string {
@@ -130,7 +137,7 @@ function writeMarker(lockPath: string, text: string): Acquire {
 /** What a delete refused by an open handle surfaces (Windows: a scanner on the just-released
  *  marker); the disk writer's rename loop (fs_disk.ts) keys off the same codes. */
 const OPEN_HANDLE_REFUSAL_CODES: ReadonlySet<string> = new Set(["EPERM", "EBUSY", "EACCES"]);
-const REMOVE_ATTEMPTS = 5;
+const REMOVE_RETRIES = 5;
 const REMOVE_RETRY_MS = 50;
 
 /** A POSIX unlink of an open file always succeeds; Windows refuses it while a handle opened
@@ -145,7 +152,7 @@ export function removeMarkerWithRetry(
       return;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (i >= REMOVE_ATTEMPTS || code === undefined || !OPEN_HANDLE_REFUSAL_CODES.has(code)) {
+      if (i >= REMOVE_RETRIES || code === undefined || !OPEN_HANDLE_REFUSAL_CODES.has(code)) {
         throw err;
       }
       sleepSync(REMOVE_RETRY_MS);
@@ -194,7 +201,13 @@ function tryAcquire(lockPath: string, staleMs: number, opts: FileLockOptions): A
   }
   let kept = false;
   try {
-    if (!file.tryLockSync(true)) return BUSY;
+    let locked: boolean;
+    try {
+      locked = (opts.osLock ?? tryLockExclusive)(file);
+    } catch (cause) {
+      return { kind: "unavailable", cause };
+    }
+    if (!locked) return BUSY;
     const written = writeMarker(lockPath, renderMarker(nowMs, jsonMarker));
     if (written.kind !== "acquired") return written;
     HELD_LOCKS.set(lockPath, new HeldFileLock(lockPath, file, nowMs));

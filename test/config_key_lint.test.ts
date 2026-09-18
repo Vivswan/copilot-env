@@ -63,9 +63,10 @@ const DOTTED_KEY_SHAPE = new RegExp(
 );
 /** `agent config [set|unset|get] <key> ...` or `agent profile [<name>] set|unset|get <key> ...`; a
  *  `<placeholder>`, a bare verb, or a verb menu (`set|unset|get`) is not a key. The name may be a
- *  template hole (blanked to a space by stringLiterals), so any run of spaces precedes the verb. */
+ *  template hole (blanked to a space by stringLiterals) or the documented `<name>` / `[<name>]`
+ *  placeholder, so any run of spaces precedes the verb. */
 const HAND_SPELLED_HINT =
-  /agent (?:config (?:(?:set|unset|get) )?|profile(?: [a-z0-9][a-z0-9-]*)? +(?:set|unset|get) )(?!<|(?:set|unset|get)\b)[a-z][a-z0-9.-]*/g;
+  /agent (?:config (?:(?:set|unset|get) )?|profile(?: (?:[a-z0-9][a-z0-9-]*|<name>|\[<name>\]))? +(?:set|unset|get) )(?!<|(?:set|unset|get)\b)[a-z][a-z0-9.-]*/g;
 /** "the <key> config key", "`<key>` config key", or a dotted/dashed "<key> config key". */
 const KEY_MENTION = /(?:(?:the |`)([a-z][a-z0-9.-]*)`?|([a-z0-9]+(?:[.-][a-z0-9]+)+)) config key/g;
 
@@ -99,6 +100,10 @@ test("no source string spells an `agent config` hint by hand or names a dotted k
     .toEqual(["agent profile work set identity"]);
   expect('"agent profile 2work set identity auto"'.match(HAND_SPELLED_HINT))
     .toEqual(["agent profile 2work set identity"]);
+  expect('"agent profile [<name>] set identity auto"'.match(HAND_SPELLED_HINT))
+    .toEqual(["agent profile [<name>] set identity"]);
+  expect('"agent profile <name> unset identity"'.match(HAND_SPELLED_HINT))
+    .toEqual(["agent profile <name> unset identity"]);
   expect(
     stringLiterals("w(`agent profile ${profile} set identity auto`)").join("").match(
       HAND_SPELLED_HINT,

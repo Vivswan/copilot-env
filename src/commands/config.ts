@@ -83,7 +83,8 @@ function refuseStateKey(key: string): void {
   if (owner === undefined) return;
   throw new Error(
     `'${key}' is state written by ${owner}; a preference verb sets preferences only ` +
-      "(`agent config --help` lists them)",
+      "(`agent config get` lists the machine's keys and the shared defaults, `agent profile " +
+      "[<name>] get` a profile's)",
   );
 }
 

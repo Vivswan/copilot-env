@@ -31,7 +31,7 @@ SHA256, and wiring shell integration by default. Optional agent CLIs and
 launchers are configured after install:
 
   agent shell --clis [--cooldown[=DAYS]] [--no-sudo] [--no-prereqs]
-  agent config --set launchers true
+  agent config set shell.launchers true
 
 Options:
   --dir DIR              Install target (default ~/.copilot-env). Takes

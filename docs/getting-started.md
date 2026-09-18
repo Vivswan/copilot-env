@@ -87,7 +87,7 @@ Every file copilot-env leaves outside its own homes (`~/.copilot-env`, `~/.local
 
 `agent update` fetches the newest release's binary, checks its SHA256 against `checksums.txt`, then verifies both files against the release's Sigstore build-provenance attestation. Only then does it swap the binary in place.
 
-The attestation must be signed by a GitHub Actions workflow of Vivswan's GitHub account (any repository, any ref), and both files must be among the attested bytes.
+The attestation must be signed by a GitHub Actions workflow of the repository owner's GitHub account (any repository, any ref), and both files must be among the attested bytes.
 
 - That check is on by default. `agent update --no-verify` skips it once, `agent config set update.verify-provenance false` turns it off.
 - The release lookup is anonymous: no `GH_TOKEN` / `GITHUB_TOKEN` from the shell and no stored Copilot credential is sent, so a token for another account cannot turn the lookup into a 401. GitHub's anonymous limit (60 requests an hour per IP) covers one lookup per `--check` or autoupdate cooldown; when nothing resolves (no eligible release, a refusal, or no network) `agent update --check` says so and exits 2.
@@ -107,8 +107,8 @@ for f in copilot-env-<target> checksums.txt; do
 done
 ```
 
-- `--owner` and `--cert-identity-regex` allow any workflow of any repository under Vivswan's GitHub account, at any ref: the fleet's publish leg signs releases from another repository and a tag. The repository is pinned by the download URL, not the certificate.
-- `--owner` also requires the calling repository to be Vivswan's; `agent update` checks only the signing workflow's identity.
+- `--owner` and `--cert-identity-regex` allow any workflow of any repository under the repository owner's GitHub account, at any ref: the fleet's publish leg signs releases from another repository and a tag. The repository is pinned by the download URL, not the certificate.
+- `--owner` also requires the calling repository to be the repository owner's; `agent update` checks only the signing workflow's identity.
 
 ## Uninstall
 

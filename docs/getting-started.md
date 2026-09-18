@@ -24,7 +24,7 @@ This downloads one self-contained `agent` binary for your platform into `~/.copi
 
 - **Install from a release, not `main`.** `main` is for development and can run ahead of the released installer flow.
 - **Replaceable:** re-run the installer any time to move to the selected release.
-- **Optional:** `agent shell --clis` installs or updates the Claude/Copilot/Codex CLIs. `agent config --set shell.launchers true` adds the `cl` / `co` / `cx` [launchers](usage.md#launchers).
+- **Optional:** `agent shell --clis` installs or updates the Claude/Copilot/Codex CLIs. `agent config set shell.launchers true` adds the `cl` / `co` / `cx` [launchers](usage.md#launchers).
 
 **Specific version:** replace `latest` with an exact release tag, or pass `--version`.
 
@@ -89,10 +89,10 @@ Every file copilot-env leaves outside its own homes (`~/.copilot-env`, `~/.local
 
 The attestation must be signed by a GitHub Actions workflow of Vivswan's GitHub account (any repository, any ref), and both files must be among the attested bytes.
 
-- That check is on by default. `agent update --no-verify` skips it once, `agent config --set update.verify-provenance false` turns it off.
+- That check is on by default. `agent update --no-verify` skips it once, `agent config set update.verify-provenance false` turns it off.
 - The release lookup is anonymous: no `GH_TOKEN` / `GITHUB_TOKEN` from the shell and no stored Copilot credential is sent, so a token for another account cannot turn the lookup into a 401. GitHub's anonymous limit (60 requests an hour per IP) covers one lookup per `--check` or autoupdate cooldown; when nothing resolves (no eligible release, a refusal, or no network) `agent update --check` says so and exits 2.
 - Your config, credentials, and profiles live outside the install directory and are untouched.
-- `agent config --set update.auto true` self-updates daily, with the cooldown from [`update.cooldown`](configuration.md#update).
+- `agent config set update.auto true` self-updates daily, with the cooldown from [`update.cooldown`](configuration.md#update).
 
 ### Verifying a download by hand
 

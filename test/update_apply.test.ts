@@ -368,7 +368,7 @@ describe("applyUpdate", () => {
     expect((err as Error).message).toContain("cannot verify the build provenance of v9.9.9");
     expect((err as Error).message).toContain("attestation.json could not be fetched");
     expect((err as Error).message).toContain("--no-verify");
-    expect((err as Error).message).toContain("agent config --set update.verify-provenance false");
+    expect((err as Error).message).toContain("agent config set update.verify-provenance false");
     expect(verifierCalls).toBe(0);
     expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
     expect(stagingDirs()).toEqual([]);
@@ -395,7 +395,7 @@ describe("applyUpdate", () => {
           warns: (warns) => {
             expect(warns).toHaveLength(1);
             expect(warns[0]).toContain("update.verify-provenance is false");
-            expect(warns[0]).toContain("agent config --del update.verify-provenance");
+            expect(warns[0]).toContain("agent config unset update.verify-provenance");
           },
         },
       ];

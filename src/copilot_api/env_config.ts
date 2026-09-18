@@ -131,7 +131,7 @@ export const CODEX_IDENTITY_NAME = "codex";
 export type ProxyConfigPath = readonly [string, ...string[]];
 
 /** The generic ties `schema` and `parse` to the key's OWN value type, so a key can never be write-only
- *  again (accepted by `--set`, stripped by the folded read schema). `scope` is required, and its type
+ *  again (accepted by `set`, stripped by the folded read schema). `scope` is required, and its type
  *  follows the name (ScopeFor), so a new key without one, or grouped as a profile key, does not compile. */
 interface ConfigKeyDefCore<K extends ConfigKey = ConfigKey> {
   key: K;
@@ -142,7 +142,7 @@ interface ConfigKeyDefCore<K extends ConfigKey = ConfigKey> {
   /** The single source CONFIG_SCHEMA folds; `parse` is derived from it by the domain builders. */
   schema: v.GenericSchema<unknown, ConfigValueTypes[K]>;
   parse: (raw: string) => ConfigValueTypes[K];
-  /** `agent config --set` refuses the key on Windows. */
+  /** `agent config set` refuses the key on Windows. */
   posixOnly?: true;
 }
 
@@ -152,7 +152,7 @@ interface DefaultSpec<K extends ConfigKey = ConfigKey> {
   defaultValue?: ConfigValueTypes[K];
 }
 
-/** What `agent config` set/del prints about when a change takes effect; projected keys already get
+/** What a `set`/`unset` prints about when a change takes effect; projected keys already get
  *  the restart hint, and a key with neither applies immediately. */
 type ApplySpec =
   | {
@@ -170,7 +170,7 @@ type ApplySpec =
 interface ProjectedKeyFields {
   /** The proxy's own key in config.json (an external contract, so it never follows our name). */
   proxyPath: ProxyConfigPath;
-  /** Oldest proxy version that reads the key: `agent config --set` warns on an older installed proxy,
+  /** Oldest proxy version that reads the key: `agent config set` warns on an older installed proxy,
    *  where the projection would be a silent no-op. Unset = every version above our floor. */
   sinceProxyVersion?: string;
 }
@@ -235,7 +235,7 @@ export function isProxyProjected(def: ConfigKeyDef): boolean {
 }
 
 // Each key's domain is stated ONCE as the schema on its registry entry: CONFIG_SCHEMA folds those into
-// the read schema and every `--set` parse is derived from the same schema, so write and read can never disagree.
+// the read schema and every `set` parse is derived from the same schema, so write and read can never disagree.
 
 /** Spread into a registry entry (`...BOOL_DOMAIN`). */
 interface ConfigDomain<T extends ConfigValue> {
@@ -354,7 +354,7 @@ const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
   "id|auto",
 );
 
-/** The one validator behind `agent config --set identity` and `agent profile set identity`. */
+/** The one validator behind `agent profile [<name>] set identity` and `identity --set`. */
 export function parseIntegrationIdPin(raw: string): string {
   return INTEGRATION_ID_DOMAIN.parse(raw);
 }
@@ -847,23 +847,27 @@ export function profileSettingsKey(profile: Profile): string {
   return profile ?? PROFILE_SETTINGS_DEFAULT_KEY;
 }
 
-// The `agent config` commands a message may point at, spelled ONCE. The key is typed, so a renamed
-// key cannot leave a stale hint behind, and test/config_key_lint.test.ts refuses a hand-spelled one.
+// The preference commands a message may point at, spelled ONCE. The key is typed, so a renamed key
+// cannot leave a stale hint behind, and test/config_key_lint.test.ts refuses a hand-spelled one.
 
-function profileFlag(profile: Profile): string {
-  return profile === null ? "" : ` --profile ${profile}`;
+/** The command a key's write or read belongs to: a named profile's own verbs; with no name, a
+ *  profile key is the default profile's (`agent profile set`), and a machine key or a shared
+ *  default is `agent config`. */
+function preferenceCommand(key: ConfigKey, profile: Profile): string {
+  if (profile !== null) return `agent profile ${profile}`;
+  return configScope(key) === "profile" ? "agent profile" : "agent config";
 }
 
 export function configSetCommand(key: ConfigKey, value: string, profile: Profile = null): string {
-  return `agent config --set ${key} ${value}${profileFlag(profile)}`;
+  return `${preferenceCommand(key, profile)} set ${key} ${value}`;
 }
 
 export function configDelCommand(key: ConfigKey, profile: Profile = null): string {
-  return `agent config --del ${key}${profileFlag(profile)}`;
+  return `${preferenceCommand(key, profile)} unset ${key}`;
 }
 
 export function configGetCommand(key: ConfigKey, profile: Profile = null): string {
-  return `agent config --get ${key}${profileFlag(profile)}`;
+  return `${preferenceCommand(key, profile)} get ${key}`;
 }
 
 /** A bad stored value falls back to undefined (unset) instead of throwing, so a hand-mangled file still reads. */
@@ -976,7 +980,7 @@ export function resolveSetting<K extends ConfigKey>(
   return config.resolve(key, opts);
 }
 
-/** A stored value is what `--del` can revert: anything resolved from either map. */
+/** A stored value is what `unset` can revert: anything resolved from either map. */
 export function isStoredSource(source: SettingSource): boolean {
   return source === "profile" || source === "global";
 }
@@ -1111,7 +1115,7 @@ export function isStoredValueInert(
 
 // --- writes ------------------------------------------------------------------------------
 
-/** Which map a `--set`/`--del` lands in. */
+/** Which map a `set`/`unset` lands in. */
 export type SettingTarget = { kind: "global" } | { kind: "profile"; profile: Profile };
 
 /** Applies one patch to one map: null, undefined, and a blank string delete; strings are trimmed. */
@@ -1137,8 +1141,8 @@ export function copilotHostIn(data: CopilotEnvConfigData, profile: Profile): str
   return value === undefined || value === COPILOT_HOST_AUTO ? null : value;
 }
 
-/** The `identity` pin in force, likewise; `auto` reads as null so `--set identity auto` restores
- *  probing without a separate `--del`. */
+/** The `identity` pin in force, likewise; `auto` reads as null so `set identity auto` restores
+ *  probing without a separate `unset`. */
 export function pinnedIntegrationIdIn(data: CopilotEnvConfigData, profile: Profile): string | null {
   const value = resolveSettingIn(data, "identity", { profile }).value;
   return value === undefined || value.toLowerCase() === "auto" ? null : value;
@@ -1351,7 +1355,7 @@ export class CopilotEnvConfig {
     });
   }
 
-  /** The `agent config --set`/`--del` write: the key's scope decides the map (settingTarget), so the
+  /** The `set`/`unset` write: the key's scope decides the map (settingTarget), so the
    *  rule sits at the one mutation point. `value` null deletes. Returns where it landed for the
    *  caller to say. */
   assign(
@@ -1416,7 +1420,9 @@ export function settingTarget(def: ConfigKeyDef, profile: Profile): SettingTarge
     case "global":
       if (profile !== null) {
         throw new Error(
-          `'${def.key}' is a global setting (scope ${def.scope}): it has no per-profile value, so --profile does not apply`,
+          `'${def.key}' is a global setting (scope ${def.scope}): it has no per-profile value; \`${
+            configSetCommand(def.key, "<value>")
+          }\` sets this machine's`,
         );
       }
       return { kind: "global" };

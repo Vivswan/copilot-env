@@ -956,7 +956,7 @@ export function applyDefaultConfig(
   // The projected preferences are static defaults the daemon reads at startup with no admin REST
   // endpoint, so they go into config.json before launch (model aliases are pushed live instead),
   // resolved for THIS daemon's profile. An unset OPT-IN key a previous start wrote (recorded in
-  // ProxyProjectionState) is cleared, so `agent config --del` truly reverts to the proxy's default
+  // ProxyProjectionState) is cleared, so `agent config unset` truly reverts to the proxy's default
   // without deleting a value we never projected.
   const config = new CopilotApiConfig(paths.configFile);
   const projection = projectedProxyConfig(profile, envConfig);

@@ -210,10 +210,10 @@ function verifyLauncherWiring(launcher: string): void {
   }
   // The launchers are `agent env` emissions gated on the `shell.launchers` key, not an rc block,
   // so both halves of that contract are asserted.
-  const stored = launcherOutput(launcher, ["config", "--get", "shell.launchers"]);
+  const stored = launcherOutput(launcher, ["config", "get", "shell.launchers"]);
   if (stored !== "true") {
     console.error(
-      `::error::expected the shell.launchers config key to read true after agent config --set shell.launchers true (got ${
+      `::error::expected the shell.launchers config key to read true after agent config set shell.launchers true (got ${
         stored ?? "a failing read"
       })`,
     );
@@ -365,8 +365,8 @@ function verifySidecarDaemonSpawn(launcher: string): void {
   };
   // `agent start` refuses without a credential; the fake proxy never reads the token, and the
   // identity pin and host literal keep the launch from probing Copilot with it.
-  runLauncher(launcher, ["config", "--set", "identity", "copilot-developer-cli"], entryEnv);
-  runLauncher(launcher, ["config", "--set", "host", "https://copilot.invalid"], entryEnv);
+  runLauncher(launcher, ["profile", "set", "identity", "copilot-developer-cli"], entryEnv);
+  runLauncher(launcher, ["profile", "set", "host", "https://copilot.invalid"], entryEnv);
   runLauncher(launcher, ["auth", "--set", "fake-default-token"], entryEnv);
   runLauncher(launcher, ["start"], entryEnv);
   runLauncher(launcher, ["stop"], entryEnv);

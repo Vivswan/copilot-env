@@ -29,7 +29,7 @@ import {
 } from "../copilot_api/profile.ts";
 import { prompt } from "../utils/logger.ts";
 import { runAuth } from "./auth.ts";
-import { runConfig } from "./config.ts";
+import { type ConfigView, runConfig } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
 import {
   type AddArgs,
@@ -270,15 +270,18 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     return runAuth({ ...authArgs(opts), profile: rawProfile ?? undefined });
   });
 
+  /** The face the preference verbs run as: this profile's view of the store. */
+  const view = (): ConfigView => ({ kind: "profile", profile: minted() });
+
   verb(
     "set",
     `Set a preference of ${forWhom}: a profile key (host, identity, passthrough, static-key) ` +
       "lands in the profile's section; a named profile may also override a profile-default key " +
       "(proxy.*, probe.*), and with no name that key's shared default is written, as `agent " +
-      "config --set` does. `set identity <id|auto>` probes the id against the hosts before it " +
+      "config set` does. `set identity <id|auto>` probes the id against the hosts before it " +
       "pins (`auto` restores probing).",
   )
-    .argument("<key>", "A key of the PROFILE block of `agent config --help`.")
+    .argument("<key>", "A key of the PROFILE block of `agent profile get`.")
     .argument("<value>", "The value, parsed by the key's type.")
     .option("--dry-run", DRY_RUN_HELP)
     .action((key: string, value: string, opts: Opts, cmd: Command) => {
@@ -287,33 +290,33 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       if (configKeyDef(key)?.key === "identity") {
         return setIdentity(rawProfile, value, Boolean(opts.dryRun));
       }
-      return runConfig({ set: [key, value], profile: minted(), dryRun: Boolean(opts.dryRun) });
+      return runConfig({ kind: "set", key, value, view: view(), dryRun: Boolean(opts.dryRun) });
     });
 
   verb(
     "unset",
     `Drop a preference of ${forWhom}: the value falls back to the shared default, then the ` +
       "built-in one. With no name, a profile-default key's shared default is dropped, as " +
-      "`agent config --del` does.",
+      "`agent config unset` does.",
   )
-    .argument("<key>", "A key of the PROFILE block of `agent config --help`.")
+    .argument("<key>", "A key of the PROFILE block of `agent profile get`.")
     .option("--dry-run", DRY_RUN_HELP)
     .action((key: string, opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "unset", rawProfile);
       refuseGlobalKey(key);
-      return runConfig({ del: key, profile: minted(), dryRun: Boolean(opts.dryRun) });
+      return runConfig({ kind: "unset", key, view: view(), dryRun: Boolean(opts.dryRun) });
     });
 
   verb(
     "get",
-    `Print a preference of ${forWhom} as it resolves for it: one value for scripts, or the ` +
-      "whole table with no key.",
+    `Print a preference of ${forWhom} as it resolves for it: the value (stdout) and its origin ` +
+      "(stderr), or with no key every key of the profile with its origin.",
   )
-    .argument("[key]", "A key of the PROFILE block of `agent config --help`.")
+    .argument("[key]", "A key of the PROFILE block of `agent profile get`.")
     .action((key: string | undefined, _opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "get", rawProfile);
       if (key !== undefined) refuseGlobalKey(key);
-      return runConfig({ get: key ?? true, profile: minted() });
+      return runConfig({ kind: "get", key, view: view() });
     });
 
   verb(
@@ -331,8 +334,10 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       const flags = [opts.set !== undefined, Boolean(opts.get), Boolean(opts.del)].filter(Boolean);
       if (flags.length > 1) throw new Error("--set, --get, and --del are mutually exclusive");
       if (opts.set !== undefined) return setIdentity(rawProfile, String(opts.set), false);
-      if (opts.get) return runConfig({ get: "identity", profile: minted() });
-      if (opts.del) return runConfig({ del: "identity", profile: minted() });
+      if (opts.get) return runConfig({ kind: "get", key: "identity", view: view() });
+      if (opts.del) {
+        return runConfig({ kind: "unset", key: "identity", view: view(), dryRun: false });
+      }
       return runAuth({ identities: true, profile: rawProfile ?? undefined });
     });
 

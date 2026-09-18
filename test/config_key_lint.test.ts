@@ -1,7 +1,7 @@
 // Every mention of a config key must be the registry's spelling. Three ways a stale name slips in
 // after a rename, all caught here rather than by a reader:
-//   an `agent config --set|--del|--get <key>` hint spelled by hand -> must go through the
-//     configSetCommand / configDelCommand / configGetCommand helpers (typed key)
+//   an `agent config set|unset|get <key>` or `agent profile [<name>] set|unset|get <key>` hint
+//     spelled by hand -> must go through configSetCommand / configDelCommand / configGetCommand (typed key)
 //   a dotted key named bare in a string ("(daemon.auto-start on)")   -> must be a registry key
 //   a retired spelling cited anywhere, comments included             -> the migration's table says which
 // The registry file owns the helpers and the descriptions, so it is exempt from the string scans.
@@ -61,9 +61,11 @@ const DOTTED_KEY_SHAPE = new RegExp(
   `\\b(?:${GROUPS.join("|")})\\.[a-z][a-z-]*(?:\\.[a-z][a-z-]*)*\\b`,
   "g",
 );
-/** `agent config --set <key> ...` or a bare `agent config <key>`; a `<placeholder>` or a second flag is
- *  not a key. */
-const HAND_SPELLED_HINT = /agent config (?:--(?:set|del|get) )?(?!<|--)[a-z][a-z0-9.-]*/g;
+/** `agent config [set|unset|get] <key> ...` or `agent profile [<name>] set|unset|get <key> ...`; a
+ *  `<placeholder>`, a bare verb, or a verb menu (`set|unset|get`) is not a key. The name may be a
+ *  template hole (blanked to a space by stringLiterals), so any run of spaces precedes the verb. */
+const HAND_SPELLED_HINT =
+  /agent (?:config (?:(?:set|unset|get) )?|profile(?: [a-z0-9][a-z0-9-]*)? +(?:set|unset|get) )(?!<|(?:set|unset|get)\b)[a-z][a-z0-9.-]*/g;
 /** "the <key> config key", "`<key>` config key", or a dotted/dashed "<key> config key". */
 const KEY_MENTION = /(?:(?:the |`)([a-z][a-z0-9.-]*)`?|([a-z0-9]+(?:[.-][a-z0-9]+)+)) config key/g;
 
@@ -90,16 +92,29 @@ test("no source string spells an `agent config` hint by hand or names a dotted k
   expect(offences).toEqual([]);
   // Negative controls: the scan sees what it is meant to see.
   expect(
-    stringLiterals('x("agent config --set daemon.port 4242")').join("").match(HAND_SPELLED_HINT),
+    stringLiterals('x("agent config set daemon.port 4242")').join("").match(HAND_SPELLED_HINT),
   )
-    .toEqual(["agent config --set daemon.port"]);
+    .toEqual(["agent config set daemon.port"]);
+  expect('"agent profile work set identity copilot-developer-cli"'.match(HAND_SPELLED_HINT))
+    .toEqual(["agent profile work set identity"]);
+  expect('"agent profile 2work set identity auto"'.match(HAND_SPELLED_HINT))
+    .toEqual(["agent profile 2work set identity"]);
+  expect(
+    stringLiterals("w(`agent profile ${profile} set identity auto`)").join("").match(
+      HAND_SPELLED_HINT,
+    ),
+  )
+    .toEqual(["agent profile   set identity"]);
   expect(stringLiterals("y(`(${key} on)`)").join("").match(DOTTED_KEY_SHAPE)).toBeNull();
   expect(stringLiterals('z("(daemon.auto-stop on)")').join("").match(DOTTED_KEY_SHAPE))
     .toEqual(["daemon.auto-stop"]);
   expect(KEYS.has("daemon.auto-stop")).toBe(false);
   expect('"pinned via `agent config integration-id`"'.match(HAND_SPELLED_HINT))
     .toEqual(["agent config integration-id"]);
-  expect('"usage: agent config --set <key> <value>"'.match(HAND_SPELLED_HINT)).toBeNull();
+  expect('"usage: agent config set <key> <value>"'.match(HAND_SPELLED_HINT)).toBeNull();
+  expect('"agent profile [<name>] set|unset|get; agent config get"'.match(HAND_SPELLED_HINT))
+    .toBeNull();
+  expect('"agent profile work add --proxy"'.match(HAND_SPELLED_HINT)).toBeNull();
   expect([...'"the `launchers` config key"'.matchAll(KEY_MENTION)].map((m) => m[1] ?? m[2]))
     .toEqual(["launchers"]);
   expect([...'"unknown config key"'.matchAll(KEY_MENTION)]).toEqual([]);

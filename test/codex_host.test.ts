@@ -103,7 +103,7 @@ function configureCodex(): Promise<void> {
   return runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
 }
 
-/** What `agent config --set codex-host true` followed by `agent profile sync --codex` does. */
+/** What `agent config set codex.host true` followed by `agent profile sync --codex` does. */
 function build(): Promise<void> {
   new CopilotEnvConfig().set({ "codex.host": true });
   return configureCodex();
@@ -264,7 +264,15 @@ onlyWin("Windows: the key cannot be set, reads off, and the derivation is inert"
   const { sharedRoot, hostHome } = isolate();
   writeRunState({ codexHome: sharedRoot });
   fs.mkdirSync(sharedRoot, { recursive: true });
-  expect(() => runConfig({ set: ["codex.host", "true"], profile: null })).toThrow(
+  expect(() =>
+    runConfig({
+      kind: "set",
+      key: "codex.host",
+      value: "true",
+      view: { kind: "config" },
+      dryRun: false,
+    })
+  ).toThrow(
     "'codex.host' is only supported on Linux and macOS (this is win32)",
   );
   // Even a stored true (an imported bundle) reads as off here.

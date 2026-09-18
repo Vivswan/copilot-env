@@ -12,7 +12,7 @@
 // against camelCase), so each reader picks its own keys out of a map and every write preserves the
 // rest, a newer release's keys included. Which a key is, is a per-key fact: the settings registry
 // (CONFIG_REGISTRY) names the settings, PROFILE_STATE_KEYS / GLOBAL_STATE_KEYS (env_state.ts) and
-// LEDGER_KEY_NAMES (ownership.ts) name the state, and `agent config --set` / `--del` refuse a state
+// LEDGER_KEY_NAMES (ownership.ts) name the state, and the preference verbs refuse a state
 // key by name, naming the command that owns it (src/commands/config.ts).
 import { CopilotApiConfig, ensureDict } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";

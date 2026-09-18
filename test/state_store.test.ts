@@ -101,13 +101,30 @@ test("`agent config` writes settings only: a state key, bare or as a path into t
     ["ownership", /claims on the files they wrote/],
   ];
   for (const [key, owner] of cases) {
-    expect(() => runConfig({ set: [key, "x"], profile: null })).toThrow(owner);
-    expect(() => runConfig({ del: key, profile: null })).toThrow(/sets preferences only/);
+    expect(() =>
+      runConfig({ kind: "set", key: key, value: "x", view: { kind: "config" }, dryRun: false })
+    ).toThrow(owner);
+    expect(() => runConfig({ kind: "unset", key: key, view: { kind: "config" }, dryRun: false }))
+      .toThrow(/sets preferences only/);
   }
   // Control: a settings key still lands, and an unknown key still gets the unknown-key error.
-  runConfig({ set: ["daemon.port", "4250"], profile: null });
+  runConfig({
+    kind: "set",
+    key: "daemon.port",
+    value: "4250",
+    view: { kind: "config" },
+    dryRun: false,
+  });
   expect(new CopilotEnvConfig().defaultPort()).toBe(4250);
-  expect(() => runConfig({ set: ["global.daemon.port", "1"], profile: null })).toThrow(
+  expect(() =>
+    runConfig({
+      kind: "set",
+      key: "global.daemon.port",
+      value: "1",
+      view: { kind: "config" },
+      dryRun: false,
+    })
+  ).toThrow(
     /unknown config key/,
   );
 });

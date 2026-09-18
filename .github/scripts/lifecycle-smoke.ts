@@ -47,8 +47,8 @@ function daemonAlive(pid: number): boolean {
 // client identity and host by probing Copilot, which refuses a fake token; the pin and the literal
 // are the two knobs that skip both probes (the token-label lookup at api.github.com still runs,
 // best-effort).
-cliOrExit(["config", "--set", "identity", "copilot-developer-cli"]);
-cliOrExit(["config", "--set", "host", "https://copilot.invalid"]);
+cliOrExit(["profile", "set", "identity", "copilot-developer-cli"]);
+cliOrExit(["profile", "set", "host", "https://copilot.invalid"]);
 cliOrExit(["auth", "--set", "fake-default-token"]);
 
 cliOrExit(["start"]);
@@ -57,7 +57,7 @@ cliOrExit(["health", "--scope", "runtime"]);
 // Managed mode (auto-start on): a redundant `start` must keep the SAME pid, so it never
 // disrupts a connected agent; `--force` relaunches. The gate is the "[start:noop]" machine
 // marker, an external contract of src/commands/start.ts, so the human wording is free to change.
-cliOrExit(["config", "--set", "daemon.auto-start", "true"]);
+cliOrExit(["config", "set", "daemon.auto-start", "true"]);
 const pidBefore = readPid();
 const redundantStart = cliOrExit(["start"], { stdout: "piped" });
 Deno.stdout.writeSync(new TextEncoder().encode(redundantStart));
@@ -71,7 +71,7 @@ cliOrExit(["start", "--force"]);
 const pidForced = readPid();
 if (pidAfter === pidForced) failOn("start --force did not relaunch a fresh daemon");
 cliOrExit(["health", "--scope", "runtime"]);
-cliOrExit(["config", "--del", "daemon.auto-start"]);
+cliOrExit(["config", "unset", "daemon.auto-start"]);
 
 cliOrExit(["init", "--proxy"]);
 cliOrExit(["health", "--scope", "setup"]);
@@ -81,16 +81,18 @@ console.log(`health OK while running on ${os}`);
 // and wires BOTH agents; its daemon gets an isolated home and reserved port; stopping/deleting it
 // must leave the default daemon untouched.
 cliOrExit(["profile", PROFILE, "add", "--proxy", "--no-auth"]);
+// The identity and host keys are per profile: the work daemon's launch needs its own pin and
+// literal, or its fake token is probed like the default's would have been. Pinned before the
+// credential lands, as the default's were: `set identity` probes a resolvable credential first,
+// and the fake token would fail that probe.
+cliOrExit(["profile", PROFILE, "set", "identity", "copilot-developer-cli"]);
+cliOrExit(["profile", PROFILE, "set", "host", "https://copilot.invalid"]);
 cliOrExit(["profile", PROFILE, "auth", "--set", "fake-profile-token"]);
 if (!cliOrExit(["list"], { stdout: "piped" }).includes(PROFILE)) {
   failOn("agent list did not report the work profile");
 }
 const checkCode = cli(["profile", PROFILE, "check"]).code;
 if (checkCode !== 2) failOn(`profile work check should exit 2 (proxy), got ${checkCode}`);
-// The identity and host keys are per profile: the work daemon's launch needs its own pin and
-// literal, or its fake token is probed like the default's would have been.
-cliOrExit(["config", "--set", "identity", "copilot-developer-cli", "--profile", PROFILE]);
-cliOrExit(["config", "--set", "host", "https://copilot.invalid", "--profile", PROFILE]);
 cliOrExit(["start", "--profile", PROFILE]);
 cliOrExit(["start", "--check", "--profile", PROFILE]);
 cliOrExit(["start", "--check"]);

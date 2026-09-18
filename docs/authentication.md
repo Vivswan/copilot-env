@@ -30,7 +30,7 @@ This page is about the credential and the profiles that carry one each. The wiri
 
 ## PAT passthrough
 
-Classic and fine-grained PATs can't perform the proxy's editor token exchange. So `agent start` transparently enables a passthrough shim for PAT-shaped tokens, using the PAT as the bearer directly. Force it either way with `agent config --set passthrough on|off` ([key](configuration.md#profile)).
+Classic and fine-grained PATs can't perform the proxy's editor token exchange. So `agent start` transparently enables a passthrough shim for PAT-shaped tokens, using the PAT as the bearer directly. Force it either way with `agent profile set passthrough on|off` ([key](configuration.md#profile)).
 
 Passthrough decides only the exchange; the proxy's [client identity](#client-identity) is the credential's whatever the decision.
 
@@ -92,8 +92,8 @@ identity = auto: the identity is probed per credential again.
 `static-key` names which agent's config carries the credential value itself instead of a resolver command: `none` (the default), `claude`, `codex`, or `all`. An agent in scope runs no copilot-env process at request time.
 
 ```bash
-agent config --set static-key codex   # bake Codex's config only; Claude keeps its helper
-agent config --set static-key all     # both agents and Claude Desktop
+agent profile set static-key codex   # bake Codex's config only; Claude keeps its helper
+agent profile set static-key all     # both agents and Claude Desktop
 ```
 
 | `static-key`     | Claude Code `settings.json`                   | Codex `config.toml`, managed provider                  | Claude Desktop entry                                                              |

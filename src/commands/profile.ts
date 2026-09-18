@@ -29,7 +29,6 @@ import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { formatTable, printKeyValue, printWrapped, terminalWidth } from "../utils/table.ts";
-import { landPlan } from "../utils/write_session.ts";
 import { runDryRun } from "./dry_run.ts";
 import {
   acquireCredential,
@@ -195,7 +194,7 @@ async function profileCredential(
 
 /** Dependency order: the daemon holds the credential in memory and an unstoppable one throws before
  *  anything is deleted (a dry run takes the same refusal and otherwise sends no signal); the store
- *  slot goes in one atomic write, credential and mode together. Every removal lands through the
+ *  slot goes in one atomic write, credential and mode together. Every removal goes through the
  *  facade, so a dry run names each file and slot key it would take. Shared with `agent uninstall`. */
 export async function deleteProfileEverywhere(
   name: ProfileName,

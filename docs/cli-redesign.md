@@ -13,14 +13,16 @@ The profile-centric command surface: everything about one profile lives under `a
 ```text
 agent
   profile [<name>] <verb>         one profile; no name = the default profile
-      add --direct|--proxy        create or re-wire: credential + mode, BOTH agents
+      add [--direct|--proxy]      create or re-wire: credential + mode, BOTH agents; no flag = the recorded mode,
+                                  or the Direct-vs-proxy probe for a new default (question 2)
           [--provider <p>] [--set <token>] [--gh-user <login>]
       del                         delete everywhere (daemon, credential, wiring, home)
       show                        mode, provider, daemon, identity, files, keys in effect
       auth                        the credential: [--provider <p>] [--set <token>] [--gh-user <login>]
                                   [--get] [--del] [--check] [--identities] [--identity]
       set <key> <value>           a profile or profile-default key, this profile's value
-      unset <key>                 drop that value (back to the shared default)
+      unset <key>                 drop that value: a profile key falls to its built-in default,
+                                  a profile-default key to the shared default
       get [<key>]                 the value in effect, with its origin
       sync [--claude|--codex]     re-render the agent files from the store
       check [--claude|--codex]    the recorded mode, or one agent's file; exit codes in the table below
@@ -42,7 +44,7 @@ Every command and flag `src/cli.ts` declares today. "Unchanged" means the comman
 
 | Today                                                                   | New spelling                                                    | Note                                                                                                                                                                                                          |
 | ----------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent init` (no flag: probe Direct vs proxy)                           | `agent profile add`                                             | The probe stays for the default only (open question 2); the next-steps box prints as today                                                                                                                    |
+| `agent init` (no flag: probe Direct vs proxy)                           | `agent profile add`                                             | Depends on question 2: the probe stays for a new default only, and a flag is required otherwise; the next-steps box prints as today                                                                           |
 | `agent init --direct` / `--proxy` / `--dry-run`                         | `agent profile add --direct` / `--proxy` / `--dry-run`          |                                                                                                                                                                                                               |
 | `agent codex` / `agent claude` (re-render, no flag)                     | `agent profile sync --codex` / `--claude`                       | On a fresh default both wire both agents today; new: refused, `add` is the landing                                                                                                                            |
 | `agent codex --direct` / `--proxy` (+ `claude`)                         | DELETED                                                         | A mode is set by `add`; a re-render never takes a mode flag                                                                                                                                                   |

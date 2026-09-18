@@ -502,7 +502,7 @@ function seedLocalCodexFileIfMissing(
     fs.copyFile(sharedPath, localPath, `${role}, seeded from ${sharedPath}`);
   } else if (createPlaceholder) {
     ensureParentDir(localPath);
-    fs.writeText(localPath, "", { atomic: false, detail: `${role}, empty` });
+    fs.writeText(localPath, "", { atomic: false, detail: `${role}, empty`, secretKeys: [] });
   }
 }
 
@@ -541,7 +541,7 @@ function seedSharedCodexFileIfMissing(
 
   if (createPlaceholder && !sharedExists) {
     ensureParentDir(sharedPath);
-    fs.writeText(sharedPath, "", { atomic: false, detail: "empty seed" });
+    fs.writeText(sharedPath, "", { atomic: false, detail: "empty seed", secretKeys: [] });
   }
   return "as-is";
 }

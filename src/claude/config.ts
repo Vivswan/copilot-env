@@ -69,7 +69,7 @@ import {
 } from "../utils/root.ts";
 import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
 import { cmdHelperBody, shQuote, winQuote } from "./helper_body.ts";
-import { registerClaudeMcpServer, removeClaudeMcpRegistration } from "./mcp_registration.ts";
+import { prepareClaudeMcpRemoval, registerClaudeMcpServer } from "./mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor, WIN } from "./paths.ts";
 
 const logger = createStderrLogger();
@@ -537,9 +537,11 @@ function landWebSearchPair(
     return stripManagedWebSearchDeny(doc, settingsPath);
   }
   const strip = stripManagedWebSearchDeny(doc, settingsPath);
-  // Post-save too: a failed settings write keeps the consistent old state (deny + server)
-  // instead of losing only the server half.
-  return { commit: strip.commit, after: () => void removeClaudeMcpRegistration() };
+  // Looked at now (a malformed ~/.claude.json is warned about before the settings save), landed
+  // post-save: a failed settings write keeps the consistent old state (deny + server) instead of
+  // losing only the server half.
+  const remove = prepareClaudeMcpRemoval();
+  return { commit: strip.commit, after: () => void remove() };
 }
 
 /**
@@ -630,17 +632,18 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
       credentialDetail(request.credential, "proxy", profile)
     }`;
   }
+  // Real Claude home only: the throwaway detect-probe home must not touch the machine-global
+  // ~/.claude.json. The pair's looks (and its registration write) come before the home's mkdir,
+  // as every look precedes the first write of the settings file's own.
+  const pair = profile === null && claudeHome === resolveClaudeHome()
+    ? landWebSearchPair(doc, request.mode, settingsPath)
+    : NO_PAIR;
   if (plannedPort !== null) reservePlannedPort(profile, plannedPort);
   try {
     fs.mkdir(claudeHome);
   } catch (e) {
     throw new Error(`could not create Claude config directory ${claudeHome}: ${errMessage(e)}`);
   }
-  // Real Claude home only: the throwaway detect-probe home must not touch the machine-global
-  // ~/.claude.json.
-  const pair = profile === null && claudeHome === resolveClaudeHome()
-    ? landWebSearchPair(doc, request.mode, settingsPath)
-    : NO_PAIR;
   fs.writeText(settingsPath, settingsText(doc), {
     atomic: false,
     detail,

@@ -502,8 +502,10 @@ function defaultAcceptsCatalog(catalogJson: string): boolean | null {
 function probeCatalog(catalogJson: string): boolean | null {
   const referencing = (content: string) => (home: string): void => {
     const file = path.join(home, "candidate-catalog.json");
-    fs.writeText(file, content);
-    fs.writeText(codexConfigPath(home), stringify({ "model_catalog_json": file }));
+    fs.writeText(file, content, { secretKeys: [] });
+    fs.writeText(codexConfigPath(home), stringify({ "model_catalog_json": file }), {
+      secretKeys: [],
+    });
   };
   // A run that never reported an exit code (spawn error, or killed, the budget's timeout kill
   // included) proves nothing either way; only a real exit counts.
@@ -524,7 +526,7 @@ function probeCatalog(catalogJson: string): boolean | null {
     return garbageExit === 0 ? null : true;
   }
   const control = runProbeSpawn((home) => {
-    fs.writeText(codexConfigPath(home), "");
+    fs.writeText(codexConfigPath(home), "", { secretKeys: [] });
   });
   if (exitOf(control) !== 0) return null;
   return parsesAsCatalog(control?.stdout ?? "") ? false : null;
@@ -587,7 +589,10 @@ export async function generateCodexModelCatalog(
       return false;
     }
     // 0600 like every file the store writes beside it (the home's own policy).
-    fs.writeText(new CopilotApiPaths().codexModelCatalogFile, bytes, { mode: 0o600 });
+    fs.writeText(new CopilotApiPaths().codexModelCatalogFile, bytes, {
+      mode: 0o600,
+      secretKeys: [],
+    });
     return true;
   } catch (e) {
     logger.warn(`codex model catalog generation failed: ${errMessage(e)}`);

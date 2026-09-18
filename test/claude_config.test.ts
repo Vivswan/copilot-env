@@ -40,6 +40,7 @@ import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
+import { captureChannels } from "./helpers/output.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, linesNaming, writeClaudeSettings } from "./helpers.ts";
 
@@ -543,6 +544,33 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
     "messages": [{ "role": "user", "content": "x" }],
   });
 });
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "a malformed ~/.claude.json is warned about before settings.json is written: the warning prints even when that write fails",
+  async () => {
+    // The proxy write takes the MCP registration back after the settings save; its look at the
+    // file (and the warning a malformed one earns) comes before the save, as every look does. An
+    // unwritable settings.json (0444, POSIX non-root) fails the save, and the warning has printed.
+    const home = tmpHome();
+    mkdirSync(home, { recursive: true });
+    const settingsPath = join(home, "settings.json");
+    writeFileSync(settingsPath, "{}\n");
+    writeFileSync(claudeJsonPath(), "{ not json");
+    chmodSync(settingsPath, 0o444);
+    try {
+      const { stderr } = await captureChannels(() => {
+        expect(() => configureClaudeConfig(home, { mode: "proxy", credential: COMMAND })).toThrow(
+          /EACCES/,
+        );
+      });
+      expect(stderr).toContain("not valid JSON; leaving it alone");
+      expect(readFileSync(settingsPath, "utf8")).toBe("{}\n");
+      expect(readFileSync(claudeJsonPath(), "utf8")).toBe("{ not json");
+    } finally {
+      chmodSync(settingsPath, 0o644);
+    }
+  },
+);
 
 test("configureClaudeConfig refuses to overwrite a malformed settings.json", () => {
   const home = tmpHome();

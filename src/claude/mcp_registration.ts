@@ -204,18 +204,26 @@ export function plannedClaudeMcpRemoval(): string | null {
   return status === "ours-current" || status === "ours-stale" ? loaded.path : null;
 }
 
-/** Foreign survives. True when NO managed entry remains (removed, or none was there); false when a
- *  foreign entry was left in place or the write failed. */
-export function removeClaudeMcpRegistration(): boolean {
+/** The removal in two steps: the look now (the file read and judged, a surprising document warned
+ *  about here), the write when the returned step runs. A caller that must save another file first
+ *  (the settings strip) still warns before that save, and warns even when that save fails.
+ *  Foreign survives. The step is true when NO managed entry remains (removed, or none was there);
+ *  false when a foreign entry was left in place or the write failed. */
+export function prepareClaudeMcpRemoval(): () => boolean {
   const loaded = loadClaudeJson();
-  if (loaded === null) return false;
+  if (loaded === null) return () => false;
   const servers = loaded.doc.mcpServers;
-  if (!isRecord(servers)) return true;
+  if (!isRecord(servers)) return () => true;
   const status = classifyMcpEntry(servers[MCP_SERVER_NAME]);
-  if (status === "absent") return true;
-  if (status === "foreign") return false;
+  if (status === "absent") return () => true;
+  if (status === "foreign") return () => false;
   const doc = structuredClone(loaded.doc);
   if (Object.keys(servers).length === 1) delete doc.mcpServers;
   else if (isRecord(doc.mcpServers)) delete doc.mcpServers[MCP_SERVER_NAME];
-  return writeClaudeJson(loaded, doc);
+  return () => writeClaudeJson(loaded, doc);
+}
+
+/** prepareClaudeMcpRemoval, landed at once. */
+export function removeClaudeMcpRegistration(): boolean {
+  return prepareClaudeMcpRemoval()();
 }

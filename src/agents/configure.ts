@@ -31,7 +31,7 @@ const DIRECT_WIRING: unique symbol = Symbol("DirectWiring");
 /** A Direct landing selects its identity and host with the credential; with none, the selection
  *  would run no request and hand back the fallback pair, which a landing then stores as state and
  *  every re-render replays. So the landing is refused before any write, and the user is asked to
- *  log in (planClaudeConfig refuses a named Direct profile the same way). */
+ *  log in (configureClaudeConfig refuses a named Direct profile the same way). */
 export function directNeedsCredentialError(profile: Profile): Error {
   const flag = profile === null ? "" : ` --profile ${profile}`;
   return new Error(

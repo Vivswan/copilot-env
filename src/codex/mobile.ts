@@ -17,10 +17,14 @@ import { createStderrLogger, prompt } from "../utils/logger.ts";
 import { inspectCatalogFile } from "./catalog.ts";
 import { effectiveCodexHome } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";
+import { codexBearerLeaf } from "./toml_io.ts";
 
 const logger = createStderrLogger();
 
 const APP_NAME = "Codex";
+
+/** The one leaf a preview of the pairing's config writes must redact. */
+const CONFIG_SECRETS: readonly string[] = [codexBearerLeaf(CODEX_PROVIDER_ID)];
 const QUIT_POLL_MS = 500;
 const QUIT_TIMEOUT_MS = 8000;
 
@@ -336,6 +340,7 @@ export async function runCodexMobile(): Promise<void> {
   try {
     fs.writeText(backupPath, original, {
       atomic: false,
+      secretKeys: CONFIG_SECRETS,
       detail: "Codex config backup for the pairing",
     });
     backupWritten = true;
@@ -368,7 +373,7 @@ export async function runCodexMobile(): Promise<void> {
       next = rebuildFromOriginal();
     }
     // A rewrite of the path the strip below already named: the seam says nothing more.
-    fs.writeText(configPath, next, { atomic: false });
+    fs.writeText(configPath, next, { atomic: false, secretKeys: CONFIG_SECRETS });
   };
 
   // `finally` does not run on a signal, so restore synchronously on SIGINT/SIGTERM too; otherwise
@@ -378,7 +383,10 @@ export async function runCodexMobile(): Promise<void> {
       restore();
     } catch {
       try {
-        fs.writeText(configPath, rebuildFromOriginal(), { atomic: false });
+        fs.writeText(configPath, rebuildFromOriginal(), {
+          atomic: false,
+          secretKeys: CONFIG_SECRETS,
+        });
       } catch {
         // give up -- the backup file is the last resort
       }
@@ -393,6 +401,7 @@ export async function runCodexMobile(): Promise<void> {
     // so this line names the act and nothing about a write not yet made.
     fs.writeText(configPath, stripModelProvider(original), {
       atomic: false,
+      secretKeys: CONFIG_SECRETS,
       detail: `Codex config, rewritten around the pairing (model_provider "${provider}")`,
     });
 

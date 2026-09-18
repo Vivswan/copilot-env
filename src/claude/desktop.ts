@@ -8,7 +8,7 @@
 //   Linux:    ${XDG_CONFIG_HOME:-~/.config}/Claude-3p/configLibrary/<uuid>.json
 //   index:    _meta.json = {appliedId, entries:[{id,name}]}
 // Two app files beside the library decide what the app does with the entry at launch (both are
-// what the app itself writes when the user clicks through; see wireClaudeDesktopAppFiles):
+// what the app itself writes when the user clicks through; see prepareClaudeDesktopAppFiles):
 //   Claude-3p/claude_desktop_config.json  deploymentMode "3p"  -> boots third-party, no sign-in chooser
 //   Claude/developer_settings.json        allowDevTools true   -> Developer menu (the 3p copy too)
 // Desktop discovers models at `<gateway>/v1/models`, hardcoded: Copilot Direct 404s it, so direct
@@ -561,22 +561,31 @@ function removeFile(path: string, detail?: string): void {
   }
 }
 
-/** A directory at a helper's path is warned once and left alone, in both runs; the entry the
- *  script served still lands or goes on its own. Any other failure is the caller's. */
-function removeHelperScript(path: string): void {
+/** A helper removal in two steps: the look now (a directory at the path is warned once and left
+ *  alone, in both runs; the entry the script served still lands or goes on its own), the removal
+ *  when the returned step runs. Any other failure is the caller's. */
+function prepareRemoveHelperScript(path: string): () => void {
   try {
     fs.assertNotDirectory(path);
   } catch (e) {
     logger.warn(`  Claude Desktop: ${errMessage(e)}; left alone.`);
-    return;
+    return () => {};
   }
-  removeFile(path);
+  return () => removeFile(path);
 }
 
-/** Post-save on a wire: the other mode's script goes. */
-export function retireDesktopHelperScript(mode: ProfileMode, profile: Profile): void {
+function removeHelperScript(path: string): void {
+  prepareRemoveHelperScript(path)();
+}
+
+/** The other mode's script goes, post-save on a wire; the look is taken when this is called. */
+function prepareRetireDesktopHelperScript(mode: ProfileMode, profile: Profile): () => void {
   const other: ProfileMode = mode === "direct" ? "proxy" : "direct";
-  removeHelperScript(desktopHelperPath(resolveRootHome(), other, profile));
+  return prepareRemoveHelperScript(desktopHelperPath(resolveRootHome(), other, profile));
+}
+
+export function retireDesktopHelperScript(mode: ProfileMode, profile: Profile): void {
+  prepareRetireDesktopHelperScript(mode, profile)();
 }
 
 // --- app files -----------------------------------------------------------------------
@@ -590,42 +599,53 @@ export type DesktopDeploymentMode = "3p" | "1p";
 
 /** What the app will do at its next launch, read from the two app files. `deploymentMode` null is
  *  "unset": the app shows the sign-in chooser. A file that cannot be read or parsed is its own
- *  kind: a rewire leaves such a file alone (mergeAppFile), so the repair is the file itself. */
+ *  kind: a rewire leaves such a file alone (prepareAppFileMerge), so the repair is the file
+ *  itself. */
 export type DesktopAppState =
   | { kind: "read"; developerMode: boolean; deploymentMode: DesktopDeploymentMode | null }
   | { kind: "unreadable"; path: string; reason: string };
 
 /** A merge that keeps the file's other keys (claude_desktop_config.json holds the user's MCP
- *  servers and preferences). An unparseable file is left alone and reported: rebuilding it would
- *  destroy those. */
-function mergeAppFile(path: string, patch: Record<string, unknown>, detail: string): void {
+ *  servers and preferences), in two steps: the file read and judged now (an unparseable one is
+ *  left alone and reported here, since rebuilding it would destroy those keys), written when the
+ *  returned step runs. */
+function prepareAppFileMerge(
+  path: string,
+  patch: Record<string, unknown>,
+  detail: string,
+): () => void {
   const loaded = loadAppFile(path);
   if (typeof loaded === "string") {
     logger.warn(`  Claude Desktop: ${path} is ${loaded}; leaving it alone.`);
-    return;
+    return () => {};
   }
-  writeJson(path, loaded.raw, Object.assign(loaded.doc, patch), detail);
+  return () => void writeJson(path, loaded.raw, Object.assign(loaded.doc, patch), detail);
 }
 
 /** The two files the app itself writes when the user clicks "Continue" on the sign-in chooser and
  *  "Enable Developer Mode": written with every entry wire so `agent init` alone leaves the app
  *  ready. Never removed: once no applied entry names an inferenceProvider the app boots claude.ai
  *  regardless, and Developer Mode is the user's. Both files are read at launch only. */
-function wireClaudeDesktopAppFiles(): void {
+function prepareClaudeDesktopAppFiles(): () => void {
   const dirs = resolveDesktopDataDirs();
-  if (dirs === null) return;
-  mergeAppFile(
-    join(dirs.data, APP_CONFIG_FILENAME),
-    { "deploymentMode": "3p" },
-    "Claude Desktop starts in third-party mode, no sign-in chooser",
-  );
-  for (const dir of [dirs.standard, dirs.data]) {
-    mergeAppFile(
-      join(dir, DEVELOPER_SETTINGS_FILENAME),
-      { "allowDevTools": true },
-      "Claude Desktop Developer Mode on",
-    );
-  }
+  if (dirs === null) return () => {};
+  const merges = [
+    prepareAppFileMerge(
+      join(dirs.data, APP_CONFIG_FILENAME),
+      { "deploymentMode": "3p" },
+      "Claude Desktop starts in third-party mode, no sign-in chooser",
+    ),
+    ...[dirs.standard, dirs.data].map((dir) =>
+      prepareAppFileMerge(
+        join(dir, DEVELOPER_SETTINGS_FILENAME),
+        { "allowDevTools": true },
+        "Claude Desktop Developer Mode on",
+      )
+    ),
+  ];
+  return () => {
+    for (const merge of merges) merge();
+  };
 }
 
 /** The state the writer's merge would read: absent is an empty document; unreadable or malformed
@@ -895,6 +915,13 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   // a slot naming a live entry (a user's own config) is never displaced.
   if (!meta.entries.some((e) => e.id === meta.appliedId)) meta.appliedId = entry.id;
 
+  // Every look before the first wiring write: the post-save steps (the other mode's helper, the
+  // app files) read and judge their files now, so their warnings precede the writes and print
+  // even when a write fails.
+  const retire = credential.kind === "command"
+    ? prepareRetireDesktopHelperScript(opts.mode, opts.profile)
+    : prepareRemoveHelperScripts(opts.profile);
+  const appFiles = prepareClaudeDesktopAppFiles();
   // Reserved now that everything is computed: a refusal above leaves no reservation behind.
   if (plannedPort !== null) reservePlannedPort(opts.profile, plannedPort);
   // The order is the safety: helper, config, then meta; the ownership claim, the helper
@@ -920,9 +947,8 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   // still-current entry never names a deleted one) and the app files, independent of the entry,
   // so a failure in either leaves a complete, OWNED entry.
   if (!owned) ledger.record("claudeDesktop", configPath);
-  if (credential.kind === "command") retireDesktopHelperScript(opts.mode, opts.profile);
-  else removeHelperScripts(opts.profile);
-  wireClaudeDesktopAppFiles();
+  retire();
+  appFiles();
 }
 
 /** The entry's recorded inferenceModels rows when they are OUR shape, else null (fetch). */
@@ -1045,10 +1071,20 @@ function releaseClaims(paths: readonly string[]): void {
   for (const path of paths) ledger.release("claudeDesktop", path);
 }
 
-function removeHelperScripts(profile: Profile): void {
+/** Both modes' scripts, looked at now and removed when the step runs. */
+function prepareRemoveHelperScripts(profile: Profile): () => void {
   const rootHome = resolveRootHome();
-  removeHelperScript(desktopHelperPath(rootHome, "direct", profile));
-  removeHelperScript(desktopHelperPath(rootHome, "proxy", profile));
+  const steps = [
+    prepareRemoveHelperScript(desktopHelperPath(rootHome, "direct", profile)),
+    prepareRemoveHelperScript(desktopHelperPath(rootHome, "proxy", profile)),
+  ];
+  return () => {
+    for (const step of steps) step();
+  };
+}
+
+function removeHelperScripts(profile: Profile): void {
+  prepareRemoveHelperScripts(profile)();
 }
 
 /** The filename grammar desktopHelperPath produces, either platform's extension. */

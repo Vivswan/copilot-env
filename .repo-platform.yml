@@ -5,6 +5,7 @@ modules:
   - pr-title
   - custom-license
   - site
+  - nightly
 project:
   name: copilot-env
   slug: copilot-env

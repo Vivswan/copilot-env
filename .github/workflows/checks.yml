@@ -33,6 +33,11 @@ jobs:
       - name: Install dependencies
         run: deno ci
 
+      # The real claude and codex CLIs run against the fake model endpoint
+      # (test/fake_model_endpoint.ts) inside the suite; the opt-in below makes a missing
+      # binary a failure there, never a skip. Same install as the nightly (nightly.yml).
+      - uses: ./.github/actions/install-agent-clis
+
       # The installed-proxy guard (proxyInstallAssertStatus) is not wired here:
       # asserting means floating first, which would hit the npm registry and warm a
       # cache on every runner. `deno ci` already pins the proxy baseline this job
@@ -47,6 +52,8 @@ jobs:
         run: deno task lint
 
       - name: Test
+        env:
+          COPILOT_ENV_LIVE_CLIS: "1"
         run: deno task test
 
       # The usage-index perf test and the goldens' extra run again over a large seeded tree
@@ -214,8 +221,15 @@ jobs:
       - name: Install dependencies
         run: deno ci
 
-      - name: Install the current Claude Code and Codex CLI releases
-        run: npm install -g @anthropic-ai/claude-code @openai/codex
+      - uses: ./.github/actions/install-agent-clis
+
+      # The recorder's own end-to-end test runs HERE only (COPILOT_ENV_LIVE_CORPUS is this job's
+      # opt-in): five turns per CLI plus a minute-boundary wait is this job's cost, not the
+      # matrix legs'.
+      - name: Recorder end to end (real CLIs, fake backend)
+        env:
+          COPILOT_ENV_LIVE_CORPUS: "1"
+        run: deno test -P=test test/usage_corpus.test.ts
 
       # The corpus task prints one JSON summary line last and leaves a runnable
       # HOME at <out>/home. HOME moves for the `agent cost` run so nothing on the

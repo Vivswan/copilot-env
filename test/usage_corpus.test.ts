@@ -1,9 +1,8 @@
-// The corpus recorder, end to end with the real CLIs (skipped where either is absent), and the
+// The corpus recorder, end to end with the real CLIs (opt-in: COPILOT_ENV_LIVE_CORPUS), and the
 // one property of its scrub that matters: nothing private survives into the shareable copies.
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { IdMap, isClaudeUsageLine, isCodexUsageLine, scrubJsonl } from "../scripts/usage_corpus.ts";
-import { findCommand } from "../src/utils/command.ts";
 import { ROOT, runCli, runScript } from "./helpers/run.ts";
 import { describe, expect, tempDir, test } from "./helpers/testing.ts";
 
@@ -207,16 +206,26 @@ describe("usage corpus scrub", () => {
   });
 });
 
-// The same resolver the driver uses, so the test runs exactly where the driver would.
-const HAVE_BOTH_CLIS = findCommand("claude").path !== null && findCommand("codex").path !== null;
-if (!HAVE_BOTH_CLIS) {
-  console.error(
-    "usage_corpus: skipping the end-to-end recording (claude and codex must both be on PATH)",
-  );
+// The recorder runs the real CLIs through five turns each with a minute-boundary wait, so it is
+// its own opt-in: COPILOT_ENV_LIVE_CORPUS, set by the session-log-drift job in checks.yml (the
+// job that owns the corpus), never by the matrix legs. Opted in, a missing CLI is a failure the
+// driver names ("<cli> is not on PATH"), never a skip.
+const LIVE_CORPUS_ENV = "COPILOT_ENV_LIVE_CORPUS";
+const LIVE_CORPUS = Boolean(process.env[LIVE_CORPUS_ENV]);
+
+/** The head of every kept turn output under `<out>/home/turns`, for a failed run's message: the
+ *  CLI's own words against the fake, which the driver never prints and the temp root removes. */
+function turnTails(out: string): string {
+  const turns = join(out, "home", "turns");
+  if (!existsSync(turns)) return "(no turns dir)";
+  return readdirSync(turns).sort().map((name) => {
+    const text = readFileSync(join(turns, name), "utf8").trim();
+    return `--- ${name} (${text.length} chars) ---\n${text.slice(0, 1_200)}`;
+  }).join("\n");
 }
 
 describe("usage corpus recorder", () => {
-  test.skipIf(!HAVE_BOTH_CLIS)(
+  test.skipIf(!LIVE_CORPUS)(
     "records both CLIs against the fake and agent cost over the kept home matches what was served",
     () => {
       const parent = tempDir("usage-corpus-out-");
@@ -225,7 +234,10 @@ describe("usage corpus recorder", () => {
         const result = runScript(join(ROOT, "scripts", "usage_corpus.ts"), ["--out", out], {
           timeoutMs: 9 * 60_000,
         });
-        expect(result.exitCode).toBe(0);
+        // A failed recording names its cause: the summary line (stdout) carries the driver's
+        // failure labels, stderr its label-only log, and each failed turn's kept output rides
+        // along (turnTails).
+        expect(result.exitCode, `${result.stdout}\n${result.stderr}\n${turnTails(out)}`).toBe(0);
         // The consumer contract: exactly one stdout line, then the trailing newline, since
         // CI's `tail -n 1` must get the summary.
         const lines = result.stdout.split(/\r?\n/);

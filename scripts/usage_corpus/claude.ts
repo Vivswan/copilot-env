@@ -63,7 +63,7 @@ export async function recordClaude(
       ledger.written.push("home/.claude/.credentials.json");
     }
   }
-  // Print mode reads the prompt from stdin when no positional prompt is given.
+  // The prompt is the positional argument (runTurn appends it): print mode takes it verbatim.
   const base = ["-p", "--output-format", "json", "--model", CLAUDE_MODEL];
   const turn = async (label: string, args: string[], prompt: string) => {
     const result = await runTurn(
@@ -94,12 +94,16 @@ export async function recordClaude(
     "Now one sentence about the sea.",
   );
   if (ids.resumed === null) return ids;
-  // Read inside the cwd needs no permission grant in print mode, so no tool allowlist.
+  // Read inside the cwd needs no permission grant in print mode, so no tool allowlist. The pinned
+  // arguments travel base64-encoded: a positional prompt through npm's PowerShell shim on Windows
+  // PowerShell 5.1 loses embedded double quotes, and the JSON would arrive unparsable.
   ids.tool = await turn(
     "claude turn 3 (tool)",
     [],
-    `Use the Read tool on the note. tool-name: Read tool-args: ${
-      JSON.stringify({ "file_path": join(work, "corpus-note.txt") })
+    `Use the Read tool on the note. tool-name: Read tool-args64: ${
+      Buffer.from(JSON.stringify({ "file_path": join(work, "corpus-note.txt") })).toString(
+        "base64",
+      )
     }`,
   );
   if (ids.tool === null) return ids;

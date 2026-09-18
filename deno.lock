@@ -14,6 +14,7 @@
     "jsr:@std/path@^1.1.6": "1.1.6",
     "jsr:@std/semver@^1.0.8": "1.0.8",
     "jsr:@std/testing@^1.0.20": "1.0.20",
+    "npm:@copilotkit/aimock@1.41.0": "1.41.0",
     "npm:@jeffreycao/copilot-api@^2.3.14": "2.3.14",
     "npm:@modelcontextprotocol/client@2": "2.0.0",
     "npm:@modelcontextprotocol/sdk@^1.30.0": "1.30.0_zod@4.5.4",
@@ -88,6 +89,10 @@
     }
   },
   "npm": {
+    "@copilotkit/aimock@1.41.0": {
+      "integrity": "sha512-hduXWDo0vI3ZyidIcb+BP1CsquVOOwqaRPUY3E3tvi4EV6nyndTuw0RNrIa4fPTh56EAozhIQDEmjKULY8MJHQ==",
+      "bin": true
+    },
     "@gar/promise-retry@1.0.3": {
       "integrity": "sha512-GmzA9ckNokPypTg10pgpeHNQe7ph+iIKKmhKu3Ob9ANkswreCx7R3cKmY781K8QK3AqVL3xVh9A42JvIAbkkSA=="
     },
@@ -1015,6 +1020,7 @@
       "jsr:@std/expect@^1.0.20",
       "jsr:@std/semver@^1.0.8",
       "jsr:@std/testing@^1.0.20",
+      "npm:@copilotkit/aimock@1.41.0",
       "npm:@jeffreycao/copilot-api@^2.3.14",
       "npm:@modelcontextprotocol/client@2",
       "npm:@modelcontextprotocol/sdk@^1.30.0",

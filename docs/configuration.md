@@ -184,6 +184,21 @@ The files these land in, what writes and removes them, and where they sit on eac
 - **Off:** the default entry stays in place as yours, named once and never rewritten; only `agent uninstall` removes it. Profile entries go, each with its credential-helper scripts under `~/.local/share/copilot-env/helpers/`; what the same writes remove is in the [write list](getting-started.md#what-a-wiring-pass-writes).
 - **Drift:** `agent claude --check` and `agent health` report an entry missing or stale with the key on, profile entries left behind after turning it off, which entry the app applies, and whether it will show the sign-in chooser or lacks the Developer menu.
 
+## probe
+
+| Key                  | Scope             | Default                                                                                                 | Effect                                            |
+| -------------------- | ----------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `probe.claude-model` | `profile-default` | unset tries the claude CLI's `haiku` alias, then the newest claude model in the catalog                 | Model the Direct probe's claude smoke prompt runs |
+| `probe.codex-model`  | `profile-default` | unset prefers a reduced GPT tier (`mini`, `nano`) from the catalog, else its first codex-servable model | Model the Direct probe's codex smoke prompt runs  |
+
+The Direct probe behind `auto` (`agent init` with neither `--direct` nor `--proxy`; a re-render of a recorded mode never probes) runs each CLI's read-only smoke prompt against a throwaway Direct config. A set value is the model that prompt runs, sent as-is: no alias, no catalog check.
+
+```bash
+agent config --set probe.claude-model claude-sonnet-5
+```
+
+Unset, the claude smoke runs `--model haiku` (the CLI resolves its own alias, so it sends no reasoning-effort field a Copilot model may lack) and, should Copilot reject that model, the newest claude model in the catalog once; any other failure stops with its reason.
+
 ## shell
 
 | Key               | Scope    | Default | Effect                                                                            |

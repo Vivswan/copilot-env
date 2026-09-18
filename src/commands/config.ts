@@ -490,7 +490,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     ...groupBlocks("profile-default", (group) =>
       banner(
         `${groupIndent}${group}:`,
-        "this profile's daemon; global rows set without --profile",
+        `${profileDefaultConsumer(group)}; global rows set without --profile`,
       )),
   ].join("\n\n");
   const globalBlock = [
@@ -498,6 +498,20 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     groupBlocks("global", (group) => paint.bold(`${groupIndent}${group}:`)).join("\n\n"),
   ].join("\n");
   return [header, profileBlock, globalBlock].join("\n\n");
+}
+
+/** What reads a profile-default group's value for the profile: the PROFILE heading's note. A
+ *  group with no profile-default key needs no entry; one that gains such a key must add its, or
+ *  its heading throws (the table test renders every group). */
+const PROFILE_DEFAULT_CONSUMER: Partial<Record<ConfigGroup, string>> = {
+  probe: "this profile's Direct probe",
+  proxy: "this profile's daemon",
+};
+
+function profileDefaultConsumer(group: ConfigGroup): string {
+  const consumer = PROFILE_DEFAULT_CONSUMER[group];
+  if (consumer === undefined) throw new Error(`no PROFILE heading note for the ${group} group`);
+  return consumer;
 }
 
 /** The one string both `agent config` and `agent config --help` print, so their outputs are

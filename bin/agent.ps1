@@ -37,5 +37,7 @@ if ($needInstall) {
 }
 
 $Cli = Join-Path $Snap 'src\cli.ts'
-& deno run -P=cli $Cli @args
+# -q drops Deno's own "Permissions in the config file is an experimental feature" line, printed
+# for -P on every command; its errors and the CLI's stderr still print.
+& deno run -q -P=cli $Cli @args
 exit $LASTEXITCODE

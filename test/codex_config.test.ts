@@ -448,12 +448,15 @@ test("detectCodexDirect: the CLI runs the catalog's codex-servable model and its
     "model_picker_enabled": true,
     "supported_endpoints": ["/responses"],
   });
-  const fetchImpl = () =>
-    Promise.resolve(
+  let fetches = 0;
+  const fetchImpl = () => {
+    fetches++;
+    return Promise.resolve(
       new Response(JSON.stringify({ data: [servable("gpt-6"), servable("gpt-6-nano")] }), {
         status: 200,
       }),
     );
+  };
   const ok = {
     findCommand: (c: string) => ({ path: `/bin/${c}` }),
     runProbe: (_cli: string, args: string[]) => {
@@ -461,13 +464,19 @@ test("detectCodexDirect: the CLI runs the catalog's codex-servable model and its
       seenArgs = args;
       return { ok: true };
     },
-    retryDelayMs: 0,
     fetchImpl,
   };
+  const pinnedModel = () => {
+    const args = seenArgs as unknown as string[];
+    return args[args.indexOf("--model") + 1];
+  };
   expect(await detectCodexDirect(DIRECT_NONE, "ghu_tok", ok)).toBe(true);
-  expect(probeCalls).toBe(1);
-  const args = seenArgs as unknown as string[];
-  expect(args[args.indexOf("--model") + 1]).toBe("gpt-6-nano");
+  expect([probeCalls, fetches, pinnedModel()]).toEqual([1, 1, "gpt-6-nano"]);
+  // A set probe.codex-model is the model the smoke runs, as-is, with no catalog fetch.
+  new CopilotEnvConfig().set({ "probe.codex-model": "gpt-6" });
+  expect(await detectCodexDirect(DIRECT_NONE, "ghu_tok", ok)).toBe(true);
+  expect([probeCalls, fetches, pinnedModel()]).toEqual([2, 1, "gpt-6"]);
+  new CopilotEnvConfig().del("probe.codex-model");
   // The live read-only prompt failed -> proxy.
   expect(
     await detectCodexDirect(DIRECT_NONE, "ghu_tok", { ...ok, runProbe: () => ({ ok: false }) }),
@@ -542,7 +551,6 @@ test("detectCodexDirect: with no codex CLI the endpoint smoke pings the first co
   const verdict = await detectCodexDirect(DIRECT_NONE, "ghu_tok", {
     findCommand: (c: string) => ({ path: c === "codex" ? null : `/bin/${c}` }),
     runProbe: () => ({ ok: false }), // must never run: no CLI was found
-    retryDelayMs: 0,
     fetchImpl,
   });
   expect(verdict).toBe(true);
@@ -592,7 +600,6 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
         probeDoc = asRecord(parse(readFileSync(join(home, "config.toml"), "utf8")));
         return { ok: true };
       },
-      retryDelayMs: 0,
       fetchImpl: () =>
         Promise.resolve(new Response(JSON.stringify({ data: [catalog] }), { status: 200 })),
     },

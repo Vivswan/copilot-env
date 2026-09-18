@@ -6,7 +6,11 @@ import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AGENT_CLIS } from "../agents/clis.ts";
-import { CODEX_CATALOG_NOISE_RE, PROBE_TIMEOUT_MS } from "../agents/live_probe.ts";
+import {
+  CODEX_CATALOG_NOISE_RE,
+  jsonOutputReason,
+  PROBE_TIMEOUT_MS,
+} from "../agents/live_probe.ts";
 import { defaultSetupNeedsProxy } from "../agents/wiring.ts";
 import { claudeDesktopStatus } from "../agents/claude_desktop.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
@@ -271,9 +275,10 @@ async function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFa
   return directAuthFromLook(look.path, await ghAuthTokenLookAsync(ghUser, look.path), ghUser);
 }
 
-/** The CLI's FULL output, verbatim, so `agent health --live` shows the complete error. Codex's
- *  catalog lines are dropped (noise). With no output (a timeout kill: code null + signal) the
- *  bare exit/timeout status keeps the detail from being blank. */
+/** The CLI's output, line for line, so `agent health --live` shows the complete error: a JSON
+ *  event that reports an error stands in as its reason text (jsonOutputReason), every other line
+ *  is verbatim, and codex's catalog lines are dropped (noise). With no output (a timeout kill:
+ *  code null + signal) the bare exit/timeout status keeps the detail from being blank. */
 function formatLiveFailure(
   code: number | null,
   signal: string | null,
@@ -284,7 +289,8 @@ function formatLiveFailure(
   const lines = `${stderr}\n${stdout}`
     .split(/\r?\n/)
     .map((l) => l.trimEnd())
-    .filter((l) => l.trim() && !CODEX_CATALOG_NOISE_RE.test(l));
+    .filter((l) => l.trim() && !CODEX_CATALOG_NOISE_RE.test(l))
+    .map((l) => jsonOutputReason(l.trim()) ?? l);
   if (lines.length) return lines.join("\n");
   if (errorMessage) return errorMessage;
   if (code === null && signal) {

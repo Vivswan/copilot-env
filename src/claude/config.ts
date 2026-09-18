@@ -29,7 +29,7 @@ import { probeDirectWiring } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
-import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
+import { directSmoke, type EndpointSmoke, probeModelPin } from "../copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   CODEX_EXEC_USER_AGENT,
@@ -37,7 +37,11 @@ import {
   directClientHeaders,
   isDirectBaseUrl,
 } from "../copilot_api/integration_identity.ts";
-import { cheapestClaudeModel, parseCatalogModels } from "../copilot_api/models.ts";
+import {
+  cheapestClaudeModel,
+  newestClaudeModel,
+  parseCatalogModels,
+} from "../copilot_api/models.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import {
   copilotApiResolvePort,
@@ -846,10 +850,20 @@ export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiri
   return { ownedDenyRemains: new OwnershipLedger().owns("webSearchDeny", settingsPath) };
 }
 
-/** The cheapest advertised claude model proves the messages wire (cheapestClaudeModel says why). */
+/** The CLI's own alias for its haiku model, resolved inside the CLI to an id it recognises: the
+ *  CLI sends `output_config.effort` for any model id it does not recognise, and Copilot rejects
+ *  that for a model without the capability, so a Copilot catalog id can fail the smoke while
+ *  Direct itself works. */
+export const CLAUDE_HAIKU_ALIAS = "haiku";
+
+/** The cheapest advertised claude model proves the messages wire (cheapestClaudeModel says why);
+ *  the CLI smoke's hops are the haiku alias, then the newest catalog model (probeDirectWorks
+ *  walks them). */
 export const CLAUDE_ENDPOINT_SMOKE: EndpointSmoke = {
   wire: "messages",
   pickModel: (body) => cheapestClaudeModel(parseCatalogModels(body)),
+  cliAlias: CLAUDE_HAIKU_ALIAS,
+  cliFallback: (body) => newestClaudeModel(parseCatalogModels(body)),
 };
 
 /** Writes a throwaway direct config and runs `claude -p --model <catalog pick>` against it
@@ -876,7 +890,7 @@ export function detectClaudeDirect(
       codexUserAgent(),
       direct.directIntegrationId,
       direct.directBaseUrl,
-      { fetchImpl: deps?.fetchImpl },
+      { fetchImpl: deps?.fetchImpl, pinnedModel: probeModelPin("probe.claude-model", null) },
     ),
     deps,
   );

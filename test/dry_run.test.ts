@@ -305,6 +305,8 @@ test("a dry run's auto-mode decision is the real one: the CLI smoke runs and its
   };
   const smoke: DirectSmoke = {
     pickModel: () => Promise.resolve({ ok: true, model: "claude-fable-5" }),
+    cliModel: () => Promise.resolve({ ok: true, model: "claude-fable-5" }),
+    cliFallbackModel: () => Promise.resolve(null),
     ping: () => Promise.resolve({ ok: true }),
   };
   const probe = (calls: { n: number }) =>
@@ -314,8 +316,6 @@ test("a dry run's auto-mode decision is the real one: the CLI smoke runs and its
         calls.n++;
         return { ok: false, detail: "auth failed" };
       },
-      retries: 0,
-      retryDelayMs: 0,
     });
   const real = { n: 0 };
   const dry = { n: 0 };

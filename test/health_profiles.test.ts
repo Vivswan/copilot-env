@@ -787,6 +787,21 @@ test("a --live exit 0 counts only when the stream carries the model's answer", a
   expect(hookStopped.kind === "failed" ? hookStopped.detail : "").toContain(
     'exit 0 without a model answer\n{"type":"system","subtype":"init"}',
   );
+  // A failed exit whose stream ends in claude's result event reports the event's `result` text,
+  // not the counters the one-line event opens with.
+  const apiError = await runLiveCli({
+    ...claudeLiveLaunch("/h", null),
+    cli: Deno.execPath(),
+    args: ["eval", "console.log(process.env.API_ERROR_STREAM); Deno.exit(1)"],
+    env: {
+      API_ERROR_STREAM: '{"type":"system","subtype":"init"}\n' +
+        '{"duration_api_ms":0,"total_cost_usd":0,"usage":{"input_tokens":0},"is_error":true,' +
+        '"api_error_status":400,"result":"API Error: 400 model x does not support reasoning effort","type":"result"}',
+    },
+  });
+  expect(apiError.kind === "failed" ? apiError.detail : "").toBe(
+    '{"type":"system","subtype":"init"}\nAPI Error: 400 model x does not support reasoning effort',
+  );
 });
 
 test("a named Claude live probe scrubs ANTHROPIC_BASE_URL; the default scrubs nothing", async () => {

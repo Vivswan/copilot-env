@@ -4,17 +4,19 @@
 // prompt against it; exit 0 means Direct works. The command boundary ensured a credential is
 // stored before this runs, and the temp config resolves it the way the real wiring will.
 //
-//   catalog pick -> the smoke model comes from Copilot's /models (src/copilot_api/endpoint_smoke.ts),
+//   model hops   -> the smoke's models come from the agent's own alias, its pick over Copilot's
+//                   /models, or the user's probe.*-model key (src/copilot_api/endpoint_smoke.ts),
 //                   never from the model the CLI would choose on its own: a saved default the
 //                   account cannot use must not decide the verdict
-//   CLI present  -> smoke prompt pinned to that model (retried) -> Direct, else the local proxy
-//   CLI absent   -> one minimal call to the wire with that model, else the proxy
+//   CLI present  -> smoke prompt pinned to the first hop (catalog-free for an alias); a MODEL
+//                   rejection fetches the catalog and runs the second hop once, any other failure
+//                   (auth, network, 5xx, timeout) stops -> Direct on a pass, else the local proxy
+//                   with the last reason
+//   CLI absent   -> one minimal call to the wire with the wire pick, else the proxy
 //
 //   a provider env var in the shell        -> dropped, so a leaked export cannot hijack auth
 //   the caller's cwd                       -> replaced by the temp home, so a project's own
 //                                             .claude/settings.json or codex trust never colours it
-//   a failure past DEFAULT_PROBE_RETRIES   -> the proxy
-//   a FAILED attempt near PROBE_TIMEOUT_MS -> no further retry; a slow SUCCESS still wins
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -23,8 +25,8 @@ import type { DirectSmoke } from "../copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
+import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { sleepSync } from "../utils/time.ts";
 import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/report_write.ts";
 
 // Narration goes to stderr, never stdout: the machine-readable `--check` / `env` paths must
@@ -37,16 +39,19 @@ export const PROBE_PROMPT = "Reply with the single word OK.";
 /** A live model call can be slow; cap it and treat a timeout as "direct failed". */
 export const PROBE_TIMEOUT_MS = 60_000;
 
-/** Retry the live smoke call this many times before concluding Direct fails. */
-export const DEFAULT_PROBE_RETRIES = 3;
-
-/** Base backoff before each retry (multiplied by the attempt index: 600ms, 1200ms). */
-export const DEFAULT_PROBE_RETRY_DELAY_MS = 600;
-
-/** A FAILED attempt that ran this close to the timeout was a hang, not a blip: retrying would
- *  burn another PROBE_TIMEOUT_MS. The blips worth retrying (fast 4xx/5xx) return well under
- *  this, and a slow SUCCESS never reaches the check. */
-const TIMEOUT_RETRY_FRACTION = 0.9;
+/** A failure that names the MODEL as what the endpoint would not serve: the one failure class the
+ *  next model hop can answer. A 5xx is the endpoint's, whatever its body says, and auth, network,
+ *  and timeout failures would fail every hop the same way; a rejection must name the model (its
+ *  id, the word, or the claude CLI's "selected model") beside a 400/404 or a not-found,
+ *  unknown, unsupported, or does-not-support phrasing. */
+export function isModelRejection(detail: string | undefined, model: string): boolean {
+  if (detail === undefined || /\b5\d\d\b/.test(detail)) return false;
+  const namesModel = detail.includes(model) || /\bmodel\b/i.test(detail);
+  const refused =
+    /\b40[04]\b|not found|does not support|unknown|unrecognized|unsupported|may not exist/i
+      .test(detail);
+  return namesModel && refused;
+}
 
 /** The ISOLATED Direct-detect start, and only that: a throwaway home, auth forced through the
  *  managed config, the catalog's model pin. The health `--live` probe is the other intent, the
@@ -133,10 +138,6 @@ export interface DirectProbeDeps {
     env: Record<string, string>,
     cwd: string,
   ) => ProbeOutcome | Promise<ProbeOutcome>;
-  /** Extra live-call retries on failure (default DEFAULT_PROBE_RETRIES). */
-  retries?: number;
-  /** Base backoff ms between retries (default DEFAULT_PROBE_RETRY_DELAY_MS; 0 in tests). */
-  retryDelayMs?: number;
   /** Threaded by detect* into the Copilot smoke (src/copilot_api/endpoint_smoke.ts), never read
    *  here, so its tests fetch nothing real. */
   fetchImpl?: ProbeFetch;
@@ -146,6 +147,37 @@ export interface DirectProbeDeps {
  *  formatters (summarizeProbeFailure here, formatLiveFailure in src/health/probe.ts) filter
  *  through this one regex. */
 export const CODEX_CATALOG_NOISE_RE = /"capabilities"|"object":\s*"model"|model_picker/;
+
+/** The failure text a JSON output line carries, or null for a non-JSON line and for a JSON event
+ *  that reports no error. Claude's `--output-format json` / `stream-json` result event is ONE long
+ *  line that opens with token counters and buries the reason in `result` (Copilot's error body
+ *  when `is_error` is true), and a stream cut before the result event ends in the assistant
+ *  event carrying that body as its text (`is_api_error_message`); codex's `turn.failed` carries
+ *  `error.message`. A bare string `error` is a code (`"unknown"`, `"rate_limit"`), not the
+ *  failure signal and never the reason. Both failure formatters read the line through this so
+ *  the reason they print is the text, never the counters or the code. */
+export function jsonOutputReason(line: string): string | null {
+  if (!line.startsWith("{")) return null;
+  const doc = parseJsonRecord(line);
+  if (doc === null) return null;
+  const failed = doc.is_error === true || isRecord(doc.error) ||
+    doc.is_api_error_message === true;
+  if (!failed) return null;
+  const message = isRecord(doc.message) ? doc.message : null;
+  const texts = Array.isArray(message?.content)
+    ? message.content.map((part) => (isRecord(part) ? part.text : undefined))
+    : [];
+  const candidates = [
+    doc.result,
+    isRecord(doc.error) ? doc.error.message : undefined,
+    doc.message,
+    ...texts,
+  ];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
 
 export function summarizeProbeFailure(
   status: number | null,
@@ -159,7 +191,8 @@ export function summarizeProbeFailure(
     return `timed out after ${Math.round(PROBE_TIMEOUT_MS / 1000)}s`;
   }
   // Scanned from the end of stderr-then-stdout: the last marker line in stdout wins, else the
-  // last in stderr; within one stream that is the marker nearest the child's death.
+  // last in stderr; within one stream that is the marker nearest the child's death. A JSON event
+  // that reports an error is a marker by itself, and its reason text is what surfaces.
   const lines = `${stderr}\n${stdout}`
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -168,7 +201,10 @@ export function summarizeProbeFailure(
     /\b(error|unauthor|forbidden|denied|invalid|expired|panic|disconnect|refused|quota|rate.?limit|[45]\d\d|stdin)\b/i;
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
-    if (line && MARKER.test(line)) return truncateReason(line);
+    if (!line) continue;
+    const reason = jsonOutputReason(line);
+    if (reason !== null) return truncateReason(reason);
+    if (MARKER.test(line)) return truncateReason(line);
   }
   // A non-timeout spawn error (ENOENT, ENOBUFS) carries the real reason when the output did not.
   if (errorMessage) return truncateReason(errorMessage);
@@ -178,10 +214,12 @@ export function summarizeProbeFailure(
   return `exit ${status ?? "?"}${tail}`;
 }
 
-/** One-line, length-bounded reason string (codex error bodies can be huge). */
+/** One-line, length-bounded reason string: a JSON-escaped newline in a result text would break
+ *  the log line it is interpolated into, and codex error bodies can be huge. */
 function truncateReason(line: string): string {
   const MAX = 200;
-  return line.length > MAX ? `${line.slice(0, MAX)}...` : line;
+  const flat = line.replace(/\s+/g, " ").trim();
+  return flat.length > MAX ? `${flat.slice(0, MAX)}...` : flat;
 }
 
 function defaultRunProbe(
@@ -264,8 +302,6 @@ export async function probeDirectWorks(
 ): Promise<boolean> {
   const find = deps.findCommand ?? findCommand;
   const runProbe = deps.runProbe ?? defaultRunProbe;
-  const retries = deps.retries ?? DEFAULT_PROBE_RETRIES;
-  const retryDelayMs = deps.retryDelayMs ?? DEFAULT_PROBE_RETRY_DELAY_MS;
 
   logger.log(`  Probing GitHub Copilot Direct for ${descriptor.cli} ...`);
 
@@ -304,22 +340,20 @@ export async function probeDirectWorks(
     logger.log("    • no stored credential to smoke with → using the local proxy");
     return false;
   }
-  const picked = await smoke.pickModel();
-  if (!picked.ok) {
-    logger.log(`    • ${picked.detail} → using the local proxy`);
+  const first = await smoke.cliModel();
+  if (!first.ok) {
+    logger.log(`    • ${first.detail} → using the local proxy`);
     return false;
   }
   const cliPath = anchorToCallerCwd(cliLook.path);
   const ghLook = find("gh").path;
   const ghPath = ghLook === null ? null : anchorToCallerCwd(ghLook);
-  logger.log(
-    `    • running a read-only smoke prompt through ${descriptor.cli} with ${picked.model} (live model call, a few seconds; pass --direct to skip) ...`,
-  );
 
   let tmpHome: ScratchDir | null = null;
   try {
     tmpHome = scratchDir(join(tmpdir(), `copilot-env-${descriptor.cli}-`));
     writeDirectConfig(tmpHome);
+    const home: ScratchDir = tmpHome;
     // Provider families stripped (why: PROVIDER_ENV_PREFIXES); the resolved CLI's and gh's bin
     // dirs lead PATH so an nvm-only toolchain resolves (why: childEnvWithPath).
     const childEnv = childEnvWithPath(
@@ -330,25 +364,30 @@ export async function probeDirectWorks(
       },
     );
 
-    const args = descriptor.args(PROBE_PROMPT, tmpHome, picked.model);
-    let lastDetail: string | undefined;
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      if (attempt > 0) {
-        logger.log(
-          `    • smoke prompt failed${lastDetail ? ` (${lastDetail})` : ""}; retrying (attempt ${
-            attempt + 1
-          } of ${retries + 1}) ...`,
-        );
-        sleepSync(retryDelayMs * attempt);
-      }
-      const startedAt = Date.now();
-      const outcome = await runProbe(cliPath, args, childEnv, tmpHome);
-      if (outcome.ok) {
-        logger.success("    GitHub Copilot Direct is available");
-        return true;
-      }
+    const run = async (model: string): Promise<ProbeOutcome> => {
+      logger.log(
+        `    • running a read-only smoke prompt through ${descriptor.cli} with ${model} (live model call, a few seconds; pass --direct to skip) ...`,
+      );
+      const args = descriptor.args(PROBE_PROMPT, home, model);
+      const outcome = await runProbe(cliPath, args, childEnv, home);
+      if (outcome.ok) logger.success("    GitHub Copilot Direct is available");
+      return outcome;
+    };
+    let outcome = await run(first.model);
+    if (outcome.ok) return true;
+    let lastDetail = outcome.detail;
+    const next = isModelRejection(lastDetail, first.model) ? await smoke.cliFallbackModel() : null;
+    if (next !== null && !next.ok) {
+      logger.log(
+        `    • ${descriptor.cli} could not run ${first.model} (${lastDetail}); ${next.detail}`,
+      );
+    } else if (next !== null) {
+      logger.log(
+        `    • ${descriptor.cli} could not run ${first.model} (${lastDetail}); trying ${next.model} ...`,
+      );
+      outcome = await run(next.model);
+      if (outcome.ok) return true;
       lastDetail = outcome.detail;
-      if (Date.now() - startedAt >= PROBE_TIMEOUT_MS * TIMEOUT_RETRY_FRACTION) break;
     }
     logger.log(
       `    • the Direct smoke prompt did not succeed${

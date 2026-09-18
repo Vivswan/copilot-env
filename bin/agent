@@ -32,4 +32,6 @@ if ! deps_proven_current; then
     touch "${SNAP}/node_modules"
 fi
 
-exec deno run -P=cli "${SNAP}/src/cli.ts" "$@"
+# -q drops Deno's own "Permissions in the config file is an experimental feature" line, printed
+# for -P on every command; its errors and the CLI's stderr still print.
+exec deno run -q -P=cli "${SNAP}/src/cli.ts" "$@"

@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { directWiring } from "../src/agents/configure.ts";
 import {
   AUTH_TOKEN_ENV,
+  CLAUDE_HAIKU_ALIAS,
   cmdHelperBody,
   configureClaudeConfig,
   CUSTOM_HEADERS_ENV,
@@ -27,6 +28,7 @@ import {
 import { runClaude } from "../src/agents/configure_defaults.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { runMcp } from "../src/commands/mcp.ts";
+import { probeModelPin } from "../src/copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import {
@@ -440,15 +442,13 @@ test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdic
   const home = tmpHome();
   // detectClaudeDirect writes a throwaway direct config; tmpHome() keeps it off any real state.
   void home;
-  // The catalog GET is the only fetch: with a CLI on the machine the endpoint is never pinged.
-  // The pin is the CHEAPEST claude family present, not the first or the most capable.
+  // With a CLI on the machine the endpoint is never pinged, and the first hop is the CLI's own
+  // haiku alias (never a Copilot id the CLI would send an effort field for), so nothing is
+  // fetched at all: a catalog that answers 503 cannot keep the alias from running.
   const urls: string[] = [];
   const fetchImpl = (input: string | URL | Request) => {
     urls.push(String(input));
-    const catalog = {
-      data: [{ "id": "gpt-6" }, { "id": "claude-fable-5" }, { "id": "claude-haiku-4.5" }],
-    };
-    return Promise.resolve(new Response(JSON.stringify(catalog), { status: 200 }));
+    return Promise.resolve(new Response("unavailable", { status: 503 }));
   };
   let seenArgs: string[] | null = null;
   const ok = {
@@ -457,17 +457,29 @@ test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdic
       seenArgs = args;
       return { ok: true };
     },
-    retryDelayMs: 0,
     fetchImpl,
   };
+  const pinnedModel = () => {
+    const args = seenArgs as unknown as string[];
+    return args[args.indexOf("--model") + 1];
+  };
   expect(await detectClaudeDirect(DIRECT_NONE, "ghu_tok", ok)).toBe(true);
-  expect(urls).toEqual(["https://api.githubcopilot.com/models"]);
-  const args = seenArgs as unknown as string[];
-  expect(args[args.indexOf("--model") + 1]).toBe("claude-haiku-4.5");
+  expect([urls, pinnedModel()]).toEqual([[], CLAUDE_HAIKU_ALIAS]);
   expect(
     await detectClaudeDirect(DIRECT_NONE, "ghu_tok", { ...ok, runProbe: () => ({ ok: false }) }),
   )
     .toBe(false);
+  // A set probe.claude-model is the model the smoke runs, as-is: no alias, no catalog fetch. The
+  // key is profile-default, so a profile's own value wins over the global one for a probe run
+  // for that profile.
+  new CopilotEnvConfig().set({ "probe.claude-model": "claude-sonnet-5" });
+  urls.length = 0;
+  expect(await detectClaudeDirect(DIRECT_NONE, "ghu_tok", ok)).toBe(true);
+  expect([urls, pinnedModel()]).toEqual([[], "claude-sonnet-5"]);
+  const work = parseProfileName("work");
+  new CopilotEnvConfig().setProfile(work, { "probe.claude-model": "claude-opus-5" });
+  expect([probeModelPin("probe.claude-model", work), probeModelPin("probe.claude-model", null)])
+    .toEqual(["claude-opus-5", "claude-sonnet-5"]);
   // No credential leaves nothing to smoke with: the proxy, before any call, CLI or not.
   urls.length = 0;
   let probeCalls = 0;
@@ -510,7 +522,6 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
     {
       findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
       runProbe: () => ({ ok: false }), // must never run: no CLI was found
-      retryDelayMs: 0,
       fetchImpl,
     },
   );

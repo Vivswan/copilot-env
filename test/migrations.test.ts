@@ -1332,7 +1332,10 @@ test(
 );
 
 test(
-  "4.0.9 profile verb tree: a verb-named profile becomes the first free <name>-<n> with every artifact retargeted and re-rendered, a named Direct profile's resolver line and the default's proxy line, MCP registration, and Desktop row move to the new spelling, the user's keys survive, and a re-run writes nothing",
+  "4.0.9 profile verb tree: a verb-named profile becomes the first free <name>-<n> with every " +
+    "artifact retargeted and re-rendered, a named Direct profile's resolver line and the default's " +
+    "proxy line, MCP registration, and Desktop row move to the new spelling, the user's keys " +
+    "survive, and a re-run writes nothing",
   async () => {
     const homes = isolateAgentHomes("copilot-mig-verb-tree-", { mkdirs: true });
     dir = homes.dir;

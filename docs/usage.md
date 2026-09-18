@@ -33,9 +33,10 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #   env [--format powershell]  its shell directives (what the shell wrapper evals for the default)
                            #   proxy-token [--yes]        its proxy daemon's API key (auto-starts under daemon.auto-start;
                            #                              --yes never prompts: exit 1 when it is down and auto-start is off)
-                           #   mcp [--serve|--remove]     MCP wiring status; --serve runs the server on its credential
+                           #   mcp [--serve]              MCP wiring status; --serve runs the server on its credential;
+                           #                              --remove (no name: the wiring is machine-global) unregisters
                            #   start                      its proxy daemon (--dry-run, --port, --check, --force)
-                           #   stop [--all]               its proxy daemon; --all = every profile's
+                           #   stop                       its proxy daemon; --all (no name) = every profile's
                            #   health                     its checks (--scope, --json, --live)
                            #   models [--proxy|--direct]  the models its credential reaches (--json)
                            #   credits [--target N]       its account's Copilot credits this month (--json)

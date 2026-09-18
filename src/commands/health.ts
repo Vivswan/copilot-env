@@ -66,21 +66,25 @@ export async function runHealth(args: HealthArgs): Promise<void> {
   report(scope, evaluateAll(scope, facts), profileModes(facts), args.json, profile);
 }
 
-/** Every profile's checks (`agent health`): the default's run, then each named profile's narrowed
- *  run, folded into one report. A check the default's sweep already produced for a profile (its
- *  runtime block, in the diagnostic scopes) is kept once, by (id, profile). */
+/** Every profile's checks (`agent health`): the default's run and each named profile's narrowed
+ *  run, gathered at once (each probe has its own timeout budget, so ten profiles cost one, not
+ *  ten) and folded in profile order, the default first. A check the default's sweep already
+ *  produced for a profile (its runtime block, in the diagnostic scopes) is kept once, by (id,
+ *  profile). */
 export async function runHealthEverywhere(args: Omit<HealthArgs, "profile">): Promise<void> {
   const scope = parseScope(args.scope);
   const live = Boolean(args.live);
-  const facts = await gatherFacts(scope, { live });
+  const [facts, ...named] = await Promise.all([
+    gatherFacts(scope, { live }),
+    ...allProfileNames().map((name) => gatherFacts(scope, { live, profile: name })),
+  ]);
   const results = evaluateAll(scope, facts);
   const modes = profileModes(facts);
   const seenKey = (r: CheckResult): string => `${r.profile ?? ""}:${r.id}`;
   const seen = new Set(results.map(seenKey));
-  for (const name of allProfileNames()) {
-    const named = await gatherFacts(scope, { live, profile: name });
-    profileModes(named, modes);
-    for (const result of evaluateAll(scope, named)) {
+  for (const gathered of named) {
+    profileModes(gathered, modes);
+    for (const result of evaluateAll(scope, gathered)) {
       const key = seenKey(result);
       if (seen.has(key)) continue;
       seen.add(key);

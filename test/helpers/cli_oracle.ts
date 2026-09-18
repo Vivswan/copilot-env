@@ -5,6 +5,7 @@
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { getSanitizedHostname } from "../../src/utils/hostname.ts";
+import { escapeRegExp } from "../../src/utils/regexp.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { runCli } from "./run.ts";
 import { expect, tempDir } from "./testing.ts";
@@ -48,16 +49,28 @@ export function scratchHome(prefix = "copilot-cli-oracle-"): ScratchHome {
   };
 }
 
+/** The checkout as a whole path: the container suite mounts it at `/work`, which is also the
+ *  fixture profile's name (`<HOME>/profiles/work/`), so the match must start a path (nothing
+ *  path-like before it) and end one (a separator, a quote, a space, or the end after it). */
+function rootPattern(root: string): RegExp {
+  return new RegExp(`(?<![\\w<>/.\\\\-])${escapeRegExp(root)}(?=[\\\\/"' ]|$)`, "gm");
+}
+
+/** Windows separators fold to `/`, inside a folded path alone (`<HOME>...`, `<ROOT>...`): a
+ *  `\n` escape inside a `--json` report's string is text, not a separator. A JSON-escaped
+ *  separator (two backslashes) folds to the one `/`. */
+const FOLDED_PATH = /<(?:HOME|ROOT)>[^\s"'`)]*/g;
+
 /** The oracle was captured on POSIX: a Windows run's separators and its PowerShell launcher
  *  spelling fold to the same tokens (the outputs compared here are paths and words), the
  *  machine's hostname (a daemon run-dir segment, `.run/<host>/`) folds to <HOST>, the
  *  heartbeat's clock reading (the run state's lastEnsureAt) folds to <NOW>, and consola's info
  *  marker (the glyph off a TTY, `[info]` under CI's basic reporter) folds to <INFO>. */
-export function normalize(home: string, text: string): string {
+export function normalize(home: string, text: string, root: string = PROJECT_ROOT): string {
   return text
     .replaceAll(home, "<HOME>")
-    .replaceAll(PROJECT_ROOT, "<ROOT>")
-    .replaceAll("\\", "/")
+    .replace(rootPattern(root), "<ROOT>")
+    .replace(FOLDED_PATH, (path) => path.replace(/\\+/g, "/"))
     .replaceAll(`.run/${getSanitizedHostname()}/`, ".run/<HOST>/")
     .replace(/"lastEnsureAt": \d+/g, '"lastEnsureAt": <NOW>')
     .replace(/^(?:\u2139|\[info\]) /gm, "<INFO> ")

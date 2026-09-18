@@ -12,6 +12,7 @@ import {
   expectIdentical,
   expectOracle as expectOracleOf,
   loadOracle,
+  normalize,
   observe,
   type ScratchHome,
   scratchHome as scratchHomeOf,
@@ -57,6 +58,27 @@ function respellDaemonHints(stdout: string): string {
     .replaceAll("agent start --profile work", "agent profile work start")
     .replaceAll("agent stop --profile work", "agent profile work stop");
 }
+
+test("the oracle fold keeps a profile named like the checkout's directory and a JSON escape", () => {
+  // The container suite mounts the checkout at /work (the fixture profile's name): the root folds
+  // as a whole path only, and a `--json` report's `\n` escape is not a Windows separator.
+  const folded = normalize(
+    "/tmp/h",
+    [
+      "unchanged /tmp/h/profiles/work/.run/x/.state.json",
+      "apiKeyHelper: /work/bin/agent profile proxy-token --yes",
+      '"detail": "credential: stored\\nresolved by"',
+      "/tmp/h\\\\profiles\\\\work",
+    ].join("\n"),
+    "/work",
+  );
+  expect(folded.split("\n")).toEqual([
+    "unchanged <HOME>/profiles/work/.run/x/.state.json",
+    "apiKeyHelper: <ROOT>/bin/agent profile proxy-token --yes",
+    '"detail": "credential: stored\\nresolved by"',
+    "<HOME>/profiles/work",
+  ]);
+});
 
 test(
   "every runtime verb is a word of the profile tree, listed by its help",

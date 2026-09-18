@@ -673,22 +673,25 @@ test("health --scope bogus exits 1 with a helpful message", () => {
 
 // --- profile-aware health ------------------------------------------------------
 
-function seededProfileEnv(): Record<string, string> {
+/** A store with the named proxy profiles `names` (the first on the reserved port 4555, the rest
+ *  on the ports after it), each with a recorded run state so its daemon is probed. */
+function seededProfileEnv(names: readonly string[] = ["p"]): Record<string, string> {
   const root = tempDir("copilot-health-profile-");
   const home = join(root, "api-home");
   mkdirSync(home, { recursive: true });
+  const slot = { "githubToken": "fake-profile-token", "authProvider": "gh-token", "mode": "proxy" };
   writeFileSync(
     join(home, "state.json"),
     JSON.stringify({
       global: { "daemon.port": 4199 },
-      "profiles": {
-        "p": { "githubToken": "fake-profile-token", "authProvider": "gh-token", "mode": "proxy" },
-      },
+      "profiles": Object.fromEntries(names.map((name) => [name, slot])),
     }),
   );
-  const runDir = join(home, "profiles", "p", ".run", getSanitizedHostname());
-  mkdirSync(runDir, { recursive: true });
-  writeFileSync(join(runDir, ".state.json"), JSON.stringify({ port: 4555 }));
+  names.forEach((name, index) => {
+    const runDir = join(home, "profiles", name, ".run", getSanitizedHostname());
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, ".state.json"), JSON.stringify({ port: 4555 + index }));
+  });
   return {
     ...process.env,
     CONSOLA_LEVEL: "5",
@@ -756,8 +759,24 @@ test(
       "runtime.port@p",
       "runtime.pid@p",
     ]);
+    // The named profiles are gathered at once and folded in name order, whatever order the store
+    // lists them in.
+    const two = runCli(["health", "--scope", "runtime", "--json"], {
+      env: seededProfileEnv(["p", "a"]),
+    });
+    const twoJson = JSON.parse(two.stdout) as { checks: ProfiledCheck[] };
+    expect(twoJson.checks.map((c) => c.profile)).toEqual([
+      null,
+      null,
+      "a",
+      "a",
+      "a",
+      "p",
+      "p",
+      "p",
+    ]);
   },
-  60_000,
+  90_000,
 );
 
 test("profile health narrows the run to the named profile and excludes account-wide checks", () => {

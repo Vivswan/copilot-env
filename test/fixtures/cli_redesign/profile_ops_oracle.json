@@ -37,7 +37,7 @@
   },
   "health --scope auth --profile work --json": {
     "exitCode": 0,
-    "stdout": "{\n  \"scope\": \"auth\",\n  \"profile\": \"work\",\n  \"ok\": true,\n  \"status\": \"ok\",\n  \"exitCode\": 0,\n  \"checks\": [\n    {\n      \"id\": \"setup.auth\",\n      \"label\": \"Authentication\",\n      \"group\": \"auth\",\n      \"profile\": \"work\",\n      \"status\": \"ok\",\n      \"detail\": \"credential: stored GitHub token (provider: gh-token, mode: proxy)/nresolved by `agent profile work auth --get`; passed to the profile's daemon on `agent start --profile work`\",\n      \"value\": {\n        \"provider\": \"gh-token\",\n        \"mode\": \"proxy\",\n        \"storedToken\": true,\n        \"ghAuthenticated\": false\n      }\n    }\n  ]\n}\n"
+    "stdout": "{\n  \"scope\": \"auth\",\n  \"profile\": \"work\",\n  \"ok\": true,\n  \"status\": \"ok\",\n  \"exitCode\": 0,\n  \"checks\": [\n    {\n      \"id\": \"setup.auth\",\n      \"label\": \"Authentication\",\n      \"group\": \"auth\",\n      \"profile\": \"work\",\n      \"status\": \"ok\",\n      \"detail\": \"credential: stored GitHub token (provider: gh-token, mode: proxy)\\nresolved by `agent profile work auth --get`; passed to the profile's daemon on `agent start --profile work`\",\n      \"value\": {\n        \"provider\": \"gh-token\",\n        \"mode\": \"proxy\",\n        \"storedToken\": true,\n        \"ghAuthenticated\": false\n      }\n    }\n  ]\n}\n"
   },
   "models --proxy --profile work": {
     "exitCode": 1,

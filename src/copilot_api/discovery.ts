@@ -95,7 +95,7 @@ export async function discoverServableClaudeModels(
     // (entitlements differ per account), nor one host's for another's.
     const credential = await credentialDigest(`${apiBase}|${token}`);
     for (const id of extras) {
-      // `agent models` and the Desktop wiring share the persisted verdicts, so a DEFINITIVE one costs its
+      // `agent profile models` and the Desktop wiring share the persisted verdicts, so a DEFINITIVE one costs its
       // billed ping once per model+identity+credential per day for sequential runs; overlapping runs each
       // probe. An inconclusive probe caches nothing (below), so it pings again on the next invocation.
       const key = `${credential}|${integrationId ?? "default"}|${id}`;

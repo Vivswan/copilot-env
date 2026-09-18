@@ -35,28 +35,24 @@ function parseMcpAction(args: McpArgs): McpAction {
     throw new Error("--dry-run previews --remove (status and --serve write nothing)");
   }
   if (args.remove) {
-    if (args.profile !== undefined || args.model !== undefined) {
+    if (args.profile !== undefined) {
       throw new Error(
-        "--remove takes no --profile/--model (it removes the machine-global Claude wiring)",
+        "--remove takes no profile name: it removes the machine-global Claude wiring " +
+          "(`agent mcp --remove`)",
       );
+    }
+    if (args.model !== undefined) {
+      throw new Error("--remove takes no --model (it removes the machine-global Claude wiring)");
     }
     return { kind: "remove", dryRun: Boolean(args.dryRun) };
   }
   if (!args.serve) {
-    if (args.profile !== undefined || args.model !== undefined) {
-      throw new Error(
-        "--profile/--model apply to --serve (the stdio server); bare `agent mcp` prints status",
-      );
+    if (args.model !== undefined) {
+      throw new Error("--model applies to --serve (the stdio server); bare `mcp` prints status");
     }
     return { kind: "status" };
   }
-  const profile = args.profile?.trim();
-  if (profile === "") {
-    // A supplied-but-blank --profile (an unset shell var) must never silently serve the default
-    // credential.
-    throw new Error("--profile expects a profile name; omit it for the default credential");
-  }
-  const name: Profile = parseProfileFlag(profile);
+  const name: Profile = parseProfileFlag(args.profile);
   const model = args.model?.trim() ?? "";
   if (args.model !== undefined && model === "") {
     throw new Error("--model expects a non-empty model id");

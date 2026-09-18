@@ -1,0 +1,58 @@
+{
+  "env": {
+    "exitCode": 0,
+    "stdout": "export ANTHROPIC_BASE_URL='http://127.0.0.1:4199'\n"
+  },
+  "env --profile work": {
+    "exitCode": 0,
+    "stdout": "export ANTHROPIC_BASE_URL='http://127.0.0.1:4200'\n"
+  },
+  "env --format powershell --profile work": {
+    "exitCode": 0,
+    "stdout": "$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:4200'\n"
+  },
+  "start --check --profile work": {
+    "exitCode": 1,
+    "stdout": "ℹ proxy is not running\n"
+  },
+  "stop --profile work": {
+    "exitCode": 1,
+    "stdout": "ℹ The profile 'work' proxy is not running on this host (nothing to stop).\n"
+  },
+  "stop --profile work --dry-run": {
+    "exitCode": 1,
+    "stdout": "DRY RUN: nothing was written. The command would:\n  unchanged <HOME>/profiles/work/.run/<HOST>/.state.json\n"
+  },
+  "proxy-token --yes --profile work": {
+    "exitCode": 1,
+    "stdout": ""
+  },
+  "mcp": {
+    "exitCode": 0,
+    "stdout": ""
+  },
+  "health --scope runtime --profile work --json": {
+    "exitCode": 1,
+    "stdout": "{\n  \"scope\": \"runtime\",\n  \"profile\": \"work\",\n  \"ok\": false,\n  \"status\": \"fail\",\n  \"exitCode\": 1,\n  \"checks\": [\n    {\n      \"id\": \"profile.consistency\",\n      \"label\": \"Profile consistency\",\n      \"group\": \"runtime\",\n      \"profile\": \"work\",\n      \"status\": \"ok\",\n      \"detail\": \"store slot (proxy) and daemon home agree\",\n      \"value\": {\n        \"slotExists\": true,\n        \"mode\": \"proxy\",\n        \"homeExists\": true\n      }\n    },\n    {\n      \"id\": \"runtime.port\",\n      \"label\": \"Proxy port reachable\",\n      \"group\": \"runtime\",\n      \"profile\": \"work\",\n      \"status\": \"fail\",\n      \"detail\": \"nothing reachable on port 4200\",\n      \"fix\": \"agent start --profile work\",\n      \"value\": {\n        \"port\": 4200,\n        \"reachable\": false\n      }\n    },\n    {\n      \"id\": \"runtime.pid\",\n      \"label\": \"Tracked proxy process\",\n      \"group\": \"runtime\",\n      \"profile\": \"work\",\n      \"status\": \"fail\",\n      \"detail\": \"no tracked copilot-api pid\",\n      \"fix\": \"agent start --profile work\",\n      \"value\": {\n        \"pid\": null,\n        \"tracked\": false,\n        \"alive\": false\n      }\n    }\n  ]\n}\n"
+  },
+  "health --scope auth --profile work --json": {
+    "exitCode": 0,
+    "stdout": "{\n  \"scope\": \"auth\",\n  \"profile\": \"work\",\n  \"ok\": true,\n  \"status\": \"ok\",\n  \"exitCode\": 0,\n  \"checks\": [\n    {\n      \"id\": \"setup.auth\",\n      \"label\": \"Authentication\",\n      \"group\": \"auth\",\n      \"profile\": \"work\",\n      \"status\": \"ok\",\n      \"detail\": \"credential: stored GitHub token (provider: gh-token, mode: proxy)/nresolved by `agent profile work auth --get`; passed to the profile's daemon on `agent start --profile work`\",\n      \"value\": {\n        \"provider\": \"gh-token\",\n        \"mode\": \"proxy\",\n        \"storedToken\": true,\n        \"ghAuthenticated\": false\n      }\n    }\n  ]\n}\n"
+  },
+  "models --proxy --profile work": {
+    "exitCode": 1,
+    "stdout": ""
+  },
+  "launch claude --profile nope -- x": {
+    "exitCode": 1,
+    "stdout": ""
+  },
+  "settings --export": {
+    "exitCode": 0,
+    "stdout": "{\n  \"formatVersion\": 2,\n  \"config\": {\n    \"global\": {\n      \"daemon.port\": 4199\n    },\n    \"profiles\": {}\n  },\n  \"credential\": {\n    \"githubToken\": \"<redacted>\",\n    \"authProvider\": \"gh-token\",\n    \"ghUser\": null\n  },\n  \"profiles\": {\n    \"work\": {\n      \"githubToken\": \"<redacted>\",\n      \"authProvider\": \"gh-token\",\n      \"ghUser\": null,\n      \"mode\": \"proxy\"\n    }\n  },\n  \"modes\": {\n    \"codex\": \"proxy\",\n    \"claude\": \"proxy\"\n  }\n}\n"
+  },
+  "credits --target 0": {
+    "exitCode": 1,
+    "stdout": ""
+  }
+}

@@ -1,6 +1,6 @@
 // Release build-provenance verification, the sigstore-backed half; ./attestation.ts (pure) says
 // what the attestation says and who may sign it. Loaded lazily by the update pipeline's default
-// verifier: the sigstore stack is well over a megabyte of CommonJS and `agent env` runs at every
+// verifier: the sigstore stack is well over a megabyte of CommonJS and `agent profile env` runs at every
 // shell start.
 //
 // The digest shim MUST load before the first sigstore import: tuf-js and @sigstore/core call

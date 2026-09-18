@@ -167,10 +167,12 @@ export async function runModels(args: ModelsArgs): Promise<void> {
   if (source === "proxy") {
     // copilot-api's local list is its own view, trimmed from upstream's (Fable stays hidden even
     // when the identity it sends lists it); the proxy still serves what upstream serves.
-    const profileFlag = profile === null ? "" : ` --profile ${profile}`;
+    const directListing = profile === null
+      ? "agent profile models --direct"
+      : `agent profile ${profile} models --direct`;
     consola.info(
-      "The proxy lists its own catalog, a trimmed view of upstream's; `agent models --direct" +
-        `${profileFlag}\` lists what Copilot serves this credential under its client identity.`,
+      `The proxy lists its own catalog, a trimmed view of upstream's; \`${directListing}\` ` +
+        "lists what Copilot serves this credential under its client identity.",
     );
   }
 }

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Self-bootstrapping entry point (Linux + macOS); bin/agent.ps1 is the Windows twin.
-# Every line this script emits goes to stderr: stdout belongs to `agent env`, which the
+# Every line this script emits goes to stderr: stdout belongs to `agent profile env`, which the
 # `agent` shell function in shell/agents.bashrc evals.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -8,9 +8,9 @@ SNAP="$(cd "${HERE}/.." && pwd)"
 
 # shellcheck source=../scripts/ensure-deno.sh
 . "${SNAP}/scripts/ensure-deno.sh"
-# `agent env` is the wrapper's automatic refresh after every command: its
+# `agent profile env` is the wrapper's automatic refresh after every command: its
 # bootstrap runs quiet so an old PATH deno warns once per command, not twice.
-if ! ensure_deno "${SNAP}" "$([ "${1:-}" = "env" ] && echo quiet)"; then
+if ! ensure_deno "${SNAP}" "$([ "${1:-}" = "profile" ] && [ "${2:-}" = "env" ] && echo quiet)"; then
     echo "copilot-env bootstrap failed: deno is unavailable -- check network, then re-run." >&2
     exit 1
 fi

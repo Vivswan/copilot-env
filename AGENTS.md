@@ -52,7 +52,7 @@ copilot-env wires the Codex and Claude CLIs to GitHub Copilot, either through a 
 
 - **A release is a binary, a checkout is a checkout.** The same `agent install` serves both and can never overwrite a checkout (`src/install/installer.ts`).
 - **The proxy floats; we never patch it.** Runtime needs are preload shims in `src/scripts/`, never package edits (`src/proxy_float.ts`).
-- **`agent env` is the only output the shell wrapper evals** (`shell/`), so a new subcommand needs no wrapper change.
+- **`agent profile env` is the only output the shell wrapper evals** (`shell/`), so a new subcommand needs no wrapper change.
 - **One credential, resolved not baked** (`src/copilot_api/env_state.ts`): Direct configs never store a token copy, and there is no implicit `gh` fallback. `static-key` is the one opt-in that bakes the value, resolved once at the write owner (`src/agents/configure.ts`) and never re-derived by a reader. When auth is none we ask.
 - **Truth lives in `~/.local/share/copilot-env`** (`src/copilot_api/paths.ts`): nothing outside it is ever read as truth. Agent files (`config.toml`, `settings.json`, the Claude Desktop config) are outputs: a command such as `agent init` or `agent profile sync` re-renders them from that state and corrects a stale or hand-edited copy, and nothing rewrites them without a command.
 - **Profiles are atomic units** (`src/agents/profile_wiring.ts`): one credential + one mode, always both agents. A named profile hard-fails rather than falling back to the default credential.

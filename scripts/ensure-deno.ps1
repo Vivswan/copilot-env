@@ -1,11 +1,11 @@
 # Dot-sourced (never executed) by scripts/setup-env.ps1 and bin/agent.ps1, so the two cannot
 # drift on which deno they use; the Windows parity of scripts/ensure-deno.sh. Every message
-# goes to stderr; bin/agent.ps1's stdout is the text the `agent env` profile function evals.
+# goes to stderr; bin/agent.ps1's stdout is the text the `agent profile env` profile function evals.
 #
 # Install-Deno -Root <repo-root> [-Quiet]
 #   deno on PATH, older than .dvmrc  -> one warning, used anyway (upgrading is the user's job)
 #   -Quiet                           -> no warning: the profile function re-runs bin/agent.ps1
-#                                       for every `agent env` refresh and must not repeat it
+#                                       for every `agent profile env` refresh and must not repeat it
 #   no deno at all                   -> the latest release, once, into $env:DENO_INSTALL
 
 # The version of the deno executable $Exe ("deno 2.9.5 (stable, ...)" -> "2.9.5"), or

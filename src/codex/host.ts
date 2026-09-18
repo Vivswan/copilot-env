@@ -76,7 +76,7 @@ export function probeCodexFarm(
   }
 }
 
-// The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent env` may clear it).
+// The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent profile env` may clear it).
 // Exact spelling on purpose: a trailing-slash variant is not ours. Never on Windows: no farm is
 // built there, so a farm-shaped export is a shared home of the user's own.
 export function isManagedFarmExport(
@@ -87,7 +87,7 @@ export function isManagedFarmExport(
   return Boolean(envHome && envHome === getHostLocalCodexHome(prefs.explicit));
 }
 
-/** The home every Codex write, `agent profile check --codex`, `agent env`, and the launch pin agree on, plus
+/** The home every Codex write, `agent profile check --codex`, `agent profile env`, and the launch pin agree on, plus
  *  the one note the writer, `--check`, and the launcher print (the other readers stay silent). */
 export interface CodexHomeResolution {
   home: string;
@@ -95,7 +95,7 @@ export interface CodexHomeResolution {
    *  convention (which is never stale). The note's wording follows it. */
   by: "farm" | "codex-home" | "default";
   /** The shell's CODEX_HOME when copilot-env decided the home (the farm, or the `codex.home` root)
-   *  and the export names another directory: an rc file, a shell `agent env` never refreshed. Null
+   *  and the export names another directory: an rc file, a shell `agent profile env` never refreshed. Null
    *  when the shell is silent or agrees; with neither key the export IS the home, so never stale. */
   staleExport: string | null;
 }

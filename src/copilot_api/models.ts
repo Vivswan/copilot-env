@@ -316,7 +316,7 @@ export interface ModelListEntry {
   unlisted?: boolean;
 }
 
-/** The shared row shape, so `agent models` and the Desktop wiring see the same list. */
+/** The shared row shape, so `agent profile models` and the Desktop wiring see the same list. */
 export function mergeUnlistedModels(
   entries: ModelListEntry[],
   discovered: { models: CatalogModel[]; unlisted: string[] },
@@ -363,7 +363,7 @@ function toEntry(raw: Record<string, unknown>, id: string): ModelListEntry {
 }
 
 /**
- * The ONE pipeline behind `agent models` and the Claude Desktop model list. Ids are kept VERBATIM,
+ * The ONE pipeline behind `agent profile models` and the Claude Desktop model list. Ids are kept VERBATIM,
  * `[1m]` suffix included: the listing answers "what can a client address", not "what is distinct".
  *   no `data` array   -> ERROR, so upstream schema drift cannot silently print "no models"
  *   `{data: []}`      -> a valid empty catalog

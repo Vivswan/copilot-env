@@ -13,10 +13,7 @@ import { changedPaths } from "./helpers.ts";
 import { runCli } from "./helpers/run.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
-interface Observation {
-  exitCode: number | null;
-  stdout: string;
-}
+const ORACLE = loadOracle("main_oracle");
 
 function fixture(name: string): string {
   return readFileSync(join(PROJECT_ROOT, "test", "fixtures", "cli_redesign", name), "utf8");
@@ -140,7 +137,6 @@ test(
     const refusals: [string[], string[]][] = [
       [["profile", "add", "sync"], ["'sync' is a reserved word"]],
       [["profile", "list"], ["'list' is a reserved word", "agent list"]],
-      [["profile", "start", "add", "--proxy"], ["'start' is a reserved word"]],
       // A real name in the verb's argument slot is the old `--add <name>` habit, named as such.
       [["profile", "add", "work"], [
         "the profile name goes before the verb",

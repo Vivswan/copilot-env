@@ -2,7 +2,7 @@
 // `claude mcp add --scope user` writes), NOT settings.json: hence beside but apart from config.ts.
 // Claude Code rewrites this file constantly and owns its schema, so a surprising document is warned
 // about and left alone, never clobbered.
-//   machine-global file, `agent mcp --serve` without `--profile` -> default profile only; a named
+//   machine-global file, `agent mcp --serve` -> the default profile's credential only; a named
 //                                                                  profile registers by hand
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";

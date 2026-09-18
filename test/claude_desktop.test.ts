@@ -452,7 +452,7 @@ test("fresh upsert: config + meta entry + appliedId only when the library had no
     "claude-opus-4-8",
     "claude-opus-5",
   ]);
-  // Labels come from the upstream catalog name when present (the `agent models`
+  // Labels come from the upstream catalog name when present (the `agent profile models`
   // pipeline), synthesized from the id otherwise.
   expect(models.find((m) => m.name === "claude-opus-5")?.labelOverride).toBe(
     "Claude Opus 5 (Upstream)",
@@ -898,7 +898,7 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
   }[];
   // On Windows the args carry the PowerShell invocation ahead of the subcommand, so the
   // expectation comes from the same launcher-command builder the writer uses.
-  const launcher = agentLauncherCommand(["mcp", "--serve", "--profile", "work"]);
+  const launcher = agentLauncherCommand(["profile", "work", "mcp", "--serve"]);
   expect(servers).toEqual([
     { "name": "their-server", "transport": "stdio", "command": "x" },
     {
@@ -2093,7 +2093,7 @@ test("the sweep and its dry-run listing take every generated helper script and n
 
 // --- the `static-key` key: attribution, the static wire, the inspector ---------------------
 
-test("entryProfileAt attributes by the managed MCP server's --profile argument alone", () => {
+test("entryProfileAt attributes by the managed MCP server's profile word alone", () => {
   isolateWithDesktop();
   const docAt = (name: string, doc: Record<string, unknown>): string => {
     const path = join(dir, name);

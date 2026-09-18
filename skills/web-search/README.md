@@ -31,7 +31,7 @@ In a dev checkout the launcher self-bootstraps: the FIRST spawn installs the pin
 
 ## Credentials
 
-The server resolves the copilot-env credential (`agent profile auth`). Without one it reads `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` from the environment, so a bare clone works with `GH_TOKEN=... bin/agent mcp --serve`. The registered server always uses the default credential; a named profile that needs its own can register a second entry with `--profile <name>`.
+The server resolves the copilot-env credential (`agent profile auth`). Without one it reads `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` from the environment, so a bare clone works with `GH_TOKEN=... bin/agent mcp --serve`. The registered server always uses the default credential; a named profile that needs its own can register a second entry running `agent profile <name> mcp --serve`.
 
 ## Configuration
 

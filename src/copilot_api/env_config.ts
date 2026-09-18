@@ -514,12 +514,13 @@ const CONFIG_REGISTRY_LITERAL = [
     defaultValue: CODEX_HOME_AUTO,
     applyHint:
       "Applies at the next `agent profile sync --codex`/`agent init` wiring (the config write lands there) and to the " +
-      "shell on the next `agent` command, whose wrapper re-evals `agent env`; a removal reaches new shells only.",
+      "shell on the next `agent` command, whose wrapper re-evals `agent profile env`; a removal reaches new shells only.",
   },
   {
     key: "codex.host",
     scope: "global",
-    describe: "Per-host CODEX_HOME at <codex.home>/hosts/<hostname> via `agent env` (Linux/macOS)",
+    describe:
+      "Per-host CODEX_HOME at <codex.home>/hosts/<hostname> via `agent profile env` (Linux/macOS)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     posixOnly: true,
@@ -760,7 +761,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "shell.launchers",
     scope: "global",
-    describe: "Shell launchers cl / co / cx (+ clx / cox / cxx) in `agent env`",
+    describe: "Shell launchers cl / co / cx (+ clx / cox / cxx) in `agent profile env`",
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint: "New shells pick a change up; the current one picks up an ENABLE on the next " +

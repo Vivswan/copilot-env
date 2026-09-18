@@ -1046,7 +1046,7 @@ export async function gatherFacts(
     }
   }
 
-  // `--live` runs each agent's smoke prompt against its CONFIGURED home (a `--profile` narrowing
+  // `--live` runs each agent's smoke prompt against its CONFIGURED home (a named profile's narrowing
   // routes it through that profile's wiring), only in the agent-focused scopes and only when
   // asked for (a slow live model call). The default sweep never runs per-profile live probes.
   if (opts.live && SCOPE_CODEX_LIVE.includes(scope)) {

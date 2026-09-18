@@ -360,11 +360,15 @@ export const DESKTOP_DISPLAY_NAME = "GitHub Copilot";
  *  named profile never falls back to the default). Rows are Desktop's documented managedMcpServers
  *  shape (an ARRAY; an object keyed by name is rejected as invalid_type and silently dropped).
  *  Foreign rows survive by name; a value of any other shape is our own former object and goes. */
-const MCP_SERVER_NAME = "copilot-env";
+export const MCP_SERVER_NAME = "copilot-env";
+/** The `agent` subcommand a profile's entry spawns: `mcp --serve` for the default (its alias), the
+ *  profile verb for a named one. One spelling for the writer, the two readers below, and the
+ *  4.0.9 migration's rewrite of the old shape. */
+export function mcpServeArgs(profile: Profile): string[] {
+  return profile === null ? ["mcp", "--serve"] : ["profile", profile, "mcp", "--serve"];
+}
 function managedMcpServers(profile: Profile, existing: unknown): Record<string, unknown>[] {
-  const { command, args } = agentLauncherCommand(
-    profile === null ? ["mcp", "--serve"] : ["mcp", "--serve", "--profile", profile],
-  );
+  const { command, args } = agentLauncherCommand(mcpServeArgs(profile));
   const foreign = Array.isArray(existing)
     ? existing.filter((row): row is Record<string, unknown> =>
       isRecord(row) && row["name"] !== MCP_SERVER_NAME
@@ -712,7 +716,7 @@ export type DesktopWireOptions = ManagedWrite & {
   fetchImpl?: ProbeFetch;
 };
 
-/** The same parse `agent models` renders: one pipeline for both surfaces. */
+/** The same parse `agent profile models` renders: one pipeline for both surfaces. */
 function labelLookup(body: unknown): (id: string) => string | null {
   const names = new Map<string, string>();
   try {
@@ -1243,7 +1247,7 @@ export interface OwnedDesktopEntry {
 }
 
 /** The rename's retarget of an entry's own MCP row (the `copilot-env` server, never another
- *  program's): its `--profile <from>` becomes `--profile <to>`. True when a row changed. */
+ *  program's): its `profile <from>` becomes `profile <to>`. True when a row changed. */
 export function retargetEntryProfile(
   doc: Record<string, unknown>,
   from: ProfileName,
@@ -1254,15 +1258,15 @@ export function retargetEntryProfile(
     ? servers.find((row) => isRecord(row) && row["name"] === MCP_SERVER_NAME)
     : undefined;
   if (!isRecord(ours) || !Array.isArray(ours.args)) return false;
-  const at = ours.args.indexOf("--profile");
+  const at = ours.args.indexOf("profile");
   if (at === -1 || ours.args[at + 1] !== from) return false;
   ours.args[at + 1] = to;
   return true;
 }
 
 /** Undefined when the document carries no wiring of ours (absent or damaged: no target can claim
- *  it, so it is an orphan). Attribution reads the managed MCP server's `--profile` argument, the one
- *  key both credential shapes write (a static entry names no helper script). An UNREADABLE
+ *  it, so it is an orphan). Attribution reads the managed MCP server's `profile <name>` words, the
+ *  one key both credential shapes write (a static entry names no helper script). An UNREADABLE
  *  document throws: a failed look is never "not ours". */
 export function entryProfileAt(path: string): Profile | undefined {
   const raw = readFileOrNull(path);
@@ -1279,7 +1283,7 @@ export function entryProfileAt(path: string): Profile | undefined {
     : undefined;
   const args = isRecord(ours) && Array.isArray(ours.args) ? ours.args : null;
   if (args === null || !args.includes("--serve")) return undefined;
-  const at = args.indexOf("--profile");
+  const at = args.indexOf("profile");
   if (at === -1) return null;
   const name = args[at + 1];
   if (typeof name !== "string") return undefined;

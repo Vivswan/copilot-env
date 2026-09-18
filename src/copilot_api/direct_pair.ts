@@ -5,7 +5,7 @@
 // identity or a literal host is an overlay, rendered at read time by renderDirectPair and never
 // written into the slot.
 //
-// Listings never write. `agent models --direct` and the web-search catalog probe a slot holding no
+// Listings never write. `agent profile models --direct` and the web-search catalog probe a slot holding no
 // pair on every call and store nothing: a transient answer there can never overwrite the stored
 // pair, and the no-pair state lasts only until the first launch or wiring lands it here.
 import {

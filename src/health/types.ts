@@ -26,7 +26,7 @@ export const HEALTH_SCOPES = [
 export const RUNTIME_SCOPES: readonly HealthScope[] = ["full", "proxy", "runtime"];
 // The named-profile runtime sweep joins only the diagnostic scopes, never the launchers' fast
 // `runtime` probe, whose row set and exit code are a contract of the DEFAULT daemon alone (a
-// stopped profile daemon must not fail a launcher's readiness gate). A `--profile` narrowing
+// stopped profile daemon must not fail a launcher's readiness gate). A named profile's narrowing
 // addresses its target in every runtime-bearing scope regardless.
 export const PROFILE_SWEEP_SCOPES: readonly HealthScope[] = ["full", "proxy"];
 export const BOOTSTRAP_SCOPES: readonly HealthScope[] = ["full", "proxy"];

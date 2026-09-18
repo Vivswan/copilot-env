@@ -41,6 +41,9 @@ import {
   syncEveryProfile,
   syncProfile,
 } from "./profile.ts";
+// --- profile ops (src/commands/profile_ops.ts) ---
+import { registerProfileOps } from "./profile_ops.ts";
+// --- end profile ops ---
 
 /** Commander hands action callbacks an options bag of mixed-typed values. */
 export type Opts = Record<string, unknown>;
@@ -369,6 +372,16 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       const agent = agentFlag(opts);
       return checkProfile(minted(), agent);
     });
+
+  // --- profile ops (src/commands/profile_ops.ts): launch env proxy-token mcp start stop health
+  // models credits settings, routed onto their command functions with this name ---
+  registerProfileOps({
+    rawProfile,
+    verb,
+    refuseStrayWords: (cmd, name) => refuseStrayWords(cmd, name, rawProfile),
+    dryRunHelp: DRY_RUN_HELP,
+  });
+  // --- end profile ops ---
 }
 
 /** `agent list`: every profile, one row each (bare `agent profile` prints the same). */

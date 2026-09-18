@@ -672,7 +672,18 @@ function planWrites(
 
 /** Compute the whole import plan against the CURRENT stores (one gh probe per
  *  pinned account, memoized, shared by every gh-cli slot and reused by the apply). */
-export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): ImportPlan {
+/** How far an import reaches. The whole store lands the default's credential and wiring; one
+ *  named profile's bundle (`agent profile <name> settings --import`) never touches the default,
+ *  so the default's rebake rules below stay off for it. */
+export interface ImportScope {
+  defaultWiring: boolean;
+}
+
+export function planImport(
+  bundle: SettingsBundle,
+  deps: ImportDeps = {},
+  scope: ImportScope = { defaultWiring: true },
+): ImportPlan {
   const ghTokens = new Map<string | null, string | null>();
   const gh = (ghUser: string | null): string | null => {
     let token = ghTokens.get(ghUser);
@@ -725,13 +736,13 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
     modes.codex = mode;
     modes.claude = mode;
   };
-  const pairUnstored = recorded === "direct" &&
+  const pairUnstored = scope.defaultWiring && recorded === "direct" &&
     (defaultSlot.action === "write" ||
       directPairIncomplete(null, directOverlayIn(bundle.config, null)));
   if (bundle.modes.codex === "none" && bundle.modes.claude === "none" && pairUnstored) {
     modes.codex = "direct";
     modes.claude = "direct";
-  } else if (oneNamed && recorded === null) {
+  } else if (scope.defaultWiring && oneNamed && recorded === null) {
     landBoth(
       named,
       `the default profile has no recorded mode, so the bundle's ${named} wiring lands for both agents`,

@@ -1,4 +1,4 @@
-// The shared raw `/models` body (`agent models`, src/codex/catalog.ts, Desktop, web_search.ts);
+// The shared raw `/models` body (`agent profile models`, src/codex/catalog.ts, Desktop, web_search.ts);
 // discovery.ts fetches its own under each identity it probes. The request itself is
 // models_fetch.ts's. Failures THROW with actionable messages; best-effort callers catch.
 //   proxy  -> the running local daemon's GET /models

@@ -224,14 +224,14 @@ test("named daemon verdicts address the profile on every fix", () => {
       check: runPort,
       overrides: down,
       status: "fail",
-      fix: "agent start --profile p",
+      fix: "agent profile p start",
     },
     {
       name: "pid: down, auto-start off",
       check: runPid,
       overrides: down,
       status: "fail",
-      fix: "agent start --profile p",
+      fix: "agent profile p start",
     },
     {
       name: "port: down, auto-start on",
@@ -254,7 +254,7 @@ test("named daemon verdicts address the profile on every fix", () => {
       check: runIdentity,
       overrides: { identityConfirmed: false },
       status: "warn",
-      fix: "free the port (stop the foreign process), then agent start --profile p",
+      fix: "free the port (stop the foreign process), then agent profile p start",
       detail: "misroute",
     },
     {
@@ -262,7 +262,7 @@ test("named daemon verdicts address the profile on every fix", () => {
       check: runOrphan,
       overrides: { pidTracked: false, trackedPid: null, identityConfirmed: true },
       status: "warn",
-      fix: "agent stop --profile p, then agent start --profile p (re-tracks the daemon)",
+      fix: "agent profile p stop, then agent profile p start (re-tracks the daemon)",
     },
   ];
   for (const row of rows) {
@@ -315,7 +315,7 @@ test("evaluateAll gates the daemon rows on a probed proxy target", () => {
       overrides: { portPersisted: false, skipped: "no persisted port on this host" },
       ids: ["profile.consistency"],
       worst: "ok",
-      detail: ["no port recorded on this host", "agent start --profile p"],
+      detail: ["no port recorded on this host", "agent profile p start"],
     },
     {
       name: "homed proxy profile with a persisted port",
@@ -380,7 +380,7 @@ test("checkProfileAuth: the slot and its credential resolution decide status, de
       slot: { provider: "gh-token", mode: "proxy" },
       resolves: RESOLVES,
       status: "ok",
-      detail: ["gh-token", "agent profile p auth --get", "agent start --profile p"],
+      detail: ["gh-token", "agent profile p auth --get", "agent profile p start"],
     },
     {
       name: "provisioned direct slot",
@@ -887,7 +887,7 @@ test("the sweep gathers the default target first, then sorted named targets; the
   }
 });
 
-test("--profile narrows gathering to the named target and excludes account-wide facts", async () => {
+test("a named profile narrows gathering to its target and excludes account-wide facts", async () => {
   const home = isolateProxyHome("copilot-health-narrow-");
   try {
     const store = new CopilotEnvState();

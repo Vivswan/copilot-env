@@ -124,11 +124,11 @@ Applies at the next wiring pass (`agent profile [<name>] add` / `sync`, `agent s
 
 ## codex
 
-| Key                   | Scope    | Default | Effect                                                                                                                                                                               |
-| --------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `codex.home`          | `global` | `auto`  | Root of the Codex home copilot-env writes and `agent env` exports; `auto` is `~/.codex`, or the shell's `CODEX_HOME` while `codex.host` is off (never copilot-env's own farm export) |
-| `codex.host`          | `global` | `false` | Per-host `CODEX_HOME` symlink farm under it, exported by `agent env` (Linux/macOS)                                                                                                   |
-| `codex.model-catalog` | `global` | `false` | Patched Codex model catalog serving Copilot's real context windows                                                                                                                   |
+| Key                   | Scope    | Default | Effect                                                                                                                                                                                       |
+| --------------------- | -------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `codex.home`          | `global` | `auto`  | Root of the Codex home copilot-env writes and `agent profile env` exports; `auto` is `~/.codex`, or the shell's `CODEX_HOME` while `codex.host` is off (never copilot-env's own farm export) |
+| `codex.host`          | `global` | `false` | Per-host `CODEX_HOME` symlink farm under it, exported by `agent profile env` (Linux/macOS)                                                                                                   |
+| `codex.model-catalog` | `global` | `false` | Patched Codex model catalog serving Copilot's real context windows                                                                                                                           |
 
 ### Codex model catalog
 
@@ -154,7 +154,7 @@ agent config set codex.host true    # false removes the farm again
 ```
 
 - What builds the farm, what it holds, and what removes it are in the [write list](getting-started.md#what-a-wiring-pass-writes).
-- `agent env` exports `CODEX_HOME` whenever `codex.host` is on (the farm path, built or not) or `codex.home` is set (the path itself); the next wiring pass creates what is missing.
+- `agent profile env` exports `CODEX_HOME` whenever `codex.host` is on (the farm path, built or not) or `codex.home` is set (the path itself); the next wiring pass creates what is missing.
 - `agent profile check --codex` / `agent health` report any drift between the key and the disk.
 
 ## claude
@@ -201,9 +201,9 @@ Unset, the claude smoke runs `--model haiku` (the CLI resolves its own alias, so
 
 ## shell
 
-| Key               | Scope    | Default | Effect                                                                            |
-| ----------------- | -------- | ------- | --------------------------------------------------------------------------------- |
-| `shell.launchers` | `global` | `false` | Define the `cl` / `co` / `cx` (+ `clx` / `cox` / `cxx`) functions via `agent env` |
+| Key               | Scope    | Default | Effect                                                                                    |
+| ----------------- | -------- | ------- | ----------------------------------------------------------------------------------------- |
+| `shell.launchers` | `global` | `false` | Define the `cl` / `co` / `cx` (+ `clx` / `cox` / `cxx`) functions via `agent profile env` |
 
 The functions are described under [launchers](usage.md#launchers).
 

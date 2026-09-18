@@ -208,7 +208,7 @@ function verifyLauncherWiring(launcher: string): void {
   if (!envBool("SETUP_LAUNCHERS")) {
     return;
   }
-  // The launchers are `agent env` emissions gated on the `shell.launchers` key, not an rc block,
+  // The launchers are `agent profile env` emissions gated on the `shell.launchers` key, not an rc block,
   // so both halves of that contract are asserted.
   const stored = launcherOutput(launcher, ["config", "get", "shell.launchers"]);
   if (stored !== "true") {
@@ -219,7 +219,7 @@ function verifyLauncherWiring(launcher: string): void {
     );
     process.exit(1);
   }
-  const envArgs = isWindows ? ["env", "--format", "powershell"] : ["env"];
+  const envArgs = isWindows ? ["profile", "env", "--format", "powershell"] : ["profile", "env"];
   const emitted = launcherOutput(launcher, envArgs);
   // The same source constant test/env.test.ts pins verbatim, so the smoke can
   // never assert a spelling the emitter no longer produces.
@@ -227,13 +227,15 @@ function verifyLauncherWiring(launcher: string): void {
   const missing = expected.filter((line) => emitted === null || !emitted.includes(line));
   if (missing.length > 0) {
     console.error(
-      `::error::agent env does not emit the launcher functions with the key on (missing: ${
+      `::error::agent profile env does not emit the launcher functions with the key on (missing: ${
         missing.join(" | ")
       })`,
     );
     process.exit(1);
   }
-  console.log("launcher opt-in verified: config key on, agent env emits the launcher functions");
+  console.log(
+    "launcher opt-in verified: config key on, agent profile env emits the launcher functions",
+  );
 }
 
 /** Everything after run-install addresses the INSTALLED tree, never the checkout. */

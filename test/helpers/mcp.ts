@@ -54,12 +54,21 @@ export class McpClient {
   private buffer = "";
   readonly stdoutLines: string[] = [];
 
-  constructor(args: string[] = []) {
+  /** `agent [profile <name>] mcp --serve <args>`: a named profile's server resolves that profile's
+   *  credential and never falls back to the default's. */
+  constructor(args: string[] = [], profile?: string) {
     // clearEnv matters: mcpEnv() scrubs the credential trio by DELETING keys, and
     // Deno.Command merges `env` over the inherited environment by default, which
     // would quietly restore an ambient GH_TOKEN.
     this.proc = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), join(ROOT, "src", "cli.ts"), "mcp", "--serve", ...args],
+      args: [
+        ...denoRunArgs(),
+        join(ROOT, "src", "cli.ts"),
+        ...(profile === undefined ? [] : ["profile", profile]),
+        "mcp",
+        "--serve",
+        ...args,
+      ],
       cwd: ROOT,
       clearEnv: true,
       env: mcpEnv(),

@@ -86,7 +86,7 @@ async function checkAndApply(
 
   logger.start(`autoupdate: updating ${current} -> ${target.tag} ...`);
   try {
-    // Stderr end to end, so an autoupdate can never write to stdout (protects `agent env`). No
+    // Stderr end to end, so an autoupdate can never write to stdout (protects `agent profile env`). No
     // flag here: the stored `update.verify-provenance` (default: verify) decides.
     const provenance = resolveProvenanceDecision(
       undefined,

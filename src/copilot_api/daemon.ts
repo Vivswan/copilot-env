@@ -95,7 +95,7 @@ export function portListening(port: number, timeoutMs = 2000): Promise<boolean> 
 }
 
 /** Keeps the in-daemon idle watchdog from stopping a proxy an open agent still uses.
- *  setIfExists: a typo'd `--profile <name>` must not fabricate a phantom profile home. */
+ *  setIfExists: a typo'd profile name must not fabricate a phantom profile home. */
 export function recordHeartbeat(profile: Profile = null): void {
   CopilotEnvRunState.forProfile(profile).setIfExists({ lastEnsureAt: Date.now() });
 }
@@ -118,7 +118,7 @@ export async function stopTrackedProxy(
   const trackedPid = state.read().pid;
   if (trackedPid === undefined) {
     // Stale activity marks still go, so a fresh start is not seen as recently active; setIfExists keeps
-    // a typo'd `agent stop --profile <name>` from fabricating a profile home.
+    // a typo'd `agent profile <name> stop` from fabricating a profile home.
     state.setIfExists({ lastEnsureAt: null });
     clearPersistedInferenceActivity(profile);
     return { signalled: false, stopped: true };

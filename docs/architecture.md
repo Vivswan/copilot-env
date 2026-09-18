@@ -263,7 +263,7 @@ flowchart LR
   settings -->|"reads the wired base URL: managedClaudeBaseUrl()"| env
   prefs -->|"reads codex-home, codex-host, launchers"| env
   env -->|"the only output the agent function evals: CODEX_HOME, ANTHROPIC_BASE_URL, the cl co cx functions"| rc
-  rc -->|"cl runs agent launch claude with the arguments"| bin
+  rc -->|"cl runs agent profile launch claude with the arguments"| bin
   bin --> cli
   cli --> launch
   launch -->|"ensureProxy"| token
@@ -313,7 +313,6 @@ graph TD
   migrations["src/migrations/"]
   scripts["src/scripts/"]
   utils["src/utils/"]
-  cli --> agents
   cli --> codex
   cli --> commands
   cli --> copilot_api

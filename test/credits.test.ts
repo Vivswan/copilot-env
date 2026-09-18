@@ -11,11 +11,14 @@ import {
   renderCredits,
   resolveCreditsTarget,
 } from "../src/usage/credits.ts";
-import { runCredits } from "../src/commands/credits.ts";
+import { runCredits, runCreditsEverywhere } from "../src/commands/credits.ts";
 import { runCli } from "./helpers/run.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { describe, expect, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const BODY = {
   "login": "octocat",
@@ -293,6 +296,85 @@ describe("runCredits", () => {
     await expect(runCredits({}, { fetchImpl, credential: none, nowMs })).rejects.toThrow(
       "run `agent auth` to log in",
     );
+  });
+});
+
+describe("runCreditsEverywhere", () => {
+  const nowMs = () => NOON_SEP_11;
+  const restoreEnv = envSnapshot();
+
+  /** A store with the default and the named profiles `a`, `b`, `c` (the names are what
+   *  allProfileNames reads; the credentials come from the seam). */
+  function seedProfiles(): void {
+    const home = isolateProxyHome("credits-everywhere-");
+    const slot = { authProvider: "gh-token", githubToken: "x", mode: "proxy" };
+    writeFileSync(
+      join(home, "state.json"),
+      JSON.stringify({ profiles: { default: slot, a: slot, b: slot, c: slot } }),
+    );
+  }
+
+  test("one meter per account: profiles on one token share a fetch, two tokens on one login print once, a credential that does not resolve is said and left out", async () => {
+    seedProfiles();
+    try {
+      const tokens: Record<string, string | null> = {
+        default: "tok-default",
+        a: "tok-default",
+        b: "tok-other-token-same-login",
+        c: null,
+      };
+      const credential = (profile: string | null) => {
+        const token = tokens[profile ?? "default"] ?? null;
+        return token === null
+          ? { token, reason: `no GitHub credential configured for profile '${profile}'` }
+          : { token, reason: null };
+      };
+      const fetched: string[] = [];
+      const fetchImpl = (_url: string, init?: RequestInit) => {
+        fetched.push(String(new Headers(init?.headers).get("Authorization")));
+        return Promise.resolve(new Response(JSON.stringify(BODY), { status: 200 }));
+      };
+      const out = await captureChannels(() =>
+        runCreditsEverywhere({ json: true }, { fetchImpl, credential, nowMs })
+      );
+      // Two distinct tokens, two fetches; the endpoint names one login for both, so one meter.
+      expect(fetched).toEqual(["token tok-default", "token tok-other-token-same-login"]);
+      const meters = JSON.parse(out.stdout) as { profiles: string[]; login: string }[];
+      expect(meters).toHaveLength(1);
+      expect(meters[0]).toMatchObject({ profiles: ["default", "a", "b"], login: "octocat" });
+      expect(out.stderr).toContain("profile 'c': no GitHub credential configured for profile 'c'");
+
+      const text = await captureChannels(() =>
+        runCreditsEverywhere({}, { fetchImpl, credential, nowMs })
+      );
+      expect(text.stdout.split("\n").slice(0, 2)).toEqual([
+        "profiles: default, a, b",
+        "Copilot credits  octocat · Sep 2026 · resets Oct 1 · day 11/30",
+      ]);
+
+      // Distinct logins are distinct meters, blank-line separated, in profile order.
+      let call = 0;
+      const perToken = () => {
+        call += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ ...BODY, "login": `user-${call}` }), { status: 200 }),
+        );
+      };
+      const two = await captureChannels(() =>
+        runCreditsEverywhere({ json: true }, { fetchImpl: perToken, credential, nowMs })
+      );
+      expect((JSON.parse(two.stdout) as { profiles: string[] }[]).map((m) => m.profiles)).toEqual([
+        ["default", "a"],
+        ["b"],
+      ]);
+
+      // Nothing resolving is the command's error.
+      const none = () => ({ token: null, reason: "no credential" });
+      await expect(runCreditsEverywhere({}, { fetchImpl, credential: none, nowMs })).rejects
+        .toThrow("no profile has a credential that resolves");
+    } finally {
+      restoreEnv();
+    }
   });
 });
 

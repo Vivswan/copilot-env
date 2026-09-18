@@ -91,14 +91,20 @@ test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only fl
   expect(help.exitCode).toBe(0);
   expect(help.output).toContain("--serve");
   expect(help.output).toContain("--remove");
-  expect(help.output).toContain("--profile");
   expect(help.output).toContain("--model");
 
   const conflict = runCli(["mcp", "--remove", "--model", "x"], {
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
   expect(conflict.exitCode).not.toBe(0);
-  expect(conflict.stderr).toContain("--remove takes no --profile/--model");
+  expect(conflict.stderr).toContain("--remove takes no --model");
+
+  // The registration is machine-global, so a named profile cannot remove it.
+  const namedRemove = runCli(["profile", "work", "mcp", "--remove"], {
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  expect(namedRemove.exitCode).not.toBe(0);
+  expect(namedRemove.stderr).toContain("--remove takes no profile name");
 
   const serveRemove = runCli(["mcp", "--serve", "--remove"], {
     env: { ...process.env, CONSOLA_LEVEL: "5" },
@@ -111,7 +117,7 @@ test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only fl
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
   expect(statusModel.exitCode).not.toBe(0);
-  expect(statusModel.stderr).toContain("apply to --serve");
+  expect(statusModel.stderr).toContain("applies to --serve");
 });
 
 test("cli.ts config set writes only inside the data home, so it names no file", () => {
@@ -181,21 +187,10 @@ test("cli.ts update folds --verify/--no-verify into the verify flag", () => {
   }
 });
 
-test("cli.ts mcp --serve --profile '' hard-fails instead of serving the default credential", () => {
-  // A supplied-but-blank --profile (an unset shell var in `--profile "$P"`) must never resolve the
-  // DEFAULT credential.
-  const blank = runCli(["mcp", "--serve", "--profile", ""], {
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  expect(blank.exitCode).not.toBe(0);
-  expect(blank.stderr).toContain("--profile expects a profile name");
-});
-
 // One help-surface case per command; commands whose help test carries extra rejection runs stay
 // separate. "--verify " keeps its trailing space so it matches the padded option entry only; bare
 // "--verify" would also match a mention of the flag inside another option's description.
 const HELP_SURFACES: { cmd: string; needles: string[] }[] = [
-  { cmd: "env", needles: ["--format", "--profile"] },
   {
     cmd: "shell",
     needles: ["--clis", "--cooldown", "--no-sudo", "--no-prereqs", "--remove"],
@@ -334,27 +329,27 @@ test("claude exposes and runs check mode", () => {
 });
 
 test("launch --help documents the contract; bad invocations are boundary rejections", () => {
-  const help = helpScreen("launch", "--help");
+  const help = helpScreen("profile", "launch", "--help");
   expect(help.exitCode).toBe(0);
-  for (const needle of ["claude | codex | copilot", "--profile", "--relaxed"]) {
+  for (const needle of ["claude | codex | copilot", "--relaxed"]) {
     expect(help.output).toContain(needle);
   }
 
-  const unknown = runCli(["launch", "cursor"], { env: isolatedEnv() });
+  const unknown = runCli(["profile", "launch", "cursor"], { env: isolatedEnv() });
   expect(unknown.exitCode).toBe(1);
   expect(unknown.stderr).toContain(
     "unknown agent CLI 'cursor' (expected claude | codex | copilot)",
   );
 
-  const copilotProfile = runCli(["launch", "copilot", "--profile", "work"], {
+  const copilotProfile = runCli(["profile", "work", "launch", "copilot"], {
     env: isolatedEnv(),
   });
   expect(copilotProfile.exitCode).toBe(1);
-  expect(copilotProfile.stderr).toContain("--profile does not apply to copilot");
+  expect(copilotProfile.stderr).toContain("copilot takes no profile");
 
   // Agent-CLI flags belong AFTER `--`; before it they are Commander's to reject,
   // so a typo'd launch flag is never silently forwarded to the agent.
-  const beforeDashes = runCli(["launch", "claude", "--resume"], { env: isolatedEnv() });
+  const beforeDashes = runCli(["profile", "launch", "claude", "--resume"], { env: isolatedEnv() });
   expect(beforeDashes.exitCode).toBe(1);
   expect(beforeDashes.stderr).toContain("unknown option");
   // Four cold CLI spawns; generous headroom for loaded Windows CI runners.
@@ -456,7 +451,7 @@ test("the mode conflict is rejected at the boundary on every command that takes 
   // error later (a fresh default with no credential) rejects the pair first.
   for (
     const argv of [
-      ["models", "--direct", "--proxy"],
+      ["profile", "models", "--direct", "--proxy"],
       ["init", "--direct", "--proxy"],
       ["profile", "add", "--direct", "--proxy"],
     ]
@@ -713,40 +708,63 @@ interface ProfiledCheck {
   fix?: string;
 }
 
-test("health sweep reports a seeded proxy profile as its own runtime target", () => {
-  const env = seededProfileEnv();
-  const proc = runCli(["health", "--json"], { env });
-  const json = JSON.parse(proc.stdout) as {
-    profile: string | null;
-    exitCode: number;
-    checks: ProfiledCheck[];
-  };
-  expect(json.profile).toBeNull();
-  const consistency = json.checks.find((c) => c.id === "profile.consistency");
-  expect(consistency?.profile).toBe("p");
-  expect(consistency?.status).toBe("ok");
-  const ports = json.checks.filter((c) => c.id === "runtime.port");
-  expect(ports.map((c) => c.profile)).toEqual([null, "p"]);
-  // Nothing listens on p's reserved 4555 and auto-start is off: the profile's
-  // rows fail with the profile-addressed fix, and the exit code reflects it.
-  const profilePort = ports.find((c) => c.profile === "p");
-  expect(profilePort?.status).toBe("fail");
-  expect(profilePort?.detail).toContain("4555");
-  expect(profilePort?.fix).toBe("agent start --profile p");
-  expect(json.exitCode).toBe(1);
-  expect(proc.exitCode).toBe(1);
-  // The fast launcher probe stays the default daemon alone.
-  const fast = runCli(["health", "--scope", "runtime", "--json"], { env });
-  const fastJson = JSON.parse(fast.stdout) as { checks: ProfiledCheck[] };
-  expect(fastJson.checks.map((c) => `${c.id}@${c.profile}`)).toEqual([
-    "runtime.port@null",
-    "runtime.pid@null",
-  ]);
-}, 30_000);
+test(
+  "health sweeps every profile: the seeded proxy profile is its own runtime target, and its narrowed checks fold in",
+  () => {
+    const env = seededProfileEnv();
+    const proc = runCli(["health", "--json"], { env });
+    const json = JSON.parse(proc.stdout) as {
+      profile: string | null;
+      exitCode: number;
+      checks: ProfiledCheck[];
+    };
+    expect(json.profile).toBeNull();
+    const consistency = json.checks.filter((c) => c.id === "profile.consistency");
+    expect(consistency.map((c) => c.profile)).toEqual(["p"]);
+    expect(consistency[0]?.status).toBe("ok");
+    const ports = json.checks.filter((c) => c.id === "runtime.port");
+    expect(ports.map((c) => c.profile)).toEqual([null, "p"]);
+    // Nothing listens on p's reserved 4555 and auto-start is off: the profile's
+    // rows fail with the profile-addressed fix, and the exit code reflects it.
+    const profilePort = ports.find((c) => c.profile === "p");
+    expect(profilePort?.status).toBe("fail");
+    expect(profilePort?.detail).toContain("4555");
+    expect(profilePort?.fix).toBe("agent profile p start");
+    // The profile's own credential line and per-agent wiring ride along, once each.
+    expect(json.checks.filter((c) => c.id === "setup.auth").map((c) => c.profile)).toEqual([
+      null,
+      "p",
+    ]);
+    expect(json.checks.filter((c) => c.id === "setup.codex").map((c) => c.profile)).toEqual([
+      null,
+      "p",
+    ]);
+    expect(json.exitCode).toBe(1);
+    expect(proc.exitCode).toBe(1);
+    // The default profile's fast probe stays the default daemon alone; the every-profile probe
+    // adds each profile daemon's rows.
+    const fast = runCli(["profile", "health", "--scope", "runtime", "--json"], { env });
+    const fastJson = JSON.parse(fast.stdout) as { checks: ProfiledCheck[] };
+    expect(fastJson.checks.map((c) => `${c.id}@${c.profile}`)).toEqual([
+      "runtime.port@null",
+      "runtime.pid@null",
+    ]);
+    const every = runCli(["health", "--scope", "runtime", "--json"], { env });
+    const everyJson = JSON.parse(every.stdout) as { checks: ProfiledCheck[] };
+    expect(everyJson.checks.map((c) => `${c.id}@${c.profile}`)).toEqual([
+      "runtime.port@null",
+      "runtime.pid@null",
+      "profile.consistency@p",
+      "runtime.port@p",
+      "runtime.pid@p",
+    ]);
+  },
+  60_000,
+);
 
-test("health --profile narrows the run and excludes account-wide checks", () => {
+test("profile health narrows the run to the named profile and excludes account-wide checks", () => {
   const env = seededProfileEnv();
-  const proc = runCli(["health", "--profile", "p", "--json"], { env });
+  const proc = runCli(["profile", "p", "health", "--json"], { env });
   const json = JSON.parse(proc.stdout) as {
     profile: string | null;
     exitCode: number;
@@ -785,10 +803,10 @@ test("health --profile narrows the run and excludes account-wide checks", () => 
   // The unwired agent homes read as interrupted profile wiring (warn), and the
   // down daemon fails -- both fixes address the profile.
   expect(json.checks.find((c) => c.id === "setup.codex")?.fix).toBe("agent profile p add");
-  expect(json.checks.find((c) => c.id === "runtime.port")?.fix).toBe("agent start --profile p");
+  expect(json.checks.find((c) => c.id === "runtime.port")?.fix).toBe("agent profile p start");
   expect(json.exitCode).toBe(1);
 
-  const narrowed = runCli(["health", "--profile", "p", "--scope", "runtime", "--json"], { env });
+  const narrowed = runCli(["profile", "p", "health", "--scope", "runtime", "--json"], { env });
   const narrowedJson = JSON.parse(narrowed.stdout) as {
     profile: string | null;
     checks: ProfiledCheck[];
@@ -801,8 +819,8 @@ test("health --profile narrows the run and excludes account-wide checks", () => 
   ]);
 }, 30_000);
 
-test("health --profile with an unknown name is a hard error naming the known profiles", () => {
-  const proc = runCli(["health", "--profile", "nope"], { env: seededProfileEnv() });
+test("profile health with an unknown name is a hard error naming the known profiles", () => {
+  const proc = runCli(["profile", "nope", "health"], { env: seededProfileEnv() });
   expect(proc.exitCode).toBe(1);
   const err = proc.stderr;
   expect(err).toContain("no such profile 'nope'");

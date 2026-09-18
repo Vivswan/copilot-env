@@ -4,7 +4,7 @@ import { COLOR_ENABLED, paintFor, palette, statusPaint } from "./ansi.ts";
 
 export type Align = "left" | "right";
 
-/** A heading spans the table between record rows (the vendor lines of `agent models`); the records
+/** A heading spans the table between record rows (the vendor lines of `agent profile models`); the records
  *  under one nest a GAP deeper than the heading. */
 export type TableRow = string[] | { heading: string };
 

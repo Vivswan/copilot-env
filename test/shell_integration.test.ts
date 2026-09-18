@@ -197,7 +197,7 @@ skipWin(
 );
 
 skipWin("shell wires NO launchers block and reports the launchers key without writing it", () => {
-  // The launchers are `agent env` emissions gated on the `launchers` config key; the
+  // The launchers are `agent profile env` emissions gated on the `launchers` config key; the
   // rc file carries only the integration block, and `--launchers` is no flag.
   const wired = run();
   expect(wired.code).toBe(0);
@@ -494,7 +494,7 @@ test.skipIf(process.platform !== "win32")(
 );
 
 test("the PowerShell agent wrapper evals every env line, mirroring the POSIX eval", () => {
-  // agents.bashrc evals the whole `agent env` output unconditionally; the PS wrapper must do
+  // agents.bashrc evals the whole `agent profile env` output unconditionally; the PS wrapper must do
   // the same, so a new upstream directive shape is never silently dropped on Windows.
   const ps1 = readFileSync(join(process.cwd(), "shell", "agents.ps1"), "utf8");
   expect(ps1).toContain("Invoke-Expression");
@@ -504,16 +504,18 @@ test("the PowerShell agent wrapper evals every env line, mirroring the POSIX eva
 test("env-refresh stderr parity: eager source is silenced, the agent wrapper's refresh is not (POSIX)", () => {
   const posix = readFileSync(join(process.cwd(), "shell", "agents.bashrc"), "utf8");
 
-  // The eager startup `agent env` call silences stderr so bootstrap noise
+  // The eager startup `agent profile env` call silences stderr so bootstrap noise
   // doesn't break the prompt's instant-prompt guard. It forwards NO arguments
   // (matching the ps1 twin's eager Import-CopilotEnv -Quiet).
-  expect(posix).toMatch(/bin\/agent" env 2>\/dev\/null/);
+  expect(posix).toMatch(/bin\/agent" profile env 2>\/dev\/null/);
 
   // The `agent` wrapper's refresh must NOT silence stderr: a genuine failure stays visible.
   const body = shellFunctionBody(posix, "agent");
-  const refresh = body.split("\n").find((line) => line.includes('bin/agent" env)'));
+  const refresh = body.split("\n").find((line) => line.includes('bin/agent" profile env)'));
   expect(refresh).toBeDefined();
-  expect(refresh).toMatch(/_env="\$\("\$\{_COPILOT_AGENTS_DIR\}\/bin\/agent" env\)" && eval/);
+  expect(refresh).toMatch(
+    /_env="\$\("\$\{_COPILOT_AGENTS_DIR\}\/bin\/agent" profile env\)" && eval/,
+  );
   expect(refresh).not.toContain("2>/dev/null");
 });
 
@@ -521,7 +523,9 @@ test("env-refresh stderr parity: Import-CopilotEnv takes -Quiet, eager passes it
   const powershell = readFileSync(join(process.cwd(), "shell", "agents.ps1"), "utf8");
 
   expect(powershell).toMatch(/function Import-CopilotEnv\s*\{\s*param\(\[switch\]\$Quiet\)/);
-  expect(powershell).toMatch(/if \(\$Quiet\) \{ Invoke-Agent env --format powershell 2>\$null \}/);
+  expect(powershell).toMatch(
+    /if \(\$Quiet\) \{ Invoke-Agent profile env --format powershell 2>\$null \}/,
+  );
 
   // The eager startup call passes -Quiet to silence bootstrap noise.
   expect(powershell).toMatch(/Import-CopilotEnv -Quiet/);

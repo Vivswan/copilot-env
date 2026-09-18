@@ -29,40 +29,43 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #   sync [--claude|--codex]    re-render its agent files from the store: both agents, or one
                            #   check                      its recorded mode; exits 0 direct, 2 proxy, 1 none or partial
                            #   check --claude|--codex     that agent's file; exits 0 direct, 2 proxy or none, 1 other
-                           #   reserved words, never a new profile's name: the verbs, help, list, identity, and the
-                           #   runtime commands (launch env proxy-token mcp start stop health models credits settings)
+                           #   launch <cli> [-- args]     run claude|codex|copilot under its wiring (--relaxed; what cl/co/cx run)
+                           #   env [--format powershell]  its shell directives (what the shell wrapper evals for the default)
+                           #   proxy-token [--yes]        its proxy daemon's API key (auto-starts under daemon.auto-start)
+                           #   mcp [--serve|--remove]     MCP wiring status; --serve runs the server on its credential
+                           #   start                      its proxy daemon (--dry-run, --port, --check, --force)
+                           #   stop [--all]               its proxy daemon; --all = every profile's
+                           #   health                     its checks (--scope, --json, --live)
+                           #   models [--proxy|--direct]  the models its credential reaches (--json)
+                           #   credits [--target N]       its account's Copilot credits this month (--json)
+                           #   settings --export|--import a bundle of this profile alone (same flags as agent settings)
+                           #   reserved words, never a new profile's name: the verbs, help, and list
 agent list                 # every profile: NAME  MODE  PROVIDER  DAEMON (also bare `agent profile`)
 agent init [--direct|--proxy] [--yes] [--no-auth]  # = agent profile add for the default profile
 agent auth <flags>         # = agent profile auth for the default profile
+agent start <flags>        # = agent profile start for the default profile
+agent stop <flags>         # = agent profile stop for the default profile (--all stops every daemon)
+agent proxy-token <flags>  # = agent profile proxy-token for the default profile (the baked resolver)
+                           #   --yes never prompts: exit 1 when the daemon is down and auto-start is off
+agent mcp <flags>          # = agent profile mcp for the default profile (the baked registration)
 agent sync                 # every profile's sync, the default's included
-agent launch <cli>         # launch claude|codex|copilot with managed flags + provider wiring
-                           #   --profile <name>, --relaxed; agent args after --
 agent config               # this machine's preferences and the shared proxy.*/probe.* defaults (configuration page)
                            #   set <key> <value>, get [<key>], unset <key>; a profile's own keys: agent profile set
-agent settings             # export/import every portable setting as one JSON bundle
+agent settings             # export/import the WHOLE store as one JSON bundle
                            #   --export [file], --import <file>
                            #   --with-credentials, --force, --no-backup
-agent start                # launch the daemon and sync aliases
-                           #   --dry-run previews, --port pins, --check probes, --profile <name>
-agent stop                 # stop the daemon (--profile <name> for one, --all for every daemon)
-agent proxy-token          # print the proxy's API key, auto-starting it when auto-start is on
-                           #   --yes never prompts (exit 1 when down and auto-start is off), --profile <name>
-agent health               # full environment diagnosis
+agent health               # every profile's diagnosis: the account-wide checks, then each profile
                            #   --scope full|runtime|proxy|setup|auth|codex|claude, --json, --live
-agent models               # list the model ids + names Copilot serves (--proxy, --direct, --json)
-agent env                  # print shell directives for the calling shell
-                           #   CODEX_HOME / proxy ANTHROPIC_BASE_URL exports + opt-in launchers
-agent mcp                  # MCP wiring status (--serve runs the stdio server, --remove unwires)
+agent credits              # every distinct account's Copilot AI credits this month (--json, --target N)
 agent codex-mobile         # pair the Codex desktop app with the phone remote-control flow
 agent cost                 # estimated token spend across proxy DBs + Codex/Claude logs
                            #   --days N, --json, --per-day, --sources, --no-index
-agent credits              # this month's Copilot AI credits: spent, projected, paced (--json, --target N)
 agent update               # update to the latest release (--check, --auto-status, --no-verify)
 agent shell                # wire rc / $PROFILE (--clis installs/updates the CLIs, --remove unwires)
 agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run, --force)
 agent <cmd> --dry-run      # print every file and store key a write would change, old -> new, and write
-                           #   nothing: profile add|del|auth|set|unset|sync, sync, config, settings,
-                           #   mcp --remove, shell, migrate, proxy-token, stop, launch, update, install
+                           #   nothing: profile add|del|auth|set|unset|sync|launch|proxy-token|start|stop|settings,
+                           #   profile mcp --remove, sync, config, settings, shell, migrate, update, install
 agent --full-help          # help for agent and every subcommand, every flag included
 ```
 
@@ -74,7 +77,7 @@ On Windows the same commands run via `agent` once the profile is wired, or direc
 
 ### Terminal width
 
-Every table (`agent profile identity`, `agent profile`, `agent models`, the `agent start` summary and alias table, the `agent cost` tables) fits the terminal:
+Every table (`agent profile identity`, `agent profile`, `agent profile models`, the `agent start` summary and alias table, the `agent cost` tables) fits the terminal:
 
 ```text
 width = a TTY: its size (80 on a size-less pty) -> a pipe: COLUMNS if set, else unbounded, never wraps
@@ -103,23 +106,23 @@ The installer wires the `agent` wrapper into your shell and exports the proxy en
 
 The rc file and profile it edits are in the [wiring write list](getting-started.md#what-a-wiring-pass-writes).
 
-`agent env` defines the launcher functions in each new shell, and `agent shell` reports the state it wired.
+`agent profile env` defines the launcher functions in each new shell (the wrapper evals the default profile's), and `agent shell` reports the state it wired.
 
 ### Launchers
 
-The `cl` / `co` / `cx` launchers are opt-in shell functions over `agent launch`. They follow the `shell.launchers` config key:
+The `cl` / `co` / `cx` launchers are opt-in shell functions over `agent profile launch`. They follow the `shell.launchers` config key:
 
 ```bash
 agent config set shell.launchers true
 agent config set shell.launchers false
 ```
 
-- `cl` (`agent launch claude`) reads the configured Claude provider. For proxy-backed or unconfigured setups it starts the proxy, re-syncing port and token, then runs Claude.
-- `cx` (`agent launch codex`) does the same for Codex.
-- `co` (`agent launch copilot`) runs Copilot.
-- `cl --profile <name>` / `cx --profile <name>` launch under a [named profile](authentication.md#profiles) instead. Leading arguments only; the default setup is untouched.
+- `cl` (`agent profile launch claude`) reads the configured Claude provider. For proxy-backed or unconfigured setups it starts the proxy, re-syncing port and token, then runs Claude.
+- `cx` (`agent profile launch codex`) does the same for Codex.
+- `co` (`agent profile launch copilot`) runs Copilot.
+- `cl --profile <name>` / `cx --profile <name>` launch under a [named profile](authentication.md#profiles) instead (the same as `agent profile <name> launch claude` / `codex`). Leading arguments only; the default setup is untouched.
 
-Each has a more-permissive variant that adds the agent's most-relaxed flag (`agent launch ... --relaxed`):
+Each has a more-permissive variant that adds the agent's most-relaxed flag (`agent profile launch ... --relaxed`):
 
 | Launcher | Adds                             |
 | -------- | -------------------------------- |
@@ -127,7 +130,7 @@ Each has a more-permissive variant that adds the agent's most-relaxed flag (`age
 | `cox`    | `--allow-all`                    |
 | `cxx`    | `--sandbox danger-full-access`   |
 
-`agent launch <claude|codex|copilot> [--profile <name>] [--relaxed] -- <args...>` works directly too, without the shell functions.
+`agent profile [<name>] launch <claude|codex|copilot> [--relaxed] -- <args...>` works directly too, without the shell functions.
 
 ## Managed proxy lifecycle (auto-start)
 
@@ -198,7 +201,7 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
 ```
 
 - **Credential:** it resolves the `agent profile auth` credential. Only when no provider is stored at all does it fall back to `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, so a bare clone works: `GH_TOKEN=... bin/agent mcp --serve`. A stored provider that no longer resolves is an error, never a silent switch to the env.
-- **Profiles:** the registered server uses the default credential. A named profile that needs its own registers a second entry with `--profile <name>`; the [profiles section](authentication.md#profiles) has the Direct-over-proxy caveat.
+- **Profiles:** the registered server uses the default credential. A named profile that needs its own registers a second entry running `agent profile <name> mcp --serve`; the [profiles section](authentication.md#profiles) has the Direct-over-proxy caveat.
 - **Plugin + skill:** the repo doubles as a Claude Code plugin (`.claude-plugin/`, which bundles the MCP server inline) and a skills collection. `npx skills add Vivswan/copilot-env` installs the companion [`web-search` skill](../skills/web-search).
 - **Windows:** the plugin's bundled registration runs `bin/agent`, a POSIX script. Wire through `agent profile add` or register `bin\agent.ps1` by hand instead.
 

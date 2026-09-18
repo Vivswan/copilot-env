@@ -23,7 +23,7 @@ export interface FetchModelCatalogOptions {
 
 /** Never throws; the four arms are what a consumer can tell apart on the wire. */
 export type ModelCatalogOutcome =
-  /** A 2xx with a JSON body. `models` is parseModelList's view (`agent models`, the survey
+  /** A 2xx with a JSON body. `models` is parseModelList's view (`agent profile models`, the survey
    *  count), null when the body is not the catalog envelope; `body` is the raw JSON for the
    *  parsers that keep more than that view. */
   | { kind: "ok"; status: number; body: unknown; models: ModelListEntry[] | null }

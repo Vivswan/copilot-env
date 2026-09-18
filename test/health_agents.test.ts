@@ -645,7 +645,7 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
     },
     parseProfileName("work"),
   );
-  expect(codexProxyWork.detail).toContain("`agent start --profile work`");
+  expect(codexProxyWork.detail).toContain("`agent profile work start`");
 
   const claudeDirectStatic = {
     home: "/h/.claude",
@@ -700,7 +700,7 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
     },
     parseProfileName("work"),
   );
-  expect(claudeProxyWork.detail).toContain("`agent start --profile work`");
+  expect(claudeProxyWork.detail).toContain("`agent profile work start`");
 });
 
 // --- live (--live) checks ---------------------------------------------------

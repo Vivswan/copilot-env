@@ -1,5 +1,5 @@
 // No wall-clock timestamp (noise on short-lived CLI output that wraps awkwardly), stderr for the
-// per-module loggers so the eval'd `agent env` stdout is never polluted, and every message wrapped
+// per-module loggers so the eval'd `agent profile env` stdout is never polluted, and every message wrapped
 // to the terminal it lands on.
 import {
   consola,

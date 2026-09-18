@@ -20,7 +20,6 @@
   "exclude": [],
   "edges": {
     "cli": [
-      "agents",
       "codex",
       "commands",
       "copilot_api",

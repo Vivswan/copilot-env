@@ -106,7 +106,7 @@ test("parseLaunchAction: each flag shape parses to its action or is rejected nam
     },
     {
       flags: { cli: "copilot", profile: "work", args: [] },
-      throws: "--profile does not apply to copilot",
+      throws: "copilot takes no profile",
     },
     { flags: { cli: "claude", profile: "", args: [] }, throws: "invalid profile name" },
     // A hoisted name goes through the same smart constructor as the flag.
@@ -312,7 +312,7 @@ test("claude default: each provider mode composes its plan, calls, and note", ()
       },
       calls: ["mode:claude"],
       notes: [
-        "agent launch: Claude has a custom or unrecognized provider config " +
+        "agent profile launch: Claude has a custom or unrecognized provider config " +
         "(not managed by copilot-env); launching it as-is.",
       ],
     },
@@ -419,7 +419,7 @@ test("--profile: each slot state syncs, launches, or hard-fails, for claude and 
       },
       calls: ["slot:work", "ensure:work", "sync:work:proxy"],
       notes: [
-        "agent launch: could not refresh the profile wiring; launching with the " +
+        "agent profile launch: could not refresh the profile wiring; launching with the " +
         "existing config (boom).",
       ],
     },
@@ -575,7 +575,7 @@ skipWin("e2e: a direct Claude launch composes flags and scrubs a stale local URL
     apiKeyHelper: directHelperCommand(),
     baseUrl: DIRECT_BASE,
   });
-  const res = runCli(["launch", "claude", "--", "--resume", "x y"], {
+  const res = runCli(["profile", "launch", "claude", "--", "--resume", "x y"], {
     env: { ...launchEnv(root, bin), ANTHROPIC_BASE_URL: "http://127.0.0.1:4141" },
   });
   expect(res.stdout).toContain("ARGS=--permission-mode auto --enable-auto-mode --resume x y");
@@ -589,7 +589,7 @@ skipWin("e2e: a direct Claude launch composes flags and scrubs a stale local URL
 });
 
 skipWin("e2e: %VAR% / $VAR user args arrive literally (no shell between us and the CLI)", () => {
-  // The vars are DEFINED so an expansion would be visible: any shell hop between `agent launch`
+  // The vars are DEFINED so an expansion would be visible: any shell hop between `agent profile launch`
   // and the CLI would substitute these.
   const root = e2eRoot();
   const bin = fakeCliBin(root, "claude");
@@ -598,7 +598,7 @@ skipWin("e2e: %VAR% / $VAR user args arrive literally (no shell between us and t
     apiKeyHelper: directHelperCommand(),
     baseUrl: DIRECT_BASE,
   });
-  const res = runCli(["launch", "claude", "--", "%USERPROFILE%", "$HOME", "`whoami`"], {
+  const res = runCli(["profile", "launch", "claude", "--", "%USERPROFILE%", "$HOME", "`whoami`"], {
     env: launchEnv(root, bin),
   });
   expect(res.stdout).toContain("ARG4=[%USERPROFILE%]");
@@ -633,7 +633,17 @@ test.skipIf(process.platform !== "win32")(
     });
     const winEnv = { ...launchEnv(root, bin), PATH: `${bin};${process.env.PATH ?? ""}` };
     const res = runCli(
-      ["launch", "claude", "--", "%USERPROFILE%", "x y", "$env:USERPROFILE", "`whoami`", 'a"b'],
+      [
+        "profile",
+        "launch",
+        "claude",
+        "--",
+        "%USERPROFILE%",
+        "x y",
+        "$env:USERPROFILE",
+        "`whoami`",
+        'a"b',
+      ],
       { env: winEnv },
     );
     // USERPROFILE is defined (launchEnv sets it), so an expansion would show a path;
@@ -646,7 +656,7 @@ test.skipIf(process.platform !== "win32")(
     expect(res.exitCode).toBe(0);
 
     writeFileSync(join(bin, "claude.ps1"), "exit 41\n");
-    expect(runCli(["launch", "claude", "--"], { env: winEnv }).exitCode).toBe(41);
+    expect(runCli(["profile", "launch", "claude", "--"], { env: winEnv }).exitCode).toBe(41);
   },
 );
 
@@ -658,7 +668,7 @@ skipWin("e2e: --relaxed exports IS_SANDBOX and never scrubs a foreign base URL",
     apiKeyHelper: directHelperCommand(),
     baseUrl: DIRECT_BASE,
   });
-  const res = runCli(["launch", "claude", "--relaxed", "--"], {
+  const res = runCli(["profile", "launch", "claude", "--relaxed", "--"], {
     env: { ...launchEnv(root, bin), ANTHROPIC_BASE_URL: "https://my-gateway.example" },
   });
   expect(res.exitCode).toBe(0);
@@ -675,7 +685,7 @@ skipWin("e2e: a proxy-wired Claude launch aborts (exit 1) when the start offer i
     apiKeyHelper: proxyHelperCommand(),
     baseUrl: "http://127.0.0.1:4199",
   });
-  const res = runCli(["launch", "claude", "--"], {
+  const res = runCli(["profile", "launch", "claude", "--"], {
     env: launchEnv(root, bin),
     input: "n\n",
   });
@@ -730,7 +740,7 @@ skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success recor
     //   plain file where the Claude home should be -> the settings write (mkdir over a file) fails
     //                                                  for any uid
     writeFileSync(join(root, ".claude"), "");
-    const failed = runCli(["launch", "claude", "--"], { env: launchEnv(root, bin) });
+    const failed = runCli(["profile", "launch", "claude", "--"], { env: launchEnv(root, bin) });
     expect(failed.exitCode).not.toBe(0);
     expect(failed.stdout).not.toContain("ARGS="); // claude was never launched
     expect(recordedMode(root)).toBeUndefined(); // nothing landed: no record
@@ -740,7 +750,7 @@ skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success recor
       apiKeyHelper: proxyHelperCommand(),
       baseUrl: "http://127.0.0.1:1", // stale port; the launch must re-sync it
     });
-    const res = runCli(["launch", "claude", "--"], { env: launchEnv(root, bin) });
+    const res = runCli(["profile", "launch", "claude", "--"], { env: launchEnv(root, bin) });
     expect(res.stderr).not.toContain("Start it now?"); // up: nothing to offer
     expect(res.stdout).toContain(`BASE=http://127.0.0.1:${port}`);
     const settings = readFileSync(join(root, ".claude", "settings.json"), "utf8");
@@ -787,7 +797,7 @@ skipWin(
     // Codex's own convention: the export is where the config lives, so it is what the child gets.
     const exported = join(root, "my-own-codex");
     writeCodexConfigToml(exported, { baseUrl: DIRECT_BASE });
-    const res = runCli(["launch", "codex", "--", "exec", "--json", "ls"], {
+    const res = runCli(["profile", "launch", "codex", "--", "exec", "--json", "ls"], {
       env: { ...launchEnv(root, bin), CODEX_HOME: exported },
     });
     expect(res.stdout).toContain("ARGS=exec --json ls");
@@ -807,14 +817,14 @@ skipWin(
     const staleExport = join(root, "old-farm");
     const line = staleCodexHomeExportLine({ home: farm, by: "farm", staleExport });
     if (line === null) throw new Error("a differing export must produce the note");
-    const stale = runCli(["launch", "codex", "--", "exec", "ls"], {
+    const stale = runCli(["profile", "launch", "codex", "--", "exec", "ls"], {
       env: { ...launchEnv(root, bin), CODEX_HOME: staleExport },
     });
     expect(stale.stdout).toContain(`CODEX_HOME=${farm}`);
     expect(occurrences(stale.stderr, line)).toBe(1);
     expect(stale.exitCode).toBe(3);
-    // The shell agreeing (what the wrapper's `agent env` refresh leaves behind): nothing to say.
-    const agreed = runCli(["launch", "codex", "--", "exec", "ls"], {
+    // The shell agreeing (what the wrapper's `agent profile env` refresh leaves behind): nothing to say.
+    const agreed = runCli(["profile", "launch", "codex", "--", "exec", "ls"], {
       env: { ...launchEnv(root, bin), CODEX_HOME: farm },
     });
     expect(agreed.stdout).toContain(`CODEX_HOME=${farm}`);
@@ -825,7 +835,7 @@ skipWin(
 skipWin("e2e: copilot gets the managed flag set and no provider wiring", () => {
   const root = e2eRoot();
   const bin = fakeCliBin(root, "copilot");
-  const res = runCli(["launch", "copilot", "--relaxed", "--", "hello"], {
+  const res = runCli(["profile", "launch", "copilot", "--relaxed", "--", "hello"], {
     env: launchEnv(root, bin),
   });
   expect(res.stdout).toContain(

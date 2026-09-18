@@ -96,7 +96,7 @@ export function resolveProvenanceDecision(
 }
 
 /** The real verifier, loaded on first use: the sigstore stack is well over a
- *  megabyte of CommonJS and `agent env` runs at every shell start. */
+ *  megabyte of CommonJS and `agent profile env` runs at every shell start. */
 const defaultVerifier: ProvenanceVerifier = async (tag, bundleJson, required) => {
   const { verifyReleaseProvenance } = await import("../install/provenance.ts");
   return await verifyReleaseProvenance(tag, bundleJson, required);

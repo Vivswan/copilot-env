@@ -39,6 +39,7 @@ import {
   scopeStaticKeyBoolean,
   stripLaunchersBlocks,
   v409CodexProfileFiles,
+  v409DesktopMcpArgv,
   v409IdentityCache,
   v409IntegrationIdPin,
   v409LaunchersBlock,
@@ -121,14 +122,16 @@ test("dueMigrations selects [from, to) in ascending order over the registry", ()
 test("the shipped registry holds exactly the named fix-ups in order, layout steps first", () => {
   // Pinned BY IDENTITY and in order: a count or a list of version strings could stay green while a
   // same-version fix-up was dropped in a merge. Each position has a reason:
-  //   layout steps first (store rename, the state.json fold, the root daemon home)
-  //                                                      -> later steps read stores at the new paths and
-  //                                                         through the new preference shape
+  //   layout steps first (store rename, the state.json fold, the root daemon home, the Desktop MCP
+  //   argv)                                              -> later steps read stores at the new paths,
+  //                                                         through the new preference shape, and
+  //                                                         the Desktop entries through the new reader
   //   Desktop helper move, then the Codex profile files  -> each needs the 4.0.0 rewrites done
   expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
     v402RootLayout,
     v409StateFold,
     v409RootDaemonHome,
+    v409DesktopMcpArgv,
     v400ShellFence,
     v400CodexWiring,
     v400ClaudeWiring,

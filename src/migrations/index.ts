@@ -12,6 +12,7 @@ import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence }
 import { v402DesktopHelpers, v402GhAccountPin, v402RootLayout } from "./4.0.2.ts";
 import {
   v409CodexProfileFiles,
+  v409DesktopMcpArgv,
   v409IdentityCache,
   v409IntegrationIdPin,
   v409LaunchersBlock,
@@ -51,6 +52,7 @@ const MIGRATIONS: Migration[] = [
   v402DesktopHelpers,
   v409StateFold,
   v409RootDaemonHome,
+  v409DesktopMcpArgv,
   v409CodexProfileFiles,
   v409IntegrationIdPin,
   v409StaticKeyScope,

@@ -15,7 +15,6 @@
 //   fails after the flip  -> best-effort: `agent migrate`, then the GC keeping ONE previous
 //                            version
 import { spawnSync, type StdioOptions } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { configDelCommand } from "../copilot_api/env_config.ts";
 import { consola } from "consola";
@@ -52,18 +51,7 @@ import type { HeldUpdateLock } from "./lock.ts";
 import { errMessage } from "../utils/error.ts";
 import { installStateRoot, PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
-import {
-  chmodReported,
-  copyFileReported,
-  mkdirReported,
-  openWritableReported,
-  refuseRmdir,
-  removeScratchDir,
-  removeTreeReported,
-  renameReported,
-  scratchDir,
-} from "../utils/report_write.ts";
-import { filePlan, landPlan } from "../utils/write_session.ts";
+import * as fs from "../utils/fs_facade.ts";
 
 const REPO = "Vivswan/copilot-env";
 const CHECKSUMS_NAME = "checksums.txt";
@@ -189,7 +177,7 @@ function downloadSource(tag: string): DownloadSource {
     // A directory is what CI and the installer e2e use; anything else is a base URL (install.sh's
     // `[ -d ... ]` branch).
     try {
-      if (Deno.statSync(override).isDirectory) return { kind: "directory", path: override };
+      if (fs.stat(override).isDirectory()) return { kind: "directory", path: override };
     } catch {
       // not a path on this machine: fall through and treat it as a URL
     }
@@ -202,7 +190,7 @@ function downloadSource(tag: string): DownloadSource {
  *  binaries run to tens of megabytes. */
 async function fetchReleaseFile(source: DownloadSource, name: string, dest: string): Promise<void> {
   if (source.kind === "directory") {
-    copyFileReported(join(source.path, name), dest);
+    fs.copyFile(join(source.path, name), dest);
     return;
   }
   const url = `${source.base}/${name}`;
@@ -210,7 +198,7 @@ async function fetchReleaseFile(source: DownloadSource, name: string, dest: stri
   if (!res.ok || !res.body) {
     throw new Error(`failed to download ${name} (HTTP ${res.status})`);
   }
-  using file = await openWritableReported(dest);
+  using file = await fs.openWritable(dest);
   await res.body.pipeTo(file.writable);
 }
 
@@ -231,7 +219,7 @@ async function download(tag: string, dir: string): Promise<Downloaded> {
   return {
     path,
     asset,
-    checksums: parseChecksums(readFileSync(manifest, "utf8")),
+    checksums: parseChecksums(fs.readText(manifest)),
     checksumsPath: manifest,
     source,
     dir,
@@ -292,7 +280,7 @@ async function attest(
     );
   }
   const verifier = decision.verifier ?? defaultVerifier;
-  const { signerIdentity } = await verifier(tag, readFileSync(bundlePath, "utf8"), [
+  const { signerIdentity } = await verifier(tag, fs.readText(bundlePath), [
     { name: verified.asset, sha256: verified.sha256 },
     { name: CHECKSUMS_NAME, sha256: verified.checksumsSha256 },
   ]);
@@ -319,12 +307,12 @@ function stage(attested: Attested, top: string, versionName: string): Staged {
   const previous = readCurrentVersionName(top);
   refuseAlreadyCurrent(top, versionName);
   const versionRoot = versionRootPath(top, versionName);
-  removeTreeReported(versionRoot);
+  fs.rm(versionRoot, { recursive: true, force: true });
   const binDir = join(versionRoot, "bin");
-  mkdirReported(binDir);
+  fs.mkdir(binDir);
   const binary = join(binDir, installedBinaryName());
-  if (process.platform !== "win32") chmodReported(attested.path, 0o755);
-  renameReported(attested.path, binary);
+  if (process.platform !== "win32") fs.chmod(attested.path, 0o755);
+  fs.rename(attested.path, binary);
   return { binary, versionName, versionRoot, previous } as Staged;
 }
 
@@ -386,11 +374,11 @@ function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Co
 }
 
 /**
- * What applyUpdate would land for `target`, recorded into the collecting dry run in the commit's
- * order: the version root it stages into and the `current` link it flips (judged from the install
- * root alone: the release's own files are known only once downloaded, so the version root is one
- * `create`), then the top-level shims through the writer the real commit runs (its refusals and
- * its best-effort warnings are the plan's), then the GC. The download, the checksum and
+ * What applyUpdate would land for `target`, through the writers the real commit runs, in the
+ * commit's order: the version root it stages into (judged from the install root alone: the
+ * release's own files are known only once downloaded, so the root is one create), the `current`
+ * flip (pointCurrentAt, with its own refusals at `current`), then the top-level shims (their
+ * refusals and best-effort warnings are the plan's), then the GC. The download, the checksum and
  * provenance checks, the new binary's asset pass, and the post-flip migrations are said, not
  * listed. A real update never runs this.
  */
@@ -402,18 +390,13 @@ export function previewUpdate(
   const top = installStateRoot(root);
   const versionName = versionDirName(target.tag);
   refuseAlreadyCurrent(top, versionName);
-  const versionRoot = versionRootPath(top, versionName);
-  const link = currentLinkPath(top);
-  // pointCurrentAt's refusals: a regular file or a directory with entries at `current`.
-  refuseRmdir(link);
   const previous = readCurrentVersionName(top);
-  landPlan({
-    files: [
-      filePlan(versionRoot, "create", { before: null }),
-      filePlan(link, previous === null ? "create" : "rewrite"),
-    ],
-    apply() {},
-  });
+  // The stage's own first two moves (a stale root from a crashed attempt goes, the root is made
+  // fresh), so a leftover at the version path previews as the stage treats it.
+  const versionRoot = versionRootPath(top, versionName);
+  fs.rm(versionRoot, { recursive: true, force: true });
+  fs.mkdir(versionRoot);
+  pointCurrentAt(top, versionName);
   if (!isCheckoutShapedRoot(top)) writeTopLevelShims(top, logger);
   // The GC the real update runs (the new version and its rollback candidate kept; the bootstrap
   // binary a flat install left in <top>/bin swept), through the same sweepers, so what they refuse
@@ -459,7 +442,7 @@ export async function applyUpdate(
 
   // Stage the download inside the install root, not the system temp dir: the
   // placement into the version dir is a rename, which needs one filesystem.
-  const staging = scratchDir(join(top, ".update-"));
+  const staging = fs.scratchDir(join(top, ".update-"));
   let provisioned: Provisioned;
   try {
     provisioned = provision(
@@ -480,11 +463,11 @@ export async function applyUpdate(
     // retry starts clean. stage() also throws when `current` ALREADY names the target, and that
     // dir is then the live install: the guard is what keeps this from deleting it.
     if (readCurrentVersionName(top) !== versionName) {
-      removeTreeReported(versionRoot);
+      fs.rm(versionRoot, { recursive: true, force: true });
     }
     throw error;
   } finally {
-    removeScratchDir(staging);
+    fs.removeScratchDir(staging);
   }
 
   const committed = commit(provisioned, top, logger);

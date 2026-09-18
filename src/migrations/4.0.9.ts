@@ -9,7 +9,6 @@
 // into the profile file and drops it from config.toml. Foreign tables and the `profile` key are
 // the user's: left in place, reported with the Codex error they cause.
 import { consola } from "consola";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { codexProviderId } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
@@ -55,17 +54,10 @@ import {
 } from "../copilot_api/profile.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
-import { isEnoentOrNotdir, readTextResult } from "../utils/fs.ts";
+import { isEnoentOrNotdir } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
-import {
-  mkdirReported,
-  removeReported,
-  removeTreeReported,
-  renameReported,
-  writeFileReported,
-} from "../utils/report_write.ts";
-import { readPlannedDir } from "../utils/write_session.ts";
 import { FENCE_LINES, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
 import type { Migration } from "./index.ts";
 
@@ -402,7 +394,7 @@ export function stripLaunchersRcBlocks(): void {
   const failed: string[] = [];
   for (const file of shellTargetFiles()) {
     try {
-      const read = readTextResult(file);
+      const read = fs.readTextResult(file);
       if (read.kind === "absent") continue;
       if (read.kind === "unreadable") throw new Error(read.error);
       const stripped = stripLaunchersBlocks(read.text);
@@ -413,7 +405,11 @@ export function stripLaunchersRcBlocks(): void {
         );
       }
       if (stripped.content === read.text) continue;
-      writeFileReported(file, stripped.content, { detail: "copilot-env launchers block removed" });
+      // In place: an rc file may be the user's own symlink, which a rename would replace.
+      fs.writeText(file, stripped.content, {
+        atomic: false,
+        detail: "copilot-env launchers block removed",
+      });
     } catch (e) {
       consola.warn(`  could not strip ${file}: ${errMessage(e)}`);
       failed.push(file);
@@ -592,10 +588,10 @@ export function foldRootStores(rootHome: string = resolveRootHome()): void {
   const docs = new Map<FoldedStore, Record<string, unknown>>();
   for (const name of FOLDED_STORES) {
     const oldPath = join(rootHome, name);
-    if (!existsSync(oldPath)) continue;
+    if (!fs.exists(oldPath)) continue;
     let doc: unknown;
     try {
-      doc = JSON.parse(readFileSync(oldPath, "utf8"));
+      doc = JSON.parse(fs.readText(oldPath));
     } catch {
       // The parser's message can quote the file's text (a token); the store's fixed diagnostic instead.
       consola.warn(
@@ -612,7 +608,7 @@ export function foldRootStores(rootHome: string = resolveRootHome()): void {
   // A flat preferences.json copies its profile keys into every profile credentials.json names, so
   // it is folded only once credentials.json has been read (or never existed): a source is never
   // deleted while a source it depends on failed validation.
-  const credentialsUnread = existsSync(join(rootHome, "credentials.json")) &&
+  const credentialsUnread = fs.exists(join(rootHome, "credentials.json")) &&
     !docs.has("credentials.json");
   const prefs = docs.get("preferences.json");
   const held = prefs !== undefined && credentialsUnread && isFlatPreferences(prefs);
@@ -637,7 +633,7 @@ export function foldRootStores(rootHome: string = resolveRootHome()): void {
         );
         continue;
       }
-      removeReported(oldPath);
+      fs.rm(oldPath, { force: true });
       consola.info(`  folded ${name} into ${stateFile}`);
     }
   }
@@ -650,20 +646,20 @@ export function foldRootStores(rootHome: string = resolveRootHome()): void {
   }
   for (const name of FOLDED_LOCKS) {
     const path = join(rootHome, LOCKS_DIR_NAME, name);
-    if (!existsSync(path)) continue;
-    removeReported(path);
+    if (!fs.exists(path)) continue;
+    fs.rm(path, { force: true });
     consola.info(`  removed ${path} (the store's one lock is ${STATE_STORE_FILENAME}.lock)`);
   }
   for (const rel of ROOT_DEBRIS) {
     const path = join(rootHome, rel);
-    if (!existsSync(path)) continue;
-    removeReported(path);
+    if (!fs.exists(path)) continue;
+    fs.rm(path, { force: true });
     consola.info(`  removed ${path} (nothing reads it)`);
   }
-  // readPlannedDir: the token removed a moment ago is gone for a dry run too.
+  // Through the facade: the token removed a moment ago is gone for a dry run too.
   const opencodeDir = join(rootHome, "opencode");
-  if (existsSync(opencodeDir) && readPlannedDir(opencodeDir).length === 0) {
-    removeTreeReported(opencodeDir);
+  if (fs.exists(opencodeDir) && fs.readdir(opencodeDir).length === 0) {
+    fs.rm(opencodeDir, { recursive: true, force: true });
     consola.info(`  removed ${opencodeDir} (empty)`);
   }
 }
@@ -673,9 +669,9 @@ export function foldRootStores(rootHome: string = resolveRootHome()): void {
 export function renameAutoupdateThrottle(autoupdateHome: string = autoupdateDir()): void {
   const oldAutoupdate = join(autoupdateHome, "state.json");
   const newAutoupdate = join(autoupdateHome, AUTOUPDATE_FILENAME);
-  if (!existsSync(oldAutoupdate)) return;
-  if (!existsSync(newAutoupdate)) {
-    renameReported(oldAutoupdate, newAutoupdate);
+  if (!fs.exists(oldAutoupdate)) return;
+  if (!fs.exists(newAutoupdate)) {
+    fs.rename(oldAutoupdate, newAutoupdate);
     consola.info(`  moved ${oldAutoupdate} -> ${newAutoupdate}`);
     return;
   }
@@ -683,8 +679,8 @@ export function renameAutoupdateThrottle(autoupdateHome: string = autoupdateDir(
   // new binary ran this step, so the old file and its lock sidecar reappear beside the new one. The
   // re-run removes them; the new file (what the readers use) keeps its content.
   for (const path of [oldAutoupdate, `${oldAutoupdate}.lock`, `${oldAutoupdate}.lock.oslock`]) {
-    if (!existsSync(path)) continue;
-    removeReported(path);
+    if (!fs.exists(path)) continue;
+    fs.rm(path, { force: true });
     consola.info(`  removed ${path} (superseded by ${newAutoupdate})`);
   }
 }
@@ -722,7 +718,7 @@ const ROOT_DAEMON_ARTIFACTS: readonly string[] = [
 function occupiedRunStates(runDir: string, thisHost: string): string[] {
   let hosts: string[];
   try {
-    hosts = readdirSync(runDir);
+    hosts = fs.readdir(runDir);
   } catch (e) {
     if (isEnoentOrNotdir(e)) return [];
     throw e;
@@ -730,7 +726,7 @@ function occupiedRunStates(runDir: string, thisHost: string): string[] {
   const occupied: string[] = [];
   for (const host of hosts) {
     const file = join(runDir, host, RUN_STATE_FILENAME);
-    const read = readTextResult(file);
+    const read = fs.readTextResult(file);
     if (read.kind === "absent") continue;
     if (read.kind === "text") {
       const doc = parseJsonRecord(read.text);
@@ -751,7 +747,7 @@ export async function moveRootDaemonHome(
   stopDaemon: () => Promise<void>,
   thisHost: string = getSanitizedHostname(),
 ): Promise<void> {
-  const present = ROOT_DAEMON_ARTIFACTS.filter((name) => existsSync(join(root, name)));
+  const present = ROOT_DAEMON_ARTIFACTS.filter((name) => fs.exists(join(root, name)));
   if (present.length === 0) return;
   const occupied = occupiedRunStates(join(root, RUN_DIR_NAME), thisHost);
   if (occupied.length > 0) {
@@ -763,22 +759,22 @@ export async function moveRootDaemonHome(
   }
   await stopDaemon();
   // Re-listed after the stop: stopping touches the run state under the root, so a `.run` it left
-  // behind travels too (readPlannedDir: in a dry run, one the stop planned as well).
-  const rootEntries = new Set(readPlannedDir(root));
+  // behind travels too (through the facade: in a dry run, one the stop planned as well).
+  const rootEntries = new Set(fs.readdir(root));
   const moving = ROOT_DAEMON_ARTIFACTS.filter((name) => rootEntries.has(name));
   const target = join(root, PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR);
-  mkdirReported(target);
+  fs.mkdir(target);
   for (const name of moving) {
     const from = join(root, name);
     const to = join(target, name);
-    if (existsSync(to)) {
+    if (fs.exists(to)) {
       consola.warn(
         `  both ${from} and ${to} exist - keeping ${to} (the one readers use); delete ${from} by ` +
           "hand after checking it holds nothing newer",
       );
       continue;
     }
-    renameReported(from, to);
+    fs.rename(from, to);
     consola.info(`  moved ${from} -> ${to}`);
   }
 }

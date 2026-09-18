@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
+import { closeSync, openSync } from "node:fs";
 import { devNull } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -8,7 +8,7 @@ import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "
 import { runPowershell } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
 import { pidAlive } from "../utils/pid.ts";
-import { openWriteFdReported } from "../utils/report_write.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { type RootMode, rootMode } from "../utils/root.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import {
@@ -57,7 +57,7 @@ function ensuredDaemonConfig(rootHome: string): string {
 function entryConfigFile(rootHome: string, mode: RootMode): string {
   if (mode.kind === "compiled") return ensuredDaemonConfig(rootHome);
   const daemonConfig = daemonConfigFile(rootHome);
-  return existsSync(daemonConfig) ? daemonConfig : join(mode.root, "deno.json");
+  return fs.exists(daemonConfig) ? daemonConfig : join(mode.root, "deno.json");
 }
 
 /**
@@ -558,7 +558,7 @@ export function daemonArgv(spec: DaemonSpec): string[] {
 }
 
 export function launchDaemon(spec: DaemonSpec): number {
-  const logFd = openWriteFdReported(spec.logFile);
+  const logFd = fs.openWriteFd(spec.logFile);
   const devnull = openSync(devNull, "r");
   const proc = spawn(spec.denoBin, daemonArgv(spec), {
     stdio: [devnull, logFd, logFd],
@@ -578,7 +578,7 @@ export function launchDaemon(spec: DaemonSpec): number {
 
 export function printLogTail(logfile: string, lines: number): void {
   try {
-    const allLines = readFileSync(logfile, "utf-8").split("\n");
+    const allLines = fs.readText(logfile).split("\n");
     const tail = allLines.slice(-lines).join("\n");
     // Raw, not line-by-line through consola.error: copilot-api already formats its lines, and a tagged
     // ERROR badge on each (blank stack-trace lines included) buried the real failure in padded gaps.

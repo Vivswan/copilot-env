@@ -37,8 +37,7 @@ import { PROJECT_ROOT } from "../utils/root.ts";
 import { COLOR_ENABLED, statusPaint } from "../utils/ansi.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
-import { mkdirReported } from "../utils/report_write.ts";
-import { dryRunActive } from "../utils/write_session.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
 import { credentialSourceLabel } from "./auth.ts";
 import { unreadProjectedKeyWarnings } from "./config.ts";
@@ -152,7 +151,7 @@ async function reportDryRun(
   // refuses the preview too), then the cleanup plan, the port, and the credential resolution (the
   // token judged under the daemon's identity, the pair landed in the slot: a rejected token is the
   // same refusal, the landing store rows).
-  mkdirReported(paths.home);
+  fs.mkdir(paths.home);
   applyDefaultConfig(profile, paths, envConfig);
   const plan = await planCleanup(paths.home, profile, state);
   const port = await resolveStartPort(action.port, false, profile, false, envConfig);
@@ -353,7 +352,7 @@ export async function runStart(
     // a bare `start --dry-run` collects its own, so its landings (the port, the credential pair)
     // record instead of writing.
     const preview = (): Promise<void> => reportDryRun(action, launchContext());
-    if (dryRunActive()) await preview();
+    if (fs.dryRunActive()) await preview();
     else await runDryRun(preview);
     return;
   }
@@ -387,7 +386,7 @@ async function launchUnderLock(
 ): Promise<void> {
   const ctx = launchContext();
   const paths = ctx.paths;
-  mkdirReported(paths.runDir);
+  fs.mkdir(paths.runDir);
   // Inside the start lock: the gate rewrites the shared daemon config and re-warms the float's
   // cache, so two concurrent starts must not run it over each other.
   const entry = await ensureProxyFloor(lock);
@@ -400,7 +399,7 @@ async function launchUnderLock(
     }
   }
 
-  mkdirReported(paths.home);
+  fs.mkdir(paths.home);
   applyDefaultConfig(profile, ctx.paths, ctx.envConfig);
   for (
     const warning of unreadProjectedKeyWarnings(ctx.envConfig, entryProxyVersion(entry), profile)

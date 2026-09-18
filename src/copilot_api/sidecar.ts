@@ -2,20 +2,12 @@
 //   .dvmrc              -> the TESTED REFERENCE version alone (what CI runs on, what health compares a PATH deno against); nothing here installs it
 //   no sha256 expected  -> a REFUSAL, never a skip; the archive is hashed as it streams, so an unverified byte never lands unpacked
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import { ASSET_ROOT, devDenoExecPath, isStandaloneBinary } from "../utils/root.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { versionLessThan } from "../utils/semver.ts";
-import {
-  chmodReported,
-  mkdirReported,
-  openWritableReported,
-  removeScratchDir,
-  renameReported,
-  scratchDir,
-} from "../utils/report_write.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { resolveRootHome } from "./paths.ts";
 import { crypto } from "@std/crypto";
 
@@ -129,13 +121,13 @@ export function provisionedSidecar(
 ): Extract<SidecarState, { kind: "provisioned" }> | null {
   let entries: string[];
   try {
-    entries = readdirSync(join(rootHome, "deno"));
+    entries = fs.readdir(join(rootHome, "deno"));
   } catch {
     return null;
   }
   const best = entries
     .filter((name) => DENO_VERSION_RE.test(name))
-    .filter((version) => existsSync(sidecarBinPath(rootHome, version, platform)))
+    .filter((version) => fs.exists(sidecarBinPath(rootHome, version, platform)))
     .sort((a, b) => versionLessThan(a, b) ? 1 : versionLessThan(b, a) ? -1 : 0)[0];
   if (best === undefined) return null;
   return {
@@ -161,7 +153,7 @@ export function readDvmrcPin(projectRoot: string = ASSET_ROOT): string {
   const path = join(projectRoot, DVMRC_FILENAME);
   let content: string;
   try {
-    content = readFileSync(path, "utf8");
+    content = fs.readText(path);
   } catch (e) {
     throw new Error(`cannot read the Deno version pin ${path}: ${String(e)}`);
   }
@@ -274,7 +266,7 @@ function defaultUnzipRunner(command: string, args: string[]): UnzipRunResult {
 
 /** pipeTo closes the file with the stream, on success and on abort alike. */
 async function writeStreamToFile(stream: ReadableStream<Uint8Array>, path: string): Promise<void> {
-  const file = await openWritableReported(path);
+  const file = await fs.openWritable(path);
   await stream.pipeTo(file.writable);
 }
 
@@ -310,10 +302,10 @@ export async function downloadSidecar(
   }
 
   const destDir = join(rootHome, "deno", version);
-  mkdirReported(destDir);
+  fs.mkdir(destDir);
   // Scratch sits beside the destination (one filesystem, so the final placement is a rename): only a
   // verified, fully extracted binary ever appears at the sidecar path.
-  const scratch = scratchDir(join(destDir, ".download-"));
+  const scratch = fs.scratchDir(join(destDir, ".download-"));
   const zipPath = join(scratch, `deno-${target}.zip`);
   try {
     const [toDisk, toHash] = response.body.tee();
@@ -341,16 +333,16 @@ export async function downloadSidecar(
 
     const bin = sidecarBinPath(rootHome, version, platform);
     const extracted = join(scratch, basename(bin));
-    if (!existsSync(extracted)) {
+    if (!fs.exists(extracted)) {
       throw new Error(`extraction of ${zipPath} did not produce ${extracted}`);
     }
-    renameReported(extracted, bin);
+    fs.rename(extracted, bin);
     if (platform !== "win32") {
-      chmodReported(bin, 0o755);
+      fs.chmod(bin, 0o755);
     }
     return parseAbsolutePath(bin);
   } finally {
-    removeScratchDir(scratch);
+    fs.removeScratchDir(scratch);
   }
 }
 

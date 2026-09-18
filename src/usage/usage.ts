@@ -2,7 +2,6 @@
 // holds several DBs. The layout is src/copilot_api/paths.ts's; this module only sweeps it.
 
 import { DatabaseSync } from "node:sqlite";
-import { readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { consola } from "consola";
@@ -14,10 +13,10 @@ import {
 } from "../copilot_api/paths.ts";
 import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
-import { entryAbsent, isDir, isEnoentOrNotdir } from "../utils/fs.ts";
+import { isEnoentOrNotdir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { dayKeyIn } from "../utils/time.ts";
-import { copyFileReported, removeScratchDir, scratchDir } from "../utils/report_write.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { canonicalModelName } from "./pricing.ts";
 
 /** The four priced token buckets every usage source reduces one event to. */
@@ -198,6 +197,16 @@ function dayUsageMap(
   return dayModels;
 }
 
+/** A directory at `path`; absent, a file, or an unreadable look all read false (the sweep only
+ *  descends into homes it can list). */
+function isDirectoryAt(path: string): boolean {
+  try {
+    return fs.stat(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /** Only the default dir and valid profile names are swept: a stray hand-made folder is not a daemon
  *  home. Realpath-deduped so a symlinked alias can never double-count a DB. */
 export function discoverUsageDbs(home: string = resolveHome()): string[] {
@@ -206,7 +215,7 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
   const profilesDir = join(home, PROFILES_DIR_NAME);
   let profiles: string[] = [];
   try {
-    profiles = readdirSync(profilesDir);
+    profiles = fs.readdir(profilesDir);
   } catch (e) {
     // Only a MISSING dir reads as "no profiles", as in usageDbsUnderHome and profileHomeNames
     // (copilot_api/paths.ts): this sweep backs a summed cost TOTAL, so a failed scan must not read
@@ -217,7 +226,7 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
   for (const profile of profiles.sort()) {
     if (profile !== DEFAULT_PROFILE_DIR && !isValidProfileName(profile)) continue;
     const profileHome = join(profilesDir, profile);
-    if (isDir(profileHome)) {
+    if (isDirectoryAt(profileHome)) {
       paths.push(...usageDbsUnderHome(profileHome));
     }
   }
@@ -227,7 +236,7 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
   return paths.filter((path) => {
     let canonical = path;
     try {
-      canonical = realpathSync(path);
+      canonical = fs.realpath(path);
     } catch {
       // unresolvable path: fall back to the literal spelling
     }
@@ -252,22 +261,22 @@ const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm"] as const;
 /** A read-only filesystem lets SQLite consult a -wal only if it can create the -shm beside it,
  *  which it can in a temp copy. */
 function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
-  const dir = scratchDir(join(tmpdir(), "copilot-usage-"));
+  const dir = fs.scratchDir(join(tmpdir(), "copilot-usage-"));
   try {
     const copy = join(dir, basename(path));
-    copyFileReported(path, copy);
+    fs.copyFile(path, copy);
     for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
       try {
-        copyFileReported(`${path}${suffix}`, `${copy}${suffix}`);
+        fs.copyFile(`${path}${suffix}`, `${copy}${suffix}`);
       } catch (e) {
         // A PROVEN-absent sidecar means the daemon checkpointed; one that is there but would not
         // copy must not be dropped, or the read would silently omit its rows.
-        if (!entryAbsent(`${path}${suffix}`)) throw e;
+        if (fs.readTextResult(`${path}${suffix}`).kind !== "absent") throw e;
       }
     }
     return withReadOnlyDb(copy, query);
   } finally {
-    removeScratchDir(dir);
+    fs.removeScratchDir(dir);
   }
 }
 

@@ -11,7 +11,7 @@ import { errMessage } from "../utils/error.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { versionLessThan } from "../utils/semver.ts";
 import { assertNonNegativeDays, MILLISECONDS_PER_DAY } from "../utils/time.ts";
-import { dryRunActive } from "../utils/write_session.ts";
+import { dryRunActive } from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
 
 const NVM_VERSION = "v0.40.1";

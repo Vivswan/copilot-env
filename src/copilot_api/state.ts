@@ -1,5 +1,5 @@
 import * as v from "valibot";
-import { readPlannedText } from "../utils/write_session.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile } from "./profile.ts";
@@ -73,9 +73,10 @@ export class CopilotEnvRunState {
    * port reservation wrote it.
    */
   setIfExists(patch: StatePatch): void {
-    // Through the dry run's landings: a state file the previewed start planned exists for the
-    // heartbeat that follows, as the real start's file does.
-    if (this.profile !== null && readPlannedText(this.store.path).kind === "absent") return;
+    // Through the facade: a state file the previewed start planned exists for the heartbeat that
+    // follows, as the real start's file does. Only a proven absence skips; an unreadable file (a
+    // dangling link) reaches the store, which refuses to overwrite it.
+    if (this.profile !== null && fs.readTextResult(this.store.path).kind === "absent") return;
     this.set(patch);
   }
 

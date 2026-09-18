@@ -2,7 +2,6 @@
 //   export  -> stdout and redacted tokens by default, so nothing lands on disk or leaks unasked
 //   import  -> confirms against the plan it then applies, after backing the stores up, so a bad
 //              import is one `--import <backup>` away from undone
-import { readFileSync } from "node:fs";
 import { consola } from "consola";
 import {
   applyImportPlan,
@@ -32,8 +31,8 @@ import {
   profileLabel,
 } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
-import { atomicWriteFile, writeFileReported } from "../utils/report_write.ts";
 import { PROXY_RESTART_HINT_ALL, unreadProjectedKeyWarnings } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
 
@@ -143,7 +142,11 @@ function runExport(target: string | boolean, withCredentials: boolean): void {
   if (withCredentials) {
     // A fresh 0600 inode by rename: a write into an existing 0644 target would hold the plaintext
     // tokens under its old permissions.
-    atomicWriteFile(target, text, 0o600, "settings bundle with your REAL tokens", { secret: true });
+    fs.writeText(target, text, {
+      mode: 0o600,
+      detail: "settings bundle with your REAL tokens",
+      secret: true,
+    });
     // Its own line, not the write report's detail: a target inside copilot-env's own homes gets no
     // write line.
     logger.warn(
@@ -151,8 +154,13 @@ function runExport(target: string | boolean, withCredentials: boolean): void {
     );
   } else {
     // The file this replaces may hold real tokens (an earlier --with-credentials export), so a
-    // dry run names the path and prints neither side.
-    writeFileReported(target, text, { detail: "settings bundle, tokens redacted", secret: true });
+    // dry run names the path and prints neither side. In place (not atomic): the target may be
+    // the user's own symlink, which a rename would replace.
+    fs.writeText(target, text, {
+      atomic: false,
+      detail: "settings bundle, tokens redacted",
+      secret: true,
+    });
   }
 }
 
@@ -175,7 +183,7 @@ async function runImport(
   const file = action.file;
   let raw: string;
   try {
-    raw = readFileSync(file, "utf8");
+    raw = fs.readText(file);
   } catch (e) {
     throw new Error(`could not read ${file}: ${errMessage(e)}`);
   }

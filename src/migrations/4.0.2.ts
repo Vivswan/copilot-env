@@ -7,7 +7,6 @@
 //   several logins, or the account look never ran       -> auto; only the user can choose
 //   already pinned, or not gh-cli                       -> untouched
 import { consola } from "consola";
-import { existsSync, readdirSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
 import {
@@ -24,7 +23,7 @@ import { resolveRootHome } from "../copilot_api/paths.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 import { isRecord } from "../utils/json.ts";
 import type { Migration } from "./index.ts";
-import { removeReported, renameReported } from "../utils/report_write.ts";
+import * as fs from "../utils/fs_facade.ts";
 
 /** The same pin-or-ask rule the auth flow settles with. An unproven look pins nothing, and so
  *  does any count but one, where EVERY github.com entry counts, broken ones included: a broken
@@ -128,18 +127,18 @@ export function moveRootStores(rootHome: string = resolveRootHome()): void {
   for (const [oldName, newName] of STORE_RENAMES) {
     const oldPath = join(rootHome, oldName);
     const newPath = join(rootHome, newName);
-    if (!existsSync(oldPath)) continue;
-    if (existsSync(newPath)) {
+    if (!fs.exists(oldPath)) continue;
+    if (fs.exists(newPath)) {
       consola.warn(
         `  both ${oldPath} and ${newPath} exist - keeping ${newName} (the one readers use); ` +
           `delete ${oldName} by hand after checking it holds nothing newer`,
       );
       continue;
     }
-    renameReported(oldPath, newPath);
+    fs.rename(oldPath, newPath);
     consola.info(`  moved ${oldName} -> ${newName}`);
   }
-  for (const name of LOCK_DEBRIS) removeReported(join(rootHome, name));
+  for (const name of LOCK_DEBRIS) fs.rm(join(rootHome, name), { force: true });
 }
 
 /** Every helper path an owned Desktop entry still REFERENCES (`inferenceCredentialHelper`), one
@@ -187,7 +186,7 @@ export async function moveDesktopHelpers(
 ): Promise<void> {
   let entries: string[] = [];
   try {
-    entries = readdirSync(rootHome);
+    entries = fs.readdir(rootHome);
   } catch {
     // No root home yet: a fresh install has nothing to move.
   }
@@ -204,7 +203,7 @@ export async function moveDesktopHelpers(
       );
       continue;
     }
-    removeReported(path);
+    fs.rm(path, { force: true });
     consola.info(`  removed ${name} (the Desktop wiring now lives under helpers/)`);
   }
 }

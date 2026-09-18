@@ -405,13 +405,24 @@ function assertProfileBundle(bundle: SettingsBundle, profile: Profile, file: str
       stray.push("the default wiring modes");
     }
   }
-  if (stray.length === 0) return;
-  throw new Error(
-    `${file} is not a bundle of ${profileLabel(profile)} alone: it carries ${
-      stray.join("; ")
-    }. The whole store imports with \`agent settings --import\`; one profile's bundle comes from ` +
-      "`agent profile [<name>] settings --export`.",
-  );
+  if (stray.length > 0) {
+    throw new Error(
+      `${file} is not a bundle of ${profileLabel(profile)} alone: it carries ${
+        stray.join("; ")
+      }. The whole store imports with \`agent settings --import\`; one profile's bundle comes from ` +
+        "`agent profile [<name>] settings --export`.",
+    );
+  }
+  // Every genuine named-profile export carries the profile's slot under `profiles` (its `add`
+  // records a mode before anything else). Without it (a fresh machine's empty whole-store export,
+  // read as a profile's) the import would clear the profile's preferences and land no slot. The
+  // default's bundle has no such slot: before its first credential it is preferences alone.
+  if (profile !== null && !Object.hasOwn(bundle.profiles, profile)) {
+    throw new Error(
+      `${file} carries no slot for ${profileLabel(profile)}: not one profile's bundle. One comes ` +
+        `from \`agent profile ${profile} settings --export\`.`,
+    );
+  }
 }
 
 /** The profile's bundle as a store-shaped document over the CURRENT store, so the one import

@@ -106,9 +106,11 @@ export function retargetMcpRegistration(legacySubArgs: readonly string[]): boole
   const entry = servers[MCP_SERVER_NAME];
   const status = classifyMcpEntry(entry, ghPath, legacySubArgs);
   if (status !== "ours-current" && status !== "ours-stale") return false;
-  return planClaudeJsonPatch(loaded, [
-    set(["mcpServers", MCP_SERVER_NAME], managedEntry(ghPath, entry)),
-  ]).apply();
+  const doc = structuredClone(loaded.doc);
+  const table = isRecord(doc.mcpServers) ? doc.mcpServers : {};
+  doc.mcpServers = table;
+  table[MCP_SERVER_NAME] = managedEntry(ghPath, entry);
+  return writeClaudeJson(loaded, doc);
 }
 
 interface ClaudeJsonDoc {

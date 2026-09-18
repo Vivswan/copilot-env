@@ -288,6 +288,25 @@ test(
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toContain("not a bundle of profile 'work' alone");
     expect(refused.stderr).toContain("agent settings --import");
+    // A fresh machine's empty whole-store export (no keys, no credential, no slot, no mode)
+    // carries no slot for work: read as work's bundle it would clear work's preferences and land
+    // nothing, so it is refused and the store is untouched.
+    const emptyFile = join(twin.home, "empty.json");
+    writeFileSync(
+      emptyFile,
+      JSON.stringify({
+        formatVersion: 2,
+        config: { global: {}, profiles: {} },
+        credential: { githubToken: null, authProvider: null, ghUser: null },
+        profiles: {},
+        modes: { codex: "none", claude: "none" },
+      }),
+    );
+    const beforeEmpty = observe(["settings", "--export"], twin).stdout;
+    const empty = observe(["profile", "work", "settings", "--import", emptyFile, "--force"], twin);
+    expect(empty.exitCode).toBe(1);
+    expect(empty.stderr).toContain("carries no slot for profile 'work'");
+    expect(observe(["settings", "--export"], twin).stdout).toBe(beforeEmpty);
     // Sixteen cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
   300_000,

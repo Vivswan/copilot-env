@@ -310,7 +310,8 @@ export class Overlay {
   readBytes(path: string): Uint8Array {
     const content = this.fileAt(path, "open");
     if ("text" in content) return new TextEncoder().encode(content.text);
-    if ("bytes" in content) return content.bytes;
+    // A copy, so a caller's edits never reach the planned bytes.
+    if ("bytes" in content) return content.bytes.slice();
     return new Uint8Array(readFileSync(content.disk));
   }
 

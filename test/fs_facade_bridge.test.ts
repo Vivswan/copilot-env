@@ -139,6 +139,37 @@ test("under the plan collector a copy prints the wrapper's row and folds with a 
   expect(renderDryRun(files)).toEqual(expected);
 });
 
+test("under the plan collector a move is planned whole with the source's planned text, a move into scratch leaves the real source, and an in-place write under a removed parent is ENOENT", async () => {
+  dir = tempDir("copilot-bridge-");
+  const source = join(dir, "source.txt");
+  const moved = join(dir, "moved.txt");
+  const real = join(dir, "real.txt");
+  const parent = join(dir, "parent");
+  writeFileSync(source, "old");
+  writeFileSync(real, "kept");
+  mkdirSync(parent);
+  const { files } = await collectDryRun(() => {
+    facade.writeText(source, "new", { atomic: false });
+    facade.rename(source, moved);
+    expect([facade.exists(source), facade.readText(moved)]).toEqual([false, "new"]);
+    const scratch = facade.scratchDir(join(dir, "scratch-"));
+    facade.rename(real, join(scratch, "taken.txt"));
+    expect(facade.exists(real)).toBe(false);
+    facade.removeScratchDir(scratch);
+    facade.rm(parent, { recursive: true });
+    expect(() => facade.writeText(join(parent, "f"), "x", { atomic: false })).toThrow(/ENOENT/);
+    return Promise.resolve();
+  });
+  expect(files.map((f) => `${f.verdict} ${f.path}`)).toEqual([
+    `rewrite ${source}`,
+    `create ${moved}`,
+    `delete ${source}`,
+    `delete ${real}`,
+    `delete ${parent}`,
+  ]);
+  expect([readFileSync(source, "utf8"), readFileSync(real, "utf8")]).toEqual(["old", "kept"]);
+});
+
 test("under the plan collector a directory removed and made again is fresh and empty, and a removed file's path takes a directory", async () => {
   dir = tempDir("copilot-bridge-");
   const root = join(dir, "version");

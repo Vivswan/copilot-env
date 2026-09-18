@@ -198,7 +198,14 @@ function planned(
       ? followedTarget(path, refusals.syscall)
       : path;
     const parent = dirname(landing);
-    if (plannedState(parent)?.kind !== "dir") {
+    const parentState = plannedState(parent);
+    if (parentState?.kind === "gone") {
+      throw errno("ENOENT", `no such file or directory, ${refusals.syscall}`);
+    }
+    if (parentState?.kind === "text" || (parentState?.kind === "opaque" && parentState.file)) {
+      throw errno("ENOTDIR", `not a directory, ${refusals.syscall}`);
+    }
+    if (parentState === null || parentState.kind === "opaque") {
       const refusal = parentRefusal(parent, refusals.syscall);
       if (refusal !== null) throw refusal;
     }
@@ -611,12 +618,14 @@ export function rmdir(path: string): void {
  *  move INTO one is the deletion of `from`. */
 export function rename(from: string, to: string): void {
   const was = plannedLook(to, true);
-  if (planCollecting() && !underScratch(to)) {
-    // The moved file's text lands at `to` for the run's later readers; the plan names the move,
-    // never the text (a moved store holds its tokens).
-    const source = readTextResult(from);
+  // Real only between scratch paths: a move touching anything else is planned whole, so a dry run
+  // never takes a real source away.
+  if (planCollecting() && !(underScratch(from) && underScratch(to))) {
+    // The moved file's text, as the run sees it, lands at `to` for the run's later readers; the
+    // plan names the move, never the text (a moved store holds its tokens).
+    const source = plannedBefore(from);
     planned(verdictOf(was), to, {
-      content: source.kind === "text" ? source.text : undefined,
+      content: source ?? undefined,
       render: "path-only",
     }, {
       syscall: `rename '${from}' -> '${to}'`,

@@ -52,6 +52,7 @@ function diskStat(key: string, follow: boolean): Stats | null {
 export function diffOverlay(overlay: Overlay): FileChange[] {
   const changes: FileChange[] = [];
   for (const [key, entry] of overlay.entries) {
+    if (overlay.isHidden(key)) continue;
     const name = overlay.nameOf(key);
     const raw = diskStat(key, false);
     if (entry.kind === "gone") {

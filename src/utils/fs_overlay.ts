@@ -184,9 +184,22 @@ export class Overlay {
   private readonly secrets = new Map<string, Set<string>>();
   /** The keys a write declared secret as a whole. */
   private readonly secretFiles = new Set<string>();
+  /** Keys the run landed under its own scratch (a move or copy into it): the report never names
+   *  them, since scratch goes before exit and was never the user's. */
+  private readonly hidden = new Set<string>();
 
   nameOf(key: string): string {
     return this.names.get(key) ?? key;
+  }
+
+  /** Marks what stands at `path` (and below) as the run's own scratch, off the report. */
+  hide(path: string): void {
+    this.hidden.add(this.key(path, false));
+  }
+
+  isHidden(key: string): boolean {
+    for (const root of this.hidden) if (key === root || isBelow(key, root)) return true;
+    return false;
   }
 
   secretKeysOf(key: string): ReadonlySet<string> {
@@ -525,17 +538,18 @@ export class Overlay {
     this.set(key, { kind: "link", target, mtimeMs: Date.now() }, resolve(link));
   }
 
-  /** The source subtree moves into the layer under `to` (planned text, disk files by path, links as
-   *  links) and `from` is tombstoned. A destination that exists is replaced without a refusal:
-   *  every writer moves onto a path it has cleared or that was never there. */
-  rename(from: string, to: string): void {
+  /** The source subtree moves into the layer under `to` (planned text, disk files by path, or by
+   *  value when the source will not outlive the run, links as links) and `from` is tombstoned. A
+   *  destination that exists is replaced without a refusal: every writer moves onto a path it has
+   *  cleared or that was never there. */
+  rename(from: string, to: string, byValue = false): void {
     const src = this.key(from, false);
     const dst = this.key(to, false);
     const source = this.view(src, "rename", from, false);
     if (source === null) throw errno("ENOENT", "rename", from, to);
     this.landingParent(dst, "rename", from, to);
     if (isBelow(dst, src)) throw errno("EINVAL", "rename", from, to);
-    const moved = this.collect(src, source);
+    const moved = this.collect(src, source, byValue);
     this.dropBelow(src);
     this.set(src, { kind: "gone" }, resolve(from));
     this.dropBelow(dst);
@@ -562,16 +576,26 @@ export class Overlay {
 
   /** Every entry of the subtree at `key`, keyed by path relative to it (the root is ""), as the run
    *  sees it. */
-  private collect(key: string, seen: Present, rel = ""): [string, OverlayEntry][] {
+  /** Every entry of the subtree at `key`, keyed by path relative to it (the root is ""), as the run
+   *  sees it; a disk file is carried by value when asked (the source will not outlive the run). */
+  private collect(
+    key: string,
+    seen: Present,
+    byValue: boolean,
+    rel = "",
+  ): [string, OverlayEntry][] {
     const entry = seen.kind === "disk" ? materialize(key, seen.stats, true) : { ...seen };
     if (entry.kind === "dir") entry.fresh = true;
+    if (byValue && entry.kind === "file" && "disk" in entry.content) {
+      entry.content = { bytes: new Uint8Array(readFileSync(entry.content.disk)) };
+    }
     const out: [string, OverlayEntry][] = [[rel, entry]];
     if (entry.kind !== "dir") return out;
     for (const name of this.readdir(key)) {
       const child = join(key, name);
       const childSeen = this.view(child, "rename", child, false);
       if (childSeen === null) continue;
-      out.push(...this.collect(child, childSeen, rel === "" ? name : join(rel, name)));
+      out.push(...this.collect(child, childSeen, byValue, rel === "" ? name : join(rel, name)));
     }
     return out;
   }

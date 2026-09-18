@@ -1,12 +1,12 @@
 // The transition bridge (src/utils/fs_disk.ts, fs_facade.ts): while `--dry-run` still runs under
 // the plan collector, a writer already on the facade previews exactly as one still on the wrappers,
 // and reads back what it planned. This file goes with write_session.ts.
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderDryRun } from "../src/agents/write_plan.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import * as facade from "../src/utils/fs_facade.ts";
-import { removeEmptyDirReported } from "../src/utils/report_write.ts";
+import { removeEmptyDirReported, writeFileReported } from "../src/utils/report_write.ts";
 import { collectDryRun, filePlan, landPlan } from "../src/utils/write_session.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
@@ -118,6 +118,27 @@ test("under the plan collector a same-content document write with declared secre
   expect(renderDryRun(files)).toEqual([`unchanged ${settings}`]);
 });
 
+test("under the plan collector a copy prints the wrapper's row and folds with a later write as main did, and a dangling link is a rewrite", async () => {
+  dir = tempDir("copilot-bridge-");
+  const source = join(dir, "source.txt");
+  const dst = join(dir, "dst.txt");
+  const dangling = join(dir, "settings.json");
+  writeFileSync(source, "copied\n");
+  if (Deno.build.os !== "windows") symlinkSync(join(dir, "nowhere.json"), dangling);
+  const { files } = await collectDryRun(() => {
+    facade.copyFile(source, dst);
+    expect(facade.readText(dst)).toBe("copied\n");
+    writeFileReported(dst, "edited\n");
+    if (Deno.build.os !== "windows") {
+      facade.writeText(dangling, '{"a":1}\n', { secretKeys: [] });
+    }
+    return Promise.resolve();
+  });
+  const expected = [`create ${dst}`, `  + edited`];
+  if (Deno.build.os !== "windows") expected.push(`rewrite ${dangling}`, `  a  (absent) -> 1`);
+  expect(renderDryRun(files)).toEqual(expected);
+});
+
 test("under the plan collector a directory removed and made again is fresh and empty, and a removed file's path takes a directory", async () => {
   dir = tempDir("copilot-bridge-");
   const root = join(dir, "version");
@@ -172,6 +193,14 @@ test("under the plan collector a directory removed and made again is fresh and e
     facade.rm(nest, { recursive: true });
     facade.writeBytes(nest, new Uint8Array([3]));
     expect([facade.stat(nest).isFile(), facade.rm(nest, { force: true })]).toEqual([true, true]);
+    // A directory replaced by a file is a file to the next write and to a mkdir under it.
+    const swapped = join(dir, "swapped");
+    mkdirSync(swapped);
+    facade.rm(swapped, { recursive: true });
+    facade.writeText(swapped, "first", { atomic: false });
+    facade.writeText(swapped, "second", { atomic: false });
+    expect(() => facade.mkdir(join(swapped, "child"))).toThrow(/ENOTDIR/);
+    expect(facade.readText(swapped)).toBe("second");
     const plannerRoot = join(dir, "planned");
     mkdirSync(plannerRoot);
     writeFileSync(join(plannerRoot, "old.txt"), "old");
@@ -202,6 +231,9 @@ test("under the plan collector a directory removed and made again is fresh and e
     `delete ${join(dir, "nest")}`,
     `create ${join(dir, "nest")}`,
     `delete ${join(dir, "nest")}`,
+    `delete ${join(dir, "swapped")}`,
+    `create ${join(dir, "swapped")}`,
+    `rewrite ${join(dir, "swapped")}`,
     `delete ${join(dir, "planned")}`,
     `create ${join(dir, "planned")}/`,
     `create ${join(dir, "planned", "new.txt")}`,

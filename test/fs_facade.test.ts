@@ -578,6 +578,23 @@ test("a copy out of scratch survives the scratch dir's removal, and a byte write
   expect(lines).toEqual([`rewrite ${target}`, `create ${written}`]);
 });
 
+test("a move into scratch in a dry run is planned, never real: the source stays on the disk and the report names its removal alone", async () => {
+  dir = tempDir("copilot-facade-");
+  const source = join(dir, "real.txt");
+  writeFileSync(source, "kept");
+  const lines = await dryRun(() => {
+    const scratch = facade.scratchDir(join(dir, "scratch-"));
+    facade.rename(source, join(scratch, "moved.txt"));
+    expect([facade.exists(source), facade.readText(join(scratch, "moved.txt"))]).toEqual([
+      false,
+      "kept",
+    ]);
+    facade.removeScratchDir(scratch);
+    expect(facade.readText(join(scratch, "moved.txt"))).toBe("kept");
+  });
+  expect([lines, readFileSync(source, "utf8")]).toEqual([[`delete ${source}`], "kept"]);
+});
+
 // Creating a symlink needs a privilege Windows does not grant by default.
 test.skipIf(WINDOWS)("a link to itself is ELOOP in a dry run, as on the disk", async () => {
   dir = tempDir("copilot-facade-");

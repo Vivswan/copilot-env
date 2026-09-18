@@ -196,7 +196,9 @@ export function plannedMissingDirectories(path: string): string[] {
   for (let cur = path;; cur = dirname(cur)) {
     const state = plannedState(cur);
     if (state?.kind === "dir") return missing;
-    if (state?.kind === "text") throw mkdirRefusal(cur, path);
+    if (state?.kind === "text" || (state?.kind === "opaque" && state.file)) {
+      throw mkdirRefusal(cur, path);
+    }
     if (state === null || state.kind === "opaque") {
       // A plan without bytes (a chmod on a disk directory, a copy): the disk says which kind.
       const entry = lookEntry(cur);
@@ -335,6 +337,12 @@ export function plannedMode(path: string): number | undefined {
   return session?.modes.get(path);
 }
 
+/** Text a landing put at `path` without a plan row carrying it (a copy's source text), so the
+ *  run's later readers see it while the row prints as the wrapper's did. */
+export function recordShadow(path: string, text: string): void {
+  session?.shadows.set(path, text);
+}
+
 /** readdirSync, with a dry run's landings in front of the disk: an entry this run planned to
  *  delete is gone, one it planned to create (a file, a copy, a link, or a directory) is there, and
  *  a directory made fresh over a planned deletion lists nothing the disk holds. Absent reads as
@@ -410,11 +418,14 @@ export function planDocReplace(
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const was = before.get(key);
     const now = after.get(key);
+    // A TOML datetime and its ISO string serialize alike, yet the file changes shape: the kind
+    // compares too.
     const status: AttributeStatus = !before.has(key)
       ? "set"
       : !after.has(key)
       ? "remove"
-      : JSON.stringify(was) === JSON.stringify(now)
+      : (was instanceof Date) === (now instanceof Date) &&
+          JSON.stringify(was) === JSON.stringify(now)
       ? "same"
       : "change";
     rows.push({ key, status, current: was, next: now, secret: secret(key) });

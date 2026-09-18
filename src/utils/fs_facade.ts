@@ -254,12 +254,16 @@ export function writeBytes(path: string, bytes: Uint8Array, options: disk.WriteO
   run.writeBytes(path, bytes, { mode: options.mode, replace: options.atomic !== false });
 }
 
-/** The bytes of `from` land at `to`; a dry run carries them by path (by value out of scratch, which
- *  goes before the report) and prints the verdict alone. */
+/** The bytes of `from` land at `to`. A dry run carries them by path (by value out of scratch, which
+ *  goes before the report) and prints the verdict alone; the copy is real only when both paths are
+ *  scratch. */
 export function copyFile(from: string, to: string, detail?: string): void {
-  const run = overlayFor(to);
-  if (run === null) disk.copyFile(from, to, detail);
-  else run.copyFile(from, to, underScratch(from));
+  if (overlay === null || (underScratch(from) && underScratch(to))) {
+    disk.copyFile(from, to, detail);
+    return;
+  }
+  overlay.copyFile(from, to, underScratch(from));
+  if (underScratch(to)) overlay.hide(to);
 }
 
 /** Always `mkdir -p`. */
@@ -290,10 +294,15 @@ export function chmod(path: string, mode: number, detail?: string): void {
   else run.chmod(path, mode);
 }
 
+/** Real only when both paths are scratch: a move touching anything else is planned whole, so a
+ *  dry run never takes a real source away. */
 export function rename(from: string, to: string): void {
-  const run = overlayFor(to);
-  if (run === null) disk.rename(from, to);
-  else run.rename(from, to);
+  if (overlay === null || (underScratch(from) && underScratch(to))) {
+    disk.rename(from, to);
+    return;
+  }
+  overlay.rename(from, to, underScratch(from));
+  if (underScratch(to)) overlay.hide(to);
 }
 
 export function symlink(target: string, path: string, type?: "junction"): void {

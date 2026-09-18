@@ -62,6 +62,7 @@ import {
   plannedState,
   readPlannedDir,
   recordPlannedMode,
+  recordShadow,
   shadowedText,
   textVerdict,
 } from "./write_session.ts";
@@ -201,13 +202,15 @@ function planned(
       const refusal = parentRefusal(parent, refusals.syscall);
       if (refusal !== null) throw refusal;
     }
-    // The target as the run leaves it: a directory this run planned gone is gone; one still there
-    // (the disk's, or one this run made) is the syscall's EISDIR.
+    // The target as the run leaves it: a directory this run planned gone, or replaced with a
+    // file, is no directory; one still there (the disk's, or one this run made) is the syscall's
+    // EISDIR.
     const state = plannedState(path);
-    const directory = refusals.directory === "none" || state?.kind === "gone"
+    const directory = refusals.directory === "none"
       ? false
-      : state?.kind === "dir" ||
-        (refusals.directory === "followed" ? isDir(path) : isDirectoryEntry(path));
+      : state === null || (state.kind === "opaque" && !state.file)
+      ? (refusals.directory === "followed" ? isDir(path) : isDirectoryEntry(path))
+      : state.kind === "dir";
     if (directory) {
       // Windows opens a directory for writing with EINVAL; every other refusal here is EISDIR.
       throw refusals.directory === "followed" && process.platform === "win32"
@@ -373,8 +376,12 @@ function bridgedRender(
   if (!planCollecting() || options.secretKeys === undefined || options.secret) {
     return { render: renderOf(options.secret) };
   }
-  const before = plannedBefore(path);
-  const verdict = textVerdict(before, text);
+  // The bytes the write replaces, as the run sees them. An entry that stands but cannot be read
+  // (a dangling link the real write lands through) is a rewrite of unknown bytes, never a create.
+  const shadow = shadowedText(path);
+  const read = shadow === undefined ? readTextResult(path) : null;
+  const before = shadow !== undefined ? shadow : read?.kind === "text" ? read.text : null;
+  const verdict: FileVerdict = read?.kind === "unreadable" ? "rewrite" : textVerdict(before, text);
   const rows = bridgeRows(path, before, text, new Set(options.secretKeys));
   return rows === null
     ? { render: "path-only", verdict }
@@ -492,15 +499,18 @@ function writeStaged(path: string, data: string | Uint8Array, options: WriteOpti
 
 export function copyFile(from: string, to: string, detail?: string): void {
   const was = plannedLook(to);
-  // The source's text (as the run sees it) lands at `to` for the run's later readers; the plan
-  // names the copy alone, as the wrapper did.
-  const source = planCollecting() ? plannedBefore(from) : null;
   if (
-    planned(verdictOf(was), to, {
-      content: source ?? undefined,
-      render: "path-only",
-    }, { syscall: `copyfile '${from}' -> '${to}'`, directory: "followed" })
-  ) return;
+    planned(verdictOf(was), to, undefined, {
+      syscall: `copyfile '${from}' -> '${to}'`,
+      directory: "followed",
+    })
+  ) {
+    // The row is the wrapper's (the verdict alone); the source's text, as the run sees it, still
+    // lands at `to` for the run's later readers.
+    const source = plannedBefore(from);
+    if (source !== null) recordShadow(to, source);
+    return;
+  }
   try {
     copyFileSync(from, to);
   } catch (err) {

@@ -32,6 +32,7 @@ copilot-env points the Codex and Claude CLIs at GitHub Copilot, either through a
 | Run the CLI from a checkout                                                 | [Development](development.md)                                                            |
 | See how the code is layered, and which module imports which                 | [Architecture](architecture.md)                                                          |
 | See how a dry run keeps its reads and writes on one seam                    | [Dry-run filesystem](dry-run-facade.md)                                                  |
+| Read the profile-centric command surface before it is built                 | [CLI redesign](cli-redesign.md)                                                          |
 
 ## The pages
 
@@ -43,3 +44,5 @@ In reading order:
 4. [Authentication](authentication.md) - the credential providers, PAT passthrough, client identity, static key, profiles.
 5. [Development](development.md) - running from a checkout, the tasks, the env init, where the rules live.
 6. [Architecture](architecture.md) - the decisions as diagrams over real files, and the layer map the lint keeps equal to the import graph.
+7. [Dry-run filesystem](dry-run-facade.md) - the planned filesystem seam for every read and write, and what a dry run prints.
+8. [CLI redesign](cli-redesign.md) - the profile-centric command tree, the old-to-new mapping, the config split, the delivery plan.

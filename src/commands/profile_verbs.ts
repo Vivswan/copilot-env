@@ -18,6 +18,7 @@ import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { inspectCodexWiring } from "../codex/config.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import {
@@ -174,7 +175,8 @@ async function confirmModeChange(opts: Opts, rawProfile: string | null): Promise
  *  script with neither is refused BEFORE the mode lands, so nothing is half done. A profile with
  *  a credential is never asked again. */
 function credentialStep(profile: Profile, opts: Opts): () => Promise<void> {
-  if (new CopilotEnvState().readCredential(profile).kind !== "none") return () => Promise.resolve();
+  // Resolving, not merely stored: a gh-cli slot whose gh login is gone is as good as none.
+  if (new Credential(undefined, profile).isAuthenticated()) return () => Promise.resolve();
   const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
   const providers = `--provider <${
     AUTH_PROVIDERS.join("|")
@@ -656,12 +658,9 @@ async function runDefaultAdd(opts: Opts): Promise<void> {
   const mode = requested === "auto" ? recordedMode(null) ?? "auto" : requested;
   const step = credentialStep(null, opts);
   // The default's mode record has one writer, the landing that follows its credential, so with
-  // no credential yet the step is all that runs here: the flow (runInit's own), the --no-auth next
-  // step, or the dry run's planned line.
-  if (
-    new CopilotEnvState().readCredential(null).kind === "none" &&
-    (opts.auth === false || opts.dryRun)
-  ) {
+  // no resolving credential the step is all that runs here: the flow (runInit's own), the
+  // --no-auth next step, or the dry run's planned line.
+  if (!new Credential().isAuthenticated() && (opts.auth === false || opts.dryRun)) {
     await step();
     logger.log(`  then:  agent init${mode === "auto" ? "" : ` --${mode}`}`);
     return;

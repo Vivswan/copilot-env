@@ -1110,19 +1110,21 @@ async function moveProfile(
       consola.info(`  moved ${oldHome} -> ${profileHome(to)}`);
       changed = true;
     }
-    // The Desktop entry points at a helper script by path, and the script's body names the
-    // profile: the new name's script is written and the old one removed here, so the pointer
-    // retargeted below is valid whether or not the re-render runs.
-    for (const mode of PROFILE_MODES) {
-      const oldHelper = desktopHelperPath(resolveRootHome(), mode, from);
-      if (!existsSync(oldHelper)) continue;
-      const newHelper = writeDesktopHelperScript(mode, to);
-      consola.info(`  moved ${oldHelper} -> ${newHelper}`);
-      removeReported(oldHelper, `Claude Desktop helper of profile '${from}'`);
-    }
     consola.info(
       `  renamed ${profileLabel(from)} -> '${to}' (its name is a verb of agent profile)`,
     );
+  }
+  // The Desktop entry points at a helper script by path, and the script's body carries the
+  // resolver spelling and the profile's name: every profile's script is rewritten under the new
+  // name (the same name when nothing renames), so the pointer retargeted below is valid and the
+  // body current whether or not the re-render runs.
+  for (const mode of PROFILE_MODES) {
+    const oldHelper = desktopHelperPath(resolveRootHome(), mode, from);
+    if (!existsSync(oldHelper)) continue;
+    const newHelper = writeDesktopHelperScript(mode, to);
+    if (from === to) continue;
+    consola.info(`  moved ${oldHelper} -> ${newHelper}`);
+    removeReported(oldHelper, `Claude Desktop helper of profile '${from}'`);
   }
   changed = retargetClaude(claudeHome, move) || changed;
   for (const home of codexHomes) changed = retargetCodex(home, move) || changed;

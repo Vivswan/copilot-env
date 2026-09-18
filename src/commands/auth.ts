@@ -585,8 +585,8 @@ async function plannedAcquisition(
 }
 
 /** Never persists: the caller owns the single store write (`authenticate` into an existing slot,
- *  `agent profile <name> add` atomically with the profile's mode). `profile` names the slot a dry
- *  run's narration speaks of; `seams` are test substitutes for the gh lookups. */
+ *  whose mode `agent profile <name> add` recorded first). `profile` names the slot a dry run's
+ *  narration speaks of; `seams` are test substitutes for the gh lookups. */
 export async function acquireCredential(
   acquisition: CredentialAcquisition,
   profile: Profile = null,

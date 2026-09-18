@@ -324,10 +324,12 @@ test(
     );
     // The default's --no-auth prints its two steps and lands nothing (its record follows its
     // credential).
+    const afterNamed = treeContents(scratch.home);
     const initNoAuth = observe(["init", "--proxy", "--no-auth"], scratch);
     expect(initNoAuth.exitCode).toBe(0);
     expect(initNoAuth.stderr).toContain("Next:  agent auth --provider");
     expect(initNoAuth.stderr).toContain("then:  agent init --proxy");
+    expect(treeContents(scratch.home)).toEqual(afterNamed);
     // With a credential, add never asks again: a headless re-add succeeds without the flag.
     expect(observe(["profile", "work", "auth", "--set", "ghu_work"], scratch).exitCode).toBe(0);
     const again = observe(["profile", "work", "add", "--proxy"], scratch);

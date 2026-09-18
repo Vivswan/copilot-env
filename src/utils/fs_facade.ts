@@ -75,15 +75,21 @@ function overlayFor(path: string): Overlay | null {
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
 
-/** What the plan collector says about `path`: planned text, a planned file whose bytes the plan
- *  does not carry (a copy, a byte write, a chmod), a planned directory, a planned deletion, or
- *  nothing (the disk speaks). */
-type Shadow = { kind: "text"; text: string } | "opaque" | "dir" | "gone" | null;
+/** What the plan collector says about `path`: planned text or bytes, a planned file whose bytes
+ *  the plan does not carry (a copy, a chmod), a planned directory, a planned deletion, or nothing
+ *  (the disk speaks). */
+type Shadow =
+  | { kind: "text"; text: string }
+  | { kind: "bytes"; bytes: Uint8Array }
+  | "opaque"
+  | "dir"
+  | "gone"
+  | null;
 
 function shadow(path: string): Shadow {
   const state = plannedState(path);
   if (state === null) return null;
-  if (state.kind === "text") return state;
+  if (state.kind === "text" || state.kind === "bytes") return state;
   if (state.kind !== "opaque") return state.kind;
   if (state.file) return "opaque";
   // A plan without bytes over what the disk holds (a chmod): the disk says which kind stands there.
@@ -107,7 +113,9 @@ function shadowStats(seen: Exclude<Shadow, "gone" | null>, path: string): EntryS
   }
   // A planned chmod, or a write's explicit mode, is what the run leaves there.
   mode = plannedMode(path) ?? mode;
-  if (typeof seen === "object") size = new TextEncoder().encode(seen.text).length;
+  if (typeof seen === "object") {
+    size = seen.kind === "text" ? new TextEncoder().encode(seen.text).length : seen.bytes.length;
+  }
   return {
     isFile: () => file,
     isDirectory: () => !file,
@@ -126,13 +134,15 @@ export function readText(path: string): string {
   if (seen === "gone") throw errno("ENOENT", "open", path);
   if (seen === "dir") throw errno("EISDIR", "open", path);
   // The plan carries no bytes for an opaque file: the disk is the nearest answer.
-  return seen === null || seen === "opaque" ? readFileSync(path, "utf8") : seen.text;
+  if (seen === null || seen === "opaque") return readFileSync(path, "utf8");
+  return seen.kind === "text" ? seen.text : new TextDecoder().decode(seen.bytes);
 }
 
 export function readBytes(path: string): Uint8Array {
   if (overlay !== null) return overlay.readBytes(path);
   const seen = shadow(path);
   if (seen === null || seen === "opaque") return new Uint8Array(readFileSync(path));
+  if (typeof seen === "object" && seen.kind === "bytes") return seen.bytes.slice();
   return new TextEncoder().encode(readText(path));
 }
 

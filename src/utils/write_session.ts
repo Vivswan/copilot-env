@@ -112,6 +112,8 @@ interface DryRunSession {
   /** Files landed without their bytes (a copy, a byte write, a link) where the run had planned a
    *  deletion: files, whatever the disk still holds at the path. */
   opaqueFiles: Set<string>;
+  /** Planned bytes by path (a byte write, a copied binary), for the run's later readers. */
+  bytes: Map<string, Uint8Array>;
 }
 
 let session: DryRunSession | null = null;
@@ -155,11 +157,14 @@ export function landPlan(plan: WritePlan): void {
         if (key !== file.path && below(key)) session.shadows.delete(key);
       }
       for (const key of [...session.modes.keys()]) if (below(key)) session.modes.delete(key);
+      for (const key of [...session.bytes.keys()]) if (below(key)) session.bytes.delete(key);
       for (const set of [session.dirs, session.fresh, session.opaqueFiles]) {
         for (const key of [...set]) if (below(key)) set.delete(key);
       }
-    } else if (file.content !== undefined) session.shadows.set(file.path, file.content);
-    // A landing whose bytes the plan does not carry (a copy, a link, a byte write) over a planned
+    } else if (file.content !== undefined) {
+      session.shadows.set(file.path, file.content);
+      session.bytes.delete(file.path);
+    } // A landing whose bytes the plan does not carry (a copy, a link, a byte write) over a planned
     // deletion is a file there whatever the disk held, and ends the deletion of the path itself;
     // earlier planned text stays (a chmod carries none).
     else if (!file.directory && shadowedText(file.path) === null) {
@@ -196,7 +201,10 @@ export function plannedMissingDirectories(path: string): string[] {
   for (let cur = path;; cur = dirname(cur)) {
     const state = plannedState(cur);
     if (state?.kind === "dir") return missing;
-    if (state?.kind === "text" || (state?.kind === "opaque" && state.file)) {
+    if (
+      state?.kind === "text" || state?.kind === "bytes" ||
+      (state?.kind === "opaque" && state.file)
+    ) {
       throw mkdirRefusal(cur, path);
     }
     if (state === null || state.kind === "opaque") {
@@ -257,6 +265,7 @@ export async function collectDryRun<T>(
     modes: new Map(),
     fresh: new Set(),
     opaqueFiles: new Set(),
+    bytes: new Map(),
   };
   try {
     const result = await body();
@@ -287,6 +296,7 @@ export function shadowedText(path: string): string | null | undefined {
 export type PlannedState =
   | { kind: "dir" }
   | { kind: "text"; text: string }
+  | { kind: "bytes"; bytes: Uint8Array }
   | { kind: "gone" }
   /** `file` is certain when the landing replaced a planned deletion; otherwise the disk says. */
   | { kind: "opaque"; file: boolean }
@@ -298,9 +308,18 @@ export function plannedState(path: string): PlannedState {
   const own = session.shadows.get(path);
   if (own === null) return { kind: "gone" };
   if (own !== undefined) return { kind: "text", text: own };
+  const bytes = session.bytes.get(path);
+  if (bytes !== undefined && plannedPresence(path) === true) return { kind: "bytes", bytes };
   const present = plannedPresence(path);
   if (present === true) return { kind: "opaque", file: session.opaqueFiles.has(path) };
   return present === false || shadowedText(path) === null ? { kind: "gone" } : null;
+}
+
+/** Bytes a landing put at `path` (a byte write, a copied binary), for the run's later readers. */
+export function recordBytes(path: string, bytes: Uint8Array): void {
+  if (session === null) return;
+  session.bytes.set(path, bytes.slice());
+  if (session.shadows.get(path) !== null) session.shadows.delete(path);
 }
 
 /** Whether `path` exists as the run has planned it, landing by landing: true after a planned
@@ -340,7 +359,9 @@ export function plannedMode(path: string): number | undefined {
 /** Text a landing put at `path` without a plan row carrying it (a copy's source text), so the
  *  run's later readers see it while the row prints as the wrapper's did. */
 export function recordShadow(path: string, text: string): void {
-  session?.shadows.set(path, text);
+  if (session === null) return;
+  session.shadows.set(path, text);
+  session.bytes.delete(path);
 }
 
 /** readdirSync, with a dry run's landings in front of the disk: an entry this run planned to
@@ -390,14 +411,37 @@ function isDoc(value: unknown): value is Record<string, unknown> {
 }
 
 /** Every leaf under `value`, keyed by dotted path; arrays and scalars are leaves. An empty record
- *  is no leaf: a map emptied by the last slot's deletion is told by the slot keys that go, not by
- *  the container. */
-function leaves(value: unknown, prefix: readonly string[], out: Map<string, unknown>): void {
+ *  is no leaf of its own: a map emptied by the last slot's deletion is told by the slot keys that
+ *  go, not by the container. `empties` collects the empty records, for the one case they do print
+ *  (see emptyLeaves). */
+function leaves(
+  value: unknown,
+  prefix: readonly string[],
+  out: Map<string, unknown>,
+  empties: Set<string>,
+): void {
   if (!isDoc(value)) {
     if (prefix.length > 0) out.set(dottedKey(prefix), value);
     return;
   }
-  for (const [k, v] of Object.entries(value)) leaves(v, [...prefix, k], out);
+  if (prefix.length > 0 && Object.keys(value).length === 0) empties.add(dottedKey(prefix));
+  for (const [k, v] of Object.entries(value)) leaves(v, [...prefix, k], out, empties);
+}
+
+/** An empty record stands as a leaf (`{}`) where the other side has nothing at or under its key:
+ *  a table set to `{}` and later dropped prints `{} -> (absent)`, as the patch writers printed it,
+ *  while a map emptied slot by slot prints only its slots. */
+export function emptyLeaves(
+  empties: ReadonlySet<string>,
+  own: Map<string, unknown>,
+  other: ReadonlyMap<string, unknown>,
+): void {
+  for (const key of empties) {
+    if (other.has(key)) continue;
+    let below = false;
+    for (const k of other.keys()) if (k.startsWith(`${key}.`)) below = true;
+    if (!below) own.set(key, {});
+  }
 }
 
 /**
@@ -412,8 +456,12 @@ export function planDocReplace(
 ): AttributeRow[] {
   const before = new Map<string, unknown>();
   const after = new Map<string, unknown>();
-  leaves(current, [], before);
-  leaves(next, [], after);
+  const beforeEmpties = new Set<string>();
+  const afterEmpties = new Set<string>();
+  leaves(current, [], before, beforeEmpties);
+  leaves(next, [], after, afterEmpties);
+  emptyLeaves(beforeEmpties, before, after);
+  emptyLeaves(afterEmpties, after, before);
   const rows: AttributeRow[] = [];
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const was = before.get(key);

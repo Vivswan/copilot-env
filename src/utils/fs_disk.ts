@@ -61,6 +61,7 @@ import {
   plannedMissingDirectories,
   plannedState,
   readPlannedDir,
+  recordBytes,
   recordPlannedMode,
   recordShadow,
   shadowedText,
@@ -202,7 +203,10 @@ function planned(
     if (parentState?.kind === "gone") {
       throw errno("ENOENT", `no such file or directory, ${refusals.syscall}`);
     }
-    if (parentState?.kind === "text" || (parentState?.kind === "opaque" && parentState.file)) {
+    if (
+      parentState?.kind === "text" || parentState?.kind === "bytes" ||
+      (parentState?.kind === "opaque" && parentState.file)
+    ) {
       throw errno("ENOTDIR", `not a directory, ${refusals.syscall}`);
     }
     if (parentState === null || parentState.kind === "opaque") {
@@ -332,7 +336,10 @@ export function assertNotDirectory(path: string): void {
  *  update planner, whose `current` flip takes the same decision. */
 export function refuseRmdir(path: string): void {
   const state = plannedState(path);
-  if (state?.kind === "text" || (state?.kind === "opaque" && state.file)) {
+  if (
+    state?.kind === "text" || state?.kind === "bytes" ||
+    (state?.kind === "opaque" && state.file)
+  ) {
     throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
   }
   if (state === null || state.kind === "opaque") {
@@ -433,6 +440,7 @@ function writeInPlace(path: string, data: string | Uint8Array, options: WriteOpt
       directory: "followed",
     })
   ) {
+    if (typeof data !== "string") recordBytes(path, data);
     if (options.mode !== undefined) recordPlannedMode(path, options.mode);
     return;
   }
@@ -465,6 +473,7 @@ function writeStaged(path: string, data: string | Uint8Array, options: WriteOpti
       directory: "entry",
     })
   ) {
+    if (typeof data !== "string") recordBytes(path, data);
     // A staged write lands a fresh inode: its mode is the explicit one, else the default.
     recordPlannedMode(path, options.mode ?? defaultFileMode());
     return;
@@ -512,10 +521,14 @@ export function copyFile(from: string, to: string, detail?: string): void {
       directory: "followed",
     })
   ) {
-    // The row is the wrapper's (the verdict alone); the source's text, as the run sees it, still
-    // lands at `to` for the run's later readers.
-    const source = plannedBefore(from);
-    if (source !== null) recordShadow(to, source);
+    // The row is the wrapper's (the verdict alone); the source's text or bytes, as the run sees
+    // them, still land at `to` for the run's later readers.
+    const state = plannedState(from);
+    if (state?.kind === "bytes") recordBytes(to, state.bytes);
+    else {
+      const source = plannedBefore(from);
+      if (source !== null) recordShadow(to, source);
+    }
     return;
   }
   if (planCollecting() && underScratch(to) && plannedState(from) !== null) {
@@ -632,9 +645,10 @@ export function rename(from: string, to: string): void {
   // Real only between scratch paths: a move touching anything else is planned whole, so a dry run
   // never takes a real source away.
   if (planCollecting() && !(underScratch(from) && underScratch(to))) {
-    // The moved file's text, as the run sees it, lands at `to` for the run's later readers; the
-    // plan names the move, never the text (a moved store holds its tokens).
-    const source = plannedBefore(from);
+    // The moved file's text or bytes, as the run sees them, land at `to` for the run's later
+    // readers; the plan names the move, never the text (a moved store holds its tokens).
+    const state = plannedState(from);
+    const source = state?.kind === "bytes" ? null : plannedBefore(from);
     planned(verdictOf(was), to, {
       content: source ?? undefined,
       render: "path-only",
@@ -642,6 +656,7 @@ export function rename(from: string, to: string): void {
       syscall: `rename '${from}' -> '${to}'`,
       directory: isDirectoryEntry(from) ? "none" : "entry",
     });
+    if (state?.kind === "bytes") recordBytes(to, state.bytes);
     planned("delete", from);
     return;
   }

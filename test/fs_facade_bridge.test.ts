@@ -118,6 +118,30 @@ test("under the plan collector a same-content document write with declared secre
   expect(renderDryRun(files)).toEqual([`unchanged ${settings}`]);
 });
 
+test("an empty table dropped whole is a row, while a map emptied slot by slot prints only its slots", async () => {
+  dir = tempDir("copilot-bridge-");
+  const config = join(dir, "config.toml");
+  const store = join(dir, "state.json");
+  writeFileSync(
+    config,
+    '[model_providers.copilot-env]\nbase_url = "https://x"\nhttp_headers = {}\n',
+  );
+  writeFileSync(store, '{"profiles":{"work":{"githubToken":"t"}}}\n');
+  const { files } = await collectDryRun(() => {
+    facade.writeText(config, '[model_providers.copilot-env]\nbase_url = "https://x"\n', {
+      secretKeys: [],
+    });
+    facade.writeText(store, '{"profiles":{}}\n', { secretKeys: ["profiles.work.githubToken"] });
+    return Promise.resolve();
+  });
+  expect(renderDryRun(files)).toEqual([
+    `rewrite ${config}`,
+    `  model_providers.copilot-env.http_headers  {} -> (absent)`,
+    `rewrite ${store}`,
+    `  profiles.work.githubToken  <redacted> -> (absent)`,
+  ]);
+});
+
 test("under the plan collector a copy prints the wrapper's row and folds with a later write as main did, and a dangling link is a rewrite", async () => {
   dir = tempDir("copilot-bridge-");
   const source = join(dir, "source.txt");
@@ -313,7 +337,7 @@ test("under the plan collector a facade read answers from the plan: a planned wr
     ]);
     expect(() => facade.readText(file)).toThrow(/ENOENT/);
     // A planned file whose bytes the plan does not carry is still present to a later read, listed
-    // by its parent, removable, and re-creatable after a planned deletion.
+    // by its parent, removable, and re-creatable after a planned deletion; a byte write reads back.
     const blob = join(dir, "blob.bin");
     facade.writeBytes(blob, new Uint8Array([1, 2, 3]));
     expect([facade.exists(blob), facade.stat(blob).isFile(), facade.readdir(dir)]).toEqual([
@@ -321,6 +345,14 @@ test("under the plan collector a facade read answers from the plan: a planned wr
       true,
       ["blob.bin", "made", "other", "seed.txt"],
     ]);
+    expect([facade.readBytes(blob), facade.stat(blob).size]).toEqual([
+      new Uint8Array([1, 2, 3]),
+      3,
+    ]);
+    facade.rename(blob, join(dir, "moved.bin"));
+    expect(facade.readBytes(join(dir, "moved.bin"))).toEqual(new Uint8Array([1, 2, 3]));
+    facade.rm(join(dir, "moved.bin"));
+    facade.writeBytes(blob, new Uint8Array([1, 2, 3]));
     expect([facade.rm(blob, { force: true }), facade.exists(blob)]).toEqual([true, false]);
     // A copy carries the source's text to the run's later readers.
     facade.copyFile(join(dir, "seed.txt"), blob);

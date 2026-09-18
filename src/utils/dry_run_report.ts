@@ -164,13 +164,36 @@ function dottedKey(path: readonly string[]): string {
   return path.map((s) => (s.includes(".") || s.includes(" ") ? JSON.stringify(s) : s)).join(".");
 }
 
-/** A Date is a leaf: smol-toml parses a TOML datetime into one. An empty table is no leaf. */
-function leaves(value: unknown, prefix: readonly string[], out: Map<string, unknown>): void {
+/** A Date is a leaf: smol-toml parses a TOML datetime into one. An empty table is no leaf of its
+ *  own (a map emptied slot by slot prints only its slots); `empties` collects them for the one
+ *  case they print (emptyLeaves). */
+function leaves(
+  value: unknown,
+  prefix: readonly string[],
+  out: Map<string, unknown>,
+  empties: Set<string>,
+): void {
   if (!isRecord(value) || value instanceof Date) {
     if (prefix.length > 0) out.set(dottedKey(prefix), value);
     return;
   }
-  for (const [k, v] of Object.entries(value)) leaves(v, [...prefix, k], out);
+  if (prefix.length > 0 && Object.keys(value).length === 0) empties.add(dottedKey(prefix));
+  for (const [k, v] of Object.entries(value)) leaves(v, [...prefix, k], out, empties);
+}
+
+/** An empty table stands as a leaf (`{}`) where the other side has nothing at or under its key: a
+ *  table set to `{}` and later dropped prints `{} -> (absent)`. */
+function emptyLeaves(
+  empties: ReadonlySet<string>,
+  own: Map<string, unknown>,
+  other: ReadonlyMap<string, unknown>,
+): void {
+  for (const key of empties) {
+    if (other.has(key)) continue;
+    let below = false;
+    for (const k of other.keys()) if (k.startsWith(`${key}.`)) below = true;
+    if (!below) own.set(key, {});
+  }
 }
 
 /** A TOML datetime and its ISO string serialize alike, yet the file changes shape. */
@@ -191,8 +214,12 @@ function docRows(
   if (beforeDoc === null || afterDoc === null) return [];
   const before = new Map<string, unknown>();
   const after = new Map<string, unknown>();
-  leaves(beforeDoc, [], before);
-  leaves(afterDoc, [], after);
+  const beforeEmpties = new Set<string>();
+  const afterEmpties = new Set<string>();
+  leaves(beforeDoc, [], before, beforeEmpties);
+  leaves(afterDoc, [], after, afterEmpties);
+  emptyLeaves(beforeEmpties, before, after);
+  emptyLeaves(afterEmpties, after, before);
   const rows: AttributeRow[] = [];
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const status: AttributeStatus = !before.has(key)

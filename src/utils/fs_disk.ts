@@ -40,7 +40,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { isDir, isEnoentOrNotdir, missingDirectories, readTextResult } from "./fs.ts";
+import { isDir, isEnoentOrNotdir, readTextResult } from "./fs.ts";
 import { rmDirectoryRefused } from "./fs_overlay.ts";
 import {
   forgetReported,
@@ -59,6 +59,7 @@ import {
   type FileVerdict,
   landPlan,
   plannedDirectory,
+  plannedMissingDirectories,
   plannedPresence,
   readPlannedDir,
   recordPlannedMode,
@@ -169,11 +170,12 @@ interface PlanRefusals {
 
 /** A look through the run's own landings: a path this dry run planned gone is absent, one it
  *  planned written (text, bytes, a copy, a link, a directory) is present, whatever the disk still
- *  shows. */
+ *  shows. A planned directory stands over its own tombstone (removed and made again). */
 function plannedLook(path: string, deep = false): Look {
+  if (plannedDirectory(path)) return { kind: "present", fingerprint: "" };
   const shadow = shadowedText(path);
   if (shadow === null) return { kind: "absent" };
-  if (shadow !== undefined || plannedDirectory(path) || plannedPresence(path) === true) {
+  if (shadow !== undefined || plannedPresence(path) === true) {
     return { kind: "present", fingerprint: "" };
   }
   return look(path, deep);
@@ -510,7 +512,7 @@ export function copyFile(from: string, to: string, detail?: string): void {
 /** Names every directory actually created, outermost first; `detail` rides on the directory asked
  *  for. An ancestor that exists as a regular file is mkdir's ENOTDIR, in a dry run too. */
 export function mkdir(path: string, mode?: number, detail?: string): void {
-  const missing = missingDirectories(path);
+  const missing = plannedMissingDirectories(path);
   if (planCollecting() && !underScratch(path)) {
     for (const made of missing) planned("create", made, { render: "diff", directory: true });
     return;
@@ -548,7 +550,7 @@ export interface RemoveOptions {
 export function rm(path: string, options: RemoveOptions = {}): boolean {
   const recursive = options.recursive ?? false;
   const shadow = shadowedText(path);
-  if (shadow === null) {
+  if (shadow === null && !plannedDirectory(path)) {
     if (options.force) return false;
     throw errno("ENOENT", `no such file or directory, lstat '${path}'`);
   }

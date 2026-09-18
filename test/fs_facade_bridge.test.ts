@@ -117,6 +117,37 @@ test("under the plan collector a same-content document write with declared secre
   expect(renderDryRun(files)).toEqual([`unchanged ${settings}`]);
 });
 
+test("under the plan collector a directory removed and made again is fresh and empty, and a removed file's path takes a directory", async () => {
+  dir = tempDir("copilot-bridge-");
+  const root = join(dir, "version");
+  const file = join(dir, "marker");
+  mkdirSync(root);
+  writeFileSync(join(root, "stale.txt"), "old");
+  writeFileSync(file, "a file today");
+  const { files } = await collectDryRun(() => {
+    facade.rm(root, { recursive: true });
+    facade.mkdir(root);
+    expect([facade.exists(root), facade.stat(root).isDirectory(), facade.readdir(root)]).toEqual([
+      true,
+      true,
+      [],
+    ]);
+    expect(facade.exists(join(root, "stale.txt"))).toBe(false);
+    facade.rm(file);
+    facade.mkdir(join(file, "deep"));
+    expect(facade.readdir(dir)).toEqual(["marker", "version"]);
+    return Promise.resolve();
+  });
+  expect(files.map((f) => `${f.verdict} ${f.path}${f.directory ? "/" : ""}`)).toEqual([
+    `delete ${root}`,
+    `create ${root}/`,
+    `delete ${file}`,
+    `create ${file}/`,
+    `create ${join(file, "deep")}/`,
+  ]);
+  expect(readFileSync(join(root, "stale.txt"), "utf8")).toBe("old");
+});
+
 test("under the plan collector a facade read answers from the plan: a planned write reads back, a planned delete reads as absent, a planned directory lists", async () => {
   dir = tempDir("copilot-bridge-");
   const file = join(dir, "f.txt");

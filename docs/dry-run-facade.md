@@ -125,6 +125,7 @@ Writes land as the plan rows today's writers land:
 Reads answer from the plan's shadows first:
 
 - `readText` is `readPlannedText`; `exists`, `stat`, `lstat`, and `readdir` see a planned path as present and a planned deletion as absent (an absent, unplanned directory is `ENOENT`).
+- A directory the run removed and made again is fresh: present, and listing nothing the disk holds under it; `mkdir` over a planned deletion plans the directory instead of trusting the disk.
 - A byte write, a copy, a chmod, or a link the plan holds without its content is present, and its bytes read from the disk.
 - A planned `chmod`, or a write's explicit `mode`, shows in `stat().mode`; a staged write without one shows the fresh inode's default.
 - `readlink` and `realpath` read the disk: the plan holds no link targets.

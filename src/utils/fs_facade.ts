@@ -84,10 +84,11 @@ type Shadow = { kind: "text"; text: string } | "opaque" | "dir" | "gone" | null;
 
 function shadow(path: string): Shadow {
   if (!planCollecting()) return null;
+  // A planned directory stands even over its own tombstone (a directory removed and made again).
+  if (plannedDirectory(path)) return "dir";
   const text = shadowedText(path);
   if (text === null) return "gone";
   if (text !== undefined) return { kind: "text", text };
-  if (plannedDirectory(path)) return "dir";
   if (plannedPresence(path) !== true) return null;
   // A plan without bytes (a chmod, a copy, a link): the disk says which kind stands there.
   try {

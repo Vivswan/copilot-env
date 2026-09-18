@@ -2,26 +2,17 @@
 // the per-host CODEX_HOME symlink farm (Linux/macOS), DERIVED from the `codex.host` config key by
 // every default Codex wiring pass.
 import { spawnSync } from "node:child_process";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { type CodexHomePrefs, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
-import { isEnoentOrNotdir, isFile, readTextOrNull } from "../utils/fs.ts";
+import { isEnoentOrNotdir } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { dryRunActive, type FilePlan, filePlan, landPlan } from "../utils/write_session.ts";
-import {
-  copyFileReported,
-  mkdirReported,
-  removeReported,
-  removeTreeReported,
-  reportWrite,
-  symlinkReported,
-  writeFileReported,
-} from "../utils/report_write.ts";
+import { reportWrite } from "../utils/report_write.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome, plainCodexHome } from "./paths.ts";
 import { readCodexToml } from "./toml_io.ts";
 
@@ -66,7 +57,7 @@ export function probeCodexFarm(
 ): Pick<CodexHostFarm, "present" | "wired" | "probeError"> {
   let viaLink: boolean;
   try {
-    viaLink = fs.lstatSync(hostHome).isSymbolicLink();
+    viaLink = fs.lstat(hostHome).isSymbolicLink();
   } catch (e) {
     return { present: false, wired: false, probeError: isEnoentOrNotdir(e) ? null : errMessage(e) };
   }
@@ -255,7 +246,7 @@ export function codexHostDriftLine(drift: CodexHostDrift): string {
 
 function lexists(p: string): boolean {
   try {
-    fs.lstatSync(p);
+    fs.lstat(p);
     return true;
   } catch {
     return false;
@@ -264,7 +255,7 @@ function lexists(p: string): boolean {
 
 function readlinkOrEmpty(p: string): string {
   try {
-    return fs.readlinkSync(p);
+    return fs.readlink(p);
   } catch {
     return "";
   }
@@ -273,7 +264,9 @@ function readlinkOrEmpty(p: string): string {
 // An unreadable side counts as "not equal", so callers refuse rather than merge.
 function filesEqual(a: string, b: string): boolean {
   try {
-    return fs.readFileSync(a).equals(fs.readFileSync(b));
+    const x = fs.readBytes(a);
+    const y = fs.readBytes(b);
+    return x.length === y.length && x.every((byte, i) => byte === y[i]);
   } catch {
     return false;
   }
@@ -281,7 +274,7 @@ function filesEqual(a: string, b: string): boolean {
 
 function isSymlinkPath(p: string): boolean {
   try {
-    return fs.lstatSync(p).isSymbolicLink();
+    return fs.lstat(p).isSymbolicLink();
   } catch {
     return false;
   }
@@ -289,7 +282,15 @@ function isSymlinkPath(p: string): boolean {
 
 function isDirPath(p: string): boolean {
   try {
-    return fs.statSync(p).isDirectory();
+    return fs.stat(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isFilePath(p: string): boolean {
+  try {
+    return fs.stat(p).isFile();
   } catch {
     return false;
   }
@@ -305,7 +306,7 @@ function listDescendants(root: string): string[] {
   const stack: string[] = [root];
   while (stack.length > 0) {
     const dirpath = stack.pop() as string;
-    const entries = fs.readdirSync(dirpath, { withFileTypes: true });
+    const entries = fs.readdirEntries(dirpath);
     const dirnames: string[] = [];
     const filenames: string[] = [];
     for (const entry of entries) {
@@ -321,47 +322,47 @@ function listDescendants(root: string): string[] {
 
 // Symlinks are preserved as links.
 function mergeDirInto(localPath: string, sharedPath: string): void {
-  const entries = fs.readdirSync(localPath, { withFileTypes: true });
+  const entries = fs.readdirEntries(localPath);
   for (const entry of entries) {
     const src = path.join(localPath, entry.name);
     const dst = path.join(sharedPath, entry.name);
     if (entry.isSymbolicLink()) {
-      const target = fs.readlinkSync(src);
+      const target = fs.readlink(src);
       if (lexists(dst)) {
         const dstIsSymlink = isSymlinkPath(dst);
         const dstIsDir = isDirPath(dst);
-        if (dstIsSymlink || !dstIsDir) removeReported(dst, "replaced by a link");
+        if (dstIsSymlink || !dstIsDir) fs.rm(dst, { force: true, detail: "replaced by a link" });
       }
-      symlinkReported(target, dst);
+      fs.symlink(target, dst);
     } else if (entry.isDirectory()) {
       copyTree(src, dst);
     } else {
-      copyFileReported(src, dst, `copied from ${src}`);
+      fs.copyFile(src, dst, `copied from ${src}`);
     }
   }
 }
 
 /** Names every entry it writes; symlinks are copied as links. */
 function copyTree(src: string, dst: string): void {
-  mkdirReported(dst);
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+  fs.mkdir(dst);
+  for (const entry of fs.readdirEntries(src)) {
     const from = path.join(src, entry.name);
     const to = path.join(dst, entry.name);
     if (entry.isSymbolicLink()) {
-      const target = fs.readlinkSync(from);
+      const target = fs.readlink(from);
       // An existing link here already passed the merge validation (same target).
-      removeReported(to, "replaced by a link");
-      symlinkReported(target, to);
+      fs.rm(to, { force: true, detail: "replaced by a link" });
+      fs.symlink(target, to);
     } else if (entry.isDirectory()) {
       copyTree(from, to);
     } else {
-      copyFileReported(from, to, `copied from ${from}`);
+      fs.copyFile(from, to, `copied from ${from}`);
     }
   }
 }
 
 function ensureParentDir(p: string): void {
-  mkdirReported(path.dirname(p));
+  fs.mkdir(path.dirname(p));
 }
 
 // === CODEX_HOME symlink farm (seeding) ===
@@ -374,8 +375,8 @@ function warnExistingCodexPath(p: string): void {
 // throw instead.
 type PromoteResult = "promoted" | "refused";
 
-/** How a host-local directory reaches the shared root, judged once (reads only) for the builder
- *  and the planner alike. The builder creates the shared directory first, so a missing one is an
+/** How a host-local directory reaches the shared root, judged once (reads only) by the preflight
+ *  and the builder alike. The builder creates the shared directory first, so a missing one is an
  *  empty one here and every local entry is copied into it.
  *    merge    -> every local entry fits the shared directory (same-target links, equal files,
  *                directories where directories go): copied in, the local tree removed
@@ -398,10 +399,10 @@ function promoteDecision(localPath: string, sharedPath: string): PromoteDecision
       if (lexists(targetPath) && (isSymlinkPath(targetPath) || !isDirPath(targetPath))) {
         return "refused";
       }
-    } else if (isFile(entry)) {
+    } else if (isFilePath(entry)) {
       if (
         lexists(targetPath) &&
-        (isSymlinkPath(targetPath) || !isFile(targetPath) || !filesEqual(entry, targetPath))
+        (isSymlinkPath(targetPath) || !isFilePath(targetPath) || !filesEqual(entry, targetPath))
       ) {
         return "refused";
       }
@@ -410,25 +411,6 @@ function promoteDecision(localPath: string, sharedPath: string): PromoteDecision
     }
   }
   return "merge";
-}
-
-/** The files a promotion writes, per its decision: a merge writes every local entry into the shared
- *  tree (a present file or link is rewritten, as copyTree and mergeDirInto do; a directory already
- *  there is left as it is) and takes the local tree; a refusal writes nothing. */
-function planPromotion(localPath: string, sharedPath: string): FilePlan[] {
-  switch (promoteDecision(localPath, sharedPath)) {
-    case "merge":
-      return [
-        ...listDescendants(localPath).flatMap((entry): FilePlan[] => {
-          const target = path.join(sharedPath, path.relative(localPath, entry));
-          if (!lexists(target)) return [filePlan(target, "create", { before: null })];
-          return isDirPath(entry) && !isSymlinkPath(entry) ? [] : [filePlan(target, "rewrite")];
-        }),
-        filePlan(localPath, "delete"),
-      ];
-    case "refused":
-      return [];
-  }
 }
 
 // Refused (warning, local dir left unchanged) when the merge would overwrite existing shared
@@ -441,16 +423,19 @@ function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): P
     case "merge":
       // TOCTOU: the merge below races the decision above; accepted, startup-only flow.
       mergeDirInto(localPath, sharedPath);
-      removeTreeReported(localPath, "merged into the shared root");
+      fs.rm(localPath, { recursive: true, force: true, detail: "merged into the shared root" });
       return "promoted";
   }
 }
 
 function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
+  // The prime is codex's own first run, outside the seam: a dry run must not spawn it, and lands
+  // the shared root's mkdir through the facade instead.
+  if (fs.dryRunActive()) return;
   // Proven absence only: a look that failed (permissions, a blip) must not start a prime whose scan
   // below would then name an existing tree as newly created.
   try {
-    fs.lstatSync(sharedRoot);
+    fs.lstat(sharedRoot);
     return;
   } catch (e) {
     if (!isEnoentOrNotdir(e)) return;
@@ -482,9 +467,9 @@ function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
 /** Each level names all its entries in readdir order, then recurses into its directories; a level
  *  that cannot be listed leaves its whole subtree unnamed. */
 function reportTreeCreated(dir: string): void {
-  let entries: fs.Dirent[];
+  let entries: fs.DirEntry[];
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
+    entries = fs.readdirEntries(dir);
   } catch {
     return;
   }
@@ -512,14 +497,19 @@ function seedLocalCodexFileIfMissing(
     return;
   }
 
-  if (isFile(sharedPath)) {
+  if (isFilePath(sharedPath)) {
     ensureParentDir(localPath);
-    copyFileReported(sharedPath, localPath, `${role}, seeded from ${sharedPath}`);
+    fs.copyFile(sharedPath, localPath, `${role}, seeded from ${sharedPath}`);
   } else if (createPlaceholder) {
     ensureParentDir(localPath);
-    writeFileReported(localPath, "", { detail: `${role}, empty` });
+    fs.writeText(localPath, "", { atomic: false, detail: `${role}, empty`, secretKeys: [] });
   }
 }
+
+/** What the shared copy holds after the seed: the local file's bytes (just copied), or whatever
+ *  was there. The link step takes the copy as equal without a byte compare, as the copy IS the
+ *  local file. */
+type SharedSeed = "copy-of-local" | "as-is";
 
 // Shared desktop state files need a one-time promotion from the host-local CODEX_HOME into ~/.codex
 // so existing installs keep their saved projects. Without `createPlaceholder` the shared file only
@@ -528,30 +518,32 @@ function seedSharedCodexFileIfMissing(
   sharedPath: string,
   localPath: string,
   createPlaceholder: boolean,
-): void {
+): SharedSeed {
   const sharedExists = lexists(sharedPath);
 
-  if (isFile(localPath) && !isSymlinkPath(localPath)) {
+  if (isFilePath(localPath) && !isSymlinkPath(localPath)) {
     if (!sharedExists) {
       ensureParentDir(sharedPath);
-      copyFileReported(localPath, sharedPath, `copied from ${localPath}`);
-      return;
+      fs.copyFile(localPath, sharedPath, `copied from ${localPath}`);
+      return "copy-of-local";
     }
 
     if (
-      isFile(sharedPath) &&
-      fs.statSync(sharedPath).size === 0 &&
-      fs.statSync(localPath).size > 0
+      isFilePath(sharedPath) &&
+      fs.stat(sharedPath).size === 0 &&
+      fs.stat(localPath).size > 0
     ) {
-      copyFileReported(localPath, sharedPath, `copied from ${localPath}`);
+      fs.copyFile(localPath, sharedPath, `copied from ${localPath}`);
+      return "copy-of-local";
     }
-    return;
+    return "as-is";
   }
 
   if (createPlaceholder && !sharedExists) {
     ensureParentDir(sharedPath);
-    writeFileReported(sharedPath, "", { detail: "empty seed" });
+    fs.writeText(sharedPath, "", { atomic: false, detail: "empty seed", secretKeys: [] });
   }
+  return "as-is";
 }
 
 function ensureCodexDirSymlink(localPath: string, sharedPath: string): void {
@@ -569,31 +561,31 @@ function ensureCodexDirSymlink(localPath: string, sharedPath: string): void {
 
   if (!lexists(localPath)) {
     ensureParentDir(localPath);
-    symlinkReported(sharedPath, localPath);
+    fs.symlink(sharedPath, localPath);
   }
 }
 
 // A host-local copy identical to the seeded shared file becomes a symlink, so future desktop
 // updates read and write the same shared state.
-function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
+function ensureCodexFileSymlink(localPath: string, sharedPath: string, seed: SharedSeed): void {
   if (isSymlinkPath(localPath)) {
     if (readlinkOrEmpty(localPath) !== sharedPath) warnExistingCodexPath(localPath);
     return;
   }
 
-  if (isFile(localPath)) {
-    if (!filesEqual(localPath, sharedPath)) {
+  if (isFilePath(localPath)) {
+    if (seed !== "copy-of-local" && !filesEqual(localPath, sharedPath)) {
       warnExistingCodexPath(localPath);
       return;
     }
-    removeReported(localPath, "identical to the shared copy");
+    fs.rm(localPath, { force: true, detail: "identical to the shared copy" });
   } else if (lexists(localPath)) {
     warnExistingCodexPath(localPath);
     return;
   }
 
   ensureParentDir(localPath);
-  symlinkReported(sharedPath, localPath);
+  fs.symlink(sharedPath, localPath);
 }
 
 // --- the farm layout, as data ------------------------------------------------
@@ -645,94 +637,26 @@ const SHARED_FILES: readonly { name: string; placeholder: boolean }[] = [
   { name: "shell-init.sh", placeholder: false }, // User shell hook, present only when configured.
 ];
 
-/**
- * What buildCodexSymlinkFarm would create, replace, or move, judged the way the builder judges
- * (lstat), on a build and on a verify alike: a farm member deleted since the last build is
- * recreated by the verify, so the verify's plan names it. A member the builder leaves alone with a
- * warning (a foreign file where a link goes) is not listed. The shared root's prime is codex's
- * own first run, not a write of ours.
- */
-function planCodexSymlinkFarm(codexHome: string): FilePlan[] {
-  const sharedRoot = path.dirname(path.dirname(codexHome));
-  const files: FilePlan[] = [];
-  const create = (p: string, content?: string): void => {
-    if (lexists(p)) return;
-    files.push(
-      filePlan(p, "create", { before: null, ...(content === undefined ? {} : { content }) }),
-    );
-  };
-  // The builder's mkdir: anything that is not a directory (a link to one included, as mkdir
-  // follows it) where a directory goes fails it, and the plan fails the same way (the error the
-  // mkdir raises), so a dry run never reports a build the real run refuses.
-  const dir = (p: string): void => {
-    if (lexists(p)) {
-      if (!isDirPath(p)) throw new Error(`EEXIST: file already exists, mkdir '${p}'`);
-      return;
-    }
-    files.push(filePlan(p, "create", { before: null, directory: true }));
-  };
-  dir(sharedRoot);
-  dir(codexHome);
-  for (const name of HOST_LOCAL_DIRS) dir(path.join(codexHome, name));
-  for (const { name, placeholder } of HOST_LOCAL_SEED_FILES) {
-    const local = path.join(codexHome, name);
-    const shared = path.join(sharedRoot, name);
-    if (lexists(local)) continue;
-    if (isFile(shared)) create(local, readTextOrNull(shared) ?? undefined);
-    else if (placeholder) create(local, "");
+/** Every look the build takes is taken before its first write, so a refused build leaves nothing
+ *  half-made: mkdir fails on anything that is not a directory where one goes (a link to one
+ *  included, as mkdir follows it; the error is mkdir's own), and a promotion's listing of a
+ *  host-local tree fails where it would fail the merge. */
+function preflightCodexSymlinkFarm(codexHome: string, sharedRoot: string): void {
+  const slots = [
+    sharedRoot,
+    codexHome,
+    ...HOST_LOCAL_DIRS.map((name) => path.join(codexHome, name)),
+    ...SHARED_DIRS.map((name) => path.join(sharedRoot, name)),
+  ];
+  for (const p of slots) {
+    if (lexists(p) && !isDirPath(p)) throw new Error(`EEXIST: file already exists, mkdir '${p}'`);
   }
   for (const name of SHARED_DIRS) {
     const local = path.join(codexHome, name);
-    const shared = path.join(sharedRoot, name);
-    dir(shared);
-    if (isSymlinkPath(local)) continue;
-    // A host-local directory is promoted into the shared root (the builder's own decision) and,
-    // when it went, replaced by the link; a refused promotion leaves it and links nothing.
-    if (isDirPath(local)) {
-      const promotion = planPromotion(local, shared);
-      if (promotion.length === 0) continue;
-      // The directory went with the promotion; the link takes its place.
-      files.push(...promotion, filePlan(local, "create", { before: null }));
-      continue;
+    if (isDirPath(local) && !isSymlinkPath(local)) {
+      promoteDecision(local, path.join(sharedRoot, name));
     }
-    if (lexists(local)) continue;
-    create(local);
   }
-  for (const { name, placeholder } of SHARED_FILES) {
-    const local = path.join(codexHome, name);
-    const shared = path.join(sharedRoot, name);
-    const localFile = isFile(local) && !isSymlinkPath(local);
-    // The seed the builder writes first: a missing shared copy from the local file, an empty
-    // shared copy refilled from a non-empty local one, else a placeholder.
-    let sharedAfterSeed: "absent" | "copy-of-local" | "as-is" = lexists(shared)
-      ? "as-is"
-      : "absent";
-    if (localFile) {
-      if (!lexists(shared)) {
-        create(shared, readTextOrNull(local) ?? undefined);
-        sharedAfterSeed = "copy-of-local";
-      } else if (isFile(shared) && fs.statSync(shared).size === 0 && fs.statSync(local).size > 0) {
-        files.push(filePlan(shared, "rewrite", { content: readTextOrNull(local) ?? undefined }));
-        sharedAfterSeed = "copy-of-local";
-      }
-    } else if (placeholder && !lexists(shared)) {
-      create(shared, "");
-      sharedAfterSeed = "as-is";
-    }
-    if (isSymlinkPath(local)) continue;
-    if (localFile) {
-      // The builder links over a local file only when it equals the (seeded) shared copy; a
-      // differing one is left alone with a warning.
-      const equal = sharedAfterSeed === "copy-of-local" ||
-        (isFile(shared) && filesEqual(local, shared));
-      if (!equal) continue;
-      files.push(filePlan(local, "delete"), filePlan(local, "create", { before: null }));
-      continue;
-    }
-    if (lexists(local)) continue;
-    create(local);
-  }
-  return files;
 }
 
 function buildCodexSymlinkFarm(codexHome: string): void {
@@ -740,12 +664,13 @@ function buildCodexSymlinkFarm(codexHome: string): void {
   // relative would make every symlink target relative to the link's own directory, pointing back
   // inside the farm.
   const sharedRoot = path.dirname(path.dirname(codexHome));
+  preflightCodexSymlinkFarm(codexHome, sharedRoot);
   primeSharedCodexHomeIfMissing(sharedRoot);
-  mkdirReported(sharedRoot);
-  mkdirReported(codexHome, undefined, "per-host CODEX_HOME farm");
+  fs.mkdir(sharedRoot);
+  fs.mkdir(codexHome, { detail: "per-host CODEX_HOME farm" });
 
   for (const name of HOST_LOCAL_DIRS) {
-    mkdirReported(path.join(codexHome, name));
+    fs.mkdir(path.join(codexHome, name));
   }
 
   for (const { name, placeholder, role } of HOST_LOCAL_SEED_FILES) {
@@ -758,17 +683,17 @@ function buildCodexSymlinkFarm(codexHome: string): void {
   }
 
   for (const name of SHARED_DIRS) {
-    mkdirReported(path.join(sharedRoot, name));
+    fs.mkdir(path.join(sharedRoot, name));
     ensureCodexDirSymlink(path.join(codexHome, name), path.join(sharedRoot, name));
   }
 
   for (const { name, placeholder } of SHARED_FILES) {
-    seedSharedCodexFileIfMissing(
+    const seed = seedSharedCodexFileIfMissing(
       path.join(sharedRoot, name),
       path.join(codexHome, name),
       placeholder,
     );
-    ensureCodexFileSymlink(path.join(codexHome, name), path.join(sharedRoot, name));
+    ensureCodexFileSymlink(path.join(codexHome, name), path.join(sharedRoot, name), seed);
   }
 }
 
@@ -789,32 +714,19 @@ export async function withCodexHostFarm(
     case "build":
     case "verify": {
       if (farm.active) state.set({ codexHome: null });
-      // The one terminal handler for farm filesystem failures, at plan time and at build time
-      // alike; the cause names the failing operation and path.
-      const farmFailure = (e: unknown): Error =>
-        new Error(
+      // The one terminal handler for farm filesystem failures; the cause names the failing
+      // operation and path.
+      try {
+        buildCodexSymlinkFarm(farm.hostHome);
+      } catch (e: unknown) {
+        throw new Error(
           `Failed to build the CODEX_HOME symlink farm at ${farm.hostHome}: ${errMessage(e)}`,
           { cause: e },
         );
-      let files: FilePlan[];
-      try {
-        files = planCodexSymlinkFarm(farm.hostHome);
-      } catch (e: unknown) {
-        throw farmFailure(e);
       }
-      landPlan({
-        files,
-        apply() {
-          try {
-            buildCodexSymlinkFarm(farm.hostHome);
-          } catch (e: unknown) {
-            throw farmFailure(e);
-          }
-        },
-      });
       // A build names the home it created; a verify names only the members it recreated. A dry
-      // run recorded those members and rebuilt nothing, so it has no success to report.
-      if (plan.action === "verify" && !dryRunActive()) {
+      // run lands nothing, so it has no success to report.
+      if (plan.action === "verify" && !fs.dryRunActive()) {
         logger.log(`  ✓ Per-host CODEX_HOME farm verified → ${farm.hostHome}`);
       }
       await write(farm.hostHome);
@@ -823,10 +735,7 @@ export async function withCodexHostFarm(
       return;
     }
     case "remove":
-      landPlan({
-        files: [filePlan(farm.hostHome, "delete")],
-        apply: () => void removeTreeReported(farm.hostHome, "per-host CODEX_HOME farm"),
-      });
+      fs.rm(farm.hostHome, { recursive: true, force: true, detail: "per-host CODEX_HOME farm" });
       break;
     case "leave":
       logger.warn(
@@ -871,7 +780,7 @@ export function knownCodexHomes(): { homes: string[]; complete: boolean } {
   for (const hostsDir of hostsDirs) {
     homes.add(path.dirname(hostsDir));
     try {
-      for (const entry of fs.readdirSync(hostsDir, { withFileTypes: true })) {
+      for (const entry of fs.readdirEntries(hostsDir)) {
         if (entry.isDirectory()) homes.add(path.join(hostsDir, entry.name));
       }
     } catch (e) {

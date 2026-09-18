@@ -2,18 +2,15 @@
 // managed write seeds the key): the wiring- and launch-time sync that heals or strips it, and the account-wide
 // sweep that keeps a deleted catalog from leaving a dangling reference in any known Codex home.
 // Best-effort throughout: stderr-only, never throws.
-import * as fs from "node:fs";
 import { parse, stringify } from "smol-toml";
-import { planPatch, remove, set } from "../agents/write_plan.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { removeReported, writeFileReported } from "../utils/report_write.ts";
-import { landPlan, readPlannedText } from "../utils/write_session.ts";
 import {
   catalogBookkeepingAllowed,
   type CatalogSource,
@@ -25,7 +22,7 @@ import {
 } from "./catalog.ts";
 import { effectiveCodexHome, knownCodexHomes } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";
-import { readCodexToml, saveCodexToml } from "./toml_io.ts";
+import { codexBearerLeaves, readCodexToml, saveCodexToml } from "./toml_io.ts";
 
 const logger = createStderrLogger();
 
@@ -78,23 +75,12 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
       );
       return;
     }
-    const ops = [set(["model_catalog_json"], catalogFile)];
-    const next = { ...doc, model_catalog_json: catalogFile };
-    landPlan({
-      files: [{
-        path: configPath,
-        verdict: "rewrite",
-        attributes: planPatch(doc, ops),
-        content: stringify(next),
-      }],
-      apply: () =>
-        saveCodexToml(
-          configPath,
-          next,
-          `Codex config; model_catalog_json = "${catalogFile}" set` +
-            (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : ""),
-        ),
-    });
+    saveCodexToml(
+      configPath,
+      { ...doc, model_catalog_json: catalogFile },
+      `Codex config; model_catalog_json = "${catalogFile}" set` +
+        (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : ""),
+    );
   } catch {
     // An unreadable config (non-ENOENT) or a write race: the next `agent profile sync --codex`/`agent init` wiring
     // writes the key anyway.
@@ -143,7 +129,7 @@ export function resolvesToCatalogFile(
 ): "yes" | "no" | "unknown" {
   if (typeof value !== "string" || value === catalogFile) return "no";
   try {
-    return fs.realpathSync(value) === fs.realpathSync(catalogFile) ? "yes" : "no";
+    return fs.realpath(value) === fs.realpath(catalogFile) ? "yes" : "no";
   } catch (e) {
     // A path proven absent cannot denote our existing file.
     return isEnoent(e) ? "no" : "unknown";
@@ -156,11 +142,12 @@ export function resolvesToCatalogFile(
  *  Left after that: only a Codex that read the old config but has not opened the file yet. */
 function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   const { deletionSafe } = stripCodexCatalogReferences(catalogFile);
-  if (deletionSafe && readPlannedText(catalogFile).kind !== "absent") {
-    // The seam plans the removal itself in a dry run, and refuses a directory at the path in both
-    // runs: the warning below is the same decision either way.
+  if (deletionSafe && fs.readTextResult(catalogFile).kind !== "absent") {
+    // A directory at the path is refused, in a dry run too: the warning is the same decision
+    // either way.
     try {
-      removeReported(catalogFile);
+      fs.assertNotDirectory(catalogFile);
+      fs.rm(catalogFile, { force: true });
     } catch (e) {
       logger.warn(`codex model catalog cleanup failed: ${errMessage(e)}`);
     }
@@ -196,7 +183,7 @@ function stripCodexCatalogReferences(
   for (const configPath of new Set([...configs, ...recordedPaths])) {
     // Absent (a recorded claim on it is stale) and unreadable (may still hold a reference) stay
     // apart, as the catch below keeps them for a raw read.
-    const read = readPlannedText(configPath);
+    const read = fs.readTextResult(configPath);
     if (read.kind === "absent") {
       if (recordedPaths.has(configPath) && catalogBookkeepingAllowed()) {
         ledger.release("codexCatalog", configPath);
@@ -210,20 +197,11 @@ function stripCodexCatalogReferences(
     try {
       const doc = parse(read.text) as Record<string, unknown>;
       if (doc.model_catalog_json === catalogFile) {
-        const ops = [remove(["model_catalog_json"])];
         const { model_catalog_json: _dropped, ...next } = doc;
-        landPlan({
-          files: [{
-            path: configPath,
-            verdict: "rewrite",
-            attributes: planPatch(doc, ops),
-            before: read.text,
-            content: stringify(next),
-          }],
-          apply: () =>
-            writeFileReported(configPath, stringify(next), {
-              detail: "Codex config; model_catalog_json removed",
-            }),
+        fs.writeText(configPath, stringify(next), {
+          atomic: false,
+          detail: "Codex config; model_catalog_json removed",
+          secretKeys: codexBearerLeaves(next),
         });
         stripped = true;
         if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);

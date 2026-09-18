@@ -19,14 +19,15 @@ import {
   directHelperCommand,
   inspectClaudeWiring,
   managedHelperShape,
-  planDefaultWebSearchSync,
   proxyHelperCommand,
   removeClaudeDefaultWiring,
   removeClaudeProfile,
+  syncDefaultWebSearch,
   WEBSEARCH_DENY_RULE,
 } from "../src/claude/config.ts";
 import { runClaude } from "../src/agents/configure_defaults.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
+import { resolveClaudeHome } from "../src/claude/paths.ts";
 import { runMcp } from "../src/commands/mcp.ts";
 import { probeModelPin } from "../src/copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -40,7 +41,7 @@ import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
-import { landPlan } from "../src/utils/write_session.ts";
+import { captureChannels } from "./helpers/output.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, linesNaming, writeClaudeSettings } from "./helpers.ts";
 
@@ -545,6 +546,55 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
   });
 });
 
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "a malformed ~/.claude.json is warned about before settings.json is written: the warning prints even when that write fails",
+  async () => {
+    // The proxy write takes the MCP registration back after the settings save; its look at the
+    // file (and the warning a malformed one earns) comes before the save, as every look does. An
+    // unwritable settings.json (0444, POSIX non-root) fails the save, and the warning has printed.
+    const home = tmpHome();
+    mkdirSync(home, { recursive: true });
+    const settingsPath = join(home, "settings.json");
+    writeFileSync(settingsPath, "{}\n");
+    writeFileSync(claudeJsonPath(), "{ not json");
+    chmodSync(settingsPath, 0o444);
+    try {
+      const { stderr } = await captureChannels(() => {
+        expect(() => configureClaudeConfig(home, { mode: "proxy", credential: COMMAND })).toThrow(
+          /EACCES/,
+        );
+      });
+      expect(stderr).toContain("not valid JSON; leaving it alone");
+      expect(readFileSync(settingsPath, "utf8")).toBe("{}\n");
+      expect(readFileSync(claudeJsonPath(), "utf8")).toBe("{ not json");
+    } finally {
+      chmodSync(settingsPath, 0o644);
+    }
+  },
+);
+
+test("a Claude home that cannot be made leaves ~/.claude.json untouched: the Direct registration follows the mkdir", async () => {
+  // A regular file where the Claude home should be fails the mkdir; the MCP registration the
+  // Direct write lands is written only once the home exists, so ~/.claude.json keeps its bytes.
+  // With no CLAUDE_CONFIG_DIR the registration file sits in $HOME itself, beside the bogus home.
+  const home = tmpHome();
+  delete process.env.CLAUDE_CONFIG_DIR;
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(home, "not a directory");
+  writeFileSync(claudeJsonPath(), "{}\n");
+  const { stderr } = await captureChannels(() => {
+    expect(() =>
+      configureClaudeConfig(resolveClaudeHome(), {
+        mode: "direct",
+        direct: null,
+        credential: COMMAND,
+      })
+    ).toThrow("could not create Claude config directory");
+  });
+  expect(readFileSync(claudeJsonPath(), "utf8")).toBe("{}\n");
+  expect(stderr).not.toContain("MCP registration failed");
+});
+
 test("configureClaudeConfig refuses to overwrite a malformed settings.json", () => {
   const home = tmpHome();
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }); // creates the dir + a valid file
@@ -961,7 +1011,7 @@ test("--check: absent settings exit 2 (none); unreadable settings and the helper
   }
 });
 
-test("planDefaultWebSearchSync applies the pair to existing direct wiring (the migration path)", () => {
+test("syncDefaultWebSearch applies the pair to existing direct wiring (the migration path)", () => {
   const home = tmpHome();
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   directDefault(); // what the `agent profile sync --claude` command records
@@ -972,31 +1022,31 @@ test("planDefaultWebSearchSync applies the pair to existing direct wiring (the m
   rmSync(claudeJsonPath(), { force: true });
   new OwnershipLedger().release("webSearchDeny", join(home, "settings.json"));
 
-  landPlan(planDefaultWebSearchSync(home));
+  syncDefaultWebSearch(home);
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
   expect((readClaudeJson().mcpServers as Record<string, unknown>)["copilot-env"]).toBeDefined();
 
   // Byte-idempotent: a second run rewrites nothing.
   const before = statSync(join(home, "settings.json")).mtimeMs;
-  landPlan(planDefaultWebSearchSync(home));
+  syncDefaultWebSearch(home);
   expect(statSync(join(home, "settings.json")).mtimeMs).toBe(before);
 });
 
 // The ledger, not the record, decides whether we strip what we wrote: a deny claimed in the ledger
 // with the default's mode gone (a record cleared after the wiring) is still ours to take back.
-test("planDefaultWebSearchSync strips a claimed deny with no recorded mode; a foreign deny stays", () => {
+test("syncDefaultWebSearch strips a claimed deny with no recorded mode; a foreign deny stays", () => {
   const home = tmpHome();
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
   expect(new CopilotEnvState().readProfileSlot(null).mode).toBeNull();
-  landPlan(planDefaultWebSearchSync(home));
+  syncDefaultWebSearch(home);
   expect(denyOf(readSettings(home))).toBeUndefined(); // the emptied permissions key goes too
   expect(new OwnershipLedger().owns("webSearchDeny", join(home, "settings.json"))).toBe(false);
   // Control: the same deny the user wrote (no claim) is left alone.
   const doc = readSettings(home);
   doc.permissions = { deny: [WEBSEARCH_DENY_RULE] };
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(doc, null, 2)}\n`);
-  landPlan(planDefaultWebSearchSync(home));
+  syncDefaultWebSearch(home);
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
 });
 

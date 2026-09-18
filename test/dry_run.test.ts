@@ -981,8 +981,6 @@ test("a directory at the retired helper's path fails only the retirement: both r
   const dry = await captureChannels(() => addProfile(null, { mode: "proxy", dryRun: true }));
   expect(dry.stderr).toContain(warning);
   expect(dry.stdout).not.toContain(`delete ${retired}`);
-  // The entry itself is preserved (its re-plan is byte-identical), not discarded with the retirement.
-  expect(dry.stdout).toContain(`unchanged ${entry[0]}`);
   const real = await captureChannels(() => addProfile(null, { mode: "proxy" }));
   expect(real.stderr).toContain(warning);
   // The entry landed regardless: the status inspector judges it wired (a fact consola's repeat

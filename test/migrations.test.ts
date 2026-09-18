@@ -1232,6 +1232,28 @@ test(
       });
       writeRunState({ port: 4555 }, LIST);
       writeFileSync(join(homes.proxyHome, "profiles", "list", "config.json"), "{}\n");
+      // The legacy provider table the retarget renames and re-resolves; a static-key bearer sits
+      // in it so the preview's redaction is exercised on the row that carries a credential.
+      const listAuth = proxyTokenCommand(LIST);
+      writeFileSync(
+        join(homes.codexHome, "config.toml"),
+        [
+          "[model_providers.copilot-env-list]",
+          'base_url = "http://127.0.0.1:4555/v1"',
+          "",
+          "[model_providers.copilot-env-list.http_headers]",
+          'Authorization = "Bearer example-secret-token"',
+          "",
+          "[model_providers.copilot-env-list.auth]",
+          `command = ${JSON.stringify(listAuth.command)}`,
+          `args = ${JSON.stringify(listAuth.args)}`,
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(homes.codexHome, "list.config.toml"),
+        'model_provider = "copilot-env-list"\n',
+      );
       // Minified, so the retarget's pretty-print reflows every line: a line diff would print
       // the token.
       writeFileSync(
@@ -1277,6 +1299,25 @@ test(
       const text = rendered.join("\n");
       expect(text).not.toContain("example-secret-token");
       expect(text).toContain("env.ANTHROPIC_AUTH_TOKEN  <redacted> -> <redacted>");
+      // config.toml prints attribute by attribute (a whole-file secret flag would print the
+      // rewrite bare): the table moves under the new id, its bearer redacted, and the profile
+      // file's selector follows.
+      const configToml = join(homes.codexHome, "config.toml");
+      expect(rendered).toContain(`rewrite ${configToml}`);
+      expect(text).toContain(
+        '  model_providers.copilot-env-list.base_url  "http://127.0.0.1:4555/v1" -> (absent)',
+      );
+      expect(text).toContain(
+        "  model_providers.copilot-env-list.http_headers.Authorization  <redacted> -> (absent)",
+      );
+      expect(text).toContain(
+        `  model_providers.copilot-env-list-1.auth.args  (absent) -> ${
+          JSON.stringify(proxyTokenCommand(parseProfileName("list-1")).args)
+        }`,
+      );
+      expect(text).toContain("  sandbox_workspace_write.network_access  (absent) -> true");
+      expect(rendered).toContain(`create ${join(homes.codexHome, "list-1.config.toml")}`);
+      expect(text).toContain('  model_provider  "copilot-env-list" -> "copilot-env-list-1"');
     } finally {
       delete process.env[CLAUDE_DESKTOP_DIR_ENV];
       setIntegrationProbeFetch(null);

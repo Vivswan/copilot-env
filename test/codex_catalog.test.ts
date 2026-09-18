@@ -21,12 +21,14 @@ import {
   withCatalogRefreshDeadline,
 } from "../src/codex/catalog.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, codexUserAgent } from "../src/codex/user_agent.ts";
+import { runDryRun } from "../src/commands/dry_run.ts";
 import { directClientHeaders } from "../src/copilot_api/integration_identity.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import { captureChannels } from "./helpers/output.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, linesNaming } from "./helpers.ts";
 
@@ -690,6 +692,33 @@ test("generateCodexModelCatalog writes the patched catalog file", async () => {
   expect(written.models[0].effective_context_window_percent).toBe(87);
   // Owner-only, like every file the store writes beside it.
   if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
+});
+
+test("a regenerated catalog identical to the one on disk previews as unchanged", async () => {
+  // The catalog is written whole on every generation; a dry run over an unchanged upstream must
+  // read the byte-identical rewrite as no change, as it does for config.toml and settings.json.
+  isolate();
+  const deps = {
+    bundledCatalog: () => BUNDLED,
+    fetchCopilotModels: async () => GPT55_ONLY,
+    acceptsCatalog: () => true,
+    codexVersion: () => null,
+  };
+  await captureChannels(async () => {
+    expect(await generateCodexModelCatalog("direct", deps)).toBe(true);
+  });
+  const file = new CopilotApiPaths().codexModelCatalogFile;
+  const before = readFileSync(file, "utf8");
+  const { stdout } = await captureChannels(() =>
+    runDryRun(() => generateCodexModelCatalog("direct", deps))
+  );
+  // The print wraps to the terminal width (mid-path, or at the space after the verdict): the rows
+  // are re-joined by their two-space indent, then the catalog's row is matched exactly.
+  const rows = stdout.split("\n").slice(1).join("\n").split(/\n {2}(?! )/).map((row) =>
+    row.replace(/\s+/g, "")
+  );
+  expect(rows).toEqual([`unchanged${file}`.replace(/\s+/g, "")]);
+  expect(readFileSync(file, "utf8")).toBe(before);
 });
 
 test("generateCodexModelCatalog fetches Copilot FIRST (cheap fail skips the codex spawn)", async () => {

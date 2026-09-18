@@ -27,7 +27,7 @@ import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../ut
 import { errMessage } from "../utils/error.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/report_write.ts";
+import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/fs_facade.ts";
 
 // Narration goes to stderr, never stdout: the machine-readable `--check` / `env` paths must
 // stay clean.

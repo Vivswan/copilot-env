@@ -6,14 +6,12 @@
 //                                                                  profile registers by hand
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { taggedLogger } from "../utils/logger.ts";
-import { applyPatch, type PatchOp, planPatch, remove, set } from "../agents/write_plan.ts";
-import { atomicWriteFile } from "../utils/report_write.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
+import { taggedLogger } from "../utils/logger.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
-import { type FilePlan, readPlannedText, textVerdict } from "../utils/write_session.ts";
 import { claudeConfigDirOverride } from "./paths.ts";
 
 const logger = taggedLogger("claude.mcp");
@@ -102,12 +100,12 @@ interface ClaudeJsonDoc {
   exists: boolean;
 }
 
-/** Null (unreadable or malformed) means leave it alone. Absence comes from readTextResult, so a
+/** Null (unreadable or malformed) means leave it alone. Absence is lstat's verdict, so a
  *  dangling symlink reads unreadable, never absent: the entry at the path exists, and writing
  *  "back" through {} would replace the user's link with a plain file. */
 function loadClaudeJson(): ClaudeJsonDoc | null {
   const path = claudeJsonPath();
-  const read = readPlannedText(path);
+  const read = fs.readTextResult(path);
   if (read.kind === "unreadable") {
     logger.warn(`could not read ${path}: ${read.error}`);
     return null;
@@ -132,45 +130,19 @@ function claudeJsonText(loaded: ClaudeJsonDoc, doc: Record<string, unknown>): st
   return `${JSON.stringify(doc, null, 2)}${newline ? "\n" : ""}`;
 }
 
-/** The patch as one file plan plus the step that lands it; a byte-identical result is not
- *  rewritten. The step returns false (after warning) when the write failed. */
-function planClaudeJsonPatch(loaded: ClaudeJsonDoc, ops: readonly PatchOp[]): McpWritePlan {
-  const attributes = planPatch(loaded.doc, ops);
-  const text = claudeJsonText(loaded, applyPatch(structuredClone(loaded.doc), ops));
-  return {
-    files: [{
-      path: loaded.path,
-      verdict: textVerdict(loaded.exists ? loaded.raw : null, text),
-      attributes,
-      before: loaded.exists ? loaded.raw : null,
-      content: text,
-    }],
-    apply() {
-      if (text === loaded.raw) return true;
-      try {
-        atomicWriteFile(loaded.path, text);
-      } catch (e) {
-        logger.warn(`could not write ${loaded.path}: ${String(e)}`);
-        return false;
-      }
-      return true;
-    },
-  };
+/** A byte-identical result is not rewritten (Claude Code rewrites this file constantly, and a
+ *  needless rename would race it). False (after warning) when the write failed. */
+function writeClaudeJson(loaded: ClaudeJsonDoc, doc: Record<string, unknown>): boolean {
+  const text = claudeJsonText(loaded, doc);
+  if (text === loaded.raw) return true;
+  try {
+    fs.writeText(loaded.path, text, { secretKeys: [] });
+  } catch (e) {
+    logger.warn(`could not write ${loaded.path}: ${String(e)}`);
+    return false;
+  }
+  return true;
 }
-
-/** A `.claude.json` write, computed: `apply` returns what the eager function it replaces returned. */
-export interface McpWritePlan {
-  files: FilePlan[];
-  apply(): boolean;
-}
-
-/** The registration, computed. `inPlace` predicts the apply's answer (the entry will be in place
- *  unless the write itself fails), so a caller can plan what it gates on that before writing. */
-export interface McpRegistrationPlan extends McpWritePlan {
-  inPlace: boolean;
-}
-
-const LEFT_ALONE: McpRegistrationPlan = { inPlace: false, files: [], apply: () => false };
 
 /** What `agent mcp` (status) reports about the registration. */
 export interface McpRegistrationInspection {
@@ -189,53 +161,35 @@ export function inspectMcpRegistration(): McpRegistrationInspection {
   return { path, status: classifyMcpEntry(entry) };
 }
 
-/** The entry in place (freshly written, or already current: then the plan states the entry it
- *  keeps); the caller gates the WebSearch deny on that, so a machine is never left denied without
- *  a server. */
-export function planClaudeMcpRegistration(
+/** True when the entry is in place (freshly written, or already current); the caller gates the
+ *  WebSearch deny on that, so a machine is never left denied without a server. */
+export function registerClaudeMcpServer(
   ghPath: string | null = resolveExecutablePath("gh"),
-): McpRegistrationPlan {
+): boolean {
   const loaded = loadClaudeJson();
-  if (loaded === null) return LEFT_ALONE;
+  if (loaded === null) return false;
   const servers = loaded.doc.mcpServers ?? {};
   if (!isRecord(servers)) {
     logger.warn(`${loaded.path} has a non-object mcpServers; leaving it alone`);
-    return LEFT_ALONE;
+    return false;
   }
-  const entryPath = ["mcpServers", MCP_SERVER_NAME];
   switch (classifyMcpEntry(servers[MCP_SERVER_NAME], ghPath)) {
     case "ours-current":
-      return {
-        inPlace: true,
-        files: [{
-          path: loaded.path,
-          verdict: "same",
-          attributes: planPatch(loaded.doc, [set(entryPath, servers[MCP_SERVER_NAME])]),
-        }],
-        apply: () => true,
-      };
+      return true;
     case "foreign":
       logger.warn(
         `${loaded.path} already has a '${MCP_SERVER_NAME}' MCP server that is not ours; leaving it alone`,
       );
-      return LEFT_ALONE;
+      return false;
     case "absent":
     case "ours-stale":
       break;
   }
-  return {
-    inPlace: true,
-    ...planClaudeJsonPatch(loaded, [
-      set(entryPath, managedEntry(ghPath, servers[MCP_SERVER_NAME])),
-    ]),
-  };
-}
-
-/** planClaudeMcpRegistration, performed. */
-export function registerClaudeMcpServer(
-  ghPath: string | null = resolveExecutablePath("gh"),
-): boolean {
-  return planClaudeMcpRegistration(ghPath).apply();
+  const doc = structuredClone(loaded.doc);
+  const table = isRecord(doc.mcpServers) ? doc.mcpServers : {};
+  doc.mcpServers = table;
+  table[MCP_SERVER_NAME] = managedEntry(ghPath, servers[MCP_SERVER_NAME]);
+  return writeClaudeJson(loaded, doc);
 }
 
 /** The `.claude.json` removeClaudeMcpRegistration would rewrite right now, or null (no entry, a
@@ -250,22 +204,23 @@ export function plannedClaudeMcpRemoval(): string | null {
   return status === "ours-current" || status === "ours-stale" ? loaded.path : null;
 }
 
-/** Foreign survives. True when NO managed entry remains (removed, or none was there); false when a
- *  foreign entry was left in place or the write failed. */
-export function planClaudeMcpRemoval(): McpWritePlan {
+/** The file is read and judged now; the returned step writes, so a caller can save another file
+ *  in between. Foreign survives. The step is true when NO managed entry remains (removed, or none
+ *  was there); false when a foreign entry was left in place or the write failed. */
+export function prepareClaudeMcpRemoval(): () => boolean {
   const loaded = loadClaudeJson();
-  if (loaded === null) return { files: [], apply: () => false };
+  if (loaded === null) return () => false;
   const servers = loaded.doc.mcpServers;
-  if (!isRecord(servers)) return { files: [], apply: () => true };
+  if (!isRecord(servers)) return () => true;
   const status = classifyMcpEntry(servers[MCP_SERVER_NAME]);
-  if (status === "absent") return { files: [], apply: () => true };
-  if (status === "foreign") return { files: [], apply: () => false };
-  const ops = [remove(["mcpServers", MCP_SERVER_NAME])];
-  if (Object.keys(servers).length === 1) ops.push(remove(["mcpServers"]));
-  return planClaudeJsonPatch(loaded, ops);
+  if (status === "absent") return () => true;
+  if (status === "foreign") return () => false;
+  const doc = structuredClone(loaded.doc);
+  if (Object.keys(servers).length === 1) delete doc.mcpServers;
+  else if (isRecord(doc.mcpServers)) delete doc.mcpServers[MCP_SERVER_NAME];
+  return () => writeClaudeJson(loaded, doc);
 }
 
-/** planClaudeMcpRemoval, performed. */
 export function removeClaudeMcpRegistration(): boolean {
-  return planClaudeMcpRemoval().apply();
+  return prepareClaudeMcpRemoval()();
 }

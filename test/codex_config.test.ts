@@ -27,7 +27,9 @@ import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identit
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { runDryRun } from "../src/commands/dry_run.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
+import { captureChannels } from "./helpers/output.ts";
 import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, linesNaming } from "./helpers.ts";
@@ -341,6 +343,35 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
   expect(asRecord(provider.auth).command).toBe(proxyTokenCommand().command);
   expect(asRecord(provider.auth).args).toEqual(proxyTokenCommand().args);
   expect(provider.http_headers).toBeUndefined();
+});
+
+test("a static-key write previews its bearer leaf redacted and every other leaf in the clear", async () => {
+  isolate();
+  const home = join(dir, ".codex");
+  const { stdout } = await captureChannels(() =>
+    runDryRun(() =>
+      Promise.resolve(
+        configureCodexConfig(home, {
+          mode: "direct",
+          direct: null,
+          credential: { kind: "static", token: "ghu_baked_token" },
+        }),
+      )
+    )
+  );
+  // The print wraps to the terminal width (mid-key or at a space), so the rows are compared with
+  // their whitespace removed, and only the rows under config.toml's own verdict line count.
+  const unspaced = (text: string): string => text.replace(/\s+/g, "");
+  const flat = unspaced(stdout);
+  const block = flat.slice(flat.indexOf(unspaced(`create ${join(home, "config.toml")}`)));
+  expect(block.length).toBeGreaterThan(0);
+  expect(block).toContain(
+    unspaced("model_providers.copilot-env.http_headers.Authorization  (absent) -> <redacted>"),
+  );
+  expect(block).toContain(
+    unspaced('model_providers.copilot-env.base_url  (absent) -> "https://api.githubcopilot.com"'),
+  );
+  expect(flat).not.toContain("ghu_baked_token");
 });
 
 test("static-key bakes the bearer as http_headers.Authorization with no auth table, in both modes", () => {

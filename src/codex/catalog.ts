@@ -27,14 +27,8 @@ import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts"
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { filePlan, landPlan, readPlannedText, textVerdict } from "../utils/write_session.ts";
-import {
-  atomicWriteFile,
-  removeScratchDir,
-  type ScratchDir,
-  scratchDir,
-  writeFileReported,
-} from "../utils/report_write.ts";
+import * as fs from "../utils/fs_facade.ts";
+import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/fs_facade.ts";
 import {
   CODEX_VERSION_TIMEOUT_MS,
   codexUserAgent,
@@ -508,8 +502,10 @@ function defaultAcceptsCatalog(catalogJson: string): boolean | null {
 function probeCatalog(catalogJson: string): boolean | null {
   const referencing = (content: string) => (home: string): void => {
     const file = path.join(home, "candidate-catalog.json");
-    writeFileReported(file, content);
-    writeFileReported(codexConfigPath(home), stringify({ "model_catalog_json": file }));
+    fs.writeText(file, content, { secretKeys: [] });
+    fs.writeText(codexConfigPath(home), stringify({ "model_catalog_json": file }), {
+      secretKeys: [],
+    });
   };
   // A run that never reported an exit code (spawn error, or killed, the budget's timeout kill
   // included) proves nothing either way; only a real exit counts.
@@ -530,7 +526,7 @@ function probeCatalog(catalogJson: string): boolean | null {
     return garbageExit === 0 ? null : true;
   }
   const control = runProbeSpawn((home) => {
-    writeFileReported(codexConfigPath(home), "");
+    fs.writeText(codexConfigPath(home), "", { secretKeys: [] });
   });
   if (exitOf(control) !== 0) return null;
   return parsesAsCatalog(control?.stdout ?? "") ? false : null;
@@ -592,13 +588,10 @@ export async function generateCodexModelCatalog(
       logger.warn("codex model catalog not written: the installed codex rejects its schema");
       return false;
     }
-    const file = new CopilotApiPaths().codexModelCatalogFile;
-    const current = readPlannedText(file);
-    const before = current.kind === "text" ? current.text : null;
-    landPlan({
-      files: [filePlan(file, textVerdict(before, bytes), { before, content: bytes })],
-      // 0600 like every file the store writes beside it (the home's own policy).
-      apply: () => atomicWriteFile(file, bytes, 0o600),
+    // 0600 like every file the store writes beside it (the home's own policy).
+    fs.writeText(new CopilotApiPaths().codexModelCatalogFile, bytes, {
+      mode: 0o600,
+      secretKeys: [],
     });
     return true;
   } catch (e) {
@@ -654,7 +647,7 @@ export function inspectCatalogFile(
   filePath: string,
   deps: CodexCatalogDeps = {},
 ): CatalogFileVerdict {
-  const read = readPlannedText(filePath);
+  const read = fs.readTextResult(filePath);
   if (read.kind !== "text") return "unusable";
   const raw = read.text;
   if (!parsesAsCatalog(raw)) return "unusable";

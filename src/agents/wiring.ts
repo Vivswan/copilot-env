@@ -9,7 +9,7 @@ import { codexConfigPath } from "../codex/paths.ts";
 import { isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
-import { readTextResult } from "../utils/fs.ts";
+import { readTextResult } from "../utils/fs_facade.ts";
 
 /** Overrides for tests and callers that already resolved the homes/port; the defaults are the
  *  effective ones (effectiveCodexHome, resolveClaudeHome, copilotApiResolvePort). */

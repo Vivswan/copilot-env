@@ -15,7 +15,6 @@
 //   bundle credential unresolvable here -> local slot kept; skipped whole when it is unresolvable too
 //   profile absent from the bundle      -> untouched
 //   bundle mode "none"                  -> that agent left alone
-import { readdirSync } from "node:fs";
 import { basename, join, posix, win32 } from "node:path";
 import * as v from "valibot";
 import { claudeJsonPath } from "../claude/mcp_registration.ts";
@@ -55,14 +54,9 @@ import {
   type ProfileName,
 } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
-import {
-  chmodReported,
-  mkdirReported,
-  removeReported,
-  writeFileReported,
-} from "../utils/report_write.ts";
 import { configureDefaultAgents } from "./configure_defaults.ts";
 import { reconcileClaudeDesktopWiring } from "./claude_desktop.ts";
 import { bothAgents, directPairIncomplete, wireBothAgents } from "./profile_wiring.ts";
@@ -936,12 +930,11 @@ const BACKUP_FILE_RE = /^settings-.*\.json$/;
 let backupSeq = 0;
 
 /** Best-effort prune: keep only the newest SETTINGS_BACKUP_KEEP backups. `landed` is the backup
- *  this run just wrote, counted whether or not it is on disk yet (a dry run plans it), so the
- *  planned prune is the real one. */
+ *  this run just wrote, counted with the listing so the prune's set is the real one. */
 function pruneSettingsBackups(dir: string, landed: string): void {
   let names: string[];
   try {
-    names = [...new Set([...readdirSync(dir), basename(landed)])]
+    names = [...new Set([...fs.readdir(dir), basename(landed)])]
       .filter((name) => BACKUP_FILE_RE.test(name))
       .sort();
   } catch {
@@ -949,11 +942,21 @@ function pruneSettingsBackups(dir: string, landed: string): void {
   }
   for (const name of names.slice(0, Math.max(0, names.length - SETTINGS_BACKUP_KEEP))) {
     try {
-      removeReported(join(dir, name));
+      fs.rm(join(dir, name), { force: true });
     } catch {
       // best-effort: a stuck file only delays the next prune
     }
   }
+}
+
+/** The bundle's token-bearing leaves, redacted in a preview of the backup: every slot's token and
+ *  the one credential-bearing preference. */
+function backupSecretKeys(bundle: SettingsBundle): string[] {
+  return [
+    "credential.githubToken",
+    ...Object.keys(bundle.profiles).map((name) => `profiles.${name}.githubToken`),
+    ...CREDENTIAL_BEARING_PREFS.map((key) => `config.global."${key}"`),
+  ];
 }
 
 /**
@@ -968,15 +971,17 @@ export function writeSettingsBackup(): string | null {
   const bundle = buildExportBundle({ withCredentials: true });
   if (bundleIsEmpty(bundle)) return null;
   const dir = settingsBackupDir();
-  mkdirReported(dir, 0o700);
+  fs.mkdir(dir, { mode: 0o700 });
   // mkdirSync's mode only applies on creation; a pre-existing looser dir must
   // still end up 0700 (it is about to hold plaintext tokens).
-  if (process.platform !== "win32") chmodReported(dir, 0o700);
+  if (process.platform !== "win32") fs.chmod(dir, 0o700);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const path = join(dir, `settings-${stamp}-${String(++backupSeq).padStart(3, "0")}.json`);
-  writeFileReported(path, serializeSettingsBundle(bundle), {
+  fs.writeText(path, serializeSettingsBundle(bundle), {
+    atomic: false,
     mode: 0o600,
     detail: `pre-import settings backup; roll back with: ${rollbackCommand(path)}`,
+    secretKeys: backupSecretKeys(bundle),
   });
   pruneSettingsBackups(dir, path);
   return path;

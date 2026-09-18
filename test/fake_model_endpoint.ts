@@ -77,13 +77,15 @@ const BASE_ENV_KEYS = [
   "USERNAME",
 ];
 
-/** A complete child env: the allowlist above from this process, then `extra` over it. */
+/** A complete child env: the allowlist above from this process, then `extra` over it. Every
+ *  child (aimock, the CLIs) is a deno or node process that would otherwise ask dl.deno.land for
+ *  its latest release on start; DENO_NO_UPDATE_CHECK is forced so the fake stays offline. */
 export function hermeticEnv(extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && BASE_ENV_KEYS.includes(key.toUpperCase())) out[key] = value;
   }
-  return { ...out, ...extra };
+  return { ...out, DENO_NO_UPDATE_CHECK: "1", ...extra };
 }
 
 export type ScenarioSpec =

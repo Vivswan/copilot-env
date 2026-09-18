@@ -40,7 +40,8 @@ const RESPONSES_PRELUDE_FRAMES = 4;
  *  with a blob-only reasoning item BEFORE the message: one output_item.added / output_item.done
  *  pair, two frames ahead of the prelude. */
 const RESPONSES_REASONING_ITEM_FRAMES = 2;
-/** aimock's `truncateAfterChunks: N` delivers N - 1 frames: it aborts before writing the Nth. */
+/** aimock's `truncateAfterChunks: N` writes the Nth frame and destroys the socket in the same
+ *  tick, so the wire carries N - 1 frames. */
 const AIMOCK_CUT_OFFSET = 1;
 
 /** Every scenario a test can name. The error bodies are the vendors' envelopes with Copilot's

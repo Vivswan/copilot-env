@@ -2,7 +2,12 @@
 // say: where its truncation lands on a codex-shaped stream, and that a child which dies before
 // listening fails the start at once with its own words.
 import { spawnChild } from "./helpers/run.ts";
-import { awaitListening, type FakeModelEndpoint, SCENARIO_HEADER } from "./fake_model_endpoint.ts";
+import {
+  awaitListening,
+  type FakeModelEndpoint,
+  hermeticEnv,
+  SCENARIO_HEADER,
+} from "./fake_model_endpoint.ts";
 import { startFakeEndpoint } from "./helpers/fake_endpoint.ts";
 import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
@@ -84,4 +89,18 @@ test("a child that exits before listening fails the start at once, naming its ex
   );
   // Well inside the 60 s start timeout: the exit, not the deadline, settled it.
   expect(Date.now() - started).toBeLessThan(15_000);
+});
+
+test("every hermetic child env keeps deno's release check off, whatever the parent shell says", () => {
+  // The parent's own value is irrelevant either way: absent, or set to something else.
+  const inherited = process.env.DENO_NO_UPDATE_CHECK;
+  try {
+    delete process.env.DENO_NO_UPDATE_CHECK;
+    expect(hermeticEnv({}).DENO_NO_UPDATE_CHECK).toBe("1");
+    process.env.DENO_NO_UPDATE_CHECK = "";
+    expect(hermeticEnv({ HOME: "/home/user" }).DENO_NO_UPDATE_CHECK).toBe("1");
+  } finally {
+    if (inherited === undefined) delete process.env.DENO_NO_UPDATE_CHECK;
+    else process.env.DENO_NO_UPDATE_CHECK = inherited;
+  }
 });

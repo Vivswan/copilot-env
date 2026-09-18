@@ -35,6 +35,7 @@ import { errMessage } from "../utils/error.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
 import { atomicWriteFile, writeFileReported } from "../utils/report_write.ts";
 import { PROXY_RESTART_HINT_ALL, unreadProjectedKeyWarnings } from "./config.ts";
+import { runDryRun } from "./dry_run.ts";
 
 // Narration to stderr so `--export`'s stdout stays a clean machine-readable bundle.
 const logger = createStderrLogger();
@@ -45,6 +46,9 @@ export interface SettingsArgs {
   withCredentials?: boolean;
   force?: boolean;
   noBackup?: boolean;
+  /** With --import: print what the bundle would change, attribute by attribute, and write nothing.
+   *  Only the confirmation is skipped: the pre-import backup and its prune are planned too. */
+  dryRun?: boolean;
 }
 
 /** The plan/apply steps are injectable so the failure path (rollback messaging) can be exercised
@@ -56,7 +60,7 @@ export interface SettingsDeps extends ImportDeps {
 
 export type SettingsAction =
   | { kind: "export"; target: string | boolean; withCredentials: boolean }
-  | { kind: "import"; file: string; force: boolean; noBackup: boolean };
+  | { kind: "import"; file: string; force: boolean; noBackup: boolean; dryRun: boolean };
 
 const EXACTLY_ONE = "pass exactly one of --export [file], --import <file>";
 
@@ -73,11 +77,12 @@ export function parseSettingsAction(args: SettingsArgs): SettingsAction {
       file: args.importFrom,
       force: Boolean(args.force),
       noBackup: Boolean(args.noBackup),
+      dryRun: Boolean(args.dryRun),
     };
   }
   if (args.exportTo === undefined) throw new Error(EXACTLY_ONE);
-  if (args.force || args.noBackup) {
-    throw new Error("--force/--no-backup only apply to --import");
+  if (args.force || args.noBackup || args.dryRun) {
+    throw new Error("--force/--no-backup/--dry-run only apply to --import");
   }
   return { kind: "export", target: args.exportTo, withCredentials: Boolean(args.withCredentials) };
 }
@@ -173,6 +178,18 @@ async function runImport(
   // One plan drives both the confirmation and the apply, so the prompt shows exactly what the
   // import OVERWRITES (planWrites), not every file it writes.
   const plan = (deps.planImport ?? planImport)(bundle, deps);
+  if (action.dryRun) {
+    // The same landing, recorded: the pre-import backup (its file, and the prune it triggers), then
+    // every store slot and agent file the bundle would change, by key. The skips and failures the
+    // apply would report are said, and fail the run, the same way. Only the confirmation is skipped.
+    await runDryRun(async () => {
+      if (!action.noBackup) writeSettingsBackup();
+      const outcome = await (deps.applyPlan ?? applyImportPlan)(plan, deps);
+      for (const line of [...outcome.skipped, ...outcome.failures]) logger.warn(line);
+      if (outcome.failures.length > 0) process.exitCode = 1;
+    });
+    return;
+  }
   if (plan.writes.length > 0 && !action.force && !(await confirmImport(plan.writes, file))) {
     consola.info("Import aborted - nothing was changed.");
     process.exitCode = 1;

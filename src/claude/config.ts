@@ -13,22 +13,12 @@ import {
   type AgentAdapter,
   type CredentialWiring,
   type DirectWiring,
+  landWithReservedPort,
   type ManagedWrite,
-  reservePlannedPort,
   resolvedDirectToken,
 } from "../agents/configure.ts";
 import { CLAUDE_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
-import {
-  applyPatch,
-  dottedKey,
-  type FilePlan,
-  type PatchOp,
-  planPatch,
-  remove,
-  set,
-  textVerdict,
-  type WritePlan,
-} from "../agents/write_plan.ts";
+import { applyPatch, type PatchOp, planPatch, remove, set } from "../agents/write_plan.ts";
 import {
   type AgentProviderMode,
   MANAGED_MODE_DETAIL,
@@ -70,12 +60,23 @@ import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { mkdirReported, removeReported, writeFileReported } from "../utils/report_write.ts";
 import {
+  dottedKey,
+  type FilePlan,
+  filePlan,
+  landPlan,
+  NO_WRITE,
+  readPlannedText,
+  shadowedText,
+  textVerdict,
+  type WritePlan,
+} from "../utils/write_session.ts";
+import {
   agentAuthGetArgs,
   agentLauncherCommand,
   proxyTokenArgs,
   proxyTokenCommand,
 } from "../utils/root.ts";
-import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
+import { planClaudeDesktopSync, planRemoveClaudeDesktopEntry } from "./desktop.ts";
 import { cmdHelperBody, shQuote, winQuote } from "./helper_body.ts";
 import { planClaudeMcpRegistration, planClaudeMcpRemoval } from "./mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor, WIN } from "./paths.ts";
@@ -336,11 +337,17 @@ export function inspectClaudeWiring(
  */
 function loadSettings(settingsPath: string): Record<string, unknown> {
   let text: string;
-  try {
-    text = fs.readFileSync(settingsPath, "utf8");
-  } catch (e) {
-    if (isEnoentOrNotdir(e)) return {};
-    throw e;
+  const planned = shadowedText(settingsPath);
+  if (planned !== undefined) {
+    if (planned === null) return {};
+    text = planned;
+  } else {
+    try {
+      text = fs.readFileSync(settingsPath, "utf8");
+    } catch (e) {
+      if (isEnoentOrNotdir(e)) return {};
+      throw e;
+    }
   }
   if (text.trim() === "") return {};
   const doc = parseJsonRecord(text);
@@ -434,17 +441,19 @@ function credentialDetail(
 export const WEBSEARCH_DENY_RULE = "WebSearch";
 
 /**
- * The pair as a patch plus a commit: the ledger record (and the registration removal on take-back)
- * runs in the commit AFTER a successful save, so a failed write leaves ledger and file consistent
- * and a retry can still recover.
+ * The pair as a patch plus what follows the settings save: `commit` is the ledger record or
+ * release (store bookkeeping, landed in a dry run too), `after` a file write the save must precede
+ * (the registration removal on take-back). Both run only after a successful save, so a failed
+ * write leaves ledger and files consistent and a retry can still recover.
  */
-type WebSearchPairCommit = () => void;
-const NO_COMMIT: WebSearchPairCommit = () => {};
+type WebSearchPairStep = () => void;
+const NO_STEP: WebSearchPairStep = () => {};
 interface WebSearchPairPatch {
   ops: PatchOp[];
-  commit: WebSearchPairCommit;
+  commit: WebSearchPairStep;
+  after: WebSearchPairStep;
 }
-const NO_PAIR: WebSearchPairPatch = { ops: [], commit: NO_COMMIT };
+const NO_PAIR: WebSearchPairPatch = { ops: [], commit: NO_STEP, after: NO_STEP };
 
 /**
  * Ownership is the exact settings PATH the entry was added to: a deny the user already had, or one
@@ -474,6 +483,7 @@ function managedWebSearchDenyPatch(
     // ours to delete. The inverse (saved, record failed) merely orphans our one line: the
     // acceptable direction.
     commit: () => new OwnershipLedger().record("webSearchDeny", settingsPath),
+    after: NO_STEP,
   };
 }
 
@@ -493,7 +503,7 @@ function stripManagedWebSearchDenyPatch(
       ops.push(remove(["permissions"]));
     }
   }
-  return { ops, commit: () => ledger.release("webSearchDeny", settingsPath) };
+  return { ops, commit: () => ledger.release("webSearchDeny", settingsPath), after: NO_STEP };
 }
 
 /**
@@ -541,34 +551,54 @@ function planWebSearchPair(
   // instead of losing only the server half.
   const predicted: WebSearchPairPatch = {
     ops: strip.ops,
-    commit: () => {
-      strip.commit();
-      removal.apply();
-    },
+    commit: strip.commit,
+    after: () => void removal.apply(),
   };
   return { files: removal.files, predicted, land: () => predicted };
 }
 
 /**
- * Re-derive the web-search pair for the current default wiring: direct applies it (per `claude.wire-mcp`),
- * proxy or none takes it back, a foreign settings.json is never touched. `agent mcp --remove`
- * stores `claude.wire-mcp false` before calling this, which makes it a strip.
+ * Re-derive the web-search pair for the current default wiring, as a plan: direct applies it (per
+ * `claude.wire-mcp`), proxy or none takes it back, a foreign settings.json is never touched.
+ * `agent mcp --remove` stores `claude.wire-mcp false` before landing this, which makes it a strip.
  */
-export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): void {
+export function planDefaultWebSearchSync(claudeHome = resolveClaudeHome()): WritePlan {
   const settingsPath = settingsPathFor(claudeHome);
   // The default slot's recorded mode decides whether the pair is APPLIED (direct); whether it is
   // STRIPPED is the ownership ledger's decision alone (stripManagedWebSearchDenyPatch owns nothing,
   // strips nothing), so a default with no recorded mode takes the strip arm like proxy: a deny we
   // wrote before the record was cleared is still ours to take back.
   const mode = new CopilotEnvState().readProfileSlot(null).mode ?? "proxy";
+  const currentText = readPlannedText(settingsPath);
   const doc = loadSettings(settingsPath);
-  const before = JSON.stringify(doc);
-  const pair = planWebSearchPair(doc, mode, settingsPath).land();
-  applyPatch(doc, pair.ops);
-  if (JSON.stringify(doc) !== before) {
-    saveOrRemoveSettings(settingsPath, doc);
-  }
-  pair.commit();
+  const pair = planWebSearchPair(doc, mode, settingsPath);
+  const settingsFile = (ops: PatchOp[]): FilePlan | null => {
+    const next = applyPatch(structuredClone(doc), ops);
+    if (JSON.stringify(next) === JSON.stringify(doc)) return null;
+    const before = currentText.kind === "text" ? currentText.text : null;
+    if (Object.keys(next).length === 0) return filePlan(settingsPath, "delete", { before });
+    const text = `${JSON.stringify(next, null, 2)}\n`;
+    return {
+      path: settingsPath,
+      verdict: textVerdict(before, text),
+      attributes: planPatch(doc, ops),
+      before,
+      content: text,
+    };
+  };
+  const predicted = settingsFile(pair.predicted.ops);
+  let landed = pair.predicted;
+  return {
+    files: [...(predicted === null ? [] : [predicted]), ...pair.files],
+    apply() {
+      landed = pair.land();
+      if (settingsFile(landed.ops) !== null) {
+        saveOrRemoveSettings(settingsPath, applyPatch(structuredClone(doc), landed.ops));
+      }
+      landed.after();
+    },
+    commit: () => landed.commit(),
+  };
 }
 
 export type ClaudeWriteRequest = ManagedWrite & {
@@ -583,7 +613,7 @@ export type ClaudeWriteRequest = ManagedWrite & {
  * via `claude --settings`. Throws on malformed settings or an unresolvable proxy port; an
  * unwritable home throws from the apply.
  */
-export function planClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): WritePlan {
+export function planClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): ClaudeWritePlan {
   const profile = request.profile ?? null;
   // read(), not resolve(): no `gh` spawn (runClaude already resolved and fail-fasted; this
   // backstops direct callers like --settings-for). read() is fail-closed, so a recorded provider
@@ -600,7 +630,7 @@ export function planClaudeConfig(claudeHome: string, request: ClaudeWriteRequest
   }
 
   const settingsPath = settingsPathFor(claudeHome, profile);
-  const currentText = readTextResult(settingsPath);
+  const currentText = readPlannedText(settingsPath);
   const doc = loadSettings(settingsPath);
   // A named profile never takes over a pre-existing settings-<name>.json wired to something we do
   // not manage; the default settings.json keeps its contract that an explicit write reclaims even a
@@ -653,20 +683,24 @@ export function planClaudeConfig(claudeHome: string, request: ClaudeWriteRequest
   const predicted = pair === null ? NO_PAIR : pair.predicted;
   const settingsText = (pairOps: PatchOp[]): string =>
     `${JSON.stringify(applyPatch(structuredClone(doc), [...ops, ...pairOps]), null, 2)}\n`;
+  const before = currentText.kind === "text" ? currentText.text : null;
+  // The pair as landed (the registration's answer at apply time); until then the prediction, which
+  // is what a dry run's commit records.
+  let landed = predicted;
 
   return {
+    plannedPort,
     files: [
       {
         path: settingsPath,
-        verdict: textVerdict(
-          currentText.kind === "text" ? currentText.text : null,
-          settingsText(predicted.ops),
-        ),
+        verdict: textVerdict(before, settingsText(predicted.ops)),
         attributes: planPatch(
           currentText.kind === "text" ? doc : null,
           [...ops, ...predicted.ops],
           SETTINGS_SECRETS,
         ),
+        before,
+        content: settingsText(predicted.ops),
       },
       ...(pair?.files ?? []),
     ],
@@ -676,17 +710,23 @@ export function planClaudeConfig(claudeHome: string, request: ClaudeWriteRequest
       } catch (e) {
         throw new Error(`could not create Claude config directory ${claudeHome}: ${errMessage(e)}`);
       }
-      if (plannedPort !== null) reservePlannedPort(profile, plannedPort);
-      const landed = pair === null ? NO_PAIR : pair.land();
+      landed = pair === null ? NO_PAIR : pair.land();
       writeFileReported(settingsPath, settingsText(landed.ops), { detail });
-      landed.commit();
+      landed.after();
     },
+    commit: () => landed.commit(),
   };
 }
 
-/** planClaudeConfig, performed. */
+/** A settings plan with the proxy port it peeked (null for Direct), for the caller to reserve as
+ *  it lands (landWithReservedPort). */
+export type ClaudeWritePlan = WritePlan & { plannedPort: string | null };
+
+/** planClaudeConfig, landed with its port reserved (landWithReservedPort: applied and committed,
+ *  or recorded by a dry run). */
 export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): void {
-  planClaudeConfig(claudeHome, request).apply();
+  const plan = planClaudeConfig(claudeHome, request);
+  landWithReservedPort(plan, request.profile ?? null, plan.plannedPort);
 }
 
 // --- the `--check` provider report ------------------------------------------
@@ -726,17 +766,31 @@ function checkClaudeConfig(): void {
 /** Read-only; the uninstall plan resolves this once and renders it both ways (dry run and live). */
 export function claudeProfileArtifacts(claudeHome: string, name: ProfileName): string[] {
   const settingsPath = settingsPathFor(claudeHome, name);
-  return inspectClaudeWiring(readTextResult(settingsPath), 0, name).wired ? [settingsPath] : [];
+  return inspectClaudeWiring(readPlannedText(settingsPath), 0, name).wired ? [settingsPath] : [];
 }
 
 /** Only artifacts whose wiring is ours; an "other" verdict (foreign, malformed, unreadable) leaves
- *  the user's file alone. */
-export function removeClaudeProfile(
+ *  the user's file alone. Computed, not performed. */
+export function planRemoveClaudeProfile(
   claudeHome: string,
   name: ProfileName,
   artifacts: readonly string[] = claudeProfileArtifacts(claudeHome, name),
+): WritePlan {
+  return {
+    files: artifacts.map((path) => filePlan(path, "delete")),
+    apply() {
+      for (const path of artifacts) removeReported(path);
+    },
+  };
+}
+
+/** planRemoveClaudeProfile, landed. */
+export function removeClaudeProfile(
+  claudeHome: string,
+  name: ProfileName,
+  artifacts?: readonly string[],
 ): void {
-  for (const path of artifacts) removeReported(path);
+  landPlan(planRemoveClaudeProfile(claudeHome, name, artifacts));
 }
 
 /** What removeClaudeDefaultWiring left behind, for the caller to sequence on. */
@@ -809,11 +863,12 @@ export function detectClaudeDirect(
   return probeDirectWorks(
     CLAUDE_PROBE,
     (tmpHome) => {
-      configureClaudeConfig(tmpHome, {
+      // Applied, never landed: the scratch config is the probe's own, not part of any plan.
+      planClaudeConfig(tmpHome, {
         mode: "direct",
         direct,
         credential: { kind: "command" },
-      });
+      }).apply();
     },
     ghToken === null ? null : directSmoke(
       CLAUDE_ENDPOINT_SMOKE,
@@ -838,21 +893,35 @@ export function claudeAdapter(): AgentAdapter {
     async configureDefault(write, ghToken) {
       configureClaudeConfig(resolveClaudeHome(), write);
       // Desktop reads its own config library, not settings.json, so every rewire reconciles it.
-      await syncClaudeDesktopWiring({ ...write, profile: null, directToken: ghToken });
+      const desktop = await planClaudeDesktopSync({
+        ...write,
+        profile: null,
+        directToken: ghToken,
+      });
+      landWithReservedPort(desktop, null, desktop.plannedPort);
     },
     async configureProfile(name, write, options) {
       configureClaudeConfig(resolveClaudeHome(), { ...write, profile: name });
       // A static write already holds the token: Desktop's discovery must not resolve it again.
-      await syncClaudeDesktopWiring({
+      const desktop = await planClaudeDesktopSync({
         ...write,
         profile: name,
         quiet: options.quiet,
         directToken: resolvedDirectToken(write.mode, write.credential),
       });
+      landWithReservedPort(desktop, name, desktop.plannedPort);
     },
-    removeProfile(name, options) {
-      removeClaudeProfile(resolveClaudeHome(), name, options?.claudeArtifacts);
-      if (!options?.keepDesktopEntry) removeClaudeDesktopEntry(name);
+    planRemoveProfile(name, options) {
+      const files = planRemoveClaudeProfile(resolveClaudeHome(), name, options?.claudeArtifacts);
+      const entry = options?.keepDesktopEntry ? NO_WRITE : planRemoveClaudeDesktopEntry(name);
+      return {
+        files: [...files.files, ...entry.files],
+        apply() {
+          files.apply();
+          entry.apply();
+        },
+        commit: () => entry.commit?.(),
+      };
     },
   };
 }

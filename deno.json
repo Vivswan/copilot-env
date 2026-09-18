@@ -106,6 +106,7 @@
       "src/utils/report_write.ts",
       "src/utils/table.ts",
       "src/utils/time.ts",
+      "src/utils/write_session.ts",
       "copilot-env.config",
       ".dvmrc",
       "deno.json"

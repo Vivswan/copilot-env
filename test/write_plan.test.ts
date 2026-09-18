@@ -5,10 +5,11 @@ import { directWiring } from "../src/agents/configure.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
-import { applyPatch, type AttributeRow, planPatch, remove, set } from "../src/agents/write_plan.ts";
+import { applyPatch, planPatch, remove, set } from "../src/agents/write_plan.ts";
 import { planClaudeConfig } from "../src/claude/config.ts";
 import { planCodexConfig } from "../src/codex/config.ts";
 import { isRecord } from "../src/utils/json.ts";
+import type { AttributeRow } from "../src/utils/write_session.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, writeCodexConfigToml } from "./helpers.ts";
 

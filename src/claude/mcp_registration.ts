@@ -7,21 +7,13 @@
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { taggedLogger } from "../utils/logger.ts";
-import {
-  applyPatch,
-  type FilePlan,
-  type PatchOp,
-  planPatch,
-  remove,
-  set,
-  textVerdict,
-} from "../agents/write_plan.ts";
+import { applyPatch, type PatchOp, planPatch, remove, set } from "../agents/write_plan.ts";
 import { atomicWriteFile } from "../utils/report_write.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
-import { readTextResult } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
+import { type FilePlan, readPlannedText, textVerdict } from "../utils/write_session.ts";
 import { claudeConfigDirOverride } from "./paths.ts";
 
 const logger = taggedLogger("claude.mcp");
@@ -115,7 +107,7 @@ interface ClaudeJsonDoc {
  *  "back" through {} would replace the user's link with a plain file. */
 function loadClaudeJson(): ClaudeJsonDoc | null {
   const path = claudeJsonPath();
-  const read = readTextResult(path);
+  const read = readPlannedText(path);
   if (read.kind === "unreadable") {
     logger.warn(`could not read ${path}: ${read.error}`);
     return null;
@@ -150,6 +142,8 @@ function planClaudeJsonPatch(loaded: ClaudeJsonDoc, ops: readonly PatchOp[]): Mc
       path: loaded.path,
       verdict: textVerdict(loaded.exists ? loaded.raw : null, text),
       attributes,
+      before: loaded.exists ? loaded.raw : null,
+      content: text,
     }],
     apply() {
       if (text === loaded.raw) return true;

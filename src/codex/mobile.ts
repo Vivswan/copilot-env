@@ -9,6 +9,7 @@ import {
   appScanFromExit,
   appScanVerdict,
   processScanScript,
+  runPowershell,
 } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
 import { isRecord } from "../utils/json.ts";
@@ -169,8 +170,9 @@ export class CodexAppController {
     return this.exec(file, args);
   }
 
+  /** Scans and signals: nothing they start outlives them, so the scratch profile is theirs. */
   private ps(script: string) {
-    return this.run("powershell", ["-NoProfile", "-NonInteractive", "-Command", script]);
+    return runPowershell(script, this.exec);
   }
 
   /** Three-state look at whether the app appears installed (see AppScan). */
@@ -199,13 +201,18 @@ export class CodexAppController {
     return appRunning(APP_NAME, this.exec, this.platform);
   }
 
-  /** On Windows, falls back to a manual prompt if it can't launch. */
+  /** On Windows, falls back to a manual prompt if it can't launch. The app this starts inherits
+   *  the spawn's environment, so the launch runs under the user's own profile, never the scans'
+   *  scratch one. */
   async open(): Promise<void> {
     if (this.windows) {
-      const r = await this.ps(
+      const r = await this.run("powershell", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
         `$a = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } | Select-Object -First 1;` +
-          `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
-      );
+        `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
+      ]);
       if (r.exitCode !== 0) await this.manualPromptOpen();
       return;
     }

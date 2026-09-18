@@ -3,14 +3,33 @@
 // emitted its verdict); "unproven" is a look that FAILED (pgrep/PowerShell erroring or missing, or
 // the spawn itself failing) and never reads as a confident absence, as in classifyPidFromScan
 // (src/copilot_api/process.ts).
-import { runCaptured } from "./command.ts";
+import { runCaptured, scratchPowershellProfile } from "./command.ts";
 
 export type AppScan = "present" | "absent" | "unproven";
 
+/** runCaptured's shape; a test's fake may ignore `opts`. */
 export type ScanExec = (
   file: string,
   args: string[],
+  opts?: { env?: Record<string, string | undefined> },
 ) => Promise<{ exitCode: number; stdout: string; launchFailed?: true }>;
+
+/** A PowerShell scan or signal (never a launch: what it starts would inherit the profile), run
+ *  under the scratch profile of scratchPowershellProfile, in a dry run's process scan as in a
+ *  daemon pid look. */
+export async function runPowershell(
+  script: string,
+  exec: ScanExec = runCaptured,
+): Promise<{ exitCode: number; stdout: string; launchFailed?: true }> {
+  const profile = scratchPowershellProfile();
+  try {
+    return await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      env: profile.env,
+    });
+  } finally {
+    profile.dispose();
+  }
+}
 
 /** The exit-0 guard is LOAD-BEARING beside the word check: a scan killed AFTER printing its verdict
  *  (a timeout kill, OOM, a user interrupt) exits nonzero with a valid word already on stdout, and
@@ -45,14 +64,7 @@ export async function appRunning(
   platform: string = process.platform,
 ): Promise<AppScan> {
   if (platform === "win32") {
-    return appScanVerdict(
-      await exec("powershell", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        processScanScript(appName),
-      ]),
-    );
+    return appScanVerdict(await runPowershell(processScanScript(appName), exec));
   }
   // pgrep's exit vocabulary is already three-state; the launch-failure mark separates a REAL exit 1
   // from the one runCaptured synthesizes for a pgrep that never ran.

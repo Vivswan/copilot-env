@@ -99,6 +99,7 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/utils/report_write.ts",
   "src/utils/table.ts",
   "src/utils/time.ts",
+  "src/utils/write_session.ts",
 ] as const;
 
 /** Embedded and NEVER materialized: read in-process through ASSET_ROOT (the compiled VFS), a

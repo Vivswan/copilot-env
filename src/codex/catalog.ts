@@ -13,7 +13,6 @@
 //                                                    catalog_reference.ts remove it
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
-import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { codexConfigPath } from "./paths.ts";
@@ -28,6 +27,7 @@ import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts"
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { filePlan, landPlan, readPlannedText, textVerdict } from "../utils/write_session.ts";
 import {
   atomicWriteFile,
   removeScratchDir,
@@ -592,8 +592,14 @@ export async function generateCodexModelCatalog(
       logger.warn("codex model catalog not written: the installed codex rejects its schema");
       return false;
     }
-    // 0600 like every file the store writes beside it (the home's own policy).
-    atomicWriteFile(new CopilotApiPaths().codexModelCatalogFile, bytes, 0o600);
+    const file = new CopilotApiPaths().codexModelCatalogFile;
+    const current = readPlannedText(file);
+    const before = current.kind === "text" ? current.text : null;
+    landPlan({
+      files: [filePlan(file, textVerdict(before, bytes), { before, content: bytes })],
+      // 0600 like every file the store writes beside it (the home's own policy).
+      apply: () => atomicWriteFile(file, bytes, 0o600),
+    });
     return true;
   } catch (e) {
     logger.warn(`codex model catalog generation failed: ${errMessage(e)}`);
@@ -642,17 +648,15 @@ function judgeCatalog(catalogJson: string, deps: CodexCatalogDeps): boolean | nu
 export type CatalogFileVerdict = "unusable" | "rejected" | "accepted" | "unverifiable";
 
 /** One read, one verdict: the bytes judged at the JSON level are the bytes the installed codex is
- *  asked about, so no second read can see a different file. */
+ *  asked about, so no second read can see a different file. A dry run's freshly planned catalog
+ *  is judged in place of the file on disk. */
 export function inspectCatalogFile(
   filePath: string,
   deps: CodexCatalogDeps = {},
 ): CatalogFileVerdict {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(filePath, "utf8");
-  } catch {
-    return "unusable";
-  }
+  const read = readPlannedText(filePath);
+  if (read.kind !== "text") return "unusable";
+  const raw = read.text;
   if (!parsesAsCatalog(raw)) return "unusable";
   const accepted = judgeCatalog(raw, deps);
   return accepted === null ? "unverifiable" : accepted ? "accepted" : "rejected";

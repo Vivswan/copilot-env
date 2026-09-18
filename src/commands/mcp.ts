@@ -1,8 +1,8 @@
-import { syncDefaultWebSearchWiring } from "../claude/config.ts";
+import { planDefaultWebSearchSync } from "../claude/config.ts";
 import {
   inspectMcpRegistration,
   type McpRegistrationStatus,
-  removeClaudeMcpRegistration,
+  planClaudeMcpRemoval,
 } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -10,6 +10,8 @@ import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { runMcpServer } from "../mcp/server.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { keyValueLine } from "../utils/table.ts";
+import { landPlan } from "../utils/write_session.ts";
+import { runDryRun } from "./dry_run.ts";
 
 const logger = createStderrLogger();
 
@@ -18,16 +20,20 @@ export interface McpArgs {
   remove?: boolean;
   profile?: string;
   model?: string;
+  dryRun?: boolean;
 }
 
 type McpAction =
   | { kind: "status" }
   | { kind: "serve"; profile: Profile; model?: string }
-  | { kind: "remove" };
+  | { kind: "remove"; dryRun: boolean };
 
 function parseMcpAction(args: McpArgs): McpAction {
   if (args.serve && args.remove) {
     throw new Error("--serve and --remove are mutually exclusive");
+  }
+  if (args.dryRun && !args.remove) {
+    throw new Error("--dry-run previews --remove (status and --serve write nothing)");
   }
   if (args.remove) {
     if (args.profile !== undefined || args.model !== undefined) {
@@ -35,7 +41,7 @@ function parseMcpAction(args: McpArgs): McpAction {
         "--remove takes no --profile/--model (it removes the machine-global Claude wiring)",
       );
     }
-    return { kind: "remove" };
+    return { kind: "remove", dryRun: Boolean(args.dryRun) };
   }
   if (!args.serve) {
     if (args.profile !== undefined || args.model !== undefined) {
@@ -84,24 +90,30 @@ function printStatus(): void {
   logger.log("rewire: `agent claude --direct` or `agent init`");
 }
 
-export async function runMcp(args: McpArgs): Promise<void> {
-  const action = parseMcpAction(args);
-  if (action.kind === "status") {
-    printStatus();
-    return;
-  }
-  if (action.kind === "serve") {
-    await runMcpServer({ profile: action.profile, model: action.model });
-    return;
-  }
-  // `claude.wire-mcp false` is stored first so a later direct write respects it; the deny and the
-  // registration then go together, since lifting the deny alone would leave a direct-wired machine
-  // with no search path. The registration is machine-global, so it goes even when settings.json is
-  // foreign and the sync leaves that file's deny alone.
+/** `claude.wire-mcp false` is stored first so a later direct write respects it; the deny and the
+ *  registration then go together, since lifting the deny alone would leave a direct-wired machine
+ *  with no search path. The registration is machine-global, so it goes even when settings.json is
+ *  foreign and the sync leaves that file's deny alone. Returns whether no managed entry remains. */
+function landRemoval(): boolean {
   new CopilotEnvConfig().set({ "claude.wire-mcp": false });
-  syncDefaultWebSearchWiring(resolveClaudeHome());
-  const unregistered = removeClaudeMcpRegistration();
-  if (unregistered) {
+  landPlan(planDefaultWebSearchSync(resolveClaudeHome()));
+  const removal = planClaudeMcpRemoval();
+  let unregistered = false;
+  landPlan({
+    files: removal.files,
+    apply() {
+      unregistered = removal.apply();
+    },
+  });
+  return unregistered;
+}
+
+async function runRemove(dryRun: boolean): Promise<void> {
+  if (dryRun) {
+    await runDryRun(() => Promise.resolve(landRemoval()));
+    return;
+  }
+  if (landRemoval()) {
     logger.log(
       "Removed the copilot-env MCP registration (and the managed WebSearch deny where " +
         "copilot-env manages settings.json); stored `claude.wire-mcp false` so direct rewires stay opted out.",
@@ -112,4 +124,17 @@ export async function runMcp(args: McpArgs): Promise<void> {
         "removed (not ours, or the file could not be written) - remove it by hand if needed.",
     );
   }
+}
+
+export async function runMcp(args: McpArgs): Promise<void> {
+  const action = parseMcpAction(args);
+  if (action.kind === "status") {
+    printStatus();
+    return;
+  }
+  if (action.kind === "serve") {
+    await runMcpServer({ profile: action.profile, model: action.model });
+    return;
+  }
+  await runRemove(action.dryRun);
 }

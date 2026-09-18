@@ -271,7 +271,9 @@ export async function probeDirectWorks(
 
   // A FAILED look never borrows the proven verdict's words: "not found" carries advice that is
   // wrong when the look itself failed, so that arm says "could not check" and gives no install
-  // advice.
+  // advice. A dry run takes the same arms: the plan is the real decision, and the CLI's auth
+  // helper (this CLI, as a silent dry run) reads the credential the store already holds, since a
+  // dry run never lands one it does not have.
   const cliLook = find(descriptor.cli);
   if (cliLook.path === null) {
     const look = cliLook.launchFailed

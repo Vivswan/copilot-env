@@ -4,11 +4,11 @@
 import {
   claudeDesktopInstalled,
   claudeDesktopRunning,
+  planClaudeDesktopSync,
+  planRemoveClaudeDesktopOrphan,
+  planRemoveUnlistedClaudeDesktopClaims,
+  planRemoveUnmanagedClaudeDesktopWiring,
   profileStoreWellFormed,
-  removeClaudeDesktopOrphan,
-  removeUnlistedClaudeDesktopClaims,
-  removeUnmanagedClaudeDesktopWiring,
-  syncClaudeDesktopWiring,
 } from "../claude/desktop.ts";
 import {
   type ClaudeDesktopStatus,
@@ -23,7 +23,13 @@ import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { type ManagedWrite, resolveCredentialWiring, resolvedDirectToken } from "./configure.ts";
+import { landPlan } from "../utils/write_session.ts";
+import {
+  landWithReservedPort,
+  type ManagedWrite,
+  resolveCredentialWiring,
+  resolvedDirectToken,
+} from "./configure.ts";
 import { renderDirectWiring } from "./profile_wiring.ts";
 
 const logger = createStderrLogger();
@@ -88,7 +94,7 @@ function unjudged(enabled: boolean, reason: string): ClaudeDesktopStatus {
 /** Cleanup runs before the upserts so an orphan holding the applied slot hands it to the entry
  *  replacing it. This is the ONE caller of the key-off sweep, so its notice naming the default's
  *  leftover entry prints from here and nowhere else; the default write's own key-off stays
- *  silent (syncClaudeDesktopWiring in src/claude/desktop.ts).
+ *  silent (planClaudeDesktopSync in src/claude/desktop.ts).
  *
  *    quiet (the launcher hot path) -> cleanup only: no upsert, identity probe, discovery, or notice */
 export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {}): Promise<void> {
@@ -101,7 +107,7 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
       return;
     }
     if (!new CopilotEnvConfig().claudeDesktopEnabled()) {
-      removeUnmanagedClaudeDesktopWiring({ quiet: opts.quiet });
+      landPlan(planRemoveUnmanagedClaudeDesktopWiring({ quiet: opts.quiet }));
       return;
     }
     if (!claudeDesktopInstalled()) return;
@@ -117,8 +123,11 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
       return;
     }
     if (status.kind !== "inspected") return;
-    for (const orphan of status.orphans) removeClaudeDesktopOrphan(orphan);
-    if (status.unlisted.length > 0) removeUnlistedClaudeDesktopClaims();
+    for (const orphan of status.orphans) landPlan(planRemoveClaudeDesktopOrphan(orphan));
+    if (status.unlisted.length > 0) {
+      const sweep = planRemoveUnlistedClaudeDesktopClaims();
+      if (sweep.kind === "swept") landPlan(sweep);
+    }
     if (opts.quiet) return;
     // The default is upserted too: a key flipped back on by a config-only import has no
     // adapter write to ride on. A default already judged wired is skipped: init / `agent
@@ -179,7 +188,8 @@ async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
     const write: ManagedWrite = mode === "direct"
       ? { mode: "direct", direct: rendered, credential }
       : { mode: "proxy", credential };
-    await syncClaudeDesktopWiring({ ...write, profile, directToken: token });
+    const plan = await planClaudeDesktopSync({ ...write, profile, directToken: token });
+    landWithReservedPort(plan, profile, plan.plannedPort);
   } catch (e) {
     logger.warn(`  Could not refresh ${profileLabel(profile)}'s Desktop entry: ${errMessage(e)}`);
   }

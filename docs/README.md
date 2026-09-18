@@ -31,6 +31,7 @@ copilot-env points the Codex and Claude CLIs at GitHub Copilot, either through a
 | Run several sessions under different credentials or modes                   | [Authentication: profiles](authentication.md#profiles)                                   |
 | Run the CLI from a checkout                                                 | [Development](development.md)                                                            |
 | See how the code is layered, and which module imports which                 | [Architecture](architecture.md)                                                          |
+| See how a dry run keeps its reads and writes on one seam                    | [Dry-run filesystem](dry-run-facade.md)                                                  |
 
 ## The pages
 

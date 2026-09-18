@@ -177,8 +177,8 @@ export class CopilotApiPaths {
   locksDir: string;
   /** The store's one lock, derived from its basename so a rename cannot silently orphan it. */
   stateStoreLock: string;
-  /** One root-wide mutex for reserveProfilePort (port.ts), best-effort: past its bounded wait a
-   *  reserver proceeds UNLOCKED, so two racing reservers can still mint the same port. */
+  /** One root-wide mutex for reserveProfilePort (port.ts): a holder past its bounded wait is an
+   *  error, so two racing reservers never mint the same port. */
   profilePortsLock: string;
   /** The bundled `codex debug models` catalog with Copilot's live context-window limits overlaid; the
    *  managed Codex config.toml references it by absolute path (`model_catalog_json`). Not dot-prefixed:

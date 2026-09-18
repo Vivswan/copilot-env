@@ -82,8 +82,8 @@ export class CopilotEnvRunState {
 
   /**
    * The pid check runs INSIDE the read-modify-write, so a daemon replaced by a newer one cannot clobber
-   * its successor's freshly written pid/port while update()'s best-effort lock holds; past its bounded
-   * wait both writers proceed unlocked. A NAMED profile's daemon passes `keepPort`: its port is the
+   * its successor's freshly written pid/port under update()'s lock (a holder past its bounded wait is
+   * an error, never a second writer). A NAMED profile's daemon passes `keepPort`: its port is the
    * profile's stable reservation the baked agent wiring points at.
    */
   clearIfPid(pid: number, keepPort = false): void {

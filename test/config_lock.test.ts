@@ -61,20 +61,22 @@ test("update() serializes concurrent writers across processes (no lost updates)"
   }
 }, 30_000);
 
-test("update() reclaims a stale lock (dead holder pid) quickly instead of hanging", () => {
+// The Windows incident: a scanner's open handle refused the release's marker delete, leaving a
+// fresh marker under a live pid. While the marker was judged, every writer (that pid's own process
+// included) waited it out and wrote unlocked; now the OS lock alone decides and update() lands at once.
+test("update() lands at once over a fresh leftover marker, its own pid's included", () => {
   const dir = tempDir("copilot-lock-");
   try {
     const store = join(dir, "s.json");
     writeFileSync(store, JSON.stringify({ v: 0 }));
-    // A fresh timestamp under a dead pid: the pid check, not the age, must reclaim the lock.
-    writeFileSync(`${store}.lock`, `2147480000\n${Date.now()}\n`);
+    writeFileSync(`${store}.lock`, `${process.pid}\n${Date.now()}\n`);
 
     const cfg = new CopilotApiConfig(store);
     const t0 = Date.now();
     cfg.update((d) => {
       d.v = 1;
     });
-    expect(Date.now() - t0).toBeLessThan(2000); // reclaimed, not a ~4s timeout wait
+    expect(Date.now() - t0).toBeLessThan(2000); // neither the 4 s wait nor the 10 s age-out
     expect(JSON.parse(readFileSync(store, "utf8")).v).toBe(1);
   } finally {
     rmSync(dir, { recursive: true, force: true });

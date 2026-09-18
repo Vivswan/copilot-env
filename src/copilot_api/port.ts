@@ -1,6 +1,6 @@
 import * as net from "node:net";
 
-import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
+import { BOUNDED_LOCK_POLICY, withRequiredFileLockSync } from "../utils/file_lock.ts";
 import { configSetCommand, CopilotEnvConfig, isLoopbackHostname } from "./env_config.ts";
 import { allProfileNames } from "./env_state.ts";
 import { CopilotApiPaths } from "./paths.ts";
@@ -181,8 +181,8 @@ function candidateProfilePort(excluding: Profile = null): number {
 }
 
 /**
- * Best-effort serialization: the scan-then-write holds the shared BOUNDED_LOCK_POLICY lock, and past its
- * bounded wait it runs UNLOCKED rather than deadlock, so two profiles wired at once can still collide there.
+ * The scan-then-write holds the shared BOUNDED_LOCK_POLICY lock; a holder still there after the wait is
+ * a LockBusyError, so two profiles wired at once never allocate unlocked.
  * An EXISTING reservation is honored even if min/max has since narrowed: the range governs NEW allocations only.
  *
  *   reservation busy at bind time  -> `start` re-records the LIVE-BOUND port outside this lock
@@ -193,7 +193,7 @@ export function reserveProfilePort(profile: ProfileName): number {
   const recorded = state.read().port;
   if (recorded !== undefined) return recorded;
   const lockPath = new CopilotApiPaths().profilePortsLock;
-  return withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
+  return withRequiredFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
     // A concurrent reserver may have recorded one during the wait.
     const raced = state.read().port;
     if (raced !== undefined) return raced;

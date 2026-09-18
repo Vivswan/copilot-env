@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { basename } from "node:path";
 import { taggedLogger } from "../utils/logger.ts";
 
-import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
+import { BOUNDED_LOCK_POLICY, withRequiredFileLockSync } from "../utils/file_lock.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
@@ -67,9 +67,9 @@ const LOAD_RETRY_MS = 4;
 export const JSON_PARSE_DIAGNOSTIC =
   "SyntaxError; the parser's message is withheld, the file may hold keys";
 
-// update()'s read-modify-write takes a best-effort `<file>.lock` (utils/file_lock.ts): the CLI, the daemon
-// shims, and several shells write the SAME store, and BOUNDED_LOCK_POLICY proceeds WITHOUT the lock after
-// its wait rather than deadlock a command.
+// update()'s read-modify-write holds `<file>.lock` (utils/file_lock.ts): the CLI, the daemon shims, and
+// several shells write the SAME store. A holder still there after BOUNDED_LOCK_POLICY's wait is an error
+// (LockBusyError), never an unlocked write.
 //   `start --record-event` heartbeat vs a fresh pid/port  -> without it, the heartbeat clobbers them
 //   two ensureApiKey callers                              -> without it, two keys minted
 
@@ -217,12 +217,12 @@ export class CopilotApiConfig {
 
   /**
    * The read-modify-write: the mutation runs on a copy and the save lands it through the facade,
-   * which a dry run answers with the planned bytes instead of the disk (withFileLockSync takes no
-   * lock in one either). A secret leaf the mutation drops is declared from the document it leaves,
-   * so a dry run redacts both sides of its row.
+   * which a dry run answers with the planned bytes instead of the disk (withRequiredFileLockSync
+   * takes no lock in one either). A secret leaf the mutation drops is declared from the document it
+   * leaves, so a dry run redacts both sides of its row.
    */
   update(mutate: (d: Record<string, unknown>) => void): Record<string, unknown> {
-    return withFileLockSync(this.lockPath, BOUNDED_LOCK_POLICY, () => {
+    return withRequiredFileLockSync(this.lockPath, BOUNDED_LOCK_POLICY, () => {
       const current = this.loadForUpdate();
       const next = structuredClone(current);
       mutate(next);
@@ -260,7 +260,7 @@ export class CopilotApiConfig {
     const existing = this.apiKey();
     if (existing !== null) return existing;
     // Generated INSIDE update() with a re-check, so two concurrent creators that both saw "missing"
-    // converge on ONE key - unless update()'s best-effort lock times out and both write unlocked.
+    // converge on ONE key (a holder past the lock's wait is a LockBusyError, never a second creator).
     let result = "";
     this.update((d) => {
       const authBlock = ensureDict(d, "auth");

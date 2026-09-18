@@ -1,9 +1,9 @@
-// The one pid-liveness judgment: copilot_api/process.ts and utils/file_lock.ts both key off it, so
-// they can never disagree about a pid. It lives in utils because file_lock must not import
-// copilot_api/process.ts, which pulls in the daemon spawn and proxy-float graph.
+// The one pid-liveness judgment, so no two consumers (copilot_api/process.ts, the health probes)
+// can disagree about a pid. It lives in utils because the daemon shims' import closure must not
+// pull in copilot_api/process.ts, which reaches the daemon spawn and proxy-float graph.
 
 /** Three states on purpose: a probe that could not run is not a death, and every consumer whose
- *  "dead" licenses a destructive act (a lock steal, a tracking clear, a kill) must never read it as
+ *  "dead" licenses a destructive act (a tracking clear, a kill) must never read it as
  *  one. */
 export type PidLiveness = "alive" | "dead" | "unproven";
 

@@ -106,7 +106,6 @@
       "src/utils/hostname.ts",
       "src/utils/json.ts",
       "src/utils/logger.ts",
-      "src/utils/pid.ts",
       "src/utils/report_write.ts",
       "src/utils/table.ts",
       "src/utils/time.ts",

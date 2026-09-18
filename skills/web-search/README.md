@@ -2,8 +2,11 @@
 
 Web search for AI coding agents through GitHub Copilot's Responses API, backed by the copilot-env MCP server (`agent mcp --serve`).
 
-Claude Code wired directly to `api.githubcopilot.com` cannot use its builtin WebSearch: the Copilot host rejects Anthropic's server-side search tool with a
-400. Copilot's own `/responses` endpoint executes web search server-side, so the copilot-env MCP server exposes it as a `web_search` tool that any MCP client can call. The skill in this folder teaches an agent when and how to use it, with a fallback workflow for sessions where the tool is missing.
+Claude Code wired directly to `api.githubcopilot.com` cannot use its builtin WebSearch: the Copilot host rejects Anthropic's server-side search tool with a 400.
+
+Copilot's own `/responses` endpoint executes web search server-side, so the copilot-env MCP server exposes it as a `web_search` tool that any MCP client can call.
+
+The skill in this folder teaches an agent when and how to use it, with a fallback workflow for sessions where the tool is missing.
 
 ## Setup
 

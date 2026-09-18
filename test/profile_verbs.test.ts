@@ -324,14 +324,26 @@ test(
     expect(observe(["profile", "work", "show"], scratch).stdout).toContain(
       "provider: no credential",
     );
-    // The default's --no-auth prints its two steps and lands nothing (its record follows its
-    // credential).
+    // The default's add records its mode like a named profile's: a dry run plans the record and
+    // names the step, --no-auth lands the record and prints the one next step.
     const afterNamed = treeContents(scratch.home);
+    const initDry = observe(["init", "--proxy", "--dry-run"], scratch);
+    expect(initDry.exitCode).toBe(0);
+    expect(initDry.stdout).toContain('profiles.default.mode  (absent) -> "proxy"');
+    expect(initDry.stderr).toContain("Would run the credential step (agent auth)");
+    expect(treeContents(scratch.home)).toEqual(afterNamed);
     const initNoAuth = observe(["init", "--proxy", "--no-auth"], scratch);
     expect(initNoAuth.exitCode).toBe(0);
     expect(initNoAuth.stderr).toContain("Next:  agent auth --provider");
-    expect(initNoAuth.stderr).toContain("then:  agent init --proxy");
-    expect(treeContents(scratch.home)).toEqual(afterNamed);
+    expect(initNoAuth.stderr).not.toContain("then:");
+    const store = JSON.parse(readFileSync(join(scratch.home, "state.json"), "utf8")) as {
+      profiles?: { default?: { mode?: string } };
+    };
+    expect(store.profiles?.default?.mode).toBe("proxy");
+    // With no mode to record, --no-auth has nothing to land and says which flag it needs.
+    const bare = observe(["profile", "add", "--no-auth"], scratchHome());
+    expect(bare.exitCode).toBe(1);
+    expect(bare.stderr).toContain("pass --direct or --proxy");
     // With a credential, add never asks again: a headless re-add succeeds without the flag.
     expect(observe(["profile", "work", "auth", "--set", "ghu_work"], scratch).exitCode).toBe(0);
     const again = observe(["profile", "work", "add", "--proxy"], scratch);
@@ -351,9 +363,65 @@ test(
     const settings = join(scratch.home, ".claude", "settings.json");
     const before = readFileSync(settings, "utf8");
     rmSync(settings);
+    const dry = observe(["sync", "--dry-run"], scratch);
+    expect(dry.exitCode).toBe(0);
+    expect(dry.stdout.split("DRY RUN:").length - 1).toBe(1);
+    expect(existsSync(settings)).toBe(false);
     const sync = observe(["sync"], scratch);
     expect(sync.exitCode).toBe(0);
+    expect(sync.stderr).toContain("Synced 1 profile (the default included)");
     expect(readFileSync(settings, "utf8")).toBe(before);
   },
   120_000,
+);
+
+test(
+  "`agent sync` exits 1 when a named profile's re-render fails: a foreign settings-<name>.json is never overwritten, and the failure is the exit code",
+  () => {
+    const scratch = scratchHome();
+    expect(observe(["auth", "--set", "ghu_test"], scratch).exitCode).toBe(0);
+    expect(observe(["profile", "work", "add", "--proxy", "--no-auth"], scratch).exitCode).toBe(0);
+    expect(observe(["profile", "work", "auth", "--set", "ghu_work"], scratch).exitCode).toBe(0);
+    const foreign = JSON.stringify({ apiKeyHelper: "/opt/x/helper.sh" });
+    writeFileSync(join(scratch.home, ".claude", "settings-work.json"), foreign);
+    const sync = observe(["sync"], scratch);
+    expect(sync.exitCode).toBe(1);
+    expect(sync.stderr).toContain("could not sync profile 'work'");
+    expect(readFileSync(join(scratch.home, ".claude", "settings-work.json"), "utf8")).toBe(foreign);
+    // Four cold CLI spawns; generous headroom for loaded Windows CI runners.
+  },
+  180_000,
+);
+
+test(
+  "set identity: an unknown named profile is refused like every other key, and --dry-run plans the pin without writing",
+  () => {
+    const scratch = scratchHome();
+    expect(observe(["auth", "--set", "ghu_test"], scratch).exitCode).toBe(0);
+    const before = treeContents(scratch.home);
+    for (
+      const args of [["profile", "ghost", "set", "identity", "auto"], [
+        "profile",
+        "ghost",
+        "identity",
+        "--set",
+        "auto",
+      ]]
+    ) {
+      const ghost = observe(args, scratch);
+      expect(ghost.exitCode, args.join(" ")).toBe(1);
+      expect(ghost.stderr, args.join(" ")).toContain("no such profile 'ghost'");
+    }
+    expect(treeContents(scratch.home)).toEqual(before);
+    const list = observe(["list"], scratch);
+    expect(list.stdout + list.stderr).not.toContain("ghost");
+    const dry = observe(["profile", "set", "identity", "auto", "--dry-run"], scratch);
+    expect(dry.exitCode).toBe(0);
+    expect(dry.stdout).toContain("DRY RUN: nothing was written");
+    expect(dry.stdout).toContain("identity");
+    expect(dry.stderr).not.toContain("identity = auto");
+    expect(treeContents(scratch.home)).toEqual(before);
+    // Five cold CLI spawns; generous headroom for loaded Windows CI runners.
+  },
+  180_000,
 );

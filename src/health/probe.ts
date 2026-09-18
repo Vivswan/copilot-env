@@ -806,7 +806,7 @@ export async function gatherFacts(
   // The store facts the checks frame a credential miss with. A static wiring omits the provider:
   // it resolves nothing at request time, so an unreadable store must not fail its agent check. A
   // named profile's recorded mode stays whatever the shape: the slot DEFINES the profile, and an
-  // interrupted `profile --add` (slot flipped, agents not yet rewritten) must never read green.
+  // interrupted `profile <name> add` (slot flipped, agents not yet rewritten) must never read green.
   const storeFacts = (credential: "command" | "static" | "none" | null) => ({
     ...(credential === "static" ? {} : { provider: runCredential().provider }),
     ...(profile === null ? {} : { expectedMode: runCredential().mode }),

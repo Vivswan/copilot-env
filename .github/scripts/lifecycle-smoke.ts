@@ -86,7 +86,7 @@ if (!cliOrExit(["list"], { stdout: "piped" }).includes(PROFILE)) {
   failOn("agent list did not report the work profile");
 }
 const checkCode = cli(["profile", PROFILE, "check"]).code;
-if (checkCode !== 2) failOn(`profile --check work should exit 2 (proxy), got ${checkCode}`);
+if (checkCode !== 2) failOn(`profile work check should exit 2 (proxy), got ${checkCode}`);
 // The identity and host keys are per profile: the work daemon's launch needs its own pin and
 // literal, or its fake token is probed like the default's would have been.
 cliOrExit(["config", "--set", "identity", "copilot-developer-cli", "--profile", PROFILE]);
@@ -109,7 +109,7 @@ if (cli(["start", "--check", "--profile", PROFILE]).code === 0) {
 if (cli(["start", "--check"]).code !== 0) failOn("default daemon died with the profile daemon");
 cliOrExit(["profile", PROFILE, "del", "--yes"]);
 if (cli(["profile", PROFILE, "check"], { stdout: "null", stderr: "null" }).code === 0) {
-  failOn("profile still exists after profile --del");
+  failOn("profile still exists after profile work del");
 }
 console.log(`profile daemon lifecycle OK on ${os}`);
 

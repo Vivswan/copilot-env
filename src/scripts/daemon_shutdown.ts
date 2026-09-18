@@ -12,7 +12,7 @@ export interface DrainableServer {
 
 /** A SIGTERM listener replaces deno's default terminate-on-signal, so without a deadline a wedged
  *  drain would leave `agent stop` (one SIGTERM, no SIGKILL) unable to stop the daemon. Every
- *  escalating teardown (start --force, uninstall, de-auth, profile --del) SIGKILLs after a 2000ms
+ *  escalating teardown (start --force, uninstall, de-auth, profile <name> del) SIGKILLs after a 2000ms
  *  grace, so this must sit under that. */
 export const DRAIN_DEADLINE_MS = 1_500;
 

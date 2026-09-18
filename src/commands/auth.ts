@@ -66,17 +66,10 @@ import {
   profileLabel,
   type ProfileName,
 } from "../copilot_api/profile.ts";
-import { COLOR_ENABLED, cyan, palette, statusPaint } from "../utils/ansi.ts";
+import { COLOR_ENABLED, cyan, palette } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
-import {
-  formatTable,
-  printTable,
-  printWrapped,
-  terminalWidth,
-  wrapLine,
-  wrapMessage,
-} from "../utils/table.ts";
+import { formatTable, printWrapped, terminalWidth, wrapLine, wrapMessage } from "../utils/table.ts";
 import { dryRunActive, PLANNED_SECRET } from "../utils/write_session.ts";
 import { runDryRun } from "./dry_run.ts";
 
@@ -93,9 +86,7 @@ export interface AuthArgs {
   get?: boolean;
   del?: boolean;
   check?: boolean;
-  printProxyToken?: boolean;
   profile?: string;
-  list?: boolean;
   identities?: boolean;
   /** `true` is the bare flag (interactive choice); a string is the id to pin, or `auto`. */
   identity?: string | boolean;
@@ -836,31 +827,6 @@ function runCheck(profile: Profile): void {
   }
 }
 
-function runList(): void {
-  const state = new CopilotEnvState();
-  const rows: Array<[string, string]> = [];
-  const describe = (source: string | null, resolves: boolean): string =>
-    source === null
-      ? statusPaint("not authenticated", COLOR_ENABLED)
-      : `${source}${resolves ? "" : " (does not resolve)"}`;
-  // One memoized account look serves every auto gh-cli row (one spawn, not N).
-  let accounts: GhAccountsLook | undefined;
-  const look = (): GhAccountsLook => (accounts ??= ghAccountsLook());
-  const defaultCred = new Credential(state);
-  rows.push([
-    "default",
-    describe(liveCredentialSourceLabel(defaultCred.read(), look), defaultCred.isAuthenticated()),
-  ]);
-  for (const name of state.profileNames()) {
-    const cred = new Credential(state, name);
-    rows.push([
-      name,
-      describe(liveCredentialSourceLabel(cred.read(), look), cred.isAuthenticated()),
-    ]);
-  }
-  printTable(rows, { indent: "", wrap: [false, true] });
-}
-
 // --- integration identities -------------------------------------------------
 
 /** `auto` has its own variant so clearing the pin never depends on a credential resolving; `pin`
@@ -1313,6 +1279,7 @@ async function pinIdentity(
     }
   }
   new CopilotEnvConfig().setProfile(profile, { identity: id });
+  if (dryRunActive()) return;
   logger.success(
     `identity = ${id} (pinned; \`agent profile set identity auto\` restores probing).`,
   );
@@ -1327,6 +1294,8 @@ async function runIdentity(
     case "auto":
       // The same literal `agent config --set identity auto` stores; the store reads it as no pin.
       new CopilotEnvConfig().setProfile(profile, { identity: "auto" });
+      // A dry run prints the plan in the landing's place.
+      if (dryRunActive()) return;
       logger.success("identity = auto: the identity is probed per credential again.");
       noteIdentityApplies();
       return;
@@ -1376,8 +1345,6 @@ export type AuthAction =
   | { kind: "get"; profile: Profile }
   | { kind: "del"; profile: Profile; dryRun: boolean }
   | { kind: "check"; profile: Profile }
-  | { kind: "print-proxy-token"; profile: Profile }
-  | { kind: "list" }
   | { kind: "identities"; profile: Profile }
   | { kind: "identity"; profile: Profile; choice: IdentityChoice }
   | {
@@ -1387,7 +1354,7 @@ export type AuthAction =
     dryRun: boolean;
   };
 
-const SUB_ACTION_FLAGS = "--get/--del/--check/--list/--identities/--identity/--print-proxy-token";
+const SUB_ACTION_FLAGS = "--get/--del/--check/--identities/--identity";
 
 function providerConflictError(): Error {
   return new Error(
@@ -1406,14 +1373,12 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
     args.get,
     args.del,
     args.check,
-    args.printProxyToken,
-    args.list,
     args.identities,
     args.identity !== undefined,
   ].filter(Boolean).length;
   if (subActions > 1) {
     throw new Error(
-      "--get, --del, --check, --list, --identities, --identity, and --print-proxy-token are mutually exclusive",
+      "--get, --del, --check, --identities, and --identity are mutually exclusive",
     );
   }
   if (args.set !== undefined && subActions > 0) {
@@ -1423,23 +1388,14 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
   if (args.dryRun && subActions > 0 && !args.del) {
     throw new Error(
       "--dry-run previews the credential landing or --del and cannot combine with the read-only " +
-        "--get/--check/--list/--identities/--identity/--print-proxy-token",
+        "--get/--check/--identities/--identity",
     );
-  }
-  if (args.list) {
-    if (args.profile !== undefined) {
-      throw new Error("--list reports every profile; it does not combine with --profile");
-    }
-    if (args.provider !== undefined) throw providerConflictError();
-    if (args.ghUser !== undefined) throw ghUserConflictError();
-    return { kind: "list" };
   }
   // Ahead of the provider conflict, so an invalid name keeps reporting itself when a stray
   // --provider rides along.
   const profile: Profile = parseProfileFlag(args.profile);
   if (args.provider !== undefined && subActions > 0) throw providerConflictError();
   if (args.ghUser !== undefined && subActions > 0) throw ghUserConflictError();
-  if (args.printProxyToken) return { kind: "print-proxy-token", profile };
   if (args.get) return { kind: "get", profile };
   if (args.del) return { kind: "del", profile, dryRun: Boolean(args.dryRun) };
   if (args.check) return { kind: "check", profile };
@@ -1462,12 +1418,6 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
 export async function runAuth(args: AuthArgs): Promise<void> {
   const action = parseAuthAction(args);
   switch (action.kind) {
-    case "list":
-      runList();
-      return;
-    case "print-proxy-token":
-      runPrintProxyToken(action.profile);
-      return;
     case "get":
       await runGet(action.profile);
       return;

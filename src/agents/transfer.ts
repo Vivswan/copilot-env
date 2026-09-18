@@ -798,7 +798,7 @@ function importPreferences(config: CopilotEnvConfigData): void {
  * Credential + mode land as ONE commitProfile write, the machinery `agent profile <name> add` uses.
  * Each profile stands alone: a failure is recorded and the next profile still runs.
  *
- *   a crash mid-import   -> at worst a complete-but-unwired slot, re-derived by `profile --sync`
+ *   a crash mid-import   -> at worst a complete-but-unwired slot, re-derived by `agent sync`
  *   a proxy-mode profile -> still needs its OWN resolvable credential, unlike the default slot
  *                           (the rule runAdd enforces in src/commands/profile.ts)
  */

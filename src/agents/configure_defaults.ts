@@ -1,6 +1,7 @@
 // The default profile's writers. The default is a profile: one credential, ONE mode, always both
-// agents, and its record (`mode` in the default slot) plus its Direct pair have one writer here,
-// commitDefaultWiring, which runs after BOTH agents' writes succeeded. It needs BOTH src/codex/ and
+// agents, and its record (`mode` in the default slot) plus its Direct pair land here, in
+// commitDefaultWiring, after BOTH agents' writes succeeded (the one other record is the default's
+// `add` with no credential yet, which records the mode alone). It needs BOTH src/codex/ and
 // src/claude/ (the adapters) and the re-render funnel (src/agents/profile_wiring.ts), so it lives in
 // src/agents/, not src/commands/.
 //

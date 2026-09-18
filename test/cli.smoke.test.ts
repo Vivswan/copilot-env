@@ -222,14 +222,6 @@ test("each command's --help exits 0 and surfaces its flags", () => {
   }
 });
 
-test("cli.ts profile add --help exposes the provider modes", () => {
-  const { exitCode, output } = helpScreen("profile", "add", "--help");
-
-  expect(exitCode).toBe(0);
-  expect(output).toContain("--proxy");
-  expect(output).toContain("--direct");
-});
-
 test("codex exposes and runs check mode", () => {
   const root = tempDir("copilot-codex-check-");
   const codexHome = join(root, ".codex");

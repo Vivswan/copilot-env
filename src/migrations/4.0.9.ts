@@ -11,7 +11,7 @@
 import { consola } from "consola";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { directPairIncomplete, wireBothAgents } from "../agents/profile_wiring.ts";
+import { wireBothAgents } from "../agents/profile_wiring.ts";
 import { directHelperCommand, managedHelperShape, proxyHelperCommand } from "../claude/config.ts";
 import {
   desktopEntryName,
@@ -21,6 +21,7 @@ import {
   parseDesktopMeta,
   readFileOrNull,
   resolveDesktopLibraryDir,
+  retargetEntryProfile,
   saveJsonIfChanged,
   writeDesktopHelperScript,
 } from "../claude/desktop.ts";
@@ -912,7 +913,6 @@ function retargetClaude(claudeHome: string, { from, to }: ProfileMove): boolean 
   if (next !== null) doc.apiKeyHelper = next;
   if (oldPath !== newPath) {
     renameReported(oldPath, newPath);
-    consola.info(`  moved ${oldPath} -> ${newPath}`);
   }
   if (next !== null) {
     writeFileReported(newPath, `${JSON.stringify(doc, null, 2)}\n`, {
@@ -974,7 +974,6 @@ function retargetCodex(codexHome: string, { from, to }: ProfileMove): boolean {
     if (fileRead.kind === "ok") {
       if (fileRead.doc.model_provider === oldId) fileRead.doc.model_provider = newId;
       renameReported(oldFile, newFile);
-      consola.info(`  moved ${oldFile} -> ${newFile}`);
       saveCodexToml(newFile, fileRead.doc, `model_provider = "${newId}"`);
       changed = true;
     }
@@ -1004,14 +1003,7 @@ function retargetDesktopEntry(from: ProfileName, to: ProfileName): void {
     if (!ledger.owns("claudeDesktop", path) || entryProfileAt(path) !== from) continue;
     const doc = parseJsonRecord(readFileOrNull(path) ?? "");
     if (doc === null) continue;
-    const servers = doc.managedMcpServers;
-    if (Array.isArray(servers)) {
-      for (const row of servers) {
-        if (!isRecord(row) || !Array.isArray(row.args)) continue;
-        const at = row.args.indexOf("--profile");
-        if (at !== -1 && row.args[at + 1] === from) row.args[at + 1] = to;
-      }
-    }
+    retargetEntryProfile(doc, from, to);
     for (const mode of PROFILE_MODES) {
       if (doc.inferenceCredentialHelper === desktopHelperPath(resolveRootHome(), mode, from)) {
         doc.inferenceCredentialHelper = desktopHelperPath(resolveRootHome(), mode, to);
@@ -1046,9 +1038,9 @@ function renameStoreSlot(from: ProfileName, to: ProfileName): boolean {
   return moved;
 }
 
-/** From the slot alone (`stored`): no probe, no login. A Direct slot whose pair is not stored
- *  (the identity-cache step took the old cache) would probe, so it is left as retargeted: the
- *  files carry the new resolver line already, and the next credential landing stores the pair. */
+/** From the slot (`stored`): no login. A Direct slot whose pair is not stored (the identity-cache
+ *  step of the same run took the old cache) probes once for it and stores it, as any re-render
+ *  does; on a real 4.0.9 store that is every Direct profile, so the re-render is not skipped. */
 async function rerender(profile: ProfileName): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(profile);
   if (slot.kind !== "complete") {
@@ -1058,19 +1050,14 @@ async function rerender(profile: ProfileName): Promise<void> {
     );
     return;
   }
-  if (slot.mode === "direct" && directPairIncomplete(profile)) {
-    consola.info(
-      `  ${profileLabel(profile)}'s Direct pair is not stored, so its files are left as ` +
-        `retargeted; \`agent profile ${profile} auth\` lands the pair with both agents`,
-    );
-    return;
-  }
   await wireBothAgents(profile, slot.mode, true, "stored");
   consola.info(`  re-rendered ${profileLabel(profile)}'s agent files`);
 }
 
-/** Every file a rename edits is parsed BEFORE the first move, so a malformed one fails the
- *  profile whole and a re-run after the repair finds every artifact under the old name. */
+/** The agent files a rename edits are parsed BEFORE the first move, so a malformed one fails
+ *  the profile whole and a re-run after the repair finds every artifact under the old name. The
+ *  Desktop library's _meta.json is not: one that cannot be parsed after the moves is reported and
+ *  left alone. */
 function assertMovable(move: ProfileMove, claudeHome: string, codexHomes: readonly string[]): void {
   const settings = readTextResult(settingsPathFor(claudeHome, move.from));
   if (settings.kind === "unreadable") {
@@ -1121,9 +1108,8 @@ async function moveProfile(
   for (const mode of PROFILE_MODES) {
     const oldHelper = desktopHelperPath(resolveRootHome(), mode, from);
     if (!existsSync(oldHelper)) continue;
-    const newHelper = writeDesktopHelperScript(mode, to);
+    writeDesktopHelperScript(mode, to);
     if (from === to) continue;
-    consola.info(`  moved ${oldHelper} -> ${newHelper}`);
     removeReported(oldHelper, `Claude Desktop helper of profile '${from}'`);
   }
   changed = retargetClaude(claudeHome, move) || changed;

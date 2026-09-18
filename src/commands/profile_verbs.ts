@@ -55,7 +55,7 @@ import { printClaudeDesktopCheck } from "./claude.ts";
 import { runConfig } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
 import { runInit } from "./init.ts";
-import { runProfile } from "./profile.ts";
+import { runProfile, syncNamedProfiles } from "./profile.ts";
 
 /** Commander hands action callbacks an options bag of mixed-typed values. */
 export type Opts = Record<string, unknown>;
@@ -487,10 +487,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       refuseStrayWords(cmd, "set", rawProfile);
       refuseGlobalKey(key);
       if (configKeyDef(key)?.key === "identity") {
-        if (opts.dryRun) {
-          throw new Error("`set identity` probes the id and pins it; it has no --dry-run");
-        }
-        return setIdentity(rawProfile, value);
+        return setIdentity(rawProfile, value, Boolean(opts.dryRun));
       }
       return runConfig({
         set: [key, value],
@@ -544,7 +541,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       const flags = [opts.set !== undefined, Boolean(opts.get), Boolean(opts.del)].filter(Boolean);
       if (flags.length > 1) throw new Error("--set, --get, and --del are mutually exclusive");
       const profile = rawProfile ?? undefined;
-      if (opts.set !== undefined) return setIdentity(rawProfile, String(opts.set));
+      if (opts.set !== undefined) return setIdentity(rawProfile, String(opts.set), false);
       if (opts.get) return runConfig({ get: "identity", profile });
       if (opts.del) return runConfig({ del: "identity", profile });
       return runAuth({ identities: true, profile });
@@ -648,12 +645,24 @@ export function registerSyncCommand(program: Command): void {
         "profile is `agent profile [<name>] sync`.",
     )
     .option("--dry-run", DRY_RUN_HELP)
-    .action(async (opts: Opts) => {
-      const dryRun = Boolean(opts.dryRun);
-      if (new CopilotEnvState().readProfileSlot(null).kind === "complete") {
-        await (dryRun ? runDryRun(syncDefault) : syncDefault());
-      }
-      await runProfile({ sync: true, mode: "auto", dryRun });
+    .action((opts: Opts) => {
+      // One landing for both phases, so a dry run plans the named files over the default's
+      // planned content and prints one plan.
+      const land = async (): Promise<() => void> => {
+        const withDefault = new CopilotEnvState().readProfileSlot(null).kind === "complete";
+        if (withDefault) await syncDefault();
+        const named = await syncNamedProfiles();
+        if (named.failed > 0) process.exitCode = 1;
+        const synced = named.synced + (withDefault ? 1 : 0);
+        return () =>
+          logger.log(
+            `  ✓ Synced ${synced} profile${synced === 1 ? "" : "s"}${
+              withDefault ? " (the default included)" : ""
+            }.`,
+          );
+      };
+      if (opts.dryRun) return runDryRun(land);
+      return land().then((say) => say());
     });
 }
 
@@ -666,21 +675,42 @@ async function runDefaultAdd(opts: Opts): Promise<void> {
   const requested = parseModeFlags(opts);
   const mode = requested === "auto" ? recordedMode(null) ?? "auto" : requested;
   const step = credentialStep(null, opts);
-  // The default's mode record has one writer, the landing that follows its credential, so with
-  // no resolving credential the step is all that runs here: the flow (runInit's own), the
-  // --no-auth next step, or the dry run's planned line.
-  if (!new Credential().isAuthenticated() && (opts.auth === false || opts.dryRun)) {
+  const dryRun = Boolean(opts.dryRun);
+  // The landing needs the credential (it probes and writes with the token), so without one the
+  // default records its mode alone, as a named profile does, and the credential step follows;
+  // the landing runs after a login, and waits for `agent init` after --no-auth.
+  if (!new Credential().isAuthenticated()) {
+    if (mode === "auto") {
+      if (opts.auth === false) {
+        throw new Error(
+          "pass --direct or --proxy: the default profile has no recorded mode yet, and a " +
+            "profile always has exactly one mode",
+        );
+      }
+    } else {
+      const record = () => {
+        new CopilotEnvState().recordDefaultMode(mode);
+        return Promise.resolve();
+      };
+      if (dryRun) await runDryRun(record);
+      else {
+        await record();
+        logger.success(`the default profile records ${mode}; both agents wait for its credential.`);
+      }
+    }
     await step();
-    logger.log(`  then:  agent init${mode === "auto" ? "" : ` --${mode}`}`);
-    return;
+    if (opts.auth === false || dryRun) return;
   }
-  return runInit({ mode, dryRun: Boolean(opts.dryRun) });
+  return runInit({ mode, dryRun });
 }
 
-/** `set identity <id|auto>` and its `identity --set` alias: the probe-backed pin (`auto` stores
- *  without one), the same arm `agent auth --identity` ran. */
-function setIdentity(rawProfile: string | null, value: string): Promise<void> {
-  return runAuth({ identity: value, profile: rawProfile ?? undefined });
+/** `set identity <id|auto>` and its `identity --set` alias: the credential command's pin arm
+ *  (`auto` stores without a probe). A named profile must exist, as for every other key; a dry run
+ *  plans the store write (the probe is a read and may run) and prints the plan. */
+function setIdentity(rawProfile: string | null, value: string, dryRun: boolean): Promise<void> {
+  if (rawProfile !== null) assertKnownProfile(parseProfileName(rawProfile));
+  const pin = () => runAuth({ identity: value, profile: rawProfile ?? undefined });
+  return dryRun ? runDryRun(pin) : pin();
 }
 
 /** `agent init`: the default's `agent profile add`, as its own command. */

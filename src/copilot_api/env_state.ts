@@ -602,11 +602,12 @@ export class CopilotEnvState {
     });
   }
 
-  /** The mode both agents share, with ONE writer: commitDefaultWiring (src/agents/configure_defaults.ts),
+  /** The mode both agents share. Its writers: commitDefaultWiring (src/agents/configure_defaults.ts)
    *  after both agents' writes of a landing (`agent init`, an import naming both agents, the first
-   *  write on a fresh default) succeeded; a single-agent command re-renders it and never moves it.
-   *  The default Desktop entry's promise (resolveClaudeDesktopTargets). Never read back off the
-   *  agent files. */
+   *  write on a fresh default) succeeded, and the default's `add` with no credential to land with,
+   *  which records the mode alone for the landing that follows the credential; a single-agent
+   *  command re-renders it and never moves it. The default Desktop entry's promise
+   *  (resolveClaudeDesktopTargets). Never read back off the agent files. */
   recordDefaultMode(mode: ProfileMode | null): void {
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};

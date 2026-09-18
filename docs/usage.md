@@ -28,12 +28,14 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #   get [<key>]                the value in effect for it, or its table
                            #   sync [--claude|--codex]    re-render its agent files (a named profile is written as a
                            #                              pair: both files, and the line says so)
-                           #   check [--claude|--codex]   its mode; exits 0 direct, 2 proxy, 1 none or other
-                           #   the verbs and `help` are reserved words: a new profile is never named after one
+                           #   check                      its recorded mode; exits 0 direct, 2 proxy, 1 none or partial
+                           #   check --claude|--codex     that agent's file; exits 0 direct, 2 proxy or none, 1 other
+                           #   reserved words, never a new profile's name: the verbs, help, list, identity, and the
+                           #   runtime commands (launch env proxy-token mcp start stop health models credits settings)
 agent list                 # every profile: NAME  MODE  PROVIDER  DAEMON (also bare `agent profile`)
 agent init [--direct|--proxy] [--yes] [--no-auth]  # = agent profile add for the default profile
 agent auth <flags>         # = agent profile auth for the default profile
-agent sync                 # every profile's sync
+agent sync                 # every profile's sync, the default's included
 agent launch <cli>         # launch claude|codex|copilot with managed flags + provider wiring
                            #   --profile <name>, --relaxed; agent args after --
 agent config               # get/set preferences (see the configuration page)

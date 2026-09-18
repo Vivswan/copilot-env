@@ -277,7 +277,7 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
     };
   }
   // A NAMED profile's wiring is DERIVED from its slot's recorded mode; a managed wiring in the
-  // OTHER mode is an interrupted rewire (`profile --add` switched the slot but not this agent)
+  // OTHER mode is an interrupted rewire (`profile <name> add` switched the slot but not this agent)
   // and must not read green.
   if (
     profile !== null &&
@@ -511,7 +511,7 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
   }
   if (f.providerMode === "other") {
     // Foreign wiring in the DEFAULT settings.json is the user's own business; in a NAMED
-    // profile's file it is drift: the profile promises managed wiring, and `profile --add`
+    // profile's file it is drift: the profile promises managed wiring, and `profile <name> add`
     // refuses to overwrite an unmanaged file, so the fix names the removal first.
     if (profile !== null) {
       return {

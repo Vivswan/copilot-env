@@ -138,7 +138,7 @@ async function dryRun(body: () => Promise<unknown>): Promise<string> {
 test("a dry run that fails partway prints the plan landed before the failure, then fails", async () => {
   const { dir } = scratch();
   const path = join(dir, "slot.json");
-  // The shape of `profile --add` when the Direct probe fails after the slot commit.
+  // The shape of a named `add` then `auth` when the Direct probe fails after the slot commit.
   const body = () => {
     landPlan({ files: [filePlan(path, "create")], apply: () => writeFileSync(path, "{}") });
     return Promise.reject(new Error("the Direct probe failed"));
@@ -336,7 +336,7 @@ test("a dry run's auto-mode decision is the real one: the CLI smoke runs and its
   expect({ dryVerdict: result, dryCalls: dry.n }).toEqual({ dryVerdict: false, dryCalls: real.n });
 });
 
-test("`profile --del --dry-run` takes the real refusal: a daemon that cannot be proven stopped aborts the preview too", async () => {
+test("`profile <name> del --dry-run` takes the real refusal: a daemon that cannot be proven stopped aborts the preview too", async () => {
   // The real command refuses to delete under a daemon.lock holder it cannot identify; the dry run
   // reaches the same refusal (no signal is sent) instead of previewing a deletion that would not run.
   await captureChannels(() => addWork("proxy", WORK_TOKEN));
@@ -845,7 +845,7 @@ test("a named `auth --set ' '` over a wired profile refuses the blank token firs
   expect(new CopilotEnvState().readProfileSlot(WORK).mode).toBe("proxy");
 });
 
-test("`profile --del --dry-run` with a directory at the profile's Desktop helper path takes the real decision: the warning, no delete, the directory kept", async () => {
+test("`profile <name> del --dry-run` with a directory at the profile's Desktop helper path takes the real decision: the warning, no delete, the directory kept", async () => {
   await captureChannels(() => addWork("proxy", WORK_TOKEN));
   const helper = desktopHelperPath(resolveRootHome(), "proxy", WORK);
   mkdirSync(helper, { recursive: true });

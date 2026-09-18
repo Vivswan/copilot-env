@@ -1,5 +1,4 @@
 // Idempotent: a second run finds nothing and exits 0.
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { consola } from "consola";
 import { prompt } from "../utils/logger.ts";
@@ -36,7 +35,7 @@ import {
   rootMode,
 } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
-import { removeTreeReported } from "../utils/report_write.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { deleteProfileEverywhere } from "./profile.ts";
 
 export interface UninstallArgs {
@@ -75,7 +74,7 @@ function recordedCodexHostFarm(): string | null {
  */
 function removeCodexHostFarm(recorded: string | null): void {
   if (recorded === null) return;
-  removeTreeReported(recorded);
+  fs.rm(recorded, { recursive: true, force: true });
   new CopilotEnvRunState().set({ codexHome: null });
 }
 
@@ -175,7 +174,7 @@ const UNINSTALL_STEPS: UninstallStep[] = [
       const lines = ctx.codexHomes.map((home) => {
         const profileFiles = ctx.profiles
           .map((name) => codexProfileConfigPath(home, name))
-          .filter((file) => existsSync(file));
+          .filter((file) => fs.exists(file));
         return `Would remove the copilot-env wiring from ${codexConfigPath(home)}` +
           (profileFiles.length === 0
             ? "."
@@ -310,7 +309,7 @@ const UNINSTALL_STEPS: UninstallStep[] = [
       // Before the home goes: a sidecar install can put the float's cache OUTSIDE the home, and
       // deleting the home alone would strand it.
       removeProxyFloatArtifacts(ctx.rootHome, ctx.targets.floatArtifacts);
-      removeTreeReported(ctx.rootHome, "the copilot-api home");
+      fs.rm(ctx.rootHome, { recursive: true, force: true, detail: "the copilot-api home" });
     },
   },
   {
@@ -332,7 +331,7 @@ const UNINSTALL_STEPS: UninstallStep[] = [
         return;
       }
       // Already gone: a second run must be a silent no-op, not a refusal.
-      if (!existsSync(installRoot)) return;
+      if (!fs.exists(installRoot)) return;
       // The root is derived, so confirm it is really ours before deleting it recursively.
       if (!looksLikeInstallRoot(installRoot)) {
         consola.warn(
@@ -349,7 +348,7 @@ const UNINSTALL_STEPS: UninstallStep[] = [
         // deletion may still succeed from the current cwd
       }
       try {
-        removeTreeReported(installRoot, "the install directory");
+        fs.rm(installRoot, { recursive: true, force: true, detail: "the install directory" });
       } catch {
         consola.warn(
           `Could not fully delete ${installRoot} (files may be in use). ` +

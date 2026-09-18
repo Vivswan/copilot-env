@@ -1,15 +1,13 @@
 // Cross-platform shell/profile integration writer for the `agent` wrapper block.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { consola } from "consola";
 
-import { isEnoent, readTextResult } from "../utils/fs.ts";
+import { isEnoent } from "../utils/fs.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
-import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
-import { dryRunActive } from "../utils/write_session.ts";
+import * as fs from "../utils/fs_facade.ts";
 
 // `agent shell` owns wiring the copilot-env integration into the
 // user's shell startup -- the logic install.sh / install.ps1 used to duplicate.
@@ -69,7 +67,7 @@ export function runShellIntegration(action: ShellIntegrationAction): void {
 
   // The restart hints follow a landed write; a dry run's plan stands in for them.
   const hint = (line: string): void => {
-    if (!dryRunActive()) consola.info(line);
+    if (!fs.dryRunActive()) consola.info(line);
   };
   if (action.kind === "remove") {
     const files = windows ? windowsProfileTarget(action.allHosts).paths : rcFiles(true);
@@ -255,7 +253,7 @@ function warnLeftBehind(file: string, lines: readonly string[]): void {
  */
 function wireBlocks(files: string[], mainBlock: string): void {
   for (const file of files) {
-    const original = existsSync(file) ? readFileSync(file, "utf-8") : "";
+    const original = fs.exists(file) ? fs.readText(file) : "";
     const upserted = upsertBlock(original, MARKER, mainBlock);
     warnLeftBehind(file, upserted.leftBehind);
     if (upserted.content === original) {
@@ -264,8 +262,9 @@ function wireBlocks(files: string[], mainBlock: string): void {
     }
     // OneDrive-backed Documents folders are reparse points; Node's recursive mkdir throws
     // EEXIST on an existing reparse point instead of no-op'ing, so skip when it already exists.
-    if (!existsSync(dirname(file))) mkdirReported(dirname(file));
-    writeFileReported(file, upserted.content, { detail: "shell integration wired" });
+    if (!fs.exists(dirname(file))) fs.mkdir(dirname(file));
+    // In place: an rc file may be the user's own symlink, which a rename would replace.
+    fs.writeText(file, upserted.content, { atomic: false, detail: "shell integration wired" });
   }
 }
 
@@ -277,11 +276,11 @@ function removeBlocksFrom(
 ): boolean {
   let removedAny = false;
   for (const file of files) {
-    if (!existsSync(file)) continue;
-    const content = readFileSync(file, "utf-8");
+    if (!fs.exists(file)) continue;
+    const content = fs.readText(file);
     const stripped = stripBlocks(content, markers);
     if (stripped.content === content) continue; // no owned block present
-    writeFileReported(file, stripped.content, { detail: removedDetail });
+    fs.writeText(file, stripped.content, { atomic: false, detail: removedDetail });
     warnLeftBehind(file, stripped.leftBehind);
     removedAny = true;
   }
@@ -309,7 +308,7 @@ export function ownedShellTargets(): string[] {
   // parent would vanish before readTextResult could call it unreadable.
   const candidates = process.platform === "win32" ? shellTargetFiles() : rcCandidates();
   return candidates.filter((file) => {
-    const read = readTextResult(file);
+    const read = fs.readTextResult(file);
     if (read.kind === "unreadable") {
       throw new Error(
         `cannot read ${file} (${read.error}); refusing to continue while it may still hold ` +
@@ -450,7 +449,7 @@ function rcCandidates(): string[] {
 /** Existing ~/.bashrc + ~/.zshrc; for wiring, fall back to one named for $SHELL. */
 export function rcFiles(remove: boolean): string[] {
   const home = absolutePathEnv(CI_RC_DIR_ENV) ?? homedir();
-  const existing = rcCandidates().filter((p) => existsSync(p));
+  const existing = rcCandidates().filter((p) => fs.exists(p));
   if (existing.length > 0 || remove) return existing;
   const shell = basename(process.env.SHELL ?? "/bin/bash");
   return [join(home, shell === "zsh" ? ".zshrc" : ".bashrc")];
@@ -552,7 +551,7 @@ function psEval(command: string): string {
 // Takes the system target as proof this run owns the policy it is about to change.
 function relaxWindowsExecutionPolicy(_target: { source: "system" }): void {
   const command = windowsExecutionPolicyCommand();
-  if (dryRunActive()) {
+  if (fs.dryRunActive()) {
     consola.info(`Would relax the PowerShell execution policy: ${command}`);
     return;
   }

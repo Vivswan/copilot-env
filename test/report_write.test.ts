@@ -1,7 +1,9 @@
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { resolveRootHome } from "../src/copilot_api/paths.ts";
+import { CopilotApiConfig } from "../src/copilot_api/config.ts";
+import { CopilotApiPaths, resolveRootHome } from "../src/copilot_api/paths.ts";
 import {
+  atomicSymlink,
   atomicWriteFile,
   deferWriteReports,
   flushWriteReports,
@@ -189,6 +191,55 @@ test("scratch dirs are silent, and deferred reports come out at the flush in ord
     removeDir(dir);
   }
 });
+
+test("a real store update into a fresh data home names the home and its parents, and nothing inside", () => {
+  const dir = tempDir("copilot-report-fresh-");
+  const restore = envSnapshot();
+  try {
+    const rootHome = join(dir, "nested", "deeper", "copilot-env");
+    process.env.COPILOT_API_HOME = rootHome;
+    delete process.env.COPILOT_ENV_ROOT_HOME;
+    const paths = new CopilotApiPaths();
+    deferWriteReports();
+    // The lock sidecar's directory is made first (inside the home: silent), then the store.
+    new CopilotApiConfig(paths.stateStoreFile, paths.stateStoreLock).update((d) => {
+      d.global = { "daemon.port": 4141 };
+    });
+    expect(flushWriteReports()).toEqual([
+      `created -> ${join(dir, "nested")}`,
+      `created -> ${join(dir, "nested", "deeper")}`,
+      `created -> ${rootHome}`,
+    ]);
+    expect(JSON.parse(readFileSync(paths.stateStoreFile, "utf8"))).toEqual({
+      global: { "daemon.port": 4141 },
+    });
+  } finally {
+    restore();
+    removeDir(dir);
+  }
+});
+
+// Creating a symlink needs a privilege Windows does not grant by default.
+test.skipIf(process.platform === "win32")(
+  "a stale staging file at the link's staging path is named before the link lands",
+  () => {
+    const dir = tempDir("copilot-report-staging-");
+    try {
+      const link = join(dir, "current");
+      const staging = join(dir, `.current-next-${process.pid}`);
+      writeFileSync(staging, "left by a crashed run");
+      deferWriteReports();
+      atomicSymlink("versions/v1", link);
+      expect(flushWriteReports()).toEqual([
+        `deleted -> ${staging} (stale staging file)`,
+        `linked -> ${link} (to versions/v1)`,
+      ]);
+      expect(readlinkSync(link)).toBe("versions/v1");
+    } finally {
+      removeDir(dir);
+    }
+  },
+);
 
 test("writes inside copilot-env's own homes print nothing; the same write outside does", () => {
   const { dir: home, proxyHome } = isolateAgentHomes("copilot-report-scope-");

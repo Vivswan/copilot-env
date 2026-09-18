@@ -48,12 +48,11 @@ import { appRunning, type ScanExec } from "../src/utils/app_scan.ts";
 import { errMessage } from "../src/utils/error.ts";
 import { missingDirectories } from "../src/utils/fs.ts";
 import { wrapLine } from "../src/utils/table.ts";
+import { DRY_RUN_ENV, spawnedByDryRun } from "../src/utils/dry_run.ts";
 import {
   deferWriteReports,
-  DRY_RUN_ENV,
   flushWriteReports,
   removeReported,
-  spawnedByDryRun,
   writeFileReported,
 } from "../src/utils/report_write.ts";
 import { collectDryRun, filePlan, landPlan } from "../src/utils/write_session.ts";

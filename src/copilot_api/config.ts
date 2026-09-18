@@ -1,20 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { taggedLogger } from "../utils/logger.ts";
 
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
-import { entryAbsent, isEnoentOrNotdir } from "../utils/fs.ts";
+import { isEnoentOrNotdir } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
-import { atomicWriteFile, chmodReported } from "../utils/report_write.ts";
 import { sleepSync } from "../utils/time.ts";
-import {
-  landPlan,
-  planDocReplace,
-  readPlannedText,
-  shadowedText,
-  textVerdict,
-} from "../utils/write_session.ts";
 import { CopilotApiPaths, PROXY_CONFIG_FILENAME } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 
@@ -24,9 +16,26 @@ const logger = taggedLogger("copilot_api.config");
  *  daemon's API keys, and the pricing URL (it may embed a key). */
 const SECRET_STORE_LEAF = /(^|\.)(githubToken|adminApiKey|apiKeys|"cost\.pricing-url")$/;
 
-/** The bytes save() lands, keys sorted; also what a dry run's plan compares and shadows. */
+/** The bytes save() lands, keys sorted. */
 function storeText(data: Record<string, unknown>): string {
   return `${JSON.stringify(sortKeys(data), null, 2)}\n`;
+}
+
+/** A segment carrying a dot or a space is quoted, so a dotted key never reads as two levels. */
+function dottedKey(path: readonly string[]): string {
+  return path.map((s) => (s.includes(".") || s.includes(" ") ? JSON.stringify(s) : s)).join(".");
+}
+
+/** The dotted leaves of `doc` that SECRET_STORE_LEAF names, declared at the write so a dry run
+ *  redacts them wherever a slot puts them (`profiles.work.githubToken`). */
+function secretLeaves(doc: Record<string, unknown>, prefix: readonly string[] = []): string[] {
+  const out: string[] = [];
+  for (const [key, value] of Object.entries(doc)) {
+    const path = [...prefix, key];
+    if (isRecord(value)) out.push(...secretLeaves(value, path));
+    else if (SECRET_STORE_LEAF.test(dottedKey(path))) out.push(dottedKey(path));
+  }
+  return out;
 }
 
 /** One read of a store file; see CopilotApiConfig.read() for the kinds' meaning. */
@@ -97,13 +106,8 @@ export class CopilotApiConfig {
    *   unreadable   -> the read FAILED: neither absence nor contents were established
    */
   private read(): StoreRead {
-    // A dry run's earlier landing on this store is the state its later readers judge (a profile
-    // committed, then wired from its slot).
-    const planned = shadowedText(this.path);
-    if (planned !== undefined) {
-      const data: unknown = planned === null ? {} : JSON.parse(planned);
-      return { kind: "doc", data: isRecord(data) ? data : {} };
-    }
+    // Through the facade: a dry run's earlier landing on this store is the state its later readers
+    // judge (a profile committed, then wired from its slot).
     // The daemon owns config.json and its write path floats with the version (the 2.3.14 build renames
     // atomically, the 2.0.1 floor truncates in place), so a read can still land mid-write; accepting that
     // would let update() WIPE the daemon's keys.
@@ -115,11 +119,14 @@ export class CopilotApiConfig {
       const last = attempt >= LOAD_RETRY_ATTEMPTS;
       let raw: string;
       try {
-        raw = readFileSync(this.path, "utf8");
+        raw = fs.readText(this.path);
       } catch (e) {
-        // Absence is proven by entryAbsent, never by ENOENT alone: a DANGLING SYMLINK reads ENOENT but
-        // the entry exists, and writing "absent" back would replace the user's link with a plain file.
-        if (isEnoentOrNotdir(e) && entryAbsent(this.path)) return { kind: "doc", data: {} };
+        // Absence is proven by the facade's lstat-backed look, never by ENOENT alone: a DANGLING
+        // SYMLINK reads ENOENT but the entry exists, and writing "absent" back would replace the
+        // user's link with a plain file.
+        if (isEnoentOrNotdir(e) && fs.readTextResult(this.path).kind === "absent") {
+          return { kind: "doc", data: {} };
+        }
         if (!last) {
           sleepSync(LOAD_RETRY_MS);
           continue;
@@ -176,14 +183,14 @@ export class CopilotApiConfig {
   }
 
   save(data: Record<string, unknown>): void {
-    // Created 0600 from the start, so a secret it may hold (the GitHub token, the proxy admin key)
-    // is never briefly readable at the default umask.
-    atomicWriteFile(this.path, storeText(data), 0o600);
-    try {
-      chmodReported(this.path, 0o600);
-    } catch {
-      // ignore
-    }
+    this.land(data, secretLeaves(data));
+  }
+
+  /** Created 0600 from the start, so a secret it may hold (the GitHub token, the proxy admin key)
+   *  is never briefly readable at the default umask; the mode is set on an existing file too.
+   *  `secretKeys` are the leaves a dry run redacts, declared here at the write. */
+  private land(data: Record<string, unknown>, secretKeys: readonly string[]): void {
+    fs.writeText(this.path, storeText(data), { mode: 0o600, secretKeys });
   }
 
   /** REFUSES a store that could not be read OR parsed: treating either as empty would wipe every key
@@ -209,31 +216,17 @@ export class CopilotApiConfig {
   }
 
   /**
-   * The read-modify-write, as a plan landed through landPlan: the mutation runs on a copy, the rows
-   * are the leaves it changed (secrets marked), and the save is the step. A dry run therefore
-   * records the store's slot keys like any other file and writes nothing (withFileLockSync takes
-   * no lock in one either).
+   * The read-modify-write: the mutation runs on a copy and the save lands it through the facade,
+   * which a dry run answers with the planned bytes instead of the disk (withFileLockSync takes no
+   * lock in one either). A secret leaf the mutation drops is declared from the document it leaves,
+   * so a dry run redacts both sides of its row.
    */
   update(mutate: (d: Record<string, unknown>) => void): Record<string, unknown> {
     return withFileLockSync(this.lockPath, BOUNDED_LOCK_POLICY, () => {
       const current = this.loadForUpdate();
       const next = structuredClone(current);
       mutate(next);
-      const text = storeText(next);
-      // The bytes on disk (or the run's planned bytes), not a re-serialization of the parse: a
-      // hand-compacted store is rewritten formatted, and the verdict says so.
-      const raw = readPlannedText(this.path);
-      const before = raw.kind === "text" ? raw.text : null;
-      landPlan({
-        files: [{
-          path: this.path,
-          verdict: textVerdict(before, text),
-          attributes: planDocReplace(current, next, (key) => SECRET_STORE_LEAF.test(key)),
-          before,
-          content: text,
-        }],
-        apply: () => this.save(next),
-      });
+      this.land(next, [...secretLeaves(current), ...secretLeaves(next)]);
       return next;
     });
   }

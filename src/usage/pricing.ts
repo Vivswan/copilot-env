@@ -4,10 +4,9 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import * as v from "valibot";
-import { atomicWriteFile } from "../utils/report_write.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { canonicalPricingUrl, OPENROUTER_MODELS_URL } from "../copilot_api/env_config.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
-import { readTextOrNull } from "../utils/fs.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { usageIndexDir } from "./paths.ts";
@@ -240,9 +239,9 @@ function readPricingCache(
   path: string,
   urlDigest: string,
 ): { pricing: Map<string, PricingTier>; fetchedAtMs: number } | null {
-  const text = readTextOrNull(path);
-  if (text === null) return null;
-  const raw = parseJsonRecord(text);
+  const read = fs.readTextResult(path);
+  if (read.kind !== "text") return null;
+  const raw = parseJsonRecord(read.text);
   if (raw === null) return null;
   const parsed = v.safeParse(PRICING_CACHE_SCHEMA, raw);
   if (!parsed.success || parsed.output.url_sha256 !== urlDigest) return null;
@@ -269,7 +268,7 @@ function writePricingCache(
     "fetched_at_ms": fetchedAtMs,
     "tiers": Object.fromEntries(pricing),
   };
-  atomicWriteFile(path, `${JSON.stringify(record)}\n`);
+  fs.writeText(path, `${JSON.stringify(record)}\n`, { secretKeys: [] });
 }
 
 const ANTHROPIC_FAMILY_SLUGS = new Set(["fable", "opus", "sonnet", "haiku"]);

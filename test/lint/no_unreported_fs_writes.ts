@@ -1,18 +1,19 @@
 // Deno lint plugin: runtime code may not mutate the filesystem behind the user's back.
 //
 // Every file a command creates, rewrites, deletes, moves or links outside copilot-env's
-// own homes is named on stderr by the one write-reporting seam (src/utils/report_write.ts;
-// the seam is what decides that a write inside a home is silent bookkeeping). A raw
+// own homes is named on stderr by the one fs seam (src/utils/fs_facade.ts, whose disk side
+// src/utils/fs_disk.ts decides that a write inside a home is silent bookkeeping). A raw
 // node:fs (or Deno) write anywhere else in src/ is a mutation the seam never sees -- so
 // the ban is on REACHING a
 // write API at all: a named import of one from node:fs / node:fs/promises, a member read
 // of one off a node:fs namespace or default import, a destructure of one, and the Deno
 // namespace's own write calls. Read APIs stay legal everywhere.
 //
-// Scope: src/, minus the seam itself, the lock protocol's internals (file_lock.ts, whose
-// per-acquisition marker file is a transient the seam documents), the daemon preload that
-// patches the proxy's own createWriteStream (log_mute_preload.ts, no write of ours), and
-// src/migrations/ (one-time fix-ups that narrate their own moves).
+// Scope: src/, minus the seam's disk side, the dry-run marker (dry_run.ts, a lock-held
+// directory a child process probes, so it must be real), the lock protocol's internals
+// (file_lock.ts, whose per-acquisition marker file is a transient the seam documents), the
+// daemon preload that patches the proxy's own createWriteStream (log_mute_preload.ts, no
+// write of ours), and src/migrations/ (one-time fix-ups that narrate their own moves).
 //
 // Two more ways to mutate without naming a write API are refused too: a file handle opened
 // for writing (`open`/`openSync` with a flag other than read, `Deno.open`/`Deno.openSync` with
@@ -26,10 +27,11 @@ import { fileURLToPath } from "node:url";
 
 const FS_MODULES = new Set(["node:fs", "node:fs/promises"]);
 
-/** The seam, the lock protocol, and the preload that patches the PROXY's stream
- *  constructor, repo-relative. */
+/** The seam's disk side, the dry-run marker, the lock protocol, and the preload that patches
+ *  the PROXY's stream constructor, repo-relative. */
 const ALLOWED = new Set([
-  "src/utils/report_write.ts",
+  "src/utils/fs_disk.ts",
+  "src/utils/dry_run.ts",
   "src/utils/file_lock.ts",
   "src/scripts/log_mute_preload.ts",
 ]);
@@ -213,16 +215,15 @@ function guarded(filename: string): boolean {
   return true;
 }
 
-const MESSAGE = "mutate the filesystem through src/utils/report_write.ts (writeFileReported, " +
-  "removeReported, ...) so a write outside copilot-env's own homes is named on stderr -- a " +
-  "raw write here is one the seam never sees";
-
-const HANDLE_MESSAGE = "open a file for writing through src/utils/report_write.ts " +
-  "(openWritableReported, openWriteFdReported): a write handle opened here is a mutation the " +
+const MESSAGE = "mutate the filesystem through src/utils/fs_facade.ts (writeText, rm, ...) so " +
+  "a write outside copilot-env's own homes is named on stderr -- a raw write here is one the " +
   "seam never sees";
 
+const HANDLE_MESSAGE = "open a file for writing through src/utils/fs_facade.ts (openWritable, " +
+  "openWriteFd): a write handle opened here is a mutation the seam never sees";
+
 const SPAWN_MESSAGE = "a child process that mutates the filesystem (rm, mv, cp, del, ...) is a " +
-  "write the seam never sees; do it through src/utils/report_write.ts";
+  "write the seam never sees; do it through src/utils/fs_facade.ts";
 
 /** The text of a string literal or an expression-free template literal, else null. */
 function literalText(node: Deno.lint.Node): string | null {

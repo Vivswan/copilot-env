@@ -1,8 +1,20 @@
 // The dry-run filesystem: a run reads what it planned (the disk is untouched), a planned delete is
 // invisible to every read, the errors the planned state determines carry the platform's own node:fs
 // codes, and the report is a tree diff of the overlay against the disk in the one print format.
-import { chmodSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join, sep } from "node:path";
+import { CopilotApiConfig } from "../src/copilot_api/config.ts";
+import { withDryRun } from "../src/utils/dry_run.ts";
 import { renderDryRun } from "../src/utils/dry_run_report.ts";
 import * as facade from "../src/utils/fs_facade.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
@@ -27,7 +39,7 @@ function outcome(fn: () => unknown): string {
 }
 
 async function dryRun(body: () => void): Promise<string[]> {
-  const run = await facade.withDryRun(async () => body());
+  const run = await withDryRun(async () => body());
   if (run.status === "failed") throw run.error;
   return renderDryRun(run.changes);
 }
@@ -42,7 +54,7 @@ test("a dry run reads its own writes and deletes back, and the disk keeps what i
   writeFileSync(a, "old");
   writeFileSync(b, "doomed");
   expect(facade.dryRunActive()).toBe(false);
-  const run = await facade.withDryRun(async () => {
+  const run = await withDryRun(async () => {
     facade.writeText(a, "new");
     facade.rm(b);
     facade.writeText(join(dir, "c.txt"), "fresh");
@@ -97,7 +109,7 @@ const ERROR_CASES: Array<{
   {
     name: "write onto a directory",
     setup: (r) => facade.mkdir(join(r, "d")),
-    op: (r) => facade.writeText(join(r, "d"), "x"),
+    op: (r) => facade.writeText(join(r, "d"), "x", { atomic: false }),
     code: "EISDIR",
     win32: "EINVAL",
   },
@@ -152,8 +164,15 @@ const ERROR_CASES: Array<{
   {
     name: "write under a missing directory",
     setup: () => {},
-    op: (r) => facade.writeText(join(r, "nope", "f"), "x"),
+    op: (r) => facade.writeText(join(r, "nope", "f"), "x", { atomic: false }),
     code: "ENOENT",
+  },
+  {
+    name: "rmdir of a file",
+    setup: (r) => writeFileSync(join(r, "f"), "x"),
+    op: (r) => facade.rmdir(join(r, "f")),
+    code: "ENOTDIR",
+    win32: "ENOENT",
   },
   {
     name: "rm of a missing path with force",
@@ -211,7 +230,7 @@ test("every error the overlay derives from planned state carries the code this p
     c.setup(root);
     real[c.name] = outcome(() => c.op(root));
   }
-  await facade.withDryRun(async () => {
+  await withDryRun(async () => {
     for (const [i, c] of CASES.entries()) {
       const root = join(dir, `dry-${i}`);
       mkdirSync(root);
@@ -505,4 +524,252 @@ test("outside a dry run every operation lands on the disk", () => {
   expect(outcome(() => facade.rm(join(home, "missing")))).toBe("ENOENT");
   facade.rm(join(dir, "home"), { recursive: true });
   expect(facade.exists(home)).toBe(false);
+});
+
+test("a file declared secret as a whole prints its verdict alone, whatever its syntax", async () => {
+  dir = tempDir("copilot-facade-");
+  const bundle = join(dir, "bundle.json");
+  const config = join(dir, "config.toml");
+  const same = join(dir, "same.json");
+  writeFileSync(config, 'model = "old"\n');
+  writeFileSync(same, '{"token":"t"}');
+  const lines = await dryRun(() => {
+    facade.writeText(bundle, '{"token":"t"}', { secret: true });
+    facade.writeText(config, 'model = "new"\n', { secret: true, atomic: false });
+    facade.writeText(same, '{"token":"t"}', { secret: true, atomic: false });
+    expect(facade.readText(bundle)).toBe('{"token":"t"}');
+  });
+  expect(lines).toEqual([`create ${bundle}`, `rewrite ${config}`, `unchanged ${same}`]);
+});
+
+test("a path's secret declarations travel with a rename and a copy, so the report at the new path redacts the same values", async () => {
+  dir = tempDir("copilot-facade-");
+  const staged = join(dir, "staged.json");
+  const live = join(dir, "live.json");
+  const copy = join(dir, "copy.json");
+  const bundle = join(dir, "bundle.json");
+  const bundleCopy = join(dir, "bundle-copy.json");
+  const lines = await dryRun(() => {
+    facade.writeText(staged, '{"token":"t"}', { secretKeys: ["token"] });
+    facade.rename(staged, live);
+    facade.copyFile(live, copy);
+    facade.writeText(bundle, '{"token":"t"}', { secret: true });
+    facade.copyFile(bundle, bundleCopy);
+  });
+  expect(lines).toEqual([
+    `create ${live}`,
+    `  token  (absent) -> <redacted>`,
+    `create ${copy}`,
+    `  token  (absent) -> <redacted>`,
+    `create ${bundle}`,
+    `create ${bundleCopy}`,
+  ]);
+});
+
+test("a copy out of scratch survives the scratch dir's removal, and a byte write keeps its own copy of the buffer", async () => {
+  dir = tempDir("copilot-facade-");
+  const target = join(dir, "target.bin");
+  const written = join(dir, "written.bin");
+  writeFileSync(target, "old");
+  const lines = await dryRun(() => {
+    const scratch = facade.scratchDir(join(dir, "scratch-"));
+    facade.writeText(join(scratch, "seed"), "fresh");
+    facade.copyFile(join(scratch, "seed"), target);
+    facade.removeScratchDir(scratch);
+    const buffer = new Uint8Array([1, 2, 3]);
+    facade.writeBytes(written, buffer);
+    buffer.fill(9);
+    expect([facade.readText(target), facade.readBytes(written)]).toEqual([
+      "fresh",
+      new Uint8Array([1, 2, 3]),
+    ]);
+  });
+  expect(lines).toEqual([`rewrite ${target}`, `create ${written}`]);
+});
+
+test("a move into scratch in a dry run is planned, never real: the source stays on the disk and the report names its removal alone", async () => {
+  dir = tempDir("copilot-facade-");
+  const source = join(dir, "real.txt");
+  writeFileSync(source, "kept");
+  const lines = await dryRun(() => {
+    const scratch = facade.scratchDir(join(dir, "scratch-"));
+    facade.rename(source, join(scratch, "moved.txt"));
+    expect([facade.exists(source), facade.readText(join(scratch, "moved.txt"))]).toEqual([
+      false,
+      "kept",
+    ]);
+    facade.removeScratchDir(scratch);
+    expect(facade.readText(join(scratch, "moved.txt"))).toBe("kept");
+  });
+  expect([lines, readFileSync(source, "utf8")]).toEqual([[`delete ${source}`], "kept"]);
+});
+
+// Creating a symlink needs a privilege Windows does not grant by default.
+test.skipIf(WINDOWS)("a link to itself is ELOOP in a dry run, as on the disk", async () => {
+  dir = tempDir("copilot-facade-");
+  const loop = join(dir, "loop");
+  symlinkSync(loop, loop);
+  expect(outcome(() => facade.readText(loop))).toBe("ELOOP");
+  await dryRun(() => {
+    expect([outcome(() => facade.readText(loop)), outcome(() => facade.stat(loop))]).toEqual([
+      "ELOOP",
+      "ELOOP",
+    ]);
+  });
+});
+
+test("readTextResult tells absent from unreadable by lstat, in a dry run from the planned state; scratch stays real in a dry run and prints nothing", async () => {
+  dir = tempDir("copilot-facade-");
+  const file = join(dir, "f.txt");
+  const dangling = join(dir, "dangling");
+  const scratchRoot = join(dir, "scratch-");
+  writeFileSync(file, "disk");
+  if (!WINDOWS) symlinkSync(join(dir, "nowhere"), dangling);
+  expect([facade.readTextResult(file), facade.readTextResult(join(dir, "missing")).kind]).toEqual([
+    { kind: "text", text: "disk" },
+    "absent",
+  ]);
+  if (!WINDOWS) expect(facade.readTextResult(dangling).kind).toBe("unreadable");
+  expect(facade.dryRunActive()).toBe(false);
+  let probe = "";
+  const lines = await dryRun(() => {
+    expect(facade.dryRunActive()).toBe(true);
+    facade.writeText(file, "planned");
+    expect(facade.readTextResult(file)).toEqual({ kind: "text", text: "planned" });
+    facade.rm(file);
+    expect(facade.readTextResult(file)).toEqual({ kind: "absent" });
+    // A probe's throwaway config is written for real, so the CLI it spawns can read it.
+    const scratch = facade.scratchDir(scratchRoot);
+    probe = join(scratch, "config.toml");
+    facade.mkdir(join(scratch, "sessions"));
+    facade.writeText(probe, 'model = "x"\n');
+    expect([readFileSync(probe, "utf8"), existsSync(join(scratch, "sessions"))]).toEqual([
+      'model = "x"\n',
+      true,
+    ]);
+    facade.removeScratchDir(scratch);
+    expect(existsSync(scratch)).toBe(false);
+  });
+  expect(lines).toEqual([`delete ${file}`]);
+  expect(readFileSync(file, "utf8")).toBe("disk");
+});
+
+test("writeText is staged by default: a stale temp under this pid goes first and none survives, and an explicit mode lands exactly", () => {
+  dir = tempDir("copilot-facade-");
+  const file = join(dir, "nested", "f.json");
+  const stale = join(dir, "nested", `f.json.tmp.${process.pid}`);
+  mkdirSync(join(dir, "nested"));
+  writeFileSync(stale, "stale");
+  facade.writeText(file, "{}", { mode: 0o600 });
+  expect([readFileSync(file, "utf8"), existsSync(stale), facade.readdir(join(dir, "nested"))])
+    .toEqual(["{}", false, ["f.json"]]);
+  if (!WINDOWS) expect(modeOf(file)).toBe("0600");
+});
+
+// Creating a symlink needs a privilege Windows does not grant by default.
+test.skipIf(WINDOWS)(
+  "`atomic: false` writes through a link and keeps it; the staged default replaces the link with a file",
+  () => {
+    dir = tempDir("copilot-facade-");
+    const target = join(dir, "target.txt");
+    const link = join(dir, "link.txt");
+    writeFileSync(target, "old");
+    symlinkSync(target, link);
+    facade.writeText(link, "through", { atomic: false });
+    expect([lstatSync(link).isSymbolicLink(), readFileSync(target, "utf8")]).toEqual([
+      true,
+      "through",
+    ]);
+    facade.writeText(link, "replaced");
+    expect([
+      lstatSync(link).isSymbolicLink(),
+      readFileSync(link, "utf8"),
+      readFileSync(target, "utf8"),
+    ]).toEqual([false, "replaced", "through"]);
+  },
+);
+
+test.skipIf(WINDOWS)(
+  "the installer's `current` swap in a dry run: a stray directory goes and the link lands as a link a lookup follows; a moved disk link stays a link",
+  async () => {
+    dir = tempDir("copilot-facade-");
+    const target = join("versions", "v1");
+    // Three tops: a stray directory at `current`, nothing there, and a link already there.
+    const [stray, fresh, linked] = ["stray", "fresh", "linked"].map((name) => join(dir, name));
+    const tops = [stray, fresh, linked] as string[];
+    for (const top of tops) mkdirSync(join(top, target, "bin"), { recursive: true });
+    mkdirSync(join(stray as string, "current"));
+    symlinkSync(target, join(linked as string, "current"));
+    const moved = { from: join(dir, "a"), to: join(dir, "b") };
+    mkdirSync(moved.from);
+    writeFileSync(join(moved.from, "target.txt"), "kept");
+    symlinkSync("target.txt", join(moved.from, "ln"));
+    const lines = await dryRun(() => {
+      for (const top of tops) {
+        const current = join(top, "current");
+        if (facade.exists(current) && !facade.lstat(current).isSymbolicLink()) {
+          facade.rmdir(current);
+        }
+        facade.atomicSymlink(target, current);
+        expect([
+          facade.lstat(current).isSymbolicLink(),
+          facade.readlink(current),
+          facade.stat(current).isDirectory(),
+          facade.readdir(current),
+          facade.readdirEntries(top).map((e) => [e.name, e.isSymbolicLink()]),
+        ]).toEqual([true, target, true, ["bin"], [["current", true], ["versions", false]]]);
+      }
+      facade.rename(moved.from, moved.to);
+      expect([
+        facade.lstat(join(moved.to, "ln")).isSymbolicLink(),
+        facade.readlink(join(moved.to, "ln")),
+        facade.readText(join(moved.to, "ln")),
+        facade.exists(moved.from),
+      ]).toEqual([true, "target.txt", "kept", false]);
+    });
+    expect(lines).toEqual([
+      `rewrite ${join(stray as string, "current")}`,
+      `create ${join(fresh as string, "current")}`,
+      `unchanged ${join(linked as string, "current")}`,
+      `delete ${moved.from}${sep}`,
+      `create ${moved.to}${sep}`,
+      `create ${join(moved.to, "ln")}`,
+      `create ${join(moved.to, "target.txt")}`,
+    ]);
+    // The disk kept every state the run started from.
+    expect([
+      lstatSync(join(stray as string, "current")).isDirectory(),
+      existsSync(join(fresh as string, "current")),
+      readlinkSync(join(linked as string, "current")),
+      existsSync(moved.to),
+    ]).toEqual([true, false, target, false]);
+  },
+);
+
+test("a store update in a dry run takes no lock: the store's home keeps only what it had", async () => {
+  dir = tempDir("copilot-facade-");
+  const home = join(dir, "copilot-env");
+  mkdirSync(home);
+  const store = join(home, "state.json");
+  writeFileSync(store, "{}\n");
+  const lines = await dryRun(() => {
+    new CopilotApiConfig(store).update((d) => {
+      d.global = { "daemon.port": 4141 };
+    });
+  });
+  expect(lines).toEqual([`rewrite ${store}`, `  global."daemon.port"  (absent) -> 4141`]);
+  expect([readdirSync(home), readFileSync(store, "utf8")]).toEqual([["state.json"], "{}\n"]);
+});
+
+test("a stale staging file at the link's staging path is planned removed before the link, in the overlay too", async () => {
+  dir = tempDir("copilot-facade-");
+  const link = join(dir, "current");
+  const staging = join(dir, `.current-next-${process.pid}`);
+  writeFileSync(staging, "left by a crashed run");
+  const lines = await dryRun(() => {
+    facade.atomicSymlink("versions/v1", link);
+    expect([facade.exists(staging), facade.readlink(link)]).toEqual([false, "versions/v1"]);
+  });
+  expect(lines).toEqual([`delete ${staging}`, `create ${link}`]);
+  expect(readFileSync(staging, "utf8")).toBe("left by a crashed run");
 });

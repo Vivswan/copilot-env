@@ -14,13 +14,13 @@
 //   chmod ~/.codex 0700 (disk dir, no rm)     -> mode recorded, the disk's children still list
 //   write ~/.codex/a; rm ~/.codex/a           -> `gone`; the report drops it (absent before and after)
 //
-// The layer holds no links. A disk link a rename moves lands as a file entry (its lstat kind), which
-// no writer on the seam reaches today: atomicSymlink is not on the seam, and moves onto it with the
-// rewiring. A disk file the layer carries (a chmod, a rename) is held by path, never decoded: a
-// binary moves as bytes, and only a text read decodes it.
+// A link the run plans (the installer's `current`) is a `link` entry: a lookup through it restarts
+// at its target, an lstat sees the link, and a disk link a rename moves stays a link. A disk file
+// the layer carries (a chmod, a rename, a copy) is held by path, never decoded: a binary moves as
+// bytes, and only a text read decodes it.
 import { lstatSync, readdirSync, readFileSync, readlinkSync, type Stats, statSync } from "node:fs";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
-import { RenameRefusedError } from "./report_write.ts";
+import { RenameRefusedError } from "./fs_disk.ts";
 
 /** The subset of node's Stats the CLI reads; a real Stats satisfies it. */
 export interface EntryStats {
@@ -32,12 +32,21 @@ export interface EntryStats {
   mtimeMs: number;
 }
 
-/** Planned text, or the disk file the entry carries by path. */
-export type FileContent = { text: string } | { disk: string };
+/** The subset of node's Dirent the CLI reads; a real Dirent satisfies it. */
+export interface DirEntry {
+  name: string;
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+/** Planned text or bytes, or the disk file the entry carries by path. */
+export type FileContent = { text: string } | { bytes: Uint8Array } | { disk: string };
 
 export type OverlayEntry =
   | { kind: "file"; content: FileContent; mode: number; mtimeMs: number }
   | { kind: "dir"; mode: number; mtimeMs: number; fresh: boolean }
+  | { kind: "link"; target: string; mtimeMs: number }
   | { kind: "gone" };
 
 export interface OverlayWrite {
@@ -46,21 +55,29 @@ export interface OverlayWrite {
    *  inode's mode even when it exists. */
   replace?: boolean;
   secretKeys?: Iterable<string>;
+  /** The whole file holds secrets (a settings bundle): the report prints its verdict alone. */
+  secret?: boolean;
 }
 
 type Present = Exclude<OverlayEntry, { kind: "gone" }> | { kind: "disk"; stats: Stats };
 
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
+const S_IFLNK = 0o120000;
 
 const ERRNO_TEXT: Record<string, string> = {
   ENOENT: "no such file or directory",
   EEXIST: "file already exists",
   EISDIR: "illegal operation on a directory",
   ENOTDIR: "not a directory",
+  ENOTEMPTY: "directory not empty",
   EINVAL: "invalid argument",
   EPERM: "operation not permitted",
+  ELOOP: "too many symbolic links encountered",
 };
+
+/** The kernel's bound on a chain of links. */
+const MAX_LINK_HOPS = 40;
 
 /** An error shaped as node:fs throws it, so `(e as NodeJS.ErrnoException).code` reads the same. */
 export function errno(code: string, syscall: string, path: string, dest?: string): Error {
@@ -121,6 +138,10 @@ function isDir(seen: Present): boolean {
   return seen.kind === "dir" || (seen.kind === "disk" && seen.stats.isDirectory());
 }
 
+function isLink(seen: Present): boolean {
+  return seen.kind === "link" || (seen.kind === "disk" && seen.stats.isSymbolicLink());
+}
+
 /** An absolute path as its root (`/`, `C:\`) and the components under it. resolve() has already
  *  normalized the separators, so only the platform's own splits: a backslash is a byte of a POSIX
  *  name. */
@@ -130,19 +151,24 @@ function split(abs: string): { root: string; parts: string[] } {
 }
 
 function statsOf(entry: Exclude<OverlayEntry, { kind: "gone" }>): EntryStats {
-  const file = entry.kind === "file";
+  const kind = entry.kind;
   return {
-    isFile: () => file,
-    isDirectory: () => !file,
-    isSymbolicLink: () => false,
-    mode: (file ? S_IFREG : S_IFDIR) | entry.mode,
-    size: file ? contentSize(entry.content) : 0,
+    isFile: () => kind === "file",
+    isDirectory: () => kind === "dir",
+    isSymbolicLink: () => kind === "link",
+    mode: kind === "file"
+      ? S_IFREG | entry.mode
+      : kind === "dir"
+      ? S_IFDIR | entry.mode
+      : S_IFLNK | 0o777,
+    size: kind === "file" ? contentSize(entry.content) : kind === "link" ? entry.target.length : 0,
     mtimeMs: entry.mtimeMs,
   };
 }
 
 function contentSize(content: FileContent): number {
   if ("text" in content) return new TextEncoder().encode(content.text).length;
+  if ("bytes" in content) return content.bytes.length;
   return statSync(content.disk).size;
 }
 
@@ -156,41 +182,68 @@ export class Overlay {
   /** Per key, every attribute a write declared secret, kept across the run's later writes to the
    *  same path: a key once declared never prints, whether or not a later writer repeats it. */
   private readonly secrets = new Map<string, Set<string>>();
+  /** The keys a write declared secret as a whole. */
+  private readonly secretFiles = new Set<string>();
+  /** Keys the run landed under its own scratch (a move or copy into it): the report never names
+   *  them, since scratch goes before exit and was never the user's. */
+  private readonly hidden = new Set<string>();
 
   nameOf(key: string): string {
     return this.names.get(key) ?? key;
+  }
+
+  /** Marks what stands at `path` (and below) as the run's own scratch, off the report. */
+  hide(path: string): void {
+    this.hidden.add(this.key(path, false));
+  }
+
+  isHidden(key: string): boolean {
+    for (const root of this.hidden) if (key === root || isBelow(key, root)) return true;
+    return false;
   }
 
   secretKeysOf(key: string): ReadonlySet<string> {
     return this.secrets.get(key) ?? new Set();
   }
 
+  isSecretFile(key: string): boolean {
+    return this.secretFiles.has(key);
+  }
+
   /** The key `path` names, resolved one component at a time against the run's own state: a
-   *  component the layer holds is taken as planned (a tombstoned or planned path is never a link
-   *  to follow), a disk symlink is followed one hop while the disk still speaks there (the walk
-   *  restarts at the target, so every hop meets the planned state), and the last component stays a
-   *  link when `follow` is off (lstat, rm, rename, and a staged write act on the link itself). */
+   *  component the layer holds is taken as planned (a tombstoned or planned path is never a disk
+   *  link to follow), a link (planned, or on the disk while the disk still speaks there) is followed
+   *  one hop with the walk restarting at its target, so every hop meets the planned state, and the
+   *  last component stays a link when `follow` is off (lstat, rm, rename, readlink, and a staged
+   *  write act on the link itself). */
   private key(path: string, follow = true): string {
     let { root: cur, parts: pending } = split(resolve(path));
     let diskSpeaks = true;
+    let hops = 0;
     while (pending.length > 0) {
       const part = pending.shift() as string;
       const next = join(cur, part);
+      let target: string | null = null;
       const own = this.entries.get(next);
       if (own !== undefined) {
-        diskSpeaks = own.kind === "dir" && !own.fresh;
+        if (own.kind !== "link" || (!follow && pending.length === 0)) {
+          diskSpeaks = own.kind === "dir" && !own.fresh;
+          cur = next;
+          continue;
+        }
+        target = own.target;
+      } else {
         cur = next;
-        continue;
+        if (!diskSpeaks || (!follow && pending.length === 0)) continue;
+        try {
+          if (lstatSync(next).isSymbolicLink()) target = readlinkSync(next);
+        } catch {
+          // Absent or under a file: the tail stays as spelled and view() judges it.
+        }
+        if (target === null) continue;
       }
-      cur = next;
-      if (!diskSpeaks || (!follow && pending.length === 0)) continue;
-      let target: string | null = null;
-      try {
-        if (lstatSync(next).isSymbolicLink()) target = readlinkSync(next);
-      } catch {
-        // Absent or under a file: the tail stays as spelled and view() judges it.
-      }
-      if (target === null) continue;
+      // The kernel's own bound on a chain of links (a link to itself included).
+      if (++hops > MAX_LINK_HOPS) throw errno("ELOOP", follow ? "stat" : "lstat", path);
       const restart = split(resolve(dirname(next), target));
       cur = restart.root;
       pending = [...restart.parts, ...pending];
@@ -237,25 +290,67 @@ export class Overlay {
     }
   }
 
-  readText(path: string): string {
+  /** The file at `path` as the run sees it, for a read that decodes or copies its bytes. */
+  private fileAt(path: string, syscall: string): FileContent {
     const key = this.key(path);
-    const seen = this.view(key, "open", path);
-    if (seen === null) throw errno("ENOENT", "open", path);
-    if (seen.kind === "file") {
-      return "text" in seen.content ? seen.content.text : readFileSync(seen.content.disk, "utf8");
+    const seen = this.view(key, syscall, path);
+    if (seen === null) throw errno("ENOENT", syscall, path);
+    if (seen.kind === "file") return seen.content;
+    if (isDir(seen)) throw errno("EISDIR", syscall, path);
+    return { disk: key };
+  }
+
+  readText(path: string): string {
+    const content = this.fileAt(path, "open");
+    if ("text" in content) return content.text;
+    if ("bytes" in content) {
+      return new TextDecoder("utf-8", { ignoreBOM: true }).decode(content.bytes);
     }
-    if (isDir(seen)) throw errno("EISDIR", "open", path);
-    return readFileSync(key, "utf8");
+    return readFileSync(content.disk, "utf8");
+  }
+
+  readBytes(path: string): Uint8Array {
+    const content = this.fileAt(path, "open");
+    if ("text" in content) return new TextEncoder().encode(content.text);
+    // A copy, so a caller's edits never reach the planned bytes.
+    if ("bytes" in content) return content.bytes.slice();
+    return new Uint8Array(readFileSync(content.disk));
+  }
+
+  /** The parent a write lands under, judged as node judges it (absent is ENOENT, a file ENOTDIR). */
+  private landingParent(key: string, syscall: string, path: string, dest?: string): void {
+    const parent = this.view(dirname(key), syscall, path);
+    if (parent === null) throw errno("ENOENT", syscall, path, dest);
+    if (!isDir(parent)) throw errno(underFile(syscall), syscall, path, dest);
   }
 
   /** An explicit mode lands whether the file exists or not (Deno chmods after the write); without
    *  one an existing file keeps its mode and a fresh inode takes the default. A staged write
    *  (`replace`) lands at the path itself, so a link there is replaced, as the real rename does. */
   writeText(path: string, text: string, write: OverlayWrite = {}): void {
+    this.land(path, { text }, write);
+  }
+
+  writeBytes(path: string, bytes: Uint8Array, write: OverlayWrite = {}): void {
+    // The caller's buffer may be reused; the layer keeps its own copy.
+    this.land(path, { bytes: bytes.slice() }, write);
+  }
+
+  /** The bytes of `from` as the run sees them, landed at `to` with the source's mode, as
+   *  copyFileSync lands them: by path (never decoded), or by value when the source will not
+   *  outlive the run (scratch). The source's secret declarations travel with them. */
+  copyFile(from: string, to: string, byValue = false): void {
+    const content = this.fileAt(from, "copyfile");
+    const carried = byValue && "disk" in content
+      ? { bytes: new Uint8Array(readFileSync(content.disk)) }
+      : content;
+    this.land(to, carried, { mode: this.stat(from).mode & 0o777 });
+    this.carrySecrets(this.key(from), this.key(to));
+  }
+
+  private land(path: string, content: FileContent, write: OverlayWrite): void {
     const key = this.key(path, !write.replace);
-    const parent = this.view(dirname(key), "open", path);
-    if (parent === null) throw errno("ENOENT", "open", path);
-    if (!isDir(parent)) throw errno(underFile("open"), "open", path);
+    this.landingParent(key, "open", path);
     const seen = this.view(key, "open", path, !write.replace);
     // Windows opens a directory for writing with EINVAL, and refuses the staged rename over one
     // with the EPERM the real writer wraps as RenameRefusedError (the installer answers that class
@@ -266,7 +361,7 @@ export class Overlay {
       }
       throw errno(!write.replace && WINDOWS ? "EINVAL" : "EISDIR", "open", path);
     }
-    const mode = write.mode !== undefined || seen === null || write.replace
+    const mode = write.mode !== undefined || seen === null || write.replace || seen.kind === "link"
       ? freshMode(write.mode, "file")
       : seen.kind === "disk"
       ? seen.stats.mode & 0o777
@@ -276,7 +371,8 @@ export class Overlay {
       for (const k of write.secretKeys) declared.add(k);
       this.secrets.set(key, declared);
     }
-    this.set(key, { kind: "file", content: { text }, mode, mtimeMs: Date.now() }, resolve(path));
+    if (write.secret) this.secretFiles.add(key);
+    this.set(key, { kind: "file", content, mode, mtimeMs: Date.now() }, resolve(path));
   }
 
   stat(path: string, follow = true): EntryStats {
@@ -308,6 +404,36 @@ export class Overlay {
     return [...names].sort();
   }
 
+  /** Each name with its own kind (a link is the link), as `readdir` with file types lists them. */
+  readdirEntries(path: string): DirEntry[] {
+    return this.readdir(path).map((name) => {
+      const stats = this.stat(join(path, name), false);
+      return {
+        name,
+        isFile: () => stats.isFile(),
+        isDirectory: () => stats.isDirectory(),
+        isSymbolicLink: () => stats.isSymbolicLink(),
+      };
+    });
+  }
+
+  /** The target text of the link at `path`, planned or on the disk; a non-link is EINVAL. */
+  readlink(path: string): string {
+    const key = this.key(path, false);
+    const seen = this.view(key, "readlink", path, false);
+    if (seen === null) throw errno("ENOENT", "readlink", path);
+    if (seen.kind === "link") return seen.target;
+    if (seen.kind === "disk" && seen.stats.isSymbolicLink()) return readlinkSync(key);
+    throw errno("EINVAL", "readlink", path);
+  }
+
+  /** The canonical path, every link (planned or on the disk) resolved; absent is node's ENOENT. */
+  realpath(path: string): string {
+    const key = this.key(path);
+    if (this.view(key, "lstat", path) === null) throw errno("ENOENT", "lstat", path);
+    return key;
+  }
+
   /** Always recursive (`mkdir -p`): an existing directory is a no-op, a regular file at the path or
    *  above it fails as node's recursive mkdir does. */
   mkdir(path: string, mode?: number): void {
@@ -318,10 +444,7 @@ export class Overlay {
     for (let cur = spelled.root, i = 0; i < spelled.parts.length; i++) {
       cur = join(cur, spelled.parts[i] as string);
       const link = this.view(this.key(cur, false), "mkdir", path, false);
-      if (
-        link?.kind === "disk" && link.stats.isSymbolicLink() &&
-        this.view(this.key(cur), "mkdir", path) === null
-      ) {
+      if (link !== null && isLink(link) && this.view(this.key(cur), "mkdir", path) === null) {
         throw errno("EEXIST", "mkdir", path);
       }
     }
@@ -347,23 +470,41 @@ export class Overlay {
     }
   }
 
-  /** node's rmSync: a directory needs `recursive` (ERR_FS_EISDIR), an absent path needs `force`. */
-  rm(path: string, options: { recursive?: boolean; force?: boolean } = {}): void {
+  /** node's rmSync: a directory needs `recursive` (ERR_FS_EISDIR), an absent path needs `force`.
+   *  Returns whether anything was there. */
+  rm(path: string, options: { recursive?: boolean; force?: boolean } = {}): boolean {
     const key = this.key(path, false);
     let seen: Present | null;
     try {
       seen = this.view(key, "lstat", path, false);
     } catch (e) {
       // Windows reads a path under a file as absent, which `force` forgives.
-      if (options.force && isEnoent(e)) return;
+      if (options.force && isEnoent(e)) return false;
       throw e;
     }
     if (seen === null) {
-      if (options.force) return;
+      if (options.force) return false;
       throw errno("ENOENT", "lstat", path);
     }
     if (isDir(seen) && !options.recursive) throw rmDirectoryRefused(path);
     this.dropBelow(key);
+    this.set(key, { kind: "gone" }, resolve(path));
+    return true;
+  }
+
+  /** node's rmdirSync: an empty directory goes (the run's own creations and removals under it
+   *  count), a file is ENOTDIR, entries are ENOTEMPTY. A link is the entry itself: Windows removes a
+   *  junction with rmdir, POSIX refuses a symlink as not a directory. */
+  rmdir(path: string): void {
+    const key = this.key(path, false);
+    const seen = this.view(key, "rmdir", path, false);
+    if (seen === null) throw errno("ENOENT", "rmdir", path);
+    if (isLink(seen)) {
+      if (!WINDOWS) throw errno("ENOTDIR", "rmdir", path);
+    } else {
+      if (!isDir(seen)) throw errno(underFile("rmdir"), "rmdir", path);
+      if (this.readdir(path).length > 0) throw errno("ENOTEMPTY", "rmdir", path);
+    }
     this.set(key, { kind: "gone" }, resolve(path));
   }
 
@@ -374,55 +515,110 @@ export class Overlay {
     const seen = this.view(key, "chmod", path);
     if (seen === null) throw errno("ENOENT", "chmod", path);
     const entry = seen.kind === "disk" ? materialize(key, seen.stats, false) : seen;
+    if (entry.kind === "link") return;
     this.set(key, { ...entry, mode: platformMode(mode) }, resolve(path));
   }
 
-  /** The source subtree moves into the layer under `to` (planned text, and disk files by path) and
-   *  `from` is tombstoned. A destination that exists is replaced without a refusal: every writer
-   *  moves onto a path it has cleared or that was never there. */
-  rename(from: string, to: string): void {
+  /** node's symlinkSync: the parent must exist, the path must not. */
+  symlink(target: string, path: string): void {
+    const key = this.key(path, false);
+    this.landingParent(key, "symlink", target, path);
+    if (this.view(key, "symlink", path, false) !== null) {
+      throw errno("EEXIST", "symlink", target, path);
+    }
+    this.set(key, { kind: "link", target, mtimeMs: Date.now() }, resolve(path));
+  }
+
+  /** A link built aside and renamed over `link`: a file or a link there is replaced, a directory
+   *  is the rename's own refusal (EISDIR; EPERM on Windows), raw, as the disk side raises it. */
+  atomicSymlink(target: string, link: string): void {
+    // A stale staging entry from a crashed run under this pid goes first, with its own row, as the
+    // disk side removes it before building the link beside the target.
+    const staged = join(dirname(link), `.${basename(link)}-next-${process.pid}`);
+    this.rm(staged, { force: true });
+    const key = this.key(link, false);
+    this.landingParent(key, "rename", link);
+    const seen = this.view(key, "rename", link, false);
+    if (seen !== null && isDir(seen)) {
+      throw errno(WINDOWS ? "EPERM" : "EISDIR", "rename", link);
+    }
+    this.set(key, { kind: "link", target, mtimeMs: Date.now() }, resolve(link));
+  }
+
+  /** The source subtree moves into the layer under `to` (planned text, disk files by path, or by
+   *  value when the source will not outlive the run, links as links) and `from` is tombstoned. A
+   *  destination that exists is replaced without a refusal: every writer moves onto a path it has
+   *  cleared or that was never there. */
+  rename(from: string, to: string, byValue = false): void {
     const src = this.key(from, false);
     const dst = this.key(to, false);
     const source = this.view(src, "rename", from, false);
     if (source === null) throw errno("ENOENT", "rename", from, to);
-    const parent = this.view(dirname(dst), "rename", from);
-    if (parent === null) throw errno("ENOENT", "rename", from, to);
-    if (!isDir(parent)) throw errno(underFile("rename"), "rename", from, to);
+    this.landingParent(dst, "rename", from, to);
     if (isBelow(dst, src)) throw errno("EINVAL", "rename", from, to);
-    const moved = this.collect(src, source);
+    const moved = this.collect(src, source, byValue);
     this.dropBelow(src);
     this.set(src, { kind: "gone" }, resolve(from));
     this.dropBelow(dst);
     const spelled = resolve(to);
     for (const [rel, entry] of moved) {
-      this.set(rel === "" ? dst : join(dst, rel), entry, rel === "" ? spelled : join(spelled, rel));
+      const key = rel === "" ? dst : join(dst, rel);
+      this.set(key, entry, rel === "" ? spelled : join(spelled, rel));
+      // What a path declared secret travels with its content, so the report at the new path
+      // redacts the same values.
+      this.carrySecrets(rel === "" ? src : join(src, rel), key);
     }
+  }
+
+  /** The secret declarations of `from` join `to`'s (a moved or copied file keeps its redaction). */
+  private carrySecrets(from: string, to: string): void {
+    const keys = this.secrets.get(from);
+    if (keys !== undefined) {
+      const declared = this.secrets.get(to) ?? new Set<string>();
+      for (const k of keys) declared.add(k);
+      this.secrets.set(to, declared);
+    }
+    if (this.secretFiles.has(from)) this.secretFiles.add(to);
   }
 
   /** Every entry of the subtree at `key`, keyed by path relative to it (the root is ""), as the run
    *  sees it. */
-  private collect(key: string, seen: Present, rel = ""): [string, OverlayEntry][] {
+  /** Every entry of the subtree at `key`, keyed by path relative to it (the root is ""), as the run
+   *  sees it; a disk file is carried by value when asked (the source will not outlive the run). */
+  private collect(
+    key: string,
+    seen: Present,
+    byValue: boolean,
+    rel = "",
+  ): [string, OverlayEntry][] {
     const entry = seen.kind === "disk" ? materialize(key, seen.stats, true) : { ...seen };
     if (entry.kind === "dir") entry.fresh = true;
+    if (byValue && entry.kind === "file" && "disk" in entry.content) {
+      entry.content = { bytes: new Uint8Array(readFileSync(entry.content.disk)) };
+    }
     const out: [string, OverlayEntry][] = [[rel, entry]];
     if (entry.kind !== "dir") return out;
     for (const name of this.readdir(key)) {
       const child = join(key, name);
       const childSeen = this.view(child, "rename", child, false);
       if (childSeen === null) continue;
-      out.push(...this.collect(child, childSeen, rel === "" ? name : join(rel, name)));
+      out.push(...this.collect(child, childSeen, byValue, rel === "" ? name : join(rel, name)));
     }
     return out;
   }
 }
 
-/** A disk entry as the layer carries it: a file by path, so its bytes are never decoded here. */
+/** A disk entry as the layer carries it: a file by path, so its bytes are never decoded here; a
+ *  link by its target text. */
 function materialize(
   key: string,
   stats: Stats,
   fresh: boolean,
 ): Exclude<OverlayEntry, { kind: "gone" }> {
   const mode = stats.mode & 0o777;
+  if (stats.isSymbolicLink()) {
+    return { kind: "link", target: readlinkSync(key), mtimeMs: stats.mtimeMs };
+  }
   if (stats.isDirectory()) return { kind: "dir", mode, mtimeMs: stats.mtimeMs, fresh };
   return { kind: "file", content: { disk: key }, mode, mtimeMs: stats.mtimeMs };
 }

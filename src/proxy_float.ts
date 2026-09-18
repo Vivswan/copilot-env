@@ -12,13 +12,12 @@
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import { wrapToTerminal } from "./utils/logger.ts";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
-import { atomicWriteFile, removeTreeReported } from "./utils/report_write.ts";
+import * as fs from "./utils/fs_facade.ts";
 import {
   configDefaultNumber,
   configSetCommand,
@@ -36,7 +35,7 @@ import {
 import { pickAgedVersion } from "./utils/aged_version.ts";
 import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
-import { entryAbsent, readTextOrNull, readTextResult } from "./utils/fs.ts";
+import { isEnoentOrNotdir } from "./utils/fs.ts";
 import { parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { ASSET_ROOT } from "./utils/root.ts";
@@ -292,7 +291,13 @@ export function proxyLockFile(rootHome: string): string {
  *  lacks. The source is read through ASSET_ROOT because a compiled install root carries no
  *  deno.json on disk. */
 export function writeDaemonConfig(rootHome: string, sourceRoot: string = ASSET_ROOT): void {
-  atomicWriteFile(daemonConfigFile(rootHome), renderDaemonConfig(sourceRoot));
+  fs.writeText(daemonConfigFile(rootHome), renderDaemonConfig(sourceRoot), { secretKeys: [] });
+}
+
+/** Text-or-null over the facade, so a record this run planned reads back inside a dry run. */
+function readTextOrNull(path: string): string | null {
+  const read = fs.readTextResult(path);
+  return read.kind === "text" ? read.text : null;
 }
 
 function renderDaemonConfig(sourceRoot: string): string {
@@ -364,7 +369,9 @@ export function writeResolvedVersionRecord(
     "deno_dir": denoDir,
     ...(buildFingerprint === undefined ? {} : { "build_fingerprint": buildFingerprint }),
   };
-  atomicWriteFile(resolvedVersionFile(rootHome), `${JSON.stringify(record, null, 2)}\n`);
+  fs.writeText(resolvedVersionFile(rootHome), `${JSON.stringify(record, null, 2)}\n`, {
+    secretKeys: [],
+  });
 }
 
 /** The resolution timestamp stays untouched: build identity and freshness are separate questions,
@@ -375,7 +382,7 @@ function ensureDaemonConfigCurrent(rootHome: string): void {
   const record = readResolvedVersionRecord(rootHome);
   if (record === null) return; // nothing resolved -> the resolve-time paths own the config
   const fingerprint = daemonConfigFingerprint();
-  if (record.buildFingerprint === fingerprint && existsSync(daemonConfigFile(rootHome))) return;
+  if (record.buildFingerprint === fingerprint && fs.exists(daemonConfigFile(rootHome))) return;
   writeDaemonConfig(rootHome);
   writeResolvedVersionRecord(
     rootHome,
@@ -402,7 +409,7 @@ export type NpmrcStatus =
  *  ownership was not proven, so the write would clobber content we never saw. */
 export function ensureProxyNpmrc(rootHome: string): NpmrcStatus {
   const path = join(rootHome, ".npmrc");
-  const read = readTextResult(path);
+  const read = fs.readTextResult(path);
   if (read.kind === "unreadable") {
     return { "kind": "kept-foreign", "path": path };
   }
@@ -413,7 +420,7 @@ export function ensureProxyNpmrc(rootHome: string): NpmrcStatus {
   if (existing === NPMRC_CONTENT) {
     return { "kind": "current", "path": path };
   }
-  atomicWriteFile(path, NPMRC_CONTENT);
+  fs.writeText(path, NPMRC_CONTENT);
   return { "kind": "written", "path": path };
 }
 
@@ -538,7 +545,7 @@ function denoCacheVersion(ctx: FloatContext, version: string, cooldownSeconds: n
 function dropSupersededCache(ctx: FloatContext, version: string): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record === null || record.version === version) return;
-  removeTreeReported(proxyDenoDir(ctx.rootHome));
+  fs.rm(proxyDenoDir(ctx.rootHome), { recursive: true, force: true });
 }
 
 /** "unproven" is a look that FAILED (the deno spawn itself). A string union rather than a boolean
@@ -551,7 +558,7 @@ type CacheLook = "resolves" | "missing" | "unproven";
  *  re-warm the cache. */
 function cacheResolves(ctx: FloatContext, version: string, denoDir: string): CacheLook {
   const config = daemonConfigFile(ctx.rootHome);
-  if (!existsSync(config)) return "missing";
+  if (!fs.exists(config)) return "missing";
   const pinned = ["--json", "--config", config, "--lock", proxyLockFile(ctx.rootHome)];
   const options = { "cwd": ctx.rootHome, "env": denoEnv(denoDir) };
 
@@ -566,11 +573,10 @@ function cacheResolves(ctx: FloatContext, version: string, denoDir: string): Cac
       // removed it this invocation), and the keep paths must never vouch for a cache that is gone;
       // any other stat error is itself a failed look.
       try {
-        return statSync(denoDir, { "throwIfNoEntry": false }) === undefined
-          ? "missing"
-          : "unproven";
-      } catch {
+        fs.stat(denoDir);
         return "unproven";
+      } catch (e) {
+        return isEnoentOrNotdir(e) ? "missing" : "unproven";
       }
     }
     if (result.status !== 0) return "missing";
@@ -605,7 +611,7 @@ export function removeProxyFloatArtifacts(
   rootHome: string = resolveRootHome(),
   paths: readonly string[] = proxyFloatArtifactPaths(rootHome),
 ): void {
-  for (const path of paths) removeTreeReported(path);
+  for (const path of paths) fs.rm(path, { recursive: true, force: true });
 }
 
 /** The uninstall plan resolves this once and renders it both as the dry run and the live removal.
@@ -619,7 +625,7 @@ export function proxyFloatArtifactPaths(rootHome: string): string[] {
     join(rootHome, "proxy"),
     ...(readTextOrNull(npmrc)?.includes(NPMRC_MARKER) ? [npmrc] : []),
   ];
-  return [...new Set(candidates)].filter((path) => !entryAbsent(path));
+  return [...new Set(candidates)].filter((path) => fs.readTextResult(path).kind !== "absent");
 }
 
 // --- Float actions -----------------------------------------------------------------

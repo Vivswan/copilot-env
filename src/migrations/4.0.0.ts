@@ -6,7 +6,6 @@
 //   `src/scripts/proxy-token.{sh,ps1}`   -> `agent proxy-token`
 //   Claude apiKeyHelper as a helper FILE -> the inline command
 //   autoupdate state's `enabled` field   -> the `auto-update` config key
-import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
 import { autoupdateStateFile } from "../autoupdate/paths.ts";
@@ -25,8 +24,8 @@ import {
 } from "../copilot_api/profile.ts";
 import { MARKER, MARKER_END, shellTargetFiles } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
-import { isEnoent, readTextResult } from "../utils/fs.ts";
-import { chmodReported, removeReported, writeFileReported } from "../utils/report_write.ts";
+import { isEnoent } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import type { Migration } from "./index.ts";
 
@@ -119,12 +118,13 @@ export function fenceShellBlocks(): void {
   const failed: string[] = [];
   for (const file of shellTargetFiles()) {
     try {
-      const read = readTextResult(file);
+      const read = fs.readTextResult(file);
       if (read.kind === "absent") continue;
       if (read.kind === "unreadable") throw new Error(read.error);
       const fenced = fenceUnfencedBlocks(read.text);
       if (fenced === read.text) continue;
-      writeFileReported(file, fenced, { detail: "copilot-env shell block fenced" });
+      // In place: an rc file may be the user's own symlink, which a rename would replace.
+      fs.writeText(file, fenced, { atomic: false, detail: "copilot-env shell block fenced" });
     } catch (e) {
       consola.warn(`  could not fence ${file}: ${errMessage(e)}`);
       failed.push(file);
@@ -152,7 +152,7 @@ const LEGACY_DIRECT_ENV_KEY = "COPILOT_ENV_GH_TOKEN";
 export function removeEnvKey(envFile: string, key: string): boolean {
   let existing: string;
   try {
-    existing = readFileSync(envFile, "utf8");
+    existing = fs.readText(envFile);
   } catch (e) {
     if (isEnoent(e)) return false;
     throw e;
@@ -163,13 +163,15 @@ export function removeEnvKey(envFile: string, key: string): boolean {
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
   const kept = lines.filter((line) => !matcher.test(line));
   if (kept.length === lines.length) return false;
-  // An env file holds tokens: a dry run names the path and prints neither side.
-  writeFileReported(envFile, kept.length ? `${kept.join("\n")}\n` : "", {
+  // An env file holds tokens: a dry run names the path and prints neither side. In place: the
+  // file is Codex's own, rewritten where it stands.
+  fs.writeText(envFile, kept.length ? `${kept.join("\n")}\n` : "", {
+    atomic: false,
     detail: `${key} removed`,
     secret: true,
   });
   try {
-    chmodReported(envFile, 0o600);
+    fs.chmod(envFile, 0o600);
   } catch {
     // the content is what matters; a mode the platform refuses stays as it was
   }
@@ -336,7 +338,7 @@ function releasedHelperBodies(mode: "direct" | "proxy", profile: Profile): RegEx
 function claudeSettingsProfiles(claudeHome: string): Profile[] {
   const names: ProfileName[] = [];
   try {
-    for (const entry of readdirSync(claudeHome)) {
+    for (const entry of fs.readdir(claudeHome)) {
       const m = /^settings-(.+)\.json$/.exec(entry);
       if (m !== null && m[1] !== undefined && isValidProfileName(m[1])) {
         names.push(parseProfileName(m[1]));
@@ -357,7 +359,7 @@ function claudeSettingsProfiles(claudeHome: string): Profile[] {
  */
 export function rewriteLegacyClaudeHelper(claudeHome: string, profile: Profile): boolean {
   const settingsPath = settingsPathFor(claudeHome, profile);
-  const read = readTextResult(settingsPath);
+  const read = fs.readTextResult(settingsPath);
   if (read.kind === "absent") return false;
   if (read.kind === "unreadable") throw new Error(`could not read it (${read.error})`);
   const doc = parseJsonRecord(read.text);
@@ -367,7 +369,7 @@ export function rewriteLegacyClaudeHelper(claudeHome: string, profile: Profile):
   const paths = legacyHelperPaths(claudeHome, profile);
   const mode = helper === paths.direct ? "direct" : helper === paths.proxy ? "proxy" : null;
   if (mode === null) return false;
-  const body = readTextResult(helper);
+  const body = fs.readTextResult(helper);
   if (body.kind === "unreadable") throw new Error(`could not read ${helper} (${body.error})`);
   if (
     body.kind === "absent" ||
@@ -379,12 +381,14 @@ export function rewriteLegacyClaudeHelper(claudeHome: string, profile: Profile):
     return false;
   }
   doc.apiKeyHelper = mode === "direct" ? directHelperCommand(profile) : proxyHelperCommand(profile);
-  // settings.json may carry a baked ANTHROPIC_AUTH_TOKEN: a dry run names the path alone.
-  writeFileReported(settingsPath, `${JSON.stringify(doc, null, 2)}\n`, {
+  // settings.json may carry a baked ANTHROPIC_AUTH_TOKEN: a dry run names the path alone. In
+  // place: the file may be the user's own symlink into a dotfiles checkout.
+  fs.writeText(settingsPath, `${JSON.stringify(doc, null, 2)}\n`, {
+    atomic: false,
     detail: "apiKeyHelper inlined",
     secret: true,
   });
-  removeReported(helper, "retired copilot-env helper file");
+  fs.rm(helper, { force: true, detail: "retired copilot-env helper file" });
   return true;
 }
 

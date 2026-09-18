@@ -1,7 +1,6 @@
 // The `agent start` launch pipeline, one named function per step; src/commands/start.ts orchestrates
 // them. String literals here are external contracts (config-file keys, copilot-api model ids, log
 // markers): never change them in a refactor.
-import * as fs from "node:fs";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
@@ -42,7 +41,7 @@ import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "../scrip
 import { isStandaloneBinary } from "../utils/root.ts";
 import { COLOR_ENABLED, paintFor } from "../utils/ansi.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
-import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { ensureSidecar, resolveDenoBin } from "./sidecar.ts";
 import {
   checkProxyPort,
@@ -102,7 +101,7 @@ const HELD_START_LOCK: HeldStartLock = Object.freeze({ held: true } as HeldStart
  *  as long as it runs -- and an unopenable `.start.lock.oslock` (EACCES) retries forever, with no holder. */
 export function withStartLock<T>(fn: (lock: HeldStartLock) => Promise<T>): Promise<T> {
   const lockPath = startLockPath();
-  mkdirReported(dirname(lockPath));
+  fs.mkdir(dirname(lockPath));
   return withFileLock(lockPath, {
     staleMs: Number.POSITIVE_INFINITY,
     waitMs: Number.POSITIVE_INFINITY,
@@ -759,8 +758,9 @@ export function spawnConfiguredDaemon(opts: {
   }
   const relaunch = (p: number): number => {
     // Blanked only HERE, at spawn time: a failure BEFORE launch (a login error, an identity-probe
-    // rejection) keeps the previous run's log for diagnosis.
-    writeFileReported(logFile, "", { detail: "proxy log, blanked for this launch" });
+    // rejection) keeps the previous run's log for diagnosis. In place (not atomic): the file the
+    // daemon holds open is the one truncated.
+    fs.writeText(logFile, "", { atomic: false, detail: "proxy log, blanked for this launch" });
     return launchDaemon({
       port: p,
       logFile,
@@ -820,7 +820,7 @@ export async function awaitReadiness(opts: {
   if (!pidAlive(pid)) {
     let logContent = "";
     try {
-      logContent = fs.readFileSync(logFile, "utf-8");
+      logContent = fs.readText(logFile);
     } catch {
       logContent = "";
     }
@@ -874,7 +874,7 @@ export async function awaitReadiness(opts: {
   for (let i = 0; i < maxWait; i++) {
     if (!pidAlive(pid)) {
       try {
-        const hint = copilotTokenFailureHint(fs.readFileSync(logFile, "utf-8"), profile);
+        const hint = copilotTokenFailureHint(fs.readText(logFile), profile);
         if (hint) consola.error(hint);
       } catch {
         // A missing or unreadable log just means no hint.
@@ -883,7 +883,7 @@ export async function awaitReadiness(opts: {
     }
     let logContent = "";
     try {
-      const logBytes = fs.readFileSync(logFile);
+      const logBytes = fs.readBytes(logFile);
       if (logBytes.length < printedLogBytes) {
         printedLogBytes = 0;
       }
@@ -891,7 +891,7 @@ export async function awaitReadiness(opts: {
         process.stderr.write(logBytes.subarray(printedLogBytes));
         printedLogBytes = logBytes.length;
       }
-      logContent = logBytes.toString("utf-8");
+      logContent = new TextDecoder().decode(logBytes);
     } catch {
       // A failed read is not a proven "not listening", but the loop RE-READS every second, so a
       // transient failure self-heals; a persistently unreadable log still fails loudly below,

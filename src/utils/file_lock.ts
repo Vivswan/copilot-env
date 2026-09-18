@@ -11,11 +11,11 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
 import { isEnoentOrNotdir } from "./fs.ts";
+import * as fs from "./fs_facade.ts";
+import { dryRunActive } from "./fs_facade.ts";
 import { isRecord } from "./json.ts";
 import { pidAlive } from "./pid.ts";
-import { mkdirReported } from "./report_write.ts";
 import { sleepSync } from "./time.ts";
-import { dryRunActive } from "./write_session.ts";
 
 // --- the shared bounded-wait acquisition policy --------------------------------
 //
@@ -172,8 +172,11 @@ export function tryAcquireFileLock(
     return ours.refresh(renderMarker(nowMs, jsonMarker));
   }
 
+  // The lock's directory is the store's home, made through the seam so a home outside
+  // copilot-env's own (its parents included) is named on stderr; the lock file itself stays raw
+  // (a dry run takes no lock, see withFileLockSync).
   try {
-    mkdirReported(dirname(lockPath));
+    fs.mkdir(dirname(lockPath));
   } catch {
     // if we can't even create the dir, the open below fails and the caller proceeds unlocked
   }

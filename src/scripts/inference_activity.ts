@@ -10,7 +10,7 @@
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import type { Profile } from "../copilot_api/profile.ts";
-import { removeReported } from "../utils/report_write.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { recordDaemonServer } from "./daemon_shutdown.ts";
 
 /** The file is for out-of-process readers (`agent health`); the watchdog reads memory directly. */
@@ -79,7 +79,7 @@ export function persistedInferenceMs(profile: Profile = null): number {
  *  mark. */
 export function clearPersistedInferenceActivity(profile: Profile = null): void {
   try {
-    removeReported(new CopilotApiPaths(profile).activityFile);
+    fs.rm(new CopilotApiPaths(profile).activityFile, { force: true });
   } catch {
     // best-effort: a stale mark only staleness-skews the health display
   }

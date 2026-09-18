@@ -71,7 +71,8 @@ import { COLOR_ENABLED, cyan, palette } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
 import { formatTable, printWrapped, terminalWidth, wrapLine, wrapMessage } from "../utils/table.ts";
-import { dryRunActive, PLANNED_SECRET } from "../utils/write_session.ts";
+import { dryRunActive } from "../utils/fs_facade.ts";
+import { PLANNED_SECRET } from "../utils/write_session.ts";
 import { runDryRun } from "./dry_run.ts";
 
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.

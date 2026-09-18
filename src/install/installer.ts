@@ -16,35 +16,15 @@
 // the whole commit of an update and old version dirs can be garbage-collected safely.
 import { spawnSync, type StdioOptions } from "node:child_process";
 import { configSetCommand } from "../copilot_api/env_config.ts";
-import {
-  existsSync,
-  lstatSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { consola } from "consola";
 
 import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
-import { entryAbsent } from "../utils/fs.ts";
-import {
-  atomicSymlink,
-  atomicWriteFile,
-  chmodReported,
-  copyFileReported,
-  mkdirReported,
-  removeEmptyDirReported,
-  removeReported,
-  removeTreeReported,
-  RenameRefusedError,
-  symlinkReported,
-  writeFileReported,
-} from "../utils/report_write.ts";
+import { isEnoentOrNotdir } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
 import {
   ASSET_ROOT,
   CURRENT_LINK,
@@ -64,7 +44,18 @@ import {
   INSTALLED_BINARY_WINDOWS,
   installedBinaryName,
 } from "./targets.ts";
-import { dryRunActive, plannedPresence } from "../utils/write_session.ts";
+
+/** Whether an entry (a link itself, never what it points at) sits at `path`. Fail-closed: only
+ *  lstat's own ENOENT/ENOTDIR reads as absent. */
+function entryPresent(path: string): boolean {
+  try {
+    fs.lstat(path);
+    return true;
+  } catch (e) {
+    if (isEnoentOrNotdir(e)) return false;
+    return true;
+  }
+}
 
 /** Embedded AND materialized: something outside this process opens these by path (the daemon's
  *  `--preload` shims, the shell payload the rc block sources, the plugin/skill surface other
@@ -93,6 +84,9 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/utils/ansi.ts",
   "src/utils/file_lock.ts",
   "src/utils/fs.ts",
+  "src/utils/fs_disk.ts",
+  "src/utils/fs_facade.ts",
+  "src/utils/fs_overlay.ts",
   "src/utils/hostname.ts",
   "src/utils/json.ts",
   "src/utils/logger.ts",
@@ -169,13 +163,13 @@ export function pointCurrentAt(top: string, versionName: string): void {
     // target to put back (a first install), or when the process dies between the two calls; each
     // is repaired by re-running the update or installer.
     const previous = readCurrentTargetPath(top);
-    removeEmptyDirReported(link);
+    if (entryPresent(link)) fs.rmdir(link);
     try {
-      symlinkReported(target, link, "junction");
+      fs.symlink(target, link, "junction");
     } catch (error) {
       if (previous !== null) {
         try {
-          symlinkReported(previous, link, "junction");
+          fs.symlink(previous, link, "junction");
         } catch {
           // Double fault: the layout is now LINKLESS. Say so, instead of reporting only the
           // creation failure as if nothing else changed.
@@ -190,21 +184,21 @@ export function pointCurrentAt(top: string, versionName: string): void {
     return;
   }
   // A corrupt layout may leave a REAL directory at the link path; rename cannot replace one.
-  // rmdirSync is non-recursive on purpose: an empty stray dir is repaired, a non-empty one is
+  // rmdir is non-recursive on purpose: an empty stray dir is repaired, a non-empty one is
   // unknown data and fails the flip loudly.
   try {
-    if (!lstatSync(link).isSymbolicLink()) removeEmptyDirReported(link);
+    if (!fs.lstat(link).isSymbolicLink()) fs.rmdir(link);
   } catch (error) {
     if ((error as { code?: string }).code !== "ENOENT") throw error;
   }
-  atomicSymlink(target, link);
+  fs.atomicSymlink(target, link);
 }
 
 /** The current link's raw target path (absolute on Windows, `\\?\` stripped),
  *  or null when there is no readable link. */
 function readCurrentTargetPath(top: string): string | null {
   try {
-    return readlinkSync(currentLinkPath(top)).replace(/^\\\\\?\\/, "");
+    return fs.readlink(currentLinkPath(top)).replace(/^\\\\\?\\/, "");
   } catch {
     return null;
   }
@@ -226,24 +220,24 @@ export function readCurrentVersionName(top: string): string | null {
 function writeShimFile(to: string, text: string, executable: boolean, logger: ShimLogger): void {
   let current: string | null;
   try {
-    current = readFileSync(to, "utf-8");
+    current = fs.readText(to);
   } catch {
     current = null; // absent or unreadable: write it below
   }
   if (current === text) {
     // Still repair a lost exec bit: a crash between an earlier write and its chmod would
     // otherwise persist across retries.
-    if (executable && (statSync(to).mode & 0o100) === 0) chmodReported(to, 0o755);
+    if (executable && (fs.stat(to).mode & 0o100) === 0) fs.chmod(to, 0o755);
     return;
   }
   try {
-    atomicWriteFile(to, text, executable ? 0o755 : undefined);
+    fs.writeText(to, text, { mode: executable ? 0o755 : undefined });
   } catch (error) {
-    // Only a refused publish falls back to the direct write; a failure to stage the text (disk
-    // full, I/O) propagates and never truncates the live shim.
-    if (!(error instanceof RenameRefusedError)) throw error;
-    writeFileReported(to, text);
-    if (executable) chmodReported(to, 0o755);
+    // Only a refused publish falls back to the direct, in-place write; a failure to stage the
+    // text (disk full, I/O) propagates and never truncates the live shim.
+    if (!(error instanceof fs.RenameRefusedError)) throw error;
+    fs.writeText(to, text, { atomic: false });
+    if (executable) fs.chmod(to, 0o755);
   }
   logger.info(`Wrote launcher shim ${to}`);
 }
@@ -283,8 +277,8 @@ export function writeTopLevelShims(top: string, logger: ShimLogger = consola): v
 /** Markers + .git: the shape of a LIVE source checkout (see CHECKOUT_MARKERS).
  *  Every destructive sweep in this module refuses such a root outright. */
 export function isCheckoutShapedRoot(root: string): boolean {
-  return CHECKOUT_MARKERS.some((marker) => existsSync(join(root, marker))) &&
-    existsSync(join(root, ".git"));
+  return CHECKOUT_MARKERS.some((marker) => fs.exists(join(root, marker))) &&
+    fs.exists(join(root, ".git"));
 }
 
 /** The bootstrap `copilot-env(.exe)` install.sh / install.ps1 downloaded to `<top>/bin`, superseded
@@ -293,7 +287,7 @@ export function bootstrapBinaryPaths(top: string): string[] {
   const binDir = join(top, "bin");
   let entries: string[];
   try {
-    entries = readdirSync(binDir);
+    entries = fs.readdir(binDir);
   } catch {
     return [];
   }
@@ -305,7 +299,7 @@ export function bootstrapBinaryPaths(top: string): string[] {
 export function removeBootstrapBinary(paths: readonly string[]): void {
   for (const path of paths) {
     try {
-      removeReported(path);
+      fs.rm(path, { force: true });
     } catch {
       // still the running image (Windows); the next update sweeps it
     }
@@ -318,14 +312,14 @@ export function removeBootstrapBinary(paths: readonly string[]): void {
 export function removeVersionDirsExcept(top: string, keep: ReadonlySet<string>): void {
   let entries: string[];
   try {
-    entries = readdirSync(versionsDirPath(top));
+    entries = fs.readdir(versionsDirPath(top));
   } catch {
     return;
   }
   for (const entry of entries) {
     if (keep.has(entry)) continue;
     try {
-      removeTreeReported(join(versionsDirPath(top), entry));
+      fs.rm(join(versionsDirPath(top), entry), { recursive: true, force: true });
     } catch {
       // in use; the next update retries
     }
@@ -463,13 +457,15 @@ export type InstallPlan =
 function canonicalizeForGuard(path: string): string | null {
   let base = resolve(path);
   const tail: string[] = [];
-  while (entryAbsent(base)) {
+  while (!entryPresent(base)) {
     const parent = dirname(base);
     if (parent === base) break; // walked off the root; realpath below decides
     tail.unshift(basename(base));
     base = parent;
   }
   try {
+    // The OS's own canonical form (8.3 short names and junctions on Windows); a read outside the
+    // seam, since a dry run resolves the same disk path.
     base = realpathSync.native(base);
   } catch {
     return null;
@@ -500,17 +496,16 @@ function unsafeRootReason(root: string): string | null {
 function collectAssetCopies(sourceRoot: string, root: string, dir: string): AssetCopy[] {
   const copies: AssetCopy[] = [];
   const walk = (rel: string): void => {
-    const entries = readdirSync(join(sourceRoot, rel), { withFileTypes: true });
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      const entryRel = join(rel, entry.name);
-      if (entry.isDirectory()) {
+    const names = fs.readdir(join(sourceRoot, rel)).sort((a, b) => a.localeCompare(b));
+    for (const name of names) {
+      const entryRel = join(rel, name);
+      if (fs.stat(join(sourceRoot, entryRel)).isDirectory()) {
         walk(entryRel);
       } else {
         copies.push({
           from: join(sourceRoot, entryRel),
           to: join(root, entryRel),
-          executable: entry.name.endsWith(".sh"),
+          executable: name.endsWith(".sh"),
         });
       }
     }
@@ -531,8 +526,8 @@ function guardInstalledTarget(root: string): void {
 
   // `.git` (a directory, or a file in a worktree) beside the markers is what makes a root a live
   // checkout reached through COPILOT_ENV_INSTALL_ROOT.
-  const presentMarkers = CHECKOUT_MARKERS.filter((marker) => existsSync(join(root, marker)));
-  if (presentMarkers.length > 0 && existsSync(join(root, ".git"))) {
+  const presentMarkers = CHECKOUT_MARKERS.filter((marker) => fs.exists(join(root, marker)));
+  if (presentMarkers.length > 0 && fs.exists(join(root, ".git"))) {
     throw new Error(
       `refusing to install into ${root}: it holds ${presentMarkers[0]} and .git, so it is a ` +
         `source checkout, and installing would overwrite its bin/agent and working files`,
@@ -544,7 +539,7 @@ function guardInstalledTarget(root: string): void {
 function planMaterialization(root: string, sourceRoot: string): Materialization {
   const copies: AssetCopy[] = [];
   for (const dir of MATERIALIZED_ASSET_DIRS) {
-    if (!existsSync(join(sourceRoot, dir))) {
+    if (!fs.exists(join(sourceRoot, dir))) {
       throw new Error(
         `embedded assets are missing ${dir}; deno.json compile.include did not embed it`,
       );
@@ -552,7 +547,7 @@ function planMaterialization(root: string, sourceRoot: string): Materialization 
     copies.push(...collectAssetCopies(sourceRoot, root, dir));
   }
   for (const file of MATERIALIZED_ASSET_FILES) {
-    if (!existsSync(join(sourceRoot, file))) {
+    if (!fs.exists(join(sourceRoot, file))) {
       throw new Error(
         `embedded assets are missing ${file}; deno.json compile.include did not embed it`,
       );
@@ -565,7 +560,7 @@ function planMaterialization(root: string, sourceRoot: string): Materialization 
   }
   // Verified, never copied: these are read out of the VFS in-process.
   for (const file of BUNDLED_ONLY_ASSETS) {
-    if (!existsSync(join(sourceRoot, file))) {
+    if (!fs.exists(join(sourceRoot, file))) {
       throw new Error(
         `embedded assets are missing ${file}; deno.json compile.include did not embed it`,
       );
@@ -663,21 +658,22 @@ export function buildInstallPlan(
   };
 }
 
-/** read+write instead of copyFileSync: the source side may be a compiled VFS path, which is only
- *  guaranteed readable through in-process reads. */
+/** read+write instead of a copy: the source side may be a compiled VFS path, which is only
+ *  guaranteed readable through in-process reads. In place: a same-version reinstall refreshes the
+ *  live version root where it stands. */
 function applyMaterialization(m: Materialization): void {
   for (const copy of m.copies) {
-    mkdirReported(dirname(copy.to));
-    writeFileReported(copy.to, readFileSync(copy.from));
-    if (copy.executable) chmodReported(copy.to, 0o755);
+    fs.mkdir(dirname(copy.to));
+    fs.writeBytes(copy.to, fs.readBytes(copy.from), { atomic: false });
+    if (copy.executable) fs.chmod(copy.to, 0o755);
   }
   for (const shim of m.shims) {
-    mkdirReported(dirname(shim.to));
-    writeFileReported(shim.to, shim.text);
-    if (shim.executable) chmodReported(shim.to, 0o755);
+    fs.mkdir(dirname(shim.to));
+    fs.writeText(shim.to, shim.text, { atomic: false });
+    if (shim.executable) fs.chmod(shim.to, 0o755);
   }
-  mkdirReported(dirname(m.manifest.to));
-  writeFileReported(m.manifest.to, m.manifest.text);
+  fs.mkdir(dirname(m.manifest.to));
+  fs.writeText(m.manifest.to, m.manifest.text, { atomic: false });
 }
 
 /** Where a post-flip problem is announced (the global consola, or an update's stderr logger). */
@@ -703,7 +699,7 @@ export function runPostFlipMigrations(
 ): void {
   const args = ["migrate", stripV(from), stripV(to)];
   const retry = `re-run it with \`agent ${args.join(" ")}\``;
-  if (dryRunActive()) {
+  if (fs.dryRunActive()) {
     logger.warn(
       `Would run the new release's migrations through ${binary}: agent ${
         args.join(" ")
@@ -738,13 +734,13 @@ function wireShellsThroughInstalledBinary(
 ): void {
   if (wires.length === 0) return;
   const binary = join(versionRoot, "bin", installedBinaryName());
-  if (!(plannedPresence(binary) ?? existsSync(binary))) {
+  if (!fs.exists(binary)) {
     consola.warn("No installed binary to wire the shell with; run 'agent shell' afterwards.");
     return;
   }
   for (const wire of wires) {
     const args = ["shell", ...(wire.allHosts ? ["--all-hosts"] : [])];
-    if (dryRunActive()) {
+    if (fs.dryRunActive()) {
       consola.info(
         `Would wire the shell integration through ${binary}: agent ${
           args.join(" ")
@@ -776,9 +772,9 @@ export function applyInstallPlan(plan: InstallPlan): void {
     // a running image on Windows.
     applyMaterialization(plan);
     if (plan.binary !== null) {
-      mkdirReported(dirname(plan.binary.to));
-      copyFileReported(plan.binary.from, plan.binary.to);
-      if (process.platform !== "win32") chmodReported(plan.binary.to, 0o755);
+      fs.mkdir(dirname(plan.binary.to));
+      fs.copyFile(plan.binary.from, plan.binary.to);
+      if (process.platform !== "win32") fs.chmod(plan.binary.to, 0o755);
     }
     pointCurrentAt(plan.top, plan.versionName);
     for (const shim of plan.topShims) writeShimBestEffort(shim, consola);

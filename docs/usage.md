@@ -24,7 +24,7 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #                              --get = get identity, --del = unset identity
                            #   set <key> <value>          its preference (identity <id|auto> pins the client identity;
                            #                              no name: = agent config set for a shared proxy.*/probe.* key)
-                           #   unset <key>                drop one (no name: = agent config unset)
+                           #   unset <key>                drop one (no name: = agent config unset for a shared proxy.*/probe.* key)
                            #   get [<key>]                the value in effect for it and its origin, or every key of the profile
                            #   sync [--claude|--codex]    re-render its agent files from the store: both agents, or one
                            #   check                      its recorded mode; exits 0 direct, 2 proxy, 1 none or partial

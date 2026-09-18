@@ -9,9 +9,30 @@ description: Installs the current Claude Code and Codex CLI releases with npm an
 runs:
   using: composite
   steps:
+    # `npm install -g` can exit 0 and still drop an optional platform package (windows-latest
+    # once added 3 packages instead of 4 and lost @openai/codex-win32-x64), so the CLI failing
+    # at its first run is what the suite would otherwise report twenty minutes later.
     - name: Install the current Claude Code and Codex CLI releases
       shell: bash
       run: |
-        npm install -g @anthropic-ai/claude-code @openai/codex
-        echo "claude: $(claude --version)"
-        echo "codex: $(codex --version)"
+        install_and_verify() {
+          local cli="$1" package="$2" attempt output status version
+          for attempt in 1 2; do
+            if [ "$attempt" = 2 ]; then
+              echo "::warning::$cli does not run after installing $package; reinstalling once"
+              npm uninstall -g "$package" || true
+            fi
+            status=0
+            output="$(npm install -g "$package" 2>&1)" || status=$?
+            printf '%s\n' "$output"
+            [ "$status" = 0 ] || echo "npm install -g $package exited $status"
+            if version="$("$cli" --version)" && [[ "$version" == *[0-9]* ]]; then
+              echo "$cli: $version"
+              return 0
+            fi
+          done
+          echo "::error::$cli does not run after two installs of $package; npm output:%0A$(printf '%s\n' "$output" | tail -n 40 | awk '{printf "%s%%0A", $0}')"
+          return 1
+        }
+        install_and_verify claude @anthropic-ai/claude-code
+        install_and_verify codex @openai/codex

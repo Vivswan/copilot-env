@@ -1,7 +1,7 @@
-import { existsSync, readdirSync, type Stats, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { hideWritesUnder } from "../utils/report_write.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
 import { isValidProfileName, parseProfileName, type Profile, type ProfileName } from "./profile.ts";
@@ -34,7 +34,7 @@ export function usageDbsUnderHome(home: string): string[] {
   const runDir = join(home, RUN_DIR_NAME);
   let hosts: string[] = [];
   try {
-    hosts = readdirSync(runDir);
+    hosts = fs.readdir(runDir);
   } catch (e) {
     // Only a MISSING dir reads as "no hosts"; any other failure propagates, because this list is rendered
     // as "no usage databases found" and summed into a cost total, where a silently short answer is worse
@@ -55,9 +55,9 @@ export function usageDbsUnderHome(home: string): string[] {
 
 /** Only ENOENT/ENOTDIR read as "nothing there"; a swallowed stat error would silently drop a DB from the
  *  cost totals this feeds. */
-function statIfPresent(path: string): Stats | null {
+function statIfPresent(path: string): fs.EntryStats | null {
   try {
-    return statSync(path);
+    return fs.stat(path);
   } catch (e) {
     if (isEnoentOrNotdir(e)) return null;
     throw e;
@@ -123,7 +123,7 @@ export function allDaemonHomes(): string[] {
  *  daemons from the orphan sweep, where an incomplete answer is worse than an error. */
 export function profileHomeNames(): ProfileName[] {
   try {
-    return readdirSync(join(resolveRootHome(), PROFILES_DIR_NAME), { withFileTypes: true })
+    return fs.readdirEntries(join(resolveRootHome(), PROFILES_DIR_NAME))
       .filter((entry) => entry.isDirectory() && isValidProfileName(entry.name))
       .map((entry) => parseProfileName(entry.name))
       .sort();
@@ -134,7 +134,7 @@ export function profileHomeNames(): ProfileName[] {
 }
 
 export function profileHomeExists(name: ProfileName): boolean {
-  return existsSync(profileHome(name));
+  return fs.exists(profileHome(name));
 }
 
 /** OUR per-host run state (port, pid, active CODEX_HOME) under `.run/<host>/`. */

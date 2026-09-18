@@ -2,17 +2,11 @@ import { mkdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from "
 import { join, sep } from "node:path";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { CopilotApiPaths, resolveRootHome } from "../src/copilot_api/paths.ts";
+import * as fs from "../src/utils/fs_facade.ts";
 import {
-  atomicSymlink,
-  atomicWriteFile,
   deferWriteReports,
   flushWriteReports,
   hideWritesUnder,
-  mkdirReported,
-  removeScratchDir,
-  type ScratchDir,
-  scratchDir,
-  writeFileReported,
 } from "../src/utils/report_write.ts";
 import { CHILD_VALUES, childValuesEnv, importSpecifier, ROOT, runScript } from "./helpers/run.ts";
 import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
@@ -25,6 +19,7 @@ const restoreEnv = envSnapshot();
 // reached which stream.
 
 const SEAM = join(ROOT, "src", "utils", "report_write.ts");
+const FACADE = join(ROOT, "src", "utils", "fs_facade.ts");
 
 test("every kind prints once per process, on stderr only, and a delete re-arms the path", () => {
   const dir = tempDir("copilot-report-");
@@ -35,38 +30,38 @@ test("every kind prints once per process, on stderr only, and a delete re-arms t
       script,
       [
         `import { join } from "node:path";`,
-        `import {`,
-        `  mkdirReported, removeEmptyDirReported, removeReported, renameReported, reportWrite,`,
-        `  symlinkReported, writeFileReported,`,
-        `} from ${importSpecifier(SEAM)};`,
+        `import { reportWrite } from ${importSpecifier(SEAM)};`,
+        `import * as fs from ${importSpecifier(FACADE)};`,
+        `const write = (p, text, detail) => fs.writeText(p, text, { atomic: false, detail });`,
+        `const remove = (p, detail) => fs.rm(p, { force: true, detail });`,
         `const dir = ${CHILD_VALUES}.dir;`,
         `const a = join(dir, "a.txt");`,
-        `writeFileReported(a, "1");`, // created
-        `writeFileReported(a, "2");`, // a rewrite of a path already announced: silent
+        `write(a, "1");`, // created
+        `write(a, "2");`, // a rewrite of a path already announced: silent
         `reportWrite("rewritten", a);`, // silent too
-        `removeReported(a);`, // deleted
-        `removeReported(a);`, // absent: nothing happened, nothing said
-        `writeFileReported(a, "3");`, // re-created after the delete: announced again
-        `removeReported(a);`, // and the second delete is a new epoch too
+        `remove(a);`, // deleted
+        `remove(a);`, // absent: nothing happened, nothing said
+        `write(a, "3");`, // re-created after the delete: announced again
+        `remove(a);`, // and the second delete is a new epoch too
         `const b = join(dir, "b.txt");`,
-        `writeFileReported(b, "");`,
-        `renameReported(b, join(dir, "c.txt"));`, // moved
+        `write(b, "");`,
+        `fs.rename(b, join(dir, "c.txt"));`, // moved
         // A directory target: on Windows only a junction needs no privilege, and a
         // junction is removed like a directory.
-        `const target = join(dir, "target"); mkdirReported(target);`,
+        `const target = join(dir, "target"); fs.mkdir(target);`,
         // A write refused by the OS (the path is a directory) changed nothing: no line. The
         // directory is one the seam never saw, so dedup cannot be what keeps it quiet.
-        `try { writeFileReported(join(dir, "occupied"), "x"); } catch { /* EISDIR / EPERM */ }`,
+        `try { write(join(dir, "occupied"), "x"); } catch { /* EISDIR / EPERM */ }`,
         `const type = process.platform === "win32" ? "junction" : undefined;`,
-        `const unlink = process.platform === "win32" ? removeEmptyDirReported : removeReported;`,
+        `const unlink = process.platform === "win32" ? fs.rmdir : remove;`,
         `const link = join(dir, "link");`,
-        `symlinkReported(target, link, type);`, // linked
-        `symlinkReported(target, link + "2", type); unlink(link); symlinkReported(target, link, type);`,
+        `fs.symlink(target, link, type);`, // linked
+        `fs.symlink(target, link + "2", type); unlink(link); fs.symlink(target, link, type);`,
         // A writer's meaning rides as the line's detail; mkdir's lands on the leaf only.
         `const d = join(dir, "d.txt");`,
-        `writeFileReported(d, "", { detail: "why it was written" });`,
-        `mkdirReported(join(dir, "n", "leaf"), undefined, "leaf only");`,
-        `removeReported(d, "why it went");`,
+        `write(d, "", "why it was written");`,
+        `fs.mkdir(join(dir, "n", "leaf"), { detail: "leaf only" });`,
+        `remove(d, "why it went");`,
         `console.log("stdout-untouched");`,
       ].join("\n"),
     );
@@ -118,7 +113,7 @@ const CONTRACTS: ContractCase[] = [
     name: "an atomic write whose temp path is occupied by a directory changes nothing: silent",
     setup: (dir) => mkdirSync(join(dir, `target.tmp.${process.pid}`)),
     run: (dir) => {
-      expect(() => atomicWriteFile(join(dir, "target"), "x")).toThrow();
+      expect(() => fs.writeText(join(dir, "target"), "x")).toThrow();
     },
     lines: () => [],
   },
@@ -127,7 +122,7 @@ const CONTRACTS: ContractCase[] = [
     skip: process.platform === "win32",
     setup: (dir) => writeFileSync(join(dir, `secret.tmp.${process.pid}`), "old", { mode: 0o644 }),
     run: (dir) => {
-      atomicWriteFile(join(dir, "secret"), "new", 0o600);
+      fs.writeText(join(dir, "secret"), "new", { mode: 0o600 });
       expect(statSync(join(dir, "secret")).mode & 0o777).toBe(0o600);
     },
     lines: (dir) => [
@@ -156,15 +151,15 @@ test("scratch dirs are silent, and deferred reports come out at the flush in ord
   const dir = tempDir("copilot-report-");
   try {
     deferWriteReports();
-    const scratch = scratchDir(join(dir, "scratch-"));
-    writeFileReported(join(scratch, "probe.json"), "{}");
-    removeScratchDir(scratch);
+    const scratch = fs.scratchDir(join(dir, "scratch-"));
+    fs.writeText(join(scratch, "probe.json"), "{}", { atomic: false });
+    fs.removeScratchDir(scratch);
     // A root this process never minted is not scratch: refused, never removed silently.
-    expect(() => removeScratchDir(join(dir, "permanent") as ScratchDir)).toThrow(
+    expect(() => fs.removeScratchDir(join(dir, "permanent") as fs.ScratchDir)).toThrow(
       "not a scratch dir",
     );
     const kept = join(dir, "kept.txt");
-    writeFileReported(kept, "");
+    fs.writeText(kept, "", { atomic: false });
     expect(flushWriteReports()).toEqual([`created -> ${kept}`]);
     expect(flushWriteReports()).toEqual([]);
 
@@ -175,9 +170,10 @@ test("scratch dirs are silent, and deferred reports come out at the flush in ord
       script,
       [
         `import { join } from "node:path";`,
-        `import { deferWriteReports, writeFileReported } from ${importSpecifier(SEAM)};`,
+        `import { deferWriteReports } from ${importSpecifier(SEAM)};`,
+        `import { writeText } from ${importSpecifier(FACADE)};`,
         `deferWriteReports();`,
-        `writeFileReported(join(${CHILD_VALUES}.dir, "late.txt"), "");`,
+        `writeText(join(${CHILD_VALUES}.dir, "late.txt"), "", { atomic: false });`,
         `console.error("before-exit");`,
       ].join("\n"),
     );
@@ -229,7 +225,7 @@ test.skipIf(process.platform === "win32")(
       const staging = join(dir, `.current-next-${process.pid}`);
       writeFileSync(staging, "left by a crashed run");
       deferWriteReports();
-      atomicSymlink("versions/v1", link);
+      fs.atomicSymlink("versions/v1", link);
       expect(flushWriteReports()).toEqual([
         `deleted -> ${staging} (stale staging file)`,
         `linked -> ${link} (to versions/v1)`,
@@ -248,13 +244,13 @@ test("writes inside copilot-env's own homes print nothing; the same write outsid
     expect(rootHome).toBe(proxyHome);
     deferWriteReports();
     // The home itself is a path the user sees appear: named.
-    mkdirReported(rootHome);
+    fs.mkdir(rootHome);
     // Inside it: a store, a lock sidecar's directory, a profile home -- bookkeeping.
-    writeFileReported(join(rootHome, "state.json"), "{}");
-    mkdirReported(join(rootHome, "profiles", "work"));
+    fs.writeText(join(rootHome, "state.json"), "{}", { atomic: false });
+    fs.mkdir(join(rootHome, "profiles", "work"));
     const codexConfig = join(home, ".codex", "config.toml");
-    mkdirReported(join(home, ".codex"));
-    writeFileReported(codexConfig, "");
+    fs.mkdir(join(home, ".codex"));
+    fs.writeText(codexConfig, "", { atomic: false });
     expect(flushWriteReports()).toEqual([
       `created -> ${rootHome}`,
       `created -> ${join(home, ".codex")}`,
@@ -265,21 +261,21 @@ test("writes inside copilot-env's own homes print nothing; the same write outsid
     const nested = join(rootHome, "data");
     hideWritesUnder(() => nested);
     deferWriteReports();
-    mkdirReported(nested);
-    writeFileReported(join(nested, "store.json"), "{}");
+    fs.mkdir(nested);
+    fs.writeText(join(nested, "store.json"), "{}", { atomic: false });
     expect(flushWriteReports()).toEqual([`created -> ${nested}`]);
     // A registered home spelled with a trailing separator hides its descendants all the
     // same (the shape a filesystem root resolves to).
     hideWritesUnder(() => `${join(home, "hidden")}${sep}`);
     deferWriteReports();
-    mkdirReported(join(home, "hidden", "inner"));
+    fs.mkdir(join(home, "hidden", "inner"));
     expect(flushWriteReports()).toEqual([`created -> ${join(home, "hidden")}`]);
     // On POSIX a trailing backslash is part of the name, never a separator: a home named
     // `keep\` hides nothing under its sibling `keep`.
     if (process.platform !== "win32") {
       hideWritesUnder(() => join(home, "keep\\"));
       deferWriteReports();
-      mkdirReported(join(home, "keep", "inner"));
+      fs.mkdir(join(home, "keep", "inner"));
       expect(flushWriteReports()).toEqual([
         `created -> ${join(home, "keep")}`,
         `created -> ${join(home, "keep", "inner")}`,

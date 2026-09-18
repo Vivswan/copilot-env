@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import * as fs from "./fs_facade.ts";
 import { ASSET_ROOT } from "./root.ts";
 import { type SemverString, toSemverString, versionLessThan } from "./semver.ts";
 
@@ -89,5 +89,5 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
  *  materialized, so an installed root has no copy. `root` is for test fixtures. */
 export function readProjectConfig(root: string = ASSET_ROOT): ProjectConfig {
   const path = join(root, PROJECT_CONFIG_FILE);
-  return parseProjectConfig(readFileSync(path, "utf8"), path);
+  return parseProjectConfig(fs.readText(path), path);
 }

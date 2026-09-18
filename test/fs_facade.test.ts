@@ -285,7 +285,11 @@ test("rename moves planned text and whole disk trees by reference, a binary keep
   const lines = await dryRun(() => {
     facade.writeText(old, 'x = "planned"\n');
     facade.rename(old, renamed);
+    // A chmod'd subdirectory still carries its disk children through the move.
+    facade.chmod(join(tree, "inner"), 0o700);
     facade.rename(tree, moved);
+    // A binary moved onto a planned text file is bytes at the new path: its verdict prints alone.
+    facade.writeText(movedBlob, "planned text");
     facade.rename(blob, movedBlob);
     facade.rm(remade, { recursive: true });
     facade.mkdir(remade);
@@ -294,7 +298,8 @@ test("rename moves planned text and whole disk trees by reference, a binary keep
     expect(facade.readdir(join(moved, "inner"))).toEqual(["f.txt"]);
     expect(facade.readText(join(moved, "inner", "f.txt"))).toBe("leaf");
     expect(facade.exists(tree)).toBe(false);
-    expect([facade.stat(movedBlob).size, facade.exists(blob)]).toEqual([bytes.length, false]);
+    expect([facade.stat(movedBlob).size, facade.exists(blob), facade.readBytes(movedBlob)])
+      .toEqual([bytes.length, false, bytes]);
     expect(facade.readdir(remade)).toEqual(["kept.txt"]);
     expect(facade.exists(join(remade, "stale.txt"))).toBe(false);
   });
@@ -307,8 +312,8 @@ test("rename moves planned text and whole disk trees by reference, a binary keep
     `create ${join(moved, "inner")}${sep}`,
     `create ${join(moved, "inner", "f.txt")}`,
     `create ${join(moved, "top.txt")}`,
-    `delete ${blob}`,
     `create ${movedBlob}`,
+    `delete ${blob}`,
     `unchanged ${remade}${sep}`,
     `delete ${join(remade, "stale.txt")}`,
     `create ${join(remade, "kept.txt")}`,
@@ -772,4 +777,55 @@ test("a stale staging file at the link's staging path is planned removed before 
   });
   expect(lines).toEqual([`delete ${staging}`, `create ${link}`]);
   expect(readFileSync(staging, "utf8")).toBe("left by a crashed run");
+});
+
+test("a dropped empty TOML table is a row and a JSON map is not; a document that does not parse prints its path alone; a symlink never replaces a planned file; planned bytes decode as node decodes a file; a carried declaration governs a later rewrite", async () => {
+  dir = tempDir("copilot-facade-");
+  const config = join(dir, "config.toml");
+  const dropped = join(dir, "dropped.json");
+  const broken = join(dir, "settings.json");
+  const planned = join(dir, "planned");
+  const keyed = join(dir, "keyed.json");
+  const copy = join(dir, "keyed-copy.json");
+  const moved = join(dir, "moved.json");
+  writeFileSync(
+    config,
+    '[model_providers.copilot-env]\nbase_url = "https://x"\nhttp_headers = {}\n',
+  );
+  writeFileSync(dropped, '{"count":1,"profiles":{}}\n');
+  writeFileSync(broken, "{broken");
+  const lines = await dryRun(() => {
+    facade.writeText(config, '[model_providers.copilot-env]\nbase_url = "https://x"\n');
+    facade.writeText(dropped, '{"count":1}\n');
+    facade.writeText(broken, '{"env":{"TOKEN":"example-secret"}}\n', { secretKeys: ["env.TOKEN"] });
+    facade.writeText(planned, "x");
+    expect(outcome(() => facade.symlink("target", planned))).toBe("EEXIST");
+    // A byte-order mark stays, as readFileSync leaves it.
+    facade.writeBytes(join(dir, "bom.txt"), new Uint8Array([239, 187, 191, 97]));
+    expect(facade.readText(join(dir, "bom.txt"))).toBe("\uFEFFa");
+    // A copied or moved declaration redacts the destination's later rewrite, declared or not.
+    facade.writeText(keyed, '{"token":"t","n":1}\n', { secretKeys: ["token"] });
+    facade.copyFile(keyed, copy);
+    facade.writeText(copy, '{"token":"u","n":2}\n');
+    facade.writeText(join(dir, "whole.json"), '{"token":"t"}\n', { secret: true });
+    facade.rename(join(dir, "whole.json"), moved);
+    facade.writeText(moved, '{"x":1}\n', { secretKeys: [] });
+  });
+  expect(lines).toEqual([
+    `rewrite ${config}`,
+    `  model_providers.copilot-env.http_headers  {} -> (absent)`,
+    `rewrite ${dropped}`,
+    `  (every managed attribute already holds its value)`,
+    `rewrite ${broken}`,
+    `create ${planned}`,
+    `  + x`,
+    `create ${join(dir, "bom.txt")}`,
+    `create ${keyed}`,
+    `  token  (absent) -> <redacted>`,
+    `  n  (absent) -> 1`,
+    `create ${copy}`,
+    `  token  (absent) -> <redacted>`,
+    `  n  (absent) -> 2`,
+    `create ${moved}`,
+  ]);
 });

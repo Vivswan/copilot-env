@@ -13,7 +13,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { renderDryRun, textDiffLines } from "../src/agents/write_plan.ts";
 import { errMessage } from "../src/utils/error.ts";
 import { applyUpdate, previewUpdate } from "../src/autoupdate/apply.ts";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
@@ -57,23 +56,16 @@ import {
 } from "../src/migrations/4.0.9.ts";
 import { runMigrations } from "../src/migrations/index.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../src/shell/integration.ts";
+import { renderDryRun, textDiffLines } from "../src/utils/dry_run_report.ts";
+import * as fs from "../src/utils/fs_facade.ts";
 import { pidAlive } from "../src/utils/pid.ts";
-import {
-  mkdirReported,
-  openWritableReported,
-  removeEmptyDirReported,
-  removeReported,
-  removeScratchDir,
-  scratchDir,
-  writeFileReported,
-} from "../src/utils/report_write.ts";
 import { VERSIONS_DIR } from "../src/utils/root.ts";
-import { collectDryRun } from "../src/utils/write_session.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { denoRunArgs, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import {
   changedPaths,
+  dryRunChanges,
   envSnapshot,
   fingerprintTree,
   isolateProxyHome,
@@ -104,9 +96,9 @@ afterEach(() => {
 /** The plan a body would land, with the tree proven untouched by it. */
 async function planOf<T>(root: string, body: () => Promise<T>): Promise<Set<string>> {
   const before = fingerprintTree(root);
-  const { files } = await collectDryRun(body);
+  const { changes } = await dryRunChanges(body);
   expect(fingerprintTree(root)).toEqual(before);
-  return new Set(files.map((f) => f.path));
+  return new Set(changes.map((c) => c.path));
 }
 
 /** The paths a real run of `body` changes under `root`. */
@@ -142,10 +134,10 @@ test("migrate --dry-run: a step's move records and moves nothing; the runner say
   expect(existsSync(old)).toBe(true);
   // A moved file's text is never the plan's diff: a moved store would print its tokens.
   writeFileSync(old, '{"lastCheckMs":1,"githubToken":"ghu_moved_secret"}\n');
-  const { files } = await collectDryRun(() =>
+  const { changes } = await dryRunChanges(() =>
     Promise.resolve(renameAutoupdateThrottle(autoupdate))
   );
-  const rendered = renderDryRun(files).join("\n");
+  const rendered = renderDryRun(changes).join("\n");
   expect(rendered).toContain(`create ${join(autoupdate, "autoupdate.json")}`);
   expect(rendered).not.toContain("ghu_moved_secret");
   writeFileSync(old, '{"lastCheckMs":1}\n');
@@ -159,10 +151,10 @@ test("migrate --dry-run: a step's move records and moves nothing; the runner say
   // token) renders path-only: neither side of the text may print.
   const envFile = join(dir, "agents.env");
   writeFileSync(envFile, "COPILOT_GITHUB_TOKEN=ghu_env_secret\nOTHER=1\n");
-  const { files: envFiles } = await collectDryRun(() =>
+  const { changes: envChanges } = await dryRunChanges(() =>
     Promise.resolve(removeEnvKey(envFile, "COPILOT_GITHUB_TOKEN"))
   );
-  const envRendered = renderDryRun(envFiles).join("\n");
+  const envRendered = renderDryRun(envChanges).join("\n");
   expect(envRendered).toContain(`rewrite ${envFile}`);
   expect(envRendered).not.toContain("ghu_env_secret");
   expect(readFileSync(envFile, "utf8")).toContain("ghu_env_secret");
@@ -170,11 +162,11 @@ test("migrate --dry-run: a step's move records and moves nothing; the runner say
   const debris = join(dir, "debris");
   writeFileSync(debris, "");
   const { all } = await captureChannels(async () => {
-    await collectDryRun(() =>
+    await dryRunChanges(() =>
       runMigrations("1.0.0", "2.0.0", [{
         version: "1.5.0",
         description: "drops the debris",
-        run: () => void removeReported(debris),
+        run: () => void fs.rm(debris, { force: true }),
       }])
     );
   });
@@ -218,7 +210,7 @@ test("proxy-token --dry-run takes the start's own preview, prints no key, and pl
   };
   // The dry run reaches the start dep like the real run and then proceeds as if the daemon came
   // up: the writes past the start are the plan.
-  const { result } = await collectDryRun(() =>
+  const { result } = await dryRunChanges(() =>
     resolveProxyToken({ assumeYes: false, profile: null }, deps)
   );
   expect({ result, launches, printed }).toEqual({ result: 0, launches: ["launched"], printed: 1 });
@@ -231,7 +223,7 @@ test("proxy-token --dry-run takes the start's own preview, prints no key, and pl
   });
   // Down, unmanaged, interactive: the real command asks; the dry run refuses.
   await expect(
-    collectDryRun(() =>
+    dryRunChanges(() =>
       resolveProxyToken({ assumeYes: false, profile: null }, {
         ...deps,
         autoStartEnabled: () => false,
@@ -251,11 +243,11 @@ test("proxy-token --dry-run takes the start's own preview, prints no key, and pl
     notify: (line: string) => void notes.push(line),
   };
   const refusedPlan = await captureChannels(async () => {
-    const { files, result } = await collectDryRun(() =>
+    const { changes, result } = await dryRunChanges(() =>
       resolveProxyToken({ assumeYes: false, profile: null }, production)
     );
     expect(result).toBe(1);
-    expect(files.map((f) => f.path)).toContain(stateFile);
+    expect(changes.map((c) => c.path)).toContain(stateFile);
   });
   void refusedPlan;
   expect(notes.some((n) => n.includes("cannot start the proxy without a credential"))).toBe(true);
@@ -276,8 +268,8 @@ test("proxy-token --dry-run takes the start's own preview, prints no key, and pl
   const before = fingerprintTree(dir);
   let plannedPort: unknown;
   const { all } = await captureChannels(async () => {
-    const { files } = await collectDryRun(() => Promise.resolve(launchProxy(null, "suppressed")));
-    const state = files.find((f) => f.path === stateFile);
+    const { changes } = await dryRunChanges(() => Promise.resolve(launchProxy(null, "suppressed")));
+    const state = changes.find((c) => c.path === stateFile);
     plannedPort = state?.attributes.find((row) => row.key === "port")?.next;
   });
   const narrated = /Would launch the proxy on port (\d+) with the gh-token credential\./.exec(all);
@@ -287,8 +279,8 @@ test("proxy-token --dry-run takes the start's own preview, prints no key, and pl
 
   const configFile = new CopilotApiPaths().configFile;
   const { stdout } = await captureChannels(async () => {
-    const { files } = await collectDryRun(() => Promise.resolve(runPrintProxyToken(null)));
-    const rendered = renderDryRun(files).join("\n");
+    const { changes } = await dryRunChanges(() => Promise.resolve(runPrintProxyToken(null)));
+    const rendered = renderDryRun(changes).join("\n");
     expect(rendered).toContain(`create ${configFile}`);
     expect(rendered).toContain("auth.apiKeys  (absent) -> <redacted>");
   });
@@ -300,18 +292,18 @@ test("proxy-token --dry-run takes the start's own preview, prints no key, and pl
 test("a dry run refuses a write handle outside scratch and opens nothing; inside scratch it is the real open", async () => {
   dir = isolateProxyHome("copilot-dry2-handle-");
   const path = join(dir, "stream.bin");
-  await expect(collectDryRun(() => openWritableReported(path))).rejects.toThrow(
+  await expect(dryRunChanges(() => fs.openWritable(path))).rejects.toThrow(
     "a dry run opens no file for writing",
   );
   expect(existsSync(path)).toBe(false);
-  const scratch = scratchDir(join(dir, "scratch-"));
+  const scratch = fs.scratchDir(join(dir, "scratch-"));
   try {
     const inScratch = join(scratch, "download.bin");
-    const { result } = await collectDryRun(() => openWritableReported(inScratch));
+    const { result } = await dryRunChanges(() => fs.openWritable(inScratch));
     result.close();
     expect(existsSync(inScratch)).toBe(true);
   } finally {
-    removeScratchDir(scratch);
+    fs.removeScratchDir(scratch);
   }
 });
 
@@ -457,8 +449,8 @@ test("the seam decides an empty-directory removal alike in both runs: entries re
   mkdirSync(full);
   writeFileSync(join(full, "keep"), "");
   const notEmpty = /ENOTEMPTY: directory not empty, rmdir '/;
-  expect(() => removeEmptyDirReported(full)).toThrow(notEmpty);
-  await expect(collectDryRun(() => Promise.resolve(removeEmptyDirReported(full)))).rejects.toThrow(
+  expect(() => fs.rmdir(full)).toThrow(notEmpty);
+  await expect(dryRunChanges(() => Promise.resolve(fs.rmdir(full)))).rejects.toThrow(
     notEmpty,
   );
   expect(existsSync(join(full, "keep"))).toBe(true);
@@ -467,24 +459,23 @@ test("the seam decides an empty-directory removal alike in both runs: entries re
   if (process.platform !== "win32") {
     const link = join(dir, "link");
     symlinkSync(full, link);
-    expect(() => removeEmptyDirReported(link)).toThrow(/ENOTDIR/);
+    expect(() => fs.rmdir(link)).toThrow(/ENOTDIR/);
   }
   // The 4.0.9 fold removes opencode/github_token and then the emptied directory: the second
-  // removal follows from the first in the plan as on disk.
+  // removal follows from the first, and the tree diff names the directory alone.
   const opencode = join(dir, "opencode");
   mkdirSync(opencode);
   writeFileSync(join(opencode, "github_token"), "ghu_old");
-  const { files } = await collectDryRun(() => Promise.resolve(foldRootStores(dir)));
-  expect(files.map((f) => [f.path, f.verdict])).toEqual(
-    expect.arrayContaining([[join(opencode, "github_token"), "delete"], [opencode, "delete"]]),
-  );
+  const { changes } = await dryRunChanges(() => Promise.resolve(foldRootStores(dir)));
+  expect(changes.map((c) => [c.path, c.verdict])).toContainEqual([opencode, "delete"]);
+  expect(changes.map((c) => c.path)).not.toContain(join(opencode, "github_token"));
   expect(existsSync(join(opencode, "github_token"))).toBe(true);
   // A regular FILE named opencode is user data: readdir's ENOTDIR in both runs, never an "empty
   // directory" swept away.
   const other = isolateProxyHome("copilot-dry2-rmdir-file-");
   writeFileSync(join(other, "opencode"), "user data");
   const notDirRead = /ENOTDIR/;
-  await expect(collectDryRun(() => Promise.resolve(foldRootStores(other)))).rejects.toThrow(
+  await expect(dryRunChanges(() => Promise.resolve(foldRootStores(other)))).rejects.toThrow(
     notDirRead,
   );
   expect(() => foldRootStores(other)).toThrow(notDirRead);
@@ -499,7 +490,7 @@ test("the update preview takes the stage's and the flip's own refusals at `curre
   mkdirSync(join(top, "versions", versionName), { recursive: true });
   pointCurrentAt(top, versionName);
   const preview = (root: string) =>
-    collectDryRun(() => Promise.resolve(previewUpdate({ tag: "v9.9.9", dateSeconds: 0 }, root)));
+    dryRunChanges(() => Promise.resolve(previewUpdate({ tag: "v9.9.9", dateSeconds: 0 }, root)));
   await expect(preview(top)).rejects.toThrow(/refusing to update: .* already points at/);
   // At `current`, the flip's own refusals in the plan and for real: a directory with entries is
   // ENOTEMPTY, a regular file ENOTDIR; an EMPTY stray directory is repaired (removed, then linked),
@@ -521,11 +512,10 @@ test("the update preview takes the stage's and the flip's own refusals at `curre
   expect(() => pointCurrentAt(file, versionName)).toThrow(notDir);
   const repair = join(dir, "repair");
   mkdirSync(join(repair, "current"), { recursive: true });
-  const { files } = await collectDryRun(() => Promise.resolve(pointCurrentAt(repair, versionName)));
-  expect(files.map((f) => [f.path, f.verdict])).toEqual([
-    [join(repair, "current"), "delete"],
-    [join(repair, "current"), "create"],
-  ]);
+  const { changes } = await dryRunChanges(() =>
+    Promise.resolve(pointCurrentAt(repair, versionName))
+  );
+  expect(changes.map((c) => [c.path, c.verdict])).toEqual([[join(repair, "current"), "rewrite"]]);
   pointCurrentAt(repair, versionName);
   expect(lstatSync(join(repair, "current")).isSymbolicLink()).toBe(true);
 });
@@ -538,16 +528,15 @@ test("the 4.0.9 root-daemon move plans the `.run` its own stop lands: a login-on
   // The stop's one write under the root (stopTrackedProxy's run-state touch), through the seam.
   const stop = (): Promise<void> => {
     const hostRun = join(root, ".run", "host");
-    mkdirReported(hostRun);
-    writeFileReported(join(hostRun, ".state.json"), "{}\n");
+    fs.mkdir(hostRun);
+    fs.writeText(join(hostRun, ".state.json"), "{}\n", { atomic: false });
     return Promise.resolve();
   };
-  const { files } = await collectDryRun(() => moveRootDaemonHome(root, stop, "host"));
-  const planned = files.map((f) => [f.path, f.verdict]);
-  expect(planned).toEqual(expect.arrayContaining([
-    [join(root, ".run"), "delete"],
-    [join(root, "profiles", "default", ".run"), "create"],
-  ]));
+  const { changes } = await dryRunChanges(() => moveRootDaemonHome(root, stop, "host"));
+  const planned = changes.map((c) => [c.path, c.verdict]);
+  // The `.run` the stop makes and the move takes away never touches the disk: no row of its own.
+  expect(planned).toContainEqual([join(root, "profiles", "default", ".run"), "create"]);
+  expect(planned.map(([path]) => path)).not.toContain(join(root, ".run"));
   expect(existsSync(join(root, ".run"))).toBe(false);
   await moveRootDaemonHome(root, stop, "host");
   expect(existsSync(join(root, "profiles", "default", ".run", "host", ".state.json"))).toBe(true);
@@ -568,10 +557,10 @@ test("stop --dry-run names the daemon it would signal and clears nothing: the tr
     // The lock is unproven (no daemon.lock), so the classifier decides; "yes" is the real daemon.
     const classify = () => Promise.resolve("yes" as const);
     const before = fingerprintTree(dir);
-    const { result, files } = await collectDryRun(() => stopTrackedProxy(0, null, classify));
+    const { result, changes } = await dryRunChanges(() => stopTrackedProxy(0, null, classify));
     expect(result).toMatchObject({ trackedPid: child.pid, signalled: true, stopped: true });
     expect(fingerprintTree(dir)).toEqual(before);
-    expect(files.map((f) => f.path)).toContain(new CopilotApiPaths().stateFile);
+    expect(changes.map((c) => c.path)).toContain(new CopilotApiPaths().stateFile);
     expect(new CopilotEnvRunState().read().pid).toBe(child.pid);
     // The command's own dry run, with nothing tracked elsewhere: the plan stands in for the lines.
     const { stdout } = await captureChannels(() => runStop({ dryRun: true }));
@@ -612,7 +601,7 @@ skipWin(
       ensureProxy: () => Promise.resolve(true),
       wireProxyDefault: () => {
         // Through the seam: the dry run records it, the real launch writes it.
-        writeFileReported(wired, "x");
+        fs.writeText(wired, "x", { atomic: false });
         return Promise.resolve();
       },
       refreshCodexCatalog: () => Promise.resolve(),
@@ -683,10 +672,10 @@ fi
     // A directory at the bootstrap binary's name: the sweeper both runs share refuses it, so the
     // preview plans no delete there (a file there is swept below).
     mkdirSync(residue);
-    const { files: withDirectory } = await collectDryRun(() =>
+    const { changes: withDirectory } = await dryRunChanges(() =>
       Promise.resolve(previewUpdate(release, installDir, quiet))
     );
-    expect(withDirectory.map((f) => f.path)).not.toContain(residue);
+    expect(withDirectory.map((c) => c.path)).not.toContain(residue);
     rmSync(residue, { recursive: true });
     writeFileSync(residue, "BOOTSTRAP");
 
@@ -694,18 +683,18 @@ fi
     // preview plans no shim there.
     const blocked = join(installDir, "bin", "agent.ps1");
     mkdirSync(blocked, { recursive: true });
-    const { files: withBlocked } = await collectDryRun(() =>
+    const { changes: withBlocked } = await dryRunChanges(() =>
       Promise.resolve(previewUpdate(release, installDir, quiet))
     );
-    expect(withBlocked.map((f) => f.path)).not.toContain(blocked);
+    expect(withBlocked.map((c) => c.path)).not.toContain(blocked);
     expect(warnings.some((w) => w.startsWith(`Could not refresh the launcher shim ${blocked}`)))
       .toBe(true);
     rmSync(blocked, { recursive: true });
-    const { files: planned } = await collectDryRun(() =>
+    const { changes: planned } = await dryRunChanges(() =>
       Promise.resolve(previewUpdate(release, installDir, quiet))
     );
     const versionRoot = join(installDir, VERSIONS_DIR, versionDirName("v9.9.9"));
-    expect(planned.map((f) => [f.path, f.verdict])).toEqual([
+    expect(planned.map((c) => [c.path, c.verdict])).toEqual([
       [versionRoot, "create"],
       [currentLinkPath(installDir), "rewrite"],
       [join(installDir, "bin", "agent"), "create"],
@@ -728,7 +717,7 @@ fi
     // binary's own log is the one write the plan could not know.
     const changed = [...changedPaths(before, fingerprintTree(installDir))]
       .filter((p) => p !== join(installDir, "invocations.log"));
-    const plannedPaths = planned.map((f) => f.path);
+    const plannedPaths = planned.map((c) => c.path);
     for (const p of plannedPaths) expect(changed).toContain(p);
     for (const p of changed) {
       expect(plannedPaths.some((q) => p === q || p.startsWith(`${q}/`)), p).toBe(true);

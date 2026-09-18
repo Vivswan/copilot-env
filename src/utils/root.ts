@@ -1,9 +1,8 @@
-import { existsSync, lstatSync, readdirSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Profile } from "../copilot_api/profile.ts";
-import { entryAbsent, readTextResult } from "./fs.ts";
+import * as fs from "./fs_facade.ts";
 import { parseJsonRecord } from "./json.ts";
 import { hideWritesUnder } from "./report_write.ts";
 
@@ -38,13 +37,13 @@ export const CURRENT_LINK = "current";
 export function isVersionedInstallTop(top: string): boolean {
   const link = join(top, CURRENT_LINK);
   try {
-    if (!lstatSync(link).isSymbolicLink()) return false;
+    if (!fs.lstat(link).isSymbolicLink()) return false;
   } catch {
     return false;
   }
   let target: string;
   try {
-    target = readlinkSync(link);
+    target = fs.readlink(link);
   } catch {
     return false;
   }
@@ -56,7 +55,7 @@ export function isVersionedInstallTop(top: string): boolean {
   const sameDir = process.platform === "win32"
     ? parent.toLowerCase() === versionsDir.toLowerCase()
     : parent === versionsDir;
-  return sameDir && !entryAbsent(versionsDir);
+  return sameDir && !fs.entryAbsent(versionsDir);
 }
 
 /** No fixed dirname() hop count, so moving this file does not break resolution; bounded so a
@@ -65,7 +64,7 @@ function findCheckoutRoot(): string {
   const start = dirname(fileURLToPath(import.meta.url));
   let dir = start;
   for (let i = 0; i < 64; i++) {
-    if (existsSync(join(dir, "package.json"))) return dir;
+    if (fs.exists(join(dir, "package.json"))) return dir;
     const parent = dirname(dir);
     if (parent === dir) break; // reached the filesystem root
     dir = parent;
@@ -182,7 +181,7 @@ export type InstallManifestReading =
   | { kind: "valid"; manifest: InstallManifest };
 
 export function readInstallManifest(root: string): InstallManifestReading {
-  const read = readTextResult(join(root, INSTALL_MANIFEST_FILE));
+  const read = fs.readTextResult(join(root, INSTALL_MANIFEST_FILE));
   if (read.kind !== "text") return { kind: read.kind };
   const record = parseJsonRecord(read.text);
   if (record === null) return { kind: "invalid" };
@@ -204,7 +203,7 @@ function looksLikeVersionedInstallTop(resolved: string): boolean {
   if (readInstallManifest(join(resolved, CURRENT_LINK)).kind === "valid") return true;
   let names: string[];
   try {
-    names = readdirSync(join(resolved, VERSIONS_DIR));
+    names = fs.readdir(join(resolved, VERSIONS_DIR));
   } catch {
     return false;
   }
@@ -229,7 +228,7 @@ export function looksLikeInstallRoot(root: string): boolean {
   if (reading.kind === "unreadable") return false;
   // A versioned top has no root manifest (the sentinel is per-version).
   if (looksLikeVersionedInstallTop(resolved)) return true;
-  return INSTALL_ROOT_MARKERS.every((marker) => existsSync(join(resolved, marker)));
+  return INSTALL_ROOT_MARKERS.every((marker) => fs.exists(join(resolved, marker)));
 }
 
 const AGENT_LAUNCHER: string = join(PROJECT_ROOT, "bin", "agent");

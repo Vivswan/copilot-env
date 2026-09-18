@@ -16,7 +16,6 @@
 // the whole commit of an update and old version dirs can be garbage-collected safely.
 import { spawnSync, type StdioOptions } from "node:child_process";
 import { configSetCommand } from "../copilot_api/env_config.ts";
-import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { consola } from "consola";
@@ -93,7 +92,6 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/utils/report_write.ts",
   "src/utils/table.ts",
   "src/utils/time.ts",
-  "src/utils/write_session.ts",
 ] as const;
 
 /** Embedded and NEVER materialized: read in-process through ASSET_ROOT (the compiled VFS), a
@@ -463,9 +461,8 @@ function canonicalizeForGuard(path: string): string | null {
     base = parent;
   }
   try {
-    // The OS's own canonical form (8.3 short names and junctions on Windows); a read outside the
-    // seam, since a dry run resolves the same disk path.
-    base = realpathSync.native(base);
+    // The OS's own canonical form (8.3 short names and junctions on Windows).
+    base = fs.realpath(base);
   } catch {
     return null;
   }

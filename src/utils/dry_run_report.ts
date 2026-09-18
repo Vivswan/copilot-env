@@ -3,13 +3,15 @@
 // diff, never a record of the operations: a file rewritten with its own bytes is `same`, a path
 // created and deleted within the run is nothing, and a tree removed is one `delete` row (as the real
 // run's one `deleted ->` line), unless the run made the directory again, when the disk's children
-// it no longer lists are named. A disk file the run carried by path (a rename, a chmod, a copy), a
-// planned link, and a file declared secret as a whole print their verdict alone: no bytes of theirs
-// were decoded, or none may print.
-import { lstatSync, readdirSync, readFileSync, readlinkSync, type Stats, statSync } from "node:fs";
+// it no longer lists are named. A disk file the run carried (a rename, a chmod, a copy), a byte
+// write, a planned link, and a file declared secret as a whole print their verdict alone: no bytes
+// of theirs were decoded, or none may print. The before-text is the disk's, read here through the
+// disk side of the seam; the after-text is the volume's.
+import type { Stats } from "node:fs";
 import { extname, join, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import type { FileContent, Overlay, OverlayEntry } from "./fs_overlay.ts";
+import * as disk from "./fs_disk.ts";
+import type { Overlay, OverlayEntry } from "./fs_overlay.ts";
 import { isRecord, parseJsonRecord } from "./json.ts";
 
 export type FileVerdict = "create" | "rewrite" | "same" | "delete";
@@ -40,7 +42,7 @@ type Doc = Record<string, unknown>;
 
 function diskStat(key: string, follow: boolean): Stats | null {
   try {
-    return follow ? statSync(key) : lstatSync(key);
+    return follow ? disk.stat(key) : disk.lstat(key);
   } catch {
     return null;
   }
@@ -51,7 +53,7 @@ function diskStat(key: string, follow: boolean): Stats | null {
  *  planned link by lstat, against the disk link's target. */
 export function diffOverlay(overlay: Overlay): FileChange[] {
   const changes: FileChange[] = [];
-  for (const [key, entry] of overlay.entries) {
+  for (const [key, entry] of overlay.entries()) {
     if (overlay.isHidden(key)) continue;
     const name = overlay.nameOf(key);
     const raw = diskStat(key, false);
@@ -64,22 +66,22 @@ export function diffOverlay(overlay: Overlay): FileChange[] {
       continue;
     }
     const link = raw?.isSymbolicLink() ?? false;
-    const disk = link ? diskStat(key, true) : raw;
+    const onDisk = link ? diskStat(key, true) : raw;
     changes.push(
       entryChange(
         key,
         name,
         entry,
-        disk,
+        onDisk,
         link,
         overlay.secretKeysOf(key),
         overlay.isSecretFile(key),
       ),
     );
     // The children a fresh directory no longer lists went with the tree.
-    if (entry.kind === "dir" && entry.fresh && disk?.isDirectory()) {
-      for (const child of readdirSync(key).sort()) {
-        if (overlay.entries.has(join(key, child))) continue;
+    if (entry.kind === "dir" && entry.fresh && onDisk?.isDirectory()) {
+      for (const child of disk.readdir(key).sort()) {
+        if (overlay.touched(join(key, child))) continue;
         const gone = diskStat(join(key, child), false);
         changes.push(change(join(name, child), "delete", gone?.isDirectory() ?? false));
       }
@@ -90,11 +92,11 @@ export function diffOverlay(overlay: Overlay): FileChange[] {
 
 /** A link is the same only as a disk link with the same target text; anything else there is
  *  replaced. */
-function linkVerdict(key: string, target: string, disk: Stats | null): FileVerdict {
-  if (disk === null) return "create";
-  if (!disk.isSymbolicLink()) return "rewrite";
+function linkVerdict(key: string, target: string, onDisk: Stats | null): FileVerdict {
+  if (onDisk === null) return "create";
+  if (!onDisk.isSymbolicLink()) return "rewrite";
   try {
-    return readlinkSync(key) === target ? "same" : "rewrite";
+    return disk.readlink(key) === target ? "same" : "rewrite";
   } catch {
     return "rewrite";
   }
@@ -104,12 +106,8 @@ function change(path: string, verdict: FileVerdict, directory: boolean): FileCha
   return { path, verdict, directory, attributes: [] };
 }
 
-/** Whether the bytes the run leaves at `key` differ from the disk's there. */
-function bytesDiffer(key: string, content: FileContent, before: string | null): boolean {
-  if ("text" in content) return before !== content.text;
-  if ("bytes" in content) return !readFileSync(key).equals(content.bytes);
-  if (content.disk === key) return false;
-  return !readFileSync(key).equals(readFileSync(content.disk));
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
 /** A disk entry of the other kind (a file where a directory is planned, or the reverse) is a
@@ -120,20 +118,22 @@ function entryChange(
   key: string,
   name: string,
   entry: Exclude<OverlayEntry, { kind: "gone" | "link" }>,
-  disk: Stats | null,
+  onDisk: Stats | null,
   replacesLink: boolean,
   secretKeys: ReadonlySet<string>,
   secretFile: boolean,
 ): FileChange {
   const directory = entry.kind === "dir";
-  const sameKind = disk !== null && disk.isDirectory() === directory;
-  const planned = entry.kind === "file" && "text" in entry.content ? entry.content.text : null;
-  const before = sameKind && planned !== null ? readFileSync(key, "utf8") : null;
+  const sameKind = onDisk !== null && onDisk.isDirectory() === directory;
+  const planned = entry.kind === "file" ? entry.text : null;
+  const before = sameKind && planned !== null ? disk.readText(key) : null;
   const rows = planned === null || secretFile ? [] : docRows(key, before, planned, secretKeys);
-  const differs = !sameKind || replacesLink ||
-    (entry.kind === "file" && bytesDiffer(key, entry.content, before)) ||
-    (disk !== null && (disk.mode & 0o777) !== entry.mode);
-  const verdict: FileVerdict = disk === null && !replacesLink
+  const bytesDiffer = (): boolean =>
+    entry.kind === "file" &&
+    (planned !== null ? before !== planned : !sameBytes(disk.readBytes(key), entry.bytes()));
+  const differs = !sameKind || replacesLink || bytesDiffer() ||
+    (onDisk !== null && (onDisk.mode & 0o777) !== entry.mode);
+  const verdict: FileVerdict = onDisk === null && !replacesLink
     ? "create"
     : differs
     ? "rewrite"
@@ -269,7 +269,7 @@ const TEXT_DIFF_MAX_LINES = 40;
 
 /** The changed lines of a whole-text file (an rc block, a helper script) as `- old` and `+ new`
  *  rows; an unchanged line never prints, wherever it sits. */
-function textDiffLines(before: string | null, after: string): string[] {
+export function textDiffLines(before: string | null, after: string): string[] {
   // The "" a trailing newline splits into is the terminator, not a line of the file.
   const lines = (text: string): string[] => {
     const parts = text.split("\n");

@@ -6,12 +6,14 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join, sep } from "node:path";
+import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { withDryRun } from "../src/utils/dry_run.ts";
 import { renderDryRun } from "../src/utils/dry_run_report.ts";
 import * as facade from "../src/utils/fs_facade.ts";
@@ -743,3 +745,31 @@ test.skipIf(WINDOWS)(
     ]).toEqual([true, false, target, false]);
   },
 );
+
+test("a store update in a dry run takes no lock: the store's home keeps only what it had", async () => {
+  dir = tempDir("copilot-facade-");
+  const home = join(dir, "copilot-env");
+  mkdirSync(home);
+  const store = join(home, "state.json");
+  writeFileSync(store, "{}\n");
+  const lines = await dryRun(() => {
+    new CopilotApiConfig(store).update((d) => {
+      d.global = { "daemon.port": 4141 };
+    });
+  });
+  expect(lines).toEqual([`rewrite ${store}`, `  global."daemon.port"  (absent) -> 4141`]);
+  expect([readdirSync(home), readFileSync(store, "utf8")]).toEqual([["state.json"], "{}\n"]);
+});
+
+test("a stale staging file at the link's staging path is planned removed before the link, in the overlay too", async () => {
+  dir = tempDir("copilot-facade-");
+  const link = join(dir, "current");
+  const staging = join(dir, `.current-next-${process.pid}`);
+  writeFileSync(staging, "left by a crashed run");
+  const lines = await dryRun(() => {
+    facade.atomicSymlink("versions/v1", link);
+    expect([facade.exists(staging), facade.readlink(link)]).toEqual([false, "versions/v1"]);
+  });
+  expect(lines).toEqual([`delete ${staging}`, `create ${link}`]);
+  expect(readFileSync(staging, "utf8")).toBe("left by a crashed run");
+});

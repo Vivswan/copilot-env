@@ -50,8 +50,9 @@ export function scratchHome(prefix = "copilot-cli-oracle-"): ScratchHome {
 
 /** The oracle was captured on POSIX: a Windows run's separators and its PowerShell launcher
  *  spelling fold to the same tokens (the outputs compared here are paths and words), the
- *  machine's hostname (a daemon run-dir segment, `.run/<host>/`) folds to <HOST>, and the
- *  heartbeat's clock reading (the run state's lastEnsureAt) folds to <NOW>. */
+ *  machine's hostname (a daemon run-dir segment, `.run/<host>/`) folds to <HOST>, the
+ *  heartbeat's clock reading (the run state's lastEnsureAt) folds to <NOW>, and consola's info
+ *  marker (the glyph off a TTY, `[info]` under CI's basic reporter) folds to <INFO>. */
 export function normalize(home: string, text: string): string {
   return text
     .replaceAll(home, "<HOME>")
@@ -59,6 +60,7 @@ export function normalize(home: string, text: string): string {
     .replaceAll("\\", "/")
     .replaceAll(`.run/${getSanitizedHostname()}/`, ".run/<HOST>/")
     .replace(/"lastEnsureAt": \d+/g, '"lastEnsureAt": <NOW>')
+    .replace(/^(?:\u2139|\[info\]) /gm, "<INFO> ")
     .replace(
       /powershell -NoProfile -ExecutionPolicy Bypass -File "?<ROOT>\/bin\/agent\.ps1"?/g,
       "<ROOT>/bin/agent",

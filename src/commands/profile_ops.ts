@@ -1,9 +1,8 @@
 // The runtime verbs of `agent profile [<name>] <verb>`: launch, env, proxy-token, mcp, start, stop,
 // health, models, credits, settings, each routed onto the command function that owned the flat
 // `--profile <name>` spelling. Registered from src/commands/profile_verbs.ts, which owns the tree
-// and hands over the name. The top-level `start`, `stop`, `proxy-token`, and `mcp` are the
-// default profile's aliases; the top-level `health`, `credits`, and `settings` are the
-// every-profile scope of the same words.
+// and hands over the name. The top-level `start` and `stop` are the default profile's aliases;
+// the top-level `health`, `credits`, and `settings` are the every-profile scope of the same words.
 import type { Command } from "commander";
 import { parseModeFlags } from "../agents/provider_mode.ts";
 import type { ProfileVerb } from "../copilot_api/profile.ts";
@@ -267,8 +266,7 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
       "proxy-token",
       `Print the API key of the proxy daemon of ${forWhom}, auto-starting it when the managed ` +
         "lifecycle (`daemon.auto-start`) is on - the resolver behind the proxy-mode Codex/Claude " +
-        "wiring and the cl/cx launchers. Only the key touches stdout. `agent proxy-token` is the " +
-        "default's alias.",
+        "wiring and the cl/cx launchers. Only the key touches stdout.",
     ),
     dryRunHelp,
   ).action((opts: Opts, cmd: Command) => {
@@ -281,7 +279,7 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
       "mcp",
       "Status of the copilot-env MCP server wiring (machine-global); --serve runs the stdio " +
         `server (web_search via GitHub Copilot /responses) with the credential of ${forWhom}, ` +
-        "for Claude, Codex, or any MCP client. `agent mcp` is the default's alias.",
+        "for Claude, Codex, or any MCP client.",
     ),
     dryRunHelp,
   ).action((opts: Opts, cmd: Command) => {
@@ -389,39 +387,6 @@ export function registerDaemonAliases(program: Command, dryRunHelp: string): voi
       ),
     dryRunHelp,
   ).action((opts: Opts) => stopAction(opts, undefined));
-}
-
-/** `agent proxy-token` and `agent mcp`: the default profile's verbs, as their own commands. Both
- *  spellings are baked into the agent files (the default's resolver line in config.toml and
- *  settings.json; the MCP registration in .claude.json and the Claude Desktop entries), so the
- *  default keeps them. */
-export function registerResolverAliases(program: Command, dryRunHelp: string): void {
-  addProxyTokenOptions(
-    program
-      .command("proxy-token")
-      .helpGroup("Daemon:")
-      .description(
-        "Print the local proxy's API key, auto-starting the proxy when the managed " +
-          "lifecycle (`daemon.auto-start`) is on - the resolver behind the proxy-mode " +
-          "Codex/Claude wiring and the cl/cx launchers. Only the key touches stdout. The same " +
-          "as `agent profile proxy-token`; a named profile's daemon is `agent profile <name> " +
-          "proxy-token`.",
-      ),
-    dryRunHelp,
-  ).action((opts: Opts) => proxyTokenAction(opts, undefined));
-
-  addMcpOptions(
-    program
-      .command("mcp")
-      .helpGroup("Setup:")
-      .description(
-        "Status of the copilot-env MCP server wiring; --serve runs the stdio server " +
-          "(web_search via GitHub Copilot /responses) for Claude, Codex, or any MCP client, " +
-          "with the default credential. The same as `agent profile mcp`; a named profile's " +
-          "credential is `agent profile <name> mcp --serve`.",
-      ),
-    dryRunHelp,
-  ).action((opts: Opts) => mcpAction(opts, undefined));
 }
 
 /** `agent health`, `agent credits`, `agent settings`: every profile, every distinct account, the

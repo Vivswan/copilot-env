@@ -38,6 +38,7 @@ import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import {
+  agentStopCommand,
   isReservedProfileWord,
   type Profile,
   profileLabel,
@@ -208,7 +209,7 @@ async function addNamed(name: ProfileName, requested: RequestedMode): Promise<Na
     logger.log(`  Launch it:  cl --profile ${name}  /  cx --profile ${name}`);
     if (mode === "proxy") {
       logger.log(
-        `  Its proxy daemon starts on demand; manage it with \`agent start/stop --profile ${name}\`.`,
+        `  Its proxy daemon starts on demand; manage it with \`agent profile ${name} start\` / \`stop\`.`,
       );
     }
   };
@@ -231,7 +232,7 @@ export async function deleteProfileEverywhere(
   if (!stopped) {
     throw new Error(
       `${profileLabel(name)}'s proxy daemon did not stop; retry, or stop it manually ` +
-        `(\`agent stop --profile ${name}\`) before deleting`,
+        `(\`${agentStopCommand(name)}\`) before deleting`,
     );
   }
   for (const agent of bothAgents()) agent.removeProfile(name, options);
@@ -356,7 +357,7 @@ export async function listProfiles(): Promise<void> {
   for (const name of allProfileNames().filter(isReservedProfileWord)) {
     logger.warn(
       `profile '${name}' is named like a verb of \`agent profile\`; \`agent update\` renames it ` +
-        `to '${name}-<n>'. Until then address it with \`--profile ${name}\` on the runtime commands.`,
+        `to '${name}-<n>'. Until then \`agent profile ${name} ...\` routes as the verb, not the profile.`,
     );
   }
 }

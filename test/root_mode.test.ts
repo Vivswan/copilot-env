@@ -213,13 +213,13 @@ test("looksLikeInstallRoot recognizes a versioned top only with the link and a m
 // Codex runs `auth.command` on a timer and cannot answer a prompt, so the argv the proxy writer
 // puts on disk must be the headless resolver, and a named profile's must address its own daemon
 // (its provider table sits in config.toml beside the default's; <name>.config.toml only selects it).
-test("the proxy credential resolver Codex is wired to run is `proxy-token --yes`, under the profile verb for a named profile", () => {
+test("the proxy credential resolver Codex is wired to run is `agent profile [<name>] proxy-token --yes`", () => {
   const restoreEnv = envSnapshot();
   const homes = isolateAgentHomes("copilot-root-argv-", { mkdirs: true });
   try {
     const work = parseProfileName("work");
     const rows: { profile: Profile; args: string[] }[] = [
-      { profile: null, args: ["proxy-token", "--yes"] },
+      { profile: null, args: ["profile", "proxy-token", "--yes"] },
       { profile: work, args: ["profile", "work", "proxy-token", "--yes"] },
     ];
     for (const { profile, args } of rows) {

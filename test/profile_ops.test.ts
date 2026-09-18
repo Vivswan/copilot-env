@@ -2,9 +2,9 @@
 // health models credits settings) route onto the functions the base's flat `--profile <name>`
 // spellings called. The oracle is the base's own output: test/fixtures/cli_redesign/
 // profile_ops_oracle.json holds what each old spelling printed (stdout, exit code) in a scratch
-// HOME, and the new spelling must print the same. The four default-profile aliases (start, stop,
-// proxy-token, mcp) are proven against their verbs live, in twin homes; the flat spellings are
-// gone; a profile's settings bundle is that profile alone.
+// HOME, and the new spelling must print the same. The two default-profile aliases (start, stop)
+// are proven against their verbs live, in twin homes; the flat spellings are gone; a profile's
+// settings bundle is that profile alone.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PROFILE_VERBS } from "../src/copilot_api/profile.ts";
@@ -130,7 +130,7 @@ test(
 );
 
 test(
-  "the default-profile aliases are one code path with their verbs: start, stop, proxy-token, mcp in twin homes",
+  "the default-profile aliases are one code path with their verbs: start and stop in twin homes",
   () => {
     const twins = [scratchHome(), scratchHome()] as const;
     for (const s of twins) {
@@ -142,8 +142,6 @@ test(
       [["stop"], ["profile", "stop"], 1],
       [["stop", "--dry-run"], ["profile", "stop", "--dry-run"], 1],
       [["stop", "--all"], ["profile", "stop", "--all"], 1],
-      [["proxy-token", "--yes"], ["profile", "proxy-token", "--yes"], 1],
-      [["mcp"], ["profile", "mcp"], 0],
     ];
     for (const [alias, verb, exitCode] of pairs) {
       const seen = expectIdentical(
@@ -156,7 +154,7 @@ test(
     const namedAll = observe(["profile", "work", "stop", "--all"], twins[0]);
     expect(namedAll.exitCode).toBe(1);
     expect(namedAll.stderr).toContain("--all stops every daemon; it takes no profile name");
-    // Seventeen cold CLI spawns; generous headroom for loaded Windows CI runners.
+    // Thirteen cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
   300_000,
 );

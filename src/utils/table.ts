@@ -91,7 +91,7 @@ export function printWrapped(text: string): void {
   console.log(wrapMessage(text, terminalWidth()));
 }
 
-/** A `key: value` status line (`agent mcp`, the `--check` reports): the key cyan, a status word in
+/** A `key: value` status line (`agent profile mcp`, the `--check` reports): the key cyan, a status word in
  *  its tone. Defaults to the command edge's COLOR_ENABLED; the argument is the test override. */
 export function keyValueLine(key: string, value: string, color = COLOR_ENABLED): string {
   return `${paintFor(color).cyan(key)}: ${statusPaint(value, color)}`;

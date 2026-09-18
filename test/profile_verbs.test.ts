@@ -13,7 +13,10 @@ import { changedPaths } from "./helpers.ts";
 import { runCli } from "./helpers/run.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
-const ORACLE = loadOracle("main_oracle");
+interface Observation {
+  exitCode: number | null;
+  stdout: string;
+}
 
 function fixture(name: string): string {
   return readFileSync(join(PROJECT_ROOT, "test", "fixtures", "cli_redesign", name), "utf8");

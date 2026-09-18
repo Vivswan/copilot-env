@@ -13,11 +13,11 @@
   },
   "start --check --profile work": {
     "exitCode": 1,
-    "stdout": "ℹ proxy is not running\n"
+    "stdout": "<INFO> proxy is not running\n"
   },
   "stop --profile work": {
     "exitCode": 1,
-    "stdout": "ℹ The profile 'work' proxy is not running on this host (nothing to stop).\n"
+    "stdout": "<INFO> The profile 'work' proxy is not running on this host (nothing to stop).\n"
   },
   "stop --profile work --dry-run": {
     "exitCode": 1,

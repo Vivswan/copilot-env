@@ -1231,7 +1231,7 @@ export class CopilotEnvConfig {
     return this.wireMcpResolved().value;
   }
 
-  /** Value and source from ONE snapshot, so `agent mcp` never prints a torn pair. */
+  /** Value and source from ONE snapshot, so `agent profile mcp` never prints a torn pair. */
   wireMcpResolved(): { value: boolean; source: "stored" | "default" } {
     const resolved = this.resolve("claude.wire-mcp", { profile: null });
     return {

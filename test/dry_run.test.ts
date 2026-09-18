@@ -834,7 +834,7 @@ test("removeReported decides alike in both runs: a directory is refused, and a f
   expect(existsSync(file)).toBe(false);
 });
 
-test("`agent mcp --remove --dry-run` names the registration, the deny, and the opt-out key it would take back", async () => {
+test("`agent profile mcp --remove --dry-run` names the registration, the deny, and the opt-out key it would take back", async () => {
   const { claudeHome } = scratch();
   storeCredential();
   // A Direct default wiring registers the MCP server and denies the builtin WebSearch.

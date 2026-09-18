@@ -54,7 +54,7 @@ export class McpClient {
   private buffer = "";
   readonly stdoutLines: string[] = [];
 
-  /** `agent [profile <name>] mcp --serve <args>`: a named profile's server resolves that profile's
+  /** `agent profile [<name>] mcp --serve <args>`: a named profile's server resolves that profile's
    *  credential and never falls back to the default's. */
   constructor(args: string[] = [], profile?: string) {
     // clearEnv matters: mcpEnv() scrubs the credential trio by DELETING keys, and
@@ -64,7 +64,8 @@ export class McpClient {
       args: [
         ...denoRunArgs(),
         join(ROOT, "src", "cli.ts"),
-        ...(profile === undefined ? [] : ["profile", profile]),
+        "profile",
+        ...(profile === undefined ? [] : [profile]),
         "mcp",
         "--serve",
         ...args,

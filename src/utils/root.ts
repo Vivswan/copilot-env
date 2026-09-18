@@ -247,10 +247,9 @@ export function agentAuthGetArgs(profile: Profile = null): string[] {
 
 /** `--yes` because Codex and Claude run the resolver on a timer and cannot answer a prompt. One
  *  spelling, like AGENT_AUTH_GET_ARGS, so the write sites and the wiring inspectors stay
- *  byte-identical. The default's resolver is `agent proxy-token` (the default's alias of `agent
- *  profile proxy-token`); a named profile's puts its name after `profile`. */
+ *  byte-identical: `agent profile [<name>] proxy-token --yes`. */
 export function proxyTokenArgs(profile: Profile = null): string[] {
-  return profile === null ? ["proxy-token", "--yes"] : ["profile", profile, "proxy-token", "--yes"];
+  return ["profile", ...(profile === null ? [] : [profile]), "proxy-token", "--yes"];
 }
 
 export function proxyTokenCommand(profile: Profile = null): { command: string; args: string[] } {

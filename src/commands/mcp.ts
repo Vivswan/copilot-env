@@ -38,7 +38,7 @@ function parseMcpAction(args: McpArgs): McpAction {
     if (args.profile !== undefined) {
       throw new Error(
         "--remove takes no profile name: it removes the machine-global Claude wiring " +
-          "(`agent mcp --remove`)",
+          "(`agent profile mcp --remove`)",
       );
     }
     if (args.model !== undefined) {
@@ -80,8 +80,12 @@ function printStatus(): void {
   const wireMcp = new CopilotEnvConfig().wireMcpResolved();
   logger.log(keyValueLine("claude.wire-mcp", `${wireMcp.value} (${wireMcp.source})`));
   logger.log("");
-  logger.log("agent mcp --serve   run the MCP stdio server (what registered clients spawn)");
-  logger.log("agent mcp --remove  unregister from Claude Code and opt out (claude.wire-mcp false)");
+  logger.log(
+    "agent profile mcp --serve   run the MCP stdio server (what registered clients spawn)",
+  );
+  logger.log(
+    "agent profile mcp --remove  unregister from Claude Code and opt out (claude.wire-mcp false)",
+  );
   logger.log("rewire: `agent init --direct` or `agent init`");
 }
 

@@ -132,7 +132,7 @@ Applies at the next wiring pass (`agent profile [<name>] add` / `sync`, `agent s
 
 ### Codex model catalog
 
-`codex.model-catalog` applies at the next `agent profile add` / `sync` wiring or the next default-profile launch (`cl` / `cx` on a proxy default, or a direct `cx`); `cx --profile <name>` never refreshes it. Credential printing (`agent profile auth --get`, `agent proxy-token`) never refreshes the catalog or rewrites an agent file. Turning it off also removes the generated `codex-model-catalog.json` and the managed `model_catalog_json` reference from the Codex config.
+`codex.model-catalog` applies at the next `agent profile add` / `sync` wiring or the next default-profile launch (`cl` / `cx` on a proxy default, or a direct `cx`); `cx --profile <name>` never refreshes it. Credential printing (`agent profile auth --get`, `agent profile proxy-token`) never refreshes the catalog or rewrites an agent file. Turning it off also removes the generated `codex-model-catalog.json` and the managed `model_catalog_json` reference from the Codex config.
 
 What the generated catalog holds:
 

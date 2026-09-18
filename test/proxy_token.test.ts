@@ -283,7 +283,7 @@ test(
       dir = tempDir("copilot-proxy-token-");
       const staged = row.up ? await stageDecoyDaemon(dir) : null;
       try {
-        const res = runCli(["proxy-token", ...row.args], {
+        const res = runCli(["profile", "proxy-token", ...row.args], {
           env: isolatedEnv(dir),
           input: row.input,
         });

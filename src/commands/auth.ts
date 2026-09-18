@@ -62,6 +62,8 @@ import {
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import {
+  agentStartCommand,
+  agentStopCommand,
   parseProfileFlag,
   type Profile,
   profileLabel,
@@ -731,7 +733,7 @@ async function runDel(profile: Profile): Promise<() => void> {
             `De-authenticated ${
               profileLabel(profile)
             }, but its proxy is still running and may keep ` +
-              `serving the old credential -- stop it with \`agent stop --profile ${profile}\`.`,
+              `serving the old credential -- stop it with \`${agentStopCommand(profile)}\`.`,
           );
         } else if (signalled) {
           logger.success(
@@ -987,8 +989,8 @@ export function identityTableLines(input: IdentityTableInput): string[] {
     })
   );
   const inUseHost = new URL(hostInUse).host;
-  const flag = input.profile === null ? "" : ` --profile ${input.profile}`;
-  const restart = `\`agent stop${flag}\`, then \`agent start${flag}\``;
+  const start = agentStartCommand(input.profile);
+  const restart = `\`${agentStopCommand(input.profile)}\`, then \`${start}\``;
   const landing = input.profile === null
     ? "`agent init`"
     : `\`agent profile ${input.profile} add --direct\``;
@@ -1004,13 +1006,13 @@ export function identityTableLines(input: IdentityTableInput): string[] {
       : []),
     ...(slot.kind === "empty"
       ? [
-        `Nothing stored yet for this profile: run ${landing} (or \`agent start${flag}\`) once; ` +
+        `Nothing stored yet for this profile: run ${landing} (or \`${start}\`) once; ` +
         "it probes on the host in use and stores the identity and host it lands on.",
       ]
       : slot.kind === "half"
       ? [
         `The ${slot.missing} is not stored yet for this profile: run ${landing} (or ` +
-        `\`agent start${flag}\`) once; it probes and stores what it lands on.`,
+        `\`${start}\`) once; it probes and stores what it lands on.`,
       ]
       : pinned !== null && stored.integrationId !== undefined &&
           pinned !== (stored.integrationId ?? CODEX_IDENTITY_NAME)

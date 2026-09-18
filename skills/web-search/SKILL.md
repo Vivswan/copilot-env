@@ -25,6 +25,6 @@ Whenever web search is needed.
 
 When the `mcp__copilot-env__web_search` tool is not registered:
 
-- From a copilot-env checkout, register the server in Claude Code: `claude mcp add --scope user copilot-search -- <checkout>/bin/agent mcp --serve` (see `.mcp.json.example` in this folder for the JSON shape other MCP clients accept). Register a hand-made entry under a name OTHER than `copilot-env`: copilot-env's own wiring writes reclaim and remove the `copilot-env` entry when switching modes or opting out.
+- From a copilot-env checkout, register the server in Claude Code: `claude mcp add --scope user copilot-search -- <checkout>/bin/agent profile mcp --serve` (see `.mcp.json.example` in this folder for the JSON shape other MCP clients accept). Register a hand-made entry under a name OTHER than `copilot-env`: copilot-env's own wiring writes reclaim and remove the `copilot-env` entry when switching modes or opting out.
 - On a machine wired through the local copilot-api proxy (`agent profile add --proxy`), the builtin WebSearch works as-is; no MCP server is needed.
 - With neither available, say plainly that you cannot search the web in this session and answer from your own knowledge, dated as such.

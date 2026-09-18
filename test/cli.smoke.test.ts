@@ -76,9 +76,7 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
   expect(output).toContain("start");
   expect(output).toContain("shell");
   expect(output).toContain("uninstall");
-  expect(output).toContain("mcp");
-  // No hidden commands: the resolver and the migration runner are documented surface.
-  expect(output).toContain("proxy-token");
+  // No hidden commands: the migration runner is documented surface.
   expect(output).toContain("migrate");
   // `profile` is the headline command and appears first in the COMMANDS list.
   expect(output).toContain("profile");
@@ -86,14 +84,14 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
   expect(output).toContain("--version");
 });
 
-test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only flags", () => {
-  const help = helpScreen("mcp", "--help");
+test("cli.ts profile mcp --help exposes the server flags; --remove rejects serve-only flags", () => {
+  const help = helpScreen("profile", "mcp", "--help");
   expect(help.exitCode).toBe(0);
   expect(help.output).toContain("--serve");
   expect(help.output).toContain("--remove");
   expect(help.output).toContain("--model");
 
-  const conflict = runCli(["mcp", "--remove", "--model", "x"], {
+  const conflict = runCli(["profile", "mcp", "--remove", "--model", "x"], {
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
   expect(conflict.exitCode).not.toBe(0);
@@ -106,14 +104,14 @@ test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only fl
   expect(namedRemove.exitCode).not.toBe(0);
   expect(namedRemove.stderr).toContain("--remove takes no profile name");
 
-  const serveRemove = runCli(["mcp", "--serve", "--remove"], {
+  const serveRemove = runCli(["profile", "mcp", "--serve", "--remove"], {
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
   expect(serveRemove.exitCode).not.toBe(0);
   expect(serveRemove.stderr).toContain("mutually exclusive");
 
   // Serve-only flags without --serve must not silently start a server (or anything).
-  const statusModel = runCli(["mcp", "--model", "x"], {
+  const statusModel = runCli(["profile", "mcp", "--model", "x"], {
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
   expect(statusModel.exitCode).not.toBe(0);
@@ -156,9 +154,9 @@ test("cli.ts config --help renders the store's CURRENT values: the same table ba
   expect(help.stdout.slice(-table.stdout.length)).toBe(table.stdout);
 });
 
-test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
+test("cli.ts profile mcp (bare) prints the wiring status and exits 0", () => {
   const claudeDir = tempDir("copilot-mcp-status-");
-  const status = runCli(["mcp"], { env: isolatedEnv({ CLAUDE_CONFIG_DIR: claudeDir }) });
+  const status = runCli(["profile", "mcp"], { env: isolatedEnv({ CLAUDE_CONFIG_DIR: claudeDir }) });
   const output = status.stderr;
   expect(status.exitCode).toBe(0);
   expect(output).toContain("not registered");

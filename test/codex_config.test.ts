@@ -221,7 +221,7 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(provider.base_url).toBe("http://localhost:4141/v1");
   expect(provider.name).toBe("copilot-env");
-  // Proxy resolves its key via auth.command (`agent proxy-token --yes`: ensure + print);
+  // Proxy resolves its key via auth.command (`agent profile proxy-token --yes`: ensure + print);
   // the stale env_key is scrubbed (Codex forbids auth + env_key together).
   expect(provider.env_key).toBeUndefined();
   const proxyAuthCmd = proxyTokenCommand();

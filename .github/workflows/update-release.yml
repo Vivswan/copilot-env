@@ -114,7 +114,7 @@ jobs:
         run: |
           chmod +x "release-smoke-assets/$ASSET"
           "./release-smoke-assets/$ASSET" --help
-          "./release-smoke-assets/$ASSET" env
+          "./release-smoke-assets/$ASSET" profile env
 
       - name: Run the uploaded installer end to end
         if: runner.os == 'Linux'

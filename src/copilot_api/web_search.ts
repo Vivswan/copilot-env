@@ -1,6 +1,6 @@
 // Claude Code wired Direct cannot use its builtin WebSearch (an Anthropic server-side tool Copilot's
 // compat layer rejects with a 400), but `POST /responses` with `tools: [{"type":"web_search"}]` runs
-// the search on Copilot's backend. This is the plain client behind the `agent mcp --serve` server's
+// the search on Copilot's backend. This is the plain client behind the `agent profile mcp --serve` server's
 // `web_search` tool; it lives here, not in the MCP server, so that server stays a thin protocol adapter.
 
 import { errMessage } from "../utils/error.ts";
@@ -151,7 +151,7 @@ async function resolveWebSearchModel(
 
 /**
  * The ONE extra rule over Credential: an env fallback (GH_TOKEN et al.) when the default slot has no
- * provider recorded at all, so a bare clone (`GH_TOKEN=... bin/agent mcp --serve`) works without
+ * provider recorded at all, so a bare clone (`GH_TOKEN=... bin/agent profile mcp --serve`) works without
  * `agent auth`. A recorded-but-broken provider still errors instead of silently switching credentials.
  */
 export function resolveWebSearchCredential(profile: Profile = null): string {

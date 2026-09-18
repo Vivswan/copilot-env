@@ -124,9 +124,7 @@ export async function resolveProxyToken(
   const startHint = agentStartCommand(profile);
   // A named profile never falls back to the default credential, so its hint names its own slot.
   const authHint = profile === null ? "agent auth" : `agent profile ${profile} auth`;
-  const yesHint = profile === null
-    ? "agent proxy-token --yes"
-    : `agent profile ${profile} proxy-token --yes`;
+  const yesHint = `agent profile ${profile === null ? "" : `${profile} `}proxy-token --yes`;
   let suppressedStart = false;
   // A dry run asks nothing, and its start is the start's own preview (launchProxy under a dry
   // run), whose refusals stand; past it the resolve proceeds as if the daemon came up, since the

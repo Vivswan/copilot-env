@@ -31,7 +31,8 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #   check --claude|--codex     that agent's file; exits 0 direct, 2 proxy or none, 1 other
                            #   launch <cli> [-- args]     run claude|codex|copilot under its wiring (--relaxed; what cl/co/cx run)
                            #   env [--format powershell]  its shell directives (what the shell wrapper evals for the default)
-                           #   proxy-token [--yes]        its proxy daemon's API key (auto-starts under daemon.auto-start)
+                           #   proxy-token [--yes]        its proxy daemon's API key (auto-starts under daemon.auto-start;
+                           #                              --yes never prompts: exit 1 when it is down and auto-start is off)
                            #   mcp [--serve|--remove]     MCP wiring status; --serve runs the server on its credential
                            #   start                      its proxy daemon (--dry-run, --port, --check, --force)
                            #   stop [--all]               its proxy daemon; --all = every profile's
@@ -45,9 +46,6 @@ agent init [--direct|--proxy] [--yes] [--no-auth]  # = agent profile add for the
 agent auth <flags>         # = agent profile auth for the default profile
 agent start <flags>        # = agent profile start for the default profile
 agent stop <flags>         # = agent profile stop for the default profile (--all stops every daemon)
-agent proxy-token <flags>  # = agent profile proxy-token for the default profile (the baked resolver)
-                           #   --yes never prompts: exit 1 when the daemon is down and auto-start is off
-agent mcp <flags>          # = agent profile mcp for the default profile (the baked registration)
 agent sync                 # every profile's sync, the default's included
 agent config               # this machine's preferences and the shared proxy.*/probe.* defaults (configuration page)
                            #   set <key> <value>, get [<key>], unset <key>; a profile's own keys: agent profile set
@@ -169,14 +167,14 @@ With `daemon.auto-start` off, the launchers prompt before starting a downed prox
 
 Claude Code wired to GitHub Copilot Direct cannot use its builtin WebSearch. Copilot's Anthropic-compatible endpoint rejects the server-side search tool with a 400.
 
-Copilot's own Responses API does serve web search, so copilot-env ships an MCP stdio server. `agent mcp --serve` runs it, and its `web_search` tool proxies through that API and returns a cited answer with a `Sources:` list. Bare `agent mcp` prints the wiring status.
+Copilot's own Responses API does serve web search, so copilot-env ships an MCP stdio server. `agent profile mcp --serve` runs it, and its `web_search` tool proxies through that API and returns a cited answer with a `Sources:` list. Bare `agent profile mcp` prints the wiring status.
 
 Wiring Claude direct sets this up by itself: it registers the server in Claude Code's user scope and denies the broken builtin. The [write list](getting-started.md#what-a-wiring-pass-writes) names the commands that add the pair and the ones that take it back. Through the local proxy the builtin WebSearch works, so nothing is needed there.
 
 The pair is opt-out:
 
 ```bash
-agent mcp --remove                  # unregister + restore the builtin + remember the opt-out
+agent profile mcp --remove          # unregister + restore the builtin + remember the opt-out
 agent config set claude.wire-mcp true    # opt back in (applies on the next direct wiring)
 ```
 
@@ -194,13 +192,13 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
     "copilot-env": {
       "type": "stdio",
       "command": "/path/to/copilot-env/bin/agent",
-      "args": ["mcp", "--serve"]
+      "args": ["profile", "mcp", "--serve"]
     }
   }
 }
 ```
 
-- **Credential:** it resolves the `agent profile auth` credential. Only when no provider is stored at all does it fall back to `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, so a bare clone works: `GH_TOKEN=... bin/agent mcp --serve`. A stored provider that no longer resolves is an error, never a silent switch to the env.
+- **Credential:** it resolves the `agent profile auth` credential. Only when no provider is stored at all does it fall back to `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, so a bare clone works: `GH_TOKEN=... bin/agent profile mcp --serve`. A stored provider that no longer resolves is an error, never a silent switch to the env.
 - **Profiles:** the registered server uses the default credential. A named profile that needs its own registers a second entry running `agent profile <name> mcp --serve`; the [profiles section](authentication.md#profiles) has the Direct-over-proxy caveat.
 - **Plugin + skill:** the repo doubles as a Claude Code plugin (`.claude-plugin/`, which bundles the MCP server inline) and a skills collection. `npx skills add Vivswan/copilot-env` installs the companion [`web-search` skill](../skills/web-search).
 - **Windows:** the plugin's bundled registration runs `bin/agent`, a POSIX script. Wire through `agent profile add` or register `bin\agent.ps1` by hand instead.

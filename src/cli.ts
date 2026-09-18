@@ -13,7 +13,6 @@ import {
   helpNote,
   registerDaemonAliases,
   registerEverywhereCommands,
-  registerResolverAliases,
 } from "./commands/profile_ops.ts";
 import {
   DRY_RUN_HELP,
@@ -126,10 +125,9 @@ registerProfileCommand(program, invocation.profile);
 registerAuthCommand(program);
 registerListCommand(program);
 registerSyncCommand(program);
-// The default profile's `start`, `stop`, `proxy-token`, and `mcp`, then the every-profile
-// `health`, `credits`, and `settings` (src/commands/profile_ops.ts).
+// The default profile's `start` and `stop`, then the every-profile `health`, `credits`, and
+// `settings` (src/commands/profile_ops.ts).
 registerDaemonAliases(program, DRY_RUN_HELP);
-registerResolverAliases(program, DRY_RUN_HELP);
 registerEverywhereCommands(program, DRY_RUN_HELP);
 
 // `agent config <verb>`: the machine's preferences (daemon.*, codex.*, claude.*, shell.*, update.*,

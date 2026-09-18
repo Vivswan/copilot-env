@@ -9,7 +9,7 @@
 //
 // The bundle wins where it resolves: a bundle credential this machine can resolve REPLACES the
 // local slot, and a store write is not rolled back when the wiring after it fails (the slot
-// stays committed-but-unwired for a re-add or `--sync`). Proxy wiring is the one
+// stays committed-but-unwired for a re-add or `agent sync`). Proxy wiring is the one
 // credential-free write: `agent start` resolves the credential itself and refuses without one.
 //
 //   bundle credential unresolvable here -> local slot kept; skipped whole when it is unresolvable too
@@ -765,7 +765,7 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
       // one repair that works whether or not the profile already exists here.
       skipped.push(
         `profile '${name}': ${landing.reason} - not imported; run ` +
-          `\`agent profile --add ${name} --direct|--proxy\``,
+          `\`agent profile ${name} add --direct|--proxy\``,
       );
     }
     profiles.push({ name, slot, landing });
@@ -795,10 +795,10 @@ function importPreferences(config: CopilotEnvConfigData): void {
 }
 
 /**
- * Credential + mode land as ONE commitProfile write, the machinery `agent profile --add` uses.
+ * Credential + mode land as ONE commitProfile write, the machinery `agent profile <name> add` uses.
  * Each profile stands alone: a failure is recorded and the next profile still runs.
  *
- *   a crash mid-import   -> at worst a complete-but-unwired slot, re-derived by `profile --sync`
+ *   a crash mid-import   -> at worst a complete-but-unwired slot, re-derived by `agent sync`
  *   a proxy-mode profile -> still needs its OWN resolvable credential, unlike the default slot
  *                           (the rule runAdd enforces in src/commands/profile.ts)
  */
@@ -809,7 +809,7 @@ async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise
     if (slot.mode === null) {
       // No mode: a re-auth. planImport skipped the no-profile case; the store's own guard still
       // fires if a concurrent --del raced the plan, hence the try. A complete Direct slot is rebaked
-      // with a fresh selection, as `agent auth --profile` does: the credential write took the
+      // with a fresh selection, as `agent profile <name> auth` does: the credential write took the
       // previous pair with it, and the Desktop reconcile below renders the slot's pair.
       if (landing.action === "write") {
         try {

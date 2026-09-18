@@ -1,5 +1,6 @@
-// The read-only side of the Claude Desktop wiring; desktop.ts is what writes it. `agent claude
-// --check` and the health engine share these lines and repair commands so the two cannot disagree.
+// The read-only side of the Claude Desktop wiring; desktop.ts is what writes it. `agent profile
+// check --claude` and the health engine share these lines and repair commands so the two cannot
+// disagree.
 import { basename, join } from "node:path";
 import type { CredentialWiring, ManagedMode } from "../agents/configure.ts";
 import { renderDirectWiring } from "../agents/profile_wiring.ts";
@@ -188,7 +189,7 @@ function entryVerdict(
       path,
       reason: `${matches.length} owned entries serve this wiring`,
       fix:
-        "delete the duplicate copilot-env entries in Claude Desktop's config picker, then re-run `agent claude`",
+        "delete the duplicate copilot-env entries in Claude Desktop's config picker, then re-run `agent profile sync --claude`",
     };
   }
   let raw: string | null;
@@ -238,7 +239,7 @@ function entryVerdict(
   }
   const rows = doc["inferenceModels"];
   if (target.mode === "direct" && (!Array.isArray(rows) || rows.length === 0)) {
-    return stale("no model rows (re-run `agent claude` online)");
+    return stale("no model rows (re-run `agent profile sync --claude` online)");
   }
   return { kind: "wired", path };
 }
@@ -288,9 +289,9 @@ function expectedCredential(
 }
 
 /** A named profile repairs through its atomic re-add (mode sticky from the store); a flag-less
- *  `agent claude` re-renders the default's recorded mode. */
+ *  `agent profile sync --claude` re-renders the default's recorded mode. */
 function desktopEntryFix(profile: Profile): string {
-  return profile === null ? "agent claude" : `agent profile --add ${profile}`;
+  return profile === null ? "agent profile sync --claude" : `agent profile ${profile} add`;
 }
 
 export function renderClaudeDesktopStatus(
@@ -299,14 +300,14 @@ export function renderClaudeDesktopStatus(
   if (status.kind === "unreadable") {
     return {
       lines: [`${status.metaPath} has an unexpected shape; the config library is left alone`],
-      fix: `repair ${status.metaPath}, then re-run \`agent claude\``,
+      fix: `repair ${status.metaPath}, then re-run \`agent profile sync --claude\``,
     };
   }
   // A failed look is reported before every other verdict: it must never render as clean.
   if (status.kind === "unjudged") {
     return {
       lines: [`${status.reason}; the Desktop entries were not judged`],
-      fix: "fix the cause named above, then re-run `agent claude`",
+      fix: "fix the cause named above, then re-run `agent profile sync --claude`",
     };
   }
   if (!status.enabled) {
@@ -339,10 +340,10 @@ export function renderClaudeDesktopStatus(
     }
     const total = left.length + unknown.length;
     const fixes = [
-      ...(left.length > 0 ? ["agent claude"] : []),
+      ...(left.length > 0 ? ["agent profile sync --claude"] : []),
       ...(unknown.length > 0
         ? [
-          "for the entries of unknown wiring: set claude.desktop true and re-run `agent claude` (it removes them as orphans), or `agent uninstall`",
+          "for the entries of unknown wiring: set claude.desktop true and re-run `agent profile sync --claude` (it removes them as orphans), or `agent uninstall`",
         ]
         : []),
     ];
@@ -402,7 +403,7 @@ export function renderClaudeDesktopStatus(
       lines.push(
         `${status.app.path} is ${status.app.reason}; what the app reads from it is unknown`,
       );
-      fixes.add(`repair ${status.app.path}, then re-run \`agent claude\``);
+      fixes.add(`repair ${status.app.path}, then re-run \`agent profile sync --claude\``);
     } else if (hasExistingEntry) {
       if (status.app.deploymentMode !== "3p") {
         lines.push(
@@ -410,18 +411,18 @@ export function renderClaudeDesktopStatus(
             status.app.deploymentMode ?? "unset"
           })`,
         );
-        fixes.add("agent claude");
+        fixes.add("agent profile sync --claude");
       }
       if (!status.app.developerMode) {
         lines.push("Developer Mode is off (no Developer menu)");
-        fixes.add("agent claude");
+        fixes.add("agent profile sync --claude");
       }
     }
     const applied = status.applied;
     if (applied === null) {
       if (hasExistingEntry) {
         lines.push("no entry is applied in the app");
-        fixes.add("agent claude");
+        fixes.add("agent profile sync --claude");
       }
     } else if (status.owned.some((o) => o.path === applied.path)) {
       if (hasExistingEntry) lines.push(`applied in the app: "${applied.name}"`);
@@ -440,7 +441,7 @@ export function renderClaudeDesktopStatus(
         );
       } else {
         fixes.add(
-          "after that wire, `agent claude --check` names the entry to select in Claude Desktop",
+          "after that wire, `agent profile check --claude` names the entry to select in Claude Desktop",
         );
       }
     }
@@ -451,11 +452,11 @@ export function renderClaudeDesktopStatus(
         entryExists(path) ? "" : ", and its file is gone"
       } (an interrupted removal)`,
     );
-    fixes.add("agent claude");
+    fixes.add("agent profile sync --claude");
   }
   for (const o of status.orphans) {
     lines.push(`"${o.name}" orphaned at ${o.path} (no current wiring promises it)`);
-    fixes.add("agent claude");
+    fixes.add("agent profile sync --claude");
   }
   return { lines, fix: fixes.size === 0 ? null : [...fixes].join(", then ") };
 }

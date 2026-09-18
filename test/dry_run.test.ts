@@ -1,7 +1,7 @@
 // `--dry-run` on the writing commands: the command runs its own landing under the dry-run session,
 // so the printed plan IS the plan the apply would land (same objects), nothing on disk changes,
 // and a secret never prints. One test per command family; the disk is proven untouched by a
-// fingerprint of the whole scratch HOME before and after. The `--add` preview also proves the
+// fingerprint of the whole scratch HOME before and after. The named `add` preview also proves the
 // session's shadow: the wiring reads the slot the (recorded) commit landed a moment before.
 import { randomBytes } from "node:crypto";
 import {
@@ -23,9 +23,8 @@ import { syncCodexCatalogReference } from "../src/codex/catalog_reference.ts";
 import { acquireCredential, runAuth } from "../src/commands/auth.ts";
 import { runConfig } from "../src/commands/config.ts";
 import { runDryRun } from "../src/commands/dry_run.ts";
-import { runInit } from "../src/commands/init.ts";
 import { runMcp } from "../src/commands/mcp.ts";
-import { runProfile } from "../src/commands/profile.ts";
+import { addProfile, delProfile } from "../src/commands/profile.ts";
 import { runSettings } from "../src/commands/settings.ts";
 import { CLAUDE_DESKTOP_DIR_ENV, desktopHelperPath, META_FILENAME } from "../src/claude/desktop.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
@@ -73,6 +72,13 @@ import {
 
 const WORK = parseProfileName("work");
 const WORK_TOKEN = "ghp_worktoken";
+
+/** A named profile lands in two commands now: `add` records the mode, `auth` lands the credential
+ *  and wires both agents. */
+async function addWork(mode: "direct" | "proxy", token: string): Promise<void> {
+  await addProfile(WORK, { mode, noAuth: true });
+  await runAuth({ set: token, profile: "work" });
+}
 const DIRECT_HOST = "https://api.githubcopilot.com";
 
 const restoreEnv = envSnapshot();
@@ -130,7 +136,7 @@ async function dryRun(body: () => Promise<unknown>): Promise<string> {
 test("a dry run that fails partway prints the plan landed before the failure, then fails", async () => {
   const { dir } = scratch();
   const path = join(dir, "slot.json");
-  // The shape of `profile --add` when the Direct probe fails after the slot commit.
+  // The shape of a named `add` then `auth` when the Direct probe fails after the slot commit.
   const body = () => {
     landPlan({ files: [filePlan(path, "create")], apply: () => writeFileSync(path, "{}") });
     return Promise.reject(new Error("the Direct probe failed"));
@@ -150,7 +156,7 @@ test("`agent init --direct --dry-run` prints each changed key old -> new for bot
     baseUrl: "https://stale.example",
     envKey: "OPENAI_API_KEY",
   });
-  const out = await dryRun(() => runInit({ mode: "direct", dryRun: true }));
+  const out = await dryRun(() => addProfile(null, { mode: "direct", dryRun: true }));
   // Codex: the stale proxy table is corrected key by key, the plan naming the value it replaces.
   expect(out).toContain(`rewrite ${configPath}`);
   expect(out).toContain(
@@ -168,23 +174,24 @@ test("`agent init --direct --dry-run` prints each changed key old -> new for bot
   expect(new CopilotEnvState().readProfileSlot(null).mode).toBeNull();
 });
 
-test("`agent profile --add --dry-run` redacts the token it would store; `--del --dry-run` names every file and slot key it would take", async () => {
+test("`agent profile <name> add --dry-run` plans the mode alone; the credential landing redacts the token and plans both files; `del --dry-run` names every file and slot key it would take", async () => {
   const { claudeHome } = scratch();
   const store = new CopilotApiPaths().stateStoreFile;
-  const add = await dryRun(() =>
-    runProfile({ add: "work", mode: "direct", set: WORK_TOKEN, dryRun: true })
-  );
-  expect(add).toContain("profiles.work.githubToken  (absent) -> <redacted>");
+  const add = await dryRun(() => addProfile(WORK, { mode: "direct", dryRun: true }));
   expect(add).toContain('profiles.work.mode  (absent) -> "direct"');
-  expect(add).toContain(`create ${settingsPathFor(claudeHome, WORK)}`);
-  expect(add).not.toContain(WORK_TOKEN);
+  expect(add).not.toContain("githubToken");
   expect(new CopilotEnvState().profileNames()).toEqual([]);
+  await captureChannels(() => addProfile(WORK, { mode: "direct", noAuth: true }));
+  const auth = await dryRun(() => runAuth({ set: WORK_TOKEN, profile: "work", dryRun: true }));
+  expect(auth).toContain("profiles.work.githubToken  (absent) -> <redacted>");
+  expect(auth).not.toContain(WORK_TOKEN);
+  expect(new CopilotEnvState().readCredential(WORK).kind).toBe("none");
 
-  // Landed for real, the same command's deletion previews as the inverse. The real landing is also
-  // the fingerprint's negative control: the assertion above can tell a written HOME from an
-  // untouched one.
+  // Landed for real, the deletion previews as the inverse. The real landing is also the
+  // fingerprint's negative control: the assertion above can tell a written HOME from an untouched
+  // one.
   const untouched = fingerprint(scratch().dir);
-  await captureChannels(() => runProfile({ add: "work", mode: "direct", set: WORK_TOKEN }));
+  await captureChannels(() => runAuth({ set: WORK_TOKEN, profile: "work" }));
   expect(fingerprint(scratch().dir)).not.toEqual(untouched);
   expect(new CopilotEnvState().profileNames()).toEqual([WORK]);
   // The daemon's activity mark is cleared by the stop the deletion runs first, outside any plan's
@@ -192,7 +199,7 @@ test("`agent profile --add --dry-run` redacts the token it would store; `--del -
   const activity = new CopilotApiPaths(WORK).activityFile;
   mkdirSync(dirname(activity), { recursive: true });
   writeFileSync(activity, '{"lastInferenceMs":1}\n');
-  const del = await dryRun(() => runProfile({ del: "work", mode: "auto", dryRun: true }));
+  const del = await dryRun(() => delProfile(WORK, true));
   expect(del).toContain(`delete ${activity}`);
   expect(del).toContain(`delete ${settingsPathFor(claudeHome, WORK)}`);
   expect(del).toContain(`rewrite ${store}`);
@@ -227,14 +234,14 @@ test("`agent auth --dry-run` runs no login and makes no network call: it plans t
   expect(new CopilotEnvState().readCredential(null).kind).toBe("none");
 });
 
-test("`profile --add --dry-run` refuses to plan a wiring from a credential the login has not landed (the Direct identity and Claude Desktop's rows need it)", async () => {
-  // The device flow lands a token the dry run never has: its stand-in selects nothing.
-  await expect(
-    captureChannels(() =>
-      runProfile({ add: "work", mode: "proxy", provider: "copilot", dryRun: true })
-    ),
-  ).rejects.toThrow(/Claude Desktop's model rows.*pass --set <token>/);
-  expect(new CopilotEnvState().profileNames()).toEqual([]);
+test("a named `auth --provider copilot --dry-run` names the wiring it cannot plan (the login has not landed, so the identity and Claude Desktop's rows are unselected)", async () => {
+  await captureChannels(() => addProfile(WORK, { mode: "proxy", noAuth: true }));
+  const { stdout, stderr } = await captureChannels(() =>
+    runAuth({ provider: "copilot", profile: "work", dryRun: true })
+  );
+  expect(stdout).toContain('profiles.work.authProvider  (absent) -> "copilot"');
+  expect(stderr).toContain("Would wire profile 'work''s proxy mode into both agents");
+  expect(new CopilotEnvState().readCredential(WORK).kind).toBe("none");
 });
 
 test("`auth --provider gh-cli --dry-run` plans the pin the real command resolves: the one saved account, never a bare auto", async () => {
@@ -327,15 +334,15 @@ test("a dry run's auto-mode decision is the real one: the CLI smoke runs and its
   expect({ dryVerdict: result, dryCalls: dry.n }).toEqual({ dryVerdict: false, dryCalls: real.n });
 });
 
-test("`profile --del --dry-run` takes the real refusal: a daemon that cannot be proven stopped aborts the preview too", async () => {
+test("`profile <name> del --dry-run` takes the real refusal: a daemon that cannot be proven stopped aborts the preview too", async () => {
   // The real command refuses to delete under a daemon.lock holder it cannot identify; the dry run
   // reaches the same refusal (no signal is sent) instead of previewing a deletion that would not run.
-  await captureChannels(() => runProfile({ add: "work", mode: "proxy", set: WORK_TOKEN }));
+  await captureChannels(() => addWork("proxy", WORK_TOKEN));
   const fx = stageRefusedStop(profileHome(WORK), WORK);
   try {
     const before = fingerprint(scratch().dir);
     await expect(
-      captureChannels(() => runProfile({ del: "work", mode: "auto", dryRun: true })),
+      captureChannels(() => delProfile(WORK, true)),
     ).rejects.toThrow("did not stop");
     expect(fingerprint(scratch().dir)).toEqual(before);
     expect(new CopilotEnvState().profileNames()).toEqual([WORK]);
@@ -514,7 +521,7 @@ test("the plan wraps to COLUMNS: no line exceeds 80 columns, a long path or valu
   const saved = process.env.COLUMNS;
   process.env.COLUMNS = "80";
   try {
-    const out = await dryRun(() => runInit({ mode: "direct", dryRun: true }));
+    const out = await dryRun(() => addProfile(null, { mode: "direct", dryRun: true }));
     const long = out.split("\n").filter((line) => line.length > 80);
     expect(long).toEqual([]);
     // Control: the unwrapped plan has lines past 80, so the assertion above is doing work.
@@ -526,9 +533,9 @@ test("the plan wraps to COLUMNS: no line exceeds 80 columns, a long path or valu
 });
 
 test("`agent config --set --dry-run` shows the preference's stored value moving, and leaves it", async () => {
-  runConfig({ set: ["daemon.idle-timeout", "30"] });
+  runConfig({ set: ["daemon.idle-timeout", "30"], profile: null });
   const out = await dryRun(() =>
-    Promise.resolve(runConfig({ set: ["daemon.idle-timeout", "45"], dryRun: true }))
+    Promise.resolve(runConfig({ set: ["daemon.idle-timeout", "45"], dryRun: true, profile: null }))
   );
   expect(out).toContain(`rewrite ${new CopilotApiPaths().stateStoreFile}`);
   expect(out).toContain('global."daemon.idle-timeout"  30 -> 45');
@@ -537,10 +544,10 @@ test("`agent config --set --dry-run` shows the preference's stored value moving,
 
 test("`agent settings --import --dry-run` previews the bundle's changes, the pre-import backup, and the prune it triggers, with no confirmation or write", async () => {
   const { dir } = scratch();
-  runConfig({ set: ["daemon.idle-timeout", "45"] });
+  runConfig({ set: ["daemon.idle-timeout", "45"], profile: null });
   const bundle = join(dir, "bundle.json");
   await captureChannels(() => runSettings({ exportTo: bundle }));
-  runConfig({ set: ["daemon.idle-timeout", "60"] });
+  runConfig({ set: ["daemon.idle-timeout", "60"], profile: null });
   // A full pile: the backup the import writes pushes the oldest out.
   const backups = settingsBackupDir();
   mkdirSync(backups, { recursive: true });
@@ -577,10 +584,10 @@ test("`agent settings --import --dry-run` previews the bundle's changes, the pre
 
 test("`settings --import --dry-run` over a pile of future-dated backups plans no row for the pile: the backup it writes is the one its prune removes, as the real run leaves it", async () => {
   const { dir } = scratch();
-  runConfig({ set: ["daemon.idle-timeout", "45"] });
+  runConfig({ set: ["daemon.idle-timeout", "45"], profile: null });
   const bundle = join(dir, "bundle.json");
   await captureChannels(() => runSettings({ exportTo: bundle }));
-  runConfig({ set: ["daemon.idle-timeout", "60"] });
+  runConfig({ set: ["daemon.idle-timeout", "60"], profile: null });
   const backups = settingsBackupDir();
   mkdirSync(backups, { recursive: true });
   for (let i = 0; i < SETTINGS_BACKUP_KEEP; i++) {
@@ -601,7 +608,8 @@ test("`agent config --set --dry-run` fails as the real run does when a home's an
   const { dir } = scratch();
   writeFileSync(join(dir, "not-a-dir"), "");
   process.env.COPILOT_API_HOME = join(dir, "not-a-dir", "share", "copilot-env");
-  const set = (dryRun: boolean) => runConfig({ set: ["daemon.idle-timeout", "45"], dryRun });
+  const set = (dryRun: boolean) =>
+    runConfig({ set: ["daemon.idle-timeout", "45"], dryRun, profile: null });
   let real = "";
   try {
     await set(false);
@@ -702,7 +710,8 @@ skipWin(
     // other.
     const raw = mkdirFailure(home);
     expect(raw).toMatch(/^EEXIST: file already exists, mkdir '/);
-    const set = (dryRun: boolean) => runConfig({ set: ["daemon.idle-timeout", "45"], dryRun });
+    const set = (dryRun: boolean) =>
+      runConfig({ set: ["daemon.idle-timeout", "45"], dryRun, profile: null });
     let real = "";
     try {
       await set(false);
@@ -779,7 +788,7 @@ test("`agent mcp --remove --dry-run` names the registration, the deny, and the o
   const { claudeHome } = scratch();
   storeCredential();
   // A Direct default wiring registers the MCP server and denies the builtin WebSearch.
-  await captureChannels(() => runInit({ mode: "direct" }));
+  await captureChannels(() => addProfile(null, { mode: "direct" }));
   const registration = JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<
     string,
     unknown
@@ -802,7 +811,7 @@ test("a fresh HOME's plan names the homes the real run creates, outermost first,
   homes = isolateAgentHomes("copilot-dry-run-fresh-");
   const { claudeHome, codexHome, dir } = homes;
   storeCredential();
-  const out = await dryRun(() => runInit({ mode: "direct", dryRun: true }));
+  const out = await dryRun(() => addProfile(null, { mode: "direct", dryRun: true }));
   const rows = out.split("\n").map((line) => line.trim());
   expect(rows).toContain(`create ${claudeHome}${sep}`);
   expect(rows).toContain(`create ${codexHome}${sep}`);
@@ -813,42 +822,39 @@ test("a fresh HOME's plan names the homes the real run creates, outermost first,
   // The real run creates exactly those directories, and names them (the seam writes its lines on
   // raw stderr, so they are read through its own deferral).
   deferWriteReports();
-  await captureChannels(() => runInit({ mode: "direct" }));
+  await captureChannels(() => addProfile(null, { mode: "direct" }));
   const named = flushWriteReports();
   expect(named).toContain(`created -> ${claudeHome}`);
   expect(named).toContain(`created -> ${codexHome}`);
   expect(existsSync(join(dir, ".claude"))).toBe(true);
 });
 
-test("`profile --add --direct --set ' '` over a proxy profile refuses the blank token first in both runs: no stop, no plan row, nothing touched", async () => {
-  await captureChannels(() => runProfile({ add: "work", mode: "proxy", set: WORK_TOKEN }));
-  const activity = new CopilotApiPaths(WORK).activityFile;
-  mkdirSync(dirname(activity), { recursive: true });
-  writeFileSync(activity, '{"lastInferenceMs":1}\n');
+test("a named `auth --set ' '` over a wired profile refuses the blank token first in both runs: no plan row, nothing touched", async () => {
+  await addWork("proxy", WORK_TOKEN);
   const refusal = "the provided GitHub token is empty";
-  const add = (dryRun: boolean) => runProfile({ add: "work", mode: "direct", set: " ", dryRun });
+  const auth = (dryRun: boolean) => runAuth({ set: " ", profile: "work", dryRun });
   const before = fingerprint(scratch().dir);
-  await expect(captureChannels(() => add(false))).rejects.toThrow(refusal);
+  await expect(captureChannels(() => auth(false))).rejects.toThrow(refusal);
   expect(fingerprint(scratch().dir)).toEqual(before);
   const { stdout } = await captureChannels(async () => {
-    await expect(add(true)).rejects.toThrow(refusal);
+    await expect(auth(true)).rejects.toThrow(refusal);
   });
-  // Refused before the daemon stop's activity clear could be planned: no plan prints at all.
+  // Refused before anything could be planned: no plan prints at all.
   expect(stdout).toBe("");
   expect(fingerprint(scratch().dir)).toEqual(before);
   expect(new CopilotEnvState().readProfileSlot(WORK).mode).toBe("proxy");
 });
 
-test("`profile --del --dry-run` with a directory at the profile's Desktop helper path takes the real decision: the warning, no delete, the directory kept", async () => {
-  await captureChannels(() => runProfile({ add: "work", mode: "proxy", set: WORK_TOKEN }));
+test("`profile <name> del --dry-run` with a directory at the profile's Desktop helper path takes the real decision: the warning, no delete, the directory kept", async () => {
+  await captureChannels(() => addWork("proxy", WORK_TOKEN));
   const helper = desktopHelperPath(resolveRootHome(), "proxy", WORK);
   mkdirSync(helper, { recursive: true });
   const warning = `${helper} is a directory; only a file can be removed here`;
-  const dry = await captureChannels(() => runProfile({ del: "work", mode: "auto", dryRun: true }));
+  const dry = await captureChannels(() => delProfile(WORK, true));
   expect(dry.stderr).toContain(warning);
   expect(dry.stdout).not.toContain(`delete ${helper}`);
   expect(dry.stdout).toContain(`rewrite ${new CopilotApiPaths().stateStoreFile}`);
-  const real = await captureChannels(() => runProfile({ del: "work", mode: "auto" }));
+  const real = await captureChannels(() => delProfile(WORK, false));
   expect(real.stderr).toContain(warning);
   expect(lstatSync(helper).isDirectory()).toBe(true);
   expect(new CopilotEnvState().profileNames()).toEqual([]);
@@ -875,7 +881,7 @@ function isolateWithDesktop(): { library: string; discoveries: { n: number } } {
 
 test("`init --proxy --dry-run` with the default's helper chmod'd 0644 runs Claude Desktop's model discovery as often as the real run: the planned helper reads executable", async () => {
   const { discoveries } = isolateWithDesktop();
-  await captureChannels(() => runInit({ mode: "proxy" }));
+  await captureChannels(() => addProfile(null, { mode: "proxy" }));
   const helper = desktopHelperPath(resolveRootHome(), "proxy", null);
   expect(existsSync(helper)).toBe(true);
   const probes = async (body: () => Promise<void>): Promise<number> => {
@@ -885,15 +891,15 @@ test("`init --proxy --dry-run` with the default's helper chmod'd 0644 runs Claud
     return discoveries.n;
   };
   // The plan heals the mode (the real run's chmod); the later status read sees it healed too.
-  const dry = await probes(() => runInit({ mode: "proxy", dryRun: true }));
-  const real = await probes(() => runInit({ mode: "proxy" }));
+  const dry = await probes(() => addProfile(null, { mode: "proxy", dryRun: true }));
+  const real = await probes(() => addProfile(null, { mode: "proxy" }));
   expect(real).toBeGreaterThan(0);
   expect(dry).toBe(real);
 });
 
 test("`init --proxy --dry-run` after `config --set static-key claude` over a proxy Desktop wiring probes once, as the real run does: the helper the plan deletes is invisible to the status read", async () => {
   const { discoveries } = isolateWithDesktop();
-  await captureChannels(() => runInit({ mode: "proxy" }));
+  await captureChannels(() => addProfile(null, { mode: "proxy" }));
   const helper = desktopHelperPath(resolveRootHome(), "proxy", null);
   expect(existsSync(helper)).toBe(true);
   // The static shape names no helper: the wire plans the script's deletion, and the status read
@@ -904,16 +910,16 @@ test("`init --proxy --dry-run` after `config --set static-key claude` over a pro
     await captureChannels(body);
     return discoveries.n;
   };
-  const dry = await probes(() => runInit({ mode: "proxy", dryRun: true }));
+  const dry = await probes(() => addProfile(null, { mode: "proxy", dryRun: true }));
   expect(existsSync(helper)).toBe(true);
-  const real = await probes(() => runInit({ mode: "proxy" }));
+  const real = await probes(() => addProfile(null, { mode: "proxy" }));
   expect(existsSync(helper)).toBe(false);
   expect({ dry, real }).toEqual({ dry: 1, real: 1 });
 });
 
 test("a directory at the retired helper's path fails only the retirement: both runs warn and still land the Desktop entry", async () => {
   const { library } = isolateWithDesktop();
-  await captureChannels(() => runInit({ mode: "proxy" }));
+  await captureChannels(() => addProfile(null, { mode: "proxy" }));
   const entry = readdirSync(library).filter((name) => name !== META_FILENAME).map((name) =>
     join(library, name)
   );
@@ -922,12 +928,12 @@ test("a directory at the retired helper's path fails only the retirement: both r
   const retired = desktopHelperPath(resolveRootHome(), "direct", null);
   mkdirSync(retired, { recursive: true });
   const warning = `${retired} is a directory; only a file can be removed here; left alone.`;
-  const dry = await captureChannels(() => runInit({ mode: "proxy", dryRun: true }));
+  const dry = await captureChannels(() => addProfile(null, { mode: "proxy", dryRun: true }));
   expect(dry.stderr).toContain(warning);
   expect(dry.stdout).not.toContain(`delete ${retired}`);
   // The entry itself is preserved (its re-plan is byte-identical), not discarded with the retirement.
   expect(dry.stdout).toContain(`unchanged ${entry[0]}`);
-  const real = await captureChannels(() => runInit({ mode: "proxy" }));
+  const real = await captureChannels(() => addProfile(null, { mode: "proxy" }));
   expect(real.stderr).toContain(warning);
   // The entry landed regardless: the status inspector judges it wired (a fact consola's repeat
   // throttle cannot hide, unlike a success line printed twice in a row).

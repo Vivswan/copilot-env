@@ -34,7 +34,7 @@ const logger = createStderrLogger();
  * usable catalog (the wiring-time seed failed, or the file appeared while mobile pairing had the
  * provider stripped).
  *
- * any other provider    -> left alone; `agent codex --mobile` runs OpenAI's default, whose limits
+ * any other provider    -> left alone; `agent codex-mobile` runs OpenAI's default, whose limits
  *                          the patched catalog would misstate
  * a key already present -> never rewritten, ours or a user-pinned custom path; enforcing OUR path
  *                          is configureCodexConfig's
@@ -56,7 +56,7 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
         logger.warn(
           `codex model catalog: ${catalogFile} is ${
             verdict === "unusable" ? "missing or unreadable" : "rejected by the installed codex"
-          }; reference removed (regenerate with \`agent codex\`)`,
+          }; reference removed (regenerate with \`agent profile sync --codex\`)`,
         );
       }
       return;
@@ -96,7 +96,7 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
         ),
     });
   } catch {
-    // An unreadable config (non-ENOENT) or a write race: the next `agent codex`/`agent init` wiring
+    // An unreadable config (non-ENOENT) or a write race: the next `agent profile sync --codex`/`agent init` wiring
     // writes the key anyway.
   }
 }

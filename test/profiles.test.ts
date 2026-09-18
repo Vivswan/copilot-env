@@ -13,11 +13,14 @@ import { settingsPathFor } from "../src/claude/paths.ts";
 import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
 import { codexProfileConfigPath } from "../src/codex/paths.ts";
 import {
+  addProfile,
+  checkProfile,
   deleteProfileEverywhere,
-  parseProfileAction,
+  delProfile,
   renderProfileTable,
-  runProfile,
+  syncNamedProfiles,
 } from "../src/commands/profile.ts";
+import { runAuth } from "../src/commands/auth.ts";
 import { commandDeps } from "../src/commands/launch.ts";
 import { runStart } from "../src/commands/start.ts";
 import { parseStopAction, runStop } from "../src/commands/stop.ts";
@@ -55,6 +58,21 @@ import {
 
 // Branded fixture names: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
+
+/** What `cl --profile work` runs in-process before it launches: the launcher's own hook
+ *  (src/commands/launch.ts), so these sites fail if the real hook changes. */
+async function launcherHook(): Promise<void> {
+  const slot = new CopilotEnvState().readProfileSlot(WORK);
+  if (slot.kind !== "complete") throw new Error("launcherHook: the work slot is not complete");
+  await commandDeps().writeClaudeProfileSettings(WORK, slot.mode);
+}
+
+/** A named profile lands in two commands: `add` records the mode, `auth` lands the credential and
+ *  wires both agents. */
+async function addWork(mode: "direct" | "proxy", token: string): Promise<void> {
+  await addProfile(WORK, { mode, noAuth: true });
+  await runAuth({ set: token, profile: "work" });
+}
 const FAST = parseProfileName("fast");
 const GH_ALT = parseProfileName("gh-alt");
 const ALT = parseProfileName("alt");
@@ -141,9 +159,9 @@ test("a home-only half profile gets the half-created repair message on re-auth",
   tmpProxyHome();
   mkdirSync(profileHome(WORK), { recursive: true });
   // The home makes the profile KNOWN (env/models/health address it), but the
-  // credential write still needs a store slot: only `--add` creates one.
+  // credential write still needs a store slot: only `add` creates one.
   expect(() => new Credential(undefined, WORK).store("gh-token", "ghp_x")).toThrow(
-    /half-created.*agent profile --add work/,
+    /half-created.*agent profile work add/,
   );
   expect(new CopilotEnvState().profileNames()).toEqual([]);
 });
@@ -303,9 +321,7 @@ test("a direct Claude profile writes settings-<name>.json + a --profile helper, 
     unknown
   >;
   const helperCommand = String(doc.apiKeyHelper);
-  expect(helperCommand).toContain("auth");
-  expect(helperCommand).toContain("--profile");
-  expect(helperCommand).toContain("work");
+  expect(helperCommand).toContain("profile work auth --get");
   expect(helperCommand).not.toContain("ghp_work"); // never baked
 
   const status = inspectClaudeWiring(
@@ -413,8 +429,7 @@ test("a Codex profile writes <name>.config.toml + its provider table, leaving th
   const table = providers[codexProviderId(WORK)];
   expect(table).toBeDefined();
   const auth = table?.auth as Record<string, unknown>;
-  expect(JSON.stringify(auth.args)).toContain("--profile");
-  expect(JSON.stringify(auth.args)).toContain("work");
+  expect(JSON.stringify(auth.args)).toContain('"profile","work","auth","--get"');
   // The default table is still the unsuffixed contract.
   expect(providers["copilot-env"]).toBeDefined();
 });
@@ -464,7 +479,7 @@ test("a Codex profile write on a FRESH or whitespace-only config lands whole and
   }
 });
 
-test("profile --sync refreshes wiring from the STORE mode and never touches model_provider", async () => {
+test("agent sync refreshes wiring from the STORE mode and never touches model_provider", async () => {
   tmpProxyHome();
   const claudeHome = tmpClaudeHome();
   const codexHome = tmpCodexHome();
@@ -483,7 +498,7 @@ test("profile --sync refreshes wiring from the STORE mode and never touches mode
   });
   expect(readToml(join(codexHome, "config.toml")).model_provider).toBeUndefined();
 
-  await runProfile({ sync: true, mode: "auto" });
+  await syncNamedProfiles();
 
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBeUndefined(); // still untouched
@@ -493,9 +508,9 @@ test("profile --sync refreshes wiring from the STORE mode and never touches mode
   expect(existsSync(settingsPathFor(claudeHome, FAST))).toBe(true);
 });
 
-test("profile --check is store-driven: exit 1 unknown/incomplete, 2 proxy, 0 direct", async () => {
+test("profile <name> check is store-driven: exit 1 unknown/incomplete, 2 proxy, 0 direct", async () => {
   const proxyHome = tmpProxyHome();
-  await runProfile({ check: "ghost", mode: "auto" });
+  await checkProfile(parseProfileName("ghost"), null);
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
   // Mode without credential is INCOMPLETE under the atomic model: never
@@ -506,25 +521,25 @@ test("profile --check is store-driven: exit 1 unknown/incomplete, 2 proxy, 0 dir
     new CopilotApiPaths().stateStoreFile,
     `${JSON.stringify({ profiles: { fast: { mode: "proxy" } } })}\n`,
   );
-  await runProfile({ check: "fast", mode: "auto" });
+  await checkProfile(FAST, null);
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
   const state = new CopilotEnvState();
   // Re-auth of the (now existing) partial slot completes it.
   new Credential(state, FAST).store("gh-token", "ghp_fast");
-  await runProfile({ check: "fast", mode: "auto" });
+  await checkProfile(FAST, null);
   expect(process.exitCode).toBe(2);
   process.exitCode = 0;
   state.commitProfile(FAST, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_fast" },
     mode: "direct",
   });
-  await runProfile({ check: "fast", mode: "auto" });
+  await checkProfile(FAST, null);
   expect(process.exitCode).toBe(0);
 });
 
 test("partialSlotGap: the ONE spelling of a partial slot's repair line (output contract)", () => {
-  // Rendered at three sites (profile --check, --settings-for, agent launch); pinned once here,
+  // Rendered at three sites (`profile <name> check`, the `cl --profile` launcher, `agent launch`); pinned once here,
   // byte for byte (launch.test.ts matches both lines end to end, but only as substrings).
   expect(
     partialSlotGap(WORK, {
@@ -533,7 +548,7 @@ test("partialSlotGap: the ONE spelling of a partial slot's repair line (output c
       mode: null,
     }),
   ).toBe(
-    "profile 'work' does not exist - create it with `agent profile --add work --direct|--proxy`",
+    "profile 'work' does not exist - create it with `agent profile work add --direct|--proxy`",
   );
   expect(
     partialSlotGap(WORK, {
@@ -542,8 +557,8 @@ test("partialSlotGap: the ONE spelling of a partial slot's repair line (output c
       mode: "proxy",
     }),
   ).toBe(
-    "profile 'work' has no credential - repair it with `agent auth --profile work` " +
-      "or `agent profile --add work`",
+    "profile 'work' has no credential - repair it with `agent profile work auth` " +
+      "or `agent profile work add`",
   );
 });
 
@@ -572,11 +587,11 @@ test("renderProfileTable aligns columns under a header and flags incomplete slot
   ]);
 });
 
-test("profile --add wires both agents atomically; --del removes everything", async () => {
+test("profile <name> add then auth wires both agents; del removes everything", async () => {
   tmpProxyHome();
   const claudeHome = tmpClaudeHome();
   const codexHome = tmpCodexHome();
-  await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
+  await addWork("proxy", "ghp_worktoken");
 
   const state = new CopilotEnvState();
   expect(state.readProfileSlot(WORK)).toEqual({
@@ -597,7 +612,7 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   expect(new CopilotEnvConfig().pinnedIntegrationId(WORK)).toBe("copilot-developer-cli");
 
   // Mode switch: re-add with the other flag flips BOTH agents (one mode, never both).
-  await runProfile({ add: "work", mode: "direct" });
+  await addProfile(WORK, { mode: "direct", noAuth: true });
   expect(state.readProfileSlot(WORK).mode).toBe("direct");
   const flipped = readToml(join(codexHome, "config.toml"));
   const flippedTable = (flipped.model_providers as Record<string, Record<string, unknown>>)[
@@ -605,7 +620,7 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   ];
   expect(flippedTable?.base_url).toBe("https://api.githubcopilot.com");
 
-  await runProfile({ del: "work", mode: "auto" });
+  await delProfile(WORK, false);
   expect(state.readProfileSlot(WORK)).toEqual({
     kind: "partial",
     credential: { kind: "none", provider: null },
@@ -622,23 +637,24 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   expect(new CopilotEnvConfig().read().profiles).not.toHaveProperty("work");
   // A profile that exists ONLY as a settings section (a settings-only import) is still deletable.
   new CopilotEnvConfig().setProfile(WORK, { host: "https://copilot-api.ghe.example" });
-  await runProfile({ del: "work", mode: "auto" });
+  await delProfile(WORK, false);
   expect(new CopilotEnvConfig().read().profiles).not.toHaveProperty("work");
 });
 
-test("a wiring failure after the atomic commit leaves a complete slot that --sync heals", async () => {
+test("a wiring failure after the atomic commit leaves a complete slot that agent sync heals", async () => {
   tmpProxyHome();
   const claudeHome = tmpClaudeHome();
   const codexHome = tmpCodexHome();
-  // A foreign settings-work.json makes the Claude profile writer refuse, so the
-  // add fails AFTER the slot committed (credential + mode landed together).
+  // A foreign settings-work.json makes the Claude profile writer refuse, so the credential
+  // landing fails AFTER the slot committed (the mode from `add`, the credential from `auth`).
   mkdirSync(claudeHome, { recursive: true });
   writeFileSync(
     settingsPathFor(claudeHome, WORK),
     JSON.stringify({ apiKeyHelper: "/somewhere/else.sh" }),
   );
 
-  await expect(runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" })).rejects.toThrow(
+  await addProfile(WORK, { mode: "proxy", noAuth: true });
+  await expect(runAuth({ set: "ghp_worktoken", profile: "work" })).rejects.toThrow(
     /could not wire/,
   );
 
@@ -651,59 +667,21 @@ test("a wiring failure after the atomic commit leaves a complete slot that --syn
   });
 
   rmSync(settingsPathFor(claudeHome, WORK));
-  await runProfile({ sync: true, mode: "auto" });
+  await syncNamedProfiles();
   expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(true);
   const doc = readToml(join(codexHome, "config.toml"));
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
   expect(providers[codexProviderId(WORK)]).toBeDefined();
 });
 
-test("profile --add requires a mode for a new profile", async () => {
+test("profile <name> add requires a mode for a new profile", async () => {
   tmpProxyHome();
   tmpClaudeHome();
   tmpCodexHome();
-  expect(runProfile({ add: "work", mode: "auto", set: "ghp_x" })).rejects.toThrow(
+  await expect(addProfile(WORK, { mode: "auto", noAuth: true })).rejects.toThrow(
     /--direct or --proxy/,
   );
   // --direct --proxy is rejected at the CLI boundary (provider_mode.test.ts), never here.
-  // Same conflict contract as `agent auth`: --set is the gh-token path, so another explicit
-  // provider errors instead of being coerced to gh-token.
-  expect(
-    runProfile({ add: "work", mode: "proxy", provider: "copilot", set: "ghp_x" }),
-  ).rejects.toThrow(/--set only applies/);
-});
-
-test("parseProfileAction: one verb per invocation, add-only knobs live on the add arm", () => {
-  expect(parseProfileAction({ add: "work", mode: "proxy" })).toEqual({
-    kind: "add",
-    name: WORK,
-    mode: "proxy",
-    acquisition: { kind: "choose" },
-  });
-  expect(parseProfileAction({ del: "work", mode: "auto" })).toEqual({ kind: "del", name: WORK });
-  expect(parseProfileAction({ check: "work", mode: "auto" })).toEqual({
-    kind: "check",
-    name: WORK,
-  });
-  expect(parseProfileAction({ settingsFor: "work", mode: "auto" })).toEqual({
-    kind: "settings-for",
-    name: WORK,
-  });
-  expect(parseProfileAction({ sync: true, mode: "auto" })).toEqual({ kind: "sync" });
-  expect(parseProfileAction({ list: true, mode: "auto" })).toEqual({ kind: "list" });
-  expect(() => parseProfileAction({ mode: "auto" })).toThrow(/exactly one/);
-  expect(() => parseProfileAction({ add: "work", list: true, mode: "auto" })).toThrow(
-    /exactly one/,
-  );
-  expect(() => parseProfileAction({ del: "work", mode: "direct" })).toThrow(
-    "--direct/--proxy only apply to --add",
-  );
-  expect(() => parseProfileAction({ list: true, mode: "auto", provider: "copilot" })).toThrow(
-    "--provider/--set/--gh-user only apply to --add",
-  );
-  expect(() => parseProfileAction({ list: true, mode: "auto", ghUser: "work-login" })).toThrow(
-    "--provider/--set/--gh-user only apply to --add",
-  );
 });
 
 test("parseStopAction: all/profile/default arms; --all --profile is a rejection", () => {
@@ -787,7 +765,7 @@ test("stop/record-event against a never-existing profile fabricate NOTHING", asy
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
   await runStart({ kind: "record-event", profile: TYPO });
-  // Neither command may materialize a phantom profile home (profile --list,
+  // Neither command may materialize a phantom profile home (agent list,
   // stop --all, and the proxy float all enumerate profile homes).
   expect(existsSync(profileHome(TYPO))).toBe(false);
   expect(profileHomeNames()).toEqual([]);
@@ -831,21 +809,21 @@ test("a direct profile probes ONCE and bakes the accepted identity into BOTH age
     };
   };
 
-  await runProfile({ add: "work", mode: "direct", set: "github_pat_worktoken" });
+  await addWork("direct", "github_pat_worktoken");
   const first = baked();
   expect(first.claude).toContain("Copilot-Integration-Id: copilot-developer-cli");
   expect(first.codex).toBe("copilot-developer-cli");
   expect(probes).toBeGreaterThan(0);
 
-  // `--settings-for` and `--sync` re-render what the files already bake: no request, same bytes.
+  // the `cl --profile` launcher and `agent sync` re-render what the files already bake: no request, same bytes.
   // The stub now rejects everything, so a probe would both count and change the verdict.
   probes = 0;
   setIntegrationProbeFetch(() => {
     probes++;
     return Promise.resolve(new Response("PATs not supported", { status: 400 }));
   });
-  await runProfile({ settingsFor: "work", mode: "auto" });
-  await runProfile({ sync: true, mode: "auto" });
+  await launcherHook();
+  await syncNamedProfiles();
   expect(probes).toBe(0);
   expect(baked()).toEqual(first);
 
@@ -860,7 +838,7 @@ test("a direct profile probes ONCE and bakes the accepted identity into BOTH age
         : new Response("PATs not supported", { status: 400 }),
     );
   });
-  await runProfile({ add: "work", mode: "direct", set: "github_pat_worktoken" });
+  await addProfile(WORK, { mode: "direct", noAuth: true });
   expect(probes).toBeGreaterThan(0);
   expect(baked().codex).toBe("copilot-developer-sandbox");
   expect(baked().claude).toContain("Copilot-Integration-Id: copilot-developer-sandbox");
@@ -871,7 +849,7 @@ test("a direct profile probes ONCE and bakes the accepted identity into BOTH age
   const ghe = "https://copilot-api.ghe.example";
   new CopilotEnvConfig().setProfile(WORK, { host: ghe });
   resetIntegrationIdentityCache();
-  await runProfile({ sync: true, mode: "auto" });
+  await syncNamedProfiles();
   expect(probes).toBe(0);
   expect(baked().claudeHost).toBe(ghe);
   expect(baked().codexHost).toBe(ghe);
@@ -882,7 +860,7 @@ test("a direct profile probes ONCE and bakes the accepted identity into BOTH age
   // Cleared, the slot's own host returns at the next re-render, again with no request.
   new CopilotEnvConfig().delProfile(WORK, "host");
   resetIntegrationIdentityCache();
-  await runProfile({ sync: true, mode: "auto" });
+  await syncNamedProfiles();
   expect(probes).toBe(0);
   expect(baked().claudeHost).toBe(DEFAULT_COPILOT_API_BASE);
 });
@@ -896,7 +874,7 @@ test("a Claude-only launch write wires BOTH agents from the slot: a pin change i
     probes++;
     return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
   });
-  await runProfile({ add: "work", mode: "direct", set: "github_pat_worktoken" });
+  await addWork("direct", "github_pat_worktoken");
   const bakedIds = (): [string | undefined, string | undefined] => {
     const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, WORK), "utf8")) as {
       env: Record<string, string>;
@@ -911,18 +889,18 @@ test("a Claude-only launch write wires BOTH agents from the slot: a pin change i
   };
   expect(bakedIds()).toEqual([undefined, undefined]);
 
-  // The pin overlays the slot's identity: the Claude launcher's write (`--settings-for`) renders
+  // The pin overlays the slot's identity: the Claude launcher's write (`cl --profile`) renders
   // it into BOTH files with no request, so the two never disagree and nothing is re-derived.
   new CopilotEnvConfig().setProfile(WORK, { identity: "copilot-developer-sandbox" });
   resetIntegrationIdentityCache();
   probes = 0;
-  await runProfile({ settingsFor: "work", mode: "auto" });
+  await launcherHook();
   expect(probes).toBe(0);
   expect(bakedIds()).toEqual(["copilot-developer-sandbox", "copilot-developer-sandbox"]);
   // Cleared, the slot's probed identity (the default) returns, still with no request.
   new CopilotEnvConfig().delProfile(WORK, "identity");
   resetIntegrationIdentityCache();
-  await runProfile({ settingsFor: "work", mode: "auto" });
+  await launcherHook();
   expect(probes).toBe(0);
   expect(bakedIds()).toEqual([undefined, undefined]);
 
@@ -941,7 +919,7 @@ test("a Claude-only launch write wires BOTH agents from the slot: a pin change i
   writeFileSync(new CopilotApiPaths().stateStoreFile, `${JSON.stringify(raw)}\n`);
   expect(state.readProfileDirectPair(WORK)).toEqual({});
   resetIntegrationIdentityCache();
-  await runProfile({ settingsFor: "work", mode: "auto" });
+  await launcherHook();
   expect(probes).toBeGreaterThan(0);
   expect(state.readProfileDirectPair(WORK)).toEqual({
     integrationId: null,
@@ -949,7 +927,7 @@ test("a Claude-only launch write wires BOTH agents from the slot: a pin change i
   });
   probes = 0;
   resetIntegrationIdentityCache();
-  await runProfile({ settingsFor: "work", mode: "auto" });
+  await launcherHook();
   expect(probes).toBe(0);
 });
 
@@ -957,7 +935,7 @@ test("the cl --profile launch hook re-renders a Direct profile from the slot: no
   tmpProxyHome();
   const claudeHome = tmpClaudeHome();
   const codexHome = tmpCodexHome();
-  await runProfile({ add: "work", mode: "direct", set: "github_pat_worktoken" });
+  await addWork("direct", "github_pat_worktoken");
   const bytes = (): [string, string] => [
     readFileSync(settingsPathFor(claudeHome, WORK), "utf8"),
     readFileSync(join(codexHome, "config.toml"), "utf8"),
@@ -993,7 +971,7 @@ test("profile add/del keeps the Claude Desktop entry in lockstep when Desktop is
       : Promise.reject(new Error("offline"));
   }) as typeof fetch;
 
-  await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
+  await addWork("proxy", "ghp_worktoken");
   const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
     entries: { id: string; name: string }[];
   };
@@ -1010,7 +988,7 @@ test("profile add/del keeps the Claude Desktop entry in lockstep when Desktop is
     "https://api.githubcopilot.com/models",
   ]);
 
-  await runProfile({ del: "work", mode: "auto" });
+  await delProfile(WORK, false);
   const after = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
     entries: unknown[];
   };
@@ -1042,25 +1020,25 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
   }) as typeof fetch;
 
   // Key on (the default): the add wires the entry.
-  await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
+  await addWork("proxy", "ghp_worktoken");
   expect(entryNames()).toEqual(["copilot-env: work"]);
   const helper = desktopHelperPath(resolveRootHome(), "proxy", WORK);
   expect(existsSync(helper)).toBe(true);
 
-  // Key off: the launcher-style --settings-for (the Claude adapter's profile write, the
-  // same path `cl --profile` takes) sweeps the entry -- no --sync or re-add needed.
+  // Key off: the launcher-style re-render (the Claude adapter's profile write, the
+  // same path `cl --profile` takes) sweeps the entry -- no sync or re-add needed.
   new CopilotEnvConfig().set({ "claude.desktop": false });
-  await captureAllWrites(() => runProfile({ settingsFor: "work", mode: "auto" }));
+  await captureAllWrites(() => launcherHook());
   expect(entryNames()).toEqual([]);
   expect(existsSync(helper)).toBe(false);
   // --sync (both agents) is a reconcile point too: idempotent on the swept library.
-  await runProfile({ sync: true, mode: "auto" });
+  await syncNamedProfiles();
   expect(entryNames()).toEqual([]);
 
-  await runProfile({ add: "work", mode: "auto" });
+  await addProfile(WORK, { mode: "auto", noAuth: true });
   expect(entryNames()).toEqual([]);
   new CopilotEnvConfig().del("claude.desktop");
-  await runProfile({ sync: true, mode: "auto" });
+  await syncNamedProfiles();
   expect(entryNames()).toEqual(["copilot-env: work"]);
   expect(existsSync(helper)).toBe(true);
   // The add asked Copilot's generic host for its catalog once; the quiet --sync re-wire

@@ -96,25 +96,29 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(checkCodex(foreign).value?.otherReason).toBe("custom");
   expect(ok.value?.otherReason).toBe(null);
   // A config.toml the writers REFUSE (malformed/read-error) gets the repair fix,
-  // never the generic `agent codex --proxy` re-wire that cannot land.
+  // never the generic `agent init --proxy` re-wire that cannot land.
   const malformed = checkCodex({ ...foreign, modelProvider: null, otherReason: "malformed" });
   expect(malformed.status).toBe("warn");
   expect(malformed.detail).toContain("not valid TOML");
   expect(malformed.detail).toContain("provider: other");
-  expect(malformed.fix).toBe(`repair ${join("/c", "config.toml")}, then re-run \`agent codex\``);
+  expect(malformed.fix).toBe(
+    `repair ${join("/c", "config.toml")}, then re-run \`agent profile sync --codex\``,
+  );
   expect(malformed.value?.otherReason).toBe("malformed");
   const unreadable = checkCodex({ ...foreign, modelProvider: null, otherReason: "read-error" });
   expect(unreadable.status).toBe("warn");
   expect(unreadable.detail).toContain("could not be read");
-  expect(unreadable.fix).toBe(`repair ${join("/c", "config.toml")}, then re-run \`agent codex\``);
-  // A named profile's repair re-runs its atomic re-add instead of `agent codex`.
+  expect(unreadable.fix).toBe(
+    `repair ${join("/c", "config.toml")}, then re-run \`agent profile sync --codex\``,
+  );
+  // A named profile's repair re-runs its atomic re-add instead of `agent profile sync --codex`.
   const namedMalformed = checkCodex(
     { ...foreign, modelProvider: null, otherReason: "malformed" },
     parseProfileName("work"),
   );
   expect(namedMalformed.status).toBe("warn");
   expect(namedMalformed.fix).toBe(
-    `repair ${join("/c", "config.toml")}, then re-run \`agent profile --add work\``,
+    `repair ${join("/c", "config.toml")}, then re-run \`agent profile work add\``,
   );
   // The profile's own file (`codex --profile work` layers it over config.toml) is the one to
   // repair when IT is the broken one, and every named row names it beside config.toml.
@@ -127,7 +131,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
   );
   expect(namedFileMalformed.detail).toContain("work.config.toml is present but not valid TOML");
   expect(namedFileMalformed.fix).toBe(
-    `repair ${join("/c", "work.config.toml")}, then re-run \`agent profile --add work\``,
+    `repair ${join("/c", "work.config.toml")}, then re-run \`agent profile work add\``,
   );
   // A profile-v1 leftover is not repaired by a re-add (the writer never deletes it), so the fix
   // names the migration by its explicit `agent migrate <from> <installed>` command: a re-run of
@@ -140,7 +144,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(legacyTable.status).toBe("warn");
   expect(legacyTable.detail).toContain("[profiles.work]");
   expect(legacyTable.fix).toBe(
-    `${profileTableRepair("work.config.toml")}, then re-run \`agent profile --add work\``,
+    `${profileTableRepair("work.config.toml")}, then re-run \`agent profile work add\``,
   );
   // The command the fix names must be one the runner selects the table step for: the bounds are
   // parsed back out of the rendered text and fed to the runner's own selection, with the reversed
@@ -164,9 +168,11 @@ test("codex: not configured is ok; each broken part warns with a precise message
   });
   expect(legacyKey.status).toBe("warn");
   expect(legacyKey.fix).toBe(
-    `delete the \`profile\` line from ${join("/c", "config.toml")}, then re-run \`agent codex\``,
+    `delete the \`profile\` line from ${
+      join("/c", "config.toml")
+    }, then re-run \`agent profile sync --codex\``,
   );
-  // With no config.toml beside it the broken file still owns the repair: `agent profile --add`
+  // With no config.toml beside it the broken file still owns the repair: `agent profile <name> add`
   // would refuse that file, so "not wired, re-add" is the wrong fix.
   expect(
     checkCodex(
@@ -440,7 +446,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   const staleBase = checkClaude({ ...direct, baseUrl: null });
   expect(staleBase.status).toBe("warn");
   expect(staleBase.detail).toContain("(missing)");
-  expect(staleBase.fix).toBe("agent claude --direct");
+  expect(staleBase.fix).toBe("agent init --direct");
 
   // Proxy: proxy-backed via settings.json (localhost base URL matching the resolved port).
   const proxy = checkClaude({
@@ -470,7 +476,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(proxyStale.detail).toContain("does not match the resolved proxy port");
   // The fix names the deterministic proxy rewire (the bare commands auto-detect
   // a mode, which is not guaranteed to re-bake the proxy wiring).
-  expect(proxyStale.fix).toContain("agent claude --proxy");
+  expect(proxyStale.fix).toContain("agent init --proxy");
 
   // Never configured: informational; cl defaults it to the proxy.
   const none = checkClaude({
@@ -607,12 +613,14 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
   // A misaddressed table still warns with the direct re-wire, not a gh fix.
   const codexUnwired = checkCodex({ ...codexDirectStatic, providerWired: false });
   expect(codexUnwired.status).toBe("warn");
-  expect(codexUnwired.fix).toBe("agent codex --direct");
+  expect(codexUnwired.fix).toBe("agent init --direct");
   // A baked value the store has moved past warns with the same rewire; "unchecked" only says so.
   const codexStale = checkCodex({ ...codexDirectStatic, bakedCredential: "stale" });
   expect(codexStale.status).toBe("warn");
-  expect(codexStale.detail).toContain("out of step with the store, re-run `agent codex --direct`");
-  expect(codexStale.fix).toBe("agent codex --direct");
+  expect(codexStale.detail).toContain(
+    "out of step with the store, re-run `agent init --direct`",
+  );
+  expect(codexStale.fix).toBe("agent init --direct");
   const codexUnchecked = checkCodex({ ...codexDirectStatic, bakedCredential: "unchecked" });
   expect(codexUnchecked.status).toBe("ok");
   expect(codexUnchecked.detail).toContain("freshness not checked");
@@ -660,7 +668,7 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
   expect(claudeDirect.detail).not.toContain("gh auth");
   const claudeStaleBase = checkClaude({ ...claudeDirectStatic, baseUrl: null });
   expect(claudeStaleBase.status).toBe("warn");
-  expect(claudeStaleBase.fix).toBe("agent claude --direct");
+  expect(claudeStaleBase.fix).toBe("agent init --direct");
 
   const claudeProxy = checkClaude({
     ...claudeDirectStatic,
@@ -681,7 +689,7 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
     bakedCredential: "stale",
   });
   expect(claudeProxyStale.status).toBe("warn");
-  expect(claudeProxyStale.fix).toBe("agent claude --proxy");
+  expect(claudeProxyStale.fix).toBe("agent init --proxy");
   const claudeProxyWork = checkClaude(
     {
       ...claudeDirectStatic,
@@ -713,7 +721,7 @@ test("checkCodexLive/checkClaudeLive: the probe outcome decides status, fix, det
       check: checkCodexLive,
       outcome: { kind: "failed", cli: "/bin/codex", detail: "exit 1" },
       status: "warn",
-      fix: "agent codex",
+      fix: "agent profile sync --codex",
     },
     // The captured output is surfaced verbatim (a failed probe ALWAYS carries it).
     {
@@ -748,7 +756,7 @@ test("checkCodexLive/checkClaudeLive: the probe outcome decides status, fix, det
       check: checkClaudeLive,
       outcome: { kind: "failed", cli: "/bin/claude", detail: "exit 1" },
       status: "warn",
-      fix: "agent claude",
+      fix: "agent profile sync --claude",
     },
     {
       check: checkClaudeLive,
@@ -781,7 +789,7 @@ test("checkCodexLive/checkClaudeLive: the probe outcome decides status, fix, det
 
 // --- codex host farm --------------------------------------------------------
 
-test("checkCodexHost: the codex-host key against the disk, every drift warns with `agent codex`", () => {
+test("checkCodexHost: the codex-host key against the disk, every drift warns with `agent profile sync --codex`", () => {
   const hostHome = "/h/.codex/hosts/box";
   const configLine = `config.toml: ${join(hostHome, "config.toml")}`;
   const on: CodexHostFacts = {
@@ -839,7 +847,7 @@ test("checkCodexHost: the codex-host key against the disk, every drift warns wit
   for (const { facts, summary, withConfig } of drifts) {
     const result = checkCodexHost(facts);
     expect(result.status).toBe("warn");
-    expect(result.fix).toBe("agent codex");
+    expect(result.fix).toBe("agent profile sync --codex");
     expect(result.detail).toBe(withConfig ? `${summary}\n${configLine}` : summary);
   }
   // Off with something at the path not proven ours NOW (no managed wiring on disk, recorded or
@@ -915,7 +923,7 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
   expect(missing.detail).toBe(
     `"copilot-env" (direct) wired at /lib/a.json\n"copilot-env: work" (proxy) missing\napplied in the app: "copilot-env"`,
   );
-  expect(missing.fix).toBe("agent profile --add work");
+  expect(missing.fix).toBe("agent profile work add");
 
   // A profile's helper script left behind with the key off and no library at all: still a
   // leftover (the default's helper stays with its entry, so it is not one).
@@ -928,7 +936,7 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
   expect(helperLeft.status).toBe("warn");
   expect(helperLeft.detail).toContain("/root/claude-desktop-token-work.sh");
   expect(helperLeft.detail).toContain("1 copilot-env leftover remains");
-  expect(helperLeft.fix).toBe("agent claude");
+  expect(helperLeft.fix).toBe("agent profile sync --claude");
 
   // The rest of the `--json` value contract: each arm's own fields ride along whole.
   const old = parseProfileName("old");

@@ -1,6 +1,7 @@
 // The default profile's writers. The default is a profile: one credential, ONE mode, always both
-// agents, and its record (`mode` in the default slot) plus its Direct pair have one writer here,
-// commitDefaultWiring, which runs after BOTH agents' writes succeeded. It needs BOTH src/codex/ and
+// agents, and its record (`mode` in the default slot) plus its Direct pair land here, in
+// commitDefaultWiring, after BOTH agents' writes succeeded (the one other record is the default's
+// `add` with no credential yet, which records the mode alone). It needs BOTH src/codex/ and
 // src/claude/ (the adapters) and the re-render funnel (src/agents/profile_wiring.ts), so it lives in
 // src/agents/, not src/commands/.
 //
@@ -8,7 +9,7 @@
 //       -> configureDefaultAgents: the landing. Both writes, then the record and pair land together;
 //          a failed write leaves the previous record, and the guidance names the agent that did not
 //          move and the repair.
-//   `agent codex`, `agent claude`, an import naming one agent, the launchers' proxy wire
+//   `agent profile sync --codex`, `agent profile sync --claude`, an import naming one agent, the launchers' proxy wire
 //       -> runAgentConfig. On a recorded mode: a re-render of it that never moves the record or the
 //          pair; a flag naming another mode is refused before any file is written. On NO record, or
 //          a Direct record whose slot holds no pair: the landing, so it wires both agents through
@@ -44,7 +45,7 @@ function initCommand(mode: RequestedMode): string {
 }
 
 /**
- * ONE agent's re-render of the recorded default mode (`agent codex`, `agent claude`, the launchers'
+ * ONE agent's re-render of the recorded default mode (`agent profile sync --codex`, `agent profile sync --claude`, the launchers'
  * proxy re-sync). No flag renders the recorded mode; a flag must name it. It never writes the
  * record or the pair: a Direct re-render bakes the slot's stored pair under the pin and literal in
  * force (renderDirectWiring, zero requests). Two states leave one agent nothing to re-render, and
@@ -86,8 +87,8 @@ export async function runAgentConfig(
   }
   if (action.mode !== "auto" && action.mode !== recorded) {
     throw new Error(
-      `the default profile records ${recorded} as the one mode for both agents; \`agent ${adapter.id} ` +
-        `--${action.mode}\` would leave the two apart. Move both with \`agent init --${action.mode}\`.`,
+      `the default profile records ${recorded} as the one mode for both agents; a ${action.mode} ` +
+        `write of ${adapter.id} alone would leave the two apart. Move both with \`agent init --${action.mode}\`.`,
     );
   }
   if (recorded === "direct") {
@@ -110,12 +111,12 @@ export async function runAgentConfig(
   return recorded;
 }
 
-/** `agent claude`: runAgentConfig over claudeAdapter. */
+/** `agent profile sync --claude`: runAgentConfig over claudeAdapter. */
 export async function runClaude(action: AgentRunAction): Promise<void> {
   await runAgentConfig(claudeAdapter(), action);
 }
 
-/** `agent codex`: runAgentConfig over codexAdapter. `catalogDeps` is the test seam. */
+/** `agent profile sync --codex`: runAgentConfig over codexAdapter. `catalogDeps` is the test seam. */
 export async function runCodex(
   action: AgentRunAction,
   catalogDeps?: CodexCatalogDeps,

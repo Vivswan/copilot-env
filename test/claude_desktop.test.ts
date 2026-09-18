@@ -51,11 +51,9 @@ import {
   reconcileClaudeDesktopWiring,
   resolveClaudeDesktopTargets,
 } from "../src/agents/claude_desktop.ts";
-import { printClaudeDesktopCheck } from "../src/commands/claude.ts";
-import { runInit } from "../src/commands/init.ts";
+import { addProfile, printClaudeDesktopCheck, syncNamedProfiles } from "../src/commands/profile.ts";
 import { runClaude } from "../src/agents/configure_defaults.ts";
 import { commandDeps } from "../src/commands/launch.ts";
-import { runProfile } from "../src/commands/profile.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
@@ -816,7 +814,7 @@ test("Desktop status judges a Direct entry against the slot's stored pair: what 
     credential: { kind: "stored", provider: "gh-token", token: "github_pat_w" },
     mode: "direct",
   });
-  // The slot holds the pair a probing --add stored: the enterprise host under the CLI id. No CLI
+  // The slot holds the pair a probing credential landing stored: the enterprise host under the CLI id. No CLI
   // file exists for the profile at all, so nothing but the slot can be the source.
   state.setProfileDirectPair(WORK, { integrationId: "copilot-developer-cli", host: enterprise });
   // The Desktop entry still records the generic host with no header: what an earlier wiring wrote.
@@ -1210,7 +1208,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
     `"copilot-env" (direct) missing`,
     `"copilot-env: work" (proxy) missing`,
   ]);
-  expect(rendered.fix).toBe("agent claude, then agent profile --add work");
+  expect(rendered.fix).toBe("agent profile sync --claude, then agent profile work add");
   // ... yet what a rewire cannot repair is reported even now: a user's own applied config
   // (never displaced) and an unreadable app file (left alone).
   const strangerId = "00000000-0000-4000-8000-000000000009";
@@ -1228,9 +1226,9 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
     `the app applies "Theirs" (not a copilot-env entry)`,
   ]);
   expect(rendered.fix).toBe(
-    `agent claude, then agent profile --add work, then repair ${
+    `agent profile sync --claude, then agent profile work add, then repair ${
       join(library, "..", "claude_desktop_config.json")
-    }, then re-run \`agent claude\`, then after that wire, \`agent claude --check\` names the entry to select in Claude Desktop`,
+    }, then re-run \`agent profile sync --claude\`, then after that wire, \`agent profile check --claude\` names the entry to select in Claude Desktop`,
   );
   // The switch is never named for an entry that does not exist yet: its wire may adopt a
   // same-gateway entry under THAT entry's name (a seed-name prediction would be wrong there).
@@ -1252,7 +1250,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
     `"copilot-env: work" (proxy) missing`,
     `applied in the app: "copilot-env"`,
   ]);
-  expect(rendered.fix).toBe("agent profile --add work");
+  expect(rendered.fix).toBe("agent profile work add");
 
   // The app-side facts, each its own line. A foreign applied entry is the user's to switch (a
   // wire never displaces it); an unset deploymentMode or Developer Mode off is a rewire away.
@@ -1271,7 +1269,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   rendered = renderClaudeDesktopStatus(inspectClaudeDesktopWiring(targets));
   expect(rendered.lines[2]).toBe(`the app applies "Elsewhere" (not a copilot-env entry)`);
   expect(rendered.fix).toBe(
-    'agent profile --add work, then in Claude Desktop (reopened): Developer > Configure Third-Party Inference..., select "copilot-env", Save & Restart',
+    'agent profile work add, then in Claude Desktop (reopened): Developer > Configure Third-Party Inference..., select "copilot-env", Save & Restart',
   );
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify(metaDoc)}\n`);
   const dataDir = join(library, "..");
@@ -1283,12 +1281,12 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
     "Developer Mode is off (no Developer menu)",
     `applied in the app: "copilot-env"`,
   ]);
-  expect(rendered.fix).toBe("agent profile --add work, then agent claude");
+  expect(rendered.fix).toBe("agent profile work add, then agent profile sync --claude");
   // The rewire heals both files.
   await wireClaudeDesktopEntry(directWire());
   expect(renderClaudeDesktopStatus(inspectClaudeDesktopWiring(targets)).lines.length).toBe(3);
   // An app file that cannot be parsed is named, never read as "unset": a rewire leaves it
-  // alone (the user's MCP servers live in it), so `agent claude` is not the repair.
+  // alone (the user's MCP servers live in it), so `agent profile sync --claude` is not the repair.
   const appConfig = join(dataDir, "claude_desktop_config.json");
   writeFileSync(appConfig, "{ not json");
   rendered = renderClaudeDesktopStatus(inspectClaudeDesktopWiring(targets));
@@ -1296,7 +1294,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
     `${appConfig} is not valid JSON; what the app reads from it is unknown`,
   );
   expect(rendered.fix).toBe(
-    `agent profile --add work, then repair ${appConfig}, then re-run \`agent claude\``,
+    `agent profile work add, then repair ${appConfig}, then re-run \`agent profile sync --claude\``,
   );
   const untouched = await captureAllWrites(() => wireClaudeDesktopEntry(directWire()));
   expect(untouched).toContain(`${appConfig} is not valid JSON; leaving it alone`);
@@ -1313,7 +1311,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
       `gateway ${DEFAULT_COPILOT_API_BASE}, expected http://127.0.0.1:`,
     );
   }
-  expect(renderClaudeDesktopStatus(status).fix).toBe("agent claude");
+  expect(renderClaudeDesktopStatus(status).fix).toBe("agent profile sync --claude");
 
   // Orphaned: the default wiring left our management (no target promises the entry).
   status = inspected(inspectClaudeDesktopWiring([]));
@@ -1323,7 +1321,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   expect(rendered.lines).toEqual([
     `"copilot-env" orphaned at ${configPath} (no current wiring promises it)`,
   ]);
-  expect(rendered.fix).toBe("agent claude");
+  expect(rendered.fix).toBe("agent profile sync --claude");
 
   // Unknowable targets outrank nothing but the library's own facts: with the key on and
   // the app present, the entries are simply not judged.
@@ -1334,7 +1332,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   expect(unjudged.kind).toBe("unjudged");
   rendered = renderClaudeDesktopStatus(unjudged);
   expect(rendered.lines).toEqual(["settings.json junk; the Desktop entries were not judged"]);
-  expect(rendered.fix).toBe("fix the cause named above, then re-run `agent claude`");
+  expect(rendered.fix).toBe("fix the cause named above, then re-run `agent profile sync --claude`");
 
   // Stale: a managed key drifted (the display name, then a User-Agent a Codex upgrade WOULD
   // rewrite: the inspector judges with the writer's live UA), then the same bytes a quiet rewire
@@ -1362,7 +1360,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   expect(inspected(inspectClaudeDesktopWiring(targets)).entries[0]?.verdict).toEqual({
     kind: "stale",
     path: configPath,
-    reason: "no model rows (re-run `agent claude` online)",
+    reason: "no model rows (re-run `agent profile sync --claude` online)",
   });
   writeFileSync(configPath, `${JSON.stringify(doc, null, 2)}\n`);
   expect(inspected(inspectClaudeDesktopWiring(targets)).entries[0]?.verdict.kind).toBe("wired");
@@ -1425,7 +1423,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
     entryPathNamed(library, "copilot-env: work"),
     desktopHelperPath(resolveRootHome(), "direct", WORK),
   ]);
-  expect(rendered.fix).toBe("agent claude");
+  expect(rendered.fix).toBe("agent profile sync --claude");
   removeUnmanagedClaudeDesktopWiring();
   expect(renderClaudeDesktopStatus(inspectClaudeDesktopWiring(targets))).toEqual({
     lines: [unmanaged, "disabled (claude.desktop false); no copilot-env leftovers present"],
@@ -1466,7 +1464,7 @@ test("an unreadable _meta.json is reported before anything else, the key off inc
     });
     const rendered = renderClaudeDesktopStatus(status);
     expect(rendered.lines[0]).toContain("has an unexpected shape");
-    expect(rendered.fix).toBe(`repair ${metaPath}, then re-run \`agent claude\``);
+    expect(rendered.fix).toBe(`repair ${metaPath}, then re-run \`agent profile sync --claude\``);
   }
 });
 
@@ -1510,7 +1508,7 @@ test("reconcileClaudeDesktopWiring: orphans go when the key is on, the profiles'
   expect(renderClaudeDesktopStatus(claudeDesktopStatus()).fix).toBeNull();
 
   // An orphan holding the applied slot hands it to the default's entry during the QUIET
-  // sweep too (the launcher / `profile --sync` path, which never upserts): an empty slot
+  // sweep too (the launcher / `agent sync` path, which never upserts): an empty slot
   // would boot the app into claude.ai sign-in until the next non-quiet wire.
   await wireClaudeDesktopEntry(directWire(WORK)); // first in: takes the applied slot
   new CopilotEnvState().recordDefaultMode("proxy"); // the default this re-render renders
@@ -1590,7 +1588,7 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
   expect(rendered.lines).toEqual([
     `${configPath} is still claimed in the ownership ledger but no longer listed in _meta.json (an interrupted removal)`,
   ]);
-  expect(rendered.fix).toBe("agent claude");
+  expect(rendered.fix).toBe("agent profile sync --claude");
   expect(listClaudeDesktopOwnedArtifacts().entries).toEqual([configPath]);
   // A trailing separator on the injected dir changes nothing about which claims count.
   expect(inspected(inspectClaudeDesktopWiring([], `${library}/`)).unlisted).toEqual([
@@ -1641,14 +1639,14 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
   expect(unknown).toContain(`${blankPath} carries no copilot-env wiring`);
   expect(unknown).toContain(`deleted -> ${besideBlank} (Claude Desktop entry)`);
   expect(existsSync(blankPath)).toBe(true);
-  // `--check` names it as a leftover `agent claude` cannot clear with the key off, and
+  // `--check` names it as a leftover `agent profile sync --claude` cannot clear with the key off, and
   // says what does.
   const unknownRendered = renderClaudeDesktopStatus(inspectClaudeDesktopWiring([]));
   expect(unknownRendered.lines).toContain(
     `${blankPath} (wiring unknown: it carries no copilot-env wiring)`,
   );
   expect(unknownRendered.fix).toBe(
-    "for the entries of unknown wiring: set claude.desktop true and re-run `agent claude` (it removes them as orphans), or `agent uninstall`",
+    "for the entries of unknown wiring: set claude.desktop true and re-run `agent profile sync --claude` (it removes them as orphans), or `agent uninstall`",
   );
   expect(new OwnershipLedger().ownedPaths("claudeDesktop").sort()).toEqual(
     [configPath, blankPath].sort(),
@@ -1752,7 +1750,7 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   const dataDir = join(library, "..");
   rmSync(join(dataDir, "developer_settings.json"));
   expect(renderClaudeDesktopStatus(inspectClaudeDesktopWiring([target])).fix).toMatch(
-    /^agent claude, then in Claude Desktop \(reopened\)/,
+    /^agent profile sync --claude, then in Claude Desktop \(reopened\)/,
   );
   // A dangling appliedId (a row the library no longer lists) is an empty slot: the rewire fills
   // it, where a live foreign one is never displaced.
@@ -1769,7 +1767,7 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   const twin = metaOf(library);
   (twin.entries as { name: string }[])[0]!.name = "copilot-env: work";
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify(twin)}\n`);
-  // A named Direct slot must exist for its pair to land (what `agent profile --add` commits).
+  // A named Direct slot must exist for its pair to land (what `agent profile <name> add` commits).
   new CopilotEnvState().commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_w" },
     mode: "direct",
@@ -1885,7 +1883,7 @@ test.skipIf(NO_CHMOD_FAULTS)(
   },
 );
 
-test("call sites reconcile the whole library: init, profile --sync, the launcher's profile write", async () => {
+test("call sites reconcile the whole library: init, agent sync, the launcher's profile write", async () => {
   const { library } = isolateWithDesktop();
   const names = () => (metaOf(library).entries as { name: string }[]).map((e) => e.name).sort();
   // The proxy wires below fall back to the direct catalog when the daemon is down: the stub
@@ -1903,21 +1901,23 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
     token: "ghu_test",
   });
   await wireClaudeDesktopEntry(directWire(WORK));
-  const init = await captureAllWrites(() => runInit({ mode: "proxy" }));
+  const init = await captureAllWrites(() => addProfile(null, { mode: "proxy" }));
   expect(names()).toEqual(["copilot-env"]);
   expect(metaOf(library).appliedId).toBe(basename(firstEntryPath(library), ".json"));
   expect(count(init, "Claude Desktop is ready to use.")).toBe(1);
   // ... and with the key off, the same command names the default's entry exactly once:
   // the reconcile owns the notice, the default write itself stays silent.
   new CopilotEnvConfig().set({ "claude.desktop": false });
-  const off = await captureAllWrites(() => runInit({ mode: "proxy" }));
+  const off = await captureAllWrites(() => addProfile(null, { mode: "proxy" }));
   expect(count(off, "left in place, unmanaged")).toBe(1);
 
-  // `agent profile --sync` with ZERO complete profiles and the key off: the sweep still
+  // `agent sync` with ZERO complete profiles and the key off: the sweep still
   // runs (nothing depends on a profile write happening), and keeps the default's entry.
   await wireClaudeDesktopEntry(directWire(WORK));
   new CopilotEnvConfig().set({ "claude.desktop": false });
-  await captureAllWrites(() => runProfile({ sync: true, mode: "auto" }));
+  await captureAllWrites(async () => {
+    await syncNamedProfiles();
+  });
   expect(names()).toEqual(["copilot-env"]);
   // ... and with the key on, the launcher hot path never runs model discovery: a proxy
   // profile's reconcile issues no catalog fetch (the global fetch would throw here).
@@ -1931,7 +1931,9 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
   };
   let synced = "";
   try {
-    synced = await captureAllWrites(() => runProfile({ sync: true, mode: "auto" }));
+    synced = await captureAllWrites(async () => {
+      await syncNamedProfiles();
+    });
   } finally {
     globalThis.fetch = online;
   }
@@ -2011,7 +2013,7 @@ test("the reconcile re-discovers the default entry only when it is missing or st
     new CopilotEnvState().recordDefaultMode("proxy"); // the default this re-render renders
     await captureAllWrites(() => runClaude({ kind: "configure", mode: "proxy" }));
     expect(names()).toEqual(["copilot-env"]);
-    // Already wired: the reconcile (what init / `agent claude` run next) fetches nothing.
+    // Already wired: the reconcile (what init / `agent profile sync --claude` run next) fetches nothing.
     modelFetches = 0;
     await captureAllWrites(() => reconcileClaudeDesktopWiring());
     expect(modelFetches).toBe(0);
@@ -2182,7 +2184,9 @@ test("the Desktop reconcile never lands a Direct default's missing pair: it name
   const warned = await captureAllWrites(() => reconcileClaudeDesktopWiring());
   expect(warned).toContain("Direct pair is not stored");
   // consola keeps or strips the backticks by reporter, so the match allows both.
-  expect(warned).toMatch(/`?agent claude`? lands the pair together with both agents' files/);
+  expect(warned).toMatch(
+    /`?agent profile sync --claude`? lands the pair together with both agents' files/,
+  );
   expect(new CopilotEnvState().readProfileDirectPair(null)).toEqual({});
   expect(readFileSync(metaPath, "utf8")).toBe(`${JSON.stringify({ entries: [] })}\n`);
   expect(readdirSync(library)).toEqual(["_meta.json"]);
@@ -2194,6 +2198,6 @@ test("the Desktop reconcile never lands a Direct default's missing pair: it name
   });
   const named = await captureAllWrites(() => reconcileClaudeDesktopWiring());
   expect(named).toMatch(/profile 'work'.*Direct pair is not stored/);
-  expect(named).toMatch(/`?agent profile --sync`? lands the pair/);
+  expect(named).toMatch(/`?agent sync`? lands the pair/);
   expect(readdirSync(library)).toEqual(["_meta.json"]);
 });

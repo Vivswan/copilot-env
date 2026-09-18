@@ -15,6 +15,7 @@ import {
   v409IdentityCache,
   v409IntegrationIdPin,
   v409LaunchersBlock,
+  v409ProfileVerbTree,
   v409RootDaemonHome,
   v409StateFold,
   v409StaticKeyScope,
@@ -55,6 +56,7 @@ const MIGRATIONS: Migration[] = [
   v409StaticKeyScope,
   v409IdentityCache,
   v409LaunchersBlock,
+  v409ProfileVerbTree,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a

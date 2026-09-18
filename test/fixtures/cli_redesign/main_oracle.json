@@ -1,0 +1,38 @@
+{
+  "auth --set": {
+    "exitCode": 0,
+    "stdout": ""
+  },
+  "init --proxy": {
+    "exitCode": 0,
+    "stdout": ""
+  },
+  "claude --check": {
+    "exitCode": 2,
+    "stdout": "Claude provider mode: proxy (local copilot-api proxy)\nsettings.json: <HOME>/.claude/settings.json\napiKeyHelper: <ROOT>/bin/agent proxy-token --yes\nANTHROPIC_BASE_URL: http://127.0.0.1:4199\nClaude Desktop: Claude Desktop not detected on this machine; nothing to wire\n"
+  },
+  "codex --check": {
+    "exitCode": 2,
+    "stdout": "Codex provider mode: proxy (local copilot-api proxy)\nCODEX_HOME: <HOME>/.codex\nconfig.toml: <HOME>/.codex/config.toml\n"
+  },
+  "auth --get": {
+    "exitCode": 0,
+    "stdout": "ghu_test\n"
+  },
+  "profile --add work": {
+    "exitCode": 0,
+    "stdout": ""
+  },
+  "profile --check work": {
+    "exitCode": 2,
+    "stdout": "profile 'work': proxy\n"
+  },
+  "auth --get --profile work": {
+    "exitCode": 0,
+    "stdout": "ghu_work\n"
+  },
+  "config --get identity --profile work": {
+    "exitCode": 0,
+    "stdout": "auto\n"
+  }
+}

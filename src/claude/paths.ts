@@ -31,7 +31,7 @@ function profileSuffix(profile: Profile): string {
 }
 
 /** Launch a named profile with `claude --settings <this path>`; the `cl --profile <name>` launcher
- *  resolves it via `agent profile --settings-for <name>`. */
+ *  resolves it in-process. */
 export function settingsPathFor(claudeHome: string, profile: Profile = null): string {
   return join(claudeHome, `settings${profileSuffix(profile)}.json`);
 }

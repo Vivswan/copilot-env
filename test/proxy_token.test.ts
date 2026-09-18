@@ -83,9 +83,13 @@ interface MatrixRow {
 
 const DECLINED = (profile: string) =>
   `Continuing without the proxy; proxy-backed agents need it (run 'agent start${profile}').`;
-const START_FAILED = (profile: string) =>
-  `copilot proxy failed to start (run 'agent start${profile}' to see the error; ` +
-  `no credential stored? run 'agent auth${profile}').`;
+const START_FAILED = (profile: string | null) =>
+  `copilot proxy failed to start (run 'agent start${
+    profile === null ? "" : ` --profile ${profile}`
+  }' to see the error; ` +
+  `no credential stored? run '${
+    profile === null ? "agent auth" : `agent profile ${profile} auth`
+  }').`;
 
 // The heartbeat is unconditional; a managed (auto-start) start is silent and SUPPRESSED, so its
 // failure needs the pointer that surfaces the hidden error; an interactive start is VISIBLE (child
@@ -118,7 +122,7 @@ test("resolveProxyToken: each (up, auto-start, --yes, answer, profile) row yield
       rec: {
         ...none,
         launches: [{ profile: null, output: "suppressed" }],
-        notes: [START_FAILED("")],
+        notes: [START_FAILED(null)],
       },
     },
     {
@@ -168,7 +172,7 @@ test("resolveProxyToken: each (up, auto-start, --yes, answer, profile) row yield
         ...none,
         launches: [{ profile: WORK, output: "suppressed" }],
         heartbeats: [WORK],
-        notes: [START_FAILED(" --profile work")],
+        notes: [START_FAILED("work")],
       },
     },
     {

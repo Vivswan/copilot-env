@@ -494,7 +494,7 @@ test("a redacted bundle on a fresh machine imports prefs + proxy wiring, but no 
 
   const skipped = outcome.skipped.join("\n");
   expect(skipped).toContain("run `agent auth`");
-  expect(skipped).toContain("agent profile --add work");
+  expect(skipped).toContain("agent profile work add");
   expect(outcome.wiredProfiles).toEqual([]);
   // Proxy default wiring is credential-independent (`agent start` resolves the credential
   // itself and refuses without one), so it re-derived even though no credential resolved.
@@ -553,7 +553,7 @@ test("an unresolvable slot leaves the existing state untouched", async () => {
   );
   const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
 
-  expect(outcome.skipped.join("\n")).toContain("agent profile --add work");
+  expect(outcome.skipped.join("\n")).toContain("agent profile work add");
   expect(credentials()).toEqual(before);
 });
 
@@ -762,7 +762,7 @@ test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the id
   // The mode-less alt slot can only re-auth an existing profile; none exists
   // here, so it is skipped whole instead of landing as a half profile.
   expect(withGh.skipped.join("\n")).toContain("profile 'alt'");
-  expect(withGh.skipped.join("\n")).toContain("agent profile --add alt");
+  expect(withGh.skipped.join("\n")).toContain("agent profile alt add");
   expect(withGh.modes?.claude).toBe("direct");
   expect(withGh.wiredProfiles).toEqual([WORK]);
   expect(probeCount).toBe(1);
@@ -901,7 +901,7 @@ test("a profile wiring failure lands in failures and the command exits non-zero"
   expect(err).toContain("but some profiles or wiring could not be applied (see above).");
   // The slot committed atomically (credential + mode) BEFORE the wiring, so the
   // failure leaves a COMPLETE-but-unwired slot -- never a half profile -- and
-  // `agent profile --sync` re-derives the artifacts from it.
+  // `agent sync` re-derives the artifacts from it.
   expect(new CopilotEnvState().readProfileSlot(WORK)).toEqual({
     kind: "complete",
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },

@@ -163,10 +163,10 @@ test("the typed store: read() starts empty, each accessor answers stored else bu
   ];
   for (const a of accessors) {
     expect(a.read(cfg), a.key).toBe(a.unset);
-    runConfig({ set: [a.key, a.raw] });
+    runConfig({ set: [a.key, a.raw], profile: null });
     expect(global()[a.key], a.key).toBe(a.stored);
     expect(a.read(cfg), a.key).toBe(a.stored);
-    runConfig({ del: a.key });
+    runConfig({ del: a.key, profile: null });
     expect(global()[a.key], a.key).toBeUndefined();
     expect(a.read(cfg), a.key).toBe(a.unset);
   }
@@ -298,31 +298,32 @@ test("the registry parsers accept valid input and reject bad input with a clear 
 
 test("runConfig --set validates + persists; --del reverts; unknown key / bad value error", () => {
   tmpHome();
-  runConfig({ set: ["daemon.idle-timeout", "45"] });
+  runConfig({ set: ["daemon.idle-timeout", "45"], profile: null });
   expect(new CopilotEnvConfig().read().global["daemon.idle-timeout"]).toBe(45);
 
-  runConfig({ del: "daemon.idle-timeout" });
+  runConfig({ del: "daemon.idle-timeout", profile: null });
   expect(new CopilotEnvConfig().read().global["daemon.idle-timeout"]).toBeUndefined();
 
-  expect(() => runConfig({ set: ["bogus-key", "1"] })).toThrow(/unknown config key/);
-  expect(() => runConfig({ set: ["daemon.port", "notanumber"] })).toThrow(
+  expect(() => runConfig({ set: ["bogus-key", "1"], profile: null })).toThrow(/unknown config key/);
+  expect(() => runConfig({ set: ["daemon.port", "notanumber"], profile: null })).toThrow(
     /invalid value for 'daemon.port'/,
   );
-  expect(() => runConfig({ set: ["daemon.auto-start"] })).toThrow(/usage/); // missing value
-  expect(() => runConfig({ del: "bogus-key" })).toThrow(/unknown config key/);
-  expect(() => runConfig({ set: ["daemon.auto-start", "true"], del: "daemon.port" })).toThrow(
-    /mutually exclusive/,
-  );
+  expect(() => runConfig({ set: ["daemon.auto-start"], profile: null })).toThrow(/usage/); // missing value
+  expect(() => runConfig({ del: "bogus-key", profile: null })).toThrow(/unknown config key/);
+  expect(() => runConfig({ set: ["daemon.auto-start", "true"], del: "daemon.port", profile: null }))
+    .toThrow(
+      /mutually exclusive/,
+    );
 });
 
 test("runConfig --get cannot combine with --set/--del (never silently dropped)", () => {
   tmpHome();
   // The bug: `--set port 5000 --get` wrote the key and silently dropped --get. Both --get
   // spellings, bare and keyed, are rejected.
-  expect(() => runConfig({ set: ["daemon.port", "5000"], get: true })).toThrow(
+  expect(() => runConfig({ set: ["daemon.port", "5000"], get: true, profile: null })).toThrow(
     "--get reads a preference and cannot combine with --set/--del",
   );
-  expect(() => runConfig({ del: "daemon.port", get: "daemon.port" })).toThrow(
+  expect(() => runConfig({ del: "daemon.port", get: "daemon.port", profile: null })).toThrow(
     "--get reads a preference and cannot combine with --set/--del",
   );
   // The rejected --set wrote nothing.
@@ -367,44 +368,45 @@ test("resolveSetting: flag > profile > global > default, each layer only where t
 test("runConfig --profile: a profile key lands in that profile's section, never the global map; a global key refuses --profile by scope", () => {
   tmpHome();
   createWorkProfile();
-  runConfig({ set: ["identity", "copilot-developer-cli"], profile: "work" });
+  runConfig({ set: ["identity", "copilot-developer-cli"], profile: WORK });
   const data = new CopilotEnvConfig().read();
   expect(data.profiles).toEqual({ work: { identity: "copilot-developer-cli" } });
   expect(data.global).not.toHaveProperty("identity");
   expect(new CopilotEnvConfig().pinnedIntegrationId(WORK)).toBe("copilot-developer-cli");
   expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-  expect(stdoutOf(() => runConfig({ get: "identity", profile: "work" }))).toBe(
+  expect(stdoutOf(() => runConfig({ get: "identity", profile: WORK }))).toBe(
     "copilot-developer-cli\n",
   );
-  expect(stdoutOf(() => runConfig({ get: "identity" }))).toBe("auto\n");
+  expect(stdoutOf(() => runConfig({ get: "identity", profile: null }))).toBe("auto\n");
 
   // Without --profile a profile key targets the default profile's section.
-  runConfig({ set: ["identity", "copilot-developer-sandbox"] });
+  runConfig({ set: ["identity", "copilot-developer-sandbox"], profile: null });
   expect(new CopilotEnvConfig().read().profiles.default).toEqual({
     identity: "copilot-developer-sandbox",
   });
 
   // A global key has no per-profile value: refused naming the scope, and nothing is written.
-  expect(() => runConfig({ set: ["daemon.port", "4242"], profile: "work" })).toThrow(
+  expect(() => runConfig({ set: ["daemon.port", "4242"], profile: WORK })).toThrow(
     "'daemon.port' is a global setting (scope global)",
   );
-  expect(() => runConfig({ del: "daemon.port", profile: "work" })).toThrow(/scope global/);
+  expect(() => runConfig({ del: "daemon.port", profile: WORK })).toThrow(/scope global/);
   expect(new CopilotEnvConfig().read().global).not.toHaveProperty("daemon.port");
 
   // A profile-default key: the global map without --profile, the profile's own section with it,
   // and --del reverts the same way.
-  runConfig({ set: ["proxy.small-model", "gpt-5"] });
-  runConfig({ set: ["proxy.small-model", "gpt-5-codex"], profile: "work" });
+  runConfig({ set: ["proxy.small-model", "gpt-5"], profile: null });
+  runConfig({ set: ["proxy.small-model", "gpt-5-codex"], profile: WORK });
   expect(new CopilotEnvConfig().read().global["proxy.small-model"]).toBe("gpt-5");
   expect(new CopilotEnvConfig().read().profiles.work?.["proxy.small-model"]).toBe("gpt-5-codex");
-  runConfig({ del: "proxy.small-model", profile: "work" });
+  runConfig({ del: "proxy.small-model", profile: WORK });
   expect(new CopilotEnvConfig().read().profiles.work).toEqual({
     identity: "copilot-developer-cli",
   });
   expect(new CopilotEnvConfig().read().global["proxy.small-model"]).toBe("gpt-5");
 
   // A profile the credential store does not know is refused before anything is written.
-  expect(() => runConfig({ set: ["identity", "auto"], profile: "other" })).toThrow();
+  expect(() => runConfig({ set: ["identity", "auto"], profile: parseProfileName("other") }))
+    .toThrow();
   expect(new CopilotEnvConfig().read().profiles).not.toHaveProperty("other");
 });
 
@@ -452,7 +454,7 @@ test("a credential-shaped key is rejected without echoing the value, and stored 
     tmpHome();
     let message = "";
     try {
-      runConfig({ set: [c.key, c.bad] });
+      runConfig({ set: [c.key, c.bad], profile: null });
     } catch (e) {
       message = (e as Error).message;
     }
@@ -460,7 +462,7 @@ test("a credential-shaped key is rejected without echoing the value, and stored 
     expect(message, c.key).toContain(c.reason);
     expect(message, c.key).not.toContain(c.leak);
     expect(new CopilotEnvConfig().read(), c.key).toEqual(stored({})); // nothing written
-    runConfig({ set: [c.key, c.valid] });
+    runConfig({ set: [c.key, c.valid], profile: null });
     expect(c.stored(new CopilotEnvConfig()), c.key).toBe(c.valid);
     expect(c.reads(new CopilotEnvConfig()), c.key).toBe(c.valid);
     c.junk(new CopilotEnvConfig());
@@ -469,19 +471,23 @@ test("a credential-shaped key is rejected without echoing the value, and stored 
   }
   // identity alone: the probe sentinel parses, and `codex` is refused keeping the previous pin
   // (it is the ABSENCE of the header, so a pin, always sent as the header's value, cannot mean it).
-  runConfig({ set: ["identity", "auto"] });
+  runConfig({ set: ["identity", "auto"], profile: null });
   expect(new CopilotEnvConfig().read().profiles.default?.identity).toBe("auto");
-  runConfig({ set: ["identity", "copilot-developer-cli"] });
-  expect(() => runConfig({ set: ["identity", "codex"] })).toThrow(/cannot be pinned/);
+  runConfig({ set: ["identity", "copilot-developer-cli"], profile: null });
+  expect(() => runConfig({ set: ["identity", "codex"], profile: null })).toThrow(
+    /cannot be pinned/,
+  );
   expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe("copilot-developer-cli");
 });
 
 test("runConfig --get <key> prints just the value to stdout (script-friendly)", () => {
   tmpHome();
   new CopilotEnvConfig().set({ "proxy.small-model": "gpt-5-mini" });
-  expect(stdoutOf(() => runConfig({ get: "proxy.small-model" }))).toBe("gpt-5-mini\n");
+  expect(stdoutOf(() => runConfig({ get: "proxy.small-model", profile: null }))).toBe(
+    "gpt-5-mini\n",
+  );
   // Unset with no built-in default: a blank line.
-  expect(stdoutOf(() => runConfig({ get: "proxy.claude-auto-model" }))).toBe("\n");
+  expect(stdoutOf(() => runConfig({ get: "proxy.claude-auto-model", profile: null }))).toBe("\n");
 });
 
 // One valid `--set` string per registry key, typed over ConfigKey: a new registry key without
@@ -535,7 +541,7 @@ test("every registry key round-trips: a CLI-set value survives read() and reache
   expect(CONFIG_REGISTRY.map((d) => d.key).sort()).toEqual(Object.keys(ROUND_TRIP_RAW).sort());
   for (const def of CONFIG_REGISTRY) {
     // Set as on Linux: the POSIX-only keys refuse `--set` on Windows (own test below).
-    runConfig({ set: [def.key, ROUND_TRIP_RAW[def.key]] }, "linux");
+    runConfig({ set: [def.key, ROUND_TRIP_RAW[def.key]], profile: null }, "linux");
   }
   const cfg = new CopilotEnvConfig();
   const data = cfg.read();
@@ -571,7 +577,7 @@ test("codex.home: an absolute path as typed or `auto`; `~` and relative paths ar
     expect(() => def.parse("\\Codex")).toThrow("on Windows the drive is required");
     expect(def.parse("C:\\Codex")).toBe("C:\\Codex");
   }
-  expect(() => runConfig({ set: ["codex.home", "~/.codex"] })).toThrow(
+  expect(() => runConfig({ set: ["codex.home", "~/.codex"], profile: null })).toThrow(
     /invalid value for 'codex.home'/,
   );
   expect(new CopilotEnvConfig().read().global["codex.home"]).toBeUndefined();
@@ -588,7 +594,7 @@ test("codex.home: an absolute path as typed or `auto`; `~` and relative paths ar
     .toEqual({ explicit: ABS_CODEX_HOME, hostFarm: false });
   // A hand-edited relative value reads as unset: the derivation falls back rather than writing
   // under the cwd.
-  runConfig({ set: ["codex.home", ABS_CODEX_HOME] }, "win32");
+  runConfig({ set: ["codex.home", ABS_CODEX_HOME], profile: null }, "win32");
   expect(new CopilotEnvConfig().codexHomePrefs("win32").explicit).toBe(ABS_CODEX_HOME);
   expect(v.parse(GLOBAL_CONFIG_SCHEMA, { "codex.home": "relative/dir" })["codex.home"])
     .toBeUndefined();
@@ -602,26 +608,26 @@ test("codex.host: stored else default, POSIX-only set, and Windows always reads 
   expect(codexHomePrefsFor({ "codex.host": true }, "darwin").hostFarm).toBe(true);
   expect(codexHomePrefsFor({ "codex.host": true }, "win32").hostFarm).toBe(false);
   expect(cfg.codexHostEnabled("linux")).toBe(false);
-  runConfig({ set: ["codex.host", "true"] }, "darwin");
+  runConfig({ set: ["codex.host", "true"], profile: null }, "darwin");
   expect(cfg.codexHostEnabled("linux")).toBe(true);
   // Windows has no farm: the stored true (e.g. from an imported bundle) reads as off there.
   expect(cfg.codexHostEnabled("win32")).toBe(false);
   // `--set` on Windows is refused with a platform message, and writes nothing.
-  runConfig({ del: "codex.host" });
-  expect(() => runConfig({ set: ["codex.host", "true"] }, "win32")).toThrow(
+  runConfig({ del: "codex.host", profile: null });
+  expect(() => runConfig({ set: ["codex.host", "true"], profile: null }, "win32")).toThrow(
     "'codex.host' is only supported on Linux and macOS (this is win32); it cannot be set here.",
   );
   expect(cfg.read().global["codex.host"]).toBeUndefined();
   // A plain (not POSIX-only) key is unaffected by the platform.
-  runConfig({ set: ["daemon.auto-start", "true"] }, "win32");
+  runConfig({ set: ["daemon.auto-start", "true"], profile: null }, "win32");
   expect(cfg.autoStartEnabled()).toBe(true);
   // A stored true (an imported bundle) is INERT on Windows: the keyed read answers with
   // the built-in default and the table names the inert value instead of hiding it.
   cfg.set({ "codex.host": true });
-  expect(stdoutOf(() => runConfig({ get: "codex.host" }, "linux"))).toBe("true\n");
-  expect(stdoutOf(() => runConfig({ get: "codex.host" }, "win32"))).toBe("false\n");
+  expect(stdoutOf(() => runConfig({ get: "codex.host", profile: null }, "linux"))).toBe("true\n");
+  expect(stdoutOf(() => runConfig({ get: "codex.host", profile: null }, "win32"))).toBe("false\n");
   // The table is stdout too, and the command hands the renderer the same platform.
-  expect(stdoutOf(() => runConfig({ get: true }, "win32"))).toBe(
+  expect(stdoutOf(() => runConfig({ get: true, profile: null }, "win32"))).toBe(
     `${configTableOutput("win32")}\n`,
   );
 });
@@ -847,7 +853,8 @@ test("configTable() by scope: PROFILE holds the profile keys and the profile-def
   const keysIn = (lines: string[]): string[] => lines.flatMap((l) => l.match(rowRe)?.[1] ?? []);
   const rowOf = (lines: string[], key: string): string =>
     lines.slice(lines.findIndex((l) => rowRe.exec(l)?.[1] === key)).slice(0, 3).join("\n");
-  const view = (profile?: string) => sections(stdoutOf(() => runConfig({ get: true, profile })));
+  const view = (profile: Profile = null) =>
+    sections(stdoutOf(() => runConfig({ get: true, profile })));
   // Every profile's PROFILE section lists its own keys, then each profile-default group under a
   // heading; GLOBAL lists the global keys group by group and nothing else.
   const profileKeys = [
@@ -898,34 +905,34 @@ test("configTable() by scope: PROFILE holds the profile keys and the profile-def
 
   // Set globally (no --profile): every profile inherits it, starred and marked (global); the key
   // still has no row under GLOBAL.
-  runConfig({ set: [shared.key, sharedDefault] });
-  for (const profile of [undefined, "work"]) {
+  runConfig({ set: [shared.key, sharedDefault], profile: null });
+  for (const profile of [null, WORK]) {
     const v = view(profile);
     expect(v.profile[0]?.startsWith(`PROFILE ${profile ?? "default"}`)).toBe(true);
     expect(rowOf(v.profile, shared.key)).toContain(`  * ${shared.key}=${sharedDefault}`);
     expect(rowOf(v.profile, shared.key)).toContain("(global)");
     expect(keysIn(v.global)).not.toContain(shared.key);
   }
-  expect(stdoutOf(() => runConfig({ get: true }))).toMatch(
+  expect(stdoutOf(() => runConfig({ get: true, profile: null }))).toMatch(
     new RegExp(`^1 of ${CONFIG_REGISTRY.length} keys set`),
   );
 
   // Set on work too: work's row is its own value and names the global value it hides; default's
   // row is unchanged. A key set at both levels is one row, so the count stays 1.
-  runConfig({ set: [shared.key, sharedDefault], profile: "work" });
-  const work = view("work");
+  runConfig({ set: [shared.key, sharedDefault], profile: WORK });
+  const work = view(WORK);
   expect(rowOf(work.profile, shared.key)).toContain(`  * ${shared.key}=${sharedDefault}`);
   expect(rowOf(work.profile, shared.key)).toContain(`(overrides global ${sharedDefault})`);
   expect(rowOf(work.profile, shared.key)).not.toContain("(global)");
   expect(rowOf(view().profile, shared.key)).toContain("(global)");
-  expect(stdoutOf(() => runConfig({ get: true, profile: "work" }))).toMatch(
+  expect(stdoutOf(() => runConfig({ get: true, profile: WORK }))).toMatch(
     new RegExp(`^1 of ${CONFIG_REGISTRY.length} keys set`),
   );
 
   // With the global value gone the override hides the built-in default, named once: no
   // `default` cell beside it.
-  runConfig({ del: shared.key });
-  const overrideRow = rowOf(view("work").profile, shared.key);
+  runConfig({ del: shared.key, profile: null });
+  const overrideRow = rowOf(view(WORK).profile, shared.key);
   expect(overrideRow).toContain(`  * ${shared.key}=${sharedDefault}`);
   expect(overrideRow).toContain(`(overrides the default ${sharedDefault})`);
   expect(overrideRow).not.toContain(`default ${sharedDefault} `);

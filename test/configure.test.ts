@@ -210,7 +210,7 @@ test("a single-agent write re-renders the recorded mode, never moves it, and ref
   await expect(
     runAgentConfig(adapter, { kind: "configure", mode: "direct" }, { ghToken: "ghp_x" }),
   ).rejects.toThrow(
-    "the default profile records proxy as the one mode for both agents; `agent claude --direct` would leave the two " +
+    "the default profile records proxy as the one mode for both agents; a direct write of claude alone would leave the two " +
       "apart. Move both with `agent init --direct`.",
   );
   expect(recorded.writes).toEqual([]);
@@ -228,7 +228,7 @@ test("a single-agent write re-renders the recorded mode, never moves it, and ref
   expect(state.readProfileSlot(null).mode).toBe("proxy");
 });
 
-// The defect this pins: a flag-less `agent claude` on a recorded Direct default used to run the
+// The defect this pins: a flag-less `agent profile sync --claude` on a recorded Direct default used to run the
 // adapter's LANDING probe and overwrite the slot's pair with a fresh selection, so a PAT accepted
 // only under `copilot-developer-cli` was rebaked as `codex` whenever /models happened to fail.
 test("a Direct re-render bakes the slot's stored pair into the file: zero probes, slot unchanged", async () => {
@@ -279,7 +279,7 @@ test("a single-agent flag on a null record lands BOTH agents like `agent init --
     recorded: "direct",
     pair: { integrationId: PAT_ID, host: HOST },
   });
-  // What `cl` and `agent claude` then render: the slot's pair, no landing probe.
+  // What `cl` and `agent profile sync --claude` then render: the slot's pair, no landing probe.
   const rerender = fakeAdapter(() => Promise.resolve(null), true, "claude");
   await runAgentConfig(rerender.adapter, { kind: "configure", mode: "auto" }, { ghToken: "ghp_x" });
   expect(rerender.recorded).toEqual({

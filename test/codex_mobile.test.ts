@@ -135,7 +135,7 @@ test("installGateFromScan: present proceeds; proven absence aborts; unproven ask
   expect(installGateFromScan("absent")).toEqual({
     kind: "abort",
     warn: "The Codex app does not appear to be installed.",
-    info: "Install the Codex app, then re-run `agent codex --mobile`.",
+    info: "Install the Codex app, then re-run `agent codex-mobile`.",
   });
   // A failed look is NOT "not installed": it asks the user, never the false abort.
   expect(installGateFromScan("unproven")).toEqual({

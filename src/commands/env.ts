@@ -47,7 +47,7 @@ function isLocalProxyUrl(url: string): boolean {
 }
 
 /** The same resolution the writer and the launch pin use (resolveCodexHome): with `codex.host` on
- *  the farm is exported built or not (the next `agent codex` builds it), so a drift between the key
+ *  the farm is exported built or not (the next `agent profile sync --codex` builds it), so a drift between the key
  *  and the disk is warned about beside it, never hidden by an empty export. */
 export function managedCodexHome(): ManagedEnvValue {
   const prefs = new CopilotEnvConfig().codexHomePrefs();

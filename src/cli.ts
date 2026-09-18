@@ -4,13 +4,8 @@
 import "./utils/dotenv.ts";
 import { Command } from "commander";
 import { consola } from "consola";
-import { parseClaudeAction, parseCodexAction } from "./agents/configure.ts";
 import { parseModeFlags } from "./agents/provider_mode.ts";
-import { runClaude, runCodex } from "./agents/configure_defaults.ts";
-import { reconcileClaudeDesktopWiring } from "./agents/claude_desktop.ts";
-import { printClaudeDesktopCheck } from "./commands/claude.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
-import { ensureAuthenticated, runAuth } from "./commands/auth.ts";
 import { configTableOutput, runConfig } from "./commands/config.ts";
 import { runCredits } from "./commands/credits.ts";
 import { runDryRun } from "./commands/dry_run.ts";
@@ -18,11 +13,19 @@ import { runEnv } from "./commands/env.ts";
 import { spawnedByDryRun } from "./utils/dry_run.ts";
 import { collectDryRun } from "./utils/write_session.ts";
 import { runHealth } from "./commands/health.ts";
-import { runInit } from "./commands/init.ts";
 import { parseLaunchAction, runLaunch } from "./commands/launch.ts";
 import { runMcp } from "./commands/mcp.ts";
 import { runModels } from "./commands/models.ts";
-import { runProfile } from "./commands/profile.ts";
+import {
+  DRY_RUN_HELP,
+  type Opts,
+  registerAuthCommand,
+  registerInitCommand,
+  registerListCommand,
+  registerProfileCommand,
+  registerSyncCommand,
+  splitProfileInvocation,
+} from "./commands/profile_verbs.ts";
 import { runProxyToken } from "./commands/proxy_token.ts";
 import { runSettings } from "./commands/settings.ts";
 import { DEFAULT_CLI_COOLDOWN_DAYS, runShell } from "./commands/setup.ts";
@@ -30,15 +33,12 @@ import { parseStartAction, runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUninstall } from "./commands/uninstall.ts";
 import { runUpdate } from "./commands/update.ts";
-import { configSetCommand, OPENROUTER_MODELS_URL } from "./copilot_api/env_config.ts";
-import { AUTH_PROVIDERS, type AuthProvider } from "./copilot_api/env_state.ts";
-import { ghTokenEnvVarsLabel } from "./copilot_api/gh_cli.ts";
+import { OPENROUTER_MODELS_URL } from "./copilot_api/env_config.ts";
 import { parseProfileFlag } from "./copilot_api/profile.ts";
 import { runInstall } from "./install/installer.ts";
 import { runMigrations } from "./migrations/index.ts";
 import { runCost } from "./usage/cost.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
-import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
 import { configureConsolaOutput, redirectConsolaToStderr } from "./utils/logger.ts";
 import { terminalWidth, wrapMessage } from "./utils/table.ts";
@@ -46,32 +46,9 @@ import { packageVersion } from "./utils/version.ts";
 
 configureConsolaOutput();
 
-/** Commander hands action callbacks an options bag of mixed-typed values. */
-type Opts = Record<string, unknown>;
-
-/** The one wording of `--dry-run` on every writing command (the plan is src/commands/dry_run.ts). */
-const DRY_RUN_HELP =
-  "Print every file and store key the command would change (old -> new, secrets redacted) and write nothing.";
-
-// Keyed exhaustively on AuthProvider so a membership change in env_state.ts fails the compile here
-// instead of drifting the help.
-const AUTH_PROVIDER_HELP: Record<AuthProvider, string> = {
-  "copilot": "device flow, read:user scope",
-  "gh-cli": "use the machine's gh login",
-  "gh-token": "paste a GitHub token, or --set <token>",
-  "gh-env": `copy a token from ${ghTokenEnvVarsLabel()} - for headless servers`,
-};
-
-/** The providers as natural-language help: "'a' (...), 'b' (...), or 'c' (...)". */
-function authProviderChoicesHelp(): string {
-  const parts = AUTH_PROVIDERS.map((p) => `'${p}' (${AUTH_PROVIDER_HELP[p]})`);
-  return `${parts.slice(0, -1).join(", ")}, or ${parts[parts.length - 1]}`;
-}
-
-/** The providers as a bare quoted list: "'copilot' | 'gh-cli' | 'gh-token' | 'gh-env'". */
-function authProviderNamesHelp(): string {
-  return AUTH_PROVIDERS.map((p) => `'${p}'`).join(" | ");
-}
+// `agent profile <name> <verb>` carries the name in the word position, which Commander has no
+// slot for: it is split off here, before the tree is built, and the profile verbs close over it.
+const invocation = splitProfileInvocation(process.argv.slice(2));
 
 function parseNonNegativeDays(raw: string, flag: string): number {
   if (!/^\d+$/.test(raw)) {
@@ -112,6 +89,10 @@ program
   .description("Manage the local proxy and wire Codex + Claude.")
   .version(packageVersion(), "--version", "Print the version and exit.")
   .helpOption("--help", "Show this help.")
+  // Options are read up to the command word and the rest handed on, so a flag `agent profile` and
+  // one of its verbs both spell (`--set`, `--dry-run`) reaches the verb. The root's own flags
+  // (`--version`, `--full-help`) then come before the command, as they always have.
+  .enablePositionalOptions()
   .option("--full-help", "Print help for `agent` and every subcommand, then exit.");
 
 // The option:full-help listener fires during parse, before any "missing command" handling, so it
@@ -145,6 +126,10 @@ program.on("option:full-help", () => {
   for (const cmd of program.commands) {
     if (cmd.name() === "help") continue;
     parts.push(`${sep}\nagent ${cmd.name()}\n${sep}\n${renderHelp(cmd)}`);
+    for (const sub of cmd.commands) {
+      if (sub.name() === "help") continue;
+      parts.push(`${sep}\nagent ${cmd.name()} ${sub.name()}\n${sep}\n${renderHelp(sub)}`);
+    }
   }
   process.stdout.write(parts.join("\n"));
   process.exit(0);
@@ -160,16 +145,12 @@ program.configureHelp({
   styleDescriptionText: gray,
 });
 
-// Commander renders help groups in first-appearance order, so `init` is added first.
-
-program
-  .command("init")
-  .helpGroup("Setup:")
-  .description("Set up both Codex and Claude (auto-detect GitHub Copilot Direct vs the proxy).")
-  .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
-  .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
-  .option("--dry-run", DRY_RUN_HELP)
-  .action((opts: Opts) => runInit({ mode: parseModeFlags(opts), dryRun: Boolean(opts.dryRun) }));
+// Commander renders help groups in first-appearance order, so `init` and `profile` come first.
+registerInitCommand(program);
+registerProfileCommand(program, invocation.profile);
+registerAuthCommand(program);
+registerListCommand(program);
+registerSyncCommand(program);
 
 program
   .command("launch")
@@ -205,133 +186,6 @@ program
       undefined,
       Boolean(opts.dryRun),
     )
-  );
-
-program
-  .command("auth")
-  .helpGroup("Settings:")
-  .description("Manage the GitHub Copilot credential (the single source of truth for Direct).")
-  .option(
-    "--provider <provider>",
-    `How to authenticate (no flag => interactive choice): ${authProviderChoicesHelp()}.`,
-  )
-  .option(
-    "--set <token>",
-    "Non-interactive gh-token: store this token verbatim. Implies --provider gh-token.",
-  )
-  .option(
-    "--gh-user <login>",
-    "Pin gh-cli to this logged-in gh account (omit = follow gh's active account). " +
-      "Implies --provider gh-cli.",
-  )
-  .option(
-    "--get",
-    "Print the resolved token to stdout (provider-driven: gh-cli → `gh auth token`, " +
-      "copilot/gh-token/gh-env → the stored token).",
-  )
-  .option("--del", "Clear the stored token (de-authenticate).")
-  .option("--check", "Report auth status and exit (0 authenticated, 1 not).")
-  .option(
-    "--print-proxy-token",
-    "Print the local proxy's API key to stdout (used by the proxy-mode resolver after it ensures the proxy).",
-  )
-  .option(
-    "--profile <name>",
-    "Address a named credential profile instead of the default (named profiles never " +
-      "fall back to the default credential).",
-  )
-  .option("--list", "List the default + named credential profiles (providers only, never tokens).")
-  .option(
-    "--identities",
-    "Probe every Copilot client identity (Copilot-Integration-Id) for the credential on both the " +
-      "Direct and the proxy host and table which accept it; * marks the one in effect.",
-  )
-  .option(
-    "--identity [id|auto]",
-    `Pin the Copilot client identity (same store as \`${
-      configSetCommand("identity", "<id>")
-    }\`); ` +
-      "`auto` restores probing; no value => interactive choice from the probe.",
-  )
-  .option(
-    "--dry-run",
-    `${DRY_RUN_HELP} No login runs: the slot write is planned from --set or --gh-user (a device flow is named, not run), so --provider is required when no credential resolves.`,
-  )
-  .action((opts: Opts) =>
-    runAuth({
-      provider: opts.provider as string | undefined,
-      set: opts.set as string | undefined,
-      ghUser: opts.ghUser as string | undefined,
-      get: Boolean(opts.get),
-      del: Boolean(opts.del),
-      check: Boolean(opts.check),
-      printProxyToken: Boolean(opts.printProxyToken),
-      profile: opts.profile as string | undefined,
-      list: Boolean(opts.list),
-      identities: Boolean(opts.identities),
-      identity: opts.identity as string | boolean | undefined,
-      dryRun: Boolean(opts.dryRun),
-    })
-  );
-
-program
-  .command("profile")
-  .helpGroup("Settings:")
-  .description(
-    "Manage named profiles: one credential + one mode (direct or proxy), wired into BOTH agents.",
-  )
-  .option(
-    "--add <name>",
-    "Create (or re-wire) a profile: acquires its own credential, records the mode, " +
-      "wires Codex + Claude. Re-add with the other mode flag to switch modes.",
-  )
-  .option(
-    "--del <name>",
-    "Delete a profile everywhere: stop its daemon, clear its credential, strip both " +
-      "agents' wiring, remove its daemon home.",
-  )
-  .option("--list", "List every profile with its provider, mode, and daemon status.")
-  .option(
-    "--check <name>",
-    "Report the profile's mode and exit (0 direct, 2 proxy, 1 no such profile) - the launcher probe.",
-  )
-  .option(
-    "--settings-for <name>",
-    "Re-sync the profile's Claude settings file and print its absolute path (the `cl --profile` hook).",
-  )
-  .option(
-    "--sync",
-    "Refresh every profile's wiring against the live proxy ports (the `cx --profile` hook).",
-  )
-  .option("--direct", "With --add: wire the profile to GitHub Copilot Direct.")
-  .option("--proxy", "With --add: wire the profile to its own local proxy daemon.")
-  .option(
-    "--provider <provider>",
-    `With --add: how the profile authenticates (${authProviderNamesHelp()}); no flag prompts.`,
-  )
-  .option("--set <token>", "With --add: non-interactive gh-token - store this token verbatim.")
-  .option(
-    "--gh-user <login>",
-    "With --add: pin gh-cli to this logged-in gh account (omit = follow gh's active account).",
-  )
-  .option("--dry-run", `${DRY_RUN_HELP} With --add, --del, --sync, or --settings-for.`)
-  .action((opts: Opts) =>
-    runProfile({
-      add: opts.add as string | undefined,
-      del: opts.del as string | undefined,
-      list: Boolean(opts.list),
-      check: opts.check as string | undefined,
-      settingsFor: opts.settingsFor as string | undefined,
-      sync: Boolean(opts.sync),
-      mode: parseModeFlags(
-        opts,
-        "--direct and --proxy are mutually exclusive (a profile has ONE mode)",
-      ),
-      provider: opts.provider as string | undefined,
-      set: opts.set as string | undefined,
-      ghUser: opts.ghUser as string | undefined,
-      dryRun: Boolean(opts.dryRun),
-    })
   );
 
 program
@@ -441,7 +295,7 @@ program
       set: opts.set as string[] | undefined,
       get: opts.get as string | boolean | undefined,
       del: opts.del as string | undefined,
-      profile: opts.profile as string | undefined,
+      profile: parseProfileFlag(opts.profile as string | undefined),
       dryRun: Boolean(opts.dryRun),
     })
   );
@@ -646,91 +500,12 @@ program
   );
 
 program
-  .command("codex")
+  .command("codex-mobile")
   .helpGroup("Setup:")
   .description(
-    "Rewrite Codex's config from the default profile's recorded mode (the first wiring on a " +
-      "fresh default sets up both agents, probing GitHub Copilot Direct vs the proxy with no flag).",
+    "Interactive: pair the Codex desktop app with its phone remote-control flow (macOS/Windows).",
   )
-  .option(
-    "--direct",
-    "GitHub Copilot Direct: on a fresh default lands both agents; else must match the recorded mode.",
-  )
-  .option(
-    "--proxy",
-    "The local copilot-api proxy: on a fresh default lands both agents; else must match the recorded mode.",
-  )
-  .option(
-    "--check",
-    "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
-  )
-  .option("--mobile", "Interactive: pair the Codex desktop app with its phone remote-control flow.")
-  .option("--dry-run", DRY_RUN_HELP)
-  .action((opts: Opts) => {
-    const action = parseCodexAction({
-      check: Boolean(opts.check),
-      mode: parseModeFlags(opts),
-      mobile: Boolean(opts.mobile),
-      dryRun: Boolean(opts.dryRun),
-    });
-    switch (action.kind) {
-      case "mobile":
-        return runCodexMobile();
-      case "check":
-        return runCodex(action);
-      case "configure": {
-        // A re-render of the recorded default mode; `agent init` is what sets or moves it.
-        const land = () => ensureAuthenticated().then(() => runCodex(action));
-        return opts.dryRun ? runDryRun(land) : land();
-      }
-      default:
-        return assertNever(action);
-    }
-  });
-
-program
-  .command("claude")
-  .helpGroup("Setup:")
-  .description(
-    "Rewrite Claude Code's config from the default profile's recorded mode (the first wiring on a " +
-      "fresh default sets up both agents, probing GitHub Copilot Direct vs the proxy with no flag).",
-  )
-  .option(
-    "--direct",
-    "GitHub Copilot Direct: on a fresh default lands both agents; else must match the recorded mode.",
-  )
-  .option(
-    "--proxy",
-    "The local copilot-api proxy: on a fresh default lands both agents; else must match the recorded mode.",
-  )
-  .option(
-    "--check",
-    "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
-  )
-  .option("--dry-run", DRY_RUN_HELP)
-  .action((opts: Opts) => {
-    const action = parseClaudeAction({
-      check: Boolean(opts.check),
-      mode: parseModeFlags(opts),
-      dryRun: Boolean(opts.dryRun),
-    });
-    switch (action.kind) {
-      case "check":
-        // The exit code stays the provider-mode contract; the Desktop status only prints.
-        return runClaude(action).then(() => printClaudeDesktopCheck());
-      case "configure": {
-        // The default's Desktop entry rode on the write itself; the reconcile covers the named
-        // profiles.
-        const land = () =>
-          ensureAuthenticated()
-            .then(() => runClaude(action))
-            .then(() => reconcileClaudeDesktopWiring());
-        return opts.dryRun ? runDryRun(land) : land();
-      }
-      default:
-        return assertNever(action);
-    }
-  });
+  .action(() => runCodexMobile());
 
 program
   .command("mcp")
@@ -905,7 +680,7 @@ if (import.meta.main) {
   // silent dry run: its bookkeeping lands nothing, and it prints no plan of its own. The marker is
   // the one the spawning dry run minted (DRY_RUN_ENV), so a value that reached the environment any
   // other way changes nothing here.
-  const run = (): Promise<unknown> => program.parseAsync(process.argv);
+  const run = (): Promise<unknown> => program.parseAsync(invocation.args, { from: "user" });
   (spawnedByDryRun() ? collectDryRun(run) : run()).catch((e: unknown) => {
     consola.error(errMessage(e));
     // exitCode, not process.exit, so pending stderr writes flush.

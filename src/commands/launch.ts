@@ -131,7 +131,7 @@ async function ensureProfileReady(
   deps: LaunchDeps,
 ): Promise<ProfileMode | null> {
   const slot = deps.profileSlot(name);
-  // A partial slot reports its gap, exactly `agent profile --check`'s contract.
+  // A partial slot reports its gap, exactly `agent profile <name> check`'s contract.
   if (slot.kind === "partial") {
     throw new Error(partialSlotGap(name, slot));
   }

@@ -26,9 +26,9 @@ export function bothAgents(catalogDeps?: CodexCatalogDeps): AgentAdapter[] {
 }
 
 /** How a Direct wiring gets its identity and host. `probe`: select afresh on the host in use and
- *  store the pair in the slot (a credential landing: `--add`, `agent auth --profile`, an import).
- *  `stored`: render the slot's pair under the pin and literal in force (a re-render: `--sync`,
- *  `--settings-for`, the Desktop reconcile, the `cl --profile` hook); a slot never probed is the
+ *  store the pair in the slot (a credential landing: `add`, `agent profile <name> auth`, an import).
+ *  `stored`: render the slot's pair under the pin and literal in force (a re-render: `sync`,
+ *  the `cl --profile` hook's re-render, the Desktop reconcile); a slot never probed is the
  *  one gap, closed by probing and storing at that re-render. */
 export type DirectResolution = "probe" | "stored";
 
@@ -38,16 +38,30 @@ export type DirectResolution = "probe" | "stored";
  *  derived surfaces bake the same value without re-probing. The credential is per agent (the
  *  `static-key` scope) and resolved from the store at most once: the first static resolution's
  *  token feeds the next agent's and the identity probe. */
-export async function wireBothAgents(
+export function wireBothAgents(
   name: ProfileName,
   mode: ProfileMode,
   quiet: boolean,
   direct: DirectResolution,
   credentialToken?: string | null,
 ): Promise<void> {
+  return wireProfileAgents(name, mode, quiet, direct, bothAgents(), credentialToken);
+}
+
+/** wireBothAgents over `agents` alone: `agent profile <name> sync --claude|--codex` re-renders one
+ *  agent's files from the same slot the same way. A landing (a credential, a mode) always takes
+ *  both agents, so it goes through wireBothAgents. */
+export async function wireProfileAgents(
+  name: ProfileName,
+  mode: ProfileMode,
+  quiet: boolean,
+  direct: DirectResolution,
+  agents: readonly AgentAdapter[],
+  credentialToken?: string | null,
+): Promise<void> {
   let token = credentialToken;
   const writes: { agent: AgentAdapter; credential: CredentialWiring }[] = [];
-  for (const agent of bothAgents()) {
+  for (const agent of agents) {
     const credential = resolveCredentialWiring(agent.id, mode, name, token);
     token ??= resolvedDirectToken(mode, credential);
     writes.push({ agent, credential });

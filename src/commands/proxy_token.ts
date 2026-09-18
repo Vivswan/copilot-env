@@ -123,7 +123,7 @@ export async function resolveProxyToken(
   // Human-facing hints must name the profile's daemon, or they'd point at the default one.
   const startHint = agentStartCommand(profile);
   // A named profile never falls back to the default credential, so its hint names its own slot.
-  const authHint = profile === null ? "agent auth" : `agent auth --profile ${profile}`;
+  const authHint = profile === null ? "agent auth" : `agent profile ${profile} auth`;
   let suppressedStart = false;
   // A dry run asks nothing, and its start is the start's own preview (launchProxy under a dry
   // run), whose refusals stand; past it the resolve proceeds as if the daemon came up, since the

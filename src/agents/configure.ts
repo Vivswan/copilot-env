@@ -1,4 +1,4 @@
-// The AgentAdapter contract and the pure default write behind `agent codex` / `agent claude` /
+// The AgentAdapter contract and the pure default write behind `agent profile sync --codex` / `agent profile sync --claude` /
 // `agent init`. This module imports NEITHER src/codex/ nor src/claude/: each agent file builds its
 // own adapter, and the default profile's writers (configure_defaults.ts) drive it, so the dependency
 // edge points one way (agent file -> here <- writers) and cannot cycle.
@@ -34,10 +34,10 @@ const DIRECT_WIRING: unique symbol = Symbol("DirectWiring");
  *  every re-render replays. So the landing is refused before any write, and the user is asked to
  *  log in (planClaudeConfig refuses a named Direct profile the same way). */
 export function directNeedsCredentialError(profile: Profile): Error {
-  const flag = profile === null ? "" : ` --profile ${profile}`;
+  const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
   return new Error(
     `a Direct wiring needs a credential and none resolves for ${profileLabel(profile)}; run ` +
-      `\`agent auth${flag}\` first (a selection made without one would bake the fallback identity ` +
+      `\`${authCommand}\` first (a selection made without one would bake the fallback identity ` +
       "and host as state)",
   );
 }
@@ -98,10 +98,10 @@ export function resolveCredentialWiring(
     ? { token: directToken, reason: null }
     : new Credential(undefined, profile).resolveWithReason();
   if (resolved.token === null) {
-    const slot = profile === null ? "" : ` --profile ${profile}`;
+    const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
     throw new Error(
       `static-key is ${config.staticKeyScope(profile)} but no credential resolves to bake: ` +
-        `${resolved.reason}. Run \`agent auth${slot}\`, or \`${
+        `${resolved.reason}. Run \`${authCommand}\`, or \`${
           configSetCommand("static-key", "none", profile)
         }\` ` +
         "to go back to the resolver command.",
@@ -147,25 +147,10 @@ export function landWithReservedPort(
   landPlan(plan);
 }
 
-/** Contradictory flag pairs (`--check --direct`, `--mobile --check`) are rejected at the
- *  parse below, so no arm carries another arm's knobs and dispatch order never decides. */
-export type AgentConfigAction =
-  | { kind: "check" }
-  | { kind: "mobile" }
-  | { kind: "configure"; mode: RequestedMode };
-
-/** The `agent codex` arms (the Codex-only `--mobile` flag lives here). */
-export type CodexCliAction = Extract<
-  AgentConfigAction,
-  { kind: "check" | "mobile" | "configure" }
->;
-
-/** The `agent claude` arms (no `--mobile`; that flag is Codex's). */
-export type ClaudeCliAction = Extract<AgentConfigAction, { kind: "check" | "configure" }>;
-
-/** `mobile` is dispatched to its own handler at the CLI boundary and never reaches
- *  runAgentConfig. */
-export type AgentRunAction = Extract<AgentConfigAction, { kind: "check" | "configure" }>;
+/** One agent's run: the `--check` report, or the write of `mode` (`auto` = the recorded mode, or
+ *  the probe on a default with none). The verbs' flags arrive parsed (parseModeFlags), so a
+ *  contradictory pair is rejected before an action exists. */
+export type AgentRunAction = { kind: "check" } | { kind: "configure"; mode: RequestedMode };
 
 /** Cross-cutting knobs of one run (never part of the parsed CLI action). */
 export interface AgentRunOptions {
@@ -173,53 +158,6 @@ export interface AgentRunOptions {
    *  import passes its plan's already-resolved token so the gh-cli provider is
    *  shelled out to once per import, not once per writer. */
   ghToken?: string | null;
-}
-
-function assertCheckStandsAlone(mode: RequestedMode, dryRun: boolean | undefined): void {
-  if (mode !== "auto") {
-    throw new Error(
-      "--check only reports the configured provider; it does not combine with --direct/--proxy",
-    );
-  }
-  if (dryRun) {
-    throw new Error("--dry-run previews the configure write; --check writes nothing to preview");
-  }
-}
-
-/** `mode` arrives already parsed (parseModeFlags), so the `--direct --proxy` conflict is
- *  rejected before any combination here is considered. `dryRun` rides beside the action (the CLI
- *  boundary wraps the configure arm in it); it is validated here so `--check`/`--mobile` refuse it. */
-export function parseCodexAction(flags: {
-  check?: boolean;
-  mode: RequestedMode;
-  mobile?: boolean;
-  dryRun?: boolean;
-}): CodexCliAction {
-  if (flags.mobile) {
-    if (flags.check || flags.mode !== "auto" || flags.dryRun) {
-      throw new Error(
-        "--mobile is an interactive pairing flow; it does not combine with --check/--direct/--proxy/--dry-run",
-      );
-    }
-    return { kind: "mobile" };
-  }
-  if (flags.check) {
-    assertCheckStandsAlone(flags.mode, flags.dryRun);
-    return { kind: "check" };
-  }
-  return { kind: "configure", mode: flags.mode };
-}
-
-export function parseClaudeAction(flags: {
-  check?: boolean;
-  mode: RequestedMode;
-  dryRun?: boolean;
-}): ClaudeCliAction {
-  if (flags.check) {
-    assertCheckStandsAlone(flags.mode, flags.dryRun);
-    return { kind: "check" };
-  }
-  return { kind: "configure", mode: flags.mode };
 }
 
 /** Knobs of a named-profile write (`agent profile`); the mode and direct identity travel in

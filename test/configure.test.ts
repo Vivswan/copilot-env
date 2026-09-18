@@ -14,7 +14,6 @@ import {
   writeDefaultAgent,
 } from "../src/agents/configure.ts";
 import { runAgentConfig } from "../src/agents/configure_defaults.ts";
-import { NO_WRITE } from "../src/utils/write_session.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import type { RequestedMode } from "../src/agents/provider_mode.ts";
 import { expect, test } from "./helpers/testing.ts";
@@ -102,7 +101,7 @@ function fakeAdapter(
       return Promise.resolve();
     },
     configureProfile: () => {},
-    planRemoveProfile: () => NO_WRITE,
+    removeProfile: () => {},
   };
   return { adapter, recorded };
 }

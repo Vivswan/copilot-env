@@ -211,7 +211,7 @@ export async function deleteProfileEverywhere(
         `(\`agent stop --profile ${name}\`) before deleting`,
     );
   }
-  for (const agent of bothAgents()) landPlan(agent.planRemoveProfile(name, options));
+  for (const agent of bothAgents()) agent.removeProfile(name, options);
   new CopilotEnvState().deleteProfile(name);
   new CopilotEnvConfig().deleteProfile(name);
   try {

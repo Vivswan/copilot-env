@@ -221,7 +221,7 @@ function entryVerdict(
   const recordedCredential = expectedCredential(doc, target, rootHome, credential);
   if ("stale" in recordedCredential) return stale(recordedCredential.stale);
   // Wired means the QUIET rewire (recorded rows, the pair above, no probe) would be a
-  // byte-identical no-op: the same bytes saveJsonIfChanged compares.
+  // byte-identical no-op: the same bytes the entry writer compares before it writes.
   const write: ManagedMode = rendered === null
     ? { mode: "proxy" }
     : { mode: "direct", direct: rendered };

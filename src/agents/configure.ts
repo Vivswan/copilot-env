@@ -11,7 +11,6 @@ import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { resolveDirectMode } from "./direct_detect.ts";
 import type { ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
-import { landPlan, type WritePlan } from "../utils/write_session.ts";
 
 const logger = createStderrLogger();
 
@@ -121,9 +120,10 @@ export function resolvedDirectToken(
   return mode === "direct" && credential.kind === "static" ? credential.token : undefined;
 }
 
-/** A plan PEEKS a proxy profile's port (copilotApiResolvePort) so computing it writes nothing; the
- *  apply RESERVES it here (wiringPortFor, a write path) and refuses a port that moved in between,
- *  which would bake a base URL the plan never showed. */
+/** A writer PEEKS a proxy profile's port (copilotApiResolvePort) so computing its text writes
+ *  nothing; right before its write it RESERVES it here (wiringPortFor, a write path) and refuses a
+ *  port that moved in between, which would bake a base URL the text never showed. A writer that
+ *  threw before this point left no reservation behind. */
 export function reservePlannedPort(profile: Profile, plannedPort: string): void {
   const port = wiringPortFor(profile);
   if (port !== plannedPort) {
@@ -132,19 +132,6 @@ export function reservePlannedPort(profile: Profile, plannedPort: string): void 
         "wiring was being planned; re-run the command",
     );
   }
-}
-
-/** A wiring plan landed with its proxy port reserved first (`plannedPort` null: a Direct write
- *  reserves none). The reservation is a run-state write and lands through the store's own plan,
- *  so a dry run records it and the next profile's peek allocates past it, as the real run would;
- *  a plan that threw before this point left no reservation behind. */
-export function landWithReservedPort(
-  plan: WritePlan,
-  profile: Profile,
-  plannedPort: string | null,
-): void {
-  if (plannedPort !== null) reservePlannedPort(profile, plannedPort);
-  landPlan(plan);
 }
 
 /** Contradictory flag pairs (`--check --direct`, `--mobile --check`) are rejected at the
@@ -276,11 +263,10 @@ export interface AgentAdapter {
     write: ManagedWrite,
     options: AgentProfileWriteOptions,
   ): void | Promise<void>;
-  /** The profile's removal, computed: the files it takes (the settings file, the provider table's
-   *  keys, the Desktop entry) and the step that takes them; the caller lands it. `keepDesktopEntry`
-   *  leaves the Claude Desktop entry and helper scripts to a caller whose own plan removes them
-   *  (uninstall). */
-  planRemoveProfile(name: ProfileName, options?: RemoveProfileOptions): WritePlan;
+  /** The profile's removal: the files it takes (the settings file, the provider table's keys, the
+   *  Desktop entry) go now, each named on stderr. `keepDesktopEntry` leaves the Claude Desktop
+   *  entry and helper scripts to a caller that removes them itself (uninstall). */
+  removeProfile(name: ProfileName, options?: RemoveProfileOptions): void;
 }
 
 /** Every "Configuring X for <backend> ..." line goes through here so the backend phrasing

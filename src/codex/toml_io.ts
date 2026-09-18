@@ -2,12 +2,10 @@
 // POLICY (throw, skip, seed a default) stays a small visible switch. "unparseable" is distinct so
 // write paths can refuse to clobber a config that exists but could not be read: a hand-edit typo
 // must never cost the user their config.toml.
-import * as fs from "node:fs";
 import { parse, stringify } from "smol-toml";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
-import { writeFileReported } from "../utils/report_write.ts";
-import { shadowedText } from "../utils/write_session.ts";
+import * as fs from "../utils/fs_facade.ts";
 
 export type CodexTomlRead =
   | { kind: "absent" }
@@ -22,21 +20,15 @@ const BLANK_TOML = /^(?:[ \t\n]|\r\n)*$/;
 /** ENOENT reads as "absent"; any other filesystem error (EISDIR, permission, I/O) THROWS raw, so a
  *  caller cannot mistake an unreadable config for a missing one. An empty or whitespace-only file
  *  also reads as "absent": a blank TOML document carries nothing worth preserving, and the
- *  seed-a-default site (loadOrCreateConfig) treats it like a missing file. A dry run's planned
- *  content for the path is read in place of the disk. */
+ *  seed-a-default site (loadOrCreateConfig) treats it like a missing file. Read through the
+ *  facade, so a dry run's planned content answers in place of the disk. */
 export function readCodexToml(path: string): CodexTomlRead {
   let text: string;
-  const planned = shadowedText(path);
-  if (planned !== undefined) {
-    if (planned === null) return { kind: "absent" };
-    text = planned;
-  } else {
-    try {
-      text = fs.readFileSync(path, "utf8");
-    } catch (e) {
-      if (isEnoent(e)) return { kind: "absent" };
-      throw e;
-    }
+  try {
+    text = fs.readText(path);
+  } catch (e) {
+    if (isEnoent(e)) return { kind: "absent" };
+    throw e;
   }
   if (BLANK_TOML.test(text)) return { kind: "absent" };
   try {
@@ -51,9 +43,26 @@ export function readCodexToml(path: string): CodexTomlRead {
   }
 }
 
-/** A Codex config can carry a baked bearer (a static-key `http_headers.Authorization`), so a
- *  whole-document write reached in a dry run is planned path-only; the managed writers plan by
- *  attribute, redact per leaf, and call this only from their apply step. */
-export function saveCodexToml(path: string, doc: Record<string, unknown>, detail?: string): void {
-  writeFileReported(path, stringify(doc), { detail, secret: true });
+/** The dotted leaf a static-key write bakes the bearer into, for `providerId`'s table: the one
+ *  Codex value a preview must redact. */
+export function codexBearerLeaf(providerId: string): string {
+  return `model_providers.${providerId}.http_headers.Authorization`;
+}
+
+/**
+ * The managed writers name the leaves a preview redacts (`secretKeys`, the bearer of the table
+ * they write) and their write prints attribute by attribute. A whole-document rewrite that names
+ * none (a removal, a migration) is printed path-only: a Codex config can carry a baked bearer in
+ * any table.
+ */
+export function saveCodexToml(
+  path: string,
+  doc: Record<string, unknown>,
+  detail?: string,
+  secretKeys?: Iterable<string>,
+): void {
+  // In place, as Codex itself writes it: a user's symlinked config.toml stays a link.
+  const text = stringify(doc);
+  if (secretKeys === undefined) fs.writeText(path, text, { atomic: false, detail, secret: true });
+  else fs.writeText(path, text, { atomic: false, detail, secretKeys });
 }

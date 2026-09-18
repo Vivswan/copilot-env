@@ -1,8 +1,8 @@
-import { planDefaultWebSearchSync } from "../claude/config.ts";
+import { syncDefaultWebSearch } from "../claude/config.ts";
 import {
   inspectMcpRegistration,
   type McpRegistrationStatus,
-  planClaudeMcpRemoval,
+  removeClaudeMcpRegistration,
 } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -10,7 +10,6 @@ import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { runMcpServer } from "../mcp/server.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { keyValueLine } from "../utils/table.ts";
-import { landPlan } from "../utils/write_session.ts";
 import { runDryRun } from "./dry_run.ts";
 
 const logger = createStderrLogger();
@@ -96,16 +95,8 @@ function printStatus(): void {
  *  foreign and the sync leaves that file's deny alone. Returns whether no managed entry remains. */
 function landRemoval(): boolean {
   new CopilotEnvConfig().set({ "claude.wire-mcp": false });
-  landPlan(planDefaultWebSearchSync(resolveClaudeHome()));
-  const removal = planClaudeMcpRemoval();
-  let unregistered = false;
-  landPlan({
-    files: removal.files,
-    apply() {
-      unregistered = removal.apply();
-    },
-  });
-  return unregistered;
+  syncDefaultWebSearch(resolveClaudeHome());
+  return removeClaudeMcpRegistration();
 }
 
 async function runRemove(dryRun: boolean): Promise<void> {

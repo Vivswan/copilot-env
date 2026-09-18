@@ -5,7 +5,7 @@ import { CODEX_EXEC_USER_AGENT } from "../copilot_api/integration_identity.ts";
 import { cliSpawn } from "../utils/command.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { removeScratchDir, scratchDir } from "../utils/report_write.ts";
+import { removeScratchDir, scratchDir } from "../utils/fs_facade.ts";
 
 // Local-only runs (no network) that may still cold-start the CLI.
 export const CODEX_VERSION_TIMEOUT_MS = 1000;

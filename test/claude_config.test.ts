@@ -19,10 +19,10 @@ import {
   directHelperCommand,
   inspectClaudeWiring,
   managedHelperShape,
-  planDefaultWebSearchSync,
   proxyHelperCommand,
   removeClaudeDefaultWiring,
   removeClaudeProfile,
+  syncDefaultWebSearch,
   WEBSEARCH_DENY_RULE,
 } from "../src/claude/config.ts";
 import { runClaude } from "../src/agents/configure_defaults.ts";
@@ -40,7 +40,6 @@ import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
-import { landPlan } from "../src/utils/write_session.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, linesNaming, writeClaudeSettings } from "./helpers.ts";
 
@@ -961,7 +960,7 @@ test("--check: absent settings exit 2 (none); unreadable settings and the helper
   }
 });
 
-test("planDefaultWebSearchSync applies the pair to existing direct wiring (the migration path)", () => {
+test("syncDefaultWebSearch applies the pair to existing direct wiring (the migration path)", () => {
   const home = tmpHome();
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   directDefault(); // what the `agent claude` command records
@@ -972,31 +971,31 @@ test("planDefaultWebSearchSync applies the pair to existing direct wiring (the m
   rmSync(claudeJsonPath(), { force: true });
   new OwnershipLedger().release("webSearchDeny", join(home, "settings.json"));
 
-  landPlan(planDefaultWebSearchSync(home));
+  syncDefaultWebSearch(home);
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
   expect((readClaudeJson().mcpServers as Record<string, unknown>)["copilot-env"]).toBeDefined();
 
   // Byte-idempotent: a second run rewrites nothing.
   const before = statSync(join(home, "settings.json")).mtimeMs;
-  landPlan(planDefaultWebSearchSync(home));
+  syncDefaultWebSearch(home);
   expect(statSync(join(home, "settings.json")).mtimeMs).toBe(before);
 });
 
 // The ledger, not the record, decides whether we strip what we wrote: a deny claimed in the ledger
 // with the default's mode gone (a record cleared after the wiring) is still ours to take back.
-test("planDefaultWebSearchSync strips a claimed deny with no recorded mode; a foreign deny stays", () => {
+test("syncDefaultWebSearch strips a claimed deny with no recorded mode; a foreign deny stays", () => {
   const home = tmpHome();
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
   expect(new CopilotEnvState().readProfileSlot(null).mode).toBeNull();
-  landPlan(planDefaultWebSearchSync(home));
+  syncDefaultWebSearch(home);
   expect(denyOf(readSettings(home))).toBeUndefined(); // the emptied permissions key goes too
   expect(new OwnershipLedger().owns("webSearchDeny", join(home, "settings.json"))).toBe(false);
   // Control: the same deny the user wrote (no claim) is left alone.
   const doc = readSettings(home);
   doc.permissions = { deny: [WEBSEARCH_DENY_RULE] };
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(doc, null, 2)}\n`);
-  landPlan(planDefaultWebSearchSync(home));
+  syncDefaultWebSearch(home);
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
 });
 

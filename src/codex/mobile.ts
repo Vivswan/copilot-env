@@ -1,7 +1,6 @@
 // Codex's phone pairing needs the app on its DEFAULT OpenAI provider, so `agent codex --mobile`
 // temporarily removes the managed `model_provider`, walks the user through pairing in the app, then
 // restores it. There is no Linux Codex app, so it is gated to macOS/Windows.
-import * as fs from "node:fs";
 import { parse, stringify } from "smol-toml";
 import {
   appRunning,
@@ -12,9 +11,9 @@ import {
   runPowershell,
 } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
-import { removeReported, writeFileReported } from "../utils/report_write.ts";
 import { inspectCatalogFile } from "./catalog.ts";
 import { effectiveCodexHome } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";
@@ -281,7 +280,7 @@ export async function runCodexMobile(): Promise<void> {
   const configPath = codexConfigPath(home);
   let original: string;
   try {
-    original = fs.readFileSync(configPath, "utf8");
+    original = fs.readText(configPath);
   } catch {
     throw new Error(`No Codex config at ${configPath}. Run \`agent codex\` first, then retry.`);
   }
@@ -335,7 +334,10 @@ export async function runCodexMobile(): Promise<void> {
   const backupPath = `${configPath}.copilot-env-mobile.bak`;
   let backupWritten = false;
   try {
-    writeFileReported(backupPath, original, { detail: "Codex config backup for the pairing" });
+    fs.writeText(backupPath, original, {
+      atomic: false,
+      detail: "Codex config backup for the pairing",
+    });
     backupWritten = true;
   } catch {
     logger.warn(`Could not write a backup at ${backupPath}; proceeding from memory.`);
@@ -361,12 +363,12 @@ export async function runCodexMobile(): Promise<void> {
     try {
       // The app may have edited the file, so re-apply onto the current one; fall back to the
       // pre-flow config when it is now unreadable or invalid.
-      next = restoreModelProvider(fs.readFileSync(configPath, "utf8"), provider, usableCatalog());
+      next = restoreModelProvider(fs.readText(configPath), provider, usableCatalog());
     } catch {
       next = rebuildFromOriginal();
     }
     // A rewrite of the path the strip below already named: the seam says nothing more.
-    writeFileReported(configPath, next);
+    fs.writeText(configPath, next, { atomic: false });
   };
 
   // `finally` does not run on a signal, so restore synchronously on SIGINT/SIGTERM too; otherwise
@@ -376,7 +378,7 @@ export async function runCodexMobile(): Promise<void> {
       restore();
     } catch {
       try {
-        writeFileReported(configPath, rebuildFromOriginal());
+        fs.writeText(configPath, rebuildFromOriginal(), { atomic: false });
       } catch {
         // give up -- the backup file is the last resort
       }
@@ -389,7 +391,8 @@ export async function runCodexMobile(): Promise<void> {
   try {
     // The restore below rewrites the same path silently (the seam names a path once per process),
     // so this line names the act and nothing about a write not yet made.
-    writeFileReported(configPath, stripModelProvider(original), {
+    fs.writeText(configPath, stripModelProvider(original), {
+      atomic: false,
       detail: `Codex config, rewritten around the pairing (model_provider "${provider}")`,
     });
 
@@ -418,7 +421,7 @@ export async function runCodexMobile(): Promise<void> {
     restore();
     if (backupWritten) {
       try {
-        removeReported(backupPath, "pairing finished");
+        fs.rm(backupPath, { force: true, detail: "pairing finished" });
       } catch {
         logger.warn(`Could not remove the backup at ${backupPath}.`);
       }

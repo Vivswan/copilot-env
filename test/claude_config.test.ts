@@ -183,71 +183,72 @@ test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), pres
 
 // --- static-key: the value rides in env, no apiKeyHelper ----------------------
 
-test("a static direct write bakes ANTHROPIC_AUTH_TOKEN beside the direct env and drops apiKeyHelper; a command rewrite takes it back", () => {
-  const home = tmpHome();
-  const settingsPath = join(home, "settings.json");
-  // Over an existing command wiring: the static write must DELETE the helper, not just omit it,
-  // or Claude would keep running it beside the baked token. Seeded by hand: the report seam
-  // names a path once per process, and the static write's line is the one under test.
-  writeClaudeSettings(home, { apiKeyHelper: directHelperCommand() });
+test("a static write bakes ANTHROPIC_AUTH_TOKEN under the mode's base URL and drops apiKeyHelper; a command rewrite takes it back", () => {
+  type Write = Parameters<typeof configureClaudeConfig>[1];
+  // `env` is resolved per row AFTER its isolation: the proxy port reads the isolated store.
+  const rows: {
+    mode: "direct" | "proxy";
+    write: Write;
+    command: Write;
+    helper: string;
+    env: () => Record<string, unknown>;
+    report: string;
+  }[] = [
+    {
+      mode: "direct",
+      write: { mode: "direct", direct: null, credential: STATIC },
+      command: { mode: "direct", direct: null, credential: COMMAND },
+      helper: directHelperCommand(),
+      env: () => ({
+        ANTHROPIC_BASE_URL: DEFAULT_COPILOT_API_BASE,
+        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1",
+        [CUSTOM_HEADERS_ENV]: expect.stringMatching(/(^|\n)User-Agent: codex_exec/),
+      }),
+      report: "static key",
+    },
+    {
+      // No resolver command runs on the agent's behalf now, so the daemon is the user's to start.
+      mode: "proxy",
+      write: { mode: "proxy", credential: STATIC },
+      command: { mode: "proxy", credential: COMMAND },
+      helper: proxyHelperCommand(),
+      env: () => ({ ANTHROPIC_BASE_URL: `http://127.0.0.1:${copilotApiResolvePort()}` }),
+      report: "static key, start the proxy yourself",
+    },
+  ];
+  for (const row of rows) {
+    dir = removeDir(dir);
+    const home = tmpHome();
+    const settingsPath = join(home, "settings.json");
+    // Over an existing command wiring: the static write must DELETE the helper, not just omit it,
+    // or Claude would keep running it beside the baked token. Seeded by hand: the report seam
+    // names a path once per process, and the static write's line is the one under test.
+    writeClaudeSettings(home, { apiKeyHelper: row.helper });
 
-  const reports = writeReportsOf(() =>
-    configureClaudeConfig(home, { mode: "direct", direct: null, credential: STATIC })
-  );
-  const doc = readSettings(home);
-  expect(doc.apiKeyHelper).toBeUndefined();
-  const env = envOf(home);
-  expect(env[AUTH_TOKEN_ENV]).toBe(STATIC.token);
-  expect(env.ANTHROPIC_BASE_URL).toBe(DEFAULT_COPILOT_API_BASE);
-  expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1");
-  expect(env[CUSTOM_HEADERS_ENV]).toMatch(/(^|\n)User-Agent: codex_exec/);
-  expect(inspectHome(home)).toMatchObject({
-    providerMode: "direct",
-    wired: true,
-    credential: "static",
-    helperPath: null,
-  });
-  // The report says HOW the credential rides, never what it is.
-  const [line, ...rest] = linesNaming(reports.join("\n"), settingsPath);
-  expect(rest).toEqual([]);
-  expect(line).toContain("static key");
-  expect(line).not.toContain(STATIC.token);
+    const reports = writeReportsOf(() => configureClaudeConfig(home, row.write));
+    expect(readSettings(home).apiKeyHelper, row.mode).toBeUndefined();
+    expect(envOf(home), row.mode).toMatchObject({ [AUTH_TOKEN_ENV]: STATIC.token, ...row.env() });
+    expect(inspectHome(home), row.mode).toMatchObject({
+      providerMode: row.mode,
+      wired: true,
+      credential: "static",
+      helperPath: null,
+    });
+    // The report says HOW the credential rides, never what it is.
+    const [line, ...rest] = linesNaming(reports.join("\n"), settingsPath);
+    expect(rest, row.mode).toEqual([]);
+    expect(line, row.mode).toContain(row.report);
+    expect(line, row.mode).not.toContain(STATIC.token);
 
-  // Claude prefers the variable over apiKeyHelper, so the command shape must delete it.
-  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
-  expect(readSettings(home).apiKeyHelper).toBe(directHelperCommand());
-  expect(envOf(home)[AUTH_TOKEN_ENV]).toBeUndefined();
-  expect(inspectHome(home)).toMatchObject({ providerMode: "direct", credential: "command" });
-});
-
-test("a static proxy write bakes ANTHROPIC_AUTH_TOKEN under the loopback base URL and tells the user to start the proxy", () => {
-  const home = tmpHome();
-  const settingsPath = join(home, "settings.json");
-  writeClaudeSettings(home, { apiKeyHelper: proxyHelperCommand() });
-
-  const reports = writeReportsOf(() =>
-    configureClaudeConfig(home, { mode: "proxy", credential: STATIC })
-  );
-  expect(readSettings(home).apiKeyHelper).toBeUndefined();
-  const env = envOf(home);
-  expect(env[AUTH_TOKEN_ENV]).toBe(STATIC.token);
-  expect(env.ANTHROPIC_BASE_URL).toBe(`http://127.0.0.1:${copilotApiResolvePort()}`);
-  expect(inspectHome(home)).toMatchObject({
-    providerMode: "proxy",
-    wired: true,
-    credential: "static",
-    helperPath: null,
-  });
-  // No resolver command runs on the agent's behalf now, so the daemon is the user's to start.
-  const [line, ...rest] = linesNaming(reports.join("\n"), settingsPath);
-  expect(rest).toEqual([]);
-  expect(line).toContain("static key, start the proxy yourself");
-  expect(line).not.toContain(STATIC.token);
-
-  configureClaudeConfig(home, { mode: "proxy", credential: COMMAND });
-  expect(readSettings(home).apiKeyHelper).toBe(proxyHelperCommand());
-  expect(envOf(home)[AUTH_TOKEN_ENV]).toBeUndefined();
-  expect(inspectHome(home)).toMatchObject({ providerMode: "proxy", credential: "command" });
+    // Claude prefers the variable over apiKeyHelper, so the command shape must delete it.
+    configureClaudeConfig(home, row.command);
+    expect(readSettings(home).apiKeyHelper, row.mode).toBe(row.helper);
+    expect(envOf(home)[AUTH_TOKEN_ENV], row.mode).toBeUndefined();
+    expect(inspectHome(home), row.mode).toMatchObject({
+      providerMode: row.mode,
+      credential: "command",
+    });
+  }
 });
 
 test("cmdHelperBody: @echo off + CRLF, quotes paths with spaces, escapes % as %%", () => {
@@ -268,74 +269,145 @@ test("cmdHelperBody: @echo off + CRLF, quotes paths with spaces, escapes % as %%
   expect(/[^%]%[^%]/.test(body)).toBe(false);
 });
 
-test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (by exact value)", () => {
-  const home = "/home/x/.claude";
-  const inspect = (text: string | null) => inspectClaudeWiring(text, 4141);
+/** The writer emits and the inspector recognizes only the current platform's shape, so a sibling
+ *  root's helper follows it. */
+function siblingRootHelper(args: string): string {
+  return WIN
+    ? `powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\other\\checkout\\bin\\agent.ps1" ${args}`
+    : `/some/other/checkout/bin/agent ${args}`;
+}
 
-  expect(inspect(JSON.stringify({ apiKeyHelper: directHelperCommand() })).providerMode)
-    .toBe("direct");
-  expect(inspect(JSON.stringify({ apiKeyHelper: proxyHelperCommand() })).providerMode)
-    .toBe("proxy");
-
-  // The helper-file PATHS 3.5.6 wrote are foreign now (the 4.0.0 migration rewrites them), whatever the file holds.
-  for (const name of ["copilot-token.sh", "copilot-proxy-token.sh"]) {
-    const stale = inspect(JSON.stringify({ apiKeyHelper: join(home, name) }));
-    expect(stale.providerMode).toBe("other");
-    expect(stale.otherReason).toBe("custom");
+test("inspectClaudeWiring classifies by exact value: direct / proxy / other / none / malformed / unreadable, from any root, profile-addressed", () => {
+  const home = "/home/user/.claude";
+  const direct = JSON.stringify({ apiKeyHelper: directHelperCommand() });
+  const rows: {
+    name: string;
+    input: Parameters<typeof inspectClaudeWiring>[0];
+    profile?: typeof WORK | null;
+    expect: Partial<ReturnType<typeof inspectClaudeWiring>>;
+  }[] = [
+    // The reason travels ONLY on the "other" arm; `wired` is minted by the owner, alongside the
+    // mode -- never re-derived.
+    {
+      name: "the managed direct command",
+      input: direct,
+      expect: { providerMode: "direct", otherReason: null, wired: true },
+    },
+    {
+      name: "the managed proxy command",
+      input: JSON.stringify({ apiKeyHelper: proxyHelperCommand() }),
+      expect: { providerMode: "proxy" },
+    },
+    // The helper-file PATHS 3.5.6 wrote are foreign now (the 4.0.0 migration rewrites them),
+    // whatever the file holds; a foreign helper sharing our basename but elsewhere is NOT ours.
+    ...["copilot-token.sh", "copilot-proxy-token.sh"].map((name) => ({
+      name: `the stale helper path ${name}`,
+      input: JSON.stringify({ apiKeyHelper: join(home, name) }),
+      expect: { providerMode: "other" as const, otherReason: "custom" as const },
+    })),
+    {
+      name: "a foreign helper sharing our basename",
+      input: JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }),
+      expect: { providerMode: "other", otherReason: "custom" },
+    },
+    {
+      name: "a custom base URL",
+      input: JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://other.example" } }),
+      expect: { providerMode: "other", otherReason: "custom" },
+    },
+    // A bare token is a user's own Anthropic wiring: static-managed only beside OUR env keys.
+    {
+      name: "a bare token",
+      input: JSON.stringify({ env: { [AUTH_TOKEN_ENV]: "sk-ant-users-own" } }),
+      expect: { providerMode: "other", otherReason: "custom", wired: false, credential: null },
+    },
+    { name: "an empty document", input: "{}", expect: { providerMode: "none", otherReason: null } },
+    {
+      name: "user keys only",
+      input: JSON.stringify({ model: "sonnet" }),
+      expect: { providerMode: "none" },
+    },
+    {
+      name: "no file",
+      input: null,
+      expect: { providerMode: "none", settingsExists: false, otherReason: null },
+    },
+    {
+      name: "malformed JSON",
+      input: "{not json",
+      expect: { providerMode: "other", otherReason: "malformed" },
+    },
+    // Unreadable EXISTS -- it just cannot be read: other/read-error, never none.
+    {
+      name: "an unreadable file",
+      input: { kind: "unreadable", error: "EACCES" },
+      expect: {
+        providerMode: "other",
+        otherReason: "read-error",
+        settingsExists: true,
+        wired: false,
+      },
+    },
+    {
+      name: "an absent read result",
+      input: { kind: "absent" },
+      expect: { providerMode: "none", settingsExists: false, wired: false },
+    },
+    {
+      name: "a text read result",
+      input: { kind: "text", text: direct },
+      expect: { providerMode: "direct", otherReason: null, wired: true },
+    },
+    // A dev checkout and ~/.copilot-env spell different roots into apiKeyHelper; both resolve the
+    // same shared store, so a sibling root's wiring reads as its real mode, not other.
+    {
+      name: "a sibling root's direct wiring",
+      input: JSON.stringify({
+        apiKeyHelper: siblingRootHelper("auth --get"),
+        env: { ANTHROPIC_BASE_URL: "https://api.githubcopilot.com" },
+      }),
+      expect: { providerMode: "direct" },
+    },
+    {
+      name: "a sibling root's proxy wiring",
+      input: JSON.stringify({
+        apiKeyHelper: siblingRootHelper("proxy-token --yes"),
+        env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4141" },
+      }),
+      expect: { providerMode: "proxy" },
+    },
+    // Profile-addressed: a default-addressed inline command is NOT a named profile's resolver
+    // (and vice versa).
+    {
+      name: "the default command read for the default",
+      input: direct,
+      profile: null,
+      expect: { providerMode: "direct" },
+    },
+    {
+      name: "the default command read for a profile",
+      input: direct,
+      profile: WORK,
+      expect: { providerMode: "other" },
+    },
+    {
+      name: "the profile command read for the profile",
+      input: JSON.stringify({ apiKeyHelper: directHelperCommand(WORK) }),
+      profile: WORK,
+      expect: { providerMode: "direct" },
+    },
+    {
+      name: "the profile command read for the default",
+      input: JSON.stringify({ apiKeyHelper: directHelperCommand(WORK) }),
+      profile: null,
+      expect: { providerMode: "other" },
+    },
+  ];
+  for (const row of rows) {
+    expect(inspectClaudeWiring(row.input, 4141, row.profile ?? null), row.name).toMatchObject(
+      row.expect,
+    );
   }
-
-  // A foreign helper sharing our basename but elsewhere is NOT ours: "custom".
-  const foreign = inspect(JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }));
-  expect(foreign.providerMode).toBe("other");
-  expect(foreign.otherReason).toBe("custom");
-  const customBase = inspect(
-    JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://other.example" } }),
-  );
-  expect(customBase.providerMode).toBe("other");
-  expect(customBase.otherReason).toBe("custom");
-  // A bare token is a user's own Anthropic wiring: static-managed only beside OUR env keys.
-  const bareToken = inspect(JSON.stringify({ env: { [AUTH_TOKEN_ENV]: "sk-ant-users-own" } }));
-  expect(bareToken.providerMode).toBe("other");
-  expect(bareToken.otherReason).toBe("custom");
-  expect(bareToken.wired).toBe(false);
-  expect(bareToken.credential).toBe(null);
-
-  expect(inspect("{}").providerMode).toBe("none");
-  expect(inspect(JSON.stringify({ model: "sonnet" })).providerMode).toBe("none");
-  // The reason travels ONLY on the "other" arm.
-  expect(inspect(JSON.stringify({ apiKeyHelper: directHelperCommand() })).otherReason).toBe(null);
-  expect(inspect("{}").otherReason).toBe(null);
-
-  const absent = inspect(null);
-  expect(absent.providerMode).toBe("none");
-  expect(absent.settingsExists).toBe(false);
-  expect(absent.otherReason).toBe(null);
-
-  const malformed = inspect("{not json");
-  expect(malformed.providerMode).toBe("other");
-  expect(malformed.otherReason).toBe("malformed");
-});
-
-test("inspectClaudeWiring takes a TextReadResult: unreadable is other/read-error, never none", () => {
-  const unreadable = inspectClaudeWiring({ kind: "unreadable", error: "EACCES" }, 0);
-  expect(unreadable.providerMode).toBe("other");
-  expect(unreadable.otherReason).toBe("read-error");
-  expect(unreadable.settingsExists).toBe(true); // it EXISTS -- it just cannot be read
-
-  const absent = inspectClaudeWiring({ kind: "absent" }, 0);
-  expect(absent.providerMode).toBe("none");
-  expect(absent.settingsExists).toBe(false);
-
-  const text = inspectClaudeWiring(
-    { kind: "text", text: JSON.stringify({ apiKeyHelper: directHelperCommand() }) },
-    0,
-  );
-  expect(text.providerMode).toBe("direct");
-  expect(text.otherReason).toBe(null);
-  // `wired` is minted by the owner, alongside the mode -- never re-derived.
-  expect(text.wired).toBe(true);
-  expect(unreadable.wired).toBe(false);
-  expect(absent.wired).toBe(false);
 });
 
 test("runClaude direct/proxy round-trip cleans the other mode", async () => {
@@ -471,22 +543,6 @@ test("configureClaudeConfig refuses to overwrite a malformed settings.json", () 
     );
 });
 
-test("direct helper invokes `agent auth --get` and never bakes a token, still classified direct", () => {
-  const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
-
-  const doc = readSettings(home);
-  expect(doc.apiKeyHelper).toBe(directHelperCommand());
-  expect(
-    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), 4141).providerMode,
-  ).toBe("direct");
-
-  const helperCommand = String(doc.apiKeyHelper);
-  expect(helperCommand).toContain("auth");
-  expect(helperCommand).toContain("--get");
-  expect(helperCommand).not.toContain("gh auth token");
-});
-
 test("runClaude --direct with static-key covering Claude fails closed without a credential, before any probe, and bakes a stored one", async () => {
   const home = tmpHome();
   new CopilotEnvConfig().setProfile(null, { "static-key": "claude" });
@@ -599,9 +655,10 @@ test("a pre-existing user WebSearch deny is never claimed nor removed", () => {
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]); // user policy survives
 });
 
-test("registration failure (foreign .claude.json entry) skips the deny - never deny without a server", () => {
+test("registration failure skips a fresh deny and strips a PRIOR managed one - never denied without a server", () => {
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
+  // A foreign .claude.json entry under our name: the registration fails, so no deny is written.
   writeFileSync(
     claudeJsonPath(),
     `${
@@ -610,6 +667,17 @@ test("registration failure (foreign .claude.json entry) skips the deny - never d
       })
     }\n`,
   );
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
+  expect(denyOf(readSettings(home))).toBeUndefined();
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
+
+  // The foreign entry gone, the same write registers and denies.
+  rmSync(claudeJsonPath());
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
+  expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
+
+  // ~/.claude.json turns malformed (Claude Code rewrites it constantly): the prior deny goes.
+  writeFileSync(claudeJsonPath(), "{ not json");
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toBeUndefined();
   expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
@@ -628,27 +696,33 @@ test("wire-mcp false: a direct write wires nothing and clears prior managed arti
   expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 });
 
-test("removeClaudeDefaultWiring strips our deny and deletes settings.json when emptied", () => {
+test("removeClaudeDefaultWiring strips every managed key (command or static) and our deny, keeps user keys, and deletes an emptied settings.json", () => {
   const home = tmpHome();
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   // The managed keys + our deny are ALL the file holds -> uninstall removes the file.
   removeClaudeDefaultWiring(home);
   expect(existsSync(join(home, "settings.json"))).toBe(false);
   expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
-});
 
-test("removeClaudeDefaultWiring keeps user keys and drops an emptied permissions object", () => {
-  const home = tmpHome();
+  // A user key keeps the file: the managed keys go, and the emptied permissions object with them.
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   const seeded = readSettings(home);
   seeded.model = "opus";
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
-
   removeClaudeDefaultWiring(home);
   const doc = readSettings(home);
   expect(doc.model).toBe("opus");
   expect(doc.permissions).toBeUndefined();
   expect(doc.apiKeyHelper).toBeUndefined();
+
+  // A static wiring's baked token leaves with the other managed env keys (the user key still
+  // holds the file, so its env can be read back).
+  configureClaudeConfig(home, { mode: "direct", direct: null, credential: STATIC });
+  removeClaudeDefaultWiring(home);
+  const afterStatic = readSettings(home);
+  expect(afterStatic.model).toBe("opus");
+  expect(afterStatic.env).toBeUndefined();
+  expect(JSON.stringify(afterStatic)).not.toContain(STATIC.token);
 });
 
 test("a command-shape NAMED write blanks the baked token so a static default cannot bleed into the profile", () => {
@@ -678,20 +752,6 @@ test("a command-shape NAMED write blanks the baked token so a static default can
   expect(namedStatic.apiKeyHelper).toBeUndefined();
 });
 
-test("removeClaudeDefaultWiring strips a static wiring's baked token with the other managed env keys", () => {
-  const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", direct: null, credential: STATIC });
-  const seeded = readSettings(home);
-  seeded.model = "opus"; // a user key, so the file survives and its env can be read back
-  writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
-
-  removeClaudeDefaultWiring(home);
-  const doc = readSettings(home);
-  expect(doc.model).toBe("opus");
-  expect(doc.env).toBeUndefined();
-  expect(JSON.stringify(doc)).not.toContain(STATIC.token);
-});
-
 test("removeClaudeDefaultWiring leaves an 'other' wiring AND the helper file it names whole", () => {
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
@@ -709,53 +769,87 @@ test("removeClaudeDefaultWiring leaves an 'other' wiring AND the helper file it 
   expect(readSettings(home).apiKeyHelper).toBe(helper);
 });
 
-test("removeClaudeDefaultWiring strips an OWNED deny from a foreign-edited config", () => {
-  const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }); // deny written + ownership recorded
-  const doc = readSettings(home);
-  doc.apiKeyHelper = "/usr/local/bin/my-helper"; // foreign edit: classifies "other"
-  writeFileSync(join(home, "settings.json"), `${JSON.stringify(doc, null, 2)}\n`);
-
-  // Ownership, not the classification, proves the deny is ours.
-  const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
-  expect(ownedDenyRemains).toBe(false);
-  const after = readSettings(home);
-  expect(denyOf(after)).toBeUndefined();
-  expect(after.apiKeyHelper).toBe("/usr/local/bin/my-helper");
-  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
-});
-
-test("removeClaudeDefaultWiring never strips a deny it does not own from a foreign config", () => {
-  const home = tmpHome();
-  mkdirSync(home, { recursive: true });
-  const settingsText = `${
+// Ownership, not the classification, proves a deny is ours to strip; a deny that may still stand
+// keeps its claim.
+test("removeClaudeDefaultWiring over a foreign-edited, foreign, unverifiable, or vanished config strips only an owned deny it can verify and reports one it cannot", () => {
+  const FOREIGN_HELPER = "/usr/local/bin/my-helper";
+  const FOREIGN_TEXT = `${
     JSON.stringify(
-      {
-        apiKeyHelper: "/usr/local/bin/my-helper",
-        permissions: { deny: [WEBSEARCH_DENY_RULE] },
-      },
+      { apiKeyHelper: FOREIGN_HELPER, permissions: { deny: [WEBSEARCH_DENY_RULE] } },
       null,
       2,
     )
   }\n`;
-  writeFileSync(join(home, "settings.json"), settingsText);
-
-  const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
-  // The user's own deny was never ours, so nothing OWNED remains and the caller may remove the MCP registration.
-  expect(ownedDenyRemains).toBe(false);
-  expect(readFileSync(join(home, "settings.json"), "utf8")).toBe(settingsText);
-});
-
-test("removeClaudeDefaultWiring reports an owned deny it cannot strip (unverifiable file)", () => {
-  const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }); // deny written + ownership recorded
-  const settingsPath = join(home, "settings.json");
-  writeFileSync(settingsPath, "{ not json"); // the deny is now unverifiable
-
-  const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
-  expect(ownedDenyRemains).toBe(true);
-  expect(readFileSync(settingsPath, "utf8")).toBe("{ not json"); // untouched
-  expect(new OwnershipLedger().owns("webSearchDeny", settingsPath)).toBe(true);
+  const rows: {
+    name: string;
+    arrange: (home: string, settingsPath: string) => void;
+    ownedDenyRemains: boolean;
+    owned: boolean;
+    after: (home: string, settingsPath: string, name: string) => void;
+  }[] = [
+    {
+      name: "an OWNED deny in a foreign-edited config is stripped, the edit kept",
+      arrange: (home, settingsPath) => {
+        configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
+        const doc = readSettings(home);
+        doc.apiKeyHelper = FOREIGN_HELPER; // foreign edit: classifies "other"
+        writeFileSync(settingsPath, `${JSON.stringify(doc, null, 2)}\n`);
+      },
+      ownedDenyRemains: false,
+      owned: false,
+      after: (home, _settingsPath, name) => {
+        const after = readSettings(home);
+        expect(denyOf(after), name).toBeUndefined();
+        expect(after.apiKeyHelper, name).toBe(FOREIGN_HELPER);
+      },
+    },
+    {
+      // The user's own deny was never ours, so nothing OWNED remains and the caller may remove
+      // the MCP registration.
+      name: "a deny never ours in a foreign config stays byte for byte",
+      arrange: (home, settingsPath) => {
+        mkdirSync(home, { recursive: true });
+        writeFileSync(settingsPath, FOREIGN_TEXT);
+      },
+      ownedDenyRemains: false,
+      owned: false,
+      after: (_home, settingsPath, name) =>
+        expect(readFileSync(settingsPath, "utf8"), name).toBe(FOREIGN_TEXT),
+    },
+    {
+      name: "an owned deny in an unverifiable file is reported and left untouched",
+      arrange: (home, settingsPath) => {
+        configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
+        writeFileSync(settingsPath, "{ not json"); // the deny is now unverifiable
+      },
+      ownedDenyRemains: true,
+      owned: true,
+      after: (_home, settingsPath, name) =>
+        expect(readFileSync(settingsPath, "utf8"), name).toBe("{ not json"),
+    },
+    {
+      name: "a vanished file releases its stale marker, resurrecting nothing",
+      arrange: (home, settingsPath) => {
+        configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
+        rmSync(settingsPath); // the user deleted the file; the marker lingers
+      },
+      ownedDenyRemains: false,
+      owned: false,
+      after: (_home, settingsPath, name) => expect(existsSync(settingsPath), name).toBe(false),
+    },
+  ];
+  for (const row of rows) {
+    dir = removeDir(dir);
+    const home = tmpHome();
+    const settingsPath = join(home, "settings.json");
+    row.arrange(home, settingsPath);
+    const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
+    expect(ownedDenyRemains, row.name).toBe(row.ownedDenyRemains);
+    expect(new OwnershipLedger().ownedPaths("webSearchDeny"), row.name).toEqual(
+      row.owned ? [settingsPath] : [],
+    );
+    row.after(home, settingsPath, row.name);
+  }
 });
 
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
@@ -781,18 +875,6 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   },
 );
 
-test("removeClaudeDefaultWiring releases a stale ownership marker for a vanished file", () => {
-  const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
-  const settingsPath = join(home, "settings.json");
-  rmSync(settingsPath); // the user deleted the file; the marker lingers
-
-  const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
-  expect(ownedDenyRemains).toBe(false);
-  expect(existsSync(settingsPath)).toBe(false); // no file resurrected
-  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
-});
-
 test("removeClaudeDefaultWiring tolerates a Claude home that is a file (nothing there)", () => {
   // A settings path under a file parent reads "absent" (ENOTDIR), so an uninstall over a bogus
   // CLAUDE_CONFIG_DIR finishes instead of throwing.
@@ -806,7 +888,7 @@ test("removeClaudeDefaultWiring tolerates a Claude home that is a file (nothing 
   removeClaudeProfile(bogusHome, WORK); // same absence tolerance
 });
 
-test("removeClaudeProfile removes a managed settings file but leaves an 'other' profile whole", () => {
+test("removeClaudeProfile removes a managed settings file, leaves an 'other' profile whole, and is hands-off on an unreadable one", () => {
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
   const settingsPath = join(home, "settings-work.json");
@@ -824,20 +906,17 @@ test("removeClaudeProfile removes a managed settings file but leaves an 'other' 
   );
   removeClaudeProfile(home, WORK);
   expect(existsSync(settingsPath)).toBe(true);
-});
 
-test("an unreadable settings file is hands-off for removal, never read as unconfigured", () => {
-  const home = tmpHome();
-  mkdirSync(home, { recursive: true });
-  // A directory at the settings path is a non-ENOENT read error on every platform: settings that exist
-  // but cannot be read must not classify as "none" (removeClaudeDefaultWiring shares the reader).
-  const settingsPath = join(home, "settings-work.json");
+  // A directory at the settings path is a non-ENOENT read error on every platform: settings that
+  // exist but cannot be read must never read as unconfigured (removeClaudeDefaultWiring shares
+  // the reader).
+  rmSync(settingsPath);
   mkdirSync(settingsPath);
   removeClaudeProfile(home, WORK);
   expect(existsSync(settingsPath)).toBe(true);
 });
 
-test("--check: absent settings exit 2 (none), unreadable settings exit 1 (other)", async () => {
+test("--check: absent settings exit 2 (none); unreadable settings and the helper-file path 3.5.6 wrote exit 1 (other)", async () => {
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
   const before = process.exitCode;
@@ -850,6 +929,19 @@ test("--check: absent settings exit 2 (none), unreadable settings exit 1 (other)
     // not take over; it must never collapse into the absent case above.
     process.exitCode = 0;
     mkdirSync(join(home, "settings.json"));
+    await runClaude({ kind: "check" });
+    expect(process.exitCode).toBe(1);
+
+    // The helper-file path 3.5.6 wrote, the file present: the `cl` launcher gates on this exit
+    // code, and a path is never the managed command.
+    process.exitCode = 0;
+    rmSync(join(home, "settings.json"), { recursive: true });
+    const helperFile = join(home, "copilot-token.sh");
+    writeFileSync(helperFile, "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get'\n");
+    writeFileSync(
+      join(home, "settings.json"),
+      `${JSON.stringify({ apiKeyHelper: helperFile }, null, 2)}\n`,
+    );
     await runClaude({ kind: "check" });
     expect(process.exitCode).toBe(1);
   } finally {
@@ -912,18 +1004,6 @@ test("runMcp --remove takes back the pair and stores a durable wire-mcp opt-out"
   expect(denyOf(readSettings(home))).toBeUndefined();
 });
 
-test("registration failure with a PRIOR managed deny strips it - never denied without a server", () => {
-  const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
-  expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
-
-  // ~/.claude.json turns malformed (Claude Code rewrites it constantly).
-  writeFileSync(claudeJsonPath(), "{ not json");
-  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
-  expect(denyOf(readSettings(home))).toBeUndefined();
-  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
-});
-
 test("a malformed permissions value (non-object) is never replaced", () => {
   const home = tmpHome();
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
@@ -967,36 +1047,6 @@ test("the default write reclaims a helper-path apiKeyHelper, leaving the user's 
   // An explicit mode write reclaims even a custom default settings.json; the helper file is the user's and stays.
   expect(readSettings(home).apiKeyHelper).toBe(proxyHelperCommand());
   expect(existsSync(helperFile)).toBe(true);
-});
-
-test("classification is profile-addressed: a default-addressed command is not a profile's", () => {
-  const modeFor = (apiKeyHelper: string, profile: typeof WORK | null) =>
-    inspectClaudeWiring(JSON.stringify({ apiKeyHelper }), 0, profile).providerMode;
-
-  // A default-addressed inline command is NOT a named profile's resolver (and vice versa).
-  expect(modeFor(directHelperCommand(), null)).toBe("direct");
-  expect(modeFor(directHelperCommand(), WORK)).toBe("other");
-  expect(modeFor(directHelperCommand(WORK), WORK)).toBe("direct");
-  expect(modeFor(directHelperCommand(WORK), null)).toBe("other");
-});
-
-test("--check: the helper-file path 3.5.6 wrote exits 1 (other), even with the file present", async () => {
-  const home = tmpHome();
-  mkdirSync(home, { recursive: true });
-  const helperFile = join(home, "copilot-token.sh");
-  writeFileSync(helperFile, "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get'\n");
-  writeFileSync(
-    join(home, "settings.json"),
-    `${JSON.stringify({ apiKeyHelper: helperFile }, null, 2)}\n`,
-  );
-  const before = process.exitCode;
-  try {
-    // The `cl` launcher gates on this exit code: a path is never the managed command.
-    await runClaude({ kind: "check" });
-    expect(process.exitCode).toBe(1);
-  } finally {
-    process.exitCode = before ?? 0;
-  }
 });
 
 test("mode inspection recognizes the managed helper from ANY copilot-env root", () => {
@@ -1072,22 +1122,4 @@ test("mode inspection recognizes the managed helper from ANY copilot-env root", 
       true,
     ),
   ).toBe(true);
-});
-
-test("inspectClaudeWiring reads a sibling root's wiring as its real mode, not other", () => {
-  // The writer emits and the inspector recognizes only the current platform's shape, so the fixture follows it.
-  const helper = (args: string) =>
-    process.platform === "win32"
-      ? `powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\other\\checkout\\bin\\agent.ps1" ${args}`
-      : `/some/other/checkout/bin/agent ${args}`;
-  const text = JSON.stringify({
-    apiKeyHelper: helper("auth --get"),
-    env: { ANTHROPIC_BASE_URL: "https://api.githubcopilot.com" },
-  });
-  expect(inspectClaudeWiring(text, 4141).providerMode).toBe("direct");
-  const proxyText = JSON.stringify({
-    apiKeyHelper: helper("proxy-token --yes"),
-    env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4141" },
-  });
-  expect(inspectClaudeWiring(proxyText, 4141).providerMode).toBe("proxy");
 });

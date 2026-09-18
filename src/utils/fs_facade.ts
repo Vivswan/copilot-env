@@ -223,8 +223,10 @@ export function readlink(path: string): string {
   return overlay === null ? readlinkSync(path) : overlay.readlink(path);
 }
 
+/** The canonical path as the OS spells it (`realpathSync.native`): on Windows a junction and an
+ *  8.3 short name resolve, which the JS walk leaves alone. */
 export function realpath(path: string): string {
-  return overlay === null ? realpathSync(path) : overlay.realpath(path);
+  return overlay === null ? realpathSync.native(path) : overlay.realpath(path);
 }
 
 // --- writes ------------------------------------------------------------------------------------

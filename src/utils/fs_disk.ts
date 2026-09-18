@@ -41,6 +41,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { isDir, isEnoentOrNotdir, missingDirectories, readTextResult } from "./fs.ts";
+import { rmDirectoryRefused } from "./fs_overlay.ts";
 import {
   forgetReported,
   kindOf,
@@ -62,6 +63,7 @@ import {
   readPlannedDir,
   recordPlannedMode,
   shadowedText,
+  textVerdict,
 } from "./write_session.ts";
 
 declare const scratchBrand: unique symbol;
@@ -317,19 +319,24 @@ export function assertNotDirectory(path: string): void {
 }
 
 /** rmdir's own refusals, taken before any plan so a dry run refuses where the real run does: a
- *  regular file is not a directory, and a directory with entries (this run's planned deletions and
- *  creations counted) is unknown data. A link (a Windows junction at `current`) is the entry rmdir
- *  removes, never what it points at. Exported for the update planner, whose `current` flip takes
- *  the same decision. */
+ *  regular file (the disk's, or one this run planned) is not a directory, and a directory with
+ *  entries (this run's planned deletions and creations counted) is unknown data. A link (a Windows
+ *  junction at `current`) is the entry rmdir removes, never what it points at. Exported for the
+ *  update planner, whose `current` flip takes the same decision. */
 export function refuseRmdir(path: string): void {
-  let stat: Stats;
-  try {
-    stat = lstatSync(path);
-  } catch {
-    return;
+  if (typeof shadowedText(path) === "string") {
+    throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
   }
-  if (stat.isSymbolicLink()) return;
-  if (!stat.isDirectory()) throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
+  if (!plannedDirectory(path)) {
+    let stat: Stats;
+    try {
+      stat = lstatSync(path);
+    } catch {
+      return;
+    }
+    if (stat.isSymbolicLink()) return;
+    if (!stat.isDirectory()) throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
+  }
   if (readPlannedDir(path).length > 0) {
     throw errno("ENOTEMPTY", `directory not empty, rmdir '${path}'`);
   }
@@ -352,12 +359,26 @@ export interface WriteOptions {
   secret?: boolean;
 }
 
-/** The rows a bridged write lands: the file's leaves before and after, when the writer declared
- *  its secret keys (a whole-file writer declares none and gets the line diff, as today). Read only
- *  while the collector is active: outside it the destination is never opened for reading. */
-function rowsFor(path: string, text: string, options: WriteOptions): AttributeRow[] | undefined {
-  if (!planCollecting() || options.secretKeys === undefined || options.secret) return undefined;
-  return bridgeRows(path, plannedBefore(path), text, new Set(options.secretKeys));
+/** How a bridged write renders: the file's leaf rows before and after when the writer declared
+ *  its secret keys (a whole-file writer declares none and gets the line diff and the wrapper's
+ *  verdict, as today); a declared document that does not parse prints its path alone, so no
+ *  secret reaches a line diff. A declared document's verdict is the byte comparison, so a
+ *  same-content re-render prints `unchanged` as the plan writers did. Read only while the
+ *  collector is active: outside it the destination is never opened. */
+function bridgedRender(
+  path: string,
+  text: string,
+  options: WriteOptions,
+): { render: PlannedRender; attributes?: AttributeRow[]; verdict?: FileVerdict } {
+  if (!planCollecting() || options.secretKeys === undefined || options.secret) {
+    return { render: renderOf(options.secret) };
+  }
+  const before = plannedBefore(path);
+  const verdict = textVerdict(before, text);
+  const rows = bridgeRows(path, before, text, new Set(options.secretKeys));
+  return rows === null
+    ? { render: "path-only", verdict }
+    : { render: "diff", attributes: rows, verdict };
 }
 
 function plannedBefore(path: string): string | null {
@@ -389,12 +410,14 @@ export function writeBytes(path: string, bytes: Uint8Array, options: WriteOption
 function writeInPlace(path: string, data: string | Uint8Array, options: WriteOptions): void {
   const was = plannedLook(path);
   const content = typeof data === "string" ? data : undefined;
+  const bridged = content === undefined
+    ? { render: renderOf(options.secret) }
+    : bridgedRender(path, content, options);
   if (
-    planned(verdictOf(was), path, {
-      content,
-      render: renderOf(options.secret),
-      attributes: content === undefined ? undefined : rowsFor(path, content, options),
-    }, { syscall: `open '${path}'`, directory: "followed" })
+    planned(bridged.verdict ?? verdictOf(was), path, { content, ...bridged }, {
+      syscall: `open '${path}'`,
+      directory: "followed",
+    })
   ) {
     if (options.mode !== undefined) recordPlannedMode(path, options.mode);
     return;
@@ -417,14 +440,16 @@ function writeStaged(path: string, data: string | Uint8Array, options: WriteOpti
   const was = plannedLook(path);
   const tmp = join(dirname(path), `${basename(path)}.tmp.${process.pid}`);
   const content = typeof data === "string" ? data : undefined;
+  const bridged = content === undefined
+    ? { render: renderOf(options.secret) }
+    : bridgedRender(path, content, options);
   // The rename over the target is the write's landing: a directory entry there is its EISDIR (a
   // link there is replaced, as rename replaces it).
   if (
-    planned(verdictOf(was), path, {
-      content,
-      render: renderOf(options.secret),
-      attributes: content === undefined ? undefined : rowsFor(path, content, options),
-    }, { syscall: `rename '${tmp}' -> '${path}'`, directory: "entry" })
+    planned(bridged.verdict ?? verdictOf(was), path, { content, ...bridged }, {
+      syscall: `rename '${tmp}' -> '${path}'`,
+      directory: "entry",
+    })
   ) {
     // A staged write lands a fresh inode: its mode is the explicit one, else the default.
     recordPlannedMode(path, options.mode ?? defaultFileMode());
@@ -528,6 +553,7 @@ export function rm(path: string, options: RemoveOptions = {}): boolean {
     throw errno("ENOENT", `no such file or directory, lstat '${path}'`);
   }
   let was: Look = { kind: "present", fingerprint: "" };
+  if (plannedDirectory(path) && !recursive) throw rmDirectoryRefused(path);
   if (shadow === undefined && !plannedDirectory(path) && plannedPresence(path) !== true) {
     // The disk's entry, as the run has not planned it: node's own refusals, and a look that
     // failed for another reason (EACCES) is left to the removal itself.
@@ -542,13 +568,7 @@ export function rm(path: string, options: RemoveOptions = {}): boolean {
       }
       if (code === "ENOTDIR") throw e;
     }
-    if (entry !== null && entry.isDirectory() && !recursive) {
-      const err: NodeJS.ErrnoException = new Error(
-        `Path is a directory: rm returned EISDIR (is a directory) ${path}`,
-      );
-      err.code = "ERR_FS_EISDIR";
-      throw err;
-    }
+    if (entry !== null && entry.isDirectory() && !recursive) throw rmDirectoryRefused(path);
     was = look(path, recursive);
   }
   if (planned("delete", path)) return true;

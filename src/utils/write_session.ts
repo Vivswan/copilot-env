@@ -6,7 +6,7 @@
 // a config.toml re-inspected after its write) sees the planned state, not the disk. utils layer:
 // the JSON store (src/copilot_api/config.ts) lands through here too.
 import { readdirSync } from "node:fs";
-import { basename, dirname, extname } from "node:path";
+import { basename, dirname, extname, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { isEnoent, missingDirectories, readTextResult, type TextReadResult } from "./fs.ts";
 import { parseJsonRecord } from "./json.ts";
@@ -129,10 +129,14 @@ export function landPlan(plan: WritePlan): void {
     if (file.verdict === "delete") {
       session.shadows.set(file.path, null);
       session.modes.delete(file.path);
+      for (const dir of [...session.dirs]) {
+        if (dir === file.path || dir.startsWith(file.path + sep)) session.dirs.delete(dir);
+      }
     } else if (file.content !== undefined) session.shadows.set(file.path, file.content);
     // A landing whose bytes the plan does not carry (a copy, a link) still ends an earlier
-    // planned deletion: presence is then judged from the files, not from a stale tombstone.
-    else session.shadows.delete(file.path);
+    // planned deletion: presence is then judged from the files, not from a stale tombstone. Earlier
+    // planned text stays (a chmod carries none).
+    else if (session.shadows.get(file.path) === null) session.shadows.delete(file.path);
   }
   plan.commit?.();
 }
@@ -202,11 +206,14 @@ export function plannedDirectory(path: string): boolean {
 }
 
 /** The mode a landing of this run left at `path` (a chmod, an explicit-mode write), for the
- *  facade's stat under the collector; a planned deletion forgets it. */
-export function recordPlannedMode(path: string, mode: number | null): void {
+ *  facade's stat under the collector; a planned deletion forgets it. Windows keeps one bit, as
+ *  its stat reports: 0666 for anything writable, 0444 otherwise. */
+export function recordPlannedMode(path: string, mode: number): void {
   if (session === null) return;
-  if (mode === null) session.modes.delete(path);
-  else session.modes.set(path, mode & 0o777);
+  const platform = process.platform === "win32"
+    ? (mode & 0o222) === 0 ? 0o444 : 0o666
+    : mode & 0o777;
+  session.modes.set(path, platform);
 }
 
 export function plannedMode(path: string): number | undefined {
@@ -315,14 +322,16 @@ function parseDoc(path: string, text: string | null): Record<string, unknown> | 
   }
 }
 
+/** The leaf rows of a bridged document write, or null when either side does not parse: the
+ *  caller then prints the path alone, so a declared secret never reaches a line diff. */
 export function bridgeRows(
   path: string,
   before: string | null,
   after: string,
   secretKeys: ReadonlySet<string>,
-): AttributeRow[] {
+): AttributeRow[] | null {
   const current = parseDoc(path, before);
   const next = parseDoc(path, after);
-  if (current === null || next === null) return [];
+  if (current === null || next === null) return null;
   return planDocReplace(current, next, (key) => secretKeys.has(key));
 }

@@ -81,6 +81,42 @@ test("under the plan collector a file the run created and removed prints nothing
   if (Deno.build.os !== "windows") expect(statSync(helper).mode & 0o777).toBe(0o644);
 });
 
+test("under the plan collector a planned directory takes rm's and rmdir's own refusals, a chmod keeps planned text, and an unparsed document with declared secrets prints its path alone", async () => {
+  dir = tempDir("copilot-bridge-");
+  const home = join(dir, "home");
+  const settings = join(dir, "settings.json");
+  writeFileSync(settings, "{broken");
+  const { files } = await collectDryRun(() => {
+    facade.mkdir(home);
+    expect(() => facade.rm(home)).toThrow(/EISDIR/);
+    facade.writeText(join(home, "child.txt"), "planned", { atomic: false });
+    expect(() => facade.rmdir(home)).toThrow(/ENOTEMPTY/);
+    expect(() => facade.rmdir(join(home, "child.txt"))).toThrow(/ENOTDIR/);
+    facade.chmod(join(home, "child.txt"), 0o600);
+    expect(facade.readText(join(home, "child.txt"))).toBe("planned");
+    facade.rm(join(home, "child.txt"));
+    facade.rmdir(home);
+    expect([facade.exists(home), facade.readdir(dir)]).toEqual([false, ["settings.json"]]);
+    facade.writeText(settings, '{"env":{"TOKEN":"example-secret"}}\n', {
+      secretKeys: ["env.TOKEN"],
+    });
+    return Promise.resolve();
+  });
+  expect(renderDryRun(files)).toEqual([`rewrite ${settings}`]);
+});
+
+test("under the plan collector a same-content document write with declared secrets prints unchanged alone", async () => {
+  dir = tempDir("copilot-bridge-");
+  const settings = join(dir, "settings.json");
+  const text = '{\n  "env": {\n    "ANTHROPIC_AUTH_TOKEN": "example-token"\n  }\n}\n';
+  writeFileSync(settings, text);
+  const { files } = await collectDryRun(() => {
+    facade.writeText(settings, text, { secretKeys: ["env.ANTHROPIC_AUTH_TOKEN"] });
+    return Promise.resolve();
+  });
+  expect(renderDryRun(files)).toEqual([`unchanged ${settings}`]);
+});
+
 test("under the plan collector a facade read answers from the plan: a planned write reads back, a planned delete reads as absent, a planned directory lists", async () => {
   dir = tempDir("copilot-bridge-");
   const file = join(dir, "f.txt");

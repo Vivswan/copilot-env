@@ -71,7 +71,7 @@ Every module under `src/` reads and writes files through `import * as fs from ".
 | `fs.stat(p)` / `fs.lstat(p)`                                 | `EntryStats` (`isFile`, `isDirectory`, `isSymbolicLink`, `mode`, `size`, `mtimeMs`); `stat` follows links                                                                                   |
 | `fs.exists(p)`                                               | whether a lookup succeeds                                                                                                                                                                   |
 | `fs.readdir(p)` / `fs.readdirEntries(p)`                     | names / `DirEntry` (`name`, `isFile`, `isDirectory`, `isSymbolicLink`; the link itself)                                                                                                     |
-| `fs.readlink(p)` / `fs.realpath(p)`                          | a link's target text / the canonical path                                                                                                                                                   |
+| `fs.readlink(p)` / `fs.realpath(p)`                          | a link's target text / the canonical path as the OS spells it (`realpathSync.native`: a Windows junction or 8.3 short name resolves)                                                        |
 | `fs.writeText(p, text, opts?)`                               | atomic by default (staged beside the target, fsynced, renamed over it, the parent made); `opts`: `mode`, `atomic: false` (write in place, through a link), `detail`, `secretKeys`, `secret` |
 | `fs.writeBytes(p, bytes, opts?)`                             | the same for bytes (`mode`, `atomic`, `detail`)                                                                                                                                             |
 | `fs.copyFile(from, to, detail?)`                             | the bytes of `from` land at `to`                                                                                                                                                            |
@@ -118,7 +118,7 @@ Writers move onto the facade one PR at a time while `--dry-run` still runs under
 
 Writes land as the plan rows today's writers land:
 
-- `writeText` on a JSON or TOML file yields `planDocReplace` rows (every leaf before and after, in document order, the `secretKeys` redacted) when the writer passes `secretKeys`; an empty list counts, as the declaration that the file is a document.
+- `writeText` on a JSON or TOML file yields `planDocReplace` rows (every leaf before and after, in document order, the `secretKeys` redacted) when the writer passes `secretKeys`; an empty list counts, as the declaration that the file is a document. Its verdict is the byte comparison (`unchanged` for a same-content re-render); a document that does not parse prints its path alone.
 - `secret: true` yields the path alone; other text, or a write with no `secretKeys`, yields the line diff the wrappers land today.
 - `mkdir`, `rm`, `rmdir`, `rename`, `chmod`, `symlink`, `copyFile` land the rows the wrappers land today and take the same refusals.
 

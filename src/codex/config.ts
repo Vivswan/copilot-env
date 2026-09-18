@@ -60,7 +60,7 @@ import {
   withCodexHostFarm,
 } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, codexProfileConfigPath } from "./paths.ts";
-import { codexBearerLeaf, type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
+import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
 import { codexUserAgent } from "./user_agent.ts";
 
 const logger = createStderrLogger();
@@ -776,10 +776,10 @@ export function configureCodexConfig(
   } catch (e) {
     throw new Error(`could not create Codex config directory ${codexHome}: ${errMessage(e)}`);
   }
-  saveCodexToml(hostConfig, doc, detail, [codexBearerLeaf(providerId)]);
+  saveCodexToml(hostConfig, doc, detail);
   // Saved after config.toml so the selector never lands ahead of the table it points at.
   if (profileFile !== null) {
-    saveCodexToml(profileFile.path, profileFile.doc, "Codex profile config", []);
+    saveCodexToml(profileFile.path, profileFile.doc, "Codex profile config");
   }
   // Ownership lands only AFTER the successful save (the ledger's crash-direction contract), and
   // only for a KNOWN Codex home (the set the cleanup sweep visits), so a write to a foreign home
@@ -968,12 +968,12 @@ export function removeCodexProfile(codexHome: string, name: ProfileName): void {
     // Date subclass) into plain values and rewrite the user's own keys.
     delete providers[providerId];
     if (Object.keys(providers).length === 0) delete doc.model_providers;
-    saveCodexToml(configPath, doc, undefined, [codexBearerLeaf(providerId)]);
+    saveCodexToml(configPath, doc);
   }
   if (profileDoc !== null && profileDoc.model_provider === providerId) {
     delete profileDoc.model_provider;
     if (Object.keys(profileDoc).length === 0) fs.rm(profilePath, { force: true });
-    else saveCodexToml(profilePath, profileDoc, undefined, []);
+    else saveCodexToml(profilePath, profileDoc);
   }
 }
 

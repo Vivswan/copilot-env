@@ -22,13 +22,9 @@ import {
 } from "./catalog.ts";
 import { effectiveCodexHome, knownCodexHomes } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";
-import { codexBearerLeaf, readCodexToml, saveCodexToml } from "./toml_io.ts";
+import { codexBearerLeaves, readCodexToml, saveCodexToml } from "./toml_io.ts";
 
 const logger = createStderrLogger();
-
-/** The default selection's table is the one these writes touch, so its bearer is the leaf a
- *  preview redacts. */
-const DEFAULT_SECRETS: readonly string[] = [codexBearerLeaf(CODEX_PROVIDER_ID)];
 
 /**
  * Runs after the default Codex wiring write and on a direct launch. ENABLED, it is an ADD-only self-heal for a config that predates a
@@ -84,7 +80,6 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
       { ...doc, model_catalog_json: catalogFile },
       `Codex config; model_catalog_json = "${catalogFile}" set` +
         (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : ""),
-      DEFAULT_SECRETS,
     );
   } catch {
     // An unreadable config (non-ENOENT) or a write race: the next `agent profile sync --codex`/`agent init` wiring
@@ -206,7 +201,7 @@ function stripCodexCatalogReferences(
         fs.writeText(configPath, stringify(next), {
           atomic: false,
           detail: "Codex config; model_catalog_json removed",
-          secretKeys: DEFAULT_SECRETS,
+          secretKeys: codexBearerLeaves(next),
         });
         stripped = true;
         if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);

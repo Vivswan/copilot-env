@@ -6,6 +6,7 @@ import { parse, stringify } from "smol-toml";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { isRecord } from "../utils/json.ts";
 
 export type CodexTomlRead =
   | { kind: "absent" }
@@ -43,26 +44,45 @@ export function readCodexToml(path: string): CodexTomlRead {
   }
 }
 
-/** The dotted leaf a static-key write bakes the bearer into, for `providerId`'s table: the one
- *  Codex value a preview must redact. */
+/** The dotted leaf a static-key write bakes the bearer into, for `providerId`'s table. */
 export function codexBearerLeaf(providerId: string): string {
   return `model_providers.${providerId}.http_headers.Authorization`;
 }
 
-/**
- * The managed writers name the leaves a preview redacts (`secretKeys`, the bearer of the table
- * they write) and their write prints attribute by attribute. A whole-document rewrite that names
- * none (a removal, a migration) is printed path-only: a Codex config can carry a baked bearer in
- * any table.
- */
-export function saveCodexToml(
-  path: string,
-  doc: Record<string, unknown>,
-  detail?: string,
-  secretKeys?: Iterable<string>,
-): void {
-  // In place, as Codex itself writes it: a user's symlinked config.toml stays a link.
-  const text = stringify(doc);
-  if (secretKeys === undefined) fs.writeText(path, text, { atomic: false, detail, secret: true });
-  else fs.writeText(path, text, { atomic: false, detail, secretKeys });
+/** Every `http_headers.Authorization` leaf of `doc`, dotted, wherever a table carries one: the
+ *  managed provider tables, and a legacy `[profiles.<name>]` table a migration still moves. The
+ *  header name is matched case-insensitively, as HTTP reads it (a user's own `authorization`
+ *  spelling is a bearer too). A segment carrying a dot or a space is quoted, so a dotted key never
+ *  reads as two levels. */
+export function codexBearerLeaves(doc: Record<string, unknown>): string[] {
+  const leaves: string[] = [];
+  const quote = (s: string): string => (s.includes(".") || s.includes(" ") ? JSON.stringify(s) : s);
+  const walk = (value: unknown, path: readonly string[]): void => {
+    if (!isRecord(value) || value instanceof Date) return;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "http_headers" && isRecord(child)) {
+        for (const header of Object.keys(child)) {
+          if (header.toLowerCase() === "authorization") {
+            leaves.push([...path, key, header].map(quote).join("."));
+          }
+        }
+      }
+      walk(child, [...path, key]);
+    }
+  };
+  walk(doc, []);
+  return leaves;
+}
+
+/** Every write names the leaves a preview redacts: the bearers the written document carries, and
+ *  those the file carries now (a table a migration renames leaves its old bearer as a row that
+ *  goes). The non-secret rows print attribute by attribute; a bearer prints `<redacted>`. In
+ *  place, as Codex itself writes it: a user's symlinked config.toml stays a link. */
+export function saveCodexToml(path: string, doc: Record<string, unknown>, detail?: string): void {
+  const current = readCodexToml(path);
+  const secretKeys = new Set([
+    ...codexBearerLeaves(doc),
+    ...(current.kind === "ok" ? codexBearerLeaves(current.doc) : []),
+  ]);
+  fs.writeText(path, stringify(doc), { atomic: false, detail, secretKeys });
 }

@@ -201,6 +201,17 @@ test("under the plan collector a moved or copied secret keeps its declaration th
     facade.writeText(movedOnto, '{"token":"t"}\n', { secretKeys: [] });
     facade.writeText(join(dir, "whole.json"), '{"token":"t"}\n', { secret: true });
     facade.rename(join(dir, "whole.json"), movedOnto);
+    // A later declaration redacts a row an earlier write printed in the clear, and a path with
+    // declared keys and no rows prints no line diff (its lines would carry the values).
+    const later = join(dir, "later.json");
+    writeFileSync(later, '{"token":"t"}\n');
+    facade.writeText(later, '{"n":1}\n', { secretKeys: [] });
+    facade.writeText(later, '{"n":2}\n', { secretKeys: ["token"] });
+    const emptied = join(dir, "emptied.json");
+    writeFileSync(emptied, '{"token":"t"}\n');
+    facade.writeText(emptied, '{"token":"t"}\n');
+    facade.copyFile(keyed, emptied);
+    facade.writeText(emptied, '{"token":"t","n":1}\n', { secretKeys: [] });
     // Planned bytes decode as node decodes a file: a byte-order mark stays.
     facade.writeBytes(join(dir, "bom.txt"), new Uint8Array([239, 187, 191, 97]));
     expect(facade.readText(join(dir, "bom.txt"))).toBe("\uFEFFa");
@@ -231,6 +242,11 @@ test("under the plan collector a moved or copied secret keeps its declaration th
     `create ${join(dir, "carried-onto.json")}`,
     `  token  (absent) -> <redacted>`,
     `create ${join(dir, "moved-onto.json")}`,
+    `rewrite ${join(dir, "later.json")}`,
+    `  token  <redacted> -> (absent)`,
+    `  n  (absent) -> 2`,
+    `rewrite ${join(dir, "emptied.json")}`,
+    `  (every managed attribute already holds its value)`,
     `create ${join(dir, "bom.txt")}`,
     `create ${binaryCopy}`,
     `create ${blob}`,

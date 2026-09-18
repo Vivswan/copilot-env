@@ -262,6 +262,9 @@ function planned(
         ...(text.directory === undefined ? {} : { directory: text.directory }),
       }),
       attributes: text.attributes ?? [],
+      ...(text.secretKeys !== undefined && text.secretKeys.length > 0
+        ? { secretKeys: text.secretKeys }
+        : {}),
     }],
     apply() {},
   });
@@ -400,7 +403,13 @@ function bridgedRender(
   path: string,
   text: string,
   options: WriteOptions,
-): { render: PlannedRender; attributes?: AttributeRow[]; verdict?: FileVerdict; secret?: boolean } {
+): {
+  render: PlannedRender;
+  attributes?: AttributeRow[];
+  verdict?: FileVerdict;
+  secret?: boolean;
+  secretKeys?: readonly string[];
+} {
   if (!planCollecting()) return { render: renderOf(options.secret) };
   recordSecret(path, { whole: options.secret, keys: options.secretKeys });
   const secret = secretOf(path);
@@ -429,7 +438,7 @@ function bridgedRender(
   const rows = bridgeRows(path, before, text, secret.keys);
   return rows === null
     ? { render: "path-only", verdict, secret: true }
-    : { render: "diff", attributes: rows, verdict };
+    : { render: "diff", attributes: rows, verdict, secretKeys: [...secret.keys] };
 }
 
 /** A moved or copied file's content, as the run sees it, lands at `to` for the run's later

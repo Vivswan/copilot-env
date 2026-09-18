@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { parse, stringify, TomlDate } from "smol-toml";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -57,7 +57,9 @@ import {
 } from "../src/copilot_api/integration_identity.ts";
 import { managedProxyProvider } from "../src/codex/config.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { renderDryRun } from "../src/agents/write_plan.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
+import { collectDryRun } from "../src/utils/write_session.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { runCli } from "./helpers/run.ts";
 import { consola } from "consola";
@@ -1207,6 +1209,81 @@ function legacyHelperLine(profile: string): string {
     `auth --get --profile ${profile}`,
   );
 }
+
+test(
+  "4.0.9 profile verb tree, dry run: a moved profile home is a directory row the re-render builds under, and a retargeted settings file never prints its token",
+  async () => {
+    const homes = isolateAgentHomes("copilot-mig-verb-dry-", { mkdirs: true });
+    dir = homes.dir;
+    const desktop = join(dir, "desktop");
+    mkdirSync(join(desktop, "configLibrary"), { recursive: true });
+    process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
+    const LIST = parseProfileName("list");
+    try {
+      writeStore(join(homes.proxyHome, "state.json"), {
+        global: { "daemon.port": 4199 },
+        profiles: {
+          default: { githubToken: "ghp_default", authProvider: "gh-token", mode: "proxy" },
+          list: { githubToken: "ghp_list", authProvider: "gh-token", mode: "proxy" },
+          // No credential: the Direct re-render refuses, so the retarget's write is the settings
+          // file's only landing (the case whose line diff would print the token).
+          work: { authProvider: "gh-token", mode: "direct" },
+        },
+      });
+      writeRunState({ port: 4555 }, LIST);
+      writeFileSync(join(homes.proxyHome, "profiles", "list", "config.json"), "{}\n");
+      // Minified, so the retarget's pretty-print reflows every line: a line diff would print
+      // the token.
+      writeFileSync(
+        join(homes.claudeHome, "settings-work.json"),
+        JSON.stringify({
+          apiKeyHelper: legacyHelperLine("work"),
+          env: { ANTHROPIC_AUTH_TOKEN: "example-secret-token" },
+        }),
+      );
+      writeFileSync(
+        join(homes.claudeHome, "settings-list.json"),
+        JSON.stringify({
+          apiKeyHelper: proxyHelperCommand(LIST),
+          env: {
+            ANTHROPIC_BASE_URL: "http://127.0.0.1:4555",
+            ANTHROPIC_AUTH_TOKEN: "example-secret-token",
+          },
+        }),
+      );
+      setIntegrationProbeFetch(() =>
+        Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+      );
+      resetIntegrationIdentityCache();
+      const before = fingerprintTree(dir);
+      let narrated = "";
+      const { files } = await collectDryRun(async () => {
+        narrated = (await captureChannels(() => moveProfilesToVerbTree())).all;
+      });
+      expect(fingerprintTree(dir)).toEqual(before);
+      const rendered = renderDryRun(files);
+      const newHome = join(homes.proxyHome, "profiles", "list-1");
+      expect(rendered).toContain(`create ${newHome}${sep}`);
+      expect(rendered.some((l) => l.startsWith(`create ${join(newHome, ".run")}${sep}`))).toBe(
+        true,
+      );
+      expect(
+        rendered.some((l) =>
+          l.endsWith(join(".run", ".state.json").slice(4)) && l.includes(newHome)
+        ),
+      )
+        .toBe(true);
+      expect(narrated).toContain("re-rendered profile 'list-1'");
+      const text = rendered.join("\n");
+      expect(text).not.toContain("example-secret-token");
+      expect(text).toContain("env.ANTHROPIC_AUTH_TOKEN  <redacted> -> <redacted>");
+    } finally {
+      delete process.env[CLAUDE_DESKTOP_DIR_ENV];
+      setIntegrationProbeFetch(null);
+    }
+  },
+  120_000,
+);
 
 test(
   "4.0.9 profile verb tree: a verb-named profile becomes the first free <name>-<n> with every artifact retargeted and re-rendered, a named Direct profile's resolver line moves to the new spelling, the user's keys survive, and a re-run writes nothing",

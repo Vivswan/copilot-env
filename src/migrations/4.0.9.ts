@@ -11,7 +11,12 @@
 import { consola } from "consola";
 import { join } from "node:path";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
-import { directHelperCommand, managedHelperShape, proxyHelperCommand } from "../claude/config.ts";
+import {
+  directHelperCommand,
+  managedHelperShape,
+  proxyHelperCommand,
+  SETTINGS_SECRETS,
+} from "../claude/config.ts";
 import {
   desktopEntryName,
   desktopHelperPath,
@@ -914,6 +919,7 @@ function retargetClaude(claudeHome: string, { from, to }: ProfileMove): boolean 
     fs.writeText(newPath, `${JSON.stringify(doc, null, 2)}\n`, {
       detail: "apiKeyHelper now `agent profile [<name>] auth --get`",
       atomic: false,
+      secretKeys: SETTINGS_SECRETS,
     });
   }
   return true;

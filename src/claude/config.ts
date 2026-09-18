@@ -426,7 +426,8 @@ function managedCredentialOps(
 }
 
 /** The one Claude value a preview must redact. */
-const SETTINGS_SECRETS: ReadonlySet<string> = new Set([dottedKey(["env", AUTH_TOKEN_ENV])]);
+/** The settings leaves a dry run redacts; every writer of a profile's settings file declares them. */
+export const SETTINGS_SECRETS: ReadonlySet<string> = new Set([dottedKey(["env", AUTH_TOKEN_ENV])]);
 
 /** The write-report clause that says how the credential rides; the proxy static case also says
  *  what the resolver command used to do for the user. */

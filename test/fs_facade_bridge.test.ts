@@ -406,6 +406,19 @@ test("under the plan collector a directory removed and made again is fresh and e
     facade.rm(nest, { recursive: true });
     facade.writeBytes(nest, new Uint8Array([3]));
     expect([facade.stat(nest).isFile(), facade.rm(nest, { force: true })]).toEqual([true, true]);
+    // A file planned where the disk holds a directory moves as a file; a directory moves as one.
+    const wasDir = join(dir, "was-dir");
+    mkdirSync(wasDir);
+    facade.rm(wasDir, { recursive: true });
+    facade.writeText(wasDir, "x", { atomic: false });
+    facade.rename(wasDir, join(dir, "now-file"));
+    facade.mkdir(join(dir, "made"));
+    facade.rename(join(dir, "made"), join(dir, "moved-dir"));
+    expect([
+      facade.readText(join(dir, "now-file")),
+      facade.stat(join(dir, "moved-dir")).isDirectory(),
+      facade.readdir(join(dir, "moved-dir")),
+    ]).toEqual(["x", true, []]);
     // A directory replaced by a file is a file to the next write and to a mkdir under it.
     const swapped = join(dir, "swapped");
     mkdirSync(swapped);
@@ -447,6 +460,13 @@ test("under the plan collector a directory removed and made again is fresh and e
     `delete ${join(dir, "nest")}`,
     `create ${join(dir, "nest")}`,
     `delete ${join(dir, "nest")}`,
+    `delete ${join(dir, "was-dir")}`,
+    `create ${join(dir, "was-dir")}`,
+    `create ${join(dir, "now-file")}`,
+    `delete ${join(dir, "was-dir")}`,
+    `create ${join(dir, "made")}/`,
+    `create ${join(dir, "moved-dir")}/`,
+    `delete ${join(dir, "made")}`,
     `delete ${join(dir, "swapped")}`,
     `create ${join(dir, "swapped")}`,
     `rewrite ${join(dir, "swapped")}`,

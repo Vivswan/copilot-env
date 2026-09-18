@@ -189,6 +189,9 @@ function planned(
     render: PlannedRender;
     directory?: true;
     attributes?: AttributeRow[];
+    /** The landing's text is secret: the renderer prints the verdict alone, whatever an earlier
+     *  landing of the path compared or declared. */
+    secret?: boolean;
   } = { render: "diff" },
   refusals?: PlanRefusals,
 ): boolean {
@@ -236,7 +239,7 @@ function planned(
     landPlan({
       files: [{
         ...filePlan(path, kind, text.content === undefined ? {} : { content: text.content }),
-        secret: true,
+        ...(text.secret ? { secret: true } : {}),
       }],
       apply() {},
     });
@@ -392,16 +395,16 @@ function bridgedRender(
   path: string,
   text: string,
   options: WriteOptions,
-): { render: PlannedRender; attributes?: AttributeRow[]; verdict?: FileVerdict } {
+): { render: PlannedRender; attributes?: AttributeRow[]; verdict?: FileVerdict; secret?: boolean } {
   if (!planCollecting()) return { render: renderOf(options.secret) };
   recordSecret(path, { whole: options.secret, keys: options.secretKeys });
   const secret = secretOf(path);
   // A whole-file secret (declared now, or carried by a move or copy) prints its path alone
   // whatever this write declares; an undeclared write over declared keys does too, since a line
   // diff would print the old text.
-  if (secret.whole) return { render: "path-only" };
+  if (secret.whole) return { render: "path-only", secret: true };
   if (options.secretKeys === undefined) {
-    return { render: secret.keys.size > 0 ? "path-only" : "diff" };
+    return secret.keys.size > 0 ? { render: "path-only", secret: true } : { render: "diff" };
   }
   // The bytes the write replaces, as the run sees them. An entry that stands but cannot be read
   // (a dangling link the real write lands through) is a rewrite of unknown bytes, never a create.
@@ -420,7 +423,7 @@ function bridgedRender(
   const verdict: FileVerdict = unreadable ? "rewrite" : textVerdict(before, text);
   const rows = bridgeRows(path, before, text, secret.keys);
   return rows === null
-    ? { render: "path-only", verdict }
+    ? { render: "path-only", verdict, secret: true }
     : { render: "diff", attributes: rows, verdict };
 }
 
@@ -542,9 +545,11 @@ export function copyFile(from: string, to: string, detail?: string): void {
   // A copy of content the run declared secret (as a whole, or by key) prints its path alone, now
   // and on a later write: a diff row would read the copied text as the text it replaces.
   const carried = secretOf(from);
+  // A copy of declared content prints its path alone (a diff would read the copied text); a
+  // whole-file secret also silences every row an earlier landing of the destination declared.
   const render: PlannedRender = carried.whole || carried.keys.size > 0 ? "path-only" : "diff";
   if (
-    planned(verdictOf(was), to, { render }, {
+    planned(verdictOf(was), to, { render, secret: carried.whole }, {
       syscall: `copyfile '${from}' -> '${to}'`,
       directory: "followed",
     })

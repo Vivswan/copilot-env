@@ -217,14 +217,14 @@ export function foldFilePlans(files: readonly FilePlan[]): FilePlan[] {
       : plans.some((plan) => plan.verdict !== "same")
       ? "rewrite"
       : "same";
+    // A secret landing prints the verdict alone: no earlier landing's text is diffed against it,
+    // and no earlier landing's rows print beneath it.
+    const secret = plans.some((plan) => plan.secret);
     folded.push({
       path,
       verdict,
-      attributes,
-      // A secret landing prints the verdict alone: no earlier landing's text is diffed against it.
-      ...(plans.some((plan) => plan.secret)
-        ? { secret: true as const }
-        : { before: first.before, content: last.content }),
+      attributes: secret ? [] : attributes,
+      ...(secret ? { secret: true as const } : { before: first.before, content: last.content }),
       ...(plans.some((plan) => plan.directory) ? { directory: true as const } : {}),
     });
   }

@@ -23,9 +23,9 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #   identity                   the client identity survey; --set <id|auto> = set identity,
                            #                              --get = get identity, --del = unset identity
                            #   set <key> <value>          its preference (identity <id|auto> pins the client identity;
-                           #                              no name: = agent config --set for a shared proxy.*/probe.* key)
-                           #   unset <key>                drop one (no name: = agent config --del)
-                           #   get [<key>]                the value in effect for it, or its table
+                           #                              no name: = agent config set for a shared proxy.*/probe.* key)
+                           #   unset <key>                drop one (no name: = agent config unset for a shared proxy.*/probe.* key)
+                           #   get [<key>]                the value in effect for it and its origin, or every key of the profile
                            #   sync [--claude|--codex]    re-render its agent files from the store: both agents, or one
                            #   check                      its recorded mode; exits 0 direct, 2 proxy, 1 none or partial
                            #   check --claude|--codex     that agent's file; exits 0 direct, 2 proxy or none, 1 other
@@ -37,8 +37,8 @@ agent auth <flags>         # = agent profile auth for the default profile
 agent sync                 # every profile's sync, the default's included
 agent launch <cli>         # launch claude|codex|copilot with managed flags + provider wiring
                            #   --profile <name>, --relaxed; agent args after --
-agent config               # get/set preferences (see the configuration page)
-                           #   --set <key> <value>, --get [key], --del <key>
+agent config               # this machine's preferences and the shared proxy.*/probe.* defaults (configuration page)
+                           #   set <key> <value>, get [<key>], unset <key>; a profile's own keys: agent profile set
 agent settings             # export/import every portable setting as one JSON bundle
                            #   --export [file], --import <file>
                            #   --with-credentials, --force, --no-backup
@@ -110,8 +110,8 @@ The rc file and profile it edits are in the [wiring write list](getting-started.
 The `cl` / `co` / `cx` launchers are opt-in shell functions over `agent launch`. They follow the `shell.launchers` config key:
 
 ```bash
-agent config --set shell.launchers true
-agent config --set shell.launchers false
+agent config set shell.launchers true
+agent config set shell.launchers false
 ```
 
 - `cl` (`agent launch claude`) reads the configured Claude provider. For proxy-backed or unconfigured setups it starts the proxy, re-syncing port and token, then runs Claude.
@@ -134,14 +134,14 @@ Each has a more-permissive variant that adds the agent's most-relaxed flag (`age
 By default you manage the proxy yourself with `agent start` / `agent stop`. Opt in to the managed lifecycle instead:
 
 ```bash
-agent config --set daemon.auto-start true
+agent config set daemon.auto-start true
 ```
 
 With `daemon.auto-start` on:
 
 - **Auto-start:** whenever Codex, Claude, or the `cl` / `cx` launchers need a downed proxy, the shared credential resolver starts it. No manual `agent start`.
 - **Idle auto-stop:** a watchdog inside the daemon stops the proxy after an idle window. Inference requests and session heartbeats count as activity; health and liveness pings never do.
-- **Window:** `agent config --set daemon.idle-timeout <seconds>` ([default and the `0` case](configuration.md#daemon)) or the [`COPILOT_API_IDLE_TIMEOUT`](configuration.md#environment-overrides) env var.
+- **Window:** `agent config set daemon.idle-timeout <seconds>` ([default and the `0` case](configuration.md#daemon)) or the [`COPILOT_API_IDLE_TIMEOUT`](configuration.md#environment-overrides) env var.
 
 With `daemon.auto-start` off, the launchers prompt before starting a downed proxy. Headless callers, such as the Codex and Claude config hooks, never start it implicitly.
 
@@ -174,13 +174,13 @@ The pair is opt-out:
 
 ```bash
 agent mcp --remove                  # unregister + restore the builtin + remember the opt-out
-agent config --set claude.wire-mcp true    # opt back in (applies on the next direct wiring)
+agent config set claude.wire-mcp true    # opt back in (applies on the next direct wiring)
 ```
 
 The search model follows the [`proxy.message-websearch-model`](configuration.md#proxy) key, shared with the proxy; when a change applies to each is on that page:
 
 ```bash
-agent config --set proxy.message-websearch-model gpt-5.6-sol   # one override, both surfaces
+agent config set proxy.message-websearch-model gpt-5.6-sol   # one override, both surfaces
 ```
 
 The server is client-agnostic. Register it in Cursor or any other MCP client by pointing at the launcher. Codex itself needs no MCP for search, since it speaks the Responses API natively.

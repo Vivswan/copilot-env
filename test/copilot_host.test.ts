@@ -83,11 +83,27 @@ test("agent config: copilot-host takes `auto` or an https origin and refuses any
     "https://api.business.githubcopilot.com",
   );
   for (const bad of ["http://api.githubcopilot.com", "api.githubcopilot.com", "", "ftp://x"]) {
-    expect(() => runConfig({ set: ["host", bad], profile: null })).toThrow(
+    expect(() =>
+      runConfig({
+        kind: "set",
+        key: "host",
+        value: bad,
+        view: { kind: "profile", profile: null },
+        dryRun: false,
+      })
+    ).toThrow(
       /expected `auto` or an https:\/\/ origin/,
     );
   }
-  expect(() => runConfig({ set: ["host", `${ENTERPRISE}/models`], profile: null })).toThrow(
+  expect(() =>
+    runConfig({
+      kind: "set",
+      key: "host",
+      value: `${ENTERPRISE}/models`,
+      view: { kind: "profile", profile: null },
+      dryRun: false,
+    })
+  ).toThrow(
     /without a path or query/,
   );
   // Every loopback spelling, not three: the whole 127/8 block, IPv4-mapped ::1, a trailing dot.
@@ -100,12 +116,32 @@ test("agent config: copilot-host takes `auto` or an https origin and refuses any
       "https://[::1]:8443",
     ]
   ) {
-    expect(() => runConfig({ set: ["host", loopback], profile: null })).toThrow(/not loopback/);
+    expect(() =>
+      runConfig({
+        kind: "set",
+        key: "host",
+        value: loopback,
+        view: { kind: "profile", profile: null },
+        dryRun: false,
+      })
+    ).toThrow(/not loopback/);
   }
   expect(new CopilotEnvConfig().copilotHost(null)).toBeNull();
-  runConfig({ set: ["host", GHE], profile: null });
+  runConfig({
+    kind: "set",
+    key: "host",
+    value: GHE,
+    view: { kind: "profile", profile: null },
+    dryRun: false,
+  });
   expect(new CopilotEnvConfig().copilotHost(null)).toBe(GHE);
-  runConfig({ set: ["host", "auto"], profile: null });
+  runConfig({
+    kind: "set",
+    key: "host",
+    value: "auto",
+    view: { kind: "profile", profile: null },
+    dryRun: false,
+  });
   expect(new CopilotEnvConfig().copilotHost(null)).toBeNull();
 });
 

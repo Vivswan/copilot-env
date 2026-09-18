@@ -11,8 +11,8 @@ import { autoupdateStateFile } from "./paths.ts";
 /** Default release cooldown for autoupdate: adopt releases at least this old. */
 export const DEFAULT_AUTOUPDATE_COOLDOWN_DAYS = 7;
 
-/** Always the live `update.cooldown` config, never snapshotted into state, so `agent config
- *  --set update.cooldown N` takes effect on the next run. */
+/** Always the live `update.cooldown` config, never snapshotted into state, so `agent config set
+ *  update.cooldown N` takes effect on the next run. */
 export function effectiveUpdateCooldownDays(): number {
   return new CopilotEnvConfig().updateCooldownDays() ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
 }

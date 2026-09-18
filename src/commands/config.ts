@@ -1,16 +1,21 @@
-// configTable() is the one table both `agent config` and its `--help` print; the key registry is
-// src/copilot_api/env_config.ts.
+// The preference verbs behind `agent config set|get|unset` and `agent profile [<name>] set|get|unset`:
+// one body, told which face called it. configTable() is the listing a keyless `get` prints, in the
+// view of the face (the machine's keys and the shared defaults, or one profile's keys); `agent
+// config --help` prints the config view. The key registry is src/copilot_api/env_config.ts.
 import { consola } from "consola";
 import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../copilot_api/daemon.ts";
 import {
   CONFIG_GROUPS,
   CONFIG_REGISTRY,
   configDefaultValue,
+  configDelCommand,
+  configGetCommand,
   type ConfigGroup,
   configGroup,
   type ConfigKeyDef,
   configKeyDef,
   type ConfigScope,
+  configSetCommand,
   type ConfigValueTypes,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
@@ -20,6 +25,7 @@ import {
   isStoredValueInert,
   profileSettingsKey,
   resolveSettingIn,
+  type SettingSource,
   type SettingTarget,
 } from "../copilot_api/env_config.ts";
 import {
@@ -38,16 +44,22 @@ import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import stringWidth from "string-width";
 import { runDryRun } from "./dry_run.ts";
 
-export interface ConfigArgs {
-  /** A Commander variadic; exactly two strings when well-formed. */
-  set?: string[];
-  get?: string | boolean;
-  del?: string;
-  /** The profile a profile-scoped key is set, deleted, or read for; null is the default profile,
-   *  whose profile-default keys (proxy.*, probe.*) are the shared default in the global map. */
-  profile: Profile;
-  /** With --set/--del: print the store key the write would change, old -> new, and write nothing. */
-  dryRun?: boolean;
+/** Which face called: `agent config` (the machine's keys and the shared default of every
+ *  profile-default key) or `agent profile [<name>]` (that profile's keys, its overrides included).
+ *  With no name, the profile face and the config face write and read the same store bytes for a
+ *  profile-default key: the default profile never carries its own override. */
+export type ConfigView = { kind: "config" } | { kind: "profile"; profile: Profile };
+
+/** A verb's arguments as the CLI parsed them: the key's scope decides the map (settingTarget). */
+export type ConfigAction =
+  | { kind: "set"; key: string; value: string; view: ConfigView; dryRun: boolean }
+  | { kind: "unset"; key: string; view: ConfigView; dryRun: boolean }
+  | { kind: "get"; key?: string; view: ConfigView };
+
+/** The profile a view resolves for: the config face reads the shared layer, which is the default
+ *  profile's own resolution. */
+function viewProfile(view: ConfigView): Profile {
+  return view.kind === "config" ? null : view.profile;
 }
 
 /** The state keys sharing the store's maps with the settings, each with the commands that write
@@ -63,21 +75,36 @@ const STATE_KEY_OWNERS: ReadonlyArray<readonly [readonly string[], string]> = [
   [["ownership"], "the wiring commands (their claims on the files they wrote)"],
 ];
 
-/** `agent config` writes settings only: a state key (spelled bare, or as a path into the file such
- *  as `profiles.default.githubToken`) is refused with its owner, never written or deleted here. */
+/** The verbs write settings only: a state key (spelled bare, or as a path into the file such as
+ *  `profiles.default.githubToken`) is refused with its owner, never written or deleted here. */
 function refuseStateKey(key: string): void {
   const leaf = key.split(".").at(-1) ?? key;
   const owner = STATE_KEY_OWNERS.find(([keys]) => keys.includes(leaf))?.[1];
   if (owner === undefined) return;
   throw new Error(
-    `'${key}' is state written by ${owner}; the \`agent config\` command sets preferences only ` +
-      "(its --help lists them)",
+    `'${key}' is state written by ${owner}; a preference verb sets preferences only ` +
+      "(`agent config get` lists the machine's keys and the shared defaults, `agent profile " +
+      "[<name>] get` a profile's)",
   );
 }
 
 function unknownKeyError(key: string): Error {
   const keys = CONFIG_REGISTRY.map((d) => d.key).join(", ");
   return new Error(`unknown config key '${key}'. Valid keys: ${keys}`);
+}
+
+/** `agent config` holds the machine's keys and the shared defaults; a key that follows the
+ *  credential (identity, host, passthrough, static-key) is a profile's own, so its verb is
+ *  `agent profile [<name>] set|get|unset`. The config face's guard, total over the key's scope. */
+export function refuseProfileKey(key: string): void {
+  const def = configKeyDef(key);
+  if (def === undefined || def.scope !== "profile") return;
+  throw new Error(
+    `'${def.key}' is a profile preference (it follows the credential), not a machine key: \`${
+      configGetCommand(def.key)
+    }\`, \`${configSetCommand(def.key, "<value>")}\`, or \`${configDelCommand(def.key)}\` (a ` +
+      "named profile's: `agent profile <name> ...`)",
+  );
 }
 
 /** The daemon that reads a projected or launch-time key is the profile's own, so the restart the
@@ -119,63 +146,35 @@ export function sinceProxyVersionWarning(
   );
 }
 
-/** A set/del lands per the key's scope for `profile` (settingTarget); a get resolves for it. */
-export type ConfigAction =
-  | { kind: "set"; key: string; value: string; profile: Profile }
-  | { kind: "del"; key: string; profile: Profile }
-  | { kind: "get"; key?: string; profile: Profile };
-
-export function parseConfigAction(args: ConfigArgs): ConfigAction {
-  if (args.set !== undefined && args.del !== undefined) {
-    throw new Error("--set and --del are mutually exclusive");
-  }
-  if (args.get !== undefined && (args.set !== undefined || args.del !== undefined)) {
-    throw new Error("--get reads a preference and cannot combine with --set/--del");
-  }
-  if (args.dryRun && args.set === undefined && args.del === undefined) {
-    throw new Error("--dry-run previews a write (--set or --del); a read has nothing to preview");
-  }
-  // A named profile must exist: a section for a profile the store never created would be a
-  // hidden value with no reader.
-  const profile = args.profile;
-  if (profile !== null) assertKnownProfile(profile);
-  if (args.set !== undefined) {
-    const [key, value] = args.set;
-    if (args.set.length !== 2 || key === undefined || value === undefined) {
-      throw new Error("usage: agent config --set <key> <value>");
-    }
-    return { kind: "set", key, value, profile };
-  }
-  if (args.del !== undefined) return { kind: "del", key: args.del, profile };
-  return { kind: "get", key: typeof args.get === "string" ? args.get : undefined, profile };
-}
-
 /** `platform` is the POSIX-only key guard's test seam. Synchronous unless it is a dry run (the
- *  plan print awaits the recording), so a flag error still throws at the call. A write handler
+ *  plan print awaits the recording), so a key error still throws at the call. A write handler
  *  returns what to say once it landed; a dry run prints the plan in its place. */
 export function runConfig(
-  args: ConfigArgs,
+  action: ConfigAction,
   platform: NodeJS.Platform = process.platform,
 ): void | Promise<void> {
-  const action = parseConfigAction(args);
+  // A named profile must exist: a section for a profile the store never created would be a
+  // hidden value with no reader.
+  const profile = viewProfile(action.view);
+  if (profile !== null) assertKnownProfile(profile);
   const run = (): () => void => {
     switch (action.kind) {
       case "set":
-        return runSet(action.key, action.value, action.profile, platform);
-      case "del":
-        return runDel(action.key, action.profile);
+        return runSet(action.key, action.value, profile, platform);
+      case "unset":
+        return runUnset(action.key, profile);
       case "get":
-        runGet(action.key, action.profile, platform);
+        runGet(action.key, action.view, platform);
         return () => {};
       default:
         return assertNever(action);
     }
   };
-  if (args.dryRun) return runDryRun(() => Promise.resolve(run()));
+  if (action.kind !== "get" && action.dryRun) return runDryRun(() => Promise.resolve(run()));
   run()();
 }
 
-/** Where a write landed, for the set/del lines: empty for the global map. */
+/** Where a write landed, for the set/unset lines: empty for the global map. */
 function targetSuffix(target: SettingTarget): string {
   return target.kind === "global" ? "" : ` (${profileLabel(target.profile)})`;
 }
@@ -213,7 +212,7 @@ function runSet(
 
 /** `agent start` prints these after projecting for ITS profile, passing the version its resolved
  *  entry runs, so a key set before the first start still gets its warning; callers without a
- *  resolved entry (`--set`, the table, `settings --import`) take the read-only default. */
+ *  resolved entry (`set`, the table, `settings --import`) take the read-only default. */
 export function unreadProjectedKeyWarnings(
   envConfig: CopilotEnvConfig = new CopilotEnvConfig(),
   proxyVersion: string | null = nextProxyVersion(),
@@ -229,45 +228,68 @@ export function unreadProjectedKeyWarnings(
   return warnings;
 }
 
-function runDel(key: string, profile: Profile): () => void {
+function runUnset(key: string, profile: Profile): () => void {
   refuseStateKey(key);
   const def = configKeyDef(key);
   if (def === undefined) throw unknownKeyError(key);
   const config = new CopilotEnvConfig();
   const target = config.assign(def, null, profile);
-  // What the key resolves to NOW, and from where: a deleted profile override may fall back to the
-  // global value, not the built-in default.
+  // What the key resolves to NOW, and from where: a dropped profile override may fall back to the
+  // shared default, not the built-in one.
   const now = config.resolve(def.key, {
     profile: target.kind === "global" ? null : target.profile,
   });
   const reads = now.value === undefined
     ? "unset"
-    : `${formatConfigValue(now.value)} (${now.source})`;
+    : `${formatConfigValue(now.value)} (${originLabel(def, now.source, profile)})`;
   return () => {
-    consola.success(`deleted ${def.key}${targetSuffix(target)}; now ${reads}`);
+    consola.success(`unset ${def.key}${targetSuffix(target)}; now ${reads}`);
     noteHowItApplies(def, target);
   };
 }
 
-function runGet(get: string | undefined, profile: Profile, platform: NodeJS.Platform): void {
+/** Where a resolved value came from, in the store's terms: the profile's own section, the global
+ *  map (the machine's value for a global key, the shared default for a profile-default one), or
+ *  the built-in default. The flag/env layer is per invocation and stays at each read site. */
+export function originLabel(def: ConfigKeyDef, source: SettingSource, profile: Profile): string {
+  switch (source) {
+    case "profile":
+      return `stored for ${profileLabel(profile)}`;
+    case "global":
+      return def.scope === "global" ? "stored" : "the shared default";
+    case "default":
+      return "built-in default";
+    case "flag":
+      return "this invocation's flag";
+    default:
+      return assertNever(source);
+  }
+}
+
+function runGet(get: string | undefined, view: ConfigView, platform: NodeJS.Platform): void {
   const data = new CopilotEnvConfig().read();
+  const profile = viewProfile(view);
 
   if (typeof get === "string") {
-    // Just the value, for scripts; a blank line when unset. A stored value inert on this platform
-    // answers with the built-in default, which is what every read site sees.
+    // Just the value on stdout, for scripts (a blank line when unset); the origin on stderr. A
+    // stored value inert on this platform answers with the built-in default, which is what every
+    // read site sees.
     const def = configKeyDef(get);
     if (def === undefined) throw unknownKeyError(get);
     const resolved = resolveSettingIn(data, def.key, { profile });
-    const value = isStoredValueInert(def, resolved, platform)
-      ? configDefaultValue(def)
-      : resolved.value;
+    const inert = isStoredValueInert(def, resolved, platform);
+    const value = inert ? configDefaultValue(def) : resolved.value;
     process.stdout.write(value === undefined ? "\n" : `${formatConfigValue(value)}\n`);
+    const origin = inert
+      ? `${originLabel(def, "default", profile)} (the stored value is inert on this platform)`
+      : originLabel(def, resolved.source, profile);
+    process.stderr.write(`${paintFor(COLOR_ENABLED).dim(`${def.key}: ${origin}`)}\n`);
     return;
   }
 
   // Straight to stdout, not consola: consola reformats the backticks in the descriptions, and this
   // must match `agent config --help` byte for byte.
-  process.stdout.write(`${configTableOutput(platform, profile)}\n`);
+  process.stdout.write(`${configTableOutput(platform, view)}\n`);
 }
 
 /** A lead that leaves the right column fewer than this goes on its own line instead. */
@@ -280,7 +302,6 @@ const GROUP_INDENT = 2;
 /** For a key that is unset AND has no built-in default. */
 const UNSET_VALUE = "<unset>";
 const RESTART_LINE = "restart the proxy to apply";
-const PROFILE_FLAG = "--profile <name>";
 /** Between the header's parts, on one line. */
 const HEADER_GAP = "  |  ";
 
@@ -316,10 +337,11 @@ interface Cell {
 export interface ConfigTableOptions {
   platform: NodeJS.Platform;
   width: number;
-  /** Whose values the profile-scoped rows show; null is the default profile. */
-  profile: Profile;
+  /** Which face is listing: the config view (the shared defaults, then the machine's keys) or one
+   *  profile's view (its own keys, then the profile-default groups resolved for it). */
+  view: ConfigView;
   /** A stored key a live daemon read at launch earns the restart line: any daemon for a value
-   *  from the global map, the selected profile's own daemon for a value from its section. */
+   *  from the global map, the viewed profile's own daemon for a value from its section. */
   daemonUp: boolean;
   profileDaemonUp: boolean;
   /** A stored projected key the next proxy is too old to read earns no restart line, since no
@@ -329,15 +351,19 @@ export interface ConfigTableOptions {
   color: boolean;
 }
 
-/** The one table `agent config` and `agent config --help` both print: a PROFILE banner for every
- *  key the selected profile's daemon and wiring consume (its own keys, then the profile-default
- *  groups resolved for it), a GLOBAL banner for the machine's keys, grouped by the key's group.
- *  Prose breaks between words; a value wider than its column (a URL) splits at the edge. */
+/** The listing a keyless `get` prints, and `agent config --help` in the config view. The config
+ *  view: a SHARED DEFAULTS banner for the profile-default groups as every profile inherits them,
+ *  then a GLOBAL banner for the machine's keys, grouped by the key's group. A profile's view: a
+ *  PROFILE banner for every key its daemon and wiring consume (its own keys, then the
+ *  profile-default groups resolved for it). Prose breaks between words; a value wider than its
+ *  column (a URL) splits at the edge. */
 export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions): string {
   const plain = (text: string): string => text;
   const paint = paintFor(opts.color);
-  const rows = CONFIG_REGISTRY.map((def) => {
-    const resolved = resolveSettingIn(data, def.key, { profile: opts.profile });
+  const profile = viewProfile(opts.view);
+  const excludedScope: ConfigScope = opts.view.kind === "config" ? "profile" : "global";
+  const rows = CONFIG_REGISTRY.filter((def) => def.scope !== excludedScope).map((def) => {
+    const resolved = resolveSettingIn(data, def.key, { profile });
     const stored = isStoredSource(resolved.source);
     const fallback = configDefaultValue(def);
     const value = resolved.value === undefined ? UNSET_VALUE : formatConfigValue(resolved.value);
@@ -380,15 +406,16 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     packToWidth(note.split(" "), stringWidth, rightWidth)
       .map((words) => paint.dim(words.join(" ")));
 
-  // The global layer a profile override hides: the global map's value, else the built-in default.
+  // The shared layer a profile override hides: the global map's value, else the built-in default.
   const globalLayer: Partial<ConfigValueTypes> = data.global;
   const renderRow = (row: (typeof rows)[number]): string[] => {
     const { def } = row;
     const cells: Cell[] = [{ text: `[${def.type}]`, paint: plain }];
-    // A profile-default row names where its value came from: the global map (`(global)`), or its
-    // own section, which then names the layer it hides once: the global map's value, or the
-    // built-in default in place of the `default` cell.
-    const inherits = def.scope === "profile-default";
+    // In a profile's view a profile-default row names where its value came from: the shared
+    // default (`(shared default)`), or its own section, which then names the layer it hides once:
+    // the shared default's value, or the built-in default in place of the `default` cell. In the
+    // config view the row IS the shared default, and the star alone says it is stored.
+    const inherits = def.scope === "profile-default" && opts.view.kind === "profile";
     const overrides = inherits && row.resolved.source === "profile";
     const shared = inherits ? globalLayer[def.key] : undefined;
     if (row.stored && row.fallback !== undefined && !(overrides && shared === undefined)) {
@@ -400,14 +427,14 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     if (overrides) {
       cells.push({
         text: shared !== undefined
-          ? `(overrides global ${formatConfigValue(shared)})`
-          : `(overrides the default ${
+          ? `(overrides the shared default ${formatConfigValue(shared)})`
+          : `(overrides the built-in default ${
             row.fallback === undefined ? UNSET_VALUE : formatConfigValue(row.fallback)
           })`,
         paint: paint.dim,
       });
     } else if (inherits && row.resolved.source === "global") {
-      cells.push({ text: "(global)", paint: paint.dim });
+      cells.push({ text: "(shared default)", paint: paint.dim });
     }
     if (isStoredValueInert(def, row.resolved, opts.platform)) {
       cells.push({ text: "(inert on this platform)", paint: paint.dim });
@@ -434,8 +461,8 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     return layout(lead, row.leadLength, right);
   };
 
-  // The groups the header and the PROFILE headings name are the ones whose scope every profile
-  // inherits, so a new profile-default group reaches them on its own.
+  // The groups the banners name are the ones whose scope every profile inherits, so a new
+  // profile-default group reaches them on its own.
   const inherited = [
     ...new Set(
       CONFIG_REGISTRY.filter((def) => def.scope === "profile-default")
@@ -443,12 +470,17 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     ),
   ].join(" / ");
   const storedCount = rows.filter((row) => row.stored).length;
+  // The face's own verbs, then where the keys it does not list live.
+  const face = opts.view.kind === "config"
+    ? "agent config"
+    : `agent profile${profile === null ? "" : ` ${profile}`}`;
   const headerParts = [
     `${storedCount} of ${rows.length} keys set (*).`,
-    "agent config --set <key> <value>",
-    "--del <key> reverts",
-    `${PROFILE_FLAG} targets another profile`,
-    ...(inherited === "" ? [] : [`${inherited} set without --profile is every profile's default`]),
+    `${face} set <key> <value>`,
+    `${face} unset <key> reverts`,
+    opts.view.kind === "config"
+      ? "a profile's own keys: agent profile [<name>] set|unset|get"
+      : "this machine's keys: agent config get",
   ];
   // A part wider than the terminal stands alone on its line; its words then wrap like prose.
   const header = packToWidth(headerParts, stringWidth, opts.width, HEADER_GAP.length)
@@ -477,25 +509,36 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
       return lines.length === 0 ? [] : [[heading(group), ...lines].join("\n")];
     });
 
-  const profileBlock = [
-    [
-      banner(
-        `PROFILE ${profileSettingsKey(opts.profile)}`,
-        `per profile; another profile: ${PROFILE_FLAG}`,
-      ),
-      ...rows.filter((row) => row.def.scope === "profile").flatMap(renderRow),
-    ].join("\n"),
-    ...groupBlocks("profile-default", (group) =>
-      banner(
-        `${groupIndent}${group}:`,
-        `${profileDefaultConsumer(group)}; global rows set without --profile`,
-      )),
-  ].join("\n\n");
+  if (opts.view.kind === "profile") {
+    const profileBlock = [
+      [
+        banner(
+          `PROFILE ${profileSettingsKey(profile)}`,
+          `this profile's keys; another profile: agent profile <name> get`,
+        ),
+        ...rows.filter((row) => row.def.scope === "profile").flatMap(renderRow),
+      ].join("\n"),
+      ...groupBlocks("profile-default", (group) =>
+        banner(
+          `${groupIndent}${group}:`,
+          `${profileDefaultConsumer(group)}; the shared default is agent config's`,
+        )),
+    ].join("\n\n");
+    return [header, profileBlock].join("\n\n");
+  }
+  const sharedBlock = [
+    banner(
+      "SHARED DEFAULTS",
+      `${inherited}: every profile's default; a named profile overrides its own with ` +
+        "agent profile <name> set",
+    ),
+    ...groupBlocks("profile-default", (group) => paint.bold(`${groupIndent}${group}:`)),
+  ].join("\n");
   const globalBlock = [
     banner("GLOBAL", "this machine, every profile"),
     groupBlocks("global", (group) => paint.bold(`${groupIndent}${group}:`)).join("\n\n"),
   ].join("\n");
-  return [header, profileBlock, globalBlock].join("\n\n");
+  return [header, sharedBlock, globalBlock].join("\n\n");
 }
 
 /** What reads a profile-default group's value for the profile: the PROFILE heading's note. A
@@ -512,18 +555,18 @@ function profileDefaultConsumer(group: ConfigGroup): string {
   return consumer;
 }
 
-/** The one string both `agent config` and `agent config --help` print, so their outputs are
- *  byte-identical. `platform` is the inert note's test seam. */
+/** The one string a keyless `agent config get` and `agent config --help` both print, so their
+ *  outputs are byte-identical. `platform` is the inert note's test seam. */
 export function configTableOutput(
   platform: NodeJS.Platform = process.platform,
-  profile: Profile = null,
+  view: ConfigView = { kind: "config" },
 ): string {
   return configTable(new CopilotEnvConfig().read(), {
     platform,
     width: terminalWidth() ?? Number.POSITIVE_INFINITY,
-    profile,
+    view,
     daemonUp: anyTrackedDaemonAlive(),
-    profileDaemonUp: trackedDaemonAlive(profile),
+    profileDaemonUp: trackedDaemonAlive(viewProfile(view)),
     proxyVersion: nextProxyVersion(),
     color: COLOR_ENABLED,
   });

@@ -6,7 +6,7 @@ import { Command } from "commander";
 import { consola } from "consola";
 import { parseModeFlags } from "./agents/provider_mode.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
-import { configTableOutput, runConfig } from "./commands/config.ts";
+import { configTableOutput, refuseProfileKey, runConfig } from "./commands/config.ts";
 import { runCredits } from "./commands/credits.ts";
 import { runDryRun } from "./commands/dry_run.ts";
 import { runEnv } from "./commands/env.ts";
@@ -34,7 +34,6 @@ import { runStop } from "./commands/stop.ts";
 import { runUninstall } from "./commands/uninstall.ts";
 import { runUpdate } from "./commands/update.ts";
 import { OPENROUTER_MODELS_URL } from "./copilot_api/env_config.ts";
-import { parseProfileFlag } from "./copilot_api/profile.ts";
 import { runInstall } from "./install/installer.ts";
 import { runMigrations } from "./migrations/index.ts";
 import { runCost } from "./usage/cost.ts";
@@ -264,41 +263,54 @@ program
     })
   );
 
-program
+// `agent config <verb>`: the machine's preferences (daemon.*, codex.*, claude.*, shell.*, update.*,
+// cost.*) and the shared default every profile follows for proxy.* / probe.*. A key that follows the
+// credential (identity, host, passthrough, static-key) is a profile's own: `agent profile [<name>]
+// set|get|unset`, which for a proxy.* / probe.* key with no name writes the same store bytes as
+// this command (the default profile never carries its own override).
+const CONFIG_VIEW = { kind: "config" } as const;
+const config = program
   .command("config")
   .helpGroup("Settings:")
+  .usage("<verb> [options]")
   .description(
-    "Get/set copilot-env preferences (daemon.auto-start, passthrough, daemon.idle-timeout, ...).",
+    "This machine's preferences (daemon.auto-start, daemon.idle-timeout, shell.launchers, ...) " +
+      "and the shared default of every proxy.* / probe.* key: agent config set|get|unset. A " +
+      "profile's own keys (identity, host, passthrough, static-key) and a named profile's " +
+      "overrides are `agent profile [<name>] set|get|unset`. Bare `agent config` lists every key.",
   )
-  .option("--set <key...>", "Set a preference: --set <key> <value>.")
-  .option("--get [key]", "Print all preferences, or just one key's value.")
-  .option("--del <key>", "Delete a preference (revert to its default).")
-  .option(
-    "--profile <name>",
-    "The profile a profile-scoped key (identity, host, passthrough, static-key, proxy.*) is set, deleted, or read for; default: the default profile.",
+  // A function, not a string baked at startup, so the values are the store's at help-render time.
+  .addHelpText("after", () => `\n${configTableOutput(process.platform, CONFIG_VIEW)}`)
+  .action(() => runConfig({ kind: "get", view: CONFIG_VIEW }));
+config
+  .command("set")
+  .description("Set a machine key, or the shared default of a proxy.* / probe.* key.")
+  .argument("<key>", "A key of the table `agent config --help` prints.")
+  .argument("<value>", "The value, parsed by the key's type.")
+  .option("--dry-run", DRY_RUN_HELP)
+  .action((key: string, value: string, opts: Opts) => {
+    refuseProfileKey(key);
+    return runConfig({ kind: "set", key, value, view: CONFIG_VIEW, dryRun: Boolean(opts.dryRun) });
+  });
+config
+  .command("get")
+  .description(
+    "Print one key's value in effect (stdout) and its origin (stderr), or every key with no key.",
   )
-  .option("--dry-run", `${DRY_RUN_HELP} With --set or --del.`)
-  // A function, not a string baked at startup, so the values are the store's at help-render time,
-  // for the profile a `--profile` before `--help` named.
-  .addHelpText(
-    "after",
-    ({ command }) =>
-      `\n${
-        configTableOutput(
-          process.platform,
-          parseProfileFlag(command.opts().profile as string | undefined),
-        )
-      }`,
-  )
-  .action((opts: Opts) =>
-    runConfig({
-      set: opts.set as string[] | undefined,
-      get: opts.get as string | boolean | undefined,
-      del: opts.del as string | undefined,
-      profile: parseProfileFlag(opts.profile as string | undefined),
-      dryRun: Boolean(opts.dryRun),
-    })
-  );
+  .argument("[key]", "A key of the table `agent config --help` prints.")
+  .action((key: string | undefined) => {
+    if (key !== undefined) refuseProfileKey(key);
+    return runConfig({ kind: "get", key, view: CONFIG_VIEW });
+  });
+config
+  .command("unset")
+  .description("Drop a key: back to its built-in default.")
+  .argument("<key>", "A key of the table `agent config --help` prints.")
+  .option("--dry-run", DRY_RUN_HELP)
+  .action((key: string, opts: Opts) => {
+    refuseProfileKey(key);
+    return runConfig({ kind: "unset", key, view: CONFIG_VIEW, dryRun: Boolean(opts.dryRun) });
+  });
 
 program
   .command("settings")

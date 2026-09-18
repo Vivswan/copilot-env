@@ -9,38 +9,36 @@ order: 3
 `agent config` is the typed preference store, and this page is its reference: every key, its scope, its default, and what it changes. The commands that read these keys are on the [usage page](usage.md).
 
 ```bash
-agent config --get                                 # print all preferences (the default profile's view)
-agent config --set daemon.auto-start true          # set one
-agent config --del daemon.idle-timeout             # revert one to its default
-agent config --set identity copilot-developer-cli --profile work   # a profile key, for one profile
-agent config --get proxy.small-model --profile work                # what that profile's daemon uses
+agent config get                                   # every machine key and shared default, with its origin
+agent config set daemon.auto-start true            # a machine key
+agent config unset daemon.idle-timeout             # back to its built-in default
+agent config set proxy.small-model gpt-5           # the shared default every profile follows
+agent profile set identity copilot-developer-cli   # a profile key, for the default profile
+agent profile work set proxy.small-model gpt-5-codex   # work overrides the shared default
+agent profile work get proxy.small-model           # what that profile's daemon uses, and where it came from
 ```
 
 ## Scope and precedence
 
 Every key has one scope:
 
-| Scope             | Meaning                                                                                                          | Where it is stored                                       |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `profile`         | The value follows the credential. `default` is a profile like any other; `--set` without `--profile` targets it. | The profile's section only, never the global map         |
-| `profile-default` | The global value is every profile's default; a profile may override it with `--profile <name>`.                  | The global map, or the profile's section when overridden |
-| `global`          | How this machine runs. `--set` / `--del` refuse `--profile` for it; `--get --profile` shows the global value.    | The global map only                                      |
+| Scope             | Meaning                                                                                                                              | Where it is stored                                           | Command                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `profile`         | The value follows the credential. `default` is a profile like any other.                                                             | The profile's section only, never the global map             | `agent profile [<name>] set\|get\|unset`                                          |
+| `profile-default` | The shared default every profile follows; a named profile may override it. The default profile never carries an override of its own. | The global map, or a named profile's section when overridden | `agent config` for the shared default; `agent profile <name> set` for an override |
+| `global`          | How this machine runs; a profile never carries it.                                                                                   | The global map only                                          | `agent config set\|get\|unset`                                                    |
 
 Every read resolves one way: **explicit flag or env (per invocation) > the profile's own value > the global value > the built-in default**, each layer only where the key's scope admits it (a `global` key never resolves from a profile's section).
 
-The profile verbs write the same store. `agent profile <name> set <key> <value>` overrides a `profile-default` key for that named profile. The default profile carries no override of its own, so with no name `agent profile set|unset|get <key>` is an alias of `agent config --set|--del|--get <key>`: both spellings write or read the shared default. `agent profile [<name>] get [<key>]` reads the value in effect for that profile.
+The two faces write the same store. With no name, `agent profile set|unset|get <proxy.*|probe.*>` is an alias of `agent config set|unset|get`: the same store bytes, the same output. A machine key under `agent profile set`, or a profile key under `agent config set`, is refused with the other face's verb.
 
-`agent config` prints the store under two banners. `PROFILE <name>` holds every key that profile's daemon and wiring
-consume: its `profile` keys, then the `profile-default` groups with the value this profile resolves to. `GLOBAL` holds
-the `global` keys only.
+A keyless `get` lists one view. `agent config get` prints `SHARED DEFAULTS` (the `profile-default` groups as every profile inherits them) and `GLOBAL` (the `global` keys); `agent config --help` prints the same. `agent profile [<name>] get` prints `PROFILE <name>`: its `profile` keys, then the `profile-default` groups with the value this profile resolves to.
 
-A `profile-default` row names where its value came from. Set without `--profile` it is starred `(global)`; set by the
-profile itself it is starred `(overrides global <v>)`, or `(overrides the default <v>)` when the global map has no
-value; set at neither level it is unstarred.
+A starred row is stored. Under `PROFILE` a `profile-default` row names where its value came from: `(shared default)`, `(overrides the shared default <v>)`, or `(overrides the built-in default <v>)` when no shared default is set; an unstarred row is the built-in default. `get <key>` prints the value alone on stdout and its origin on stderr.
 
 The key names below are also the stored JSON keys in `~/.local/share/copilot-env/state.json`, under `global` and `profiles.<name>`, beside the state keys the commands write into the same maps (a profile's credential slot, the Codex catalog throttle).
 
-Which a key is, is a per-key fact: `agent config --set` and `--del` refuse a state key by name, naming the command that owns it. The file's third map, `ownership`, is the wiring commands' ledger of the files they wrote.
+Which a key is, is a per-key fact: `set` and `unset` refuse a state key by name, naming the command that owns it. The file's third map, `ownership`, is the wiring commands' ledger of the files they wrote.
 
 ## profile
 
@@ -145,14 +143,14 @@ Codex parses that file strictly and treats it as a replacement for its bundled c
 
 copilot-env guards the installed `codex`: before writing or referencing a catalog it asks that binary to parse it, and a catalog it rejects is left out of the config.
 
-Other Codex consumers sharing `~/.codex`, such as an IDE extension's own codex-core or a desktop app, cannot be probed. If one reports that error, run `agent profile sync --codex` to regenerate from the installed CLI, or `agent config --set codex.model-catalog false` to remove the catalog.
+Other Codex consumers sharing `~/.codex`, such as an IDE extension's own codex-core or a desktop app, cannot be probed. If one reports that error, run `agent profile sync --codex` to regenerate from the installed CLI, or `agent config set codex.model-catalog false` to remove the catalog.
 
 ### Per-host CODEX_HOME
 
 `codex.host` (Linux/macOS) is the per-host `CODEX_HOME` symlink farm switch. Setting it is refused on Windows.
 
 ```bash
-agent config --set codex.host true    # false removes the farm again
+agent config set codex.host true    # false removes the farm again
 ```
 
 - What builds the farm, what it holds, and what removes it are in the [write list](getting-started.md#what-a-wiring-pass-writes).
@@ -196,7 +194,7 @@ The files these land in, what writes and removes them, and where they sit on eac
 The Direct probe behind `auto` (`agent profile add` with neither `--direct` nor `--proxy`; a re-render of a recorded mode never probes) runs each CLI's read-only smoke prompt against a throwaway Direct config. A set value is the model that prompt runs, sent as-is: no alias, no catalog check.
 
 ```bash
-agent config --set probe.claude-model claude-sonnet-5
+agent config set probe.claude-model claude-sonnet-5
 ```
 
 Unset, the claude smoke runs `--model haiku` (the CLI resolves its own alias, so it sends no reasoning-effort field a Copilot model may lack) and, should Copilot reject that model, the newest claude model in the catalog once; any other failure stops with its reason.

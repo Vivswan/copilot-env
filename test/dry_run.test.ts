@@ -533,10 +533,24 @@ test("the plan wraps to COLUMNS: no line exceeds 80 columns, a long path or valu
   }
 });
 
-test("`agent config --set --dry-run` shows the preference's stored value moving, and leaves it", async () => {
-  runConfig({ set: ["daemon.idle-timeout", "30"], profile: null });
+test("`agent config set --dry-run` shows the preference's stored value moving, and leaves it", async () => {
+  runConfig({
+    kind: "set",
+    key: "daemon.idle-timeout",
+    value: "30",
+    view: { kind: "config" },
+    dryRun: false,
+  });
   const out = await dryRun(() =>
-    Promise.resolve(runConfig({ set: ["daemon.idle-timeout", "45"], dryRun: true, profile: null }))
+    Promise.resolve(
+      runConfig({
+        kind: "set",
+        key: "daemon.idle-timeout",
+        value: "45",
+        view: { kind: "config" },
+        dryRun: true,
+      }),
+    )
   );
   expect(out).toContain(`rewrite ${new CopilotApiPaths().stateStoreFile}`);
   expect(out).toContain('global."daemon.idle-timeout"  30 -> 45');
@@ -545,10 +559,22 @@ test("`agent config --set --dry-run` shows the preference's stored value moving,
 
 test("`agent settings --import --dry-run` previews the bundle's changes, the pre-import backup, and the prune it triggers, with no confirmation or write", async () => {
   const { dir } = scratch();
-  runConfig({ set: ["daemon.idle-timeout", "45"], profile: null });
+  runConfig({
+    kind: "set",
+    key: "daemon.idle-timeout",
+    value: "45",
+    view: { kind: "config" },
+    dryRun: false,
+  });
   const bundle = join(dir, "bundle.json");
   await captureChannels(() => runSettings({ exportTo: bundle }));
-  runConfig({ set: ["daemon.idle-timeout", "60"], profile: null });
+  runConfig({
+    kind: "set",
+    key: "daemon.idle-timeout",
+    value: "60",
+    view: { kind: "config" },
+    dryRun: false,
+  });
   // A full pile: the backup the import writes pushes the oldest out.
   const backups = settingsBackupDir();
   mkdirSync(backups, { recursive: true });
@@ -585,10 +611,22 @@ test("`agent settings --import --dry-run` previews the bundle's changes, the pre
 
 test("`settings --import --dry-run` over a pile of future-dated backups plans no row for the pile: the backup it writes is the one its prune removes, as the real run leaves it", async () => {
   const { dir } = scratch();
-  runConfig({ set: ["daemon.idle-timeout", "45"], profile: null });
+  runConfig({
+    kind: "set",
+    key: "daemon.idle-timeout",
+    value: "45",
+    view: { kind: "config" },
+    dryRun: false,
+  });
   const bundle = join(dir, "bundle.json");
   await captureChannels(() => runSettings({ exportTo: bundle }));
-  runConfig({ set: ["daemon.idle-timeout", "60"], profile: null });
+  runConfig({
+    kind: "set",
+    key: "daemon.idle-timeout",
+    value: "60",
+    view: { kind: "config" },
+    dryRun: false,
+  });
   const backups = settingsBackupDir();
   mkdirSync(backups, { recursive: true });
   for (let i = 0; i < SETTINGS_BACKUP_KEEP; i++) {
@@ -605,12 +643,18 @@ test("`settings --import --dry-run` over a pile of future-dated backups plans no
   expect(new CopilotEnvConfig().read().global["daemon.idle-timeout"]).toBe(45);
 });
 
-test("`agent config --set --dry-run` fails as the real run does when a home's ancestor is a regular file: the same ENOTDIR, no empty preamble", async () => {
+test("`agent config set --dry-run` fails as the real run does when a home's ancestor is a regular file: the same ENOTDIR, no empty preamble", async () => {
   const { dir } = scratch();
   writeFileSync(join(dir, "not-a-dir"), "");
   process.env.COPILOT_API_HOME = join(dir, "not-a-dir", "share", "copilot-env");
   const set = (dryRun: boolean) =>
-    runConfig({ set: ["daemon.idle-timeout", "45"], dryRun, profile: null });
+    runConfig({
+      kind: "set",
+      key: "daemon.idle-timeout",
+      value: "45",
+      view: { kind: "config" },
+      dryRun: dryRun,
+    });
   let real = "";
   try {
     await set(false);
@@ -625,7 +669,7 @@ test("`agent config --set --dry-run` fails as the real run does when a home's an
   expect(stdout).toBe("");
 });
 
-test("the dry-run marker a child honours is one a live run holds: an ambient `1`, a pid, a bare nonce, or a hand-made marker leaves `agent config --set` writing for real", async () => {
+test("the dry-run marker a child honours is one a live run holds: an ambient `1`, a pid, a bare nonce, or a hand-made marker leaves `agent config set` writing for real", async () => {
   const { dir, codexHome, claudeHome } = scratch();
   const env = (marker: string): Record<string, string | undefined> => ({
     ...process.env,
@@ -638,7 +682,7 @@ test("the dry-run marker a child honours is one a live run holds: an ambient `1`
   });
   const store = join(dir, "state.json");
   const set = (marker: string) =>
-    runCli(["config", "--set", "daemon.idle-timeout", "45"], { env: env(marker) });
+    runCli(["config", "set", "daemon.idle-timeout", "45"], { env: env(marker) });
   // A marker-shaped directory nobody holds: made by hand, or left behind by a run that crashed.
   const forged = join(dir, `copilot-env-dry-run-${"0".repeat(32)}`);
   mkdirSync(forged);
@@ -699,7 +743,7 @@ test("every PowerShell scan gets a scratch profile (the Desktop and Codex app lo
 });
 
 skipWin(
-  "a dangling symlink at a home's ancestor fails `config --set --dry-run` as the real mkdir fails: the same EEXIST, no plan",
+  "a dangling symlink at a home's ancestor fails `config set --dry-run` as the real mkdir fails: the same EEXIST, no plan",
   async () => {
     const { dir } = scratch();
     const dangling = join(dir, "dangling");
@@ -712,7 +756,13 @@ skipWin(
     const raw = mkdirFailure(home);
     expect(raw).toMatch(/^EEXIST: file already exists, mkdir '/);
     const set = (dryRun: boolean) =>
-      runConfig({ set: ["daemon.idle-timeout", "45"], dryRun, profile: null });
+      runConfig({
+        kind: "set",
+        key: "daemon.idle-timeout",
+        value: "45",
+        view: { kind: "config" },
+        dryRun: dryRun,
+      });
     let real = "";
     try {
       await set(false);
@@ -898,7 +948,7 @@ test("`init --proxy --dry-run` with the default's helper chmod'd 0644 runs Claud
   expect(dry).toBe(real);
 });
 
-test("`init --proxy --dry-run` after `config --set static-key claude` over a proxy Desktop wiring probes once, as the real run does: the helper the plan deletes is invisible to the status read", async () => {
+test("`init --proxy --dry-run` after `profile set static-key claude` over a proxy Desktop wiring probes once, as the real run does: the helper the plan deletes is invisible to the status read", async () => {
   const { discoveries } = isolateWithDesktop();
   await captureChannels(() => addProfile(null, { mode: "proxy" }));
   const helper = desktopHelperPath(resolveRootHome(), "proxy", null);

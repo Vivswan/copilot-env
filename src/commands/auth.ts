@@ -19,6 +19,7 @@ import { stopTrackedProxy, trackedDaemonAlive } from "../copilot_api/daemon.ts";
 import {
   CODEX_IDENTITY_NAME,
   configKeyDef,
+  configSetCommand,
   CopilotEnvConfig,
   parseIntegrationIdPin,
 } from "../copilot_api/env_config.ts";
@@ -1281,7 +1282,9 @@ async function pinIdentity(
   new CopilotEnvConfig().setProfile(profile, { identity: id });
   if (dryRunActive()) return;
   logger.success(
-    `identity = ${id} (pinned; \`agent profile set identity auto\` restores probing).`,
+    `identity = ${id} (pinned; \`${
+      configSetCommand("identity", "auto", profile)
+    }\` restores probing).`,
   );
   noteIdentityApplies();
 }
@@ -1292,7 +1295,7 @@ async function runIdentity(
 ): Promise<void> {
   switch (choice.kind) {
     case "auto":
-      // The same literal `agent config --set identity auto` stores; the store reads it as no pin.
+      // The same literal `agent profile set identity auto` stores; the store reads it as no pin.
       new CopilotEnvConfig().setProfile(profile, { identity: "auto" });
       // A dry run prints the plan in the landing's place.
       if (dryRunActive()) return;
@@ -1305,8 +1308,9 @@ async function runIdentity(
     case "choose": {
       if (!process.stdin.isTTY) {
         throw new Error(
-          "not a terminal - pass the identity: `agent profile set identity <id|auto>` " +
-            "(see `agent profile identity`)",
+          `not a terminal - pass the identity: \`${
+            configSetCommand("identity", "<id|auto>", profile)
+          }\` (see \`agent profile identity\`)`,
         );
       }
       const token = resolveForProbe(profile);

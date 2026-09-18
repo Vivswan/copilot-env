@@ -225,7 +225,7 @@ describe("messages and paths", () => {
     const message = cannotVerifyMessage("v1.2.3", "attestation.json could not be fetched");
     expect(message).toContain("cannot verify the build provenance of v1.2.3");
     expect(message).toContain("--no-verify");
-    expect(message).toContain("agent config --set update.verify-provenance false");
+    expect(message).toContain("agent config set update.verify-provenance false");
   });
 
   test("the mismatch message names the tag and forbids the install", () => {

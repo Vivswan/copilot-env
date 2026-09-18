@@ -211,16 +211,29 @@ test(
     );
     expect(wired.exitCode).toBe(0);
     expect(existsSync(join(fresh[1].home, ".codex", "config.toml"))).toBe(true);
-    // No name on a profile-default key writes the shared default, as `agent config --set` does.
+    // No name on a profile-default key is `agent config`'s shared default: set, get, and unset
+    // print the same and leave the same bytes (the default profile never carries an override).
     const shared = expectIdentical(
-      { args: ["config", "--set", "proxy.small-model", "gpt-x"], scratch: fresh[0] },
+      { args: ["config", "set", "proxy.small-model", "gpt-x"], scratch: fresh[0] },
       { args: ["profile", "set", "proxy.small-model", "gpt-x"], scratch: fresh[1] },
     );
     expect(shared.exitCode).toBe(0);
     expect(readFileSync(join(fresh[1].home, "state.json"), "utf8")).toContain('"gpt-x"');
-    // Six cold CLI spawns; generous headroom for loaded Windows CI runners.
+    const read = expectIdentical(
+      { args: ["config", "get", "proxy.small-model"], scratch: fresh[0] },
+      { args: ["profile", "get", "proxy.small-model"], scratch: fresh[1] },
+    );
+    expect(read.stdout).toBe("gpt-x\n");
+    expect(read.stderr).toContain("proxy.small-model: the shared default");
+    const dropped = expectIdentical(
+      { args: ["config", "unset", "proxy.small-model"], scratch: fresh[0] },
+      { args: ["profile", "unset", "proxy.small-model"], scratch: fresh[1] },
+    );
+    expect(dropped.exitCode).toBe(0);
+    expect(readFileSync(join(fresh[1].home, "state.json"), "utf8")).not.toContain("gpt-x");
+    // Ten cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
-  180_000,
+  300_000,
 );
 
 test(

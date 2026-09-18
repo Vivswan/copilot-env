@@ -114,27 +114,39 @@ test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only fl
   expect(statusModel.stderr).toContain("apply to --serve");
 });
 
-test("cli.ts config --set writes only inside the data home, so it names no file", () => {
+test("cli.ts config set writes only inside the data home, so it names no file", () => {
   // The preference store is copilot-env's own bookkeeping: written, never reported.
   const home = tempDir("copilot-report-");
   const env = isolatedEnv({ COPILOT_API_HOME: home, HOME: home, USERPROFILE: home });
   const store = join(home, "state.json");
 
-  const set = runCli(["config", "--set", "daemon.port", "4199"], { env });
+  const set = runCli(["config", "set", "daemon.port", "4199"], { env });
   expect(set.exitCode).toBe(0);
   expect(existsSync(store)).toBe(true);
   expect(set.stderr).not.toContain(" -> ");
   expect(set.stdout).not.toContain(" -> ");
 });
 
-test("cli.ts config --help renders the store's CURRENT values: the same table bare config prints", () => {
+test("cli.ts routes each key to its face: a profile key is refused under `agent config` and a machine key under `agent profile set`, each naming the other's verb", () => {
+  const env = isolatedEnv();
+  const configIdentity = runCli(["config", "set", "identity", "copilot-developer-cli"], { env });
+  expect(configIdentity.exitCode).not.toBe(0);
+  expect(configIdentity.stderr).toContain("agent profile set identity <value>");
+  const profilePort = runCli(["profile", "set", "daemon.port", "4199"], { env });
+  expect(profilePort.exitCode).not.toBe(0);
+  expect(profilePort.stderr).toContain("agent config set daemon.port <value>");
+});
+
+test("cli.ts config --help renders the store's CURRENT values: the same table bare config and `config get` print", () => {
   const env = isolatedEnv({ NO_COLOR: "1" });
-  expect(runCli(["config", "--set", "daemon.strict-port", "true"], { env }).exitCode).toBe(0);
+  expect(runCli(["config", "set", "daemon.strict-port", "true"], { env }).exitCode).toBe(0);
   const table = runCli(["config"], { env });
+  const get = runCli(["config", "get"], { env });
   const help = runCli(["config", "--help"], { env });
   expect(table.exitCode).toBe(0);
   expect(help.exitCode).toBe(0);
   expect(table.stdout).toMatch(/^ {2}\* daemon.strict-port=true +\[bool\] default false$/m);
+  expect(get.stdout).toBe(table.stdout);
   expect(help.stdout.slice(-table.stdout.length)).toBe(table.stdout);
 });
 

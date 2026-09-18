@@ -1126,19 +1126,19 @@ test("resolveStartPort: a port outside the configured range is a clear error, wh
       requested: undefined,
       error:
         "invalid port range: daemon.min-port (5000) is greater than daemon.max-port (4000); fix it with " +
-        "`agent config --set daemon.min-port <n>` / `agent config --set daemon.max-port <n>`.",
+        "`agent config set daemon.min-port <n>` / `agent config set daemon.max-port <n>`.",
     },
     {
       config: { "daemon.min-port": 4000, "daemon.max-port": 5000 },
       requested: 3999,
       error: "requested port 3999 is out of range; the proxy port must be between 4000 and 5000 " +
-        "(`agent config --set daemon.min-port <n>` / `agent config --set daemon.max-port <n>` change the range).",
+        "(`agent config set daemon.min-port <n>` / `agent config set daemon.max-port <n>` change the range).",
     },
     {
       config: { "daemon.port": 1500, "daemon.min-port": 2000, "daemon.max-port": 3000 },
       requested: undefined,
       error: "configured port 1500 is outside the allowed range 2000-3000; run " +
-        "`agent config --set daemon.port <n>` within the range, or adjust daemon.min-port/daemon.max-port.",
+        "`agent config set daemon.port <n>` within the range, or adjust daemon.min-port/daemon.max-port.",
     },
   ];
   for (const row of rows) {
@@ -1176,7 +1176,7 @@ test("resolveStartPort: a pin is used or refused as-is; a busy default moves unl
       busy: true,
       strict: true,
       outcome: (busy) =>
-        `port ${busy} is busy and auto-increment is disabled (\`daemon.strict-port\`); free it, pick another \`--port\`, or set \`agent config --set daemon.strict-port false\`.`,
+        `port ${busy} is busy and auto-increment is disabled (\`daemon.strict-port\`); free it, pick another \`--port\`, or set \`agent config set daemon.strict-port false\`.`,
     },
     {
       name: "busy default without strict-port",

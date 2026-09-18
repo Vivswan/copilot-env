@@ -13,7 +13,7 @@ and wiring shell integration by default. Optional agent CLIs and launchers are
 configured after install:
 
   agent shell --clis [--cooldown[=DAYS]] [--no-sudo] [--no-prereqs]
-  agent config --set launchers true
+  agent config set shell.launchers true
 
 The main-branch installer resolves the latest release; release assets are
 pinned to their release tag. $env:COPILOT_ENV_DOWNLOAD_BASE (a directory or a

@@ -81,8 +81,8 @@ if (import.meta.main) {
   // A fake credential: the daemon spawns and fails upstream auth, so `start` is expected to exit
   // nonzero. The assertions are on what it got through first, so the exit code alone tells us
   // nothing.
-  cli(["config", "--set", "identity", "copilot-developer-cli"]);
-  cli(["config", "--set", "host", "https://copilot.invalid"]);
+  cli(["profile", "set", "identity", "copilot-developer-cli"]);
+  cli(["profile", "set", "host", "https://copilot.invalid"]);
   cli(["auth", "--set", "fake-default-token"]);
   const start = cli(["start"], { stdout: "piped", stderr: "piped" });
   const startOutput = start.stdout + start.stderr;

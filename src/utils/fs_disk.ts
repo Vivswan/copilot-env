@@ -518,6 +518,17 @@ export function copyFile(from: string, to: string, detail?: string): void {
     if (source !== null) recordShadow(to, source);
     return;
   }
+  if (planCollecting() && underScratch(to) && plannedState(from) !== null) {
+    // A probe's scratch copy of a file this run planned: the planned bytes land for real under
+    // scratch (silent, as every scratch write), never the disk's stale ones.
+    const source = plannedBefore(from);
+    if (source === null) {
+      throw errno("ENOENT", `no such file or directory, copyfile '${from}' -> '${to}'`);
+    }
+    writeFileSync(to, source);
+    reportWrite(kindOf(was), to, detail);
+    return;
+  }
   try {
     copyFileSync(from, to);
   } catch (err) {

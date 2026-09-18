@@ -155,6 +155,10 @@ test("under the plan collector a move is planned whole with the source's planned
     const scratch = facade.scratchDir(join(dir, "scratch-"));
     facade.rename(real, join(scratch, "taken.txt"));
     expect(facade.exists(real)).toBe(false);
+    // A probe's scratch copy of a planned file gets the planned bytes, for real.
+    facade.writeText(join(dir, "seed.toml"), 'model = "planned"\n', { atomic: false });
+    facade.copyFile(join(dir, "seed.toml"), join(scratch, "config.toml"));
+    expect(readFileSync(join(scratch, "config.toml"), "utf8")).toBe('model = "planned"\n');
     facade.removeScratchDir(scratch);
     facade.rm(parent, { recursive: true });
     expect(() => facade.writeText(join(parent, "f"), "x", { atomic: false })).toThrow(/ENOENT/);
@@ -165,6 +169,7 @@ test("under the plan collector a move is planned whole with the source's planned
     `create ${moved}`,
     `delete ${source}`,
     `delete ${real}`,
+    `create ${join(dir, "seed.toml")}`,
     `delete ${parent}`,
   ]);
   expect([readFileSync(source, "utf8"), readFileSync(real, "utf8")]).toEqual(["old", "kept"]);

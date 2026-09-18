@@ -763,7 +763,7 @@ export async function gatherFacts(
   };
 
   // The (~5s) gh probe is skipped, and Direct reported as "uses token", only when the config is
-  // `managed` (execs `agent auth --get [--profile <name>]`) AND the credential classifies as a
+  // `managed` (execs `agent auth --get`, or `agent profile <name> auth --get`) AND the credential classifies as a
   // stored token; gh-cli means a live gh probe. Classification is storedCredentialKind()
   // (env_state.ts): a leftover token with no provider is "none", so no gh probe (no implicit
   // fallback) and Direct never reads green. A static shape asks the store nothing: the value is in

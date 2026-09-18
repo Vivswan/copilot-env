@@ -33,6 +33,7 @@ import {
   dropSlotIdentityCache,
   foldRootStores,
   moveCodexProfileTables,
+  moveProfilesToVerbTree,
   moveRootDaemonHome,
   renameAutoupdateThrottle,
   scopeStaticKeyBoolean,
@@ -41,17 +42,29 @@ import {
   v409IdentityCache,
   v409IntegrationIdPin,
   v409LaunchersBlock,
+  v409ProfileVerbTree,
   v409RootDaemonHome,
   v409StateFold,
   v409StaticKeyScope,
 } from "../src/migrations/4.0.9.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { MARKER, MARKER_END } from "../src/shell/integration.ts";
-import { proxyTokenCommand } from "../src/utils/root.ts";
+import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
+import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../src/claude/desktop.ts";
+import { managedProxyProvider } from "../src/codex/config.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { captureChannels } from "./helpers/output.ts";
+import { runCli } from "./helpers/run.ts";
 import { consola } from "consola";
 import type { SemverString } from "../src/utils/semver.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import {
+  envSnapshot,
+  fingerprintTree,
+  isolateAgentHomes,
+  isolateProxyHome,
+  writeRunState,
+} from "./helpers.ts";
 
 // A synthetic registry: the real migrations' side effects never run here.
 const mig = (version: SemverString): Migration => ({
@@ -120,6 +133,7 @@ test("the shipped registry holds exactly the named fix-ups in order, layout step
     v409StaticKeyScope,
     v409IdentityCache,
     v409LaunchersBlock,
+    v409ProfileVerbTree,
   ]);
   // A 4.0.0 install gets every wiring rewrite on its way to the next release.
   expect(dueMigrations("4.0.0", "4.0.1")).toEqual([
@@ -1178,3 +1192,180 @@ test("4.0.9 root daemon home: a login's config.json at the root with no .run sti
     '{"auth":{"apiKeys":["k"]}}\n',
   );
 });
+
+// The 4.0.9 resolver line of a named profile, built from the current one so the launcher path and
+// its quoting are this platform's; the replacement failing to match would leave the line
+// unrecognised and the assertions below red.
+function legacyHelperLine(profile: string): string {
+  return directHelperCommand(parseProfileName(profile)).replace(
+    `profile ${profile} auth --get`,
+    `auth --get --profile ${profile}`,
+  );
+}
+
+test(
+  "4.0.9 profile verb tree: a verb-named profile becomes the first free <name>-<n> with every artifact retargeted and re-rendered, a named Direct profile's resolver line moves to the new spelling, the user's keys survive, and a re-run writes nothing",
+  async () => {
+    const homes = isolateAgentHomes("copilot-mig-verb-tree-", { mkdirs: true });
+    dir = homes.dir;
+    const desktop = join(dir, "desktop");
+    const library = join(desktop, "configLibrary");
+    mkdirSync(library, { recursive: true });
+    process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
+    const SYNC = parseProfileName("sync");
+    const SYNC2 = parseProfileName("sync-2");
+    const entryPath = join(library, "e1.json");
+    try {
+      // A proxy profile named like a verb, and a Direct profile whose files carry the 4.0.9 resolver
+      // line; the default's line (`agent auth --get`, the alias) is not touched.
+      writeStore(join(homes.proxyHome, "state.json"), {
+        global: { "daemon.port": 4199 },
+        profiles: {
+          default: { githubToken: "ghp_default", authProvider: "gh-token", mode: "proxy" },
+          sync: {
+            githubToken: "ghp_sync",
+            authProvider: "gh-token",
+            mode: "proxy",
+            passthrough: "off",
+          },
+          work: {
+            githubToken: "ghp_work",
+            authProvider: "gh-token",
+            mode: "direct",
+            integrationIdentity: "vscode-chat",
+            copilotHost: "https://api.githubcopilot.com",
+          },
+        },
+        ownership: { claudeDesktopPaths: [entryPath] },
+      });
+      writeRunState({ port: 4555 }, SYNC);
+      writeFileSync(
+        join(homes.claudeHome, "settings-work.json"),
+        JSON.stringify({ apiKeyHelper: legacyHelperLine("work"), hand: "kept" }),
+      );
+      writeFileSync(
+        join(homes.claudeHome, "settings-sync.json"),
+        JSON.stringify({
+          apiKeyHelper: proxyHelperCommand(SYNC),
+          env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4555" },
+          hand: "kept",
+        }),
+      );
+      const legacyWork = agentLauncherCommand(["auth", "--get", "--profile", "work"]);
+      writeFileSync(
+        join(homes.codexHome, "config.toml"),
+        stringify({
+          "model_provider": "copilot-env",
+          "model_providers": {
+            "copilot-env-work": {
+              "name": "copilot-env-work",
+              "base_url": "https://api.githubcopilot.com",
+              "auth": { "command": legacyWork.command, "args": legacyWork.args },
+            },
+            "copilot-env-sync": managedProxyProvider("http://127.0.0.1:4555/v1", SYNC, {
+              kind: "command",
+            }),
+          },
+        }),
+      );
+      writeFileSync(
+        join(homes.codexHome, "sync.config.toml"),
+        stringify({ "model_provider": "copilot-env-sync", "model": "gpt-5.4" }),
+      );
+      // `sync-1` is taken by a file of the user's, so the free name is `sync-2`.
+      writeFileSync(join(homes.codexHome, "sync-1.config.toml"), stringify({ "model": "theirs" }));
+      writeFileSync(
+        join(library, META_FILENAME),
+        JSON.stringify({
+          appliedId: "e1",
+          entries: [{ id: "e1", name: "copilot-env: sync", pinned: true }],
+        }),
+      );
+      writeFileSync(
+        entryPath,
+        JSON.stringify({
+          inferenceGatewayBaseUrl: "http://127.0.0.1:4555",
+          managedMcpServers: [{
+            name: "copilot-env",
+            args: ["mcp", "--serve", "--profile", "sync"],
+          }],
+        }),
+      );
+
+      await captureChannels(() => moveProfilesToVerbTree());
+
+      const store = readStore(join(homes.proxyHome, "state.json"));
+      const profiles = store.profiles as Record<string, Record<string, unknown>>;
+      expect(profiles.sync).toBeUndefined();
+      expect(profiles["sync-2"]).toMatchObject({
+        githubToken: "ghp_sync",
+        mode: "proxy",
+        passthrough: "off",
+      });
+      expect(existsSync(join(homes.proxyHome, "profiles", "sync"))).toBe(false);
+      expect(CopilotEnvRunState.forProfile(SYNC2).read().port).toBe(4555);
+
+      const settingsWork = JSON.parse(
+        readFileSync(join(homes.claudeHome, "settings-work.json"), "utf8"),
+      );
+      expect(settingsWork.apiKeyHelper).toBe(directHelperCommand(parseProfileName("work")));
+      expect(settingsWork.hand).toBe("kept");
+      expect(existsSync(join(homes.claudeHome, "settings-sync.json"))).toBe(false);
+      const named = JSON.parse(
+        readFileSync(join(homes.claudeHome, "settings-sync-2.json"), "utf8"),
+      );
+      expect(named.apiKeyHelper).toBe(proxyHelperCommand(SYNC2));
+      expect(named.hand).toBe("kept");
+      expect(named.env.ANTHROPIC_BASE_URL).toContain("4555");
+
+      const config = parse(readFileSync(join(homes.codexHome, "config.toml"), "utf8")) as {
+        model_providers: Record<string, { name: string; auth: { args: string[] } }>;
+      };
+      expect(config.model_providers["copilot-env-work"]?.auth.args).toEqual(
+        agentLauncherCommand(agentAuthGetArgs(parseProfileName("work"))).args,
+      );
+      expect(config.model_providers["copilot-env-sync"]).toBeUndefined();
+      expect(config.model_providers["copilot-env-sync-2"]).toMatchObject({
+        name: "copilot-env-sync-2",
+        auth: { args: proxyTokenCommand(SYNC2).args },
+      });
+      expect(existsSync(join(homes.codexHome, "sync.config.toml"))).toBe(false);
+      expect(parse(readFileSync(join(homes.codexHome, "sync-2.config.toml"), "utf8"))).toEqual({
+        "model_provider": "copilot-env-sync-2",
+        "model": "gpt-5.4",
+      });
+      expect(parse(readFileSync(join(homes.codexHome, "sync-1.config.toml"), "utf8"))).toEqual({
+        "model": "theirs",
+      });
+
+      const meta = JSON.parse(readFileSync(join(library, META_FILENAME), "utf8"));
+      expect(meta.appliedId).toBe("e1");
+      expect(meta.entries).toEqual([{ id: "e1", name: "copilot-env: sync-2", pinned: true }]);
+      const entry = JSON.parse(readFileSync(entryPath, "utf8"));
+      expect(entry.managedMcpServers[0].args).toContain("sync-2");
+
+      expect(new CopilotEnvState().profileNames()).toEqual([SYNC2, WORK]);
+      const list = runCli(["profile"], {
+        env: { ...process.env, CONSOLA_LEVEL: "5", NO_COLOR: "1" },
+      });
+      expect(list.exitCode).toBe(0);
+      expect(list.stdout + list.stderr).toContain("sync-2");
+
+      // Idempotent: nothing left at an old spelling or name, so the re-run touches no file.
+      const before = fingerprintTree(dir);
+      await captureChannels(() => moveProfilesToVerbTree());
+      expect(fingerprintTree(dir)).toEqual(before);
+
+      // The verbs stay creatable-by-no-one: the one creator refuses the word.
+      expect(() =>
+        new CopilotEnvState().commitProfile(SYNC, {
+          credential: { kind: "stored", provider: "gh-token", token: "ghp_x" },
+          mode: "proxy",
+        })
+      ).toThrow(/reserved/);
+    } finally {
+      delete process.env[CLAUDE_DESKTOP_DIR_ENV];
+    }
+  },
+  120_000,
+);

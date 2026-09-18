@@ -74,6 +74,13 @@ import {
 
 const WORK = parseProfileName("work");
 const WORK_TOKEN = "ghp_worktoken";
+
+/** A named profile lands in two commands now: `add` records the mode, `auth` lands the credential
+ *  and wires both agents. */
+async function addWork(mode: "direct" | "proxy", token: string): Promise<void> {
+  await runProfile({ add: "work", mode });
+  await runAuth({ set: token, profile: "work" });
+}
 const DIRECT_HOST = "https://api.githubcopilot.com";
 
 const restoreEnv = envSnapshot();
@@ -169,23 +176,24 @@ test("`agent init --direct --dry-run` prints each changed key old -> new for bot
   expect(new CopilotEnvState().readProfileSlot(null).mode).toBeNull();
 });
 
-test("`agent profile --add --dry-run` redacts the token it would store; `--del --dry-run` names every file and slot key it would take", async () => {
+test("`agent profile <name> add --dry-run` plans the mode alone; the credential landing redacts the token and plans both files; `del --dry-run` names every file and slot key it would take", async () => {
   const { claudeHome } = scratch();
   const store = new CopilotApiPaths().stateStoreFile;
-  const add = await dryRun(() =>
-    runProfile({ add: "work", mode: "direct", set: WORK_TOKEN, dryRun: true })
-  );
-  expect(add).toContain("profiles.work.githubToken  (absent) -> <redacted>");
+  const add = await dryRun(() => runProfile({ add: "work", mode: "direct", dryRun: true }));
   expect(add).toContain('profiles.work.mode  (absent) -> "direct"');
-  expect(add).toContain(`create ${settingsPathFor(claudeHome, WORK)}`);
-  expect(add).not.toContain(WORK_TOKEN);
+  expect(add).not.toContain("githubToken");
   expect(new CopilotEnvState().profileNames()).toEqual([]);
+  await captureChannels(() => runProfile({ add: "work", mode: "direct" }));
+  const auth = await dryRun(() => runAuth({ set: WORK_TOKEN, profile: "work", dryRun: true }));
+  expect(auth).toContain("profiles.work.githubToken  (absent) -> <redacted>");
+  expect(auth).not.toContain(WORK_TOKEN);
+  expect(new CopilotEnvState().readCredential(WORK).kind).toBe("none");
 
-  // Landed for real, the same command's deletion previews as the inverse. The real landing is also
-  // the fingerprint's negative control: the assertion above can tell a written HOME from an
-  // untouched one.
+  // Landed for real, the deletion previews as the inverse. The real landing is also the
+  // fingerprint's negative control: the assertion above can tell a written HOME from an untouched
+  // one.
   const untouched = fingerprint(scratch().dir);
-  await captureChannels(() => runProfile({ add: "work", mode: "direct", set: WORK_TOKEN }));
+  await captureChannels(() => runAuth({ set: WORK_TOKEN, profile: "work" }));
   expect(fingerprint(scratch().dir)).not.toEqual(untouched);
   expect(new CopilotEnvState().profileNames()).toEqual([WORK]);
   // The daemon's activity mark is cleared by the stop the deletion runs first, outside any plan's
@@ -228,14 +236,14 @@ test("`agent auth --dry-run` runs no login and makes no network call: it plans t
   expect(new CopilotEnvState().readCredential(null).kind).toBe("none");
 });
 
-test("`profile --add --dry-run` refuses to plan a wiring from a credential the login has not landed (the Direct identity and Claude Desktop's rows need it)", async () => {
-  // The device flow lands a token the dry run never has: its stand-in selects nothing.
-  await expect(
-    captureChannels(() =>
-      runProfile({ add: "work", mode: "proxy", provider: "copilot", dryRun: true })
-    ),
-  ).rejects.toThrow(/Claude Desktop's model rows.*pass --set <token>/);
-  expect(new CopilotEnvState().profileNames()).toEqual([]);
+test("a named `auth --provider copilot --dry-run` names the wiring it cannot plan (the login has not landed, so the identity and Claude Desktop's rows are unselected)", async () => {
+  await captureChannels(() => runProfile({ add: "work", mode: "proxy" }));
+  const { stdout, stderr } = await captureChannels(() =>
+    runAuth({ provider: "copilot", profile: "work", dryRun: true })
+  );
+  expect(stdout).toContain('profiles.work.authProvider  (absent) -> "copilot"');
+  expect(stderr).toContain("Would wire profile 'work''s proxy mode into both agents");
+  expect(new CopilotEnvState().readCredential(WORK).kind).toBe("none");
 });
 
 test("`auth --provider gh-cli --dry-run` plans the pin the real command resolves: the one saved account, never a bare auto", async () => {
@@ -331,7 +339,7 @@ test("a dry run's auto-mode decision is the real one: the CLI smoke runs and its
 test("`profile --del --dry-run` takes the real refusal: a daemon that cannot be proven stopped aborts the preview too", async () => {
   // The real command refuses to delete under a daemon.lock holder it cannot identify; the dry run
   // reaches the same refusal (no signal is sent) instead of previewing a deletion that would not run.
-  await captureChannels(() => runProfile({ add: "work", mode: "proxy", set: WORK_TOKEN }));
+  await captureChannels(() => addWork("proxy", WORK_TOKEN));
   const fx = stageRefusedStop(profileHome(WORK), WORK);
   try {
     const before = fingerprint(scratch().dir);
@@ -821,27 +829,24 @@ test("a fresh HOME's plan names the homes the real run creates, outermost first,
   expect(existsSync(join(dir, ".claude"))).toBe(true);
 });
 
-test("`profile --add --direct --set ' '` over a proxy profile refuses the blank token first in both runs: no stop, no plan row, nothing touched", async () => {
-  await captureChannels(() => runProfile({ add: "work", mode: "proxy", set: WORK_TOKEN }));
-  const activity = new CopilotApiPaths(WORK).activityFile;
-  mkdirSync(dirname(activity), { recursive: true });
-  writeFileSync(activity, '{"lastInferenceMs":1}\n');
+test("a named `auth --set ' '` over a wired profile refuses the blank token first in both runs: no plan row, nothing touched", async () => {
+  await addWork("proxy", WORK_TOKEN);
   const refusal = "the provided GitHub token is empty";
-  const add = (dryRun: boolean) => runProfile({ add: "work", mode: "direct", set: " ", dryRun });
+  const auth = (dryRun: boolean) => runAuth({ set: " ", profile: "work", dryRun });
   const before = fingerprint(scratch().dir);
-  await expect(captureChannels(() => add(false))).rejects.toThrow(refusal);
+  await expect(captureChannels(() => auth(false))).rejects.toThrow(refusal);
   expect(fingerprint(scratch().dir)).toEqual(before);
   const { stdout } = await captureChannels(async () => {
-    await expect(add(true)).rejects.toThrow(refusal);
+    await expect(auth(true)).rejects.toThrow(refusal);
   });
-  // Refused before the daemon stop's activity clear could be planned: no plan prints at all.
+  // Refused before anything could be planned: no plan prints at all.
   expect(stdout).toBe("");
   expect(fingerprint(scratch().dir)).toEqual(before);
   expect(new CopilotEnvState().readProfileSlot(WORK).mode).toBe("proxy");
 });
 
 test("`profile --del --dry-run` with a directory at the profile's Desktop helper path takes the real decision: the warning, no delete, the directory kept", async () => {
-  await captureChannels(() => runProfile({ add: "work", mode: "proxy", set: WORK_TOKEN }));
+  await captureChannels(() => addWork("proxy", WORK_TOKEN));
   const helper = desktopHelperPath(resolveRootHome(), "proxy", WORK);
   mkdirSync(helper, { recursive: true });
   const warning = `${helper} is a directory; only a file can be removed here`;

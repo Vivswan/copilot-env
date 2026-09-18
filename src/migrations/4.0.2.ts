@@ -200,7 +200,7 @@ export async function moveDesktopHelpers(
     if (stillReferenced.some((ref) => samePath(ref, path))) {
       consola.info(
         `  kept ${name} (a Claude Desktop entry still references it) - rewire with ` +
-          "`agent claude`, then delete it by hand",
+          "`agent profile sync --claude`, then delete it by hand",
       );
       continue;
     }

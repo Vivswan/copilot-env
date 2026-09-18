@@ -372,7 +372,7 @@ test("--profile: each slot state syncs, launches, or hard-fails, for claude and 
       action: { kind: "codex", profile: WORK, relaxed: false, args: [] },
       outcome: {
         throws:
-          "profile 'work' does not exist - create it with `agent profile --add work --direct|--proxy`",
+          "profile 'work' does not exist - create it with `agent profile work add --direct|--proxy`",
       },
       calls: ["slot:work"],
     },
@@ -381,8 +381,8 @@ test("--profile: each slot state syncs, launches, or hard-fails, for claude and 
       script: { slot: partialSlot("proxy") },
       action: { kind: "claude", profile: WORK, relaxed: false, args: [] },
       outcome: {
-        throws: "profile 'work' has no credential - repair it with `agent auth --profile work` " +
-          "or `agent profile --add work`",
+        throws: "profile 'work' has no credential - repair it with `agent profile work auth` " +
+          "or `agent profile work add`",
       },
       calls: ["slot:work"],
     },

@@ -12,6 +12,51 @@ export type Profile = ProfileName | null;
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
+/** The words of `agent profile [<name>] <verb>`: the per-profile verbs and `list`. Every one
+ *  matches the name grammar, so they are reserved names: `agent profile <word>` then routes one
+ *  way, never by what profiles exist. */
+export const PROFILE_VERBS = [
+  "add",
+  "del",
+  "show",
+  "auth",
+  "set",
+  "unset",
+  "get",
+  "identity",
+  "sync",
+  "check",
+] as const;
+
+/** The commands that take `--profile <name>` today and become profile verbs next: reserved
+ *  now, so no profile takes one of their names first. */
+export const PROFILE_VERBS_NEXT = [
+  "launch",
+  "env",
+  "proxy-token",
+  "mcp",
+  "start",
+  "stop",
+  "health",
+  "models",
+  "credits",
+  "settings",
+] as const;
+
+/** `list` is `agent list`, and bare `agent profile` lists too; a profile named `list` would make
+ *  `agent profile list` ambiguous, so the word stays reserved beside the verbs. */
+const RESERVED_PROFILE_WORDS = ["help", "list", ...PROFILE_VERBS, ...PROFILE_VERBS_NEXT] as const;
+
+export type ProfileVerb = (typeof PROFILE_VERBS)[number];
+
+/** The words `agent profile <word>` routes as something other than a name: the verbs and
+ *  Commander's `help`. Reserved at CREATION (CopilotEnvState.commitProfile and the `--add`
+ *  boundary), not at the mint: a profile named before its word became a verb stays readable and
+ *  reachable by `--profile <name>` until the 4.0.9 migration renames it. */
+export function isReservedProfileWord(name: string): boolean {
+  return (RESERVED_PROFILE_WORDS as readonly string[]).includes(name);
+}
+
 // `default` is the implicit unnamed profile (omit --profile instead); the rest collide with the
 // mode-flag and `stop --all` vocabulary.
 const RESERVED_PROFILE_NAMES = ["default", "direct", "proxy", "all"] as const;

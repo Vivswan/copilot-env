@@ -11,6 +11,19 @@
 import { consola } from "consola";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { directPairIncomplete, wireBothAgents } from "../agents/profile_wiring.ts";
+import { directHelperCommand, managedHelperShape, proxyHelperCommand } from "../claude/config.ts";
+import {
+  desktopEntryName,
+  desktopHelperPath,
+  entryProfileAt,
+  META_FILENAME,
+  parseDesktopMeta,
+  readFileOrNull,
+  resolveDesktopLibraryDir,
+  saveJsonIfChanged,
+} from "../claude/desktop.ts";
+import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { codexProviderId } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
 import {
@@ -31,11 +44,19 @@ import {
   PROFILE_SETTING_KEYS,
   PROFILE_SETTINGS_DEFAULT_KEY,
 } from "../copilot_api/env_config.ts";
-import { GLOBAL_STATE_KEYS, PROFILE_STATE_KEYS } from "../copilot_api/env_state.ts";
+import {
+  CopilotEnvState,
+  GLOBAL_STATE_KEYS,
+  PROFILE_MODES,
+  PROFILE_STATE_KEYS,
+} from "../copilot_api/env_state.ts";
+import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import {
   DEFAULT_PROFILE_DIR,
   LOCKS_DIR_NAME,
   LOGS_DIR_NAME,
+  profileHome,
+  profileHomeNames,
   PROFILES_DIR_NAME,
   PROJECTIONS_FILENAME,
   PROXY_CONFIG_FILENAME,
@@ -48,10 +69,12 @@ import {
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { rootStateStore } from "../copilot_api/state_store.ts";
 import {
+  isReservedProfileWord,
   isValidProfileName,
   parseProfileName,
   type Profile,
   profileLabel,
+  type ProfileName,
 } from "../copilot_api/profile.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
@@ -65,6 +88,12 @@ import {
   renameReported,
   writeFileReported,
 } from "../utils/report_write.ts";
+import {
+  agentAuthGetArgs,
+  agentLauncherCommand,
+  proxyTokenArgs,
+  proxyTokenCommand,
+} from "../utils/root.ts";
 import { readPlannedDir } from "../utils/write_session.ts";
 import { FENCE_LINES, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
 import type { Migration } from "./index.ts";
@@ -299,7 +328,7 @@ export function dropCodexIdentityPin(): void {
         profileLabel(profile)
       }'s identity pin \`${stored}\` (Direct's default identity ` +
         "cannot be pinned; the identity now reads as auto, and Direct wiring rebakes at the next " +
-        "`agent init` / `agent profile --add`)",
+        "`agent init` / `agent profile <name> add`)",
     );
   }
 }
@@ -820,4 +849,333 @@ export const v409RootDaemonHome: Migration = {
     const root = resolveRootHome();
     return moveRootDaemonHome(root, () => stopRootDaemon(root));
   },
+};
+
+// --- the `agent profile [<name>] <verb>` command tree --------------------------------------------
+//
+// Away from 4.0.9: a named profile's resolver line in the agent files was `agent auth --get
+// --profile <name>`; it is `agent profile <name> auth --get` now (the default's `agent auth --get`
+// stays: `agent auth` is the default's alias), and the readers classify the old line as foreign,
+// so it is rewritten in place before the profile re-renders. The verbs are reserved names for a
+// NEW profile (isReservedProfileWord), and one named like a verb before the word became one is
+// renamed to the first unused `<name>-<n>` across the store, the daemon homes, and the agent
+// files: every artifact is retargeted before the re-render, so the user's own keys in the profile
+// files and the Desktop entry's identity survive.
+
+/** The 4.0.9 resolver spelling of a named profile, the one place it still exists. */
+function legacyAuthGetArgs(profile: ProfileName): string[] {
+  return ["auth", "--get", "--profile", profile];
+}
+
+function sameArgs(args: unknown, expected: readonly string[]): boolean {
+  return Array.isArray(args) && args.length === expected.length &&
+    args.every((a, i) => a === expected[i]);
+}
+
+/** `from === to` is a retarget with no rename. */
+interface ProfileMove {
+  from: ProfileName;
+  to: ProfileName;
+}
+
+/** The first `<base>-<n>` no artifact uses. Exported for the migration test. */
+export function freeProfileName(base: ProfileName, taken: (name: string) => boolean): ProfileName {
+  for (let n = 1;; n++) {
+    const candidate = `${base}-${n}`;
+    if (isValidProfileName(candidate) && !taken(candidate)) return parseProfileName(candidate);
+  }
+}
+
+/** The one Claude file of the profile: the old resolver line becomes the new one, the file moves
+ *  under the new name; every other key is the user's and rides along. */
+function retargetClaude(claudeHome: string, { from, to }: ProfileMove): boolean {
+  const oldPath = settingsPathFor(claudeHome, from);
+  const newPath = settingsPathFor(claudeHome, to);
+  const read = readTextResult(oldPath);
+  if (read.kind === "absent") return false;
+  if (read.kind === "unreadable") throw new Error(`could not read ${oldPath}: ${read.error}`);
+  const doc = parseJsonRecord(read.text);
+  if (doc === null) {
+    consola.warn(`  ${oldPath} is not a JSON object; left as it is`);
+    return false;
+  }
+  const helper = doc.apiKeyHelper;
+  let next: string | null = null;
+  if (typeof helper === "string") {
+    if (managedHelperShape(helper, legacyAuthGetArgs(from))) next = directHelperCommand(to);
+    else if (from !== to && managedHelperShape(helper, proxyTokenArgs(from))) {
+      next = proxyHelperCommand(to);
+    }
+  }
+  if (next === null && oldPath === newPath) return false;
+  if (next !== null) doc.apiKeyHelper = next;
+  if (oldPath !== newPath) {
+    renameReported(oldPath, newPath);
+    consola.info(`  moved ${oldPath} -> ${newPath}`);
+  }
+  if (next !== null) {
+    writeFileReported(newPath, `${JSON.stringify(doc, null, 2)}\n`, {
+      detail: "apiKeyHelper now `agent profile [<name>] auth --get`",
+    });
+  }
+  return true;
+}
+
+/** One Codex home: the provider table's `auth` command line and, for a rename, the table's key
+ *  and `name` plus the profile file's selector. */
+function retargetCodex(codexHome: string, { from, to }: ProfileMove): boolean {
+  let changed = false;
+  const configPath = codexConfigPath(codexHome);
+  const read = readCodexToml(configPath);
+  if (read.kind === "unparseable") {
+    throw new Error(`${configPath} is not valid TOML (${read.error})`);
+  }
+  const oldId = codexProviderId(from);
+  const newId = codexProviderId(to);
+  if (read.kind === "ok") {
+    const providers = read.doc.model_providers;
+    const table = isRecord(providers) ? providers[oldId] : undefined;
+    if (isRecord(providers) && isRecord(table)) {
+      let tableChanged = false;
+      const auth = table.auth;
+      if (isRecord(auth)) {
+        const legacy = agentLauncherCommand(legacyAuthGetArgs(from));
+        const proxy = proxyTokenCommand(from);
+        if (auth.command === legacy.command && sameArgs(auth.args, legacy.args)) {
+          auth.args = agentLauncherCommand(agentAuthGetArgs(to)).args;
+          tableChanged = true;
+        } else if (
+          from !== to && auth.command === proxy.command && sameArgs(auth.args, proxy.args)
+        ) {
+          auth.args = proxyTokenCommand(to).args;
+          tableChanged = true;
+        }
+      }
+      if (oldId !== newId) {
+        table.name = newId;
+        providers[newId] = table;
+        delete providers[oldId];
+        tableChanged = true;
+      }
+      if (tableChanged) {
+        saveCodexToml(configPath, read.doc, `[model_providers.${newId}] resolver and name`);
+        changed = true;
+      }
+    }
+  }
+  if (from !== to) {
+    const oldFile = codexProfileConfigPath(codexHome, from);
+    const newFile = codexProfileConfigPath(codexHome, to);
+    const fileRead = readCodexToml(oldFile);
+    if (fileRead.kind === "unparseable") {
+      throw new Error(`${oldFile} is not valid TOML (${fileRead.error})`);
+    }
+    if (fileRead.kind === "ok") {
+      if (fileRead.doc.model_provider === oldId) fileRead.doc.model_provider = newId;
+      renameReported(oldFile, newFile);
+      consola.info(`  moved ${oldFile} -> ${newFile}`);
+      saveCodexToml(newFile, fileRead.doc, `model_provider = "${newId}"`);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/** The owned Desktop entry keeps its id: its row is renamed and its MCP `--profile` argument
+ *  retargeted, so the re-render finds it instead of minting a twin. */
+function retargetDesktopEntry(from: ProfileName, to: ProfileName): void {
+  const dir = resolveDesktopLibraryDir();
+  if (dir === null) return;
+  const metaPath = join(dir, META_FILENAME);
+  const raw = readFileOrNull(metaPath);
+  if (raw === null) return;
+  const meta = parseDesktopMeta(raw);
+  if (meta === null) {
+    consola.warn(
+      `  Claude Desktop: ${metaPath} has an unexpected shape; leaving the library alone`,
+    );
+    return;
+  }
+  const ledger = new OwnershipLedger();
+  let changed = false;
+  for (const entry of meta.entries) {
+    const path = join(dir, `${entry.id}.json`);
+    if (!ledger.owns("claudeDesktop", path) || entryProfileAt(path) !== from) continue;
+    const doc = parseJsonRecord(readFileOrNull(path) ?? "");
+    if (doc === null) continue;
+    const servers = doc.managedMcpServers;
+    if (Array.isArray(servers)) {
+      for (const row of servers) {
+        if (!isRecord(row) || !Array.isArray(row.args)) continue;
+        const at = row.args.indexOf("--profile");
+        if (at !== -1 && row.args[at + 1] === from) row.args[at + 1] = to;
+      }
+    }
+    saveJsonIfChanged(path, doc, `Claude Desktop entry "${desktopEntryName(to)}"`);
+    if (entry.name === desktopEntryName(from)) entry.name = desktopEntryName(to);
+    changed = true;
+  }
+  if (!changed) return;
+  saveJsonIfChanged(
+    metaPath,
+    {
+      ...meta.extra,
+      ...(meta.appliedId === null ? {} : { appliedId: meta.appliedId }),
+      entries: meta.entries.map((e) => ({ ...e.extra, id: e.id, name: e.name })),
+    },
+    "Claude Desktop config-library index",
+  );
+}
+
+/** The store slot moves whole (credential, mode, pair, and the profile's settings section). */
+function renameStoreSlot(from: ProfileName, to: ProfileName): boolean {
+  let moved = false;
+  rootStateStore().update((d) => {
+    const profiles = d.profiles;
+    if (!isRecord(profiles) || !Object.hasOwn(profiles, from)) return;
+    profiles[to] = profiles[from];
+    delete profiles[from];
+    moved = true;
+  });
+  return moved;
+}
+
+/** From the slot alone (`stored`): no probe, no login. A Direct slot whose pair is not stored
+ *  (the identity-cache step took the old cache) would probe, so it is left as retargeted: the
+ *  files carry the new resolver line already, and the next credential landing stores the pair. */
+async function rerender(profile: ProfileName): Promise<void> {
+  const slot = new CopilotEnvState().readProfileSlot(profile);
+  if (slot.kind !== "complete") {
+    consola.info(
+      `  ${profileLabel(profile)} has no complete wiring to re-render; its files carry the new ` +
+        "resolver line already",
+    );
+    return;
+  }
+  if (slot.mode === "direct" && directPairIncomplete(profile)) {
+    consola.info(
+      `  ${profileLabel(profile)}'s Direct pair is not stored, so its files are left as ` +
+        `retargeted; \`agent profile ${profile} auth\` lands the pair with both agents`,
+    );
+    return;
+  }
+  await wireBothAgents(profile, slot.mode, true, "stored");
+  consola.info(`  re-rendered ${profileLabel(profile)}'s agent files`);
+}
+
+/** Every file a rename edits is parsed BEFORE the first move, so a malformed one fails the
+ *  profile whole and a re-run after the repair finds every artifact under the old name. */
+function assertMovable(move: ProfileMove, claudeHome: string, codexHomes: readonly string[]): void {
+  const settings = readTextResult(settingsPathFor(claudeHome, move.from));
+  if (settings.kind === "unreadable") {
+    throw new Error(`could not read ${settingsPathFor(claudeHome, move.from)}: ${settings.error}`);
+  }
+  if (settings.kind === "text" && parseJsonRecord(settings.text) === null) {
+    throw new Error(`${settingsPathFor(claudeHome, move.from)} is not a JSON object`);
+  }
+  for (const home of codexHomes) {
+    for (const path of [codexConfigPath(home), codexProfileConfigPath(home, move.from)]) {
+      const read = readCodexToml(path);
+      if (read.kind === "unparseable") throw new Error(`${path} is not valid TOML (${read.error})`);
+    }
+  }
+}
+
+async function moveProfile(
+  move: ProfileMove,
+  claudeHome: string,
+  codexHomes: readonly string[],
+): Promise<void> {
+  const { from, to } = move;
+  let changed = false;
+  if (from !== to) {
+    assertMovable(move, claudeHome, codexHomes);
+    const { stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, from);
+    if (!stopped) {
+      throw new Error(
+        `${profileLabel(from)}'s proxy daemon did not stop; stop it (\`agent stop --profile ` +
+          `${from}\`) and re-run`,
+      );
+    }
+    changed = renameStoreSlot(from, to) || changed;
+    const oldHome = profileHome(from);
+    if (existsSync(oldHome)) {
+      renameReported(oldHome, profileHome(to));
+      consola.info(`  moved ${oldHome} -> ${profileHome(to)}`);
+      changed = true;
+    }
+    // The re-render writes the new name's helper scripts; the old name's have no reader left.
+    for (const mode of PROFILE_MODES) {
+      const helper = desktopHelperPath(resolveRootHome(), mode, from);
+      if (existsSync(helper)) removeReported(helper, `Claude Desktop helper of profile '${from}'`);
+    }
+    consola.info(
+      `  renamed ${profileLabel(from)} -> '${to}' (its name is a verb of agent profile)`,
+    );
+  }
+  changed = retargetClaude(claudeHome, move) || changed;
+  for (const home of codexHomes) changed = retargetCodex(home, move) || changed;
+  if (from !== to) retargetDesktopEntry(from, to);
+  if (changed) await rerender(to);
+}
+
+/** Exported for the migration test. Every profile is visited even after one fails; the failures
+ *  then fail the step (the runner names the re-run). Idempotent: a second run finds no old
+ *  resolver line and no verb-named profile, and writes nothing. */
+export async function moveProfilesToVerbTree(): Promise<void> {
+  const rawProfiles = rootStateStore().loadStrict().profiles;
+  const storeNames = isRecord(rawProfiles) ? Object.keys(rawProfiles) : [];
+  const named = [
+    ...new Set([...storeNames.filter(isValidProfileName), ...profileHomeNames()]),
+  ]
+    .filter((name) => name !== PROFILE_SETTINGS_DEFAULT_KEY)
+    .sort()
+    .map((name) => parseProfileName(name));
+  const claudeHome = resolveClaudeHome();
+  const { homes: codexHomes, complete } = knownCodexHomes();
+  if (!complete) {
+    consola.warn(
+      "  could not enumerate every ~/.codex/hosts home; a config there may keep the old resolver line.",
+    );
+  }
+  const claimed = new Set<string>();
+  const taken = (candidate: string): boolean =>
+    claimed.has(candidate) || storeNames.includes(candidate) ||
+    existsSync(profileHome(parseProfileName(candidate))) ||
+    existsSync(settingsPathFor(claudeHome, parseProfileName(candidate))) ||
+    codexHomes.some((home) => {
+      if (existsSync(codexProfileConfigPath(home, parseProfileName(candidate)))) return true;
+      const read = readCodexToml(codexConfigPath(home));
+      return read.kind === "ok" && isRecord(read.doc.model_providers) &&
+        Object.hasOwn(read.doc.model_providers, codexProviderId(parseProfileName(candidate)));
+    });
+  const moves: ProfileMove[] = [];
+  for (const name of named) {
+    if (!isReservedProfileWord(name)) {
+      moves.push({ from: name, to: name });
+      continue;
+    }
+    const to = freeProfileName(name, taken);
+    claimed.add(to);
+    moves.push({ from: name, to });
+  }
+  const failed: string[] = [];
+  for (const move of moves) {
+    try {
+      await moveProfile(move, claudeHome, codexHomes);
+    } catch (e) {
+      consola.warn(`  could not move ${profileLabel(move.from)}: ${errMessage(e)}`);
+      failed.push(profileLabel(move.from));
+    }
+  }
+  if (failed.length > 0) throw new Error(`not moved: ${failed.join(", ")}`);
+}
+
+// Registered under 4.0.9 although the tree lands in 5.0.0: 5.0.0 is unreleased, so every install
+// that meets the verbs upgrades away from 4.0.9 and runs this step exactly once.
+export const v409ProfileVerbTree: Migration = {
+  version: "4.0.9",
+  description:
+    "move a named profile's resolver line to `agent profile <name> auth --get` and rename a profile named like a verb",
+  run: moveProfilesToVerbTree,
 };

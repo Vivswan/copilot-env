@@ -146,12 +146,12 @@ export async function runModels(args: ModelsArgs): Promise<void> {
       );
     }
   } catch (e) {
-    const profileFlag = profile === null ? "" : ` --profile ${profile}`;
+    const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
     const hint = source === "proxy"
       ? profile === null
         ? "check `agent health` (or use --direct)"
         : `check \`${agentStartCommand(profile)} --check\` (or use --direct)`
-      : `see \`agent auth --check${profileFlag}\``;
+      : `see \`${authCommand} --check\``;
     throw new Error(`could not list models via ${label}: ${errMessage(e)}; ${hint}`);
   }
   if (args.json) {

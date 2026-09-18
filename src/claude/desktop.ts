@@ -936,7 +936,7 @@ export async function planClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   const existing: Record<string, unknown> = parsedRecord(existingRaw) ?? {};
 
   // The launcher hot path (quiet) must NEVER run discovery: its probes are billed requests. It
-  // reuses the recorded rows; init, profile-add, and `agent claude` refresh live.
+  // reuses the recorded rows; `agent init`, `agent profile <name> add`, and `agent profile sync --claude` refresh live.
   const models = opts.quiet
     ? (owned ? recordedModelRows(existing) ?? undefined : undefined)
     : await wiringModels(opts);

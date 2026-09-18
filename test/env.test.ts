@@ -273,7 +273,7 @@ skipWin(
         stderr: missing,
       },
       // With a codex-home path the farm under the path is the subject: exported all the same
-      // before it is built (the next `agent codex` builds it), quiet once it is.
+      // before it is built (the next `agent profile sync --codex` builds it), quiet once it is.
       {
         name: "key on under a codex-home root, not built",
         config: { "codex.host": true, root: true },

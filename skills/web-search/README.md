@@ -7,7 +7,7 @@ Claude Code wired directly to `api.githubcopilot.com` cannot use its builtin Web
 
 ## Setup
 
-The server ships with [copilot-env](https://github.com/Vivswan/copilot-env); `agent init` / `agent claude` wire it into Claude Code automatically on a Direct write. To register it anywhere else (in Claude Code specifically, pick a name other than `copilot-env` - copilot-env's own wiring writes reclaim that name when switching modes):
+The server ships with [copilot-env](https://github.com/Vivswan/copilot-env); `agent profile add` / `agent profile sync` wire it into Claude Code automatically on a Direct write. To register it anywhere else (in Claude Code specifically, pick a name other than `copilot-env` - copilot-env's own wiring writes reclaim that name when switching modes):
 
 ```jsonc
 // see .mcp.json.example; in Claude Code use a name other than copilot-env
@@ -28,9 +28,9 @@ In a dev checkout the launcher self-bootstraps: the FIRST spawn installs the pin
 
 ## Credentials
 
-The server resolves the copilot-env credential (`agent auth`). Without one it reads `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` from the environment, so a bare clone works with `GH_TOKEN=... bin/agent mcp --serve`. The registered server always uses the default credential; a named profile that needs its own can register a second entry with `--profile <name>`.
+The server resolves the copilot-env credential (`agent profile auth`). Without one it reads `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` from the environment, so a bare clone works with `GH_TOKEN=... bin/agent mcp --serve`. The registered server always uses the default credential; a named profile that needs its own can register a second entry with `--profile <name>`.
 
 ## Configuration
 
-- `agent config --set message-websearch-model <id>` picks the search model (read on every call; default `gpt-5-mini`, the same default the proxy uses).
-- `agent mcp --remove` unregisters the server from Claude Code, restores the builtin WebSearch permission, and stores a durable opt-out (`wire-mcp false`).
+- `agent config --set proxy.message-websearch-model <id>` picks the search model (read on every call; default `gpt-5-mini`, the same default the proxy uses).
+- `agent mcp --remove` unregisters the server from Claude Code, restores the builtin WebSearch permission, and stores a durable opt-out (`claude.wire-mcp false`).

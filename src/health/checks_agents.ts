@@ -119,10 +119,8 @@ function directAuthVerdict(
   directFix: string,
   profile: Profile = null,
 ): DirectAuthVerdict {
-  const getCommand = profile === null
-    ? "agent auth --get"
-    : `agent auth --get --profile ${profile}`;
-  const authFix = profile === null ? "agent auth" : `agent auth --profile ${profile}`;
+  const getCommand = profile === null ? "agent auth --get" : `agent profile ${profile} auth --get`;
+  const authFix = profile === null ? "agent auth" : `agent profile ${profile} auth`;
   if (f.credential === "static") {
     const baked = bakedCredentialClause(f.bakedCredential, directFix);
     const authLine = `auth: GitHub token baked into the config (static-key${baked.clause})`;
@@ -149,7 +147,7 @@ function directAuthVerdict(
 
 /** Keyed off the reason the classifier minted (exhaustive, so a new reason forces a verdict), with
  *  the repair: `repair <file>` for a broken one, or the one step that lifts a profile-v1 shape (a
- *  rewire never removes it, so `agent profile --add` alone would leave Codex refusing). Null =
+ *  rewire never removes it, so `agent profile <name> add` alone would leave Codex refusing). Null =
  *  "custom": a foreign selection is re-wirable, so checkCodex's generic model_provider reporting
  *  owns it. */
 function codexOtherLine(
@@ -219,9 +217,9 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
     ...(profileConfigPath === null ? [] : [`${basename(profileConfigPath)}: ${profileConfigPath}`]),
   ];
   // A named profile's whole wiring (both agents, one mode) is rewritten by ONE command, so every
-  // named repair points there instead of `agent codex ...`.
-  const directFix = profile === null ? "agent codex --direct" : profileAddFix(profile);
-  const proxyFix = profile === null ? "agent codex --proxy" : profileAddFix(profile);
+  // named repair points there instead of `agent profile sync --codex ...`.
+  const directFix = profile === null ? "agent init --direct" : profileAddFix(profile);
+  const proxyFix = profile === null ? "agent init --proxy" : profileAddFix(profile);
   const base = {
     ...meta("setup.codex"),
     profile,
@@ -251,7 +249,7 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
   if (f.providerMode === "other") {
     const other = codexOtherLine(f.otherReason, configPath, profile);
     if (other !== null) {
-      const rewire = profile === null ? "agent codex" : profileAddFix(profile);
+      const rewire = profile === null ? "agent profile sync --codex" : profileAddFix(profile);
       return {
         ...base,
         status: "warn",
@@ -261,7 +259,7 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
     }
   }
   // No config: fine for the default, but a NAMED profile promises both-agent wiring, so its
-  // absence is an interrupted `agent profile --add`.
+  // absence is an interrupted `agent profile <name> add`.
   if (!f.configExists) {
     if (profile !== null) {
       return {
@@ -390,7 +388,7 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
     ...base,
     status: "warn",
     detail: detail(summary),
-    fix: "agent codex",
+    fix: "agent profile sync --codex",
   });
   if (!f.supported) return { ...base, status: "ok", detail: "not built (unsupported on Windows)" };
   const drift = codexHostDriftFrom(f.enabled, {
@@ -423,7 +421,7 @@ function claudeOtherLine(f: ClaudeFacts & { providerMode: "other" }): string {
 }
 
 export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResult {
-  const directFix = profile === null ? "agent claude --direct" : profileAddFix(profile);
+  const directFix = profile === null ? "agent init --direct" : profileAddFix(profile);
   const base = {
     ...meta("setup.claude"),
     profile,
@@ -484,7 +482,7 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
     const proxyFix = profile === null
       // --proxy explicitly: the bare commands auto-detect a mode, which is not guaranteed to
       // re-bake the proxy wiring this fix is repairing.
-      ? "agent claude --proxy"
+      ? "agent init --proxy"
       : profileAddFix(profile);
     const baked = bakedCredentialClause(f.bakedCredential, proxyFix);
     const detail = [
@@ -537,7 +535,7 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
         status: "warn",
         detail: ["provider: other", `settings.json: ${f.settingsPath}`, claudeOtherLine(f)]
           .join("\n"),
-        fix: `repair ${f.settingsPath}, then re-run \`agent claude\``,
+        fix: `repair ${f.settingsPath}, then re-run \`agent profile sync --claude\``,
       };
     }
     return {
@@ -551,7 +549,7 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
     };
   }
   // none: fine for the default (`cl` writes proxy wiring on first launch); a NAMED profile
-  // promises both-agent wiring, so its absence is an interrupted `agent profile --add`.
+  // promises both-agent wiring, so its absence is an interrupted `agent profile <name> add`.
   if (profile !== null) {
     return {
       ...base,
@@ -570,13 +568,13 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
     detail: [
       "provider: none",
       `settings.json: ${f.settingsPath}`,
-      "not configured; run `agent claude` (or --direct/--proxy)",
+      "not configured; run `agent profile sync --claude` (or `agent init --direct|--proxy`)",
     ].join("\n"),
   };
 }
 
 /** A rendered fix (drift) is a warn, anything else informational. The drift rule lives in
- *  renderClaudeDesktopStatus, shared with `agent claude --check`. */
+ *  renderClaudeDesktopStatus, shared with `agent profile check --claude`. */
 export function checkClaudeDesktop(f: ClaudeDesktopStatus): CheckResult {
   const { lines, fix } = renderClaudeDesktopStatus(f);
   const base = {
@@ -641,7 +639,7 @@ function checkAgentLive(
       ...base,
       status: "warn",
       detail: `read-only prompt failed (${f.cli})\n${f.detail}`,
-      fix: profile === null ? `agent ${agent}` : profileAddFix(profile),
+      fix: profile === null ? `agent profile sync --${agent}` : profileAddFix(profile),
     };
 }
 

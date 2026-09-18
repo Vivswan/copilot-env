@@ -237,13 +237,12 @@ const AGENT_LAUNCHER_PS1: string = join(PROJECT_ROOT, "bin", "agent.ps1");
 
 /** One spelling so the write sites (Codex `auth.command`, Claude apiKeyHelper) and the health
  *  verify site stay byte-identical; if they drift, health stops recognizing the config the writer
- *  just wrote. */
+ *  just wrote. The default profile's resolver (`agent auth` is the default's alias of `agent
+ *  profile auth`); a named profile's puts its name after `profile`. */
 export const AGENT_AUTH_GET_ARGS: readonly string[] = ["auth", "--get"];
 
 export function agentAuthGetArgs(profile: Profile = null): string[] {
-  return profile === null
-    ? [...AGENT_AUTH_GET_ARGS]
-    : [...AGENT_AUTH_GET_ARGS, "--profile", profile];
+  return profile === null ? [...AGENT_AUTH_GET_ARGS] : ["profile", profile, "auth", "--get"];
 }
 
 /** `--yes` because Codex and Claude run the resolver on a timer and cannot answer a prompt. One

@@ -154,9 +154,9 @@ function acquisitionForProvider(provider: AuthProvider): ResolvedAcquisition {
 }
 
 /** The one place "--set implies gh-token" and "--gh-user implies gh-cli" live, shared by `agent
- *  auth` and `agent profile --add`. The two differ on `--set x --provider bogus`: `agent auth`
- *  validates the provider name first, `agent profile --add` treats any non-gh-token string as the
- *  --set conflict (`setConflictWins`). */
+ *  profile auth` and `agent profile <name> add`. The two differ on `--set x --provider bogus`:
+ *  `agent auth` validates the provider name first, `agent profile <name> add` treats any
+ *  non-gh-token string as the --set conflict (`setConflictWins`). */
 export function parseAcquisition(
   provider: string | undefined,
   set: string | undefined,
@@ -396,8 +396,8 @@ async function promptForGhToken(): Promise<string> {
 
 // The account is a LABEL, never a gate: a look that missed says why and the token is used anyway.
 // "Using", never "Stored": persistence is the caller's single store write, which `agent profile
-// --add` commits later, atomically with the profile's mode, and which could still fail after this
-// prints.
+// <name> add` commits later, atomically with the profile's mode, and which could still fail after
+// this prints.
 async function loginWithGhToken(inline: string | null): Promise<string> {
   const token = providedToken(inline ?? await promptForGhToken());
   const look = await githubLoginLook(token);
@@ -493,7 +493,9 @@ function assertGhCliResolves(
   if (gh.token === null) {
     const detail = gh.detail ?? "`gh auth token` gave no token";
     if (gh.unproven) {
-      throw new Error(`could not check gh authentication (${detail}) - retry \`agent auth\``);
+      throw new Error(
+        `could not check gh authentication (${detail}) - retry \`agent auth\``,
+      );
     }
     throw new Error(
       ghUser === null
@@ -583,7 +585,7 @@ async function plannedAcquisition(
 }
 
 /** Never persists: the caller owns the single store write (`authenticate` into an existing slot,
- *  `agent profile --add` atomically with the profile's mode). `profile` names the slot a dry
+ *  `agent profile <name> add` atomically with the profile's mode). `profile` names the slot a dry
  *  run's narration speaks of; `seams` are test substitutes for the gh lookups. */
 export async function acquireCredential(
   acquisition: CredentialAcquisition,
@@ -625,7 +627,7 @@ export async function acquireCredential(
   return { kind: "gh-cli", ghUser: null };
 }
 
-/** A named profile's slot must already exist (`agent profile --add` is the only creator), and the
+/** A named profile's slot must already exist (`agent profile <name> add` is the only creator), and the
  *  gate fires BEFORE the acquisition so a typo'd name never costs a device flow. A complete Direct
  *  profile is rebaked here with a fresh selection: the credential write took the previous
  *  credential's stored pair with it, and every re-render bakes the slot's pair, so the landing is
@@ -638,18 +640,19 @@ export async function authenticate(
   const credential = await acquireCredential(acquisition, profile);
   new Credential(undefined, profile).record(credential);
   if (profile !== null) {
+    // The landing completes the profile `add` recorded, or rebakes one already wired: both agents
+    // from the slot. A Direct write selects the identity WITH the token, and a dry run's stand-in
+    // selects nothing, so the wiring is named, not planned.
     const slot = new CopilotEnvState().readProfileSlot(profile);
-    if (slot.kind === "complete" && slot.mode === "direct") {
-      // The rebake selects the identity WITH the token; a dry run's stand-in selects nothing.
+    if (slot.kind === "complete") {
       if (isPlannedCredential(credential)) {
         logger.log(
-          `  Would rebake ${
-            profileLabel(profile)
-          }'s Direct wiring for the landed token (both agents, ` +
-            "the identity selected with it).",
+          `  Would wire ${profileLabel(profile)}'s ${slot.mode} mode into both agents for the ` +
+            "landed token" +
+            (slot.mode === "direct" ? " (the Direct identity selected with it)." : "."),
         );
       } else {
-        await wireBothAgents(profile, "direct", false, "probe");
+        await wireBothAgents(profile, slot.mode, false, "probe");
       }
     }
   }
@@ -659,8 +662,8 @@ export async function authenticate(
 // --- sub-actions ------------------------------------------------------------
 
 /** The read-back sub-actions report instead of hard-failing, so their repair hint must branch the
- *  way the store's write gate does: an existing slot re-auths via `agent auth --profile`, a
- *  nonexistent name can only be created by `agent profile --add`. */
+ *  way the store's write gate does: an existing slot re-auths via `agent profile <name> auth`, a
+ *  nonexistent name can only be created by `agent profile <name> add`. */
 function profileSlotMissing(profile: ProfileName): boolean {
   return !new CopilotEnvState().profileSlotStatus(profile).exists;
 }
@@ -670,10 +673,10 @@ function profileSlotMissing(profile: ProfileName): boolean {
 function noSuchProfileHint(profile: ProfileName): string {
   if (profileHomeNames().includes(profile)) {
     return `profile '${profile}' has no store slot (half-created; its daemon home exists) - ` +
-      `re-create it with \`agent profile --add ${profile} --direct|--proxy\``;
+      `re-create it with \`agent profile ${profile} add --direct|--proxy\``;
   }
   return `no such profile '${profile}' - create it with ` +
-    `\`agent profile --add ${profile} --direct|--proxy\``;
+    `\`agent profile ${profile} add --direct|--proxy\``;
 }
 
 /** Codex re-runs this every 300s through auth.command, so it returns the token and nothing more: a
@@ -729,7 +732,7 @@ async function runDel(profile: Profile): Promise<() => void> {
           logger.success("De-authenticated. Run `agent auth` to log in again.");
         }
       } else {
-        const again = `\`agent auth --profile ${profile}\``;
+        const again = `\`agent profile ${profile} auth\``;
         if (!stopped) {
           logger.warn(
             `De-authenticated ${
@@ -756,7 +759,7 @@ async function runDel(profile: Profile): Promise<() => void> {
     } else {
       logger.info(
         `Nothing to clear for ${profileLabel(profile)} - not authenticated. Run ` +
-          `\`agent auth --profile ${profile}\` to log in.`,
+          `\`agent profile ${profile} auth\` to log in.`,
       );
     }
     // Whatever the store held, a baked copy may still sit in the agent configs.
@@ -809,13 +812,13 @@ function runCheck(profile: Profile): void {
   // and label are empty).
   const credential = new Credential(undefined, profile);
   const { provider, resolves } = credential.status();
-  const flag = profile === null ? "" : ` --profile ${profile}`;
+  const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
   const label = profile === null ? "" : ` (${profileLabel(profile)})`;
   if (provider === null) {
     if (profile !== null && profileSlotMissing(profile)) {
       printWrapped(noSuchProfileHint(profile));
     } else {
-      printWrapped(`not authenticated${label} - run \`agent auth${flag}\``);
+      printWrapped(`not authenticated${label} - run \`${authCommand}\``);
     }
     process.exitCode = 1;
     return;
@@ -827,7 +830,7 @@ function runCheck(profile: Profile): void {
   } else {
     // e.g. gh-cli selected but `gh` is no longer authenticated (as the pinned account).
     printWrapped(
-      `provider '${source}' selected but no credential resolves${label} - run \`agent auth${flag}\``,
+      `provider '${source}' selected but no credential resolves${label} - run \`${authCommand}\``,
     );
     process.exitCode = 1;
   }
@@ -1020,7 +1023,7 @@ export function identityTableLines(input: IdentityTableInput): string[] {
   const restart = `\`agent stop${flag}\`, then \`agent start${flag}\``;
   const landing = input.profile === null
     ? "`agent init`"
-    : `\`agent profile --add ${input.profile} --direct\``;
+    : `\`agent profile ${input.profile} add --direct\``;
   const legend = "* = in use: the pin, else the slot's probed identity; what every Direct " +
     "re-render bakes and a daemon launch sends, on the host in use" +
     (wouldPick === null ? "" : "; > = would be picked by the next landing (nothing stored yet)");
@@ -1311,7 +1314,7 @@ async function pinIdentity(
   }
   new CopilotEnvConfig().setProfile(profile, { identity: id });
   logger.success(
-    `identity = ${id} (pinned; \`agent auth --identity auto\` restores probing).`,
+    `identity = ${id} (pinned; \`agent profile set identity auto\` restores probing).`,
   );
   noteIdentityApplies();
 }
@@ -1333,8 +1336,8 @@ async function runIdentity(
     case "choose": {
       if (!process.stdin.isTTY) {
         throw new Error(
-          "not a terminal - pass the identity: `agent auth --identity <id|auto>` " +
-            "(see `agent auth --identities`)",
+          "not a terminal - pass the identity: `agent profile set identity <id|auto>` " +
+            "(see `agent profile identity`)",
         );
       }
       const token = resolveForProbe(profile);
@@ -1355,10 +1358,10 @@ export async function ensureAuthenticated(profile: Profile = null): Promise<void
   if (new Credential(undefined, profile).isAuthenticated()) return;
   // A dry run never logs in, and the wiring it previews is decided with the credential.
   if (dryRunActive()) {
-    const flag = profile === null ? "" : ` --profile ${profile}`;
+    const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
     throw new Error(
       `${profileLabel(profile)} is not authenticated, and a dry run never logs in; run ` +
-        `\`agent auth${flag}\` first, then re-run with --dry-run`,
+        `\`${authCommand}\` first, then re-run with --dry-run`,
     );
   }
   logger.log(
@@ -1520,8 +1523,8 @@ async function runAuthenticate(
         } else {
           logger.success(
             `Already authenticated (${source}, ${profileLabel(profile)}). Switch with ` +
-              `\`agent auth --profile ${profile} --provider <${PROVIDER_CHOICES}>\`, or clear it ` +
-              `with \`agent auth --profile ${profile} --del\`.`,
+              `\`agent profile ${profile} auth --provider <${PROVIDER_CHOICES}>\`, or clear it ` +
+              `with \`agent profile ${profile} auth --del\`.`,
           );
         }
         noteStaticKeyStale(profile);
@@ -1529,24 +1532,28 @@ async function runAuthenticate(
     }
   }
 
-  // A complete Direct profile is rebaked by authenticate itself; anything else still needs the
-  // `--add` that wires (or re-wires) it.
-  const rebakes = profile !== null &&
-    new CopilotEnvState().readProfileSlot(profile).mode === "direct";
+  // A named profile with a recorded mode is wired by authenticate itself; one without (a daemon
+  // home and no slot) still needs the `add` that records it.
+  const mode = profile === null ? null : new CopilotEnvState().readProfileSlot(profile).mode;
   const provider = await authenticate(acquisition, profile);
   return () => {
-    logger.success(
-      profile === null
-        ? `Authenticated (${provider}). Run \`agent init\` to configure Codex and Claude.`
-        : rebakes
-        ? `Authenticated ${
-          profileLabel(profile)
-        } (${provider}); its Direct wiring is rebaked for ` +
-          "this credential."
-        : `Authenticated ${profileLabel(profile)} (${provider}). Wire it into both agents with ` +
-          `\`agent profile --add ${profile} --direct|--proxy\`.`,
-    );
-    if (!rebakes) noteStaticKeyStale(profile);
+    if (profile === null) {
+      logger.success(
+        `Authenticated (${provider}). Run \`agent init\` to configure Codex and Claude.`,
+      );
+    } else if (mode !== null) {
+      logger.success(
+        `Authenticated ${profileLabel(profile)} (${provider}); both agents are wired for its ` +
+          `${mode} mode.`,
+      );
+      logger.log(`  Launch it:  cl --profile ${profile}  /  cx --profile ${profile}`);
+    } else {
+      logger.success(
+        `Authenticated ${profileLabel(profile)} (${provider}). Wire it into both agents with ` +
+          `\`agent profile ${profile} add --direct|--proxy\`.`,
+      );
+    }
+    if (mode === null) noteStaticKeyStale(profile);
   };
 }
 
@@ -1559,9 +1566,7 @@ function noteStaticKeyStale(profile: Profile): void {
     : scope === "claude"
     ? "Claude's"
     : "Codex's";
-  const rewire = profile === null
-    ? "agent init"
-    : `agent profile --add ${profile} --direct|--proxy`;
+  const rewire = profile === null ? "agent init" : `agent profile ${profile} add --direct|--proxy`;
   logger.info(
     `static-key is ${scope}: ${whose} baked value stays as it is until \`${rewire}\` rewrites it.`,
   );

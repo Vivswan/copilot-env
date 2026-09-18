@@ -11,7 +11,7 @@ TypeScript port of the original Python `copilot-api` helper. Runs on Linux, macO
 - **Codex + Claude wiring**: both CLIs point at the proxy or at Copilot Direct, with `~/.codex` / `~/.claude` written for you.
 - **Lifecycle**: `start` / `stop` the proxy yourself, or let `daemon.auto-start` run it on demand and stop it when idle.
 - **Zero setup**: one self-contained binary, no runtime or package manager first. The proxy is fetched on first use, never installed globally.
-- **One credential per setup**: `agent auth` holds the GitHub Copilot token (device flow, `gh` CLI, or a stored PAT), plus one slot per profile.
+- **One credential per setup**: `agent profile auth` holds the GitHub Copilot token (device flow, `gh` CLI, or a stored PAT), plus one slot per profile.
 - **Named profiles**: `agent profile` bundles one credential and one mode into both agents, so several sessions run at once.
 - **Typed preferences**: `agent config` gets and sets every knob under one precedence rule everywhere.
 - **Web search on Direct**: Claude Code's builtin WebSearch is replaced by copilot-env's MCP `web_search` tool.
@@ -20,7 +20,7 @@ TypeScript port of the original Python `copilot-api` helper. Runs on Linux, macO
 
 ## Requirements
 
-- A GitHub account with Copilot access. `agent auth` stores the credential: device flow, your `gh` login, or a token.
+- A GitHub account with Copilot access. `agent profile auth` stores the credential: device flow, your `gh` login, or a token.
 - Linux, macOS, or Windows. Nothing else first: the install is one self-contained binary.
 - The Claude and Codex CLIs, or let `agent shell --clis` install them.
 
@@ -39,9 +39,9 @@ powershell -c "irm https://github.com/Vivswan/copilot-env/releases/latest/downlo
 Then, in a new shell:
 
 ```bash
-agent shell --clis   # install the Claude, Codex, and Copilot CLIs (init probes Direct through Claude and Codex, or at the endpoint without them)
-agent init           # wire Codex + Claude to GitHub Copilot
-agent start          # run the local proxy (only if init picked it)
+agent shell --clis   # install the Claude, Codex, and Copilot CLIs (the add probes Direct through them, or at the endpoint without them)
+agent profile add    # wire Codex + Claude to GitHub Copilot
+agent start          # run the local proxy (only if the add picked it)
 ```
 
 Install from a release, not `main`. Why, the flags, a pinned version, and what the installer writes are on the [getting started page](docs/getting-started.md#install).
@@ -49,7 +49,7 @@ Install from a release, not `main`. Why, the flags, a pinned version, and what t
 ## Documentation
 
 - [Docs index](docs/README.md) - the pages by task ("I want to...")
-- [Getting started](docs/getting-started.md) - install and its flags, the first `agent init` and the two modes, updating, verifying a download, uninstall
+- [Getting started](docs/getting-started.md) - install and its flags, the first `agent profile add` and the two modes, updating, verifying a download, uninstall
 - [Usage](docs/usage.md) - every command, shell integration and the launchers, the managed proxy lifecycle, web search for Claude Code, cost reporting
 - [Configuration](docs/configuration.md) - every `agent config` key with its default, the proxy-side keys, the Codex model catalog, per-host `CODEX_HOME`, Claude Desktop, environment overrides
 - [Authentication](docs/authentication.md) - the credential providers, PAT passthrough, static key, profiles

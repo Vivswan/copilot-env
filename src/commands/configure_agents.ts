@@ -93,8 +93,8 @@ export function printGuidance(
   section("Profiles (optional)", [
     "Run several sessions at once - direct, proxy, or another account.",
     "A profile = one credential + one mode, wired into BOTH agents:",
-    "`agent profile --add <name> --direct|--proxy` → `cl --profile <name>` / `cx --profile <name>`",
-    "`agent profile --list` / `--del <name>` manage them.",
+    "`agent profile <name> add --direct|--proxy` → `cl --profile <name>` / `cx --profile <name>`",
+    "`agent profile` lists them; `agent profile <name> del` removes one.",
   ]);
 
   if (bothDirect) {

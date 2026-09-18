@@ -28,6 +28,8 @@ Every key has one scope:
 
 Every read resolves one way: **explicit flag or env (per invocation) > the profile's own value > the global value > the built-in default**, each layer only where the key's scope admits it (a `global` key never resolves from a profile's section).
 
+The profile verbs write the same store. `agent profile <name> set <key> <value>` overrides a `profile-default` key for that named profile. The default profile carries no override of its own, so with no name `agent profile set|unset|get <key>` is an alias of `agent config --set|--del|--get <key>`: both spellings write or read the shared default. `agent profile [<name>] get [<key>]` reads the value in effect for that profile.
+
 `agent config` prints the store under two banners. `PROFILE <name>` holds every key that profile's daemon and wiring
 consume: its `profile` keys, then the `profile-default` groups with the value this profile resolves to. `GLOBAL` holds
 the `global` keys only.
@@ -49,7 +51,7 @@ Which a key is, is a per-key fact: `agent config --set` and `--del` refuse a sta
 | `passthrough` | `profile` | `auto`                        | PAT passthrough: `auto` / `on` / `off`                                                                                                                                                      |
 | `static-key`  | `profile` | `none`                        | Whose config carries the credential value itself: `none` / `claude` / `codex` / `all`                                                                                                       |
 
-`identity` is surveyed and pinned by `agent auth --identities` / `--identity` ([client identity](authentication.md#client-identity)), per profile; `passthrough` is explained under [PAT passthrough](authentication.md#pat-passthrough) and `static-key` under [static key](authentication.md#static-key).
+`identity` is surveyed by `agent profile [<name>] identity` and pinned by `agent profile [<name>] set identity <id|auto>` ([client identity](authentication.md#client-identity)); `passthrough` is explained under [PAT passthrough](authentication.md#pat-passthrough) and `static-key` under [static key](authentication.md#static-key).
 
 ### Copilot host
 
@@ -65,28 +67,28 @@ A literal `https://` origin skips the probe (a GitHub Enterprise Server serves C
 - the proxy daemon's upstream (a pinned daemon ignores an inherited `COPILOT_API_ENTERPRISE_URL`);
 - every catalog, discovery, smoke, and web-search request.
 
-A Direct profile slot (`profiles.<name>` in `~/.local/share/copilot-env/state.json`) holds the probed identity and host as state. A credential landing (`agent profile --add`, `agent auth --profile <name>`, a settings import) writes it; every re-render reads it, with no request and no read of the agent files, which are outputs.
+A Direct profile slot (`profiles.<name>` in `~/.local/share/copilot-env/state.json`) holds the probed identity and host as state. A credential landing (`agent profile [<name>] add`, `agent profile <name> auth`, a settings import) writes it; every re-render reads it, with no request and no read of the agent files, which are outputs.
 
-| event                                                                                                         | the slot's Direct pair                                                                                                                                                                                                            |
-| ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| a re-render (`agent profile --sync`, `--settings-for`, the `cl --profile` hook, the Claude Desktop reconcile) | bakes `identity` pin ?? slot identity and `host` literal ?? slot host: no request while the pair is stored; a missing pair is landed once through the landing path (the Desktop reconcile alone never lands, it names the repair) |
-| a credential write                                                                                            | takes the previous credential's pair with it                                                                                                                                                                                      |
-| a named profile's next re-render after that                                                                   | probes once and stores the new pair                                                                                                                                                                                               |
-| the default's next `agent codex` or `agent claude` after that                                                 | lands BOTH agents and says so: the default's pair is stored only together with both agents' files. The Claude Desktop reconcile leaves a pair-less Direct entry alone and names that repair                                       |
-| a Direct landing with no resolvable credential                                                                | refused before any write (`agent auth` first): a selection made without one would store the fallback identity and host                                                                                                            |
-| a pin or literal set or cleared                                                                               | applies at the next re-render; it renders over the slot and never enters it, so the slot keeps only what a probe answered (a half never probed under an overlay is probed once when the overlay is cleared)                       |
+| event                                                                                                            | the slot's Direct pair                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a re-render (`agent profile [<name>] sync`, `agent sync`, the `cl --profile` hook, the Claude Desktop reconcile) | bakes `identity` pin ?? slot identity and `host` literal ?? slot host: no request while the pair is stored; a missing pair is landed once through the landing path (the Desktop reconcile alone never lands, it names the repair) |
+| a credential write                                                                                               | takes the previous credential's pair with it                                                                                                                                                                                      |
+| a named profile's next re-render after that                                                                      | probes once and stores the new pair                                                                                                                                                                                               |
+| the default's next `agent profile sync` after that                                                               | lands BOTH agents and says so: the default's pair is stored only together with both agents' files. The Claude Desktop reconcile leaves a pair-less Direct entry alone and names that repair                                       |
+| a Direct landing with no resolvable credential                                                                   | refused before any write (`agent profile auth` first): a selection made without one would store the fallback identity and host                                                                                                    |
+| a pin or literal set or cleared                                                                                  | applies at the next re-render; it renders over the slot and never enters it, so the slot keeps only what a probe answered (a half never probed under an overlay is probed once when the overlay is cleared)                       |
 
 The default profile is one mode for both agents. Its recorded mode has one writer: a landing that succeeded for both agents.
 
-- `agent init`: no flag probes both agents first and lands one mode (the proxy when they disagree); `--direct|--proxy` lands that mode for both.
+- `agent profile add`: no flag probes both agents first and lands one mode (the proxy when they disagree); `--direct|--proxy` lands that mode for both.
 - `agent settings --import` of a bundle naming both agents, or one Direct agent on a Direct default whose stored pair is incomplete or whose credential the import replaces (the plan names both files).
-- The first `agent codex` / `agent claude` / launcher write on a default with no record yet, or on a Direct default whose stored pair is incomplete: it lands both agents and says so. Whether a write lands is decided by the stored pair alone; a pin or literal renders over the pair and never decides it.
+- The first `agent profile sync` or launcher write on a default with no record yet, or on a Direct default whose stored pair is incomplete: it lands both agents and says so. Whether a write lands is decided by the stored pair alone; a pin or literal renders over the pair and never decides it.
 
-A failed write leaves the previous record and names the agent that did not move. With a mode recorded and its pair stored, `agent codex` or `agent claude` is a re-render of it: no flag or the recorded flag renders the slot's pair (no probe); a flag naming the other mode is refused before any file is written.
+A failed write leaves the previous record and names the agent that did not move. With a mode recorded and its pair stored, `agent profile sync` (with or without `--claude` / `--codex`) is a re-render of it: it renders the slot's pair with no probe and never moves the record. Changing the mode is an `agent profile add --direct|--proxy`, which lands both agents.
 
-`agent auth --identities` shows the hosts as columns and marks the one in use.
+`agent profile identity` shows the hosts as columns and marks the one in use.
 
-Applies at the next wiring pass (`agent init`, `agent codex`, `agent claude`, `agent profile`) and the next proxy start.
+Applies at the next wiring pass (`agent profile [<name>] add` / `sync`, `agent sync`) and the next proxy start.
 
 ## daemon
 
@@ -132,7 +134,7 @@ Applies at the next wiring pass (`agent init`, `agent codex`, `agent claude`, `a
 
 ### Codex model catalog
 
-`codex.model-catalog` applies at the next `agent codex` / `agent init` wiring or the next default-profile launch (`cl` / `cx` on a proxy default, or a direct `cx`); `cx --profile <name>` never refreshes it. Credential printing (`agent auth --get`, `agent proxy-token`) never refreshes the catalog or rewrites an agent file. Turning it off also removes the generated `codex-model-catalog.json` and the managed `model_catalog_json` reference from the Codex config.
+`codex.model-catalog` applies at the next `agent profile add` / `sync` wiring or the next default-profile launch (`cl` / `cx` on a proxy default, or a direct `cx`); `cx --profile <name>` never refreshes it. Credential printing (`agent profile auth --get`, `agent proxy-token`) never refreshes the catalog or rewrites an agent file. Turning it off also removes the generated `codex-model-catalog.json` and the managed `model_catalog_json` reference from the Codex config.
 
 What the generated catalog holds:
 
@@ -143,7 +145,7 @@ Codex parses that file strictly and treats it as a replacement for its bundled c
 
 copilot-env guards the installed `codex`: before writing or referencing a catalog it asks that binary to parse it, and a catalog it rejects is left out of the config.
 
-Other Codex consumers sharing `~/.codex`, such as an IDE extension's own codex-core or a desktop app, cannot be probed. If one reports that error, run `agent codex` to regenerate from the installed CLI, or `agent config --set codex.model-catalog false` to remove the catalog.
+Other Codex consumers sharing `~/.codex`, such as an IDE extension's own codex-core or a desktop app, cannot be probed. If one reports that error, run `agent profile sync --codex` to regenerate from the installed CLI, or `agent config --set codex.model-catalog false` to remove the catalog.
 
 ### Per-host CODEX_HOME
 
@@ -155,7 +157,7 @@ agent config --set codex.host true    # false removes the farm again
 
 - What builds the farm, what it holds, and what removes it are in the [write list](getting-started.md#what-a-wiring-pass-writes).
 - `agent env` exports `CODEX_HOME` whenever `codex.host` is on (the farm path, built or not) or `codex.home` is set (the path itself); the next wiring pass creates what is missing.
-- `agent codex --check` / `agent health` report any drift between the key and the disk.
+- `agent profile check --codex` / `agent health` report any drift between the key and the disk.
 
 ## claude
 
@@ -168,9 +170,9 @@ agent config --set codex.host true    # false removes the farm again
 
 ### Claude Desktop
 
-`claude.desktop` applies at the next `agent init`, `agent claude`, or `agent profile` wiring. Setting the key writes no Desktop file itself. After a wiring pass, quit and reopen Claude Desktop: it reads everything below at launch only, and lands on the GitHub Copilot gateway with no sign-in chooser.
+`claude.desktop` applies at the next `agent profile [<name>] add` / `sync` or `agent sync` wiring. Setting the key writes no Desktop file itself. After a wiring pass, quit and reopen Claude Desktop: it reads everything below at launch only, and lands on the GitHub Copilot gateway with no sign-in chooser.
 
-One exception: a configuration you applied in the app yourself stays applied, since a wire never displaces it. `agent claude --check` names it, and the switch is `Developer > Configure Third-Party Inference...`.
+One exception: a configuration you applied in the app yourself stays applied, since a wire never displaces it. `agent profile check --claude` names it, and the switch is `Developer > Configure Third-Party Inference...`.
 
 | Setting                                             | Why                                                                                                                                                                                                                |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -182,7 +184,7 @@ The files these land in, what writes and removes them, and where they sit on eac
 
 - **On:** a wiring pass ends with `Claude Desktop is ready to use.` once the default entry is wired, applied, and the app boots third-party; which passes write what is in the [write list](getting-started.md#what-a-wiring-pass-writes).
 - **Off:** the default entry stays in place as yours, named once and never rewritten; only `agent uninstall` removes it. Profile entries go, each with its credential-helper scripts under `~/.local/share/copilot-env/helpers/`; what the same writes remove is in the [write list](getting-started.md#what-a-wiring-pass-writes).
-- **Drift:** `agent claude --check` and `agent health` report an entry missing or stale with the key on, profile entries left behind after turning it off, which entry the app applies, and whether it will show the sign-in chooser or lacks the Developer menu.
+- **Drift:** `agent profile check --claude` and `agent health` report an entry missing or stale with the key on, profile entries left behind after turning it off, which entry the app applies, and whether it will show the sign-in chooser or lacks the Developer menu.
 
 ## probe
 
@@ -191,7 +193,7 @@ The files these land in, what writes and removes them, and where they sit on eac
 | `probe.claude-model` | `profile-default` | unset tries the claude CLI's `haiku` alias, then the newest claude model in the catalog                 | Model the Direct probe's claude smoke prompt runs |
 | `probe.codex-model`  | `profile-default` | unset prefers a reduced GPT tier (`mini`, `nano`) from the catalog, else its first codex-servable model | Model the Direct probe's codex smoke prompt runs  |
 
-The Direct probe behind `auto` (`agent init` with neither `--direct` nor `--proxy`; a re-render of a recorded mode never probes) runs each CLI's read-only smoke prompt against a throwaway Direct config. A set value is the model that prompt runs, sent as-is: no alias, no catalog check.
+The Direct probe behind `auto` (`agent profile add` with neither `--direct` nor `--proxy`; a re-render of a recorded mode never probes) runs each CLI's read-only smoke prompt against a throwaway Direct config. A set value is the model that prompt runs, sent as-is: no alias, no catalog check.
 
 ```bash
 agent config --set probe.claude-model claude-sonnet-5

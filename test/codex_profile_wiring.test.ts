@@ -304,7 +304,7 @@ test("a writer-produced direct profile inspects as wired via its own auth comman
   expect(wiring.credential).toBe("command");
   expect(wiring.providerWired).toBe(true);
 
-  // The DEFAULT direct auth (`agent auth --get` without --profile) resolves the default credential;
+  // The DEFAULT direct auth (`agent auth --get`, no profile name) resolves the default credential;
   // a named profile hard-fails rather than fall back to it, so this must not read as wired.
   mutateConfig(codexHome, (doc) => {
     const auth = asRecord(profileProvider(doc).auth);
@@ -491,7 +491,7 @@ test("malformed TOML in either file reads other for the named view, naming the f
     profileToml: { kind: "unreadable", error: "EACCES" },
   });
   expect(unreadable).toMatchObject({ providerMode: "other", otherReason: "profile-read-error" });
-  // With no config.toml at all the broken profile file still names itself: `agent profile --add`
+  // With no config.toml at all the broken profile file still names itself: `agent profile <name> add`
   // would refuse it, so "no config, re-add" is the wrong repair.
   const noConfig = inspectCodexWiring(null, null, PROFILE_PORT, false, {
     profile: WORK,

@@ -964,7 +964,7 @@ test("--check: absent settings exit 2 (none); unreadable settings and the helper
 test("planDefaultWebSearchSync applies the pair to existing direct wiring (the migration path)", () => {
   const home = tmpHome();
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
-  directDefault(); // what the `agent claude` command records
+  directDefault(); // what the `agent profile sync --claude` command records
   // Simulate a pre-3.5.2 install: wiring exists but the pair does not.
   const doc = readSettings(home);
   delete doc.permissions;
@@ -1064,7 +1064,10 @@ test("the default write reclaims a helper-path apiKeyHelper, leaving the user's 
 test("mode inspection recognizes the managed helper from ANY copilot-env root", () => {
   // A dev checkout and ~/.copilot-env spell different roots into apiKeyHelper; both resolve the same
   // shared store, so inspection reads both as managed.
-  const posixDirect = ["/opt/somewhere/bin/agent auth --get", "'/with space/bin/agent' auth --get"];
+  const posixDirect = [
+    "/opt/somewhere/bin/agent auth --get",
+    "'/with space/bin/agent' auth --get",
+  ];
   for (const value of posixDirect) {
     expect(managedHelperShape(value, ["auth", "--get"], false)).toBe(true);
   }
@@ -1072,26 +1075,48 @@ test("mode inspection recognizes the managed helper from ANY copilot-env root", 
     .toBe(true);
   expect(
     managedHelperShape(
-      "/opt/x/bin/agent auth --get --profile work",
-      ["auth", "--get", "--profile", "work"],
+      "/opt/x/bin/agent profile work auth --get",
+      ["profile", "work", "auth", "--get"],
       false,
     ),
   ).toBe(true);
   // Negatives: wrong binary name, trailing junk, foreign command, wrong profile args.
-  expect(managedHelperShape("/opt/x/bin/agent-evil auth --get", ["auth", "--get"], false)).toBe(
+  expect(
+    managedHelperShape(
+      "/opt/x/bin/agent-evil auth --get",
+      ["auth", "--get"],
+      false,
+    ),
+  ).toBe(
     false,
   );
-  expect(managedHelperShape("/opt/x/bin/agent auth --get --extra", ["auth", "--get"], false)).toBe(
+  expect(
+    managedHelperShape(
+      "/opt/x/bin/agent auth --get --extra",
+      ["auth", "--get"],
+      false,
+    ),
+  ).toBe(
     false,
   );
   expect(managedHelperShape("gh auth token", ["auth", "--get"], false)).toBe(false);
   // Shell metacharacters can never classify as managed: only shToken's bare charset
   // (or a fully quoted path) is a spelling the writer can produce.
-  expect(managedHelperShape("evil;/bin/agent auth --get", ["auth", "--get"], false)).toBe(false);
-  expect(managedHelperShape("$(evil)/bin/agent auth --get", ["auth", "--get"], false)).toBe(false);
-  expect(managedHelperShape("a b/bin/agent auth --get", ["auth", "--get"], false)).toBe(false);
   expect(
-    managedHelperShape("/opt/x/bin/agent auth --get", ["auth", "--get", "--profile", "w"], false),
+    managedHelperShape("evil;/bin/agent auth --get", ["auth", "--get"], false),
+  ).toBe(false);
+  expect(
+    managedHelperShape("$(evil)/bin/agent auth --get", ["auth", "--get"], false),
+  ).toBe(false);
+  expect(
+    managedHelperShape("a b/bin/agent auth --get", ["auth", "--get"], false),
+  ).toBe(false);
+  expect(
+    managedHelperShape(
+      "/opt/x/bin/agent auth --get",
+      ["profile", "w", "auth", "--get"],
+      false,
+    ),
   ).toBe(false);
   // Windows shape: only the QUOTED -File path spelling is managed.
   expect(

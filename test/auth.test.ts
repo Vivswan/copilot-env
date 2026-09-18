@@ -320,7 +320,7 @@ test("headless gh-token never reads the env: that is gh-env's job", async () => 
 
 test("auth --profile <unknown> errors instead of creating a half profile", async () => {
   isolate();
-  // A profile is created ONLY by `agent profile --add`'s atomic commit, so re-auth refuses an
+  // A profile is created ONLY by `agent profile <name> add`'s atomic commit, so re-auth refuses an
   // unknown name BEFORE any acquisition runs.
   await expect(runAuth({ set: "ghu_x", profile: "ghost" })).rejects.toThrow(
     /no such profile 'ghost'/,
@@ -356,7 +356,7 @@ test("auth --profile <unknown> errors instead of creating a half profile", async
 
 test("token acquisition narrates 'Using' + the account, never 'Stored' (persistence is the caller's write)", async () => {
   isolate();
-  // The token is only ACQUIRED here -- `agent profile --add` commits it later,
+  // The token is only ACQUIRED here -- `agent profile <name> add` commits it later,
   // atomically with the profile's mode, so a "Stored" claim at this point would
   // be false on that path (and premature even on the plain auth path).
   const inline = await captureStderr(() => runAuth({ set: "ghu_inline_value" }));
@@ -396,17 +396,17 @@ test("githubLoginLook asks GraphQL for the viewer and reads a login, a 401, or a
   });
 });
 
-test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile --add`", async () => {
+test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile <name> add`", async () => {
   isolate();
   // Recommending a re-auth would hit the no-store-slot gate, so the hint reuses the store's
   // no-such-profile phrasing. Asserted without backticks: consola renders code spans, stripping
   // them.
   const addHint = "no such profile 'ghost' - create it with ";
-  const addCommand = "agent profile --add ghost --direct|--proxy";
+  const addCommand = "agent profile ghost add --direct|--proxy";
   const got = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
   expect(got).toContain(addHint);
   expect(got).toContain(addCommand);
-  expect(got).not.toContain("agent auth --profile");
+  expect(got).not.toContain("ghost auth");
   expect(process.exitCode).toBe(1);
   resetExitCode();
   const deleted = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
@@ -419,7 +419,7 @@ test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile -
   resetExitCode();
 
   // A partial slot (de-authed, mode kept) re-auths in place, so the hint stays
-  // `agent auth --profile`.
+  // `agent profile <name> auth`.
   const ghost = parseProfileName("ghost");
   state().commitProfile(ghost, {
     credential: { kind: "stored", provider: "gh-token", token: "ghu_old" },
@@ -427,14 +427,14 @@ test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile -
   });
   state().clearCredential(ghost);
   const gotExisting = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
-  expect(gotExisting).toContain("agent auth --profile ghost");
-  expect(gotExisting).not.toContain("profile --add");
+  expect(gotExisting).toContain("agent profile ghost auth");
+  expect(gotExisting).not.toContain("ghost add");
   const deletedExisting = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
   expect(deletedExisting).toContain("Nothing to clear for profile 'ghost'");
-  expect(deletedExisting).toContain("agent auth --profile ghost");
-  expect(deletedExisting).not.toContain("profile --add");
+  expect(deletedExisting).toContain("agent profile ghost auth");
+  expect(deletedExisting).not.toContain("ghost add");
   const checkedExisting = await captureLog(() => runAuth({ check: true, profile: "ghost" }));
-  expect(checkedExisting).toContain("run `agent auth --profile ghost`");
+  expect(checkedExisting).toContain("run `agent profile ghost auth`");
 });
 
 test("auth --get/--del/--check on a HALF-CREATED profile reuse the store's missing-slot phrasing", async () => {
@@ -444,7 +444,7 @@ test("auth --get/--del/--check on a HALF-CREATED profile reuse the store's missi
   const ghost = parseProfileName("ghost");
   mkdirSync(profileHome(ghost), { recursive: true });
   const phrase = "profile 'ghost' has no store slot (half-created; its daemon home exists)";
-  const addCommand = "agent profile --add ghost --direct|--proxy";
+  const addCommand = "agent profile ghost add --direct|--proxy";
   // Alignment pin: the store's own gate renders the same phrase + command, so a
   // rewording on either side fails here.
   let storeMessage = "";
@@ -1008,7 +1008,7 @@ test("resolveWithReason: one probe answers with the token or names the provider 
   expect(refused).not.toContain("minimal PATH");
   const named = new Credential(state(), parseProfileName("p1"));
   expect(named.resolveWithReason(() => ({ token: null })).reason).toContain(
-    "for profile 'p1' - run `agent auth --profile p1` to log in (a named profile never falls back",
+    "for profile 'p1' - run `agent profile p1 auth` to log in (a named profile never falls back",
   );
 });
 

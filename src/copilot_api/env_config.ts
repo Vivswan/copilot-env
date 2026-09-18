@@ -354,7 +354,7 @@ const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
   "id|auto",
 );
 
-/** The one validator behind `agent config --set identity` and `agent auth --identity`. */
+/** The one validator behind `agent config --set identity` and `agent profile set identity`. */
 export function parseIntegrationIdPin(raw: string): string {
   return INTEGRATION_ID_DOMAIN.parse(raw);
 }
@@ -480,7 +480,7 @@ const COPILOT_HOST_DOMAIN: ConfigDomain<string> = domain(
 );
 
 const WIRING_HINT =
-  "Applies at the next `agent init` / `agent claude` / `agent codex` / `agent profile` wiring";
+  "Applies at the next wiring: `agent init`, `agent profile <name> add`, or `agent profile [<name>] sync`";
 /** A re-render of a recorded mode never probes, so only the auto-detect landing reads the key. */
 const PROBE_HINT = "Read by the next Direct probe: `agent init` with neither --direct nor --proxy";
 
@@ -494,7 +494,7 @@ const CONFIG_REGISTRY_LITERAL = [
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint:
-      "Applies at the next `agent init`/`agent claude`/`agent profile` wiring; setting the key writes no Desktop files itself.",
+      "Applies at the next wiring (`agent init`, `agent profile <name> add`, `agent profile [<name>] sync`); setting the key writes no Desktop files itself.",
   },
   {
     key: "claude.wire-mcp",
@@ -502,7 +502,7 @@ const CONFIG_REGISTRY_LITERAL = [
     describe: "Wire the copilot-env MCP server + WebSearch deny on direct writes",
     ...BOOL_DOMAIN,
     defaultValue: true,
-    applyHint: "Applies at the next `agent claude`/`agent init` direct wiring.",
+    applyHint: "Applies at the next `agent profile sync --claude`/`agent init` direct wiring.",
   },
   {
     key: "codex.home",
@@ -513,7 +513,7 @@ const CONFIG_REGISTRY_LITERAL = [
     ...ABSOLUTE_PATH_DOMAIN,
     defaultValue: CODEX_HOME_AUTO,
     applyHint:
-      "Applies at the next `agent codex`/`agent init` wiring (the config write lands there) and to the " +
+      "Applies at the next `agent profile sync --codex`/`agent init` wiring (the config write lands there) and to the " +
       "shell on the next `agent` command, whose wrapper re-evals `agent env`; a removal reaches new shells only.",
   },
   {
@@ -524,7 +524,7 @@ const CONFIG_REGISTRY_LITERAL = [
     defaultValue: false,
     posixOnly: true,
     applyHint:
-      "Applies at the next `agent codex`/`agent init` wiring, which builds or removes the farm.",
+      "Applies at the next `agent profile sync --codex`/`agent init` wiring, which builds or removes the farm.",
   },
   {
     key: "codex.model-catalog",
@@ -533,7 +533,7 @@ const CONFIG_REGISTRY_LITERAL = [
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint:
-      "Applies at the next `agent codex`/`agent init` wiring or the next default-profile launch " +
+      "Applies at the next `agent profile sync --codex`/`agent init` wiring or the next default-profile launch " +
       "(`cl`/`cx` on a proxy default, or a direct `cx`); `cx --profile <name>` never refreshes it.",
   },
   {
@@ -628,7 +628,7 @@ const CONFIG_REGISTRY_LITERAL = [
     ...COPILOT_HOST_DOMAIN,
     defaultValue: COPILOT_HOST_AUTO,
     applyHint:
-      "Applies at the next `agent init`/`agent codex`/`agent claude` wiring and the next proxy start.",
+      "Applies at the next `agent init`/`agent profile sync --codex`/`agent profile sync --claude` wiring and the next proxy start.",
   },
   {
     key: "identity",
@@ -636,7 +636,8 @@ const CONFIG_REGISTRY_LITERAL = [
     describe: "Copilot-Integration-Id header to send; auto probes it per credential",
     ...INTEGRATION_ID_DOMAIN,
     defaultValue: "auto",
-    applyHint: "Applies to Direct at the next `agent init`/`agent profile --add` (rewires the " +
+    applyHint:
+      "Applies to Direct at the next `agent init`/`agent profile <name> add` (rewires the " +
       "agent configs) and to the profile's proxy at its next daemon launch (a running daemon " +
       "keeps its identity until restarted).",
   },
@@ -1337,7 +1338,7 @@ export class CopilotEnvConfig {
     this.setProfile(profile, { [key]: undefined });
   }
 
-  /** Every setting goes with the profile (`agent profile --del`): a deleted profile leaves no
+  /** Every setting goes with the profile (`agent profile <name> del`): a deleted profile leaves no
    *  value behind for a later profile of the same name to inherit. The slot's state keys are
    *  CopilotEnvState.deleteProfile's; a map left with nothing is dropped. */
   deleteProfile(name: ProfileName): void {

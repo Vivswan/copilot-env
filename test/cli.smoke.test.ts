@@ -80,9 +80,9 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
   // No hidden commands: the resolver and the migration runner are documented surface.
   expect(output).toContain("proxy-token");
   expect(output).toContain("migrate");
-  // `init` is the headline command and appears first in the COMMANDS list.
-  expect(output).toContain("init");
-  expect(output.indexOf("init")).toBeLessThan(output.indexOf("start"));
+  // `profile` is the headline command and appears first in the COMMANDS list.
+  expect(output).toContain("profile");
+  expect(output.indexOf("profile")).toBeLessThan(output.indexOf("start"));
   expect(output).toContain("--version");
 });
 
@@ -201,7 +201,6 @@ const HELP_SURFACES: { cmd: string; needles: string[] }[] = [
 const REMOVED_FLAGS: { cmd: string; flags: string[] }[] = [
   { cmd: "update", flags: ["--auto ", "--no-auto"] },
   { cmd: "shell", flags: ["--launchers"] },
-  { cmd: "codex", flags: ["--host", "--delete-host"] },
 ];
 
 test("the flags that became config keys are gone from the help screens", () => {
@@ -223,15 +222,13 @@ test("each command's --help exits 0 and surfaces its flags", () => {
   }
 });
 
-for (const args of [["codex"], ["claude"]] as const) {
-  test(`cli.ts ${args.join(" ")} --help exposes provider modes`, () => {
-    const { exitCode, output } = helpScreen(...args, "--help");
+test("cli.ts profile add --help exposes the provider modes", () => {
+  const { exitCode, output } = helpScreen("profile", "add", "--help");
 
-    expect(exitCode).toBe(0);
-    expect(output).toContain("--proxy");
-    expect(output).toContain("--direct");
-  });
-}
+  expect(exitCode).toBe(0);
+  expect(output).toContain("--proxy");
+  expect(output).toContain("--direct");
+});
 
 test("codex exposes and runs check mode", () => {
   const root = tempDir("copilot-codex-check-");
@@ -251,15 +248,12 @@ test("codex exposes and runs check mode", () => {
   writeFileSync(join(otherHome, "config.toml"), 'model_provider = "openai"\n');
   writeFileSync(join(unsetHome, "config.toml"), "[analytics]\nenabled = false\n");
 
-  const helpOut = helpScreen("codex", "--help").output;
-  expect(helpOut).toContain("--check");
-  // The per-host farm is driven by the `codex-host` config key; no flag builds it.
-  expect(helpOut).not.toContain("--host");
-  expect(helpOut).not.toContain("--delete-host");
-  expect(helpOut).toContain("--mobile");
+  const helpOut = helpScreen("profile", "check", "--help").output;
+  expect(helpOut).toContain("--codex");
+  expect(helpOut).toContain("--claude");
 
   const runCheck = (home: string) =>
-    runCli(["codex", "--check"], { env: isolatedEnv({ CODEX_HOME: home }) });
+    runCli(["profile", "check", "--codex"], { env: isolatedEnv({ CODEX_HOME: home }) });
 
   const proxy = runCheck(codexHome);
   expect(proxy.exitCode).toBe(2);
@@ -289,7 +283,7 @@ test("codex exposes and runs check mode", () => {
   expect(unset.stdout).toContain("Codex provider mode: none");
   expect(unset.stdout).toContain("no model_provider configured");
 
-  const conflicting = runCli(["codex", "--proxy", "--direct"], {
+  const conflicting = runCli(["profile", "add", "--proxy", "--direct"], {
     env: isolatedEnv({ CODEX_HOME: codexHome }),
   });
   expect(conflicting.exitCode).toBe(1);
@@ -307,10 +301,8 @@ test("claude exposes and runs check mode", () => {
   writeClaudeSettings(proxyHome, { apiKeyHelper: proxyHelperCommand() });
   writeClaudeSettings(otherHome, { apiKeyHelper: "/opt/x/helper.sh" });
 
-  expect(helpScreen("claude", "--help").output).toContain("--check");
-
   const runCheck = (home: string) =>
-    runCli(["claude", "--check"], { env: isolatedEnv({ CLAUDE_CONFIG_DIR: home }) });
+    runCli(["profile", "check", "--claude"], { env: isolatedEnv({ CLAUDE_CONFIG_DIR: home }) });
 
   const direct = runCheck(directHome);
   expect(direct.exitCode).toBe(0);
@@ -330,7 +322,7 @@ test("claude exposes and runs check mode", () => {
   expect(other.exitCode).toBe(1);
   expect(other.stdout).toContain("Claude provider mode: other");
 
-  const conflicting = runCli(["claude", "--proxy", "--direct"], {
+  const conflicting = runCli(["profile", "add", "--proxy", "--direct"], {
     env: isolatedEnv({ CLAUDE_CONFIG_DIR: proxyHome }),
   });
   expect(conflicting.exitCode).toBe(1);
@@ -364,7 +356,7 @@ test("launch --help documents the contract; bad invocations are boundary rejecti
   // Four cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 90_000);
 
-test("agent claude reconciles the Desktop library after its write; --check reports drift", () => {
+test("profile add reconciles the Desktop library after its write; --check reports drift", () => {
   const env = isolatedEnv();
   const dataDir = join(env.COPILOT_API_HOME!, "claude-desktop");
   const library = join(dataDir, "configLibrary");
@@ -387,31 +379,37 @@ test("agent claude reconciles the Desktop library after its write; --check repor
   );
 
   // Before any wiring: --check names the leftover as drift, on the proxy/none exit code.
-  const check = runCli(["claude", "--check"], { env });
+  const check = runCli(["profile", "check", "--claude"], { env });
   expect(check.exitCode).toBe(2);
   expect(check.stdout).toContain("Claude provider mode: none");
   expect(check.stdout).toContain(`"copilot-env: old" orphaned at ${join(library, "old.json")}`);
-  expect(check.stdout).toContain("fix: agent claude");
+  expect(check.stdout).toContain("fix: agent profile sync --claude");
 
   // The wiring write logs in first; a stored token satisfies the gate headless.
-  expect(runCli(["auth", "--set", "ghu_test"], { env }).exitCode).toBe(0);
-  const wire = runCli(["claude", "--proxy"], { env });
+  expect(runCli(["profile", "auth", "--set", "ghu_test"], { env }).exitCode).toBe(0);
+  const wire = runCli(["profile", "add", "--proxy"], { env });
   expect(wire.exitCode).toBe(0);
   const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
     entries: { name: string }[];
   };
   expect(meta.entries.map((e) => e.name)).toEqual(["copilot-env"]);
   expect(existsSync(join(library, "old.json"))).toBe(false);
-  const after = runCli(["claude", "--check"], { env });
+  const after = runCli(["profile", "check", "--claude"], { env });
   expect(after.exitCode).toBe(2);
   expect(after.stdout).toMatch(/Claude Desktop: "copilot-env" \(proxy\) wired at /);
 }, 60_000);
 
-test("claude --desktop is deleted, not aliased: an unknown option, exit 1", () => {
-  const gone = runCli(["claude", "--desktop"], { env: isolatedEnv() });
-  expect(gone.exitCode).toBe(1);
-  expect(gone.stderr).toContain("unknown option '--desktop'");
-});
+test(
+  "the deleted top-level spellings are unknown commands, not aliases: exit 1, Commander's own error",
+  () => {
+    for (const cmd of ["claude", "codex"]) {
+      const gone = runCli([cmd], { env: isolatedEnv() });
+      expect(gone.exitCode, cmd).toBe(1);
+      expect(gone.stderr, cmd).toContain(`unknown command '${cmd}'`);
+    }
+  },
+  60_000,
+);
 
 test("init configures both agents and rejects --direct + --proxy", () => {
   const help = helpScreen("init", "--help");
@@ -426,7 +424,7 @@ test("init configures both agents and rejects --direct + --proxy", () => {
     CODEX_HOME: join(root, ".codex"),
     CLAUDE_CONFIG_DIR: join(root, ".claude"),
   });
-  expect(runCli(["auth", "--set", "ghu_test"], { env }).exitCode).toBe(0);
+  expect(runCli(["profile", "auth", "--set", "ghu_test"], { env }).exitCode).toBe(0);
   const proc = runCli(["init", "--proxy"], { env });
   expect(proc.exitCode).toBe(0);
   const out = proc.stdout + proc.stderr;
@@ -439,8 +437,8 @@ test("init configures both agents and rejects --direct + --proxy", () => {
   expect(conflict.stderr).toContain("--direct and --proxy are mutually exclusive");
 });
 
-test("profile rejects --direct + --proxy at the CLI boundary with its own wording", () => {
-  const conflict = runCli(["profile", "--add", "work", "--direct", "--proxy"], {
+test("profile add rejects --direct + --proxy at the CLI boundary with its own wording", () => {
+  const conflict = runCli(["profile", "work", "add", "--direct", "--proxy"], {
     env: isolatedEnv(),
   });
   expect(conflict.exitCode).toBe(1);
@@ -450,15 +448,13 @@ test("profile rejects --direct + --proxy at the CLI boundary with its own wordin
 });
 
 test("the mode conflict is rejected at the boundary on every command that takes the pair", () => {
-  // Boundary parse runs before any per-command logic, so even invocations whose
-  // command would error later (non---add profile, --mobile, --check) reject
-  // the pair first.
+  // Boundary parse runs before any per-command logic, so even an invocation whose command would
+  // error later (a fresh default with no credential) rejects the pair first.
   for (
     const argv of [
       ["models", "--direct", "--proxy"],
-      ["profile", "--list", "--direct", "--proxy"],
-      ["codex", "--mobile", "--direct", "--proxy"],
-      ["claude", "--check", "--direct", "--proxy"],
+      ["init", "--direct", "--proxy"],
+      ["profile", "add", "--direct", "--proxy"],
     ]
   ) {
     const conflict = runCli([...argv], { env: isolatedEnv() });
@@ -467,27 +463,10 @@ test("the mode conflict is rejected at the boundary on every command that takes 
   }
 });
 
-test("codex/claude reject flag combinations the old routing order silently resolved", () => {
-  // The bugs pinned: `codex --check --direct` once ran the check and dropped the mode, and
-  // `codex --mobile --check` once ran mobile and dropped the check. Units in provider_mode.test.ts;
-  // this pins the cli.ts wiring.
-  const cases: Array<{ argv: string[]; message: string }> = [
-    { argv: ["codex", "--check", "--direct"], message: "does not combine with --direct/--proxy" },
-    { argv: ["codex", "--mobile", "--check"], message: "--mobile is an interactive pairing flow" },
-    { argv: ["claude", "--check", "--proxy"], message: "does not combine with --direct/--proxy" },
-  ];
-  for (const { argv, message } of cases) {
-    const proc = runCli(argv, { env: isolatedEnv() });
-    expect(proc.exitCode).toBe(1);
-    expect(proc.stderr).toContain(message);
-  }
-  // Three cold CLI spawns; generous headroom for loaded Windows CI runners.
-}, 90_000);
-
-test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {
+test("codex-mobile refuses to run (non-TTY, or unsupported platform)", () => {
   // Without a TTY the pairing flow must bail instead of hanging on a prompt. On macOS/Windows that
   // is the TTY guard ("interactive"); on Linux the platform gate fires first (no Codex app there).
-  const proc = runCli(["codex", "--mobile"], { env: isolatedEnv() });
+  const proc = runCli(["codex-mobile"], { env: isolatedEnv() });
   expect(proc.exitCode).toBe(1);
   const err = proc.stderr;
   if (process.platform === "darwin" || process.platform === "win32") {
@@ -631,25 +610,36 @@ test("shell --clis --no-prereqs rejects --cooldown, never drops it", () => {
   // Three cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 90_000);
 
-test("the merged commands are gone; --gh-token is off the per-agent commands", () => {
+test("the merged commands are gone; --gh-token is off the wiring commands", () => {
   const rootOut = helpScreen("--help").output;
-  // The cached root help is the reintroduction guard for the folded-in setup-* commands (the CLI
-  // has a no-hidden-commands rule).
-  for (const stale of ["setup-clis", "setup-shell", "setup-launchers"]) {
-    expect(rootOut).not.toContain(stale);
+  // The cached root help is the reintroduction guard for the folded-in commands (the CLI has a
+  // no-hidden-commands rule): the setup-* trio and the per-agent pair. A command row starts its
+  // line; the same words inside a description do not count.
+  for (const stale of ["setup-clis", "setup-shell", "setup-launchers", "claude", "codex"]) {
+    expect(rootOut, stale).not.toMatch(new RegExp(`^\\s{2}${stale}\\s`, "m"));
   }
 
-  for (const cmd of ["codex", "claude"] as const) {
-    const help = helpScreen(cmd, "--help");
-    expect(help.exitCode).toBe(0);
-    expect(help.output).not.toContain("--gh-token");
+  for (const args of [["init"], ["profile", "add"], ["profile", "sync"]]) {
+    const help = helpScreen(...args, "--help");
+    expect(help.exitCode, args.join(" ")).toBe(0);
+    expect(help.output, args.join(" ")).not.toContain("--gh-token");
   }
 });
 
-test("--full-help prints the overview plus every subcommand's help", () => {
+test("--full-help prints the overview plus every subcommand's help, the profile verbs included", () => {
   const proc = helpScreen("--full-help");
   expect(proc.exitCode).toBe(0);
-  for (const needle of ["agent init", "agent shell", "agent start", "agent codex", "--clis"]) {
+  for (
+    const needle of [
+      "agent init",
+      "agent profile add",
+      "agent profile check",
+      "agent codex-mobile",
+      "agent shell",
+      "agent start",
+      "--clis",
+    ]
+  ) {
     expect(proc.stdout).toContain(needle);
   }
 });
@@ -790,7 +780,7 @@ test("health --profile narrows the run and excludes account-wide checks", () => 
   for (const c of json.checks) expect(c.profile).toBe("p");
   // The unwired agent homes read as interrupted profile wiring (warn), and the
   // down daemon fails -- both fixes address the profile.
-  expect(json.checks.find((c) => c.id === "setup.codex")?.fix).toBe("agent profile --add p");
+  expect(json.checks.find((c) => c.id === "setup.codex")?.fix).toBe("agent profile p add");
   expect(json.checks.find((c) => c.id === "runtime.port")?.fix).toBe("agent start --profile p");
   expect(json.exitCode).toBe(1);
 

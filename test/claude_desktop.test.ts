@@ -35,7 +35,6 @@ import {
   removeClaudeDesktopEntry,
   removeUnmanagedClaudeDesktopWiring,
   resolveDesktopLibraryDir,
-  retireDesktopHelperScript,
   syncClaudeDesktopWiring,
   wireClaudeDesktopEntry,
   writeDesktopHelperScript,
@@ -396,7 +395,7 @@ test("payload: the static shape bakes the key and drops the helper keys; the com
 
 // --- helper scripts ----------------------------------------------------------------
 
-test("helper scripts: written 0755, regenerated when tampered, other mode removed", () => {
+test("helper scripts: written 0755, regenerated when tampered, other mode removed", async () => {
   isolateWithDesktop();
   const rootHome = resolveRootHome();
   const direct = writeDesktopHelperScript("direct", null);
@@ -415,10 +414,10 @@ test("helper scripts: written 0755, regenerated when tampered, other mode remove
     writeDesktopHelperScript("direct", null);
     expect(statSync(again).mode & 0o111).not.toBe(0);
   }
-  // A mode switch retires the stale twin after the save.
-  const proxy = writeDesktopHelperScript("proxy", null);
+  // A mode switch's wire retires the stale twin after the save.
+  await wireClaudeDesktopEntry({ mode: "proxy", credential: { kind: "command" }, profile: null });
+  const proxy = desktopHelperPath(rootHome, "proxy", null);
   expect(readFileSync(proxy, "utf8")).toContain("proxy-token");
-  retireDesktopHelperScript("proxy", null);
   expect(existsSync(direct)).toBe(false);
 });
 

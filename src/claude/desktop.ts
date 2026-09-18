@@ -520,7 +520,8 @@ function readDesktopHelperScript(mode: ProfileMode, profile: Profile): DesktopHe
 }
 
 /** The executable bit is healed even when the body matched (a chmod'd-away +x would otherwise
- *  survive every wire). The OTHER mode's script is retired separately (retireDesktopHelperScript)
+ *  survive every wire). The OTHER mode's script is retired separately
+ *  (prepareRetireDesktopHelperScript)
  *  AFTER the entry saves, so a failed save never leaves the current entry pointing at a deleted
  *  helper. */
 function landDesktopHelperScript({ path, body, current }: DesktopHelperScript): void {
@@ -561,9 +562,8 @@ function removeFile(path: string, detail?: string): void {
   }
 }
 
-/** A helper removal in two steps: the look now (a directory at the path is warned once and left
- *  alone, in both runs; the entry the script served still lands or goes on its own), the removal
- *  when the returned step runs. Any other failure is the caller's. */
+/** A directory at a helper's path is warned once and left alone, in both runs; the entry the
+ *  script served still lands or goes on its own. Any other failure is the caller's. */
 function prepareRemoveHelperScript(path: string): () => void {
   try {
     fs.assertNotDirectory(path);
@@ -574,18 +574,10 @@ function prepareRemoveHelperScript(path: string): () => void {
   return () => removeFile(path);
 }
 
-function removeHelperScript(path: string): void {
-  prepareRemoveHelperScript(path)();
-}
-
-/** The other mode's script goes, post-save on a wire; the look is taken when this is called. */
+/** The other mode's script goes, post-save on a wire. */
 function prepareRetireDesktopHelperScript(mode: ProfileMode, profile: Profile): () => void {
   const other: ProfileMode = mode === "direct" ? "proxy" : "direct";
   return prepareRemoveHelperScript(desktopHelperPath(resolveRootHome(), other, profile));
-}
-
-export function retireDesktopHelperScript(mode: ProfileMode, profile: Profile): void {
-  prepareRetireDesktopHelperScript(mode, profile)();
 }
 
 // --- app files -----------------------------------------------------------------------
@@ -606,9 +598,8 @@ export type DesktopAppState =
   | { kind: "unreadable"; path: string; reason: string };
 
 /** A merge that keeps the file's other keys (claude_desktop_config.json holds the user's MCP
- *  servers and preferences), in two steps: the file read and judged now (an unparseable one is
- *  left alone and reported here, since rebuilding it would destroy those keys), written when the
- *  returned step runs. */
+ *  servers and preferences). An unparseable file is left alone and reported: rebuilding it would
+ *  destroy those. */
 function prepareAppFileMerge(
   path: string,
   patch: Record<string, unknown>,
@@ -915,9 +906,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   // a slot naming a live entry (a user's own config) is never displaced.
   if (!meta.entries.some((e) => e.id === meta.appliedId)) meta.appliedId = entry.id;
 
-  // Every look before the first wiring write: the post-save steps (the other mode's helper, the
-  // app files) read and judge their files now, so their warnings precede the writes and print
-  // even when a write fails.
+  // The post-save steps take their looks before the first wiring write.
   const retire = credential.kind === "command"
     ? prepareRetireDesktopHelperScript(opts.mode, opts.profile)
     : prepareRemoveHelperScripts(opts.profile);
@@ -1057,9 +1046,11 @@ function removeOwned(
   helpersOf: Profile | undefined,
 ): void {
   try {
+    // The helpers' looks come before the library is touched.
+    const helpers = helpersOf === undefined ? () => {} : prepareRemoveHelperScripts(helpersOf);
     const entries = sweepOwnedEntries(selects);
     if (entries.kind === "blocked") return;
-    if (helpersOf !== undefined) removeHelperScripts(helpersOf);
+    helpers();
     releaseClaims(entries.removed);
   } catch (e) {
     logger.warn(`  Could not remove ${what}: ${errMessage(e)}`);
@@ -1071,7 +1062,7 @@ function releaseClaims(paths: readonly string[]): void {
   for (const path of paths) ledger.release("claudeDesktop", path);
 }
 
-/** Both modes' scripts, looked at now and removed when the step runs. */
+/** Both modes' scripts. */
 function prepareRemoveHelperScripts(profile: Profile): () => void {
   const rootHome = resolveRootHome();
   const steps = [
@@ -1081,10 +1072,6 @@ function prepareRemoveHelperScripts(profile: Profile): () => void {
   return () => {
     for (const step of steps) step();
   };
-}
-
-function removeHelperScripts(profile: Profile): void {
-  prepareRemoveHelperScripts(profile)();
 }
 
 /** The filename grammar desktopHelperPath produces, either platform's extension. */
@@ -1166,12 +1153,13 @@ export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {
   // Every look before the first write: the helper listing and the unlisted claims are judged over
   // the library as it stands, and a listing that fails leaves it untouched.
   const helpers = presentDesktopHelperScripts(resolveRootHome())
-    .filter((path) => desktopHelperScriptWiring(basename(path))?.profile !== null);
+    .filter((path) => desktopHelperScriptWiring(basename(path))?.profile !== null)
+    .map(prepareRemoveHelperScript);
   const unlisted = unlistedClaims(undefined, sweepable);
   const entries = sweepOwnedEntries((e) => sweepable(e.path));
   if (entries.kind === "blocked") return;
   if (unlisted.kind === "listed") { for (const path of unlisted.paths) removeFile(path, ENTRY); }
-  for (const path of helpers) removeHelperScript(path);
+  for (const remove of helpers) remove();
   if (!opts.quiet) announceUnmanagedDefault();
   releaseClaims(entries.removed);
   if (unlisted.kind === "listed") releaseClaims(unlisted.paths);

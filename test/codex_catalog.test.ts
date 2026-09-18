@@ -712,10 +712,12 @@ test("a regenerated catalog identical to the one on disk previews as unchanged",
   const { stdout } = await captureChannels(() =>
     runDryRun(() => generateCodexModelCatalog("direct", deps))
   );
-  // The print wraps to the terminal width (mid-path, or at the space after the verdict), so both
-  // sides are compared with their whitespace removed.
-  const unspaced = (text: string): string => text.replace(/\s+/g, "");
-  expect(unspaced(stdout)).toContain(unspaced(`unchanged ${file}`));
+  // The print wraps to the terminal width (mid-path, or at the space after the verdict): the rows
+  // are re-joined by their two-space indent, then the catalog's row is matched exactly.
+  const rows = stdout.split("\n").slice(1).join("\n").split(/\n {2}(?! )/).map((row) =>
+    row.replace(/\s+/g, "")
+  );
+  expect(rows).toEqual([`unchanged${file}`.replace(/\s+/g, "")]);
   expect(readFileSync(file, "utf8")).toBe(before);
 });
 

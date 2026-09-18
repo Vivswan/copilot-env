@@ -27,6 +27,7 @@ import {
 } from "../src/claude/config.ts";
 import { runClaude } from "../src/agents/configure_defaults.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
+import { resolveClaudeHome } from "../src/claude/paths.ts";
 import { runMcp } from "../src/commands/mcp.ts";
 import { probeModelPin } from "../src/copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -571,6 +572,28 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     }
   },
 );
+
+test("a Claude home that cannot be made leaves ~/.claude.json untouched: the Direct registration follows the mkdir", async () => {
+  // A regular file where the Claude home should be fails the mkdir; the MCP registration the
+  // Direct write lands is written only once the home exists, so ~/.claude.json keeps its bytes.
+  // With no CLAUDE_CONFIG_DIR the registration file sits in $HOME itself, beside the bogus home.
+  const home = tmpHome();
+  delete process.env.CLAUDE_CONFIG_DIR;
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(home, "not a directory");
+  writeFileSync(claudeJsonPath(), "{}\n");
+  const { stderr } = await captureChannels(() => {
+    expect(() =>
+      configureClaudeConfig(resolveClaudeHome(), {
+        mode: "direct",
+        direct: null,
+        credential: COMMAND,
+      })
+    ).toThrow("could not create Claude config directory");
+  });
+  expect(readFileSync(claudeJsonPath(), "utf8")).toBe("{}\n");
+  expect(stderr).not.toContain("MCP registration failed");
+});
 
 test("configureClaudeConfig refuses to overwrite a malformed settings.json", () => {
   const home = tmpHome();

@@ -452,18 +452,20 @@ function credentialDetail(
 export const WEBSEARCH_DENY_RULE = "WebSearch";
 
 /**
- * What follows the settings save for the web-search pair: `commit` is the ledger record or release
- * (store bookkeeping), `after` a file write the save must precede (the registration removal on
- * take-back). Both run only after a successful save, so a failed write leaves ledger and files
- * consistent and a retry can still recover.
+ * The web-search pair around the settings save: `before` runs once the home exists and before the
+ * save (the registration, whose answer the deny depends on), `after` a file write the save must
+ * precede (the registration removal on take-back), `commit` the ledger record or release (store
+ * bookkeeping). `after` and `commit` run only after a successful save, so a failed write leaves
+ * ledger and files consistent and a retry can still recover.
  */
 type WebSearchPairStep = () => void;
 const NO_STEP: WebSearchPairStep = () => {};
 interface WebSearchPair {
+  before: WebSearchPairStep;
   commit: WebSearchPairStep;
   after: WebSearchPairStep;
 }
-const NO_PAIR: WebSearchPair = { commit: NO_STEP, after: NO_STEP };
+const NO_PAIR: WebSearchPair = { before: NO_STEP, commit: NO_STEP, after: NO_STEP };
 
 /**
  * Ownership is the exact settings PATH the entry was added to: a deny the user already had, or one
@@ -490,6 +492,7 @@ function applyManagedWebSearchDeny(
   doc.permissions = permissions;
   permissions.deny = [...deny, WEBSEARCH_DENY_RULE];
   return {
+    before: NO_STEP,
     // Post-save on purpose: a record without a saved deny would make a deny the USER adds later
     // ours to delete. The inverse (saved, record failed) merely orphans our one line: the
     // acceptable direction.
@@ -512,36 +515,51 @@ function stripManagedWebSearchDeny(
     else delete permissions.deny;
     if (filtered.length === 0 && denyAlone) delete doc.permissions;
   }
-  return { commit: () => ledger.release("webSearchDeny", settingsPath), after: NO_STEP };
+  return {
+    before: NO_STEP,
+    commit: () => ledger.release("webSearchDeny", settingsPath),
+    after: NO_STEP,
+  };
 }
 
 /**
  * Registration first, and the deny stands only while the registration is confirmed: a machine is
  * never left with the builtin denied and no replacement. The proxy serves web search itself, so it
  * takes both back. Default profile only: `~/.claude.json` is global and deny rules UNION across
- * layers, so a named proxy profile could never un-deny a direct default's rule. The registration
- * lands here, before the settings save; the removal follows the save (`after`).
+ * layers, so a named proxy profile could never un-deny a direct default's rule.
+ *
+ * Direct: the registration is written in `before` (after the home exists, before the settings
+ * save) and the deny is patched onto `doc` from its answer. Proxy: the removal is looked at now
+ * and written in `after`, so a failed settings save keeps the consistent old state (deny +
+ * server) instead of losing only the server half.
  */
-function landWebSearchPair(
+function prepareWebSearchPair(
   doc: Record<string, unknown>,
   mode: ManagedAgentMode,
   settingsPath: string,
 ): WebSearchPair {
   if (mode === "direct" && new CopilotEnvConfig().wireMcpEnabled()) {
-    if (registerClaudeMcpServer()) return applyManagedWebSearchDeny(doc, settingsPath);
-    logger.warn(
-      "copilot-env MCP registration failed; removing the managed WebSearch deny so the " +
-        "builtin stays reachable (it will 400 on Copilot Direct) - fix ~/.claude.json, " +
-        "then rewire with `agent claude --direct`",
-    );
-    return stripManagedWebSearchDeny(doc, settingsPath);
+    let landed: WebSearchPair = NO_PAIR;
+    return {
+      before() {
+        if (registerClaudeMcpServer()) {
+          landed = applyManagedWebSearchDeny(doc, settingsPath);
+          return;
+        }
+        logger.warn(
+          "copilot-env MCP registration failed; removing the managed WebSearch deny so the " +
+            "builtin stays reachable (it will 400 on Copilot Direct) - fix ~/.claude.json, " +
+            "then rewire with `agent claude --direct`",
+        );
+        landed = stripManagedWebSearchDeny(doc, settingsPath);
+      },
+      after: () => landed.after(),
+      commit: () => landed.commit(),
+    };
   }
   const strip = stripManagedWebSearchDeny(doc, settingsPath);
-  // Looked at now (a malformed ~/.claude.json is warned about before the settings save), landed
-  // post-save: a failed settings write keeps the consistent old state (deny + server) instead of
-  // losing only the server half.
   const remove = prepareClaudeMcpRemoval();
-  return { commit: strip.commit, after: () => void remove() };
+  return { before: NO_STEP, commit: strip.commit, after: () => void remove() };
 }
 
 /**
@@ -558,7 +576,8 @@ export function syncDefaultWebSearch(claudeHome = resolveClaudeHome()): void {
   const mode = new CopilotEnvState().readProfileSlot(null).mode ?? "proxy";
   const doc = loadSettings(settingsPath);
   const before = JSON.stringify(doc);
-  const pair = landWebSearchPair(doc, mode, settingsPath);
+  const pair = prepareWebSearchPair(doc, mode, settingsPath);
+  pair.before();
   if (JSON.stringify(doc) !== before) saveOrRemoveSettings(settingsPath, doc);
   pair.after();
   pair.commit();
@@ -633,10 +652,10 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     }`;
   }
   // Real Claude home only: the throwaway detect-probe home must not touch the machine-global
-  // ~/.claude.json. The pair's looks (and its registration write) come before the home's mkdir,
-  // as every look precedes the first write of the settings file's own.
+  // ~/.claude.json. The proxy arm's look at it comes before any write; the Direct arm's
+  // registration write follows the home's mkdir, so a home that cannot be made leaves it untouched.
   const pair = profile === null && claudeHome === resolveClaudeHome()
-    ? landWebSearchPair(doc, request.mode, settingsPath)
+    ? prepareWebSearchPair(doc, request.mode, settingsPath)
     : NO_PAIR;
   if (plannedPort !== null) reservePlannedPort(profile, plannedPort);
   try {
@@ -644,6 +663,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
   } catch (e) {
     throw new Error(`could not create Claude config directory ${claudeHome}: ${errMessage(e)}`);
   }
+  pair.before();
   fs.writeText(settingsPath, settingsText(doc), {
     atomic: false,
     detail,

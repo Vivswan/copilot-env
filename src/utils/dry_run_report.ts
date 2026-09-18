@@ -188,12 +188,14 @@ function emptyLeaves(
   empties: ReadonlySet<string>,
   own: Map<string, unknown>,
   other: ReadonlyMap<string, unknown>,
+  otherEmpties: ReadonlySet<string>,
 ): void {
   for (const key of empties) {
-    if (other.has(key)) continue;
-    let below = false;
-    for (const k of other.keys()) if (k.startsWith(`${key}.`)) below = true;
-    if (!below) own.set(key, {});
+    if (other.has(key) || otherEmpties.has(key)) continue;
+    // A table whose subtree still stands (a leaf, or an empty table, below it) is not absent.
+    const under = (k: string): boolean => k.startsWith(`${key}.`);
+    if ([...other.keys()].some(under) || [...otherEmpties].some(under)) continue;
+    own.set(key, {});
   }
 }
 
@@ -222,7 +224,9 @@ function docRows(
   // A dropped empty table is a row for TOML, where the writers' rows printed one; the JSON store
   // never printed a container; one kept on both sides is neither.
   for (const key of afterEmpties) beforeEmpties.delete(key);
-  if (extname(path).toLowerCase() === ".toml") emptyLeaves(beforeEmpties, before, after);
+  if (extname(path).toLowerCase() === ".toml") {
+    emptyLeaves(beforeEmpties, before, after, afterEmpties);
+  }
   const rows: AttributeRow[] = [];
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const status: AttributeStatus = !before.has(key)

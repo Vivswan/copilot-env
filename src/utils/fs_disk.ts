@@ -63,6 +63,7 @@ import {
   plannedMissingDirectories,
   plannedState,
   readPlannedDir,
+  readPlannedText,
   recordBytes,
   recordPlannedMode,
   recordSecret,
@@ -215,7 +216,7 @@ function planned(
       parentState?.kind === "text" || parentState?.kind === "bytes" ||
       (parentState?.kind === "opaque" && parentState.file)
     ) {
-      throw errno("ENOTDIR", `not a directory, ${refusals.syscall}`);
+      throw underFileRefusal(refusals.syscall);
     }
     if (parentState === null || parentState.kind === "opaque") {
       const refusal = parentRefusal(parent, refusals.syscall);
@@ -251,8 +252,10 @@ function planned(
     return true;
   }
   // A file that is not text (a directory, a binary) carries no `before`, and the plan names the
-  // path alone.
-  const was = kind === "create" ? null : readTextResult(path);
+  // path alone. The text compared is the run's own (an earlier landing's planned text), never the
+  // disk's: a second landing that restores the disk bytes is then `same`, and the fold reads the
+  // path as unchanged, as it did when the store read its shadow.
+  const was = kind === "create" ? null : readPlannedText(path);
   const before = was === null ? null : was.kind === "text" ? was.text : undefined;
   landPlan({
     files: [{
@@ -316,6 +319,16 @@ function parentRefusal(parent: string, syscall: string): NodeJS.ErrnoException |
   }
 }
 
+/** What a lookup at or under a regular file raises: ENOTDIR on POSIX; Windows reports the path as
+ *  not found (the overlay's table, fs_overlay.ts), except that node's own recursive mkdir says
+ *  ENOTDIR. */
+function underFileRefusal(syscall: string): NodeJS.ErrnoException {
+  const notdir = process.platform !== "win32" || syscall.startsWith("mkdir");
+  return notdir
+    ? errno("ENOTDIR", `not a directory, ${syscall}`)
+    : errno("ENOENT", `no such file or directory, ${syscall}`);
+}
+
 /** The error node:fs raises for `code`, spelled as it spells it. */
 function errno(code: string, detail: string): NodeJS.ErrnoException {
   const err: NodeJS.ErrnoException = new Error(`${code}: ${detail}`);
@@ -357,7 +370,7 @@ export function refuseRmdir(path: string): void {
     state?.kind === "text" || state?.kind === "bytes" ||
     (state?.kind === "opaque" && state.file)
   ) {
-    throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
+    throw underFileRefusal(`rmdir '${path}'`);
   }
   if (state === null || state.kind === "opaque") {
     // A plan without bytes (a chmod on a disk directory): the disk says which kind stands there.

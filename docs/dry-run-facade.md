@@ -86,7 +86,9 @@ Every module under `src/` reads and writes files through `import * as fs from ".
 | `fs.scratchDir(prefix)` / `fs.removeScratchDir(dir)`         | a process-transient directory (`ScratchDir`): real in every mode (a probe's throwaway config must exist for the CLI it spawns), never reported, never planned; a move or copy is real only when both its paths are scratch |
 | `RenameRefusedError`                                         | the one failure a caller may answer with a direct write (`atomic: false`)                                                                                                                                                  |
 
-Secrets are declared at the write. `secretKeys` names the dotted leaves of a JSON or TOML file whose values print as `<redacted>` for the path's whole run (`fs.writeText(settingsPath, text, { secretKeys: SETTINGS_SECRETS })`); `secret: true` marks the whole file (a settings bundle, the Codex `config.toml` with a baked key, the Claude Desktop config), which prints its verdict alone. A declaration travels with the file through `rename` and `copyFile`, so the report at the new path redacts the same values. Nothing is redacted at read time, and no reader re-derives a secret.
+Secrets are declared at the write. `secretKeys` names the dotted leaves of a JSON or TOML file whose values print as `<redacted>` for the path's whole run (`fs.writeText(settingsPath, text, { secretKeys: SETTINGS_SECRETS })`); `secret: true` marks the whole file (a settings bundle, the Codex `config.toml` with a baked key, the Claude Desktop config), which prints its verdict alone.
+
+A declaration travels with the file through `rename` and `copyFile`, so the report at the new path redacts the same values, and it outlives a deletion of the path within the run. Nothing is redacted at read time, and no reader re-derives a secret.
 
 What replaces each `src/utils/report_write.ts` wrapper (the wrappers stay as thin aliases until every caller has moved; then they go):
 

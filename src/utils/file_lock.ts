@@ -7,10 +7,11 @@
 // exclusive LockFileEx blocks reads from every other handle, which would blind exactly the readers
 // whose contract the marker is. The sidecar is never unlinked: a deletable lock file can be locked
 // as an orphan inode by a contender that opened it just before the holder released the path.
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
 import { isEnoentOrNotdir } from "./fs.ts";
+import * as fs from "./fs_facade.ts";
 import { isRecord } from "./json.ts";
 import { pidAlive } from "./pid.ts";
 import { sleepSync } from "./time.ts";
@@ -171,10 +172,11 @@ export function tryAcquireFileLock(
     return ours.refresh(renderMarker(nowMs, jsonMarker));
   }
 
-  // Raw and real in every mode: the lock protocol never routes through the write seam (a planned
-  // directory is no place to take a lock).
+  // The lock's directory is the store's home, made through the seam so a home outside
+  // copilot-env's own (its parents included) is named on stderr; the lock file itself stays raw
+  // (a dry run takes no lock, see withFileLockSync).
   try {
-    mkdirSync(dirname(lockPath), { recursive: true });
+    fs.mkdir(dirname(lockPath));
   } catch {
     // if we can't even create the dir, the open below fails and the caller proceeds unlocked
   }

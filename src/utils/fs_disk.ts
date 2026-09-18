@@ -758,8 +758,13 @@ export function rename(from: string, to: string): void {
 }
 
 export function symlink(target: string, path: string, type?: "junction"): void {
+  // node's symlinkSync never replaces: an entry at the path, the disk's or one this run planned,
+  // is its EEXIST, in the plan too (atomicSymlink is the replacing shape).
+  if (planCollecting() && plannedLook(path).kind !== "absent") {
+    throw errno("EEXIST", `file already exists, symlink '${target}' -> '${path}'`);
+  }
   if (
-    planned(verdictOf(plannedLook(path)), path, undefined, {
+    planned("create", path, undefined, {
       syscall: `symlink '${target}' -> '${path}'`,
       directory: "none",
     })

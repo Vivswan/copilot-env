@@ -457,6 +457,37 @@ test("under the plan collector a directory removed and made again is fresh and e
   expect(readFileSync(join(root, "stale.txt"), "utf8")).toBe("old");
 });
 
+test("a symlink never replaces: a disk entry or a planned file at the path is EEXIST under the collector as for real, and a fresh path records a create", async () => {
+  dir = tempDir("copilot-bridge-");
+  const onDisk = join(dir, "on-disk");
+  const plannedFile = join(dir, "planned");
+  const fresh = join(dir, "fresh");
+  writeFileSync(onDisk, "kept");
+  const exists = /EEXIST: file already exists, symlink/;
+  const { files } = await collectDryRun(() => {
+    facade.writeText(plannedFile, "x");
+    expect(() => facade.symlink("target", onDisk)).toThrow(exists);
+    expect(() => facade.symlink("target", plannedFile)).toThrow(exists);
+    facade.symlink("target", fresh);
+    return Promise.resolve();
+  });
+  expect(files.map((f) => `${f.verdict} ${f.path}`)).toEqual([
+    `create ${plannedFile}`,
+    `create ${fresh}`,
+  ]);
+  expect([readFileSync(onDisk, "utf8"), facade.exists(fresh)]).toEqual(["kept", false]);
+  // The real call refuses with the same code (its message is the runtime's own spelling).
+  if (Deno.build.os !== "windows") {
+    let code = "ok";
+    try {
+      facade.symlink("target", onDisk);
+    } catch (e) {
+      code = (e as NodeJS.ErrnoException).code ?? "";
+    }
+    expect([code, readFileSync(onDisk, "utf8")]).toEqual(["EEXIST", "kept"]);
+  }
+});
+
 test("under the plan collector a facade read answers from the plan: a planned write reads back, a planned delete reads as absent, a planned directory lists", async () => {
   dir = tempDir("copilot-bridge-");
   const file = join(dir, "f.txt");

@@ -303,7 +303,9 @@ export class Overlay {
   readText(path: string): string {
     const content = this.fileAt(path, "open");
     if ("text" in content) return content.text;
-    if ("bytes" in content) return new TextDecoder().decode(content.bytes);
+    if ("bytes" in content) {
+      return new TextDecoder("utf-8", { ignoreBOM: true }).decode(content.bytes);
+    }
     return readFileSync(content.disk, "utf8");
   }
 

@@ -465,7 +465,12 @@ export function readPlannedDir(dir: string): string[] {
  *  Readers that decide a later write on a file an earlier landing touched read through here. */
 export function readPlannedText(path: string): TextReadResult {
   const state = plannedState(path);
-  if (state?.kind === "bytes") return { kind: "text", text: new TextDecoder().decode(state.bytes) };
+  if (state?.kind === "bytes") {
+    return {
+      kind: "text",
+      text: new TextDecoder("utf-8", { ignoreBOM: true }).decode(state.bytes),
+    };
+  }
   const shadow = shadowedText(path);
   if (shadow === undefined) return readTextResult(path);
   return shadow === null ? { kind: "absent" } : { kind: "text", text: shadow };

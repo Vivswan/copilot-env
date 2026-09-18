@@ -176,10 +176,16 @@ test("under the plan collector a moved or copied secret keeps its declaration th
     // text.
     writeFileReported(copy, "plain\n");
     facade.writeText(moved, '{"x":1}\n', { secretKeys: [] });
-    // Declared keys travel too: a later document write of the copy redacts them.
+    // Declared keys travel too: a later document write of the copy redacts them, and a later
+    // undeclared write prints no line of either text.
     facade.writeText(keyed, '{"token":"t","n":1}\n', { secretKeys: ["token"] });
     facade.copyFile(keyed, keyedCopy);
     facade.writeText(keyedCopy, '{"n":2}\n', { secretKeys: [] });
+    facade.copyFile(keyed, join(dir, "keyed-plain.json"));
+    writeFileReported(join(dir, "keyed-plain.json"), '{"token":"t","n":3}\n');
+    // Planned bytes decode as node decodes a file: a byte-order mark stays.
+    facade.writeBytes(join(dir, "bom.txt"), new Uint8Array([239, 187, 191, 97]));
+    expect(facade.readText(join(dir, "bom.txt"))).toBe("\uFEFFa");
     facade.copyFile(binary, binaryCopy);
     expect(facade.readBytes(binaryCopy)).toEqual(new Uint8Array([202, 254, 186, 190]));
     expect(() => facade.rename(join(dir, "missing"), join(dir, "elsewhere"))).toThrow(/ENOENT/);
@@ -201,6 +207,8 @@ test("under the plan collector a moved or copied secret keeps its declaration th
     `create ${keyedCopy}`,
     `  token  <redacted> -> (absent)`,
     `  n  1 -> 2`,
+    `create ${join(dir, "keyed-plain.json")}`,
+    `create ${join(dir, "bom.txt")}`,
     `create ${binaryCopy}`,
     `create ${blob}`,
   ]);

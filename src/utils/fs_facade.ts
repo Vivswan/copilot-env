@@ -135,7 +135,9 @@ export function readText(path: string): string {
   if (seen === "dir") throw errno("EISDIR", "open", path);
   // The plan carries no bytes for an opaque file: the disk is the nearest answer.
   if (seen === null || seen === "opaque") return readFileSync(path, "utf8");
-  return seen.kind === "text" ? seen.text : new TextDecoder().decode(seen.bytes);
+  return seen.kind === "text"
+    ? seen.text
+    : new TextDecoder("utf-8", { ignoreBOM: true }).decode(seen.bytes);
 }
 
 export function readBytes(path: string): Uint8Array {

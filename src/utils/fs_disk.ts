@@ -406,8 +406,9 @@ function bridgedRender(
   let before: string | null;
   let unreadable = false;
   if (state?.kind === "text") before = state.text;
-  else if (state?.kind === "bytes") before = new TextDecoder().decode(state.bytes);
-  else if (state?.kind === "gone") before = null;
+  else if (state?.kind === "bytes") {
+    before = new TextDecoder("utf-8", { ignoreBOM: true }).decode(state.bytes);
+  } else if (state?.kind === "gone") before = null;
   else {
     const read = readTextResult(path);
     before = read.kind === "text" ? read.text : null;
@@ -535,8 +536,10 @@ function writeStaged(path: string, data: string | Uint8Array, options: WriteOpti
 
 export function copyFile(from: string, to: string, detail?: string): void {
   const was = plannedLook(to);
-  // A copy of content the run declared secret as a whole prints its path alone, now and later.
-  const render: PlannedRender = secretOf(from).whole ? "path-only" : "diff";
+  // A copy of content the run declared secret (as a whole, or by key) prints its path alone, now
+  // and on a later write: a diff row would read the copied text as the text it replaces.
+  const carried = secretOf(from);
+  const render: PlannedRender = carried.whole || carried.keys.size > 0 ? "path-only" : "diff";
   if (
     planned(verdictOf(was), to, { render }, {
       syscall: `copyfile '${from}' -> '${to}'`,

@@ -457,6 +457,22 @@ test("under the plan collector a directory removed and made again is fresh and e
   expect(readFileSync(join(root, "stale.txt"), "utf8")).toBe("old");
 });
 
+test("under the plan collector a stale staging file at the link's staging path is planned removed before the link", async () => {
+  dir = tempDir("copilot-bridge-");
+  const link = join(dir, "current");
+  const staging = join(dir, `.current-next-${process.pid}`);
+  writeFileSync(staging, "left by a crashed run");
+  const { files } = await collectDryRun(() => {
+    facade.atomicSymlink("versions/v1", link);
+    return Promise.resolve();
+  });
+  expect(files.map((f) => `${f.verdict} ${f.path}`)).toEqual([
+    `delete ${staging}`,
+    `create ${link}`,
+  ]);
+  expect(readFileSync(staging, "utf8")).toBe("left by a crashed run");
+});
+
 test("a symlink never replaces: a disk entry or a planned file at the path is EEXIST under the collector as for real, and a fresh path records a create", async () => {
   dir = tempDir("copilot-bridge-");
   const onDisk = join(dir, "on-disk");

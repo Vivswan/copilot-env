@@ -777,15 +777,16 @@ export function symlink(target: string, path: string, type?: "junction"): void {
  *  missing link. */
 export function atomicSymlink(target: string, link: string): void {
   const staged = join(dirname(link), `.${basename(link)}-next-${process.pid}`);
+  // A stale staging entry from a crashed run under this pid goes first, through the seam: with
+  // pid reuse the path could be a file the user made, so its removal is named, and planned before
+  // the link is (a dry run prints what the real run does).
+  rm(staged, { force: true, detail: "stale staging file" });
   if (
     planned(verdictOf(plannedLook(link)), link, undefined, {
       syscall: `rename '${staged}' -> '${link}'`,
       directory: "entry",
     })
   ) return;
-  // A stale staging entry from a crashed run under this pid goes first, through the seam: with
-  // pid reuse the path could be a file the user made, and its removal is then named.
-  rm(staged, { force: true, detail: "stale staging file" });
   const was = look(staged);
   symlinkSync(target, staged);
   try {

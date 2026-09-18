@@ -5,7 +5,7 @@ import { consola } from "consola";
 import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
 import { daemonLockVerdict } from "../scripts/daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
-import { dryRunActive } from "../utils/write_session.ts";
+import { dryRunActive } from "../utils/fs_facade.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { daemonPolicy, defaultProxyPort } from "./port.ts";
 import { classifyDaemonPid, isCopilotApiPid, pidAlive, terminatePid } from "./process.ts";

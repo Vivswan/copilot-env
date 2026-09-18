@@ -10,7 +10,7 @@ import {
 } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
-import { dryRunActive } from "../utils/write_session.ts";
+import { dryRunActive } from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
 
 /** A status word in its tone, the edge's COLOR_ENABLED resolved once here. */

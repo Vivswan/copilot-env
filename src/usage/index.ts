@@ -14,7 +14,7 @@ import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { BOUNDED_LOCK_POLICY, type LockPolicy, withFileLockSync } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { chmodReported, mkdirReported, removeReported } from "../utils/report_write.ts";
+import * as fs from "../utils/fs_facade.ts";
 import {
   type ClaudeContribution,
   type CodexContribution,
@@ -645,7 +645,7 @@ function relinquishDb(db: DatabaseSync): Relinquish {
 }
 
 function removeDbFiles(dbPath: string): void {
-  for (const suffix of DB_FILE_SUFFIXES) removeReported(`${dbPath}${suffix}`);
+  for (const suffix of DB_FILE_SUFFIXES) fs.rm(`${dbPath}${suffix}`, { force: true });
 }
 
 /** Null means "run index-less": the reader falls back to `parseEveryCandidate`. */
@@ -654,10 +654,10 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
   const fingerprint = opts.fingerprint ?? DEFAULT_PARSER_FINGERPRINT;
   const lockPolicy = opts.lockPolicy ?? BOUNDED_LOCK_POLICY;
   try {
-    mkdirReported(dir, 0o700);
+    fs.mkdir(dir, { mode: 0o700 });
     // mkdir's mode only applies on creation; a pre-existing wider dir must still end up 0700, since
     // the index names every session file, its models and timestamps.
-    if (process.platform !== "win32") chmodReported(dir, 0o700);
+    if (process.platform !== "win32") fs.chmod(dir, 0o700);
   } catch (e) {
     logger.warn(`could not create the usage index directory ${dir} (${errMessage(e)}).`);
     return null;

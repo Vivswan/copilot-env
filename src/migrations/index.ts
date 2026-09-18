@@ -19,7 +19,7 @@ import {
   v409StateFold,
   v409StaticKeyScope,
 } from "./4.0.9.ts";
-import { dryRunActive } from "../utils/write_session.ts";
+import { dryRunActive } from "../utils/fs_facade.ts";
 
 /** One step, named for the release it migrates AWAY FROM (authored against the current release,
  *  with no future number to predict). It runs when an update leaves that version behind:

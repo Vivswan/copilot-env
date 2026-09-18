@@ -25,11 +25,11 @@ import { parseProfileFlag, profileLabel, type ProfileName } from "../copilot_api
 import { COLOR_ENABLED, gray, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
-import { entryAbsent } from "../utils/fs.ts";
+import { isEnoentOrNotdir } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { removeTreeReported } from "../utils/report_write.ts";
 import { formatTable, printKeyValue, printWrapped, terminalWidth } from "../utils/table.ts";
-import { filePlan, landPlan } from "../utils/write_session.ts";
+import { landPlan } from "../utils/write_session.ts";
 import { runDryRun } from "./dry_run.ts";
 import {
   acquireCredential,
@@ -195,8 +195,8 @@ async function profileCredential(
 
 /** Dependency order: the daemon holds the credential in memory and an unstoppable one throws before
  *  anything is deleted (a dry run takes the same refusal and otherwise sends no signal); the store
- *  slot goes in one atomic write, credential and mode together. Every removal lands through
- *  landPlan, so a dry run names each file and slot key it would take. Shared with `agent uninstall`. */
+ *  slot goes in one atomic write, credential and mode together. Every removal lands through the
+ *  facade, so a dry run names each file and slot key it would take. Shared with `agent uninstall`. */
 export async function deleteProfileEverywhere(
   name: ProfileName,
   options: RemoveProfileOptions = {},
@@ -214,11 +214,13 @@ export async function deleteProfileEverywhere(
   for (const agent of bothAgents()) landPlan(agent.planRemoveProfile(name, options));
   new CopilotEnvState().deleteProfile(name);
   new CopilotEnvConfig().deleteProfile(name);
-  const home = profileHome(name);
-  landPlan({
-    files: entryAbsent(home) ? [] : [filePlan(home, "delete")],
-    apply: () => void removeTreeReported(home),
-  });
+  try {
+    fs.rm(profileHome(name), { recursive: true, force: true });
+  } catch (e) {
+    // A lookup under a regular file where `profiles/` should be is ENOTDIR: nothing of the
+    // profile's is there to remove.
+    if (!isEnoentOrNotdir(e)) throw e;
+  }
 }
 
 async function runDel(name: ProfileName): Promise<Narration> {

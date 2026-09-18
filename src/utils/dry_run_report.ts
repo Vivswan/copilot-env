@@ -219,8 +219,10 @@ function docRows(
   const afterEmpties = new Set<string>();
   leaves(beforeDoc, [], before, beforeEmpties);
   leaves(afterDoc, [], after, afterEmpties);
+  // A dropped empty table is a row for TOML, where the writers' rows printed one; the JSON store
+  // never printed a container; one kept on both sides is neither.
   for (const key of afterEmpties) beforeEmpties.delete(key);
-  emptyLeaves(beforeEmpties, before, after);
+  if (extname(path).toLowerCase() === ".toml") emptyLeaves(beforeEmpties, before, after);
   const rows: AttributeRow[] = [];
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const status: AttributeStatus = !before.has(key)

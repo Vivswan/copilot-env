@@ -5,7 +5,7 @@
 // have written is shadowed so a later reader in the same run (the store re-read after a commit,
 // a config.toml re-inspected after its write) sees the planned state, not the disk. utils layer:
 // the JSON store (src/copilot_api/config.ts) lands through here too.
-import { lstatSync, readdirSync, type Stats, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, type Stats, statSync } from "node:fs";
 import { basename, dirname, extname, join, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import {
@@ -114,9 +114,12 @@ interface DryRunSession {
   opaqueFiles: Set<string>;
   /** Planned bytes by path (a byte write, a copied binary), for the run's later readers. */
   bytes: Map<string, Uint8Array>;
-  /** Paths whose planned content holds declared secrets (a whole-file secret, or declared keys):
-   *  a later undeclared write of one prints its path alone, never a line diff of the old text. */
-  secretPaths: Set<string>;
+  /** Paths whose planned content is secret as a whole: every later write of one prints its path
+   *  alone, whatever it declares. */
+  secretFiles: Set<string>;
+  /** Per path, every leaf a write declared secret, kept across the run's later writes and carried
+   *  by a move or a copy: a key once declared never prints. */
+  secretKeys: Map<string, Set<string>>;
 }
 
 let session: DryRunSession | null = null;
@@ -161,7 +164,10 @@ export function landPlan(plan: WritePlan): void {
       }
       for (const key of [...session.modes.keys()]) if (below(key)) session.modes.delete(key);
       for (const key of [...session.bytes.keys()]) if (below(key)) session.bytes.delete(key);
-      for (const set of [session.dirs, session.fresh, session.opaqueFiles, session.secretPaths]) {
+      for (const key of [...session.secretKeys.keys()]) {
+        if (below(key)) session.secretKeys.delete(key);
+      }
+      for (const set of [session.dirs, session.fresh, session.opaqueFiles, session.secretFiles]) {
         for (const key of [...set]) if (below(key)) set.delete(key);
       }
     } else if (file.content !== undefined) {
@@ -269,7 +275,8 @@ export async function collectDryRun<T>(
     fresh: new Set(),
     opaqueFiles: new Set(),
     bytes: new Map(),
-    secretPaths: new Set(),
+    secretFiles: new Set(),
+    secretKeys: new Map(),
   };
   try {
     const result = await body();
@@ -327,28 +334,56 @@ export function recordBytes(path: string, bytes: Uint8Array): void {
 }
 
 /** The content a landing left at `path` as the run sees it: planned bytes, planned text, the
- *  disk's text, or null (absent, or a planned deletion). */
+ *  disk's bytes (never decoded: a copied binary stays a binary), or null (absent, or a planned
+ *  deletion). */
 export function plannedContent(path: string): string | Uint8Array | null {
   const state = plannedState(path);
   if (state?.kind === "bytes") return state.bytes;
   if (state?.kind === "text") return state.text;
   if (state?.kind === "gone") return null;
-  const read = readTextResult(path);
-  return read.kind === "text" ? read.text : null;
+  try {
+    return new Uint8Array(readFileSync(path));
+  } catch {
+    return null;
+  }
 }
 
-/** A path whose planned content holds declared secrets; the declaration travels with a move or a
- *  copy, so a later undeclared write of the destination prints its path alone. */
-export function recordSecretPath(path: string): void {
-  session?.secretPaths.add(path);
+/** What a path's planned content holds as secret: the whole file, or declared leaves. */
+export interface PlannedSecret {
+  whole: boolean;
+  keys: ReadonlySet<string>;
 }
 
-export function carrySecretPath(from: string, to: string): void {
-  if (session?.secretPaths.has(from)) session.secretPaths.add(to);
+/** A write's declaration joins the path's: a key once declared never prints, and a whole-file
+ *  secret stays one for the run. */
+export function recordSecret(
+  path: string,
+  secret: { whole?: boolean; keys?: Iterable<string> },
+): void {
+  if (session === null) return;
+  if (secret.whole) session.secretFiles.add(path);
+  if (secret.keys !== undefined) {
+    const declared = session.secretKeys.get(path) ?? new Set<string>();
+    for (const k of secret.keys) declared.add(k);
+    session.secretKeys.set(path, declared);
+  }
 }
 
-export function isSecretPath(path: string): boolean {
-  return session?.secretPaths.has(path) ?? false;
+/** The declarations travel with a move or a copy, so the destination redacts the same values. */
+export function carrySecret(from: string, to: string): void {
+  if (session === null) return;
+  const carried = secretOf(from);
+  recordSecret(to, {
+    whole: carried.whole,
+    keys: carried.keys.size > 0 ? carried.keys : undefined,
+  });
+}
+
+export function secretOf(path: string): PlannedSecret {
+  return {
+    whole: session?.secretFiles.has(path) ?? false,
+    keys: session?.secretKeys.get(path) ?? new Set(),
+  };
 }
 
 /** Whether `path` exists as the run has planned it, landing by landing: true after a planned
@@ -484,6 +519,7 @@ export function planDocReplace(
   current: Record<string, unknown>,
   next: Record<string, unknown>,
   secret: (key: string) => boolean,
+  emptyDrops = false,
 ): AttributeRow[] {
   const before = new Map<string, unknown>();
   const after = new Map<string, unknown>();
@@ -491,9 +527,10 @@ export function planDocReplace(
   const afterEmpties = new Set<string>();
   leaves(current, [], before, beforeEmpties);
   leaves(next, [], after, afterEmpties);
-  // Only a dropped empty record is a row; one kept on both sides is neither.
+  // A dropped empty table is a row where the writer's rows printed one (TOML); one kept on both
+  // sides is neither; the JSON store never printed a container.
   for (const key of afterEmpties) beforeEmpties.delete(key);
-  emptyLeaves(beforeEmpties, before, after);
+  if (emptyDrops) emptyLeaves(beforeEmpties, before, after);
   const rows: AttributeRow[] = [];
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const was = before.get(key);
@@ -543,5 +580,10 @@ export function bridgeRows(
   const current = parseDoc(path, before);
   const next = parseDoc(path, after);
   if (current === null || next === null) return null;
-  return planDocReplace(current, next, (key) => secretKeys.has(key));
+  return planDocReplace(
+    current,
+    next,
+    (key) => secretKeys.has(key),
+    extname(path).toLowerCase() === ".toml",
+  );
 }

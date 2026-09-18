@@ -54,11 +54,10 @@ import { sleepSync } from "./time.ts";
 import {
   type AttributeRow,
   bridgeRows,
-  carrySecretPath,
+  carrySecret,
   dryRunActive as planCollecting,
   filePlan,
   type FileVerdict,
-  isSecretPath,
   landPlan,
   plannedContent,
   plannedMissingDirectories,
@@ -66,9 +65,9 @@ import {
   readPlannedDir,
   recordBytes,
   recordPlannedMode,
-  recordSecretPath,
+  recordSecret,
   recordShadow,
-  shadowedText,
+  secretOf,
   textVerdict,
 } from "./write_session.ts";
 
@@ -392,20 +391,30 @@ function bridgedRender(
   options: WriteOptions,
 ): { render: PlannedRender; attributes?: AttributeRow[]; verdict?: FileVerdict } {
   if (!planCollecting()) return { render: renderOf(options.secret) };
-  const declared = options.secret === true || options.secretKeys !== undefined;
-  if (declared) recordSecretPath(path);
-  if (options.secretKeys === undefined || options.secret) {
-    // An undeclared write over content the run declared secret (a copy of a settings bundle)
-    // prints its path alone: a line diff would print the old text.
-    return { render: options.secret || isSecretPath(path) ? "path-only" : "diff" };
+  recordSecret(path, { whole: options.secret, keys: options.secretKeys });
+  const secret = secretOf(path);
+  // A whole-file secret (declared now, or carried by a move or copy) prints its path alone
+  // whatever this write declares; an undeclared write over declared keys does too, since a line
+  // diff would print the old text.
+  if (secret.whole) return { render: "path-only" };
+  if (options.secretKeys === undefined) {
+    return { render: secret.keys.size > 0 ? "path-only" : "diff" };
   }
   // The bytes the write replaces, as the run sees them. An entry that stands but cannot be read
   // (a dangling link the real write lands through) is a rewrite of unknown bytes, never a create.
-  const shadow = shadowedText(path);
-  const read = shadow === undefined ? readTextResult(path) : null;
-  const before = shadow !== undefined ? shadow : read?.kind === "text" ? read.text : null;
-  const verdict: FileVerdict = read?.kind === "unreadable" ? "rewrite" : textVerdict(before, text);
-  const rows = bridgeRows(path, before, text, new Set(options.secretKeys));
+  const state = plannedState(path);
+  let before: string | null;
+  let unreadable = false;
+  if (state?.kind === "text") before = state.text;
+  else if (state?.kind === "bytes") before = new TextDecoder().decode(state.bytes);
+  else if (state?.kind === "gone") before = null;
+  else {
+    const read = readTextResult(path);
+    before = read.kind === "text" ? read.text : null;
+    unreadable = read.kind === "unreadable";
+  }
+  const verdict: FileVerdict = unreadable ? "rewrite" : textVerdict(before, text);
+  const rows = bridgeRows(path, before, text, secret.keys);
   return rows === null
     ? { render: "path-only", verdict }
     : { render: "diff", attributes: rows, verdict };
@@ -417,7 +426,7 @@ function carryContent(from: string, to: string): void {
   const content = plannedContent(from);
   if (content instanceof Uint8Array) recordBytes(to, content);
   else if (content !== null) recordShadow(to, content);
-  carrySecretPath(from, to);
+  carrySecret(from, to);
 }
 
 /** The mode a fresh file takes with no explicit one: 0666 under the umask (none on Windows). */
@@ -526,8 +535,8 @@ function writeStaged(path: string, data: string | Uint8Array, options: WriteOpti
 
 export function copyFile(from: string, to: string, detail?: string): void {
   const was = plannedLook(to);
-  // A copy of content the run declared secret prints its path alone, now and on a later write.
-  const render: PlannedRender = isSecretPath(from) ? "path-only" : "diff";
+  // A copy of content the run declared secret as a whole prints its path alone, now and later.
+  const render: PlannedRender = secretOf(from).whole ? "path-only" : "diff";
   if (
     planned(verdictOf(was), to, { render }, {
       syscall: `copyfile '${from}' -> '${to}'`,

@@ -118,12 +118,13 @@ test("under the plan collector a same-content document write with declared secre
   expect(renderDryRun(files)).toEqual([`unchanged ${settings}`]);
 });
 
-test("an empty table dropped whole is a row, while a map emptied slot by slot, kept, or gained prints no row of its own", async () => {
+test("a dropped empty TOML table is a row, while a JSON map kept, gained, emptied slot by slot, or dropped prints no row of its own", async () => {
   dir = tempDir("copilot-bridge-");
   const config = join(dir, "config.toml");
   const store = join(dir, "state.json");
   const kept = join(dir, "kept.json");
   const gained = join(dir, "gained.json");
+  const dropped = join(dir, "dropped.json");
   writeFileSync(
     config,
     '[model_providers.copilot-env]\nbase_url = "https://x"\nhttp_headers = {}\n',
@@ -131,6 +132,7 @@ test("an empty table dropped whole is a row, while a map emptied slot by slot, k
   writeFileSync(store, '{"profiles":{"work":{"githubToken":"t"}}}\n');
   writeFileSync(kept, '{"count":1,"profiles":{}}\n');
   writeFileSync(gained, '{"count":1}\n');
+  writeFileSync(dropped, '{"count":1,"profiles":{}}\n');
   const { files } = await collectDryRun(() => {
     facade.writeText(config, '[model_providers.copilot-env]\nbase_url = "https://x"\n', {
       secretKeys: [],
@@ -138,6 +140,7 @@ test("an empty table dropped whole is a row, while a map emptied slot by slot, k
     facade.writeText(store, '{"profiles":{}}\n', { secretKeys: ["profiles.work.githubToken"] });
     facade.writeText(kept, '{"count":2,"profiles":{}}\n', { secretKeys: [] });
     facade.writeText(gained, '{"count":1,"profiles":{}}\n', { secretKeys: [] });
+    facade.writeText(dropped, '{"count":1}\n', { secretKeys: [] });
     return Promise.resolve();
   });
   expect(renderDryRun(files)).toEqual([
@@ -149,22 +152,36 @@ test("an empty table dropped whole is a row, while a map emptied slot by slot, k
     `  count  1 -> 2`,
     `rewrite ${gained}`,
     `  (every managed attribute already holds its value)`,
+    `rewrite ${dropped}`,
+    `  (every managed attribute already holds its value)`,
   ]);
 });
 
-test("under the plan collector a moved or copied secret keeps its declaration, a missing source is rename's ENOENT, and planned bytes copy into scratch", async () => {
+test("under the plan collector a moved or copied secret keeps its declaration through a later document write, a copied binary keeps its bytes, and a missing source is rename's ENOENT", async () => {
   dir = tempDir("copilot-bridge-");
   const bundle = join(dir, "bundle.json");
   const copy = join(dir, "copy.json");
   const moved = join(dir, "moved.json");
+  const keyed = join(dir, "keyed.json");
+  const keyedCopy = join(dir, "keyed-copy.json");
+  const binary = join(dir, "tool.bin");
+  const binaryCopy = join(dir, "tool-copy.bin");
   const blob = join(dir, "blob.bin");
+  writeFileSync(binary, new Uint8Array([202, 254, 186, 190]));
   const { files } = await collectDryRun(() => {
     facade.writeText(bundle, '{"token":"example-token"}\n', { secret: true });
     facade.copyFile(bundle, copy);
     facade.rename(bundle, moved);
-    // A later undeclared write of the copy or the moved file prints no line of the old text.
+    // A later write of the copy or the moved file, declared or not, prints no value of the old
+    // text.
     writeFileReported(copy, "plain\n");
-    writeFileReported(moved, "plain\n");
+    facade.writeText(moved, '{"x":1}\n', { secretKeys: [] });
+    // Declared keys travel too: a later document write of the copy redacts them.
+    facade.writeText(keyed, '{"token":"t","n":1}\n', { secretKeys: ["token"] });
+    facade.copyFile(keyed, keyedCopy);
+    facade.writeText(keyedCopy, '{"n":2}\n', { secretKeys: [] });
+    facade.copyFile(binary, binaryCopy);
+    expect(facade.readBytes(binaryCopy)).toEqual(new Uint8Array([202, 254, 186, 190]));
     expect(() => facade.rename(join(dir, "missing"), join(dir, "elsewhere"))).toThrow(/ENOENT/);
     facade.writeBytes(blob, new Uint8Array([0, 255, 128]));
     const scratch = facade.scratchDir(join(dir, "scratch-"));
@@ -175,7 +192,18 @@ test("under the plan collector a moved or copied secret keeps its declaration, a
     facade.removeScratchDir(scratch);
     return Promise.resolve();
   });
-  expect(renderDryRun(files)).toEqual([`create ${copy}`, `create ${moved}`, `create ${blob}`]);
+  expect(renderDryRun(files)).toEqual([
+    `create ${copy}`,
+    `create ${moved}`,
+    `create ${keyed}`,
+    `  token  (absent) -> <redacted>`,
+    `  n  (absent) -> 1`,
+    `create ${keyedCopy}`,
+    `  token  <redacted> -> (absent)`,
+    `  n  1 -> 2`,
+    `create ${binaryCopy}`,
+    `create ${blob}`,
+  ]);
 });
 
 test("under the plan collector a copy prints the wrapper's row and folds with a later write as main did, and a dangling link is a rewrite", async () => {

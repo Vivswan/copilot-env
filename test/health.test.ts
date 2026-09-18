@@ -2,7 +2,7 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand } from "../src/claude/config.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import type { TextReadResult } from "../src/utils/fs.ts";
+import type { TextReadResult } from "../src/utils/fs_facade.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
 import {
   buildHealthJson,

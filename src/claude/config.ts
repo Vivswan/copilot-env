@@ -55,7 +55,8 @@ import {
 } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
-import { isEnoentOrNotdir, type TextReadResult } from "../utils/fs.ts";
+import { isEnoentOrNotdir } from "../utils/fs.ts";
+import type { TextReadResult } from "../utils/fs_facade.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { escapeRegExp } from "../utils/regexp.ts";
 import { printKeyValue } from "../utils/table.ts";

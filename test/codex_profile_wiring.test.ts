@@ -17,7 +17,7 @@ import { codexProfileConfigPath } from "../src/codex/paths.ts";
 import { openaiBaseUrl } from "../src/copilot_api/port.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../src/utils/command.ts";
-import { readTextResult } from "../src/utils/fs.ts";
+import { readTextResult } from "../src/utils/fs_facade.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
 import { runSync } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";

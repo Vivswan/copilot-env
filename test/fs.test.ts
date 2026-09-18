@@ -3,7 +3,8 @@
 // don't-care wrapper that folds both to null.
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { readTextOrNull, readTextResult, type TextReadResult } from "../src/utils/fs.ts";
+import { readTextOrNull } from "../src/utils/fs.ts";
+import { readTextResult, type TextReadResult } from "../src/utils/fs_facade.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
 let dir = "";

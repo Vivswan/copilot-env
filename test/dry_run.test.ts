@@ -838,8 +838,8 @@ test("`agent profile mcp --remove --dry-run` names the registration, the deny, a
 });
 
 test("a fresh HOME's plan names the homes the real run creates, outermost first, as directory rows", async () => {
-  // The apply's mkdir never runs in a dry run; the session derives the missing ancestors of every
-  // planned create instead, so the plan equals the real run's named set by construction.
+  // The writer's own mkdir runs in the dry run too, on the overlay, and the tree diff names each
+  // directory it made: the plan equals the real run's named set because it is the same code path.
   if (homes !== null) removeDir(homes.dir);
   homes = isolateAgentHomes("copilot-dry-run-fresh-");
   const { claudeHome, codexHome, dir } = homes;

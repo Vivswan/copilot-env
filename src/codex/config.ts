@@ -35,7 +35,7 @@ import { copilotApiResolvePort, matchesProxyOrigin, openaiBaseUrl } from "../cop
 import { agentStartCommand, type Profile, type ProfileName } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
-import type { TextReadResult } from "../utils/fs.ts";
+import type { TextReadResult } from "../utils/fs_facade.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";

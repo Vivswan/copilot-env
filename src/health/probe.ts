@@ -73,8 +73,9 @@ import {
   resolveCommand,
 } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
-import { readTextOrNull, readTextResult, type TextReadResult } from "../utils/fs.ts";
+import { readTextOrNull } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { readTextResult, type TextReadResult } from "../utils/fs_facade.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";

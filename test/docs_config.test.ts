@@ -19,6 +19,8 @@ import { expect, test } from "./helpers/testing.ts";
 const PROSE_DEFAULT_CELLS: Readonly<Record<string, string>> = {
   "cost.credits-target": "unset paces against the plan's entitlement alone",
   "daemon.version": "unset floats the proxy to the latest release",
+  "probe.claude-model": "unset runs the haiku alias, then the newest catalog model",
+  "probe.codex-model": "unset prefers a reduced GPT tier, else the first codex-servable model",
   "proxy.claude-auto-model": "unset disables the security-monitor model override",
   "update.cooldown": "unset is no cooldown by hand and 7 days for update.auto",
 };

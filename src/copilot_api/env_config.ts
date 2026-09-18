@@ -43,6 +43,8 @@ export interface ConfigValueTypes {
   "host": string;
   "identity": string;
   "passthrough": PassthroughPref;
+  "probe.claude-model": string;
+  "probe.codex-model": string;
   "proxy.alpha-search.codex-priority": boolean;
   "proxy.alpha-search.model": string;
   "proxy.claude-auto-model": string;
@@ -84,6 +86,7 @@ export const CONFIG_GROUPS = [
   "proxy",
   "codex",
   "claude",
+  "probe",
   "shell",
   "update",
   "cost",
@@ -478,6 +481,8 @@ const COPILOT_HOST_DOMAIN: ConfigDomain<string> = domain(
 
 const WIRING_HINT =
   "Applies at the next `agent init` / `agent claude` / `agent codex` / `agent profile` wiring";
+/** A re-render of a recorded mode never probes, so only the auto-detect landing reads the key. */
+const PROBE_HINT = "Read by the next Direct probe: `agent init` with neither --direct nor --proxy";
 
 /** Ordered ALPHABETICALLY by key: that is `--help`'s order within a group, and a test pins it, so
  *  insert new keys in place. */
@@ -642,6 +647,22 @@ const CONFIG_REGISTRY_LITERAL = [
     ...PASSTHROUGH_DOMAIN,
     defaultValue: "auto",
     restartToApply: true,
+  },
+  {
+    key: "probe.claude-model",
+    scope: "profile-default",
+    describe: "Model the Direct probe's claude smoke prompt runs, sent as-is; unset tries the " +
+      "CLI's haiku alias, then the newest claude model in the catalog",
+    ...MODEL_ID_DOMAIN,
+    applyHint: PROBE_HINT,
+  },
+  {
+    key: "probe.codex-model",
+    scope: "profile-default",
+    describe: "Model the Direct probe's codex smoke prompt runs, sent as-is; unset prefers a " +
+      "reduced GPT tier from the catalog, else its first codex-servable model",
+    ...MODEL_ID_DOMAIN,
+    applyHint: PROBE_HINT,
   },
   {
     key: "proxy.alpha-search.codex-priority",

@@ -165,6 +165,28 @@ export function cheapestClaudeModel(catalog: CatalogModel[]): string | null {
   return newest(parsed, family, () => true)?.id ?? null;
 }
 
+/** The claude CLI smoke's second hop (src/claude/config.ts): the newest claude model Copilot
+ *  lists, by version, then by the date a snapshot qualifier carries (a dated id over its undated
+ *  twin), the first listed on a full tie. */
+export function newestClaudeModel(catalog: CatalogModel[]): string | null {
+  let best: ParsedModel | undefined;
+  for (const p of parseClaudeModels(catalog)) {
+    if (best === undefined) {
+      best = p;
+      continue;
+    }
+    const byVersion = compareVersion(p.version, best.version);
+    if (byVersion > 0 || (byVersion === 0 && snapshotDate(p) > snapshotDate(best))) best = p;
+  }
+  return best?.id ?? null;
+}
+
+/** A snapshot qualifier's date (`20260301`) as a number; an undated id sorts below every dated one. */
+function snapshotDate(p: ParsedModel): number {
+  const token = p.qualifier?.split("-").find((t) => /^\d{8}$/.test(t));
+  return token === undefined ? 0 : Number(token);
+}
+
 /** A reduced GPT tier (`gpt-6-mini`, `gpt-6-nano`): cheaper, and rarely gated. The same token
  *  match `gpt-latest` uses to skip them. */
 export function isReducedGpt(id: string): boolean {

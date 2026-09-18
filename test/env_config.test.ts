@@ -509,6 +509,8 @@ const ROUND_TRIP_RAW: Record<ConfigKey, string> = {
   "host": "https://copilot.example",
   "identity": "copilot-developer-cli",
   "passthrough": "on",
+  "probe.claude-model": "claude-sonnet-5",
+  "probe.codex-model": "gpt-6",
   "proxy.alpha-search.codex-priority": "false",
   "proxy.alpha-search.model": "gpt-5",
   "proxy.claude-auto-model": "claude-haiku-4.5",
@@ -683,7 +685,7 @@ test("configTable() renders the header, the groups, and key=value rows with type
   expect(lines.slice(0, 4)).toEqual([
     `4 of ${CONFIG_REGISTRY.length} keys set (*).  |  agent config --set <key> <value>`,
     "--del <key> reverts  |  --profile <name> targets another profile",
-    "proxy.* set without --profile is every profile's default",
+    "probe.* / proxy.* set without --profile is every profile's default",
     "",
   ]);
   // Under GLOBAL the group headings come in CONFIG_GROUPS order, each over its keys in registry
@@ -859,18 +861,36 @@ test("configTable() by scope: PROFILE holds the profile keys and the profile-def
     CONFIG_REGISTRY.filter((d) => configGroup(d.key) === g && d.scope === "global")
       .map((d) => d.key)
   );
+  // Each profile-default group's heading names what reads the value for the profile.
+  const headingNote: Record<string, string> = {
+    probe: "this profile's Direct probe",
+    proxy: "this profile's daemon",
+  };
   const headingRe = new RegExp(
-    `^  ${
-      configGroup(shared.key)
-    }: +\\(this profile's daemon; global rows set without --profile\\)$`,
+    `^  ${configGroup(shared.key)}: +\\(${
+      headingNote[configGroup(shared.key)]
+    }; global rows set without --profile\\)$`,
     "m",
   );
+  const profileDefaultGroups = [
+    ...new Set(
+      CONFIG_REGISTRY.filter((d) => d.scope === "profile-default").map((d) => configGroup(d.key)),
+    ),
+  ];
 
   // Nothing stored: the shared key sits under PROFILE unstarred, with no source cell.
   const empty = view();
   expect(keysIn(empty.profile)).toEqual(profileKeys);
   expect(keysIn(empty.global)).toEqual(globalKeys);
   expect(empty.profile.join("\n")).toMatch(headingRe);
+  for (const group of profileDefaultGroups) {
+    expect(empty.profile.join("\n"), group).toMatch(
+      new RegExp(
+        `^  ${group}: +\\(${headingNote[group]}; global rows set without --profile\\)$`,
+        "m",
+      ),
+    );
+  }
   expect(rowOf(empty.profile, shared.key).startsWith(`    ${shared.key}=`)).toBe(true);
   expect(rowOf(empty.profile, shared.key)).not.toContain("(global)");
   expect(keysIn(empty.profile)).toContain(own.key);
@@ -919,7 +939,8 @@ test("configTable() narrows with the width: the header packs to it, the right co
       `1 of ${CONFIG_REGISTRY.length} keys set (*).  |  agent config --set <key> <value>`,
       "--del <key> reverts",
       "--profile <name> targets another profile",
-      "proxy.* set without --profile is every profile's default",
+      "probe.* / proxy.* set without --profile is every profile's",
+      "default",
       "",
     ]],
     [40, [
@@ -927,8 +948,8 @@ test("configTable() narrows with the width: the header packs to it, the right co
       "agent config --set <key> <value>",
       "--del <key> reverts",
       "--profile <name> targets another profile",
-      "proxy.* set without --profile is every",
-      "profile's default",
+      "probe.* / proxy.* set without --profile",
+      "is every profile's default",
     ]],
   ];
   for (const [width, header] of headers) {

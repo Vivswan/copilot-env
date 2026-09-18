@@ -3,6 +3,7 @@ import {
   claudeCatalogRows,
   generateAliases,
   mergeUnlistedModels,
+  newestClaudeModel,
   parseCatalogModels,
 } from "../src/copilot_api/models.ts";
 import { expect, test } from "./helpers/testing.ts";
@@ -383,6 +384,28 @@ test("reduced GPT tiers match whole qualifier tokens, not substrings", () => {
     { id: "gpt-5.6-mini-high", is1m: false },
   ];
   expect(generateAliases(reduced)["gpt-latest"]).toBe("gpt-5.5");
+});
+
+test("newestClaudeModel: the highest version across families, a dated snapshot over its undated twin, first listed on a full tie, null without a claude model", () => {
+  // The probe's second hop must be an id Copilot serves today, so the pick is the newest thing
+  // in the catalog, whatever its family; the dated snapshot is the more specific of two twins.
+  const catalog: CatalogModel[] = [
+    { id: "claude-opus-4.8", is1m: false },
+    { id: "claude-haiku-4.5", is1m: false },
+    { id: "claude-sonnet-5", is1m: false },
+    { id: "claude-fable-5-1", is1m: false },
+    { id: "claude-opus-5-20260301", is1m: false },
+  ];
+  expect(newestClaudeModel(catalog)).toBe("claude-fable-5-1");
+  const noFable = catalog.filter((m) => m.id !== "claude-fable-5-1");
+  expect(newestClaudeModel(noFable)).toBe("claude-opus-5-20260301");
+  expect(
+    newestClaudeModel([{ id: "claude-sonnet-5", is1m: false }, {
+      id: "claude-opus-5",
+      is1m: false,
+    }]),
+  ).toBe("claude-sonnet-5");
+  expect(newestClaudeModel([{ id: "gpt-6", is1m: false }])).toBeNull();
 });
 
 test("parseCatalogModels strips the [1m] suffix and flags the entry 1m", () => {

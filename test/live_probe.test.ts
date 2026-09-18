@@ -4,14 +4,14 @@ import {
   CLAUDE_PROBE,
   CODEX_CATALOG_NOISE_RE,
   CODEX_PROBE,
-  DEFAULT_PROBE_RETRIES,
   type ProbeDescriptor,
   probeDirectWorks,
   type ProbeOutcome,
   summarizeProbeFailure,
 } from "../src/agents/live_probe.ts";
-import type { DirectSmoke } from "../src/copilot_api/endpoint_smoke.ts";
+import type { DirectSmoke, SmokeModelOutcome } from "../src/copilot_api/endpoint_smoke.ts";
 import { ghAuthVerdict, ghTokenFromEnv } from "../src/copilot_api/gh_cli.ts";
+import { captureAllWrites } from "./helpers/output.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 // The one catalog-noise filter shared by summarizeProbeFailure and formatLiveFailure
@@ -46,26 +46,33 @@ const FAKE_DESCRIPTOR: ProbeDescriptor = {
 
 type RunProbe = (cliPath: string, args: string[], env: Record<string, string>) => ProbeOutcome;
 
-// retryDelayMs 0: the retry cases would otherwise wait out the real backoff.
 function passingDeps(runProbe: RunProbe) {
   return {
     findCommand: (c: string) => ({ path: `/bin/${c}` }),
     runProbe,
-    retryDelayMs: 0,
   };
 }
 
-/** A bound Copilot smoke with a scripted catalog pick and ping; `pings` counts the wire calls. */
+/** A bound Copilot smoke with a scripted pick and ping; `pings` counts the wire calls. `cli`
+ *  scripts the CLI smoke's hops when they differ from the wire pick: `first` a catalog-free alias,
+ *  `next` the second hop's outcome (null: none). */
 function fakeSmoke(
   pick: { ok: true; model: string } | { ok: false; detail: string } = {
     ok: true,
     model: "claude-fable-5",
   },
   pingOk = true,
-): DirectSmoke & { pings: number } {
+  cli: { first: string; next: SmokeModelOutcome | null } | null = null,
+): DirectSmoke & { pings: number; fallbackAsks: number } {
   const smoke = {
     pings: 0,
+    fallbackAsks: 0,
     pickModel: () => Promise.resolve(pick),
+    cliModel: () => Promise.resolve(cli === null ? pick : { ok: true as const, model: cli.first }),
+    cliFallbackModel: () => {
+      smoke.fallbackAsks++;
+      return Promise.resolve(cli === null ? null : cli.next);
+    },
     ping: () => {
       smoke.pings++;
       return Promise.resolve(
@@ -77,6 +84,23 @@ function fakeSmoke(
 }
 
 // --- summarizeProbeFailure: the reason surfaced on fallback --------------------
+
+/** A `claude --print --output-format stream-json` result event on an endpoint 400: the counters
+ *  come first and the reason rides in `result`. */
+const CLAUDE_API_ERROR_RESULT =
+  '{"duration_api_ms":0,"stop_reason":"stop_sequence","session_id":"00000000-0000-4000-8000-000000000000","total_cost_usd":0,' +
+  '"usage":{"output_tokens_details":{"thinking_tokens":0},"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,' +
+  '"output_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard"},"modelUsage":{},' +
+  '"permission_denials":[],"terminal_reason":"api_error","is_error":true,"num_turns":1,"subtype":"success","api_error_status":400,' +
+  '"result":"API Error: 400 output_config.effort \\"high\\" was provided, but model claude-haiku-4.5 does not support reasoning effort",' +
+  '"type":"result","duration_ms":126}';
+
+/** The assistant event the same stream emits before the result event on an API error: a bare
+ *  code in `error`, the API's text as the message content. */
+const CLAUDE_API_ERROR_ASSISTANT =
+  '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence",' +
+  '"usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: 429 rate limited"}]},' +
+  '"parent_tool_use_id":null,"error":"rate_limit","is_api_error_message":true}';
 
 test("summarizeProbeFailure: the reason per (status, signal, error, stdout, stderr), marker lines over raw exit, catalog noise skipped, oversized lines cut", () => {
   const noise = `{"id":"gpt-5.5","object":"model","capabilities":{"family":"gpt-5.5"}}`;
@@ -102,6 +126,26 @@ test("summarizeProbeFailure: the reason per (status, signal, error, stdout, stde
         "",
       ],
       matches: /401 Unauthorized/,
+    },
+    {
+      // Claude's result event is one long JSON line that opens with counters; the reason is its
+      // `result` text, and the raw line's first 200 characters never reach it.
+      name: "a claude json result's error text over its token counters",
+      input: [1, null, undefined, CLAUDE_API_ERROR_RESULT, ""],
+      matches: /^API Error: 400 output_config\.effort .* does not support reasoning effort$/,
+      omits: "duration_api_ms",
+    },
+    {
+      // A stream cut before the result event ends in the assistant event: its `error` is a bare
+      // code, the API's text sits in the message content.
+      name: "a claude assistant event's API error text over its bare error code",
+      input: [1, null, undefined, CLAUDE_API_ERROR_ASSISTANT, ""],
+      matches: /^API Error: 429 rate limited$/,
+    },
+    {
+      name: "a result text with a newline stays one log line",
+      input: [1, null, undefined, '{"is_error":true,"result":"first line\\nsecond line"}', ""],
+      matches: /^first line second line$/,
     },
     {
       name: "codex's model-catalog noise skipped",
@@ -198,7 +242,6 @@ test("probeDirectWorks: with no CLI to run, the endpoint smoke's verdict decides
           probeCalls++;
           return { ok: true };
         },
-        retryDelayMs: 0,
       },
     );
     expect({ ...c, verdict, probeCalls }).toEqual({ ...c, verdict: c.expected, probeCalls: 0 });
@@ -236,26 +279,118 @@ test("probeDirectWorks: a catalog with no drivable model is the proxy before the
   expect([verdict, probeCalls]).toEqual([false, 0]);
 });
 
-// --- probeDirectWorks: retry on transient failure ---------------------------
+// --- probeDirectWorks: the model hops -----------------------------------------
 
-test("probeDirectWorks retries the live smoke call: Direct once an attempt passes, the proxy after the initial attempt plus DEFAULT_PROBE_RETRIES", async () => {
-  const cases: { name: string; passesOn: number | null; ok: boolean; calls: number }[] = [
-    { name: "passes on the third attempt", passesOn: 3, ok: true, calls: 3 },
-    { name: "never passes", passesOn: null, ok: false, calls: DEFAULT_PROBE_RETRIES + 1 },
+test("probeDirectWorks walks the smoke's model hops on a MODEL rejection only: the next hop runs once, any other failure stops at the first", async () => {
+  // External fact neither CLI enforces for us: a model the endpoint will not serve fails with
+  // the model named in the reason, while an auth, network, 5xx, or timeout failure would fail
+  // the next hop the same way, so only the former earns the second call, and nothing earns a
+  // third. The catalog is consulted for the second hop alone.
+  const cases: { name: string; details: string[]; ok: boolean; models: string[] }[] = [
+    {
+      name: "rejected on the alias, the newest passes",
+      details: [
+        'API Error: 400 output_config.effort "high" was provided, but model haiku does not support reasoning effort',
+        "",
+      ],
+      ok: true,
+      models: ["haiku", "claude-fable-5"],
+    },
+    {
+      name: "a 5xx naming the model with the rejection phrasing is the endpoint's, not the model's",
+      details: ["API Error: 503 model haiku does not support the request"],
+      ok: false,
+      models: ["haiku"],
+    },
+    {
+      name: "rejected on both hops",
+      details: ["404 model haiku not found", "404 model claude-fable-5 not found"],
+      ok: false,
+      models: ["haiku", "claude-fable-5"],
+    },
+    {
+      // The claude CLI's own wording when the endpoint will not serve the alias's model.
+      name: "the CLI's model-not-available wording on the alias, the newest passes",
+      details: [
+        "There's an issue with the selected model (claude-haiku-4-5-20251001). It may not exist or you may not have access to it.",
+        "",
+      ],
+      ok: true,
+      models: ["haiku", "claude-fable-5"],
+    },
+    {
+      name: "auth failure on the alias",
+      details: ["401 Unauthorized"],
+      ok: false,
+      models: ["haiku"],
+    },
+    {
+      name: "timeout on the alias",
+      details: ["timed out after 60s"],
+      ok: false,
+      models: ["haiku"],
+    },
   ];
   for (const c of cases) {
-    let calls = 0;
+    const models: string[] = [];
+    const smoke = fakeSmoke(undefined, true, {
+      first: "haiku",
+      next: { ok: true, model: "claude-fable-5" },
+    });
     const ok = await probeDirectWorks(
       FAKE_DESCRIPTOR,
-      () => {}, // no-op writeDirectConfig
-      fakeSmoke(),
-      passingDeps(() => {
-        calls++;
-        return { ok: c.passesOn !== null && calls >= c.passesOn };
+      () => {},
+      smoke,
+      passingDeps((_cli, args) => {
+        models.push(args[args.indexOf("--model") + 1] ?? "");
+        const detail = c.details[models.length - 1];
+        return detail === "" ? { ok: true } : { ok: false, detail };
       }),
     );
-    expect({ name: c.name, ok, calls }).toEqual({ name: c.name, ok: c.ok, calls: c.calls });
+    expect({ name: c.name, ok, models, fallbackAsks: smoke.fallbackAsks }).toEqual({
+      name: c.name,
+      ok: c.ok,
+      models: c.models,
+      fallbackAsks: c.models.length === 2 ? 1 : 0,
+    });
   }
+});
+
+test("probeDirectWorks runs a catalog-free first hop whatever the catalog says: Direct on a pass, and a rejection whose fallback cannot be read stops with the rejection", async () => {
+  // A GET /models that fails must not skip a hop that never needed it (the CLI resolves the alias
+  // itself); once the alias is rejected, an unreadable catalog leaves no second hop.
+  const unreadable = fakeSmoke(
+    { ok: false, detail: "GET /models returned 503" },
+    true,
+    { first: "haiku", next: { ok: false, detail: "GET /models returned 503" } },
+  );
+  const models: string[] = [];
+  const passes = await probeDirectWorks(
+    FAKE_DESCRIPTOR,
+    () => {},
+    unreadable,
+    passingDeps((_cli, args) => {
+      models.push(args[args.indexOf("--model") + 1] ?? "");
+      return { ok: true };
+    }),
+  );
+  expect([passes, models, unreadable.fallbackAsks]).toEqual([true, ["haiku"], 0]);
+  models.length = 0;
+  let rejected: boolean | null = null;
+  const narration = await captureAllWrites(async () => {
+    rejected = await probeDirectWorks(
+      FAKE_DESCRIPTOR,
+      () => {},
+      unreadable,
+      passingDeps((_cli, args) => {
+        models.push(args[args.indexOf("--model") + 1] ?? "");
+        return { ok: false, detail: "404 model haiku not found" };
+      }),
+    );
+  });
+  expect([rejected, models, unreadable.fallbackAsks]).toEqual([false, ["haiku"], 1]);
+  expect(narration).toContain("GET /models returned 503");
+  expect(narration).toMatch(/did not succeed \(404 model haiku not found\)/);
 });
 
 // --- probeDirectWorks: the child's working directory ------------------------
@@ -279,7 +414,7 @@ test("probeDirectWorks spawns the CLI from inside the throwaway home, never the 
         "Deno.exit(Deno.realPathSync(Deno.cwd()) === Deno.realPathSync(import.meta.dirname) ? 0 : 3);\n",
       ),
     fakeSmoke(),
-    { findCommand: () => ({ path: process.execPath }), retries: 0, retryDelayMs: 0 },
+    { findCommand: () => ({ path: process.execPath }) },
   );
   expect(ok).toBe(true);
 });
@@ -298,7 +433,6 @@ test("probeDirectWorks anchors a relative CLI path to the caller's cwd before th
       seen = { cliPath, path: (env.PATH ?? "").split(delimiter) };
       return { ok: true };
     },
-    retryDelayMs: 0,
   });
   expect(ok).toBe(true);
   const got = seen as unknown as { cliPath: string; path: string[] };
@@ -337,7 +471,7 @@ test("the real probe child never sees a provider variable the parent shell expor
           'Deno.exit(Deno.env.has("ANTHROPIC_BASE_URL") || Deno.env.has("OPENAI_BASE_URL") ? 3 : 0);\n',
         ),
       fakeSmoke(),
-      { findCommand: () => ({ path: process.execPath }), retries: 0, retryDelayMs: 0 },
+      { findCommand: () => ({ path: process.execPath }) },
     );
     expect(ok).toBe(true);
   } finally {

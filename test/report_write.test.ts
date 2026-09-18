@@ -1,6 +1,7 @@
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { resolveRootHome } from "../src/copilot_api/paths.ts";
+import { CopilotApiConfig } from "../src/copilot_api/config.ts";
+import { CopilotApiPaths, resolveRootHome } from "../src/copilot_api/paths.ts";
 import {
   atomicWriteFile,
   deferWriteReports,
@@ -186,6 +187,33 @@ test("scratch dirs are silent, and deferred reports come out at the flush in ord
     const ours = result.stderr.split("\n").filter((l) => !l.includes("Permissions in the config"));
     expect(ours).toEqual(["before-exit", `created -> ${join(dir, "late.txt")}`, ""]);
   } finally {
+    removeDir(dir);
+  }
+});
+
+test("a real store update into a fresh data home names the home and its parents, and nothing inside", () => {
+  const dir = tempDir("copilot-report-fresh-");
+  const restore = envSnapshot();
+  try {
+    const rootHome = join(dir, "nested", "deeper", "copilot-env");
+    process.env.COPILOT_API_HOME = rootHome;
+    delete process.env.COPILOT_ENV_ROOT_HOME;
+    const paths = new CopilotApiPaths();
+    deferWriteReports();
+    // The lock sidecar's directory is made first (inside the home: silent), then the store.
+    new CopilotApiConfig(paths.stateStoreFile, paths.stateStoreLock).update((d) => {
+      d.global = { "daemon.port": 4141 };
+    });
+    expect(flushWriteReports()).toEqual([
+      `created -> ${join(dir, "nested")}`,
+      `created -> ${join(dir, "nested", "deeper")}`,
+      `created -> ${rootHome}`,
+    ]);
+    expect(JSON.parse(readFileSync(paths.stateStoreFile, "utf8"))).toEqual({
+      global: { "daemon.port": 4141 },
+    });
+  } finally {
+    restore();
     removeDir(dir);
   }
 });

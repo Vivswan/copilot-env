@@ -252,9 +252,9 @@ function planned(
     return true;
   }
   // A file that is not text (a directory, a binary) carries no `before`, and the plan names the
-  // path alone. The text compared is the run's own (an earlier landing's planned text), never the
-  // disk's: a second landing that restores the disk bytes is then `same`, and the fold reads the
-  // path as unchanged, as it did when the store read its shadow.
+  // path alone. `before` is the text as the run sees it: an earlier landing's planned text, else
+  // the disk's. So a second landing that restores the disk bytes records `rewrite` against the
+  // first's text, and the fold (first `before`, last `content`) prints the path as unchanged.
   const was = kind === "create" ? null : readPlannedText(path);
   const before = was === null ? null : was.kind === "text" ? was.text : undefined;
   landPlan({
@@ -379,10 +379,10 @@ export function refuseRmdir(path: string): void {
       stat = lstatSync(path);
     } catch {
       if (state === null) return;
-      throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
+      throw underFileRefusal(`rmdir '${path}'`);
     }
     if (stat.isSymbolicLink()) return;
-    if (!stat.isDirectory()) throw errno("ENOTDIR", `not a directory, rmdir '${path}'`);
+    if (!stat.isDirectory()) throw underFileRefusal(`rmdir '${path}'`);
   }
   if (state?.kind !== "gone" && readPlannedDir(path).length > 0) {
     throw errno("ENOTEMPTY", `directory not empty, rmdir '${path}'`);

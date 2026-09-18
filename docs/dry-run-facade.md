@@ -172,6 +172,6 @@ At the end of the run every touched path is compared with the disk, in first-tou
 
 Three waves:
 
-1. The facade PR lands the seam complete (every call above, the bridge, the marker beside it, `atomicSymlink` and a link-honest overlay, the per-file secret flag) with every writer still on the wrappers and the plan API intact, so its dry-run output is main's.
+1. The facade PR lands the seam complete: every call above, the bridge, the marker beside it, `atomicSymlink` and a link-honest overlay, the per-file secret flag. Every writer stays on the wrappers and the plan API stays intact, so its dry-run output is main's.
 2. The rewire PRs move the writers (`src/agents`, `src/claude`, `src/codex` in one; the rest of `src/` in the other) onto the calls above and stack on it.
 3. The last PR switches `src/commands/dry_run.ts` to `withDryRun`, deletes `write_session.ts`, `write_plan.ts`, the wrappers and the bridge, and extends the fs lint from raw writes to raw reads.

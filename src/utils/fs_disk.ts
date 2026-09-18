@@ -443,7 +443,7 @@ export function rm(path: string, options: RemoveOptions = {}): boolean {
 }
 
 /** node's rmdirSync, named: an empty directory (or a Windows junction) goes; entries (ENOTEMPTY),
- *  a file (ENOTDIR; ENOENT on Windows), and an absent path (ENOENT) are its own refusals. */
+ *  a file (ENOTDIR, on Windows too), and an absent path (ENOENT) are its own refusals. */
 export function rmdir(path: string): void {
   rmdirSync(path);
   reportWrite("deleted", path);

@@ -179,7 +179,6 @@ const ERROR_CASES: Array<{
     setup: (r) => writeFileSync(join(r, "f"), "x"),
     op: (r) => facade.rmdir(join(r, "f")),
     code: "ENOTDIR",
-    win32: "ENOENT",
   },
   {
     name: "rm of a missing path with force",

@@ -504,10 +504,9 @@ test("the update preview takes the stage's and the flip's own refusals at `curre
   const file = join(dir, "file");
   mkdirSync(file, { recursive: true });
   writeFileSync(join(file, "current"), "");
-  // The platform's own code for rmdir at a regular file: Windows reports it as not found.
-  const notDir = process.platform === "win32"
-    ? /ENOENT: no such file or directory, rmdir '/
-    : /ENOTDIR: not a directory, rmdir '/;
+  // rmdir at a regular file is ENOTDIR on every platform (a lookup UNDER a file is where Windows
+  // says ENOENT).
+  const notDir = /ENOTDIR: not a directory, rmdir '/;
   await expect(preview(file)).rejects.toThrow(notDir);
   expect(() => pointCurrentAt(file, versionName)).toThrow(notDir);
   const repair = join(dir, "repair");

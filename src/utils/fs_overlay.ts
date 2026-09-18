@@ -714,7 +714,8 @@ export class Overlay {
     if (seen.stats.isSymbolicLink()) {
       if (!WINDOWS) throw errno("ENOTDIR", "rmdir", path);
     } else {
-      if (!seen.stats.isDirectory()) throw errno(underFile("rmdir"), "rmdir", path);
+      // At a regular file (not under one): ENOTDIR on Windows too, as Deno's rmdirSync raises it.
+      if (!seen.stats.isDirectory()) throw errno("ENOTDIR", "rmdir", path);
       if (this.readdir(path).length > 0) throw errno("ENOTEMPTY", "rmdir", path);
     }
     this.tombstone(key, resolve(path));

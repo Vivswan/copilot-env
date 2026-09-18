@@ -1,0 +1,2 @@
+# www.npmjs.com answers automated clients with 403 (bot wall); the packages linked from docs/ are public and open in a browser.
+^https://www\.npmjs\.com/

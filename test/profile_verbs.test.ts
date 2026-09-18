@@ -388,7 +388,18 @@ test(
     expect(sync.exitCode).toBe(1);
     expect(sync.stderr).toContain("could not sync profile 'work'");
     expect(readFileSync(join(scratch.home, ".claude", "settings-work.json"), "utf8")).toBe(foreign);
-    // Four cold CLI spawns; generous headroom for loaded Windows CI runners.
+    // The default's failure never stops the named sweep: with the default's settings.json
+    // unparseable and work's file removed, sync records the default's failure, re-renders work,
+    // and exits 1 for the default.
+    expect(observe(["init", "--proxy"], scratch).exitCode).toBe(0);
+    rmSync(join(scratch.home, ".claude", "settings-work.json"));
+    writeFileSync(join(scratch.home, ".claude", "settings.json"), "{ not json");
+    const partial = observe(["sync"], scratch);
+    expect(partial.exitCode).toBe(1);
+    expect(partial.stderr).toContain("could not sync the default profile");
+    expect(partial.stderr).toContain("Synced 1 profile.");
+    expect(existsSync(join(scratch.home, ".claude", "settings-work.json"))).toBe(true);
+    // Six cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
   180_000,
 );

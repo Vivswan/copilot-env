@@ -47,6 +47,7 @@ import {
   type ProfileVerb,
 } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
+import { errMessage } from "../utils/error.ts";
 import { readTextResult } from "../utils/fs.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
 import { printKeyValue, printWrapped } from "../utils/table.ts";
@@ -647,17 +648,27 @@ export function registerSyncCommand(program: Command): void {
     .option("--dry-run", DRY_RUN_HELP)
     .action((opts: Opts) => {
       // One landing for both phases, so a dry run plans the named files over the default's
-      // planned content and prints one plan.
+      // planned content and prints one plan. The default's failure is recorded, never a stop: the
+      // named sweep still runs, and the exit code says a profile did not land.
       const land = async (): Promise<() => void> => {
         const withDefault = new CopilotEnvState().readProfileSlot(null).kind === "complete";
-        if (withDefault) await syncDefault();
+        let defaultSynced = 0;
+        if (withDefault) {
+          try {
+            await syncDefault();
+            defaultSynced = 1;
+          } catch (e) {
+            logger.warn(`could not sync the default profile: ${errMessage(e)}`);
+            process.exitCode = 1;
+          }
+        }
         const named = await syncNamedProfiles();
         if (named.failed > 0) process.exitCode = 1;
-        const synced = named.synced + (withDefault ? 1 : 0);
+        const synced = named.synced + defaultSynced;
         return () =>
           logger.log(
             `  ✓ Synced ${synced} profile${synced === 1 ? "" : "s"}${
-              withDefault ? " (the default included)" : ""
+              defaultSynced === 1 ? " (the default included)" : ""
             }.`,
           );
       };

@@ -130,8 +130,8 @@ flowchart LR
 ```
 
 - **No fallback** ([authentication: profiles](authentication.md#profiles) owns the rule): `Credential.resolveWithReason()` names the profile in its reason, and a launch on a partial slot reports `partialSlotGap()` instead of guessing.
-- **The default is a profile too,** under the reserved `default` key. Its `mode` is the one mode both agents share, with one writer: `commitDefaultWiring()` in `src/agents/configure_defaults.ts`, which records it (and the probed pair) after BOTH agents' writes succeeded, so a failed write leaves the previous record.
-- **A single-agent command re-renders the default** and never moves its record: with a pair stored it renders that pair; with no record, or a Direct record whose pair a credential write took, it lands both agents as `agent profile add` would.
+- **The default is a profile too,** under the reserved `default` key. Its `mode` is the one mode both agents share. `commitDefaultWiring()` in `src/agents/configure_defaults.ts` records it (and the probed pair) after BOTH agents' writes succeeded, so a failed write leaves the previous record; `add` with no credential yet records the mode alone.
+- **A single-agent command re-renders the default** and never moves its record: with a pair stored it renders that pair; with no record, or a Direct record whose pair a credential write took, it lands both agents as `agent profile add` would. The record has two writers: the landing after both agents wrote, and `add` with no credential yet, which records the mode alone.
 
 Demonstrated by: [test/profiles.test.ts](../test/profiles.test.ts), [test/codex_profile_wiring.test.ts](../test/codex_profile_wiring.test.ts).
 

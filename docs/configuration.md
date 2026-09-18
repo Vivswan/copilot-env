@@ -78,9 +78,9 @@ A Direct profile slot (`profiles.<name>` in `~/.local/share/copilot-env/state.js
 | a Direct landing with no resolvable credential                                                                   | refused before any write (`agent profile auth` first): a selection made without one would store the fallback identity and host                                                                                                    |
 | a pin or literal set or cleared                                                                                  | applies at the next re-render; it renders over the slot and never enters it, so the slot keeps only what a probe answered (a half never probed under an overlay is probed once when the overlay is cleared)                       |
 
-The default profile is one mode for both agents. Its recorded mode has one writer: a landing that succeeded for both agents.
+The default profile is one mode for both agents. Its recorded mode comes from a landing that succeeded for both agents, or from `add` with no credential yet, which records the mode alone.
 
-- `agent profile add`: no flag probes both agents first and lands one mode (the proxy when they disagree); `--direct|--proxy` lands that mode for both.
+- `agent profile add`: no flag probes both agents first and lands one mode (the proxy when they disagree); `--direct|--proxy` lands that mode for both. With no credential yet, `add` records the mode alone (`--no-auth` stops there) and the landing follows the credential.
 - `agent settings --import` of a bundle naming both agents, or one Direct agent on a Direct default whose stored pair is incomplete or whose credential the import replaces (the plan names both files).
 - The first `agent profile sync` or launcher write on a default with no record yet, or on a Direct default whose stored pair is incomplete: it lands both agents and says so. Whether a write lands is decided by the stored pair alone; a pin or literal renders over the pair and never decides it.
 

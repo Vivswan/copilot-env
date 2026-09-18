@@ -237,6 +237,11 @@ export interface FakeRequest {
 
 export interface FakeModelEndpoint {
   baseUrl: string;
+  /** aimock's own listener behind the front (the front is this process's), so a test can see
+   *  aimock serve, or stop serving, from outside the process that started it. */
+  aimockUrl: string;
+  /** aimock's process, for that test's cleanup. */
+  pid: number;
   journal(): Promise<FakeRequest[]>;
   lastRequest(route: Route): Promise<FakeRequest | null>;
   close(): Promise<void>;
@@ -328,6 +333,10 @@ export async function awaitListening(child: Deno.ChildProcess): Promise<number> 
 /**
  * Start aimock on the scenario table (its fixture file lands in `dir`, a directory the caller
  * owns and removes) and the front in front of it; resolves once both listen.
+ *
+ * aimock runs under the exit-with-parent preload (test/helpers/exit_with_parent_preload.ts) and
+ * holds this process's stdin pipe: however this process ends, the pipe's EOF ends aimock too, so
+ * a run interrupted mid-suite leaves nothing serving. `close` is the orderly path.
  */
 export async function startFakeModelEndpoint(
   dir: string,
@@ -337,7 +346,7 @@ export async function startFakeModelEndpoint(
   writeFileSync(fixturesPath, `${JSON.stringify(fixtureFile(scenarios), null, 2)}\n`);
   const child = spawnChild(Deno.execPath(), {
     args: [
-      ...denoRunArgs(),
+      ...denoRunArgs("--preload", join(ROOT, "test", "helpers", "exit_with_parent_preload.ts")),
       aimockSpecifier(),
       "--port",
       "0",
@@ -350,7 +359,8 @@ export async function startFakeModelEndpoint(
     // and reject the fake tokens.
     env: hermeticEnv({}),
     clearEnv: true,
-    stdin: "null",
+    // Never written; the preload reads it for the EOF alone.
+    stdin: "piped",
     stdout: "piped",
     stderr: "piped",
   });
@@ -358,14 +368,8 @@ export async function startFakeModelEndpoint(
   try {
     aimockPort = await awaitListening(child);
   } catch (e) {
-    // A child that already exited (the early-exit rejection) throws on kill; the start's own
-    // error is the one the caller must see.
-    try {
-      child.kill();
-    } catch {
-      // already gone
-    }
-    await child.status;
+    // The start's own error (the early-exit rejection, say) is the one the caller must see.
+    await stopChild(child);
     throw e;
   }
 
@@ -413,8 +417,9 @@ export async function startFakeModelEndpoint(
   const address = front.address();
   const frontPort = typeof address === "object" && address !== null ? address.port : 0;
 
+  const aimockUrl = `http://127.0.0.1:${aimockPort}`;
   const journal = async (): Promise<FakeRequest[]> => {
-    const res = await fetch(`http://127.0.0.1:${aimockPort}/__aimock/journal`, {
+    const res = await fetch(`${aimockUrl}/__aimock/journal`, {
       signal: AbortSignal.timeout(JOURNAL_TIMEOUT_MS),
     });
     const entries = (await res.json()) as unknown;
@@ -442,6 +447,8 @@ export async function startFakeModelEndpoint(
 
   return {
     baseUrl: `http://127.0.0.1:${frontPort}`,
+    aimockUrl,
+    pid: child.pid,
     journal,
     lastRequest: async (route) => {
       const all = (await journal()).filter((r) => isRoute(route, r.path));
@@ -452,12 +459,18 @@ export async function startFakeModelEndpoint(
         front.closeAllConnections();
         front.close(() => done());
       });
-      try {
-        child.kill();
-      } catch {
-        // already gone
-      }
-      await child.status;
+      await stopChild(child);
     },
   };
+}
+
+/** Kill aimock and release its stdin pipe. A child that already exited throws on kill. */
+async function stopChild(child: Deno.ChildProcess): Promise<void> {
+  try {
+    child.kill();
+  } catch {
+    // already gone
+  }
+  await child.status;
+  await child.stdin.close();
 }

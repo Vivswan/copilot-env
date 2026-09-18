@@ -1,14 +1,24 @@
-// The two facts of the fake itself that the CLI tests rest on and the source of aimock does not
-// say: where its truncation lands on a codex-shaped stream, and that a child which dies before
-// listening fails the start at once with its own words.
-import { spawnChild } from "./helpers/run.ts";
+// The three facts of the fake itself that the CLI tests rest on and the source of aimock does
+// not say: where its truncation lands on a codex-shaped stream, that a child which dies before
+// listening fails the start at once with its own words, and that aimock dies with the process
+// that started it.
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  CHILD_VALUES,
+  childValuesEnv,
+  denoRunArgs,
+  importSpecifier,
+  ROOT,
+  spawnChild,
+} from "./helpers/run.ts";
 import {
   awaitListening,
   type FakeModelEndpoint,
   hermeticEnv,
   SCENARIO_HEADER,
 } from "./fake_model_endpoint.ts";
-import { startFakeEndpoint } from "./helpers/fake_endpoint.ts";
+import { jsonLines, startFakeEndpoint } from "./helpers/fake_endpoint.ts";
 import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
 let fake: FakeModelEndpoint;
@@ -89,6 +99,89 @@ test("a child that exits before listening fails the start at once, naming its ex
   );
   // Well inside the 60 s start timeout: the exit, not the deadline, settled it.
   expect(Date.now() - started).toBeLessThan(15_000);
+});
+
+/** How long aimock gets to notice its parent is gone: the stdin EOF is immediate; the pid poll,
+ *  the fallback, runs once a second. */
+const ORPHAN_GRACE_MS = 5_000;
+
+/** Whether anything listens on aimock's port. Read at the socket, not the pid: an orphan that
+ *  exited under a pid 1 that reaps nothing (the docker run's `deno task test`) stays a zombie,
+ *  which a signal-0 probe reads as alive. A refusal is the one answer that means "gone"; any
+ *  other failure throws, so it can never pass as one. */
+async function aimockPort(url: string): Promise<"listening" | "refused"> {
+  try {
+    const conn = await Deno.connect({ hostname: "127.0.0.1", port: Number(new URL(url).port) });
+    conn.close();
+    return "listening";
+  } catch (e) {
+    if (e instanceof Deno.errors.ConnectionRefused) return "refused";
+    throw e;
+  }
+}
+
+test("aimock dies with the process that started it, even one killed outright", async () => {
+  // A second process starts the fake through the helper, prints where aimock is, and holds it.
+  // SIGKILL (TerminateProcess on Windows) gives that process no chance to close anything.
+  const holderDir = join(dir, "holder");
+  mkdirSync(holderDir);
+  const program = join(holderDir, "hold_endpoint.ts");
+  writeFileSync(
+    program,
+    [
+      `import { startFakeEndpoint } from ${
+        importSpecifier(join(ROOT, "test", "helpers", "fake_endpoint.ts"))
+      };`,
+      `const fake = await startFakeEndpoint(${CHILD_VALUES}.dir);`,
+      `console.log(JSON.stringify({ pid: fake.pid, aimockUrl: fake.aimockUrl }));`,
+      `await new Promise(() => {});`,
+      "",
+    ].join("\n"),
+  );
+  const holder = spawnChild(Deno.execPath(), {
+    args: [...denoRunArgs(), program],
+    env: childValuesEnv({ dir: holderDir }),
+    stdin: "null",
+    stdout: "piped",
+    stderr: "null",
+  });
+  const reader = holder.stdout.getReader();
+  const decoder = new TextDecoder();
+  let printed = "";
+  let aimock: { pid: number; aimockUrl: string } | undefined;
+  while (aimock === undefined) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`the holder exited before printing aimock's address: ${printed}`);
+    printed += decoder.decode(value, { stream: true });
+    aimock = jsonLines(printed).find(
+      (line): line is { pid: number; aimockUrl: string } =>
+        typeof line.pid === "number" && typeof line.aimockUrl === "string",
+    );
+  }
+  try {
+    // Control: the same probe finds aimock before the kill, so "refused" below is a stop observed.
+    expect(await aimockPort(aimock.aimockUrl)).toBe("listening");
+
+    holder.kill("SIGKILL");
+    await holder.status;
+    while (!(await reader.read()).done) {
+      // the holder's last output, to its EOF
+    }
+    const deadline = Date.now() + ORPHAN_GRACE_MS;
+    let port = await aimockPort(aimock.aimockUrl);
+    while (port === "listening" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      port = await aimockPort(aimock.aimockUrl);
+    }
+    expect(port).toBe("refused");
+  } finally {
+    // A regression here is the very leak under test; the pid is what this test can still reach.
+    try {
+      process.kill(aimock.pid, "SIGKILL");
+    } catch {
+      // already gone, the expected state
+    }
+  }
 });
 
 test("every hermetic child env keeps deno's release check off, whatever the parent shell says", () => {

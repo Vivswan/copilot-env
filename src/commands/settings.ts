@@ -29,7 +29,7 @@ import {
   type ProfileMapKey,
   profileSettingsKey,
 } from "../copilot_api/env_config.ts";
-import { assertKnownProfile } from "../copilot_api/env_state.ts";
+import { assertProfileSlot } from "../copilot_api/env_state.ts";
 import {
   isValidProfileName,
   parseProfileFlag,
@@ -307,8 +307,10 @@ export async function runProfileSettings(
     args,
     deps,
     (options) => {
-      // An export reads a profile that exists; an import is how a bundle creates one.
-      if (profile !== null) assertKnownProfile(profile);
+      // An export carries the profile's store slot (the import requires it back), so a name with
+      // a daemon home and no slot is refused here with its repair; an import is how a bundle
+      // creates a profile.
+      if (profile !== null) assertProfileSlot(profile);
       return profileBundle(buildExportBundle(options), profile);
     },
     {

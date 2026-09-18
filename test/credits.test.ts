@@ -354,21 +354,27 @@ describe("runCreditsEverywhere", () => {
         "Copilot credits  octocat · Sep 2026 · resets Oct 1 · day 11/30",
       ]);
 
-      // Distinct logins are distinct meters, blank-line separated, in profile order.
+      // Distinct logins are distinct meters, blank-line separated, in profile order: the fetches
+      // run at once and the FIRST token's answer arrives last, so the order is the tokens', never
+      // the arrivals'.
       let call = 0;
       const perToken = () => {
         call += 1;
-        return Promise.resolve(
-          new Response(JSON.stringify({ ...BODY, "login": `user-${call}` }), { status: 200 }),
-        );
+        const login = `user-${call}`;
+        const body = new Response(JSON.stringify({ ...BODY, "login": login }), { status: 200 });
+        return call === 1
+          ? new Promise<Response>((resolve) => setTimeout(() => resolve(body), 20))
+          : Promise.resolve(body);
       };
       const two = await captureChannels(() =>
         runCreditsEverywhere({ json: true }, { fetchImpl: perToken, credential, nowMs })
       );
-      expect((JSON.parse(two.stdout) as { profiles: string[] }[]).map((m) => m.profiles)).toEqual([
-        ["default", "b"],
-        ["a"],
-      ]);
+      expect(
+        (JSON.parse(two.stdout) as { profiles: string[]; login: string }[]).map((m) => [
+          m.login,
+          ...m.profiles,
+        ]),
+      ).toEqual([["user-1", "default", "b"], ["user-2", "a"]]);
 
       // Nothing resolving is the command's error.
       const none = () => ({ token: null, reason: "no credential" });

@@ -86,9 +86,16 @@ export async function runCreditsEverywhere(
       "no profile has a credential that resolves; run `agent auth` or `agent profile <name> auth`",
     );
   }
+  // Every account's read at once (one timeout budget, not one per account), folded in the order
+  // the tokens were met (profile order), so a slow account never reorders the meters.
+  const fetched = await Promise.all(
+    [...byToken].map(async ([token, profiles]) => ({
+      profiles,
+      credits: await fetchCopilotCredits(token, deps.fetchImpl ?? fetch),
+    })),
+  );
   const meters: AccountMeter[] = [];
-  for (const [token, profiles] of byToken) {
-    const credits = await fetchCopilotCredits(token, deps.fetchImpl ?? fetch);
+  for (const { profiles, credits } of fetched) {
     const pace = creditsPace(credits, target, (deps.nowMs ?? Date.now)());
     const same = pace.login === null
       ? undefined

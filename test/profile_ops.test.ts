@@ -288,6 +288,14 @@ test(
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toContain("not a bundle of profile 'work' alone");
     expect(refused.stderr).toContain("agent settings --import");
+    // A daemon home with no store slot is not a profile an export can carry: refused with its
+    // repair, so no bundle exists that its own import would refuse.
+    mkdirSync(join(twin.home, "profiles", "ghost"), { recursive: true });
+    const homeOnly = observe(["profile", "ghost", "settings", "--export"], twin);
+    expect(homeOnly.exitCode).toBe(1);
+    expect(homeOnly.stdout).toBe("");
+    expect(homeOnly.stderr).toContain("profile 'ghost' has no store slot");
+    expect(homeOnly.stderr).toContain("agent profile ghost add");
     // A fresh machine's empty whole-store export (no keys, no credential, no slot, no mode)
     // carries no slot for work: read as work's bundle it would clear work's preferences and land
     // nothing, so it is refused and the store is untouched.

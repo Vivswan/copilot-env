@@ -672,12 +672,16 @@ function planWrites(
 
 /** Compute the whole import plan against the CURRENT stores (one gh probe per
  *  pinned account, memoized, shared by every gh-cli slot and reused by the apply). */
-/** How far an import reaches. The whole store lands the default's credential and wiring; one
- *  named profile's bundle (`agent profile <name> settings --import`) never touches the default,
- *  so the default's rebake rules below stay off for it. */
+/** How far an import reaches. The whole store lands the default's credential and wiring and
+ *  reconciles every Desktop entry; one named profile's bundle (`agent profile <name> settings
+ *  --import`) never touches the default, so the default's rebake rules below stay off for it and
+ *  the apply leaves every other profile's Desktop entry as it is (its own profile's write carries
+ *  that profile's entry). */
 export interface ImportScope {
   defaultWiring: boolean;
 }
+
+export const WHOLE_STORE: ImportScope = { defaultWiring: true };
 
 export function planImport(
   bundle: SettingsBundle,
@@ -873,6 +877,7 @@ function keptCredential(state: CopilotEnvState, name: ProfileName): ProvisionedC
 export async function applyImportPlan(
   plan: ImportPlan,
   deps: ImportDeps = {},
+  scope: ImportScope = WHOLE_STORE,
 ): Promise<ImportOutcome> {
   const outcome: ImportOutcome = {
     modes: null,
@@ -899,8 +904,16 @@ export async function applyImportPlan(
     outcome.failures.push(...failures);
   }
   await importProfiles(plan, outcome);
-  // The imported `claude.desktop` preference lands even when no wiring was re-derived.
-  await reconcileClaudeDesktopWiring();
+  if (scope.defaultWiring) {
+    // The imported `claude.desktop` preference lands even when no wiring was re-derived.
+    await reconcileClaudeDesktopWiring();
+  } else {
+    // A named bundle reaches its profile's entry alone: a re-auth with no mode, or a preference
+    // its entry bakes (static-key), lands there and nowhere else.
+    for (const { name, landing } of plan.profiles) {
+      if (landing.action !== "skip") await reconcileClaudeDesktopWiring({ only: name });
+    }
+  }
   return outcome;
 }
 

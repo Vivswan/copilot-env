@@ -5,8 +5,9 @@
 // HOME, and the new spelling must print the same. The two default-profile aliases (start, stop)
 // are proven against their verbs live, in twin homes; the flat spellings are gone; a profile's
 // settings bundle is that profile alone.
-import { writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { desktopEntryName, META_FILENAME } from "../src/claude/desktop.ts";
 import {
   expectIdentical,
   expectOracle as expectOracleOf,
@@ -149,7 +150,13 @@ test(
     const namedAll = observe(["profile", "work", "stop", "--all"], twins[0]);
     expect(namedAll.exitCode).toBe(1);
     expect(namedAll.stderr).toContain("--all stops every daemon; it takes no profile name");
-    // Thirteen cold CLI spawns; generous headroom for loaded Windows CI runners.
+    // A named profile hard-fails on every arm: `--check` on a profile that does not exist is the
+    // refusal, never "not running" for a daemon that never was.
+    const ghost = observe(["profile", "ghost", "start", "--check"], twins[0]);
+    expect(ghost.exitCode).toBe(1);
+    expect(ghost.stdout).toBe("");
+    expect(ghost.stderr).toContain("no such profile 'ghost'");
+    // Fourteen cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
   300_000,
 );
@@ -239,6 +246,37 @@ test(
       githubToken: "ghu_twin",
     });
     expect(twinStore.modes).toEqual({ codex: "none", claude: "none" });
+
+    // A named import reaches its profile alone: the default's Desktop entry, made stale by
+    // hand, is byte-identical after it, and a default write (`agent sync`) is what rewrites it.
+    const desktop = join(twin.home, "claude-desktop");
+    const library = join(desktop, "configLibrary");
+    mkdirSync(library, { recursive: true });
+    const withDesktop = {
+      ...twin,
+      env: { ...twin.env, COPILOT_ENV_CI_CLAUDE_DESKTOP_DIR: desktop },
+    };
+    expect(observe(["init", "--proxy"], withDesktop).exitCode).toBe(0);
+    const meta = JSON.parse(readFileSync(join(library, META_FILENAME), "utf8")) as {
+      entries: { id: string; name: string }[];
+    };
+    const defaultId = meta.entries.find((e) => e.name === desktopEntryName(null))?.id;
+    expect(defaultId).toBeDefined();
+    const defaultEntry = join(library, `${defaultId}.json`);
+    const stale = readFileSync(defaultEntry, "utf8").replace(
+      "http://127.0.0.1:4199",
+      "http://127.0.0.1:4100",
+    );
+    expect(stale).not.toBe(readFileSync(defaultEntry, "utf8"));
+    writeFileSync(defaultEntry, stale);
+    const namedImport = observe(
+      ["profile", "work", "settings", "--import", bundleFile, "--force"],
+      withDesktop,
+    );
+    expect(namedImport.exitCode).toBe(0);
+    expect(readFileSync(defaultEntry, "utf8")).toBe(stale);
+    expect(observe(["sync"], withDesktop).exitCode).toBe(0);
+    expect(readFileSync(defaultEntry, "utf8")).not.toBe(stale);
 
     // The whole store is not one profile's bundle.
     const wholeFile = join(twin.home, "all.json");

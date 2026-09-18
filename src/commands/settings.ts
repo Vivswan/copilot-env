@@ -224,7 +224,7 @@ async function runImport(
     // apply would report are said, and fail the run, the same way. Only the confirmation is skipped.
     await runDryRun(async () => {
       if (!action.noBackup) writeSettingsBackup();
-      const outcome = await (deps.applyPlan ?? applyImportPlan)(plan, deps);
+      const outcome = await (deps.applyPlan ?? applyImportPlan)(plan, deps, scope.plan);
       for (const line of [...outcome.skipped, ...outcome.failures]) logger.warn(line);
       if (outcome.failures.length > 0) process.exitCode = 1;
     });
@@ -242,7 +242,7 @@ async function runImport(
 
   let outcome: ImportOutcome;
   try {
-    outcome = await (deps.applyPlan ?? applyImportPlan)(plan, deps);
+    outcome = await (deps.applyPlan ?? applyImportPlan)(plan, deps, scope.plan);
   } catch (e) {
     // A mid-import throw may leave the stores half-written, so the rollback hint rides the rendered
     // error.

@@ -676,13 +676,17 @@ async function gatherNamedTarget(
  *  and its per-agent wiring. The account-wide fact groups (bootstrap, proxy package,
  *  shell/CLI/tool setup, autoupdate, codex.host) are not gathered at all, so they cannot leak
  *  into a narrowed report. */
+/** `profile` narrows the run to one named profile's target; with none, `namedSweep` (the
+ *  default) adds every named profile's runtime target in the diagnostic scopes, and false is the
+ *  default profile's own run: its daemon alone, as a named profile's run is its daemon alone. */
 export async function gatherFacts(
   scope: HealthScope,
-  opts: { live?: boolean; profile?: Profile } = {},
+  opts: { live?: boolean; profile?: Profile; namedSweep?: boolean } = {},
   overrides?: Partial<ProbeDeps>,
 ): Promise<HealthFacts> {
   const deps: ProbeDeps = { ...defaultProbeDeps(), ...overrides };
   const profile = opts.profile ?? null;
+  const namedSweep = opts.namedSweep ?? true;
   // The addressed target's resolved port (READ-ONLY: a named profile's reservation is peeked,
   // never made). Lazy and cached: only the scopes that inspect wiring resolve it, so a
   // runtime/auth run never computes a named profile's candidate port at all.
@@ -831,9 +835,9 @@ export async function gatherFacts(
           return;
         }
         // The default target first, then every named profile in sorted order, but only in the
-        // diagnostic scopes (PROFILE_SWEEP_SCOPES): the launchers' fast `runtime` probe stays
-        // the default daemon alone.
-        const names = SCOPE_PROFILE_SWEEP.includes(scope) ? deps.profileNames() : [];
+        // diagnostic scopes (PROFILE_SWEEP_SCOPES) of a sweeping run: the launchers' fast
+        // `runtime` probe and the default profile's own run stay the default daemon alone.
+        const names = namedSweep && SCOPE_PROFILE_SWEEP.includes(scope) ? deps.profileNames() : [];
         facts.runtimes = await Promise.all<RuntimeTarget>([
           gatherDefaultTarget(scope, deps),
           ...names.map((name) => gatherNamedTarget(name, scope, deps)),

@@ -317,10 +317,12 @@ describe("runCreditsEverywhere", () => {
   test("one meter per account: profiles on one token share a fetch, two tokens on one login print once, a credential that does not resolve is said and left out", async () => {
     seedProfiles();
     try {
+      // `a` holds the other token, so the login merge meets it AFTER `b`: the meter must still
+      // list the default first, then the names sorted.
       const tokens: Record<string, string | null> = {
         default: "tok-default",
-        a: "tok-default",
-        b: "tok-other-token-same-login",
+        a: "tok-other-token-same-login",
+        b: "tok-default",
         c: null,
       };
       const credential = (profile: string | null) => {
@@ -364,8 +366,8 @@ describe("runCreditsEverywhere", () => {
         runCreditsEverywhere({ json: true }, { fetchImpl: perToken, credential, nowMs })
       );
       expect((JSON.parse(two.stdout) as { profiles: string[] }[]).map((m) => m.profiles)).toEqual([
-        ["default", "a"],
-        ["b"],
+        ["default", "b"],
+        ["a"],
       ]);
 
       // Nothing resolving is the command's error.

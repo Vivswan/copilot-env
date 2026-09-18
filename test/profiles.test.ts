@@ -762,7 +762,11 @@ test("stop/record-event against a never-existing profile fabricate NOTHING", asy
   await runStop({ profile: "typo" });
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
-  await runStart({ kind: "record-event", profile: TYPO });
+  // The heartbeat is the resolver's, wired for a profile that exists: an unknown name is the
+  // refusal every named verb gives, never a heartbeat landed somewhere.
+  await expect(runStart({ kind: "record-event", profile: TYPO })).rejects.toThrow(
+    "no such profile 'typo'",
+  );
   // Neither command may materialize a phantom profile home (agent list,
   // stop --all, and the proxy float all enumerate profile homes).
   expect(existsSync(profileHome(TYPO))).toBe(false);

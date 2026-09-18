@@ -332,6 +332,10 @@ export async function runStart(
   preflight: PreflightRunner = runPreflight,
 ): Promise<void> {
   const profile = action.profile;
+  // First, on every arm: a named profile hard-fails and never falls back, so a typo'd name is
+  // refused before a probe answers "not running" for a daemon that never existed, a heartbeat
+  // lands anywhere, or a launch makes a half-created daemon home behind its refusal.
+  if (profile !== null) assertProfileSlot(profile);
   if (action.kind === "check") {
     await reportCheckProbe(profile);
     return;
@@ -340,9 +344,6 @@ export async function runStart(
     recordHeartbeat(profile);
     return;
   }
-  // Before any directory is made: a launch of a profile that does not exist must not leave a
-  // half-created daemon home behind its refusal.
-  if (profile !== null) assertProfileSlot(profile);
   /** Resolved together so paths and stores can never disagree. */
   const launchContext = (): LaunchContext => {
     const paths = new CopilotApiPaths(profile);

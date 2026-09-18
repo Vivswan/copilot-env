@@ -96,6 +96,13 @@ export async function runCreditsEverywhere(
     if (same === undefined) meters.push({ pace, profiles });
     else same.profiles.push(...profiles);
   }
+  // A merge appends the later token's profiles after the earlier's: the list is profile order
+  // (the default, then the names sorted) whatever order the tokens were met in.
+  for (const meter of meters) {
+    meter.profiles.sort((a, b) =>
+      a === DEFAULT_PROFILE_KEY ? -1 : b === DEFAULT_PROFILE_KEY ? 1 : a.localeCompare(b)
+    );
+  }
   if (args.json) {
     console.log(
       JSON.stringify(

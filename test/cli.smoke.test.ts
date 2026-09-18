@@ -732,6 +732,11 @@ test(
     expect(profilePort?.status).toBe("fail");
     expect(profilePort?.detail).toContain("4555");
     expect(profilePort?.fix).toBe("agent profile p start");
+    // The default profile's own run is its daemon alone: p's stopped daemon is p's business.
+    const own = runCli(["profile", "health", "--json"], { env });
+    const ownJson = JSON.parse(own.stdout) as { checks: ProfiledCheck[] };
+    expect(ownJson.checks.map((c) => c.profile)).toEqual(ownJson.checks.map(() => null));
+    expect(ownJson.checks.some((c) => c.id === "runtime.port")).toBe(true);
     // The profile's own credential line and per-agent wiring ride along, once each.
     expect(json.checks.filter((c) => c.id === "setup.auth").map((c) => c.profile)).toEqual([
       null,

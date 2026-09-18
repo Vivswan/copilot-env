@@ -53,16 +53,20 @@ function report(
 }
 
 /** One profile's checks (`agent profile [<name>] health`): the default's run is the whole
- *  environment's account-wide checks plus, in the diagnostic scopes, every profile daemon's
- *  runtime block; a named profile's run is its daemon, consistency, credential slot, and
- *  per-agent wiring alone. */
+ *  environment's account-wide checks and its own daemon (never a named profile's, whose stop
+ *  is that profile's business); a named profile's run is its daemon, consistency, credential
+ *  slot, and per-agent wiring alone. */
 export async function runHealth(args: HealthArgs): Promise<void> {
   const scope = parseScope(args.scope);
   // Before anything is probed: a typo'd name must error naming the known profiles, never
   // diagnose the default wiring under the wrong name.
   const profile: Profile = parseProfileFlag(args.profile);
   if (profile !== null) assertKnownProfile(profile);
-  const facts = await gatherFacts(scope, { live: Boolean(args.live), profile });
+  const facts = await gatherFacts(scope, {
+    live: Boolean(args.live),
+    profile,
+    namedSweep: false,
+  });
   report(scope, evaluateAll(scope, facts), profileModes(facts), args.json, profile);
 }
 

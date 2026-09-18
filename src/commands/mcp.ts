@@ -47,8 +47,11 @@ function parseMcpAction(args: McpArgs): McpAction {
     return { kind: "remove", dryRun: Boolean(args.dryRun) };
   }
   if (!args.serve) {
-    if (args.model !== undefined) {
-      throw new Error("--model applies to --serve (the stdio server); bare `mcp` prints status");
+    if (args.profile !== undefined || args.model !== undefined) {
+      throw new Error(
+        "a profile name and --model apply to --serve (the stdio server); bare `agent profile " +
+          "mcp` prints the machine-global status",
+      );
     }
     return { kind: "status" };
   }

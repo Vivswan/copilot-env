@@ -22,11 +22,16 @@ export interface ScratchHome {
   env: Record<string, string>;
 }
 
-/** `test/fixtures/cli_redesign/<name>.json`. */
-export function loadOracle(name: string): Oracle {
+/** `test/fixtures/cli_redesign/<name>.json`, parsed; the caller names its shape. */
+export function loadFixture(name: string): unknown {
   return JSON.parse(
     readFileSync(join(PROJECT_ROOT, "test", "fixtures", "cli_redesign", `${name}.json`), "utf8"),
-  ) as Oracle;
+  );
+}
+
+/** A fixture of spelling -> what it printed. */
+export function loadOracle(name: string): Oracle {
+  return loadFixture(name) as Oracle;
 }
 
 /** A scratch HOME the child owns entirely: its data home, both agent homes, and a port pin that

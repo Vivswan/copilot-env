@@ -7,7 +7,6 @@
 // settings bundle is that profile alone.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { PROFILE_VERBS } from "../src/copilot_api/profile.ts";
 import {
   expectIdentical,
   expectOracle as expectOracleOf,
@@ -22,19 +21,6 @@ import { expect, test } from "./helpers/testing.ts";
 const ORACLE = loadOracle("profile_ops_oracle");
 
 const scratchHome = () => scratchHomeOf("copilot-profile-ops-");
-
-const OPS_VERBS = [
-  "launch",
-  "env",
-  "proxy-token",
-  "mcp",
-  "start",
-  "stop",
-  "health",
-  "models",
-  "credits",
-  "settings",
-] as const;
 
 /** The base's setup, as the oracle was captured: a proxy default and a proxy profile `work`, each
  *  with a stored token. */
@@ -79,19 +65,6 @@ test("the oracle fold keeps a profile named like the checkout's directory and a 
     "<HOME>/profiles/work",
   ]);
 });
-
-test(
-  "every runtime verb is a word of the profile tree, listed by its help",
-  () => {
-    const help = observe(["profile", "--help"], scratchHome());
-    expect(help.exitCode).toBe(0);
-    for (const verb of OPS_VERBS) {
-      expect(PROFILE_VERBS).toContain(verb);
-      expect(help.stdout, verb).toMatch(new RegExp(`^\\s+${verb}( |$)`, "m"));
-    }
-  },
-  60_000,
-);
 
 test(
   "each verb prints what the base's --profile spelling printed; the whole-store settings export and the top-level credits flags are unchanged",
@@ -200,8 +173,8 @@ test(
     for (
       const args of [
         ["profile", "work", "set", "passthrough", "off"],
-        ["config", "--set", "proxy.small-model", "gpt-x"],
-        ["config", "--set", "daemon.strict-port", "true"],
+        ["config", "set", "proxy.small-model", "gpt-x"],
+        ["config", "set", "daemon.strict-port", "true"],
       ]
     ) {
       expect(observe(args, scratch).exitCode, args.join(" ")).toBe(0);

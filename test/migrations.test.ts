@@ -1215,6 +1215,40 @@ function legacyHelperLine(profile: string): string {
   );
 }
 
+test("4.0.9 profile verb tree: the default's MCP registration moves to `agent profile mcp --serve` on its own, with no re-render to redo it", async () => {
+  // A Direct default with no credential: its slot is incomplete, so the step retargets the
+  // registration and re-renders nothing, and the retarget alone must leave the entry current.
+  const homes = isolateAgentHomes("copilot-mig-verb-tree-mcp-", { mkdirs: true });
+  dir = homes.dir;
+  writeStore(join(homes.proxyHome, "state.json"), {
+    profiles: { default: { mode: "direct" } },
+  });
+  const legacyMcp = agentLauncherCommand(["mcp", "--serve"]);
+  writeFileSync(
+    claudeJsonPath(),
+    JSON.stringify({
+      mcpServers: {
+        "copilot-env": { type: "stdio", command: legacyMcp.command, args: legacyMcp.args },
+        "theirs": { type: "stdio", command: "x", args: [] },
+      },
+    }),
+  );
+  const run = await captureChannels(() => moveProfilesToVerbTree());
+  expect(run.all).toContain("default has no complete wiring to re-render");
+  expect(inspectMcpRegistration().status).toBe("ours-current");
+  const doc = JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as {
+    mcpServers: Record<string, { args: string[] }>;
+  };
+  expect(doc.mcpServers["copilot-env"]?.args).toEqual(
+    agentLauncherCommand(["profile", "mcp", "--serve"]).args,
+  );
+  expect(doc.mcpServers["theirs"]).toEqual({ type: "stdio", command: "x", args: [] });
+  // Idempotent: the second run finds the new shape and writes nothing.
+  const before = fingerprintTree(dir);
+  await captureChannels(() => moveProfilesToVerbTree());
+  expect(fingerprintTree(dir)).toEqual(before);
+});
+
 test(
   "4.0.9 profile verb tree, dry run: a moved profile home is a directory row the re-render builds under, and a retargeted settings file never prints its token",
   async () => {
@@ -1489,13 +1523,13 @@ test(
       expect(run.all).toContain("re-rendered default's agent files");
 
       // The default's proxy line moved in both agent files, the user's key survived, and the
-      // registration is never left in the old shape (the proxy re-render owns it from here).
+      // proxy re-render took the registration out (proxy wiring registers no server).
       const settingsDefault = JSON.parse(
         readFileSync(join(homes.claudeHome, "settings.json"), "utf8"),
       );
       expect(settingsDefault.apiKeyHelper).toBe(proxyHelperCommand());
       expect(settingsDefault.hand).toBe("kept");
-      expect(["absent", "ours-current"]).toContain(inspectMcpRegistration().status);
+      expect(inspectMcpRegistration().status).toBe("absent");
 
       const store = readStore(join(homes.proxyHome, "state.json"));
       const profiles = store.profiles as Record<string, Record<string, unknown>>;

@@ -110,12 +110,13 @@ test("cli.ts profile mcp --help exposes the server flags; --remove rejects serve
   expect(serveRemove.exitCode).not.toBe(0);
   expect(serveRemove.stderr).toContain("mutually exclusive");
 
-  // Serve-only flags without --serve must not silently start a server (or anything).
-  const statusModel = runCli(["profile", "mcp", "--model", "x"], {
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  expect(statusModel.exitCode).not.toBe(0);
-  expect(statusModel.stderr).toContain("applies to --serve");
+  // Serve-only selectors without --serve must not silently print the machine-global status (or
+  // start anything): the model flag, and a profile name, whose server is the only per-profile thing.
+  for (const args of [["profile", "mcp", "--model", "x"], ["profile", "work", "mcp"]]) {
+    const status = runCli(args, { env: { ...process.env, CONSOLA_LEVEL: "5" } });
+    expect(status.exitCode, args.join(" ")).not.toBe(0);
+    expect(status.stderr, args.join(" ")).toContain("apply to --serve");
+  }
 });
 
 test("cli.ts config set writes only inside the data home, so it names no file", () => {

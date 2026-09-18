@@ -1,26 +1,12 @@
-// `agent profile [<name>] <verb> ...`: one tree for everything about one profile, routed onto the
-// functions that own each write (src/commands/profile.ts, auth.ts, init.ts, config.ts, and the
-// default's per-agent re-render in src/agents/configure_defaults.ts). No name is the default
-// profile. The verbs are reserved words for a NEW profile (src/copilot_api/profile.ts), so
-// `agent profile <word>` routes by the word alone.
+// `agent profile [<name>] <verb> ...`: one tree for everything about one profile, routed onto one
+// function per verb in src/commands/profile.ts (add del show sync check list), auth.ts (auth,
+// identity), and config.ts (set unset get), each on the Profile it targets: no name is the
+// default profile, null. The verbs are reserved words for a NEW profile (src/copilot_api/profile.ts),
+// so `agent profile <word>` routes by the word alone. This module validates the flags and asks the
+// questions; the bodies write.
 import type { Command } from "commander";
-import { parseClaudeAction, parseCodexAction } from "../agents/configure.ts";
-import { runClaude, runCodex } from "../agents/configure_defaults.ts";
-import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
-import {
-  MANAGED_MODE_DETAIL,
-  parseModeFlags,
-  providerModeExitCode,
-} from "../agents/provider_mode.ts";
-import { wireBothAgents } from "../agents/profile_wiring.ts";
-import { inspectClaudeWiring } from "../claude/config.ts";
-import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { inspectCodexWiring } from "../codex/config.ts";
-import { effectiveCodexHome } from "../codex/host.ts";
-import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
-import { Credential } from "../copilot_api/credential.ts";
-import { proxyStatus } from "../copilot_api/daemon.ts";
-import { copilotApiResolvePort } from "../copilot_api/port.ts";
+import type { ManagedAgentId } from "../agents/configure.ts";
+import { parseModeFlags } from "../agents/provider_mode.ts";
 import {
   configDelCommand,
   configGetCommand,
@@ -28,13 +14,10 @@ import {
   configSetCommand,
 } from "../copilot_api/env_config.ts";
 import {
-  allProfileNames,
   assertKnownProfile,
   AUTH_PROVIDERS,
   type AuthProvider,
   CopilotEnvState,
-  credentialProvider,
-  partialSlotGap,
 } from "../copilot_api/env_state.ts";
 import { ghTokenEnvVarsLabel } from "../copilot_api/gh_cli.ts";
 import {
@@ -42,21 +25,22 @@ import {
   parseProfileName,
   type Profile,
   PROFILE_VERBS,
-  profileLabel,
-  type ProfileName,
   type ProfileVerb,
 } from "../copilot_api/profile.ts";
-import { assertNever } from "../utils/assert.ts";
-import { errMessage } from "../utils/error.ts";
-import { readTextResult } from "../utils/fs.ts";
-import { createStderrLogger, prompt } from "../utils/logger.ts";
-import { printKeyValue, printWrapped } from "../utils/table.ts";
-import { ensureAuthenticated, runAuth } from "./auth.ts";
-import { printClaudeDesktopCheck } from "./claude.ts";
+import { prompt } from "../utils/logger.ts";
+import { runAuth } from "./auth.ts";
 import { runConfig } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
-import { runInit } from "./init.ts";
-import { runProfile, syncNamedProfiles } from "./profile.ts";
+import {
+  type AddArgs,
+  addProfile,
+  checkProfile,
+  delProfile,
+  listProfiles,
+  showProfile,
+  syncEveryProfile,
+  syncProfile,
+} from "./profile.ts";
 
 /** Commander hands action callbacks an options bag of mixed-typed values. */
 export type Opts = Record<string, unknown>;
@@ -103,9 +87,6 @@ export function splitProfileInvocation(args: readonly string[]): ProfileInvocati
   return { args: ["profile", ...rest], profile: word };
 }
 
-// Narration to stderr, so `show`'s and `get`'s stdout stay the payload.
-const logger = createStderrLogger();
-
 function reservedWordError(word: string): Error {
   return new Error(
     `'${word}' is a reserved word (it is a verb of \`agent profile\`), not a profile name`,
@@ -148,20 +129,14 @@ async function confirmOrRefuse(question: string, opts: Opts, what: string): Prom
   if (confirmed !== true) throw new Error(`${what} aborted - nothing was changed`);
 }
 
-/** The recorded mode of a profile, for the add question: null when it has none yet. */
-function recordedMode(rawProfile: string | null): "direct" | "proxy" | null {
-  const profile = rawProfile === null ? null : parseProfileName(rawProfile);
-  return new CopilotEnvState().readProfileSlot(profile).mode;
-}
+const ONE_MODE = "--direct and --proxy are mutually exclusive (a profile has ONE mode)";
 
 /** `add`'s question, asked only when an explicit flag moves a recorded mode. */
 async function confirmModeChange(opts: Opts, rawProfile: string | null): Promise<void> {
-  const mode = parseModeFlags(
-    opts,
-    "--direct and --proxy are mutually exclusive (a profile has ONE mode)",
-  );
+  const mode = parseModeFlags(opts, ONE_MODE);
   if (mode === "auto") return;
-  const recorded = recordedMode(rawProfile);
+  const profile = rawProfile === null ? null : parseProfileName(rawProfile);
+  const recorded = new CopilotEnvState().readProfileSlot(profile).mode;
   if (recorded === null || recorded === mode) return;
   const whose = rawProfile === null ? "the default profile" : `profile '${rawProfile}'`;
   await confirmOrRefuse(
@@ -171,190 +146,20 @@ async function confirmModeChange(opts: Opts, rawProfile: string | null): Promise
   );
 }
 
-/** The credential step `add` runs on a profile that has none: `auth`'s interactive flow, which
- *  then wires both agents. `--no-auth` leaves it to `auth` and says so; a dry run names it; a
- *  script with neither is refused BEFORE the mode lands, so nothing is half done. A profile with
- *  a credential is never asked again. */
-function credentialStep(profile: Profile, opts: Opts): () => Promise<void> {
-  // Resolving, not merely stored: a gh-cli slot whose gh login is gone is as good as none.
-  if (new Credential(undefined, profile).isAuthenticated()) return () => Promise.resolve();
-  const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
-  const providers = `--provider <${
-    AUTH_PROVIDERS.join("|")
-  }>  (or --set <token>, --gh-user <login>)`;
-  // Commander stores a `--no-<x>` flag as `<x>: false`.
-  if (opts.auth === false) {
-    return () => {
-      logger.log(`  Next:  ${authCommand} ${providers}`);
-      return Promise.resolve();
-    };
-  }
-  if (opts.dryRun) {
-    return () => {
-      logger.log(`  Would run the credential step (${authCommand}); a dry run never logs in.`);
-      return Promise.resolve();
-    };
-  }
-  if (!process.stdin.isTTY) {
-    throw new Error(
-      `not a terminal - pass --no-auth to record the mode alone, then \`${authCommand} ${providers}\``,
-    );
-  }
-  return () => ensureAuthenticated(profile);
+/** The add flags as the body's arguments (Commander stores a `--no-<x>` flag as `<x>: false`). */
+function addArgs(opts: Opts): AddArgs {
+  return {
+    mode: parseModeFlags(opts, ONE_MODE),
+    dryRun: Boolean(opts.dryRun),
+    noAuth: opts.auth === false,
+  };
 }
 
-function agentFlag(opts: Opts): "claude" | "codex" | null {
+function agentFlag(opts: Opts): ManagedAgentId | null {
   if (opts.claude && opts.codex) throw new Error("--claude and --codex are mutually exclusive");
   if (opts.claude) return "claude";
   if (opts.codex) return "codex";
   return null;
-}
-
-interface AgentCommandFlags {
-  check: boolean;
-  dryRun: boolean;
-}
-
-/** The default's Claude re-render or file check (`profile sync|check --claude`). */
-function runClaudeCommand(flags: AgentCommandFlags): Promise<void> {
-  const action = parseClaudeAction({ ...flags, mode: "auto" });
-  switch (action.kind) {
-    case "check":
-      // The exit code stays the provider-mode contract; the Desktop status only prints.
-      return runClaude(action).then(() => printClaudeDesktopCheck());
-    case "configure": {
-      // The default's Desktop entry rode on the write itself; the reconcile covers the named
-      // profiles.
-      const land = () =>
-        ensureAuthenticated()
-          .then(() => runClaude(action))
-          .then(() => reconcileClaudeDesktopWiring());
-      return flags.dryRun ? runDryRun(land) : land();
-    }
-    default:
-      return assertNever(action);
-  }
-}
-
-/** The default's Codex re-render or file check (`profile sync|check --codex`). */
-function runCodexCommand(flags: AgentCommandFlags): Promise<void> {
-  const action = parseCodexAction({ ...flags, mode: "auto", mobile: false });
-  switch (action.kind) {
-    case "mobile":
-      throw new Error("the Codex pairing flow is `agent codex-mobile`");
-    case "check":
-      return runCodex(action);
-    case "configure": {
-      // A re-render of the recorded default mode; `agent profile add` is what sets or moves it.
-      const land = () => ensureAuthenticated().then(() => runCodex(action));
-      return flags.dryRun ? runDryRun(land) : land();
-    }
-    default:
-      return assertNever(action);
-  }
-}
-
-/** The store slot's answer for the default, on the launcher exit-code contract (a named
- *  profile's reaches the same slot through runProfile). */
-function runDefaultSlotCheck(): void {
-  const slot = new CopilotEnvState().readProfileSlot(null);
-  switch (slot.kind) {
-    case "partial":
-      printKeyValue("default", slot.mode ?? "none");
-      printWrapped("  the default profile has no complete wiring yet - run `agent init`");
-      process.exitCode = providerModeExitCode("other");
-      return;
-    case "complete":
-      printKeyValue(profileLabel(null), slot.mode);
-      process.exitCode = providerModeExitCode(slot.mode);
-      return;
-    default:
-      assertNever(slot);
-  }
-}
-
-/** One agent's file of a NAMED profile, read as the launcher reads it: `settings-<name>.json`, or
- *  `<name>.config.toml`'s selection into config.toml. The exit code is the provider-mode
- *  contract, as for the default's per-agent check. */
-function runNamedAgentCheck(name: ProfileName, agent: "claude" | "codex"): void {
-  const port = Number(copilotApiResolvePort(name));
-  if (agent === "claude") {
-    const path = settingsPathFor(resolveClaudeHome(), name);
-    const status = inspectClaudeWiring(readTextResult(path), port, name);
-    printKeyValue("Claude provider mode", modeDetail(status.providerMode));
-    printKeyValue(`settings-${name}.json`, path);
-    process.exitCode = providerModeExitCode(status.providerMode);
-    return;
-  }
-  const home = effectiveCodexHome();
-  const profileToml = codexProfileConfigPath(home, name);
-  const status = inspectCodexWiring(
-    readTextResult(codexConfigPath(home)),
-    null,
-    port,
-    false,
-    { profile: name, profileToml: readTextResult(profileToml) },
-  );
-  printKeyValue("Codex provider mode", modeDetail(status.providerMode));
-  printKeyValue(`${name}.config.toml`, profileToml);
-  process.exitCode = providerModeExitCode(status.providerMode);
-}
-
-function modeDetail(mode: "direct" | "proxy" | "other" | "none"): string {
-  switch (mode) {
-    case "direct":
-    case "proxy":
-      return `${mode} (${MANAGED_MODE_DETAIL[mode]})`;
-    case "other":
-      return "other (a provider copilot-env does not manage)";
-    case "none":
-      return "none (not wired)";
-    default:
-      return assertNever(mode);
-  }
-}
-
-/** One profile's row of the list, as key/value lines: the same words. */
-async function runShow(profile: Profile): Promise<void> {
-  if (profile !== null) assertKnownProfile(profile);
-  const slot = new CopilotEnvState().readProfileSlot(profile);
-  const daemon = slot.mode === "proxy" ? await proxyStatus(profile) : null;
-  printWrapped(profileLabel(profile));
-  printKeyValue("  mode", slot.mode ?? "incomplete");
-  printKeyValue("  provider", credentialProvider(slot.credential) ?? "no credential");
-  // A direct profile has no daemon: "-", never a blank that reads as missing data.
-  printKeyValue(
-    "  daemon",
-    daemon === null ? "-" : daemon.up ? `up (port ${daemon.port})` : "down",
-  );
-}
-
-/** The list, then the one hint the list cannot carry: a profile named before its word became a
- *  verb routes as the verb here, and the update's migration renames it. */
-async function runList(): Promise<void> {
-  await runProfile({ list: true, mode: "auto" });
-  for (const name of allProfileNames().filter(isReservedProfileWord)) {
-    logger.warn(
-      `profile '${name}' is named like a verb of \`agent profile\`; \`agent update\` renames it ` +
-        `to '${name}-<n>'. Until then address it with \`--profile ${name}\` on the runtime commands.`,
-    );
-  }
-}
-
-/** The named re-render `agent sync` runs for every profile, for this one profile. */
-async function syncNamed(name: ProfileName): Promise<void> {
-  const slot = new CopilotEnvState().readProfileSlot(name);
-  if (slot.kind === "partial") throw new Error(partialSlotGap(name, slot));
-  await wireBothAgents(name, slot.mode, true, "stored");
-}
-
-/** The default's re-render, both agents. */
-function syncDefault(): Promise<void> {
-  const configure = { kind: "configure", mode: "auto" } as const;
-  return ensureAuthenticated()
-    .then(() => runClaude(configure))
-    .then(() => runCodex(configure))
-    .then(() => reconcileClaudeDesktopWiring());
 }
 
 /** The name from the word position is passed on as the string the owning function takes, so both
@@ -394,7 +199,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
         );
       }
       if (word !== undefined) throw reservedWordError(word);
-      return runList();
+      return listProfiles();
     });
 
   const verb = (name: ProfileVerb, description: string): Command =>
@@ -415,19 +220,11 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     .option("--dry-run", DRY_RUN_HELP)
     .action(async (opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "add", rawProfile);
-      if (rawProfile === null) return runDefaultAdd(opts);
-      if (isReservedProfileWord(rawProfile)) throw reservedWordError(rawProfile);
+      if (rawProfile !== null && isReservedProfileWord(rawProfile)) {
+        throw reservedWordError(rawProfile);
+      }
       await confirmModeChange(opts, rawProfile);
-      const step = credentialStep(parseProfileName(rawProfile), opts);
-      await runProfile({
-        add: rawProfile,
-        mode: parseModeFlags(
-          opts,
-          "--direct and --proxy are mutually exclusive (a profile has ONE mode)",
-        ),
-        dryRun: Boolean(opts.dryRun),
-      });
-      await step();
+      return addProfile(minted(), addArgs(opts));
     });
 
   verb(
@@ -452,13 +249,13 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
         opts,
         "delete the profile",
       );
-      return runProfile({ del: rawProfile, mode: "auto", dryRun: Boolean(opts.dryRun) });
+      return delProfile(parseProfileName(rawProfile), Boolean(opts.dryRun));
     });
 
   verb("show", `Print the mode, provider, and daemon status of ${forWhom}.`)
     .action((_opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "show", rawProfile);
-      return runShow(minted());
+      return showProfile(minted());
     });
 
   addAuthOptions(
@@ -490,11 +287,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       if (configKeyDef(key)?.key === "identity") {
         return setIdentity(rawProfile, value, Boolean(opts.dryRun));
       }
-      return runConfig({
-        set: [key, value],
-        profile: rawProfile ?? undefined,
-        dryRun: Boolean(opts.dryRun),
-      });
+      return runConfig({ set: [key, value], profile: minted(), dryRun: Boolean(opts.dryRun) });
     });
 
   verb(
@@ -508,11 +301,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     .action((key: string, opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "unset", rawProfile);
       refuseGlobalKey(key);
-      return runConfig({
-        del: key,
-        profile: rawProfile ?? undefined,
-        dryRun: Boolean(opts.dryRun),
-      });
+      return runConfig({ del: key, profile: minted(), dryRun: Boolean(opts.dryRun) });
     });
 
   verb(
@@ -524,7 +313,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     .action((key: string | undefined, _opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "get", rawProfile);
       if (key !== undefined) refuseGlobalKey(key);
-      return runConfig({ get: key ?? true, profile: rawProfile ?? undefined });
+      return runConfig({ get: key ?? true, profile: minted() });
     });
 
   verb(
@@ -541,53 +330,24 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       refuseStrayWords(cmd, "identity", rawProfile);
       const flags = [opts.set !== undefined, Boolean(opts.get), Boolean(opts.del)].filter(Boolean);
       if (flags.length > 1) throw new Error("--set, --get, and --del are mutually exclusive");
-      const profile = rawProfile ?? undefined;
       if (opts.set !== undefined) return setIdentity(rawProfile, String(opts.set), false);
-      if (opts.get) return runConfig({ get: "identity", profile });
-      if (opts.del) return runConfig({ del: "identity", profile });
-      return runAuth({ identities: true, profile });
+      if (opts.get) return runConfig({ get: "identity", profile: minted() });
+      if (opts.del) return runConfig({ del: "identity", profile: minted() });
+      return runAuth({ identities: true, profile: rawProfile ?? undefined });
     });
 
   verb(
     "sync",
     `Re-render the agent files of ${forWhom} from its recorded mode; a mode is set by add alone. ` +
-      "Both agents, or one with --claude | --codex (a named profile is written as a pair, so " +
-      "both of its files are re-rendered and the line says so).",
+      "Both agents, or one with --claude | --codex.",
   )
     .option("--claude", "Re-render Claude Code alone.")
     .option("--codex", "Re-render Codex alone.")
     .option("--dry-run", DRY_RUN_HELP)
-    .action(async (opts: Opts, cmd: Command) => {
+    .action((opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "sync", rawProfile);
-      const name = minted();
-      const agent = agentFlag(opts);
-      const dryRun = Boolean(opts.dryRun);
-      if (name !== null) {
-        const land = () => syncNamed(name);
-        if (dryRun) {
-          await runDryRun(land);
-          return;
-        }
-        await land();
-        logger.log(
-          agent === null
-            ? `  ✓ Synced ${profileLabel(name)}.`
-            : `  ✓ Synced ${profileLabel(name)}: both agents were re-rendered (a named profile ` +
-              `is written as a pair; --${agent} names the one you asked about).`,
-        );
-        return;
-      }
-      const flags = { check: false, dryRun };
-      switch (agent) {
-        case "claude":
-          return runClaudeCommand(flags);
-        case "codex":
-          return runCodexCommand(flags);
-        case null:
-          return dryRun ? runDryRun(syncDefault) : syncDefault();
-        default:
-          return assertNever(agent);
-      }
+      const profile = minted();
+      return syncProfile(profile, agentFlag(opts), Boolean(opts.dryRun));
     });
 
   verb(
@@ -602,23 +362,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     .action((opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "check", rawProfile);
       const agent = agentFlag(opts);
-      if (rawProfile !== null) {
-        if (agent === null) return runProfile({ check: rawProfile, mode: "auto" });
-        runNamedAgentCheck(parseProfileName(rawProfile), agent);
-        return Promise.resolve();
-      }
-      const flags = { check: true, dryRun: false };
-      switch (agent) {
-        case "claude":
-          return runClaudeCommand(flags);
-        case "codex":
-          return runCodexCommand(flags);
-        case null:
-          runDefaultSlotCheck();
-          return Promise.resolve();
-        default:
-          return assertNever(agent);
-      }
+      return checkProfile(minted(), agent);
     });
 }
 
@@ -630,13 +374,10 @@ export function registerListCommand(program: Command): void {
     .description(
       "Every profile with its mode, provider, and daemon status (also bare `agent profile`).",
     )
-    .action(() => runList());
+    .action(() => listProfiles());
 }
 
-/** `agent sync`: every profile's re-render (the `cx --profile` hook). */
-/** `agent sync`: every profile's re-render. The default's is `profile sync`'s (each agent's own,
- *  the Desktop entry discovered); the named loop (`runProfile({ sync })`) is the launcher's quiet
- *  hook and stays discovery-free, so the default is not folded into it. */
+/** `agent sync`: every profile's re-render. */
 export function registerSyncCommand(program: Command): void {
   program
     .command("sync")
@@ -646,73 +387,7 @@ export function registerSyncCommand(program: Command): void {
         "profile is `agent profile [<name>] sync`.",
     )
     .option("--dry-run", DRY_RUN_HELP)
-    .action((opts: Opts) => {
-      // One landing for both phases, so a dry run plans the named files over the default's
-      // planned content and prints one plan. The default's failure is recorded, never a stop: the
-      // named sweep still runs, and the exit code says a profile did not land.
-      const land = async (): Promise<() => void> => {
-        const withDefault = new CopilotEnvState().readProfileSlot(null).kind === "complete";
-        let defaultSynced = 0;
-        if (withDefault) {
-          try {
-            await syncDefault();
-            defaultSynced = 1;
-          } catch (e) {
-            logger.warn(`could not sync the default profile: ${errMessage(e)}`);
-            process.exitCode = 1;
-          }
-        }
-        const named = await syncNamedProfiles();
-        if (named.failed > 0) process.exitCode = 1;
-        const synced = named.synced + defaultSynced;
-        return () =>
-          logger.log(
-            `  ✓ Synced ${synced} profile${synced === 1 ? "" : "s"}${
-              defaultSynced === 1 ? " (the default included)" : ""
-            }.`,
-          );
-      };
-      if (opts.dryRun) return runDryRun(land);
-      return land().then((say) => say());
-    });
-}
-
-/** The default's add (`agent init` and `agent profile add` with no name): both agents, the
- *  Direct-vs-proxy probe with no flag. The default's credential is `auth`'s, never a flag here. */
-async function runDefaultAdd(opts: Opts): Promise<void> {
-  await confirmModeChange(opts, null);
-  // The probe sets a mode on a fresh default; a recorded one is re-wired as it is (a flag moves
-  // it, and asks), so no unflagged add can move a mode by a probe's answer.
-  const requested = parseModeFlags(opts);
-  const mode = requested === "auto" ? recordedMode(null) ?? "auto" : requested;
-  const step = credentialStep(null, opts);
-  const dryRun = Boolean(opts.dryRun);
-  // The landing needs the credential (it probes and writes with the token), so without one the
-  // default records its mode alone, as a named profile does, and the credential step follows;
-  // the landing runs after a login, and waits for `agent init` after --no-auth.
-  if (!new Credential().isAuthenticated()) {
-    if (mode === "auto") {
-      if (opts.auth === false) {
-        throw new Error(
-          "pass --direct or --proxy: the default profile has no recorded mode yet, and a " +
-            "profile always has exactly one mode",
-        );
-      }
-    } else {
-      const record = () => {
-        new CopilotEnvState().recordDefaultMode(mode);
-        return Promise.resolve();
-      };
-      if (dryRun) await runDryRun(record);
-      else {
-        await record();
-        logger.success(`the default profile records ${mode}; both agents wait for its credential.`);
-      }
-    }
-    await step();
-    if (opts.auth === false || dryRun) return;
-  }
-  return runInit({ mode, dryRun });
+    .action((opts: Opts) => syncEveryProfile(Boolean(opts.dryRun)));
 }
 
 /** `set identity <id|auto>` and its `identity --set` alias: the credential command's pin arm
@@ -738,7 +413,10 @@ export function registerInitCommand(program: Command): void {
     .option("--yes", "Switch a recorded mode without asking (headless use).")
     .option("--no-auth", "Print the credential step instead of running it; `agent auth` is it.")
     .option("--dry-run", DRY_RUN_HELP)
-    .action((opts: Opts) => runDefaultAdd(opts));
+    .action(async (opts: Opts) => {
+      await confirmModeChange(opts, null);
+      return addProfile(null, addArgs(opts));
+    });
 }
 
 /** The credential flags `agent auth` and `agent profile [<name>] auth` share, in one wording. */

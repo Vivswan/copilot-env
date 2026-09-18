@@ -1,11 +1,14 @@
 // `agent profile [<name>] <verb>` is routing onto the functions main's flat spellings called. The
 // oracle is main's own output: test/fixtures/cli_redesign/main_oracle.json holds what each old
 // spelling printed (stdout, exit code) in a scratch HOME, and the new spelling must print the same.
-// The two kept aliases (`agent init`, `agent auth`) are proven against their verbs live, in twin
-// homes. The verbs are reserved names, pinned at the CLI.
+// verbs_oracle.json is the same kind of pin for the verbs' own output, captured when the tree only
+// routed onto the flat commands' bodies: with the bodies folded under the verbs, each verb still
+// names the same files in the same order. The two kept aliases (`agent init`, `agent auth`) are
+// proven against their verbs live, in twin homes. The verbs are reserved names, pinned at the CLI.
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
+import { changedPaths } from "./helpers.ts";
 import { runCli } from "./helpers/run.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
@@ -14,9 +17,19 @@ interface Observation {
   stdout: string;
 }
 
-const ORACLE = JSON.parse(
-  readFileSync(join(PROJECT_ROOT, "test", "fixtures", "cli_redesign", "main_oracle.json"), "utf8"),
-) as Record<string, Observation>;
+function fixture(name: string): string {
+  return readFileSync(join(PROJECT_ROOT, "test", "fixtures", "cli_redesign", name), "utf8");
+}
+
+const ORACLE = JSON.parse(fixture("main_oracle.json")) as Record<string, Observation>;
+
+/** The verbs' own oracle: the commands that seed the scratch state, then what each verb printed
+ *  for it. Only stdout the CLI writes itself (plans, key/value lines): a consola line's prefix
+ *  differs between the CI reporter and the local one. */
+const VERBS_ORACLE = JSON.parse(fixture("verbs_oracle.json")) as {
+  seed: string[][];
+  observed: Record<string, Observation>;
+};
 
 /** A scratch HOME the child owns entirely: its data home, both agent homes, and a port pin that
  *  keeps a real proxy on 4141 out of the picture. */
@@ -61,14 +74,22 @@ function observe(args: string[], scratch: { home: string; env: Record<string, st
   };
 }
 
+/** One spelling prints `expected` (exit code, normalized stdout). */
+function expectPrinted(
+  expected: Observation | undefined,
+  args: string[],
+  scratch: ReturnType<typeof scratchHome>,
+  label: string,
+) {
+  const seen = observe(args, scratch);
+  expect(expected, label).toBeDefined();
+  expect({ exitCode: seen.exitCode, stdout: seen.stdout }, label).toEqual(expected);
+  return seen;
+}
+
 /** The new spelling prints what main's old spelling printed. */
 function expectOracle(oracleKey: string, args: string[], scratch: ReturnType<typeof scratchHome>) {
-  const seen = observe(args, scratch);
-  const expected = ORACLE[oracleKey];
-  expect(expected, oracleKey).toBeDefined();
-  expect({ exitCode: seen.exitCode, stdout: seen.stdout }, `${oracleKey}  ->  ${args.join(" ")}`)
-    .toEqual(expected);
-  return seen;
+  return expectPrinted(ORACLE[oracleKey], args, scratch, `${oracleKey}  ->  ${args.join(" ")}`);
 }
 
 /** Every file under `home` by relative path with its content, paths normalized, so two homes
@@ -198,6 +219,21 @@ test(
 );
 
 test(
+  "the verbs with their bodies folded under them print what the routing-only tree printed: the same files in the same order, the same rows",
+  () => {
+    const scratch = scratchHome();
+    for (const args of VERBS_ORACLE.seed) {
+      expect(observe(args, scratch).exitCode, args.join(" ")).toBe(0);
+    }
+    for (const [key, expected] of Object.entries(VERBS_ORACLE.observed)) {
+      expectPrinted(expected, key.split(" "), scratch, key);
+    }
+    // Fifteen cold CLI spawns; generous headroom for loaded Windows CI runners.
+  },
+  240_000,
+);
+
+test(
   "the tree prints what main's deleted spellings printed: the checks, the resolver, a named profile",
   () => {
     const scratch = scratchHome();
@@ -222,10 +258,22 @@ test(
     const codex = observe(["profile", "work", "check", "--codex"], scratch);
     expect(codex.exitCode).toBe(2);
     expect(codex.stdout).toContain("Codex provider mode: proxy");
-    // A named sync with an agent flag lands the pair and says so.
-    const synced = observe(["profile", "work", "sync", "--codex"], scratch);
-    expect(synced.exitCode).toBe(0);
-    expect(synced.stderr).toContain("both agents were re-rendered");
+    // A named sync with an agent flag re-renders that agent's files alone: each deleted file comes
+    // back only under its own flag, and nothing else in the home moves.
+    const claudeFile = join(scratch.home, ".claude", "settings-work.json");
+    const codexFile = join(scratch.home, ".codex", "work.config.toml");
+    rmSync(claudeFile);
+    rmSync(codexFile);
+    const bothGone = treeContents(scratch.home);
+    const codexOnly = observe(["profile", "work", "sync", "--codex"], scratch);
+    expect(codexOnly.exitCode).toBe(0);
+    expect(codexOnly.stderr).toContain("Synced profile 'work' (Codex only).");
+    const codexBack = treeContents(scratch.home);
+    expect([...changedPaths(bothGone, codexBack)]).toEqual([relative(scratch.home, codexFile)]);
+    expect(observe(["profile", "work", "sync", "--claude"], scratch).exitCode).toBe(0);
+    expect([...changedPaths(codexBack, treeContents(scratch.home))]).toEqual([
+      relative(scratch.home, claudeFile),
+    ]);
     expectOracle("auth --get --profile work", ["profile", "work", "auth", "--get"], scratch);
     expectOracle(
       "config --get identity --profile work",
@@ -239,7 +287,7 @@ test(
     expect(planned.exitCode).toBe(0);
     expect(planned.stdout).toContain("DRY RUN: nothing was written");
     expect(treeContents(scratch.home)).toEqual(before);
-    // Fourteen cold CLI spawns; generous headroom for loaded Windows CI runners.
+    // Fifteen cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
   240_000,
 );

@@ -147,25 +147,10 @@ export function landWithReservedPort(
   landPlan(plan);
 }
 
-/** Contradictory flag pairs (`--check --direct`, `--mobile --check`) are rejected at the
- *  parse below, so no arm carries another arm's knobs and dispatch order never decides. */
-export type AgentConfigAction =
-  | { kind: "check" }
-  | { kind: "mobile" }
-  | { kind: "configure"; mode: RequestedMode };
-
-/** The `agent profile sync --codex` arms (the Codex-only `--mobile` flag lives here). */
-export type CodexCliAction = Extract<
-  AgentConfigAction,
-  { kind: "check" | "mobile" | "configure" }
->;
-
-/** The `agent profile sync --claude` arms (no `--mobile`; that flag is Codex's). */
-export type ClaudeCliAction = Extract<AgentConfigAction, { kind: "check" | "configure" }>;
-
-/** `mobile` is dispatched to its own handler at the CLI boundary and never reaches
- *  runAgentConfig. */
-export type AgentRunAction = Extract<AgentConfigAction, { kind: "check" | "configure" }>;
+/** One agent's run: the `--check` report, or the write of `mode` (`auto` = the recorded mode, or
+ *  the probe on a default with none). The verbs' flags arrive parsed (parseModeFlags), so a
+ *  contradictory pair is rejected before an action exists. */
+export type AgentRunAction = { kind: "check" } | { kind: "configure"; mode: RequestedMode };
 
 /** Cross-cutting knobs of one run (never part of the parsed CLI action). */
 export interface AgentRunOptions {
@@ -173,53 +158,6 @@ export interface AgentRunOptions {
    *  import passes its plan's already-resolved token so the gh-cli provider is
    *  shelled out to once per import, not once per writer. */
   ghToken?: string | null;
-}
-
-function assertCheckStandsAlone(mode: RequestedMode, dryRun: boolean | undefined): void {
-  if (mode !== "auto") {
-    throw new Error(
-      "--check only reports the configured provider; it does not combine with --direct/--proxy",
-    );
-  }
-  if (dryRun) {
-    throw new Error("--dry-run previews the configure write; --check writes nothing to preview");
-  }
-}
-
-/** `mode` arrives already parsed (parseModeFlags), so the `--direct --proxy` conflict is
- *  rejected before any combination here is considered. `dryRun` rides beside the action (the CLI
- *  boundary wraps the configure arm in it); it is validated here so `--check`/`--mobile` refuse it. */
-export function parseCodexAction(flags: {
-  check?: boolean;
-  mode: RequestedMode;
-  mobile?: boolean;
-  dryRun?: boolean;
-}): CodexCliAction {
-  if (flags.mobile) {
-    if (flags.check || flags.mode !== "auto" || flags.dryRun) {
-      throw new Error(
-        "--mobile is an interactive pairing flow; it does not combine with --check/--direct/--proxy/--dry-run",
-      );
-    }
-    return { kind: "mobile" };
-  }
-  if (flags.check) {
-    assertCheckStandsAlone(flags.mode, flags.dryRun);
-    return { kind: "check" };
-  }
-  return { kind: "configure", mode: flags.mode };
-}
-
-export function parseClaudeAction(flags: {
-  check?: boolean;
-  mode: RequestedMode;
-  dryRun?: boolean;
-}): ClaudeCliAction {
-  if (flags.check) {
-    assertCheckStandsAlone(flags.mode, flags.dryRun);
-    return { kind: "check" };
-  }
-  return { kind: "configure", mode: flags.mode };
 }
 
 /** Knobs of a named-profile write (`agent profile`); the mode and direct identity travel in

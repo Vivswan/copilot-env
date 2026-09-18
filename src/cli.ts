@@ -295,7 +295,7 @@ program
       set: opts.set as string[] | undefined,
       get: opts.get as string | boolean | undefined,
       del: opts.del as string | undefined,
-      profile: opts.profile as string | undefined,
+      profile: parseProfileFlag(opts.profile as string | undefined),
       dryRun: Boolean(opts.dryRun),
     })
   );

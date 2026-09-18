@@ -366,7 +366,7 @@ test("token acquisition narrates 'Using' + the account, never 'Stored' (persiste
   expect(state().read().githubToken).toBe("ghu_unlisted_0123456789");
 });
 
-test("githubLoginLook asks GraphQL for the viewer and reads a login, a 401, or an unreachable GitHub", async () => {
+test("githubLoginLook asks GraphQL for the viewer and reads a login, a 401, a GraphQL error, or an unreachable GitHub", async () => {
   const seen: { url: string; init?: RequestInit }[] = [];
   const answer = (status: number, body: string) => (url: string, init?: RequestInit) => {
     seen.push({ url, init });
@@ -382,6 +382,12 @@ test("githubLoginLook asks GraphQL for the viewer and reads a login, a 401, or a
     login: null,
     detail: "GitHub rejected it, HTTP 401",
   });
+  expect(
+    await githubLoginLook(
+      "ghp_d",
+      answer(200, '{"data":null,"errors":[{"message":"Resource not accessible by token"}]}'),
+    ),
+  ).toEqual({ login: null, detail: "GitHub said: Resource not accessible by token" });
   expect(await githubLoginLook("ghp_c", () => Promise.reject(new Error("ENOTFOUND")))).toEqual({
     login: null,
     detail: "GitHub could not be reached: ENOTFOUND",

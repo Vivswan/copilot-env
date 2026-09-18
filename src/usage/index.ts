@@ -11,13 +11,11 @@ import { closeSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
 import { errMessage } from "../utils/error.ts";
-import { isRecord } from "../utils/json.ts";
+import { jsonObject } from "../utils/json.ts";
 import { BOUNDED_LOCK_POLICY, type LockPolicy, withFileLockSync } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { chmodReported, mkdirReported, removeReported } from "../utils/report_write.ts";
 import {
-  type ClaudeContribution,
-  type CodexContribution,
   type Contribution,
   CONTRIBUTION_VERSION,
   type ContributionOf,
@@ -88,14 +86,16 @@ export interface OpenUsageIndexOptions {
 
 // ---------- the stored contribution, parsed at BOTH boundaries ----------
 
-// Reading is STRICT (any undeclared field means "no row", so the file is re-parsed and the row
-// rewritten clean); writing is a PROJECTION (undeclared parser fields are stripped).
+// Writing is a PROJECTION (undeclared parser fields are stripped); reading is STRICT (any
+// undeclared field or extra tuple item means "no row", so the file is re-parsed and the row
+// rewritten clean).
 /** Infinity would serialize as null and turn a stored row into a re-parse. */
 const FINITE_SCHEMA = v.pipe(v.number(), v.finite());
 const TS_SCHEMA = v.nullable(FINITE_SCHEMA);
 const COUNT_SCHEMA = v.pipe(v.number(), v.safeInteger(), v.minValue(0));
 /** A parser regression that leaks a raw id fails this and the row is not stored. */
 const HASH_SCHEMA = v.pipe(v.string(), v.regex(new RegExp(`^[0-9a-f]{${dedupKey("").length}}$`)));
+const VERSION_SCHEMA = v.literal(CONTRIBUTION_VERSION);
 const CODEX_EVENT_ITEMS = [
   TS_SCHEMA,
   v.string(),
@@ -111,7 +111,6 @@ const CODEX_STATE_ENTRIES = {
   provider: v.string(),
   model: v.string(),
   metaTsMs: v.optional(FINITE_SCHEMA),
-  fork: v.optional(v.object(CODEX_FORK_ENTRIES)),
 } as const;
 const CLAUDE_OCCURRENCE_ITEMS = [
   v.nullable(HASH_SCHEMA),
@@ -124,92 +123,40 @@ const CLAUDE_OCCURRENCE_ITEMS = [
 ] as const;
 
 const STORABLE_CODEX_SCHEMA = v.object({
-  v: v.literal(CONTRIBUTION_VERSION),
-  state: v.object(CODEX_STATE_ENTRIES),
+  v: VERSION_SCHEMA,
+  state: v.object({ ...CODEX_STATE_ENTRIES, fork: v.optional(v.object(CODEX_FORK_ENTRIES)) }),
   events: v.array(v.tuple(CODEX_EVENT_ITEMS)),
 });
 const STORABLE_CLAUDE_SCHEMA = v.object({
-  v: v.literal(CONTRIBUTION_VERSION),
+  v: VERSION_SCHEMA,
   occurrences: v.array(v.tuple(CLAUDE_OCCURRENCE_ITEMS)),
 });
 
-// The READ side is hand-written because a schema-library parse of half a million stored tuples
-// dominated the warm run. It admits exactly what the STORABLE_* schemas write;
-// test/usage_index.test.ts holds the two together.
-
-const HASH_LENGTH = dedupKey("").length;
-const HASH_RE = new RegExp(`^[0-9a-f]{${HASH_LENGTH}}$`);
-
-function isHash(value: unknown): value is string {
-  return typeof value === "string" && value.length === HASH_LENGTH && HASH_RE.test(value);
+/** The read side's object: every own key declared, then the entries. valibot's strictObject
+ *  resolves an unknown key with `in`, so an inherited name (`toString`) or a prototype key
+ *  (`constructor`) passes it and whatever was planted under it would stay on disk. */
+function declaredKeysOnly<const TEntries extends v.ObjectEntries>(entries: TEntries) {
+  const declared = new Set(Object.keys(entries));
+  return v.pipe(
+    jsonObject(),
+    v.check((value) => Object.keys(value).every((key) => declared.has(key))),
+    v.object(entries),
+  );
 }
 
-function isFinite(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function hasOnlyDeclaredKeys(
-  value: unknown,
-  declared: ReadonlySet<string>,
-): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  for (const key of Object.keys(value)) {
-    if (!declared.has(key)) return false;
-  }
-  return true;
-}
-
-const CODEX_KEYS: ReadonlySet<string> = new Set(["v", "state", "events"]);
-const CODEX_STATE_KEYS: ReadonlySet<string> = new Set(Object.keys(CODEX_STATE_ENTRIES));
-const CODEX_FORK_KEYS: ReadonlySet<string> = new Set(Object.keys(CODEX_FORK_ENTRIES));
-const CLAUDE_KEYS: ReadonlySet<string> = new Set(["v", "occurrences"]);
-const TUPLE_LENGTH = 7;
-
-function readStoredCodex(doc: unknown): CodexContribution | null {
-  if (!hasOnlyDeclaredKeys(doc, CODEX_KEYS) || doc.v !== CONTRIBUTION_VERSION) return null;
-  const state = doc.state;
-  if (!hasOnlyDeclaredKeys(state, CODEX_STATE_KEYS)) return null;
-  if (typeof state.provider !== "string" || typeof state.model !== "string") return null;
-  if (state.sessionIdHash !== undefined && !isHash(state.sessionIdHash)) return null;
-  if (state.metaTsMs !== undefined && !isFinite(state.metaTsMs)) return null;
-  if (state.fork !== undefined) {
-    const fork = state.fork;
-    if (!hasOnlyDeclaredKeys(fork, CODEX_FORK_KEYS)) return null;
-    if (!isHash(fork.parentHash) || !isCount(fork.knownAfter)) return null;
-  }
-  const events = doc.events;
-  if (!Array.isArray(events)) return null;
-  for (const event of events) {
-    if (!Array.isArray(event) || event.length !== TUPLE_LENGTH) return null;
-    if (
-      !(event[0] === null || isFinite(event[0])) || typeof event[1] !== "string" ||
-      typeof event[2] !== "string" || !isHash(event[3]) || !isFinite(event[4]) ||
-      !isFinite(event[5]) || !isFinite(event[6])
-    ) {
-      return null;
-    }
-  }
-  // Every field was checked above; the assertion only names what the checks proved.
-  return doc as unknown as CodexContribution;
-}
-
-function readStoredClaude(doc: unknown): ClaudeContribution | null {
-  if (!hasOnlyDeclaredKeys(doc, CLAUDE_KEYS) || doc.v !== CONTRIBUTION_VERSION) return null;
-  const occurrences = doc.occurrences;
-  if (!Array.isArray(occurrences)) return null;
-  for (const occurrence of occurrences) {
-    if (!Array.isArray(occurrence) || occurrence.length !== TUPLE_LENGTH) return null;
-    if (
-      !(occurrence[0] === null || isHash(occurrence[0])) ||
-      !(occurrence[1] === null || isFinite(occurrence[1])) ||
-      typeof occurrence[2] !== "string" || !isFinite(occurrence[3]) ||
-      !isFinite(occurrence[4]) || !isFinite(occurrence[5]) || !isFinite(occurrence[6])
-    ) {
-      return null;
-    }
-  }
-  return doc as unknown as ClaudeContribution;
-}
+// test/usage_index.test.ts holds these to exactly what the STORABLE_* schemas write.
+const STORED_CODEX_SCHEMA = declaredKeysOnly({
+  v: VERSION_SCHEMA,
+  state: declaredKeysOnly({
+    ...CODEX_STATE_ENTRIES,
+    fork: v.optional(declaredKeysOnly(CODEX_FORK_ENTRIES)),
+  }),
+  events: v.array(v.strictTuple(CODEX_EVENT_ITEMS)),
+});
+const STORED_CLAUDE_SCHEMA = declaredKeysOnly({
+  v: VERSION_SCHEMA,
+  occurrences: v.array(v.strictTuple(CLAUDE_OCCURRENCE_ITEMS)),
+});
 
 function parseStoredContribution(source: UsageSource, text: string): Contribution | null {
   let doc: unknown;
@@ -218,7 +165,10 @@ function parseStoredContribution(source: UsageSource, text: string): Contributio
   } catch {
     return null;
   }
-  return source === "codex" ? readStoredCodex(doc) : readStoredClaude(doc);
+  const parsed = source === "codex"
+    ? v.safeParse(STORED_CODEX_SCHEMA, doc)
+    : v.safeParse(STORED_CLAUDE_SCHEMA, doc);
+  return parsed.success ? parsed.output : null;
 }
 
 /** A parser that hands over extra properties cannot smuggle them onto disk; one that leaks a raw id
@@ -232,30 +182,22 @@ function storableContribution(source: UsageSource, contribution: Contribution): 
 
 // ---------- the row, parsed at the boundary ----------
 
-/** A row that fails the shape checks reads as "no row" (a whole parse), never as a bad session. */
-interface KnownFile {
-  size: number;
-  mtimeMs: number;
-  parsedThrough: number;
-  /** dedupKey of the parse's tailProbeHex. */
-  tailProbeKey: string;
-}
+/** A row that fails the shape checks reads as "no row" (a whole parse), never as a bad session.
+ *  `tailProbeKey` is the dedupKey of the parse's tailProbeHex. */
+const KNOWN_FILE_ENTRIES = {
+  path: v.string(),
+  size: COUNT_SCHEMA,
+  mtimeMs: FINITE_SCHEMA,
+  parsedThrough: COUNT_SCHEMA,
+  tailProbeKey: HASH_SCHEMA,
+} as const;
+const KNOWN_FILE_SCHEMA = v.object(KNOWN_FILE_ENTRIES);
+const STORED_ROW_SCHEMA = v.object({ ...KNOWN_FILE_ENTRIES, record: v.string() });
+/** A row with malformed identity columns is listed with no identity, so its file parses whole and
+ *  its path can still be deleted. */
+const ROW_PATH_SCHEMA = v.object({ path: v.string() });
 
-function isCount(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function readKnownFile(raw: unknown): { path: string; known: KnownFile } | null {
-  if (!isRecord(raw)) return null;
-  const { path, size, mtimeMs, parsedThrough, tailProbeKey } = raw;
-  if (
-    typeof path !== "string" || !isCount(size) || !isFinite(mtimeMs) ||
-    !isCount(parsedThrough) || !isHash(tailProbeKey)
-  ) {
-    return null;
-  }
-  return { path, known: { size, mtimeMs, parsedThrough, tailProbeKey } };
-}
+type KnownFile = Omit<v.InferOutput<typeof KNOWN_FILE_SCHEMA>, "path">;
 
 /** A short read is a mismatch; the bytes read count either way. */
 function tailProbeMatches(
@@ -333,9 +275,7 @@ class SqliteUsageIndex implements UsageIndex {
     this.#lockPolicy = lockPolicy;
   }
 
-  /** One query for the not-walked deletion set and the reuse/resume decisions alike. A row with
-   *  malformed identity columns is listed with no identity, so its file parses whole and its path
-   *  can still be deleted. */
+  /** One query for the not-walked deletion set and the reuse/resume decisions alike. */
   #knownFiles(source: UsageSource): Map<string, KnownFile | null> {
     const rows = this.#db.prepare(
       `SELECT "path", "size", "mtime_ms" AS mtimeMs, "parsed_through" AS parsedThrough,
@@ -344,12 +284,14 @@ class SqliteUsageIndex implements UsageIndex {
     ).all(source);
     const known = new Map<string, KnownFile | null>();
     for (const raw of rows) {
-      const row = readKnownFile(raw);
-      if (row !== null) {
-        known.set(row.path, row.known);
-      } else if (isRecord(raw) && typeof raw.path === "string") {
-        known.set(raw.path, null);
+      const row = v.safeParse(KNOWN_FILE_SCHEMA, raw);
+      if (row.success) {
+        const { path, ...identity } = row.output;
+        known.set(path, identity);
+        continue;
       }
+      const listed = v.safeParse(ROW_PATH_SCHEMA, raw);
+      if (listed.success) known.set(listed.output.path, null);
     }
     return known;
   }
@@ -363,19 +305,18 @@ class SqliteUsageIndex implements UsageIndex {
     known: KnownFile,
     statement: StatementSync,
   ): ContributionOf<S> | null {
-    const raw = statement.get(path, source);
-    if (!isRecord(raw) || typeof raw.record !== "string") return null;
-    const row = readKnownFile(raw);
+    const row = v.safeParse(STORED_ROW_SCHEMA, statement.get(path, source));
+    if (!row.success) return null;
+    const { size, mtimeMs, parsedThrough, tailProbeKey, record } = row.output;
     if (
-      row === null || row.known.size !== known.size || row.known.mtimeMs !== known.mtimeMs ||
-      row.known.parsedThrough !== known.parsedThrough ||
-      row.known.tailProbeKey !== known.tailProbeKey
+      size !== known.size || mtimeMs !== known.mtimeMs || parsedThrough !== known.parsedThrough ||
+      tailProbeKey !== known.tailProbeKey
     ) {
       return null;
     }
     // parseStoredContribution validated against the reader `source` selects, so the
     // value IS this source's contribution type; the generic cannot say so.
-    return parseStoredContribution(source, raw.record) as ContributionOf<S> | null;
+    return parseStoredContribution(source, record) as ContributionOf<S> | null;
   }
 
   /** Null = the lock could not be taken and nothing was written. */

@@ -1089,7 +1089,7 @@ test("rows are scoped per source: a claude walk never deletes codex rows", () =>
   expect(storedRows().map((r) => r.path)).toEqual([a, c]);
 });
 
-// The stored-row reader is hand-written for speed; these hold it to exactly what the
+// The stored-row reader is the strict twin of the write schema; these hold it to exactly what the
 // write side admits. Every mutation of a valid row must read as "no row" (a whole
 // parse); the identity re-serialization is the control that still reuses.
 /** A corruption of a stored record: of the parsed document (re-serialized), or of the

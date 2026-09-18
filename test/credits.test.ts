@@ -40,7 +40,17 @@ describe("parseCopilotCredits", () => {
     // The endpoint is undocumented: a shape it stops matching is named, not guessed at.
     const malformed: [unknown, string][] = [
       [null, "not a JSON object"],
+      [[], "not a JSON object"],
+      [
+        { "login": "octocat", "quota_reset_date": "2026-10-01" },
+        "no metered premium_interactions quota",
+      ],
       [{ ...BODY, "quota_snapshots": {} }, "no metered premium_interactions quota"],
+      [{ ...BODY, "quota_snapshots": null }, "no metered premium_interactions quota"],
+      [
+        { ...BODY, "quota_snapshots": { "premium_interactions": false } },
+        "no metered premium_interactions quota",
+      ],
       [
         {
           ...BODY,
@@ -56,6 +66,10 @@ describe("parseCopilotCredits", () => {
         "credits_used",
       ],
       [
+        { ...BODY, "quota_snapshots": { "premium_interactions": { "entitlement": 5 } } },
+        "credits_used missing",
+      ],
+      [
         {
           ...BODY,
           "quota_snapshots": {
@@ -63,6 +77,10 @@ describe("parseCopilotCredits", () => {
           },
         },
         "credits_used",
+      ],
+      [
+        { "login": "octocat", "quota_snapshots": BODY.quota_snapshots },
+        "quota_reset_date missing",
       ],
       [{ ...BODY, "quota_reset_date": "2026-02-30" }, "quota_reset_date"],
       [{ ...BODY, "quota_reset_date": "next month" }, "quota_reset_date"],

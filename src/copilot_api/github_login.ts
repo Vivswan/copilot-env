@@ -2,9 +2,10 @@
 // token kind (a device-flow gho_, a classic or fine-grained PAT) reads the same way. The device flow that
 // mints such a token lives here too: copilot-env runs it itself, so the token lands in our store and never
 // in a file of the proxy's, whose layout floats with its version.
-import { isRecord } from "../utils/json.ts";
+import * as v from "valibot";
 import { errMessage } from "../utils/error.ts";
 import { defaultFetch } from "../utils/fetch.ts";
+import { jsonObject } from "../utils/json.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
 export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
@@ -36,17 +37,41 @@ export type GithubLoginLook =
   | { login: string }
   | { login: null; detail: string };
 
+/** A field of another shape reads as absent; GitHub's answer is a label input, never a gate. */
+const OPTIONAL_TEXT = v.fallback(v.optional(v.string()), undefined);
+const NAMED = v.fallback(v.optional(v.pipe(v.string(), v.nonEmpty())), undefined);
+
+const VIEWER_ANSWER_SCHEMA = v.fallback(
+  v.object({
+    "data": v.fallback(
+      v.optional(v.object({
+        "viewer": v.fallback(v.optional(v.object({ "login": NAMED })), undefined),
+      })),
+      undefined,
+    ),
+    "errors": v.fallback(
+      v.array(
+        v.fallback(
+          v.nullable(v.pipe(jsonObject(), v.object({ "message": OPTIONAL_TEXT }))),
+          null,
+        ),
+      ),
+      [],
+    ),
+  }),
+  { data: undefined, errors: [] },
+);
+
 function parseViewerLogin(body: unknown): GithubLoginLook {
-  const data = isRecord(body) && isRecord(body.data) ? body.data : undefined;
-  const viewer = data && isRecord(data.viewer) ? data.viewer : undefined;
-  const login = viewer?.login;
-  if (typeof login === "string" && login !== "") return { login };
-  const errors = isRecord(body) && Array.isArray(body.errors) ? body.errors : [];
-  const first = errors.find(isRecord);
-  const message = first && typeof first.message === "string" ? first.message : null;
+  const answer = v.parse(VIEWER_ANSWER_SCHEMA, body);
+  const login = answer.data?.viewer?.login;
+  if (login !== undefined) return { login };
+  const message = answer.errors.find((error) => error !== null)?.message;
   return {
     login: null,
-    detail: message === null ? "GitHub answered without a viewer login" : `GitHub said: ${message}`,
+    detail: message === undefined
+      ? "GitHub answered without a viewer login"
+      : `GitHub said: ${message}`,
   };
 }
 
@@ -129,23 +154,39 @@ async function postJson(
   }
 }
 
+/** GitHub's documented defaults stand in for absent timings. */
+const DEVICE_CODE_SCHEMA = v.object({
+  "device_code": v.string(),
+  "user_code": v.string(),
+  "verification_uri": v.string(),
+  "expires_in": v.fallback(v.number(), 900),
+  "interval": v.fallback(v.number(), 5),
+});
+
 function parseDeviceCode(body: unknown): DeviceCode {
-  const b = isRecord(body) ? body : {};
-  const { device_code, user_code, verification_uri, expires_in, interval } = b;
-  if (
-    typeof device_code !== "string" || typeof user_code !== "string" ||
-    typeof verification_uri !== "string"
-  ) {
+  const parsed = v.safeParse(DEVICE_CODE_SCHEMA, body);
+  if (!parsed.success) {
     throw new Error("GitHub answered the device-code request without a device code");
   }
+  const { device_code, user_code, verification_uri, expires_in, interval } = parsed.output;
   return {
     deviceCode: device_code,
     userCode: user_code,
     verificationUri: verification_uri,
-    expiresInS: typeof expires_in === "number" ? expires_in : 900,
-    intervalS: typeof interval === "number" ? interval : 5,
+    expiresInS: expires_in,
+    intervalS: interval,
   };
 }
+
+/** One poll's answer: the token once granted, else GitHub's error word and its description. */
+const TOKEN_ANSWER_SCHEMA = v.fallback(
+  v.object({
+    "access_token": NAMED,
+    "error": v.fallback(v.string(), ""),
+    "error_description": OPTIONAL_TEXT,
+  }),
+  { error: "" },
+);
 
 /**
  * GitHub's OAuth device flow, start to token: one device-code request, then polling at GitHub's
@@ -176,16 +217,12 @@ export async function githubDeviceFlowLogin(deps: DeviceFlowDeps): Promise<strin
       device_code: code.deviceCode,
       grant_type: DEVICE_FLOW_GRANT,
     });
-    const answer = isRecord(body) ? body : {};
-    if (typeof answer.access_token === "string" && answer.access_token !== "") {
-      return answer.access_token;
-    }
-    const error = typeof answer.error === "string" ? answer.error : "";
-    if (error === "slow_down") intervalS += SLOW_DOWN_EXTRA_S;
-    else if (error !== "authorization_pending") {
-      const description = typeof answer.error_description === "string"
-        ? answer.error_description
-        : error || "GitHub answered without a token";
+    const answer = v.parse(TOKEN_ANSWER_SCHEMA, body);
+    if (answer.access_token !== undefined) return answer.access_token;
+    if (answer.error === "slow_down") intervalS += SLOW_DOWN_EXTRA_S;
+    else if (answer.error !== "authorization_pending") {
+      const description = answer.error_description ??
+        (answer.error || "GitHub answered without a token");
       throw new Error(`device-flow login failed: ${description}`);
     }
   }

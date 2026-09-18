@@ -2,7 +2,7 @@
 // own normalizer already maps `claude-opus-4-8` -> `claude-opus-4.8`, so aliases cover only what it
 // cannot parse: the `[1m]` suffix, reasoning-effort qualifiers, and the friendly shorthands.
 
-import { isRecord } from "../utils/json.ts";
+import * as v from "valibot";
 
 export const ONE_M_SUFFIX = "[1m]";
 
@@ -14,32 +14,46 @@ export interface CatalogModel {
   is1m: boolean;
 }
 
-/** Malformed entries are skipped, never thrown on. */
+// A field of another shape reads as absent: a junk entry is tolerated, never thrown on.
+const NAMED = v.fallback(v.nullable(v.pipe(v.string(), v.nonEmpty())), null);
+const POSITIVE = v.fallback(v.nullable(v.pipe(v.number(), v.finite(), v.gtValue(0))), null);
+const CAPABILITIES_SCHEMA = v.fallback(
+  v.optional(v.object({
+    "type": NAMED,
+    "limits": v.fallback(
+      v.optional(v.object({
+        "max_context_window_tokens": POSITIVE,
+        "max_output_tokens": POSITIVE,
+      })),
+      undefined,
+    ),
+  })),
+  undefined,
+);
+
+/** A malformed entry reads as null and is skipped; no data array is an empty catalog here. */
+const CATALOG_SCHEMA = v.fallback(
+  v.object({
+    "data": v.array(
+      v.fallback(
+        v.nullable(v.object({ "id": v.string(), "capabilities": CAPABILITIES_SCHEMA })),
+        null,
+      ),
+    ),
+  }),
+  { data: [] },
+);
+
 export function parseCatalogModels(body: unknown): CatalogModel[] {
-  const data = isRecord(body) && Array.isArray(body.data) ? body.data : [];
   const out: CatalogModel[] = [];
-  for (const entry of data) {
-    if (!isRecord(entry) || typeof entry.id !== "string") {
-      continue;
-    }
+  for (const entry of v.parse(CATALOG_SCHEMA, body).data) {
+    if (entry === null) continue;
     const suffixed = entry.id.endsWith(ONE_M_SUFFIX);
     const rawId = suffixed ? entry.id.slice(0, -ONE_M_SUFFIX.length) : entry.id;
-    out.push({ id: rawId, is1m: suffixed || contextWindow(entry) === ONE_M_TOKENS });
+    const contextWindow = entry.capabilities?.limits?.max_context_window_tokens;
+    out.push({ id: rawId, is1m: suffixed || contextWindow === ONE_M_TOKENS });
   }
   return out;
-}
-
-function contextWindow(entry: Record<string, unknown>): number | undefined {
-  const capabilities = entry.capabilities;
-  if (!isRecord(capabilities)) {
-    return undefined;
-  }
-  const limits = capabilities.limits;
-  if (!isRecord(limits)) {
-    return undefined;
-  }
-  const tokens = limits.max_context_window_tokens;
-  return typeof tokens === "number" ? tokens : undefined;
 }
 
 interface ParsedModel {
@@ -340,25 +354,28 @@ export function mergeUnlistedModels(
   return [...entries, ...extras].sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function nonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
+/** A listed entry: the blank id parseCatalogModels keeps is refused here. */
+const LISTED_ENTRY_SCHEMA = v.object({
+  "id": v.pipe(v.string(), v.nonEmpty()),
+  "name": NAMED,
+  "vendor": NAMED,
+  "preview": v.fallback(v.boolean(), false),
+  "capabilities": CAPABILITIES_SCHEMA,
+});
+const MODEL_LIST_SCHEMA = v.object({
+  "data": v.array(v.fallback(v.nullable(LISTED_ENTRY_SCHEMA), null)),
+});
 
-function positiveNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
-}
-
-function toEntry(raw: Record<string, unknown>, id: string): ModelListEntry {
-  const capabilities = isRecord(raw.capabilities) ? raw.capabilities : {};
-  const limits = isRecord(capabilities.limits) ? capabilities.limits : {};
+function toEntry(raw: v.InferOutput<typeof LISTED_ENTRY_SCHEMA>): ModelListEntry {
+  const limits = raw.capabilities?.limits;
   return {
-    id,
-    name: nonEmptyString(raw.name),
-    vendor: nonEmptyString(raw.vendor),
-    type: nonEmptyString(capabilities.type),
-    contextWindow: positiveNumber(limits.max_context_window_tokens),
-    maxOutput: positiveNumber(limits.max_output_tokens),
-    preview: raw.preview === true,
+    id: raw.id,
+    name: raw.name,
+    vendor: raw.vendor,
+    type: raw.capabilities?.type ?? null,
+    contextWindow: limits?.max_context_window_tokens ?? null,
+    maxOutput: limits?.max_output_tokens ?? null,
+    preview: raw.preview,
   };
 }
 
@@ -370,15 +387,16 @@ function toEntry(raw: Record<string, unknown>, id: string): ModelListEntry {
  *   duplicate ids     -> merged field-wise, first non-null wins, so a bare duplicate cannot mask a named one
  */
 export function parseModelList(body: unknown): ModelListEntry[] {
-  if (!isRecord(body) || !Array.isArray(body.data)) {
+  const parsed = v.safeParse(MODEL_LIST_SCHEMA, body);
+  if (!parsed.success) {
     throw new Error("unexpected /models response shape (no data array)");
   }
   const byId = new Map<string, ModelListEntry>();
-  for (const raw of body.data) {
-    if (!isRecord(raw) || typeof raw.id !== "string" || raw.id === "") {
+  for (const raw of parsed.output.data) {
+    if (raw === null) {
       continue;
     }
-    const entry = toEntry(raw, raw.id);
+    const entry = toEntry(raw);
     const existing = byId.get(entry.id);
     if (existing === undefined) {
       byId.set(entry.id, entry);

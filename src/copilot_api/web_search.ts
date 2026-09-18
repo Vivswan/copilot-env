@@ -3,9 +3,9 @@
 // the search on Copilot's backend. This is the plain client behind the `agent mcp --serve` server's
 // `web_search` tool; it lives here, not in the MCP server, so that server stays a thin protocol adapter.
 
+import * as v from "valibot";
 import { errMessage } from "../utils/error.ts";
 import { defaultFetch } from "../utils/fetch.ts";
-import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { directRequestIdentity, fetchRawModels } from "./catalog.ts";
 import { Credential } from "./credential.ts";
@@ -225,29 +225,53 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   return parseResponsesOutput(await res.json());
 }
 
-/** Exported for fixture tests. The `output` array carries `web_search_call` items (ignored) and
- *  `message` items whose `output_text` parts may carry `url_citation` annotations. */
+// The `output` array carries `web_search_call` items (ignored) and `message` items whose
+// `output_text` parts may carry `url_citation` annotations. An item, part, or annotation of another
+// kind or shape reads as null and is skipped; a blank text reads as absent.
+const CITATION_SCHEMA = v.object({
+  "type": v.literal("url_citation"),
+  "url": v.pipe(v.string(), v.nonEmpty()),
+  "title": v.fallback(v.string(), ""),
+});
+const TEXT_PART_SCHEMA = v.object({
+  "type": v.literal("output_text"),
+  "text": v.fallback(
+    v.optional(v.pipe(v.string(), v.check((text) => text.trim() !== ""))),
+    undefined,
+  ),
+  "annotations": v.fallback(v.array(v.fallback(v.nullable(CITATION_SCHEMA), null)), []),
+});
+const MESSAGE_ITEM_SCHEMA = v.object({
+  "type": v.literal("message"),
+  "content": v.array(v.fallback(v.nullable(TEXT_PART_SCHEMA), null)),
+});
+const RESPONSES_BODY_SCHEMA = v.fallback(
+  v.object({
+    "status": v.fallback(v.nullable(v.string()), null),
+    "output": v.fallback(v.array(v.fallback(v.nullable(MESSAGE_ITEM_SCHEMA), null)), []),
+  }),
+  { status: null, output: [] },
+);
+
+/** Exported for fixture tests. */
 export function parseResponsesOutput(body: unknown): string {
-  const output = isRecord(body) && Array.isArray(body.output) ? body.output : [];
+  const { status, output } = v.parse(RESPONSES_BODY_SCHEMA, body);
   const texts: string[] = [];
   const sources = new Map<string, string>();
   for (const item of output) {
-    if (!isRecord(item) || item.type !== "message" || !Array.isArray(item.content)) continue;
+    if (item === null) continue;
     for (const part of item.content) {
-      if (!isRecord(part) || part.type !== "output_text") continue;
-      if (typeof part.text === "string" && part.text.trim() !== "") texts.push(part.text);
-      if (!Array.isArray(part.annotations)) continue;
-      for (const annotation of part.annotations) {
-        if (!isRecord(annotation) || annotation.type !== "url_citation") continue;
-        if (typeof annotation.url !== "string" || annotation.url === "") continue;
-        const title = typeof annotation.title === "string" ? annotation.title : "";
-        if (!sources.has(annotation.url)) sources.set(annotation.url, title);
+      if (part === null) continue;
+      if (part.text !== undefined) texts.push(part.text);
+      for (const citation of part.annotations) {
+        if (citation !== null && !sources.has(citation.url)) {
+          sources.set(citation.url, citation.title);
+        }
       }
     }
   }
   const answer = texts.join("\n").trim();
   if (answer === "") {
-    const status = isRecord(body) && typeof body.status === "string" ? body.status : null;
     throw new Error(
       "the /responses body carried no answer text (no message output items)" +
         (status !== null && status !== "completed" ? ` - response status: ${status}` : ""),

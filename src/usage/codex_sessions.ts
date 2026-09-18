@@ -6,10 +6,11 @@ import { type Dirent, readdirSync, readFileSync, realpathSync, statSync } from "
 import path from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { consola } from "consola";
+import * as v from "valibot";
 import { knownCodexHomes } from "../codex/host.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
-import { isRecord } from "../utils/json.ts";
+import { jsonObject } from "../utils/json.ts";
 import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import {
   type CodexContribution,
@@ -59,6 +60,46 @@ const FORK_PREFIX_WINDOW_MS = 2_000;
  *  file-level skipping keeps a day and a half of slack and the per-event cutoff does the exact cut.
  */
 const FILENAME_CUTOFF_SLACK_MS = 1.5 * MILLISECONDS_PER_DAY;
+
+// A needle may sit inside another line's content, so a field of another shape reads as absent
+// rather than failing the line.
+const TEXT = v.fallback(v.optional(v.string()), undefined);
+const NAMED = v.fallback(v.optional(v.pipe(v.string(), v.nonEmpty())), undefined);
+/** Epoch ms of the line's ISO timestamp; unparseable reads as absent. */
+const TIMESTAMP_MS = v.fallback(
+  v.optional(v.pipe(v.string(), v.transform((text) => Date.parse(text)), v.finite())),
+  undefined,
+);
+/** A shallow copy in key order: `JSON.stringify` of it hashes like the raw object (the dedup key). */
+const RAW_RECORD = v.record(v.string(), v.unknown());
+
+const ROLLOUT_LINE_SCHEMA = v.object({
+  "type": TEXT,
+  "timestamp": TIMESTAMP_MS,
+  "payload": v.pipe(
+    jsonObject(),
+    v.object({
+      "type": TEXT,
+      "id": TEXT,
+      "session_id": TEXT,
+      "model_provider": NAMED,
+      "forked_from_id": TEXT,
+      "model": NAMED,
+      "thread_settings": v.fallback(v.optional(v.object({ "model": NAMED })), undefined),
+      "info": v.fallback(v.optional(RAW_RECORD), undefined),
+    }),
+  ),
+});
+
+/** Counts stay unknown here: sanitizeTokenCount (usage.ts) is the one owner of what a count is. */
+const LAST_TOKEN_USAGE_SCHEMA = v.pipe(
+  jsonObject(),
+  v.object({
+    "input_tokens": v.optional(v.unknown()),
+    "cached_input_tokens": v.optional(v.unknown()),
+    "output_tokens": v.optional(v.unknown()),
+  }),
+);
 
 /** Farm homes symlink these directories back into the shared ~/.codex, hence the realpath dedup. */
 export function discoverCodexSessionRoots(homes: string[] = knownCodexHomes().homes): string[] {
@@ -292,7 +333,7 @@ function parseCodexFrom(
   return { contribution, ...scan };
 }
 
-function tokenBuckets(last: Record<string, unknown>): TokenBuckets {
+function tokenBuckets(last: v.InferOutput<typeof LAST_TOKEN_USAGE_SCHEMA>): TokenBuckets {
   // Hostile or torn counts never enter a report.
   const num = sanitizeTokenCount;
   const cached = num(last.cached_input_tokens);
@@ -307,68 +348,66 @@ function tokenBuckets(last: Record<string, unknown>): TokenBuckets {
   };
 }
 
-/** A needle may sit inside another line's content, so the type checks stay. */
 function parseCodexLine(line: string, contribution: CodexContribution): void {
   const { state, events } = contribution;
   const isMeta = line.includes('"session_meta"');
   const isTurnContext = line.includes('"turn_context"');
   const isTokenCount = line.includes('"token_count"');
   const isSettings = line.includes('"thread_settings_applied"');
-  let parsed: unknown;
+  let raw: unknown;
   try {
-    parsed = JSON.parse(line);
+    raw = JSON.parse(line);
   } catch {
     return; // torn or corrupt line
   }
-  if (!isRecord(parsed) || !isRecord(parsed.payload)) {
+  const parsed = v.safeParse(ROLLOUT_LINE_SCHEMA, raw);
+  if (!parsed.success) {
     return;
   }
-  const payload = parsed.payload;
+  const { type, timestamp, payload } = parsed.output;
 
-  if (isMeta && parsed.type === "session_meta" && state.sessionIdHash === undefined) {
+  if (isMeta && type === "session_meta" && state.sessionIdHash === undefined) {
     const id = payload.id ?? payload.session_id;
-    state.sessionIdHash = typeof id === "string" ? dedupKey(id) : undefined;
-    if (typeof payload.model_provider === "string" && payload.model_provider !== "") {
+    if (id !== undefined) state.sessionIdHash = dedupKey(id);
+    if (payload.model_provider !== undefined) {
       state.provider = payload.model_provider;
     }
-    if (typeof payload.forked_from_id === "string") {
+    if (payload.forked_from_id !== undefined) {
       state.fork = { parentHash: dedupKey(payload.forked_from_id), knownAfter: events.length };
     }
-    const ts = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
-    state.metaTsMs = Number.isFinite(ts) ? ts : undefined;
+    state.metaTsMs = timestamp;
     return;
   }
 
-  if (isTurnContext && parsed.type === "turn_context") {
-    if (typeof payload.model === "string" && payload.model !== "") {
+  if (isTurnContext && type === "turn_context") {
+    if (payload.model !== undefined) {
       state.model = payload.model;
     }
     return;
   }
 
-  if (parsed.type !== "event_msg") {
+  if (type !== "event_msg") {
     return;
   }
 
   if (isSettings && payload.type === "thread_settings_applied") {
-    const settings = payload.thread_settings;
-    if (isRecord(settings) && typeof settings.model === "string" && settings.model !== "") {
-      state.model = settings.model;
+    const model = payload.thread_settings?.model;
+    if (model !== undefined) {
+      state.model = model;
     }
     return;
   }
 
-  if (!isTokenCount || payload.type !== "token_count" || !isRecord(payload.info)) {
+  if (!isTokenCount || payload.type !== "token_count" || payload.info === undefined) {
     return;
   }
-  const last = payload.info.last_token_usage;
-  if (!isRecord(last)) {
+  const last = v.safeParse(LAST_TOKEN_USAGE_SCHEMA, payload.info.last_token_usage);
+  if (!last.success) {
     return;
   }
-  const tsMs = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
-  const buckets = tokenBuckets(last);
+  const buckets = tokenBuckets(last.output);
   const event: CodexEvent = [
-    Number.isFinite(tsMs) ? tsMs : null,
+    timestamp ?? null,
     state.provider,
     state.model,
     dedupKey(JSON.stringify(payload.info)),

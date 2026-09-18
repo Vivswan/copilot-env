@@ -2,12 +2,13 @@
 // /copilot_internal/user is undocumented: only `premium_interactions` is metered (chat
 // and completions are unlimited), and the period is the calendar month ending at
 // 00:00 UTC on `quota_reset_date`, which is how GitHub's own meter counts it.
-import { isRecord } from "../utils/json.ts";
+import * as v from "valibot";
 import { Credential } from "../copilot_api/credential.ts";
 import { configKeyDef, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { COPILOT_USER_URL } from "../copilot_api/integration_identity.ts";
 import { blue, cyan, green, red } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
+import { jsonObject } from "../utils/json.ts";
 import { MILLISECONDS_PER_DAY as DAY_MS } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
@@ -24,31 +25,47 @@ export interface CopilotCredits {
 
 const FETCH_TIMEOUT_MS = 5000;
 
-/** Validated field by field: a rename in the undocumented endpoint must surface by
- *  name, never as NaN. */
+const NOT_OBJECT = "the response is not a JSON object";
+const NO_QUOTA = "no metered premium_interactions quota in the response";
+const BAD_USED = "premium_interactions.credits_used missing or not a count";
+const BAD_RESET = "quota_reset_date missing or not a valid YYYY-MM-DD date";
+
+// Every field names itself when it fails: a rename in the undocumented endpoint must surface by
+// name, never as NaN. valibot reports a missing or mistyped key with the PARENT object's message
+// (the path then ends in that key) and an object of the wrong type with the object's own (no path
+// yet), so each object answers with the key's wording when there is a key, else its own.
+const FIELD_MESSAGES: Record<string, string> = {
+  "quota_snapshots": NO_QUOTA,
+  "credits_used": BAD_USED,
+  "quota_reset_date": BAD_RESET,
+};
+const messageByKey = (own: string) => (issue: v.ObjectIssue): string =>
+  FIELD_MESSAGES[String(issue.path?.at(-1)?.key)] ?? own;
+
+const CREDITS_SCHEMA = v.pipe(
+  jsonObject(NOT_OBJECT),
+  v.object({
+    "quota_snapshots": v.object({
+      "premium_interactions": v.object({
+        "entitlement": v.pipe(v.number(NO_QUOTA), v.finite(NO_QUOTA), v.gtValue(0, NO_QUOTA)),
+        "credits_used": v.pipe(v.number(BAD_USED), v.finite(BAD_USED), v.minValue(0, BAD_USED)),
+      }, messageByKey(NO_QUOTA)),
+    }, NO_QUOTA),
+    "quota_reset_date": v.pipe(v.string(BAD_RESET), v.check(isCalendarDate, BAD_RESET)),
+    "login": v.fallback(v.nullable(v.string()), null),
+  }, messageByKey(NOT_OBJECT)),
+);
+
 export function parseCopilotCredits(body: unknown): CopilotCredits {
-  if (!isRecord(body)) throw new Error("the response is not a JSON object");
-  const snapshots = isRecord(body.quota_snapshots) ? body.quota_snapshots : undefined;
-  const quota = snapshots && isRecord(snapshots.premium_interactions)
-    ? snapshots.premium_interactions
-    : undefined;
-  const entitlement = quota?.entitlement;
-  if (typeof entitlement !== "number" || !Number.isFinite(entitlement) || entitlement <= 0) {
-    throw new Error("no metered premium_interactions quota in the response");
-  }
-  const used = quota?.credits_used;
-  if (typeof used !== "number" || !Number.isFinite(used) || used < 0) {
-    throw new Error("premium_interactions.credits_used missing or not a count");
-  }
-  const resetDate = body.quota_reset_date;
-  if (typeof resetDate !== "string" || !isCalendarDate(resetDate)) {
-    throw new Error("quota_reset_date missing or not a valid YYYY-MM-DD date");
-  }
+  const parsed = v.safeParse(CREDITS_SCHEMA, body);
+  if (!parsed.success) throw new Error(parsed.issues[0].message);
+  const { login, quota_snapshots: { premium_interactions: quota }, quota_reset_date } =
+    parsed.output;
   return {
-    login: typeof body.login === "string" ? body.login : null,
-    entitlement,
-    used,
-    resetDate,
+    login,
+    entitlement: quota.entitlement,
+    used: quota.credits_used,
+    resetDate: quota_reset_date,
   };
 }
 

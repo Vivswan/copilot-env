@@ -118,6 +118,20 @@ test("parseResponsesOutput: message text concatenated with deduped sources appen
       body: { "output": [{ "type": "web_search_call" }] },
       throws: /no answer text/,
     },
+    {
+      name: "blank part dropped between texts",
+      body: {
+        "output": [{
+          "type": "message",
+          "content": [
+            { "type": "output_text", "text": "first" },
+            { "type": "output_text", "text": "  \n" },
+            { "type": "output_text", "text": "second" },
+          ],
+        }],
+      },
+      text: "first\nsecond",
+    },
     { name: "no output at all", body: {}, throws: /no answer text/ },
   ];
   for (const c of cases) {

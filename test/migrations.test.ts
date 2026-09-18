@@ -52,7 +52,12 @@ import {
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { MARKER, MARKER_END } from "../src/shell/integration.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
-import { CLAUDE_DESKTOP_DIR_ENV, mcpServeArgs, META_FILENAME } from "../src/claude/desktop.ts";
+import {
+  CLAUDE_DESKTOP_DIR_ENV,
+  mcpServeArgs,
+  META_FILENAME,
+  writeDesktopHelperScript,
+} from "../src/claude/desktop.ts";
 import { claudeJsonPath, inspectMcpRegistration } from "../src/claude/mcp_registration.ts";
 import {
   resetIntegrationIdentityCache,
@@ -1214,6 +1219,42 @@ function legacyHelperLine(profile: string): string {
     `auth --get --profile ${profile}`,
   );
 }
+
+test("4.0.9 profile verb tree: a malformed Desktop index refuses a rename before its first delete, and the step reports it", async () => {
+  // Without the check the rename would move the store and home, write the new helper, delete
+  // the old one, then find the index unreadable and leave the owned entry pointing at the deleted
+  // helper with the old argv, while the step reported success.
+  const homes = isolateAgentHomes("copilot-mig-verb-tree-meta-", { mkdirs: true });
+  dir = homes.dir;
+  const desktop = join(dir, "desktop");
+  const library = join(desktop, "configLibrary");
+  mkdirSync(library, { recursive: true });
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
+  const SYNC = parseProfileName("sync");
+  try {
+    writeStore(join(homes.proxyHome, "state.json"), {
+      global: { "daemon.port": 4199 },
+      profiles: {
+        sync: { githubToken: "ghp_sync", authProvider: "gh-token", mode: "proxy" },
+      },
+    });
+    mkdirSync(join(homes.proxyHome, "profiles", "sync"), { recursive: true });
+    const helper = writeDesktopHelperScript("proxy", SYNC);
+    writeFileSync(join(library, META_FILENAME), "{ not json");
+    const before = fingerprintTree(dir);
+    const run = await captureChannels(() =>
+      expect(moveProfilesToVerbTree()).rejects.toThrow("not moved: profile 'sync'")
+    );
+    expect(run.all).toContain("could not move profile 'sync'");
+    expect(run.all).toContain("has an unexpected shape");
+    // Nothing moved, nothing deleted: the store slot, the daemon home, and the helper stand.
+    expect(fingerprintTree(dir)).toEqual(before);
+    expect(existsSync(helper)).toBe(true);
+    expect(new CopilotEnvState().profileNames()).toEqual([SYNC]);
+  } finally {
+    delete process.env[CLAUDE_DESKTOP_DIR_ENV];
+  }
+});
 
 test("4.0.9 profile verb tree: the default's MCP registration moves to `agent profile mcp --serve` on its own, with no re-render to redo it", async () => {
   // A Direct default with no credential: its slot is incomplete, so the step retargets the

@@ -1146,10 +1146,9 @@ async function rerender(profile: Profile): Promise<void> {
   consola.info(`  re-rendered ${profileLabel(profile)}'s agent files`);
 }
 
-/** The agent files a rename edits are parsed BEFORE the first move, so a malformed one fails
- *  the profile whole and a re-run after the repair finds every artifact under the old name. The
- *  Desktop library's _meta.json is not: one that cannot be parsed after the moves is reported and
- *  left alone. */
+/** Every file a rename edits is parsed BEFORE the first move, the Desktop library's index
+ *  included, so a malformed one fails the profile whole (nothing renamed, nothing deleted) and a
+ *  re-run after the repair finds every artifact under the old name. */
 function assertMovable(
   move: { from: ProfileName; to: ProfileName },
   claudeHome: string,
@@ -1166,6 +1165,17 @@ function assertMovable(
     for (const path of [codexConfigPath(home), codexProfileConfigPath(home, move.from)]) {
       const read = readCodexToml(path);
       if (read.kind === "unparseable") throw new Error(`${path} is not valid TOML (${read.error})`);
+    }
+  }
+  const dir = resolveDesktopLibraryDir();
+  if (dir !== null) {
+    const metaPath = join(dir, META_FILENAME);
+    const raw = readFileOrNull(metaPath);
+    if (raw !== null && parseDesktopMeta(raw) === null) {
+      throw new Error(
+        `Claude Desktop's ${metaPath} has an unexpected shape; the profile's Desktop entry could ` +
+          "not be retargeted, so nothing was renamed (repair or remove the index and re-run)",
+      );
     }
   }
 }

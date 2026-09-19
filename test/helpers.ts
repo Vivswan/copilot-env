@@ -20,8 +20,8 @@ import {
   DEFAULT_COPILOT_API_BASE,
 } from "../src/copilot_api/integration_identity.ts";
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
-import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
-import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
+import { acquireDaemonLockForLife, daemonLockPath } from "../src/copilot_api/daemon_lock.ts";
 import { type FileChange, withDryRun } from "../src/utils/dry_run.ts";
 import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { pidAlive } from "../src/utils/pid.ts";

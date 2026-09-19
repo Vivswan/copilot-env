@@ -1,6 +1,6 @@
 import { configDefaultNumber, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { DAEMON_KEEP_PORT_ENV } from "../src/copilot_api/paths.ts";
-import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import {
   armIdleWatchdog,
   defaultCheckIntervalMs,
@@ -9,12 +9,12 @@ import {
   idleTimeoutMs,
   isIdle,
   lastActivityMs,
-} from "../src/scripts/idle_watchdog.ts";
+} from "../src/copilot_api/idle_watchdog.ts";
 import { resetDaemonShutdownForTests } from "../src/scripts/daemon_shutdown.ts";
 import {
   markInference,
   resetInferenceActivityForTests,
-} from "../src/scripts/inference_activity.ts";
+} from "../src/copilot_api/inference_activity.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, writeRunState } from "./helpers.ts";
 

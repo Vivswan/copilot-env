@@ -928,7 +928,9 @@ test("rejected: the candidate run fails, the empty-config control dumps; the byt
 });
 
 test("accepted: the candidate parses and garbage through the same key fails; the same bytes are never judged twice", () => {
-  const codex = catalogFixture({ probe: "accept" });
+  // No resolvable version: the acceptance record stays empty, so the second look is answered by
+  // the per-process verdict memo, never the store.
+  const codex = catalogFixture({ probe: "accept", version: null });
   writeCatalog("accepted");
   const file = new CopilotApiPaths().codexModelCatalogFile;
   expect(inspectCatalogFile(file)).toBe("accepted");

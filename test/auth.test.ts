@@ -7,12 +7,11 @@ import { configureClaudeConfig } from "../src/claude/config.ts";
 import {
   type AuthArgs,
   chooseGhAccount,
-  type IdentityTableInput,
-  identityTableLines,
   loginWithGhCli,
   parseAcquisition,
   runAuth,
 } from "../src/commands/auth.ts";
+import { type IdentityTableInput, identityTableLines } from "../src/commands/identity.ts";
 import { runPrintProxyToken } from "../src/commands/proxy_token.ts";
 import {
   Credential,

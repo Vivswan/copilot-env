@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
 import { devNull } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -561,7 +562,8 @@ export function daemonArgv(spec: DaemonSpec): string[] {
 
 export function launchDaemon(spec: DaemonSpec): number {
   const logFd = fs.openWriteFd(spec.logFile);
-  const devnull = fs.openReadFd(devNull);
+  // The disk's `/dev/null` in every mode: a read fd for the child's stdin.
+  const devnull = openSync(devNull, "r");
   const proc = spawn(spec.denoBin, daemonArgv(spec), {
     stdio: [devnull, logFd, logFd],
     detached: true,
@@ -570,8 +572,8 @@ export function launchDaemon(spec: DaemonSpec): number {
     env: daemonEnvironment(spec, process.env),
   });
   proc.unref();
-  fs.closeFd(devnull);
-  fs.closeFd(logFd);
+  closeSync(devnull);
+  closeSync(logFd);
   if (proc.pid === undefined) {
     throw new Error("Failed to start the proxy; check `agent health` and retry `agent start`");
   }

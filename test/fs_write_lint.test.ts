@@ -78,6 +78,8 @@ const CASES: readonly (readonly [string, number, number])[] = [
   ['await Deno.open("x", { read: true }); Deno.openSync("y", { write: false });', 0, 2],
   ['const { open } = Deno; await open("x", { write: true, create: true });', 1, 1],
   ['const { openSync: o } = Deno; o("x", { read: true });', 0, 1],
+  ['const open = Deno.open; await open("x", { write: true, create: true });', 1, 1],
+  ['import * as fs from "node:fs"; const o = fs.openSync; o("x", "w");', 1, 1],
   // Type imports, the seam itself, and unrelated modules are left alone.
   ['import type { WriteFileOptions, Stats } from "node:fs";', 0, 0],
   ['import * as fs from "../utils/fs_facade.ts"; fs.writeText("x", "y"); fs.readText("x");', 0, 0],
@@ -146,6 +148,14 @@ test("scoped to src/, minus each rule's own exemptions", () => {
   for (const readsOnly of ["src/usage/index.ts", "src/scripts/node_compat_preload.ts"]) {
     expect(lint(write + read, readsOnly), readsOnly).toEqual({ writes: 1, reads: 0 });
     expect(lint(writeOpen, readsOnly), readsOnly).toEqual({ writes: 1, reads: 0 });
+  }
+  // A raw read handle alone: the two files that stream a file no run plans keep every other read
+  // (and every write) guarded.
+  const readOpen = 'import { openSync } from "node:fs"; openSync("x", "r"); Deno.open("y");';
+  for (const handle of ["src/install/checksums.ts", "src/copilot_api/process.ts"]) {
+    expect(lint(readOpen, handle), handle).toEqual({ writes: 0, reads: 0 });
+    expect(lint(write + read, handle), handle).toEqual({ writes: 1, reads: 1 });
+    expect(lint(writeOpen, handle), handle).toEqual({ writes: 1, reads: 0 });
   }
   // The seam's overlay and report read the disk through fs_disk.ts, not around it.
   for (

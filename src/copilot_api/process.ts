@@ -38,8 +38,8 @@ export type CopilotApiEntry =
     readonly denoDir: string;
     readonly configFile: string;
   }
-  /** deno.json's mapped specifier: resolved through the frozen lock in a checkout,
-   *  or through the generated daemon config on a compiled root. */
+  /** deno.json's mapped specifier, resolved through the config entryConfigFile picks: the daemon
+   *  config wherever the float has written one, else the checkout's frozen-lock deno.json. */
   | { readonly kind: "package"; readonly specifier: string; readonly configFile: string };
 
 /** Regenerated on every call (the float rewrites the same content on every warm), so a stale or
@@ -50,9 +50,10 @@ function ensuredDaemonConfig(rootHome: string): string {
 }
 
 /**
- * A compiled root ALWAYS answers with the daemon config: an install root deliberately carries no
- * deno.json on disk (there it is a checkout marker). The preload shims resolve their own imports
- * through whichever config is passed, which is why every spawn passes one.
+ * The ONE rule for which config a non-floated entry runs under. A compiled root ALWAYS answers with
+ * the daemon config: an install root deliberately carries no deno.json on disk (there it is a
+ * checkout marker). The preload shims resolve their own imports through whichever config is passed,
+ * which is why every spawn passes one.
  */
 function entryConfigFile(rootHome: string, mode: RootMode): string {
   if (mode.kind === "compiled") return ensuredDaemonConfig(rootHome);
@@ -86,9 +87,7 @@ export function resolveCopilotApiEntry(mode: RootMode = rootMode()): CopilotApiE
   return {
     kind: "package",
     specifier: PROXY_PACKAGE_NAME,
-    configFile: mode.kind === "compiled"
-      ? ensuredDaemonConfig(rootHome)
-      : join(mode.root, "deno.json"),
+    configFile: entryConfigFile(rootHome, mode),
   };
 }
 
@@ -198,6 +197,10 @@ export function isDaemonCommandLine(command: string): boolean {
  *  daemon, which imports no CLI module) and test/daemon_spawn.test.ts pins the two in order. */
 export const DAEMON_SIGKILL_GRACE_MS = 2_000;
 
+/** The launch pipeline's one-second wait: after the cleanup sweep, after a spawn before the pid is
+ *  judged, and per readiness tick, whose budget counts these in seconds. */
+export const LAUNCH_SETTLE_MS = 1_000;
+
 /** One arm per decision the escalation makes, so callers report what happened instead of guessing
  *  from a follow-up pidAlive read. */
 export type TerminateVerdict =
@@ -216,8 +219,8 @@ export type TerminateVerdict =
 /**
  * The caller proves `pid` is OURS before calling, but that authorizes the SIGTERM only: the grace is
  * long enough for the OS to recycle a died-in-grace pid, so the KILL re-proves identity at its own
- * signal boundary (the rule stopLockHolder and the orphan sweep in launch.ts share). `classify` is
- * the test seam.
+ * signal boundary (the rule stopLockHolder and the orphan sweep in launch_cleanup.ts share).
+ * `classify` is the test seam.
  */
 export async function terminatePid(
   pid: number,
@@ -488,7 +491,7 @@ export interface DaemonSpec {
 /** Every shim is a RUNTIME shim touching none of copilot-api's files, so none of them pins the floated
  *  proxy version. */
 function daemonPreloadFlags(spec: DaemonSpec): string[] {
-  // FIRST, ALWAYS: the liveness lock (`<home>/daemon.lock`, src/scripts/daemon_lock.ts) must be held
+  // FIRST, ALWAYS: the liveness lock (`<home>/daemon.lock`, src/copilot_api/daemon_lock.ts) must be held
   // before anything else touches the home.
   const shims: DaemonShimFile[] = ["daemon_lock_preload.ts"];
   // Must precede the PAT shim, which reads the spliced token back from argv.

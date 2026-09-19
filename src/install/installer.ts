@@ -63,10 +63,13 @@ export const MATERIALIZED_ASSET_DIRS = [
  *  bidirectionally by test/installer_pinning.test.ts. */
 export const MATERIALIZED_ASSET_FILES = [
   "src/copilot_api/config.ts",
+  "src/copilot_api/daemon_lock.ts",
   "src/copilot_api/env_config.ts",
+  "src/copilot_api/idle_watchdog.ts",
+  "src/copilot_api/inference_activity.ts",
   "src/copilot_api/paths.ts",
   "src/copilot_api/profile.ts",
-  "src/copilot_api/state.ts",
+  "src/copilot_api/run_state.ts",
   "src/copilot_api/state_store.ts",
   "src/utils/ansi.ts",
   "src/utils/file_lock.ts",

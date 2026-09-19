@@ -9,7 +9,7 @@
 // `--allow-run` is unscoped: the pid probe signals the daemon's pid, which `--allow-run=deno`
 // cannot express.
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
-import { CopilotEnvRunState } from "../../src/copilot_api/state.ts";
+import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { pidLiveness } from "../../src/utils/pid.ts";
 import { cli, cliOrExit, fail, requireDisposableHome, runnerOs } from "./smoke-support.ts";
 

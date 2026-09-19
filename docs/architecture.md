@@ -329,7 +329,6 @@ graph TD
   commands --> install
   commands --> mcp
   commands --> proxy_float
-  commands --> scripts
   commands --> shell
   commands --> usage
   commands --> utils
@@ -357,7 +356,6 @@ graph TD
   health --> codex
   health --> copilot_api
   health --> proxy_float
-  health --> scripts
   health --> shell
   health --> utils
   install --> copilot_api
@@ -381,7 +379,6 @@ graph TD
   migrations --> shell
   migrations --> utils
   scripts --> copilot_api
-  scripts --> utils
   utils --> copilot_api
 ```
 

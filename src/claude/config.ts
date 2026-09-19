@@ -27,7 +27,7 @@ import { probeDirectWiring } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
-import { directSmoke, type EndpointSmoke, probeModelPin } from "../copilot_api/endpoint_smoke.ts";
+import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   CODEX_EXEC_USER_AGENT,
@@ -790,7 +790,12 @@ export function detectClaudeDirect(
       codexUserAgent(),
       direct.directIntegrationId,
       direct.directBaseUrl,
-      { fetchImpl: deps?.fetchImpl, pinnedModel: probeModelPin("probe.claude-model", null) },
+      {
+        fetchImpl: deps?.fetchImpl,
+        pinnedModel:
+          new CopilotEnvConfig().resolve("probe.claude-model", { profile: null }).value ??
+            null,
+      },
     ),
     deps,
   );

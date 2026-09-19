@@ -9,7 +9,7 @@ import { PROBE_PROMPT } from "../agents/live_probe.ts";
 import { BASE_URL_ENV } from "../claude/config.ts";
 import { settingsPathFor } from "../claude/paths.ts";
 import type { Profile } from "../copilot_api/profile.ts";
-import { isRecord } from "../utils/json.ts";
+import { isRecord, parseJsonRecord } from "../utils/json.ts";
 
 /** The launcher's LaunchPlan shape plus the success postcondition; tests pin the composition
  *  without spawning. */
@@ -26,21 +26,12 @@ export interface LiveLaunch {
   answered: (stdout: string) => boolean;
 }
 
-type JsonEvent = Record<string, unknown>;
-
 /** One JSON event per stdout line; a line that is not one (a hook's stray print) is skipped. */
-function jsonEvents(stdout: string): JsonEvent[] {
-  const events: JsonEvent[] = [];
-  for (const line of stdout.split(/\r?\n/)) {
-    if (!line.startsWith("{")) continue;
-    try {
-      const parsed: unknown = JSON.parse(line);
-      if (isRecord(parsed)) events.push(parsed);
-    } catch {
-      // not an event line
-    }
-  }
-  return events;
+function jsonEvents(stdout: string): Record<string, unknown>[] {
+  return stdout.split(/\r?\n/).flatMap((line) => {
+    const event = line.startsWith("{") ? parseJsonRecord(line) : null;
+    return event === null ? [] : [event];
+  });
 }
 
 /** A NAMED profile drops a shell-exported ANTHROPIC_BASE_URL: env beats the profile's settings

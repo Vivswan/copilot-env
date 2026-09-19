@@ -34,9 +34,10 @@ export function exitCodeFor(results: CheckResult[]): 0 | 1 {
   return results.some((r) => r.status === "fail") ? 1 : 0;
 }
 
-/** Build the `--json` payload from the (already scope-filtered) results.
- *  `profile` is the target the run was narrowed to (null = the default/whole
- *  environment; per-check `profile` still names each check's own target). */
+/** Build the `--json` payload from the (already scope-filtered) results: every row minus its
+ *  `scopes` (a filter input, not report data). `profile` is the target the run was narrowed to
+ *  (null = the default/whole environment; per-check `profile` still names each check's own
+ *  target). */
 export function buildHealthJson(
   scope: HealthScope,
   results: CheckResult[],
@@ -50,16 +51,6 @@ export function buildHealthJson(
     ok: exitCode === 0,
     status,
     exitCode,
-    checks: results.map((r) => ({
-      id: r.id,
-      label: r.label,
-      group: r.group,
-      profile: r.profile,
-      status: r.status,
-      detail: r.detail,
-      // The CheckOutcome union: a fix exists exactly when the status is not ok.
-      ...(r.status === "ok" ? {} : { fix: r.fix }),
-      ...(r.value ? { value: r.value } : {}),
-    })),
+    checks: results.map(({ scopes: _scopes, ...row }) => row),
   };
 }

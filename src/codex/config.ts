@@ -16,7 +16,7 @@ import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/l
 import { providerModeExitCode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { directOverlay, landDirectPair } from "../copilot_api/direct_pair.ts";
-import { directSmoke, type EndpointSmoke, probeModelPin } from "../copilot_api/endpoint_smoke.ts";
+import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { isReducedGpt } from "../copilot_api/models.ts";
 import {
@@ -648,7 +648,11 @@ export function detectCodexDirect(
       codexUserAgent(),
       direct.directIntegrationId,
       direct.directBaseUrl,
-      { fetchImpl: deps?.fetchImpl, pinnedModel: probeModelPin("probe.codex-model", null) },
+      {
+        fetchImpl: deps?.fetchImpl,
+        pinnedModel: new CopilotEnvConfig().resolve("probe.codex-model", { profile: null }).value ??
+          null,
+      },
     ),
     deps,
   );

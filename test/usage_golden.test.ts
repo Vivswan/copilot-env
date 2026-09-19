@@ -86,7 +86,7 @@ function blocksFromReports(
   claude: ReadonlyUsageReport,
 ): Record<string, unknown> {
   const block = (report: ReadonlyUsageReport): unknown =>
-    buildSourceJson(report, estimateCost(report.byModel, NO_PRICING), NO_PRICING, {
+    buildSourceJson(report, estimateCost(report, NO_PRICING), NO_PRICING, {
       perDay: true,
     });
   return JSON.parse(JSON.stringify({

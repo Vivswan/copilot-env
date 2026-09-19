@@ -23,7 +23,7 @@ import {
   type Reconcile,
   type WalkedFile,
 } from "./contribution.ts";
-import { canonicalModelNames } from "./pricing.ts";
+import { canonicalModelNames, LONG_CONTEXT_PROMPT_TOKENS } from "./pricing.ts";
 import { scanBytes, scanLines } from "./scan.ts";
 import {
   type OnCounted,
@@ -193,10 +193,13 @@ export function foldCodex(
         providers.set(rawProvider, report);
       }
       // The day is the user's local one, not the UTC day the timestamp spells; a line with no
-      // parseable timestamp still counts toward the totals.
+      // parseable timestamp still counts toward the totals. The prompt Codex reported is the input
+      // INCLUDING the cached part (tokenBuckets split them), which is the size the tier is cut on.
       const model = canonical(rawModel);
       const buckets = { input, output, cacheRead, cacheCreation: 0 };
-      record(report, tsMs === null ? null : dayKey(tsMs), model, { ...buckets, events: 1 });
+      record(report, tsMs === null ? null : dayKey(tsMs), model, { ...buckets, events: 1 }, {
+        longContext: input + cacheRead > LONG_CONTEXT_PROMPT_TOKENS,
+      });
       onCounted?.({ id: null, tsMs, model, buckets });
     }
     if (state.sessionIdHash !== undefined && ownHashes.size > 0) {

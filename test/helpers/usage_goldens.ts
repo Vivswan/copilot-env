@@ -8,7 +8,7 @@ import * as v from "valibot";
 import { SHA256_HEX_SCHEMA } from "../../src/copilot_api/config_registry.ts";
 import { type CostRuntime, runCost } from "../../src/usage/cost.ts";
 import { canonicalModelName } from "../../src/usage/pricing.ts";
-import type { ModelUsage, ReadonlyUsageReport } from "../../src/usage/usage.ts";
+import { type ModelUsage, type ReadonlyUsageReport, usageReport } from "../../src/usage/usage.ts";
 import {
   DEFAULT_DAYS,
   DEFAULT_END,
@@ -273,10 +273,10 @@ export function canonicalLedger(report: ExpectedReport): ReadonlyUsageReport {
     for (const [model, u] of row) addUsage(out, canonicalModelName(model), u);
     return out;
   };
-  return {
-    byModel: fold(report.byModel),
-    perDay: new Map([...report.perDay].map(([day, row]) => [day, fold(row)])),
-  };
+  const out = usageReport();
+  out.byModel = fold(report.byModel);
+  out.perDay = new Map([...report.perDay].map(([day, row]) => [day, fold(row)]));
+  return out;
 }
 
 /**

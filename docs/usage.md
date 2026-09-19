@@ -59,6 +59,7 @@ agent credits              # every distinct account's Copilot AI credits this mo
 agent codex-mobile         # pair the Codex desktop app with the phone remote-control flow
 agent cost                 # estimated token spend across proxy DBs + Codex/Claude logs
                            #   --days N, --json, --per-day, --sources, --no-index
+                           #   --month  this month from 00:00 UTC on the 1st, the period agent credits meters
 agent update               # update to the latest release (--check, --auto-status, --no-verify)
 agent shell                # wire rc / $PROFILE (--clis installs/updates the CLIs, --remove unwires)
 agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run, --force)
@@ -206,7 +207,7 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
 
 ## Cost reporting
 
-`agent cost` prices the proxy's usage DBs plus the Codex and Claude session logs at public OpenRouter rates ([`cost.pricing-url`](configuration.md#cost)). Re-parsing every log on each run is slow, so the readers keep a usage index.
+`agent cost` prices the proxy's usage DBs plus the Codex and Claude session logs at public OpenRouter rates ([`cost.pricing-url`](configuration.md#cost)), at GitHub's own rate where the two differ (the report's footer names those models), and a Codex request on `gpt-6-astra` or `gpt-5.6-sol` whose prompt exceeds 272K tokens at GitHub's long-context tier. Re-parsing every log on each run is slow, so the readers keep a usage index.
 
 - **What it stores:** per-file facts only. The path, size, mtime, how far it was parsed, and its contribution (token counts, timestamps, model names, hashed dedup keys).
 - **What it never stores:** message text or any other session content.

@@ -89,44 +89,107 @@ export function parseUsageRow(raw: unknown): UsageRequest | null {
   };
 }
 
-/** The mutable shape is for producers, which fold through record(); readers take
- *  ReadonlyUsageReport. */
-export interface UsageReport {
+/** The roll-up and its per-day split, folded from the same rows. */
+export interface UsageTotals {
   /** Derived from the same rows as `perDay`; kept so callers do not recompute it. */
   byModel: Map<string, ModelUsage>;
   /** Keyed by LOCAL calendar day, YYYY-MM-DD in the user's timezone. */
   perDay: Map<string, Map<string, ModelUsage>>;
 }
 
-/** Consumers take this shape so they cannot mutate a report they were handed. */
-export interface ReadonlyUsageReport {
+export interface ReadonlyUsageTotals {
   readonly byModel: ReadonlyMap<string, Readonly<ModelUsage>>;
   readonly perDay: ReadonlyMap<string, ReadonlyMap<string, Readonly<ModelUsage>>>;
 }
 
-/** An empty report; every producer fills one through record(). */
-export function usageReport(): UsageReport {
+/** Requests GitHub itself priced: the tokens the transcript logged for them and the bill they
+ *  carried, in nano AI credits (`copilot_usage.total_nano_aiu`; 1 credit = $0.01). */
+export interface BilledUsage extends ModelUsage {
+  nanoAiu: number;
+}
+
+/** The mutable shape is for producers, which fold through record(); readers take
+ *  ReadonlyUsageReport. */
+export interface UsageReport extends UsageTotals {
+  /** The share of the same rows whose request prompt exceeded the long-context threshold, which
+   *  pricing.ts bills at the long-context tier. Always a subset: record() books both. */
+  longContext: UsageTotals;
+  /** Per model, the requests that carried GitHub's own bill: a like-for-like check on the
+   *  estimate, never part of it. */
+  billed: Map<string, BilledUsage>;
+}
+
+/** Consumers take this shape so they cannot mutate a report they were handed. */
+export interface ReadonlyUsageReport extends ReadonlyUsageTotals {
+  readonly longContext: ReadonlyUsageTotals;
+  readonly billed: ReadonlyMap<string, Readonly<BilledUsage>>;
+}
+
+function usageTotals(): UsageTotals {
   return { byModel: new Map(), perDay: new Map() };
 }
 
+/** An empty report; every producer fills one through record(). */
+export function usageReport(): UsageReport {
+  return { ...usageTotals(), longContext: usageTotals(), billed: new Map() };
+}
+
 /** The one owner of a new increment's consistency: every source records through here, so the
- *  per-day split cannot drift from the roll-up. mergeUsageReports bypasses it, unioning two
- *  reports that are consistent already. `usage.events` is the increment's count: a grouped SQL
- *  row's COUNT, a session line's 1, a streaming delta's 0. */
+ *  per-day split cannot drift from the roll-up and the long-context share cannot exceed it.
+ *  mergeUsageReports bypasses it, unioning reports that are consistent already. `usage.events` is
+ *  the increment's count: a grouped SQL row's COUNT, a session line's 1, a streaming delta's 0. */
 export function record(
   report: UsageReport,
   day: string | null,
   model: string,
   usage: Readonly<ModelUsage>,
+  opts: { longContext?: boolean } = {},
 ): void {
   // The byModel fold mutates its entry in place, and `usage` may BE that entry (a caller folding a
   // report's own accumulator back in), which would hand the perDay fold an already-doubled
   // increment.
   const increment = { ...usage };
-  addUsage(report.byModel, model, increment);
-  if (day !== null) {
-    addUsage(dayUsageMap(report.perDay, day), model, increment);
+  addTotals(report, day, model, increment);
+  if (opts.longContext === true) {
+    addTotals(report.longContext, day, model, increment);
   }
+}
+
+function addTotals(
+  totals: UsageTotals,
+  day: string | null,
+  model: string,
+  increment: Readonly<ModelUsage>,
+): void {
+  addUsage(totals.byModel, model, increment);
+  if (day !== null) {
+    addUsage(dayUsageMap(totals.perDay, day), model, increment);
+  }
+}
+
+/** A request GitHub billed, with the tokens it logged, beside the roll-up: record() has already
+ *  counted the request itself. */
+export function recordBilled(
+  report: UsageReport,
+  model: string,
+  usage: Readonly<ModelUsage>,
+  nanoAiu: number,
+): void {
+  const prev = report.billed.get(model) ?? {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 0,
+    nanoAiu: 0,
+  };
+  prev.input += usage.input;
+  prev.output += usage.output;
+  prev.cacheRead += usage.cacheRead;
+  prev.cacheCreation += usage.cacheCreation;
+  prev.events += usage.events;
+  prev.nanoAiu += nanoAiu;
+  report.billed.set(model, prev);
 }
 
 /** The one fold both report maps share: add a token bucket here and every source folds it. */
@@ -317,29 +380,46 @@ export function foldUsageRequests(
   return report;
 }
 
-export function mergeUsageReports(reports: Iterable<ReadonlyUsageReport>): UsageReport {
+export function mergeUsageReports(reports: readonly ReadonlyUsageReport[]): UsageReport {
   const merged = usageReport();
   for (const report of reports) {
-    // Each byModel entry is already a full roll-up, dated rows included, so it folds in day-less
-    // and the per-day split unions day-wise below.
-    for (const [model, u] of report.byModel) {
-      record(merged, null, model, u);
-    }
-    for (const [day, dayModels] of report.perDay) {
-      // A day with an empty model map still counts as active in the union.
-      const target = dayUsageMap(merged.perDay, day);
-      for (const [model, u] of dayModels) {
-        addUsage(target, model, u);
-      }
+    mergeTotals(merged, report);
+    mergeTotals(merged.longContext, report.longContext);
+  }
+  merged.billed = mergeBilled(reports);
+  return merged;
+}
+
+function mergeTotals(into: UsageTotals, from: ReadonlyUsageTotals): void {
+  // Each byModel entry is already a full roll-up, dated rows included, so it folds in day-less
+  // and the per-day split unions day-wise below.
+  for (const [model, u] of from.byModel) {
+    addUsage(into.byModel, model, u);
+  }
+  for (const [day, dayModels] of from.perDay) {
+    // A day with an empty model map still counts as active in the union.
+    const target = dayUsageMap(into.perDay, day);
+    for (const [model, u] of dayModels) {
+      addUsage(target, model, u);
     }
   }
-  return merged;
+}
+
+/** Every report's billed requests, summed per model. */
+export function mergeBilled(reports: readonly ReadonlyUsageReport[]): Map<string, BilledUsage> {
+  const merged = usageReport();
+  for (const report of reports) {
+    for (const [model, b] of report.billed) {
+      recordBilled(merged, model, b, b.nanoAiu);
+    }
+  }
+  return merged.billed;
 }
 
 /** record() folds every dated increment into both maps and sanitizeTokenCount keeps every count an
  *  integer, so the difference is exactly the usage recorded with a null day. A model the days
  *  fully cover is absent, not zero-filled. */
-export function undatedUsage(report: ReadonlyUsageReport): Map<string, ModelUsage> {
+export function undatedUsage(report: ReadonlyUsageTotals): Map<string, ModelUsage> {
   const rest = new Map<string, ModelUsage>();
   for (const [model, u] of report.byModel) {
     rest.set(model, { ...u });

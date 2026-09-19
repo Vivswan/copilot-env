@@ -88,7 +88,7 @@ test("the window table has a row per measure with base, head, and a signed delta
   expect(deltaCell(0, 0, "")).toBe("+0");
 });
 
-test("the verdict step exits 1 on a recorded differs and 0 on a match", () => {
+test("the verdict step exits 1 on a recorded differs, 0 on a match, and 0 on a diff the label declared intended", () => {
   const script = join(ROOT, ".github", "scripts", "cost-metrics.ts");
   const verdict = (recorded: string) => {
     const dir = tempDir("cost-metrics-verdict-");
@@ -96,6 +96,7 @@ test("the verdict step exits 1 on a recorded differs and 0 on a match", () => {
     return runSync(Deno.execPath(), ["run", "--allow-read", script, "verdict", "--in", dir]);
   };
   expect(verdict("match").exitCode).toBe(0);
+  expect(verdict("intended").exitCode).toBe(0);
   const differs = verdict("differs");
   expect(differs.exitCode).toBe(1);
   expect(differs.stderr).toContain("cost JSON differs from the base commit");

@@ -9,7 +9,7 @@ import { discoverClaudeSessionRoots, readClaudeSessions } from "../src/usage/cla
 import { discoverCodexSessionRoots, readCodexSessions } from "../src/usage/codex_sessions.ts";
 import { parseEveryCandidate } from "../src/usage/contribution.ts";
 import { canonicalModelName } from "../src/usage/pricing.ts";
-import type { ModelUsage, ReadonlyUsageReport } from "../src/usage/usage.ts";
+import type { ModelUsage, ReadonlyUsageTotals } from "../src/usage/usage.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 import {
@@ -48,7 +48,7 @@ function canonical(report: ExpectedReport): ExpectedReport {
 
 async function readBack(
   tree: GeneratedTree,
-): Promise<{ codex: Map<string, ReadonlyUsageReport>; claude: ReadonlyUsageReport }> {
+): Promise<{ codex: Map<string, ReadonlyUsageTotals>; claude: ReadonlyUsageTotals }> {
   return {
     codex: await readCodexSessions(
       discoverCodexSessionRoots([tree.codexRoot]),
@@ -65,11 +65,11 @@ async function readBack(
   };
 }
 
-function byModel(report: ReadonlyUsageReport): Record<string, unknown> {
+function byModel(report: ReadonlyUsageTotals): Record<string, unknown> {
   return Object.fromEntries([...report.byModel].sort(([a], [b]) => a.localeCompare(b)));
 }
 
-function perDay(report: ReadonlyUsageReport): Record<string, Record<string, unknown>> {
+function perDay(report: ReadonlyUsageTotals): Record<string, Record<string, unknown>> {
   return Object.fromEntries(
     [...report.perDay].sort(([a], [b]) => a.localeCompare(b)).map(([day, models]) => [
       day,

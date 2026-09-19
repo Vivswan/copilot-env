@@ -11,7 +11,7 @@ export type UsageSource = "codex" | "claude";
 /** Bump when a parser's output for the same bytes changes (a new field, a fixed bug in what
  *  counts): every stored contribution with another version is parsed whole again. Never bump for a
  *  pure speedup. */
-export const CONTRIBUTION_VERSION = 2;
+export const CONTRIBUTION_VERSION = 3;
 
 /** 128 bits of SHA-256: equality is all the dedup needs, collisions stay out of any realistic
  *  corpus (about 4e-30 at 50k keys), and the truncation halves the index's key bytes. */
@@ -67,7 +67,9 @@ export interface CodexContribution {
 // ---------- Claude ----------
 
 /** Line order, exact repeats included: the fold applies the `sinceMs` window BEFORE the running-max
- *  dedup, so an out-of-window higher snapshot must not suppress a later in-window lower one. */
+ *  dedup, so an out-of-window higher snapshot must not suppress a later in-window lower one.
+ *  `billedNanoAiu` is `message.copilot_usage.total_nano_aiu`, GitHub's own bill for the request in
+ *  nano AI credits; 0 on the lines that carry none. */
 export type ClaudeOccurrence = [
   idHash: string | null,
   tsMs: number | null,
@@ -76,6 +78,7 @@ export type ClaudeOccurrence = [
   output: number,
   cacheRead: number,
   cacheCreation: number,
+  billedNanoAiu: number,
 ];
 
 export interface ClaudeContribution {

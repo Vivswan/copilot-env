@@ -1,5 +1,6 @@
-// The per-day arithmetic behind `agent cost --per-day` and `--days`: window parsing, the day
-// grouping, and the coverage statistics. Pure functions over a folded UsageReport; cost.ts renders.
+// The per-day arithmetic behind `agent cost --per-day`, `--days`, and `--month`: window parsing,
+// the day grouping, and the coverage statistics. Pure functions over a folded UsageReport; cost.ts
+// renders.
 
 import { formatDuration, MILLISECONDS_PER_DAY, startOfLocalDay } from "../utils/time.ts";
 import { type CostEstimate, estimateCost, type PricingTier } from "./pricing.ts";
@@ -7,10 +8,12 @@ import { type ModelUsage, type ReadonlyUsageReport, undatedUsage } from "./usage
 
 /** Told apart by SPELLING: `7` counts local calendar days (today plus the six before), `1.0` is an
  *  exact span of 24-hour days. Number("1.0") === 1, so the raw flag text is the only place the two
- *  differ, which is why the parser takes the string. */
+ *  differ, which is why the parser takes the string. `month` is the UTC calendar month GitHub
+ *  meters, the period `agent credits` reports. */
 export type DaysWindow =
   | { kind: "calendar"; days: number }
-  | { kind: "exact"; days: number };
+  | { kind: "exact"; days: number }
+  | { kind: "month" };
 
 /** Number() would also admit a sign, whitespace, an exponent, or hex, and each would silently land
  *  in a window kind the user never chose. */
@@ -36,11 +39,28 @@ export function parseDaysWindow(raw: string): DaysWindow {
   return { kind, days };
 }
 
-/** A calendar window starts at a real local midnight, so its first day is never partial. */
+/** The window `agent cost` prices, from its two flags; neither is all time. */
+export function parseWindowFlags(days: string | undefined, month: boolean): DaysWindow | undefined {
+  if (month && days !== undefined) {
+    throw new Error("--month and --days name two windows; pass one");
+  }
+  if (month) return { kind: "month" };
+  return days === undefined ? undefined : parseDaysWindow(days);
+}
+
+/** A calendar window starts at a real local midnight, so its first day is never partial; the month
+ *  starts at 00:00 UTC on the 1st, where GitHub's meter starts it. */
 export function daysCutoffMs(window: DaysWindow, nowMs: number = Date.now()): number {
-  return window.kind === "calendar"
-    ? startOfLocalDay(nowMs, window.days - 1)
-    : nowMs - window.days * MILLISECONDS_PER_DAY;
+  switch (window.kind) {
+    case "calendar":
+      return startOfLocalDay(nowMs, window.days - 1);
+    case "exact":
+      return nowMs - window.days * MILLISECONDS_PER_DAY;
+    case "month": {
+      const now = new Date(nowMs);
+      return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+    }
+  }
 }
 
 /** formatDuration rounds to whole seconds, so a span it would render as "0s" falls back to the day
@@ -48,6 +68,9 @@ export function daysCutoffMs(window: DaysWindow, nowMs: number = Date.now()): nu
 export function describeDaysWindow(window: DaysWindow | undefined): string {
   if (window === undefined) {
     return "all time";
+  }
+  if (window.kind === "month") {
+    return "this month (UTC)";
   }
   if (window.kind === "exact") {
     const duration = formatDuration(window.days * MILLISECONDS_PER_DAY);
@@ -92,17 +115,23 @@ export function computeDayMetrics(
   const priced = new Set(Object.keys(estimate.perModel));
   const out: DayMetrics[] = [];
   for (const [day, dayModels] of report.perDay) {
-    out.push({ day, ...groupTotals(dayModels, pricing, priced) });
+    const longContext = report.longContext.perDay.get(day) ?? NO_MODELS;
+    out.push({ day, ...groupTotals(dayModels, longContext, pricing, priced) });
   }
   return out;
 }
 
+const NO_MODELS: ReadonlyMap<string, Readonly<ModelUsage>> = new Map();
+
+/** `longContext` is the share of `models` from long-context requests, so the group is priced the
+ *  way the aggregate was. */
 function groupTotals(
   models: ReadonlyMap<string, Readonly<ModelUsage>>,
+  longContext: ReadonlyMap<string, Readonly<ModelUsage>>,
   pricing: Map<string, PricingTier>,
   priced: ReadonlySet<string>,
 ): DayTotals {
-  const est = estimateCost(models, pricing);
+  const est = estimateCost({ byModel: models, longContext: { byModel: longContext } }, pricing);
   const m: DayTotals = {
     reqs: 0,
     input: 0,
@@ -152,7 +181,12 @@ function undatedTotals(
   if (rest.size === 0) {
     return null;
   }
-  return groupTotals(rest, pricing, new Set(Object.keys(estimate.perModel)));
+  return groupTotals(
+    rest,
+    undatedUsage(report.longContext),
+    pricing,
+    new Set(Object.keys(estimate.perModel)),
+  );
 }
 
 /** THE row list the per-day table prints and its TOTAL line sums over. */

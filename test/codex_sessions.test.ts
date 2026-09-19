@@ -17,6 +17,7 @@ import {
   walkCodexSessions,
 } from "../src/usage/codex_sessions.ts";
 import { dedupKey, parseEveryCandidate, type WalkedFile } from "../src/usage/contribution.ts";
+import { estimateCost, type PricingTier } from "../src/usage/pricing.ts";
 import { errMessage } from "../src/utils/error.ts";
 import { dayKeyIn } from "../src/utils/time.ts";
 import { captureAllWrites } from "./helpers/output.ts";
@@ -193,6 +194,51 @@ test.skipIf(Deno.build.os === "windows")(
     expect(output).toContain(`could not read ${dangling} (${statError}).`);
   },
 );
+
+test("foldCodex books a request over 272K prompt tokens as long-context and one at exactly 272K as not", () => {
+  const dir = tempDir("codex-sessions-");
+  // GitHub's boundary: a prompt of 272,000 tokens is default-tier, 272,001 is long-context.
+  const at = 272_000;
+  const cached = 100_000;
+  const path = writeRollout(join(dir, "s"), "2026-06-01", "aaa", [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-6-astra"),
+    // Codex's input_tokens INCLUDES the cached part: the whole of it is the prompt the tier cuts on.
+    tokenCount("2026-06-01T10:00:05.000Z", usage(at, cached, 10), usage(at, cached, 10)),
+    tokenCount(
+      "2026-06-01T10:00:09.000Z",
+      usage(2 * at + 1, 2 * cached, 20),
+      usage(at + 1, cached, 10),
+    ),
+  ]);
+  const { contribution } = parseCodexWhole(walkedFile(path));
+  const report = foldCodex([{ path, contribution }], undefined, dayKeyIn("UTC")).get(
+    "copilot-env",
+  )!;
+  const flat = { input: at - cached, output: 10, cacheRead: cached, cacheCreation: 0, events: 1 };
+  const long = { ...flat, input: at + 1 - cached };
+  expect(report.byModel.get("gpt-6-astra")).toEqual({
+    ...flat,
+    input: flat.input + long.input,
+    output: 20,
+    cacheRead: 2 * cached,
+    events: 2,
+  });
+  expect(report.longContext.byModel.get("gpt-6-astra")).toEqual(long);
+  expect(report.longContext.perDay.get("2026-06-01")?.get("gpt-6-astra")).toEqual(long);
+
+  // Priced: the first request at astra's card, the second at its long-context tier (20/75/2).
+  const pricing = new Map<string, PricingTier>([
+    ["openai/gpt-6-astra", { input: 10, output: 50, cacheRead: 1, cacheCreation: 12.5 }],
+  ]);
+  const cost = estimateCost(report, pricing).perModel["gpt-6-astra"];
+  const perMillion = 1e-6;
+  expect(cost?.estimatedCostUsd).toBeCloseTo(
+    (flat.input * 10 + 10 * 50 + cached * 1) * perMillion +
+      (long.input * 20 + 10 * 75 + cached * 2) * perMillion,
+    10,
+  );
+});
 
 test("parseCodexWhole honours session_meta until an id is known, then ignores later ones", () => {
   const dir = tempDir("codex-sessions-");

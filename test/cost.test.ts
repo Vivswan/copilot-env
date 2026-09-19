@@ -40,9 +40,11 @@ import {
   assistantLine,
   claudeUsage,
   codexUsage,
+  type ProxyRow,
   sessionMeta,
   tokenCount,
   turnContext,
+  writeProxyDb,
   writeRollout,
   writeTranscript,
 } from "./helpers/session_fixtures.ts";
@@ -513,6 +515,7 @@ function rootsOf(codex: string[], claude: string[]): { sessionRoots: SessionRoot
 
 interface CostJson {
   runtime: CostRuntime;
+  usageByModel: Record<string, ModelUsage>;
   claudeSessions: { totalUsd: number };
 }
 
@@ -777,6 +780,61 @@ for (const vanished of ["codex", "claude"] as const) {
       expect(after.index.filesSeen).toBe(2);
     }));
 }
+
+test("the combined view counts a request the proxy DB and a client log both recorded once", () =>
+  withCostHome(async ({ home, claudeRoot }) => {
+    // The home's transcript holds msg_1's first line: claude-opus-4-8, 10 in / 20 out, 10:00:00Z.
+    // Streaming appends a second line two seconds later with the output grown to 35, so the
+    // request's counts are 10 / 35 and its lines span 10:00:00-10:00:02. The proxy relayed that
+    // response and recorded it when the stream ended, seconds after the last line; a second proxy
+    // row has no client line at all (an agent whose logs are not on this machine) and keeps
+    // counting.
+    appendFileSync(
+      join(claudeRoot, "-Users-x-proj", "aaa.jsonl"),
+      `${
+        assistantLine("2026-06-01T10:00:02.000Z", "claude-opus-4-8", "msg_1", claudeUsage(10, 35))
+      }\n`,
+    );
+    const relayed: ProxyRow = {
+      at: "2026-06-01T10:00:05.000Z",
+      model: "claude-opus-4.8",
+      input: 10,
+      output: 35,
+    };
+    const unlogged: ProxyRow = {
+      at: "2026-06-01T12:00:00.000Z",
+      model: "claude-opus-4.8",
+      input: 100,
+      output: 200,
+    };
+    const deps = { fetchImpl: fakeFetch(PRICED_BODY), ...rootsOf([], [claudeRoot]) };
+    const report = (args: CostArgs) =>
+      captureChannels(() => runCost({ pricingUrl: PRICE_URL, ...args }, deps));
+
+    // Control: the same counts a minute and a millisecond after the client's LAST line are another
+    // request, and the note stays off the header.
+    const dbFile = writeProxyDb(home, "work-bot", [
+      { ...relayed, at: "2026-06-01T10:01:02.001Z" },
+      unlogged,
+    ]);
+    const apart = await report({ noIndex: true });
+    expect(apart.stdout).toContain("| 1 proxy db + 1 claude projects root | 3 requests | ");
+    expect(apart.stdout).toMatch(/^\s+TOTAL\s+3\s+120 \|/m);
+
+    rmSync(dbFile, { maxRetries: 10, retryDelay: 100 });
+    writeProxyDb(home, "work-bot", [relayed, unlogged]);
+    const plain = await report({ noIndex: true });
+    expect(plain.stdout).toContain(
+      "| 1 proxy db + 1 claude projects root | 2 requests (1 seen in both a proxy row and a client log, counted once) | ",
+    );
+    expect(plain.stdout).toMatch(/^\s+TOTAL\s+2\s+110 \|/m);
+    // The pairing runs over the records the reconcile yields, so the index changes nothing.
+    const indexed = await report({});
+    expect(indexed.stdout).toBe(plain.stdout);
+    // --json and --sources report each source whole: the proxy keys still carry both rows.
+    const { payload } = await jsonRun({ pricingUrl: PRICE_URL, noIndex: true }, deps);
+    expect(payload.usageByModel["claude-opus-4.8"]?.events).toBe(2);
+  }));
 
 test("runCost's human report ends with one index line only when the index was used", () =>
   withCostHome(async ({ claudeRoot }) => {

@@ -31,6 +31,7 @@ import {
 import { canonicalModelNames } from "./pricing.ts";
 import { scanLines } from "./scan.ts";
 import {
+  type OnCounted,
   record,
   sanitizeTokenCount,
   type TokenBuckets,
@@ -71,18 +72,19 @@ export function discoverClaudeSessionRoots(homes: string[] = [resolveClaudeHome(
 }
 
 /** `timeZone` exists so the per-day slicing is assertable without pinning the process `TZ`, which
- *  deno honors on unix only. */
+ *  deno honors on unix only. `onCounted` sees every increment the fold records. */
 export async function readClaudeSessions(
   roots: string[],
   sinceMs: number | undefined,
   timeZone: string | undefined,
   reconcile: Reconcile,
+  onCounted?: OnCounted,
 ): Promise<UsageReport> {
   // Before any file read: an unknown zone must fail here, not inside the per-file parse catch.
   const dayKey = dayKeyIn(timeZone);
   const walked = walkClaudeSessions(roots, sinceMs);
   const { records } = reconcile("claude", walked, parseClaudeWhole, parseClaudeTail);
-  return foldClaude(records, sinceMs, dayKey);
+  return foldClaude(records, sinceMs, dayKey, onCounted);
 }
 
 /** Ascending by path. discoverClaudeSessionRoots hands over realpath-distinct `projects` directories,
@@ -110,6 +112,7 @@ function foldClaude(
   records: readonly FileRecord<ClaudeContribution>[],
   sinceMs: number | undefined,
   dayKey: DayKey,
+  onCounted?: OnCounted,
 ): UsageReport {
   const report = usageReport();
   const seenMessages = new Map<string, TokenBuckets>();
@@ -167,6 +170,7 @@ function foldClaude(
         ...buckets,
         events: isNewMessage ? 1 : 0,
       });
+      onCounted?.({ id: idHash, tsMs, model, buckets });
     }
   }
   return report;

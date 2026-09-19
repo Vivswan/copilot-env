@@ -135,8 +135,8 @@ export function registerMachineCommands(program: Command): void {
           "Sources: the proxy's per-host SQLite DBs (default + every profile daemon home; " +
             "proxied traffic only), the Codex CLI's local session logs, and Claude Code's local " +
             "transcripts (each agent's FULL traffic, Direct included). The default table merges " +
-            "all three, so traffic through the proxy can be double counted; use --sources for " +
-            "per-source tables.",
+            "all three and counts a request the proxy and a client log both recorded once; use " +
+            "--sources for per-source tables.",
           "Active days: distinct local calendar days (your timezone) that recorded at " +
             "least one request, unioned across the displayed sources. The header also shows " +
             "the inclusive min..max calendar span and what percent of it was active. Avg/day " +

@@ -26,6 +26,7 @@ import {
 import { canonicalModelNames } from "./pricing.ts";
 import { scanBytes, scanLines } from "./scan.ts";
 import {
+  type OnCounted,
   record,
   sanitizeTokenCount,
   type TokenBuckets,
@@ -79,18 +80,20 @@ export function discoverCodexSessionRoots(homes: string[] = knownCodexHomes().ho
 }
 
 /** One report per `model_provider`. `timeZone` exists so the per-day slicing is assertable without
- *  pinning the process `TZ`, which deno honors on unix only. */
+ *  pinning the process `TZ`, which deno honors on unix only. `onCounted` sees every event the fold
+ *  records. */
 export async function readCodexSessions(
   roots: string[],
   sinceMs: number | undefined,
   timeZone: string | undefined,
   reconcile: Reconcile,
+  onCounted?: OnCounted,
 ): Promise<Map<string, UsageReport>> {
   // Before any file read: an unknown zone must fail here, not inside the per-file parse catch.
   const dayKey = dayKeyIn(timeZone);
   const walked = walkCodexSessions(roots, sinceMs);
   const { records } = reconcile("codex", walked, parseCodexWhole, parseCodexTail);
-  return foldCodex(records, sinceMs, dayKey);
+  return foldCodex(records, sinceMs, dayKey, onCounted);
 }
 
 /** Ascending by basename, which embeds the start timestamp, so a fork's parent precedes the fork.
@@ -156,6 +159,7 @@ export function foldCodex(
   records: readonly FileRecord<CodexContribution>[],
   sinceMs: number | undefined,
   dayKey: DayKey,
+  onCounted?: OnCounted,
 ): Map<string, UsageReport> {
   const providers = new Map<string, UsageReport>();
   const canonical = canonicalModelNames();
@@ -190,13 +194,10 @@ export function foldCodex(
       }
       // The day is the user's local one, not the UTC day the timestamp spells; a line with no
       // parseable timestamp still counts toward the totals.
-      record(report, tsMs === null ? null : dayKey(tsMs), canonical(rawModel), {
-        input,
-        output,
-        cacheRead,
-        cacheCreation: 0,
-        events: 1,
-      });
+      const model = canonical(rawModel);
+      const buckets = { input, output, cacheRead, cacheCreation: 0 };
+      record(report, tsMs === null ? null : dayKey(tsMs), model, { ...buckets, events: 1 });
+      onCounted?.({ id: null, tsMs, model, buckets });
     }
     if (state.sessionIdHash !== undefined && ownHashes.size > 0) {
       infoHashesBySession.set(state.sessionIdHash, ownHashes);

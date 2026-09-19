@@ -3,15 +3,16 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   discoverUsageDbs,
+  foldUsageRequests,
   mergeUsageReports,
   parseUsageRow,
-  readUsage,
+  readUsageRequests,
   record,
   sanitizeTokenCount,
   undatedUsage,
   usageReport,
 } from "../src/usage/usage.ts";
-import { localDayKey } from "../src/utils/time.ts";
+import { dayKeyIn, localDayKey } from "../src/utils/time.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 // Day keys are LOCAL calendar days, so expectations derive from the reader's own helper.
@@ -20,6 +21,11 @@ import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 // could stretch a day to 25h, but these June dates avoid one).
 const ms = (utc: string): number => Date.parse(utc);
 const day = (utc: string): string => localDayKey(ms(utc));
+
+/** The read and the fold composed, the way `agent cost` runs them. */
+function readProxy(dbPaths: string[], sinceMs?: number, timeZone?: string) {
+  return foldUsageRequests(readUsageRequests(dbPaths, sinceMs), dayKeyIn(timeZone));
+}
 
 let dir = "";
 
@@ -54,43 +60,40 @@ test("sanitizeTokenCount clamps non-finite, negative, and non-number counts to 0
 // parseUsageRow is THE boundary between untyped SQLite output and the report. The file is
 // external state a torn write or a hand edit can corrupt, so shapes a live daemon DB never
 // holds are driven directly rather than through a DB that cannot produce all of them.
-test("parseUsageRow normalizes every count and drops rows it cannot attribute", () => {
+test("parseUsageRow normalizes every count, canonicalizes the model, and drops rows it cannot attribute", () => {
   const ok = parseUsageRow({
-    bucket: 100,
-    model: "gpt-5.5",
+    tsMs: 100,
+    model: "claude-opus-4-8-20260101",
     input: 10,
     output: 20,
     cacheRead: 30,
     cacheCreation: 40,
-    events: 2,
   });
   expect(ok).toEqual({
-    bucket: 100,
-    model: "gpt-5.5",
+    tsMs: 100,
+    model: "claude-opus-4.8",
     buckets: { input: 10, output: 20, cacheRead: 30, cacheCreation: 40 },
-    events: 2,
   });
 
   // A bigint column (node:sqlite hands one back for an integer a double cannot hold, and
   // for every column under readBigInts) becomes a plain number, never leaks downstream.
-  expect(parseUsageRow({ bucket: 5n, model: "m", input: 7n, events: 1n })?.buckets.input).toBe(7);
-  expect(parseUsageRow({ bucket: 5n, model: "m", events: 1 })?.bucket).toBe(5);
+  expect(parseUsageRow({ tsMs: 5n, model: "m", input: 7n })?.buckets.input).toBe(7);
+  expect(parseUsageRow({ tsMs: 5n, model: "m" })?.tsMs).toBe(5);
 
   const clamped = parseUsageRow({
-    bucket: null,
+    tsMs: null,
     model: "m",
     input: -5,
     output: null,
     cacheRead: "700",
     cacheCreation: Number.NaN,
-    events: 1,
   });
   expect(clamped?.buckets).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
-  expect(clamped?.bucket).toBeNull(); // no timestamp -> omitted from the per-day split
+  expect(clamped?.tsMs).toBeNull(); // no timestamp -> omitted from the per-day split
 
-  expect(parseUsageRow({ model: null, input: 10, events: 1 })).toBeNull();
-  expect(parseUsageRow({ model: "", input: 10, events: 1 })).toBeNull();
-  expect(parseUsageRow({ model: 42, input: 10, events: 1 })).toBeNull();
+  expect(parseUsageRow({ model: null, input: 10 })).toBeNull();
+  expect(parseUsageRow({ model: "", input: 10 })).toBeNull();
+  expect(parseUsageRow({ model: 42, input: 10 })).toBeNull();
   expect(parseUsageRow(null)).toBeNull();
   expect(parseUsageRow("not a row")).toBeNull();
 });
@@ -248,7 +251,7 @@ test("mergeUsageReports sums models, unions days, and keeps day-less usage in th
 
 // A column a live daemon never writes badly, but a torn write or a hand edit can: no model, hostile
 // counts, no timestamp. The row is dropped, clamped, or kept out of the day split, never a phantom.
-test("readUsage: an unattributable row is dropped, hostile counts clamp, an undated row reaches the totals only", () => {
+test("the proxy reader: an unattributable row is dropped, hostile counts clamp, an undated row reaches the totals only", () => {
   dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   // No column constraints: the reader must survive a corrupt file, not just the daemon's.
@@ -268,7 +271,7 @@ test("readUsage: an unattributable row is dropped, hostile counts clamp, an unda
   insert.run("gpt-5.5", 7, 0, 0, 0, null, at);
   db.close();
 
-  const report = readUsage([path]);
+  const report = readProxy([path]);
 
   expect([...report.byModel.keys()].sort()).toEqual(["gpt-5.5", "negative"]);
   expect(report.byModel.get("negative")).toEqual({
@@ -310,7 +313,7 @@ function seedUsageDb(path: string): void {
   db.close();
 }
 
-test("readUsage sums tokens per canonical model across DBs and splits them by local day, the split reconciling with byModel", () => {
+test("the proxy reader sums tokens per canonical model across DBs and splits them by local day, the split reconciling with byModel", () => {
   dir = tempDir("copilot-usage-");
   const pathA = join(dir, "a.sqlite");
   const pathB = join(dir, "b.sqlite");
@@ -338,7 +341,7 @@ test("readUsage sums tokens per canonical model across DBs and splits them by lo
   insert.run("gemini-3.0", 9, 0, 0, 0, ms(day3), day3);
   db.close();
 
-  const report = readUsage([pathA, pathB]);
+  const report = readProxy([pathA, pathB]);
 
   // A's 200/100/10/0 over two events plus B's 111/222/1/2 over three.
   const claude = { input: 311, output: 322, cacheRead: 11, cacheCreation: 2, events: 5 };
@@ -357,13 +360,13 @@ test("readUsage sums tokens per canonical model across DBs and splits them by lo
   );
 });
 
-test("readUsage sinceMs filters older rows from token totals and active days", () => {
+test("the proxy reader sinceMs filters older rows from token totals and active days", () => {
   dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   seedUsageDb(path);
 
   // The cutoff sits at the gpt row's own timestamp: the boundary row is kept.
-  const report = readUsage([path], ms("2026-06-02T00:00:00Z"));
+  const report = readProxy([path], ms("2026-06-02T00:00:00Z"));
 
   expect(report.byModel.has("claude-opus-4.8")).toBe(false);
   expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
@@ -371,7 +374,7 @@ test("readUsage sinceMs filters older rows from token totals and active days", (
   expect(report.perDay.size).toBe(1);
 });
 
-test("readUsage buckets by the user's local day, not the UTC day", () => {
+test("the proxy reader buckets by the user's local day, not the UTC day", () => {
   dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   const db = new DatabaseSync(path);
@@ -400,15 +403,9 @@ test("readUsage buckets by the user's local day, not the UTC day", () => {
   // The zone is NAMED rather than pinned through process.env.TZ, so this runs on Windows too
   // (deno honours the TZ env var on unix only). The SAME row in two zones keeps the teeth: a
   // reader that ignored the zone or sliced by UTC would return one key for both.
-  expect([...readUsage([path], undefined, "America/New_York").perDay.keys()])
+  expect([...readProxy([path], undefined, "America/New_York").perDay.keys()])
     .toEqual(["2026-06-01"]);
-  expect([...readUsage([path], undefined, "UTC").perDay.keys()]).toEqual(["2026-06-02"]);
-});
-
-test("readUsage rejects an unknown zone before it opens a single database", () => {
-  // Resolved lazily, a bad zone would raise RangeError per row inside the per-path catch,
-  // which reports it as an unreadable DB and returns a report missing its per-day split.
-  expect(() => readUsage([], undefined, "Not/AZone")).toThrow();
+  expect([...readProxy([path], undefined, "UTC").perDay.keys()]).toEqual(["2026-06-02"]);
 });
 
 /** A set of database paths, some unreadable, and the report the readable ones give. */
@@ -453,9 +450,9 @@ const UNREADABLE_SETS: {
 ];
 
 for (const { name, files, inputs, days } of UNREADABLE_SETS) {
-  test(`readUsage skips ${name} without throwing and reports the readable ones`, () => {
+  test(`the proxy reader skips ${name} without throwing and reports the readable ones`, () => {
     dir = tempDir("copilot-usage-");
-    const report = readUsage(files(dir));
+    const report = readProxy(files(dir));
     expect(Object.fromEntries([...report.byModel].map(([m, u]) => [m, u.input]))).toEqual(inputs);
     expect(report.perDay.size).toBe(days);
   });

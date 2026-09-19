@@ -666,7 +666,11 @@ fi
     // The bootstrap binary a flat install left behind goes too.
     const residue = join(installDir, "bin", installedBinaryName());
     const release = { tag: "v9.9.9", dateSeconds: 0 };
-    const quiet = { info: () => {}, warn: (line: string) => void warnings.push(line) };
+    const quiet = {
+      info: () => {},
+      warn: (line: string) => void warnings.push(line),
+      success: () => {},
+    };
     const warnings: string[] = [];
     // A directory at the bootstrap binary's name: the sweeper both runs share refuses it, so the
     // preview plans no delete there (a file there is swept below).

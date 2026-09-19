@@ -147,10 +147,14 @@ export interface AgentRunOptions {
   ghToken?: string | null;
 }
 
-/** Knobs of a named-profile write (`agent profile`); the mode and direct identity travel in
- *  the ManagedWrite beside it. */
+/** Knobs of one write; the mode and direct identity travel in the ManagedWrite beside it. */
 export interface AgentProfileWriteOptions {
   quiet: boolean;
+  /** The GitHub credential the default's writers already resolved: a string is reused by the
+   *  Codex catalog seed and Claude Desktop's discovery, so gh-cli is never spawned twice; null
+   *  (none stored) leaves Desktop's discovery to resolve for itself. Absent (a named profile), a
+   *  static Direct write's own token stands in (resolvedDirectToken). */
+  directToken?: string | null;
 }
 
 /** DefaultAgentRequest is indexed by this union (configure_defaults.ts), so a new agent is a
@@ -167,11 +171,9 @@ export interface RemoveProfileOptions {
 
 /**
  * One CLI agent's wiring surface; the config.toml / settings.json mechanics stay in src/codex/
- * and src/claude/. Default and named-profile writes are separate methods because only the
- * default flow hands the adapter a resolved credential.
- *
- *   configureDefault -> gets runAgentConfig's credential (Codex seeds its catalog with it)
- *   configureProfile -> gets none; Claude Desktop's discovery resolves that slot itself
+ * and src/claude/. One write method serves the default (`null`) and a named profile alike; what
+ * differs travels in the options: the default's writers hand over the credential they already
+ * resolved, a named profile's carry none (Claude Desktop's discovery resolves that slot itself).
  */
 export interface AgentAdapter {
   readonly id: ManagedAgentId;
@@ -191,13 +193,10 @@ export interface AgentAdapter {
    *  (`host` literal, else probe). On the adapter because this module must not import the
    *  per-agent probe machinery. */
   resolveDirectWiring(ghToken: string | null): Promise<DirectWiring>;
-  /** `ghToken` is the credential runAgentConfig already resolved (null = none stored). Only
-   *  Claude Desktop's model discovery resolves again, and only from null (src/claude/desktop.ts). */
-  configureDefault(write: ManagedWrite, ghToken: string | null): Promise<void>;
   /** Never probes: the identity arrives inside `write`. Async when the adapter also refreshes
    *  a derived surface (Claude's Desktop config library). */
   configureProfile(
-    name: ProfileName,
+    profile: Profile,
     write: ManagedWrite,
     options: AgentProfileWriteOptions,
   ): void | Promise<void>;
@@ -231,7 +230,7 @@ export async function writeDefaultAgent(
   const write: ManagedWrite = chosen.mode === "direct"
     ? { ...chosen, credential }
     : { mode: "proxy", credential };
-  await adapter.configureDefault(write, ghToken);
+  await adapter.configureProfile(null, write, { quiet: false, directToken: ghToken });
 }
 
 /**

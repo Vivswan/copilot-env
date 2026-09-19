@@ -681,8 +681,6 @@ export interface ImportScope {
   defaultWiring: boolean;
 }
 
-export const WHOLE_STORE: ImportScope = { defaultWiring: true };
-
 export function planImport(
   bundle: SettingsBundle,
   deps: ImportDeps = {},
@@ -877,7 +875,7 @@ function keptCredential(state: CopilotEnvState, name: ProfileName): ProvisionedC
 export async function applyImportPlan(
   plan: ImportPlan,
   deps: ImportDeps = {},
-  scope: ImportScope = WHOLE_STORE,
+  scope: ImportScope = { defaultWiring: true },
 ): Promise<ImportOutcome> {
   const outcome: ImportOutcome = {
     modes: null,
@@ -915,15 +913,6 @@ export async function applyImportPlan(
     }
   }
   return outcome;
-}
-
-/** Plan + apply in one call, for callers that need no confirmation step between the two
- *  (`agent settings` plans first to render the prompt, then applies that same plan). */
-export async function applyImportBundle(
-  bundle: SettingsBundle,
-  deps: ImportDeps = {},
-): Promise<ImportOutcome> {
-  return applyImportPlan(planImport(bundle, deps), deps);
 }
 
 // --- pre-import backups -------------------------------------------------------

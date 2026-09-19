@@ -142,7 +142,7 @@ describe("buildInstallPlan", () => {
     if (plan.kind !== "installed") throw new Error("expected an installed plan");
 
     for (const file of BUNDLED_ONLY_ASSETS) {
-      expect(plan.copies.map((c) => c.to)).not.toContain(join(dest, file));
+      expect(plan.writes.map((w) => w.to)).not.toContain(join(dest, file));
     }
   });
 
@@ -166,20 +166,18 @@ describe("the versioned full-install plan", () => {
     expect(plan.top).toBe(dest);
     expect(plan.versionName).toBe(VERSION_NAME);
     expect(plan.versionRoot).toBe(join(dest, VERSIONS_DIR, VERSION_NAME));
-    // Every write aims INSIDE the version root; nothing lands flat at the top.
-    for (const copy of plan.copies) {
-      expect(copy.to.startsWith(plan.versionRoot)).toBe(true);
-    }
-    expect(plan.manifest.to).toBe(join(plan.versionRoot, INSTALL_MANIFEST_FILE));
-    expect(plan.shims.map((s) => s.to)).toEqual([
-      join(plan.versionRoot, "bin", "agent"),
-      join(plan.versionRoot, "bin", "agent.ps1"),
-    ]);
+    // Every write aims INSIDE the version root; nothing lands flat at the top. The manifest is
+    // the LAST write: root detection reads it, so a half-laid root never reads as installed.
+    const planned = plan.writes.map((w) => w.to);
+    for (const to of planned) expect(to.startsWith(plan.versionRoot)).toBe(true);
+    expect(planned.at(-1)).toBe(join(plan.versionRoot, INSTALL_MANIFEST_FILE));
+    expect(planned).toContain(join(plan.versionRoot, "bin", "agent"));
+    expect(planned).toContain(join(plan.versionRoot, "bin", "agent.ps1"));
     expect(plan.topShims.map((s) => s.to)).toEqual([
       join(dest, "bin", "agent"),
       join(dest, "bin", "agent.ps1"),
     ]);
-    expect(plan.topShims.map((s) => s.text)).toEqual([
+    expect(plan.topShims.map((s) => s.body)).toEqual([
       POSIX_CURRENT_SHIM,
       POWERSHELL_CURRENT_SHIM,
     ]);
@@ -311,9 +309,7 @@ describe("the versioned full-install plan", () => {
     expect(plan.bootstrapBinaryRemovals).toEqual([binarySource]);
 
     const created = [
-      ...plan.copies.map((c) => c.to),
-      ...plan.shims.map((s) => s.to),
-      plan.manifest.to,
+      ...plan.writes.map((w) => w.to),
       plan.binary.to,
       ...plan.topShims.map((s) => s.to),
     ];

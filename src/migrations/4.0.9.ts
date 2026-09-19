@@ -96,7 +96,7 @@ import {
   proxyTokenArgs,
   proxyTokenCommand,
 } from "../utils/root.ts";
-import { FENCE_LINES, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
+import { failIfAny, FENCE_LINES, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
 import type { Migration } from "./index.ts";
 
 /** A parsed TOML table is a plain object; smol-toml's date-time scalar is a class instance with no
@@ -453,9 +453,7 @@ export function stripLaunchersRcBlocks(): void {
       failed.push(file);
     }
   }
-  if (failed.length > 0) {
-    throw new Error(`${failed.length} file(s) were not converted: ${failed.join(", ")}`);
-  }
+  failIfAny(failed);
 }
 
 export const v409LaunchersBlock: Migration = {

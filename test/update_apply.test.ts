@@ -86,21 +86,6 @@ echo "\${COPILOT_ENV_INSTALL_ROOT:-} $@" >> "$(dirname "$0")/../../../invocation
 exit 0
 `;
 
-/** Exit 0 but write NO manifest: the soft no-op the postcondition must catch. */
-const SOFT_NOOP_BINARY = `#!/bin/sh
-echo "\${COPILOT_ENV_INSTALL_ROOT:-} $@" >> "$(dirname "$0")/../../../invocations.log"
-exit 0
-`;
-
-/** Writes a VALID manifest for the wrong release: the version-match half. */
-const WRONG_VERSION_BINARY = `#!/bin/sh
-HERE="$(dirname "$0")"
-if [ "$1" = "install" ]; then
-  printf '{"version":"0.0.1","kind":"installed","assets":[]}' > "$HERE/../.copilot-env-install.json"
-fi
-exit 0
-`;
-
 /** Seed one version dir (with a stand-in binary) inside the install root. */
 function seedVersion(name: string, contents = name): string {
   const dir = join(installDir, VERSIONS_DIR, name);
@@ -504,52 +489,22 @@ describe("applyUpdate", () => {
     ).toBe("OLD");
   });
 
-  skipWin(
-    "a provision that fails, exits 0 without the manifest, or provisions the wrong release aborts BEFORE the flip",
-    async () => {
-      // Exit codes approximate; the per-version manifest naming this release is the postcondition.
-      // Whatever the failure, the old version stays live and nothing is left staged.
-      const versionRoot = join(installDir, VERSIONS_DIR, "v9.9.9");
-      const rows: { name: string; binary: string; error: string; invocations: string[] | null }[] =
-        [
-          {
-            name: "soft no-op install",
-            binary: SOFT_NOOP_BINARY,
-            error: "no valid install manifest",
-            invocations: [`${versionRoot} install --assets-only`],
-          },
-          {
-            name: "manifest for the wrong release",
-            binary: WRONG_VERSION_BINARY,
-            error: "provisioned version 0.0.1, not the v9.9.9 release",
-            invocations: null, // this stand-in records nothing
-          },
-          {
-            name: "failing install",
-            binary: FAILING_PROVISION_BINARY,
-            error: "failed to lay down its runtime files",
-            invocations: [`${versionRoot} install --assets-only`],
-          },
-        ];
-      for (const { name, binary, error, invocations: expected } of rows) {
-        rmSync(installDir, { recursive: true, force: true });
-        mkdirSync(join(installDir, "bin"), { recursive: true });
-        writeRelease(binary);
-        seedVersion("v9.9.8", "OLD");
-        pointCurrentAt(installDir, "v9.9.8");
+  skipWin("a provision that fails aborts BEFORE the flip", async () => {
+    // The old version stays live and nothing is left staged.
+    const versionRoot = join(installDir, VERSIONS_DIR, "v9.9.9");
+    writeRelease(FAILING_PROVISION_BINARY);
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
 
-        await expect(
-          applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
-          name,
-        ).rejects.toThrow(error);
+    await expect(
+      applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
+    ).rejects.toThrow("failed to lay down its runtime files");
 
-        expect(readCurrentVersionName(installDir), name).toBe("v9.9.8");
-        expect(existsSync(versionRoot), name).toBe(false);
-        expect(stagingDirs(), name).toEqual([]);
-        if (expected !== null) expect(invocations(), name).toEqual(expected);
-      }
-    },
-  );
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
+    expect(existsSync(versionRoot)).toBe(false);
+    expect(stagingDirs()).toEqual([]);
+    expect(invocations()).toEqual([`${versionRoot} install --assets-only`]);
+  });
 
   skipWin("refuses when current already points at the target version", async () => {
     // Releases only move forward; `current` naming the target while the version

@@ -683,15 +683,18 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
     check: checkCodexConfig,
     detectDirect: detectCodexDirect,
     resolveDirectWiring: (ghToken) => probeDirectWiring(null, ghToken),
-    async configureDefault(write, ghToken) {
+    async configureProfile(profile, write, options) {
+      if (profile !== null) {
+        configureCodexConfig(effectiveCodexHome(), codexWriteRequest(write, profile));
+        return;
+      }
       // The already-resolved credential feeds the catalog seed's direct fetch, so the gh-cli
       // provider isn't shelled out to a second time.
-      const seedDeps = catalogDeps ?? (ghToken === null ? undefined : { directToken: ghToken });
+      const token = options.directToken;
+      const seedDeps = catalogDeps ??
+        (typeof token === "string" ? { directToken: token } : undefined);
       // The farm derivation decides the home the write lands in (and records it after).
       await withCodexHostFarm((codexHome) => applyCodexConfig(codexHome, write, seedDeps, null));
-    },
-    configureProfile(name, write) {
-      configureCodexConfig(effectiveCodexHome(), codexWriteRequest(write, name));
     },
     removeProfile(name) {
       removeCodexProfile(effectiveCodexHome(), name);

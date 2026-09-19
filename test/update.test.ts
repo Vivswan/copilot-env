@@ -2,7 +2,6 @@ import { parseUpdateAction, recheckVerdict } from "../src/commands/update.ts";
 import {
   parseReleasesJson,
   pickAged,
-  pickLatest,
   pickTag,
   type Release,
   resolveTarget,
@@ -149,7 +148,7 @@ test("parseReleasesJson keeps published vX.Y.Z releases newest-first and drops t
   }
 });
 
-test("pickLatest, pickAged, and pickTag select one release from the parsed list", () => {
+test("pickAged and pickTag select one release from the parsed list", () => {
   const now = secs("2026-06-06T00:00:00Z");
   const releases: Release[] = parseReleasesJson(
     JSON.stringify([
@@ -160,8 +159,6 @@ test("pickLatest, pickAged, and pickTag select one release from the parsed list"
   );
   const fresh = parseReleasesJson(JSON.stringify([rel("v4.0.0", "2026-06-05T23:00:00Z")]));
   const rows: { name: string; pick: () => Release | null; tag: string | null }[] = [
-    { name: "pickLatest is the newest", pick: () => pickLatest(releases), tag: "v3.0.0" },
-    { name: "pickLatest of nothing", pick: () => pickLatest([]), tag: null },
     {
       name: "pickAged(7) skips the too-fresh release",
       pick: () => pickAged(releases, now, 7),

@@ -32,7 +32,7 @@ import type { Migration } from "./index.ts";
 
 /** Each file converts independently, but any file left unconverted fails the whole step, so
  *  the runner warns and names the re-run instead of reporting a clean pass over broken wiring. */
-function failIfAny(failed: readonly string[]): void {
+export function failIfAny(failed: readonly string[]): void {
   if (failed.length === 0) return;
   throw new Error(`${failed.length} file(s) were not converted: ${failed.join(", ")}`);
 }

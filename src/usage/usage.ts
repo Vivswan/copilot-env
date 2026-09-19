@@ -72,15 +72,9 @@ export function parseUsageRow(raw: unknown): UsageRow | null {
   };
 }
 
-/** Privates are nominal, so no object literal or spread compiles as a UsageReport: mutable reports
- *  are born in usageReport(). A cast still gets through, as with any compile-time brand. */
-declare class UsageReportMint {
-  private readonly usageReportMint: true;
-}
-
 /** The mutable shape is for producers, which fold through record(); readers take
  *  ReadonlyUsageReport. */
-export interface UsageReport extends UsageReportMint {
+export interface UsageReport {
   /** Derived from the same rows as `perDay`; kept so callers do not recompute it. */
   byModel: Map<string, ModelUsage>;
   /** Keyed by LOCAL calendar day, YYYY-MM-DD in the user's timezone. */
@@ -93,55 +87,9 @@ export interface ReadonlyUsageReport {
   readonly perDay: ReadonlyMap<string, ReadonlyMap<string, Readonly<ModelUsage>>>;
 }
 
-/** Hand-built maps are parsed here: every count a non-negative integer, every perDay model in
- *  byModel, and per model the days' sum never above the roll-up (the invariant record() keeps), so
- *  no consumer has to clamp a negative undated remainder away. Deep-copied so a later fold or
- *  caller edit cannot alias validated state. */
-export function usageReport(
-  byModel: ReadonlyMap<string, Readonly<ModelUsage>> = new Map(),
-  perDay: ReadonlyMap<string, ReadonlyMap<string, Readonly<ModelUsage>>> = new Map(),
-): UsageReport {
-  const ownByModel = new Map<string, ModelUsage>();
-  for (const [model, u] of byModel) {
-    ownByModel.set(model, checkedUsage(model, u));
-  }
-  const ownPerDay = new Map<string, Map<string, ModelUsage>>();
-  const dated = new Map<string, ModelUsage>();
-  for (const [day, dayModels] of perDay) {
-    const ownDay = new Map<string, ModelUsage>();
-    for (const [model, u] of dayModels) {
-      const copy = checkedUsage(model, u);
-      ownDay.set(model, copy);
-      addUsage(dated, model, copy);
-    }
-    ownPerDay.set(day, ownDay);
-  }
-  for (const [model, d] of dated) {
-    const total = ownByModel.get(model);
-    if (
-      total === undefined || d.input > total.input || d.output > total.output ||
-      d.cacheRead > total.cacheRead || d.cacheCreation > total.cacheCreation ||
-      d.events > total.events
-    ) {
-      throw new Error(`inconsistent usage report: perDay exceeds byModel for model '${model}'`);
-    }
-  }
-  // The ONE brand assertion: the maps above were validated into consistency here.
-  return { byModel: ownByModel, perDay: ownPerDay } as UsageReport;
-}
-
-/** NaN passes every ordering check, so admitting it would let the perDay-vs-byModel comparison fail
- *  open. */
-function checkedUsage(model: string, u: Readonly<ModelUsage>): ModelUsage {
-  const copy = { ...u };
-  for (const v of [copy.input, copy.output, copy.cacheRead, copy.cacheCreation, copy.events]) {
-    if (!Number.isInteger(v) || v < 0) {
-      throw new Error(
-        `invalid usage report: count for model '${model}' is not a non-negative integer`,
-      );
-    }
-  }
-  return copy;
+/** An empty report; every producer fills one through record(). */
+export function usageReport(): UsageReport {
+  return { byModel: new Map(), perDay: new Map() };
 }
 
 /** The one owner of a new increment's consistency: every source records through here, so the
@@ -369,7 +317,8 @@ export function mergeUsageReports(reports: Iterable<ReadonlyUsageReport>): Usage
 }
 
 /** record() folds every dated increment into both maps and sanitizeTokenCount keeps every count an
- *  integer, so the difference is exactly the usage recorded with a null day. */
+ *  integer, so the difference is exactly the usage recorded with a null day. A model the days
+ *  fully cover is absent, not zero-filled. */
 export function undatedUsage(report: ReadonlyUsageReport): Map<string, ModelUsage> {
   const rest = new Map<string, ModelUsage>();
   for (const [model, u] of report.byModel) {
@@ -377,12 +326,8 @@ export function undatedUsage(report: ReadonlyUsageReport): Map<string, ModelUsag
   }
   for (const dayModels of report.perDay.values()) {
     for (const [model, u] of dayModels) {
-      const r = rest.get(model);
-      if (r === undefined) {
-        // record() and usageReport() put every perDay model in byModel; a miss is a corrupted
-        // hand-built report.
-        throw new Error(`inconsistent usage report: perDay model '${model}' missing from byModel`);
-      }
+      // record() puts every perDay model in byModel first.
+      const r = rest.get(model)!;
       r.input -= u.input;
       r.output -= u.output;
       r.cacheRead -= u.cacheRead;
@@ -391,13 +336,6 @@ export function undatedUsage(report: ReadonlyUsageReport): Map<string, ModelUsag
     }
   }
   for (const [model, r] of rest) {
-    // The split is kept within the roll-up, so a negative remainder can only come from totals past
-    // 2^53, where float addition stops being exact.
-    r.input = Math.max(0, r.input);
-    r.output = Math.max(0, r.output);
-    r.cacheRead = Math.max(0, r.cacheRead);
-    r.cacheCreation = Math.max(0, r.cacheCreation);
-    r.events = Math.max(0, r.events);
     if (
       r.input === 0 && r.output === 0 && r.cacheRead === 0 && r.cacheCreation === 0 &&
       r.events === 0

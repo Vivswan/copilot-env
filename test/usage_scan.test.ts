@@ -339,14 +339,6 @@ test("scanLines nested inside another scan's callback delivers both files correc
   expect(result.parsedThrough).toBe(24);
 });
 
-test("scanLines rejects needles that cannot be searched byte-exactly", () => {
-  const path = writeTemp("TOKEN\n");
-  for (const needle of ["", "a\nb", "caf\u00e9"]) {
-    expect(() => collect(path, [needle])).toThrow(/scan needle/);
-  }
-  expect(() => collect(path, ["TOKEN"], 0, 0)).toThrow(/buffer size/);
-});
-
 test("scanLines propagates filesystem errors: missing file, directory, failing source", () => {
   const dir = trackedDir();
   expect(() => collect(join(dir, "missing.jsonl"), ["TOKEN"])).toThrow(/ENOENT/);

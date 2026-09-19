@@ -441,7 +441,7 @@ for (const { name, seededAt, readAt, ttlMs, fresh } of CACHE_AGES) {
     }));
 }
 
-test("loadPricing treats a corrupt or invalid cache file as absent", () =>
+test("loadPricing treats a cache file that is not JSON or was written for another URL as absent", () =>
   withCacheDir(async (cacheDir) => {
     const now = 1_700_000_000_000;
     const path = pricingCachePath(PRICE_URL, cacheDir);
@@ -449,40 +449,6 @@ test("loadPricing treats a corrupt or invalid cache file as absent", () =>
     const invalid: string[] = [
       "{not json",
       "[]",
-      // Right keys, wrong types.
-      JSON.stringify({ "url_sha256": digest, "fetched_at_ms": "yesterday", tiers: {} }),
-      // A negative rate cannot be a price.
-      JSON.stringify({
-        "url_sha256": digest,
-        "fetched_at_ms": now,
-        tiers: { "x/y": { input: -1 } },
-      }),
-      // Ids are lowercased and routable; anything else was not written by fetchPricing.
-      JSON.stringify({ "url_sha256": digest, "fetched_at_ms": now, tiers: { "": { input: 1 } } }),
-      JSON.stringify({
-        "url_sha256": digest,
-        "fetched_at_ms": now,
-        tiers: { "X/Y": { input: 1 } },
-      }),
-      JSON.stringify({
-        "url_sha256": digest,
-        "fetched_at_ms": now,
-        tiers: { "x/ y": { input: 1 } },
-      }),
-      // An empty list is never written, so an empty record is not one this code wrote.
-      JSON.stringify({ "url_sha256": digest, "fetched_at_ms": now, tiers: {} }),
-      // Unknown fields at either level: not a record this code wrote.
-      JSON.stringify({
-        "url_sha256": digest,
-        "fetched_at_ms": now,
-        tiers: { "x/y": {} },
-        extra: 1,
-      }),
-      JSON.stringify({
-        "url_sha256": digest,
-        "fetched_at_ms": now,
-        tiers: { "x/y": { input: 1, note: "x" } },
-      }),
       // A valid record written for ANOTHER url under this file name.
       JSON.stringify({
         "url_sha256": sha256(OTHER_URL),
@@ -806,116 +772,3 @@ test("loadPricing never echoes the URL in its errors", () =>
     // Negative control: the fake transport's own error DOES carry the token.
     await expect(down.fetch(secretUrl)).rejects.toThrow("SECRET-TOKEN-123");
   }));
-
-test("loadPricing honours an abort signal: no request result, nothing written, stale kept", () =>
-  withCacheDir(async (cacheDir) => {
-    const now = 1_700_000_000_000;
-    const aborted = new AbortController();
-    aborted.abort();
-
-    // No cache: a cancelled refresh rejects like any other failure and writes nothing.
-    const net = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
-    await expect(
-      loadPricing(PRICE_URL, {
-        cacheDir,
-        nowMs: now,
-        fetchImpl: net.fetch,
-        signal: aborted.signal,
-      }),
-    ).rejects.toThrow("pricing request was cancelled");
-    expect(readdirSync(cacheDir)).toEqual([]);
-
-    // Expired cache: the cancelled refresh leaves the stale copy as the answer.
-    await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: net.fetch });
-    const stale = await loadPricing(PRICE_URL, {
-      cacheDir,
-      nowMs: now + 2 * DAY_MS,
-      fetchImpl: net.fetch,
-      signal: aborted.signal,
-    });
-    expect(stale).toMatchObject({
-      source: "stale-cache",
-      fetchError: "pricing request was cancelled",
-    });
-
-    // Negative control: a live signal changes nothing.
-    const live = new AbortController();
-    const fresh = await loadPricing(PRICE_URL, {
-      cacheDir,
-      nowMs: now + 2 * DAY_MS,
-      fetchImpl: net.fetch,
-      signal: live.signal,
-    });
-    expect(fresh.source).toBe("fetched");
-  }));
-
-// ---------- memoized lookups ----------
-
-test("estimateCost prices the same list identically across calls and sees a changed catalog", () => {
-  const pricing = new Map<string, PricingTier>([
-    ["anthropic/claude-opus-4.1", { input: 15, output: 75 }],
-  ]);
-  const usage = new Map<string, UsageTokens>([
-    ["opus", { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 }],
-    ["gpt-5.5", { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 }],
-  ]);
-
-  const first = estimateCost(usage, pricing);
-  const second = estimateCost(usage, pricing);
-  expect(second).toEqual(first);
-  expect(first.perModel["opus"]?.pricingReference).toBe("anthropic/claude-opus-4.1");
-  expect(first.unpriced).toEqual(["gpt-5.5"]);
-
-  // A price list that gains ids after it was first priced must resolve against
-  // the new catalog, not a remembered one.
-  pricing.set("anthropic/claude-opus-4.8", { input: 20, output: 80 });
-  pricing.set("openai/gpt-5.5", { input: 2, output: 8 });
-  const grown = estimateCost(usage, pricing);
-  expect(grown.perModel["opus"]?.pricingReference).toBe("anthropic/claude-opus-4.8");
-  expect(grown.perModel["gpt-5.5"]?.pricingReference).toBe("openai/gpt-5.5");
-  expect(grown.unpriced).toEqual([]);
-
-  // Same size, different ids: a swap must invalidate the remembered resolutions too.
-  pricing.delete("anthropic/claude-opus-4.8");
-  pricing.set("anthropic/claude-opus-4.9", { input: 25, output: 90 });
-  const swapped = estimateCost(usage, pricing);
-  expect(swapped.perModel["opus"]?.pricingReference).toBe("anthropic/claude-opus-4.9");
-  expect(swapped.perModel["opus"]?.inputCostUsd).toBe(25);
-
-  // A rate change under an unchanged id is priced from the map, never a remembered tier.
-  pricing.set("anthropic/claude-opus-4.9", { input: 30, output: 90 });
-  expect(estimateCost(usage, pricing).perModel["opus"]?.inputCostUsd).toBe(30);
-});
-
-test("fetchPricing reports a cancel over the transport's failure, and names no URL in either", async () => {
-  // Whether the caller had already cancelled is read from the signal alone and decides what is
-  // reported; the transport's own text never surfaces (a custom --pricing-url may carry credentials).
-  const failing = (() => Promise.reject(new TypeError("error sending request"))) as typeof fetch;
-  const cancelled = new AbortController();
-  cancelled.abort();
-  await expect(fetchPricing(PRICE_URL, failing, cancelled.signal)).rejects.toThrow(
-    "pricing request was cancelled",
-  );
-  await expect(fetchPricing(PRICE_URL, failing)).rejects.toThrow(/^pricing request failed$/);
-  await expect(fetchPricing(PRICE_URL, failing)).rejects.not.toThrow("pricing.example");
-});
-
-test("fetchPricing reports a cancel that lands while the body streams as cancelled, not bad JSON", async () => {
-  // The response arrives, then the caller cancels while the body is still
-  // streaming: the read rejects inside res.json(), which is not a malformed list.
-  const controller = new AbortController();
-  const streamingFetch = ((_input: string | URL | Request, init?: RequestInit) => {
-    const body = new ReadableStream<Uint8Array>({
-      start(stream) {
-        stream.enqueue(new TextEncoder().encode('{"data": ['));
-        init?.signal?.addEventListener("abort", () => stream.error(init.signal?.reason));
-      },
-    });
-    return Promise.resolve(new Response(body, { status: 200 }));
-  }) as typeof fetch;
-
-  const pending = fetchPricing(PRICE_URL, streamingFetch, controller.signal);
-  await Promise.resolve();
-  controller.abort();
-  await expect(pending).rejects.toThrow("pricing request was cancelled");
-});

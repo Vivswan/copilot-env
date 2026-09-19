@@ -17,9 +17,7 @@ import {
   CONTRIBUTION_VERSION,
   dedupKey,
   type FileRecord,
-  inWalkOrder,
   type ParsedFile,
-  parseEveryCandidate,
   type ParseTail,
   type ParseWhole,
   type Reconcile,
@@ -84,40 +82,27 @@ export function discoverCodexSessionRoots(homes: string[] = knownCodexHomes().ho
  *  pinning the process `TZ`, which deno honors on unix only. */
 export async function readCodexSessions(
   roots: string[],
-  sinceMs?: number,
-  timeZone?: string,
-  reconcile?: Reconcile,
+  sinceMs: number | undefined,
+  timeZone: string | undefined,
+  reconcile: Reconcile,
 ): Promise<Map<string, UsageReport>> {
   // Before any file read: an unknown zone must fail here, not inside the per-file parse catch.
   const dayKey = dayKeyIn(timeZone);
   const walked = walkCodexSessions(roots, sinceMs);
-  const { records } = (reconcile ?? parseEveryCandidate)(
-    "codex",
-    walked,
-    parseCodexWhole,
-    parseCodexTail,
-  );
-  return foldCodex(inWalkOrder(walked, records), sinceMs, dayKey);
+  const { records } = reconcile("codex", walked, parseCodexWhole, parseCodexTail);
+  return foldCodex(records, sinceMs, dayKey);
 }
 
 /** Ascending by basename, which embeds the start timestamp, so a fork's parent precedes the fork.
  *  Of a same-session `.jsonl` / `.jsonl.zst` pair the resumable plain file wins, but only among
  *  the files the cutoff left as candidates: a plain file dropped for an old mtime leaves the
- *  compressed twin. */
+ *  compressed twin. The roots are distinct directories (discoverCodexSessionRoots dedupes them by
+ *  realpath), so no file is collected twice. */
 export function walkCodexSessions(roots: string[], sinceMs: number | undefined): WalkedFile[] {
-  const collected: WalkedFile[] = [];
+  const files: WalkedFile[] = [];
   for (const root of roots) {
-    collectRolloutFiles(root, 1, sinceMs, collected);
+    collectRolloutFiles(root, 1, sinceMs, files);
   }
-  // Roots may overlap (the same directory named twice).
-  const seen = new Set<string>();
-  const files = collected.filter((f) => {
-    if (seen.has(f.path)) {
-      return false;
-    }
-    seen.add(f.path);
-    return true;
-  });
   files.sort((a, b) => path.basename(a.path).localeCompare(path.basename(b.path)));
   const bySession = new Map<string, WalkedFile>();
   for (const file of files) {

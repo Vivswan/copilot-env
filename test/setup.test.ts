@@ -8,13 +8,12 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
-import { AGENT_CLIS } from "../src/agents/clis.ts";
 import {
+  AGENT_CLIS,
   buildNodePosixInstallScript,
   computePathRefresh,
-  parseShellAction,
-  runShell,
-} from "../src/commands/setup.ts";
+} from "../src/agents/cli_install.ts";
+import { parseShellAction, runShell } from "../src/commands/setup.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CI_RC_DIR_ENV, MARKER } from "../src/shell/integration.ts";
 import { expect, removeDir, tempDir, test } from "./helpers/testing.ts";

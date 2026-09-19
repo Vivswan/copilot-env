@@ -57,7 +57,8 @@ const SOURCES_INTRO =
   "Note: three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts " +
   "(each agent's full traffic, Direct included). ";
 const DISCLAIMER =
-  "\nDisclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates; " +
+  "\nDisclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates " +
+  "(GitHub's own where the two differ); " +
   "actual billing may differ.";
 /** The combined table pairs a proxied request's two records; the per-source tables are each whole. */
 const COMBINED_NOTE = SOURCES_INTRO +

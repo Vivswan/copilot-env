@@ -7,7 +7,6 @@ import { type AgentAdapter, directWiring, type ManagedAgentId } from "../src/age
 import { configureDefaultAgents, runAgentConfig } from "../src/agents/configure_defaults.ts";
 import { bothAgents } from "../src/agents/profile_wiring.ts";
 import { AUTH_TOKEN_ENV, claudeAdapter, proxyHelperCommand } from "../src/claude/config.ts";
-import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { CopilotEnvConfig, type StaticKeyScope } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -84,14 +83,14 @@ test("the both-agents write moves a recorded default; a single-agent write onto 
   state.recordDefaultMode("direct");
   const single = await configureDefaultAgents(
     { codex: "proxy", claude: null, ghToken: "ghu_test" },
-    bothAgents(NOOP_CATALOG_DEPS),
+    bothAgents(),
   );
   expect(single.failedAgents).toEqual(["codex"]);
   expect(existsSync(join(homes.codexHome, "config.toml"))).toBe(false);
   expect(state.readProfileSlot(null).mode).toBe("direct");
   const both = await configureDefaultAgents(
     { codex: "proxy", claude: "proxy", ghToken: "ghu_test" },
-    bothAgents(NOOP_CATALOG_DEPS),
+    bothAgents(),
   );
   expect(both.failures).toEqual([]);
   expect(existsSync(join(homes.codexHome, "config.toml"))).toBe(true);
@@ -193,7 +192,7 @@ test("a Direct landing with no resolvable credential is refused before any write
   process.env.PATH = emptyBin;
   const direct = await configureDefaultAgents(
     { codex: "direct", claude: "direct" },
-    bothAgents(NOOP_CATALOG_DEPS),
+    bothAgents(),
   );
   expect(direct.failures.map((f) => f.includes("run `agent auth` first"))).toEqual([
     true,
@@ -201,7 +200,7 @@ test("a Direct landing with no resolvable credential is refused before any write
   ]);
   // `auto` is refused the same way: a proxy landing on that credential would serve nothing.
   await expect(
-    configureDefaultAgents({ codex: "auto", claude: "auto" }, bothAgents(NOOP_CATALOG_DEPS)),
+    configureDefaultAgents({ codex: "auto", claude: "auto" }, bothAgents()),
   ).rejects.toThrow("run `agent auth` first");
   // The re-render gap takes the same refusal: a Direct record whose slot holds no pair.
   state.recordDefaultMode("direct");
@@ -236,7 +235,7 @@ test("static-key scopes the baked value to the named agent; the other keeps its 
     new CopilotEnvConfig().setProfile(null, { "static-key": c.scope });
     const out = await configureDefaultAgents(
       { codex: "proxy", claude: "proxy", ghToken: "ghu_test" },
-      bothAgents(NOOP_CATALOG_DEPS),
+      bothAgents(),
     );
     const settings = record(
       JSON.parse(readFileSync(join(homes.claudeHome, "settings.json"), "utf8")),

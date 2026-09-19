@@ -2,7 +2,6 @@
 // direct identity resolved once and baked into both. Needs BOTH src/codex/ and src/claude/, so
 // it lives in src/agents/ like wiring.ts.
 import { claudeAdapter } from "../claude/config.ts";
-import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { codexAdapter, landDirectWiring } from "../codex/config.ts";
 import { type DirectOverlay, directOverlay, renderDirectPair } from "../copilot_api/direct_pair.ts";
 import type { ProfileMode } from "../copilot_api/env_state.ts";
@@ -19,10 +18,9 @@ import {
 } from "./configure.ts";
 
 /** THE cross-agent adapter list; the both-agent flows iterate it rather than naming agents, and
- *  Claude comes first because per-agent narration and failure lists come out in this order. A
- *  function, not a constant, so the Codex adapter can take `catalogDeps` per call. */
-export function bothAgents(catalogDeps?: CodexCatalogDeps): AgentAdapter[] {
-  return [claudeAdapter(), codexAdapter(catalogDeps)];
+ *  Claude comes first because per-agent narration and failure lists come out in this order. */
+export function bothAgents(): AgentAdapter[] {
+  return [claudeAdapter(), codexAdapter()];
 }
 
 /** How a Direct wiring gets its identity and host. `probe`: select afresh on the host in use and

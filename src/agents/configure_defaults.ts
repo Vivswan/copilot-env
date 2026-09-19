@@ -14,7 +14,6 @@
 //          pair; a flag naming another mode is refused before any file is written. On NO record, or
 //          a Direct record whose slot holds no pair: the landing, so it wires both agents through
 //          configureDefaultAgents and says so.
-import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { codexAdapter } from "../codex/config.ts";
 import { claudeAdapter } from "../claude/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
@@ -116,12 +115,9 @@ export async function runClaude(action: AgentRunAction): Promise<void> {
   await runAgentConfig(claudeAdapter(), action);
 }
 
-/** `agent profile sync --codex`: runAgentConfig over codexAdapter. `catalogDeps` is the test seam. */
-export async function runCodex(
-  action: AgentRunAction,
-  catalogDeps?: CodexCatalogDeps,
-): Promise<void> {
-  await runAgentConfig(codexAdapter(catalogDeps), action);
+/** `agent profile sync --codex`: runAgentConfig over codexAdapter. */
+export async function runCodex(action: AgentRunAction): Promise<void> {
+  await runAgentConfig(codexAdapter(), action);
 }
 
 /** null leaves that agent alone (its own re-render, or nothing) unless the default has no record,

@@ -19,7 +19,6 @@ import { basename, join, posix, win32 } from "node:path";
 import * as v from "valibot";
 import { claudeJsonPath } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { codexHostFarm, effectiveCodexHomeFor, planCodexHostFarm } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
@@ -444,7 +443,6 @@ export function parseSettingsBundle(raw: unknown): SettingsBundle {
  *  `ghAuthToken` substitutes the gh CLI token probe so gh-cli slot handling is
  *  testable without spawning the machine's real `gh`. */
 export interface ImportDeps {
-  catalogDeps?: CodexCatalogDeps;
   ghAuthToken?: typeof ghAuthToken;
 }
 
@@ -874,7 +872,6 @@ function keptCredential(state: CopilotEnvState, name: ProfileName): ProvisionedC
  *                                      below runs even for a config-only import */
 export async function applyImportPlan(
   plan: ImportPlan,
-  deps: ImportDeps = {},
   scope: ImportScope = { defaultWiring: true },
 ): Promise<ImportOutcome> {
   const outcome: ImportOutcome = {
@@ -896,7 +893,7 @@ export async function applyImportPlan(
         // without a resolvable slot).
         ghToken: plan.defaultSlot.action === "skip" ? null : plan.defaultSlot.resolvedToken,
       },
-      bothAgents(deps.catalogDeps),
+      bothAgents(),
     );
     outcome.modes = { codex, claude };
     outcome.failures.push(...failures);

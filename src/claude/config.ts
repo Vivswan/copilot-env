@@ -188,11 +188,6 @@ export type ClaudeWiringStatus =
     baseUrlMatches: boolean;
   };
 
-/** No path, unlike Codex's `/v1`; the grammar (trailing slash, localhost) is port.ts's. */
-function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
-  return matchesProxyOrigin(baseUrl, expectedPort, "");
-}
-
 /** The Direct client headers Claude carries (directCustomHeaders' output), recognized by the one
  *  line no other wiring writes: the codex_exec User-Agent. */
 function directHeadersShape(customHeaders: string | null): boolean {
@@ -240,40 +235,34 @@ export function inspectClaudeWiring(
     baseUrl: null,
     baseUrlMatches: false,
   });
-  if (read.kind === "unreadable") {
-    return {
-      providerMode: "other",
-      settingsExists: true,
-      wired: false,
-      otherReason: "read-error",
-      credential: null,
-      helperPath: null,
-      baseUrl: null,
-      baseUrlMatches: false,
-    };
-  }
+  const other = (
+    otherReason: ClaudeOtherReason,
+    helperPath: string | null = null,
+    baseUrl: string | null = null,
+    baseUrlMatches = false,
+  ): ClaudeWiringStatus => ({
+    providerMode: "other",
+    settingsExists: true,
+    wired: false,
+    otherReason,
+    credential: null,
+    helperPath,
+    baseUrl,
+    baseUrlMatches,
+  });
+  if (read.kind === "unreadable") return other("read-error");
   if (read.kind === "absent" || read.text.trim() === "") return none(read.kind !== "absent");
 
   const doc = parseJsonRecord(read.text);
-  if (doc === null) {
-    return {
-      providerMode: "other",
-      settingsExists: true,
-      wired: false,
-      otherReason: "malformed",
-      credential: null,
-      helperPath: null,
-      baseUrl: null,
-      baseUrlMatches: false,
-    };
-  }
+  if (doc === null) return other("malformed");
 
   // apiKeyHelper is the command Claude runs, not a secret; keyed access (no literal
   // `.apiKeyHelper`) keeps secret scanners from flagging it as a logged credential.
   const helperPath = readStringField(doc, "apiKeyHelper");
   const env = isRecord(doc.env) ? doc.env : undefined;
   const baseUrl = env ? readStringField(env, BASE_URL_ENV) : null;
-  const baseUrlMatches = baseUrl !== null && claudeBaseUrlMatchesProxy(baseUrl, expectedPort);
+  // No path, unlike Codex's `/v1`; the grammar (trailing slash, localhost) is port.ts's.
+  const baseUrlMatches = baseUrl !== null && matchesProxyOrigin(baseUrl, expectedPort, "");
   const wired = (
     providerMode: "direct" | "proxy",
     shape: ClaudeManagedCredential,
@@ -307,16 +296,7 @@ export function inspectClaudeWiring(
     }
   }
   if (helperPath !== null || baseUrl !== null || staticToken !== null) {
-    return {
-      providerMode: "other",
-      settingsExists: true,
-      wired: false,
-      otherReason: "custom",
-      credential: null,
-      helperPath,
-      baseUrl,
-      baseUrlMatches,
-    };
+    return other("custom", helperPath, baseUrl, baseUrlMatches);
   }
   return none(true);
 }
@@ -645,8 +625,8 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     }`;
   } else {
     plannedPort = copilotApiResolvePort(profile);
-    // No path, no trailing slash: the shape claudeBaseUrlMatchesProxy and parseLoopbackProxyUrl
-    // expect.
+    // No path, no trailing slash: the shape inspectClaudeWiring's proxy-origin check and
+    // parseLoopbackProxyUrl expect.
     applyManagedEnv(doc, "proxy", proxyLoopbackOrigin(plannedPort), profile);
     applyManagedCredential(doc, request.credential, proxyHelperCommand(profile), profile);
     detail = `Claude config, proxy mode via port ${plannedPort}${
@@ -666,11 +646,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     throw new Error(`could not create Claude config directory ${claudeHome}: ${errMessage(e)}`);
   }
   pair.before();
-  fs.writeText(settingsPath, settingsText(doc), {
-    atomic: false,
-    detail,
-    secretKeys: SETTINGS_SECRETS,
-  });
+  saveSettings(settingsPath, doc, detail);
   pair.after();
   pair.commit();
 }

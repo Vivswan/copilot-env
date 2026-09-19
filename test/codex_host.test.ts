@@ -4,7 +4,6 @@
 import * as fs from "node:fs";
 import { join, relative } from "node:path";
 import { proxyHelperCommand } from "../src/claude/config.ts";
-import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { runCodex } from "../src/agents/configure_defaults.ts";
 import {
   codexHostDrift,
@@ -95,7 +94,7 @@ function isolate(): Farm {
 function configureCodex(): Promise<void> {
   // A single-agent write re-renders the recorded default mode (the record is `agent init`'s).
   new CopilotEnvState().recordDefaultMode("proxy");
-  return runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
+  return runCodex({ kind: "configure", mode: "proxy" });
 }
 
 /** What `agent config set codex.host true` followed by `agent profile sync --codex` does. */

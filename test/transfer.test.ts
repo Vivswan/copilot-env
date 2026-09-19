@@ -28,7 +28,6 @@ import {
 } from "../src/agents/transfer.ts";
 import { runClaude, runCodex } from "../src/agents/configure_defaults.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
-import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { getHostLocalCodexHome } from "../src/codex/host.ts";
 import { codexConfigPath } from "../src/codex/paths.ts";
 import { importRestartHints, runSettings } from "../src/commands/settings.ts";
@@ -82,7 +81,7 @@ function isolate(): AgentHomes {
 
 /** Plan + apply in one call: these cases need no confirmation step between the two. */
 function applyImportBundle(bundle: SettingsBundle, deps: ImportDeps = {}): Promise<ImportOutcome> {
-  return applyImportPlan(planImport(bundle, deps), deps);
+  return applyImportPlan(planImport(bundle, deps));
 }
 
 /** stderr is the command's narration logger. */
@@ -108,7 +107,7 @@ async function seedStores(): Promise<void> {
   new OwnershipLedger().record("webSearchDeny", "/some/other/machine/settings.json");
   // The default record is the landing's (`agent init`); each single-agent write re-renders it.
   state.recordDefaultMode("proxy");
-  await runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
+  await runCodex({ kind: "configure", mode: "proxy" });
   await runClaude({ kind: "configure", mode: "proxy" });
 }
 
@@ -188,7 +187,7 @@ test("the per-profile settings section travels: export, then import on a fresh m
   const bundle = parseSettingsBundle(JSON.parse(serializeSettingsBundle(exported)));
 
   isolate();
-  await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+  await applyImportBundle(bundle);
   const imported = new CopilotEnvConfig();
   expect(imported.read().profiles).toEqual(exported.config.profiles);
   expect(imported.read().global).not.toHaveProperty("identity");
@@ -235,7 +234,7 @@ test("a bundle's codex-home from the other OS is left out with a warning; the re
   );
   expect(bundle.config).toEqual({ global: { "daemon.port": 4242 }, profiles: {} });
   expect(bundle.skippedConfig).toEqual([line]);
-  expect(planImport(bundle, { catalogDeps: NOOP_CATALOG_DEPS }).skipped).toEqual([line]);
+  expect(planImport(bundle).skipped).toEqual([line]);
   expect(() =>
     parseSettingsBundle(rawBundle({ config: configOf({ "codex.home": "relative/dir" }) }))
   )
@@ -402,7 +401,7 @@ test("round trip: export -> wipe -> import restores stores and re-derives wiring
   // A brand-new "machine": fresh temp homes, empty stores.
   const machine2 = isolate();
 
-  const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+  const outcome = await applyImportBundle(bundle);
   expect(outcome.skipped).toEqual([]);
   expect(outcome.failures).toEqual([]);
   expect(outcome.modes).toEqual({ codex: "proxy", claude: "proxy" });
@@ -458,13 +457,13 @@ for (
         }),
       }),
     );
-    const plan = planImport(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+    const plan = planImport(bundle);
     // The confirmation names the local keys the import rewrites: the redacted one is kept.
     const prefsLine = plan.writes.find((line) => line.startsWith("preferences (")) ?? "";
     expect(prefsLine).toContain("daemon.port");
     expect(prefsLine.includes("pricing-url")).toBe(name !== "redacted");
 
-    await applyImportPlan(plan, { catalogDeps: NOOP_CATALOG_DEPS });
+    await applyImportPlan(plan);
     const after = new CopilotEnvConfig().read();
     expect(after.global["cost.pricing-url"]).toBe(expected);
     // Every other preference still follows full-replace.
@@ -479,7 +478,7 @@ test("a redacted bundle on a fresh machine imports prefs + proxy wiring, but no 
   const bundle = buildExportBundle(); // redacted; modes are proxy/proxy
 
   const machine2 = isolate();
-  const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+  const outcome = await applyImportBundle(bundle);
 
   const skipped = outcome.skipped.join("\n");
   expect(skipped).toContain("run `agent auth`");
@@ -513,7 +512,7 @@ test("a redacted bundle over resolvable LOCAL credentials wires normally (result
     mode: "direct",
   });
 
-  const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+  const outcome = await applyImportBundle(bundle);
 
   expect(outcome.skipped).toEqual([]);
   expect(outcome.modes).toEqual({ codex: "proxy", claude: "proxy" });
@@ -540,7 +539,7 @@ test("an unresolvable slot leaves the existing state untouched", async () => {
       },
     }),
   );
-  const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+  const outcome = await applyImportBundle(bundle);
 
   expect(outcome.skipped.join("\n")).toContain("agent profile work add");
   expect(credentials()).toEqual(before);
@@ -558,7 +557,7 @@ test("the import's credential gate is direct-only: proxy wires without one", asy
       modes: { codex: "none", claude: "proxy" },
     }),
   );
-  const wired = await applyImportBundle(proxy, { catalogDeps: NOOP_CATALOG_DEPS });
+  const wired = await applyImportBundle(proxy);
   // Claude (proxy) was written despite the unresolvable credential; on a fresh default that one
   // write is the landing for BOTH agents (profiles are atomic units), so Codex is proxy-wired too.
   expect(wired.skipped.join("\n")).not.toContain("agent init");
@@ -573,7 +572,7 @@ test("the import's credential gate is direct-only: proxy wires without one", asy
       modes: { codex: "direct", claude: "none" },
     }),
   );
-  const gated = await applyImportBundle(direct, { catalogDeps: NOOP_CATALOG_DEPS });
+  const gated = await applyImportBundle(direct);
   const skipped = gated.skipped.join("\n");
   expect(skipped).toContain("agent init --direct");
   expect(skipped).not.toContain("agent init --proxy");
@@ -647,7 +646,7 @@ test("a Direct default whose pair will not be stored at apply time rebakes both 
     "Claude wiring: the default's Direct pair is not stored, so both agents are rebaked (one " +
     "mode for both)",
   ]);
-  const outcome = await applyImportPlan(plan, { catalogDeps: NOOP_CATALOG_DEPS });
+  const outcome = await applyImportPlan(plan);
   expect({ failures: outcome.failures, modes: outcome.modes }).toEqual({
     failures: [],
     modes: { codex: "direct", claude: "direct" },
@@ -667,7 +666,7 @@ test("a Direct default whose pair will not be stored at apply time rebakes both 
   expect(kept.defaultSlot.action).toBe("keep");
   expect(kept.modes).toEqual({ codex: "direct", claude: "direct" });
   expect(kept.writes.join("\n")).toContain(settingsPathFor(machine.claudeHome));
-  const rebaked = await applyImportPlan(kept, { catalogDeps: NOOP_CATALOG_DEPS });
+  const rebaked = await applyImportPlan(kept);
   expect({ failures: rebaked.failures, modes: rebaked.modes }).toEqual({
     failures: [],
     modes: { codex: "direct", claude: "direct" },
@@ -693,7 +692,7 @@ test("a Direct default whose pair will not be stored at apply time rebakes both 
   expect(overlaid.defaultSlot.action).toBe("keep");
   expect(overlaid.modes).toEqual({ codex: "direct", claude: "direct" });
   expect(overlaid.writes.join("\n")).toContain(settingsPathFor(machine.claudeHome));
-  const landed = await applyImportPlan(overlaid, { catalogDeps: NOOP_CATALOG_DEPS });
+  const landed = await applyImportPlan(overlaid);
   expect({ failures: landed.failures, modes: landed.modes }).toEqual({
     failures: [],
     modes: { codex: "direct", claude: "direct" },
@@ -725,7 +724,6 @@ test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the id
   // gh does not resolve: nothing written anywhere, skip messages say how to fix.
   let probeCount = 0;
   const noGh = await applyImportBundle(bundle, {
-    catalogDeps: NOOP_CATALOG_DEPS,
     ghAuthToken: () => {
       probeCount++;
       return null;
@@ -742,7 +740,6 @@ test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the id
   // identity probe is the stubbed fetch).
   probeCount = 0;
   const withGh = await applyImportBundle(bundle, {
-    catalogDeps: NOOP_CATALOG_DEPS,
     ghAuthToken: () => {
       probeCount++;
       return "gho_live";
@@ -777,7 +774,6 @@ test("a pinned gh-cli bundle slot probes ITS account and lands the pin", async (
   );
   const asked: Array<string | null> = [];
   await applyImportBundle(bundle, {
-    catalogDeps: NOOP_CATALOG_DEPS,
     ghAuthToken: (ghUser) => {
       asked.push(ghUser ?? null);
       return "gho_live";
@@ -801,7 +797,6 @@ test("a gh-cli default over a working local token falls through to the kept slot
   );
 
   const outcome = await applyImportBundle(bundle, {
-    catalogDeps: NOOP_CATALOG_DEPS,
     ghAuthToken: () => null,
   });
 
@@ -838,7 +833,6 @@ test("a mode-less bundle slot landing a new credential on a Direct profile probe
         work: { githubToken: "github_pat_first", authProvider: "gh-token", mode: "direct" },
       },
     })),
-    { catalogDeps: NOOP_CATALOG_DEPS },
   );
   const bakedId = (): string | undefined =>
     (JSON.parse(readFileSync(settingsPathFor(machine.claudeHome, WORK), "utf8")) as {
@@ -854,7 +848,7 @@ test("a mode-less bundle slot landing a new credential on a Direct profile probe
   // The overwrite preview names the profile's agent files: the apply rewrites them.
   const plan = planImport(reauth);
   expect(plan.writes.join("\n")).toContain(settingsPathFor(machine.claudeHome, WORK));
-  const outcome = await applyImportPlan(plan, { catalogDeps: NOOP_CATALOG_DEPS });
+  const outcome = await applyImportPlan(plan);
   expect(outcome.failures).toEqual([]);
   expect(outcome.wiredProfiles).toEqual([WORK]);
   expect(probes.length).toBeGreaterThan(0);
@@ -880,9 +874,7 @@ test("a profile wiring failure lands in failures and the command exits non-zero"
     ),
   );
 
-  const err = await captureStderr(() =>
-    runSettings({ importFrom: file, force: true }, { catalogDeps: NOOP_CATALOG_DEPS })
-  );
+  const err = await captureStderr(() => runSettings({ importFrom: file, force: true }));
 
   expect(process.exitCode).toBe(1);
   // The summary covers BOTH failure kinds outcome.failures carries (a profile
@@ -908,7 +900,7 @@ test("a throwing profile COMMIT is contained per-slot: the rest of the import pr
       },
     }),
   );
-  const plan = planImport(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+  const plan = planImport(bundle);
   // A whitespace token travels fine in the plan's types but rawCredentialPatch (inside
   // commitProfile) rejects it, so the FIRST slot's commit itself throws. The commit sits
   // INSIDE the per-profile containment: the slot is skipped whole and never blocks the
@@ -921,7 +913,7 @@ test("a throwing profile COMMIT is contained per-slot: the rest of the import pr
   }
   bad.landing.credential.token = "   ";
 
-  const outcome = await applyImportPlan(plan, { catalogDeps: NOOP_CATALOG_DEPS });
+  const outcome = await applyImportPlan(plan);
 
   expect(outcome.failures.length).toBe(1);
   expect(outcome.failures[0]).toContain("profile 'bad'");
@@ -942,7 +934,7 @@ test("a default-wiring failure surfaces into outcome.failures", async () => {
     }),
   );
 
-  const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+  const outcome = await applyImportBundle(bundle);
 
   expect(outcome.failures.length).toBe(1);
   expect(outcome.failures[0]).toContain("Claude:");
@@ -1069,7 +1061,7 @@ test("import confirms only for actual overwrites: stores with content, or wiring
       }),
     ),
   );
-  await runSettings({ importFrom: storesOnly }, { catalogDeps: NOOP_CATALOG_DEPS });
+  await runSettings({ importFrom: storesOnly });
   expect(new Credential().resolve()).toBe("ghp_new");
   expect(new CopilotEnvConfig().read().global["daemon.auto-start"]).toBe(true);
   expect(existsSync(settingsBackupDir())).toBe(false);
@@ -1088,7 +1080,7 @@ test("import confirms only for actual overwrites: stores with content, or wiring
       }),
     ),
   );
-  await runSettings({ importFrom: skippedOnly }, { catalogDeps: NOOP_CATALOG_DEPS });
+  await runSettings({ importFrom: skippedOnly });
   expect(new CopilotEnvState().read().profiles).toEqual({});
 });
 
@@ -1127,7 +1119,7 @@ test.skipIf(process.platform === "win32")(
         modes: { codex: "proxy", claude: "none" },
       });
     const writesOf = (config: Record<string, unknown>): string =>
-      planImport(parseSettingsBundle(proxyBundle(config)), { catalogDeps: NOOP_CATALOG_DEPS })
+      planImport(parseSettingsBundle(proxyBundle(config)))
         .writes.join("\n");
     const hostHome = getHostLocalCodexHome();
     const farmConfig = join(hostHome, "config.toml");
@@ -1163,7 +1155,6 @@ test.skipIf(process.platform === "win32")(
           credential: { githubToken: "ghp_default", authProvider: "gh-token" },
           profiles: { work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" } },
         })),
-        { catalogDeps: NOOP_CATALOG_DEPS },
       ).writes.join("\n");
     // Both Codex files the profile write touches are named, under the same home.
     expect(profileOnly({ "codex.host": true })).toContain(
@@ -1243,15 +1234,12 @@ test("import backs up the previous settings with credentials intact unless --no-
   diverge();
   await runSettings(
     { importFrom: exported, force: true, noBackup: true },
-    { catalogDeps: NOOP_CATALOG_DEPS },
   );
   expect(new CopilotEnvConfig().read().global["daemon.port"]).toBe(5050);
   expect(existsSync(settingsBackupDir())).toBe(false);
 
   diverge();
-  const imported = await captureStderr(() =>
-    runSettings({ importFrom: exported, force: true }, { catalogDeps: NOOP_CATALOG_DEPS })
-  );
+  const imported = await captureStderr(() => runSettings({ importFrom: exported, force: true }));
   expect(new CopilotEnvConfig().read().global["daemon.port"]).toBe(5050);
   expect(new Credential().resolve()).toBe("ghp_default");
 
@@ -1280,7 +1268,6 @@ test("import backs up the previous settings with credentials intact unless --no-
   // Rolling back IS an import of the backup file.
   await runSettings(
     { importFrom: backupFile, force: true, noBackup: true },
-    { catalogDeps: NOOP_CATALOG_DEPS },
   );
   expect(new CopilotEnvConfig().read().global["daemon.port"]).toBe(6060);
   expect(new CopilotEnvConfig().read().global["daemon.auto-start"]).toBe(false);
@@ -1317,7 +1304,7 @@ test("the backup pile is pruned to the newest 5", async () => {
 
   let firstBackup = "";
   for (let i = 0; i < SETTINGS_BACKUP_KEEP + 1; i++) {
-    await runSettings({ importFrom: exported, force: true }, { catalogDeps: NOOP_CATALOG_DEPS });
+    await runSettings({ importFrom: exported, force: true });
     if (i === 0) firstBackup = readdirSync(settingsBackupDir())[0] ?? "";
   }
   const names = readdirSync(settingsBackupDir());
@@ -1366,7 +1353,7 @@ test("a config-only import of claude-desktop false sweeps a PROMISED Desktop ent
   // The import carries only the preference (no profiles, no modes): the imported false
   // must be what removes the entry, so the reconcile has to run AFTER the prefs land.
   const bundle = parseSettingsBundle(rawBundle({ config: configOf({ "claude.desktop": false }) }));
-  await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+  await applyImportBundle(bundle);
   expect(new CopilotEnvConfig().claudeDesktopEnabled()).toBe(false);
   expect(entryPath()).toBeNull();
   expect(existsSync(wired ?? "")).toBe(false);
@@ -1398,7 +1385,7 @@ test("a config-only import of claude-desktop true restores the DEFAULT Desktop e
   try {
     const bundle = parseSettingsBundle(rawBundle({ config: configOf({ "claude.desktop": true }) }));
     await captureStderr(async () => {
-      await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+      await applyImportBundle(bundle);
     });
   } finally {
     globalThis.fetch = realFetch;

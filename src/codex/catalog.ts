@@ -57,26 +57,22 @@ const REFRESH_DEADLINE_MS = CODEX_VERSION_TIMEOUT_MS + COPILOT_FETCH_BUDGET_MS +
   BUNDLED_DUMP_TIMEOUT_MS + CATALOG_PROBE_TIMEOUT_MS;
 
 // Null outside a refresh: writes allowed.
-let refreshDeadline: { at: number; clock: () => number } | null = null;
+let refreshDeadlineAt: number | null = null;
 
 /** False once the running refresh has passed its deadline: bookkeeping writes are skipped rather
  *  than waiting on a lock. */
 export function catalogBookkeepingAllowed(): boolean {
-  return refreshDeadline === null || refreshDeadline.clock() < refreshDeadline.at;
+  return refreshDeadlineAt === null || Date.now() < refreshDeadlineAt;
 }
 
 /** The refresh AND the reference sync that follows it run under one deadline, so every bookkeeping
  *  write along the way answers to the same clock. */
-export async function withCatalogRefreshDeadline<T>(
-  deps: CodexCatalogDeps,
-  work: () => Promise<T>,
-): Promise<T> {
-  const clock = deps.nowMs ?? Date.now;
-  refreshDeadline = { at: clock() + REFRESH_DEADLINE_MS, clock };
+export async function withCatalogRefreshDeadline<T>(work: () => Promise<T>): Promise<T> {
+  refreshDeadlineAt = Date.now() + REFRESH_DEADLINE_MS;
   try {
     return await work();
   } finally {
-    refreshDeadline = null;
+    refreshDeadlineAt = null;
   }
 }
 
@@ -108,32 +104,6 @@ export interface CopilotCatalogModel {
   /** Codex can drive it: a chat model served on `/responses` and in Copilot's picker. */
   codexServable: boolean;
 }
-
-/** Injectable seams for tests. */
-export interface CodexCatalogDeps {
-  /** `codex debug models --bundled` stdout, or null on failure. */
-  bundledCatalog?: () => string | null;
-  /** Copilot's catalog by model id, or null on failure. */
-  fetchCopilotModels?: (source: CatalogSource) => Promise<Map<string, CopilotCatalogModel> | null>;
-  /** Whether the installed codex CLI parses `catalogJson` as a model catalog: false on a schema
-   *  rejection, null when it cannot be verified (no codex, or a failure unrelated to the catalog).
-   */
-  acceptsCatalog?: (catalogJson: string) => boolean | null;
-  /** The caller (a Direct wiring write) has already resolved the credential; re-resolving inside the
-   *  refresh would re-run `gh auth token` (up to 5s) for nothing. */
-  directToken?: string;
-  /** The installed codex CLI version (spawned by default; injected in tests). */
-  codexVersion?: () => string | null;
-  nowMs?: () => number;
-}
-
-/** Deps that always fail generation, for tests that must not spawn or fetch. */
-export const NOOP_CATALOG_DEPS: CodexCatalogDeps = {
-  bundledCatalog: () => null,
-  fetchCopilotModels: async () => null,
-  acceptsCatalog: () => null,
-  codexVersion: () => null,
-};
 
 // Copilot's `/responses` endpoint marker: the only wire Codex speaks.
 const RESPONSES_ENDPOINT = "/responses";
@@ -422,7 +392,7 @@ function runCodexDebugModels(
 }
 
 /** `codex debug models --bundled` stdout, or null on any failure. */
-function defaultBundledCatalog(): string | null {
+function bundledCatalog(): string | null {
   const result = runCodexDebugModels(["--bundled"], () => {}, BUNDLED_DUMP_TIMEOUT_MS);
   if (result === null || result.error || result.status !== 0) return null;
   return result.stdout;
@@ -483,13 +453,14 @@ function runProbeSpawn(prepareHome: (home: string) => void): SpawnSyncReturns<st
 }
 
 /**
- * `codex debug models` under a throwaway home whose config.toml references the candidate is the
- * exact parse a real startup performs, offline. Anything short of proof is null (unverifiable); off
- * under the suite's seam.
+ * Whether the installed codex CLI parses `catalogJson` as a model catalog: `codex debug models`
+ * under a throwaway home whose config.toml references the candidate is the exact parse a real
+ * startup performs, offline. Anything short of proof is null (unverifiable: no codex, or a failure
+ * unrelated to the catalog); off under the suite's seam.
  *   exit 0, dump lists exactly the candidate's models, and a garbage catalog fails  -> true
  *   nonzero exit, and the same run WITHOUT a catalog dumps one                      -> false
  */
-function defaultAcceptsCatalog(catalogJson: string): boolean | null {
+function acceptsCatalog(catalogJson: string): boolean | null {
   if (liveLookupsDisabled()) return null;
   const key = sha256(catalogJson);
   const memoized = probeVerdicts.get(key);
@@ -532,7 +503,8 @@ function probeCatalog(catalogJson: string): boolean | null {
   return parsesAsCatalog(control?.stdout ?? "") ? false : null;
 }
 
-async function defaultFetchCopilotModels(
+/** Copilot's catalog by model id, or null on failure. */
+async function fetchCopilotModels(
   source: CatalogSource,
   directToken?: string,
 ): Promise<Map<string, CopilotCatalogModel> | null> {
@@ -561,29 +533,27 @@ async function defaultFetchCopilotModels(
 }
 
 /** Never throws, never deletes or truncates an existing file: a stale catalog serves until a
- *  refresh succeeds.
+ *  refresh succeeds. `directToken`: the caller (a Direct wiring write) has already resolved the
+ *  credential; re-resolving here would re-run `gh auth token` (up to 5s) for nothing.
  *
  *  opt-in `codex.model-catalog` off -> a no-op
  *  Copilot fetched FIRST            -> no credential, or the proxy down, skips the codex spawn
  *  the installed CLI rejects it     -> the candidate is not written; an unjudgeable one is */
 export async function generateCodexModelCatalog(
   source: CatalogSource,
-  deps: CodexCatalogDeps = {},
+  directToken?: string,
 ): Promise<boolean> {
   try {
     if (!new CopilotEnvConfig().codexModelCatalogEnabled()) return false;
-    const fetchCopilotModels = deps.fetchCopilotModels ??
-      ((s: CatalogSource) => defaultFetchCopilotModels(s, deps.directToken));
-    const copilotModels = await fetchCopilotModels(source);
+    const copilotModels = await fetchCopilotModels(source, directToken);
     if (copilotModels === null || copilotModels.size === 0) return false;
-    const bundledCatalog = deps.bundledCatalog ?? defaultBundledCatalog;
     const bundled = bundledCatalog();
     if (bundled === null) return false;
     const patched = patchModelCatalog(bundled, copilotModels);
     if (patched === null) return false;
     // The exact bytes written are the bytes judged (and later re-judged by file).
     const bytes = `${JSON.stringify(patched, null, 2)}\n`;
-    const verdict = judgeCatalog(bytes, deps);
+    const verdict = judgeCatalog(bytes);
     if (verdict === false) {
       logger.warn("codex model catalog not written: the installed codex rejects its schema");
       return false;
@@ -604,8 +574,8 @@ export async function generateCodexModelCatalog(
  *  without a spawn, so the reference sync asks again only when the file or the codex changed.
  *  Recorded only on a positive verdict with a known version: a rejection is re-asked, since the
  *  next regeneration replaces it. */
-function judgeCatalog(catalogJson: string, deps: CodexCatalogDeps): boolean | null {
-  const version = (deps.codexVersion ?? installedCodexVersion)();
+function judgeCatalog(catalogJson: string): boolean | null {
+  const version = installedCodexVersion();
   const digest = sha256(catalogJson);
   // The record is a cache: unreadable means "not recorded", unwritable is ignored, so a proven
   // verdict is never lost to the cache that would keep it.
@@ -622,7 +592,7 @@ function judgeCatalog(catalogJson: string, deps: CodexCatalogDeps): boolean | nu
   ) {
     return true;
   }
-  const verdict = (deps.acceptsCatalog ?? defaultAcceptsCatalog)(catalogJson);
+  const verdict = acceptsCatalog(catalogJson);
   if (verdict === true && version !== null && catalogBookkeepingAllowed()) {
     try {
       state.set({ codexCatalogAccepted: { sha256: digest, codexVersion: version } });
@@ -643,31 +613,25 @@ export type CatalogFileVerdict = "unusable" | "rejected" | "accepted" | "unverif
 /** One read, one verdict: the bytes judged at the JSON level are the bytes the installed codex is
  *  asked about, so no second read can see a different file. A dry run's freshly planned catalog
  *  is judged in place of the file on disk. */
-export function inspectCatalogFile(
-  filePath: string,
-  deps: CodexCatalogDeps = {},
-): CatalogFileVerdict {
+export function inspectCatalogFile(filePath: string): CatalogFileVerdict {
   const read = fs.readTextResult(filePath);
   if (read.kind !== "text") return "unusable";
   const raw = read.text;
   if (!parsesAsCatalog(raw)) return "unusable";
-  const accepted = judgeCatalog(raw, deps);
+  const accepted = judgeCatalog(raw);
   return accepted === null ? "unverifiable" : accepted ? "accepted" : "rejected";
 }
 
 /** At most one ATTEMPT per day, recorded before generating so a failure cannot retry on every launch;
  *  bypassed by a codex version or patch change (the file REPLACES the bundled catalog). Never
  *  throws. */
-export async function refreshCodexModelCatalogIfStale(
-  source: CatalogSource,
-  deps: CodexCatalogDeps = {},
-): Promise<boolean> {
+export async function refreshCodexModelCatalogIfStale(source: CatalogSource): Promise<boolean> {
   try {
     if (!new CopilotEnvConfig().codexModelCatalogEnabled()) return false;
-    const now = deps.nowMs?.() ?? Date.now();
+    const now = Date.now();
     const state = new CopilotEnvState();
     const recorded = state.read();
-    const version = (deps.codexVersion ?? installedCodexVersion)();
+    const version = installedCodexVersion();
     // An unresolvable version (codex missing, --version failed) never counts as a change:
     // generation needs the codex CLI anyway, and flapping between null and a version must not
     // defeat the throttle.
@@ -683,7 +647,7 @@ export async function refreshCodexModelCatalogIfStale(
       codexCatalogCodexVersion: version,
       codexCatalogPatchVersion: CATALOG_PATCH_VERSION,
     });
-    return await generateCodexModelCatalog(source, deps);
+    return await generateCodexModelCatalog(source);
   } catch (e) {
     logger.warn(`codex model catalog refresh failed: ${errMessage(e)}`);
     return false;

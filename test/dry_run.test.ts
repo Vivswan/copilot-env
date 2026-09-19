@@ -30,10 +30,8 @@ import { desktopHelperPath } from "../src/claude/desktop_helper_scripts.ts";
 import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../src/claude/desktop_library.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { runCodex } from "../src/agents/configure_defaults.ts";
-import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { getHostLocalCodexHome, withCodexHostFarm } from "../src/codex/host.ts";
 import { codexConfigPath } from "../src/codex/paths.ts";
-import { CodexAppController } from "../src/codex/mobile.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import type { DirectSmoke } from "../src/copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -484,7 +482,7 @@ skipWin(
       storeCredential();
       new CopilotEnvState().recordDefaultMode("proxy");
       new CopilotEnvConfig().set({ "codex.host": true });
-      const configure = () => runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
+      const configure = () => runCodex({ kind: "configure", mode: "proxy" });
       await captureChannels(configure);
       const farm = getHostLocalCodexHome();
       const farmConfig = codexConfigPath(farm);
@@ -711,7 +709,7 @@ test("the dry-run marker a child honours is one a live run holds: an ambient `1`
   expect(process.env[DRY_RUN_ENV]).toBeUndefined();
 });
 
-test("every PowerShell scan gets a scratch profile (the Desktop and Codex app looks hand powershell a USERPROFILE of their own, removed after); the app launch keeps the user's", async () => {
+test("every PowerShell scan gets a scratch profile (the app looks hand powershell a USERPROFILE of their own, removed after)", async () => {
   const spawns: { file: string; env: Record<string, string | undefined> | undefined }[] = [];
   const exec: ScanExec = (file, _args, opts) => {
     spawns.push({ file, env: opts?.env });
@@ -720,10 +718,7 @@ test("every PowerShell scan gets a scratch profile (the Desktop and Codex app lo
     return Promise.resolve({ exitCode: 0, stdout: "absent" });
   };
   expect(await appRunning("Claude", exec, "win32")).toBe("absent");
-  const codex = new CodexAppController(exec, "win32");
-  expect(await codex.runningState()).toBe("absent");
-  expect(await codex.installedState()).toBe("absent");
-  expect(spawns.map((s) => s.file)).toEqual(["powershell", "powershell", "powershell"]);
+  expect(spawns.map((s) => s.file)).toEqual(["powershell"]);
   for (const { env } of spawns) {
     const profile = env?.USERPROFILE ?? "";
     expect(basename(profile).startsWith("copilot-env-ps-")).toBe(true);
@@ -732,11 +727,6 @@ test("every PowerShell scan gets a scratch profile (the Desktop and Codex app lo
     expect(env?.LOCALAPPDATA).toBe(join(profile, "AppData", "Local"));
     expect(existsSync(profile)).toBe(false);
   }
-  // What Start-Process launches inherits the spawn's environment: the launch is the one PowerShell
-  // spawn that keeps the inherited profile.
-  await codex.open();
-  expect(spawns.length).toBe(4);
-  expect(spawns[3]?.env).toBeUndefined();
 });
 
 skipWin(

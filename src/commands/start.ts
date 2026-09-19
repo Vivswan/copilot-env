@@ -13,6 +13,7 @@ import {
   type FloorCheckedEntry,
   type HeldStartLock,
   type LaunchToken,
+  previewProxyFloor,
   readLaunchToken,
   resolveLaunchCredential,
   resolveStartPort,
@@ -26,18 +27,17 @@ import {
   planCleanup,
 } from "../copilot_api/launch_cleanup.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
+import { daemonPolicy } from "../copilot_api/port.ts";
 import {
   agentStartCommand,
   agentStopCommand,
   parseProfileFlag,
   type Profile,
-  profileLabel,
 } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { idleTimeoutMs } from "../copilot_api/idle_watchdog.ts";
-import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger, withConsolaOnStderr } from "../utils/logger.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
@@ -106,59 +106,64 @@ interface LaunchContext {
   logFile: string;
 }
 
-/** The narration half of the planCleanup contract; the live half executes the same enumeration, and
- *  a new CleanupAction without a line here does not compile. Each string is a pinned output
- *  contract. */
-function narrateCleanupAction(step: CleanupAction): void {
-  switch (step.kind) {
-    case "stop-tracked":
-      consola.info(`   Would stop tracked proxy (pid=${step.pid}).`);
-      break;
-    case "clear-tracking":
-      consola.info(`   Would clear tracked run state (pid=${step.pid}).`);
-      break;
-    case "stop-holder":
-      consola.info(`   Would stop this home's untracked daemon.lock holder (pid=${step.pid}).`);
-      break;
-    case "leave-holder":
-      consola.warn(
-        `   Would leave the daemon.lock holder (pid=${step.pid}) alone: this host cannot identify that pid as our daemon.`,
-      );
-      break;
-    case "stop-orphan":
-      consola.info(`   Would stop orphaned proxy (pid=${step.pid}).`);
-      break;
-    default:
-      assertNever(step);
-  }
-}
+/** What the preview does with each action planCleanup plans: the tracking clear lands (the live
+ *  cleanup's own store write), a signal is listed, a leave is warned. A new CleanupAction kind
+ *  without a row here does not compile. */
+const PREVIEW_ROLE: Record<CleanupAction["kind"], "clear" | "stop" | "leave"> = {
+  "stop-tracked": "stop",
+  "clear-tracking": "clear",
+  "stop-holder": "stop",
+  "leave-holder": "leave",
+  "stop-orphan": "stop",
+};
 
-/** planCleanup is the same decision source the live path executes, so no live action can go
- *  unreported. */
-async function reportDryRun(
+/** The launch's landings up to its spawn, in the real start's order, on the dry run's overlay: the
+ *  run and daemon directories, the projected configuration (a config.json the real start refuses
+ *  to rewrite refuses the preview too), the tracking the cleanup would clear, the port, and the
+ *  credential resolution (the token judged under the daemon's identity, the pair landed in the
+ *  slot: a rejected token is the same refusal). Their rows are the plan. planCleanup is the live
+ *  cleanup's decision source; the signals it would send and the spawn land no file, so each is
+ *  said in one line. */
+async function previewLaunch(
   action: { force: boolean; port?: number },
   ctx: LaunchContext,
 ): Promise<void> {
   const { profile, paths, envConfig, state, logFile } = ctx;
   // The launch's own gate, first here as it is first in the real run: no credential is the same
-  // refusal, and the plan names the source the daemon would run with.
+  // refusal, and the spawn line names the source the daemon would run with.
   const launch = readLaunchToken(profile);
   const source = credentialSourceLabel(new Credential(undefined, profile).read());
-  if (isIdempotentNoOp(action, envConfig) && (await proxyStatus(profile)).up) {
-    consola.info(
-      "DRY RUN: proxy already running (managed lifecycle); would leave it up. --force forces one.",
-    );
-    return;
+  fs.mkdir(paths.runDir);
+  // The floor gate precedes even the managed no-op in the real start, so a proxy below the floor
+  // refuses the preview the same way.
+  await previewProxyFloor();
+  if (isIdempotentNoOp(action, envConfig)) {
+    const status = await proxyStatus(profile);
+    if (status.up) {
+      reportStartNoOp(state, status.port, profile);
+      return;
+    }
   }
-  consola.info(`DRY RUN: no proxy runtime changes will be made (${profileLabel(profile)}).`);
-  // In the real start's order, so a refusal leaves the plan the real run's writes up to it: the
-  // home and the projected configuration land (a config.json the real start refuses to rewrite
-  // refuses the preview too), then the cleanup plan, the port, and the credential resolution (the
-  // token judged under the daemon's identity, the pair landed in the slot: a rejected token is the
-  // same refusal, the landing store rows).
   fs.mkdir(paths.home);
   applyDefaultConfig(profile, paths, envConfig);
+  // The cleanup runs before the port is validated in the real start, so its signals are said here,
+  // where a refused port still leaves them in the preview.
   const plan = await planCleanup(paths.home, profile, state);
+  const pids = (role: "stop" | "leave"): string =>
+    plan.filter((step) => PREVIEW_ROLE[step.kind] === role).map((step) => `pid ${step.pid}`)
+      .join(", ");
+  if (plan.some((step) => PREVIEW_ROLE[step.kind] === "clear")) {
+    state.set(daemonPolicy(profile).releasesPortOnStop ? { pid: null, port: null } : { pid: null });
+  }
+  const stops = pids("stop");
+  if (stops !== "") consola.info(`Would stop the proxy processes in the way first (${stops}).`);
+  const left = pids("leave");
+  if (left !== "") {
+    consola.warn(
+      `Would leave the daemon.lock holder alone (${left}): this host cannot identify it as our ` +
+        "daemon, and a lock still held fails the launch.",
+    );
+  }
   const port = await resolveStartPort(action.port, false, profile, false, envConfig);
   const { copilotHost } = await resolveLaunchCredential(profile, launch, envConfig, {
     userAgent: codexUserAgent(),
@@ -166,14 +171,10 @@ async function reportDryRun(
   // The real launch records the port it took before anything wires from it (a launcher's config
   // reads copilotApiResolvePort), so the plan records it too; the pid beside it is minted at spawn.
   state.set({ port });
-  consola.info(`   Would ensure the run directory: ${paths.runDir}`);
-  for (const step of plan) {
-    narrateCleanupAction(step);
-  }
-  consola.info(`   Would launch the proxy on port ${port} with the ${source} credential.`);
-  consola.info(`   Would send the daemon's requests to ${copilotHost}.`);
-  consola.info(`   Would write runtime state + log: ${paths.stateFile}, ${logFile}`);
-  consola.info("   Would wait for readiness, sync model aliases, and report proxy details.");
+  consola.info(
+    `Would spawn the proxy daemon on port ${port} with the ${source} credential, its requests ` +
+      `sent to ${copilotHost}, its log at ${logFile}.`,
+  );
 }
 
 /** A manual start is a keep-alive against the idle watchdog, hence the heartbeat. */
@@ -361,7 +362,7 @@ export async function runStart(
     // Under a collecting dry run already (proxy-token's, a launcher's) the plan is the caller's;
     // a bare `start --dry-run` collects its own, so its landings (the port, the credential pair)
     // record instead of writing.
-    const preview = (): Promise<void> => reportDryRun(action, launchContext());
+    const preview = (): Promise<void> => previewLaunch(action, launchContext());
     if (fs.dryRunActive()) await preview();
     else await runDryRun(preview);
     return;

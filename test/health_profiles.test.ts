@@ -1,7 +1,7 @@
 import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
-import { proxyHelperCommand } from "../src/claude/config.ts";
+import { BASE_URL_ENV, proxyHelperCommand } from "../src/claude/config.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { profileHome } from "../src/copilot_api/paths.ts";
@@ -28,13 +28,18 @@ import {
 import { gatherFacts } from "../src/health/probe.ts";
 import { type ProbeDeps, runLiveCli } from "../src/health/probe_deps.ts";
 import type { CheckId, CheckResult, CheckStatus } from "../src/health/types.ts";
-import { type LaunchDeps, prepareLaunch } from "../src/commands/launch.ts";
+import { prepareLaunch } from "../src/commands/launch.ts";
+import {
+  resetIntegrationIdentityCache,
+  setIntegrationProbeFetch,
+} from "../src/copilot_api/integration_identity.ts";
 import { probeOf, runIdentity, runOrphan, runPid, runPort } from "./helpers/health.ts";
 import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
+import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "./helpers/env.ts";
 import { writeRunState } from "./helpers/fixtures.ts";
+import { dryRunChanges } from "./helpers/dry_run.ts";
 
-const restoreEnv = envSnapshot();
+const restoreEnv = envSnapshot([BASE_URL_ENV]);
 
 // --- fixtures -----------------------------------------------------------------
 
@@ -670,55 +675,55 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
 
 // --- --live argv + env scrub -----------------------------------------------------
 
-/** Only the arms a launch plan reads for the selector and the scrub; every step is scripted so no
- *  proxy, wiring, or settings write happens. */
-const launcherDeps: LaunchDeps = {
-  agentMode: () => "direct",
-  ensureProxy: () => Promise.resolve(true),
-  wireProxyDefault: () => Promise.resolve(),
-  refreshCodexCatalog: () => Promise.resolve(),
-  profileSlot: () => ({
-    kind: "complete",
-    credential: { kind: "stored", provider: "gh-token", token: "tok" },
-    mode: "direct",
-  }),
-  writeClaudeProfileSettings: (name) => Promise.resolve(join("/h", `settings-${name}.json`)),
-  syncProfileWiring: () => Promise.resolve(),
-  managedClaudeBaseUrl: () => null,
-  codexHome: () => "/h/.codex",
-  notify: () => {},
-};
-
 test("the --live launch is the launcher's start minus interactivity, never the Direct-detect argv", async () => {
   // What would drift silently: health borrowing `--bare` (auth through the apiKeyHelper alone, no
   // settings discovery) or `--model` from the detect descriptor, which no `cl`/`cx` session passes.
-  for (const profile of [null, P] as Profile[]) {
-    const claude = claudeLiveLaunch("/h", profile);
-    const codex = codexLiveLaunch("/h", profile);
-    for (const launch of [claude, codex]) {
-      expect(launch.args).not.toContain("--bare");
-      expect(launch.args).not.toContain("--model");
+  // The launcher's plan is read off a scratch state, the default and `p` both Direct, on the dry
+  // run's overlay (the wiring hook's writes land nowhere); the identity probe the hook runs for a
+  // slot without a stored pair is stubbed to accept.
+  const homes = isolateAgentHomes("copilot-health-live-");
+  // The default launch scrubs a local proxy URL the shell exports; the probe scrubs nothing, so
+  // the two agree only over a shell that exports none.
+  delete process.env[BASE_URL_ENV];
+  try {
+    const state = new CopilotEnvState();
+    state.recordDefaultMode("direct");
+    state.commitProfile(P, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok" },
+      mode: "direct",
+    });
+    setIntegrationProbeFetch(() =>
+      Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    );
+    for (const profile of [null, P] as Profile[]) {
+      const claude = claudeLiveLaunch(homes.claudeHome, profile);
+      const codex = codexLiveLaunch(homes.codexHome, profile);
+      for (const launch of [claude, codex]) {
+        expect(launch.args).not.toContain("--bare");
+        expect(launch.args).not.toContain("--model");
+      }
+      // The selector and the scrub are the launcher's own, read off its plan for the same profile.
+      const { result: [claudePlan, codexPlan] } = await dryRunChanges(async () => [
+        await prepareLaunch({ kind: "claude", profile, relaxed: false, args: [] }),
+        await prepareLaunch({ kind: "codex", profile, relaxed: false, args: [] }),
+      ]);
+      const selector = (args: string[], flag: string) => {
+        const i = args.indexOf(flag);
+        return i === -1 ? [] : args.slice(i, i + 2);
+      };
+      expect(selector(claude.args, "--settings")).toEqual(selector(claudePlan!.args, "--settings"));
+      expect(selector(codex.args, "--profile")).toEqual(selector(codexPlan!.args, "--profile"));
+      expect(claude.omitEnv).toEqual(claudePlan!.scrub);
+      expect(codex.omitEnv).toEqual(codexPlan!.scrub);
+      // External fact: Claude namespaces its keychain entry by CLAUDE_CONFIG_DIR, so exporting even
+      // the default dir hides a keychain-held key from the probe that a real session reads.
+      expect(claude.env).toEqual({});
     }
-    // The selector and the scrub are the launcher's own, read off its plan for the same profile.
-    const claudePlan = await prepareLaunch(
-      { kind: "claude", profile, relaxed: false, args: [] },
-      launcherDeps,
-    );
-    const codexPlan = await prepareLaunch(
-      { kind: "codex", profile, relaxed: false, args: [] },
-      launcherDeps,
-    );
-    const selector = (args: string[], flag: string) => {
-      const i = args.indexOf(flag);
-      return i === -1 ? [] : args.slice(i, i + 2);
-    };
-    expect(selector(claude.args, "--settings")).toEqual(selector(claudePlan!.args, "--settings"));
-    expect(selector(codex.args, "--profile")).toEqual(selector(codexPlan!.args, "--profile"));
-    expect(claude.omitEnv).toEqual(claudePlan!.scrub);
-    expect(codex.omitEnv).toEqual(codexPlan!.scrub);
-    // External fact: Claude namespaces its keychain entry by CLAUDE_CONFIG_DIR, so exporting even
-    // the default dir hides a keychain-held key from the probe that a real session reads.
-    expect(claude.env).toEqual({});
+  } finally {
+    setIntegrationProbeFetch(null);
+    resetIntegrationIdentityCache();
+    restoreEnv();
+    removeDir(homes.dir);
   }
 });
 

@@ -13,7 +13,12 @@ import { spawnSync } from "node:child_process";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { agentStartCommand, parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
+import {
+  agentAuthCommand,
+  agentStartCommand,
+  parseProfileFlag,
+  type Profile,
+} from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { printWrappedToStderr, terminalWidth, wrapMessage } from "../utils/table.ts";
@@ -131,8 +136,7 @@ export async function resolveProxyToken(
   const { profile } = action;
   // Human-facing hints must name the profile's daemon, or they'd point at the default one.
   const startHint = agentStartCommand(profile);
-  // A named profile never falls back to the default credential, so its hint names its own slot.
-  const authHint = profile === null ? "agent auth" : `agent profile ${profile} auth`;
+  const authHint = agentAuthCommand(profile);
   const yesHint = `agent profile ${profile === null ? "" : `${profile} `}proxy-token --yes`;
   let suppressedStart = false;
   // A dry run asks nothing, and its start is the start's own preview (launchProxy under a dry
@@ -187,17 +191,22 @@ export async function resolveProxyToken(
   return 1;
 }
 
-function commandDeps(): ProxyTokenDeps {
+/** The production members. `printProxyToken` is the one a caller substitutes: `agent profile
+ *  launch` runs the Codex catalog refresh in its place, since a launch needs reachability, not the
+ *  credential. */
+export function proxyTokenDeps(
+  printProxyToken: ProxyTokenDeps["printProxyToken"] = (profile) => {
+    runPrintProxyToken(profile);
+    return Promise.resolve();
+  },
+): ProxyTokenDeps {
   return {
     proxyUp: async (profile) => (await proxyStatus(profile)).up,
     autoStartEnabled: () => new CopilotEnvConfig().autoStartEnabled(),
     launchProxy,
     readAnswer: readStartAnswer,
     recordHeartbeat,
-    printProxyToken: (profile) => {
-      runPrintProxyToken(profile);
-      return Promise.resolve();
-    },
+    printProxyToken,
     notify: (line) => {
       printWrappedToStderr(line);
     },
@@ -211,7 +220,7 @@ export async function runProxyToken(flags: ProxyTokenFlags): Promise<void> {
     profile: parseProfileFlag(flags.profile),
   };
   const run = async (): Promise<void> => {
-    process.exitCode = await resolveProxyToken(action, commandDeps());
+    process.exitCode = await resolveProxyToken(action, proxyTokenDeps());
   };
   if (flags.dryRun) {
     await runDryRun(run);

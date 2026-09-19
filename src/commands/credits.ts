@@ -2,12 +2,8 @@
 // projected, against the plan's entitlement and the optional `cost.credits-target`. One live read
 // of GitHub's meter per account; no local log is touched.
 import { Credential } from "../copilot_api/credential.ts";
-import {
-  allProfileNames,
-  assertKnownProfile,
-  DEFAULT_PROFILE_KEY,
-} from "../copilot_api/env_state.ts";
-import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { allProfileNames, DEFAULT_PROFILE_KEY, knownProfile } from "../copilot_api/env_state.ts";
+import { type Profile, profileLabel } from "../copilot_api/profile.ts";
 import {
   type CreditsFetch,
   creditsJson,
@@ -44,8 +40,7 @@ const resolveCredential: NonNullable<CreditsDeps["credential"]> = (profile) =>
 
 /** One profile's account: no credential is the command's error. */
 export async function runCredits(args: CreditsArgs, deps: CreditsDeps = {}): Promise<void> {
-  const profile = parseProfileFlag(args.profile);
-  if (profile !== null) assertKnownProfile(profile);
+  const profile = knownProfile(args.profile);
   const target = resolveCreditsTarget(args.creditsTarget);
   const look = deps.credential ?? resolveCredential;
   const pace = await loadCreditsPace(target, { ...deps, credential: () => look(profile) });

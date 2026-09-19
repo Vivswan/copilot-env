@@ -8,20 +8,12 @@
 import { spawnSync } from "node:child_process";
 import { constants } from "node:os";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
-import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { runClaude, runCodex } from "../agents/configure_defaults.ts";
 import { BASE_URL_ENV, managedClaudeBaseUrl } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { narrateCodexHome, resolveCodexHome } from "../codex/host.ts";
-import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import {
-  CopilotEnvState,
-  partialSlotGap,
-  type ProfileMode,
-  type ProfileSlot,
-} from "../copilot_api/env_state.ts";
+import { CopilotEnvState, partialSlotGap, type ProfileMode } from "../copilot_api/env_state.ts";
 import {
   parseProfileFlag,
   parseProfileName,
@@ -33,12 +25,7 @@ import { errMessage } from "../utils/error.ts";
 import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
 import type { ManagedEnvValue } from "../utils/shell_quote.ts";
 import { runDryRun } from "./dry_run.ts";
-import {
-  launchProxy,
-  type ProxyTokenDeps,
-  readStartAnswer,
-  resolveProxyToken,
-} from "./proxy_token.ts";
+import { proxyTokenDeps, resolveProxyToken } from "./proxy_token.ts";
 import { printWrappedToStderr } from "../utils/table.ts";
 
 /** Each name is also the command spawned. */
@@ -92,33 +79,15 @@ export interface LaunchPlan {
   scrub: string[];
 }
 
-export interface LaunchDeps {
-  /** The CONFIGURED provider, no live probe. */
-  agentMode(agent: "claude" | "codex"): AgentProviderMode;
-  /** False = the launch must abort. */
-  ensureProxy(profile: Profile): Promise<boolean>;
-  wireProxyDefault(agent: "claude" | "codex"): Promise<void>;
-  /** For a DIRECT default launch; the proxy launch refreshes inside ensureProxy's token step. */
-  refreshCodexCatalog(): Promise<void>;
-  profileSlot(name: ProfileName): ProfileSlot;
-  /** Returns the absolute path `claude --settings` gets. */
-  writeClaudeProfileSettings(name: ProfileName, mode: ProfileMode): Promise<string>;
-  syncProfileWiring(name: ProfileName, mode: ProfileMode): Promise<void>;
-  managedClaudeBaseUrl(profile: Profile): ManagedEnvValue;
-  /** The home the wiring step just wrote (resolveCodexHome): pinned into the child so a shell
-   *  CODEX_HOME can never send Codex to a config other than the one copilot-env wrote. */
-  codexHome(): string;
-  /** stderr: stdout belongs to the launched agent. */
-  notify(line: string): void;
-}
-
 const CLAUDE_MANAGED_FLAGS = ["--permission-mode", "auto", "--enable-auto-mode"] as const;
 
 /** Every inherited casing is scrubbed first: on Windows `Codex_Home` and `CODEX_HOME` would both
- *  reach the child and which one it reads is undefined (childEnvWithPath). */
-function pinCodexHome(plan: LaunchPlan, home: string): void {
+ *  reach the child and which one it reads is undefined (childEnvWithPath). The home is read AFTER
+ *  the wiring step (resolveCodexHome): a proxy re-wire may have just built the farm, and a shell
+ *  CODEX_HOME can never send Codex to a config other than the one copilot-env wrote. */
+function pinCodexHome(plan: LaunchPlan): void {
   plan.scrub.push("CODEX_HOME");
-  plan.env.CODEX_HOME = home;
+  plan.env.CODEX_HOME = narrateCodexHome(resolveCodexHome());
 }
 
 function applyManagedEnv(plan: LaunchPlan, key: string, value: ManagedEnvValue): void {
@@ -127,45 +96,57 @@ function applyManagedEnv(plan: LaunchPlan, key: string, value: ManagedEnvValue):
   else plan.env[key] = value.value;
 }
 
+/** The shared resolver matrix (resolveProxyToken) without `--yes`, so a down unmanaged proxy
+ *  prompts. The print step emits no key (launch needs reachability, not the credential) and runs
+ *  the Codex catalog refresh instead: a launch is where a stale catalog is felt, and the
+ *  token-returning commands never write agent files. Default profile only, like every catalog
+ *  write. False = the launch must abort; the resolver already explained itself on stderr. */
+async function ensureProxyUp(profile: Profile): Promise<boolean> {
+  const deps = proxyTokenDeps(async (p) => {
+    if (p !== null) return;
+    await refreshCodexCatalogAndSync("proxy");
+  });
+  return (await resolveProxyToken({ assumeYes: false, profile }, deps)) === 0;
+}
+
 /** Null = the resolver said no and already explained itself on stderr. */
-async function ensureProfileReady(
-  name: ProfileName,
-  deps: LaunchDeps,
-): Promise<ProfileMode | null> {
-  const slot = deps.profileSlot(name);
+async function ensureProfileReady(name: ProfileName): Promise<ProfileMode | null> {
+  const slot = new CopilotEnvState().readProfileSlot(name);
   // A partial slot reports its gap, exactly `agent profile <name> check`'s contract.
   if (slot.kind === "partial") {
     throw new Error(partialSlotGap(name, slot));
   }
-  if (slot.mode === "proxy" && !(await deps.ensureProxy(name))) return null;
+  if (slot.mode === "proxy" && !(await ensureProxyUp(name))) return null;
   return slot.mode;
 }
 
-/** The proxy is ensured THEN the wiring re-synced, because a cold start may have moved the port.
- *  "other" is not ours to touch. Null = abort. */
+/** The default slot's recorded mode is the truth for both agents; the agent files are outputs. On a
+ *  proxy or unrecorded default the proxy is ensured THEN the wiring re-synced, because a cold start
+ *  may have moved the port: a fresh default (no recorded mode) lands BOTH agents (runAgentConfig's
+ *  null-record rule), a recorded proxy re-renders the launching agent alone. Null = abort. */
 async function wireDefaultProvider(
   agent: "claude" | "codex",
-  display: string,
-  deps: LaunchDeps,
-): Promise<AgentProviderMode | null> {
-  const mode = deps.agentMode(agent);
+): Promise<ProfileMode | "none" | null> {
+  const mode = new CopilotEnvState().readProfileSlot(null).mode ?? "none";
   if (mode === "proxy" || mode === "none") {
-    if (!(await deps.ensureProxy(null))) return null;
-    await deps.wireProxyDefault(agent);
-  } else if (mode === "other") {
-    deps.notify(
-      `agent profile launch: ${display} has a custom or unrecognized provider config ` +
-        "(not managed by copilot-env); launching it as-is.",
-    );
+    if (!(await ensureProxyUp(null))) return null;
+    await (agent === "claude"
+      ? runClaude({ kind: "configure", mode: "proxy" })
+      : runCodex({ kind: "configure", mode: "proxy" }));
   }
   return mode;
 }
 
+/** The `cl --profile <name>` hook, run after the profile's daemon was ensured: both agents are
+ *  re-rendered from the slot's pair (a Claude-only write could leave the two disagreeing), then the
+ *  absolute path `claude --settings` gets. */
+export async function writeProfileSettings(name: ProfileName, mode: ProfileMode): Promise<string> {
+  await wireBothAgents(name, mode, true, "stored");
+  return settingsPathFor(resolveClaudeHome(), name);
+}
+
 /** Null = abort with exit 1; the failing step already narrated on stderr. */
-export async function prepareLaunch(
-  action: LaunchAction,
-  deps: LaunchDeps,
-): Promise<LaunchPlan | null> {
+export async function prepareLaunch(action: LaunchAction): Promise<LaunchPlan | null> {
   const relaxed = action.relaxed;
   switch (action.kind) {
     case "claude": {
@@ -182,19 +163,18 @@ export async function prepareLaunch(
         ...(relaxed ? ["--dangerously-skip-permissions"] : []),
       ];
       if (action.profile !== null) {
-        const mode = await ensureProfileReady(action.profile, deps);
+        const mode = await ensureProfileReady(action.profile);
         if (mode === null) return null;
-        const settings = await deps.writeClaudeProfileSettings(action.profile, mode);
+        const settings = await writeProfileSettings(action.profile, mode);
         // The shell may carry the DEFAULT proxy's URL (from `agent profile env`), which would
-        // override the
-        // profile's own env block.
+        // override the profile's own env block.
         plan.scrub.push(BASE_URL_ENV);
         plan.args = ["--settings", settings, ...flags, ...action.args];
         return plan;
       }
-      if ((await wireDefaultProvider("claude", "Claude", deps)) === null) return null;
+      if ((await wireDefaultProvider("claude")) === null) return null;
       // Read AFTER the wiring step so a fresh proxy port is what gets exported.
-      applyManagedEnv(plan, BASE_URL_ENV, deps.managedClaudeBaseUrl(null));
+      applyManagedEnv(plan, BASE_URL_ENV, managedClaudeBaseUrl(null));
       plan.args = [...flags, ...action.args];
       return plan;
     }
@@ -202,31 +182,32 @@ export async function prepareLaunch(
       const plan: LaunchPlan = { command: "codex", args: [], env: {}, scrub: [] };
       const flags = relaxed ? ["--sandbox", "danger-full-access"] : [];
       if (action.profile !== null) {
-        const mode = await ensureProfileReady(action.profile, deps);
+        const mode = await ensureProfileReady(action.profile);
         if (mode === null) return null;
         // After the daemon was ensured (a cold start may move its port), so this refresh bakes the
         // port the daemon actually bound. A failed refresh warns and launches with the existing
         // config.
         try {
-          await deps.syncProfileWiring(action.profile, mode);
+          await wireBothAgents(action.profile, mode, true, "stored");
         } catch (e) {
-          deps.notify(
+          printWrappedToStderr(
             "agent profile launch: could not refresh the profile wiring; launching with the " +
               `existing config (${errMessage(e)}).`,
           );
         }
         // Read AFTER the sync: the home its write resolved is the one the child must open.
-        pinCodexHome(plan, deps.codexHome());
+        pinCodexHome(plan);
         plan.args = ["--profile", action.profile, ...flags, ...action.args];
         return plan;
       }
-      const mode = await wireDefaultProvider("codex", "Codex", deps);
+      const mode = await wireDefaultProvider("codex");
       if (mode === null) return null;
       // Read AFTER the wiring step: a proxy re-wire may have just built the farm.
-      pinCodexHome(plan, deps.codexHome());
+      pinCodexHome(plan);
       // Codex parses `model_catalog_json` at startup, so a catalog an upgraded codex rejects must be
-      // regenerated BEFORE it starts: a direct launch refreshes here first.
-      if (mode === "direct") await deps.refreshCodexCatalog();
+      // regenerated BEFORE it starts: a direct launch refreshes here first. The proxy launch
+      // refreshed inside ensureProxyUp's print step.
+      if (mode === "direct") await refreshCodexCatalogAndSync("direct");
       plan.args = [...flags, ...action.args];
       return plan;
     }
@@ -245,61 +226,6 @@ export async function prepareLaunch(
       };
     }
   }
-}
-
-// --- production effects --------------------------------------------------------
-
-/** The shared resolver matrix (resolveProxyToken) without `--yes`, so a down unmanaged proxy
- *  prompts. The print step emits no key (launch needs reachability, not the credential) and runs
- *  the Codex catalog refresh instead: a launch is where a stale catalog is felt, and the
- *  token-returning commands never write agent files. Default profile only, like every catalog
- *  write. */
-async function ensureProxyUp(profile: Profile): Promise<boolean> {
-  const deps: ProxyTokenDeps = {
-    proxyUp: async (p) => (await proxyStatus(p)).up,
-    autoStartEnabled: () => new CopilotEnvConfig().autoStartEnabled(),
-    launchProxy,
-    readAnswer: readStartAnswer,
-    recordHeartbeat,
-    printProxyToken: async (p) => {
-      if (p !== null) return;
-      await refreshCodexCatalogAndSync("proxy");
-    },
-    notify: (line) => {
-      printWrappedToStderr(line);
-    },
-  };
-  return (await resolveProxyToken({ assumeYes: false, profile }, deps)) === 0;
-}
-
-/** Exported for its tests. */
-export function commandDeps(): LaunchDeps {
-  return {
-    // The default slot's recorded mode is the truth for both agents; the agent files are outputs.
-    agentMode: () => new CopilotEnvState().readProfileSlot(null).mode ?? "none",
-    ensureProxy: ensureProxyUp,
-    wireProxyDefault: async (agent) => {
-      // On a fresh default (no recorded mode) this write lands BOTH agents (runAgentConfig's
-      // null-record rule); on a recorded proxy it re-renders the launching agent alone.
-      await (agent === "claude"
-        ? runClaude({ kind: "configure", mode: "proxy" })
-        : runCodex({ kind: "configure", mode: "proxy" }));
-    },
-    refreshCodexCatalog: () => refreshCodexCatalogAndSync("direct"),
-    profileSlot: (name) => new CopilotEnvState().readProfileSlot(name),
-    writeClaudeProfileSettings: async (name, mode) => {
-      // Both agents, like the Codex hook (syncProfileWiring): the slot's pair is rendered into both
-      // files, so a Claude-only write can never leave the two disagreeing.
-      await wireBothAgents(name, mode, true, "stored");
-      return settingsPathFor(resolveClaudeHome(), name);
-    },
-    syncProfileWiring: (name, mode) => wireBothAgents(name, mode, true, "stored"),
-    managedClaudeBaseUrl,
-    codexHome: () => narrateCodexHome(resolveCodexHome()),
-    notify: (line) => {
-      printWrappedToStderr(line);
-    },
-  };
 }
 
 function spawnAgentCli(plan: LaunchPlan): number {
@@ -349,15 +275,11 @@ function rejectMissingCli(cli: LaunchAction["kind"]): void {
 
 /** process.exitCode, never process.exit, so pending stderr writes flush. A dry run prepares the
  *  launch (the wiring it lands is the plan) and says what it would spawn instead of spawning it. */
-export async function runLaunch(
-  action: LaunchAction,
-  deps: LaunchDeps = commandDeps(),
-  dryRun = false,
-): Promise<void> {
+export async function runLaunch(action: LaunchAction, dryRun = false): Promise<void> {
   // The one preparation (the refusal, the wiring, the plan); only what happens to the plan differs.
   const prepare = async (): Promise<LaunchPlan | null> => {
     rejectMissingCli(action.kind);
-    const plan = await prepareLaunch(action, deps);
+    const plan = await prepareLaunch(action);
     if (plan === null) process.exitCode = 1;
     return plan;
   };
@@ -365,7 +287,7 @@ export async function runLaunch(
     await runDryRun(async () => {
       const plan = await prepare();
       if (plan === null) return;
-      deps.notify(
+      printWrappedToStderr(
         `Would launch ${[plan.command, ...plan.args].join(" ")} with ${
           Object.keys(plan.env).length
         } managed env var(s) set and ${plan.scrub.length} scrubbed.`,

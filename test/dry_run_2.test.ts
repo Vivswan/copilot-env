@@ -22,7 +22,9 @@ import { runSettings } from "../src/commands/settings.ts";
 import { runShell } from "../src/commands/setup.ts";
 import { runStop } from "../src/commands/stop.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
-import { recordHeartbeat, stopTrackedProxy } from "../src/copilot_api/daemon.ts";
+import { portListening, recordHeartbeat, stopTrackedProxy } from "../src/copilot_api/daemon.ts";
+import { codexConfigPath } from "../src/codex/paths.ts";
+import { daemonLockHolderPid } from "../src/copilot_api/daemon_lock.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import {
   resetIntegrationIdentityCache,
@@ -62,10 +64,17 @@ import { VERSIONS_DIR } from "../src/utils/root.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { denoRunArgs, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, resetExitCode } from "./helpers/env.ts";
+import {
+  defaultHomeDir,
+  envSnapshot,
+  isolateAgentHomes,
+  isolateProxyHome,
+  resetExitCode,
+} from "./helpers/env.ts";
 import { writeRunState } from "./helpers/fixtures.ts";
 import { changedPaths, dryRunChanges, fingerprintTree } from "./helpers/dry_run.ts";
-import { until } from "./helpers/daemon.ts";
+import { killAndAwaitExit, launchFakeDaemon, until } from "./helpers/daemon.ts";
+import { freePort } from "./helpers/net.ts";
 
 const skipWin = test.skipIf(process.platform === "win32");
 const restoreEnv = envSnapshot([
@@ -265,7 +274,9 @@ test("proxy-token --dry-run takes the start's own preview, prints no key, and pl
     const state = changes.find((c) => c.path === stateFile);
     plannedPort = state?.attributes.find((row) => row.key === "port")?.next;
   });
-  const narrated = /Would launch the proxy on port (\d+) with the gh-token credential\./.exec(all);
+  const narrated = /Would spawn the proxy daemon on port (\d+) with the gh-token credential/.exec(
+    all,
+  );
   expect(narrated).not.toBeNull();
   expect(plannedPort).toBe(Number(narrated?.[1]));
   expect(fingerprintTree(dir)).toEqual(before);
@@ -577,7 +588,8 @@ test("stop --dry-run names the daemon it would signal and clears nothing: the tr
 skipWin(
   "launch --dry-run lands the wiring's plan and spawns no agent; the real launch spawns it",
   async () => {
-    dir = isolateProxyHome("copilot-dry2-launch-");
+    const homes = isolateAgentHomes("copilot-dry2-launch-");
+    dir = homes.dir;
     const bin = join(dir, "bin");
     mkdirSync(bin, { recursive: true });
     const marker = join(dir, "spawned");
@@ -585,41 +597,39 @@ skipWin(
     // The command lookup falls back to nvm's bin dirs; pointed at an empty one, only the PATH's
     // fake codex resolves.
     process.env.PATH = `${bin}:/usr/bin:/bin`;
-    process.env.HOME = dir;
     process.env.NVM_DIR = join(dir, "no-nvm");
-    const wired = join(dir, "wired.toml");
-    const deps = {
-      agentMode: () => "proxy" as const,
-      ensureProxy: () => Promise.resolve(true),
-      wireProxyDefault: () => {
-        // Through the seam: the dry run records it, the real launch writes it.
-        fs.writeText(wired, "x", { atomic: false });
-        return Promise.resolve();
-      },
-      refreshCodexCatalog: () => Promise.resolve(),
-      profileSlot: () => {
-        throw new Error("no profile in this launch");
-      },
-      writeClaudeProfileSettings: () => Promise.reject(new Error("unused")),
-      syncProfileWiring: () => Promise.reject(new Error("unused")),
-      managedClaudeBaseUrl: () => null,
-      codexHome: () => join(dir, ".codex"),
-      notify: (line: string) => void notes.push(line),
-    };
-    const notes: string[] = [];
-    const action = { kind: "codex" as const, profile: null, relaxed: false, args: [] as string[] };
-    const { stdout } = await captureChannels(() => runLaunch(action, deps, true));
-    expect(notes.some((n) => n.startsWith("Would launch codex"))).toBe(true);
-    expect(stdout).toContain(`create ${wired}`);
-    expect(existsSync(wired)).toBe(false);
-    expect(existsSync(marker)).toBe(false);
-    // A CLI the machine lacks is refused before anything is prepared, dry or real.
-    await expect(
-      captureChannels(() => runLaunch({ kind: "copilot", relaxed: false, args: [] }, deps, true)),
-    ).rejects.toThrow("'copilot' is not installed");
-    await captureChannels(() => runLaunch(action, deps));
-    expect(existsSync(wired)).toBe(true);
-    expect(existsSync(marker)).toBe(true);
+    // A proxy default whose daemon is up (the fake, over the default daemon home): the launch's
+    // wiring step re-renders Codex onto that daemon, and its config write is the plan.
+    new CopilotEnvState().recordDefaultMode("proxy");
+    const home = defaultHomeDir();
+    const port = await freePort();
+    const daemonPid = launchFakeDaemon(home, port);
+    try {
+      await until(() => daemonLockHolderPid(home) === daemonPid);
+      await until(() => portListening(port));
+      writeRunState({ pid: daemonPid, port });
+      const configFile = codexConfigPath(homes.codexHome);
+      const action = {
+        kind: "codex" as const,
+        profile: null,
+        relaxed: false,
+        args: [] as string[],
+      };
+      const { stdout, stderr } = await captureChannels(() => runLaunch(action, true));
+      expect(stderr).toContain("Would launch codex");
+      expect(stdout).toContain(`create ${configFile}`);
+      expect(existsSync(configFile)).toBe(false);
+      expect(existsSync(marker)).toBe(false);
+      // A CLI the machine lacks is refused before anything is prepared, dry or real.
+      await expect(
+        captureChannels(() => runLaunch({ kind: "copilot", relaxed: false, args: [] }, true)),
+      ).rejects.toThrow("'copilot' is not installed");
+      await captureChannels(() => runLaunch(action));
+      expect(existsSync(configFile)).toBe(true);
+      expect(existsSync(marker)).toBe(true);
+    } finally {
+      await killAndAwaitExit(daemonPid);
+    }
   },
 );
 

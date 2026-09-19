@@ -7,8 +7,8 @@ import { renderDirectWiring } from "../agents/profile_wiring.ts";
 import { probeDirectWiring } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
-import { assertKnownProfile } from "../copilot_api/env_state.ts";
-import { agentStartCommand, parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
+import { knownProfile } from "../copilot_api/env_state.ts";
+import { agentAuthCommand, agentStartCommand, type Profile } from "../copilot_api/profile.ts";
 import { colorEnabled, palette } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { formatTable, type TableRow, terminalWidth } from "../utils/table.ts";
@@ -112,8 +112,7 @@ function sourceLabel(resolved: ResolvedSource, profile: Profile): string {
 export async function runModels(args: ModelsArgs): Promise<void> {
   // Before any probe or fetch: an unknown profile must error naming the known ones, never answer
   // from the default wiring.
-  const profile: Profile = parseProfileFlag(args.profile);
-  if (profile !== null) assertKnownProfile(profile);
+  const profile: Profile = knownProfile(args.profile);
   const resolved = await resolveSource(args.mode, profile);
   const { source } = resolved;
   const label = sourceLabel(resolved, profile);
@@ -146,7 +145,7 @@ export async function runModels(args: ModelsArgs): Promise<void> {
       );
     }
   } catch (e) {
-    const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
+    const authCommand = agentAuthCommand(profile);
     const hint = source === "proxy"
       ? profile === null
         ? "check `agent health` (or use --direct)"

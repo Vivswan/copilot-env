@@ -39,6 +39,7 @@ import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import {
+  agentAuthCommand,
   agentStopCommand,
   DEFAULT_PROFILE_NAME,
   type Profile,
@@ -167,7 +168,7 @@ function printGuidance(
 function credentialStep(profile: Profile, args: AddArgs): () => Promise<void> {
   // Resolving, not merely stored: a gh-cli slot whose gh login is gone is as good as none.
   if (new Credential(undefined, profile).isAuthenticated()) return () => Promise.resolve();
-  const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
+  const authCommand = agentAuthCommand(profile);
   const providers = `--provider <${
     AUTH_PROVIDERS.join("|")
   }>  (or --set <token>, --gh-user <login>)`;
@@ -357,6 +358,12 @@ export async function delProfile(name: ProfileName, dryRun: boolean): Promise<vo
 
 // --- show, list --------------------------------------------------------------------------------
 
+/** The daemon cell of `show` and the list. A direct profile has no daemon: "-", never a blank that
+ *  reads as missing data. */
+function daemonCell(daemon: ProxyStatus | null): string {
+  return daemon === null ? "-" : daemon.up ? `up (port ${daemon.port})` : "down";
+}
+
 /** One profile's row of the list, as key/value lines: the same words. */
 export async function showProfile(profile: Profile): Promise<void> {
   if (profile !== null) assertKnownProfile(profile);
@@ -365,11 +372,7 @@ export async function showProfile(profile: Profile): Promise<void> {
   printWrapped(profileLabel(profile));
   printKeyValue("  mode", slot.mode ?? "incomplete");
   printKeyValue("  provider", credentialProvider(slot.credential) ?? "no credential");
-  // A direct profile has no daemon: "-", never a blank that reads as missing data.
-  printKeyValue(
-    "  daemon",
-    daemon === null ? "-" : daemon.up ? `up (port ${daemon.port})` : "down",
-  );
+  printKeyValue("  daemon", daemonCell(daemon));
 }
 
 /** `daemon` is null for a direct profile, which has none. */
@@ -386,16 +389,12 @@ export function renderProfileTable(
   color = colorEnabled(),
 ): string {
   const status = (word: string): string => statusPaint(word, color);
-  const cells = rows.map((r) => {
-    // A direct profile has no daemon: "-", never a blank that reads as missing data.
-    const daemon = r.daemon === null ? "-" : r.daemon.up ? `up (port ${r.daemon.port})` : "down";
-    return [
-      r.name,
-      status(r.mode ?? "incomplete"),
-      status(r.provider ?? "no credential"),
-      status(daemon),
-    ];
-  });
+  const cells = rows.map((r) => [
+    r.name,
+    status(r.mode ?? "incomplete"),
+    status(r.provider ?? "no credential"),
+    status(daemonCell(r.daemon)),
+  ]);
   return formatTable(cells, {
     header: ["NAME", "MODE", "PROVIDER", "DAEMON"],
     indent: "     ",

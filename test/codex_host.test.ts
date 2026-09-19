@@ -11,13 +11,13 @@ import {
   effectiveCodexHome,
   getHostLocalCodexHome,
   managedCodexHome,
+  narrateCodexHome,
   planCodexHostFarm,
   resolveCodexHome,
   staleCodexHomeExportLine,
   withCodexHostFarm,
 } from "../src/codex/host.ts";
 import { runConfig } from "../src/commands/config.ts";
-import { commandDeps } from "../src/commands/launch.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
@@ -1174,7 +1174,7 @@ skipWin(
     let pinned = "";
     let narrated = await stderrDuring(async () => {
       await configureCodex();
-      pinned = commandDeps().codexHome();
+      pinned = narrateCodexHome(resolveCodexHome());
     });
     expect(fs.readFileSync(join(root, "config.toml"), "utf8")).toContain(
       'model_provider = "copilot-env"',

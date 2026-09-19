@@ -58,7 +58,7 @@ import {
 } from "../src/agents/claude_desktop.ts";
 import { addProfile, printClaudeDesktopCheck, syncNamedProfiles } from "../src/commands/profile.ts";
 import { runClaude } from "../src/agents/configure_defaults.ts";
-import { commandDeps } from "../src/commands/launch.ts";
+import { writeProfileSettings } from "../src/commands/launch.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
@@ -1978,12 +1978,12 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
   });
   expect(names()).toEqual(["copilot-env: work"]);
   await captureAllWrites(async () => {
-    await commandDeps().writeClaudeProfileSettings(WORK, "proxy");
+    await writeProfileSettings(WORK, "proxy");
   });
   expect(names()).toEqual([]);
   new CopilotEnvConfig().del("claude.desktop");
   await captureAllWrites(async () => {
-    await commandDeps().writeClaudeProfileSettings(WORK, "proxy");
+    await writeProfileSettings(WORK, "proxy");
   });
   expect(names()).toEqual(["copilot-env: work"]);
   // Every request a call site made was a catalog GET: the daemon's, or Copilot's generic host.

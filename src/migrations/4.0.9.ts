@@ -19,30 +19,26 @@ import {
   proxyHelperCommand,
   SETTINGS_SECRETS,
 } from "../claude/config.ts";
+import { desktopHelperPath, writeDesktopHelperScript } from "../claude/desktop_helper_scripts.ts";
 import {
   desktopEntryName,
-  desktopHelperPath,
-  entryProfileAt,
-  launcherSubcommandArgs,
-  mcpServeArgs,
   META_FILENAME,
-  ownMcpRow,
   parseDesktopMeta,
   readFileOrNull,
   resolveDesktopLibraryDir,
-  retargetEntryProfile,
   saveJsonIfChanged,
-  writeDesktopHelperScript,
-} from "../claude/desktop.ts";
+} from "../claude/desktop_library.ts";
+import {
+  entryProfileAt,
+  launcherSubcommandArgs,
+  mcpServeArgs,
+  ownMcpRow,
+  retargetEntryProfile,
+} from "../claude/desktop_payload.ts";
 import { retargetMcpRegistration } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { codexProviderId } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
-import {
-  CODEX_PROFILE_TABLES_LAST_VERSION,
-  codexConfigPath,
-  codexProfileConfigPath,
-} from "../codex/paths.ts";
+import { codexConfigPath, codexProfileConfigPath, codexProviderId } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { CopilotApiConfig, ensureDict, JSON_PARSE_DIAGNOSTIC } from "../copilot_api/config.ts";
 import { AUTOUPDATE_FILENAME, autoupdateDir } from "../autoupdate/paths.ts";
@@ -213,7 +209,7 @@ export function moveCodexProfileTablesEverywhere(): void {
 }
 
 export const v409CodexProfileFiles: Migration = {
-  version: CODEX_PROFILE_TABLES_LAST_VERSION,
+  version: "4.0.9",
   description: "move Codex named profiles from [profiles.<name>] to <name>.config.toml",
   run: moveCodexProfileTablesEverywhere,
 };

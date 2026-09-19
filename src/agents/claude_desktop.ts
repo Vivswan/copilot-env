@@ -2,14 +2,13 @@
 // status `agent profile check --claude` and health judge. Cross-agent: every promise comes from the store
 // (the default slot's recorded mode, the named slots), never from the agent files.
 import {
-  claudeDesktopInstalled,
-  claudeDesktopRunning,
   profileStoreWellFormed,
   removeClaudeDesktopOrphan,
   removeUnlistedClaudeDesktopClaims,
   removeUnmanagedClaudeDesktopWiring,
   syncClaudeDesktopWiring,
 } from "../claude/desktop.ts";
+import { claudeDesktopInstalled, claudeDesktopRunning } from "../claude/desktop_library.ts";
 import {
   type ClaudeDesktopStatus,
   type DesktopTarget,

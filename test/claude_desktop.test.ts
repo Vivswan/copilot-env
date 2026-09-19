@@ -15,30 +15,36 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import {
-  CLAUDE_DESKTOP_DIR_ENV,
-  claudeDesktopInstalled,
-  DESKTOP_DISPLAY_NAME,
-  desktopAppInstalledFor,
-  desktopConfigPayload,
-  desktopDataDirFor,
-  desktopHelperPath,
-  desktopLibraryDirUnder,
-  desktopModelLabel,
-  desktopModelsFromPicks,
-  desktopStandardDataDirFor,
   type DesktopWireOptions,
-  entryProfileAt,
   listClaudeDesktopOwnedArtifacts,
-  parseDesktopMeta,
-  presentDesktopHelperScripts,
   removeAllClaudeDesktopWiring,
   removeClaudeDesktopEntry,
   removeUnmanagedClaudeDesktopWiring,
-  resolveDesktopLibraryDir,
   syncClaudeDesktopWiring,
   wireClaudeDesktopEntry,
-  writeDesktopHelperScript,
 } from "../src/claude/desktop.ts";
+import {
+  desktopHelperPath,
+  presentDesktopHelperScripts,
+  writeDesktopHelperScript,
+} from "../src/claude/desktop_helper_scripts.ts";
+import {
+  CLAUDE_DESKTOP_DIR_ENV,
+  claudeDesktopInstalled,
+  desktopAppInstalledFor,
+  desktopDataDirFor,
+  desktopLibraryDirUnder,
+  desktopStandardDataDirFor,
+  parseDesktopMeta,
+  resolveDesktopLibraryDir,
+} from "../src/claude/desktop_library.ts";
+import {
+  DESKTOP_DISPLAY_NAME,
+  desktopConfigPayload,
+  desktopModelLabel,
+  desktopModelsFromPicks,
+  entryProfileAt,
+} from "../src/claude/desktop_payload.ts";
 import {
   type DesktopTarget,
   inspectClaudeDesktopWiring,

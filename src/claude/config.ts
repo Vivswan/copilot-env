@@ -55,10 +55,11 @@ import {
 } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
-import { isEnoentOrNotdir } from "../utils/fs.ts";
+import { isEnoentOrNotdir, WIN } from "../utils/fs.ts";
 import type { TextReadResult } from "../utils/fs_facade.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { escapeRegExp } from "../utils/regexp.ts";
+import { quotePosix } from "../utils/shell_quote.ts";
 import { printKeyValue } from "../utils/table.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -69,9 +70,9 @@ import {
   proxyTokenCommand,
 } from "../utils/root.ts";
 import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
-import { cmdHelperBody, shQuote, winQuote } from "./helper_body.ts";
+import { cmdHelperBody, winQuote } from "./helper_body.ts";
 import { prepareClaudeMcpRemoval, registerClaudeMcpServer } from "./mcp_registration.ts";
-import { resolveClaudeHome, settingsPathFor, WIN } from "./paths.ts";
+import { resolveClaudeHome, settingsPathFor } from "./paths.ts";
 
 const logger = createStderrLogger();
 
@@ -93,7 +94,7 @@ export const AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN";
 export { cmdHelperBody };
 
 function shToken(s: string): string {
-  return /^[A-Za-z0-9_.:/=-]+$/.test(s) ? s : shQuote(s);
+  return /^[A-Za-z0-9_.:/=-]+$/.test(s) ? s : quotePosix(s);
 }
 
 // Recognized by SHAPE, not byte-exact against this root: a sibling install's wiring (a dev checkout

@@ -10,12 +10,13 @@ import { join } from "node:path";
 import { consola } from "consola";
 import { autoupdateStateFile } from "../autoupdate/paths.ts";
 import { directHelperCommand, proxyHelperCommand } from "../claude/config.ts";
-import { resolveClaudeHome, settingsPathFor, WIN } from "../claude/paths.ts";
+import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { managedProxyProvider } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
+import { WIN } from "../utils/fs.ts";
 import {
   isValidProfileName,
   parseProfileName,

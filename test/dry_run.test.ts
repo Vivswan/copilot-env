@@ -26,7 +26,8 @@ import { runDryRun } from "../src/commands/dry_run.ts";
 import { runMcp } from "../src/commands/mcp.ts";
 import { addProfile, delProfile } from "../src/commands/profile.ts";
 import { runSettings } from "../src/commands/settings.ts";
-import { CLAUDE_DESKTOP_DIR_ENV, desktopHelperPath, META_FILENAME } from "../src/claude/desktop.ts";
+import { desktopHelperPath } from "../src/claude/desktop_helper_scripts.ts";
+import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../src/claude/desktop_library.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { runCodex } from "../src/agents/configure_defaults.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
@@ -438,10 +439,10 @@ skipWin(
       mkdirSync(join(hostHome, "skills"), { recursive: true });
       writeFileSync(join(hostHome, "skills", "new.md"), "skill\n");
       mkdirSync(join(sharedRoot, "skills"), { recursive: true });
-      // AGENTS.md: a non-empty local file over an empty shared one -> the shared copy is refilled,
-      // the local file gives way to a link.
+      // AGENTS.md: a local file equal to the shared one -> no shared write, the local file gives
+      // way to a link.
       writeFileSync(join(hostHome, "AGENTS.md"), "rules\n");
-      writeFileSync(join(sharedRoot, "AGENTS.md"), "");
+      writeFileSync(join(sharedRoot, "AGENTS.md"), "rules\n");
       const build = () => captureChannels(() => withCodexHostFarm(() => Promise.resolve()));
       const { changes } = await dryRunChanges(build);
       const planned = changes.map((c) => [c.path, c.verdict]);
@@ -453,7 +454,7 @@ skipWin(
       expect(planned).toContainEqual([join(hostHome, "rules"), "rewrite"]);
       expect(planned).toContainEqual([join(sharedRoot, "skills", "new.md"), "create"]);
       expect(planned).toContainEqual([join(hostHome, "skills"), "rewrite"]);
-      expect(planned).toContainEqual([join(sharedRoot, "AGENTS.md"), "rewrite"]);
+      expect(planned).not.toContainEqual([join(sharedRoot, "AGENTS.md"), "rewrite"]);
       expect(planned).toContainEqual([join(hostHome, "AGENTS.md"), "rewrite"]);
       // The real build lands exactly those decisions.
       await build();

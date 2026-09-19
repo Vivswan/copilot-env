@@ -7,7 +7,7 @@ import {
   MARKER as SHELL_MARKER,
 } from "../src/shell/integration.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
-import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
+import { USAGE_INDEX_DIR_NAME } from "../src/copilot_api/paths.ts";
 import { loadPricing } from "../src/usage/pricing.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { runCli } from "./helpers/run.ts";

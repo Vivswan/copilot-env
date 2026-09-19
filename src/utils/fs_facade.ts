@@ -208,9 +208,9 @@ export function rmdir(path: string): void {
   else run.rmdir(path);
 }
 
-export function chmod(path: string, mode: number, detail?: string): void {
+export function chmod(path: string, mode: number): void {
   const run = overlayFor(path);
-  if (run === null) disk.chmod(path, mode, detail);
+  if (run === null) disk.chmod(path, mode);
   else run.chmod(path, mode);
 }
 
@@ -242,15 +242,15 @@ export function atomicSymlink(target: string, link: string): void {
 /** A file opened for writing (created or truncated at the open): the one way runtime code streams
  *  bytes to a path (a release download, the daemon's log). A dry run has no handle to hand back
  *  and refuses outside scratch. */
-export function openWritable(path: string, detail?: string): Promise<Deno.FsFile> {
+export function openWritable(path: string): Promise<Deno.FsFile> {
   refuseHandle(path);
-  return disk.openWritable(path, detail);
+  return disk.openWritable(path);
 }
 
 /** openWritable as a node fd, for a child's stdio. */
-export function openWriteFd(path: string, detail?: string): number {
+export function openWriteFd(path: string): number {
   refuseHandle(path);
-  return disk.openWriteFd(path, detail);
+  return disk.openWriteFd(path);
 }
 
 function refuseHandle(path: string): void {

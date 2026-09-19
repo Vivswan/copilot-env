@@ -13,6 +13,7 @@ import {
   type FloorCheckedEntry,
   type HeldStartLock,
   type LaunchToken,
+  previewProxyFloor,
   readLaunchToken,
   resolveLaunchCredential,
   resolveStartPort,
@@ -132,6 +133,10 @@ async function previewLaunch(
   // refusal, and the spawn line names the source the daemon would run with.
   const launch = readLaunchToken(profile);
   const source = credentialSourceLabel(new Credential(undefined, profile).read());
+  fs.mkdir(paths.runDir);
+  // The floor gate precedes even the managed no-op in the real start, so a proxy below the floor
+  // refuses the preview the same way.
+  await previewProxyFloor();
   if (isIdempotentNoOp(action, envConfig)) {
     const status = await proxyStatus(profile);
     if (status.up) {
@@ -139,7 +144,6 @@ async function previewLaunch(
       return;
     }
   }
-  fs.mkdir(paths.runDir);
   fs.mkdir(paths.home);
   applyDefaultConfig(profile, paths, envConfig);
   // The cleanup runs before the port is validated in the real start, so its signals are said here,

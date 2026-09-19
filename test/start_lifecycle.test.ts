@@ -30,6 +30,7 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { daemonLockHolderPid } from "../src/copilot_api/daemon_lock.ts";
 import { probeFileLock, withFileLock } from "../src/utils/file_lock.ts";
+import { writeResolvedVersionRecord } from "../src/proxy_float.ts";
 import { packageVersion } from "../src/utils/version.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { ROOT } from "./helpers/run.ts";
@@ -169,6 +170,18 @@ test("start --dry-run runs the launch's credential gate: no credential is the re
       runStart({ kind: "launch", dryRun: false, force: false, port: undefined, profile: null })
     ),
   ).rejects.toThrow(notJson);
+});
+
+// The floor gate precedes even the managed no-op in the real start (ensureProxyFloor): a recorded
+// proxy below the floor refuses the preview with the gate's own error, and the preview neither
+// floats (which would warm the cache) nor writes anything.
+test("start --dry-run refuses a recorded proxy below the version floor with the real gate's error", async () => {
+  tmpHome();
+  new Credential().store("gh-token", "ghp_fake_for_the_plan");
+  writeResolvedVersionRecord(dir, "0.0.1", Date.now(), join(dir, "deno-cache"));
+  const before = fingerprintTree(dir);
+  await expect(dryRunNarration()).rejects.toThrow(/0\.0\.1 is below the required .* floor/);
+  expect(fingerprintTree(dir)).toEqual(before);
 });
 
 // The heartbeat lands in the NAMED daemon's run state alone. A real proxy profile always has run

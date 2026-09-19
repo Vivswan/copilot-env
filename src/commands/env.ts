@@ -8,27 +8,12 @@
 // The launcher functions ride here rather than in an rc block, so enabling `shell.launchers` takes effect
 // on the next `agent` command, whose wrapper evals this output; redefining a function is
 // idempotent. Disabling emits nothing, so functions a shell already defined live until it exits.
-import { BASE_URL_ENV } from "../claude/config.ts";
-import {
-  codexHostDriftFrom,
-  codexHostDriftLine,
-  codexHostFarm,
-  isManagedFarmExport,
-  resolveCodexHome,
-} from "../codex/host.ts";
+import { BASE_URL_ENV, managedClaudeBaseUrl } from "../claude/config.ts";
+import { managedCodexHome } from "../codex/host.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { assertKnownProfile, CopilotEnvState } from "../copilot_api/env_state.ts";
-import {
-  copilotApiResolvePort,
-  parseLoopbackProxyUrl,
-  proxyLoopbackOrigin,
-} from "../copilot_api/port.ts";
+import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
-import { createStderrLogger } from "../utils/logger.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
-
-// Stderr only: this command's stdout is evaled by the shell wrapper.
-const logger = createStderrLogger();
 
 export interface EnvArgs {
   format?: string;
@@ -36,43 +21,6 @@ export interface EnvArgs {
 }
 
 type EnvDirective = { key: string; value: string } | { key: string; unset: true };
-
-/** null = leave whatever the shell has alone. */
-export type ManagedEnvValue = { value: string } | { unset: true } | null;
-
-/** Port- and path-agnostic on purpose: this gates clearing as well as setting, and a stale URL on
- *  an old port must still read as ours to clear. */
-function isLocalProxyUrl(url: string): boolean {
-  return parseLoopbackProxyUrl(url) !== null;
-}
-
-/** The same resolution the writer and the launch pin use (resolveCodexHome): with `codex.host` on
- *  the farm is exported built or not (the next `agent profile sync --codex` builds it), so a drift between the key
- *  and the disk is warned about beside it, never hidden by an empty export. */
-export function managedCodexHome(): ManagedEnvValue {
-  const prefs = new CopilotEnvConfig().codexHomePrefs();
-  const resolution = resolveCodexHome(prefs);
-  if (prefs.hostFarm) {
-    const drift = codexHostDriftFrom(true, codexHostFarm(prefs));
-    if (drift !== null) logger.warn(codexHostDriftLine(drift));
-  }
-  if (resolution.by !== "default") return { value: resolution.home };
-  if (isManagedFarmExport(process.env.CODEX_HOME, prefs)) return { unset: true };
-  return null;
-}
-
-/** Read-only, from copilot-env's own state: the slot's recorded mode (the default's, or the named
- *  profile's) and the profile's resolved port, never reserving one; the settings file is an output
- *  and is not read. Shared by `agent profile env` and the launch verb. */
-export function managedClaudeBaseUrl(profile: Profile): ManagedEnvValue {
-  const mode = new CopilotEnvState().readProfileSlot(profile).mode;
-  if (mode === "proxy") return { value: proxyLoopbackOrigin(copilotApiResolvePort(profile)) };
-  // Direct, or nothing wired: a stale local URL in the shell is ours to clear, anything else is
-  // the user's.
-  const current = process.env[BASE_URL_ENV];
-  if (current && isLocalProxyUrl(current)) return { unset: true };
-  return null;
-}
 
 // [name, agent CLI, adds `--relaxed`]
 const LAUNCHER_FUNCTIONS = [

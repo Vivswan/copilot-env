@@ -1,7 +1,7 @@
 import { consola } from "consola";
 import { type PreflightOptions, runPreflight } from "../autoupdate/preflight.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { Credential } from "../copilot_api/credential.ts";
+import { Credential, credentialSourceLabel } from "../copilot_api/credential.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { assertProfileSlot } from "../copilot_api/env_state.ts";
@@ -46,7 +46,6 @@ import { formatTable, terminalWidth } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
-import { credentialSourceLabel } from "./auth.ts";
 
 export interface StartFlags {
   dryRun?: boolean;

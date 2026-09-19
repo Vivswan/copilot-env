@@ -11,13 +11,13 @@ import {
   codexHostFarm,
   effectiveCodexHome,
   getHostLocalCodexHome,
+  managedCodexHome,
   planCodexHostFarm,
   resolveCodexHome,
   staleCodexHomeExportLine,
   withCodexHostFarm,
 } from "../src/codex/host.ts";
 import { runConfig } from "../src/commands/config.ts";
-import { managedCodexHome } from "../src/commands/env.ts";
 import { commandDeps } from "../src/commands/launch.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";

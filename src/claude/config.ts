@@ -59,7 +59,7 @@ import { isEnoentOrNotdir, WIN } from "../utils/fs.ts";
 import type { TextReadResult } from "../utils/fs_facade.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { escapeRegExp } from "../utils/regexp.ts";
-import { quotePosix } from "../utils/shell_quote.ts";
+import { type ManagedEnvValue, quotePosix } from "../utils/shell_quote.ts";
 import { printKeyValue } from "../utils/table.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -645,7 +645,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     }`;
   } else {
     plannedPort = copilotApiResolvePort(profile);
-    // No path, no trailing slash: the shape claudeBaseUrlMatchesProxy and env.ts's isLocalProxyUrl
+    // No path, no trailing slash: the shape claudeBaseUrlMatchesProxy and parseLoopbackProxyUrl
     // expect.
     applyManagedEnv(doc, "proxy", proxyLoopbackOrigin(plannedPort), profile);
     applyManagedCredential(doc, request.credential, proxyHelperCommand(profile), profile);
@@ -852,4 +852,17 @@ export function claudeAdapter(): AgentAdapter {
       if (!options?.keepDesktopEntry) removeClaudeDesktopEntry(name);
     },
   };
+}
+
+/** Read-only, from copilot-env's own state: the slot's recorded mode (the default's, or the named
+ *  profile's) and the profile's resolved port, never reserving one; the settings file is an output
+ *  and is not read. Shared by `agent profile env` and the launch verb. Direct, or nothing wired: a
+ *  loopback URL in the shell is ours to clear whatever its port or path (a stale one on an old port
+ *  must still read as ours); anything else is the user's. */
+export function managedClaudeBaseUrl(profile: Profile): ManagedEnvValue {
+  const mode = new CopilotEnvState().readProfileSlot(profile).mode;
+  if (mode === "proxy") return { value: proxyLoopbackOrigin(copilotApiResolvePort(profile)) };
+  const current = process.env[BASE_URL_ENV];
+  if (current && parseLoopbackProxyUrl(current) !== null) return { unset: true };
+  return null;
 }

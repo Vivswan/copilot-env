@@ -10,6 +10,7 @@
 //   child stdin   -> ignored on the managed branch: nothing in `agent start` reads it (with no stored
 //                    credential the child refuses and names `agent auth`; nothing prompts)
 import { spawnSync } from "node:child_process";
+import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { agentStartCommand, parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
@@ -18,7 +19,6 @@ import { agentLauncherCommand } from "../utils/root.ts";
 import { printWrappedToStderr, terminalWidth, wrapMessage } from "../utils/table.ts";
 import { promptRefusedInDryRun } from "../utils/dry_run.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
-import { runPrintProxyToken } from "./auth.ts";
 import { runDryRun } from "./dry_run.ts";
 import { runStart } from "./start.ts";
 
@@ -102,6 +102,15 @@ export function readStartAnswer(query: string): Promise<string> {
     process.stdin.on("data", onData);
     process.stdin.once("end", onEnd);
   });
+}
+
+/** The key line is the ENTIRE stdout contract; like `agent auth --get`, it writes no agent file. */
+export function runPrintProxyToken(profile: Profile): void {
+  const key = CopilotApiConfig.forProfile(profile).ensureApiKey();
+  // codeql[js/clear-text-logging] -- emitting the proxy key on stdout IS this command's
+  // contract (the proxy-mode agents' auth.command / apiKeyHelper consume it). A dry run minted a
+  // key its recorded store write never lands, so it prints none: the plan is the stdout.
+  if (!dryRunActive()) process.stdout.write(`${key}\n`);
 }
 
 function answerMeansStart(answer: string): boolean {

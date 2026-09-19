@@ -42,13 +42,7 @@ import {
   syncProfile,
 } from "./profile.ts";
 import { registerProfileOps } from "./profile_ops.ts";
-
-/** Commander hands action callbacks an options bag of mixed-typed values. */
-export type Opts = Record<string, unknown>;
-
-/** The one wording of `--dry-run` on every writing command (the plan is src/commands/dry_run.ts). */
-export const DRY_RUN_HELP =
-  "Print every file and store key the command would change (old -> new, secrets redacted) and write nothing.";
+import { DRY_RUN_HELP, type Opts } from "./registration.ts";
 
 // Keyed exhaustively on AuthProvider so a membership change in env_state.ts fails the compile here
 // instead of drifting the help.
@@ -377,7 +371,6 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     rawProfile,
     verb,
     refuseStrayWords: (cmd, name) => refuseStrayWords(cmd, name, rawProfile),
-    dryRunHelp: DRY_RUN_HELP,
   });
 }
 

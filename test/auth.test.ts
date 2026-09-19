@@ -7,21 +7,20 @@ import { configureClaudeConfig } from "../src/claude/config.ts";
 import {
   type AuthArgs,
   chooseGhAccount,
-  credentialSourceLabel,
-  type IdentityTableInput,
-  identityTableLines,
-  liveCredentialSourceLabel,
   loginWithGhCli,
   parseAcquisition,
   runAuth,
-  runPrintProxyToken,
 } from "../src/commands/auth.ts";
+import { type IdentityTableInput, identityTableLines } from "../src/commands/identity.ts";
+import { runPrintProxyToken } from "../src/commands/proxy_token.ts";
 import {
   Credential,
+  credentialSourceLabel,
   ghAccountsLookFromSpawn,
   ghAuthTokenLookVia,
   type GhTokenLook,
   ghTokenLookFromSpawn,
+  liveCredentialSourceLabel,
   runGhSpecAsync,
 } from "../src/copilot_api/credential.ts";
 import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";

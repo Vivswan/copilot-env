@@ -410,3 +410,41 @@ export class Credential {
     return this.state.clearCredential(this.profile);
   }
 }
+
+/** BRACKET-FREE by contract: a surface that wants parens adds its own. */
+export function credentialSourceLabel(credential: StoredCredential): string | null {
+  switch (credential.kind) {
+    case "none":
+    case "stored":
+      return credential.provider;
+    case "gh-cli":
+      return credential.ghUser === null ? "gh-cli" : `gh-cli as ${credential.ghUser}`;
+  }
+}
+
+/** An AUTO gh-cli slot names the account it follows right now and every account it may use, so a
+ *  read-back through here says whose credit the credential can spend; an unproven or empty look
+ *  never guesses. A batch caller passes one memoized `look`. */
+export function liveCredentialSourceLabel(
+  credential: StoredCredential,
+  look: () => GhAccountsLook = ghAccountsLook,
+): string | null {
+  if (credential.kind === "gh-cli" && credential.ghUser === null) {
+    const accounts = look().accounts;
+    const active = activeGhLogin(accounts);
+    const logins = [
+      ...new Set(
+        accounts
+          .filter((a) => a.host === GH_COPILOT_HOST && a.login !== "")
+          .map((a) => a.login),
+      ),
+    ];
+    const parts = [
+      active === null ? null : `currently ${active}`,
+      logins.length === 0 ? null : `may use ${logins.join(", ")}`,
+    ].filter((part) => part !== null);
+    // Bracket-free like credentialSourceLabel: the callers add the one paren level.
+    return `gh-cli on auto${parts.length === 0 ? "" : `: ${parts.join("; ")}`}`;
+  }
+  return credentialSourceLabel(credential);
+}

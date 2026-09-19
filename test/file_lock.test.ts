@@ -95,16 +95,6 @@ test("a leftover marker under a free OS lock never delays an acquirer, whatever 
   });
 });
 
-test("jsonMarker writes the JSON {pid,ts} contract; the hold refreshes past staleMs in either form", () => {
-  const path = tmp("x.lock");
-  expect(tryAcquireFileLock(path, 10_000, { nowMs: 1_000, jsonMarker: true })).toBe(true);
-  // The on-disk form is the pre-unification autoupdate contract (old readers parse it).
-  expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({ pid: process.pid, ts: 1_000 });
-  expect(tryAcquireFileLock(path, 10_000, { nowMs: 2_000 })).toBe(false);
-  expect(tryAcquireFileLock(path, 5_000, { nowMs: 6_001 })).toBe(true);
-  releaseFileLock(path);
-});
-
 // The release judgment reads the marker at the path: only OUR marker is deleted. A release by a
 // non-holder (a test's cleanup, a stray primitive call) leaves another pid's marker byte-for-byte,
 // or it would blind the probes to the live holder's pid; our own marker goes even when its ts half

@@ -212,3 +212,11 @@ export class CopilotApiPaths {
     this.codexModelCatalogFile = join(rootHome, "codex-model-catalog.json");
   }
 }
+
+/** `agent cost`'s pre-index and the price-list cache (src/usage/index.ts, src/usage/pricing.ts) share
+ *  this ROOT-home dir: both are re-derivable bookkeeping, never truth. */
+export const USAGE_INDEX_DIR_NAME = "usage-index";
+
+export function usageIndexDir(): string {
+  return join(resolveRootHome(), USAGE_INDEX_DIR_NAME);
+}

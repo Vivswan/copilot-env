@@ -4,7 +4,7 @@
 import type { AutoupdateData } from "../autoupdate/state.ts";
 import type { ClaudeWiringStatus } from "../claude/config.ts";
 import type { ClaudeDesktopStatus } from "../claude/desktop_status.ts";
-import type { CodexWiringStatus } from "../codex/config.ts";
+import type { CodexWiringStatus } from "../codex/inspect.ts";
 import type { AuthProvider, ProfileMode } from "../copilot_api/env_state.ts";
 import type { CopilotApiPaths } from "../copilot_api/paths.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";

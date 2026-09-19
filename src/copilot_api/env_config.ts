@@ -122,6 +122,10 @@ const PASSTHROUGH_VALUES = ["auto", "on", "off"] as const;
  */
 export const INTEGRATION_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
+/** A lowercase sha256 hex digest, as the stores persist one (the accepted catalog's digest in
+ *  state.json, the price-list cache's URL digest). */
+export const SHA256_HEX_SCHEMA = v.pipe(v.string(), v.regex(/^[0-9a-f]{64}$/));
+
 /** Direct's default identity (integration_identity.ts): Codex CLI impersonation with NO id header.
  *  Owned here, beside the pin domain that refuses it, because this module sits in the daemon shims'
  *  import closure and the identity module does not. */

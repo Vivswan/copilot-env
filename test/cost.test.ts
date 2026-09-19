@@ -12,31 +12,33 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type IndexStats, parseEveryCandidate, type Reconcile } from "../src/usage/contribution.ts";
 import {
-  activeDayCoverage,
   buildSourceJson,
-  computeDayMetrics,
   type CostArgs,
   type CostDeps,
   type CostRuntime,
-  daysCutoffMs,
-  describeDaysWindow,
   formatBytesCompact,
   formatTokensCompact,
-  median,
-  parseDaysWindow,
-  perDayRows,
   ReconcileMeter,
   resolvePricingUrl,
   runCost,
   type SessionRootDiscovery,
   sumDayTotals,
-  UNDATED_DAY_LABEL,
 } from "../src/usage/cost.ts";
+import {
+  activeDayCoverage,
+  computeDayMetrics,
+  daysCutoffMs,
+  describeDaysWindow,
+  median,
+  parseDaysWindow,
+  perDayRows,
+  UNDATED_DAY_LABEL,
+} from "../src/usage/day_metrics.ts";
 import { consola } from "consola";
 import { CopilotEnvConfig, OPENROUTER_MODELS_URL } from "../src/copilot_api/env_config.ts";
 import { openUsageIndex } from "../src/usage/index.ts";
 import { USAGE_INDEX_DB_NAME } from "../src/usage/index.ts";
-import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
+import { USAGE_INDEX_DIR_NAME } from "../src/copilot_api/paths.ts";
 import {
   estimateCost,
   loadPricing,

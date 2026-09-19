@@ -34,7 +34,7 @@ import {
   type UsageSource,
   type WalkedFile,
 } from "./contribution.ts";
-import { usageIndexDir } from "./paths.ts";
+import { usageIndexDir } from "../copilot_api/paths.ts";
 
 // `cost --json` owns stdout and its consumers parse the whole of it.
 const logger = createStderrLogger();

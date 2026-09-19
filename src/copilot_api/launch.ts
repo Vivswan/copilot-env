@@ -54,7 +54,7 @@ import {
 } from "./process.ts";
 import type { Profile } from "./profile.ts";
 import { ProxyProjectionState } from "./ownership.ts";
-import { CopilotEnvRunState } from "./state.ts";
+import { CopilotEnvRunState } from "./run_state.ts";
 import { installedProxyVersion, PROXY_PACKAGE_NAME, proxyVersionFloorStatus } from "./version.ts";
 
 // --- the start lock -----------------------------------------------------------

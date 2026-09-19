@@ -3,7 +3,7 @@
 // every target's identity at its own signal boundary.
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
-import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "../scripts/daemon_lock.ts";
+import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "./daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
 import type { HeldStartLock } from "./launch.ts";
 import { allDaemonHomes, CopilotApiPaths, profileHomeNames } from "./paths.ts";
@@ -19,7 +19,7 @@ import {
   terminatePid,
 } from "./process.ts";
 import type { Profile } from "./profile.ts";
-import { CopilotEnvRunState } from "./state.ts";
+import { CopilotEnvRunState } from "./run_state.ts";
 
 /** The set the orphan sweep must NEVER signal: another profile's healthy daemon is not an orphan.
  *  `except` drops ONE slot's RECORD, never the pid: another slot's claim on the same pid still counts. */

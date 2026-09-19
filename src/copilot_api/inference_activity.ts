@@ -7,11 +7,11 @@
 // purpose: the CLI writes state concurrently (launch pid/port, resolver heartbeats) and the JSON
 // store's load-mutate-save is not atomic across processes. Importing patches nothing;
 // daemon_runtime_preload.ts installs the observer.
-import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import type { Profile } from "../copilot_api/profile.ts";
+import { CopilotApiConfig } from "./config.ts";
+import { CopilotApiPaths } from "./paths.ts";
+import type { Profile } from "./profile.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { recordDaemonServer } from "./daemon_shutdown.ts";
+import { recordDaemonServer } from "../scripts/daemon_shutdown.ts";
 
 /** The file is for out-of-process readers (`agent health`); the watchdog reads memory directly. */
 export const PERSIST_INTERVAL_MS = 60_000;

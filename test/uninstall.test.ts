@@ -33,7 +33,7 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths, profileHome, resolveRootHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { isRecord } from "../src/utils/json.ts";
 import { INSTALL_MANIFEST_FILE, type RootMode } from "../src/utils/root.ts";
 import { pointCurrentAt } from "../src/install/installer.ts";

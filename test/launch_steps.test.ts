@@ -46,13 +46,13 @@ import {
 import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { ProxyProjectionState } from "../src/copilot_api/ownership.ts";
-import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import {
   acquireDaemonLockForLife,
   daemonLockHolderPid,
   daemonLockPath,
   daemonLockVerdict,
-} from "../src/scripts/daemon_lock.ts";
+} from "../src/copilot_api/daemon_lock.ts";
 import { releaseFileLock } from "../src/utils/file_lock.ts";
 import {
   CHILD_VALUES,
@@ -883,7 +883,7 @@ test("cleanupExistingProxies: a lock THIS process holds is never signalled (self
 // Windows has no trappable SIGTERM (process.kill maps to TerminateProcess), so the escalation
 // tests below are POSIX-only. Their holder scripts are named copilot-api-* and given `start`:
 // the argv signature classifyDaemonPid needs before an untracked holder is signalled.
-const DAEMON_LOCK_SPECIFIER = importSpecifier(join(ROOT, "src", "scripts", "daemon_lock.ts"));
+const DAEMON_LOCK_SPECIFIER = importSpecifier(join(ROOT, "src", "copilot_api", "daemon_lock.ts"));
 
 test.skipIf(process.platform === "win32")(
   "cleanupExistingProxies: a holder that ignores SIGTERM draws the SIGKILL escalation, bound to the lock",

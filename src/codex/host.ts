@@ -4,7 +4,7 @@
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
 import { type CodexHomePrefs, CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";

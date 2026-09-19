@@ -490,7 +490,7 @@ export interface DaemonSpec {
 /** Every shim is a RUNTIME shim touching none of copilot-api's files, so none of them pins the floated
  *  proxy version. */
 function daemonPreloadFlags(spec: DaemonSpec): string[] {
-  // FIRST, ALWAYS: the liveness lock (`<home>/daemon.lock`, src/scripts/daemon_lock.ts) must be held
+  // FIRST, ALWAYS: the liveness lock (`<home>/daemon.lock`, src/copilot_api/daemon_lock.ts) must be held
   // before anything else touches the home.
   const shims: DaemonShimFile[] = ["daemon_lock_preload.ts"];
   // Must precede the PAT shim, which reads the spliced token back from argv.

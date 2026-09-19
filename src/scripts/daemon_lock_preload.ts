@@ -5,7 +5,7 @@
 // The throw aborts the launch before the proxy serves; the message lands in the daemon log the
 // start pipeline tails on failure.
 import { resolveHome } from "../copilot_api/paths.ts";
-import { acquireDaemonLockForLife, daemonLockPath } from "./daemon_lock.ts";
+import { acquireDaemonLockForLife, daemonLockPath } from "../copilot_api/daemon_lock.ts";
 
 const home = resolveHome();
 if (!acquireDaemonLockForLife(home)) {

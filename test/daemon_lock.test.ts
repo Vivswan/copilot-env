@@ -7,13 +7,13 @@ import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { launchDaemon, pidAlive } from "../src/copilot_api/process.ts";
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
-import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import {
   acquireDaemonLockForLife,
   daemonLockHolderPid,
   daemonLockPath,
   daemonLockVerdict,
-} from "../src/scripts/daemon_lock.ts";
+} from "../src/copilot_api/daemon_lock.ts";
 import { releaseFileLock } from "../src/utils/file_lock.ts";
 import {
   CHILD_VALUES,
@@ -157,7 +157,7 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
   writeFileSync(
     holder,
     `import { acquireDaemonLockForLife } from ${
-      importSpecifier(join(ROOT, "src", "scripts", "daemon_lock.ts"))
+      importSpecifier(join(ROOT, "src", "copilot_api", "daemon_lock.ts"))
     };\n` +
       `if (!acquireDaemonLockForLife(${CHILD_VALUES}.home)) Deno.exit(1);\n` +
       `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "locked");\n` +
@@ -287,7 +287,7 @@ test(
     writeFileSync(
       holder,
       `import { acquireDaemonLockForLife } from ${
-        importSpecifier(join(ROOT, "src", "scripts", "daemon_lock.ts"))
+        importSpecifier(join(ROOT, "src", "copilot_api", "daemon_lock.ts"))
       };\n` +
         `if (!acquireDaemonLockForLife(${CHILD_VALUES}.home)) Deno.exit(1);\n` +
         `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "locked");\n` +

@@ -4,10 +4,10 @@
 //   GET /, GET /v1/models  -> liveness, not activity: `agent health` and shell keepalives leave the
 //                             timer where it was
 //   importing this module  -> arms nothing; idle_watchdog_preload.ts does
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { DAEMON_KEEP_PORT_ENV } from "../copilot_api/paths.ts";
-import { CopilotEnvRunState } from "../copilot_api/state.ts";
-import { shutdownDaemon } from "./daemon_shutdown.ts";
+import { CopilotEnvConfig } from "./env_config.ts";
+import { DAEMON_KEEP_PORT_ENV } from "./paths.ts";
+import { CopilotEnvRunState } from "./run_state.ts";
+import { shutdownDaemon } from "../scripts/daemon_shutdown.ts";
 import { lastObservedInferenceMs } from "./inference_activity.ts";
 
 /** Whole seconds; `0` or negative disables the watchdog. */

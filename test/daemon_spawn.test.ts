@@ -687,7 +687,7 @@ test.skipIf(Deno.build.os === "windows")(
       target,
       `import { installTerminationHandler } from ${SHUTDOWN_MODULE};\n` +
         `import { installInferenceObserver } from ${
-          importSpecifier(join(ROOT, "src", "scripts", "inference_activity.ts"))
+          importSpecifier(join(ROOT, "src", "copilot_api", "inference_activity.ts"))
         };\n` +
         `const release = ${CHILD_VALUES}.release;\n` +
         "installInferenceObserver();\n" +

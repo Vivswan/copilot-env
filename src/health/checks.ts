@@ -5,7 +5,7 @@ import { configGetCommand, configSetCommand } from "../copilot_api/env_config.ts
 import { SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
 import { agentStartCommand, agentStopCommand, type ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
-import { lastActivityMs } from "../scripts/idle_watchdog.ts";
+import { lastActivityMs } from "../copilot_api/idle_watchdog.ts";
 import type { CommandLook } from "../utils/command.ts";
 import { versionLessThan } from "../utils/semver.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";

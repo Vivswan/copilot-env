@@ -35,7 +35,7 @@ import {
 import { pickAgedVersion } from "./utils/aged_version.ts";
 import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
-import { isEnoentOrNotdir } from "./utils/fs.ts";
+import { isEnoentOrNotdir, readTextOrNull } from "./utils/fs.ts";
 import { parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { ASSET_ROOT } from "./utils/root.ts";
@@ -292,12 +292,6 @@ export function proxyLockFile(rootHome: string): string {
  *  deno.json on disk. */
 export function writeDaemonConfig(rootHome: string, sourceRoot: string = ASSET_ROOT): void {
   fs.writeText(daemonConfigFile(rootHome), renderDaemonConfig(sourceRoot), { secretKeys: [] });
-}
-
-/** Text-or-null over the facade, so a record this run planned reads back inside a dry run. */
-function readTextOrNull(path: string): string | null {
-  const read = fs.readTextResult(path);
-  return read.kind === "text" ? read.text : null;
 }
 
 function renderDaemonConfig(sourceRoot: string): string {

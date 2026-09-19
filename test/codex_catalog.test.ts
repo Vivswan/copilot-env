@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { parse } from "smol-toml";
 import {
   CATALOG_PATCH_VERSION,
   type CopilotCatalogModel,
@@ -10,13 +11,15 @@ import {
   patchModelCatalog,
   refreshCodexModelCatalogIfStale,
   resetCatalogProbeState,
-  withCatalogRefreshDeadline,
 } from "../src/codex/catalog.ts";
+import { refreshCodexCatalogAndSync } from "../src/codex/catalog_reference.ts";
+import { codexConfigPath } from "../src/codex/paths.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, codexUserAgent } from "../src/codex/user_agent.ts";
 import { runDryRun } from "../src/commands/dry_run.ts";
 import { directClientHeaders } from "../src/copilot_api/integration_identity.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
@@ -831,9 +834,19 @@ test("refresh regenerates when due and reports it", async () => {
   expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(true);
 });
 
-test("past the refresh deadline the catalog is still written but its acceptance is not memoized", async () => {
+test("past the refresh deadline the catalog is still written, but neither the acceptance memo nor the reference and its claim are", async () => {
   catalogFixture({ version: "1.0.0" });
   storeCredential();
+  // A managed config with no reference yet: the sync after the refresh would add one.
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  mkdirSync(codexHome, { recursive: true });
+  const configPath = codexConfigPath(codexHome);
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  writeFileSync(configPath, 'model_provider = "copilot-env"\n');
+  const reference = () =>
+    (parse(readFileSync(configPath, "utf8")) as Record<string, unknown>)
+      .model_catalog_json;
   // The deadline is taken as the refresh starts; the clock then jumps past it while Copilot
   // answers, so the probe, the memo, and the reference sync all run late.
   const realNow = Date.now;
@@ -844,23 +857,29 @@ test("past the refresh deadline the catalog is still written but its acceptance 
     skewMs = 60_000;
     return Promise.resolve(new Response(JSON.stringify(GPT55_BODY), { status: 200 }));
   }) as typeof fetch;
+  let said = "";
   try {
-    const late = await withCatalogRefreshDeadline(() => refreshCodexModelCatalogIfStale("direct"));
-    expect(late).toBe(true);
-    expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(true);
-    expect(new CopilotEnvState().read().codexCatalogAccepted).toBeNull();
+    said = await stderrOf(() => refreshCodexCatalogAndSync("direct"));
   } finally {
     globalThis.fetch = realFetch;
     Date.now = realNow;
   }
-  // Control: inside the deadline the same run records the acceptance.
+  expect(existsSync(catalogFile)).toBe(true);
+  expect(new CopilotEnvState().read().codexCatalogAccepted).toBeNull();
+  expect(reference()).toBeUndefined();
+  expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(false);
+  // The logger wraps to the terminal width (mid-path included), so both sides drop whitespace.
+  const unwrapped = (text: string) => text.replace(/\s+/g, "");
+  expect(unwrapped(said)).toContain(unwrapped(
+    `catalog reference not set in ${configPath}: ownership could not be recorded; ` +
+      "the next wiring or direct launch retries",
+  ));
+  // Control: inside the deadline the same run records the acceptance, the reference, and the claim.
   new CopilotEnvState().set({ codexCatalogLastAttemptMs: Date.now() - MILLISECONDS_PER_DAY - 1 });
-  const { result } = await withCopilot(
-    GPT55_BODY,
-    () => withCatalogRefreshDeadline(() => refreshCodexModelCatalogIfStale("direct")),
-  );
-  expect(result).toBe(true);
+  await withCopilot(GPT55_BODY, () => refreshCodexCatalogAndSync("direct"));
   expect(new CopilotEnvState().read().codexCatalogAccepted?.codexVersion).toBe("1.0.0");
+  expect(reference()).toBe(catalogFile);
+  expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(true);
 });
 
 // --- inspectCatalogFile -----------------------------------

@@ -4,11 +4,8 @@ import { errMessage } from "../src/utils/error.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
-import {
-  CopilotEnvConfig,
-  type GlobalMapKey,
-  type GlobalPatch,
-} from "../src/copilot_api/env_config.ts";
+import type { GlobalMapKey } from "../src/copilot_api/config_registry.ts";
+import { CopilotEnvConfig, type GlobalPatch } from "../src/copilot_api/env_config.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
   daemonClientHeaders,

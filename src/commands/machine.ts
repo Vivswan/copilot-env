@@ -4,7 +4,7 @@
 // (src/commands/profile_verbs.ts, profile_ops.ts), in this order, so the help groups keep theirs.
 import type { Command } from "commander";
 import { runCodexMobile } from "../codex/mobile.ts";
-import { OPENROUTER_MODELS_URL } from "../copilot_api/env_config.ts";
+import { OPENROUTER_MODELS_URL } from "../copilot_api/config_registry.ts";
 import { runInstall } from "../install/installer.ts";
 import { runMigrations } from "../migrations/index.ts";
 import { runCost } from "../usage/cost.ts";

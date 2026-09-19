@@ -23,7 +23,8 @@ import {
   liveCredentialSourceLabel,
   runGhSpecAsync,
 } from "../src/copilot_api/credential.ts";
-import { CODEX_IDENTITY_NAME, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { CODEX_IDENTITY_NAME } from "../src/copilot_api/config_registry.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { assertProfileSlot, CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import {
   activeGhLogin,

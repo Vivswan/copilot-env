@@ -1,4 +1,4 @@
-import { CODEX_IDENTITY_NAME } from "../src/copilot_api/env_config.ts";
+import { CODEX_IDENTITY_NAME } from "../src/copilot_api/config_registry.ts";
 import {
   CODEX_EXEC_USER_AGENT,
   COPILOT_CLI_INTEGRATION_ID,

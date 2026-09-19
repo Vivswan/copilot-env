@@ -15,12 +15,11 @@ import { CopilotApiConfig, ensureDict } from "./config.ts";
 import { Credential } from "./credential.ts";
 import { assertProfileSlot, type AuthProvider } from "./env_state.ts";
 import { directOverlay, landDirectPair, renderDirectPair } from "./direct_pair.ts";
+import type { ConfigValue, ProxyConfigPath } from "./config_registry.ts";
 import {
   configSetCommand,
-  type ConfigValue,
   CopilotEnvConfig,
   projectedProxyConfig,
-  type ProxyConfigPath,
 } from "./env_config.ts";
 import {
   daemonClientHeaders,

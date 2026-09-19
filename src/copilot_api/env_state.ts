@@ -12,7 +12,7 @@ import {
   INTEGRATION_ID_RE,
   isLoopbackHostname,
   SHA256_HEX_SCHEMA,
-} from "./env_config.ts";
+} from "./config_registry.ts";
 import { GH_LOGIN_RE } from "./gh_cli.ts";
 import { profileHomeNames } from "./paths.ts";
 import {

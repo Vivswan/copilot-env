@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { canonicalPricingUrl } from "../src/copilot_api/env_config.ts";
+import { canonicalPricingUrl } from "../src/copilot_api/config_registry.ts";
 import {
   canonicalModelName,
   estimateCost,

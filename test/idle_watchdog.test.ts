@@ -1,4 +1,5 @@
-import { configDefaultNumber, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { configDefaultNumber } from "../src/copilot_api/config_registry.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { DAEMON_KEEP_PORT_ENV } from "../src/copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import {

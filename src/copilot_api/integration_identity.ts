@@ -17,7 +17,7 @@
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
-import { CODEX_IDENTITY_NAME, isLoopbackHostname } from "./env_config.ts";
+import { CODEX_IDENTITY_NAME, isLoopbackHostname } from "./config_registry.ts";
 import type { AuthProvider } from "./env_state.ts";
 import { fetchModelCatalog, type ModelCatalogOutcome } from "./models_fetch.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";

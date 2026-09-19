@@ -34,7 +34,8 @@ import {
   UNDATED_DAY_LABEL,
 } from "../src/usage/day_metrics.ts";
 import { consola } from "consola";
-import { CopilotEnvConfig, OPENROUTER_MODELS_URL } from "../src/copilot_api/env_config.ts";
+import { OPENROUTER_MODELS_URL } from "../src/copilot_api/config_registry.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { openUsageIndex } from "../src/usage/index.ts";
 import { USAGE_INDEX_DIR_NAME } from "../src/copilot_api/paths.ts";
 import {

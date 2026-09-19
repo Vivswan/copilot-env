@@ -7,12 +7,8 @@
 import type { Command } from "commander";
 import type { ManagedAgentId } from "../agents/configure.ts";
 import { parseModeFlags } from "../agents/provider_mode.ts";
-import {
-  configDelCommand,
-  configGetCommand,
-  configKeyDef,
-  configSetCommand,
-} from "../copilot_api/env_config.ts";
+import { configKeyDef } from "../copilot_api/config_registry.ts";
+import { configDelCommand, configGetCommand, configSetCommand } from "../copilot_api/env_config.ts";
 import {
   assertKnownProfile,
   AUTH_PROVIDERS,

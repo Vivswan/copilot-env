@@ -7,7 +7,12 @@
 import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
 import { type CopilotApiConfig, ensureDict } from "./config.ts";
-import { CODEX_IDENTITY_NAME, INTEGRATION_ID_RE, isLoopbackHostname } from "./env_config.ts";
+import {
+  CODEX_IDENTITY_NAME,
+  INTEGRATION_ID_RE,
+  isLoopbackHostname,
+  SHA256_HEX_SCHEMA,
+} from "./env_config.ts";
 import { GH_LOGIN_RE } from "./gh_cli.ts";
 import { profileHomeNames } from "./paths.ts";
 import {
@@ -259,7 +264,7 @@ const STATE_SCHEMA = v.object({
   codexCatalogPatchVersion: v.fallback(v.pipe(v.number(), v.finite(), v.minValue(0)), 0),
   codexCatalogAccepted: v.fallback(
     v.nullable(v.object({
-      sha256: v.pipe(v.string(), v.regex(/^[0-9a-f]{64}$/)),
+      sha256: SHA256_HEX_SCHEMA,
       codexVersion: v.pipe(v.string(), v.trim(), v.minLength(1)),
     })),
     null,

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import * as v from "valibot";
+import { SHA256_HEX_SCHEMA } from "../../src/copilot_api/env_config.ts";
 import { type CostRuntime, runCost } from "../../src/usage/cost.ts";
 import { canonicalModelName } from "../../src/usage/pricing.ts";
 import type { ModelUsage, ReadonlyUsageReport } from "../../src/usage/usage.ts";
@@ -100,14 +101,13 @@ export function goldenFilesFor(name: string, dir: string = FIXTURES_DIR): Golden
   };
 }
 
-const SHA256_HEX = v.pipe(v.string(), v.regex(/^[0-9a-f]{64}$/));
 const COMMIT_SHA = v.pipe(v.string(), v.regex(/^[0-9a-f]{40}$/));
 
 /** The sidecar beside a golden: how its tree was made and how the old cli was run. */
 export const RecordingSchema = v.strictObject({
   generator: GeneratorParamsSchema,
   split: v.boolean(),
-  treeSha256: SHA256_HEX,
+  treeSha256: SHA256_HEX_SCHEMA,
   oldCommit: COMMIT_SHA,
   args: v.array(v.string()),
   timeZone: v.literal(GOLDEN_TIME_ZONE),

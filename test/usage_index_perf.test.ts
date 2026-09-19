@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { TAIL_PROBE_BYTES } from "../src/usage/contribution.ts";
 import type { CostRuntime } from "../src/usage/cost.ts";
 import { USAGE_INDEX_DB_NAME } from "../src/usage/index.ts";
-import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
+import { USAGE_INDEX_DIR_NAME } from "../src/copilot_api/paths.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 import { generateUsageTree } from "./helpers/usage_fixtures.ts";
 import { runCurrentCost, utcPinnable } from "./helpers/usage_goldens.ts";

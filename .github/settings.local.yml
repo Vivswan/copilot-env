@@ -17,10 +17,10 @@ repository:
 
 # This repository's own labels (the fleet layers already carry the
 # dependabot, release, and tracking labels its modules need):
-# labels:
-#   - name: my-label
-#     color: "0e8a16"
-#     description: What it marks
+labels:
+  - name: "cost-metrics: intended"
+    color: "BFD4F2"
+    description: This PR changes agent cost's numbers on purpose; the Cost metrics check reports the diff and passes
 
 # This repository's own rulesets, or additions to a fleet one (an entry
 # named like a fleet ruleset merges into it and adds its rules):

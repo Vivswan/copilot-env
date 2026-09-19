@@ -34,14 +34,12 @@ const WEB_SEARCH_TIMEOUT_MS = 120_000;
 const SEARCH_INSTRUCTIONS =
   "Search the web to answer the user's query. Answer concisely from the search results and cite the source URLs.";
 
-/** Rejects once `signal` aborts and never settles otherwise. Raced against the work, it stops the
- *  WAITING without cancelling the work, so the identity probe's memoized result still gets filled.
- *  Listed FIRST in each race: Promise.race settles in list order among promises already settled, so
- *  a signal aborted before the call rejects ahead of work that already has its answer. */
-function rejectOnAbort(signal: AbortSignal | undefined): Promise<never> {
-  return new Promise<never>((_, reject) => {
-    if (signal === undefined) return;
-    const abortError = (): Error => {
+/** Rejects on abort WITHOUT cancelling the work: the identity probe's memoized result is worth keeping
+ *  even when this call stops waiting for it. */
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const abortError = () => {
       // MCP cancellations carry a plain string as the reason.
       if (signal.reason instanceof Error) return signal.reason;
       if (signal.reason === undefined || signal.reason === null) {
@@ -49,8 +47,26 @@ function rejectOnAbort(signal: AbortSignal | undefined): Promise<never> {
       }
       return new Error(`web_search was cancelled: ${String(signal.reason)}`);
     };
-    if (signal.aborted) reject(abortError());
-    else signal.addEventListener("abort", () => reject(abortError()), { once: true });
+    if (signal.aborted) {
+      promise.catch(() => {});
+      reject(abortError());
+      return;
+    }
+    const onAbort = () => {
+      promise.catch(() => {});
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
   });
 }
 
@@ -160,22 +176,22 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   // stored pair under the pin and literal (directRequestIdentity), and the catalog fetch below
   // reuses the host, so one host and one identity serve every request here.
   const config = new CopilotEnvConfig();
-  const pair = await Promise.race([
-    rejectOnAbort(opts.signal),
+  const pair = await raceWithAbort(
     directRequestIdentity(profile, token, CODEX_EXEC_USER_AGENT, {
       fetchImpl: opts.fetchImpl,
       narrator: logger,
     }),
-  ]);
+    opts.signal,
+  );
   const { integrationId, apiBase } = pair;
   const clientHeaders = directClientHeaders(CODEX_EXEC_USER_AGENT, integrationId);
   const configured = opts.model ?? config.messageApiWebSearchModel(profile);
   // Only a configured value can be an alias; the built-in default is a raw catalog id, so the default
   // path stays catalog-free.
-  const model = configured === null ? DEFAULT_WEB_SEARCH_MODEL : await Promise.race([
-    rejectOnAbort(opts.signal),
+  const model = configured === null ? DEFAULT_WEB_SEARCH_MODEL : await raceWithAbort(
     resolveWebSearchModel(configured, profile, token, pair, opts.fetchImpl),
-  ]);
+    opts.signal,
+  );
   const headers: Record<string, string> = {
     "Authorization": `Bearer ${token}`,
     "Content-Type": "application/json",

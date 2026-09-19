@@ -35,20 +35,36 @@ import {
   roundUsd,
 } from "./pricing.ts";
 import {
+  type ClientRequest,
+  ClientRequests,
+  dropRequestsLoggedByClients,
+} from "./proxy_overlap.ts";
+import {
   discoverUsageDbs,
+  foldUsageRequests,
   mergeUsageReports,
   type ReadonlyUsageReport,
-  readUsage,
+  readUsageRequests,
   type UsageReport,
   usageReport,
+  type UsageRequest,
 } from "./usage.ts";
 
-const SOURCES_NOTE =
-  "Note: merges three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts " +
-  "(each agent's full traffic, Direct included). Traffic through the proxy appears twice, so totals can double count it; " +
-  "use --sources for per-source tables.\n" +
-  "Disclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates; " +
+const SOURCES_INTRO =
+  "Note: three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts " +
+  "(each agent's full traffic, Direct included). ";
+const DISCLAIMER =
+  "\nDisclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates; " +
   "actual billing may differ.";
+/** The combined table pairs a proxied request's two records; the per-source tables are each whole. */
+const COMBINED_NOTE = SOURCES_INTRO +
+  "The table merges all three; a request both the proxy and a client log recorded " +
+  "(same model, token counts, and time) is counted once. Use --sources for per-source tables." +
+  DISCLAIMER;
+const SOURCES_NOTE = SOURCES_INTRO +
+  "Each table is whole, so summing them double counts traffic that went through the proxy; " +
+  "the default view counts such a request once." +
+  DISCLAIMER;
 
 const EMPTY_REPORT: ReadonlyUsageReport = usageReport();
 
@@ -191,7 +207,8 @@ async function reportCost(
   const { window, startedAt, now } = run;
   const sinceMs = window === undefined ? undefined : daysCutoffMs(window);
   const dbPaths = discoverUsageDbs();
-  const proxyReport = dbPaths.length > 0 ? readUsage(dbPaths, sinceMs) : EMPTY_REPORT;
+  const proxyRequests = dbPaths.length > 0 ? readUsageRequests(dbPaths, sinceMs) : [];
+  const proxyReport = foldUsageRequests(proxyRequests);
 
   // Discovered before the index opens, so nothing but the reads sits between open and close.
   const sessionRoots = roots.codex();
@@ -202,6 +219,9 @@ async function reportCost(
     sinceMs,
     args.noIndex === true,
     now,
+    // Only the combined table pairs proxy rows with client requests; the other views report each
+    // source whole, so their runs collect nothing.
+    !args.json && !args.sources && proxyRequests.length > 0,
   );
   const { codexByProvider, claudeReport } = logs;
 
@@ -300,23 +320,25 @@ async function reportCost(
   }
 
   const claude = { report: claudeReport, roots: claudeRoots.length };
+  const proxy: ProxySource = {
+    report: proxyReport,
+    requests: proxyRequests,
+    estimate: proxyEstimate,
+    dbCount: dbPaths.length,
+  };
+  const reportOpts: ReportOpts = {
+    pricing,
+    window,
+    perDay: Boolean(args.perDay),
+    roots: sessionRoots.length,
+  };
   if (args.sources) {
-    printSeparateReports(
-      { report: proxyReport, estimate: proxyEstimate, dbCount: dbPaths.length },
-      codexByProvider,
-      claude,
-      { pricing, window, perDay: Boolean(args.perDay), roots: sessionRoots.length },
-    );
+    printSeparateReports(proxy, codexByProvider, claude, reportOpts);
   } else {
-    printCombinedView(
-      { report: proxyReport, estimate: proxyEstimate, dbCount: dbPaths.length },
-      codexByProvider,
-      claude,
-      { pricing, window, perDay: Boolean(args.perDay), roots: sessionRoots.length },
-    );
+    printCombinedView(proxy, codexByProvider, claude, reportOpts, logs.clients);
   }
 
-  printWrapped(SOURCES_NOTE);
+  printWrapped(args.sources ? SOURCES_NOTE : COMBINED_NOTE);
   console.log("");
   if (logs.indexed) {
     printWrappedToStderr(describeIndexRun(logs.meter.stats));
@@ -326,6 +348,8 @@ async function reportCost(
 interface SessionLogs {
   codexByProvider: Map<string, UsageReport>;
   claudeReport: UsageReport;
+  /** Every request the two folds counted, for the proxy overlap pass; empty when not collected. */
+  clients: readonly ClientRequest[];
   /** False under --no-index and when the index could not be opened. */
   indexed: boolean;
   meter: ReconcileMeter;
@@ -340,17 +364,25 @@ async function readSessionLogs(
   sinceMs: number | undefined,
   noIndex: boolean,
   now: () => number,
+  collectClients: boolean,
 ): Promise<SessionLogs> {
   const index = noIndex ? null : openUsageIndex();
   try {
     const meter = new ReconcileMeter(index?.reconcile ?? parseEveryCandidate, now);
+    const clients = collectClients ? new ClientRequests() : null;
     const codexByProvider = await meter.read((reconcile) =>
-      readCodexSessions(codexRoots, sinceMs, undefined, reconcile)
+      readCodexSessions(codexRoots, sinceMs, undefined, reconcile, clients?.onCounted)
     );
     const claudeReport = await meter.read((reconcile) =>
-      readClaudeSessions(claudeRoots, sinceMs, undefined, reconcile)
+      readClaudeSessions(claudeRoots, sinceMs, undefined, reconcile, clients?.onCounted)
     );
-    return { codexByProvider, claudeReport, indexed: index !== null, meter };
+    return {
+      codexByProvider,
+      claudeReport,
+      clients: clients?.all() ?? [],
+      indexed: index !== null,
+      meter,
+    };
   } finally {
     index?.close();
   }
@@ -378,6 +410,8 @@ interface ReportOpts {
 
 interface ProxySource {
   report: ReadonlyUsageReport;
+  /** The rows `report` folds, for the combined view's overlap pass. */
+  requests: readonly UsageRequest[];
   estimate: CostEstimate;
   dbCount: number;
 }
@@ -433,13 +467,22 @@ function printSeparateReports(
   }
 }
 
+/** A request the proxy and a client log both recorded enters the merge from the client's record
+ *  only, so its per-model and per-day rows come from one record. The count of such requests is
+ *  named in the header only when there are any. */
 function printCombinedView(
   proxy: ProxySource,
   codexByProvider: ReadonlyMap<string, ReadonlyUsageReport>,
   claude: ClaudeSource,
   opts: ReportOpts,
+  clients: readonly ClientRequest[],
 ): void {
-  const merged = mergeUsageReports([proxy.report, ...codexByProvider.values(), claude.report]);
+  const { kept, paired } = dropRequestsLoggedByClients(proxy.requests, clients);
+  const merged = mergeUsageReports([
+    foldUsageRequests(kept),
+    ...codexByProvider.values(),
+    claude.report,
+  ]);
   const estimate = estimateCost(merged.byModel, opts.pricing);
   const parts: string[] = [];
   if (proxy.dbCount > 0) {
@@ -454,6 +497,9 @@ function printCombinedView(
   printCostReport(merged, estimate, opts.pricing, {
     title: "Usage by model",
     sourceLabel: parts.join(" + "),
+    requestsNote: paired > 0
+      ? ` (${paired} seen in both a proxy row and a client log, counted once)`
+      : "",
     window: opts.window,
   });
   if (opts.perDay) {
@@ -699,7 +745,13 @@ function printCostReport(
   report: ReadonlyUsageReport,
   estimate: CostEstimate,
   pricing: Map<string, PricingTier>,
-  opts: { title: string; sourceLabel: string; window: DaysWindow | undefined },
+  opts: {
+    title: string;
+    sourceLabel: string;
+    /** Follows the request count; empty when there is nothing to say about it. */
+    requestsNote?: string;
+    window: DaysWindow | undefined;
+  },
 ): void {
   const activeDays = report.perDay.size;
   const dayMetrics = computeDayMetrics(report, pricing, estimate);
@@ -717,7 +769,9 @@ function printCostReport(
     : "0 active days";
   printWrapped(
     paintFor(colorEnabled()).bold(
-      `${opts.title} - ${period} | ${opts.sourceLabel} | ${sum.reqs} requests | ${activeDaysLabel}`,
+      `${opts.title} - ${period} | ${opts.sourceLabel} | ${sum.reqs} requests${
+        opts.requestsNote ?? ""
+      } | ${activeDaysLabel}`,
     ),
   );
   console.log("");

@@ -15,7 +15,7 @@ import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
-import { dayKeyIn } from "../utils/time.ts";
+import { type DayKey, dayKeyIn } from "../utils/time.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { canonicalModelName } from "./pricing.ts";
 
@@ -37,12 +37,30 @@ export interface ModelUsage extends TokenBuckets {
   events: number;
 }
 
-/** parseUsageRow is the only mint, so nothing downstream re-checks the counts. */
-interface UsageRow {
-  bucket: number | null;
+/** One increment a session fold counted, as the fold saw it: a Codex token_count is a whole
+ *  request (`id` null); a Claude message's lines share its `id`, so its request is the sum of its
+ *  increments. `tsMs` is the line's own clock. */
+export interface CountedUsage {
+  id: string | null;
+  tsMs: number | null;
   model: string;
   buckets: TokenBuckets;
-  events: number;
+}
+
+/** A fold calls this for every increment it records, so a consumer sees exactly what was counted:
+ *  after the fold's own dedup and window, never before. A Claude line that repeats its message's
+ *  counts exactly is reported too, with zero buckets, so the message's clock runs to its last line. */
+export type OnCounted = (usage: CountedUsage) => void;
+
+/** One `token_usage_events` row: the proxy's record of one request. `tsMs` is the daemon's clock
+ *  when it recorded the response's usage. parseUsageRow is the only mint, so nothing downstream
+ *  re-checks the counts or the model spelling. */
+export interface UsageRequest {
+  tsMs: number | null;
+  /** The canonical spelling (canonicalModelName), so a proxy row and a client log line for the same
+   *  request carry the same model. */
+  model: string;
+  buckets: TokenBuckets;
 }
 
 /** node:sqlite hands back a `bigint` for an integer a double cannot hold exactly, so both shapes
@@ -55,20 +73,19 @@ function numberOrNull(value: unknown): number | null {
 /** The boundary between untyped SQLite output and the report: no later step re-checks for bigints,
  *  nulls, or hostile values. A row with no usable `model` cannot be attributed and is dropped.
  *  Exported for tests. */
-export function parseUsageRow(raw: unknown): UsageRow | null {
+export function parseUsageRow(raw: unknown): UsageRequest | null {
   if (!isRecord(raw)) return null;
   const model = raw.model;
   if (typeof model !== "string" || model === "") return null;
   return {
-    bucket: numberOrNull(raw.bucket),
-    model,
+    tsMs: numberOrNull(raw.tsMs),
+    model: canonicalModelName(model),
     buckets: {
       input: sanitizeTokenCount(numberOrNull(raw.input)),
       output: sanitizeTokenCount(numberOrNull(raw.output)),
       cacheRead: sanitizeTokenCount(numberOrNull(raw.cacheRead)),
       cacheCreation: sanitizeTokenCount(numberOrNull(raw.cacheCreation)),
     },
-    events: sanitizeTokenCount(numberOrNull(raw.events)),
   };
 }
 
@@ -243,34 +260,27 @@ function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: Database
   }
 }
 
-/** `timeZone` exists so the per-day slicing is assertable without pinning the process `TZ`, which
- *  deno honors on unix only. */
-export function readUsage(dbPaths: string[], sinceMs?: number, timeZone?: string): UsageReport {
-  const report = usageReport();
+/** Every row in the window, one per request. Oldest minute first and models alphabetical within
+ *  it, so the fold order (and with it the order the estimate sums in) is the same whatever order
+ *  the daemon or a merge wrote the rows. A DB that will not open is warned and skipped: this feeds
+ *  a summed TOTAL, so the rest still count. */
+export function readUsageRequests(dbPaths: string[], sinceMs?: number): UsageRequest[] {
   const since = sinceMs ?? null;
-  // Before any DB is opened: an unknown zone must fail here, not inside the per-path catch.
-  const dayKey = dayKeyIn(timeZone);
-
-  // A minute bucket never straddles a local midnight: every IANA transition in the standard-time
-  // era is minute-aligned. Minutes rather than quarter-hours because historical zones flipped DST
-  // at odd minutes (America/Goose_Bay fell back at 00:01 local), which would split a coarser bucket
-  // across two local days.
-  const MINUTE_MS = 60_000;
-  // The bucket is a UTC minute so the LOCAL day key is derived in JS, away from SQLite's
-  // cached-libc `localtime`. At most ~1440 rows per model-day.
-  const QUERY = `SELECT (created_at_ms / ${MINUTE_MS}) AS bucket,
+  // The raw timestamp, so the LOCAL day key is derived in JS, away from SQLite's cached-libc
+  // `localtime`.
+  const QUERY = `SELECT created_at_ms                AS tsMs,
                   model,
-                  SUM(input_tokens)                 AS input,
-                  SUM(output_tokens)                AS output,
-                  SUM(cache_read_input_tokens)      AS cacheRead,
-                  SUM(cache_creation_input_tokens)  AS cacheCreation,
-                  COUNT(*)                          AS events
+                  input_tokens                 AS input,
+                  output_tokens                AS output,
+                  cache_read_input_tokens      AS cacheRead,
+                  cache_creation_input_tokens  AS cacheCreation
            FROM token_usage_events
            WHERE (?1 IS NULL OR created_at_ms >= ?1)
-           GROUP BY bucket, model`;
+           ORDER BY created_at_ms / 60000, model`;
 
+  const requests: UsageRequest[] = [];
   for (const path of dbPaths) {
-    let rows: UsageRow[];
+    let rows: UsageRequest[];
     try {
       rows = openSqliteReadOnlyWithWalFallback(
         path,
@@ -281,19 +291,29 @@ export function readUsage(dbPaths: string[], sinceMs?: number, timeZone?: string
       consola.warn(`could not read ${path} (${errMessage(e)}).`);
       continue;
     }
-
-    for (const row of rows) {
-      // The daemon writes created_at_ms on every row, so a null bucket is not expected; record
-      // still totals such a row, just outside the per-day split.
-      record(
-        report,
-        row.bucket !== null ? dayKey(row.bucket * MINUTE_MS) : null,
-        canonicalModelName(row.model),
-        { ...row.buckets, events: row.events },
-      );
-    }
+    // One push per row: a spread of a whole DB's rows is a call with that many arguments.
+    for (const row of rows) requests.push(row);
   }
+  return requests;
+}
 
+/** `dayKey` is injectable so the per-day slicing is assertable without pinning the process `TZ`,
+ *  which deno honors on unix only. */
+export function foldUsageRequests(
+  requests: Iterable<UsageRequest>,
+  dayKey: DayKey = dayKeyIn(),
+): UsageReport {
+  const report = usageReport();
+  for (const request of requests) {
+    // The daemon writes created_at_ms on every row, so a null tsMs is not expected; record still
+    // totals such a row, just outside the per-day split. The day is the user's local one.
+    record(
+      report,
+      request.tsMs !== null ? dayKey(request.tsMs) : null,
+      request.model,
+      { ...request.buckets, events: 1 },
+    );
+  }
   return report;
 }
 

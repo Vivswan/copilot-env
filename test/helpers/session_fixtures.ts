@@ -1,6 +1,9 @@
-// Fixture lines spelled exactly the way the Codex and Claude CLIs write them.
+// Fixture lines spelled exactly the way the Codex and Claude CLIs write them, and the proxy's DB
+// the way the daemon writes it.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { RUN_DIR_NAME, SQLITE_DB_FILENAME } from "../../src/copilot_api/paths.ts";
 
 // ---------- Codex ----------
 
@@ -93,5 +96,52 @@ export function writeTranscript(dir: string, name: string, lines: string[]): str
   mkdirSync(dir, { recursive: true });
   const path = join(dir, name);
   writeFileSync(path, `${lines.join("\n")}\n`);
+  return path;
+}
+
+// ---------- Proxy ----------
+
+/** One `token_usage_events` row as the daemon writes it: `at` is the moment it recorded the
+ *  response's usage, and the counts are already split into the four buckets. */
+export interface ProxyRow {
+  at: string;
+  model: string;
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheCreation?: number;
+}
+
+/** The daemon's DB at `<home>/.run/<host>/copilot-api.sqlite`, the columns `agent cost` reads. */
+export function writeProxyDb(home: string, host: string, rows: ProxyRow[]): string {
+  const dir = join(home, RUN_DIR_NAME, host);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, SQLITE_DB_FILENAME);
+  const db = new DatabaseSync(path);
+  try {
+    db.exec(`CREATE TABLE token_usage_events (
+      model TEXT NOT NULL,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      cache_creation_input_tokens INTEGER,
+      created_at_ms INTEGER,
+      created_at_utc TEXT
+    )`);
+    const insert = db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)");
+    for (const row of rows) {
+      insert.run(
+        row.model,
+        row.input,
+        row.output,
+        row.cacheRead ?? 0,
+        row.cacheCreation ?? 0,
+        Date.parse(row.at),
+        row.at,
+      );
+    }
+  } finally {
+    db.close();
+  }
   return path;
 }

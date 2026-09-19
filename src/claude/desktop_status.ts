@@ -12,28 +12,31 @@ import type { Profile } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
+import { type OwnedDesktopEntry, readOwnedLibrary } from "./desktop.ts";
 import {
-  claudeDesktopInstalled,
-  type DesktopAppState,
-  desktopConfigPayload,
-  type DesktopCredential,
-  desktopEntryName,
   desktopHelperBody,
   desktopHelperPath,
   desktopHelperScriptWiring,
-  entryExists,
-  entryProfileAt,
   helperExecutable,
-  META_FILENAME,
-  type OwnedDesktopEntry,
   presentDesktopHelperScripts,
+} from "./desktop_helper_scripts.ts";
+import {
+  claudeDesktopInstalled,
+  type DesktopAppState,
+  desktopEntryName,
+  entryExists,
+  META_FILENAME,
   readDesktopAppState,
   readFileOrNull,
-  readOwnedLibrary,
-  recordedModelRows,
   resolveDesktopLibraryDir,
   sameBaseUrl,
-} from "./desktop.ts";
+} from "./desktop_library.ts";
+import {
+  desktopConfigPayload,
+  type DesktopCredential,
+  entryProfileAt,
+  recordedModelRows,
+} from "./desktop_payload.ts";
 
 /** `mode` is what the store records: the default slot's recorded mode for the default, the named
  *  slot's mode for a profile; settings.json is an output and promises nothing. */

@@ -15,11 +15,8 @@ import { dirname, join, sep } from "node:path";
 import { consola } from "consola";
 import { parse } from "smol-toml";
 import { configureClaudeConfig, WEBSEARCH_DENY_RULE } from "../src/claude/config.ts";
-import {
-  CLAUDE_DESKTOP_DIR_ENV,
-  desktopHelperPath,
-  desktopLibraryDirUnder,
-} from "../src/claude/desktop.ts";
+import { desktopHelperPath } from "../src/claude/desktop_helper_scripts.ts";
+import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop_library.ts";
 import { claudeJsonPath, registerClaudeMcpServer } from "../src/claude/mcp_registration.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";

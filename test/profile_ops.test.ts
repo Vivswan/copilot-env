@@ -7,7 +7,7 @@
 // settings bundle is that profile alone.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { desktopEntryName, META_FILENAME } from "../src/claude/desktop.ts";
+import { desktopEntryName, META_FILENAME } from "../src/claude/desktop_library.ts";
 import {
   expectIdentical,
   expectOracle as expectOracleOf,

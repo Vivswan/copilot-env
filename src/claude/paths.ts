@@ -4,8 +4,6 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Profile } from "../copilot_api/profile.ts";
 
-export const WIN = process.platform === "win32";
-
 /** THE single reader of CLAUDE_CONFIG_DIR: claudeJsonPath (mcp_registration.ts) and
  *  resolveClaudeHome derive from it with different fallbacks. Resolved absolute because the
  *  web-search deny ownership record keys on the exact string, so a relative override must not drift

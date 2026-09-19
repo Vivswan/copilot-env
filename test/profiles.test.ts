@@ -4,11 +4,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
-import {
-  CLAUDE_DESKTOP_DIR_ENV,
-  desktopHelperPath,
-  desktopLibraryDirUnder,
-} from "../src/claude/desktop.ts";
+import { desktopHelperPath } from "../src/claude/desktop_helper_scripts.ts";
+import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop_library.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
 import { codexProfileConfigPath } from "../src/codex/paths.ts";

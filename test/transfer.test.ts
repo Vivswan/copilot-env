@@ -39,11 +39,8 @@ import {
 } from "../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { claudeDesktopStatus, reconcileClaudeDesktopWiring } from "../src/agents/claude_desktop.ts";
-import {
-  CLAUDE_DESKTOP_DIR_ENV,
-  desktopLibraryDirUnder,
-  wireClaudeDesktopEntry,
-} from "../src/claude/desktop.ts";
+import { wireClaudeDesktopEntry } from "../src/claude/desktop.ts";
+import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop_library.ts";
 import { resolveRootHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";

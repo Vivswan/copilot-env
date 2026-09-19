@@ -42,6 +42,7 @@ import {
   MARKER_END,
   shellTargetFiles,
 } from "../src/shell/integration.ts";
+import type { FileChange } from "../src/utils/dry_run.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { ROOT } from "./helpers/run.ts";
@@ -428,7 +429,10 @@ test("uninstall --dry-run prints every file and store slot it would take as the 
     new CopilotEnvRunState().set({ codexHome: farm });
   }
 
+  const cwd = process.cwd();
   const { stdout, stderr } = await captureChannels(() => runUninstall({ dryRun: true }, root));
+  // A dry run moves nothing of the process either: the live delete step leaves the doomed tree.
+  expect(process.cwd()).toBe(cwd);
   // The plan is the tree diff on stdout: every removal outside our homes by path, the wiring
   // rewrites by attribute, the home (the Desktop helper inside it included) and the install root
   // as whole trees.
@@ -583,8 +587,13 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
     name: WORK,
     claudeArtifacts: [settingsPathFor(claudeHome, WORK)],
   }]);
-  // The dry run: the same steps on the overlay, nothing landed.
-  const { changes } = await dryRunChanges(() => applyUninstall(ctx));
+  // The dry run: the same steps on the overlay, nothing landed, and the shell-restart hint that
+  // follows a landed removal is not said.
+  let changes: FileChange[] = [];
+  const preview = await captureChannels(async () => {
+    ({ changes } = await dryRunChanges(() => applyUninstall(ctx)));
+  });
+  expect(preview.all).not.toContain("Restart");
   const named = new Set(changes.map((c) => c.path));
   expect(readFileSync(rc, "utf8")).toContain(SHELL_MARKER);
   expect(existsSync(join(library, "ours.json"))).toBe(true);

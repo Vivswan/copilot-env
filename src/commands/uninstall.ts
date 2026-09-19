@@ -218,10 +218,13 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
         process.exitCode = 1;
         return;
       }
-      try {
-        process.chdir(homedir());
-      } catch {
-        // deletion may still succeed from the current cwd
+      // Out of the doomed tree first; a dry run deletes nothing and moves nothing.
+      if (!fs.dryRunActive()) {
+        try {
+          process.chdir(homedir());
+        } catch {
+          // deletion may still succeed from the current cwd
+        }
       }
       try {
         fs.rm(installRoot, { recursive: true, force: true, detail: "the install directory" });

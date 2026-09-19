@@ -14,12 +14,14 @@ import {
 } from "../src/commands/launch.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import {
   resetIntegrationIdentityCache,
   setIntegrationProbeFetch,
 } from "../src/copilot_api/integration_identity.ts";
 import { renderModelAliases } from "../src/copilot_api/launch.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
+import type { FileChange } from "../src/utils/dry_run.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { runCli, spawnChild } from "./helpers/run.ts";
@@ -251,6 +253,84 @@ test("codex --profile: a failed wiring refresh warns and launches with the exist
     env: { CODEX_HOME: homes.codexHome },
     scrub: ["CODEX_HOME"],
   });
+});
+
+/** The default slot with a credential, its identity probe stubbed to accept. */
+function seedDefault(mode: "direct" | "proxy"): void {
+  const state = new CopilotEnvState();
+  state.setCredential(null, { kind: "stored", provider: "gh-token", token: "tok" });
+  state.recordDefaultMode(mode);
+  setIntegrationProbeFetch(() =>
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+  );
+}
+
+/** The `next` value of one attribute row of one planned file, or undefined. */
+function plannedValue(changes: FileChange[], path: string, key: string): unknown {
+  return changes.find((c) => c.path === path)?.attributes.find((row) => row.key === key)?.next;
+}
+
+// A cold start may move the port, so the default proxy launch ensures the daemon FIRST and wires
+// after it: the config the wire bakes carries the port the start took, never the stale record.
+test("codex default proxy: the daemon is ensured before the wiring, which bakes the port the start took", async () => {
+  const homes = scratchState();
+  seedDefault("proxy");
+  new CopilotEnvConfig().set({ "daemon.auto-start": true });
+  // A port left by a daemon that is gone: the start does not honor it for the default profile.
+  writeRunState({ port: 9999 });
+  const { changes, result } = await dryRunChanges(() =>
+    prepareLaunch({ kind: "codex", profile: null, relaxed: false, args: [] })
+  );
+  expect(result).toEqual({
+    command: "codex",
+    args: [],
+    env: { CODEX_HOME: homes.codexHome },
+    scrub: ["CODEX_HOME"],
+  });
+  const started = plannedValue(changes, new CopilotApiPaths().stateFile, "port");
+  expect(typeof started).toBe("number");
+  expect(started).not.toBe(9999);
+  expect(
+    plannedValue(changes, codexConfigPath(homes.codexHome), "model_providers.copilot-env.base_url"),
+  ).toBe(`http://127.0.0.1:${started}/v1`);
+});
+
+// Codex parses `model_catalog_json` at startup, so a direct default launch refreshes the catalog
+// while preparing and the plan is returned only once the refresh is through: the attempt is
+// recorded as it starts, and the reference sync that follows the generation (here: stripping the
+// reference to an unusable file) is in the plan too. The catalog is Codex's, so Claude's launch
+// touches neither.
+test("codex default direct: the catalog refresh runs to completion inside the preparation; claude's launch never runs it", async () => {
+  const homes = scratchState();
+  seedDefault("direct");
+  new CopilotEnvConfig().set({ "codex.model-catalog": true });
+  const paths = new CopilotApiPaths();
+  mkdirSync(homes.proxyHome, { recursive: true });
+  writeFileSync(paths.codexModelCatalogFile, "not a catalog\n");
+  writeCodexConfigToml(homes.codexHome, { baseUrl: DIRECT_BASE });
+  const config = codexConfigPath(homes.codexHome);
+  // Top level, ahead of the provider table the fixture ends with.
+  writeFileSync(
+    config,
+    `model_catalog_json = ${JSON.stringify(paths.codexModelCatalogFile)}\n${
+      readFileSync(config, "utf8")
+    }`,
+  );
+  const rowsOf = async (kind: "codex" | "claude"): Promise<[unknown, unknown]> => {
+    const { changes } = await dryRunChanges(() =>
+      prepareLaunch({ kind, profile: null, relaxed: false, args: [] })
+    );
+    return [
+      plannedValue(changes, paths.stateStoreFile, "global.codexCatalogLastAttemptMs"),
+      changes.find((c) => c.path === config)?.attributes.find((row) =>
+        row.key === "model_catalog_json"
+      )?.status,
+    ];
+  };
+  const [attempt, reference] = await rowsOf("codex");
+  expect(typeof attempt).toBe("number");
+  expect(reference).toBe("remove");
+  expect(await rowsOf("claude")).toEqual([undefined, undefined]);
 });
 
 test("copilot: the managed flag set verbatim, --relaxed adds --allow-all", async () => {

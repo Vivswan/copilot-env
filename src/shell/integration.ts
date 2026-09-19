@@ -279,9 +279,9 @@ export function ownedShellTargets(): string[] {
 }
 
 /** Strip the owned blocks from exactly `files` (an uninstall plan's ownedShellTargets),
- *  with the restart hint when anything went. */
+ *  with the restart hint when anything went; a dry run's plan stands in for the hint. */
 export function removeShellIntegrationFrom(files: readonly string[]): void {
-  if (removeFrom([...files])) {
+  if (removeFrom([...files]) && !fs.dryRunActive()) {
     consola.info(process.platform === "win32" ? "Restart PowerShell." : "Restart your shell.");
   }
 }

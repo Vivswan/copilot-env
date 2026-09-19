@@ -7,8 +7,8 @@ import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config
 import { desktopHelperPath } from "../src/claude/desktop_helper_scripts.ts";
 import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop_library.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
-import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
-import { codexProfileConfigPath } from "../src/codex/paths.ts";
+import { configureCodexConfig } from "../src/codex/config.ts";
+import { codexProfileConfigPath, codexProviderId } from "../src/codex/paths.ts";
 import {
   addProfile,
   checkProfile,

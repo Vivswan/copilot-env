@@ -13,7 +13,7 @@ import { claudeDesktopStatus } from "../agents/claude_desktop.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import type { ClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
-import { CODEX_ENV_KEY } from "../codex/config.ts";
+import { CODEX_ENV_KEY } from "../codex/inspect.ts";
 import { type CodexHostFarm, codexHostFarm, effectiveCodexHome } from "../codex/host.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {

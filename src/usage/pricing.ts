@@ -5,11 +5,16 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import * as v from "valibot";
 import * as fs from "../utils/fs_facade.ts";
-import { canonicalPricingUrl, OPENROUTER_MODELS_URL } from "../copilot_api/env_config.ts";
+import {
+  canonicalPricingUrl,
+  OPENROUTER_MODELS_URL,
+  SHA256_HEX_SCHEMA,
+} from "../copilot_api/env_config.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
+import { usageIndexDir } from "../copilot_api/paths.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
-import { usageIndexDir } from "./paths.ts";
+import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const PER_MILLION = 1_000_000;
@@ -61,8 +66,7 @@ export async function fetchPricing(
   let res: Response;
   try {
     res = await fetchImpl(canonical, {
-      // Not COPILOT_ENV_USER_AGENT: the pricing host sees this literal, and it differs on purpose.
-      headers: { Accept: "application/json", "User-Agent": "copilot-env-cost" },
+      headers: { Accept: "application/json", "User-Agent": COPILOT_ENV_USER_AGENT },
       signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]),
     });
   } catch {
@@ -230,7 +234,7 @@ function priceListProblem(pricing: ReadonlyMap<string, PricingTier>): string | n
 // The URL is stored as a digest only: a custom --pricing-url may carry credentials or signed query
 // parameters.
 const PRICING_CACHE_SCHEMA = v.strictObject({
-  "url_sha256": v.pipe(v.string(), v.regex(/^[0-9a-f]{64}$/)),
+  "url_sha256": SHA256_HEX_SCHEMA,
   "fetched_at_ms": v.pipe(v.number(), v.finite(), v.minValue(0)),
   "tiers": TIERS_SCHEMA,
 });

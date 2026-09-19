@@ -36,7 +36,7 @@ import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
 import { PROXY_CACHE_FIXTURE } from "../scripts/warm-proxy-cache.ts";
 import { ROOT, runSync } from "./helpers/run.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 // resolved-version.json records each float; it is the freshness oracle that
 // proxyFloatVerifyStatus's offline fast path reads.

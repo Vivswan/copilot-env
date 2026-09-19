@@ -22,11 +22,11 @@ import {
   SCENARIO_HEADER,
   type Scenarios,
   startFakeModelEndpoint,
-} from "../fake_model_endpoint.ts";
+} from "./fake_model_endpoint.ts";
 import { spawnChild } from "./run.ts";
 
-export const FAKE_CLAUDE_TOKEN = "fake-token-claude";
-export const FAKE_CODEX_TOKEN = "fake-token-codex";
+const FAKE_CLAUDE_TOKEN = "fake-token-claude";
+const FAKE_CODEX_TOKEN = "fake-token-codex";
 /** The identity the scratch configs bake, distinct from anything a real wiring sends. */
 export const FAKE_USER_AGENT = "copilot-env-test/1.0";
 /** The models the scratch configs pin, both in the fake's catalog. */
@@ -91,7 +91,7 @@ export function startFakeEndpoint(dir: string): Promise<FakeModelEndpoint> {
 
 /** The identity headers a Direct wiring bakes (directClientHeaders, no integration id), plus the
  *  scenario header when a scenario is named. */
-export function fakeClientHeaders(scenario: ScenarioName | null): Record<string, string> {
+function fakeClientHeaders(scenario: ScenarioName | null): Record<string, string> {
   return {
     ...directClientHeaders(FAKE_USER_AGENT, null),
     ...(scenario === null ? {} : { [SCENARIO_HEADER]: scenario }),
@@ -172,7 +172,7 @@ export function fakeCliEnv(
   });
 }
 
-export interface CliRun {
+interface CliRun {
   /** -1 when the deadline killed it before it exited. */
   exitCode: number;
   stdout: string;

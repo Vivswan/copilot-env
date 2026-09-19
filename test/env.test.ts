@@ -16,7 +16,9 @@ import {
   runSync,
 } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { claudeSettingsJson, envSnapshot, writeClaudeSettings, writeRunState } from "./helpers.ts";
+import { envSnapshot } from "./helpers/env.ts";
+import { claudeSettingsJson, writeClaudeSettings, writeRunState } from "./helpers/fixtures.ts";
+import { captureChannelsSync } from "./helpers/output.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -32,18 +34,7 @@ afterEach(() => {
 
 /** Everything `run` writes to stderr (the one place `agent profile env` may talk). */
 function stderrDuring(run: () => void): string {
-  const original = process.stderr.write;
-  let captured = "";
-  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
-    captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    run();
-  } finally {
-    process.stderr.write = original;
-  }
-  return captured;
+  return captureChannelsSync(run).stderr;
 }
 
 function envLines(profile?: string): string[] {

@@ -1,7 +1,7 @@
 # Nightly CI: written once from repo-platform's starter (files/nightly/.github/workflows/nightly.yml
 # at `stable`), repo-owned from then on and never overwritten by a sync. The `checks` job is this
 # repository's: the CURRENT claude and codex releases against the fake model endpoint
-# (test/fake_model_endpoint.ts), no credential and no network past the installs.
+# (test/helpers/fake_model_endpoint.ts), no credential and no network past the installs.
 #
 # What a red night points at, in order of likelihood:
 #   the test step red        -> a claude or codex release changed the output shape our Direct probe

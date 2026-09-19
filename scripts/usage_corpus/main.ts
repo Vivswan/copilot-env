@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join, relative } from "node:path";
 import { findCommand } from "../../src/utils/command.ts";
-import { startInferenceFake } from "../../test/helpers/inference_fake.mjs";
+import { startInferenceFake } from "./inference_fake.mjs";
 import { claudeEvidenceFailures, type ClaudeIds, recordClaude } from "./claude.ts";
 import { die, ledger, log, parseArgs, writeFile } from "./cli.ts";
 import { registry } from "./children.ts";

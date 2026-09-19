@@ -54,14 +54,10 @@ import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { errMessage } from "../src/utils/error.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import {
-  envSnapshot,
-  isolateAgentHomes,
-  resetExitCode,
-  stageRefusedStop,
-  stubGithubLogins,
-  writeRunState,
-} from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers/env.ts";
+import { stubGithubLogins, writeRunState } from "./helpers/fixtures.ts";
+import { stageRefusedStop } from "./helpers/daemon.ts";
+import { captureChannels } from "./helpers/output.ts";
 
 const restoreEnv = envSnapshot(["PATH"]);
 let dir = "";
@@ -96,48 +92,12 @@ function enableCatalog(): void {
   new CopilotEnvConfig().set({ "codex.model-catalog": true });
 }
 
-async function captureStdout(fn: () => Promise<void>): Promise<string> {
-  const original = process.stdout.write.bind(process.stdout);
-  let out = "";
-  process.stdout.write = (chunk: string | Uint8Array): boolean => {
-    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    return true;
-  };
-  try {
-    await fn();
-  } finally {
-    process.stdout.write = original;
-  }
-  return out;
-}
-
 async function captureStderr(fn: () => Promise<void>): Promise<string> {
-  const original = process.stderr.write.bind(process.stderr);
-  let out = "";
-  process.stderr.write = (chunk: string | Uint8Array): boolean => {
-    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    return true;
-  };
-  try {
-    await fn();
-  } finally {
-    process.stderr.write = original;
-  }
-  return out;
+  return (await captureChannels(fn)).stderr;
 }
 
-async function captureLog(fn: () => Promise<void>): Promise<string> {
-  const original = console.log;
-  let out = "";
-  console.log = (...args: unknown[]) => {
-    out += `${args.join(" ")}\n`;
-  };
-  try {
-    await fn();
-  } finally {
-    console.log = original;
-  }
-  return out;
+async function captureStdout(fn: () => Promise<void>): Promise<string> {
+  return (await captureChannels(fn)).stdout;
 }
 
 const PROVIDER_CONFLICT = "--provider selects how to authenticate and cannot combine with " +
@@ -275,7 +235,7 @@ test("auth --del, --provider gh-env, and --set land exactly in the store and wri
 test("auth --check: a configured provider reports authenticated, exit 0", async () => {
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
-  const out = await captureLog(() => runAuth({ check: true }));
+  const out = await captureStdout(() => runAuth({ check: true }));
   // The status line is human copy, so only the parenthesized provider identifier is pinned (the
   // parens keep a longer name like "gh-token-file" from matching); exit 0 is the machine contract.
   expect(out).toContain("(gh-token)");
@@ -402,7 +362,7 @@ test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile <
   const deleted = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
   expect(deleted).toContain("Nothing to clear");
   expect(deleted).toContain(addCommand);
-  const checked = await captureLog(() => runAuth({ check: true, profile: "ghost" }));
+  const checked = await captureStdout(() => runAuth({ check: true, profile: "ghost" }));
   expect(checked).toContain(addHint);
   expect(checked).toContain(addCommand);
   expect(process.exitCode).toBe(1);
@@ -423,7 +383,7 @@ test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile <
   expect(deletedExisting).toContain("Nothing to clear for profile 'ghost'");
   expect(deletedExisting).toContain("agent profile ghost auth");
   expect(deletedExisting).not.toContain("ghost add");
-  const checkedExisting = await captureLog(() => runAuth({ check: true, profile: "ghost" }));
+  const checkedExisting = await captureStdout(() => runAuth({ check: true, profile: "ghost" }));
   expect(checkedExisting).toContain("run `agent profile ghost auth`");
 });
 
@@ -456,7 +416,7 @@ test("auth --get/--del/--check on a HALF-CREATED profile reuse the store's missi
   expect(deleted).toContain("Nothing to clear");
   expect(deleted).toContain(phrase);
   expect(deleted).toContain(addCommand);
-  const checked = await captureLog(() => runAuth({ check: true, profile: "ghost" }));
+  const checked = await captureStdout(() => runAuth({ check: true, profile: "ghost" }));
   // --check prints the raw hint (console.log, no consola rendering), so the
   // WHOLE store message pins verbatim -- byte-level drift fails here.
   expect(checked).toContain(storeMessage);
@@ -535,7 +495,7 @@ test("identity survey: one column per host, ONE mark on the slot's identity unde
       return stubbedSurveyFetch(input, init);
     };
     setIntegrationProbeFetch(surveyFetch);
-    const fresh = await captureLog(() => runAuth({ identities: true }));
+    const fresh = await captureStdout(() => runAuth({ identities: true }));
     expect([...requests.entries()].filter(([, n]) => n !== 1)).toEqual([]);
     // The account lookup (no id, copilot-env's own User-Agent) happened exactly once.
     expect(requests.get("https://api.github.com/copilot_internal/user - copilot-env")).toBe(1);
@@ -577,7 +537,7 @@ test("identity survey: one column per host, ONE mark on the slot's identity unde
     // A pin without a stored pair marks nothing: the pin fixes the identity, so there is no pick to
     // preview, and the host is still the probe's to find, so the `*` waits for the pair.
     new CopilotEnvConfig().setProfile(null, { identity: COPILOT_CLI_INTEGRATION_ID });
-    const pinnedEmpty = await captureLog(() => runAuth({ identities: true }));
+    const pinnedEmpty = await captureStdout(() => runAuth({ identities: true }));
     expect(pinnedEmpty).toContain(`identity: pinned to ${COPILOT_CLI_INTEGRATION_ID}`);
     expect(pinnedEmpty).not.toContain(">");
     expect(pinnedEmpty.match(/ \*/g)).toBeNull();
@@ -587,7 +547,7 @@ test("identity survey: one column per host, ONE mark on the slot's identity unde
     // A pinned landing stored only the host; with the pin cleared the slot holds that half alone.
     // The next landing re-selects from the generic host, so no pick is previewed on the stored one.
     state().setProfileDirectPair(null, { host: "https://api.enterprise.githubcopilot.com" });
-    const halfStored = await captureLog(() => runAuth({ identities: true }));
+    const halfStored = await captureStdout(() => runAuth({ identities: true }));
     expect(halfStored).toContain("host: auto (api.enterprise.githubcopilot.com in use)");
     expect(halfStored).not.toContain(">");
     expect(halfStored.match(/ \*/g)).toBeNull();
@@ -598,7 +558,7 @@ test("identity survey: one column per host, ONE mark on the slot's identity unde
       integrationId: COPILOT_CLI_INTEGRATION_ID,
       host: GENERIC_HOST,
     });
-    const stored = await captureLog(() => runAuth({ identities: true }));
+    const stored = await captureStdout(() => runAuth({ identities: true }));
     expect(stored).toMatch(
       /^copilot-developer-cli\s+accepted \(5 models\) \*\s+accepted \(37 models\)\s/m,
     );
@@ -613,11 +573,11 @@ test("identity survey: one column per host, ONE mark on the slot's identity unde
       credential: { kind: "command" },
       direct: directWiring(COPILOT_SANDBOX_INTEGRATION_ID, DEFAULT_COPILOT_API_BASE),
     });
-    expect(await captureLog(() => runAuth({ identities: true }))).toBe(stored);
+    expect(await captureStdout(() => runAuth({ identities: true }))).toBe(stored);
 
     // A pin overlays the stored identity: the mark moves to it, and the note names the overlay.
     await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID });
-    const pinned = await captureLog(() => runAuth({ identities: true }));
+    const pinned = await captureStdout(() => runAuth({ identities: true }));
     expect(pinned).toContain(`identity: pinned to ${COPILOT_SANDBOX_INTEGRATION_ID}`);
     expect(pinned).toMatch(
       /^copilot-developer-cli\s+accepted \(5 models\)\s+accepted \(37 models\)\s/m,
@@ -632,7 +592,7 @@ test("identity survey: one column per host, ONE mark on the slot's identity unde
 
     // A pin that is not a built-in candidate is still probed and marked, never a bare `-`.
     new CopilotEnvConfig().setProfile(null, { identity: FOREIGN_ID });
-    const foreign = await captureLog(() => runAuth({ identities: true }));
+    const foreign = await captureStdout(() => runAuth({ identities: true }));
     expect(foreign).toMatch(FOREIGN_MARKED_ROW);
     expect(foreign).toContain(`  ${FOREIGN_ID} on api.githubcopilot.com: ${PAT_REJECTION}`);
 
@@ -640,7 +600,7 @@ test("identity survey: one column per host, ONE mark on the slot's identity unde
     // pin) stays in use once the pin clears, so its row stays and keeps the mark.
     new CopilotEnvConfig().setProfile(null, { identity: "auto" });
     state().setProfileDirectPair(null, { integrationId: FOREIGN_ID, host: GENERIC_HOST });
-    const storedForeign = await captureLog(() => runAuth({ identities: true }));
+    const storedForeign = await captureStdout(() => runAuth({ identities: true }));
     expect(storedForeign).toContain("identity: auto");
     expect(storedForeign).toMatch(FOREIGN_MARKED_ROW);
     expect(storedForeign.match(/ \*/g)).toHaveLength(1);
@@ -648,14 +608,14 @@ test("identity survey: one column per host, ONE mark on the slot's identity unde
     // A credential the proxy exchanges itself (device-flow) has no identity story of its own: the
     // credential write took the pair with it, so the slot reads as never probed again.
     state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_device" });
-    const exchanged = await captureLog(() => runAuth({ identities: true }));
+    const exchanged = await captureStdout(() => runAuth({ identities: true }));
     expect(exchanged.match(/ \*/g)).toBeNull();
     expect(exchanged).toContain("Nothing stored yet for this profile");
     expect(exchanged).not.toContain("passthrough");
 
     // A running daemon keeps the identity and host it launched with, and the table says so.
     writeRunState({ pid: process.pid, port: 4141 });
-    const running = await captureLog(() => runAuth({ identities: true }));
+    const running = await captureStdout(() => runAuth({ identities: true }));
     expect(running).toContain(
       "Proxy: a daemon is running and keeps the identity and host it launched with; restart it " +
         "to apply a change: `agent stop`, then `agent start`.",
@@ -750,7 +710,7 @@ test("identity survey: columns are the generic host, the account's when it diffe
   try {
     // The account is served on the generic host: one column, marked in use.
     stubIdentitySurvey("https://api.githubcopilot.com");
-    const one = await captureLog(() => runAuth({ identities: true }));
+    const one = await captureStdout(() => runAuth({ identities: true }));
     expect(one).toMatch(/^identity\s+api\.githubcopilot\.com \(in use\)\s+note$/m);
     expect(one).not.toContain("(account)");
 
@@ -759,7 +719,7 @@ test("identity survey: columns are the generic host, the account's when it diffe
     state().setProfileDirectPair(null, { integrationId: null, host: GENERIC_HOST });
     new CopilotEnvConfig().setProfile(null, { host: CONFIGURED_HOST });
     stubIdentitySurvey();
-    const three = await captureLog(() => runAuth({ identities: true }));
+    const three = await captureStdout(() => runAuth({ identities: true }));
     expect(three).toContain(`host: ${CONFIGURED_HOST}`);
     expect(three).toMatch(
       /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account\)\s+copilot\.example \(host, in use\)\s+note$/m,
@@ -783,7 +743,7 @@ test("identity survey: columns are the generic host, the account's when it diffe
       }
       return stubbedSurveyFetch(input, init);
     });
-    const storedHost = await captureLog(() => runAuth({ identities: true }));
+    const storedHost = await captureStdout(() => runAuth({ identities: true }));
     expect(storedHost).toContain("host: auto (api.enterprise.githubcopilot.com in use)");
     expect(storedHost).toMatch(
       /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(stored, in use\)\s+note$/m,
@@ -799,7 +759,7 @@ test("identity survey: columns are the generic host, the account's when it diffe
     // A literal equal to the account's host is one column, in its account role.
     stubIdentitySurvey();
     new CopilotEnvConfig().setProfile(null, { host: "https://api.enterprise.githubcopilot.com" });
-    const merged = await captureLog(() => runAuth({ identities: true }));
+    const merged = await captureStdout(() => runAuth({ identities: true }));
     expect(merged).toMatch(
       /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account, in use\)\s+note$/m,
     );
@@ -819,7 +779,7 @@ test("identity survey: at 80 columns the note wraps inside its own column, never
   const columns = process.env.COLUMNS;
   process.env.COLUMNS = "80";
   try {
-    const lines = (await captureLog(() => runAuth({ identities: true })))
+    const lines = (await captureStdout(() => runAuth({ identities: true })))
       .split("\n");
     expect(lines.filter((line) => line.length > 80)).toEqual([]);
     const header = lines.find((line) => line.startsWith("identity  "));

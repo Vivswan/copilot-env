@@ -16,7 +16,8 @@ import {
   resetInferenceActivityForTests,
 } from "../src/copilot_api/inference_activity.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, writeRunState } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
+import { writeRunState } from "./helpers/fixtures.ts";
 
 const restoreEnv = envSnapshot([IDLE_TIMEOUT_ENV, DAEMON_KEEP_PORT_ENV]);
 let dir = "";

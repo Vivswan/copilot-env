@@ -38,7 +38,8 @@ import { type ProbeDeps, runLiveCli } from "../src/health/probe_deps.ts";
 import type { CheckId, CheckResult, CheckStatus } from "../src/health/types.ts";
 import { type LaunchDeps, prepareLaunch } from "../src/commands/launch.ts";
 import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, writeRunState } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
+import { writeRunState } from "./helpers/fixtures.ts";
 
 const restoreEnv = envSnapshot();
 

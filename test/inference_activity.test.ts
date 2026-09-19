@@ -12,7 +12,7 @@ import {
 } from "../src/copilot_api/inference_activity.ts";
 import { denoRunArgs, importSpecifier, resolvePackageDir, ROOT, runSync } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 const PRELOAD = join(ROOT, "src", "scripts", "daemon_runtime_preload.ts");
 

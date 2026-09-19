@@ -1,31 +1,15 @@
-import { rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import { daemonClientHeaders } from "../src/copilot_api/integration_identity.ts";
 import { isCopilotApiHost } from "../src/scripts/client_headers_preload.ts";
-import { CHILD_VALUES, childValuesEnv, denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
-import { expect, tempDir, test } from "./helpers/testing.ts";
+import { CHILD_VALUES, childValuesEnv, ROOT, runWithPreload } from "./helpers/run.ts";
+import { expect, test } from "./helpers/testing.ts";
+import { freePort } from "./helpers/net.ts";
 
 // Importing the preload without its env var set installs nothing, so the exported helpers are
 // unit-tested directly; the wiring (fetch AND undici's WebSocket, Copilot hosts only) runs as a
 // real `--preload` subprocess against local servers, the way launchDaemon loads it.
 const SHIM = join(ROOT, "src", "scripts", "client_headers_preload.ts");
 const UA = "codex_exec/1.2.3";
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        reject(new Error("expected an AddressInfo from a TCP server"));
-        return;
-      }
-      server.close(() => resolve(address.port));
-    });
-  });
-}
 
 /** What the server saw of the identity headers on one request. */
 interface Seen {
@@ -43,57 +27,48 @@ async function runPreloaded(
   set: Record<string, string | null>,
 ): Promise<{ http: Seen; ws: Seen; other: Seen }> {
   const [pinned, other] = [await freePort(), await freePort()];
-  const dir = tempDir("copilot-client-headers-");
-  try {
-    const target = join(dir, "target.ts");
-    writeFileSync(
-      target,
-      [
-        'import { WebSocket as UndiciWebSocket } from "undici";',
-        `const values = ${CHILD_VALUES};`,
-        "const seen = (req) => ({",
-        '  ua: req.headers.get("user-agent"),',
-        '  id: req.headers.get("copilot-integration-id"),',
-        '  intent: req.headers.get("openai-intent"),',
-        "});",
-        "const serve = (port) =>",
-        '  Deno.serve({ port, hostname: "127.0.0.1", onListen() {} }, (req) => {',
-        // Read before the upgrade: an upgraded request's headers are gone.
-        "    const record = seen(req);",
-        '    if (req.headers.get("upgrade") === "websocket") {',
-        "      const { socket, response } = Deno.upgradeWebSocket(req);",
-        "      socket.onopen = () => { socket.send(JSON.stringify(record)); socket.close(); };",
-        "      return response;",
-        "    }",
-        "    return Response.json(record);",
-        "  });",
-        "const servers = [serve(values.pinned), serve(values.other)];",
-        // The proxy's own upstream identity, as copilot-api sends it on both transports.
-        'const proxyOwn = { "Copilot-Integration-Id": "vscode-chat", "user-agent": "node", "openai-intent": "conversation-agent" };',
-        "const http = await (await fetch(`http://127.0.0.1:${values.pinned}/models`, { headers: proxyOwn })).json();",
-        "const other = await (await fetch(`http://127.0.0.1:${values.other}/models`, { headers: proxyOwn })).json();",
-        "const ws = await new Promise((resolve, reject) => {",
-        "  const socket = new UndiciWebSocket(`ws://127.0.0.1:${values.pinned}/responses`, { headers: proxyOwn });",
-        "  socket.onmessage = (e) => resolve(JSON.parse(String(e.data)));",
-        "  socket.onerror = () => reject(new Error('websocket failed'));",
-        "});",
-        "console.log(JSON.stringify({ http, ws, other }));",
-        "await Promise.all(servers.map((s) => s.shutdown()));",
-      ].join("\n"),
-    );
-    const res = runSync(Deno.execPath(), [...denoRunArgs("--preload", SHIM), target], {
-      env: {
-        ...process.env,
-        ...childValuesEnv({ pinned, other }),
-        COPILOT_ENV_DAEMON_CLIENT_HEADERS: JSON.stringify(set),
-        COPILOT_ENV_DAEMON_COPILOT_HOST: `http://127.0.0.1:${pinned}`,
-      },
-    });
-    if (res.exitCode !== 0) throw new Error(`target failed: ${res.stderr}`);
-    return JSON.parse(res.stdout.trim());
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const source = [
+    'import { WebSocket as UndiciWebSocket } from "undici";',
+    `const values = ${CHILD_VALUES};`,
+    "const seen = (req) => ({",
+    '  ua: req.headers.get("user-agent"),',
+    '  id: req.headers.get("copilot-integration-id"),',
+    '  intent: req.headers.get("openai-intent"),',
+    "});",
+    "const serve = (port) =>",
+    '  Deno.serve({ port, hostname: "127.0.0.1", onListen() {} }, (req) => {',
+    // Read before the upgrade: an upgraded request's headers are gone.
+    "    const record = seen(req);",
+    '    if (req.headers.get("upgrade") === "websocket") {',
+    "      const { socket, response } = Deno.upgradeWebSocket(req);",
+    "      socket.onopen = () => { socket.send(JSON.stringify(record)); socket.close(); };",
+    "      return response;",
+    "    }",
+    "    return Response.json(record);",
+    "  });",
+    "const servers = [serve(values.pinned), serve(values.other)];",
+    // The proxy's own upstream identity, as copilot-api sends it on both transports.
+    'const proxyOwn = { "Copilot-Integration-Id": "vscode-chat", "user-agent": "node", "openai-intent": "conversation-agent" };',
+    "const http = await (await fetch(`http://127.0.0.1:${values.pinned}/models`, { headers: proxyOwn })).json();",
+    "const other = await (await fetch(`http://127.0.0.1:${values.other}/models`, { headers: proxyOwn })).json();",
+    "const ws = await new Promise((resolve, reject) => {",
+    "  const socket = new UndiciWebSocket(`ws://127.0.0.1:${values.pinned}/responses`, { headers: proxyOwn });",
+    "  socket.onmessage = (e) => resolve(JSON.parse(String(e.data)));",
+    "  socket.onerror = () => reject(new Error('websocket failed'));",
+    "});",
+    "console.log(JSON.stringify({ http, ws, other }));",
+    "await Promise.all(servers.map((s) => s.shutdown()));",
+  ].join("\n");
+  const res = runWithPreload(SHIM, source, {
+    env: {
+      ...process.env,
+      ...childValuesEnv({ pinned, other }),
+      COPILOT_ENV_DAEMON_CLIENT_HEADERS: JSON.stringify(set),
+      COPILOT_ENV_DAEMON_COPILOT_HOST: `http://127.0.0.1:${pinned}`,
+    },
+  });
+  if (res.exitCode !== 0) throw new Error(`target failed: ${res.stderr}`);
+  return JSON.parse(res.stdout.trim());
 }
 
 test("the daemon sends the resolved identity on fetch AND undici's WebSocket to its Copilot host, and nothing else changes", async () => {

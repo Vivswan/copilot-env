@@ -31,7 +31,7 @@ export const PRE_INDEX_COMMIT = "48384eaa9352b90c5d9f80894add828937d042e2";
 /** Port 1 is on the fetch spec's bad-port list, so the request fails inside the runtime
  *  before any socket opens: both implementations fall back to the token-only report the
  *  same way, offline, and no pricing cache is ever written. */
-export const UNREACHABLE_PRICING_URL = "https://127.0.0.1:1/unreachable";
+const UNREACHABLE_PRICING_URL = "https://127.0.0.1:1/unreachable";
 
 /** The zone the goldens' per-day buckets are cut in: the generator's synthetic user's own. */
 export const GOLDEN_TIME_ZONE = "UTC";
@@ -56,14 +56,14 @@ const ZONED_INSTANT = v.pipe(
 
 /** Every parameter that determines a generated tree, spelled out so a sidecar is complete
  *  on its own. */
-export const GeneratorParamsSchema = v.strictObject({
+const GeneratorParamsSchema = v.strictObject({
   mb: v.pipe(v.number(), v.minValue(MIN_MB), v.maxValue(MAX_MB)),
   seed: v.pipe(v.number(), v.integer()),
   adversarial: v.boolean(),
   days: v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(MAX_DAYS)),
   end: ZONED_INSTANT,
 });
-export type GeneratorParams = v.InferOutput<typeof GeneratorParamsSchema>;
+type GeneratorParams = v.InferOutput<typeof GeneratorParamsSchema>;
 
 export function generatorParams(mb: number, seed: number, adversarial: boolean): GeneratorParams {
   return { mb, seed, adversarial, days: DEFAULT_DAYS, end: DEFAULT_END };
@@ -89,7 +89,7 @@ export const GOLDEN_MATRIX: readonly GoldenCase[] = [
   { name: "golden-5-split", generator: generatorParams(2, 5, false), split: true },
 ];
 
-export interface GoldenFiles {
+interface GoldenFiles {
   goldenPath: string;
   recordingPath: string;
 }
@@ -104,7 +104,7 @@ export function goldenFilesFor(name: string, dir: string = FIXTURES_DIR): Golden
 const COMMIT_SHA = v.pipe(v.string(), v.regex(/^[0-9a-f]{40}$/));
 
 /** The sidecar beside a golden: how its tree was made and how the old cli was run. */
-export const RecordingSchema = v.strictObject({
+const RecordingSchema = v.strictObject({
   generator: GeneratorParamsSchema,
   split: v.boolean(),
   treeSha256: SHA256_HEX_SCHEMA,
@@ -162,11 +162,11 @@ export function treeSha256(tree: GeneratedTree): string {
  * breaks a line at U+2028 and U+2029, while a U+0085 (NEL) line survives in both readers.
  * The delta a split golden differs by is the usage of exactly these lines.
  */
-export const OLD_READER_SPLITS: ReadonlySet<string> = new Set(["\u2028", "\u2029"]);
+const OLD_READER_SPLITS: ReadonlySet<string> = new Set(["\u2028", "\u2029"]);
 
 /** What the old reader missed of plantSplitLines: the canonical model and UTC day the lines
  *  land on, and the summed usage of the OLD_READER_SPLITS lines (one event each). */
-export interface PlantedDelta {
+interface PlantedDelta {
   model: string;
   day: string;
   usage: ModelUsage;
@@ -185,7 +185,7 @@ const PLANTED_SESSION_ID = "00000000-0000-4000-a000-000000002028";
 /** One assistant line per LINE_SPLITTING_CODE_POINTS member, the code point raw in the text
  *  (JSON.stringify does not escape them), on a day and model the tree already has so the
  *  delta touches only existing rows. */
-export function plantSplitLines(tree: GeneratedTree): PlantedDelta {
+function plantSplitLines(tree: GeneratedTree): PlantedDelta {
   const first = tree.files.filter((f) => f.source === "claude")
     .map((f) => f.path).sort()[0];
   if (first === undefined) throw new Error("the tree has no Claude transcript to plant beside");
@@ -284,7 +284,7 @@ export function canonicalLedger(report: ExpectedReport): ReadonlyUsageReport {
  * model's usage row and the day's per-day row, nothing else. Both rows must already exist,
  * which is what makes "differs ONLY by the planted lines" a precise claim.
  */
-export function withPlantedDelta(
+function withPlantedDelta(
   payload: Record<string, unknown>,
   delta: PlantedDelta,
 ): Record<string, unknown> {
@@ -366,7 +366,7 @@ export function describeMismatch(actual: unknown, expected: unknown): string | n
 
 /** The key the current implementation reserves for run metadata the old one never emitted;
  *  parseCostPayload drops it. */
-export const RUNTIME_KEY = "runtime";
+const RUNTIME_KEY = "runtime";
 
 export function parseCostPayload(stdout: string, what: string): Record<string, unknown> {
   let parsed: unknown;
@@ -440,13 +440,13 @@ export function utcPinnable(): boolean {
   }
 }
 
-export interface CurrentCostRun {
+interface CurrentCostRun {
   /** The payload without the runtime key: what a golden compares against. */
   payload: Record<string, unknown>;
   runtime: CostRuntime;
 }
 
-export interface CurrentCostOptions {
+interface CurrentCostOptions {
   /** `--no-index`: parse every file, never open the index. */
   noIndex?: boolean;
   /** The copilot-api home (where the index lives); default the tree's own `.copilot-env`. */

@@ -12,6 +12,7 @@ import { PREFERENCE_RENAMES } from "../src/migrations/4.0.9.ts";
 import { escapeRegExp } from "../src/utils/regexp.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { expect, test } from "./helpers/testing.ts";
+import { tsFilesUnder as sourceFiles } from "./helpers/tree.ts";
 
 const SRC = join(PROJECT_ROOT, "src");
 const REGISTRY_FILE = join(SRC, "copilot_api", "env_config.ts");
@@ -30,16 +31,6 @@ const NOT_KEYS = new Set([
   "proxy.sidecar",
   "proxy.resolved",
 ]);
-
-function sourceFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const name of readdirSync(dir)) {
-    const path = join(dir, name);
-    if (statSync(path).isDirectory()) out.push(...sourceFiles(path));
-    else if (path.endsWith(".ts")) out.push(path);
-  }
-  return out;
-}
 
 /** The string and template literals of a file, `${...}` holes removed, full-line comments and
  *  import/export specifiers (module paths such as `./daemon.ts`) dropped. */

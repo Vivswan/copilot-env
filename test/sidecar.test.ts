@@ -26,11 +26,12 @@ import {
   beforeEach,
   describe,
   expect,
+  outcomeOf as caught,
   removeDir,
   tempDir,
   test,
 } from "./helpers/testing.ts";
-import { envSnapshot } from "./helpers.ts";
+import { envSnapshot } from "./helpers/env.ts";
 
 const PIN = "2.9.5";
 // sha256("hello"), the classic test vector -- the fake download below serves "hello".
@@ -64,11 +65,8 @@ function plantSidecar(rootHome: string, version: string, platform = "linux"): st
 type Outcome<T> = { value: T } | { error: string };
 
 function outcomeOf<T>(fn: () => T): Outcome<T> {
-  try {
-    return { value: fn() };
-  } catch (err) {
-    return { error: (err as Error).message };
-  }
+  const seen = caught(fn);
+  return "error" in seen ? { error: (seen.error as Error).message } : seen;
 }
 
 /** The row's expected error is a fragment of the thrown message; a value is exact. */

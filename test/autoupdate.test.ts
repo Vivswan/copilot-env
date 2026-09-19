@@ -13,7 +13,7 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { isDue, MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { packageVersion } from "../src/utils/version.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot } from "./helpers.ts";
+import { envSnapshot } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

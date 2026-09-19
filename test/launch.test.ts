@@ -20,7 +20,8 @@ import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
 import { runCli, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
-import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "./helpers.ts";
+import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "./helpers/fixtures.ts";
+import { agentHomeEnv } from "./helpers/env.ts";
 
 const WORK = parseProfileName("work");
 const skipWin = test.skipIf(process.platform === "win32");
@@ -539,11 +540,7 @@ function launchEnv(root: string, bin: string): Record<string, string> {
     ...inherited,
     CONSOLA_LEVEL: "5",
     PATH: `${bin}:${process.env.PATH ?? ""}`,
-    HOME: root,
-    USERPROFILE: root,
-    COPILOT_API_HOME: join(root, "api-home"),
-    CLAUDE_CONFIG_DIR: join(root, ".claude"),
-    CODEX_HOME: join(root, ".codex"),
+    ...agentHomeEnv(root, { proxyHome: join(root, "api-home") }),
   };
 }
 

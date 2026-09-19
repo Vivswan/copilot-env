@@ -35,7 +35,8 @@ import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { colorEnabled } from "../src/utils/ansi.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
+import { captureChannelsSync } from "./helpers/output.ts";
 
 // CopilotEnvConfig reads/writes the SHARED prefs store under COPILOT_API_HOME, so isolate
 // each test in a temp home.
@@ -76,21 +77,6 @@ function face(key: string | undefined, profile: Profile = null): ConfigView {
 /** Every key a view lists: the config view drops the profile keys, a profile's view the machine's. */
 const MACHINE_AND_SHARED_KEYS = CONFIG_REGISTRY.filter((d) => d.scope !== "profile").length;
 
-function stderrOf(run: () => void): string {
-  const written: string[] = [];
-  const orig = process.stderr.write.bind(process.stderr);
-  process.stderr.write = (s: string | Uint8Array) => {
-    written.push(String(s));
-    return true;
-  };
-  try {
-    run();
-  } finally {
-    process.stderr.write = orig;
-  }
-  return written.join("");
-}
-
 /** Both maps, as read() returns them. */
 function stored(
   global: CopilotEnvConfigData["global"],
@@ -108,18 +94,7 @@ function projectedValue(
 }
 
 function stdoutOf(run: () => void): string {
-  const written: string[] = [];
-  const orig = process.stdout.write.bind(process.stdout);
-  process.stdout.write = (s: string | Uint8Array) => {
-    written.push(String(s));
-    return true;
-  };
-  try {
-    run();
-  } finally {
-    process.stdout.write = orig;
-  }
-  return written.join("");
+  return captureChannelsSync(run).stdout;
 }
 
 test("the typed store: read() starts empty, each accessor answers stored else built-in default and del() reverts it, a whole patch lands beside a profile section", () => {
@@ -578,10 +553,7 @@ test("get <key> prints the value alone on stdout (script-friendly) and where it 
   tmpHome();
   createWorkProfile();
   const get = (key: string, view: ConfigView): { stdout: string; stderr: string } => {
-    let stderr = "";
-    const stdout = stdoutOf(() => {
-      stderr = stderrOf(() => runConfig({ kind: "get", key, view }));
-    });
+    const { stdout, stderr } = captureChannelsSync(() => runConfig({ kind: "get", key, view }));
     return { stdout, stderr };
   };
   // The built-in default, then the shared default once `agent config set` lands it (the default

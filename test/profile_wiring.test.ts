@@ -8,7 +8,7 @@ import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { landDirectWiring } from "../src/codex/config.ts";
 import { directPairIncomplete, resolveDirectWiring } from "../src/agents/profile_wiring.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 const WORK = parseProfileName("work");
 const PIN = "copilot-developer-cli";

@@ -43,7 +43,7 @@ import { installedBinaryName } from "../src/install/targets.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../src/shell/integration.ts";
 import { INSTALL_MANIFEST_FILE, INSTALL_ROOT_MARKERS } from "../src/utils/root.ts";
 import { packageVersion } from "../src/utils/version.ts";
-import { envSnapshot } from "./helpers.ts";
+import { envSnapshot } from "./helpers/env.ts";
 import { runSync } from "./helpers/run.ts";
 import { afterEach, beforeEach, describe, expect, tempDir, test } from "./helpers/testing.ts";
 

@@ -16,7 +16,7 @@ import { childEnvWithPath, cliSpawn, resolveCommand } from "../src/utils/command
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { runSync } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
 
 // Opted in: the test RUNS, and a missing codex is a failure (CI installs it right
 // before), never a skip that lets the gate pass vacuously.

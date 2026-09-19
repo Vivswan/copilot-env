@@ -197,32 +197,15 @@ export function emptyIndexStats(): IndexStats {
   };
 }
 
-/** The path is for ordering and the reader's own logging; it is never stored inside the
- *  contribution. */
+/** The path names the file for the caller; it is never stored inside the contribution. */
 export interface FileRecord<C extends Contribution> {
   path: string;
   contribution: C;
 }
 
-/** The fold order is the reader's guarantee, so a reader applies this to whatever a Reconcile hands
- *  back rather than trusting its ordering. */
-export function inWalkOrder<C extends Contribution>(
-  walked: readonly WalkedFile[],
-  records: readonly FileRecord<C>[],
-): FileRecord<C>[] {
-  const byPath = new Map(records.map((r) => [r.path, r]));
-  const ordered: FileRecord<C>[] = [];
-  for (const file of walked) {
-    const found = byPath.get(file.path);
-    if (found !== undefined) {
-      ordered.push(found);
-    }
-  }
-  return ordered;
-}
-
 export interface ReconcileResult<C extends Contribution> {
-  /** Every candidate that exists right now and parsed, in `walked` order. */
+  /** Every candidate that exists right now and parsed, in `walked` order: the fold order is the
+   *  reader's guarantee, and every Reconcile keeps it. */
   records: FileRecord<C>[];
   stats: IndexStats;
 }

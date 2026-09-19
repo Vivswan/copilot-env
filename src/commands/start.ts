@@ -10,8 +10,6 @@ import {
   awaitReadiness,
   ensureProxyFloor,
   entryProxyVersion,
-  type FloorCheckedEntry,
-  type HeldStartLock,
   type LaunchToken,
   previewProxyFloor,
   readLaunchToken,
@@ -28,6 +26,7 @@ import {
 } from "../copilot_api/launch_cleanup.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { daemonPolicy } from "../copilot_api/port.ts";
+import type { CopilotApiEntry } from "../copilot_api/process.ts";
 import {
   agentStartCommand,
   agentStopCommand,
@@ -214,7 +213,7 @@ function reportManagedLifecycle(state: CopilotEnvRunState): void {
 
 /** The summary's first line, consola-decorated; the table rows go through console.log: consola
  *  would put its icon in front of the first row and read a hard-split path chunk as markup. */
-async function proxyLine(entry: FloorCheckedEntry): Promise<string> {
+async function proxyLine(entry: CopilotApiEntry): Promise<string> {
   if (entry.kind === "file") return `   Proxy: ${entry.path} (COPILOT_API_ENTRY)`;
   const version = entryProxyVersion(entry);
   if (version === null) return `   Proxy: ${PROXY_PACKAGE_NAME} (version unknown)`;
@@ -259,7 +258,7 @@ async function reportStartSummary(
   live: { pid: number; port: number },
   paths: CopilotApiPaths,
   logFile: string,
-  entry: FloorCheckedEntry,
+  entry: CopilotApiEntry,
 ): Promise<void> {
   consola.info(await proxyLine(entry));
   console.log(renderStartSummary([
@@ -374,9 +373,9 @@ export async function runStart(
   // before the command.
   const launch = readLaunchToken(profile);
 
-  await withStartLock(async (lock) => {
+  await withStartLock(async () => {
     try {
-      await launchUnderLock(lock, action, profile, launchContext, launch);
+      await launchUnderLock(action, profile, launchContext, launch);
     } finally {
       // On every exit path: a failed launch still gets its daily check, and its error passes
       // through.
@@ -386,7 +385,6 @@ export async function runStart(
 }
 
 async function launchUnderLock(
-  lock: HeldStartLock,
   action: { force: boolean; port?: number },
   profile: Profile,
   launchContext: () => LaunchContext,
@@ -396,8 +394,9 @@ async function launchUnderLock(
   const paths = ctx.paths;
   fs.mkdir(paths.runDir);
   // Inside the start lock: the gate rewrites the shared daemon config and re-warms the float's
-  // cache, so two concurrent starts must not run it over each other.
-  const entry = await ensureProxyFloor(lock);
+  // cache, so two concurrent starts must not run it over each other. The spawn below runs the
+  // entry it judged.
+  const entry = await ensureProxyFloor();
 
   if (isIdempotentNoOp(action, ctx.envConfig)) {
     const status = await proxyStatus(profile);
@@ -409,7 +408,7 @@ async function launchUnderLock(
 
   fs.mkdir(paths.home);
   applyDefaultConfig(profile, ctx.paths, ctx.envConfig);
-  await cleanupExistingProxies(lock, profile, ctx.state);
+  await cleanupExistingProxies(profile, ctx.state);
 
   const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);
   const { credential, copilotHost } = await resolveLaunchCredential(

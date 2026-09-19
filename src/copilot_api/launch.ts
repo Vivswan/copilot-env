@@ -7,7 +7,7 @@ import { consola } from "consola";
 import { floatProxy, proxyFloatVerifyStatus } from "../proxy_float.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
-import { BOUNDED_LOCK_POLICY, withFileLock, withRequiredFileLockSync } from "../utils/file_lock.ts";
+import { withFileLock } from "../utils/file_lock.ts";
 import { isRecord } from "../utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { CopilotAdminClient } from "./admin.ts";
@@ -19,7 +19,6 @@ import {
   configSetCommand,
   type ConfigValue,
   CopilotEnvConfig,
-  optInProxyConfigPaths,
   projectedProxyConfig,
   type ProxyConfigPath,
 } from "./env_config.ts";
@@ -53,7 +52,6 @@ import {
   resolveCopilotApiEntry,
 } from "./process.ts";
 import type { Profile } from "./profile.ts";
-import { ProxyProjectionState } from "./ownership.ts";
 import { CopilotEnvRunState } from "./run_state.ts";
 import { installedProxyVersion, PROXY_PACKAGE_NAME, proxyVersionFloorStatus } from "./version.ts";
 
@@ -72,21 +70,12 @@ export function startLockPath(): string {
   return join(new CopilotApiPaths().runDir, ".start.lock");
 }
 
-declare const startLockBrand: unique symbol;
-
-/** Minted only by withStartLock, whose wait is unbounded, so its fn ALWAYS runs held. APIs that must
- *  stay inside the launch critical section (ensureProxyFloor) demand one. */
-export interface HeldStartLock {
-  readonly held: true;
-  readonly [startLockBrand]: true;
-}
-
-const HELD_START_LOCK: HeldStartLock = Object.freeze({ held: true } as HeldStartLock);
-
 /** The wait is UNBOUNDED and never proceeds unlocked, which could let a waiter reap the holder's daemon.
  *  Only a DEAD holder is reclaimed (staleMs Infinity), so a live holder keeps every other start waiting for
- *  as long as it runs -- and an unopenable `.start.lock.oslock` (EACCES) retries forever, with no holder. */
-export function withStartLock<T>(fn: (lock: HeldStartLock) => Promise<T>): Promise<T> {
+ *  as long as it runs -- and an unopenable `.start.lock.oslock` (EACCES) retries forever, with no holder.
+ *  So fn ALWAYS runs held: the launch critical section (ensureProxyFloor, cleanupExistingProxies) runs
+ *  inside it, an order its one caller (commands/start.ts) keeps. */
+export function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
   const lockPath = startLockPath();
   fs.mkdir(dirname(lockPath));
   return withFileLock(lockPath, {
@@ -96,7 +85,7 @@ export function withStartLock<T>(fn: (lock: HeldStartLock) => Promise<T>): Promi
     noticeAfterMs: START_LOCK_NOTICE_MS,
     onWait: () =>
       consola.info("Another `agent start` is in progress; waiting for it to finish ..."),
-  }, () => fn(HELD_START_LOCK));
+  }, fn);
 }
 
 // --- the proxy freshness + floor gate ---------------------------------------------
@@ -116,25 +105,16 @@ export function entryProxyVersion(entry: CopilotApiEntry): string | null {
   }
 }
 
-declare const floorCheckedBrand: unique symbol;
-
-/** Minted only by ensureProxyFloor, so spawnConfiguredDaemon cannot be handed an entry the gate never
- *  saw: the gate-then-spawn order is carried by the data. */
-export type FloorCheckedEntry = CopilotApiEntry & { readonly [floorCheckedBrand]: true };
-
-function floorChecked(entry: CopilotApiEntry): FloorCheckedEntry {
-  return entry as FloorCheckedEntry;
-}
-
 /**
- * The float runs INSIDE the start lock (`_lock` is the evidence) so two concurrent starts never
- * re-warm the float's cache over each other. The float is best-effort (offline keeps what is cached),
- * but the floor is a hard contract: fail-closed, before disturbing any running daemon. A
- * `COPILOT_API_ENTRY` override skips both: it runs a file we did not resolve or version.
+ * Runs INSIDE the start lock (withStartLock, held by its one caller in commands/start.ts) so two
+ * concurrent starts never re-warm the float's cache over each other, and BEFORE spawnConfiguredDaemon,
+ * which runs the entry judged here. The float is best-effort (offline keeps what is cached), but the
+ * floor is a hard contract: fail-closed, before disturbing any running daemon. A `COPILOT_API_ENTRY`
+ * override skips both: it runs a file we did not resolve or version.
  */
-export async function ensureProxyFloor(_lock: HeldStartLock): Promise<FloorCheckedEntry> {
+export async function ensureProxyFloor(): Promise<CopilotApiEntry> {
   const preflight = resolveCopilotApiEntry();
-  if (preflight.kind === "file") return floorChecked(preflight);
+  if (preflight.kind === "file") return preflight;
 
   // A compiled build's own executable is not a deno CLI, so SOME deno (PATH or a provisioned sidecar)
   // must exist before the float can warm a cache or the daemon can launch. A no-op from a checkout.
@@ -172,7 +152,7 @@ export async function previewProxyFloor(): Promise<void> {
 }
 
 /** The resolved entry against the floor: fail-closed on an unresolved version or one below it. */
-function judgeProxyFloor(): FloorCheckedEntry {
+function judgeProxyFloor(): CopilotApiEntry {
   const entry = resolveCopilotApiEntry();
   const version = entryProxyVersion(entry);
   if (version === null) {
@@ -196,7 +176,7 @@ function judgeProxyFloor(): FloorCheckedEntry {
         `known-good release, or rewire an agent to the proxy ('agent init --proxy') first.`,
     );
   }
-  return floorChecked(entry);
+  return entry;
 }
 
 // --- port resolution --------------------------------------------------------------
@@ -417,9 +397,9 @@ export function spawnConfiguredDaemon(opts: {
   credential: DaemonCredential;
   /** resolveLaunchCredential's host for `credential` (one pair), so the spawn never re-probes. */
   copilotHost: string;
-  /** Only ensureProxyFloor mints one, so a spawn without the gate does not compile; every bind-race
-   *  relaunch runs exactly what the floor check judged. */
-  entry: FloorCheckedEntry;
+  /** The entry ensureProxyFloor judged (the caller runs that gate first); every bind-race relaunch
+   *  runs exactly it. */
+  entry: CopilotApiEntry;
   config?: CopilotEnvConfig;
 }): SpawnedDaemon {
   const { port, logFile, profile, paths, credential, copilotHost, entry } = opts;
@@ -495,52 +475,53 @@ export async function awaitReadiness(opts: {
   const findPort = opts.findPort ?? copilotApiFindPort;
   let { pid, port } = opts;
 
-  await sleep(LAUNCH_SETTLE_MS);
-  if (!pidAlive(pid)) {
+  let retried = false;
+  for (;;) {
+    await sleep(LAUNCH_SETTLE_MS);
+    if (pidAlive(pid)) break;
+    if (retried) {
+      printLogTail(logFile, 20);
+      throw new Error(
+        `the proxy failed to start after retrying on a different port. See ${logFile}`,
+      );
+    }
     let logContent = "";
     try {
       logContent = fs.readText(logFile);
     } catch {
       logContent = "";
     }
-    if (/address already in use|EADDRINUSE|bind.*failed/i.test(logContent)) {
-      // Same exemption as resolveStartPort: `daemon.strict-port` gates only the policy-eligible daemon.
-      const strictPort = daemonPolicy(profile).strictPortEligible && config.strictPortEnabled();
-      if (pinnedPort !== undefined || strictPort) {
-        printLogTail(logFile, 20);
-        throw new Error(
-          `port ${port} was taken by another process just before launch` +
-            `${
-              strictPort && pinnedPort === undefined
-                ? " (daemon.strict-port is on, so no auto-increment)"
-                : ""
-            }. See ${logFile}`,
-        );
-      }
-      consola.warn(
-        `Port ${port} was taken by another process just before launch; retrying on a different port ...`,
-      );
-      try {
-        port = await findPort(port + 1);
-      } catch {
-        throw new Error("could not find a free port after the retry.");
-      }
-      pid = relaunch(port);
-      await sleep(LAUNCH_SETTLE_MS);
-      if (!pidAlive(pid)) {
-        printLogTail(logFile, 20);
-        throw new Error(
-          `the proxy failed to start after retrying on a different port. See ${logFile}`,
-        );
-      }
-      consola.success(`Started on port ${port} after retry.`);
-    } else {
+    if (!/address already in use|EADDRINUSE|bind.*failed/i.test(logContent)) {
       printLogTail(logFile, 20);
       const hint = copilotTokenFailureHint(logContent, profile);
       if (hint) consola.error(hint);
       throw new Error(`the proxy failed to start. See ${logFile}`);
     }
+    // Same exemption as resolveStartPort: `daemon.strict-port` gates only the policy-eligible daemon.
+    const strictPort = daemonPolicy(profile).strictPortEligible && config.strictPortEnabled();
+    if (pinnedPort !== undefined || strictPort) {
+      printLogTail(logFile, 20);
+      throw new Error(
+        `port ${port} was taken by another process just before launch` +
+          `${
+            strictPort && pinnedPort === undefined
+              ? " (daemon.strict-port is on, so no auto-increment)"
+              : ""
+          }. See ${logFile}`,
+      );
+    }
+    consola.warn(
+      `Port ${port} was taken by another process just before launch; retrying on a different port ...`,
+    );
+    try {
+      port = await findPort(port + 1);
+    } catch {
+      throw new Error("could not find a free port after the retry.");
+    }
+    pid = relaunch(port);
+    retried = true;
   }
+  if (retried) consola.success(`Started on port ${port} after retry.`);
 
   state.set({ pid, port });
   consola.info(`Started the proxy (PID ${pid}) on port ${port}, detached.`);
@@ -634,33 +615,16 @@ export function applyDefaultConfig(
 ): void {
   // The projected preferences are static defaults the daemon reads at startup with no admin REST
   // endpoint, so they go into config.json before launch (model aliases are pushed live instead),
-  // resolved for THIS daemon's profile. An unset OPT-IN key a previous start wrote (recorded in
-  // ProxyProjectionState) is cleared, so `agent config unset` truly reverts to the proxy's default
-  // without deleting a value we never projected.
+  // resolved for THIS daemon's profile. Every projected path lands on every start: set as it
+  // resolves, cleared while its opt-in key is unset, so `agent config unset` reverts the daemon to
+  // the proxy's own default. The daemon's config.json is an output: a value at one of our paths is
+  // re-rendered from the store whoever wrote it, and the daemon's own keys are never touched.
   const config = new CopilotApiConfig(paths.configFile);
-  const projection = projectedProxyConfig(profile, envConfig);
-  const projectedKeys = new Set(projection.map((e) => JSON.stringify(e.path)));
-  const registryOptInKeys = new Set(optInProxyConfigPaths().map((p) => JSON.stringify(p)));
-  const ownership = new ProxyProjectionState(paths);
-  // The record-read -> config-write -> record-write sequence is guarded per HOME: the global start lock
-  // lives in the per-host run dir, so two hosts sharing a daemon home would not exclude each other
-  // there. Named `.apply.lock` because plain `<file>.lock` is CopilotApiConfig.update()'s own inner lock.
-  const lockPath = `${ownership.path}.apply.lock`;
-  withRequiredFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
-    // A recorded path outside the CURRENT registry's opt-in set (an older registry's, or a foreign
-    // write to the record) claims nothing: it stays in config.json and falls out of the record.
-    const ownedBefore = ownership
-      .ownedPaths()
-      .filter((p) => registryOptInKeys.has(JSON.stringify(p)));
-    config.update((d) => {
-      for (const path of ownedBefore) {
-        if (!projectedKeys.has(JSON.stringify(path))) deleteProxyConfigValue(d, path);
-      }
-      for (const entry of projection) {
-        setProxyConfigValue(d, entry.path, entry.value);
-      }
-    });
-    ownership.setOwnedPaths(projection.filter((e) => e.optIn).map((e) => e.path));
+  config.update((d) => {
+    for (const entry of projectedProxyConfig(profile, envConfig)) {
+      if (entry.value === undefined) deleteProxyConfigValue(d, entry.path);
+      else setProxyConfigValue(d, entry.path, entry.value);
+    }
   });
   // Without an admin key the live `/admin/config/model-mappings` route (syncModelAliases) 401s.
   config.ensureAdminApiKey();

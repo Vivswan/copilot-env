@@ -198,9 +198,8 @@ type ForceProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
     proxyProjected?: undefined;
   };
 
-/** Written only while a value resolves for the daemon's profile, so the proxy's own default stands
- *  otherwise. A previous write is cleared once the key is unset, ownership-tracked per daemon home
- *  (applyDefaultConfig in launch.ts). */
+/** Written only while a value is stored for the daemon's profile, so the proxy's own default stands
+ *  otherwise: every start clears the path while the key is unset (applyDefaultConfig in launch.ts). */
 type OptInProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
   & ConfigKeyDefCore<K>
   & DefaultSpec<K>
@@ -1041,24 +1040,13 @@ export function configDefaultBoolean(key: ConfigKey): boolean {
 
 export interface ProjectedProxyEntry {
   path: ProxyConfigPath;
-  value: ConfigValue;
-  /** Opt-in entries are ownership-tracked per daemon home so a later unset clears OUR leftover write
-   *  (applyDefaultConfig, ProxyProjectionState). */
-  optIn: boolean;
+  /** undefined = an opt-in key with nothing stored: the path is CLEARED so the proxy's own default
+   *  stands, whatever a previous start wrote there. */
+  value: ConfigValue | undefined;
 }
 
-/** The ownership ALLOWLIST, set or not: applyDefaultConfig only deletes recorded paths inside this set,
- *  so a recorded path the registry no longer projects opt-in is left alone in config.json. */
-export function optInProxyConfigPaths(): ProxyConfigPath[] {
-  const out: ProxyConfigPath[] = [];
-  for (const def of CONFIG_REGISTRY) {
-    if (def.proxyProjected === true) out.push(def.proxyPath);
-  }
-  return out;
-}
-
-/** What `agent start` writes into `profile`'s daemon config.json before launch (applyDefaultConfig
- *  in launch.ts): each proxy knob as it resolves FOR THAT PROFILE. */
+/** What `agent start` lands in `profile`'s daemon config.json before launch (applyDefaultConfig in
+ *  launch.ts): one entry per projected key, each as it resolves FOR THAT PROFILE. */
 export function projectedProxyConfig(
   profile: Profile,
   config: CopilotEnvConfig = new CopilotEnvConfig(),
@@ -1069,12 +1057,13 @@ export function projectedProxyConfig(
     if (def.proxyDefault !== undefined) {
       // Force-projected: the built-in default IS proxyDefault, so the resolution always has a value.
       const resolved = resolveSettingIn(data, def.key, { profile });
-      out.push({ path: def.proxyPath, value: resolved.value ?? def.proxyDefault, optIn: false });
+      out.push({ path: def.proxyPath, value: resolved.value ?? def.proxyDefault });
     } else if (def.proxyProjected === true) {
       const resolved = resolveSettingIn(data, def.key, { profile });
-      if (isStoredSource(resolved.source) && resolved.value !== undefined) {
-        out.push({ path: def.proxyPath, value: resolved.value, optIn: true });
-      }
+      out.push({
+        path: def.proxyPath,
+        value: isStoredSource(resolved.source) ? resolved.value : undefined,
+      });
     }
   }
   return out;

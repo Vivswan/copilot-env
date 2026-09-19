@@ -66,7 +66,6 @@ import {
   profileHome,
   profileHomeNames,
   PROFILES_DIR_NAME,
-  PROJECTIONS_FILENAME,
   PROXY_CONFIG_FILENAME,
   resolveRootHome,
   ROOT_HOME_ENV,
@@ -742,7 +741,8 @@ export const v409StateFold: Migration = {
  *  with it; a `copilot-api.sqlite` directly at the root predates 4.0.0 and has no reader. */
 const ROOT_DAEMON_ARTIFACTS: readonly string[] = [
   PROXY_CONFIG_FILENAME,
-  PROJECTIONS_FILENAME,
+  // The projection record earlier releases wrote beside config.json; nothing reads it any more.
+  ".copilot-env-projections.json",
   LOGS_DIR_NAME,
   RUN_DIR_NAME,
 ];

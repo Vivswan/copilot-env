@@ -1,9 +1,10 @@
 import { join } from "node:path";
 
+import * as fs from "../utils/fs_facade.ts";
+import { parseJsonRecord } from "../utils/json.ts";
 import type { ProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { versionLessThan } from "../utils/semver.ts";
-import { readPackageVersion } from "../utils/version.ts";
 
 export const PROXY_PACKAGE_NAME = "@jeffreycao/copilot-api";
 
@@ -18,7 +19,12 @@ export type ProxyVersionStatus =
 
 export function installedProxyVersion(root: string = PROJECT_ROOT): string | null {
   const packagePath = join(root, "node_modules", ...PROXY_PACKAGE_NAME.split("/"), "package.json");
-  return readPackageVersion(packagePath);
+  try {
+    const parsed = parseJsonRecord(fs.readText(packagePath));
+    return typeof parsed?.version === "string" ? parsed.version : null;
+  } catch {
+    return null;
+  }
 }
 
 export function proxyVersionFloorStatus(

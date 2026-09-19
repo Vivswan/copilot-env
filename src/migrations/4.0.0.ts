@@ -8,7 +8,7 @@
 //   autoupdate state's `enabled` field   -> the `auto-update` config key
 import { join } from "node:path";
 import { consola } from "consola";
-import { autoupdateStateFile } from "../autoupdate/paths.ts";
+import { autoupdateStateFile } from "../autoupdate/state.ts";
 import { directHelperCommand, proxyHelperCommand } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { managedProxyProvider } from "../codex/config.ts";

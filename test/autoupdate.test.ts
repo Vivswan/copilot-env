@@ -1,16 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { isDue } from "../src/autoupdate/due.ts";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
-import { autoupdateDir, autoupdateStateFile } from "../src/autoupdate/paths.ts";
 import { runPreflight } from "../src/autoupdate/preflight.ts";
 import {
+  autoupdateDir,
   AutoupdateState,
+  autoupdateStateFile,
   DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
   effectiveUpdateCooldownDays,
 } from "../src/autoupdate/state.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import { isDue, MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { packageVersion } from "../src/utils/version.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot } from "./helpers/env.ts";

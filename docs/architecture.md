@@ -342,10 +342,8 @@ graph TD
   claude --> mcp
   claude --> utils
   codex --> agents
-  codex --> autoupdate
   codex --> copilot_api
   codex --> utils
-  copilot_api --> autoupdate
   copilot_api --> proxy_float
   copilot_api --> scripts
   copilot_api --> utils

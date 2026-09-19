@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Profile } from "../copilot_api/profile.ts";
+import { powershellFileArgs } from "./command.ts";
 import * as fs from "./fs_facade.ts";
 import { parseJsonRecord } from "./json.ts";
 import { hideWritesUnder } from "./report_write.ts";
@@ -30,6 +31,12 @@ export const VERSIONS_DIR = "versions";
  *  updates and version GC, so it IS the compiled root in a versioned layout. */
 export const CURRENT_LINK = "current";
 
+/** A junction's target reads back in the Win32 extended-length spelling (`\\?\C:\...`); the
+ *  prefix is dropped so the target joins and compares like any other path. */
+export function stripExtendedLengthPrefix(target: string): string {
+  return target.replace(/^\\\\\?\\/, "");
+}
+
 /** Names alone must never qualify: a flat install that happens to sit at `<x>/versions/<name>`
  *  beside an unrelated `<x>/current` directory would be misrooted, and the destructive gates would
  *  then aim at `<x>`. A dangling link still qualifies: readlink works without a target, and a
@@ -49,7 +56,7 @@ export function isVersionedInstallTop(top: string): boolean {
   }
   // Junction targets read back absolute, possibly `\\?\`-prefixed and with a trailing separator; a
   // POSIX target is relative (`versions/<name>`).
-  const normalized = target.replace(/^\\\\\?\\/, "").replace(/[\\/]+$/, "");
+  const normalized = stripExtendedLengthPrefix(target).replace(/[\\/]+$/, "");
   const parent = dirname(resolve(top, normalized));
   const versionsDir = resolve(join(top, VERSIONS_DIR));
   const sameDir = process.platform === "win32"
@@ -250,7 +257,7 @@ export function agentLauncherCommand(subArgs: readonly string[]): {
   if (process.platform === "win32") {
     return {
       command: "powershell",
-      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", AGENT_LAUNCHER_PS1, ...subArgs],
+      args: powershellFileArgs(AGENT_LAUNCHER_PS1, subArgs),
     };
   }
   return { command: AGENT_LAUNCHER, args: [...subArgs] };

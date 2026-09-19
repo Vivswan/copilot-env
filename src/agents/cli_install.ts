@@ -4,12 +4,11 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { dirname } from "node:path";
 import { consola } from "consola";
-import { pickAgedVersion } from "../utils/aged_version.ts";
 import { assertNever } from "../utils/assert.ts";
 import { childEnvWithPath, commandExists, findCommand, resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
-import { versionLessThan } from "../utils/semver.ts";
+import { pickAgedVersion, versionLessThan } from "../utils/semver.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 

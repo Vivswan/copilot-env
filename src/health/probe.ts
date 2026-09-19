@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { AGENT_CLIS } from "../agents/clis.ts";
+import { AGENT_CLIS } from "../agents/cli_install.ts";
 import {
   CODEX_CATALOG_NOISE_RE,
   jsonOutputReason,

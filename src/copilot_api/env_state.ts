@@ -438,8 +438,8 @@ export class CopilotEnvState {
   /**
    * A NAMED slot must already exist (commitProfile and recordProfileMode are the two creators),
    * checked INSIDE the same update as the write, so a racing deleteProfile resurrects no
-   * credential-only half slot under update()'s best-effort lock; past its bounded wait both
-   * writers proceed unlocked.
+   * credential-only half slot under update()'s lock (a holder past its bounded wait is an error,
+   * never a second writer).
    */
   setCredential(profile: Profile, credential: ProvisionedCredential): void {
     const patch = rawCredentialPatch(credential);

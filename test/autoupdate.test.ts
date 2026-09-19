@@ -225,7 +225,7 @@ test("withUpdateLock holds across fn, reports a nested acquire not-held, release
   });
 });
 
-test("withUpdateLock steals stale, dead-owner, and malformed locks; a stolen-from release leaves the successor's lock", async () => {
+test("withUpdateLock takes a lock over an aged, dead-owner, or malformed leftover; release spares a marker another pid wrote", async () => {
   const now = 100_000_000;
   const rows: {
     name: string;
@@ -246,9 +246,9 @@ test("withUpdateLock steals stale, dead-owner, and malformed locks; a stolen-fro
     },
     { name: "malformed", seed: "not json", leftBehind: false },
     {
-      // A successor stole our slot and now owns the lock under its own (alive) pid: not ours,
-      // so release must not delete it.
-      name: "stolen by a successor before release",
+      // Another pid's marker sits at the path at release time: not ours, so release must not
+      // delete it.
+      name: "another pid's marker at release",
       seed: JSON.stringify({ pid: DEAD_PID, ts: now }),
       inside: (path) => writeFileSync(path, JSON.stringify({ pid: process.pid + 1, ts: now })),
       leftBehind: true,

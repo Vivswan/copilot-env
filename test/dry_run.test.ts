@@ -645,7 +645,8 @@ test("`settings --import --dry-run` over a pile of future-dated backups plans no
 test("`agent config set --dry-run` fails as the real run does when a home's ancestor is a regular file: the same ENOTDIR, no empty preamble", async () => {
   const { dir } = scratch();
   writeFileSync(join(dir, "not-a-dir"), "");
-  process.env.COPILOT_API_HOME = join(dir, "not-a-dir", "share", "copilot-env");
+  const home = join(dir, "not-a-dir", "share", "copilot-env");
+  process.env.COPILOT_API_HOME = home;
   const set = (dryRun: boolean) =>
     runConfig({
       kind: "set",
@@ -654,6 +655,7 @@ test("`agent config set --dry-run` fails as the real run does when a home's ance
       view: { kind: "config" },
       dryRun: dryRun,
     });
+  // The real run fails first at the store lock's directory; the dry run takes no lock, so at the home.
   let real = "";
   try {
     await set(false);
@@ -661,8 +663,9 @@ test("`agent config set --dry-run` fails as the real run does when a home's ance
     real = errMessage(e);
   }
   expect(real).toMatch(/^ENOTDIR: not a directory, mkdir '/);
+  expect(real).toBe(mkdirFailure(new CopilotApiPaths().locksDir));
   const { stdout } = await captureChannels(async () => {
-    await expect(set(true)).rejects.toThrow(real);
+    await expect(set(true)).rejects.toThrow(mkdirFailure(home));
   });
   // Nothing was planned before the failure, so no plan (and no "Before it failed" header) prints.
   expect(stdout).toBe("");
@@ -749,9 +752,9 @@ skipWin(
     symlinkSync(join(dir, "nowhere"), dangling);
     const home = join(dangling, "share", "copilot-env");
     process.env.COPILOT_API_HOME = home;
-    // The reference is the OS's own: what a raw recursive mkdir of the home raises. Both runs walk
-    // the ancestors before any mkdir (the seam's planner), so each is pinned to this, not to the
-    // other.
+    // The reference is the OS's own: what a raw recursive mkdir raises. Both runs walk the
+    // ancestors before any mkdir (the seam's planner), so each is pinned to this, not to the
+    // other: the real run at the store lock's directory, the dry run (no lock) at the home.
     const raw = mkdirFailure(home);
     expect(raw).toMatch(/^EEXIST: file already exists, mkdir '/);
     const set = (dryRun: boolean) =>
@@ -768,7 +771,7 @@ skipWin(
     } catch (e) {
       real = errMessage(e);
     }
-    expect(real).toBe(raw);
+    expect(real).toBe(mkdirFailure(new CopilotApiPaths().locksDir));
     const { stdout } = await captureChannels(async () => {
       await expect(set(true)).rejects.toThrow(raw);
     });

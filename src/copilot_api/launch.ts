@@ -7,7 +7,7 @@ import { consola } from "consola";
 import { floatProxy, proxyFloatVerifyStatus } from "../proxy_float.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
-import { BOUNDED_LOCK_POLICY, withFileLock, withFileLockSync } from "../utils/file_lock.ts";
+import { BOUNDED_LOCK_POLICY, withFileLock, withRequiredFileLockSync } from "../utils/file_lock.ts";
 import { isRecord } from "../utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { CopilotAdminClient } from "./admin.ts";
@@ -967,10 +967,7 @@ export function applyDefaultConfig(
   // lives in the per-host run dir, so two hosts sharing a daemon home would not exclude each other
   // there. Named `.apply.lock` because plain `<file>.lock` is CopilotApiConfig.update()'s own inner lock.
   const lockPath = `${ownership.path}.apply.lock`;
-  withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, (outcome) => {
-    if (!outcome.held) {
-      consola.info("Proxy-config apply lock is busy; applying unlocked after the bounded wait.");
-    }
+  withRequiredFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
     // A recorded path outside the CURRENT registry's opt-in set (an older registry's, or a foreign
     // write to the record) claims nothing: it stays in config.json and falls out of the record.
     const ownedBefore = ownership

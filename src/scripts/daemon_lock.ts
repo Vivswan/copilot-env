@@ -14,11 +14,9 @@ export function daemonLockPath(home: string): string {
   return join(home, DAEMON_LOCK_FILENAME);
 }
 
-// daemon.lock has no marker-only writers, so a marker under a FREE OS lock is always a dead
-// holder's leftover: staleMs 0 honors only a marker written this same millisecond by a still-live
-// pid, which the retry loop below absorbs. Accepted residual: a future-dated marker (clock
-// rollback) whose dead holder's pid was recycled onto a live process blocks launches until the
-// clock passes it.
+// staleMs governs only a second acquire from the SAME process (another process's marker is never
+// judged, see file_lock.ts): 0 lets it refresh the marker rather than read its own hold as a
+// contender.
 const ACQUIRE_STALE_MS = 0;
 const ACQUIRE_RETRY_MS = 100;
 const ACQUIRE_WAIT_MS = 5_000;

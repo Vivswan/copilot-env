@@ -135,7 +135,7 @@ test("daemonLockVerdict: absent, dead-marker, held, and foreign-pid judgments", 
   expect(daemonLockVerdict(dir, process.pid)).toBe("unproven");
   expect(daemonLockHolderPid(dir)).toBe(null); // free = nobody HOLDS it
 
-  // Acquired (stealing the dead holder's leftover): held = alive for the holder pid only.
+  // Acquired over the dead holder's leftover: held = alive for the holder pid only.
   expect(acquireDaemonLockForLife(dir, { waitMs: 0 })).toBe(true);
   try {
     expect(daemonLockVerdict(dir, process.pid)).toBe("alive");
@@ -186,7 +186,7 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
     await until(() => daemonLockVerdict(home, child.pid) === "dead");
     expect(Date.now() - flippedAt).toBeLessThan(5_000);
 
-    // And the lock is genuinely re-acquirable (the dead holder's marker is stolen).
+    // And the lock is genuinely re-acquirable (the dead holder's marker is overwritten).
     expect(acquireDaemonLockForLife(home, { waitMs: 1_000, retryMs: 50 })).toBe(true);
     releaseFileLock(daemonLockPath(home));
   } finally {

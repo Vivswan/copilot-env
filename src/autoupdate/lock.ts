@@ -1,10 +1,10 @@
-// The create-exclusive lock around the autoupdate preflight, so two shells racing at the same
+// The lock around the autoupdate preflight, so two shells racing at the same
 // moment do not both download and apply one release. A parameterization of the shared advisory
 // file lock (utils/file_lock.ts, which also carries the no-flock rationale).
 //
 //   best-effort, a once-a-day personal self-update -> not a distributed mutex
-//   STALE_LOCK_MS dwarfs any real update           -> a LIVE holder is never seen as stale, so
-//                                                     steal only ever reaps a dead one
+//   STALE_LOCK_MS dwarfs any real update           -> a second scope in THIS process never
+//                                                     refresh-acquires a live update's lock
 //   marker is JSON `{pid,ts}` (`jsonMarker`)       -> an external contract with every installed
 //                                                     release; change it and a not-yet-updated
 //                                                     reader misjudges a live new lock as
@@ -33,8 +33,8 @@ const UPDATE_LOCK_NOT_HELD: UpdateLockOutcome = Object.freeze({ held: false });
 /** Always THE update lock: HeldUpdateLock is evidence about that one path, so no caller can aim
  *  this elsewhere and mint one anyway. One acquisition attempt, never a retry.
  *
- *    the lock is stale  -> stolen, and `fn` sees `held: true`
- *    a holder is fresh  -> another update is running, and `fn` sees `held: false`
+ *    the OS lock is free  -> taken over whatever marker is left, and `fn` sees `held: true`
+ *    a holder is live     -> another update is running, and `fn` sees `held: false`
  *    we took it         -> released exactly once, and never another holder's lock */
 export function withUpdateLock<T>(
   nowMs: number,

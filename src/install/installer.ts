@@ -90,7 +90,6 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/utils/hostname.ts",
   "src/utils/json.ts",
   "src/utils/logger.ts",
-  "src/utils/pid.ts",
   "src/utils/report_write.ts",
   "src/utils/table.ts",
   "src/utils/time.ts",

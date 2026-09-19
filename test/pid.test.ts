@@ -1,6 +1,6 @@
 // Under the daemon's permission set (everything but --allow-run) the null signal throws Deno's
-// NotCapable with code undefined, which an EPERM-only catch read as DEAD; pidAlive=false gates lock
-// steals, tracking clears, and sweeps. The restricted run below produces the real NotCapable, so the
+// NotCapable with code undefined, which an EPERM-only catch read as DEAD; pidAlive=false gates
+// tracking clears and sweeps. The restricted run below produces the real NotCapable, so the
 // "unproven" mapping and withUnprovablePidProbe (test/helpers.ts) are anchored to the genuine shape.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";

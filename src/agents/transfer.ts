@@ -68,7 +68,7 @@ import {
 
 /** The bundle format this copilot-env writes and reads; any other version is
  *  rejected outright (external contract). */
-export const SETTINGS_BUNDLE_FORMAT_VERSION = 2;
+const SETTINGS_BUNDLE_FORMAT_VERSION = 2;
 
 /** Placeholder replacing every token in a credential-less export (the default).
  *  An external contract: import recognizes exactly this value as "not a token". */
@@ -154,7 +154,7 @@ export function serializeSettingsBundle(bundle: SettingsBundle): string {
 
 /** Deliberately silent about `modes`: wiring is derived state, so it matters to the import
  *  confirmation (checked separately) but not to a backup (nothing to roll back). */
-export function bundleIsEmpty(bundle: SettingsBundle): boolean {
+function bundleIsEmpty(bundle: SettingsBundle): boolean {
   return (
     setKeys(bundle.config.global).length === 0 &&
     Object.values(bundle.config.profiles).every((section) => setKeys(section).length === 0) &&
@@ -923,7 +923,7 @@ export function rollbackCommand(backupPath: string): string {
 }
 
 /** Directory (under the ROOT home) holding the pre-import settings backups. */
-export const SETTINGS_BACKUP_DIR_NAME = "settings-backups";
+const SETTINGS_BACKUP_DIR_NAME = "settings-backups";
 
 /** How many backups survive a prune. Each backup holds plaintext tokens, so
  *  the pile is bounded instead of accumulating forever. */

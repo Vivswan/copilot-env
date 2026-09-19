@@ -13,7 +13,7 @@ import type { ProxyVersionStatus } from "../copilot_api/version.ts";
 import type { CommandLook } from "../utils/command.ts";
 
 /** A projection, never a second hand-maintained shape. */
-export type RuntimePathsView = Pick<
+type RuntimePathsView = Pick<
   CopilotApiPaths,
   "home" | "configFile" | "runDir" | "stateFile" | "logFile" | "sqliteDb"
 >;
@@ -100,7 +100,7 @@ export type DaemonProbed = { kind: "probed" } & DaemonProbeFacts;
 /** THE row gate: per-daemon rows render exactly for `probed` targets, so a row can never
  *  describe a probe that did not happen, and probe-shaped fields cannot exist without the probe.
  *  `why` (never rendered) records which skip rule fired. Mirrors LiveProbeFacts. */
-export type DaemonProbe = { kind: "skipped"; why: string } | DaemonProbed;
+type DaemonProbe = { kind: "skipped"; why: string } | DaemonProbed;
 
 /** One daemon target: the default (profile null) or a named profile's isolated daemon.
  *  Gathering is READ-ONLY: the port comes from the same run-state snapshot as the pid
@@ -163,7 +163,7 @@ export interface BootstrapFacts {
 }
 
 /** The proxy float's resolved-version record, as health reads it back. */
-export interface ProxyResolvedFacts {
+interface ProxyResolvedFacts {
   version: string;
   resolvedAtMs: number;
   denoDir: string;
@@ -215,7 +215,7 @@ export interface CliFacts {
   look: CommandLook;
 }
 
-export interface ToolFacts {
+interface ToolFacts {
   node: CommandLook;
   npm: CommandLook;
 }
@@ -231,8 +231,8 @@ export interface CodexDirectAuthFacts {
    *  list was readable, so the report names the account an auto slot follows. Naming only,
    *  never a verdict. */
   ghActiveLogin?: string | null;
-  /** The gh call that served the token (a pin may be served by the plain host-scoped call when gh
-   *  cannot answer `--user`), so the report names the one that ran. Token found only. */
+  /** The gh call that served the token: the pinned `--user` form for a pin, the plain host-scoped
+   *  call for gh's active account (ghAuthTokenSpawnSpec, one call per look). Token found only. */
   ghCommand?: string;
   /** Why the look ended without a token: the gh call that failed or timed out, quoted, with what
    *  the completed calls before it said (CodexDirectAuthFacts.ghDetail). */

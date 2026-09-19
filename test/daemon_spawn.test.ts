@@ -30,7 +30,7 @@ import {
   DAEMON_COPILOT_HOST_ENV,
   daemonClientHeaders,
 } from "../src/copilot_api/integration_identity.ts";
-import { DRAIN_DEADLINE_MS } from "../src/scripts/daemon_shutdown.ts";
+import { DRAIN_DEADLINE_MS } from "../src/copilot_api/daemon_shutdown.ts";
 import { PROXY_PACKAGE_NAME } from "../src/copilot_api/version.ts";
 import {
   daemonConfigFile,
@@ -646,7 +646,7 @@ test("impostor argv that merely mentions copilot-api and start survives the swee
 
 // --- the shared shutdown path --------------------------------------------------------
 
-const SHUTDOWN_MODULE = importSpecifier(join(ROOT, "src", "scripts", "daemon_shutdown.ts"));
+const SHUTDOWN_MODULE = importSpecifier(join(ROOT, "src", "copilot_api", "daemon_shutdown.ts"));
 
 test("a wedged drain still exits: the deadline is what keeps `agent stop` able to stop us", () => {
   // A SIGTERM listener REPLACES deno's terminate-on-signal, and `agent stop` sends a single SIGTERM

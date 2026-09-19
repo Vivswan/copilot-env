@@ -22,7 +22,7 @@ export function dedupKey(text: string): string {
 // ---------- Codex ----------
 
 /** The state a tail re-read resumes from: exactly what parseCodexLine carries across lines. */
-export interface CodexParseState {
+interface CodexParseState {
   /** dedupKey of `session_meta.payload.id` (or `.session_id`). */
   sessionIdHash?: string;
   /** `session_meta.payload.model_provider`, else the reader's default provider. */
@@ -36,7 +36,7 @@ export interface CodexParseState {
   fork?: CodexFork;
 }
 
-export interface CodexFork {
+interface CodexFork {
   /** dedupKey of `session_meta.payload.forked_from_id`. */
   parentHash: string;
   knownAfter: number;
@@ -83,7 +83,7 @@ export interface ClaudeContribution {
   occurrences: ClaudeOccurrence[];
 }
 
-export type Contribution = CodexContribution | ClaudeContribution;
+type Contribution = CodexContribution | ClaudeContribution;
 
 /** The contribution type each source produces, so a reconcile call cannot pair
  *  a source with the other source's parsers. */

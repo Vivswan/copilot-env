@@ -38,7 +38,7 @@ export interface ModelUsage extends TokenBuckets {
 }
 
 /** parseUsageRow is the only mint, so nothing downstream re-checks the counts. */
-export interface UsageRow {
+interface UsageRow {
   bucket: number | null;
   model: string;
   buckets: TokenBuckets;

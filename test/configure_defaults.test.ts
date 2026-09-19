@@ -1,4 +1,4 @@
-// The record's store-level semantics are pinned in test/state.test.ts.
+// The record's store-level semantics are pinned in test/env_state.test.ts.
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -179,7 +179,7 @@ test("a failed write in a both-agents landing leaves the previous record and no 
 
 // A selection made without a credential runs no request and hands back the fallback pair; stored,
 // every re-render would replay it. So a Direct landing with no resolvable credential is refused at
-// the owner (resolveDefaultMode, probeDirectWiring) before any write.
+// the owner (resolveDefaultMode, directWiringFor) before any write.
 test("a Direct landing with no resolvable credential is refused before any write: nothing written, nothing stored", async () => {
   dir = removeDir(dir);
   const homes = isolateAgentHomes("copilot-no-credential-", { mkdirs: true });

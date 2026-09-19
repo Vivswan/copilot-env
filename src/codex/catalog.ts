@@ -85,7 +85,7 @@ export interface CopilotModelLimits {
 }
 
 /** A list the parser guarantees non-empty (an empty list reads as "unadvertised"). */
-export type NonEmpty<T> = [T, ...T[]];
+type NonEmpty<T> = [T, ...T[]];
 
 function nonEmpty<T>(list: T[]): NonEmpty<T> | null {
   const [first, ...rest] = list;

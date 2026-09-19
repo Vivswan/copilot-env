@@ -1151,7 +1151,7 @@ export class CopilotEnvConfig {
   }
 
   /** ONLY for the best-effort background gates, where a throw would kill the serving daemon
-   *  (src/scripts/idle_watchdog.ts) or the autoupdate preflight. Their flatten is the safe direction:
+   *  (src/copilot_api/idle_watchdog.ts) or the autoupdate preflight. Their flatten is the safe direction:
    *  lifecycle off, default window, no self-update. */
   private readDegraded(): CopilotEnvConfigData {
     return settingsOf(v.parse(CONFIG_SCHEMA, this.store.load()));
@@ -1290,7 +1290,7 @@ export class CopilotEnvConfig {
     return this.setting("daemon.release-cooldown");
   }
 
-  /** The COPILOT_API_IDLE_TIMEOUT env layer stays at the read site (src/scripts/idle_watchdog.ts).
+  /** The COPILOT_API_IDLE_TIMEOUT env layer stays at the read site (src/copilot_api/idle_watchdog.ts).
    *  Watchdog-reachable, so the read degrades. */
   idleTimeoutSeconds(): number {
     return this.degradedSetting("daemon.idle-timeout");

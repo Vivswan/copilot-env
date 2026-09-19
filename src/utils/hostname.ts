@@ -3,7 +3,7 @@ import path from "node:path";
 
 /** HOME before os.homedir(), the per-host Codex farm's contract; resolved per call so a retargeted
  *  HOME sees the live value. */
-export function homeDir(): string {
+function homeDir(): string {
   return process.env.HOME || os.homedir();
 }
 

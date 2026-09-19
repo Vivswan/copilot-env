@@ -335,12 +335,12 @@ function resolveAgedVersion(packageName: string, days: number): string {
 }
 
 /** A newer install is kept: a cooled-down target must never downgrade a fresher release. */
-export type CliPlan =
+type CliPlan =
   | { action: "install" }
   | { action: "update"; from: string }
   | { action: "keep"; from: string; reason: "current" | "newer" };
 
-export function planCliVersion(installed: string | null, target: string): CliPlan {
+function planCliVersion(installed: string | null, target: string): CliPlan {
   if (installed === null) return { action: "install" };
   if (versionLessThan(installed, target)) return { action: "update", from: installed };
   return {

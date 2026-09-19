@@ -376,7 +376,7 @@ export async function showProfile(profile: Profile): Promise<void> {
 }
 
 /** `daemon` is null for a direct profile, which has none. */
-export interface ProfileListRow {
+interface ProfileListRow {
   name: string;
   provider: string | null;
   mode: ProfileMode | null;

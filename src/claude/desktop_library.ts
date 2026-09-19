@@ -36,7 +36,7 @@ export type Doc = Record<string, unknown>;
 export const CLAUDE_DESKTOP_DIR_ENV = "COPILOT_ENV_CI_CLAUDE_DESKTOP_DIR";
 
 /** The environment the app's data dirs derive from, one field per platform. */
-export interface DesktopEnv {
+interface DesktopEnv {
   localAppData?: string;
   appData?: string;
   xdgConfigHome?: string;
@@ -48,7 +48,7 @@ export interface DesktopEnv {
  *  dir (Electron's default userData is the ROAMING AppData on Windows, unlike the Claude-3p dir).
  *  `app` is where an install itself sits; Linux has no fixed install path. A null dir: the
  *  platform's variable is unset, or the platform has no app. */
-export interface DesktopDirs {
+interface DesktopDirs {
   data: string | null;
   standard: string | null;
   app: string[];
@@ -97,7 +97,7 @@ function desktopDirs(): DesktopDirs {
 }
 
 /** Under the seam, the standard dir is the seam's `-1p` sibling. */
-export function resolveDesktopDataDirs(): { data: string; standard: string } | null {
+function resolveDesktopDataDirs(): { data: string; standard: string } | null {
   const seam = seamDir();
   if (seam !== null) return { data: seam, standard: `${seam}-1p` };
   const { data, standard } = desktopDirs();
@@ -287,11 +287,11 @@ export function removeFile(path: string, detail?: string): void {
 // --- app files -----------------------------------------------------------------------
 
 /** The app's process name, for the running scan. */
-export const CLAUDE_DESKTOP_PROCESS = "Claude";
+const CLAUDE_DESKTOP_PROCESS = "Claude";
 const APP_CONFIG_FILENAME = "claude_desktop_config.json";
 const DEVELOPER_SETTINGS_FILENAME = "developer_settings.json";
 
-export type DesktopDeploymentMode = "3p" | "1p";
+type DesktopDeploymentMode = "3p" | "1p";
 
 /** What the app will do at its next launch, read from the two app files. `deploymentMode` null is
  *  "unset": the app shows the sign-in chooser. A file that cannot be read or parsed is its own

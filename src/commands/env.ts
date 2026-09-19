@@ -15,7 +15,7 @@ import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
-export interface EnvArgs {
+interface EnvArgs {
   format?: string;
   profile?: string;
 }

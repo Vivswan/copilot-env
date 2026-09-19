@@ -5,7 +5,7 @@
 /** Three states on purpose: a probe that could not run is not a death, and every consumer whose
  *  "dead" licenses a destructive act (a tracking clear, a kill) must never read it as
  *  one. */
-export type PidLiveness = "alive" | "dead" | "unproven";
+type PidLiveness = "alive" | "dead" | "unproven";
 
 export function pidLiveness(pid: number): PidLiveness {
   try {

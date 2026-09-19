@@ -45,17 +45,17 @@ export interface DesktopTarget {
   mode: ProfileMode;
 }
 
-export type DesktopEntryVerdict =
+type DesktopEntryVerdict =
   | { kind: "wired"; path: string }
   | { kind: "missing" }
   /** `fix` overrides the target's rewire command when a rewire cannot repair it. */
   | { kind: "stale"; path: string; reason: string; fix?: string };
 
-export type DesktopEntryStatus = DesktopTarget & { verdict: DesktopEntryVerdict };
+type DesktopEntryStatus = DesktopTarget & { verdict: DesktopEntryVerdict };
 
 /** `profile` is undefined when the document carries no copilot-env wiring (see entryProfileAt),
  *  which no target can claim. */
-export interface DesktopClaim {
+interface DesktopClaim {
   path: string;
   profile: Profile | undefined;
 }
@@ -159,7 +159,7 @@ export function inspectClaudeDesktopWiring(
   return status;
 }
 
-export function desktopStatusBase(): DesktopStatusBase {
+function desktopStatusBase(): DesktopStatusBase {
   return {
     enabled: new CopilotEnvConfig().claudeDesktopEnabled(),
     installed: claudeDesktopInstalled(),

@@ -11,7 +11,7 @@ import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { recordDaemonServer } from "../scripts/daemon_shutdown.ts";
+import { recordDaemonServer } from "./daemon_shutdown.ts";
 
 /** The file is for out-of-process readers (`agent health`); the watchdog reads memory directly. */
 export const PERSIST_INTERVAL_MS = 60_000;

@@ -5,7 +5,7 @@ import {
   setIntegrationProbeFetch,
 } from "../src/copilot_api/integration_identity.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { landDirectWiring } from "../src/codex/config.ts";
+import { directWiringFor } from "../src/codex/config.ts";
 import { directPairIncomplete, resolveDirectWiring } from "../src/agents/profile_wiring.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
@@ -32,7 +32,7 @@ test("a pinned half is never a gap: the landing probes the other half once, and 
     probes++;
     return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
   });
-  const landed = await landDirectWiring(WORK, "ghp_work");
+  const landed = await directWiringFor(WORK, "ghp_work", "land");
   expect(probes).toBeGreaterThan(0);
   expect(landed.directIntegrationId).toBe(PIN);
   // Only the probed half is stored; the pin stays an overlay.

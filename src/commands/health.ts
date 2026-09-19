@@ -11,7 +11,7 @@ import { renderReport } from "../health/report.ts";
 import { HEALTH_SCOPES, type HealthScope } from "../health/types.ts";
 import type { CheckResult } from "../health/types.ts";
 
-export interface HealthArgs {
+interface HealthArgs {
   scope: string;
   json: boolean;
   live?: boolean;

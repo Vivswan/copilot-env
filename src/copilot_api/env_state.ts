@@ -46,8 +46,8 @@ export type ProvisionedCredential =
   | { kind: "stored"; provider: TokenProvider; token: string };
 
 /**
- * "none" is fail-closed: a token-backed provider whose token is gone resolves to nothing, no implicit
- * gh fallback. Its `provider` keeps the recorded choice so diagnostics can name it.
+ * "none" is fail-closed: a token-backed provider whose token is gone resolves to nothing, and gh is
+ * never consulted in its place. Its `provider` keeps the recorded choice so diagnostics can name it.
  */
 export type StoredCredential =
   | { kind: "none"; provider: TokenProvider | null }
@@ -191,7 +191,7 @@ export function partialSlotGap(
 
 /** The READ view, not the disk layout: the default slot's credential is projected to the top level
  *  and `profiles` holds the NAMED slots only. */
-export interface CopilotEnvStateData {
+interface CopilotEnvStateData {
   githubToken: string | null;
   authProvider: AuthProvider | null;
   ghUser: string | null;
@@ -210,7 +210,7 @@ export interface CopilotEnvStateData {
   claudeModelVerdicts: Record<string, ModelVerdict>;
 }
 
-export interface ModelVerdict {
+interface ModelVerdict {
   servable: boolean;
   is1m: boolean;
   atMs: number;

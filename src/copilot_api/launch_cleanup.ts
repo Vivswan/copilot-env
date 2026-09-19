@@ -36,7 +36,7 @@ export function trackedDaemonPids(except?: Profile): Set<number> {
 /** A held daemon.lock is the STRONGER keep-signal beside run-state tracking: OS-enforced, immune to
  *  pid reuse and run-state loss. `indeterminate` means the sweep cannot prove ANY pid unprotected,
  *  so it must not run. */
-export type LockSweepSpares =
+type LockSweepSpares =
   | { readonly kind: "pids"; readonly pids: Set<number> }
   | { readonly kind: "indeterminate"; readonly home: string };
 

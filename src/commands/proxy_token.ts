@@ -27,7 +27,7 @@ import { dryRunActive } from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
 import { runStart } from "./start.ts";
 
-export interface ProxyTokenFlags {
+interface ProxyTokenFlags {
   yes?: boolean;
   profile?: string;
   /** Print the daemon start and the store writes the resolve would make (the minted API key
@@ -35,7 +35,7 @@ export interface ProxyTokenFlags {
   dryRun?: boolean;
 }
 
-export interface ProxyTokenAction {
+interface ProxyTokenAction {
   assumeYes: boolean;
   profile: Profile;
 }

@@ -10,7 +10,7 @@ import { resolve, sep } from "node:path";
 import type { ScratchDir } from "./fs_disk.ts";
 import { terminalWidth, wrapMessage } from "./table.ts";
 
-export type WriteKind = "created" | "rewritten" | "deleted" | "moved" | "linked";
+type WriteKind = "created" | "rewritten" | "deleted" | "moved" | "linked";
 
 const REPORTED = new Map<string, Set<WriteKind>>();
 

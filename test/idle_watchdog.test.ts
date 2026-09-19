@@ -10,7 +10,7 @@ import {
   isIdle,
   lastActivityMs,
 } from "../src/copilot_api/idle_watchdog.ts";
-import { resetDaemonShutdownForTests } from "../src/scripts/daemon_shutdown.ts";
+import { resetDaemonShutdownForTests } from "../src/copilot_api/daemon_shutdown.ts";
 import {
   markInference,
   resetInferenceActivityForTests,

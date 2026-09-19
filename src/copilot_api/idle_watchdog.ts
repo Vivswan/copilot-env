@@ -7,7 +7,7 @@
 import { CopilotEnvConfig } from "./env_config.ts";
 import { DAEMON_KEEP_PORT_ENV } from "./paths.ts";
 import { CopilotEnvRunState } from "./run_state.ts";
-import { shutdownDaemon } from "../scripts/daemon_shutdown.ts";
+import { shutdownDaemon } from "./daemon_shutdown.ts";
 import { lastObservedInferenceMs } from "./inference_activity.ts";
 
 /** Whole seconds; `0` or negative disables the watchdog. */

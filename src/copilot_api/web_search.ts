@@ -70,7 +70,7 @@ function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined):
   });
 }
 
-export interface WebSearchOptions {
+interface WebSearchOptions {
   /** A named profile NEVER falls back to the default credential. */
   profile?: Profile;
   /** Wins over stored config. */

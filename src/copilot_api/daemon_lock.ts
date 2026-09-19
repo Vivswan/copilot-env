@@ -8,7 +8,7 @@ import { probeFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { sleepSync } from "../utils/time.ts";
 
 /** An on-disk contract: a rename would orphan every running daemon's lock. */
-export const DAEMON_LOCK_FILENAME = "daemon.lock";
+const DAEMON_LOCK_FILENAME = "daemon.lock";
 
 export function daemonLockPath(home: string): string {
   return join(home, DAEMON_LOCK_FILENAME);
@@ -40,7 +40,7 @@ export function acquireDaemonLockForLife(
   }
 }
 
-export type DaemonLockVerdict = "alive" | "dead" | "unproven";
+type DaemonLockVerdict = "alive" | "dead" | "unproven";
 
 /**
  * Shared by every liveness site (proxyStatus, the stop paths, the launch cleanup) so the judgment
@@ -59,7 +59,7 @@ export function daemonLockVerdict(home: string, pid: number): DaemonLockVerdict 
 
 /** `unreadable` and `held` with a null pid are "failed to look", never "nobody there": a caller
  *  about to signal processes fails closed on both. */
-export type DaemonLockHold =
+type DaemonLockHold =
   | { readonly kind: "held"; readonly pid: number | null }
   | { readonly kind: "free" }
   | { readonly kind: "unreadable" };

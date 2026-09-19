@@ -149,17 +149,17 @@ export function pinnedIdentityCandidates(id: string, userAgent: string): Integra
   return [directIdentity(userAgent, id)];
 }
 
-export function bakedIntegrationId(identity: IntegrationIdentity): string | null {
+function bakedIntegrationId(identity: IntegrationIdentity): string | null {
   return identity.headers[INTEGRATION_ID_HEADER] ?? null;
 }
 
-export interface IdentityProbeOutcome {
+interface IdentityProbeOutcome {
   name: string;
   /** "ok", an HTTP rejection ("400 <body snippet>"), or a network error message. */
   detail: string;
 }
 
-export interface IdentityProbeResult {
+interface IdentityProbeResult {
   identity: IntegrationIdentity | null;
   /** false when a network error or an ambiguous status made the run inconclusive, so callers keep the
    *  default rather than failing hard on a flaky network. */
@@ -170,7 +170,7 @@ export interface IdentityProbeResult {
   outcomes: IdentityProbeOutcome[];
 }
 
-export interface IdentityProbeDeps {
+interface IdentityProbeDeps {
   fetchImpl?: ProbeFetch;
   timeoutMs?: number;
   /** A caller deadline over the WHOLE probe chain, combined with each request's own timeout. */
@@ -365,7 +365,7 @@ export async function probeIntegrationIdentity(
 }
 
 /** Why a host is a survey column. */
-export type SurveyHostRole = "generic" | "designated" | "configured";
+type SurveyHostRole = "generic" | "designated" | "configured";
 
 export interface IdentityHostSurvey {
   /** The API base actually probed. */
@@ -383,7 +383,7 @@ export interface IdentitySurvey {
   designatedUnknown: boolean;
 }
 
-export interface IdentitySurveyDeps extends Omit<IdentityProbeDeps, "apiBase"> {
+interface IdentitySurveyDeps extends Omit<IdentityProbeDeps, "apiBase"> {
   /** The `host` literal, or null for `auto`. */
   configuredHost?: string | null;
 }
@@ -531,7 +531,7 @@ export function resetIntegrationIdentityCache(): void {
   verdictMemo.clear();
 }
 
-export function identityRejectionHints(): string[] {
+function identityRejectionHints(): string[] {
   return [
     "a fine-grained PAT needs the 'Copilot Requests' permission (repo-less, on your personal account)",
     "classic PATs and PATs on accounts without a Copilot seat are rejected outright",
@@ -539,7 +539,7 @@ export function identityRejectionHints(): string[] {
   ];
 }
 
-export interface ResolveIdentityOptions extends IdentityProbeDeps {
+interface ResolveIdentityOptions extends IdentityProbeDeps {
   /** The `identity` config pin, or null to probe. */
   pinned?: string | null;
   /** Callers whose stdout is a contract (`agent auth --get`) pass a stderr logger. */
@@ -609,7 +609,7 @@ async function acceptedIdentity(
 /** Every known identity was definitively rejected on `apiBase`, the host in use at that point (the
  *  generic host, a literal, or the host `auto` moved to): no mode can use this credential, and the
  *  landing (a rewire, a daemon start) fails with the message. */
-export class IdentityRejectedError extends Error {
+class IdentityRejectedError extends Error {
   constructor(readonly apiBase: string, message: string) {
     super(message);
   }
@@ -661,7 +661,7 @@ export interface IdentityAndHost {
   apiBase: string;
 }
 
-export interface IdentityAndHostOptions extends Omit<ResolveIdentityOptions, "apiBase"> {
+interface IdentityAndHostOptions extends Omit<ResolveIdentityOptions, "apiBase"> {
   /** A host every request goes to (a caller's, else the `host` literal): identity selection
    *  runs there and the host probe is skipped. Null = `auto`. */
   fixedHost?: string | null;

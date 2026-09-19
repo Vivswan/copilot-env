@@ -16,14 +16,14 @@ const SEARCH_DECODER = new TextDecoder("latin1");
 // would eat it.
 const LINE_DECODER = new TextDecoder("utf-8", { ignoreBOM: true });
 
-export interface ScanOptions {
+interface ScanOptions {
   /** A floor, not a limit: a longer line grows the buffer. Small values drive the chunk-boundary
    *  paths in tests. */
   bufferBytes?: number;
 }
 
 /** Returns the bytes copied (a short read is fine), 0 at the end. */
-export type ReadAt = (target: Uint8Array, position: number) => number;
+type ReadAt = (target: Uint8Array, position: number) => number;
 
 /** Filesystem errors propagate; the readers turn them into their `could not read` warning. */
 export function scanLines(

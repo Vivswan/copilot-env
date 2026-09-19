@@ -52,7 +52,7 @@ interface CheckDescriptor {
  *   setup.auth          -> checkAuth: one credential line per target (the default, a named profile)
  *   setup.cli.<command> -> the one id minted outside this table; the CLI list is runtime data
  */
-export const CHECK_DESCRIPTORS = {
+const CHECK_DESCRIPTORS = {
   "bootstrap.version": {
     label: "copilot-env version",
     group: "bootstrap",
@@ -101,7 +101,7 @@ export const CHECK_DESCRIPTORS = {
 } as const satisfies Record<string, CheckDescriptor>;
 
 /** A check id registered in the descriptor table. */
-export type RegisteredCheckId = keyof typeof CHECK_DESCRIPTORS;
+type RegisteredCheckId = keyof typeof CHECK_DESCRIPTORS;
 
 /** Every check id: the registered table plus the per-CLI family. The strings
  *  are external contracts (`--json` consumers key on them). */

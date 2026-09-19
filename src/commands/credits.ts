@@ -19,7 +19,7 @@ import { createStderrLogger } from "../utils/logger.ts";
 // Narration to stderr, so the block and the `--json` payload own stdout.
 const logger = createStderrLogger();
 
-export interface CreditsArgs {
+interface CreditsArgs {
   json?: boolean;
   /** The per-run `--target`; unset defers to COPILOT_CREDITS_TARGET, then the config key. */
   creditsTarget?: string;
@@ -28,7 +28,7 @@ export interface CreditsArgs {
 }
 
 /** Test seams; production takes every default. */
-export interface CreditsDeps {
+interface CreditsDeps {
   fetchImpl?: CreditsFetch;
   /** The credential look for one profile (the default is null). */
   credential?: (profile: Profile) => ReturnType<Credential["resolveWithReason"]>;

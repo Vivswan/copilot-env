@@ -26,10 +26,10 @@ import { type Profile, profileLabel } from "./profile.ts";
 
 // The provider vocabulary is defined with the store that persists it (env_state);
 // re-export it here so the auth command layer keeps importing it from `Credential`.
-export type { AuthProvider, TokenProvider } from "./env_state.ts";
+export type { AuthProvider } from "./env_state.ts";
 export { AUTH_PROVIDERS } from "./env_state.ts";
 
-export interface CredentialStatus {
+interface CredentialStatus {
   provider: AuthProvider | null;
   resolves: boolean;
 }

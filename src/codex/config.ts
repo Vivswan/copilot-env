@@ -67,7 +67,7 @@ const logger = createStderrLogger();
 /** What one `agent auth --get` (the `gh` look and the token print, nothing else) has before Codex
  *  gives up. It sits in every install's config; the gh look's own budget (GH_AUTH_TIMEOUT_MS) stays
  *  far under it. */
-export const DIRECT_AUTH_TIMEOUT_MS = 30000;
+const DIRECT_AUTH_TIMEOUT_MS = 30000;
 
 /** Proxy ALWAYS carries a base URL: a proxy write without one is unrepresentable, so nothing
  *  downstream re-checks for it. `plannedPort` is the port the base URL was computed from
@@ -98,7 +98,7 @@ interface CodexWriteCommon {
 }
 
 /** Spelled as a top-level union so the discriminant narrows at every consumer. */
-export type CodexWriteRequest =
+type CodexWriteRequest =
   | (Extract<CodexModeRequest, { mode: "direct" }> & CodexWriteCommon)
   | (Extract<CodexModeRequest, { mode: "proxy" }> & CodexWriteCommon);
 
@@ -411,7 +411,7 @@ function codexWriteRequest(write: ManagedWrite, profile: Profile): CodexWriteReq
  * proceed. `directToken` is that already-resolved credential, so the catalog seed's direct fetch
  * never shells out to the gh-cli provider a second time.
  */
-export async function applyCodexConfig(
+async function applyCodexConfig(
   codexHome: string,
   write: ManagedWrite,
   directToken: string | null,
@@ -437,38 +437,35 @@ export async function applyCodexConfig(
  *
  *  Claude           -> the result rides in ANTHROPIC_BASE_URL + ANTHROPIC_CUSTOM_HEADERS
  *  Codex            -> the same result rides in base_url + http_headers
- *  `token` supplied -> skips a redundant credential resolve */
-export async function probeDirectWiring(
-  profile: Profile = null,
-  token?: string | null,
+ *  `token` supplied -> skips a redundant credential resolve
+ *
+ *  `probe` answers and stores nothing: a listing such as `agent profile models --direct` probes
+ *  this way, so a transient answer there can never overwrite the stored pair.
+ *
+ *  `land` is the LANDING: landDirectPair (src/copilot_api/direct_pair.ts, the one probe-and-store
+ *  owner) as the branded wiring the writers take. A named profile lands when a credential lands
+ *  (`agent profile <name> add`, `agent profile <name> auth`, an import) or a re-render finds its
+ *  slot holding no pair. The default profile never lands here: its landing probes per agent and
+ *  stores through commitDefaultWiring (configure_defaults.ts) once both agents' files are written. */
+export async function directWiringFor(
+  profile: Profile,
+  token: string | null | undefined,
+  landing: "probe" | "land",
 ): Promise<DirectWiring> {
   const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
   if (resolved === null) throw directNeedsCredentialError(profile);
   const overlay = directOverlay(profile);
-  // The one identity-then-host rule (selectDirectIdentityAndHost): a literal skips the HOST probe,
-  // never the identity selection, and a host `auto` moved to re-runs the selection there.
-  const { integrationId, apiBase } = await selectDirectIdentityAndHost(resolved, codexUserAgent(), {
-    pinned: overlay.pinned,
-    fixedHost: overlay.literal,
-  });
+  const userAgent = codexUserAgent();
+  // The one identity-then-host rule (selectDirectIdentityAndHost, which the landing runs too): a
+  // literal skips the HOST probe, never the identity selection, and a host `auto` moved to re-runs
+  // the selection there.
+  const { integrationId, apiBase } = landing === "land"
+    ? await landDirectPair(profile, resolved, userAgent, overlay)
+    : await selectDirectIdentityAndHost(resolved, userAgent, {
+      pinned: overlay.pinned,
+      fixedHost: overlay.literal,
+    });
   return directWiring(integrationId, apiBase);
-}
-
-/** The LANDING: landDirectPair (src/copilot_api/direct_pair.ts, the one probe-and-store owner) as
- *  the branded wiring the writers take. Only the commands that land a credential or wire a slot
- *  holding no pair reach it (`agent profile <name> add`, `agent profile <name> auth`, an import, and a named
- *  profile's re-render whose slot holds no pair; the default's landing probes per agent and
- *  stores through commitDefaultWiring in configure_defaults.ts once both agents' files are
- *  written); a listing such as `agent profile models --direct` probes without it (probeDirectWiring), so a
- *  transient answer there can never overwrite the stored pair. */
-export async function landDirectWiring(
-  profile: Profile = null,
-  token?: string | null,
-): Promise<DirectWiring> {
-  const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
-  if (resolved === null) throw directNeedsCredentialError(profile);
-  const landed = await landDirectPair(profile, resolved, codexUserAgent(), directOverlay(profile));
-  return directWiring(landed.integrationId, landed.apiBase);
 }
 
 function checkCodexConfig(): void {
@@ -664,7 +661,7 @@ export function codexAdapter(): AgentAdapter {
     label: "Codex",
     check: checkCodexConfig,
     detectDirect: detectCodexDirect,
-    resolveDirectWiring: (ghToken) => probeDirectWiring(null, ghToken),
+    resolveDirectWiring: (ghToken) => directWiringFor(null, ghToken, "probe"),
     async configureProfile(profile, write, options) {
       if (profile !== null) {
         configureCodexConfig(effectiveCodexHome(), codexWriteRequest(write, profile));

@@ -30,7 +30,7 @@ export function getHostLocalCodexHome(
 }
 
 /** `active` is recorded in run state AFTER the config write succeeded. */
-export interface CodexHostFarm {
+interface CodexHostFarm {
   hostHome: string;
   /** The farm directory exists (a half-built farm counts). */
   present: boolean;
@@ -81,7 +81,7 @@ export function probeCodexFarm(
 // The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent profile env` may clear it).
 // Exact spelling on purpose: a trailing-slash variant is not ours. Never on Windows: no farm is
 // built there, so a farm-shaped export is a shared home of the user's own.
-export function isManagedFarmExport(
+function isManagedFarmExport(
   envHome: string | undefined,
   prefs: CodexHomePrefs = codexHomePrefsOrDerived(),
 ): boolean {
@@ -91,7 +91,7 @@ export function isManagedFarmExport(
 
 /** The home every Codex write, `agent profile check --codex`, `agent profile env`, and the launch pin agree on, plus
  *  the one note the writer, `--check`, and the launcher print (the other readers stay silent). */
-export interface CodexHomeResolution {
+interface CodexHomeResolution {
   home: string;
   /** What decided the home: the `codex.host` farm, the `codex.home` root, or the shell/default
    *  convention (which is never stale). The note's wording follows it. */
@@ -145,7 +145,7 @@ export function effectiveCodexHomeFor(prefs: CodexHomePrefs): string {
 /** `$CODEX_HOME` unless it is OUR farm export (POSIX only; Windows never has a farm), else
  *  `~/.codex`. `prefs` names the root the farm export is judged against: the settings-import plan
  *  passes the bundle's, so its line and the apply's write agree. */
-export function unmanagedCodexHome(prefs: CodexHomePrefs = codexHomePrefsOrDerived()): string {
+function unmanagedCodexHome(prefs: CodexHomePrefs = codexHomePrefsOrDerived()): string {
   if (isManagedFarmExport(process.env.CODEX_HOME, prefs)) {
     return plainCodexHome();
   }
@@ -176,11 +176,11 @@ export function narrateCodexHome(resolution: CodexHomeResolution): string {
 /** The single decision the derivation (withCodexHostFarm) and the settings-import plan share.
  *  `leave` = something sits at the farm path that is not proven ours (no record, no managed
  *  wiring). */
-export type CodexHostFarmPlan = { action: "build" | "verify" | "remove" | "leave" | "none" };
+type CodexHostFarmPlan = { action: "build" | "verify" | "remove" | "leave" | "none" };
 
 /** The activation record alone proves only that we built something there once; the user may have
  *  replaced it since, so it never authorizes a delete. */
-export function isOurFarm(farm: CodexHostFarm): boolean {
+function isOurFarm(farm: CodexHostFarm): boolean {
   return farm.wired;
 }
 

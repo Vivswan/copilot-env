@@ -14,7 +14,7 @@ import { runDryRun } from "./dry_run.ts";
 
 const logger = createStderrLogger();
 
-export interface McpArgs {
+interface McpArgs {
   serve?: boolean;
   remove?: boolean;
   profile?: string;

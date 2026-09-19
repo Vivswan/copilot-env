@@ -23,7 +23,7 @@ import {
   type ManagedAgentMode,
   providerModeExitCode,
 } from "../agents/provider_mode.ts";
-import { probeDirectWiring } from "../codex/config.ts";
+import { directWiringFor } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
@@ -136,10 +136,10 @@ export function proxyHelperCommand(profile: Profile = null): string {
  *    "malformed"   -> settings present but not a JSON object
  *    "read-error"  -> settings exist but could not be read
  *    "custom"      -> a foreign apiKeyHelper or a custom base URL */
-export type ClaudeOtherReason = "malformed" | "custom" | "read-error";
+type ClaudeOtherReason = "malformed" | "custom" | "read-error";
 
 /** How a managed file obtains the credential: the `static-key` preference at its write time. */
-export type ClaudeManagedCredential =
+type ClaudeManagedCredential =
   /** The managed inline command: not a secret, safe to print. */
   | { credential: "command"; helperPath: string }
   /** `env.ANTHROPIC_AUTH_TOKEN` carries the value; the inspector never surfaces it. */
@@ -561,7 +561,7 @@ export function syncDefaultWebSearch(claudeHome = resolveClaudeHome()): void {
   pair.commit();
 }
 
-export type ClaudeWriteRequest = ManagedWrite & {
+type ClaudeWriteRequest = ManagedWrite & {
   /** Wire a NAMED profile's settings-<name>.json instead of the default settings.json. */
   profile?: Profile;
 };
@@ -704,7 +704,7 @@ export function removeClaudeProfile(
 }
 
 /** What removeClaudeDefaultWiring left behind, for the caller to sequence on. */
-export interface ClaudeDefaultWiringRemoval {
+interface ClaudeDefaultWiringRemoval {
   /** The strip could not land (file unreadable, malformed, or unwritable), so the ledger still owns
    *  a deny here. While it stands the MCP registration must stay too: never a denied builtin with
    *  no replacement. */
@@ -808,7 +808,7 @@ export function claudeAdapter(): AgentAdapter {
     check: checkClaudeConfig,
     detectDirect: detectClaudeDirect,
     // The skeleton passes the token it already resolved so gh-cli is not spawned twice.
-    resolveDirectWiring: (ghToken) => probeDirectWiring(null, ghToken),
+    resolveDirectWiring: (ghToken) => directWiringFor(null, ghToken, "probe"),
     async configureProfile(profile, write, options) {
       configureClaudeConfig(resolveClaudeHome(), { ...write, profile });
       // Desktop reads its own config library, not settings.json, so every rewire reconciles it.

@@ -115,7 +115,7 @@ export function fenceUnfencedBlocks(content: string): string {
   return out.join("\n");
 }
 
-export function fenceShellBlocks(): void {
+function fenceShellBlocks(): void {
   const failed: string[] = [];
   for (const file of shellTargetFiles()) {
     try {
@@ -248,7 +248,7 @@ export function rewriteLegacyCodexTables(doc: Record<string, unknown>): boolean 
 
 /** Every known Codex home: the managed provider tables move to the current auth block, and the
  *  baked direct bearer leaves `.env`. */
-export function rewriteCodexWiring(): void {
+function rewriteCodexWiring(): void {
   const { homes, complete } = knownCodexHomes();
   if (!complete) {
     consola.warn(

@@ -116,9 +116,10 @@ async function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFa
       ...(ghUser === null ? {} : { ghUser }),
     };
   }
-  // The SAME recipe `agent auth` and every resolve run (the pinned look and its fallback), off the
-  // event loop so it overlaps the other probes under gatherFacts' Promise.all. The token is read
-  // into memory with the rest of gh's output and only the verdict and the serving call are kept.
+  // The SAME recipe `agent auth` and every resolve run (ghAuthTokenSpawnSpec: ONE gh call, the
+  // pinned `--user` form or the active account's), off the event loop so it overlaps the other
+  // probes under gatherFacts' Promise.all. The token is read into memory with the rest of gh's
+  // output and only the verdict and the serving call are kept.
   return directAuthFromLook(look.path, await ghAuthTokenLookAsync(ghUser, look.path), ghUser);
 }
 

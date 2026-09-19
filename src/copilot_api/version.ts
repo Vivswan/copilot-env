@@ -8,7 +8,7 @@ import { versionLessThan } from "../utils/semver.ts";
 
 export const PROXY_PACKAGE_NAME = "@jeffreycao/copilot-api";
 
-export type ProxyVersionFloorStatus =
+type ProxyVersionFloorStatus =
   | { ok: true; version: string }
   | { ok: false; reason: "missing"; version: null }
   | { ok: false; reason: "belowFloor"; version: string; floor: string };

@@ -106,7 +106,7 @@ export const parseClaudeTail: ParseTail<ClaudeContribution> = (file, fromByte, p
 };
 
 /** Per occurrence: the window, THEN the running-max dedup (one map across all files). */
-export function foldClaude(
+function foldClaude(
   records: readonly FileRecord<ClaudeContribution>[],
   sinceMs: number | undefined,
   dayKey: DayKey,

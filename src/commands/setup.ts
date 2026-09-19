@@ -10,7 +10,7 @@ export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
 
 /** The cl/co/cx launchers belong to the `shell.launchers` config key (`agent profile env` emits them); a wire
  *  only reports that state. */
-export interface ShellArgs {
+interface ShellArgs {
   remove?: boolean;
   clis?: boolean;
   /** Days of npm release aging; null = latest. */
@@ -24,7 +24,7 @@ export interface ShellArgs {
   dryRun?: boolean;
 }
 
-export type ShellAction =
+type ShellAction =
   | { kind: "remove"; allHosts: boolean }
   | { kind: "wire"; allHosts: boolean; clis: CliSetup | null };
 

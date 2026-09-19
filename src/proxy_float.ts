@@ -48,7 +48,7 @@ export const DEFAULT_RELEASE_COOLDOWN_SECONDS = configDefaultNumber("daemon.rele
 
 /** The full document: its `time` map carries the publish times the cooldown needs; the abbreviated
  *  install doc lacks it. */
-export const PROXY_REGISTRY_URL = `https://registry.npmjs.org/${PROXY_PKG.replaceAll("/", "%2F")}`;
+const PROXY_REGISTRY_URL = `https://registry.npmjs.org/${PROXY_PKG.replaceAll("/", "%2F")}`;
 
 /** The config read is the store's STRICT one: an unreadable prefs store throws rather than read as
  *  "no pin", because floating past a supply-chain pin on an unproven empty is exactly what the pin
@@ -93,15 +93,15 @@ function formatReleaseAge(seconds: number): string {
 
 /** npm's install-time scripts, which never run for global-cache `npm:` execution. External
  *  contract. */
-export const NPM_LIFECYCLE_SCRIPT_KEYS = ["preinstall", "install", "postinstall"] as const;
+const NPM_LIFECYCLE_SCRIPT_KEYS = ["preinstall", "install", "postinstall"] as const;
 
-export interface ProxyRelease {
+interface ProxyRelease {
   version: string;
   publishedAtMs: number;
   lifecycleScripts: string[];
 }
 
-export interface ProxyRegistryDoc {
+interface ProxyRegistryDoc {
   releases: ReadonlyMap<string, ProxyRelease>;
   distTags: Readonly<Record<string, string>>;
 }
@@ -147,7 +147,7 @@ export function parseRegistryDoc(raw: unknown): ProxyRegistryDoc {
 
 export type FetchLike = (url: string) => Promise<Response>;
 
-export async function fetchRegistryDoc(fetchLike: FetchLike = fetch): Promise<ProxyRegistryDoc> {
+async function fetchRegistryDoc(fetchLike: FetchLike = fetch): Promise<ProxyRegistryDoc> {
   let response: Response;
   try {
     response = await fetchLike(PROXY_REGISTRY_URL);
@@ -169,7 +169,7 @@ export async function fetchRegistryDoc(fetchLike: FetchLike = fetch): Promise<Pr
 // --- Target selection ----------------------------------------------------------
 
 /** `pinned` is only minted by the pin path; `selectProxyVersion` returns the other three. */
-export type ProxySelection =
+type ProxySelection =
   | { kind: "pinned"; version: string }
   | { kind: "resolved"; version: string; publishedAtMs: number; reason: string }
   | { kind: "refused"; version: string; lifecycleScripts: string[]; reason: string }
@@ -245,7 +245,7 @@ function refusalMessage(sel: Extract<ProxySelection, { kind: "refused" }>): stri
 
 // --- The resolved-version record (the freshness oracle) -------------------------
 
-export interface ResolvedVersionRecord {
+interface ResolvedVersionRecord {
   version: string;
   resolvedAtMs: number;
   denoDir: string;
@@ -344,7 +344,7 @@ export const NPMRC_MARKER = "# managed by copilot-env (proxy float); do not edit
 
 const NPMRC_CONTENT = `${NPMRC_MARKER}\ntrust-policy=no-downgrade\n`;
 
-export type NpmrcStatus =
+type NpmrcStatus =
   | { kind: "written"; path: string }
   | { kind: "current"; path: string }
   | { kind: "kept-foreign"; path: string };
@@ -373,7 +373,7 @@ export function ensureProxyNpmrc(rootHome: string): NpmrcStatus {
 /** `launchFailed` marks a spawn that never completed (the same mark as runCaptured in
  *  src/utils/command.ts), so a failed look at the cache never reads as deno's own "cannot resolve".
  */
-export interface DenoRunResult {
+interface DenoRunResult {
   status: number;
   stdout: string;
   stderr: string;
@@ -415,7 +415,7 @@ interface FloatContext {
   nowMs: number;
 }
 
-export interface ProxyFloatDeps {
+interface ProxyFloatDeps {
   rootHome?: string;
   config?: ProjectConfig;
   /** Seconds; unset defers to env > config > built-in default. */
@@ -447,7 +447,7 @@ function denoEnv(denoDir: string): Record<string, string> {
 }
 
 /** deno's flag takes minutes, ISO-8601 durations, or timestamps; `0` disables. */
-export function minimumDependencyAgeArg(cooldownSeconds: number): string {
+function minimumDependencyAgeArg(cooldownSeconds: number): string {
   return cooldownSeconds === 0 ? "0" : `PT${cooldownSeconds}S`;
 }
 
@@ -812,7 +812,7 @@ export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
   }
 }
 
-export type ProxyFloatVerifyStatus = {
+type ProxyFloatVerifyStatus = {
   upToDate: boolean;
   message: string;
 };

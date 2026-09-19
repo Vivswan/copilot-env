@@ -14,7 +14,7 @@ export type { FileChange };
 
 /** A body that fails partway has planned what precedes the failure, as the real command would have
  *  landed it, so the changes travel with the error instead of being lost to a throw. */
-export type DryRunOutcome<T> =
+type DryRunOutcome<T> =
   | { status: "done"; result: T; changes: FileChange[] }
   | { status: "failed"; error: unknown; changes: FileChange[] };
 

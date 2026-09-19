@@ -88,7 +88,7 @@ export function resolveCreditsTarget(
   }
 }
 
-export type CredentialLook = () => ReturnType<Credential["resolveWithReason"]>;
+type CredentialLook = () => ReturnType<Credential["resolveWithReason"]>;
 
 /** The live meter for the default credential; no credential is the command's error. */
 export async function loadCreditsPace(
@@ -131,8 +131,8 @@ export async function fetchCopilotCredits(
 }
 
 /** GitHub bills AI credits at 100 to the dollar. */
-export const CREDITS_PER_USD = 100;
-export const creditsUsd = (credits: number): number => credits / CREDITS_PER_USD;
+const CREDITS_PER_USD = 100;
+const creditsUsd = (credits: number): number => credits / CREDITS_PER_USD;
 
 export interface CreditsPace {
   login: string | null;

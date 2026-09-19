@@ -16,14 +16,14 @@ import { runDryRun } from "./dry_run.ts";
 /** A status word in its tone, the edge's colorEnabled() resolved once here. */
 const status = (word: string): string => statusPaint(word, colorEnabled());
 
-export interface StopArgs {
+interface StopArgs {
   profile?: string;
   all?: boolean;
   /** Print the daemon the stop would signal and the tracking rows it would clear; signal nothing. */
   dryRun?: boolean;
 }
 
-export type StopAction =
+type StopAction =
   | { kind: "all" }
   | { kind: "profile"; name: ProfileName }
   | { kind: "default" };

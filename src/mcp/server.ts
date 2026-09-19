@@ -18,7 +18,7 @@ const logger = createStderrLogger();
 export const MCP_SERVER_NAME = "copilot-env";
 const WEB_SEARCH_TOOL = "web_search";
 
-export interface McpServerOptions {
+interface McpServerOptions {
   /** Credential slot the tools resolve; a named profile never falls back. */
   profile: Profile;
   /** Per-process web-search model override (beats the stored config key). */

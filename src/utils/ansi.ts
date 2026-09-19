@@ -30,7 +30,7 @@ const SGR = {
 
 export type Tone = keyof typeof SGR;
 
-export const ESC = "\x1b[";
+const ESC = "\x1b[";
 /** The close every foreground tone shares. */
 export const FG_CLOSE = `${ESC}39m`;
 
@@ -57,7 +57,7 @@ export const palette: Record<Tone, Paint> = {
 };
 
 /** Every tone as identity: what a renderer paints with when `color` is off. */
-export const plainPalette: Record<Tone, Paint> = Object.fromEntries(
+const plainPalette: Record<Tone, Paint> = Object.fromEntries(
   Object.keys(palette).map((tone) => [tone, (text: string) => text]),
 ) as Record<Tone, Paint>;
 
@@ -72,12 +72,10 @@ function gated(paint: Paint): Paint {
 }
 
 export const bold = gated(palette.bold);
-export const dim = gated(palette.dim);
 export const blue = gated(palette.blue);
 export const cyan = gated(palette.cyan);
 export const gray = gated(palette.gray);
 export const green = gated(palette.green);
-export const yellow = gated(palette.yellow);
 export const red = gated(palette.red);
 
 /** The tone of a status word that is data, not a log level: what `agent health` rows, the profile

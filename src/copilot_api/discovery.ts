@@ -38,14 +38,14 @@ const KNOWN_IDENTITY_IDS: readonly (string | null)[] = [
   COPILOT_SANDBOX_INTEGRATION_ID,
 ];
 
-export interface DiscoveryOptions {
+interface DiscoveryOptions {
   /** Test seam for EVERY request this module makes. */
   fetchImpl?: ProbeFetch;
   /** Clock seam for the verdict-cache TTL. */
   nowMs?: () => number;
 }
 
-export interface DiscoveredClaudeModels {
+interface DiscoveredClaudeModels {
   /** The raw /models body under the wiring's own identity (labels, windows). */
   catalogBody: unknown;
   /** Advertised catalog models plus the VERIFIED unadvertised extras. */

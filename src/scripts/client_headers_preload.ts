@@ -25,7 +25,7 @@ const COPILOT_HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
 const UNDICI_GLOBAL_DISPATCHER = Symbol.for("undici.globalDispatcher.1");
 
 /** The launcher's JSON: header name -> value to set, or null to delete. */
-export type ClientHeaderSet = Record<string, string | null>;
+type ClientHeaderSet = Record<string, string | null>;
 
 /** Throws on anything but a JSON object of strings and nulls: the launcher always writes one, so a
  *  malformed value is a launch bug that must kill the daemon at module load, never run it under
@@ -62,7 +62,7 @@ export function isCopilotApiHost(url: string, configuredHost: string | null = nu
 
 /** `current` with the set applied: every named header set or deleted, everything else kept.
  *  Exported for tests. */
-export function applyClientHeaders(
+function applyClientHeaders(
   current: HeadersInit | undefined,
   set: ClientHeaderSet,
 ): Headers {

@@ -166,9 +166,9 @@ export class CopilotApiPaths {
   projectionsFile: string;
   runDir: string;
   stateFile: string;
-  /** Written ONLY by the in-daemon observer (src/scripts/inference_activity.ts) and read by `agent health`.
-   *  Separate from `.state.json` on purpose: the CLI and the daemon write state concurrently, and a
-   *  single-writer file sidesteps the lost-update race. */
+  /** Written ONLY by the in-daemon observer (src/copilot_api/inference_activity.ts) and read by
+   *  `agent health`. Separate from `.state.json` on purpose: the CLI and the daemon write state
+   *  concurrently, and a single-writer file sidesteps the lost-update race. */
   activityFile: string;
   logFile: string;
   /** The proxy's per-endpoint handler logs, distinct from the access `logFile` (which also records

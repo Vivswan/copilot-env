@@ -54,7 +54,7 @@ import { runDryRun } from "./dry_run.ts";
 export type ConfigView = { kind: "config" } | { kind: "profile"; profile: Profile };
 
 /** A verb's arguments as the CLI parsed them: the key's scope decides the map (settingTarget). */
-export type ConfigAction =
+type ConfigAction =
   | { kind: "set"; key: string; value: string; view: ConfigView; dryRun: boolean }
   | { kind: "unset"; key: string; view: ConfigView; dryRun: boolean }
   | { kind: "get"; key?: string; view: ConfigView };
@@ -112,7 +112,7 @@ export function refuseProfileKey(key: string): void {
 
 /** The daemon that reads a projected or launch-time key is the profile's own, so the restart the
  *  hint names is that daemon's. Hints stay shell-neutral (no `&&`) for Windows PowerShell 5.1. */
-export function proxyRestartHint(profile: Profile): string {
+function proxyRestartHint(profile: Profile): string {
   return `Applies on the next proxy start; restart it: \`${agentStopCommand(profile)}\`, then \`${
     agentStartCommand(profile)
   }\`.`;
@@ -217,7 +217,7 @@ function runUnset(key: string, profile: Profile): () => void {
 /** Where a resolved value came from, in the store's terms: the profile's own section, the global
  *  map (the machine's value for a global key, the shared default for a profile-default one), or
  *  the built-in default. The flag/env layer is per invocation and stays at each read site. */
-export function originLabel(def: ConfigKeyDef, source: SettingSource, profile: Profile): string {
+function originLabel(def: ConfigKeyDef, source: SettingSource, profile: Profile): string {
   switch (source) {
     case "profile":
       return `stored for ${profileLabel(profile)}`;
@@ -300,7 +300,7 @@ interface Cell {
   paint: (text: string) => string;
 }
 
-export interface ConfigTableOptions {
+interface ConfigTableOptions {
   platform: NodeJS.Platform;
   width: number;
   /** Which face is listing: the config view (the shared defaults, then the machine's keys) or one

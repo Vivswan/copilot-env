@@ -142,6 +142,8 @@ async function previewLaunch(
   fs.mkdir(paths.runDir);
   fs.mkdir(paths.home);
   applyDefaultConfig(profile, paths, envConfig);
+  // The cleanup runs before the port is validated in the real start, so its signals are said here,
+  // where a refused port still leaves them in the preview.
   const plan = await planCleanup(paths.home, profile, state);
   const pids = (role: "stop" | "leave"): string =>
     plan.filter((step) => PREVIEW_ROLE[step.kind] === role).map((step) => `pid ${step.pid}`)
@@ -149,13 +151,6 @@ async function previewLaunch(
   if (plan.some((step) => PREVIEW_ROLE[step.kind] === "clear")) {
     state.set(daemonPolicy(profile).releasesPortOnStop ? { pid: null, port: null } : { pid: null });
   }
-  const port = await resolveStartPort(action.port, false, profile, false, envConfig);
-  const { copilotHost } = await resolveLaunchCredential(profile, launch, envConfig, {
-    userAgent: codexUserAgent(),
-  });
-  // The real launch records the port it took before anything wires from it (a launcher's config
-  // reads copilotApiResolvePort), so the plan records it too; the pid beside it is minted at spawn.
-  state.set({ port });
   const stops = pids("stop");
   if (stops !== "") consola.info(`Would stop the proxy processes in the way first (${stops}).`);
   const left = pids("leave");
@@ -165,6 +160,13 @@ async function previewLaunch(
         "daemon, and a lock still held fails the launch.",
     );
   }
+  const port = await resolveStartPort(action.port, false, profile, false, envConfig);
+  const { copilotHost } = await resolveLaunchCredential(profile, launch, envConfig, {
+    userAgent: codexUserAgent(),
+  });
+  // The real launch records the port it took before anything wires from it (a launcher's config
+  // reads copilotApiResolvePort), so the plan records it too; the pid beside it is minted at spawn.
+  state.set({ port });
   consola.info(
     `Would spawn the proxy daemon on port ${port} with the ${source} credential, its requests ` +
       `sent to ${copilotHost}, its log at ${logFile}.`,

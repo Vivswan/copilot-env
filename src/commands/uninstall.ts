@@ -312,8 +312,14 @@ export async function runUninstall(
 
   if (args.dryRun) {
     // The same steps on the dry run's overlay: every file and store slot they would take is the
-    // plan, a daemon stop is its own line, and nothing lands.
-    await runDryRun(() => applyUninstall(ctx));
+    // plan, a daemon stop is its own line, and nothing lands. The install-root guards set the
+    // live run's exit code for a root left behind; a preview leaves every root behind.
+    const exitCode = process.exitCode;
+    try {
+      await runDryRun(() => applyUninstall(ctx));
+    } finally {
+      process.exitCode = exitCode;
+    }
     return;
   }
 

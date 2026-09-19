@@ -8,7 +8,8 @@ import { configureDefaultAgents, runAgentConfig } from "../src/agents/configure_
 import { bothAgents } from "../src/agents/profile_wiring.ts";
 import { AUTH_TOKEN_ENV, claudeAdapter, proxyHelperCommand } from "../src/claude/config.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
-import { CopilotEnvConfig, type StaticKeyScope } from "../src/copilot_api/env_config.ts";
+import type { StaticKeyScope } from "../src/copilot_api/config_registry.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
 import { runCli } from "./helpers/run.ts";

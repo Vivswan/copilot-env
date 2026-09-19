@@ -8,10 +8,9 @@ import { trackedDaemonAlive } from "../copilot_api/daemon.ts";
 import {
   CODEX_IDENTITY_NAME,
   configKeyDef,
-  configSetCommand,
-  CopilotEnvConfig,
   parseIntegrationIdPin,
-} from "../copilot_api/env_config.ts";
+} from "../copilot_api/config_registry.ts";
+import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState, type StoredDirectPair } from "../copilot_api/env_state.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,

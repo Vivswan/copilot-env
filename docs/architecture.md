@@ -178,8 +178,8 @@ flowchart LR
   flag[("an explicit flag or env var: agent update --no-verify here, COPILOT_API_VERSION for the proxy pin")]
   cmd["src/commands/config.ts<br>runConfig() configTable()"]
   prefsin[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)<br>as stored (read at the start)")]
-  store["src/copilot_api/env_config.ts<br>CopilotEnvConfig CONFIG_REGISTRY ConfigKeyDef"]
-  dflt["src/copilot_api/env_config.ts<br>configDefaultValue() configDefaultBoolean() configDefaultNumber()"]
+  store["src/copilot_api/env_config.ts<br>CopilotEnvConfig<br>src/copilot_api/config_registry.ts<br>CONFIG_REGISTRY ConfigKeyDef"]
+  dflt["src/copilot_api/config_registry.ts<br>configDefaultValue() configDefaultBoolean() configDefaultNumber()"]
   site["src/autoupdate/apply.ts<br>resolveProvenanceDecision()"]
   prefsout[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)<br>rewritten whole (written at the end)")]
   cmd -->|"--set, --del, --get"| store

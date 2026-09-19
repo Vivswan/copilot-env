@@ -73,7 +73,6 @@ test("CopilotApiPaths composes per-host run files under the daemon home", () => 
 
   expect(paths.home).toBe(home);
   expect(paths.configFile).toBe(join(home, "config.json"));
-  expect(paths.projectionsFile).toBe(join(home, ".copilot-env-projections.json"));
   expect(paths.runDir).toBe(runDir);
   expect(paths.stateFile).toBe(join(runDir, ".state.json"));
   expect(paths.logFile).toBe(join(runDir, ".log"));

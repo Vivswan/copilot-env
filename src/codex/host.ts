@@ -4,7 +4,8 @@
 import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
-import { type CodexHomePrefs, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import type { CodexHomePrefs } from "../copilot_api/config_registry.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";

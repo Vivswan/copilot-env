@@ -28,14 +28,16 @@ import {
   CONFIG_REGISTRY,
   configDefaultBoolean,
   configKeyDef,
+  type GlobalConfigData,
+  type GlobalMapKey,
+  type ProfileConfigData,
+} from "../copilot_api/config_registry.ts";
+import {
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   GLOBAL_CONFIG_SCHEMA,
-  type GlobalConfigData,
-  type GlobalMapKey,
   PROFILE_CONFIG_SCHEMA,
   PROFILE_SETTINGS_DEFAULT_KEY,
-  type ProfileConfigData,
 } from "../copilot_api/env_config.ts";
 import {
   AUTH_PROVIDERS,

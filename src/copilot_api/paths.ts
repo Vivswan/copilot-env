@@ -86,9 +86,6 @@ export const DEFAULT_PROFILE_DIR = DEFAULT_PROFILE_NAME;
 /** The proxy's per-endpoint handler logs; shared across hosts, unlike `.run/<host>/`. */
 export const LOGS_DIR_NAME = "logs";
 
-/** ProxyProjectionState's record; lives beside the config.json it describes. */
-export const PROJECTIONS_FILENAME = ".copilot-env-projections.json";
-
 /** Env var carrying the ROOT home inside a profile daemon (set at spawn). */
 export const ROOT_HOME_ENV = "COPILOT_ENV_ROOT_HOME";
 
@@ -161,9 +158,6 @@ export const HELPERS_DIR_NAME = "helpers";
 export class CopilotApiPaths {
   home: string;
   configFile: string;
-  /** Declared beside `configFile`, the file it describes, so the two never drift onto different homes.
-   *  Per HOME, not per host: hosts sharing a home share its config.json, so they share its projections. */
-  projectionsFile: string;
   runDir: string;
   stateFile: string;
   /** Written ONLY by the in-daemon observer (src/copilot_api/inference_activity.ts) and read by
@@ -198,7 +192,6 @@ export class CopilotApiPaths {
     const hostname = getSanitizedHostname();
     const runDir = join(this.home, RUN_DIR_NAME, hostname);
     this.configFile = join(this.home, PROXY_CONFIG_FILENAME);
-    this.projectionsFile = join(this.home, PROJECTIONS_FILENAME);
     this.runDir = runDir;
     this.stateFile = join(runDir, RUN_STATE_FILENAME);
     this.activityFile = join(runDir, ".activity.json");

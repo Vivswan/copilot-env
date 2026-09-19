@@ -1,7 +1,8 @@
 import * as net from "node:net";
 
 import { BOUNDED_LOCK_POLICY, withRequiredFileLockSync } from "../utils/file_lock.ts";
-import { configSetCommand, CopilotEnvConfig, isLoopbackHostname } from "./env_config.ts";
+import { isLoopbackHostname } from "./config_registry.ts";
+import { configSetCommand, CopilotEnvConfig } from "./env_config.ts";
 import { allProfileNames } from "./env_state.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile, ProfileName } from "./profile.ts";

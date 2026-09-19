@@ -4,11 +4,8 @@ import { errMessage } from "../src/utils/error.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
-import {
-  CopilotEnvConfig,
-  type GlobalMapKey,
-  type GlobalPatch,
-} from "../src/copilot_api/env_config.ts";
+import type { GlobalMapKey } from "../src/copilot_api/config_registry.ts";
+import { CopilotEnvConfig, type GlobalPatch } from "../src/copilot_api/env_config.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
   daemonClientHeaders,
@@ -23,8 +20,6 @@ import {
   applyDefaultConfig,
   awaitReadiness,
   daemonLifecycleEnv,
-  type FloorCheckedEntry,
-  type HeldStartLock,
   resolveStartPort,
   withStartLock,
 } from "../src/copilot_api/launch.ts";
@@ -36,15 +31,9 @@ import {
   planCleanup,
   trackedDaemonPids,
 } from "../src/copilot_api/launch_cleanup.ts";
-import {
-  classifyOwnedDaemonPid,
-  type CopilotApiEntry,
-  isCopilotApiPid,
-  pidAlive,
-} from "../src/copilot_api/process.ts";
+import { classifyOwnedDaemonPid, isCopilotApiPid, pidAlive } from "../src/copilot_api/process.ts";
 import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
-import { ProxyProjectionState } from "../src/copilot_api/ownership.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import {
   acquireDaemonLockForLife,
@@ -508,13 +497,12 @@ test("the exclusion set end-to-end: the default's and another profile's tracked 
 /** An inert machine-wide scan: no orphans, so only the tracked/holder stops can act. */
 const NO_ORPHANS = (): Promise<number[]> => Promise.resolve([]);
 
-/** Mints the HeldStartLock evidence the cleanup's signature demands, as runStart does. */
 function cleanupUnderLock(
   profile: Profile,
   state: CopilotEnvRunState,
   listPids?: (myPid: number, myPpid: number) => Promise<number[]>,
 ): Promise<void> {
-  return withStartLock((lock) => cleanupExistingProxies(lock, profile, state, listPids));
+  return withStartLock(() => cleanupExistingProxies(profile, state, listPids));
 }
 
 // --- planCleanup: the enumerated decision source (executed live, narrated by --dry-run) --
@@ -1423,15 +1411,11 @@ test("applyDefaultConfig: a nested projection merges into contextManagement", ()
   expect(doc.contextManagement).toEqual({ messages: true, responses: true });
   expect(doc.useResponsesApiContextManagement).toBe(false); // not ours: untouched
   expect(doc.smallModel).toBe("gpt-5-mini");
-  // The opt-in write (and ONLY it) is recorded as ours, so a later unset can clear it.
-  expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([
-    ["contextManagement", "responses"],
-  ]);
 });
 
-// The ownership record covers every opt-in key, nested or top-level: after --del the next apply
-// removes OUR write and nothing else. A key the clearing missed would outlive the operator's unset.
-test("applyDefaultConfig: --del of any opt-in key clears OUR recorded write on the next apply", () => {
+// Every opt-in key, nested or top-level: after --del the next apply clears its path and nothing
+// else. A key the clearing missed would outlive the operator's unset.
+test("applyDefaultConfig: --del of any opt-in key clears its path on the next apply", () => {
   const rows: Array<{
     key: GlobalMapKey;
     set: GlobalPatch;
@@ -1482,51 +1466,23 @@ test("applyDefaultConfig: --del of any opt-in key clears OUR recorded write on t
     });
     if (row.absentKey !== undefined) expect(row.absentKey in doc).toBe(false);
     expect(doc.smallModel).toBe("gpt-5-mini");
-    expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
   }
 });
 
-test("applyDefaultConfig: with the opt-in key unset, a hand-edited value we never projected survives", () => {
+// The daemon's config.json is an output: a value at one of our opt-in paths is re-rendered from
+// the store on every start, whoever wrote it, while the daemon's own sibling keys are left alone.
+test("applyDefaultConfig: with the opt-in key unset, a value at its path is cleared and its siblings kept", () => {
   const { paths, config } = projectionFixture();
-  config.save({ contextManagement: { messages: false, responses: true } });
+  config.save({
+    contextManagement: { messages: false, responses: true },
+    auth: { apiKeys: ["k"] },
+  });
 
   applyDefaultConfig(null, paths);
 
   const doc = config.load();
-  // No ownership record exists for contextManagement.responses, so the hand edit stands.
-  expect(doc.contextManagement).toEqual({ messages: false, responses: true });
-});
-
-test("applyDefaultConfig: a recorded path outside the registry's opt-in set is never deleted", () => {
-  const { paths, config } = projectionFixture();
-  config.save({ auth: { apiKeys: ["seeded-key"] } });
-  // A well-formed record entry claiming a path no registry entry projects opt-in (a foreign
-  // write, or an older registry's key).
-  new ProxyProjectionState(paths).setOwnedPaths([["auth"]]);
-
-  applyDefaultConfig(null, paths);
-
-  expect(config.load().auth).toMatchObject({ apiKeys: ["seeded-key"] });
-  expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
-});
-
-test("applyDefaultConfig: a lost record write self-heals on the next apply", () => {
-  const { paths, config } = projectionFixture();
-  const envConfig = new CopilotEnvConfig();
-  envConfig.set({ "proxy.responses.context-management": true });
-  applyDefaultConfig(null, paths);
-  // Simulate the crash window: config.json already carries our value, but the record write
-  // (which lands after the config write) never did.
-  rmSync(paths.projectionsFile);
-
-  applyDefaultConfig(null, paths);
-  expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([
-    ["contextManagement", "responses"],
-  ]);
-
-  envConfig.del("proxy.responses.context-management");
-  applyDefaultConfig(null, paths);
-  expect(config.load().contextManagement).toEqual({});
+  expect(doc.contextManagement).toEqual({ messages: false });
+  expect(doc.auth).toMatchObject({ apiKeys: ["k"] });
 });
 
 test("applyDefaultConfig: a non-record in a nested path's way is replaced, not crashed on", () => {
@@ -1548,38 +1504,6 @@ test("withStartLock releases the start lock on return and on throw alike", async
   // If either scope above had leaked the lock, this take would wait forever
   // (the start lock's wait is unbounded) and time the suite out.
   expect(await withStartLock(() => Promise.resolve(true))).toBe(true);
-});
-
-// --- the floor-checked entry: gate-then-spawn ordered by data ----------------------------
-
-test("spawnConfiguredDaemon demands ensureProxyFloor's evidence (compile-enforced)", () => {
-  // Only ensureProxyFloor mints a FloorCheckedEntry, so a spawn from an entry the
-  // gate never judged does not compile -- the float/floor-before-spawn ordering is
-  // carried by the data, not by statement order in runStart.
-  const plain: CopilotApiEntry = {
-    kind: "package",
-    specifier: "@jeffreycao/copilot-api",
-    configFile: "deno.json",
-  };
-  // @ts-expect-error a plain resolved entry is not floor-checked evidence
-  const gated: FloorCheckedEntry = plain;
-  expect(gated).toBe(plain); // the brand is type-level only; no runtime shape exists
-});
-
-test("cleanupExistingProxies demands withStartLock's evidence (compile-enforced)", () => {
-  // Only withStartLock mints a HeldStartLock, so an un-locked cleanup does not compile --
-  // the lock-before-sweep ordering is carried by the data. The first parameter must BE the
-  // evidence type EXACTLY: a widening (HeldStartLock | null) or a dropped parameter turns
-  // `paramIsEvidence` into never and fails the typecheck.
-  type FirstParam = Parameters<typeof cleanupExistingProxies>[0];
-  const paramIsEvidence: FirstParam extends HeldStartLock
-    ? HeldStartLock extends FirstParam ? true : never
-    : never = true;
-  const bare = { held: true } as const;
-  // @ts-expect-error a bare { held: true } literal is not held-start-lock evidence
-  const held: HeldStartLock = bare;
-  expect(held).toBe(bare); // the brand is type-level only; no runtime shape exists
-  expect(paramIsEvidence).toBe(true);
 });
 
 // --- unproven tracked-pid identity scans (the plan gate + the signal boundary) ----------
@@ -1686,9 +1610,8 @@ describe("unproven tracked-pid identity scans", () => {
         // re-scan FAILS -- the fail-closed skip must hold there too, and be said.
         let calls = 0;
         const out = await captureAllWrites(() =>
-          withStartLock((lock) =>
+          withStartLock(() =>
             cleanupExistingProxies(
-              lock,
               null,
               new CopilotEnvRunState(),
               NO_ORPHANS,
@@ -1716,9 +1639,8 @@ describe("unproven tracked-pid identity scans", () => {
       try {
         writeRunState({ pid: child.pid, port: 4141 });
         const out = await captureAllWrites(() =>
-          withStartLock((lock) =>
+          withStartLock(() =>
             cleanupExistingProxies(
-              lock,
               null,
               new CopilotEnvRunState(),
               NO_ORPHANS,
@@ -1760,8 +1682,8 @@ describe("unproven tracked-pid identity scans", () => {
         writeRunState({ pid: child.pid, port: 4141 });
         let calls = 0;
         await captureAllWrites(() =>
-          withStartLock((lock) =>
-            cleanupExistingProxies(lock, null, new CopilotEnvRunState(), NO_ORPHANS, () => {
+          withStartLock(() =>
+            cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS, () => {
               calls += 1;
               return Promise.resolve("yes" as const);
             })

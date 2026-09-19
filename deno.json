@@ -93,6 +93,7 @@
       "skills",
       ".claude-plugin",
       "src/copilot_api/config.ts",
+      "src/copilot_api/config_registry.ts",
       "src/copilot_api/daemon_lock.ts",
       "src/copilot_api/daemon_shutdown.ts",
       "src/copilot_api/env_config.ts",

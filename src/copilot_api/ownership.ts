@@ -17,7 +17,6 @@
 import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
 import { CopilotApiConfig, ensureDict } from "./config.ts";
-import type { ProxyConfigPath } from "./env_config.ts";
 import type { CopilotApiPaths } from "./paths.ts";
 import { rootStateStore } from "./state_store.ts";
 
@@ -106,65 +105,6 @@ export class OwnershipLedger {
       const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
       if (list.length === 0) delete d[key];
       else d[key] = list;
-    });
-  }
-}
-
-// --- the per-daemon-home projection record ---------------------------------------
-//
-// Which paths copilot-env itself wrote into a daemon's config.json (the OPT-IN projections), so a later
-// `agent start` clears OUR leftover once its `agent config` key is unset, while a value at the same path
-// we never projected (a hand edit, or the daemon's own write) is never deleted. Per home, beside the
-// config.json (ProxyProjectionState says why).
-
-/** Junk entries are dropped WHOLE, never truncated to a parent path, and never fail the read. A
- *  well-formed path that is not ours still claims nothing: applyDefaultConfig intersects the record with
- *  the registry's own opt-in paths before deleting anything. */
-function recordedPathList(value: unknown): ProxyConfigPath[] {
-  if (!Array.isArray(value)) return [];
-  const out: ProxyConfigPath[] = [];
-  for (const entry of value) {
-    if (!Array.isArray(entry)) continue;
-    const keys = entry.filter((k): k is string => typeof k === "string" && k !== "");
-    const [head, ...rest] = keys;
-    if (head !== undefined && keys.length === entry.length) out.push([head, ...rest]);
-  }
-  return out;
-}
-
-const PROJECTION_STATE_SCHEMA = v.object({
-  optInPaths: v.fallback(v.pipe(v.unknown(), v.transform(recordedPathList)), []),
-});
-
-/**
- * Kept OUTSIDE the ledger on purpose: applyDefaultConfig's read-modify-write lock derives from the record
- * path (per HOME, so hosts sharing a daemon home exclude each other), and a deleted profile home takes its
- * record with it; a global ledger would keep stale claims for dead homes and widen that lock to every daemon.
- * Same doctrine as the ledger: written AFTER the config.json apply, so a crash leaves an unclaimed value.
- */
-export class ProxyProjectionState {
-  private readonly store: CopilotApiConfig;
-  /** The applyDefaultConfig RMW lock derives from this path. */
-  readonly path: string;
-
-  constructor(paths: CopilotApiPaths) {
-    this.path = paths.projectionsFile;
-    this.store = new CopilotApiConfig(this.path);
-  }
-
-  /** Strict: the record decides which config.json paths applyDefaultConfig may DELETE, so an unreadable
-   *  record throws rather than reading as "we projected nothing". */
-  ownedPaths(): ProxyConfigPath[] {
-    return v.parse(PROJECTION_STATE_SCHEMA, this.store.loadStrict()).optInPaths;
-  }
-
-  /** No write when nothing was recorded before or after, so a default-configured start never
-   *  materializes an empty record file. */
-  setOwnedPaths(paths: readonly ProxyConfigPath[]): void {
-    if (paths.length === 0 && this.ownedPaths().length === 0) return;
-    this.store.update((d) => {
-      if (paths.length === 0) delete d.optInPaths;
-      else d.optInPaths = paths.map((p) => [...p]);
     });
   }
 }

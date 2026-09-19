@@ -288,7 +288,7 @@ test("junk config keys and malformed values are rejections, never dropped or coe
   }
   // The identity pin WINS over probed identities and lands in HTTP headers, so a
   // header-splitting value is rejected by the shared shape (INTEGRATION_ID_RE in
-  // env_config.ts) -- and never echoed. It lives in a profile's section.
+  // config_registry.ts) -- and never echoed. It lives in a profile's section.
   message = "";
   try {
     parseSettingsBundle(

@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import * as v from "valibot";
 import * as fs from "../utils/fs_facade.ts";
-import { canonicalPricingUrl, OPENROUTER_MODELS_URL } from "../copilot_api/env_config.ts";
+import { canonicalPricingUrl, OPENROUTER_MODELS_URL } from "../copilot_api/config_registry.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
 import { usageIndexDir } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";

@@ -12,7 +12,8 @@ import { codexAdapter, directWiringFor } from "../src/codex/config.ts";
 import { inspectCodexWiring } from "../src/codex/inspect.ts";
 import { runConfig } from "../src/commands/config.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
-import { configKeyDef, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { configKeyDef } from "../src/copilot_api/config_registry.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,

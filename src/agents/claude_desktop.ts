@@ -16,7 +16,8 @@ import {
   inspectClaudeDesktopWiring,
 } from "../claude/desktop_status.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { configDefaultBoolean, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { configDefaultBoolean } from "../copilot_api/config_registry.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";

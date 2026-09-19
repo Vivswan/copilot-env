@@ -19,12 +19,14 @@ import {
   configKeyDef,
   type ConfigScope,
   type ConfigValueTypes,
+  isProxyProjected,
+  OPENROUTER_MODELS_URL,
+} from "../src/copilot_api/config_registry.ts";
+import {
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   formatConfigValue,
   GLOBAL_CONFIG_SCHEMA,
-  isProxyProjected,
-  OPENROUTER_MODELS_URL,
   projectedProxyConfig,
   type ProjectedProxyEntry,
 } from "../src/copilot_api/env_config.ts";
@@ -85,12 +87,20 @@ function stored(
   return { global, profiles };
 }
 
+function projectedEntry(
+  entries: readonly ProjectedProxyEntry[],
+  path: readonly string[],
+): ProjectedProxyEntry | undefined {
+  return entries.find((e) =>
+    e.path.length === path.length && e.path.every((k, i) => k === path[i])
+  );
+}
+
 function projectedValue(
   entries: readonly ProjectedProxyEntry[],
   path: readonly string[],
 ): boolean | number | string | undefined {
-  return entries.find((e) => e.path.length === path.length && e.path.every((k, i) => k === path[i]))
-    ?.value;
+  return projectedEntry(entries, path)?.value;
 }
 
 function stdoutOf(run: () => void): string {
@@ -1135,29 +1145,29 @@ test("configTable() narrows with the width: the header packs to it, the right co
   expect(long.slice(bannerAt, bannerAt + 4).filter((l) => l.length > 40)).toEqual([]);
 });
 
-test("projectedProxyConfig(): force keys always project (built-in default or stored), opt-in keys only when set, per profile, along the registry's paths; internal keys never leak", () => {
+test("projectedProxyConfig(): force keys always project (built-in default or stored), opt-in keys project a stored value and clear their path otherwise, per profile, along the registry's paths; internal keys never leak", () => {
   tmpHome();
-  // Empty store: the force-projected keys resolve to their built-in defaults; the opt-in keys
-  // are absent so the proxy's own defaults stand.
+  // Empty store: the force-projected keys resolve to their built-in defaults; every opt-in key is
+  // an entry WITHOUT a value, the clear that lets the proxy's own default stand.
   const empty = projectedProxyConfig(null);
   expect(projectedValue(empty, ["smallModel"])).toBe("gpt-5-mini");
   expect(projectedValue(empty, ["useResponsesApiWebSocket"])).toBe(true);
   expect(projectedValue(empty, ["useResponsesApiWebSearch"])).toBe(true);
   expect(projectedValue(empty, ["useMessagesApi"])).toBe(true);
-  expect(empty).toHaveLength(4);
-  expect(empty.every((e) => !e.optIn)).toBe(true);
+  expect(empty.filter((e) => e.value !== undefined)).toHaveLength(4);
   for (
     const path of [
-      "alphaSearchCodexPriority",
-      "alphaSearchModel",
-      "claudeAutoModel",
-      "claudeTokenMultiplier",
-      "messageApiWebSearchModel",
+      ["alphaSearchCodexPriority"],
+      ["alphaSearchModel"],
+      ["claudeAutoModel"],
+      ["claudeTokenMultiplier"],
+      ["messageApiWebSearchModel"],
+      ["contextManagement", "responses"],
     ]
   ) {
-    expect(projectedValue(empty, [path]), path).toBeUndefined();
+    expect(projectedEntry(empty, path)).toEqual({ path, value: undefined });
   }
-  expect(projectedValue(empty, ["contextManagement", "responses"])).toBeUndefined();
+  expect(empty).toHaveLength(10);
   // A stored override on a force key is honored; a stored opt-in key now appears too, each under
   // the proxy's own key (the paths are the proxy's contract): the nested one under
   // contextManagement.responses (the pre-1.14 flat key is never projected).
@@ -1173,12 +1183,10 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
   const projected = projectedProxyConfig(null);
   expect(projectedValue(projected, ["useResponsesApiWebSocket"])).toBe(false);
   expect(projectedValue(projected, ["messageApiWebSearchModel"])).toBe("gpt-5");
-  expect(projected.find((e) => e.path[0] === "messageApiWebSearchModel")?.optIn).toBe(true);
   expect(projectedValue(projected, ["alphaSearchCodexPriority"])).toBe(false);
   expect(projectedValue(projected, ["alphaSearchModel"])).toBe("gpt-5");
   expect(projectedValue(projected, ["claudeAutoModel"])).toBe("claude-haiku-4.5");
   expect(projectedValue(projected, ["contextManagement", "responses"])).toBe(true);
-  expect(projected.find((e) => e.path[0] === "contextManagement")?.optIn).toBe(true);
   expect(projectedValue(projected, ["useResponsesApiContextManagement"])).toBeUndefined();
   // Copilot-env-internal keys never leak into the proxy projection.
   cfg.set({ "daemon.auto-start": true, "claude.desktop": false });
@@ -1192,8 +1200,8 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
   expect(projectedValue(work, ["claudeTokenMultiplier"])).toBe(2);
   expect(projectedValue(work, ["messageApiWebSearchModel"])).toBe("gpt-5");
   expect(projectedProxyConfig(null)).toEqual(projected);
-  // No two projected entries (force or opt-in, set or not) may share a path: a force entry
-  // always re-emits its path, which would permanently disable the opt-in clearing pass for it.
+  // No two projected entries (force or opt-in) may share a path: the later entry's set or clear
+  // would silently undo the earlier one's on every start.
   const allProjectedPaths = CONFIG_REGISTRY.filter(isProxyProjected).map((d) =>
     JSON.stringify(d.proxyPath)
   );

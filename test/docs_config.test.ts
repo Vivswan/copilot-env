@@ -8,8 +8,8 @@ import {
   CONFIG_REGISTRY,
   configDefaultValue,
   type ConfigValue,
-  formatConfigValue,
-} from "../src/copilot_api/env_config.ts";
+} from "../src/copilot_api/config_registry.ts";
+import { formatConfigValue } from "../src/copilot_api/env_config.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { expect, test } from "./helpers/testing.ts";
 

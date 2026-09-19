@@ -22,7 +22,8 @@ import { runStop } from "./stop.ts";
  *  the verb factory, and the stray-word refusal. */
 export interface ProfileOpsContext {
   rawProfile: string | null;
-  verb(name: ProfileVerb, description: string): Command;
+  /** `summary` is the verb's one-line row in the listings; `description` its own help. */
+  verb(name: ProfileVerb, summary: string, description: string): Command;
   refuseStrayWords(cmd: Command, verb: ProfileVerb): void;
 }
 
@@ -213,9 +214,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
 
   verb(
     "launch",
-    `Launch an agent CLI (claude | codex | copilot) under the wiring of ${forWhom}: the managed ` +
-      "flags, provider wiring, and environment (what the cl / co / cx shell launchers run). " +
-      "copilot takes no profile.",
+    "Run an agent CLI (claude | codex | copilot)",
+    `Launch an agent CLI (claude | codex | copilot) under the wiring of ${forWhom}: its ` +
+      "provider, managed flags, and environment. This is what the cl / co / cx shell launchers " +
+      "run. Put the CLI's own arguments after --. copilot takes no profile.",
   )
     .argument("<cli>", "Which agent CLI to launch: claude | codex | copilot.")
     .argument(
@@ -237,8 +239,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
 
   verb(
     "env",
-    `Print the shell directives of ${forWhom} (the proxy base URL, the Codex home, the opt-in ` +
-      "launchers), evaluated by the calling shell; the shell wrapper evals the default's.",
+    "Print its shell exports, for eval",
+    `Print the shell directives of ${forWhom} for your shell to eval: the proxy base URL, the ` +
+      "Codex home, and the opt-in launchers. Each new shell evals the default profile's through " +
+      "the shell wrapper. --format powershell for PowerShell.",
   )
     .option(
       "--format <format>",
@@ -254,9 +258,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
   addProxyTokenOptions(
     verb(
       "proxy-token",
-      `Print the API key of the proxy daemon of ${forWhom}, auto-starting it when the managed ` +
-        "lifecycle (`daemon.auto-start`) is on - the resolver behind the proxy-mode Codex/Claude " +
-        "wiring and the cl/cx launchers. Only the key touches stdout.",
+      "Print its proxy daemon's API key",
+      `Print the API key of the proxy daemon of ${forWhom}; only the key goes to stdout. When ` +
+        "the managed lifecycle (`daemon.auto-start`) is on, a downed daemon is started first. " +
+        "Codex and Claude call this in proxy mode, as do the cl / cx launchers.",
     ),
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "proxy-token");
@@ -266,9 +271,11 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
   addMcpOptions(
     verb(
       "mcp",
-      "Status of the copilot-env MCP server wiring (machine-global); --serve runs the stdio " +
-        `server (web_search via GitHub Copilot /responses) with the credential of ${forWhom}, ` +
-        "for Claude, Codex, or any MCP client.",
+      "Show or run the web-search MCP server",
+      "Show the wiring status of the copilot-env MCP server, whose `web_search` tool gives " +
+        "Claude Code web search through GitHub Copilot (the registration is machine-global). " +
+        `--serve runs the stdio server with the credential of ${forWhom}, for Claude, Codex, ` +
+        "or any MCP client; --remove unregisters it.",
     ),
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "mcp");
@@ -278,8 +285,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
   addStartOptions(
     verb(
       "start",
-      `Start the proxy daemon of ${forWhom} in the background, detached (a named profile's own ` +
-        "home and port, its own credential); `agent start` is the default's alias.",
+      "Start its proxy daemon in the background",
+      `Start the proxy daemon of ${forWhom} in the background, detached. A named profile runs ` +
+        "its own daemon: its own home, port, and credential. " +
+        "See also: `agent start`, the same command for the default profile.",
     ),
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "start");
@@ -289,8 +298,9 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
   addStopOptions(
     verb(
       "stop",
+      "Stop its proxy daemon; --all stops them all",
       `Stop the proxy daemon of ${forWhom} on this host; --all stops every profile's. ` +
-        "`agent stop` is the default's alias.",
+        "See also: `agent stop`, the same command for the default profile.",
     ),
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "stop");
@@ -300,9 +310,11 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
   addHealthOptions(
     verb(
       "health",
-      `Diagnose ${forWhom} (exit 1 on any failure): its daemon, consistency, credential slot, ` +
-        "and per-agent wiring (account-wide checks are the default's). Every profile at once is " +
-        "`agent health`.",
+      "Diagnose its daemon, credential, and wiring",
+      `Diagnose ${forWhom}: its daemon, consistency, credential slot, and Codex and Claude ` +
+        "wiring (the default profile adds the account-wide checks). Exit 1 on any failure; " +
+        "--scope narrows the checks, --json emits the report as data. " +
+        "See also: `agent health` for every profile at once.",
     ),
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "health");
@@ -311,8 +323,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
 
   verb(
     "models",
-    `List the model ids + names GitHub Copilot serves ${forWhom}: its running proxy daemon, else ` +
-      "Direct with its own credential (never the default's).",
+    "List the models its credential can use",
+    `List the model ids and names GitHub Copilot serves ${forWhom}: from its running proxy ` +
+      "daemon, else from Direct with its own credential (never the default's). --json emits " +
+      "the list as data.",
   )
     .option("--proxy", "Read the running local proxy's catalog (fails if the proxy is down).")
     .option("--direct", "Fetch upstream from GitHub Copilot Direct with the resolved credential.")
@@ -325,9 +339,11 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
   addCreditsOptions(
     verb(
       "credits",
-      `This month's Copilot AI credits (100 to the dollar) of the account of ${forWhom}: spent, ` +
-        "projected, and paced against the plan's entitlement and an optional target. One live " +
-        "read of GitHub's meter; nothing local. Every account at once is `agent credits`.",
+      "Show its Copilot credits for this month",
+      `Show this month's Copilot AI credits (100 to the dollar) of the account of ${forWhom}: ` +
+        "spent, projected for the month, and paced against the plan's entitlement and an " +
+        "optional target. One live read of GitHub's meter; nothing is stored locally. " +
+        "See also: `agent credits` for every account at once.",
     ),
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "credits");
@@ -337,9 +353,11 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
   addSettingsOptions(
     verb(
       "settings",
-      `Export/import the portable settings of ${forWhom} alone as one JSON bundle: its ` +
-        "credential, mode, and preferences (the default's: its credential, both agents' mode, " +
-        "its section, and the shared proxy.*/probe.* defaults). The whole store is `agent settings`.",
+      "Export or import its settings as JSON",
+      `Export the portable settings of ${forWhom} alone as one JSON bundle, or import one ` +
+        "back: its credential, mode, and preferences (the default profile's bundle also carries " +
+        "both agents' mode and the shared proxy.* / probe.* defaults). " +
+        "See also: `agent settings` for the whole store.",
     ),
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "settings");
@@ -355,9 +373,10 @@ export function registerDaemonAliases(program: Command): void {
     program
       .command("start")
       .helpGroup("Daemon:")
+      .summary("Start the default profile's proxy daemon")
       .description(
-        "Start the proxy in the background, detached: the same as `agent profile start`. A named " +
-          "profile's daemon is `agent profile <name> start`.",
+        "Start the default profile's proxy daemon in the background, detached, and return. " +
+          "See also: `agent profile <name> start` for a named profile's daemon.",
       ),
   ).action((opts: Opts) => startAction(opts, undefined));
 
@@ -365,9 +384,10 @@ export function registerDaemonAliases(program: Command): void {
     program
       .command("stop")
       .helpGroup("Daemon:")
+      .summary("Stop the default profile's proxy daemon")
       .description(
-        "Stop the proxy on this host: the same as `agent profile stop`; --all stops every " +
-          "profile's daemon.",
+        "Stop the default profile's proxy daemon on this host; --all stops the default and every " +
+          "named profile's daemon. See also: `agent profile <name> stop`.",
       ),
   ).action((opts: Opts) => stopAction(opts, undefined));
 }
@@ -379,10 +399,12 @@ export function registerEverywhereCommands(program: Command): void {
     program
       .command("health")
       .helpGroup("Daemon:")
+      .summary("Diagnose the whole setup and every profile")
       .description(
-        "Diagnose the whole setup and every profile (exit 1 on any failure): the account-wide " +
-          "checks, then each profile's daemon, credential slot, and per-agent wiring. One profile " +
-          "alone is `agent profile [<name>] health`.",
+        "Diagnose the whole setup: the account-wide checks (shell, CLIs, credential) first, then " +
+          "each profile's daemon, credential slot, and Codex and Claude wiring. Exit 1 on any " +
+          "failure; --scope narrows the checks, --json emits the report as data. " +
+          "See also: `agent profile [<name>] health` for one profile.",
       ),
   ).action((opts: Opts) => runHealthEverywhere(healthFlags(opts)));
 
@@ -390,11 +412,13 @@ export function registerEverywhereCommands(program: Command): void {
     program
       .command("credits")
       .helpGroup("Daemon:")
+      .summary("Show this month's Copilot credits per account")
       .description(
-        "This month's Copilot AI credits (100 to the dollar) for every distinct GitHub account " +
-          "across the profiles (profiles on one account print one meter): spent, projected, and " +
-          "paced against the plan's entitlement and an optional target. One live read of GitHub's " +
-          "meter per account; nothing local. One profile's is `agent profile [<name>] credits`.",
+        "Show this month's Copilot AI credits (100 to the dollar) for every GitHub account " +
+          "across your profiles: spent, projected for the month, and paced against the plan's " +
+          "entitlement and an optional target. Profiles on one account share one meter. One " +
+          "live read of GitHub's meter per account; nothing is stored locally. " +
+          "See also: `agent profile [<name>] credits` for one profile.",
       ),
   ).action((opts: Opts) => runCreditsEverywhere(creditsFlags(opts)));
 
@@ -402,10 +426,12 @@ export function registerEverywhereCommands(program: Command): void {
     program
       .command("settings")
       .helpGroup("Settings:")
+      .summary("Export or import every setting as one JSON file")
       .description(
-        "Export/import every portable copilot-env setting (preferences, credential, " +
-          "profiles, wiring modes) as one JSON bundle: the whole store. One profile's bundle is " +
-          "`agent profile [<name>] settings`.",
+        "Export every portable copilot-env setting (preferences, credentials, profiles, wiring " +
+          "modes) as one JSON bundle, or import a bundle back. Tokens are redacted on export " +
+          "unless --with-credentials. " +
+          "See also: `agent profile [<name>] settings` for one profile's bundle.",
       ),
   ).action((opts: Opts) => runSettings(settingsFlags(opts)));
 }

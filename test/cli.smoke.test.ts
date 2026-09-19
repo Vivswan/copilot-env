@@ -8,6 +8,7 @@ import {
 } from "../src/shell/integration.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
 import { USAGE_INDEX_DIR_NAME } from "../src/copilot_api/paths.ts";
+import { PROFILE_VERBS } from "../src/copilot_api/profile.ts";
 import { loadPricing } from "../src/usage/pricing.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { runCli } from "./helpers/run.ts";
@@ -74,6 +75,29 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
   expect(output).toContain("profile");
   expect(output.indexOf("profile")).toBeLessThan(output.indexOf("start"));
   expect(output).toContain("--version");
+});
+
+// Down a pipe Commander wraps help at 80 columns, the narrowest terminal in common use. A row that
+// wraps continues on a line indented past the name column; a row that fits never does.
+test("the command listings fit 80 columns one row each, and the root help lists every profile verb", () => {
+  const root = helpScreen("--help");
+  const profile = helpScreen("profile", "--help");
+  for (const [label, screen] of [["agent", root], ["agent profile", profile]] as const) {
+    expect(screen.exitCode, label).toBe(0);
+    const lines = screen.stdout.split("\n");
+    expect(lines.filter((line) => line.length > 80), label).toEqual([]);
+    expect(lines.filter((line) => /^ {3,}\S/.test(line)), label).toEqual([]);
+  }
+  expect(root.stdout).toMatch(/^Profile:$/m);
+  for (const verb of PROFILE_VERBS) {
+    expect(root.stdout, verb).toMatch(new RegExp(`^  profile \\[<name>\\] ${verb} +\\S`, "m"));
+  }
+  // The verb rows are a rendering of the root help alone: a verb typed as a top-level command is
+  // unknown with no suggestion, as on a plain Commander program.
+  const stray = runCli(["models"], { env: { ...process.env, CONSOLA_LEVEL: "5" } });
+  expect(stray.exitCode).toBe(1);
+  expect(stray.stderr).toContain("unknown command 'models'");
+  expect(stray.stderr).not.toContain("Did you mean");
 });
 
 test("cli.ts profile mcp --help exposes the server flags; --remove rejects serve-only flags", () => {

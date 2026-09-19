@@ -41,6 +41,7 @@ import {
 import { releaseFileLock, tryAcquireFileLock } from "../src/utils/file_lock.ts";
 import { captureAllWrites } from "./helpers/output.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
+import { indexBytesOnDisk } from "./helpers/usage_index.ts";
 
 let root = "";
 let logs = "";
@@ -241,12 +242,7 @@ function hideFilesTable(hidden: boolean): void {
 
 /** Every byte SQLite left on disk for the index: the database and any sidecar. */
 function rawIndexBytes(): string {
-  let text = "";
-  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
-    const file = `${dbPath()}${suffix}`;
-    if (existsSync(file)) text += readFileSync(file).toString("latin1");
-  }
-  return text;
+  return indexBytesOnDisk(dbPath());
 }
 
 // --- tests ----------------------------------------------------------------------

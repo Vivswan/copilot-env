@@ -11,7 +11,7 @@
 // entry points would miss `import * as cp`. Type imports are erased, so they stay legal.
 //
 // Registered in deno.json, unit-tested in test/child_spawn_lint.test.ts.
-import { memberName, testTreePath } from "./test_tree.ts";
+import { isDenoNamespace, memberName, testTreePath } from "./test_tree.ts";
 
 /** The files that own a sanctioned construction, relative to the test tree: run.ts, the
  *  process boundary, and testing.ts, whose one child (the cache lookup) runs at module load,
@@ -25,14 +25,6 @@ const MESSAGE =
   "build child processes with spawnChild (test/helpers/run.ts), which registers the child " +
   "for abort teardown -- one made here outlives a timed-out test and runs on alongside the " +
   "tests that follow";
-
-/** Whether `node` is the `Deno` global, spelled bare or through globalThis. */
-function isDenoNamespace(node: Deno.lint.Node): boolean {
-  if (node.type === "Identifier") return node.name === "Deno";
-  return node.type === "MemberExpression" &&
-    node.object.type === "Identifier" && node.object.name === "globalThis" &&
-    node.property.type === "Identifier" && node.property.name === "Deno";
-}
 
 const plugin: Deno.lint.Plugin = {
   name: "copilot-env-test",

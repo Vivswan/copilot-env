@@ -45,13 +45,10 @@ import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { isRecord } from "../src/utils/json.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
-import {
-  envSnapshot,
-  isolateAgentHomes,
-  resetExitCode,
-  stageRefusedStop,
-  stubGithubLogins,
-} from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers/env.ts";
+import { stubGithubLogins } from "./helpers/fixtures.ts";
+import { stageRefusedStop } from "./helpers/daemon.ts";
+import { captureAllWrites } from "./helpers/output.ts";
 
 // Branded fixture names: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
@@ -689,26 +686,6 @@ test("parseStopAction: all/profile/default arms; --all on a named profile is a r
 });
 
 // --- the refused stop's consumers (guard + summary line) ---------------------------------
-
-/** Capture BOTH process write streams (consola routes by level) while awaiting `fn`. */
-async function captureAllWrites(fn: () => Promise<void>): Promise<string> {
-  const stdout = process.stdout.write.bind(process.stdout);
-  const stderr = process.stderr.write.bind(process.stderr);
-  let out = "";
-  const capture = (chunk: string | Uint8Array): boolean => {
-    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    return true;
-  };
-  process.stdout.write = capture;
-  process.stderr.write = capture;
-  try {
-    await fn();
-  } finally {
-    process.stdout.write = stdout;
-    process.stderr.write = stderr;
-  }
-  return out;
-}
 
 test(
   "profile delete: a REFUSED stop aborts the deletion; home, slot, and tracking survive",

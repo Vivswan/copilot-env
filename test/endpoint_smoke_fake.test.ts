@@ -9,7 +9,7 @@ import { CLAUDE_ENDPOINT_SMOKE } from "../src/claude/config.ts";
 import { CODEX_ENDPOINT_SMOKE } from "../src/codex/config.ts";
 import { directSmoke } from "../src/copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../src/copilot_api/integration_identity.ts";
-import { type FakeModelEndpoint, SCENARIO_HEADER } from "./fake_model_endpoint.ts";
+import { type FakeModelEndpoint, SCENARIO_HEADER } from "./helpers/fake_model_endpoint.ts";
 import { type ScenarioName, startFakeEndpoint } from "./helpers/fake_endpoint.ts";
 import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 

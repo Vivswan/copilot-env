@@ -3,14 +3,12 @@
 //   v1 monolith SDK client (what Claude Code embeds)  -> the legacy `initialize` handshake
 //   v2 client pinned to 2026-07-28                    -> the modern era outright; the pin forbids the silent legacy fallback
 
-import { join } from "node:path";
-
 import { Client as ClientV2 } from "@modelcontextprotocol/client";
 import { StdioClientTransport as StdioTransportV2 } from "@modelcontextprotocol/client/stdio";
 import { Client as ClientV1 } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport as StdioTransportV1 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { cleanupTmpDirs, mcpEnv } from "./helpers/mcp.ts";
-import { denoRunArgs, ROOT } from "./helpers/run.ts";
+import { CLI_ENTRY, denoRunArgs } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 
 afterEach(cleanupTmpDirs);
@@ -19,7 +17,7 @@ afterEach(cleanupTmpDirs);
 function serverParams() {
   return {
     command: Deno.execPath(),
-    args: [...denoRunArgs(), join(ROOT, "src", "cli.ts"), "profile", "mcp", "--serve"],
+    args: [...denoRunArgs(), CLI_ENTRY, "profile", "mcp", "--serve"],
     env: mcpEnv(),
     stderr: "pipe" as const,
   };

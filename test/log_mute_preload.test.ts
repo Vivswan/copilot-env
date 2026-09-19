@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { denoRunArgs, resolvePackageDir, ROOT, runSync } from "./helpers/run.ts";
+import { resolvePackageDir, ROOT, runWithPreload } from "./helpers/run.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // The shim patches `node:fs` at import, so any import would show it; the subprocess proves it
@@ -17,11 +17,9 @@ import { expect, tempDir, test } from "./helpers/testing.ts";
 const SHIM = join(ROOT, "src", "scripts", "log_mute_preload.ts");
 
 function runPreloaded(home: string, script: string): string {
-  const target = join(home, "target.ts");
-  writeFileSync(target, script);
   // Both env vars as the daemon spawn pins them (src/copilot_api/launch.ts): inside a daemon,
   // COPILOT_API_HOME IS the home.
-  const res = runSync(Deno.execPath(), [...denoRunArgs("--preload", SHIM), target], {
+  const res = runWithPreload(SHIM, script, {
     env: { ...process.env, COPILOT_API_HOME: home, COPILOT_ENV_ROOT_HOME: home },
   });
   if (res.exitCode !== 0) {

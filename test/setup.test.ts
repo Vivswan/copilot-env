@@ -17,7 +17,8 @@ import { parseShellAction, runShell } from "../src/commands/setup.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CI_RC_DIR_ENV, MARKER } from "../src/shell/integration.ts";
 import { expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
+import { captureChannelsSync } from "./helpers/output.ts";
 
 // runShell's flag validation throws BEFORE any install or rc wiring, so these
 // need no filesystem/network isolation.
@@ -188,27 +189,7 @@ function stageCliInstallFixture(opts: {
 }
 
 function captureRun(fn: () => void): string {
-  const written: string[] = [];
-  const savedLevel = consola.level;
-  const origOut = process.stdout.write.bind(process.stdout);
-  const origErr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = (s: string | Uint8Array) => {
-    written.push(String(s));
-    return true;
-  };
-  process.stderr.write = (s: string | Uint8Array) => {
-    written.push(String(s));
-    return true;
-  };
-  try {
-    consola.level = 3; // ensure info is not self-silenced under the test runner
-    fn();
-  } finally {
-    process.stdout.write = origOut;
-    process.stderr.write = origErr;
-    consola.level = savedLevel;
-  }
-  return written.join("");
+  return captureChannelsSync(fn).all;
 }
 
 const CLI_ENV_EXTRAS = ["PATH", "Path", "NVM_DIR"] as const;

@@ -1,4 +1,4 @@
-// Loaded with `--preload` into the fake model endpoint's aimock child (test/fake_model_endpoint.ts)
+// Loaded with `--preload` into the fake model endpoint's aimock child (test/helpers/fake_model_endpoint.ts)
 // so the child can never outlive the test process that spawned it: a run interrupted mid-suite
 // (Ctrl-C, a SIGKILL, a crash) once left aimock serving on its port for hours with no parent.
 //

@@ -25,11 +25,11 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { runDryRun } from "../src/commands/dry_run.ts";
-import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
-import { captureChannels } from "./helpers/output.ts";
+import { captureChannels, captureChannelsSync } from "./helpers/output.ts";
 import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, linesNaming } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
+import { linesNaming } from "./helpers/dry_run.ts";
 
 /** A recorded Direct default whose slot holds its pair, so a single-agent write is a re-render
  *  (zero probes, no credential needed); with no pair it would land both agents and ask to log in. */
@@ -1245,37 +1245,11 @@ test("a rejected catalog is stripped from every known config even when the activ
 /** Everything `fn` says on stderr: the logger's lines, then the seam's write reports
  *  (which bypass process.stderr, so they are held back and read at the flush). */
 async function stderrOfAsync(fn: () => Promise<void>): Promise<string> {
-  let out = "";
-  const realWrite = process.stderr.write;
-  process.stderr.write = (chunk: string | Uint8Array): boolean => {
-    out += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    return true;
-  };
-  deferWriteReports();
-  try {
-    await fn();
-  } finally {
-    process.stderr.write = realWrite;
-    out += flushWriteReports().map((line) => `${line}\n`).join("");
-  }
-  return out;
+  return (await captureChannels(fn, { writeReports: true })).stderr;
 }
 
 function stderrOfSync(fn: () => void): string {
-  let out = "";
-  const realWrite = process.stderr.write;
-  process.stderr.write = (chunk: string | Uint8Array): boolean => {
-    out += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    return true;
-  };
-  deferWriteReports();
-  try {
-    fn();
-  } finally {
-    process.stderr.write = realWrite;
-    out += flushWriteReports().map((line) => `${line}\n`).join("");
-  }
-  return out;
+  return captureChannelsSync(fn, { writeReports: true }).stderr;
 }
 
 test("the config write's one line carries the model_catalog_json change it makes", () => {

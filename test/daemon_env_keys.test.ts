@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import {
   DAEMON_CLIENT_HEADERS_ENV,
@@ -8,6 +8,7 @@ import { DAEMON_GH_TOKEN_ENV } from "../src/copilot_api/process.ts";
 import { ROOT } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 import shimImportsPlugin, { SHIM_FILES } from "./lint/no_shim_imports.ts";
+import { tsFilesUnder } from "./helpers/tree.ts";
 
 // Some `--preload` shims run import-free inside the proxy daemon (a CLI import would drag that
 // layer into the daemon), so each env-var contract between launchDaemon and such a shim is spelled
@@ -227,16 +228,6 @@ test("no-shim-imports: rejects every runtime-import shape in a shim, allows type
     expect(SHIM_FILES.map((f) => f.split("/").at(-1))).toContain(shim);
   }
 });
-
-function tsFilesUnder(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...tsFilesUnder(path));
-    else if (entry.name.endsWith(".ts")) out.push(path);
-  }
-  return out;
-}
 
 /** Escape hatch for a COPILOT_ENV_* key legitimately spelled in a script yet NOT a
  *  shim/CLI pair (say, a user-facing message naming a key). Empty today; add to it

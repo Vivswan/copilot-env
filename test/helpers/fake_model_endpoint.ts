@@ -39,13 +39,13 @@
 import { writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, request as httpRequest } from "node:http";
 import { join } from "node:path";
-import { isRecord } from "../src/utils/json.ts";
-import { denoRunArgs, ROOT, spawnChild } from "./helpers/run.ts";
+import { isRecord } from "../../src/utils/json.ts";
+import { denoRunArgs, ROOT, spawnChild } from "./run.ts";
 
 /** The header aimock matches a fixture's `context` against, exact string match. */
 export const SCENARIO_HEADER = "X-AIMock-Context";
 /** What a request with no matching scenario gets. */
-export const DEFAULT_REPLY = "The fake model endpoint answered.";
+const DEFAULT_REPLY = "The fake model endpoint answered.";
 /** A hang or a pace can never exceed this, so a leaked scenario cannot wedge the run. */
 const MAX_LATENCY_MS = 10_000;
 const START_TIMEOUT_MS = 60_000;
@@ -88,7 +88,7 @@ export function hermeticEnv(extra: Record<string, string>): Record<string, strin
   return { ...out, DENO_NO_UPDATE_CHECK: "1", ...extra };
 }
 
-export type ScenarioSpec =
+type ScenarioSpec =
   | { kind: "text"; text: string; usage?: { input: number; output: number } }
   | { kind: "error"; status: number; type: string; message: string; code?: string }
   | { kind: "truncate"; text: string; afterFrames: number };
@@ -97,7 +97,7 @@ export type ScenarioSpec =
 export type Scenarios = Record<string, ScenarioSpec>;
 
 /** The aimock fixture file for a scenario table: context fixtures first, the default last. */
-export function fixtureFile(scenarios: Scenarios): { fixtures: Record<string, unknown>[] } {
+function fixtureFile(scenarios: Scenarios): { fixtures: Record<string, unknown>[] } {
   const fixtures: Record<string, unknown>[] = [];
   for (const [context, spec] of Object.entries(scenarios)) {
     const match = { "context": context };
@@ -220,10 +220,10 @@ function catalogBody(): unknown {
   };
 }
 
-export type Route = "models" | "messages" | "responses" | "chat";
+type Route = "models" | "messages" | "responses" | "chat";
 
 /** One request the fake answered, in one shape whichever side journaled it. */
-export interface FakeRequest {
+interface FakeRequest {
   method: string;
   /** As received, query included. */
   path: string;

@@ -50,14 +50,14 @@ import { evalCodex, evalShellFiles, gatherFacts } from "../src/health/probe.ts";
 import { runLiveCli } from "../src/health/probe_deps.ts";
 import type { CheckId, CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot } from "./helpers/env.ts";
 import {
   type ClaudeSettingsOptions,
   codexConfigToml,
   type CodexConfigTomlOptions,
-  envSnapshot,
   writeClaudeSettings,
   writeCodexConfigToml,
-} from "./helpers.ts";
+} from "./helpers/fixtures.ts";
 
 // --- fixtures ---------------------------------------------------------------
 

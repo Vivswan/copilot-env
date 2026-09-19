@@ -1,8 +1,7 @@
-import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DAEMON_GH_TOKEN_ENV } from "../src/copilot_api/process.ts";
-import { denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
-import { expect, tempDir, test } from "./helpers/testing.ts";
+import { ROOT, runWithPreload } from "./helpers/run.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // The shim runs here as a real `--preload` subprocess, the way launchDaemon loads it. Production
 // also orders it before the PAT shim, which reads the token from argv (daemonPreloadFlags in
@@ -14,30 +13,19 @@ function runPreloaded(
   token: string | undefined,
   argv: string[],
 ): { argv: string[]; envHadKey: boolean } {
-  const dir = tempDir("copilot-tokenargv-");
-  try {
-    const target = join(dir, "target.ts");
-    writeFileSync(
-      target,
-      [
-        "const out = {",
-        "  argv: process.argv.slice(2),",
-        `  envHadKey: ${JSON.stringify(ENV_KEY)} in process.env,`,
-        "};",
-        "console.log(JSON.stringify(out));",
-      ].join("\n"),
-    );
-    const env: Record<string, string> = { ...process.env } as Record<string, string>;
-    if (token === undefined) delete env[ENV_KEY];
-    else env[ENV_KEY] = token;
-    const res = runSync(Deno.execPath(), [...denoRunArgs("--preload", SHIM), target, ...argv], {
-      env,
-    });
-    if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr}`);
-    return JSON.parse(res.stdout.trim());
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const source = [
+    "const out = {",
+    "  argv: process.argv.slice(2),",
+    `  envHadKey: ${JSON.stringify(ENV_KEY)} in process.env,`,
+    "};",
+    "console.log(JSON.stringify(out));",
+  ].join("\n");
+  const env: Record<string, string> = { ...process.env } as Record<string, string>;
+  if (token === undefined) delete env[ENV_KEY];
+  else env[ENV_KEY] = token;
+  const res = runWithPreload(SHIM, source, { env, args: argv });
+  if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr}`);
+  return JSON.parse(res.stdout.trim());
 }
 
 // The shim's copied env-var literal is pinned against launchDaemon's DAEMON_GH_TOKEN_ENV

@@ -26,15 +26,10 @@ import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../src/utils/hostname.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import {
-  envSnapshot,
-  isolateAgentHomes,
-  linesNaming,
-  resetExitCode,
-  writeClaudeSettings,
-  writeCodexConfigToml,
-  writeRunState,
-} from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers/env.ts";
+import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "./helpers/fixtures.ts";
+import { linesNaming } from "./helpers/dry_run.ts";
+import { captureChannels } from "./helpers/output.ts";
 
 // The farm needs POSIX symlinks; Windows CI still runs the path-derivation test and the Windows-only guard.
 const skipWin = test.skipIf(process.platform === "win32");
@@ -115,20 +110,7 @@ function storeFiles(): { config: string; state: string } {
 }
 
 async function stderrDuring(run: () => Promise<void>): Promise<string> {
-  const original = process.stderr.write;
-  let captured = "";
-  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
-    captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    return true;
-  }) as typeof process.stderr.write;
-  deferWriteReports();
-  try {
-    await run();
-  } finally {
-    process.stderr.write = original;
-    captured += flushWriteReports().map((line) => `${line}\n`).join("");
-  }
-  return captured;
+  return (await captureChannels(run, { writeReports: true })).stderr;
 }
 
 /** The console.log lines `run` prints (`agent profile check --codex` reports on stdout). */

@@ -1,7 +1,6 @@
-import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CHILD_VALUES, childValuesEnv, denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
-import { expect, tempDir, test } from "./helpers/testing.ts";
+import { CHILD_VALUES, childValuesEnv, ROOT, runWithPreload } from "./helpers/run.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // The shim reads its token from argv and wraps globalThis.fetch, so it is exercised as a real
 // `--preload` subprocess, the way launchDaemon loads it.
@@ -16,37 +15,27 @@ const OTHER_URL = "http://127.0.0.1:1/other";
 type InputKind = "string" | "url" | "request";
 
 function runPreloaded(url: string, token: string | null, inputKind: InputKind): string {
-  const dir = tempDir("copilot-preload-");
-  try {
-    const target = join(dir, "target.ts");
-    const input = inputKind === "url"
-      ? `new URL(${CHILD_VALUES}.url)`
-      : inputKind === "request"
-      ? `new Request(${CHILD_VALUES}.url)`
-      : `${CHILD_VALUES}.url`;
-    // Only the fetch itself may fail into PASSTHROUGH; an intercepted body that does not parse
-    // fails the child instead of reading as a pass-through.
-    writeFileSync(
-      target,
-      [
-        `const r = await fetch(${input}).catch(() => null);`,
-        "if (r === null) {",
-        "  console.log('PASSTHROUGH');",
-        "} else {",
-        "  const b = await r.json();",
-        "  console.log('INTERCEPTED:' + b.token + ':' + b.refresh_in);",
-        "}",
-      ].join("\n"),
-    );
-    const argv = [...denoRunArgs("--preload", SHIM), target];
-    if (token !== null) argv.push("--github-token", token);
-    const res = runSync(Deno.execPath(), argv, {
-      env: { ...process.env, ...childValuesEnv({ url }) },
-    });
-    return res.stdout.trim();
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const input = inputKind === "url"
+    ? `new URL(${CHILD_VALUES}.url)`
+    : inputKind === "request"
+    ? `new Request(${CHILD_VALUES}.url)`
+    : `${CHILD_VALUES}.url`;
+  // Only the fetch itself may fail into PASSTHROUGH; an intercepted body that does not parse
+  // fails the child instead of reading as a pass-through.
+  const source = [
+    `const r = await fetch(${input}).catch(() => null);`,
+    "if (r === null) {",
+    "  console.log('PASSTHROUGH');",
+    "} else {",
+    "  const b = await r.json();",
+    "  console.log('INTERCEPTED:' + b.token + ':' + b.refresh_in);",
+    "}",
+  ].join("\n");
+  const res = runWithPreload(SHIM, source, {
+    env: { ...process.env, ...childValuesEnv({ url }) },
+    args: token === null ? [] : ["--github-token", token],
+  });
+  return res.stdout.trim();
 }
 
 // The exchange URL is intercepted for every fetch input shape and any token shape (the load

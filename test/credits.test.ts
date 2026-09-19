@@ -16,7 +16,7 @@ import { runCli } from "./helpers/run.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { describe, expect, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 

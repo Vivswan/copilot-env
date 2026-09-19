@@ -15,7 +15,7 @@ import { captureAllWrites } from "./helpers/output.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 // The one catalog-noise filter shared by summarizeProbeFailure and formatLiveFailure
-// (src/health/probe.ts).
+// (src/health/probe_deps.ts).
 test("CODEX_CATALOG_NOISE_RE matches catalog dump lines and not real errors", () => {
   expect(CODEX_CATALOG_NOISE_RE.test('{"object": "model", "id": "gpt-5.5"}')).toBe(true);
   expect(CODEX_CATALOG_NOISE_RE.test('"capabilities": {"family": "gpt"}')).toBe(true);

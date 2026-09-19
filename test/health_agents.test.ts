@@ -742,14 +742,14 @@ test("checkCodexLive/checkClaudeLive: the probe outcome decides status, fix, det
       outcome: { kind: "skipped" },
       status: "ok",
       exactDetail: "skipped (codex CLI not installed)",
-      value: { ran: false, ok: false, cli: null },
+      value: { kind: "skipped" },
     },
     {
       check: checkCodexLive,
       outcome: { kind: "skipped", lookFailed: true },
       status: "ok",
       exactDetail: "skipped (could not check for the codex CLI - the command probe failed to run)",
-      value: { ran: false, ok: false, cli: null, lookFailed: true },
+      value: { kind: "skipped", lookFailed: true },
     },
     { check: checkClaudeLive, outcome: { kind: "ok", cli: "/bin/claude" }, status: "ok" },
     {

@@ -251,7 +251,7 @@ flowchart LR
   rc["shell/agents.bashrc<br>shell/agents.ps1"]
   bin["bin/agent<br>bin/agent.ps1"]
   cli["src/cli.ts"]
-  launch["src/commands/launch.ts<br>parseLaunchAction() prepareLaunch() commandDeps() runLaunch() LaunchPlan"]
+  launch["src/commands/launch.ts<br>parseLaunchAction() prepareLaunch() writeProfileSettings() runLaunch() LaunchPlan"]
   token["src/commands/proxy_token.ts<br>resolveProxyToken() launchProxy()"]
   wire["src/agents/profile_wiring.ts<br>wireBothAgents()"]
   daemonproc[["agent start, a child, when the proxy is down"]]

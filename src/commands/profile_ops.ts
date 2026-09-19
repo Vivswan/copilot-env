@@ -231,7 +231,6 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
     .action((cli: string, args: string[], opts: Opts) =>
       runLaunch(
         parseLaunchAction({ cli, args, profile, relaxed: Boolean(opts.relaxed) }),
-        undefined,
         Boolean(opts.dryRun),
       )
     );

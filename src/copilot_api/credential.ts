@@ -144,9 +144,9 @@ export function runGhSpecAsync(s: GhSpawnSpec): Promise<GhSpawnResult> {
 /**
  * ONE gh call per look, on the shared recipe (ghAuthTokenSpawnSpec): the pinned `--user` form for a
  * pin, the plain `gh auth token` for gh's active account. The pin follows no `gh auth switch`; it
- * fails only when gh cannot serve that account (logged out, or gh older than 2.40), as a proven miss
- * quoting gh's own refusal; the caller renders the `gh auth login` advice. Exported for tests (`run`
- * is the spawn seam).
+ * fails only when gh cannot serve that account (logged out, a hosts.yml login without an oauth
+ * token, or gh older than 2.40), as a proven miss quoting gh's own refusal; the caller renders the
+ * `gh auth login` advice. Exported for tests (`run` is the spawn seam).
  */
 export function ghAuthTokenLookVia(
   ghUser: string | null,

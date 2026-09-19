@@ -15,8 +15,7 @@ export interface CatalogModel {
 }
 
 /** Malformed entries and bodies are skipped, never thrown on. Catalog order and duplicates are
- *  kept: a `[1m]` sibling arrives as a second entry under the bare id, and a version tie between
- *  two ids falls to catalog order in every pick below. */
+ *  kept: a `[1m]` sibling arrives as a second entry under the bare id. */
 export function parseCatalogModels(body: unknown): CatalogModel[] {
   const data = isRecord(body) && Array.isArray(body.data) ? body.data : [];
   const out: CatalogModel[] = [];

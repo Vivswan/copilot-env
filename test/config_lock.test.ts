@@ -15,7 +15,13 @@ import { expect, tempDir, test } from "./helpers/testing.ts";
 // each other and the counter comes up short of workers * increments.
 const CONFIG_MODULE = join(ROOT, "src", "copilot_api", "config.ts");
 
-function spawnWorker(worker: string, store: string): Promise<{ code: number; stdout: string }> {
+interface WorkerExit {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+function spawnWorker(worker: string, store: string): Promise<WorkerExit> {
   const child = spawnChild(Deno.execPath(), {
     args: [...denoRunArgs(), worker],
     env: childValuesEnv({ store }),
@@ -25,7 +31,14 @@ function spawnWorker(worker: string, store: string): Promise<{ code: number; std
   return child.output().then((o) => ({
     code: o.code,
     stdout: new TextDecoder().decode(o.stdout),
+    stderr: new TextDecoder().decode(o.stderr),
   }));
+}
+
+/** A red names the worker's own error (its stderr, with the exit code) instead of a bare exit
+ *  code list. */
+function failures(exits: WorkerExit[]): { code: number; stderr: string }[] {
+  return exits.filter((p) => p.code !== 0).map(({ code, stderr }) => ({ code, stderr }));
 }
 
 test("update() serializes concurrent writers across processes (no lost updates)", async () => {
@@ -51,8 +64,7 @@ test("update() serializes concurrent writers across processes (no lost updates)"
     );
 
     const procs = Array.from({ length: WORKERS }, () => spawnWorker(worker, store));
-    const codes = (await Promise.all(procs)).map((p) => p.code);
-    expect(codes.every((c) => c === 0)).toBe(true);
+    expect(failures(await Promise.all(procs))).toEqual([]);
 
     const final = JSON.parse(readFileSync(store, "utf8")).counter;
     expect(final).toBe(WORKERS * INCREMENTS);

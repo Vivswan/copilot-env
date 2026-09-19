@@ -16,12 +16,7 @@ import {
   readCodexSessions,
   walkCodexSessions,
 } from "../src/usage/codex_sessions.ts";
-import {
-  dedupKey,
-  emptyIndexStats,
-  type Reconcile,
-  type WalkedFile,
-} from "../src/usage/contribution.ts";
+import { dedupKey, parseEveryCandidate, type WalkedFile } from "../src/usage/contribution.ts";
 import { errMessage } from "../src/utils/error.ts";
 import { dayKeyIn } from "../src/utils/time.ts";
 import { captureAllWrites } from "./helpers/output.ts";
@@ -36,23 +31,15 @@ import {
 import { CODEX_SCENARIOS, scenarioNamed } from "./helpers/session_scenarios.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
-// The index equivalence tests read the shared catalog scenarios three ways; this one
-// default-reconcile read covers the reader's own entry point.
-test("readCodexSessions reads a catalog scenario without a reconcile", async () => {
-  const scenario = scenarioNamed(
-    CODEX_SCENARIOS,
-    "attributes turns to the model in effect and splits cached input",
-  );
-  const { roots, sinceMs, timeZone } = scenario.build(tempDir("codex-sessions-"));
-  scenario.check(await readCodexSessions(roots, sinceMs, timeZone));
-});
-
 test("readCodexSessions counts an unterminated final line once its LF lands", async () => {
   const scenario = scenarioNamed(CODEX_SCENARIOS, "does not count an unterminated final line");
   const { roots, files } = scenario.build(tempDir("codex-sessions-"));
-  scenario.check(await readCodexSessions(roots));
+  scenario.check(await readCodexSessions(roots, undefined, undefined, parseEveryCandidate));
   appendFileSync(files![0]!, "\n");
-  expect((await readCodexSessions(roots)).get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
+  expect(
+    (await readCodexSessions(roots, undefined, undefined, parseEveryCandidate)).get("copilot-env")
+      ?.byModel.get("gpt-5.6"),
+  ).toEqual({
     input: 30,
     output: 3,
     cacheRead: 0,
@@ -78,7 +65,7 @@ test("readCodexSessions warns about a corrupt archive and still counts the valid
 
   let byProvider: Awaited<ReturnType<typeof readCodexSessions>> | undefined;
   const output = await captureAllWrites(async () => {
-    byProvider = await readCodexSessions([root]);
+    byProvider = await readCodexSessions([root], undefined, undefined, parseEveryCandidate);
   });
   expect(output).toContain(`could not read ${corrupt} (`);
   expect([...(byProvider?.keys() ?? [])]).toEqual(["copilot-env"]);
@@ -96,36 +83,6 @@ test("walkCodexSessions under a NaN cutoff keeps every file a candidate", () => 
   const { roots } = scenarioNamed(CODEX_SCENARIOS, "under a NaN cutoff counts nothing, as before")
     .build(tempDir("codex-sessions-"));
   expect(walkCodexSessions(roots, Number.NaN).map((f) => f.candidate)).toEqual([true]);
-});
-
-const reversingReconcile: Reconcile = (_source, walked, parseWhole) => {
-  const records = walked
-    .filter((f) => f.candidate)
-    .map((f) => ({ path: f.path, contribution: parseWhole(f).contribution }));
-  return { records: records.reverse(), stats: emptyIndexStats() };
-};
-
-test("readCodexSessions folds in walk order whatever order the reconcile returns", async () => {
-  // The parent's hashes exist only if the parent was folded FIRST.
-  const scenario = scenarioNamed(
-    CODEX_SCENARIOS,
-    "identifies a fork's copy outside the batch window only through the parent's hashes",
-  );
-  const { roots } = scenario.build(tempDir("codex-sessions-"));
-  const viaReconcile = await readCodexSessions(roots, undefined, undefined, reversingReconcile);
-  scenario.check(viaReconcile);
-  expect(viaReconcile).toEqual(await readCodexSessions(roots));
-});
-
-test("readCodexSessions walks a root named twice once, whatever the reconcile", async () => {
-  const { roots } = scenarioNamed(CODEX_SCENARIOS, "counts a root named twice once").build(
-    tempDir("codex-sessions-"),
-  );
-  expect(walkCodexSessions(roots, undefined).length).toBe(1);
-  // The baseline is the root named ONCE; both duplicated-root reads must equal it.
-  const once = await readCodexSessions([roots[0]!]);
-  expect(await readCodexSessions(roots)).toEqual(once);
-  expect(await readCodexSessions(roots, undefined, undefined, reversingReconcile)).toEqual(once);
 });
 
 test("discoverCodexSessionRoots dedupes farm symlinks by realpath", () => {

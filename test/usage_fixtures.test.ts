@@ -7,6 +7,7 @@ import { relative } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "../src/usage/claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "../src/usage/codex_sessions.ts";
+import { parseEveryCandidate } from "../src/usage/contribution.ts";
 import { canonicalModelName } from "../src/usage/pricing.ts";
 import type { ModelUsage, ReadonlyUsageReport } from "../src/usage/usage.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
@@ -49,11 +50,17 @@ async function readBack(
   tree: GeneratedTree,
 ): Promise<{ codex: Map<string, ReadonlyUsageReport>; claude: ReadonlyUsageReport }> {
   return {
-    codex: await readCodexSessions(discoverCodexSessionRoots([tree.codexRoot]), undefined, "UTC"),
+    codex: await readCodexSessions(
+      discoverCodexSessionRoots([tree.codexRoot]),
+      undefined,
+      "UTC",
+      parseEveryCandidate,
+    ),
     claude: await readClaudeSessions(
       discoverClaudeSessionRoots([tree.claudeRoot]),
       undefined,
       "UTC",
+      parseEveryCandidate,
     ),
   };
 }

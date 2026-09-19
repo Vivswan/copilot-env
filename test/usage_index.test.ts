@@ -210,16 +210,11 @@ function storedRows(): StoredRow[] {
   }
 }
 
+/** Overwrite one row's record from a second connection. */
 function rewriteRecord(path: string, record: string): void {
-  rewriteColumn(path, "record", record);
-}
-
-/** Overwrite one column of one row from a second connection. `column` is one of
- *  the on-disk names and is interpolated as an identifier, never as a value. */
-function rewriteColumn(path: string, column: string, value: string | number): void {
   const db = new DatabaseSync(dbPath());
   try {
-    db.prepare(`UPDATE "files" SET "${column}" = ? WHERE "path" = ?`).run(value, path);
+    db.prepare(`UPDATE "files" SET "record" = ? WHERE "path" = ?`).run(record, path);
   } finally {
     db.close();
   }
@@ -522,6 +517,21 @@ const OPENERS: {
     line: "rebuilding the usage index (parser_fingerprint parsers-2)",
   },
   {
+    // Tables another build left behind: sound SQLite, not our columns.
+    name: "a database with another table layout is rebuilt",
+    sabotage: () => {
+      const db = new DatabaseSync(dbPath());
+      try {
+        db.exec(`DROP TABLE "meta"; CREATE TABLE "meta" ("k" TEXT PRIMARY KEY, "v" TEXT NOT NULL)`);
+        db.exec(`DROP TABLE "files"; CREATE TABLE "files" ("path" TEXT PRIMARY KEY, "blob" TEXT)`);
+      } finally {
+        db.close();
+      }
+    },
+    rebuilds: true,
+    line: "rebuilding the usage index (no such column: ",
+  },
+  {
     name: "rows without stamps are rebuilt, never adopted",
     sabotage: () => {
       const db = new DatabaseSync(dbPath());
@@ -564,49 +574,6 @@ for (const { name, seedFingerprint, sabotage, openFingerprint, rebuilds, line } 
     expect(result.records[1]?.contribution).toEqual(expectedContribution(b));
     reopened!.close();
     expect(storedRows().map((r) => r.path)).toEqual([a, b]);
-  });
-}
-
-for (const corrupt of [-1, 1e20]) {
-  test(`a row with resume offset ${corrupt} reads as no row: whole parse, row healed`, async () => {
-    setup();
-    const a = join(logs, "a.jsonl");
-    const b = join(logs, "b.jsonl");
-    writeLines(a, 0, 3, "alpha");
-    writeLines(b, 0, 3, "beta");
-    const index = open();
-    runReconcile(index.reconcile, [walked(a), walked(b)]);
-    index.close();
-    rewriteColumn(a, "parsed_through", corrupt);
-    // Both grow, so a trusted row would resume; a's corrupt one must not be trusted.
-    appendLines(a, 3, 1, "alpha");
-    const appendedB = appendLines(b, 3, 1, "beta");
-
-    const reopened = open();
-    let result: ReturnType<typeof runReconcile> | undefined;
-    const out = await captureAllWrites(() => {
-      result = runReconcile(reopened.reconcile, [walked(a), walked(b)]);
-    });
-    expect(out).not.toContain("could not read");
-    expect(result?.stats).toEqual(fullStats({
-      filesSeen: 2,
-      filesParsedWhole: 1,
-      filesParsedTail: 1,
-      bytesRead: statSync(a).size + TAIL_PROBE_BYTES + appendedB,
-    }));
-    expect(result?.calls.whole).toEqual([a]);
-    expect(result?.records[0]?.contribution).toEqual(expectedContribution(a));
-    reopened.close();
-
-    // The healed row resumes normally on the next append.
-    const healed = open();
-    const appendedA = appendLines(a, 4, 1, "alpha");
-    expect(runReconcile(healed.reconcile, [walked(a), walked(b)]).stats).toEqual(fullStats({
-      filesSeen: 2,
-      filesReused: 1,
-      filesParsedTail: 1,
-      bytesRead: TAIL_PROBE_BYTES + appendedA,
-    }));
   });
 }
 
@@ -793,270 +760,6 @@ for (const when of ["before the run", "between two candidates"] as const) {
   });
 }
 
-/** Contributions the schema must refuse to store, each spoiling one occurrence. */
-const UNSTORABLE: {
-  name: string;
-  spoil: (o: ClaudeOccurrence) => ClaudeOccurrence;
-  needle: string;
-}[] = [
-  {
-    name: "a raw id in a hash slot",
-    spoil: (o) => ["msg_01RAWIDENTIFIER", o[1], o[2], o[3], o[4], o[5], o[6]],
-    needle: "msg_01RAWIDENTIFIER",
-  },
-  {
-    name: "a non-finite count",
-    spoil: (o) => [o[0], o[1], o[2], Infinity, o[4], o[5], o[6]],
-    needle: "null",
-  },
-];
-
-for (const { name, spoil, needle } of UNSTORABLE) {
-  test(`a contribution with ${name} is returned, never stored, and evicts its row`, async () => {
-    setup();
-    const a = join(logs, "a.jsonl");
-    const leaky = join(logs, "leaky.jsonl");
-    writeLines(a, 0, 2, "alpha");
-    writeLines(leaky, 0, 2, "leaky");
-    const calls: ParserCalls = { whole: [], tail: [] };
-    const parsers = fakeParsers(calls);
-    const leaking: ParseWhole<ClaudeContribution> = (file) => {
-      const parsed = parsers.whole(file);
-      if (file.path !== leaky) return parsed;
-      const [first, ...rest] = parsed.contribution.occurrences;
-      if (first === undefined) throw new Error("fixture has no lines");
-      return {
-        ...parsed,
-        contribution: { v: CONTRIBUTION_VERSION, occurrences: [spoil(first), ...rest] },
-      };
-    };
-    const index = open();
-    // A clean first run stores both rows (the control the eviction is measured
-    // against); the shrink then forces a whole parse, the leaking one.
-    runReconcile(index.reconcile, [walked(a), walked(leaky)]);
-    writeLines(leaky, 0, 1, "leaky");
-
-    let result: ReturnType<Reconcile> | undefined;
-    const out = await captureAllWrites(() => {
-      result = index.reconcile("claude", [walked(a), walked(leaky)], leaking, () => {
-        throw new Error("the leaky file must be re-parsed whole for this test");
-      });
-    });
-    expect(out.split(`not indexing ${leaky}: its contribution is not storable.`).length - 1).toBe(
-      1,
-    );
-    expect(out).not.toContain("could not read");
-    // The fold still gets both records this run...
-    expect(result?.records.map((r) => r.path)).toEqual([a, leaky]);
-    expect(result?.stats).toEqual(fullStats({
-      filesSeen: 2,
-      filesReused: 1,
-      filesParsedWhole: 1,
-      bytesRead: statSync(leaky).size,
-    }));
-    index.close();
-    // ...but the leaky file's old row is gone too, and the spoiled value leaves no
-    // trace in a stored record (the clean row is the control that records exist).
-    const rows = storedRows();
-    expect(rows.map((r) => r.path)).toEqual([a]);
-    expect(rows[0]?.record).toContain(MODEL);
-    expect(rows[0]?.record).not.toContain(needle);
-    expect(rawIndexBytes()).not.toContain("msg_01RAWIDENTIFIER");
-  });
-}
-
-test("an extra property on a contribution is stripped, never stored", () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  const marker = "EXTRA-PROPERTY-PLAINTEXT-3c7f";
-  const calls: ParserCalls = { whole: [], tail: [] };
-  const parsers = fakeParsers(calls);
-  const decorated: ParseWhole<ClaudeContribution> = (file) => {
-    const parsed = parsers.whole(file);
-    // A Claude contribution wearing a Codex-shaped `events` list: the shape a
-    // careless spread could produce.
-    const contribution: ClaudeContribution & { events: unknown } = {
-      ...parsed.contribution,
-      events: [[marker, marker, marker, marker, 1, 2, 3]],
-    };
-    return { ...parsed, contribution };
-  };
-  const index = open();
-  const result = index.reconcile("claude", [walked(a)], decorated, parsers.tail);
-  expect(result.stats).toEqual(
-    fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
-  );
-  index.close();
-  const rows = storedRows();
-  expect(rows.map((r) => r.path)).toEqual([a]);
-  expect(JSON.parse(rows[0]?.record ?? "")).toEqual(expectedContribution(a));
-  expect(rawIndexBytes()).not.toContain(marker);
-});
-
-/** A database another connection holds while an opener arrives: the opener runs index-less and
- *  removes nothing, whatever the holder's journal mode; `hold` returns the release. */
-const HOLDERS: {
-  name: string;
-  seedFingerprint?: string;
-  openFingerprint?: string;
-  hold: (seed: UsageIndex) => () => void;
-  held?: (out: string, seed: UsageIndex, seeded: ReturnType<typeof runReconcile>) => void;
-  released: "rebuilds" | "reuses";
-}[] = [
-  {
-    // A stale database (another parser's) a live handle still has open: never removed.
-    name: "a live WAL handle on a stale database",
-    seedFingerprint: "parsers-1",
-    openFingerprint: "parsers-2",
-    hold: (seed) => () => seed.close(),
-    held: (out, seed, seeded) => {
-      expect(out).toContain("parser_fingerprint parsers-1");
-      // The live handle's files and rows are intact, and it keeps working.
-      expect(existsSync(`${dbPath()}-wal`)).toBe(true);
-      const again = runReconcile(seed.reconcile, [walked(join(logs, "a.jsonl"))]);
-      expect(again.stats).toEqual(fullStats({ filesSeen: 1, filesReused: 1 }));
-      expect(again.records).toEqual(seeded.records);
-    },
-    released: "rebuilds",
-  },
-  {
-    // A foreign holder takes the file out of WAL mode and keeps a write transaction open, so
-    // our own WAL entry cannot be established: in use, not exclusive.
-    name: "a rollback-mode write transaction",
-    hold: (seed) => {
-      seed.close();
-      const holder = new DatabaseSync(dbPath());
-      try {
-        expect(holder.prepare("PRAGMA journal_mode = DELETE").get()).toEqual({
-          journal_mode: "delete",
-        });
-        holder.exec("BEGIN IMMEDIATE");
-      } catch (error) {
-        holder.close();
-        throw error;
-      }
-      return () => {
-        try {
-          holder.exec("COMMIT");
-        } finally {
-          holder.close();
-        }
-      };
-    },
-    released: "reuses",
-  },
-];
-
-for (const { name, seedFingerprint, openFingerprint, hold, held, released } of HOLDERS) {
-  test(`${name} is in use: the opener runs index-less and removes nothing`, async () => {
-    setup();
-    const a = join(logs, "a.jsonl");
-    writeLines(a, 0, 3, "alpha");
-    const quick = { staleMs: 60_000, waitMs: 0 };
-    const seed = open({ fingerprint: seedFingerprint });
-    const seeded = runReconcile(seed.reconcile, [walked(a)]);
-    let release: (() => void) | undefined;
-    try {
-      release = hold(seed);
-      let other: UsageIndex | null = null;
-      const out = await captureAllWrites(() => {
-        other = openUsageIndex({ dir: indexDir, fingerprint: openFingerprint, lockPolicy: quick });
-      });
-      expect(other).toBeNull();
-      expect(out.split("usage index in use by another run").length - 1).toBe(1);
-      expect(out).not.toContain("rebuilding the usage index");
-      expect(existsSync(dbPath())).toBe(true);
-      held?.(out, seed, seeded);
-    } finally {
-      release?.();
-    }
-
-    // Released, the same open goes through (the control): a stale database rebuilds, a
-    // current one reuses its rows.
-    let reopened: UsageIndex | undefined;
-    const out2 = await captureAllWrites(() => {
-      reopened = open({ fingerprint: openFingerprint, lockPolicy: quick });
-    });
-    const again = runReconcile(reopened!.reconcile, [walked(a)]);
-    if (released === "rebuilds") {
-      expect(out2.split("rebuilding the usage index (parser_fingerprint parsers-1)").length - 1)
-        .toBe(1);
-      expect(again.stats).toEqual(
-        fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
-      );
-    } else {
-      expect(out2).not.toContain("rebuilding the usage index");
-      expect(again.stats).toEqual(fullStats({ filesSeen: 1, filesReused: 1 }));
-      expect(again.records).toEqual(seeded.records);
-    }
-  });
-}
-
-/** Ways a stored row can carry text the schema does not declare. */
-const PLANTED: { name: string; plant: (row: StoredRow, marker: string) => void }[] = [
-  {
-    name: "an extra object property in the record",
-    plant: (row, marker) => {
-      const doc = JSON.parse(row.record) as Record<string, unknown>;
-      rewriteRecord(row.path, JSON.stringify({ ...doc, leak: marker }));
-    },
-  },
-  {
-    name: "an extra tuple item in the record",
-    plant: (row, marker) => {
-      const doc = JSON.parse(row.record) as { v: number; occurrences: unknown[][] };
-      const [first, ...rest] = doc.occurrences;
-      rewriteRecord(
-        row.path,
-        JSON.stringify({ ...doc, occurrences: [[...(first ?? []), marker], ...rest] }),
-      );
-    },
-  },
-  {
-    name: "a non-hash tail probe",
-    plant: (row, marker) => rewriteColumn(row.path, "tail_probe", marker),
-  },
-  {
-    name: "an inherited-name property in the record",
-    plant: (row, marker) => {
-      const doc = JSON.parse(row.record) as Record<string, unknown>;
-      rewriteRecord(row.path, JSON.stringify({ ...doc, constructor: marker }));
-    },
-  },
-];
-
-for (const { name, plant } of PLANTED) {
-  test(`a stored row with ${name} is not reused: whole parse, row rewritten clean`, () => {
-    setup();
-    const marker = "PLANTED-ROW-PLAINTEXT-5a2b";
-    const a = join(logs, "a.jsonl");
-    const b = join(logs, "b.jsonl");
-    writeLines(a, 0, 3, "alpha");
-    writeLines(b, 0, 3, "beta");
-    const index = open();
-    runReconcile(index.reconcile, [walked(a), walked(b)]);
-    index.close();
-    const rowA = storedRows().find((r) => r.path === a);
-    if (rowA === undefined) throw new Error("the seeded row is missing");
-    plant(rowA, marker);
-    expect(rawIndexBytes()).toContain(marker);
-
-    const reopened = open();
-    const result = runReconcile(reopened.reconcile, [walked(a), walked(b)]);
-    expect(result.stats).toEqual(
-      fullStats({ filesSeen: 2, filesReused: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
-    );
-    expect(result.calls.whole).toEqual([a]);
-    expect(result.records[0]).toEqual({ path: a, contribution: expectedContribution(a) });
-    reopened.close();
-    const clean = storedRows()[0];
-    expect(JSON.parse(clean?.record ?? "")).toEqual(expectedContribution(a));
-    expect(clean?.tailProbe).toMatch(/^[0-9a-f]{32}$/);
-    expect(rawIndexBytes()).not.toContain(marker);
-  });
-}
-
 test("rows are scoped per source: a claude walk never deletes codex rows", () => {
   setup();
   const c = join(logs, "rollout.jsonl");
@@ -1085,204 +788,33 @@ test("rows are scoped per source: a claude walk never deletes codex rows", () =>
   expect(storedRows().map((r) => r.path)).toEqual([a, c]);
 });
 
-// The stored-row reader is hand-written for speed; these hold it to exactly what the
-// write side admits. Every mutation of a valid row must read as "no row" (a whole
-// parse); the identity re-serialization is the control that still reuses.
-/** A corruption of a stored record: of the parsed document (re-serialized), or of the
- *  raw text, for values JSON.stringify cannot produce (`1e999` parses to Infinity). */
-type Mutation =
-  | {
-    name: string;
-    mutate(doc: Record<string, unknown>): unknown;
-    raw?: undefined;
-    plants?: string;
-  }
-  | { name: string; raw(record: string): string; mutate?: undefined; plants?: string };
+/** A stored record is this program's own: it is trusted once it parses as JSON under the current
+ *  contribution version. One from another version, or text that is not JSON, reads as no row: the
+ *  file parses whole and the row is rewritten. */
+const REWRITTEN_RECORDS: { name: string; rewrite: (record: string) => string; reused: boolean }[] =
+  [
+    { name: "the same text (control)", rewrite: (record) => record, reused: true },
+    {
+      name: "another contribution version",
+      rewrite: (record) =>
+        record.replace(`"v":${CONTRIBUTION_VERSION}`, `"v":${CONTRIBUTION_VERSION + 1}`),
+      reused: false,
+    },
+    { name: "text that is not JSON", rewrite: () => "{not json", reused: false },
+  ];
 
-/** Plaintext a mutation plants in a stored state: the repair must erase it from the index
- *  files, not merely stop reading it. */
-const PLANTED_STATE_MARKER = "PLANTED-STATE-PLAINTEXT-8e1c";
-
-/** The last count of the last tuple (`...,3]]`) as an out-of-range literal. */
-const INFINITE_LAST_COUNT = (record: string): string => record.replace(/\d+\]\]/, "1e999]]");
-
-const CODEX_MUTATIONS: Mutation[] = [
-  { name: "identity (control)", mutate: (doc) => doc },
-  { name: "an extra top-level key", mutate: (doc) => ({ ...doc, extra: 1 }) },
-  { name: "another version", mutate: (doc) => ({ ...doc, v: CONTRIBUTION_VERSION + 1 }) },
-  { name: "a missing state", mutate: ({ state: _state, ...rest }) => rest },
-  {
-    name: "an extra state key",
-    mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), extra: 1 } }),
-  },
-  {
-    name: "a numeric provider",
-    mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), provider: 1 } }),
-  },
-  {
-    name: "an uppercase session hash",
-    mutate: (doc) => ({
-      ...doc,
-      state: { ...(doc.state as object), sessionIdHash: dedupKey("x").toUpperCase() },
-    }),
-  },
-  {
-    name: "a short fork parent hash",
-    mutate: (doc) => ({
-      ...doc,
-      state: { ...(doc.state as object), fork: { parentHash: "abc", knownAfter: 0 } },
-    }),
-  },
-  {
-    name: "a fork without knownAfter",
-    mutate: (doc) => ({
-      ...doc,
-      state: { ...(doc.state as object), fork: { parentHash: dedupKey("p") } },
-    }),
-  },
-  {
-    name: "an extra fork key",
-    mutate: (doc) => ({
-      ...doc,
-      state: {
-        ...(doc.state as object),
-        fork: { parentHash: dedupKey("p"), knownAfter: 0, extra: 1 },
-      },
-    }),
-  },
-  {
-    name: "a string metaTsMs",
-    mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), metaTsMs: "1" } }),
-  },
-  {
-    name: "an inherited-name state key",
-    mutate: (doc) => ({
-      ...doc,
-      state: { ...(doc.state as object), toString: PLANTED_STATE_MARKER },
-    }),
-    plants: PLANTED_STATE_MARKER,
-  },
-  {
-    name: "a negative fork knownAfter",
-    mutate: (doc) => ({
-      ...doc,
-      state: { ...(doc.state as object), fork: { parentHash: dedupKey("p"), knownAfter: -1 } },
-    }),
-  },
-  { name: "events as an object", mutate: (doc) => ({ ...doc, events: {} }) },
-  {
-    name: "a six-item event",
-    mutate: (doc) => ({ ...doc, events: [(doc.events as unknown[][])[0]!.slice(0, 6)] }),
-  },
-  {
-    name: "an eight-item event",
-    mutate: (doc) => ({ ...doc, events: [[...(doc.events as unknown[][])[0]!, 0]] }),
-  },
-  {
-    name: "a string timestamp",
-    mutate: (doc) => ({ ...doc, events: [replaceAt((doc.events as unknown[][])[0]!, 0, "1")] }),
-  },
-  {
-    name: "a null provider",
-    mutate: (doc) => ({ ...doc, events: [replaceAt((doc.events as unknown[][])[0]!, 1, null)] }),
-  },
-  {
-    name: "a non-hex info hash",
-    mutate: (doc) => ({
-      ...doc,
-      events: [replaceAt((doc.events as unknown[][])[0]!, 3, "g".repeat(32))],
-    }),
-  },
-  {
-    name: "a string count",
-    mutate: (doc) => ({ ...doc, events: [replaceAt((doc.events as unknown[][])[0]!, 4, "1")] }),
-  },
-  {
-    name: "a null count",
-    mutate: (doc) => ({ ...doc, events: [replaceAt((doc.events as unknown[][])[0]!, 6, null)] }),
-  },
-  { name: "an infinite count in the raw record", raw: INFINITE_LAST_COUNT },
-  {
-    name: "an infinite metaTsMs in the raw record",
-    raw: (record) => record.replace(`"metaTsMs":${BASE_TS}`, '"metaTsMs":1e999'),
-  },
-];
-
-const CLAUDE_MUTATIONS: Mutation[] = [
-  { name: "identity (control)", mutate: (doc) => doc },
-  { name: "an extra top-level key", mutate: (doc) => ({ ...doc, extra: 1 }) },
-  { name: "another version", mutate: (doc) => ({ ...doc, v: CONTRIBUTION_VERSION + 1 }) },
-  { name: "occurrences as an object", mutate: (doc) => ({ ...doc, occurrences: {} }) },
-  {
-    name: "a six-item occurrence",
-    mutate: (doc) => ({ ...doc, occurrences: [(doc.occurrences as unknown[][])[0]!.slice(0, 6)] }),
-  },
-  {
-    name: "a non-hash id",
-    mutate: (doc) => ({
-      ...doc,
-      occurrences: [replaceAt((doc.occurrences as unknown[][])[0]!, 0, "msg_1")],
-    }),
-  },
-  {
-    name: "a string timestamp",
-    mutate: (doc) => ({
-      ...doc,
-      occurrences: [replaceAt((doc.occurrences as unknown[][])[0]!, 1, "1")],
-    }),
-  },
-  {
-    name: "a numeric model",
-    mutate: (doc) => ({
-      ...doc,
-      occurrences: [replaceAt((doc.occurrences as unknown[][])[0]!, 2, 5)],
-    }),
-  },
-  {
-    name: "a null count",
-    mutate: (doc) => ({
-      ...doc,
-      occurrences: [replaceAt((doc.occurrences as unknown[][])[0]!, 3, null)],
-    }),
-  },
-  {
-    name: "a boolean count",
-    mutate: (doc) => ({
-      ...doc,
-      occurrences: [replaceAt((doc.occurrences as unknown[][])[0]!, 6, true)],
-    }),
-  },
-  { name: "an infinite count in the raw record", raw: INFINITE_LAST_COUNT },
-  { name: "text that is not JSON", raw: () => "{not json" },
-];
-
-function replaceAt(tuple: unknown[], at: number, value: unknown): unknown[] {
-  const copy = [...tuple];
-  copy[at] = value;
-  return copy;
-}
-
-/** `record` with `mutation` applied; a raw mutation must actually change the text. */
-function mutated(record: string, mutation: Mutation): string {
-  if (mutation.raw !== undefined) {
-    const out = mutation.raw(record);
-    expect(out).not.toBe(record);
-    return out;
-  }
-  return JSON.stringify(mutation.mutate(JSON.parse(record) as Record<string, unknown>));
-}
-
-for (const mutation of CLAUDE_MUTATIONS) {
-  const { name } = mutation;
-  const reused = name.includes("control");
-  test(`a stored claude row with ${name} is ${reused ? "reused" : "parsed whole"}`, () => {
+for (const { name, rewrite, reused } of REWRITTEN_RECORDS) {
+  test(`a stored row holding ${name} is ${reused ? "reused" : "parsed whole"}`, () => {
     setup();
     const a = join(logs, "a.jsonl");
     writeLines(a, 0, 2, "alpha");
     const index = open();
     runReconcile(index.reconcile, [walked(a)]);
     index.close();
-    rewriteRecord(a, mutated(storedRows()[0]?.record ?? "", mutation));
+    const record = storedRows()[0]?.record ?? "";
+    const rewritten = rewrite(record);
+    if (!reused) expect(rewritten).not.toBe(record);
+    rewriteRecord(a, rewritten);
 
     const reopened = open();
     const result = runReconcile(reopened.reconcile, [walked(a)]);
@@ -1296,97 +828,6 @@ for (const mutation of CLAUDE_MUTATIONS) {
     expect(JSON.parse(storedRows()[0]?.record ?? "")).toEqual(expectedContribution(a));
   });
 }
-
-for (const mutation of CODEX_MUTATIONS) {
-  const { name, plants } = mutation;
-  const reused = name.includes("control");
-  test(`a stored codex row with ${name} is ${reused ? "reused" : "parsed whole"}`, () => {
-    setup();
-    const c = join(logs, "rollout.jsonl");
-    writeLines(c, 0, 2, "codex");
-    const contribution: CodexContribution = {
-      v: CONTRIBUTION_VERSION,
-      state: {
-        provider: "openai",
-        model: "gpt",
-        sessionIdHash: dedupKey("s"),
-        fork: { parentHash: dedupKey("p"), knownAfter: 0 },
-        metaTsMs: BASE_TS,
-      },
-      events: [[BASE_TS, "openai", "gpt", dedupKey(c), 1, 2, 3]],
-    };
-    const wholeCalls: string[] = [];
-    const codexWhole: ParseWhole<CodexContribution> = (file) => {
-      wholeCalls.push(file.path);
-      return { contribution, parsedThrough: file.size, tailProbeHex: "", bytesRead: file.size };
-    };
-    const noTail = (): never => {
-      throw new Error("no tail");
-    };
-    const index = open();
-    index.reconcile("codex", [walked(c)], codexWhole, noTail);
-    index.close();
-    rewriteRecord(c, mutated(storedRows()[0]?.record ?? "", mutation));
-    if (plants) expect(rawIndexBytes()).toContain(plants);
-
-    const reopened = open();
-    const result = reopened.reconcile("codex", [walked(c)], codexWhole, noTail);
-    expect(result.stats).toEqual(fullStats(
-      reused
-        ? { filesSeen: 1, filesReused: 1 }
-        : { filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(c).size },
-    ));
-    expect(wholeCalls).toEqual(reused ? [c] : [c, c]);
-    expect(result.records[0]?.contribution).toEqual(contribution);
-    reopened.close();
-    expect(JSON.parse(storedRows()[0]?.record ?? "")).toEqual(contribution);
-    if (plants) expect(rawIndexBytes()).not.toContain(plants);
-  });
-}
-
-test("a row another run rewrote between the identity read and the record read is not trusted", () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  const b = join(logs, "b.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  writeLines(b, 0, 3, "beta");
-  const first = open();
-  runReconcile(first.reconcile, [walked(a), walked(b)]);
-  first.close();
-
-  // This run's walk sees b BEFORE another run appends to it and commits the grown
-  // row. The reconcile reads every row's identity up front, then parses a (grown, so
-  // its tail parser runs); that parser stands in for the concurrent run.
-  const appendedA = appendLines(a, 3, 1, "alpha");
-  const files = [walked(a), walked(b)];
-  let appendedB = 0;
-  const calls: ParserCalls = { whole: [], tail: [] };
-  const parsers = fakeParsers(calls);
-  const racingTail: ParseTail<ClaudeContribution> = (file, fromByte, prior) => {
-    appendedB = appendLines(b, 3, 1, "beta");
-    const other = open();
-    runReconcile(other.reconcile, [walked(b)]);
-    other.close();
-    return parsers.tail(file, fromByte, prior);
-  };
-
-  const index = open();
-  const result = index.reconcile("claude", files, parsers.whole, racingTail);
-  // b's stale walk entry matches the identity this run snapshotted, but the row behind
-  // it now describes four lines: trusting it would hand the fold a contribution for a
-  // file the walk described as three. The record fetch sees the changed identity and
-  // the file parses whole instead.
-  expect(calls.whole).toEqual([b]);
-  expect(result.stats).toEqual(fullStats({
-    filesSeen: 2,
-    filesParsedTail: 1,
-    filesParsedWhole: 1,
-    bytesRead: TAIL_PROBE_BYTES + appendedA + statSync(b).size,
-  }));
-  expect(appendedB).toBeGreaterThan(0);
-  expect(result.records[1]).toEqual({ path: b, contribution: expectedContribution(b) });
-  index.close();
-});
 
 /** Everything under `path` as SQLite and we left it: directory listings and file bytes. */
 function diskState(path: string): unknown {

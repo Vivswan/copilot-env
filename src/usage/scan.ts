@@ -70,12 +70,7 @@ export function scanBytes(
 let idleBuffer: Buffer | undefined;
 
 function takeBuffer(bufferBytes: number | undefined): Buffer {
-  if (bufferBytes !== undefined) {
-    if (!(Number.isInteger(bufferBytes) && bufferBytes > 0)) {
-      throw new Error(`scan buffer size must be a positive integer, got ${bufferBytes}`);
-    }
-    return Buffer.allocUnsafe(bufferBytes);
-  }
+  if (bufferBytes !== undefined) return Buffer.allocUnsafe(bufferBytes);
   const taken = idleBuffer ?? Buffer.allocUnsafe(DEFAULT_SCAN_BUFFER_BYTES);
   idleBuffer = undefined;
   return taken;
@@ -87,24 +82,9 @@ function releaseBuffer(buffer: Buffer, bufferBytes: number | undefined): void {
   }
 }
 
-/** A needle must match the same bytes in the latin1 search string and the UTF-8 text (so ASCII
- *  only), and lie within one line (so no LF). */
-function checkNeedles(needles: readonly string[]): void {
-  for (const needle of needles) {
-    let ascii = needle !== "";
-    for (let i = 0; i < needle.length && ascii; i++) {
-      const code = needle.charCodeAt(i);
-      ascii = code < 0x80 && code !== 0x0a;
-    }
-    if (!ascii) {
-      throw new Error(
-        `scan needle must be non-empty ASCII without a line feed: ${JSON.stringify(needle)}`,
-      );
-    }
-  }
-}
-
-/** Exported so tests can drive it with sources that read short. */
+/** Exported so tests can drive it with sources that read short. The needles are the readers' string
+ *  constants: non-empty ASCII without a line feed, so each matches the same bytes in the latin1
+ *  search string and the UTF-8 text and lies within one line. */
 export function scanSource(
   readAt: ReadAt,
   fromByte: number,
@@ -112,7 +92,6 @@ export function scanSource(
   onLine: (hit: ScanHit) => void,
   options: ScanOptions,
 ): ScanResult {
-  checkNeedles(needles);
   let bytesRead = 0;
   // A resume starts with the bytes before `fromByte`, which only the source has.
   let probe: Uint8Array = new Uint8Array(0);

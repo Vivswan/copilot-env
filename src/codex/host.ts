@@ -7,7 +7,7 @@ import { type CodexHomePrefs, CopilotEnvConfig } from "../copilot_api/env_config
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
-import { isEnoentOrNotdir } from "../utils/fs.ts";
+import { isDir, isEnoentOrNotdir, isFile } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
@@ -280,22 +280,6 @@ function isSymlinkPath(p: string): boolean {
   }
 }
 
-function isDirPath(p: string): boolean {
-  try {
-    return fs.stat(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-function isFilePath(p: string): boolean {
-  try {
-    return fs.stat(p).isFile();
-  } catch {
-    return false;
-  }
-}
-
 // --- fs operations that throw on failure --------------------------------------
 // Every mutation goes through the reporting seam, which names the path it changed (nothing hidden);
 // what the farm did to it rides as the line's detail.
@@ -310,8 +294,8 @@ function listDescendants(root: string): string[] {
     const dirnames: string[] = [];
     const filenames: string[] = [];
     for (const entry of entries) {
-      const isDir = !entry.isSymbolicLink() && entry.isDirectory();
-      (isDir ? dirnames : filenames).push(entry.name);
+      const isDirEntry = !entry.isSymbolicLink() && entry.isDirectory();
+      (isDirEntry ? dirnames : filenames).push(entry.name);
     }
     for (const name of dirnames) results.push(path.join(dirpath, name));
     for (const name of filenames) results.push(path.join(dirpath, name));
@@ -330,7 +314,7 @@ function mergeDirInto(localPath: string, sharedPath: string): void {
       const target = fs.readlink(src);
       if (lexists(dst)) {
         const dstIsSymlink = isSymlinkPath(dst);
-        const dstIsDir = isDirPath(dst);
+        const dstIsDir = isDir(dst);
         if (dstIsSymlink || !dstIsDir) fs.rm(dst, { force: true, detail: "replaced by a link" });
       }
       fs.symlink(target, dst);
@@ -384,7 +368,7 @@ type PromoteResult = "promoted" | "refused";
 type PromoteDecision = "merge" | "refused";
 
 function promoteDecision(localPath: string, sharedPath: string): PromoteDecision {
-  if (lexists(sharedPath) && (isSymlinkPath(sharedPath) || !isDirPath(sharedPath))) {
+  if (lexists(sharedPath) && (isSymlinkPath(sharedPath) || !isDir(sharedPath))) {
     return "refused";
   }
   for (const entry of listDescendants(localPath)) {
@@ -395,14 +379,14 @@ function promoteDecision(localPath: string, sharedPath: string): PromoteDecision
       } else if (lexists(targetPath)) {
         return "refused";
       }
-    } else if (isDirPath(entry)) {
-      if (lexists(targetPath) && (isSymlinkPath(targetPath) || !isDirPath(targetPath))) {
+    } else if (isDir(entry)) {
+      if (lexists(targetPath) && (isSymlinkPath(targetPath) || !isDir(targetPath))) {
         return "refused";
       }
-    } else if (isFilePath(entry)) {
+    } else if (isFile(entry)) {
       if (
         lexists(targetPath) &&
-        (isSymlinkPath(targetPath) || !isFilePath(targetPath) || !filesEqual(entry, targetPath))
+        (isSymlinkPath(targetPath) || !isFile(targetPath) || !filesEqual(entry, targetPath))
       ) {
         return "refused";
       }
@@ -461,7 +445,7 @@ function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
   // walked into.
   if (!lexists(sharedRoot)) return;
   reportWrite("created", sharedRoot);
-  if (isDirPath(sharedRoot) && !isSymlinkPath(sharedRoot)) reportTreeCreated(sharedRoot);
+  if (isDir(sharedRoot) && !isSymlinkPath(sharedRoot)) reportTreeCreated(sharedRoot);
 }
 
 /** Each level names all its entries in readdir order, then recurses into its directories; a level
@@ -497,7 +481,7 @@ function seedLocalCodexFileIfMissing(
     return;
   }
 
-  if (isFilePath(sharedPath)) {
+  if (isFile(sharedPath)) {
     ensureParentDir(localPath);
     fs.copyFile(sharedPath, localPath, `${role}, seeded from ${sharedPath}`);
   } else if (createPlaceholder) {
@@ -521,7 +505,7 @@ function ensureCodexDirSymlink(localPath: string, sharedPath: string): void {
     return;
   }
 
-  if (isDirPath(localPath)) {
+  if (isDir(localPath)) {
     if (promoteCodexDirToSharedIfSafe(localPath, sharedPath) === "refused") return;
   } else if (lexists(localPath)) {
     warnExistingCodexPath(localPath);
@@ -542,7 +526,7 @@ function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
     return;
   }
 
-  if (isFilePath(localPath)) {
+  if (isFile(localPath)) {
     if (!filesEqual(localPath, sharedPath)) {
       warnExistingCodexPath(localPath);
       return;
@@ -617,11 +601,11 @@ function preflightCodexSymlinkFarm(codexHome: string, sharedRoot: string): void 
     ...SHARED_DIRS.map((name) => path.join(sharedRoot, name)),
   ];
   for (const p of slots) {
-    if (lexists(p) && !isDirPath(p)) throw new Error(`EEXIST: file already exists, mkdir '${p}'`);
+    if (lexists(p) && !isDir(p)) throw new Error(`EEXIST: file already exists, mkdir '${p}'`);
   }
   for (const name of SHARED_DIRS) {
     const local = path.join(codexHome, name);
-    if (isDirPath(local) && !isSymlinkPath(local)) {
+    if (isDir(local) && !isSymlinkPath(local)) {
       promoteDecision(local, path.join(sharedRoot, name));
     }
   }

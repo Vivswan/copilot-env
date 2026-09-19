@@ -30,7 +30,8 @@ import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, linesNaming } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
+import { linesNaming } from "./helpers/dry_run.ts";
 
 const restoreEnv = envSnapshot([
   "PATH",

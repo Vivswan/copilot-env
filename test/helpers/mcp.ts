@@ -1,7 +1,7 @@
 // The one MCP harness for every stdio-server suite: a credential env var scrubbed here is
 // scrubbed for all of them, so no test can pick up an ambient credential and reach the network.
-import { join } from "node:path";
-import { denoRunArgs, ROOT, spawnChild } from "./run.ts";
+import { agentHomeEnv } from "./env.ts";
+import { CLI_ENTRY, denoRunArgs, ROOT, spawnChild } from "./run.ts";
 import { expect, removeDir, tempDir } from "./testing.ts";
 
 let dirs: string[] = [];
@@ -12,20 +12,15 @@ export function cleanupTmpDirs(): void {
   dirs = [];
 }
 
-function mcpTempDir(tag: string): string {
-  const d = tempDir(`copilot-mcp-${tag}-`);
-  dirs.push(d);
-  return d;
-}
-
 export function mcpEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) env[k] = v;
   }
   // Hermetic stores + no ambient credential: the no-credential tool error is the point.
-  env.COPILOT_API_HOME = mcpTempDir("home");
-  env.CLAUDE_CONFIG_DIR = mcpTempDir("claude");
+  const home = tempDir("copilot-mcp-home-");
+  dirs.push(home);
+  Object.assign(env, agentHomeEnv(home));
   env.CONSOLA_LEVEL = "5"; // consola self-silences under test otherwise
   delete env.COPILOT_GITHUB_TOKEN;
   delete env.GH_TOKEN;
@@ -63,7 +58,7 @@ export class McpClient {
     this.proc = spawnChild(Deno.execPath(), {
       args: [
         ...denoRunArgs(),
-        join(ROOT, "src", "cli.ts"),
+        CLI_ENTRY,
         "profile",
         ...(profile === undefined ? [] : [profile]),
         "mcp",

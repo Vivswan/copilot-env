@@ -19,8 +19,8 @@ import { readCodexToml } from "../src/codex/toml_io.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
+import { afterEach, expect, outcomeOf, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -117,11 +117,8 @@ test("readCodexToml: a non-ENOENT filesystem error throws raw instead of reading
 const UNPARSEABLE = ["[mcp_servers.mine]", 'command = "my-server', ""].join("\n");
 
 function capture(fn: () => void): unknown {
-  try {
-    fn();
-  } catch (e) {
-    return e;
-  }
+  const seen = outcomeOf(fn);
+  if ("error" in seen) return seen.error;
   throw new Error("expected the call to throw");
 }
 

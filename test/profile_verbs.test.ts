@@ -7,7 +7,7 @@
 // proven against their verbs live, in twin homes. The verbs are reserved names, pinned at the CLI.
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { changedPaths } from "./helpers.ts";
+import { changedPaths } from "./helpers/dry_run.ts";
 import {
   expectIdentical,
   expectOracle as expectOracleOf,

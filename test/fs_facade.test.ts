@@ -18,7 +18,7 @@ import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { withDryRun } from "../src/utils/dry_run.ts";
 import { renderDryRun } from "../src/utils/dry_run_report.ts";
 import * as facade from "../src/utils/fs_facade.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, outcomeOf, removeDir, tempDir, test } from "./helpers/testing.ts";
 
 let dir = "";
 afterEach(() => {
@@ -30,13 +30,10 @@ const WINDOWS = Deno.build.os === "windows";
 /** The thrown code (or the error's name when it carries none), or "ok": the shape both modes are
  *  compared in. */
 function outcome(fn: () => unknown): string {
-  try {
-    fn();
-    return "ok";
-  } catch (e) {
-    const err = e as NodeJS.ErrnoException;
-    return err.code ?? err.name;
-  }
+  const seen = outcomeOf(fn);
+  if (!("error" in seen)) return "ok";
+  const err = seen.error as NodeJS.ErrnoException;
+  return err.code ?? err.name;
 }
 
 async function dryRun(body: () => void): Promise<string[]> {

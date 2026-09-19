@@ -56,16 +56,15 @@ import { captureChannels } from "./helpers/output.ts";
 import { runCli } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
+  agentHomeEnv,
   type AgentHomes,
-  dryRunChanges,
   envSnapshot,
-  fingerprintTree,
   isolateAgentHomes,
   resetExitCode,
-  stageRefusedStop,
-  stubGithubLogins,
-  writeCodexConfigToml,
-} from "./helpers.ts";
+} from "./helpers/env.ts";
+import { stubGithubLogins, writeCodexConfigToml } from "./helpers/fixtures.ts";
+import { dryRunChanges, fingerprintTree } from "./helpers/dry_run.ts";
+import { stageRefusedStop } from "./helpers/daemon.ts";
 
 const WORK = parseProfileName("work");
 const WORK_TOKEN = "ghp_worktoken";
@@ -675,11 +674,7 @@ test("the dry-run marker a child honours is one a live run holds: an ambient `1`
   const { dir, codexHome, claudeHome } = scratch();
   const env = (marker: string): Record<string, string | undefined> => ({
     ...process.env,
-    COPILOT_API_HOME: dir,
-    HOME: dir,
-    USERPROFILE: dir,
-    CODEX_HOME: codexHome,
-    CLAUDE_CONFIG_DIR: claudeHome,
+    ...agentHomeEnv(dir, { codexHome, claudeHome }),
     [DRY_RUN_ENV]: marker,
   });
   const store = join(dir, "state.json");

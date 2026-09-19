@@ -7,6 +7,7 @@ import { join, relative } from "node:path";
 import { getSanitizedHostname } from "../../src/utils/hostname.ts";
 import { escapeRegExp } from "../../src/utils/regexp.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
+import { agentHomeEnv } from "./env.ts";
 import { runCli } from "./run.ts";
 import { expect, tempDir } from "./testing.ts";
 
@@ -45,11 +46,7 @@ export function scratchHome(prefix = "copilot-cli-oracle-"): ScratchHome {
       ...process.env,
       CONSOLA_LEVEL: "5",
       NO_COLOR: "1",
-      COPILOT_API_HOME: home,
-      HOME: home,
-      USERPROFILE: home,
-      CLAUDE_CONFIG_DIR: join(home, ".claude"),
-      CODEX_HOME: join(home, ".codex"),
+      ...agentHomeEnv(home),
     },
   };
 }

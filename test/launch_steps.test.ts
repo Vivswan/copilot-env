@@ -1,5 +1,4 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { errMessage } from "../src/utils/error.ts";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
@@ -63,17 +62,17 @@ import {
   spawnChild,
 } from "./helpers/run.ts";
 import { afterEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
+import { defaultHomeDir, envSnapshot, isolateProxyHome } from "./helpers/env.ts";
+import { writeRunState } from "./helpers/fixtures.ts";
 import {
-  defaultHomeDir,
-  envSnapshot,
-  isolateProxyHome,
   killAndAwaitExit,
   launchAuth,
   launchFakeDaemon,
   until,
   withUnprovablePidProbe,
-  writeRunState,
-} from "./helpers.ts";
+} from "./helpers/daemon.ts";
+import { captureAllWrites } from "./helpers/output.ts";
+import { closeServer, freePort, listenEphemeral } from "./helpers/net.ts";
 
 const WORK = parseProfileName("work");
 
@@ -127,25 +126,6 @@ function probeSpy(id: string | null, apiBase = DEFAULT_COPILOT_API_BASE): {
   };
 }
 
-function listenEphemeral(): Promise<{ server: Server; port: number }> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        reject(new Error("expected an AddressInfo from a TCP server"));
-        return;
-      }
-      resolve({ server, port: address.port });
-    });
-  });
-}
-
-function closeServer(server: Server): Promise<void> {
-  return new Promise((resolve) => server.close(() => resolve()));
-}
-
 async function withBusyPort<T>(run: (port: number) => Promise<T>): Promise<T> {
   const { server, port } = await listenEphemeral();
   try {
@@ -153,12 +133,6 @@ async function withBusyPort<T>(run: (port: number) => Promise<T>): Promise<T> {
   } finally {
     await closeServer(server);
   }
-}
-
-async function freePort(): Promise<number> {
-  const { server, port } = await listenEphemeral();
-  await closeServer(server);
-  return port;
 }
 
 // --- resolveLaunchCredential: the decision table -------------------------------------
@@ -1613,26 +1587,6 @@ test("cleanupExistingProxies demands withStartLock's evidence (compile-enforced)
 // A FAILED identity scan ("unknown") and a confirmed "no" both skip the courtesy SIGTERM, but
 // the failed look is SAID (a warn naming the pid), never flattened into "proven not ours".
 // Pinned at both sites: the plan gate and the signal-boundary re-check.
-
-/** Capture BOTH process write streams (consola routes by level) while awaiting `fn`. */
-async function captureAllWrites(fn: () => Promise<void>): Promise<string> {
-  const stdout = process.stdout.write.bind(process.stdout);
-  const stderr = process.stderr.write.bind(process.stderr);
-  let out = "";
-  const capture = (chunk: string | Uint8Array): boolean => {
-    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    return true;
-  };
-  process.stdout.write = capture;
-  process.stderr.write = capture;
-  try {
-    await fn();
-  } finally {
-    process.stdout.write = stdout;
-    process.stderr.write = stderr;
-  }
-  return out;
-}
 
 /** Not daemon-shaped: with the classifier injected it only needs to be alive, so a skipped
  *  SIGTERM shows as survival. */

@@ -4,7 +4,7 @@ import { CopilotEnvState, storedCredentialKind } from "../src/copilot_api/env_st
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 // CopilotEnvState reads/writes the SHARED store under COPILOT_API_HOME, so isolate
 // each test in a temp home (not the per-host .run state).

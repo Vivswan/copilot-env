@@ -14,12 +14,8 @@ import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts
 import { getHostLocalCodexHome } from "../src/codex/host.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
-import {
-  envSnapshot,
-  isolateProxyHome,
-  writeClaudeSettings,
-  writeCodexConfigToml,
-} from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
+import { writeClaudeSettings, writeCodexConfigToml } from "./helpers/fixtures.ts";
 
 /** The two default modes as the classifiers read them (a test-side view: src reads no agent file
  *  as truth, so this helper exists here alone). */

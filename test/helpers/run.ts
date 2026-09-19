@@ -3,12 +3,20 @@
 // Every spawn is gated on the running test's abort signal (testing.ts): a body the deadline
 // abandoned keeps executing, and its next spawn would otherwise land inside a later test.
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ISOLATE_ROOT, PINNED_DENO_DIR, TEST_ROOT_ENV, testAbortSignal } from "./testing.ts";
+import {
+  ISOLATE_ROOT,
+  PINNED_DENO_DIR,
+  tempDir,
+  TEST_ROOT_ENV,
+  testAbortSignal,
+} from "./testing.ts";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+/** The CLI's entry module, what `agent` runs. */
+export const CLI_ENTRY = join(ROOT, "src", "cli.ts");
 
 /**
  * A quoted module specifier for splicing into generated source. It must be a file URL: deno
@@ -39,7 +47,7 @@ export function denoRunArgs(...flags: string[]): string[] {
   return ["run", "--config", join(ROOT, "deno.json"), "-P=test", ...flags];
 }
 
-export interface RunResult {
+interface RunResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
@@ -167,7 +175,21 @@ export function runScript(entry: string, args: string[] = [], opts: RunOptions =
 }
 
 export function runCli(args: string[], opts: RunOptions = {}): RunResult {
-  return runScript(join(ROOT, "src", "cli.ts"), args, opts);
+  return runScript(CLI_ENTRY, args, opts);
+}
+
+/** `source` written to a file under a fresh temp dir and run with `--preload shim` ahead of it,
+ *  the way launchDaemon loads the shims (src/copilot_api/process.ts); `args` follow the target on
+ *  its argv. */
+export function runWithPreload(
+  shim: string,
+  source: string,
+  opts: RunOptions & { args?: string[] } = {},
+): RunResult {
+  const target = join(tempDir("preload-target-"), "target.ts");
+  writeFileSync(target, source);
+  const { args = [], ...run } = opts;
+  return runSync(Deno.execPath(), [...denoRunArgs("--preload", shim), target, ...args], run);
 }
 
 /**

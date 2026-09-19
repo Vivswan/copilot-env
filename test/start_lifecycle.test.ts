@@ -7,7 +7,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { createServer, type Server } from "node:net";
+import type { Server } from "node:net";
 import { delimiter, join, relative } from "node:path";
 import { consola } from "consola";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
@@ -34,18 +34,11 @@ import { packageVersion } from "../src/utils/version.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import {
-  defaultHomeDir,
-  envSnapshot,
-  fingerprintTree,
-  isolateProxyHome,
-  killAndAwaitExit,
-  launchFakeDaemon,
-  resetExitCode,
-  stageRefusedStop,
-  until,
-  writeRunState,
-} from "./helpers.ts";
+import { defaultHomeDir, envSnapshot, isolateProxyHome, resetExitCode } from "./helpers/env.ts";
+import { writeRunState } from "./helpers/fixtures.ts";
+import { fingerprintTree } from "./helpers/dry_run.ts";
+import { killAndAwaitExit, launchFakeDaemon, stageRefusedStop, until } from "./helpers/daemon.ts";
+import { closeServer, freePort, listenEphemeral } from "./helpers/net.ts";
 // `start --record-event` (the heartbeat) and `start --check` (the is-it-up probe) are the
 // primitives the proxy-token resolver orchestrates.
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
@@ -176,32 +169,6 @@ test("start --dry-run runs the launch's credential gate: no credential is the re
     ),
   ).rejects.toThrow(notJson);
 });
-
-// A real listening socket, so portListening can probe a real port.
-function listenEphemeral(host = "127.0.0.1"): Promise<{ server: Server; port: number }> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, host, () => {
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        reject(new Error("expected an AddressInfo from a TCP server"));
-        return;
-      }
-      resolve({ server, port: address.port });
-    });
-  });
-}
-
-function closeServer(server: Server): Promise<void> {
-  return new Promise((resolve) => server.close(() => resolve()));
-}
-
-async function freePort(): Promise<number> {
-  const { server, port } = await listenEphemeral();
-  await closeServer(server);
-  return port;
-}
 
 // The heartbeat lands in the NAMED daemon's run state alone. A real proxy profile always has run
 // state before its resolver heartbeats (the port reservation writes it); a profile WITHOUT state

@@ -1,7 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:net";
 import { join } from "node:path";
-import { consola } from "consola";
 import { anyTrackedDaemonAlive, proxyStatus, stopTrackedProxy } from "../src/copilot_api/daemon.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
@@ -24,16 +22,16 @@ import {
   spawnChild,
 } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { defaultHomeDir, envSnapshot, isolateProxyHome } from "./helpers/env.ts";
+import { writeRunState } from "./helpers/fixtures.ts";
 import {
-  defaultHomeDir,
-  envSnapshot,
   FAKE_DAEMON_CREDENTIAL,
   FAKE_DAEMON_HOST,
-  isolateProxyHome,
   until,
   withUnprovablePidProbe,
-  writeRunState,
-} from "./helpers.ts";
+} from "./helpers/daemon.ts";
+import { captureAllWrites } from "./helpers/output.ts";
+import { closeServer, freePort, listenEphemeral } from "./helpers/net.ts";
 
 // The daemon holds `<home>/daemon.lock` for life (acquired by daemon_lock_preload), and the
 // liveness consults judge it BEFORE the pid table. SIGKILL frees it with no unlock code
@@ -53,55 +51,6 @@ const plantMarker = (home: string, pid: number): void => {
   mkdirSync(home, { recursive: true });
   writeFileSync(daemonLockPath(home), `${pid}\n${Date.now()}\n`);
 };
-
-function listenEphemeral(): Promise<{ server: Server; port: number }> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        reject(new Error("expected an AddressInfo from a TCP server"));
-        return;
-      }
-      resolve({ server, port: address.port });
-    });
-  });
-}
-
-function closeServer(server: Server): Promise<void> {
-  return new Promise((resolve) => server.close(() => resolve()));
-}
-
-async function freePort(): Promise<number> {
-  const { server, port } = await listenEphemeral();
-  await closeServer(server);
-  return port;
-}
-
-/** Run `body` with stdout/stderr captured (consola routes through one of them); the
- *  consola level is raised so info/warn are not self-silenced under the test runner. */
-async function captureAllWrites(body: () => Promise<void>): Promise<string> {
-  const written: string[] = [];
-  const savedLevel = consola.level;
-  const origOut = process.stdout.write.bind(process.stdout);
-  const origErr = process.stderr.write.bind(process.stderr);
-  const capture = (chunk: string | Uint8Array): boolean => {
-    written.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
-    return true;
-  };
-  process.stdout.write = capture;
-  process.stderr.write = capture;
-  try {
-    consola.level = 3;
-    await body();
-  } finally {
-    process.stdout.write = origOut;
-    process.stderr.write = origErr;
-    consola.level = savedLevel;
-  }
-  return written.join("");
-}
 
 // --- the decision table, in-process ------------------------------------------------------
 

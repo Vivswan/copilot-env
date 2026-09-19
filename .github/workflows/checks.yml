@@ -38,7 +38,7 @@ jobs:
         run: deno ci
 
       # The real claude and codex CLIs run against the fake model endpoint
-      # (test/fake_model_endpoint.ts) inside the suite; the opt-in below makes a missing
+      # (test/helpers/fake_model_endpoint.ts) inside the suite; the opt-in below makes a missing
       # binary a failure there, never a skip. Same install as the nightly (nightly.yml).
       - uses: ./.github/actions/install-agent-clis
 

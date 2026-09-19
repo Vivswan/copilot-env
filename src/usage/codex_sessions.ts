@@ -96,8 +96,8 @@ export async function readCodexSessions(
 /** Ascending by basename, which embeds the start timestamp, so a fork's parent precedes the fork.
  *  Of a same-session `.jsonl` / `.jsonl.zst` pair the resumable plain file wins, but only among
  *  the files the cutoff left as candidates: a plain file dropped for an old mtime leaves the
- *  compressed twin. The roots are distinct directories (discoverCodexSessionRoots dedupes them by
- *  realpath), so no file is collected twice. */
+ *  compressed twin. discoverCodexSessionRoots hands over realpath-distinct session directories, and
+ *  none nests in another, so no file is collected twice. */
 export function walkCodexSessions(roots: string[], sinceMs: number | undefined): WalkedFile[] {
   const files: WalkedFile[] = [];
   for (const root of roots) {

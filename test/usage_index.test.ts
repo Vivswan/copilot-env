@@ -521,6 +521,21 @@ const OPENERS: {
     line: "rebuilding the usage index (parser_fingerprint parsers-2)",
   },
   {
+    // Tables another build left behind: sound SQLite, not our columns.
+    name: "a database with another table layout is rebuilt",
+    sabotage: () => {
+      const db = new DatabaseSync(dbPath());
+      try {
+        db.exec(`DROP TABLE "meta"; CREATE TABLE "meta" ("k" TEXT PRIMARY KEY, "v" TEXT NOT NULL)`);
+        db.exec(`DROP TABLE "files"; CREATE TABLE "files" ("path" TEXT PRIMARY KEY, "blob" TEXT)`);
+      } finally {
+        db.close();
+      }
+    },
+    rebuilds: true,
+    line: "rebuilding the usage index (no such column: ",
+  },
+  {
     name: "rows without stamps are rebuilt, never adopted",
     sabotage: () => {
       const db = new DatabaseSync(dbPath());

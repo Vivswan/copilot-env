@@ -51,8 +51,12 @@ const DB_FILE_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
 
 const META_PARSER_FINGERPRINT = "parser_fingerprint";
 
-/** A garbage file no connection can hold; the one open failure that is answered by removing it. */
+/** A garbage file no connection can hold. */
 const SQLITE_NOTADB = 26;
+
+/** Our own statements against a sound database whose tables are not ours: an index a build with
+ *  another table layout left behind. */
+const LAYOUT_MISMATCH_RE = /^(no such column: |table "?\w+"? has no column named )/;
 
 // The quoted snake_case names are the on-disk contract. `tail_probe` holds dedupKey(tailProbeHex),
 // never the probe bytes: the last bytes of a session line are session text, and the equality check
@@ -328,15 +332,18 @@ class SqliteUsageIndex implements UsageIndex {
   }
 }
 
-/** node:sqlite does not always expose `errcode`, so the message SQLite emits for it counts too. */
-function isNotADatabase(e: unknown): boolean {
+/** The open failures answered by removing the file and creating it afresh: a garbage file, or a
+ *  database with another table layout. node:sqlite does not always expose `errcode`, so the message
+ *  SQLite emits counts too. Anything else (a corrupt database, say) is left as it is. */
+function isRebuildable(e: unknown): boolean {
+  const message = errMessage(e);
   return (e as { errcode?: unknown }).errcode === SQLITE_NOTADB ||
-    errMessage(e) === "file is not a database";
+    message === "file is not a database" || LAYOUT_MISMATCH_RE.test(message);
 }
 
 /** Configures and stamps a fresh connection, or closes it and throws. Rows under another stamp, or
- *  under none, are deleted and the stamp rewritten in the same connection, so the file itself never
- *  has to go. */
+ *  under none, go with their table (a stamp change may carry a layout change) and the stamp is
+ *  rewritten in the same connection, so the file itself never has to go. */
 function stamped(db: DatabaseSync, fingerprint: string): DatabaseSync {
   try {
     db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
@@ -352,8 +359,10 @@ function stamped(db: DatabaseSync, fingerprint: string): DatabaseSync {
         ? "unstamped rows"
         : `${META_PARSER_FINGERPRINT} ${stamp.value}`;
       logger.info(`rebuilding the usage index (${detail}).`);
-      db.exec(`DELETE FROM "files"`);
     }
+    // A fresh database recreates an empty table, silently.
+    db.exec(`DROP TABLE "files"`);
+    db.exec(SCHEMA_SQL);
     db.prepare(`INSERT OR REPLACE INTO "meta" ("key", "value") VALUES (?, ?)`)
       .run(META_PARSER_FINGERPRINT, fingerprint);
     return db;
@@ -402,8 +411,7 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
     try {
       return new SqliteUsageIndex(stamped(db, fingerprint), lockPath, lockPolicy);
     } catch (e) {
-      // Anything but a garbage file (a corrupt database, say) is left as it is.
-      if (!isNotADatabase(e)) {
+      if (!isRebuildable(e)) {
         logger.warn(`usage index unavailable (${errMessage(e)}); running without it.`);
         return null;
       }

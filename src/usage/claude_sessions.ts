@@ -85,8 +85,8 @@ export async function readClaudeSessions(
   return foldClaude(records, sinceMs, dayKey);
 }
 
-/** Ascending by path. The roots are distinct directories (discoverClaudeSessionRoots dedupes them
- *  by realpath), so no file is collected twice. */
+/** Ascending by path. discoverClaudeSessionRoots hands over realpath-distinct `projects` directories,
+ *  and none nests in another, so no file is collected twice. */
 export function walkClaudeSessions(roots: string[], sinceMs: number | undefined): WalkedFile[] {
   const files: WalkedFile[] = [];
   for (const root of roots) {

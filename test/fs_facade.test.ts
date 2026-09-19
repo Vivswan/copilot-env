@@ -604,6 +604,18 @@ test("a move into scratch in a dry run is planned, never real: the source stays 
   expect([lines, readFileSync(source, "utf8")]).toEqual([[`delete ${source}`], "kept"]);
 });
 
+test("a copy into scratch in a dry run is planned, never real: the source stays on the disk and the report stays empty", async () => {
+  dir = tempDir("copilot-facade-");
+  const source = join(dir, "real.txt");
+  writeFileSync(source, "kept");
+  const lines = await dryRun(() => {
+    const copy = join(facade.scratchDir(join(dir, "scratch-")), "copy.txt");
+    facade.copyFile(source, copy);
+    expect([facade.readText(copy), existsSync(copy)]).toEqual(["kept", false]);
+  });
+  expect([lines, readFileSync(source, "utf8")]).toEqual([["Nothing would be written."], "kept"]);
+});
+
 // Creating a symlink needs a privilege Windows does not grant by default.
 test.skipIf(WINDOWS)("a link to itself is ELOOP in a dry run, as on the disk", async () => {
   dir = tempDir("copilot-facade-");

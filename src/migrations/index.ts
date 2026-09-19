@@ -61,9 +61,9 @@ const MIGRATIONS: Migration[] = [
   v409ProfileVerbTree,
 ];
 
-// versionLessThan tolerates unparseable input by answering "not less-than", so a garbage bound
-// on either side of the range filter silently empties or floods the selection instead of
-// failing. The registry's own versions are SemverString literals, checked at compile time.
+// versionLessThan tolerates unparseable input by answering "not less-than", so a
+// garbage version on either side of the range filter silently empties or floods the
+// selection instead of failing. Every version entering dueMigrations goes through here.
 function requireSemver(value: string, what: string): SemverString {
   const parsed = toSemverString(value);
   if (parsed === null) {
@@ -81,6 +81,11 @@ export function dueMigrations(
   to: string,
   migrations: Migration[] = MIGRATIONS,
 ): Migration[] {
+  // SemverString is a template-literal type: "1.2.3-" and "1.2.3.4" satisfy it, and toSemverString
+  // rejects them, so a registry entry the range filter could never see is caught here by name.
+  for (const m of migrations) {
+    requireSemver(m.version, `registry version (${m.description})`);
+  }
   const f = requireSemver(from, "from version");
   const t = requireSemver(to, "to version");
   // Equal ranks compare 0: Array.sort is stable, so within a version the

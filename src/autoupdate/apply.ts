@@ -48,7 +48,7 @@ import {
 import type { Release } from "../install/resolve-release.ts";
 import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../install/targets.ts";
 import { errMessage } from "../utils/error.ts";
-import { installStateRoot, PROJECT_ROOT } from "../utils/root.ts";
+import { installStateRoot, PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import * as fs from "../utils/fs_facade.ts";
 
@@ -300,10 +300,11 @@ function stage(attested: Attested, top: string, versionName: string): Staged {
 
 /**
  * Stage 4: the NEW binary lays down its own runtime files, aimed explicitly because `current` still
- * names the OLD version. Nothing is committed yet, so a nonzero exit (the materialization failed)
- * leaves that version live. The binary is the release's own (the checksum and attestation stages
- * proved it), and its `install` writes the per-version manifest last, so exit 0 is the whole
- * postcondition.
+ * names the OLD version. Nothing is committed yet, so every failure here leaves that version live.
+ *
+ *   nonzero exit                    -> the materialization failed
+ *   exit 0, no valid manifest       -> the manifest is written LAST, so exit 0 alone proves nothing
+ *   manifest names another version  -> the staged binary provisioned the wrong release
  */
 function provision(staged: Staged, stdio: StdioOptions): Provisioned {
   const result = spawnSync(staged.binary, ["install", "--assets-only"], {
@@ -315,6 +316,19 @@ function provision(staged: Staged, stdio: StdioOptions): Provisioned {
   if (result.status !== 0) {
     throw new Error(
       "the new version failed to lay down its runtime files; the current version is untouched",
+    );
+  }
+  const manifest = readInstallManifest(staged.versionRoot);
+  if (manifest.kind !== "valid") {
+    throw new Error(
+      "the new version reported success but wrote no valid install manifest; " +
+        "the current version is untouched",
+    );
+  }
+  if (versionDirName(manifest.manifest.version) !== staged.versionName) {
+    throw new Error(
+      `the staged binary provisioned version ${manifest.manifest.version}, not the ` +
+        `${staged.versionName} release being applied; the current version is untouched`,
     );
   }
   return {

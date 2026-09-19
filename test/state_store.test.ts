@@ -10,7 +10,6 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
-import { rootStateStore, StateSection } from "../src/copilot_api/state_store.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
@@ -86,7 +85,7 @@ test("a map emptied by its writer leaves the file; a missing or non-object map r
   expect(existsSync(paths.stateStoreFile)).toBe(true);
   expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
   writeFileSync(paths.stateStoreFile, `${JSON.stringify({ ownership: 7, global: [] })}\n`);
-  expect(new StateSection("ownership", rootStateStore()).loadStrict()).toEqual({});
+  expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
   expect(new CopilotEnvConfig().read()).toEqual({ global: {}, profiles: {} });
   expect(new CopilotEnvState().read().codexCatalogLastAttemptMs).toBe(0);
 });

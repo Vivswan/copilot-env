@@ -1,6 +1,7 @@
 // Which `deno` binary copilot-env's own subprocess work runs on, and how a deno-less machine gets one.
 //   .dvmrc              -> the TESTED REFERENCE version alone (what CI runs on, what health compares a PATH deno against); nothing here installs it
 //   no sha256 expected  -> a REFUSAL, never a skip; the archive is hashed as it streams, so an unverified byte never lands unpacked
+import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { basename, isAbsolute, join } from "node:path";
 import { ASSET_ROOT, devDenoExecPath, isStandaloneBinary } from "../utils/root.ts";
@@ -268,10 +269,6 @@ async function writeStreamToFile(stream: ReadableStream<Uint8Array>, path: strin
   await stream.pipeTo(file.writable);
 }
 
-function hexDigest(buffer: ArrayBuffer): string {
-  return Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 /**
  * The response is teed so the bytes on disk are exactly the bytes hashed. An `undefined`
  * `expectedSha256` (no expectation known) is a REFUSAL, not a skip: an unverifiable binary is never downloaded.
@@ -311,7 +308,7 @@ export async function downloadSidecar(
       crypto.subtle.digest("SHA-256", toHash),
       writeStreamToFile(toDisk, zipPath),
     ]);
-    const actual = hexDigest(digest);
+    const actual = Buffer.from(digest).toString("hex");
     if (actual !== expectedSha256.toLowerCase()) {
       throw new Error(
         `sha256 mismatch for ${url}: expected ${expectedSha256.toLowerCase()}, got ${actual}; refusing to install`,

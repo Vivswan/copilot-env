@@ -361,7 +361,7 @@ test("set validates + persists; unset reverts; unknown key / bad value error", (
   ).toThrow(/unknown config key/);
 });
 
-test("resolveSetting: flag > profile > global > default, each layer only where the key's scope admits it", () => {
+test("resolve: flag > profile > global > default, each layer only where the key's scope admits it", () => {
   tmpHome();
   const cfg = new CopilotEnvConfig();
   const at = <K extends ConfigKey>(key: K, profile: Profile, flag?: ConfigValueTypes[K]) =>

@@ -66,13 +66,6 @@ export function ghAuthTokenSpawnSpec(ghPath: string, ghUser: string | null = nul
   return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
 }
 
-/** The active account's token ON GH_COPILOT_HOST: the pinned look's fallback, where a bare
- *  `gh auth token` would follow a GH_HOST override to another host's credential. */
-export function ghAuthHostTokenSpawnSpec(ghPath: string): GhSpawnSpec {
-  const s = cliSpawn(ghPath, ["auth", "token", "--hostname", GH_COPILOT_HOST]);
-  return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
-}
-
 export interface GhSpawnSpec {
   file: string;
   args: string[];
@@ -137,9 +130,8 @@ export function activeGhLogin(accounts: GhAccount[]): string | null {
 }
 
 /**
- * A choice-menu and naming input, and the gate for the pinned look's plain-token fallback (is the pin
- * gh's active account?); the token verdict itself always comes from `gh auth token` (ghAuthVerdict).
- * Broken logins are kept and marked; unrecognized output parses as no accounts.
+ * A choice-menu and naming input; the token verdict itself always comes from `gh auth token`
+ * (ghAuthVerdict). Broken logins are kept and marked; unrecognized output parses as no accounts.
  */
 export function parseGhAuthStatusAccounts(output: string): GhAccount[] {
   const accounts: GhAccount[] = [];

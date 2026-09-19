@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CopilotEnvState, storedCredentialKind } from "../src/copilot_api/env_state.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
@@ -305,16 +305,6 @@ test("the read boundary parses the stored pair fail-closed into the credential u
     provider: "copilot",
     token: "ghu_ok",
   });
-  // The presence-only classifier (health facts) must agree with the parse.
-  for (const provider of [null, "bogus", "gh-cli", "copilot", "gh-token"]) {
-    for (const token of [null, "tok"]) {
-      const pair = { githubToken: token ?? undefined, authProvider: provider ?? undefined };
-      seedRawState({ profiles: { default: pair } });
-      expect(new CopilotEnvState().readCredential(null).kind).toBe(
-        storedCredentialKind(provider, token !== null),
-      );
-    }
-  }
 });
 
 test("clearCredential clears even a parse-rejected stray token and reports what it removed", () => {

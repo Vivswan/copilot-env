@@ -1,12 +1,11 @@
 import { configDefaultNumber, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
+  checkProxyPort,
   matchesProxyOrigin,
-  maxProxyPort,
-  minProxyPort,
   openaiBaseUrl,
   parseLoopbackProxyUrl,
   proxyLoopbackOrigin,
-  proxyPortInRange,
+  proxyPortRange,
 } from "../src/copilot_api/port.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
@@ -24,9 +23,9 @@ function tmpHome(): void {
 }
 
 // The allowed range is [min-port, max-port] from the config, [1024, 65535] by default: privileged,
-// out-of-range, and non-integer ports are refused, and an inverted range admits nothing (the
-// start flow surfaces the "min-port > max-port" error; here every port simply reads out of range).
-test("the port range: config narrows the default [1024, 65535]; an inverted range admits no port", () => {
+// out-of-range, and non-integer ports read out of range before any socket is opened, and an
+// inverted range is refused with the config commands that fix it.
+test("the port range: config narrows the default [1024, 65535]; an inverted range is refused", async () => {
   tmpHome();
   const rows: {
     label: string;
@@ -63,29 +62,26 @@ test("the port range: config narrows the default [1024, 65535]; an inverted rang
         [8080, false],
       ],
     },
-    {
-      label: "an inverted range (min > max) admits no port",
-      config: { "daemon.min-port": 5000, "daemon.max-port": 4000 },
-      min: 5000,
-      max: 4000,
-      inRange: [
-        [3999, false],
-        [4000, false],
-        [4500, false],
-        [5000, false],
-        [5001, false],
-      ],
-    },
   ];
   for (const row of rows) {
-    if (row.config !== null) new CopilotEnvConfig().set(row.config);
-    expect({
+    const config = new CopilotEnvConfig();
+    if (row.config !== null) config.set(row.config);
+    const inRange: [number, boolean][] = [];
+    for (const [port] of row.inRange) {
+      inRange.push([port, (await checkProxyPort(port, config)) !== "out-of-range"]);
+    }
+    expect({ label: row.label, range: proxyPortRange(config), inRange }).toEqual({
       label: row.label,
-      min: minProxyPort(),
-      max: maxProxyPort(),
-      inRange: row.inRange.map(([port]) => [port, proxyPortInRange(port)]),
-    }).toEqual({ label: row.label, min: row.min, max: row.max, inRange: row.inRange });
+      range: { min: row.min, max: row.max },
+      inRange: row.inRange,
+    });
   }
+  const inverted = new CopilotEnvConfig();
+  inverted.set({ "daemon.min-port": 5000, "daemon.max-port": 4000 });
+  await expect(checkProxyPort(4500, inverted)).rejects.toThrow(
+    "invalid port range: daemon.min-port (5000) is greater than daemon.max-port (4000); " +
+      "fix it with `agent config set daemon.min-port <n>` / `agent config set daemon.max-port <n>`.",
+  );
 });
 
 test("parseLoopbackProxyUrl: the loopback-http grammar, host/protocol/garbage table", () => {

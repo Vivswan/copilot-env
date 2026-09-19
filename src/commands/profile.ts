@@ -12,6 +12,7 @@ import {
 import { configureDefaultAgents, runClaude, runCodex } from "../agents/configure_defaults.ts";
 import { bothAgents, wireBothAgents, wireProfileAgents } from "../agents/profile_wiring.ts";
 import {
+  type AgentProviderMode,
   MANAGED_MODE_DETAIL,
   providerModeExitCode,
   type RequestedMode,
@@ -24,7 +25,7 @@ import { effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   allProfileNames,
   assertKnownProfile,
@@ -39,12 +40,12 @@ import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import {
   agentStopCommand,
-  isReservedProfileWord,
+  DEFAULT_PROFILE_NAME,
   type Profile,
   profileLabel,
   type ProfileName,
 } from "../copilot_api/profile.ts";
-import { colorEnabled, gray, statusPaint } from "../utils/ansi.ts";
+import { bold, colorEnabled, gray, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
@@ -53,7 +54,6 @@ import { createStderrLogger } from "../utils/logger.ts";
 import { formatTable, printKeyValue, printWrapped, terminalWidth } from "../utils/table.ts";
 import { ensureAuthenticated } from "./auth.ts";
 import { runDryRun } from "./dry_run.ts";
-import { printGuidance } from "./init_guidance.ts";
 
 // Narration to stderr, so a verb whose stdout is a payload keeps it clean.
 const logger = createStderrLogger();
@@ -72,6 +72,92 @@ export interface AddArgs {
   dryRun?: boolean;
   /** Record the mode alone and print the credential step instead of running it. */
   noAuth?: boolean;
+}
+
+/** The box the default's `add` closes with: what each agent was wired to and the next steps. */
+function modeLabel(mode: AgentProviderMode): string {
+  if (mode === "direct") return "GitHub Copilot Direct";
+  if (mode === "proxy") return "the local proxy";
+  // "other" is any config that is not ours: a foreign provider, but also a
+  // malformed or unreadable one (the classifiers fold read/parse failures in).
+  if (mode === "other") return "a custom or unrecognized provider config (not managed)";
+  if (mode === "none") return "not configured";
+  return assertNever(mode);
+}
+
+function printGuidance(
+  codex: AgentProviderMode,
+  claude: AgentProviderMode,
+  usedToken = false,
+  failedAgents: readonly ManagedAgentId[] = [],
+): void {
+  const bothDirect = codex === "direct" && claude === "direct";
+  const anyProxy = codex === "proxy" || claude === "proxy";
+
+  // A write that failed left that agent's files as they were: "unchanged", never "not configured".
+  const label = (agent: ManagedAgentId, mode: AgentProviderMode): string =>
+    failedAgents.includes(agent)
+      ? "unchanged (this run's write failed; see the warning above)"
+      : modeLabel(mode);
+  const lines: string[] = [
+    `Codex   →  ${label("codex", codex)}`,
+    `Claude  →  ${label("claude", claude)}`,
+  ];
+
+  // Backticked commands render as highlighted inline code inside the box, so no space-padded
+  // columns.
+  const section = (title: string, items: string[]): void => {
+    lines.push("", bold(title));
+    for (const item of items) lines.push(`  • ${item}`);
+  };
+
+  if (anyProxy) {
+    lines.push("", "At least one agent uses the local proxy.");
+    section("Start the proxy", [
+      "`agent start` - launch the daemon",
+      `\`${
+        configSetCommand("shell.launchers", "true")
+      }\` - \`cl\` / \`cx\` then auto-start it for you`,
+      "`agent cost` - report proxy usage",
+    ]);
+  } else if (bothDirect) {
+    const tail = usedToken ? " (using your GitHub token - no `gh` CLI needed)." : ".";
+    lines.push("", `Both agents use GitHub Copilot Direct - no local proxy needed${tail}`);
+    section("Run the agents", [
+      "Just use `claude` and `codex` - no `agent start` / `agent stop`",
+      `\`${
+        configSetCommand("shell.launchers", "true")
+      }\` - optional \`cl\` / \`co\` / \`cx\` shortcuts`,
+    ]);
+    section("Good to know", [
+      "`agent cost` reports proxy usage only - Direct usage won't appear",
+      "Model aliases come from the proxy; in Direct, use the provider's exact ids",
+    ]);
+  } else {
+    lines.push("", "Mixed setup - the agents aren't configured the same way.");
+    const steps = ["Anything unconfigured? Re-run `agent init` or check `agent health`"];
+    if (codex === "direct" || claude === "direct") {
+      steps.unshift("The Direct agent needs no proxy - run it directly");
+    }
+    section("Next steps", steps);
+  }
+
+  section("Profiles (optional)", [
+    "Run several sessions at once - direct, proxy, or another account.",
+    "A profile = one credential + one mode, wired into BOTH agents:",
+    "`agent profile <name> add --direct|--proxy` → `cl --profile <name>` / `cx --profile <name>`",
+    "`agent profile` lists them; `agent profile <name> del` removes one.",
+  ]);
+
+  if (bothDirect) {
+    lines.push(
+      "",
+      "if needed, switch everything to the proxy:  `agent init --proxy`, then `agent start`",
+    );
+  }
+
+  logger.log("");
+  logger.box(lines.join("\n"));
 }
 
 /** The credential step `add` runs on a profile that has none: `auth`'s interactive flow, which
@@ -318,9 +404,7 @@ export function renderProfileTable(
   }).join("\n");
 }
 
-/** `agent list` and bare `agent profile`: every profile, one row each, then the one hint the list
- *  cannot carry: a profile named before its word became a verb routes as the verb, and the
- *  update's migration renames it. */
+/** `agent list` and bare `agent profile`: every profile, one row each. */
 export async function listProfiles(): Promise<void> {
   const state = new CopilotEnvState();
   // The default is a profile too: a row as soon as its slot carries anything.
@@ -339,7 +423,7 @@ export async function listProfiles(): Promise<void> {
         const slot = state.readProfileSlot(profile);
         const daemon = slot.mode === "proxy" ? await proxyStatus(profile) : null;
         return {
-          name: profile ?? "default",
+          name: profile ?? DEFAULT_PROFILE_NAME,
           provider: credentialProvider(slot.credential),
           mode: slot.mode,
           daemon,
@@ -352,12 +436,6 @@ export async function listProfiles(): Promise<void> {
       `${rows.length} profile${rows.length === 1 ? "" : "s"}:\n\n${
         renderProfileTable(rows)
       }\n\n${hint}\n`,
-    );
-  }
-  for (const name of allProfileNames().filter(isReservedProfileWord)) {
-    logger.warn(
-      `profile '${name}' is named like a verb of \`agent profile\`; \`agent update\` renames it ` +
-        `to '${name}-<n>'. Until then \`agent profile ${name} ...\` routes as the verb, not the profile.`,
     );
   }
 }
@@ -487,7 +565,7 @@ function checkSlot(profile: Profile): void {
   switch (slot.kind) {
     case "partial":
       if (profile === null) {
-        printKeyValue("default", slot.mode ?? "none");
+        printKeyValue(profileLabel(profile), slot.mode ?? "none");
         printWrapped("  the default profile has no complete wiring yet - run `agent init`");
       } else {
         printWrapped(partialSlotGap(profile, slot));

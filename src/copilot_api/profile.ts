@@ -51,9 +51,13 @@ export function isReservedProfileWord(name: string): boolean {
   return (RESERVED_PROFILE_WORDS as readonly string[]).includes(name);
 }
 
-// `default` is the implicit unnamed profile (give no name instead); the rest collide with the
+/** The default profile's name: the key of its store slot (env_state.ts), its daemon home directory
+ *  (paths.ts), and its label. Never a named profile's: the constructor below rejects it. */
+export const DEFAULT_PROFILE_NAME = "default";
+
+// The default is the implicit unnamed profile (give no name instead); the rest collide with the
 // mode-flag and `stop --all` vocabulary.
-const RESERVED_PROFILE_NAMES = ["default", "direct", "proxy", "all"] as const;
+const RESERVED_PROFILE_NAMES = [DEFAULT_PROFILE_NAME, "direct", "proxy", "all"] as const;
 
 /** Windows cannot create a `profiles/<name>` directory under these names (CreateFile treats them
  *  specially even with an extension), and cross-platform is non-negotiable, so they are invalid
@@ -73,7 +77,7 @@ export function parseProfileName(name: string): ProfileName {
   if ((RESERVED_PROFILE_NAMES as readonly string[]).includes(name)) {
     throw new Error(
       `profile name '${name}' is reserved${
-        name === "default" ? " (give no name for the default profile)" : ""
+        name === DEFAULT_PROFILE_NAME ? " (give no name for the default profile)" : ""
       }`,
     );
   }
@@ -96,7 +100,7 @@ export function parseProfileFlag(raw: string | undefined): Profile {
 }
 
 export function profileLabel(profile: Profile): string {
-  return profile === null ? "default" : `profile '${profile}'`;
+  return profile === null ? DEFAULT_PROFILE_NAME : `profile '${profile}'`;
 }
 
 /** The `agent start` command addressed at a profile's own daemon; a bare `agent start` would leave

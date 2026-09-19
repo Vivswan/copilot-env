@@ -12,7 +12,7 @@ import {
   parseLaunchAction,
   prepareLaunch,
 } from "../src/commands/launch.ts";
-import type { ManagedEnvValue } from "../src/commands/env.ts";
+import type { ManagedEnvValue } from "../src/utils/shell_quote.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import type { ProfileMode, ProfileSlot, TokenProvider } from "../src/copilot_api/env_state.ts";
 import { renderModelAliases } from "../src/copilot_api/launch.ts";

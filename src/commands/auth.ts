@@ -5,7 +5,6 @@ import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
-import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {
   AUTH_PROVIDERS,
   type AuthProvider,
@@ -14,6 +13,7 @@ import {
   ghAccountsLook,
   ghAuthTokenLook,
   type GhTokenLook,
+  liveCredentialSourceLabel,
 } from "../copilot_api/credential.ts";
 import { stopTrackedProxy, trackedDaemonAlive } from "../copilot_api/daemon.ts";
 import {
@@ -27,7 +27,6 @@ import {
   assertProfileSlot,
   CopilotEnvState,
   type ProvisionedCredential,
-  type StoredCredential,
   type StoredDirectPair,
 } from "../copilot_api/env_state.ts";
 import {
@@ -691,15 +690,6 @@ async function runGet(profile: Profile): Promise<void> {
   process.stdout.write(`${token}\n`);
 }
 
-/** The key line is the ENTIRE stdout contract; like `--get`, it writes no agent file. */
-export function runPrintProxyToken(profile: Profile): void {
-  const key = CopilotApiConfig.forProfile(profile).ensureApiKey();
-  // codeql[js/clear-text-logging] -- emitting the proxy key on stdout IS this command's
-  // contract (the proxy-mode agents' auth.command / apiKeyHelper consume it). A dry run minted a
-  // key its recorded store write never lands, so it prints none: the plan is the stdout.
-  if (!dryRunActive()) process.stdout.write(`${key}\n`);
-}
-
 /** The de-auth and the daemon stop, with what to say once they are real (a dry run prints the plan
  *  in their place). */
 async function runDel(profile: Profile): Promise<() => void> {
@@ -760,45 +750,6 @@ async function runDel(profile: Profile): Promise<() => void> {
     // Whatever the store held, a baked copy may still sit in the agent configs.
     noteStaticKeyStale(profile);
   };
-}
-
-/** BRACKET-FREE by contract: a surface that wants parens adds its own. Exported for `agent
- *  profile`'s credential-reuse line. */
-export function credentialSourceLabel(credential: StoredCredential): string | null {
-  switch (credential.kind) {
-    case "none":
-    case "stored":
-      return credential.provider;
-    case "gh-cli":
-      return credential.ghUser === null ? "gh-cli" : `gh-cli as ${credential.ghUser}`;
-  }
-}
-
-/** An AUTO gh-cli slot names the account it follows right now and every account it may use, so a
- *  read-back through here says whose credit the credential can spend; an unproven or empty look
- *  never guesses. A batch caller passes one memoized `look`. */
-export function liveCredentialSourceLabel(
-  credential: StoredCredential,
-  look: () => GhAccountsLook = ghAccountsLook,
-): string | null {
-  if (credential.kind === "gh-cli" && credential.ghUser === null) {
-    const accounts = look().accounts;
-    const active = activeGhLogin(accounts);
-    const logins = [
-      ...new Set(
-        accounts
-          .filter((a) => a.host === GH_COPILOT_HOST && a.login !== "")
-          .map((a) => a.login),
-      ),
-    ];
-    const parts = [
-      active === null ? null : `currently ${active}`,
-      logins.length === 0 ? null : `may use ${logins.join(", ")}`,
-    ].filter((part) => part !== null);
-    // Bracket-free like credentialSourceLabel: the callers add the one paren level.
-    return `gh-cli on auto${parts.length === 0 ? "" : `: ${parts.join("; ")}`}`;
-  }
-  return credentialSourceLabel(credential);
 }
 
 function runCheck(profile: Profile): void {

@@ -12,6 +12,7 @@ import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import type { ManagedEnvValue } from "../utils/shell_quote.ts";
 import { reportWrite } from "../utils/report_write.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome, plainCodexHome } from "./paths.ts";
 import { readCodexToml } from "./toml_io.ts";
@@ -790,4 +791,20 @@ export function knownCodexHomes(): { homes: string[]; complete: boolean } {
     }
   }
   return { homes: [...homes], complete };
+}
+
+/** The same resolution the writer and the launch pin use (resolveCodexHome): with `codex.host` on
+ *  the farm is exported built or not (the next `agent profile sync --codex` builds it), so a drift
+ *  between the key and the disk is warned about beside it, never hidden by an empty export. A
+ *  managed-farm export left in the shell is ours to clear; anything else is the user's. */
+export function managedCodexHome(): ManagedEnvValue {
+  const prefs = new CopilotEnvConfig().codexHomePrefs();
+  const resolution = resolveCodexHome(prefs);
+  if (prefs.hostFarm) {
+    const drift = codexHostDriftFrom(true, codexHostFarm(prefs));
+    if (drift !== null) logger.warn(codexHostDriftLine(drift));
+  }
+  if (resolution.by !== "default") return { value: resolution.home };
+  if (isManagedFarmExport(process.env.CODEX_HOME, prefs)) return { unset: true };
+  return null;
 }

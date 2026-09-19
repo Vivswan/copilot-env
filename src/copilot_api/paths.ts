@@ -4,7 +4,13 @@ import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { hideWritesUnder } from "../utils/report_write.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
-import { isValidProfileName, parseProfileName, type Profile, type ProfileName } from "./profile.ts";
+import {
+  DEFAULT_PROFILE_NAME,
+  isValidProfileName,
+  parseProfileName,
+  type Profile,
+  type ProfileName,
+} from "./profile.ts";
 
 // One spelling on every platform: do NOT swap in a native %LOCALAPPDATA% location on Windows, the wrapper
 // and the daemon must derive the identical path. The daemon never depends on this default: every spawn
@@ -75,7 +81,7 @@ function statIfPresent(path: string): fs.EntryStats | null {
 export const PROFILES_DIR_NAME = "profiles";
 
 /** Reserved: a user profile can never claim this name (profile.ts rejects it), so the join can never collide. */
-export const DEFAULT_PROFILE_DIR = "default";
+export const DEFAULT_PROFILE_DIR = DEFAULT_PROFILE_NAME;
 
 /** The proxy's per-endpoint handler logs; shared across hosts, unlike `.run/<host>/`. */
 export const LOGS_DIR_NAME = "logs";

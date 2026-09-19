@@ -11,6 +11,7 @@ import { CODEX_IDENTITY_NAME, INTEGRATION_ID_RE, isLoopbackHostname } from "./en
 import { GH_LOGIN_RE } from "./gh_cli.ts";
 import { profileHomeNames } from "./paths.ts";
 import {
+  DEFAULT_PROFILE_NAME,
   isReservedProfileWord,
   isValidProfileName,
   parseProfileName,
@@ -114,7 +115,7 @@ export const PROFILE_MODES = ["direct", "proxy"] as const;
 export type ProfileMode = (typeof PROFILE_MODES)[number];
 
 /** parseProfileName rejects `default`, so no named profile can collide with this key. */
-export const DEFAULT_PROFILE_KEY = "default";
+export const DEFAULT_PROFILE_KEY = DEFAULT_PROFILE_NAME;
 
 /** The two creators refuse a word `agent profile` routes as a verb, so it can never become a
  *  profile; a profile named before its word became a verb is read as it is. */

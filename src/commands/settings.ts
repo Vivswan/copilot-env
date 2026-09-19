@@ -30,17 +30,11 @@ import {
   profileSettingsKey,
 } from "../copilot_api/env_config.ts";
 import { assertProfileSlot } from "../copilot_api/env_state.ts";
-import {
-  isValidProfileName,
-  parseProfileFlag,
-  parseProfileName,
-  type Profile,
-  profileLabel,
-} from "../copilot_api/profile.ts";
+import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
-import { PROXY_RESTART_HINT_ALL, unreadProjectedKeyWarnings } from "./config.ts";
+import { PROXY_RESTART_HINT_ALL } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
 
 // Narration to stderr so `--export`'s stdout stays a clean machine-readable bundle.
@@ -107,14 +101,11 @@ const ROLLBACK_SCOPE_NOTE =
   "(restores the stores; profiles this import created stay until `agent profile <name> del`)";
 
 /** Projection happens at `agent start` per profile, and an auto-start no-op never re-projects, so a
- *  running daemon misses a projected key the bundle set or reset until it restarts. Hint first, then
- *  the installed-version warnings for EVERY profile either snapshot names, deduplicated. Exported for
+ *  running daemon misses a projected key the bundle set or reset until it restarts. Exported for
  *  tests. */
 export function importRestartHints(
   config: CopilotEnvConfigData,
   preImportPrefs: CopilotEnvConfigData,
-  warningsFor: (profile: Profile) => string[] = (profile) =>
-    unreadProjectedKeyWarnings(undefined, undefined, profile),
 ): string[] {
   // Prefs are full-replace, so a projected key changes when the bundle carries it OR when the
   // bundle drops one the store had, in the global map or any profile's section.
@@ -126,13 +117,7 @@ export function importRestartHints(
       isProxyProjected(def) && isGlobalMapKey(def.key) && isProfileMapKey(def.key) &&
       (carries(config, def.key) || carries(preImportPrefs, def.key)),
   );
-  if (!projectedChanges) return [];
-  const named = new Set([...Object.keys(config.profiles), ...Object.keys(preImportPrefs.profiles)]);
-  const profiles: Profile[] = [
-    null,
-    ...[...named].filter(isValidProfileName).sort().map(parseProfileName),
-  ];
-  return [PROXY_RESTART_HINT_ALL, ...new Set(profiles.flatMap(warningsFor))];
+  return projectedChanges ? [PROXY_RESTART_HINT_ALL] : [];
 }
 
 /** The bundle a scope exports: the whole store (buildExportBundle) or one profile's projection. */
@@ -275,9 +260,7 @@ async function runImport(
   for (const name of outcome.wiredProfiles) {
     logger.log(`  Launch ${profileLabel(name)}:  cl --profile ${name}  /  cx --profile ${name}`);
   }
-  const [restartHint, ...projectionWarnings] = importRestartHints(bundle.config, preImportPrefs);
-  if (restartHint !== undefined) logger.info(restartHint);
-  for (const warning of projectionWarnings) logger.warn(warning);
+  for (const hint of importRestartHints(bundle.config, preImportPrefs)) logger.info(hint);
   // The backup lives inside copilot-env's own home, where writes are silent, so the rollback
   // command is said here.
   if (backupPath !== null) {

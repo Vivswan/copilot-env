@@ -1,6 +1,6 @@
 // The configuration page's key tables are hand-written, so a new registry key needs its row
-// added by hand and a changed default needs its Default cell moved; this is where either
-// omission fails.
+// added by hand, a changed default needs its Default cell moved, and a reworded describe needs
+// its Effect cell retyped; this is where any omission fails.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,17 +27,16 @@ const PROSE_DEFAULT_CELLS: Readonly<Record<string, string>> = {
 
 interface DocsRow {
   key: string;
-  /** The row's Default cell, or this key's share of a combined cell (`1024` / `65535`). */
   defaultCell: string;
+  effectCell: string;
 }
 
 function cells(line: string): string[] {
   return line.split("|").slice(1, -1).map((cell) => cell.trim());
 }
 
-/** Every row of every `| Key | ... | Default | ... |` table on the page. Only a row's FIRST cell
- *  names keys (a key echoed in a description cell is not a row); a combined first cell
- *  (`min-port` / `max-port`) is one row per key, with the Default cell split the same way. */
+/** Every row of every `| Key | ... | Default | Effect |` table on the page, one key per row. Only
+ *  a row's FIRST cell names the key (a key echoed in a description cell is not a row). */
 function configTableRows(page: string): DocsRow[] {
   const rows: DocsRow[] = [];
   const lines = page.split("\n");
@@ -45,16 +44,18 @@ function configTableRows(page: string): DocsRow[] {
     const header = cells(lines[i] ?? "");
     if (header[0] !== "Key") continue;
     const defaultColumn = header.indexOf("Default");
+    const effectColumn = header.indexOf("Effect");
     expect(defaultColumn, `table at line ${i + 1} has no Default column`).toBeGreaterThan(0);
+    expect(effectColumn, `table at line ${i + 1} has no Effect column`).toBeGreaterThan(0);
     for (let j = i + 2; j < lines.length && lines[j]?.startsWith("|"); j++) {
       const row = cells(lines[j] ?? "");
-      const keyCell = row[0] ?? "";
-      const defaultCell = row[defaultColumn] ?? "";
-      const keys = [...keyCell.matchAll(/`([^`]+)`/g)].map((match) => match[1] ?? "");
-      const defaults = keys.length > 1 ? defaultCell.split(" / ") : [defaultCell];
-      expect(defaults.length, `row for ${keyCell} has ${defaults.length} default cells`)
-        .toBe(keys.length);
-      keys.forEach((key, n) => rows.push({ key, defaultCell: defaults[n] ?? "" }));
+      const key = /^`([^`]+)`$/.exec(row[0] ?? "")?.[1];
+      expect(key, `row at line ${j + 1} names no single key`).toBeDefined();
+      rows.push({
+        key: key ?? "",
+        defaultCell: row[defaultColumn] ?? "",
+        effectCell: row[effectColumn] ?? "",
+      });
     }
   }
   return rows;
@@ -86,6 +87,17 @@ test("every Default cell is the registry's default as `agent config` renders it"
     const expected = `\`${formatConfigValue(value)}\``;
     if (defaultCell.replace(/ \([^`()]*\)$/, "") !== expected) {
       drift.push(`${key}: docs cell ${defaultCell}, registry default ${expected}`);
+    }
+  }
+  expect(drift).toEqual([]);
+});
+
+test("every Effect cell is the key's describe text verbatim, as `agent config` prints it", () => {
+  const drift: string[] = [];
+  for (const { key, effectCell } of docsRows) {
+    const describe = CONFIG_REGISTRY.find((def) => def.key === key)?.describe;
+    if (effectCell !== describe) {
+      drift.push(`${key}: docs cell "${effectCell}", registry "${describe}"`);
     }
   }
   expect(drift).toEqual([]);

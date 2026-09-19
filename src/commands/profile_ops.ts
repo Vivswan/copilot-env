@@ -272,10 +272,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
     verb(
       "mcp",
       "Show or run the web-search MCP server",
-      "Show the wiring status of the copilot-env MCP server, which gives Claude Code web search " +
-        "through GitHub Copilot (the registration is machine-global). --serve runs the stdio " +
-        `server with the credential of ${forWhom}, for Claude, Codex, or any MCP client; ` +
-        "--remove unregisters it.",
+      "Show the wiring status of the copilot-env MCP server, whose `web_search` tool gives " +
+        "Claude Code web search through GitHub Copilot (the registration is machine-global). " +
+        `--serve runs the stdio server with the credential of ${forWhom}, for Claude, Codex, ` +
+        "or any MCP client; --remove unregisters it.",
     ),
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "mcp");

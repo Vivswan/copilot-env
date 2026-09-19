@@ -92,6 +92,12 @@ test("the command listings fit 80 columns one row each, and the root help lists 
   for (const verb of PROFILE_VERBS) {
     expect(root.stdout, verb).toMatch(new RegExp(`^  profile \\[<name>\\] ${verb} +\\S`, "m"));
   }
+  // The verb rows are a rendering of the root help alone: a verb typed as a top-level command is
+  // unknown with no suggestion, as on a plain Commander program.
+  const stray = runCli(["models"], { env: { ...process.env, CONSOLA_LEVEL: "5" } });
+  expect(stray.exitCode).toBe(1);
+  expect(stray.stderr).toContain("unknown command 'models'");
+  expect(stray.stderr).not.toContain("Did you mean");
 });
 
 test("cli.ts profile mcp --help exposes the server flags; --remove rejects serve-only flags", () => {

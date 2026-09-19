@@ -159,7 +159,7 @@ function agentFlag(opts: Opts): ManagedAgentId | null {
 
 /** The help group every profile verb is listed under: `agent profile --help` and, one row per
  *  verb as `profile [<name>] <verb>`, the root `agent --help` (src/cli.ts). */
-export const PROFILE_VERB_GROUP = "Profile:";
+const PROFILE_VERB_GROUP = "Profile:";
 
 /** The name from the word position is passed on as the string the owning function takes, so both
  *  it and the verb validate the name in one order; a verb that owns its own read mints it.
@@ -181,7 +181,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     .passThroughOptions()
     // The bare action handler would otherwise suppress `agent profile help <verb>`.
     .helpCommand(true)
-    .summary("Manage one profile (its verbs are listed below)")
+    .summary("Manage one profile; its verbs are listed below")
     .description(
       "Manage one profile: `agent profile [<name>] <verb>`. A profile is one GitHub Copilot " +
         "credential and one mode (Direct or the local proxy), wired into both Codex and Claude. " +
@@ -278,7 +278,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     verb(
       "auth",
       "Sign in, or manage its Copilot credential",
-      `Sign ${forWhom} in to GitHub Copilot, or manage its credential: pick how to sign in ` +
+      `Sign in to GitHub Copilot for ${forWhom}, or manage its credential: pick how to sign in ` +
         "(--provider), store a token (--set), print the resolved token (--get), clear it " +
         "(--del), or check it (--check). Both agents use this one credential in Direct mode; a " +
         "named profile always uses its own, never the default's. " +
@@ -348,11 +348,11 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     `Show the Copilot client identities the credential of ${forWhom} is accepted under, on ` +
       "the Direct host and the proxy host (* marks the one in effect). A read, never a write, " +
       "unless a flag asks for one: --set <id|auto> pins an identity (the same as `set " +
-      "identity`), --get prints the one in effect (`get identity`), --del drops the pin " +
-      "(`unset identity`).",
+      "identity`), --get prints the pin (`auto` when probing; `get identity`), --del drops " +
+      "the pin (`unset identity`).",
   )
     .option("--set <id|auto>", "Pin the identity (probed first); `auto` restores probing.")
-    .option("--get", "Print the identity in effect.")
+    .option("--get", "Print the pin (`auto` when probing).")
     .option("--del", "Drop the pin (back to auto).")
     .action((opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "identity", rawProfile);
@@ -370,8 +370,8 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     "sync",
     "Rewrite its Codex and Claude config files",
     `Rewrite the agent files of ${forWhom} from its recorded mode: both agents, or one with ` +
-      "--claude | --codex. Use it when a file is stale or a hand edit went wrong; only `add` " +
-      "changes the mode. See also: `agent sync` for every profile at once.",
+      "--claude | --codex. Use it when a file is stale or a hand edit went wrong; sync never " +
+      "changes the recorded mode. See also: `agent sync` for every profile at once.",
   )
     .option("--claude", "Re-render Claude Code alone.")
     .option("--codex", "Re-render Codex alone.")
@@ -413,7 +413,7 @@ export function registerListCommand(program: Command): void {
   program
     .command("list")
     .helpGroup("Settings:")
-    .summary("List every profile with mode, provider, daemon")
+    .summary("List profiles: mode, provider, daemon status")
     .description(
       "List every profile with its mode, provider, and daemon status, one row each. " +
         "See also: bare `agent profile` prints the same list.",
@@ -428,8 +428,8 @@ export function registerSyncCommand(program: Command): void {
     .helpGroup("Settings:")
     .summary("Rewrite every profile's Codex and Claude files")
     .description(
-      "Rewrite every profile's agent files (Codex's config.toml, Claude's settings.json) from " +
-        "the recorded modes, the default profile included. Use it when a file is stale or a " +
+      "Rewrite every profile's Codex and Claude config files (a named profile's own copies) " +
+        "from the recorded modes, the default profile included. Use it when a file is stale or a " +
         "hand edit went wrong. See also: `agent profile [<name>] sync` for one profile.",
     )
     .option("--dry-run", DRY_RUN_HELP)

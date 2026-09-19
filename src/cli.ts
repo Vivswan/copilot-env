@@ -3,7 +3,7 @@
 // accepted, and so help wraps to the terminal width natively. Every command registers from
 // src/commands/ (profile_verbs.ts, profile_ops.ts, machine.ts); this file owns the program alone.
 import "./utils/dotenv.ts";
-import { Command, Help } from "commander";
+import { Command, Help, type Option } from "commander";
 import { consola } from "consola";
 import { registerMachineCommands } from "./commands/machine.ts";
 import { registerDaemonAliases, registerEverywhereCommands } from "./commands/profile_ops.ts";
@@ -101,22 +101,32 @@ registerEverywhereCommands(program);
 registerMachineCommands(program);
 
 // The root help lists the profile verbs too, right after the `profile` row, one row per verb as
-// `profile [<name>] <verb>` with the summary `agent profile --help` shows for it. The root alone
-// renders this way: the subcommands keep the plain configuration they copied above, so
-// `agent profile --help` lists the verbs by their own names.
+// `profile [<name>] <verb>` with the summary `agent profile --help` shows for it. The listing is a
+// private renderer, never the program's configured help: Commander draws its unknown-command
+// suggestions from the configured `visibleCommands`, so a verb there would make `agent models`
+// suggest `models`. The subcommands keep the plain configuration they copied above.
 const plainHelp = new Help();
-program.configureHelp({
-  ...HELP_STYLES,
-  visibleCommands: (cmd) => {
+const rootListing = Object.assign(new Help(), HELP_STYLES, {
+  visibleCommands: (cmd: Command): Command[] => {
     const rows = plainHelp.visibleCommands(cmd);
-    if (cmd !== program) return rows;
     const at = rows.indexOf(profile) + 1;
     return [...rows.slice(0, at), ...profile.commands, ...rows.slice(at)];
   },
-  subcommandTerm: (cmd) =>
+  subcommandTerm: (cmd: Command): string =>
     cmd.parent === profile ? `profile [<name>] ${cmd.name()}` : plainHelp.subcommandTerm(cmd),
   // Groups in the order the rows above appear, so the verbs' group follows the `profile` row's.
-  groupItems: (_unsorted, visible, getGroup) => plainHelp.groupItems(visible, visible, getGroup),
+  groupItems: <T extends Command | Option>(
+    _unsorted: T[],
+    visible: T[],
+    getGroup: (item: T) => string,
+  ): Map<string, T[]> => plainHelp.groupItems(visible, visible, getGroup),
+});
+program.configureHelp({
+  ...HELP_STYLES,
+  formatHelp: (cmd, helper) => {
+    rootListing.helpWidth = helper.helpWidth;
+    return rootListing.formatHelp(cmd, rootListing);
+  },
 });
 
 if (import.meta.main) {

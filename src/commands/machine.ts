@@ -88,6 +88,7 @@ export function registerMachineCommands(program: Command): void {
     });
   config
     .command("unset")
+    .summary("Drop a key, back to its built-in default")
     .description("Drop a key: back to its built-in default.")
     .argument("<key>", "A key of the table `agent config --help` prints.")
     .option("--dry-run", DRY_RUN_HELP)
@@ -101,7 +102,7 @@ export function registerMachineCommands(program: Command): void {
     .helpGroup("Daemon:")
     .summary("Estimate token spend from proxy and agent logs")
     .description(
-      "Estimate what your usage cost: token totals from the proxy's usage databases, the Codex " +
+      "Estimate the cost of your usage: token totals from the proxy's usage databases, the Codex " +
         "session logs, and the Claude transcripts, priced at public OpenRouter rates. --days " +
         "narrows the window, --per-day and --sources break the totals down, --json emits the " +
         "numbers as data.",
@@ -174,8 +175,9 @@ export function registerMachineCommands(program: Command): void {
     .helpGroup("Maintenance:")
     .summary("Update copilot-env to the latest release")
     .description(
-      "Update copilot-env to the latest GitHub release: download it, verify its provenance, swap " +
-        "it in, and run the migrations due. --check only reports whether an update exists.",
+      "Update copilot-env to the latest GitHub release: download it, verify its provenance " +
+        "(unless --no-verify or the update.verify-provenance key opts out), swap it in, and run " +
+        "the migrations due. --check only reports whether an update exists.",
     )
     .option(
       "--check",

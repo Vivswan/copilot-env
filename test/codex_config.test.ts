@@ -15,11 +15,8 @@ import {
   refreshCodexCatalogAndSync,
   syncCodexCatalogReference,
 } from "../src/codex/catalog_reference.ts";
-import {
-  configureCodexConfig,
-  detectCodexDirect,
-  inspectCodexWiring,
-} from "../src/codex/config.ts";
+import { configureCodexConfig, detectCodexDirect } from "../src/codex/config.ts";
+import { inspectCodexWiring } from "../src/codex/inspect.ts";
 import { runCodex } from "../src/agents/configure_defaults.ts";
 import { FALLBACK_CODEX_UA_VERSION } from "../src/codex/user_agent.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";

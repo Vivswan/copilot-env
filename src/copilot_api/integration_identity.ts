@@ -77,7 +77,6 @@ let defaultProbeFetch: ProbeFetch = (input, init) => globalThis.fetch(input, ini
 /** Test hook. Clears the memo so a new fetch is actually exercised. */
 export function setIntegrationProbeFetch(fetchImpl: ProbeFetch | null): void {
   defaultProbeFetch = fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
-  probeMemo.clear();
   hostMemo.clear();
   verdictMemo.clear();
 }
@@ -263,10 +262,14 @@ function genericHostBlockedBy(status: number): boolean {
 // the host rule: the table `agent profile identity` prints and a selection in the same process come
 // from the SAME responses, so a status that flips between two request rounds cannot show an
 // accepted cell beside a refusal.
-// Process-lifetime like probeMemo; injected I/O bypasses it (see probeIntegrationIdentityCached).
+// Process-lifetime and never invalidated: a CLI invocation ends in seconds, while the MCP server
+// (src/mcp/server.ts, reached through web_search.ts) keeps its verdicts until the transport closes.
 const verdictMemo = new Map<string, Promise<IdentityVerdict>>();
 
-/** Whether a probe's deps are the production ones, so its verdicts may be memoized. */
+/** Whether a probe's deps are the production ones, so its answers may be memoized. Injected I/O
+ *  bypasses every memo: a memo is keyed on inputs only, so two stubs sharing a (token, headers)
+ *  pair would collide. So does a caller deadline: an aborted probe must not be memoized as this
+ *  process's verdict. */
 function memoizable(deps: Pick<IdentityProbeDeps, "fetchImpl" | "timeoutMs" | "signal">): boolean {
   return deps.fetchImpl === undefined && deps.timeoutMs === undefined && deps.signal === undefined;
 }
@@ -466,8 +469,7 @@ interface ResolveHostOptions extends Omit<IdentityProbeDeps, "apiBase"> {
   narrator?: HostNarrator;
 }
 
-// The same memo discipline as probeMemo: one network round per (token, identity) in a process,
-// injected I/O or a caller deadline bypasses it.
+// One `host auto` answer, and one narration of it, per (token, identity) in a process (memoizable).
 const hostMemo = new Map<string, Promise<string>>();
 
 /**
@@ -489,13 +491,12 @@ function resolveCopilotHost(
   const { literal = null, narrator = consola, ...deps } = opts;
   if (literal !== null) return Promise.resolve(literal);
   if (token === null) return Promise.resolve(DEFAULT_COPILOT_API_BASE);
-  const injected = deps.fetchImpl !== undefined || deps.timeoutMs !== undefined ||
-    deps.signal !== undefined;
+  const memoize = memoizable(deps);
   const key = JSON.stringify([token, headers]);
-  const cached = injected ? undefined : hostMemo.get(key);
+  const cached = memoize ? hostMemo.get(key) : undefined;
   if (cached !== undefined) return cached;
   const pending = resolveAutoHost(token, headers, deps, narrator);
-  if (!injected) hostMemo.set(key, pending);
+  if (memoize) hostMemo.set(key, pending);
   return pending;
 }
 
@@ -524,35 +525,8 @@ async function resolveAutoHost(
   return designated.apiBase;
 }
 
-// Memoized so the probe sites in one process (both agents at init, start narration + launch, catalog
-// fetches) share one network round. Process-lifetime and never invalidated: a CLI invocation ends in
-// seconds, while the MCP server (src/mcp/server.ts, reached through web_search.ts) keeps its verdict
-// until the transport closes.
-const probeMemo = new Map<string, Promise<IdentityProbeResult>>();
-
-export async function probeIntegrationIdentityCached(
-  token: string,
-  candidates: readonly IntegrationIdentity[],
-  deps: IdentityProbeDeps,
-): Promise<IdentityProbeResult> {
-  // Injected I/O bypasses the memo: it is keyed on inputs only, so two stubs sharing a (token, candidates)
-  // pair would collide. So does a caller deadline: an aborted probe must not be memoized as this
-  // process's verdict.
-  if (deps.fetchImpl !== undefined || deps.timeoutMs !== undefined || deps.signal !== undefined) {
-    return probeIntegrationIdentity(token, candidates, deps);
-  }
-  const key = JSON.stringify([token, candidates, deps.apiBase]);
-  let pending = probeMemo.get(key);
-  if (pending === undefined) {
-    pending = probeIntegrationIdentity(token, candidates, deps);
-    probeMemo.set(key, pending);
-  }
-  return pending;
-}
-
 /** Test hook. */
 export function resetIntegrationIdentityCache(): void {
-  probeMemo.clear();
   hostMemo.clear();
   verdictMemo.clear();
 }
@@ -612,7 +586,9 @@ async function acceptedIdentity(
   candidates: readonly [IntegrationIdentity, ...IntegrationIdentity[]],
   deps: IdentityProbeDeps,
 ): Promise<IntegrationIdentity> {
-  const probe = await probeIntegrationIdentityCached(token, candidates, deps);
+  // Every candidate request is memoized per (token, host, header set), so the probe sites in one
+  // process (both agents at init, start narration + launch, catalog fetches) share one network round.
+  const probe = await probeIntegrationIdentity(token, candidates, deps);
   if (probe.identity !== null) return probe.identity;
   if (!probe.conclusive) {
     consola.warn(

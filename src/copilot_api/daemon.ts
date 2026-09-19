@@ -6,8 +6,9 @@ import { clearPersistedInferenceActivity } from "./inference_activity.ts";
 import { daemonLockVerdict } from "./daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
+import { CopilotEnvConfig } from "./env_config.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
-import { daemonPolicy, defaultProxyPort } from "./port.ts";
+import { daemonPolicy } from "./port.ts";
 import { classifyDaemonPid, isCopilotApiPid, pidAlive, terminatePid } from "./process.ts";
 import type { Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./run_state.ts";
@@ -61,7 +62,9 @@ export async function proxyStatus(profile: Profile = null): Promise<ProxyStatus>
   // Only a config-ported daemon has a meaningful fallback port; a reservation-ported daemon's
   // reservation IS the recorded port, so without it there is nothing to probe.
   const probePort = port ??
-    (daemonPolicy(profile).port.source === "config" ? defaultProxyPort() : undefined);
+    (daemonPolicy(profile).port.source === "config"
+      ? new CopilotEnvConfig().defaultPort()
+      : undefined);
   if (probePort === undefined) return { up: false };
   return (await portListening(probePort)) ? { up: true, port: probePort } : { up: false };
 }

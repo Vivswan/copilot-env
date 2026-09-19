@@ -13,10 +13,8 @@ import {
 } from "./env_state.ts";
 import {
   activeGhLogin,
-  GH_AUTH_TIMEOUT_MS,
   GH_COPILOT_HOST,
   type GhAccount,
-  ghAuthHostTokenSpawnSpec,
   ghAuthStatusSpawnSpec,
   ghAuthTokenSpawnSpec,
   ghAuthVerdict,
@@ -44,8 +42,7 @@ export interface GhTokenLook {
   unproven?: true;
   /** Why there is no token: what the spawn or the `gh` probe reported (null token only). */
   detail?: string;
-  /** The gh call that produced the token (token only): a pin is served by `--user` or, when gh
-   *  cannot, by the plain host-scoped call, and a report names the one that ran. */
+  /** The gh call that produced the token (token only), as a report names it. */
   command?: string;
 }
 
@@ -53,8 +50,7 @@ function firstStderrLine(stderr: string | null | undefined): string {
   return (stderr ?? "").trim().split(/\r?\n/)[0]?.trim() ?? "";
 }
 
-/** The call as the user could retype it: the pinned `--user` form and the plain one fail for
- *  different reasons, so a miss must name WHICH gh call it reports. */
+/** The call as the user could retype it, so a miss names the gh call it reports. */
 function ghCommandLabel(spec: Pick<GhSpawnSpec, "args">): string {
   return `gh ${spec.args.join(" ")}`;
 }
@@ -145,118 +141,29 @@ export function runGhSpecAsync(s: GhSpawnSpec): Promise<GhSpawnResult> {
   });
 }
 
-/** One gh call at a time, so the sync resolve and the async health probe drive ONE recipe. */
-export type GhLookStep =
-  | { kind: "done"; look: GhTokenLook }
-  | { kind: "run"; spec: GhSpawnSpec; then: (result: GhSpawnResult) => GhLookStep };
-
-/** gh's own token vars for GH_COPILOT_HOST: when one is set, the plain `gh auth token` serves IT. */
-const GH_OWN_TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
-
 /**
- * Exported for tests. `gh auth token --user` is not the only way gh serves a saved login:
- *
- *   gh < 2.40            -> rejects `--user` outright ("unknown flag")
- *   a hosts.yml layout   -> `gh auth status` lists the account, `--user` finds no token for it
- *
- * so when the pin IS gh's active account on GH_COPILOT_HOST, the plain host-scoped `gh auth token`
- * serves the same login, and the pin still holds: a later `gh auth switch` fails both looks. The
- * status listing is read off ANY exit code (a missing-scope warning exits 1 while the token is
- * fine). An env token is never adopted for a pin: it is not a saved login and vanishes with the
- * shell, so a set GH_TOKEN/GITHUB_TOKEN, or gh reporting such a var as the login's source, is a miss.
- *
- * GH_AUTH_TIMEOUT_MS is the budget of the WHOLE look: the first call gets all of it and every call
- * after runs on what is left, so gh's own running time across the chain can never outlast the
- * single call the callers' deadlines budget for. Outside the budget: the async path's hand-over
- * grace, and on the sync path a descendant of gh holding the pipes (spawnSync waits for them).
+ * ONE gh call per look, on the shared recipe (ghAuthTokenSpawnSpec): the pinned `--user` form for a
+ * pin, the plain `gh auth token` for gh's active account. The pin follows no `gh auth switch`; it
+ * fails only when gh cannot serve that account (logged out, a hosts.yml login without an oauth
+ * token, or gh older than 2.40), as a proven miss quoting gh's own refusal; the caller renders the
+ * `gh auth login` advice. Exported for tests (`run` is the spawn seam).
  */
-export function ghAuthTokenLookStart(
-  ghUser: string | null,
-  ghPath: string,
-  clock: () => number = Date.now,
-): GhLookStep {
-  const done = (look: GhTokenLook): GhLookStep => ({ kind: "done", look });
-  const deadline = clock() + GH_AUTH_TIMEOUT_MS;
-  const run = (
-    spec: GhSpawnSpec,
-    why: string | null,
-    then: (result: GhSpawnResult) => GhLookStep,
-  ): GhLookStep => {
-    const left = why === null ? GH_AUTH_TIMEOUT_MS : deadline - clock();
-    if (left <= 0) {
-      return done({
-        token: null,
-        unproven: true,
-        detail: `${why}; the ${GH_AUTH_TIMEOUT_MS / 1000}s gh budget ran out before \`${
-          ghCommandLabel(spec)
-        }\``,
-      });
-    }
-    return { kind: "run", spec: { ...spec, timeout: left }, then };
-  };
-  const pinnedSpec = ghAuthTokenSpawnSpec(ghPath, ghUser);
-  return run(pinnedSpec, null, (pinnedResult) => {
-    const pinned = ghTokenLookFromSpawn(pinnedResult, ghCommandLabel(pinnedSpec));
-    if (ghUser === null || pinned.token !== null || pinned.unproven) return done(pinned);
-    const why = pinned.detail ?? "gh gave no token";
-    const envVar = GH_OWN_TOKEN_VARS.find((name) => (pinnedSpec.env[name] ?? "").trim() !== "");
-    if (envVar !== undefined) {
-      return done({ token: null, detail: `${why}; $${envVar} is set, not a saved login` });
-    }
-    const statusSpec = ghAuthStatusSpawnSpec(ghPath);
-    return run(statusSpec, why, (statusResult) => {
-      const listing = ghAccountsLookFromSpawn(statusResult);
-      if (listing.unproven) {
-        return done({
-          token: null,
-          unproven: true,
-          detail: `${why}; \`${ghCommandLabel(statusSpec)}\` did not complete`,
-        });
-      }
-      const active = activeGhLogin(listing.accounts);
-      if (active !== ghUser) {
-        const who = active === null ? "no active account" : `active account ${active}`;
-        return done({ token: null, detail: `${why}; \`gh auth status\` reports ${who}` });
-      }
-      const envSource = listing.accounts.find((a) =>
-        a.host === GH_COPILOT_HOST && a.login === ghUser && /_TOKEN$/.test(a.source)
-      )?.source;
-      if (envSource !== undefined) {
-        return done({
-          token: null,
-          detail: `${why}; gh serves ${ghUser} from $${envSource}, not a saved login`,
-        });
-      }
-      const plainSpec = ghAuthHostTokenSpawnSpec(ghPath);
-      return run(plainSpec, why, (plainResult) => {
-        const plain = ghTokenLookFromSpawn(plainResult, ghCommandLabel(plainSpec));
-        if (plain.token !== null) return done(plain);
-        return done({ ...plain, detail: `${why}; ${plain.detail ?? "gh gave no token"}` });
-      });
-    });
-  });
-}
-
-/** Exported for tests (`run` is the spawn seam, `clock` the budget's). */
 export function ghAuthTokenLookVia(
   ghUser: string | null,
   ghPath: string,
   run: (spec: GhSpawnSpec) => GhSpawnResult = runGhSpec,
-  clock: () => number = Date.now,
 ): GhTokenLook {
-  let step = ghAuthTokenLookStart(ghUser, ghPath, clock);
-  while (step.kind === "run") step = step.then(run(step.spec));
-  return step.look;
+  const spec = ghAuthTokenSpawnSpec(ghPath, ghUser);
+  return ghTokenLookFromSpawn(run(spec), ghCommandLabel(spec));
 }
 
-/** The same recipe off the event loop, for probes that overlap other work (`agent health`). */
+/** The same call off the event loop, for probes that overlap other work (`agent health`). */
 export async function ghAuthTokenLookAsync(
   ghUser: string | null,
   ghPath: string,
 ): Promise<GhTokenLook> {
-  let step = ghAuthTokenLookStart(ghUser, ghPath);
-  while (step.kind === "run") step = step.then(await runGhSpecAsync(step.spec));
-  return step.look;
+  const spec = ghAuthTokenSpawnSpec(ghPath, ghUser);
+  return ghTokenLookFromSpawn(await runGhSpecAsync(spec), ghCommandLabel(spec));
 }
 
 /** `ghUser` pins the call to that gh account; null follows gh's active account. */
@@ -279,11 +186,8 @@ export function ghAuthToken(ghUser: string | null = null): string | null {
   return ghAuthTokenLook(ghUser).token;
 }
 
-/** The account listing: a choice-menu and naming input, and the pinned look's gate for trying the
- *  plain token (is the pin gh's active account?). In the pinned look an unproven listing ends the
- *  look unproven ("could not check"), and a completed listing that does not name the pin as active
- *  is a proven miss, which loginWithGhCli renders with `gh auth login` advice. chooseGhAccount
- *  refuses both: an unproven listing asks for a retry, an empty one for `gh auth login`. */
+/** The account listing: a choice-menu and naming input. chooseGhAccount refuses both marked shapes:
+ *  an unproven listing asks for a retry, an empty one for `gh auth login`. */
 export interface GhAccountsLook {
   accounts: GhAccount[];
   unproven?: true;
@@ -399,11 +303,6 @@ export class Credential {
 
   store(provider: TokenProvider, token: string): void {
     this.record({ kind: "stored", provider, token });
-  }
-
-  /** Holds no token of our own; a null `ghUser` follows gh's active account at every resolve. */
-  useGhCli(ghUser: string | null = null): void {
-    this.record({ kind: "gh-cli", ghUser });
   }
 
   clear(): boolean {

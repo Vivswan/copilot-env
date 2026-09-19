@@ -71,7 +71,7 @@ flowchart TD
   state["src/copilot_api/env_state.ts<br>CopilotEnvState StoredDirectPair"]
   wire["src/agents/profile_wiring.ts<br>wireBothAgents() DirectResolution resolveDirectWiring()"]
   probe["src/codex/config.ts<br>probeDirectWiring() landDirectWiring()"]
-  select["src/copilot_api/integration_identity.ts<br>selectDirectIdentityAndHost() IdentityAndHost probeIntegrationIdentityCached()"]
+  select["src/copilot_api/integration_identity.ts<br>selectDirectIdentityAndHost() IdentityAndHost probeIntegrationIdentity()"]
   pair["src/copilot_api/direct_pair.ts<br>directOverlay() renderDirectPair() landDirectPair()"]
   launch["src/copilot_api/launch.ts<br>resolveLaunchCredential()"]
   slotout[("~/.local/share/copilot-env/state.json (profiles.<name>: the credential slot)<br>the profile slot, its pair rewritten (written at the end)")]
@@ -96,7 +96,7 @@ flowchart TD
   pair -->|"setProfileDirectPair(): the probe's own halves, the one copilot_api write"| slotout
 ```
 
-- **The probe memo is process-lifetime and never invalidated** (`probeIntegrationIdentityCached()`): a CLI run ends in seconds, and the MCP server keeps its verdict until the transport closes. Injected I/O and a caller deadline bypass it.
+- **The probe memo is process-lifetime and never invalidated** (`verdictMemo` in `integration_identity.ts`, one verdict per token, host, and header set): a CLI run ends in seconds, and the MCP server keeps its verdicts until the transport closes. Injected I/O and a caller deadline bypass it.
 - **The slot is the truth, the agent files are outputs:** a re-render (`sync`, the `cl --profile` hook, the Desktop reconcile and its status) renders the slot's pair under the pin and literal in force, never reading a file back. A credential landing (`agent profile <name> auth`, `agent profile <name> add`, a settings import) probes and stores.
 - **A re-render makes no request while the pair is stored.** A missing pair is landed once through the landing path; the Desktop reconcile alone never lands, it names the repair.
 - **A credential write takes the previous pair with it,** so a definitive refusal leaves the files as they were and an empty pair: a credential refused under every identity works under none, and the next Direct landing probes again.
@@ -179,7 +179,7 @@ flowchart LR
   cmd["src/commands/config.ts<br>runConfig() configTable()"]
   prefsin[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)<br>as stored (read at the start)")]
   store["src/copilot_api/env_config.ts<br>CopilotEnvConfig CONFIG_REGISTRY ConfigKeyDef"]
-  dflt["src/copilot_api/env_config.ts<br>configDefaultValue() configDefaultBoolean() configDefaultNumber() configDefaultString()"]
+  dflt["src/copilot_api/env_config.ts<br>configDefaultValue() configDefaultBoolean() configDefaultNumber()"]
   site["src/autoupdate/apply.ts<br>resolveProvenanceDecision()"]
   prefsout[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)<br>rewritten whole (written at the end)")]
   cmd -->|"--set, --del, --get"| store

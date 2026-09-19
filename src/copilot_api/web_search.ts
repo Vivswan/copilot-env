@@ -82,7 +82,7 @@ export interface WebSearchOptions {
 }
 
 // Memoized per host and token so a long-lived MCP server pays the catalog fetch once. An injected
-// fetchImpl bypasses the memo (the probeMemo precedent in integration_identity.ts): test stubs sharing
+// fetchImpl bypasses the memo (the memo discipline of integration_identity.ts): test stubs sharing
 // a token must not collide.
 const aliasMemo = new Map<string, Promise<Record<string, string>>>();
 

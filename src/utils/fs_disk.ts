@@ -4,7 +4,8 @@
 // changed. test/lint/no_unreported_fs_writes.ts refuses a raw node:fs or Deno filesystem call
 // anywhere else, bar the lock protocol's internals (file_lock.ts), the dry-run marker (dry_run.ts),
 // the preloads that run before the seam or patch the proxy's own stream (src/scripts/), the usage
-// scanners' partial reads (src/usage/), and src/migrations/.
+// scanners' partial reads (src/usage/), the two read handles no run plans (install/checksums.ts,
+// copilot_api/process.ts), and src/migrations/.
 //
 // What does not print:
 //
@@ -17,7 +18,6 @@ import {
   closeSync,
   copyFileSync,
   cpSync,
-  existsSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -25,7 +25,6 @@ import {
   openSync,
   readdirSync,
   readFileSync,
-  readlinkSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -74,6 +73,14 @@ export interface DirEntry {
 
 // --- the reads -------------------------------------------------------------------------------------
 
+export {
+  existsSync as exists,
+  lstatSync as lstat,
+  readdirSync as readdir,
+  readlinkSync as readlink,
+  statSync as stat,
+} from "node:fs";
+
 export function readText(path: string): string {
   return readFileSync(path, "utf8");
 }
@@ -82,48 +89,14 @@ export function readBytes(path: string): Uint8Array {
   return new Uint8Array(readFileSync(path));
 }
 
-export function stat(path: string): Stats {
-  return statSync(path);
-}
-
-export function lstat(path: string): Stats {
-  return lstatSync(path);
-}
-
-export function exists(path: string): boolean {
-  return existsSync(path);
-}
-
-export function readdir(path: string): string[] {
-  return readdirSync(path);
-}
-
 export function readdirEntries(path: string): DirEntry[] {
   return readdirSync(path, { withFileTypes: true });
-}
-
-export function readlink(path: string): string {
-  return readlinkSync(path);
 }
 
 /** The canonical path as the OS spells it (`realpathSync.native`): on Windows a junction and an
  *  8.3 short name resolve, which the JS walk leaves alone. */
 export function realpath(path: string): string {
   return realpathSync.native(path);
-}
-
-/** A file opened for reading, streamed (a release binary hashed by the updater). */
-export function openReadable(path: string): Promise<Deno.FsFile> {
-  return Deno.open(path, { read: true });
-}
-
-/** A read fd for a child's stdio (the daemon's `/dev/null` stdin). */
-export function openReadFd(path: string): number {
-  return openSync(path, "r");
-}
-
-export function closeFd(fd: number): void {
-  closeSync(fd);
 }
 
 // --- the before/after look -----------------------------------------------------------------------

@@ -156,7 +156,7 @@ flowchart LR
   shims -->|"every shim, warmed into the cache"| float
   float -->|"writes the import map and a marked .npmrc once, deno cache pins the lock"| dcfg
   float -->|"deno cache: the package and the shims"| cache
-  float -->|"writes the version, its DENO_DIR, the build fingerprint"| record
+  float -->|"writes the version and its DENO_DIR"| record
   record -->|"reads the daemon's entry"| spawn
   dcfg -->|"reads --config"| spawn
   shims -->|"the subset DaemonSpec derives"| spawn
@@ -323,7 +323,6 @@ graph TD
   commands --> mcp
   commands --> migrations
   commands --> proxy_float
-  commands --> scripts
   commands --> shell
   commands --> usage
   commands --> utils
@@ -353,7 +352,6 @@ graph TD
   health --> codex
   health --> copilot_api
   health --> proxy_float
-  health --> scripts
   health --> shell
   health --> utils
   install --> copilot_api
@@ -377,7 +375,6 @@ graph TD
   migrations --> shell
   migrations --> utils
   scripts --> copilot_api
-  scripts --> utils
   utils --> copilot_api
 ```
 

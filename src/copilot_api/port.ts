@@ -5,7 +5,7 @@ import { configSetCommand, CopilotEnvConfig, isLoopbackHostname } from "./env_co
 import { allProfileNames } from "./env_state.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile, ProfileName } from "./profile.ts";
-import { CopilotEnvRunState } from "./state.ts";
+import { CopilotEnvRunState } from "./run_state.ts";
 
 // --- the per-daemon policy ------------------------------------------------------
 

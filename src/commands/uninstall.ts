@@ -23,7 +23,7 @@ import { allProfileNames } from "../copilot_api/env_state.ts";
 import { profileHome, resolveRootHome } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
-import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { proxyFloatArtifactPaths, removeProxyFloatArtifacts } from "../proxy_float.ts";
 import { ownedShellTargets, removeShellIntegrationFrom } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";

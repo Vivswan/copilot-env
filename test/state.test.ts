@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CopilotEnvState, storedCredentialKind } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 

@@ -9,7 +9,7 @@ import {
   PERSIST_INTERVAL_MS,
   persistedInferenceMs,
   resetInferenceActivityForTests,
-} from "../src/scripts/inference_activity.ts";
+} from "../src/copilot_api/inference_activity.ts";
 import { denoRunArgs, importSpecifier, resolvePackageDir, ROOT, runSync } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
@@ -129,7 +129,7 @@ test("observeServeArgs substitutes the handler in every Deno.serve calling shape
 // The target shares the preloaded module instance, so it can read the in-memory mark.
 const TARGET_SCRIPT = `
 import { lastObservedInferenceMs, persistedInferenceMs } from ${
-  importSpecifier(join(ROOT, "src", "scripts", "inference_activity.ts"))
+  importSpecifier(join(ROOT, "src", "copilot_api", "inference_activity.ts"))
 };
 const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, () => new Response("ok"));
 const base = "http://127.0.0.1:" + server.addr.port;

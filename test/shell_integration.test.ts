@@ -26,8 +26,8 @@ const skipWin = test.skipIf(process.platform === "win32");
 let home = "";
 
 /** upsertBlock's content, for the round-trip assertions that don't inspect leftBehind. */
-function up(content: string, marker: Parameters<typeof upsertBlock>[1], block: string): string {
-  return upsertBlock(content, marker, block).content;
+function up(content: string, block: string): string {
+  return upsertBlock(content, block).content;
 }
 
 /** Occurrences of `marker` as a whole line. The end markers contain the open markers
@@ -285,17 +285,17 @@ test("upsert follows the file's DOMINANT line ending on a first wire, and keeps 
     [`${lfWired}\n${MARKER}`.replaceAll("\n", "\r\n"), crlfWired],
   ];
   for (const [content, wired] of rows) {
-    expect(up(content, MARKER, block), JSON.stringify(content)).toBe(wired);
-    expect(up(wired, MARKER, block), JSON.stringify(content)).toBe(wired);
+    expect(up(content, block), JSON.stringify(content)).toBe(wired);
+    expect(up(wired, block), JSON.stringify(content)).toBe(wired);
   }
-  const removed = stripBlocks(crlfWired, [MARKER]);
+  const removed = stripBlocks(crlfWired);
   expect(removed.content).toBe("Write-Host before\r\n");
   expect(removed.leftBehind).toEqual([]);
 });
 
 test("upsert converges duplicate blocks on ONE wherever they sit: the first refreshed, the rest stripped, a user line under a stray marker kept and reported, an EOF duplicate normalized", () => {
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const wired = up("Write-Host before\n", MARKER, block);
+  const wired = up("Write-Host before\n", block);
   const stale = `${MARKER}\n$AgentsPs1 = 'C:\\old\\agents.ps1'\n` +
     `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n${MARKER_END}`;
   const rows: Array<{ content: string; converged: string; leftBehind: string[] }> = [
@@ -323,10 +323,10 @@ test("upsert converges duplicate blocks on ONE wherever they sit: the first refr
     { content: `${wired}\n${MARKER}`, converged: wired, leftBehind: [] },
   ];
   for (const { content, converged, leftBehind } of rows) {
-    const next = upsertBlock(content, MARKER, block);
+    const next = upsertBlock(content, block);
     expect(next.content, content).toBe(converged);
     expect(next.leftBehind, content).toEqual(leftBehind);
-    expect(up(next.content, MARKER, block), content).toBe(next.content);
+    expect(up(next.content, block), content).toBe(next.content);
   }
 });
 
@@ -349,32 +349,20 @@ test("upsert owns ONE separating blank: added once, reused forever, at EOF and b
     [wired, wired],
   ];
   for (const [content, expected] of rows) {
-    expect(up(content, MARKER, block), JSON.stringify(content)).toBe(expected);
+    expect(up(content, block), JSON.stringify(content)).toBe(expected);
   }
 });
 
 test("removal owns ONE separating blank: the reused blank goes, extra user spacing stays", () => {
   const fenced = posixBlock(join(homedir(), "shell", "agents.bashrc")).slice(1);
   const wired = `export A=1\n\n${fenced}export B=1\n`;
-  expect(stripBlocks(wired, [MARKER]).content).toBe("export A=1\nexport B=1\n");
+  expect(stripBlocks(wired).content).toBe("export A=1\nexport B=1\n");
   const spaced = `export A=1\n\n${fenced}\nexport B=1\n`;
-  expect(stripBlocks(spaced, [MARKER]).content).toBe("export A=1\n\nexport B=1\n");
+  expect(stripBlocks(spaced).content).toBe("export A=1\n\nexport B=1\n");
   // A fenced block with NO trailing blank (pre-blank releases) must not eat the adjacent line.
   const snug = `export A=1\n${fenced.replace(/\n$/, "")}export B=1\n`;
-  expect(stripBlocks(snug, [MARKER]).content).toBe("export A=1\nexport B=1\n");
-  expect(stripBlocks(`export A=1\n\n${fenced}`, [MARKER]).content).toBe("export A=1\n");
-});
-
-test("an unknown marker is unrepresentable, not a runtime throw", () => {
-  // The shape lookup is typed against the marker union (BlockMarker), so a marker
-  // this module does not own fails to compile; there is no throwing lookup left.
-  void (() => {
-    // @ts-expect-error -- not an owned block marker
-    up("", "# some other marker", "");
-    // @ts-expect-error -- not an owned block marker
-    stripBlocks("", ["# some other marker"]);
-  });
-  expect(markerLines(`${MARKER}\n`, MARKER)).toBe(1);
+  expect(stripBlocks(snug).content).toBe("export A=1\nexport B=1\n");
+  expect(stripBlocks(`export A=1\n\n${fenced}`).content).toBe("export A=1\n");
 });
 
 test("an unfenced block (the 3.5.6 shape) is not recognized: only its marker line is owned", () => {
@@ -383,7 +371,6 @@ test("an unfenced block (the 3.5.6 shape) is not recognized: only its marker lin
   const unfenced = stripBlocks(
     `Write-Host before\n\n${MARKER}\n$AgentsPs1 = "C:\\x\\agents.ps1"\n` +
       `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\nWrite-Host after\n`,
-    [MARKER],
   );
   expect(unfenced.content).toBe(
     `Write-Host before\n$AgentsPs1 = "C:\\x\\agents.ps1"\n` +

@@ -2,15 +2,15 @@
 // models, profile, auth, and uninstall never import another command.
 import { connect } from "node:net";
 import { consola } from "consola";
-import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
-import { daemonLockVerdict } from "../scripts/daemon_lock.ts";
+import { clearPersistedInferenceActivity } from "./inference_activity.ts";
+import { daemonLockVerdict } from "./daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { daemonPolicy, defaultProxyPort } from "./port.ts";
 import { classifyDaemonPid, isCopilotApiPid, pidAlive, terminatePid } from "./process.ts";
 import type { Profile } from "./profile.ts";
-import { CopilotEnvRunState } from "./state.ts";
+import { CopilotEnvRunState } from "./run_state.ts";
 
 /** An "up" verdict ALWAYS carries the port it was probed on, so no consumer handles a portless up daemon. */
 export type ProxyStatus = { up: false } | { up: true; port: number };

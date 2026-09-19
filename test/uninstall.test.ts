@@ -33,7 +33,7 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths, profileHome, resolveRootHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { isRecord } from "../src/utils/json.ts";
 import { INSTALL_MANIFEST_FILE, type RootMode } from "../src/utils/root.ts";
 import { pointCurrentAt } from "../src/install/installer.ts";
@@ -597,7 +597,7 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   // A float cache recorded OUTSIDE the root home: only the plan can name it.
   const elsewhere = join(dir, "float-elsewhere");
   mkdirSync(elsewhere, { recursive: true });
-  writeResolvedVersionRecord(proxyHome, "1.10.30", Date.now(), elsewhere, "fp");
+  writeResolvedVersionRecord(proxyHome, "1.10.30", Date.now(), elsewhere);
   // A wired rc / PowerShell profile on a scratch home, resolved by the REAL shell
   // resolver (no injected remover): the plan must name the concrete file.
   const rcDir = join(dir, "rc");

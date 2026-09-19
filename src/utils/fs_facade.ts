@@ -124,21 +124,6 @@ export function realpath(path: string): string {
   return overlay === null ? disk.realpath(path) : overlay.realpath(path);
 }
 
-/** A file opened for reading, streamed: the disk's in every mode (a release binary the updater
- *  hashes; no run plans the file it streams). */
-export function openReadable(path: string): Promise<Deno.FsFile> {
-  return disk.openReadable(path);
-}
-
-/** A read fd for a child's stdio (`/dev/null`): the disk's in every mode. */
-export function openReadFd(path: string): number {
-  return disk.openReadFd(path);
-}
-
-export function closeFd(fd: number): void {
-  disk.closeFd(fd);
-}
-
 // --- writes ------------------------------------------------------------------------------------
 
 /** Atomic by default: staged beside the target, fsynced, renamed over it, the parent made. */

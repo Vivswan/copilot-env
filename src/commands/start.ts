@@ -8,14 +8,11 @@ import { assertProfileSlot } from "../copilot_api/env_state.ts";
 import {
   applyDefaultConfig,
   awaitReadiness,
-  type CleanupAction,
-  cleanupExistingProxies,
   ensureProxyFloor,
   entryProxyVersion,
   type FloorCheckedEntry,
   type HeldStartLock,
   type LaunchToken,
-  planCleanup,
   readLaunchToken,
   resolveLaunchCredential,
   resolveStartPort,
@@ -23,6 +20,11 @@ import {
   syncAliasesAfterStart,
   withStartLock,
 } from "../copilot_api/launch.ts";
+import {
+  type CleanupAction,
+  cleanupExistingProxies,
+  planCleanup,
+} from "../copilot_api/launch_cleanup.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import {
   agentStartCommand,
@@ -31,10 +33,10 @@ import {
   type Profile,
   profileLabel,
 } from "../copilot_api/profile.ts";
-import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
-import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
+import { idleTimeoutMs } from "../copilot_api/idle_watchdog.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger, withConsolaOnStderr } from "../utils/logger.ts";

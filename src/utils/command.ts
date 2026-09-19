@@ -211,8 +211,7 @@ function windowsWhereCandidates(pattern: string): string[] {
   return (result.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 }
 
-/** A shim script cannot stand in for a binary another process spawns as its runtime. Exported for
- *  tests. */
+/** A shim script cannot stand in for a binary another process spawns as its runtime. */
 function pickWindowsExecutable(candidates: string[]): string | null {
   return candidates.find((candidate) => {
     const lower = candidate.toLowerCase();

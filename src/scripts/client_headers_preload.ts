@@ -60,8 +60,7 @@ export function isCopilotApiHost(url: string, configuredHost: string | null = nu
   }
 }
 
-/** `current` with the set applied: every named header set or deleted, everything else kept.
- *  Exported for tests. */
+/** `current` with the set applied: every named header set or deleted, everything else kept. */
 function applyClientHeaders(
   current: HeadersInit | undefined,
   set: ClientHeaderSet,

@@ -21,7 +21,7 @@ import {
   type DayTotals,
   describeDaysWindow,
   median,
-  parseDaysWindow,
+  parseWindowFlags,
   perDayRows,
   UNDATED_DAY_LABEL,
 } from "./day_metrics.ts";
@@ -31,8 +31,10 @@ import {
   estimateCost,
   loadPricing,
   type ModelCost,
+  nanoAiuToUsd,
   type PricingTier,
   roundUsd,
+  withGitHubRates,
 } from "./pricing.ts";
 import {
   type ClientRequest,
@@ -42,6 +44,7 @@ import {
 import {
   discoverUsageDbs,
   foldUsageRequests,
+  mergeBilled,
   mergeUsageReports,
   type ReadonlyUsageReport,
   readUsageRequests,
@@ -91,6 +94,8 @@ export interface CostDeps {
 
 export interface CostArgs {
   days?: string;
+  /** This UTC calendar month, the period `agent credits` meters; not with `days`. */
+  month?: boolean;
   json?: boolean;
   perDay?: boolean;
   /** Unset defers to the `cost.pricing-url` config key. */
@@ -178,7 +183,7 @@ export function resolvePricingUrl(
 export async function runCost(args: CostArgs, deps: CostDeps = {}): Promise<void> {
   const now = deps.now ?? (() => performance.now());
   const startedAt = now();
-  const window = args.days === undefined ? undefined : parseDaysWindow(args.days);
+  const window = parseWindowFlags(args.days, args.month === true);
   // Up front, so an unreadable preference store rejects the command before any source is read
   // rather than degrading to a token-only report.
   const pricingUrl = resolvePricingUrl(args.pricingUrl);
@@ -235,6 +240,7 @@ async function reportCost(
   // After the readers, never beside them: they are synchronous, so a fetch in flight across them
   // could make no progress and its timeout fired the moment the event loop was free again. A fetch
   // failure prices from an expired cache when one exists, and reports tokens only when none does.
+  // GitHub's own rates go over the loaded list; the list and its cache stay as fetched.
   let pricing = new Map<string, PricingTier>();
   const pricingWaitStartedAt = now();
   let pricingWaitMs = 0;
@@ -242,7 +248,7 @@ async function reportCost(
     const loaded = await loadPricing(run.pricingUrl, { fetchImpl: run.fetchImpl }).finally(() => {
       pricingWaitMs = now() - pricingWaitStartedAt;
     });
-    pricing = loaded.pricing;
+    pricing = withGitHubRates(loaded.pricing);
     if (loaded.source === "stale-cache") {
       consola.warn(
         `WARNING: could not refresh OpenRouter pricing (${loaded.fetchError}); using the cached price list from ${
@@ -274,8 +280,8 @@ async function reportCost(
     now,
   };
 
-  // ModelUsage is a structural superset of UsageTokens, so no per-model copy is needed.
-  const proxyEstimate = estimateCost(proxyReport.byModel, pricing);
+  // ModelUsage is a structural superset of UsageTokens, so a report prices as it is.
+  const proxyEstimate = estimateCost(proxyReport, pricing);
   const codexProviders = [...codexByProvider.keys()].sort();
 
   if (args.json) {
@@ -286,7 +292,7 @@ async function reportCost(
           const report = codexByProvider.get(provider) ?? EMPTY_REPORT;
           return [
             provider,
-            buildSourceJson(report, estimateCost(report.byModel, pricing), pricing, {
+            buildSourceJson(report, estimateCost(report, pricing), pricing, {
               perDay: Boolean(args.perDay),
             }),
           ];
@@ -295,7 +301,7 @@ async function reportCost(
     };
     const claudeSessions = {
       roots: claudeRoots.length,
-      ...buildSourceJson(claudeReport, estimateCost(claudeReport.byModel, pricing), pricing, {
+      ...buildSourceJson(claudeReport, estimateCost(claudeReport, pricing), pricing, {
         perDay: Boolean(args.perDay),
       }),
     };
@@ -338,6 +344,7 @@ async function reportCost(
     printCombinedView(proxy, codexByProvider, claude, reportOpts, logs.clients);
   }
 
+  printBilledCheck([proxyReport, ...codexByProvider.values(), claudeReport], pricing);
   printWrapped(args.sources ? SOURCES_NOTE : COMBINED_NOTE);
   console.log("");
   if (logs.indexed) {
@@ -394,6 +401,41 @@ function describeIndexRun(stats: IndexStats): string {
   } read`;
 }
 
+/** GitHub's bill in USD over the requests of `report` that carried one; 0 when none did. */
+function billedUsd(report: ReadonlyUsageReport): number {
+  let nanoAiu = 0;
+  for (const b of report.billed.values()) nanoAiu += b.nanoAiu;
+  return nanoAiuToUsd(nanoAiu);
+}
+
+/** GitHub's own bill against our estimate for exactly the same requests: one line, only when some
+ *  request carried a bill. The billed requests are priced flat: only Claude transcripts carry a
+ *  bill, and Anthropic models have no long-context tier. With no rate for a billed model the
+ *  estimate is named unpriced, as the table names it, never $0. */
+function printBilledCheck(
+  reports: readonly ReadonlyUsageReport[],
+  pricing: Map<string, PricingTier>,
+): void {
+  const billed = mergeBilled(reports);
+  if (billed.size === 0) return;
+  let requests = 0;
+  let nanoAiu = 0;
+  for (const b of billed.values()) {
+    requests += b.events;
+    nanoAiu += b.nanoAiu;
+  }
+  const estimate = estimateCost({ byModel: billed }, pricing);
+  const ours = estimate.unpriced.length > 0
+    ? `unpriced (${estimate.unpriced.join(", ")})`
+    : formatCurrency(estimate.totalUsd);
+  printWrapped(
+    `GitHub billed ${formatCurrency(nanoAiuToUsd(nanoAiu))} for the ${requests} request${
+      requests === 1 ? "" : "s"
+    } that carried a bill; our estimate for those same requests: ${ours}`,
+  );
+  console.log("");
+}
+
 export function formatBytesCompact(bytes: number): string {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
@@ -443,7 +485,7 @@ function printSeparateReports(
 
   for (const provider of [...codexByProvider.keys()].sort()) {
     const report = codexByProvider.get(provider) ?? EMPTY_REPORT;
-    const estimate = estimateCost(report.byModel, opts.pricing);
+    const estimate = estimateCost(report, opts.pricing);
     printCostReport(report, estimate, opts.pricing, {
       title: `Codex sessions (provider: ${provider}) by model`,
       sourceLabel: `${opts.roots} root${opts.roots === 1 ? "" : "s"}`,
@@ -455,7 +497,7 @@ function printSeparateReports(
   }
 
   if (claude.roots > 0) {
-    const estimate = estimateCost(claude.report.byModel, opts.pricing);
+    const estimate = estimateCost(claude.report, opts.pricing);
     printCostReport(claude.report, estimate, opts.pricing, {
       title: "Claude sessions by model",
       sourceLabel: `${claude.roots} root${claude.roots === 1 ? "" : "s"}`,
@@ -483,7 +525,7 @@ function printCombinedView(
     ...codexByProvider.values(),
     claude.report,
   ]);
-  const estimate = estimateCost(merged.byModel, opts.pricing);
+  const estimate = estimateCost(merged, opts.pricing);
   const parts: string[] = [];
   if (proxy.dbCount > 0) {
     parts.push(`${proxy.dbCount} proxy db${proxy.dbCount === 1 ? "" : "s"}`);
@@ -788,6 +830,14 @@ function printCostReport(
       ),
     );
   }
+  if (estimate.githubRated.length > 0) {
+    console.log("");
+    printWrapped(
+      paintFor(colorEnabled()).dim(
+        `  Priced at GitHub's rate, not OpenRouter's: ${estimate.githubRated.join(", ")}`,
+      ),
+    );
+  }
   console.log("");
 }
 
@@ -879,6 +929,7 @@ export function buildSourceJson(
   const dayMetrics = computeDayMetrics(report, pricing, estimate);
   const dayCosts = dayMetrics.map((d) => d.cost);
   const coverage = activeDayCoverage(report);
+  const billed = billedUsd(report);
   return {
     activeDays,
     activeDaySpan: coverage.spanDays,
@@ -888,6 +939,9 @@ export function buildSourceJson(
       Object.entries(estimate.perModel).map(([model, c]) => [model, roundModelCost(c)]),
     ),
     totalUsd: roundUsd(estimate.totalUsd),
+    // GitHub's own bill for the requests that carried one, beside the estimate; absent when none
+    // did (the JSON payload is otherwise unchanged).
+    ...(billed > 0 ? { billedUsd: roundUsd(billed) } : {}),
     avgCostPerDayUsd: activeDays > 0 ? roundUsd(estimate.totalUsd / div) : null,
     medianCostPerDayUsd: activeDays > 0 ? roundUsd(median(dayCosts)) : null,
     ...(opts.perDay

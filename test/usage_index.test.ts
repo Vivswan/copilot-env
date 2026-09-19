@@ -121,6 +121,7 @@ function occurrenceOf(text: string): ClaudeOccurrence {
     0,
     0,
     0,
+    0,
   ];
 }
 

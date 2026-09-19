@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { zstdCompressSync } from "node:zlib";
 import * as v from "valibot";
-import type { ModelUsage, ReadonlyUsageReport } from "../../src/usage/usage.ts";
+import type { ModelUsage, ReadonlyUsageTotals } from "../../src/usage/usage.ts";
 import { isRecord } from "../../src/utils/json.ts";
 import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import {
@@ -377,8 +377,8 @@ interface ExpectedUsage {
   claude: ExpectedReport;
 }
 
-/** A structural check that the ledger's shape is a reader report's read-only face. */
-const _ledgerIsReport: (r: ExpectedReport) => ReadonlyUsageReport = (r) => r;
+/** A structural check that the ledger's shape is a reader report's read-only roll-up. */
+const _ledgerIsReport: (r: ExpectedReport) => ReadonlyUsageTotals = (r) => r;
 
 function emptyReport(): ExpectedReport {
   return { byModel: new Map(), perDay: new Map() };

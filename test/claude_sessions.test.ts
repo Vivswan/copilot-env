@@ -43,6 +43,43 @@ test("readClaudeSessions counts an unterminated final line once its LF lands", a
   });
 });
 
+test("readClaudeSessions books a message's GitHub bill once, however many files repeat its line", async () => {
+  const root = join(tempDir("claude-sessions-"), "projects");
+  const proj = join(root, "-Users-x-proj");
+  // The shape a billed response carries: GitHub's per-bucket detail and its total in nano credits.
+  const billed = assistantLine(
+    "2026-06-01T10:00:00.000Z",
+    "claude-fable-5-1",
+    "msg_billed",
+    usage(4, 262, 912_223, 6_399),
+    {
+      "copilot_usage": {
+        "token_details": [{ "token_type": "output", "token_count": 262 }],
+        "total_nano_aiu": 32_118_325_000,
+      },
+    },
+  );
+  writeTranscript(proj, "aaa.jsonl", [
+    billed,
+    assistantLine("2026-06-01T10:01:00.000Z", "claude-fable-5-1", "msg_plain", usage(10, 20)),
+  ]);
+  // A resumed session copies finished lines into its own file, bill included.
+  writeTranscript(proj, "bbb.jsonl", [billed]);
+
+  const report = await readClaudeSessions([root], undefined, "UTC", parseEveryCandidate);
+  expect(report.byModel.get("claude-fable-5.1")?.events).toBe(2);
+  expect([...report.billed]).toEqual([
+    ["claude-fable-5.1", {
+      input: 4,
+      output: 262,
+      cacheRead: 912_223,
+      cacheCreation: 6_399,
+      events: 1,
+      nanoAiu: 32_118_325_000,
+    }],
+  ]);
+});
+
 test("walkClaudeSessions under a NaN cutoff keeps every file a candidate", () => {
   // A NaN cutoff fails every comparison, so no file is skipped by its mtime.
   const { roots } = scenarioNamed(CLAUDE_SCENARIOS, "under a NaN cutoff counts nothing, as before")

@@ -33,6 +33,7 @@ import { scanLines } from "./scan.ts";
 import {
   type OnCounted,
   record,
+  recordBilled,
   sanitizeTokenCount,
   type TokenBuckets,
   type UsageReport,
@@ -107,7 +108,16 @@ export const parseClaudeTail: ParseTail<ClaudeContribution> = (file, fromByte, p
   return parseClaudeFrom(file, fromByte, { v: prior.v, occurrences: [...prior.occurrences] });
 };
 
-/** Per occurrence: the window, THEN the running-max dedup (one map across all files). */
+/** One message across its lines: the running per-bucket max, and the bill it carried. */
+interface SeenMessage {
+  model: string;
+  buckets: TokenBuckets;
+  nanoAiu: number;
+}
+
+/** Per occurrence: the window, THEN the running-max dedup (one map across all files). A billed
+ *  message is booked beside the roll-up once every line of it is in: the bill and the request's
+ *  full counts are both running maxes. */
 function foldClaude(
   records: readonly FileRecord<ClaudeContribution>[],
   sinceMs: number | undefined,
@@ -115,44 +125,40 @@ function foldClaude(
   onCounted?: OnCounted,
 ): UsageReport {
   const report = usageReport();
-  const seenMessages = new Map<string, TokenBuckets>();
+  const seenMessages = new Map<string, SeenMessage>();
   // Transcripts log Anthropic's dashed, date-snapshotted ids; the canonical spelling merges them
   // with the proxy's Copilot ids.
   const canonical = canonicalModelNames();
   for (const { contribution } of records) {
     for (const occurrence of contribution.occurrences) {
-      const [idHash, tsMs, rawModel] = occurrence;
+      const [idHash, tsMs, rawModel, input, output, cacheRead, cacheCreation, nanoAiu] = occurrence;
       if (sinceMs !== undefined && !(tsMs !== null && tsMs >= sinceMs)) {
         continue; // outside the window (or no timestamp under a cutoff)
       }
       const model = canonical(rawModel);
-      const snapshot: TokenBuckets = {
-        input: occurrence[3],
-        output: occurrence[4],
-        cacheRead: occurrence[5],
-        cacheCreation: occurrence[6],
-      };
+      const snapshot: TokenBuckets = { input, output, cacheRead, cacheCreation };
       // Id-less lines (not observed in practice) are counted unconditionally.
       let buckets = snapshot;
       let isNewMessage = true;
       if (idHash !== null) {
         const prev = seenMessages.get(idHash);
         if (prev === undefined) {
-          seenMessages.set(idHash, snapshot);
+          seenMessages.set(idHash, { model, buckets: snapshot, nanoAiu });
         } else {
           isNewMessage = false;
           buckets = {
-            input: Math.max(0, snapshot.input - prev.input),
-            output: Math.max(0, snapshot.output - prev.output),
-            cacheRead: Math.max(0, snapshot.cacheRead - prev.cacheRead),
-            cacheCreation: Math.max(0, snapshot.cacheCreation - prev.cacheCreation),
+            input: Math.max(0, snapshot.input - prev.buckets.input),
+            output: Math.max(0, snapshot.output - prev.buckets.output),
+            cacheRead: Math.max(0, snapshot.cacheRead - prev.buckets.cacheRead),
+            cacheCreation: Math.max(0, snapshot.cacheCreation - prev.buckets.cacheCreation),
           };
-          seenMessages.set(idHash, {
-            input: Math.max(prev.input, snapshot.input),
-            output: Math.max(prev.output, snapshot.output),
-            cacheRead: Math.max(prev.cacheRead, snapshot.cacheRead),
-            cacheCreation: Math.max(prev.cacheCreation, snapshot.cacheCreation),
-          });
+          prev.buckets = {
+            input: Math.max(prev.buckets.input, snapshot.input),
+            output: Math.max(prev.buckets.output, snapshot.output),
+            cacheRead: Math.max(prev.buckets.cacheRead, snapshot.cacheRead),
+            cacheCreation: Math.max(prev.buckets.cacheCreation, snapshot.cacheCreation),
+          };
+          prev.nanoAiu = Math.max(prev.nanoAiu, nanoAiu);
           if (
             buckets.input === 0 &&
             buckets.output === 0 &&
@@ -165,6 +171,8 @@ function foldClaude(
             continue;
           }
         }
+      } else if (nanoAiu > 0) {
+        recordBilled(report, model, { ...snapshot, events: 1 }, nanoAiu);
       }
       // Only the first occurrence of an id is an event. The day is the user's local one, not the
       // UTC day the timestamp spells; a line with no parseable timestamp still counts toward the
@@ -175,6 +183,9 @@ function foldClaude(
       });
       onCounted?.({ id: idHash, tsMs, model, buckets });
     }
+  }
+  for (const { model, buckets, nanoAiu } of seenMessages.values()) {
+    if (nanoAiu > 0) recordBilled(report, model, { ...buckets, events: 1 }, nanoAiu);
   }
   return report;
 }
@@ -265,6 +276,10 @@ function parseClaudeLine(line: string, occurrences: ClaudeOccurrence[]): void {
   }
   const tsMs = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
   const buckets = tokenBuckets(message.usage);
+  // GitHub's own bill for the request, when the response carried one (a handful do).
+  const billedNanoAiu = isRecord(message.copilot_usage)
+    ? sanitizeTokenCount(message.copilot_usage.total_nano_aiu)
+    : 0;
   occurrences.push([
     typeof message.id === "string" ? dedupKey(message.id) : null,
     Number.isFinite(tsMs) ? tsMs : null,
@@ -273,5 +288,6 @@ function parseClaudeLine(line: string, occurrences: ClaudeOccurrence[]): void {
     buckets.output,
     buckets.cacheRead,
     buckets.cacheCreation,
+    billedNanoAiu,
   ]);
 }

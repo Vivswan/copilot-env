@@ -13,6 +13,7 @@ import {
   resolvePricingId,
   roundUsd,
   type UsageTokens,
+  withGitHubRates,
 } from "../src/usage/pricing.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
@@ -248,7 +249,7 @@ const ESTIMATES: {
 
 for (const { name, pricing, usage, perModel, totalUsd, unpriced } of ESTIMATES) {
   test(`estimateCost: ${name}`, () => {
-    const result = estimateCost(usage, pricing);
+    const result = estimateCost({ byModel: usage }, pricing);
     expect(Object.keys(result.perModel).sort()).toEqual(Object.keys(perModel).sort());
     for (const [model, expected] of Object.entries(perModel)) {
       const cost = result.perModel[model];
@@ -265,6 +266,68 @@ for (const { name, pricing, usage, perModel, totalUsd, unpriced } of ESTIMATES) 
     expect(result.totalUsd).toBe(summed);
   });
 }
+
+// ---------- GitHub's rate card ----------
+
+const ONE_MILLION_EACH: UsageTokens = {
+  input: 1_000_000,
+  output: 1_000_000,
+  cacheRead: 1_000_000,
+  cacheCreation: 1_000_000,
+};
+
+test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and every other model as they are, and names it", () => {
+  const list = new Map<string, PricingTier>([
+    ["openai/gpt-5.6-sol", { input: 2, output: 10, cacheRead: 0.2, cacheCreation: 2.5 }],
+    ["anthropic/claude-fable-5.1", { input: 10, output: 50, cacheRead: 0.25, cacheCreation: 12.5 }],
+  ]);
+  const usage = new Map([["gpt-5.6-sol", ONE_MILLION_EACH], [
+    "claude-fable-5.1",
+    ONE_MILLION_EACH,
+  ]]);
+  const estimate = estimateCost({ byModel: usage }, withGitHubRates(list));
+  // GitHub's card for Sol: 4 / 20 / 0.40 / 5 per million (input, output, cache read, cache write).
+  expect(estimate.perModel["gpt-5.6-sol"]).toEqual({
+    pricingReference: "openai/gpt-5.6-sol",
+    inputCostUsd: 4,
+    outputCostUsd: 20,
+    cacheReadCostUsd: 0.4,
+    cacheCreationCostUsd: 5,
+    estimatedCostUsd: 4 + 20 + 0.4 + 5,
+  });
+  expect(estimate.perModel["claude-fable-5.1"]?.estimatedCostUsd).toBeCloseTo(
+    10 + 50 + 0.25 + 12.5,
+    10,
+  );
+  expect(estimate.githubRated).toEqual(["gpt-5.6-sol"]);
+  // The list is copied, never edited: its cache on disk stays the list as fetched.
+  expect(list.get("openai/gpt-5.6-sol")?.input).toBe(2);
+  // The card stands on its own: a list without the model still prices it.
+  expect(estimateCost({ byModel: usage }, withGitHubRates(new Map())).unpriced).toEqual([
+    "claude-fable-5.1",
+  ]);
+});
+
+test("estimateCost bills an OpenAI long-context share at its tier and an Anthropic one flat", () => {
+  const pricing = new Map<string, PricingTier>([
+    ["openai/gpt-6-astra", { input: 10, output: 50, cacheRead: 1, cacheCreation: 12.5 }],
+    ["anthropic/claude-fable-5.1", { input: 10, output: 50, cacheRead: 0.25, cacheCreation: 12.5 }],
+  ]);
+  const total = { input: 1_000_000, output: 100_000, cacheRead: 2_000_000, cacheCreation: 0 };
+  const long = { input: 400_000, output: 40_000, cacheRead: 1_000_000, cacheCreation: 0 };
+  const { perModel, githubRated } = estimateCost({
+    byModel: new Map([["gpt-6-astra", total], ["claude-fable-5.1", total]]),
+    longContext: { byModel: new Map([["gpt-6-astra", long], ["claude-fable-5.1", long]]) },
+  }, pricing);
+  // astra: 600K input at 10 + 400K at 20; 60K output at 50 + 40K at 75; 1M reads at 1 + 1M at 2.
+  expect(perModel["gpt-6-astra"]?.inputCostUsd).toBeCloseTo(0.6 * 10 + 0.4 * 20, 10);
+  expect(perModel["gpt-6-astra"]?.outputCostUsd).toBeCloseTo(0.06 * 50 + 0.04 * 75, 10);
+  expect(perModel["gpt-6-astra"]?.cacheReadCostUsd).toBeCloseTo(1 + 2, 10);
+  // fable: the same share, and no tier to move it to.
+  expect(perModel["claude-fable-5.1"]?.estimatedCostUsd).toBeCloseTo(10 + 0.1 * 50 + 2 * 0.25, 10);
+  // The tier is GitHub's rate too: the footer names astra, and not fable.
+  expect(githubRated).toEqual(["gpt-6-astra"]);
+});
 
 // ---------- the on-disk price-list cache ----------
 
@@ -581,7 +644,7 @@ test("loadPricing drops the entries that are not prices and keeps the rest of th
       ["openrouter/auto", { input: 1000, output: 0, cacheRead: 0, cacheCreation: 0 }],
       ["gpt-5.5", { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 }],
     ]);
-    const cost = estimateCost(usage, loaded.pricing);
+    const cost = estimateCost({ byModel: usage }, loaded.pricing);
     expect(cost.unpriced).toEqual(["openrouter/auto"]);
     expect(cost.totalUsd).toBe(2);
     // The persisted list is the filtered one and is a valid cache on re-read.

@@ -33,7 +33,8 @@ import {
   codexLiveLaunch,
   type LiveLaunch,
 } from "../src/health/live_launch.ts";
-import { gatherFacts, type ProbeDeps, runLiveCli } from "../src/health/probe.ts";
+import { gatherFacts } from "../src/health/probe.ts";
+import { type ProbeDeps, runLiveCli } from "../src/health/probe_deps.ts";
 import type { CheckId, CheckResult, CheckStatus } from "../src/health/types.ts";
 import { type LaunchDeps, prepareLaunch } from "../src/commands/launch.ts";
 import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";

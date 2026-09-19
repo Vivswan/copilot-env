@@ -174,9 +174,6 @@ type ApplySpec =
 interface ProjectedKeyFields {
   /** The proxy's own key in config.json (an external contract, so it never follows our name). */
   proxyPath: ProxyConfigPath;
-  /** Oldest proxy version that reads the key: `agent config set` warns on an older installed proxy,
-   *  where the projection would be a silent no-op. Unset = every version above our floor. */
-  sinceProxyVersion?: string;
 }
 
 /** Our own code reads it; nothing is written into the proxy config.json for it. */
@@ -188,7 +185,6 @@ type InternalConfigKeyDef<K extends ConfigKey = ConfigKey> =
     proxyDefault?: undefined;
     proxyProjected?: undefined;
     proxyPath?: undefined;
-    sinceProxyVersion?: undefined;
   };
 
 /** Always written at `agent start` as `resolved ?? proxyDefault`, for keys copilot-env has an opinion on. */
@@ -524,7 +520,7 @@ const CONFIG_REGISTRY_LITERAL = [
     key: "codex.host",
     scope: "global",
     describe:
-      "Per-host CODEX_HOME at <codex.home>/hosts/<hostname> via `agent profile env` (Linux/macOS)",
+      "Per-host CODEX_HOME at `<codex.home>/hosts/<hostname>` via `agent profile env` (Linux/macOS)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     posixOnly: true,
@@ -567,7 +563,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.idle-timeout",
     scope: "global",
-    describe: "Idle auto-stop window; 0 disables",
+    describe: "Idle auto-stop window in seconds; 0 disables",
     ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
     defaultValue: 3600,
     restartToApply: true,
@@ -575,7 +571,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.logs",
     scope: "global",
-    describe: "Proxy request logging under <home>/logs; false discards the writes",
+    describe: "Proxy request logging under `<home>/logs`; false discards the writes",
     ...BOOL_DOMAIN,
     defaultValue: false,
     restartToApply: true,
@@ -607,7 +603,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.release-cooldown",
     scope: "global",
-    describe: "Age a proxy release must reach before the float adopts it",
+    describe: "Age in seconds a proxy release must reach before the float adopts it",
     ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
     defaultValue: 7 * SECONDS_PER_DAY,
   },
@@ -678,7 +674,6 @@ const CONFIG_REGISTRY_LITERAL = [
     defaultValue: true,
     proxyProjected: true,
     proxyPath: ["alphaSearchCodexPriority"],
-    sinceProxyVersion: "1.15.0",
   },
   {
     key: "proxy.alpha-search.model",
@@ -688,7 +683,6 @@ const CONFIG_REGISTRY_LITERAL = [
     defaultValue: "gpt-5-mini",
     proxyProjected: true,
     proxyPath: ["alphaSearchModel"],
-    sinceProxyVersion: "1.16.3",
   },
   {
     key: "proxy.claude-auto-model",
@@ -697,7 +691,6 @@ const CONFIG_REGISTRY_LITERAL = [
     ...MODEL_ID_DOMAIN,
     proxyProjected: true,
     proxyPath: ["claudeAutoModel"],
-    sinceProxyVersion: "1.14.22",
   },
   {
     key: "proxy.claude-token-multiplier",
@@ -792,7 +785,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "update.cooldown",
     scope: "global",
-    describe: "Min release age for updates; unset means none by hand, 7 for auto",
+    describe: "Min release age in days for updates; unset means none by hand, 7 for auto",
     ...wholeNumberDomain(0, MAX_DAYS, "days"),
   },
   {

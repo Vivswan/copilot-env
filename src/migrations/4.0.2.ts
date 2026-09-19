@@ -9,11 +9,8 @@
 import { consola } from "consola";
 import { join, normalize } from "node:path";
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
-import {
-  claudeDesktopInstalled,
-  desktopHelperScriptWiring,
-  readFileOrNull,
-} from "../claude/desktop.ts";
+import { desktopHelperScriptWiring } from "../claude/desktop_helper_scripts.ts";
+import { claudeDesktopInstalled, readFileOrNull } from "../claude/desktop_library.ts";
 import { type GhAccountsLook, ghAccountsLook, ghAuthTokenLook } from "../copilot_api/credential.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";

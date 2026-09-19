@@ -45,7 +45,6 @@ import { formatDuration } from "../utils/time.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
 import { credentialSourceLabel } from "./auth.ts";
-import { unreadProjectedKeyWarnings } from "./config.ts";
 
 export interface StartFlags {
   dryRun?: boolean;
@@ -408,11 +407,6 @@ async function launchUnderLock(
 
   fs.mkdir(paths.home);
   applyDefaultConfig(profile, ctx.paths, ctx.envConfig);
-  for (
-    const warning of unreadProjectedKeyWarnings(ctx.envConfig, entryProxyVersion(entry), profile)
-  ) {
-    consola.warn(warning);
-  }
   await cleanupExistingProxies(lock, profile, ctx.state);
 
   const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);

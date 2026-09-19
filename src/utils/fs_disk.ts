@@ -400,9 +400,9 @@ export function mkdir(path: string, mode?: number, detail?: string): void {
 
 /** A mode change is a rewrite of the entry, deduped away when this process already announced the
  *  path. */
-export function chmod(path: string, mode: number, detail?: string): void {
+export function chmod(path: string, mode: number): void {
   chmodSync(path, mode);
-  reportWrite("rewritten", path, detail);
+  reportWrite("rewritten", path);
 }
 
 export interface RemoveOptions {
@@ -514,18 +514,18 @@ export function atomicSymlink(target: string, link: string): void {
  * A file opened for writing (created or truncated at the open, which is the mutation reported):
  * the one way runtime code streams bytes to a path (a release download, the daemon's log).
  */
-export async function openWritable(path: string, detail?: string): Promise<Deno.FsFile> {
+export async function openWritable(path: string): Promise<Deno.FsFile> {
   const was = look(path);
   const file = await Deno.open(path, { write: true, create: true, truncate: true });
-  reportWrite(kindOf(was), path, detail);
+  reportWrite(kindOf(was), path);
   return file;
 }
 
 /** openWritable as a node fd, for a child's stdio. */
-export function openWriteFd(path: string, detail?: string): number {
+export function openWriteFd(path: string): number {
   const was = look(path);
   const fd = openSync(path, "w");
-  reportWrite(kindOf(was), path, detail);
+  reportWrite(kindOf(was), path);
   return fd;
 }
 

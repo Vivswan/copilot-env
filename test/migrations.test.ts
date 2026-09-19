@@ -52,12 +52,9 @@ import {
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { MARKER, MARKER_END } from "../src/shell/integration.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
-import {
-  CLAUDE_DESKTOP_DIR_ENV,
-  mcpServeArgs,
-  META_FILENAME,
-  writeDesktopHelperScript,
-} from "../src/claude/desktop.ts";
+import { writeDesktopHelperScript } from "../src/claude/desktop_helper_scripts.ts";
+import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../src/claude/desktop_library.ts";
+import { mcpServeArgs } from "../src/claude/desktop_payload.ts";
 import { claudeJsonPath, inspectMcpRegistration } from "../src/claude/mcp_registration.ts";
 import {
   resetIntegrationIdentityCache,

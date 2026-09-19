@@ -615,13 +615,7 @@ function checkAgentLive(
   const base = {
     ...meta(agent === "codex" ? "codex.live" : "claude.live"),
     profile,
-    // The JSON report's historical shape: ran/ok/cli, derived from the probe kind.
-    value: {
-      ran: f.kind !== "skipped",
-      ok: f.kind === "ok",
-      cli: f.kind === "skipped" ? null : f.cli,
-      ...(f.kind === "skipped" && f.lookFailed ? { lookFailed: true } : {}),
-    },
+    value: { kind: f.kind, ...(f.kind === "skipped" && f.lookFailed ? { lookFailed: true } : {}) },
   };
   if (f.kind === "skipped") {
     // A skip off a FAILED look is a could-not-check, never a proven absence.

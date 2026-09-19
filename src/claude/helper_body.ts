@@ -1,10 +1,8 @@
-// Shared by the Claude Code wiring (config.ts, whose inline command reuses the quoting) and the
-// Desktop wiring (desktop.ts writes real helper files: Desktop's inferenceCredentialHelper is a
-// file path, not a command). Apart from config.ts so desktop.ts imports it without a module cycle.
-
-export function shQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
+// Shared by the Claude Code wiring (config.ts, whose inline command reuses winQuote) and the
+// Desktop wiring (the helper-script writer produces real files: Desktop's inferenceCredentialHelper
+// is a file path, not a command). Apart from config.ts so the Desktop side imports it without a
+// module cycle.
+import { quotePosix } from "../utils/shell_quote.ts";
 
 /** cmd.exe runs a quoted path fine, and our args never contain a `"`. */
 export function winQuote(s: string): string {
@@ -22,6 +20,6 @@ export function cmdHelperBody(command: string, args: readonly string[]): string 
 
 /** exec, so no intermediate shell lingers; every token quoted, since paths carry spaces. */
 export function posixExecBody(command: string, args: readonly string[]): string {
-  const line = [command, ...args].map(shQuote).join(" ");
+  const line = [command, ...args].map(quotePosix).join(" ");
   return `#!/bin/sh\nexec ${line}\n`;
 }

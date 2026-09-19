@@ -19,21 +19,22 @@ import {
   proxyHelperCommand,
   SETTINGS_SECRETS,
 } from "../claude/config.ts";
+import { desktopHelperPath, writeDesktopHelperScript } from "../claude/desktop_helper_scripts.ts";
 import {
   desktopEntryName,
-  desktopHelperPath,
-  entryProfileAt,
-  launcherSubcommandArgs,
-  mcpServeArgs,
   META_FILENAME,
-  ownMcpRow,
   parseDesktopMeta,
   readFileOrNull,
   resolveDesktopLibraryDir,
-  retargetEntryProfile,
   saveJsonIfChanged,
-  writeDesktopHelperScript,
-} from "../claude/desktop.ts";
+} from "../claude/desktop_library.ts";
+import {
+  entryProfileAt,
+  launcherSubcommandArgs,
+  mcpServeArgs,
+  ownMcpRow,
+  retargetEntryProfile,
+} from "../claude/desktop_payload.ts";
 import { retargetMcpRegistration } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { codexProviderId } from "../codex/config.ts";

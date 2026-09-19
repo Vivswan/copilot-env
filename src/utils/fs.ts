@@ -3,6 +3,8 @@
 import * as fs from "./fs_facade.ts";
 import { isRecord } from "./json.ts";
 
+export const WIN = process.platform === "win32";
+
 export function isFile(path: string): boolean {
   try {
     return fs.stat(path).isFile();

@@ -1049,107 +1049,112 @@ test("a proxy auth block that is not the managed proxy-token command (the 3.5.6 
   }
 });
 
-test("inspectCodexWiring classifies the read result (unreadable is other/read-error with the file EXISTING, absent is none, ours is selected, a foreign one is other/custom carrying its id), then config.toml, .env, and the environ decide the wiring facts", () => {
-  const proxyToml = (baseUrl: string) => codexConfigToml({ baseUrl, auth: proxyTokenCommand() });
-  const good = proxyToml("http://localhost:4141/v1");
-  const env = "OPENAI_API_KEY=sk-test\n";
-  const cases: {
-    name: string;
-    input: Parameters<typeof inspectCodexWiring>[0];
-    env?: string;
-    environ?: true;
-    expected: Record<string, unknown>;
-  }[] = [
-    {
-      name: "unreadable",
-      input: { kind: "unreadable", error: "EACCES" },
-      expected: { providerMode: "other", otherReason: "read-error", configExists: true },
-    },
-    {
-      name: "absent",
-      input: { kind: "absent" },
-      expected: { providerMode: "none", configExists: false },
-    },
-    {
-      name: "no config.toml",
-      input: null,
-      expected: { configExists: false, providerWired: false, providerMode: "none" },
-    },
-    {
-      name: "ours",
-      input: { kind: "text", text: 'model_provider = "copilot-env"' },
-      expected: { providerSelected: true, otherReason: null },
-    },
-    {
-      name: "foreign",
-      input: 'model_provider = "openai"',
-      expected: { providerMode: "other", otherReason: "custom", modelProvider: "openai" },
-    },
-    {
-      name: "managed proxy provider + .env key",
-      input: good,
-      env,
-      expected: {
-        providerMode: "proxy",
-        providerWired: true,
-        envKeyInDotenv: true,
-        tokenAvailable: true,
+test(
+  "inspectCodexWiring classifies the read result (unreadable is other/read-error with the file " +
+    "EXISTING, absent is none, ours is selected, a foreign one is other/custom carrying its id), " +
+    "then config.toml, .env, and the environ decide the wiring facts",
+  () => {
+    const proxyToml = (baseUrl: string) => codexConfigToml({ baseUrl, auth: proxyTokenCommand() });
+    const good = proxyToml("http://localhost:4141/v1");
+    const env = "OPENAI_API_KEY=sk-test\n";
+    const cases: {
+      name: string;
+      input: Parameters<typeof inspectCodexWiring>[0];
+      env?: string;
+      environ?: true;
+      expected: Record<string, unknown>;
+    }[] = [
+      {
+        name: "unreadable",
+        input: { kind: "unreadable", error: "EACCES" },
+        expected: { providerMode: "other", otherReason: "read-error", configExists: true },
       },
-    },
-    {
-      name: "stale port",
-      input: proxyToml("http://localhost:9999/v1"),
-      env,
-      expected: { baseUrlMatches: false, providerWired: false },
-    },
-    {
-      name: "foreign auth command",
-      input: codexConfigToml({
-        baseUrl: "http://localhost:4141/v1",
-        auth: { command: "/usr/local/bin/other", args: ["--yes"] },
-      }),
-      env,
-      expected: { providerWired: false },
-    },
-    {
-      // The pre-4.0.0 proxy shape (`env_key` instead of the managed auth block) is proxy by base_url
-      // but never managed wiring; the 4.0.0 migration rewrites it.
-      name: "legacy env_key provider",
-      input: codexConfigToml({ baseUrl: "http://localhost:4141/v1", envKey: "OPENAI_API_KEY" }),
-      env,
-      expected: {
-        providerMode: "proxy",
-        envKeyMatches: false,
-        providerWired: false,
-        tokenAvailable: true,
+      {
+        name: "absent",
+        input: { kind: "absent" },
+        expected: { providerMode: "none", configExists: false },
       },
-    },
-    {
-      name: "key only in the environ",
-      input: good,
-      env: "FOO=1\n",
-      environ: true,
-      expected: { envKeyInDotenv: false, envKeyInEnviron: true, tokenAvailable: true },
-    },
-    { name: "key nowhere", input: good, env: "FOO=1\n", expected: { tokenAvailable: false } },
-    {
-      name: "spaces around the .env equals sign",
-      input: good,
-      env: "OPENAI_API_KEY = sk-test\n",
-      expected: { envKeyInDotenv: true },
-    },
-    {
-      name: "direct provider needs no OPENAI_API_KEY",
-      input:
-        `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "https://api.githubcopilot.com"\n`,
-      expected: { providerMode: "direct", providerWired: true, tokenAvailable: false },
-    },
-  ];
-  for (const c of cases) {
-    expect(inspectCodexWiring(c.input, c.env ?? null, 4141, c.environ ?? false), c.name)
-      .toMatchObject(c.expected);
-  }
-});
+      {
+        name: "no config.toml",
+        input: null,
+        expected: { configExists: false, providerWired: false, providerMode: "none" },
+      },
+      {
+        name: "ours",
+        input: { kind: "text", text: 'model_provider = "copilot-env"' },
+        expected: { providerSelected: true, otherReason: null },
+      },
+      {
+        name: "foreign",
+        input: 'model_provider = "openai"',
+        expected: { providerMode: "other", otherReason: "custom", modelProvider: "openai" },
+      },
+      {
+        name: "managed proxy provider + .env key",
+        input: good,
+        env,
+        expected: {
+          providerMode: "proxy",
+          providerWired: true,
+          envKeyInDotenv: true,
+          tokenAvailable: true,
+        },
+      },
+      {
+        name: "stale port",
+        input: proxyToml("http://localhost:9999/v1"),
+        env,
+        expected: { baseUrlMatches: false, providerWired: false },
+      },
+      {
+        name: "foreign auth command",
+        input: codexConfigToml({
+          baseUrl: "http://localhost:4141/v1",
+          auth: { command: "/usr/local/bin/other", args: ["--yes"] },
+        }),
+        env,
+        expected: { providerWired: false },
+      },
+      {
+        // The pre-4.0.0 proxy shape (`env_key` instead of the managed auth block) is proxy by base_url
+        // but never managed wiring; the 4.0.0 migration rewrites it.
+        name: "legacy env_key provider",
+        input: codexConfigToml({ baseUrl: "http://localhost:4141/v1", envKey: "OPENAI_API_KEY" }),
+        env,
+        expected: {
+          providerMode: "proxy",
+          envKeyMatches: false,
+          providerWired: false,
+          tokenAvailable: true,
+        },
+      },
+      {
+        name: "key only in the environ",
+        input: good,
+        env: "FOO=1\n",
+        environ: true,
+        expected: { envKeyInDotenv: false, envKeyInEnviron: true, tokenAvailable: true },
+      },
+      { name: "key nowhere", input: good, env: "FOO=1\n", expected: { tokenAvailable: false } },
+      {
+        name: "spaces around the .env equals sign",
+        input: good,
+        env: "OPENAI_API_KEY = sk-test\n",
+        expected: { envKeyInDotenv: true },
+      },
+      {
+        name: "direct provider needs no OPENAI_API_KEY",
+        input:
+          `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "https://api.githubcopilot.com"\n`,
+        expected: { providerMode: "direct", providerWired: true, tokenAvailable: false },
+      },
+    ];
+    for (const c of cases) {
+      expect(inspectCodexWiring(c.input, c.env ?? null, 4141, c.environ ?? false), c.name)
+        .toMatchObject(c.expected);
+    }
+  },
+);
 
 // --- the installed codex's schema verdict ----------------------------------------
 

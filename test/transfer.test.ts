@@ -485,6 +485,8 @@ const REDACTED_LANDINGS: {
   wiredProfiles: ProfileName[];
   /** The whole profile map after the import, by name. */
   profiles: ProfileName[];
+  /** The imported prefs land whatever the slots did: the bundle's `daemon.auto-start` after. */
+  autoStart: boolean | undefined;
   defaultCredential: StoredCredential;
   workSlot: ProfileSlot;
 }[] = [
@@ -500,6 +502,7 @@ const REDACTED_LANDINGS: {
     modes: { codex: "proxy", claude: "proxy" },
     wiredProfiles: [],
     profiles: [],
+    autoStart: true,
     defaultCredential: { kind: "none", provider: null },
     // No artifacts, no placeholder token, no mode-only slot.
     workSlot: { kind: "partial", credential: { kind: "none", provider: null }, mode: null },
@@ -523,6 +526,7 @@ const REDACTED_LANDINGS: {
     modes: { codex: "proxy", claude: "proxy" },
     wiredProfiles: [WORK],
     profiles: [WORK],
+    autoStart: true,
     defaultCredential: { kind: "stored", provider: "gh-token", token: "ghp_local_default" },
     workSlot: {
       kind: "complete",
@@ -547,6 +551,7 @@ const REDACTED_LANDINGS: {
     modes: null,
     wiredProfiles: [],
     profiles: [],
+    autoStart: undefined, // the bundle carries no prefs
     defaultCredential: { kind: "stored", provider: "gh-token", token: "ghp_local_default" },
     workSlot: { kind: "partial", credential: { kind: "none", provider: null }, mode: null },
   },
@@ -566,6 +571,7 @@ for (const row of REDACTED_LANDINGS) {
     expect(outcome.modes).toEqual(row.modes);
     expect(outcome.wiredProfiles).toEqual(row.wiredProfiles);
     expect(new CopilotEnvState().profileNames()).toEqual(row.profiles);
+    expect(new CopilotEnvConfig().read().global["daemon.auto-start"]).toBe(row.autoStart);
     expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(row.modes !== null);
     expect(existsSync(settingsPathFor(machine.claudeHome, WORK))).toBe(
       row.wiredProfiles.length > 0,

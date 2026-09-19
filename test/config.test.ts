@@ -294,9 +294,9 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 test("update REFUSES a store that is present but not valid JSON, preserving its bytes", () => {
   // A parse failure is refused like a read error: config.json's torn-write window can outlast
   // the retries, and for our own atomic stores the junk is outside corruption whose
-  // salvageable content a reset would discard. A parsed NON-OBJECT root is the same class. The
-  // third case is one whose raw V8 diagnostic quotes the source (a stray token before a string
-  // yields `Unexpected token 'x', "x"secret-key"" is not valid JSON`).
+  // salvageable content a reset would discard. A parsed NON-OBJECT root (an array, a scalar) is
+  // the same class. The stray-token case is one whose raw V8 diagnostic quotes the source
+  // (`Unexpected token 'x', "x"secret-key"" is not valid JSON`).
   const cases = [
     '{ "auth": { "apiKeys": ["secret-key"] }, half-written',
     '[42, "secret-key"]',

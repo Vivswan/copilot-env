@@ -44,15 +44,15 @@ interface InteropClient {
   close(): Promise<void>;
 }
 
-/** Connects, then runs that era's negotiation asserts; a failed assert still closes the client
- *  (and with it the server it spawned). */
+/** Connects, then runs that era's negotiation asserts; a failed connect or assert still closes
+ *  the client (and with it the stdio server the transport spawned). */
 async function connected<T, C extends InteropClient & { connect(transport: T): Promise<void> }>(
   client: C,
   transport: T,
   negotiated: (client: C) => void,
 ): Promise<C> {
-  await client.connect(transport);
   try {
+    await client.connect(transport);
     negotiated(client);
   } catch (e) {
     await client.close();

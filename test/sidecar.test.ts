@@ -18,7 +18,6 @@ import {
   resolveDenoBin,
   SIDECAR_DENO_ENV,
   sidecarBinPath,
-  type SidecarState,
   unzipCommand,
 } from "../src/copilot_api/sidecar.ts";
 import { resolveRootHome } from "../src/copilot_api/paths.ts";
@@ -122,7 +121,7 @@ describe("the sidecar ladder", () => {
       opts?: Parameters<typeof detectSidecar>[1];
       /** The override a bare call finds in the process environment. */
       ambient?: string;
-      state: Outcome<SidecarState>;
+      state: Outcome<ReturnType<typeof detectSidecar>>;
       resolved: Outcome<string>;
     }[] = [
       {

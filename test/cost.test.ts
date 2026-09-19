@@ -663,10 +663,11 @@ for (
         { fetchImpl, ...rootsOf([], [claudeRoot]) },
       );
       for (const line of lines) expect(stderr).toContain(line);
-      // Neither the host nor any path segment (a token baked into the path) reaches stderr.
-      expect(stderr).not.toContain(new URL(url).host);
+      // Neither the host nor any path segment (a token baked into the path) reaches either channel.
+      const printed = stderr + JSON.stringify(payload);
+      expect(printed).not.toContain(new URL(url).host);
       for (const segment of new URL(url).pathname.split("/").filter(Boolean)) {
-        expect(stderr, segment).not.toContain(segment);
+        expect(printed, segment).not.toContain(segment);
       }
       expect(payload.claudeSessions.totalUsd).toBe(totalUsd);
       expect(payload.runtime.indexed).toBe(noIndex !== true);

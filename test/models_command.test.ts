@@ -205,11 +205,20 @@ function runModelsCli(
   seed?: (home: string) => void,
   profile?: string,
 ): { exitCode: number | null; out: string } {
+  return runProfileVerb("models", seed, profile, args);
+}
+
+function runProfileVerb(
+  verb: string,
+  seed?: (home: string) => void,
+  profile?: string,
+  args: string[] = [],
+): { exitCode: number | null; out: string } {
   const home = tempDir("copilot-models-");
   try {
     seed?.(home);
     const proc = runCli(
-      ["profile", ...(profile === undefined ? [] : [profile]), "models", ...args],
+      ["profile", ...(profile === undefined ? [] : [profile]), verb, ...args],
       {
         env: { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home },
       },
@@ -256,14 +265,17 @@ test("models (auto) falls back to Direct and fails actionably with no credential
 
 // --- a named profile ---------------------------------------------------------------
 
-test("profile models with an unknown name hard-fails naming the known profiles", () => {
-  const none = runModelsCli([], undefined, "nope");
-  expect(none.exitCode).toBe(1);
-  expect(none.out).toContain("no such profile 'nope' (no profiles exist");
+test("profile models and profile health with an unknown name hard-fail naming the known profiles", () => {
+  // Two verbs with their own profile lookups (health resolves the target itself); one refusal.
+  for (const verb of ["models", "health"]) {
+    const none = runProfileVerb(verb, undefined, "nope");
+    expect(none.exitCode, verb).toBe(1);
+    expect(none.out, verb).toContain("no such profile 'nope' (no profiles exist");
 
-  const known = runModelsCli([], (home) => seedDirectProfile(home, "p1"), "nope");
-  expect(known.exitCode).toBe(1);
-  expect(known.out).toContain("no such profile 'nope' (known profiles: p1)");
+    const known = runProfileVerb(verb, (home) => seedDirectProfile(home, "p1"), "nope");
+    expect(known.exitCode, verb).toBe(1);
+    expect(known.out, verb).toContain("no such profile 'nope' (known profiles: p1)");
+  }
 });
 
 test("profile models never falls back: a credential-less direct profile hard-fails", () => {

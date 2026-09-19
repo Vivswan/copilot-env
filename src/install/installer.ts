@@ -22,7 +22,6 @@ import { consola } from "consola";
 
 import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
-import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import {
   ASSET_ROOT,
@@ -33,6 +32,7 @@ import {
   installStateRoot,
   isStandaloneBinary,
   PROJECT_ROOT,
+  stripExtendedLengthPrefix,
   VERSIONS_DIR,
 } from "../utils/root.ts";
 import { stripV } from "../utils/semver.ts";
@@ -43,18 +43,6 @@ import {
   INSTALLED_BINARY_WINDOWS,
   installedBinaryName,
 } from "./targets.ts";
-
-/** Whether an entry (a link itself, never what it points at) sits at `path`. Fail-closed: only
- *  lstat's own ENOENT/ENOTDIR reads as absent. */
-function entryPresent(path: string): boolean {
-  try {
-    fs.lstat(path);
-    return true;
-  } catch (e) {
-    if (isEnoentOrNotdir(e)) return false;
-    return true;
-  }
-}
 
 /** Embedded AND materialized: something outside this process opens these by path (the daemon's
  *  `--preload` shims, the shell payload the rc block sources, the plugin/skill surface other
@@ -160,7 +148,7 @@ export function pointCurrentAt(top: string, versionName: string): void {
     // target to put back (a first install), or when the process dies between the two calls; each
     // is repaired by re-running the update or installer.
     const previous = readCurrentTargetPath(top);
-    if (entryPresent(link)) fs.rmdir(link);
+    if (!fs.entryAbsent(link)) fs.rmdir(link);
     try {
       fs.symlink(target, link, "junction");
     } catch (error) {
@@ -195,7 +183,7 @@ export function pointCurrentAt(top: string, versionName: string): void {
  *  or null when there is no readable link. */
 function readCurrentTargetPath(top: string): string | null {
   try {
-    return fs.readlink(currentLinkPath(top)).replace(/^\\\\\?\\/, "");
+    return stripExtendedLengthPrefix(fs.readlink(currentLinkPath(top)));
   } catch {
     return null;
   }
@@ -454,7 +442,7 @@ export type InstallPlan =
 function canonicalizeForGuard(path: string): string | null {
   let base = resolve(path);
   const tail: string[] = [];
-  while (!entryPresent(base)) {
+  while (fs.entryAbsent(base)) {
     const parent = dirname(base);
     if (parent === base) break; // walked off the root; realpath below decides
     tail.unshift(basename(base));
@@ -520,13 +508,14 @@ function guardInstalledTarget(root: string): void {
     throw new Error(`refusing to install into ${root}: ${unsafe}`);
   }
 
-  // `.git` (a directory, or a file in a worktree) beside the markers is what makes a root a live
-  // checkout reached through COPILOT_ENV_INSTALL_ROOT.
-  const presentMarkers = CHECKOUT_MARKERS.filter((marker) => fs.exists(join(root, marker)));
-  if (presentMarkers.length > 0 && fs.exists(join(root, ".git"))) {
+  // A live checkout reached through COPILOT_ENV_INSTALL_ROOT (`.git` is a directory, or a file in
+  // a worktree).
+  if (isCheckoutShapedRoot(root)) {
     throw new Error(
-      `refusing to install into ${root}: it holds ${presentMarkers[0]} and .git, so it is a ` +
-        `source checkout, and installing would overwrite its bin/agent and working files`,
+      `refusing to install into ${root}: it holds ${
+        CHECKOUT_MARKERS.join(" or ")
+      } beside .git, so it is a source checkout, and installing would overwrite its bin/agent ` +
+        `and working files`,
     );
   }
 }

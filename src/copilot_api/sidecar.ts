@@ -6,7 +6,7 @@ import { basename, isAbsolute, join } from "node:path";
 import { ASSET_ROOT, devDenoExecPath, isStandaloneBinary } from "../utils/root.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
-import { versionLessThan } from "../utils/semver.ts";
+import { isStableVersion, versionLessThan } from "../utils/semver.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { resolveRootHome } from "./paths.ts";
 import { crypto } from "@std/crypto";
@@ -111,8 +111,6 @@ export function detectSidecar(
   return provisionedSidecar(rootHome, opts.platform) ?? { "kind": "absent" };
 }
 
-const DENO_VERSION_RE = /^\d+\.\d+\.\d+$/;
-
 /** Highest version wins, so a copy provisioned under an older release stays usable and a fresh
  *  download supersedes it without any cleanup step. */
 export function provisionedSidecar(
@@ -126,7 +124,7 @@ export function provisionedSidecar(
     return null;
   }
   const best = entries
-    .filter((name) => DENO_VERSION_RE.test(name))
+    .filter(isStableVersion)
     .filter((version) => fs.exists(sidecarBinPath(rootHome, version, platform)))
     .sort((a, b) => versionLessThan(a, b) ? 1 : versionLessThan(b, a) ? -1 : 0)[0];
   if (best === undefined) return null;
@@ -139,7 +137,7 @@ export function provisionedSidecar(
 
 export function parseDvmrcPin(content: string, source: string = DVMRC_FILENAME): string {
   const trimmed = content.trim();
-  if (!DENO_VERSION_RE.test(trimmed)) {
+  if (!isStableVersion(trimmed)) {
     throw new Error(
       `${source}: expected a single x.y.z Deno version line, got '${trimmed.slice(0, 64)}'`,
     );

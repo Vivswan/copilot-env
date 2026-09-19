@@ -39,3 +39,27 @@ export function stripV(v: string): string {
 export function isUpToDate(current: string, target: string): boolean {
   return !versionLessThan(stripV(current), stripV(target));
 }
+
+/** A plain `x.y.z` release: no `v`, no prerelease or build suffix. */
+export function isStableVersion(v: string): boolean {
+  return /^\d+\.\d+\.\d+$/.test(v);
+}
+
+/** The newest stable version published at or before `nowMs - minimumAgeMs`. `timeMap` is the npm
+ *  packument's `time` object: version -> publish date, plus the created/modified keys, which
+ *  isStableVersion skips along with prereleases. */
+export function pickAgedVersion(
+  timeMap: Record<string, string>,
+  minimumAgeMs: number,
+  nowMs: number,
+): string | null {
+  const cutoff = nowMs - minimumAgeMs;
+  let best: string | null = null;
+  for (const [version, iso] of Object.entries(timeMap)) {
+    if (!isStableVersion(version)) continue;
+    const published = Date.parse(iso);
+    if (Number.isNaN(published) || published > cutoff) continue;
+    if (best === null || versionLessThan(best, version)) best = version;
+  }
+  return best;
+}

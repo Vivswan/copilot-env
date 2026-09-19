@@ -46,7 +46,7 @@ import {
 } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { CopilotApiConfig, ensureDict, JSON_PARSE_DIAGNOSTIC } from "../copilot_api/config.ts";
-import { AUTOUPDATE_FILENAME, autoupdateDir } from "../autoupdate/paths.ts";
+import { AUTOUPDATE_FILENAME, autoupdateDir } from "../autoupdate/state.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import {
   CODEX_IDENTITY_NAME,

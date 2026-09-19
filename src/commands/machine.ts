@@ -46,17 +46,20 @@ export function registerMachineCommands(program: Command): void {
     .command("config")
     .helpGroup("Settings:")
     .usage("<verb> [options]")
+    .summary("Set, get, or unset this machine's preferences")
     .description(
-      "This machine's preferences (daemon.auto-start, daemon.idle-timeout, shell.launchers, ...) " +
-        "and the shared default of every proxy.* / probe.* key: agent config set|get|unset. A " +
-        "profile's own keys (identity, host, passthrough, static-key) and a named profile's " +
-        "overrides are `agent profile [<name>] set|get|unset`. Bare `agent config` lists every key.",
+      "Set, get, or unset this machine's preferences: `agent config set|get|unset <key>`. These " +
+        "are the daemon.*, codex.*, claude.*, shell.*, update.*, and cost.* keys, plus the " +
+        "shared default of every proxy.* / probe.* key. Bare `agent config` lists every key with " +
+        "its value. See also: `agent profile [<name>] set|get|unset` for a profile's own keys " +
+        "(identity, host, passthrough, static-key) and a named profile's overrides.",
     )
     // A function, not a string baked at startup, so the values are the store's at help-render time.
     .addHelpText("after", () => `\n${configTableOutput(process.platform, CONFIG_VIEW)}`)
     .action(() => runConfig({ kind: "get", view: CONFIG_VIEW }));
   config
     .command("set")
+    .summary("Set a machine key or a shared default")
     .description("Set a machine key, or the shared default of a proxy.* / probe.* key.")
     .argument("<key>", "A key of the table `agent config --help` prints.")
     .argument("<value>", "The value, parsed by the key's type.")
@@ -73,8 +76,10 @@ export function registerMachineCommands(program: Command): void {
     });
   config
     .command("get")
+    .summary("Show a key's value and where it comes from")
     .description(
-      "Print one key's value in effect (stdout) and its origin (stderr), or every key with no key.",
+      "Show one key's value in effect (stdout) and where it comes from (stderr), or every key " +
+        "with no key.",
     )
     .argument("[key]", "A key of the table `agent config --help` prints.")
     .action((key: string | undefined) => {
@@ -94,8 +99,12 @@ export function registerMachineCommands(program: Command): void {
   program
     .command("cost")
     .helpGroup("Daemon:")
+    .summary("Estimate token spend from proxy and agent logs")
     .description(
-      "Aggregate token usage (proxy SQLite DBs + Codex session logs + Claude transcripts) and estimate cost.",
+      "Estimate what your usage cost: token totals from the proxy's usage databases, the Codex " +
+        "session logs, and the Claude transcripts, priced at public OpenRouter rates. --days " +
+        "narrows the window, --per-day and --sources break the totals down, --json emits the " +
+        "numbers as data.",
     )
     .option(
       "--days <days>",
@@ -153,15 +162,21 @@ export function registerMachineCommands(program: Command): void {
   program
     .command("codex-mobile")
     .helpGroup("Setup:")
+    .summary("Pair the Codex desktop app with your phone")
     .description(
-      "Interactive: pair the Codex desktop app with its phone remote-control flow (macOS/Windows).",
+      "Pair the Codex desktop app with its phone remote-control flow, interactively. macOS and " +
+        "Windows only.",
     )
     .action(() => runCodexMobile());
 
   program
     .command("update")
     .helpGroup("Maintenance:")
-    .description("Update the copilot-env checkout to the latest GitHub release.")
+    .summary("Update copilot-env to the latest release")
+    .description(
+      "Update copilot-env to the latest GitHub release: download it, verify its provenance, swap " +
+        "it in, and run the migrations due. --check only reports whether an update exists.",
+    )
     .option(
       "--check",
       "Report update status and exit - no changes (0 up to date, 1 update available, 2 no release resolved).",
@@ -198,9 +213,12 @@ export function registerMachineCommands(program: Command): void {
   program
     .command("shell")
     .helpGroup("Setup:")
+    .summary("Wire your shell; --clis also installs the CLIs")
     .description(
-      "Set up the shell environment: wire the copilot-env integration (rc / PowerShell $PROFILE) " +
-        "and optionally install the agent CLIs (the cl / co / cx launchers follow the `shell.launchers` config key).",
+      "Wire copilot-env into your shell: one block in the rc file (bash, zsh) or the PowerShell " +
+        "$PROFILE defines `agent` and, when the `shell.launchers` key is on, the cl / co / cx " +
+        "launchers. --clis also installs or updates the claude, codex, and copilot CLIs; " +
+        "--remove takes the block out again.",
     )
     .option(
       "--clis",
@@ -237,9 +255,11 @@ export function registerMachineCommands(program: Command): void {
   program
     .command("install")
     .helpGroup("Maintenance:")
+    .summary("Finalize an install root (run by the installer)")
     .description(
-      "Finalize this install root: write the runtime files and launcher shims " +
-        "shipped inside this binary, then wire shell integration. Run by install.sh / install.ps1.",
+      "Finalize this install root: write the runtime files and launcher shims shipped inside " +
+        "this binary, then wire the shell integration. install.sh and install.ps1 run it for " +
+        "you; run it by hand only to refresh the current version in place.",
     )
     .option(
       "--no-shell-integration",
@@ -269,9 +289,10 @@ export function registerMachineCommands(program: Command): void {
   program
     .command("uninstall")
     .helpGroup("Maintenance:")
+    .summary("Remove copilot-env from this machine")
     .description(
-      "Remove copilot-env from this machine: daemons, profiles, agent wiring, " +
-        "shell integration, data, and the install itself.",
+      "Remove copilot-env from this machine: daemons, profiles, agent wiring, shell " +
+        "integration, data, and the install itself. Asks first; --yes answers.",
     )
     .option("--yes", "Skip the confirmation prompt (headless use).")
     .option("--dry-run", "Print what would be removed without changing anything.")
@@ -290,9 +311,11 @@ export function registerMachineCommands(program: Command): void {
   program
     .command("migrate")
     .helpGroup("Maintenance:")
+    .summary("Run the migration steps between two versions")
     .description(
-      "Run the migration steps due between two versions (what `agent update` and a reinstall " +
-        "run after swapping in a release). Safe to re-run: steps are idempotent.",
+      "Run the migration steps due between two versions. `agent update` and a reinstall run it " +
+        "for you after swapping in a release; run it by hand only when a message tells you to. " +
+        "Safe to re-run: every step is idempotent.",
     )
     .argument("<from>", "Version being updated away from.")
     .argument("<to>", "Version being updated to.")

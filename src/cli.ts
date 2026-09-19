@@ -3,7 +3,7 @@
 // accepted, and so help wraps to the terminal width natively. Every command registers from
 // src/commands/ (profile_verbs.ts, profile_ops.ts, machine.ts); this file owns the program alone.
 import "./utils/dotenv.ts";
-import { Command } from "commander";
+import { Command, Help } from "commander";
 import { consola } from "consola";
 import { registerMachineCommands } from "./commands/machine.ts";
 import { registerDaemonAliases, registerEverywhereCommands } from "./commands/profile_ops.ts";
@@ -39,7 +39,7 @@ program
   // one of its verbs both spell (`--set`, `--dry-run`) reaches the verb. The root's own flags
   // (`--version`, `--full-help`) then come before the command, as they always have.
   .enablePositionalOptions()
-  .option("--full-help", "Print help for `agent` and every subcommand, then exit.");
+  .option("--full-help", "Print help for agent and every subcommand.");
 
 // The option:full-help listener fires during parse, before any "missing command" handling, so it
 // works with no subcommand.
@@ -76,18 +76,20 @@ program.on("option:full-help", () => {
 });
 
 // The ansi.ts helpers no-op under NO_COLOR / TERM=dumb / CI / test runs, so these hooks degrade to
-// plain text on their own; Commander still owns all layout and width-wrapping.
-program.configureHelp({
+// plain text on their own; Commander still owns all layout and width-wrapping. Every subcommand
+// copies this configuration as it is created, so it is set before any registers.
+const HELP_STYLES = {
   styleTitle: bold,
   styleCommandText: cyan,
   styleOptionTerm: cyan,
   styleSubcommandTerm: cyan,
   styleDescriptionText: gray,
-});
+};
+program.configureHelp(HELP_STYLES);
 
 // Commander renders help groups in first-appearance order, so `init` and `profile` come first.
 registerInitCommand(program);
-registerProfileCommand(program, invocation.profile);
+const profile = registerProfileCommand(program, invocation.profile);
 registerAuthCommand(program);
 registerListCommand(program);
 registerSyncCommand(program);
@@ -97,6 +99,25 @@ registerDaemonAliases(program);
 registerEverywhereCommands(program);
 // config, cost, codex-mobile, update, shell, install, uninstall, migrate.
 registerMachineCommands(program);
+
+// The root help lists the profile verbs too, right after the `profile` row, one row per verb as
+// `profile [<name>] <verb>` with the summary `agent profile --help` shows for it. The root alone
+// renders this way: the subcommands keep the plain configuration they copied above, so
+// `agent profile --help` lists the verbs by their own names.
+const plainHelp = new Help();
+program.configureHelp({
+  ...HELP_STYLES,
+  visibleCommands: (cmd) => {
+    const rows = plainHelp.visibleCommands(cmd);
+    if (cmd !== program) return rows;
+    const at = rows.indexOf(profile) + 1;
+    return [...rows.slice(0, at), ...profile.commands, ...rows.slice(at)];
+  },
+  subcommandTerm: (cmd) =>
+    cmd.parent === profile ? `profile [<name>] ${cmd.name()}` : plainHelp.subcommandTerm(cmd),
+  // Groups in the order the rows above appear, so the verbs' group follows the `profile` row's.
+  groupItems: (_unsorted, visible, getGroup) => plainHelp.groupItems(visible, visible, getGroup),
+});
 
 if (import.meta.main) {
   // A child of a dry run (the Direct probes' agent CLIs run this CLI as their auth helper) is a

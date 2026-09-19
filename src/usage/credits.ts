@@ -4,7 +4,8 @@
 // 00:00 UTC on `quota_reset_date`, which is how GitHub's own meter counts it.
 import { isRecord } from "../utils/json.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { configKeyDef, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { configKeyDef } from "../copilot_api/config_registry.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { COPILOT_USER_URL } from "../copilot_api/integration_identity.ts";
 import { blue, cyan, green, red } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";

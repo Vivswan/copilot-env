@@ -17,11 +17,8 @@ import { wrapToTerminal } from "./utils/logger.ts";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
 import * as fs from "./utils/fs_facade.ts";
-import {
-  configDefaultNumber,
-  configSetCommand,
-  CopilotEnvConfig,
-} from "./copilot_api/env_config.ts";
+import { configDefaultNumber } from "./copilot_api/config_registry.ts";
+import { configSetCommand, CopilotEnvConfig } from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
 import { resolveDenoBin } from "./copilot_api/sidecar.ts";

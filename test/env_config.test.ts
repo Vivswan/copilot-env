@@ -19,12 +19,14 @@ import {
   configKeyDef,
   type ConfigScope,
   type ConfigValueTypes,
+  isProxyProjected,
+  OPENROUTER_MODELS_URL,
+} from "../src/copilot_api/config_registry.ts";
+import {
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   formatConfigValue,
   GLOBAL_CONFIG_SCHEMA,
-  isProxyProjected,
-  OPENROUTER_MODELS_URL,
   projectedProxyConfig,
   type ProjectedProxyEntry,
 } from "../src/copilot_api/env_config.ts";

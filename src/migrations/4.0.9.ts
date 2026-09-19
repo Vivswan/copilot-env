@@ -47,6 +47,8 @@ import {
   CODEX_IDENTITY_NAME,
   type ConfigKey,
   configScope,
+} from "../copilot_api/config_registry.ts";
+import {
   CopilotEnvConfig,
   GLOBAL_SETTING_KEYS,
   PROFILE_SETTING_KEYS,

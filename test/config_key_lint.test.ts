@@ -4,10 +4,10 @@
 //     spelled by hand -> must go through configSetCommand / configDelCommand / configGetCommand (typed key)
 //   a dotted key named bare in a string ("(daemon.auto-start on)")   -> must be a registry key
 //   a retired spelling cited anywhere, comments included             -> the migration's table says which
-// The registry file owns the helpers and the descriptions, so it is exempt from the string scans.
+// The registry file owns the descriptions, so it is exempt from the string scans.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { CONFIG_REGISTRY } from "../src/copilot_api/env_config.ts";
+import { CONFIG_REGISTRY } from "../src/copilot_api/config_registry.ts";
 import { PREFERENCE_RENAMES } from "../src/migrations/4.0.9.ts";
 import { escapeRegExp } from "../src/utils/regexp.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
@@ -15,7 +15,7 @@ import { expect, test } from "./helpers/testing.ts";
 import { tsFilesUnder as sourceFiles } from "./helpers/tree.ts";
 
 const SRC = join(PROJECT_ROOT, "src");
-const REGISTRY_FILE = join(SRC, "copilot_api", "env_config.ts");
+const REGISTRY_FILE = join(SRC, "copilot_api", "config_registry.ts");
 
 /** Dotted tokens with a key-group prefix that are NOT config keys: file names and health check ids
  *  that happen to share the shape. A new key never lands here; a new file name or check id does. */

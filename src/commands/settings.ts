@@ -19,14 +19,16 @@ import {
 import {
   CONFIG_REGISTRY,
   configKeyDef,
-  CopilotEnvConfig,
-  type CopilotEnvConfigData,
   type GlobalConfigData,
   type GlobalMapKey,
   isGlobalMapKey,
   isProfileMapKey,
   isProxyProjected,
   type ProfileMapKey,
+} from "../copilot_api/config_registry.ts";
+import {
+  CopilotEnvConfig,
+  type CopilotEnvConfigData,
   profileSettingsKey,
 } from "../copilot_api/env_config.ts";
 import { assertProfileSlot } from "../copilot_api/env_state.ts";

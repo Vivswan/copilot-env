@@ -1,26 +1,28 @@
 // The preference verbs behind `agent config set|get|unset` and `agent profile [<name>] set|get|unset`:
 // one body, told which face called it. configTable() is the listing a keyless `get` prints, in the
 // view of the face (the machine's keys and the shared defaults, or one profile's keys); `agent
-// config --help` prints the config view. The key registry is src/copilot_api/env_config.ts.
+// config --help` prints the config view. The key registry is src/copilot_api/config_registry.ts.
 import { consola } from "consola";
 import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../copilot_api/daemon.ts";
 import {
   CONFIG_GROUPS,
   CONFIG_REGISTRY,
   configDefaultValue,
-  configDelCommand,
-  configGetCommand,
   type ConfigGroup,
   configGroup,
   type ConfigKeyDef,
   configKeyDef,
   type ConfigScope,
-  configSetCommand,
   type ConfigValueTypes,
+  isProxyProjected,
+} from "../copilot_api/config_registry.ts";
+import {
+  configDelCommand,
+  configGetCommand,
+  configSetCommand,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   formatConfigValue,
-  isProxyProjected,
   isStoredSource,
   isStoredValueInert,
   profileSettingsKey,

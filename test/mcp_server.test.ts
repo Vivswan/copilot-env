@@ -95,7 +95,7 @@ test(
 );
 
 test("a named profile without a credential hard-fails per call, never falling back", async () => {
-  const client = new McpClient(["--profile", "work"]);
+  const client = new McpClient([], "work");
   try {
     await initialized(client);
     const res = await client.request(3, "tools/call", {

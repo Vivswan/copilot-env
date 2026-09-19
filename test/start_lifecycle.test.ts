@@ -26,6 +26,7 @@ import { startLockPath } from "../src/copilot_api/launch.ts";
 import { classifyDaemonPid, pidAlive } from "../src/copilot_api/process.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { daemonLockHolderPid } from "../src/scripts/daemon_lock.ts";
 import { probeFileLock } from "../src/utils/file_lock.ts";
@@ -49,6 +50,14 @@ import {
 // primitives the proxy-token resolver orchestrates.
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
+
+/** The `work` slot in the store: a named profile hard-fails on every arm of `start` without one. */
+function seedWork(): void {
+  new CopilotEnvState().commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "proxy",
+  });
+}
 
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
@@ -199,6 +208,7 @@ async function freePort(): Promise<number> {
 // must not be fabricated, and the other slot's state is left exactly as it was.
 test("start --record-event writes the lastEnsureAt heartbeat to the named run state only, and never launches", async () => {
   tmpHome();
+  seedWork();
   writeRunState({ port: 4242 }, WORK);
   const rows = [
     { profile: WORK, own: CopilotEnvRunState.forProfile(WORK), other: new CopilotEnvRunState() },
@@ -504,6 +514,11 @@ test("portListening: a real v4 or v6-only loopback listener reads true, a closed
 // sandboxed callers and is not reproducible here.
 test("start --check stays DOWN for a live pid + listening port that is not a copilot-api daemon", async () => {
   tmpHome();
+  // A named profile the store does not hold is the refusal, never a "not running" verdict.
+  await expect(runStart({ kind: "check", profile: WORK })).rejects.toThrow(
+    "no such profile 'work'",
+  );
+  seedWork();
   for (const profile of [null, WORK]) {
     await runStart({ kind: "check", profile });
     expect(process.exitCode, profile ?? "(default)").toBe(1); // nothing tracked

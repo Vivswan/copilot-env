@@ -60,7 +60,7 @@ export function defaultSetupNeedsProxy(opts: AgentWiringOptions = {}): boolean {
 /**
  * The float's question: unused by the default selection AND every named profile, so floating
  * against npm would be wasted work. Stricter than the inverse of defaultSetupNeedsProxy: any
- * profile home counts as proxy use (only proxy wiring or `agent start --profile` creates one),
+ * profile home counts as proxy use (only proxy wiring or `agent profile <name> start` creates one),
  * and Claude must carry exactly the managed Direct base URL. Any read failure counts as "maybe
  * used", so uncertain wiring floats normally.
  */

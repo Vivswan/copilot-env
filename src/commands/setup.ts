@@ -25,7 +25,7 @@ const NODE_PROBE_COMMAND = process.platform === "win32" ? NPM_COMMAND : "node";
 /** Distinct from the autoupdate release cooldown, which happens to share the number. */
 export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
 
-/** The cl/co/cx launchers belong to the `shell.launchers` config key (`agent env` emits them); a wire
+/** The cl/co/cx launchers belong to the `shell.launchers` config key (`agent profile env` emits them); a wire
  *  only reports that state. */
 export interface ShellArgs {
   remove?: boolean;
@@ -530,7 +530,7 @@ function applyShell(action: ShellAction): void {
   runShellIntegration({ kind: "wire", allHosts: action.allHosts });
   consola.info(
     new CopilotEnvConfig().launchersEnabled()
-      ? "Launchers: enabled (the shell.launchers config key) - cl / co / cx (+ clx / cox / cxx) load via `agent env`."
+      ? "Launchers: enabled (the shell.launchers config key) - cl / co / cx (+ clx / cox / cxx) load via `agent profile env`."
       : `Launchers: disabled (the shell.launchers config key) - \`${
         configSetCommand("shell.launchers", "true")
       }\` defines cl / co / cx.`,

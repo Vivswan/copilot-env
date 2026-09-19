@@ -27,7 +27,7 @@ body:
     id: wiring
     attributes:
       label: Agent wiring
-      description: How the affected agent is wired (`agent env` shows it).
+      description: How the affected agent is wired (`agent profile env` shows it).
       multiple: true
       options:
         - Local proxy

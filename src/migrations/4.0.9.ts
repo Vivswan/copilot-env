@@ -10,6 +10,8 @@
 // the user's: left in place, reported with the Codex error they cause.
 import { consola } from "consola";
 import { join } from "node:path";
+import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
+import { runClaude, runCodex } from "../agents/configure_defaults.ts";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
 import {
   directHelperCommand,
@@ -21,7 +23,10 @@ import {
   desktopEntryName,
   desktopHelperPath,
   entryProfileAt,
+  launcherSubcommandArgs,
+  mcpServeArgs,
   META_FILENAME,
+  ownMcpRow,
   parseDesktopMeta,
   readFileOrNull,
   resolveDesktopLibraryDir,
@@ -29,6 +34,7 @@ import {
   saveJsonIfChanged,
   writeDesktopHelperScript,
 } from "../claude/desktop.ts";
+import { retargetMcpRegistration } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { codexProviderId } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
@@ -458,7 +464,7 @@ export function stripLaunchersRcBlocks(): void {
 
 export const v409LaunchersBlock: Migration = {
   version: "4.0.9",
-  description: "remove the launchers rc block (the launchers are `agent env` emissions)",
+  description: "remove the launchers rc block (the launchers are `agent profile env` emissions)",
   run: stripLaunchersRcBlocks,
 };
 
@@ -856,18 +862,27 @@ export const v409RootDaemonHome: Migration = {
 
 // --- the `agent profile [<name>] <verb>` command tree --------------------------------------------
 //
-// Away from 4.0.9: a named profile's resolver line in the agent files was `agent auth --get
-// --profile <name>`; it is `agent profile <name> auth --get` now (the default's `agent auth --get`
-// stays: `agent auth` is the default's alias), and the readers classify the old line as foreign,
-// so it is rewritten in place before the profile re-renders. The verbs are reserved names for a
+// Away from 4.0.9: the proxy resolver line in the agent files was `agent proxy-token --yes
+// [--profile <name>]`, a named profile's Direct line `agent auth --get --profile <name>`, and the
+// MCP argv (the `.claude.json` registration, every Claude Desktop entry) `agent mcp --serve
+// [--profile <name>]`; they are `agent profile [<name>] proxy-token --yes`, `agent profile <name>
+// auth --get`, and `agent profile [<name>] mcp --serve` now (the default's Direct line, `agent auth
+// --get`, stays: `agent auth` is an alias), and the readers classify the old lines as foreign, so
+// each is rewritten in place before the profile re-renders. The verbs are reserved names for a
 // NEW profile (isReservedProfileWord), and one named like a verb before the word became one is
 // renamed to the first unused `<name>-<n>` across the store, the daemon homes, and the agent
 // files: every artifact is retargeted before the re-render, so the user's own keys in the profile
 // files and the Desktop entry's identity survive.
 
-/** The 4.0.9 resolver spelling of a named profile, the one place it still exists. */
+/** The 4.0.9 spellings, the one place they still exist. */
 function legacyAuthGetArgs(profile: ProfileName): string[] {
   return ["auth", "--get", "--profile", profile];
+}
+function legacyProxyTokenArgs(profile: Profile): string[] {
+  return ["proxy-token", "--yes", ...(profile === null ? [] : ["--profile", profile])];
+}
+function legacyMcpServeArgs(profile: Profile): string[] {
+  return ["mcp", "--serve", ...(profile === null ? [] : ["--profile", profile])];
 }
 
 function sameArgs(args: unknown, expected: readonly string[]): boolean {
@@ -875,10 +890,15 @@ function sameArgs(args: unknown, expected: readonly string[]): boolean {
     args.every((a, i) => a === expected[i]);
 }
 
-/** `from === to` is a retarget with no rename. */
+/** `from === to` is a retarget with no rename; the default (null) is only ever retargeted. */
 interface ProfileMove {
-  from: ProfileName;
-  to: ProfileName;
+  from: Profile;
+  to: Profile;
+}
+
+/** The named rename a move performs, or null for a retarget in place. */
+function renameOf({ from, to }: ProfileMove): { from: ProfileName; to: ProfileName } | null {
+  return from !== null && to !== null && from !== to ? { from, to } : null;
 }
 
 /** The first `<base>-<n>` no artifact uses. Exported for the migration test. */
@@ -905,8 +925,11 @@ function retargetClaude(claudeHome: string, { from, to }: ProfileMove): boolean 
   const helper = doc.apiKeyHelper;
   let next: string | null = null;
   if (typeof helper === "string") {
-    if (managedHelperShape(helper, legacyAuthGetArgs(from))) next = directHelperCommand(to);
-    else if (from !== to && managedHelperShape(helper, proxyTokenArgs(from))) {
+    if (from !== null && managedHelperShape(helper, legacyAuthGetArgs(from))) {
+      next = directHelperCommand(to);
+    } else if (managedHelperShape(helper, legacyProxyTokenArgs(from))) {
+      next = proxyHelperCommand(to);
+    } else if (from !== to && managedHelperShape(helper, proxyTokenArgs(from))) {
       next = proxyHelperCommand(to);
     }
   }
@@ -917,7 +940,8 @@ function retargetClaude(claudeHome: string, { from, to }: ProfileMove): boolean 
   }
   if (next !== null) {
     fs.writeText(newPath, `${JSON.stringify(doc, null, 2)}\n`, {
-      detail: "apiKeyHelper now `agent profile [<name>] auth --get`",
+      detail:
+        "apiKeyHelper now `agent profile [<name>] proxy-token --yes` or `agent profile <name> auth --get`",
       atomic: false,
       secretKeys: SETTINGS_SECRETS,
     });
@@ -943,10 +967,18 @@ function retargetCodex(codexHome: string, { from, to }: ProfileMove): boolean {
       let tableChanged = false;
       const auth = table.auth;
       if (isRecord(auth)) {
-        const legacy = agentLauncherCommand(legacyAuthGetArgs(from));
+        const legacy = from === null ? null : agentLauncherCommand(legacyAuthGetArgs(from));
+        const legacyProxy = agentLauncherCommand(legacyProxyTokenArgs(from));
         const proxy = proxyTokenCommand(from);
-        if (auth.command === legacy.command && sameArgs(auth.args, legacy.args)) {
+        if (
+          legacy !== null && auth.command === legacy.command && sameArgs(auth.args, legacy.args)
+        ) {
           auth.args = agentLauncherCommand(agentAuthGetArgs(to)).args;
+          tableChanged = true;
+        } else if (
+          auth.command === legacyProxy.command && sameArgs(auth.args, legacyProxy.args)
+        ) {
+          auth.args = proxyTokenCommand(to).args;
           tableChanged = true;
         } else if (
           from !== to && auth.command === proxy.command && sameArgs(auth.args, proxy.args)
@@ -967,9 +999,10 @@ function retargetCodex(codexHome: string, { from, to }: ProfileMove): boolean {
       }
     }
   }
-  if (from !== to) {
-    const oldFile = codexProfileConfigPath(codexHome, from);
-    const newFile = codexProfileConfigPath(codexHome, to);
+  const rename = renameOf({ from, to });
+  if (rename !== null) {
+    const oldFile = codexProfileConfigPath(codexHome, rename.from);
+    const newFile = codexProfileConfigPath(codexHome, rename.to);
     const fileRead = readCodexToml(oldFile);
     if (fileRead.kind === "unparseable") {
       throw new Error(`${oldFile} is not valid TOML (${fileRead.error})`);
@@ -984,7 +1017,54 @@ function retargetCodex(codexHome: string, { from, to }: ProfileMove): boolean {
   return changed;
 }
 
-/** The owned Desktop entry keeps its id: its row is renamed and its MCP `--profile` argument
+/** The 4.0.9 shape's attribution: the entry's own MCP row spawned `mcp --serve [--profile <name>]`
+ *  behind the launcher's own argv. The profile (the default is null) for a row in that shape;
+ *  undefined for a row already in the new shape, one of another shape, or no row of ours. */
+function legacyEntryProfileAt(doc: Record<string, unknown>): Profile | undefined {
+  const ours = ownMcpRow(doc);
+  if (ours === undefined) return undefined;
+  const sub = launcherSubcommandArgs(ours.args);
+  if (sameArgs(sub, legacyMcpServeArgs(null))) return null;
+  const name = sub[sub.indexOf("--profile") + 1];
+  if (typeof name !== "string" || !isValidProfileName(name)) return undefined;
+  const profile = parseProfileName(name);
+  return sameArgs(sub, legacyMcpServeArgs(profile)) ? profile : undefined;
+}
+
+/** Every owned Desktop entry's MCP row in the old shape gets the verb spelling under the same
+ *  name. Runs at the front of the update (a layout step): the 4.0.2 helper move reconciles the
+ *  library through the NEW reader (entryProfileAt), which would read an old-shape row as no
+ *  profile's and sweep the entry as an orphan. Exported for the migration test. */
+export function rewriteDesktopMcpArgv(): void {
+  const dir = resolveDesktopLibraryDir();
+  if (dir === null) return;
+  const raw = readFileOrNull(join(dir, META_FILENAME));
+  if (raw === null) return;
+  const meta = parseDesktopMeta(raw);
+  if (meta === null) return;
+  const ledger = new OwnershipLedger();
+  for (const entry of meta.entries) {
+    const path = join(dir, `${entry.id}.json`);
+    if (!ledger.owns("claudeDesktop", path)) continue;
+    const doc = parseJsonRecord(readFileOrNull(path) ?? "");
+    if (doc === null) continue;
+    const profile = legacyEntryProfileAt(doc);
+    if (profile === undefined) continue;
+    const ours = ownMcpRow(doc);
+    if (ours === undefined) continue;
+    ours.args = agentLauncherCommand(mcpServeArgs(profile)).args;
+    saveJsonIfChanged(path, doc, `Claude Desktop entry "${desktopEntryName(profile)}"`);
+  }
+}
+
+export const v409DesktopMcpArgv: Migration = {
+  version: "4.0.9",
+  layout: true,
+  description: "spell a Claude Desktop entry's MCP row `agent profile [<name>] mcp --serve`",
+  run: rewriteDesktopMcpArgv,
+};
+
+/** The owned Desktop entry keeps its id: its row is renamed and its MCP row's profile word
  *  retargeted, so the re-render finds it instead of minting a twin. */
 function retargetDesktopEntry(from: ProfileName, to: ProfileName): void {
   const dir = resolveDesktopLibraryDir();
@@ -1044,7 +1124,9 @@ function renameStoreSlot(from: ProfileName, to: ProfileName): boolean {
 /** From the slot (`stored`): no login. A Direct slot whose pair is not stored (the identity-cache
  *  step of the same run took the old cache) probes once for it and stores it, as any re-render
  *  does; on a real 4.0.9 store that is every Direct profile, so the re-render is not skipped. */
-async function rerender(profile: ProfileName): Promise<void> {
+/** The default re-renders as `agent profile sync` does (each agent's own write, then the Desktop
+ *  reconcile); a named profile as `agent profile <name> sync` does. */
+async function rerender(profile: Profile): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(profile);
   if (slot.kind !== "complete") {
     consola.info(
@@ -1053,15 +1135,25 @@ async function rerender(profile: ProfileName): Promise<void> {
     );
     return;
   }
-  await wireBothAgents(profile, slot.mode, true, "stored");
+  if (profile === null) {
+    const configure = { kind: "configure", mode: "auto" } as const;
+    await runClaude(configure);
+    await runCodex(configure);
+    await reconcileClaudeDesktopWiring();
+  } else {
+    await wireBothAgents(profile, slot.mode, true, "stored");
+  }
   consola.info(`  re-rendered ${profileLabel(profile)}'s agent files`);
 }
 
-/** The agent files a rename edits are parsed BEFORE the first move, so a malformed one fails
- *  the profile whole and a re-run after the repair finds every artifact under the old name. The
- *  Desktop library's _meta.json is not: one that cannot be parsed after the moves is reported and
- *  left alone. */
-function assertMovable(move: ProfileMove, claudeHome: string, codexHomes: readonly string[]): void {
+/** Every file a rename edits is parsed BEFORE the first move, the Desktop library's index
+ *  included, so a malformed one fails the profile whole (nothing renamed, nothing deleted) and a
+ *  re-run after the repair finds every artifact under the old name. */
+function assertMovable(
+  move: { from: ProfileName; to: ProfileName },
+  claudeHome: string,
+  codexHomes: readonly string[],
+): void {
   const settings = fs.readTextResult(settingsPathFor(claudeHome, move.from));
   if (settings.kind === "unreadable") {
     throw new Error(`could not read ${settingsPathFor(claudeHome, move.from)}: ${settings.error}`);
@@ -1075,6 +1167,17 @@ function assertMovable(move: ProfileMove, claudeHome: string, codexHomes: readon
       if (read.kind === "unparseable") throw new Error(`${path} is not valid TOML (${read.error})`);
     }
   }
+  const dir = resolveDesktopLibraryDir();
+  if (dir !== null) {
+    const metaPath = join(dir, META_FILENAME);
+    const raw = readFileOrNull(metaPath);
+    if (raw !== null && parseDesktopMeta(raw) === null) {
+      throw new Error(
+        `Claude Desktop's ${metaPath} has an unexpected shape; the profile's Desktop entry could ` +
+          "not be retargeted, so nothing was renamed (repair or remove the index and re-run)",
+      );
+    }
+  }
 }
 
 async function moveProfile(
@@ -1084,26 +1187,30 @@ async function moveProfile(
 ): Promise<void> {
   const { from, to } = move;
   let changed = false;
-  if (from !== to) {
-    assertMovable(move, claudeHome, codexHomes);
+  const rename = renameOf(move);
+  if (rename !== null) {
+    assertMovable(rename, claudeHome, codexHomes);
     const { stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, from);
     if (!stopped) {
+      // The profile's name is a verb, so no command addresses its daemon any more: by hand it is.
       throw new Error(
-        `${profileLabel(from)}'s proxy daemon did not stop; stop it (\`agent stop --profile ` +
-          `${from}\`) and re-run`,
+        `${profileLabel(from)}'s proxy daemon did not stop; stop it by hand (its pid is recorded ` +
+          `under ${profileHome(rename.from)}) and re-run`,
       );
     }
-    changed = renameStoreSlot(from, to) || changed;
-    const oldHome = profileHome(from);
+    changed = renameStoreSlot(rename.from, rename.to) || changed;
+    const oldHome = profileHome(rename.from);
     if (fs.exists(oldHome)) {
-      fs.rename(oldHome, profileHome(to));
-      consola.info(`  moved ${oldHome} -> ${profileHome(to)}`);
+      fs.rename(oldHome, profileHome(rename.to));
+      consola.info(`  moved ${oldHome} -> ${profileHome(rename.to)}`);
       changed = true;
     }
     consola.info(
       `  renamed ${profileLabel(from)} -> '${to}' (its name is a verb of agent profile)`,
     );
   }
+  // The machine-global registration spawns the default's server; its old argv is ours to rewrite.
+  if (from === null && retargetMcpRegistration(legacyMcpServeArgs(null))) changed = true;
   // The Desktop entry points at a helper script by path, and the script's body carries the
   // resolver spelling and the profile's name: every profile's script is rewritten under the new
   // name (the same name when nothing renames), so the pointer retargeted below is valid and the
@@ -1117,7 +1224,7 @@ async function moveProfile(
   }
   changed = retargetClaude(claudeHome, move) || changed;
   for (const home of codexHomes) changed = retargetCodex(home, move) || changed;
-  if (from !== to) retargetDesktopEntry(from, to);
+  if (rename !== null) retargetDesktopEntry(rename.from, rename.to);
   if (changed) await rerender(to);
 }
 
@@ -1125,6 +1232,9 @@ async function moveProfile(
  *  then fail the step (the runner names the re-run). Idempotent: a second run finds no old
  *  resolver line and no verb-named profile, and writes nothing. */
 export async function moveProfilesToVerbTree(): Promise<void> {
+  // First, so a rename below finds every entry in the new shape (a real update ran the layout
+  // step already; this is its idempotent repeat for a direct call).
+  rewriteDesktopMcpArgv();
   const rawProfiles = rootStateStore().loadStrict().profiles;
   const storeNames = isRecord(rawProfiles) ? Object.keys(rawProfiles) : [];
   const named = [
@@ -1151,7 +1261,8 @@ export async function moveProfilesToVerbTree(): Promise<void> {
       return read.kind === "ok" && isRecord(read.doc.model_providers) &&
         Object.hasOwn(read.doc.model_providers, codexProviderId(parseProfileName(candidate)));
     });
-  const moves: ProfileMove[] = [];
+  // The default first: its lines move too, and nothing renames it.
+  const moves: ProfileMove[] = [{ from: null, to: null }];
   for (const name of named) {
     if (!isReservedProfileWord(name)) {
       moves.push({ from: name, to: name });
@@ -1178,6 +1289,6 @@ export async function moveProfilesToVerbTree(): Promise<void> {
 export const v409ProfileVerbTree: Migration = {
   version: "4.0.9",
   description:
-    "move a named profile's resolver line to `agent profile <name> auth --get` and rename a profile named like a verb",
+    "spell every profile's resolver lines `agent profile [<name>] ...` and rename a profile named like a verb",
   run: moveProfilesToVerbTree,
 };

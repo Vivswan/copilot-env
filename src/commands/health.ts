@@ -1,13 +1,14 @@
 // The launchers and shell scripts call `--scope runtime` and branch on its exit code, so that code
 // is a contract (src/health/aggregate.ts, exitCodeFor).
-import { assertKnownProfile, type ProfileMode } from "../copilot_api/env_state.ts";
+import { allProfileNames, assertKnownProfile, type ProfileMode } from "../copilot_api/env_state.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { buildHealthJson, exitCodeFor, isHealthScope } from "../health/aggregate.ts";
 import { evaluateAll } from "../health/checks.ts";
 import type { HealthFacts } from "../health/facts.ts";
 import { gatherFacts } from "../health/probe.ts";
 import { renderReport } from "../health/report.ts";
-import { HEALTH_SCOPES } from "../health/types.ts";
+import { HEALTH_SCOPES, type HealthScope } from "../health/types.ts";
+import type { CheckResult } from "../health/types.ts";
 
 export interface HealthArgs {
   scope: string;
@@ -16,31 +17,83 @@ export interface HealthArgs {
   profile?: string;
 }
 
-function profileModes(facts: HealthFacts): Map<string, ProfileMode | null> {
-  const modes = new Map<string, ProfileMode | null>();
+function profileModes(
+  facts: HealthFacts,
+  modes = new Map<string, ProfileMode | null>(),
+): Map<string, ProfileMode | null> {
   for (const target of facts.runtimes ?? []) {
     if (target.profile !== null) modes.set(target.profile, target.slot.mode);
   }
   return modes;
 }
 
-export async function runHealth(args: HealthArgs): Promise<void> {
-  if (!isHealthScope(args.scope)) {
+function parseScope(scope: string): HealthScope {
+  if (!isHealthScope(scope)) {
     throw new Error(`--scope must be one of: ${HEALTH_SCOPES.join(", ")}`);
   }
-  const scope = args.scope;
-  // Before anything is probed: a typo'd --profile must error naming the known profiles, never
-  // diagnose the default wiring under the wrong name.
-  const profile: Profile = parseProfileFlag(args.profile);
-  if (profile !== null) assertKnownProfile(profile);
-  const facts = await gatherFacts(scope, { live: Boolean(args.live), profile });
-  const results = evaluateAll(scope, facts);
+  return scope;
+}
 
-  if (args.json) {
+/** The report and the exit code, from the results of one or more gathers. `profile` is the
+ *  narrowed run's for the JSON header; the every-profile run is the whole environment's (null). */
+function report(
+  scope: HealthScope,
+  results: CheckResult[],
+  modes: ReadonlyMap<string, ProfileMode | null>,
+  json: boolean,
+  profile: Profile,
+): void {
+  if (json) {
     console.log(JSON.stringify(buildHealthJson(scope, results, profile), null, 2));
   } else {
-    renderReport(scope, results, profileModes(facts));
+    renderReport(scope, results, modes);
   }
   // Set, don't exit, so stderr/stdout flush (matches the rest of the CLI).
   process.exitCode = exitCodeFor(results);
+}
+
+/** One profile's checks (`agent profile [<name>] health`): the default's run is the whole
+ *  environment's account-wide checks and its own daemon (never a named profile's, whose stop
+ *  is that profile's business); a named profile's run is its daemon, consistency, credential
+ *  slot, and per-agent wiring alone. */
+export async function runHealth(args: HealthArgs): Promise<void> {
+  const scope = parseScope(args.scope);
+  // Before anything is probed: a typo'd name must error naming the known profiles, never
+  // diagnose the default wiring under the wrong name.
+  const profile: Profile = parseProfileFlag(args.profile);
+  if (profile !== null) assertKnownProfile(profile);
+  const facts = await gatherFacts(scope, {
+    live: Boolean(args.live),
+    profile,
+    namedSweep: false,
+  });
+  report(scope, evaluateAll(scope, facts), profileModes(facts), args.json, profile);
+}
+
+/** Every profile's checks (`agent health`): the default's run and each named profile's narrowed
+ *  run, gathered at once (each probe has its own timeout budget, so ten profiles cost one, not
+ *  ten) and folded in profile order, the default first. A check the default's sweep already
+ *  produced for a profile (its runtime block, in the diagnostic scopes) is kept once, by (id,
+ *  profile). */
+export async function runHealthEverywhere(args: Omit<HealthArgs, "profile">): Promise<void> {
+  const scope = parseScope(args.scope);
+  const live = Boolean(args.live);
+  const [facts, ...named] = await Promise.all([
+    gatherFacts(scope, { live }),
+    ...allProfileNames().map((name) => gatherFacts(scope, { live, profile: name })),
+  ]);
+  const results = evaluateAll(scope, facts);
+  const modes = profileModes(facts);
+  const seenKey = (r: CheckResult): string => `${r.profile ?? ""}:${r.id}`;
+  const seen = new Set(results.map(seenKey));
+  for (const gathered of named) {
+    profileModes(gathered, modes);
+    for (const result of evaluateAll(scope, gathered)) {
+      const key = seenKey(result);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push(result);
+    }
+  }
+  report(scope, results, modes, args.json, null);
 }

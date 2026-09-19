@@ -35,28 +35,27 @@ function parseMcpAction(args: McpArgs): McpAction {
     throw new Error("--dry-run previews --remove (status and --serve write nothing)");
   }
   if (args.remove) {
-    if (args.profile !== undefined || args.model !== undefined) {
+    if (args.profile !== undefined) {
       throw new Error(
-        "--remove takes no --profile/--model (it removes the machine-global Claude wiring)",
+        "--remove takes no profile name: it removes the machine-global Claude wiring " +
+          "(`agent profile mcp --remove`)",
       );
+    }
+    if (args.model !== undefined) {
+      throw new Error("--remove takes no --model (it removes the machine-global Claude wiring)");
     }
     return { kind: "remove", dryRun: Boolean(args.dryRun) };
   }
   if (!args.serve) {
     if (args.profile !== undefined || args.model !== undefined) {
       throw new Error(
-        "--profile/--model apply to --serve (the stdio server); bare `agent mcp` prints status",
+        "a profile name and --model apply to --serve (the stdio server); bare `agent profile " +
+          "mcp` prints the machine-global status",
       );
     }
     return { kind: "status" };
   }
-  const profile = args.profile?.trim();
-  if (profile === "") {
-    // A supplied-but-blank --profile (an unset shell var) must never silently serve the default
-    // credential.
-    throw new Error("--profile expects a profile name; omit it for the default credential");
-  }
-  const name: Profile = parseProfileFlag(profile);
+  const name: Profile = parseProfileFlag(args.profile);
   const model = args.model?.trim() ?? "";
   if (args.model !== undefined && model === "") {
     throw new Error("--model expects a non-empty model id");
@@ -84,8 +83,12 @@ function printStatus(): void {
   const wireMcp = new CopilotEnvConfig().wireMcpResolved();
   logger.log(keyValueLine("claude.wire-mcp", `${wireMcp.value} (${wireMcp.source})`));
   logger.log("");
-  logger.log("agent mcp --serve   run the MCP stdio server (what registered clients spawn)");
-  logger.log("agent mcp --remove  unregister from Claude Code and opt out (claude.wire-mcp false)");
+  logger.log(
+    "agent profile mcp --serve   run the MCP stdio server (what registered clients spawn)",
+  );
+  logger.log(
+    "agent profile mcp --remove  unregister from Claude Code and opt out (claude.wire-mcp false)",
+  );
   logger.log("rewire: `agent init --direct` or `agent init`");
 }
 

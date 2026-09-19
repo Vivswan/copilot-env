@@ -30,7 +30,9 @@ export type StopAction =
 
 export function parseStopAction(args: StopArgs): StopAction {
   if (args.all && args.profile !== undefined) {
-    throw new Error("--all stops every daemon; it does not combine with --profile");
+    throw new Error(
+      "--all stops every daemon; it takes no profile name (`agent stop --all`)",
+    );
   }
   if (args.all) return { kind: "all" };
   const named = parseProfileFlag(args.profile);

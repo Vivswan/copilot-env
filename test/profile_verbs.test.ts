@@ -5,132 +5,34 @@
 // routed onto the flat commands' bodies: with the bodies folded under the verbs, each verb still
 // names the same files in the same order. The two kept aliases (`agent init`, `agent auth`) are
 // proven against their verbs live, in twin homes. The verbs are reserved names, pinned at the CLI.
-import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { escapeRegExp } from "../src/utils/regexp.ts";
-import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { changedPaths } from "./helpers.ts";
-import { runCli } from "./helpers/run.ts";
-import { expect, tempDir, test } from "./helpers/testing.ts";
+import {
+  expectIdentical,
+  expectOracle as expectOracleOf,
+  loadFixture,
+  loadOracle,
+  observe,
+  type Oracle,
+  type ScratchHome,
+  scratchHome as scratchHomeOf,
+  treeContents,
+} from "./helpers/cli_oracle.ts";
+import { expect, test } from "./helpers/testing.ts";
 
-interface Observation {
-  exitCode: number | null;
-  stdout: string;
-}
-
-function fixture(name: string): string {
-  return readFileSync(join(PROJECT_ROOT, "test", "fixtures", "cli_redesign", name), "utf8");
-}
-
-const ORACLE = JSON.parse(fixture("main_oracle.json")) as Record<string, Observation>;
+const ORACLE = loadOracle("main_oracle");
 
 /** The verbs' own oracle: the commands that seed the scratch state, then what each verb printed
  *  for it. Only stdout the CLI writes itself (plans, key/value lines): a consola line's prefix
  *  differs between the CI reporter and the local one. */
-const VERBS_ORACLE = JSON.parse(fixture("verbs_oracle.json")) as {
-  seed: string[][];
-  observed: Record<string, Observation>;
-};
+const VERBS_ORACLE = loadFixture("verbs_oracle") as { seed: string[][]; observed: Oracle };
 
-/** A scratch HOME the child owns entirely: its data home, both agent homes, and a port pin that
- *  keeps a real proxy on 4141 out of the picture. */
-function scratchHome(): { home: string; env: Record<string, string> } {
-  const home = tempDir("copilot-profile-verbs-");
-  writeFileSync(join(home, "state.json"), JSON.stringify({ global: { "daemon.port": 4199 } }));
-  return {
-    home,
-    env: {
-      ...process.env,
-      CONSOLA_LEVEL: "5",
-      NO_COLOR: "1",
-      COPILOT_API_HOME: home,
-      HOME: home,
-      USERPROFILE: home,
-      CLAUDE_CONFIG_DIR: join(home, ".claude"),
-      CODEX_HOME: join(home, ".codex"),
-    },
-  };
-}
-
-/** The checkout path as a whole path segment: the container suite mounts the checkout at `/work`,
- *  which is also the fixture profile's name (`/.codex/work.config.toml`). */
-const ROOT_SEGMENT = new RegExp(`${escapeRegExp(PROJECT_ROOT)}(?=[\\\\/"' ]|$)`, "gm");
-
-/** The oracle was captured on POSIX: a Windows run's separators and its PowerShell launcher
- *  spelling fold to the same tokens (the outputs compared here are paths and words). */
-function normalize(home: string, text: string): string {
-  return text
-    .replaceAll(home, "<HOME>")
-    .replace(ROOT_SEGMENT, "<ROOT>")
-    .replaceAll("\\", "/")
-    .replace(
-      /powershell -NoProfile -ExecutionPolicy Bypass -File "?<ROOT>\/bin\/agent\.ps1"?/g,
-      "<ROOT>/bin/agent",
-    );
-}
-
-/** What the outside sees of one spelling: exit code, stdout with the scratch paths normalized. */
-function observe(args: string[], scratch: { home: string; env: Record<string, string> }) {
-  const proc = runCli(args, { env: scratch.env });
-  return {
-    exitCode: proc.exitCode,
-    stdout: normalize(scratch.home, proc.stdout),
-    stderr: proc.stderr,
-  };
-}
-
-/** One spelling prints `expected` (exit code, normalized stdout). */
-function expectPrinted(
-  expected: Observation | undefined,
-  args: string[],
-  scratch: ReturnType<typeof scratchHome>,
-  label: string,
-) {
-  const seen = observe(args, scratch);
-  expect(expected, label).toBeDefined();
-  expect({ exitCode: seen.exitCode, stdout: seen.stdout }, label).toEqual(expected);
-  return seen;
-}
+const scratchHome = () => scratchHomeOf("copilot-profile-verbs-");
 
 /** The new spelling prints what main's old spelling printed. */
-function expectOracle(oracleKey: string, args: string[], scratch: ReturnType<typeof scratchHome>) {
-  return expectPrinted(ORACLE[oracleKey], args, scratch, `${oracleKey}  ->  ${args.join(" ")}`);
-}
-
-/** Every file under `home` by relative path with its content, paths normalized, so two homes
- *  compare equal when the same files were written with the same content. */
-function treeContents(home: string): Map<string, string> {
-  const out = new Map<string, string>();
-  const walk = (dir: string): void => {
-    for (const name of readdirSync(dir).sort()) {
-      const path = join(dir, name);
-      if (statSync(path).isDirectory()) walk(path);
-      else out.set(relative(home, path), normalize(home, readFileSync(path, "utf8")));
-    }
-  };
-  walk(home);
-  return out;
-}
-
-/** Two spellings in twin homes: same exit code, same stdout, same stderr, same files. Returns the
- *  first observation so the caller can prove the pair did the thing (identical failures would pass
- *  the equality alone). */
-function expectIdentical(
-  a: { args: string[]; scratch: ReturnType<typeof scratchHome> },
-  b: { args: string[]; scratch: ReturnType<typeof scratchHome> },
-) {
-  const label = `${a.args.join(" ")}  ==  ${b.args.join(" ")}`;
-  const seenA = observe(a.args, a.scratch);
-  const seenB = observe(b.args, b.scratch);
-  expect(seenB.exitCode, label).toBe(seenA.exitCode);
-  expect(seenB.stdout, label).toBe(seenA.stdout);
-  expect(normalize(b.scratch.home, seenB.stderr), label).toBe(
-    normalize(a.scratch.home, seenA.stderr),
-  );
-  expect([...treeContents(b.scratch.home).entries()], label).toEqual(
-    [...treeContents(a.scratch.home).entries()],
-  );
-  return seenA;
+function expectOracle(oracleKey: string, args: string[], scratch: ScratchHome) {
+  return expectOracleOf(ORACLE, oracleKey, args, scratch);
 }
 
 test(
@@ -140,7 +42,6 @@ test(
     const refusals: [string[], string[]][] = [
       [["profile", "add", "sync"], ["'sync' is a reserved word"]],
       [["profile", "list"], ["'list' is a reserved word", "agent list"]],
-      [["profile", "start", "add", "--proxy"], ["'start' is a reserved word"]],
       // A real name in the verb's argument slot is the old `--add <name>` habit, named as such.
       [["profile", "add", "work"], [
         "the profile name goes before the verb",
@@ -243,8 +144,8 @@ test(
     for (const args of VERBS_ORACLE.seed) {
       expect(observe(args, scratch).exitCode, args.join(" ")).toBe(0);
     }
-    for (const [key, expected] of Object.entries(VERBS_ORACLE.observed)) {
-      expectPrinted(expected, key.split(" "), scratch, key);
+    for (const key of Object.keys(VERBS_ORACLE.observed)) {
+      expectOracleOf(VERBS_ORACLE.observed, key, key.split(" "), scratch);
     }
     // Fifteen cold CLI spawns; generous headroom for loaded Windows CI runners.
   },

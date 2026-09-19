@@ -157,7 +157,7 @@ function parseProfileSlot(data: ProfileSlotData): ProfileSlot {
   return { kind: "partial", credential, mode: data.mode };
 }
 
-/** The ONE spelling of a partial slot's repair line, shared by `agent profile` and `agent launch`.
+/** The ONE spelling of a partial slot's repair line, shared by `agent profile` and `agent profile launch`.
  *  The rendered strings are output contracts pinned by test. */
 export function partialSlotGap(
   name: ProfileName,
@@ -308,7 +308,7 @@ export function allProfileNames(): ProfileName[] {
 }
 
 /**
- * A typo'd `--profile` must error, never resolve against default wiring: `agent env`'s stdout is
+ * A typo'd profile name must error, never resolve against default wiring: `agent profile env`'s stdout is
  * evaled by the shell wrapper, so a wrong-profile answer would be silently applied.
  */
 export function assertKnownProfile(name: ProfileName): ProfileSlot {

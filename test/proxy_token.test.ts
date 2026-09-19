@@ -81,12 +81,12 @@ interface MatrixRow {
   rec: Recorded;
 }
 
-const DECLINED = (profile: string) =>
-  `Continuing without the proxy; proxy-backed agents need it (run 'agent start${profile}').`;
+const startCommand = (profile: string | null) =>
+  profile === null ? "agent start" : `agent profile ${profile} start`;
+const DECLINED = (profile: string | null) =>
+  `Continuing without the proxy; proxy-backed agents need it (run '${startCommand(profile)}').`;
 const START_FAILED = (profile: string | null) =>
-  `copilot proxy failed to start (run 'agent start${
-    profile === null ? "" : ` --profile ${profile}`
-  }' to see the error; ` +
+  `copilot proxy failed to start (run '${startCommand(profile)}' to see the error; ` +
   `no credential stored? run '${
     profile === null ? "agent auth" : `agent profile ${profile} auth`
   }').`;
@@ -152,18 +152,18 @@ test("resolveProxyToken: each (up, auto-start, --yes, answer, profile) row yield
       assumeYes: false,
       profile: null,
       exit: 1,
-      rec: { ...none, prompts: [PROMPT], notes: [DECLINED("")] },
+      rec: { ...none, prompts: [PROMPT], notes: [DECLINED(null)] },
     })),
     {
-      name: "--profile, declined: the hint points at the PROFILE's daemon",
+      name: "a named profile, declined: the hint points at the PROFILE's daemon",
       opts: { autoStart: false, answer: "n" },
       assumeYes: false,
       profile: WORK,
       exit: 1,
-      rec: { ...none, prompts: [PROMPT], heartbeats: [WORK], notes: [DECLINED(" --profile work")] },
+      rec: { ...none, prompts: [PROMPT], heartbeats: [WORK], notes: [DECLINED("work")] },
     },
     {
-      name: "--profile, managed start fails: profile-scoped launch and pointer",
+      name: "a named profile, managed start fails: profile-scoped launch and pointer",
       opts: { autoStart: true, launchBringsUp: false },
       assumeYes: true,
       profile: WORK,
@@ -176,7 +176,7 @@ test("resolveProxyToken: each (up, auto-start, --yes, answer, profile) row yield
       },
     },
     {
-      name: "--profile, up: the key print is addressed at the profile's daemon config",
+      name: "a named profile, up: the key print is addressed at the profile's daemon config",
       opts: { up: true },
       assumeYes: true,
       profile: WORK,
@@ -283,7 +283,7 @@ test(
       dir = tempDir("copilot-proxy-token-");
       const staged = row.up ? await stageDecoyDaemon(dir) : null;
       try {
-        const res = runCli(["proxy-token", ...row.args], {
+        const res = runCli(["profile", "proxy-token", ...row.args], {
           env: isolatedEnv(dir),
           input: row.input,
         });

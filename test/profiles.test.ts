@@ -366,9 +366,7 @@ test("a proxy Claude profile bakes ITS reserved port and blanks the direct-only 
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("");
   expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe("");
   const helperCommand = String(doc.apiKeyHelper);
-  expect(helperCommand).toContain("proxy-token");
-  expect(helperCommand).toContain("--profile");
-  expect(helperCommand).toContain("fast");
+  expect(helperCommand).toContain("profile fast proxy-token --yes");
 });
 
 test("a foreign settings-<name>.json is never taken over", () => {
@@ -539,7 +537,7 @@ test("profile <name> check is store-driven: exit 1 unknown/incomplete, 2 proxy, 
 });
 
 test("partialSlotGap: the ONE spelling of a partial slot's repair line (output contract)", () => {
-  // Rendered at three sites (`profile <name> check`, the `cl --profile` launcher, `agent launch`); pinned once here,
+  // Rendered at three sites (`profile <name> check`, the `cl --profile` launcher, `agent profile launch`); pinned once here,
   // byte for byte (launch.test.ts matches both lines end to end, but only as substrings).
   expect(
     partialSlotGap(WORK, {
@@ -684,12 +682,12 @@ test("profile <name> add requires a mode for a new profile", async () => {
   // --direct --proxy is rejected at the CLI boundary (provider_mode.test.ts), never here.
 });
 
-test("parseStopAction: all/profile/default arms; --all --profile is a rejection", () => {
+test("parseStopAction: all/profile/default arms; --all on a named profile is a rejection", () => {
   expect(parseStopAction({})).toEqual({ kind: "default" });
   expect(parseStopAction({ all: true })).toEqual({ kind: "all" });
   expect(parseStopAction({ profile: "work" })).toEqual({ kind: "profile", name: WORK });
   expect(() => parseStopAction({ all: true, profile: "work" })).toThrow(
-    "--all stops every daemon; it does not combine with --profile",
+    "--all stops every daemon; it takes no profile name",
   );
 });
 
@@ -764,7 +762,11 @@ test("stop/record-event against a never-existing profile fabricate NOTHING", asy
   await runStop({ profile: "typo" });
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
-  await runStart({ kind: "record-event", profile: TYPO });
+  // The heartbeat is the resolver's, wired for a profile that exists: an unknown name is the
+  // refusal every named verb gives, never a heartbeat landed somewhere.
+  await expect(runStart({ kind: "record-event", profile: TYPO })).rejects.toThrow(
+    "no such profile 'typo'",
+  );
   // Neither command may materialize a phantom profile home (agent list,
   // stop --all, and the proxy float all enumerate profile homes).
   expect(existsSync(profileHome(TYPO))).toBe(false);

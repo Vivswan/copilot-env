@@ -42,7 +42,7 @@ Copilot reads the client from two things on every request: the `Copilot-Integrat
 - **Probed at a landing, stored in the slot:** a credential landing (`agent profile [<name>] add`, `agent profile <name> auth`) probes on the host in use and stores the halves the probe answered; a pinned identity or a literal host is an overlay, never stored.
 - **Read back everywhere else:** every Direct re-render and every daemon start read the slot under the `identity` pin and `host` literal, with no request; a half still unknown is probed once and stored.
 - **Direct** bakes the header set into the agent configs (Codex `http_headers`, Claude `ANTHROPIC_CUSTOM_HEADERS`).
-- **Proxy** applies the same header set inside the daemon: a preload rewrites `User-Agent` and `Copilot-Integration-Id` on every fetch and WebSocket to the Copilot API hosts, deleting the id for `codex`, so the proxy serves the catalog Direct sees. The proxy's own `agent models --proxy` list is copilot-api's trimmed view of that catalog.
+- **Proxy** applies the same header set inside the daemon: a preload rewrites `User-Agent` and `Copilot-Integration-Id` on every fetch and WebSocket to the Copilot API hosts, deleting the id for `codex`, so the proxy serves the catalog Direct sees. The proxy's own `agent profile models --proxy` list is copilot-api's trimmed view of that catalog.
 
 ```text
 $ agent profile identity
@@ -125,7 +125,7 @@ agent profile work del --yes  # stop its daemon, clear its credential, strip bot
 ```
 
 - **No fallback:** a named profile hard-fails rather than falling back to the default credential. Re-authenticate one with `agent profile <name> auth`.
-- **Own daemon:** a proxy-mode profile runs in an isolated home (`<copilot-api home>/profiles/<name>`) on a stable reserved port, managed via `agent start/stop --profile <name>`.
+- **Own daemon:** a proxy-mode profile runs in an isolated home (`<copilot-api home>/profiles/<name>`) on a stable reserved port, managed via `agent profile <name> start` / `stop`.
 - **Own files:** Claude reads `~/.claude/settings-<name>.json`; Codex reads `~/.codex/<name>.config.toml`, whose top-level `model_provider` selects the `[model_providers.copilot-env-<name>]` table in `config.toml` (`codex --profile <name>` layers the file over `config.toml`). Your own keys in the profile file survive a rewire. Both files are in the [write list](getting-started.md#what-a-wiring-pass-writes).
 - **Legacy shape:** Codex 0.134 and later refuse to start `--profile <name>` on a `[profiles.<name>]` table, and refuse every launch on a top-level `profile` key. The 4.0.9 migration, through `agent update`, moves each table copilot-env wrote into `<name>.config.toml` and reports the ones it did not write; `agent health` reports a leftover as broken wiring with that repair, never as wired.
 - **Switch mode:** re-run `add` with the other mode flag.

@@ -34,7 +34,12 @@ import {
   PROFILE_STATE_KEYS,
 } from "../copilot_api/env_state.ts";
 import { LEDGER_KEY_NAMES } from "../copilot_api/ownership.ts";
-import { type Profile, profileLabel } from "../copilot_api/profile.ts";
+import {
+  agentStartCommand,
+  agentStopCommand,
+  type Profile,
+  profileLabel,
+} from "../copilot_api/profile.ts";
 import { nextProxyVersion } from "../proxy_float.ts";
 import { COLOR_ENABLED, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -110,14 +115,15 @@ export function refuseProfileKey(key: string): void {
 /** The daemon that reads a projected or launch-time key is the profile's own, so the restart the
  *  hint names is that daemon's. Hints stay shell-neutral (no `&&`) for Windows PowerShell 5.1. */
 export function proxyRestartHint(profile: Profile): string {
-  const flag = profile === null ? "" : ` --profile ${profile}`;
-  return `Applies on the next proxy start; restart it: \`agent stop${flag}\`, then \`agent start${flag}\`.`;
+  return `Applies on the next proxy start; restart it: \`${agentStopCommand(profile)}\`, then \`${
+    agentStartCommand(profile)
+  }\`.`;
 }
 
 /** Shared with `agent settings --import`, whose bundle may touch every profile's knobs. */
 export const PROXY_RESTART_HINT_ALL =
   "Applies on the next proxy start; restart the running daemons: `agent stop --all`, then " +
-  "`agent start` (add `--profile <name>` for a profile's daemon).";
+  "`agent start` (`agent profile <name> start` for a profile's daemon).";
 
 /** A global-map write (a global key, or a profile-default key's shared value) reaches every daemon
  *  that reads it at launch; a profile section's write reaches that profile's daemon alone. A key's

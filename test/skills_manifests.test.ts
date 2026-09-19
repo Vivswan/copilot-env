@@ -41,7 +41,7 @@ test(".claude-plugin manifests parse and list skills that exist", () => {
   if (process.platform !== "win32") expect(classifyMcpEntry(entry, null)).toBe("ours-current");
 
   // The skill's example registration is what a user pastes into a project .mcp.json: it must
-  // parse, and it must spawn the same `agent mcp --serve` the plugin does.
+  // parse, and it must spawn the same `agent profile mcp --serve` the plugin does.
   const example = readJson(join(PROJECT_ROOT, "skills", "web-search", ".mcp.json.example"));
   const exampleEntry = ((example.mcpServers ?? {}) as Record<
     string,

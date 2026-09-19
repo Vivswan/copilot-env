@@ -858,7 +858,7 @@ export async function probeDirectWiring(
  *  holding no pair reach it (`agent profile <name> add`, `agent profile <name> auth`, an import, and a named
  *  profile's re-render whose slot holds no pair; the default's landing probes per agent and
  *  stores through commitDefaultWiring in configure_defaults.ts once both agents' files are
- *  written); a listing such as `agent models --direct` probes without it (probeDirectWiring), so a
+ *  written); a listing such as `agent profile models --direct` probes without it (probeDirectWiring), so a
  *  transient answer there can never overwrite the stored pair. */
 export async function landDirectWiring(
   profile: Profile = null,

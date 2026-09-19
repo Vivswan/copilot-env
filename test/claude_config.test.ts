@@ -375,7 +375,7 @@ test("inspectClaudeWiring classifies by exact value: direct / proxy / other / no
     {
       name: "a sibling root's proxy wiring",
       input: JSON.stringify({
-        apiKeyHelper: siblingRootHelper("proxy-token --yes"),
+        apiKeyHelper: siblingRootHelper("profile proxy-token --yes"),
         env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4141" },
       }),
       expect: { providerMode: "proxy" },
@@ -1121,7 +1121,13 @@ test("mode inspection recognizes the managed helper from ANY copilot-env root", 
   for (const value of posixDirect) {
     expect(managedHelperShape(value, ["auth", "--get"], false)).toBe(true);
   }
-  expect(managedHelperShape("/opt/x/bin/agent proxy-token --yes", ["proxy-token", "--yes"], false))
+  expect(
+    managedHelperShape(
+      "/opt/x/bin/agent profile proxy-token --yes",
+      ["profile", "proxy-token", "--yes"],
+      false,
+    ),
+  )
     .toBe(true);
   expect(
     managedHelperShape(

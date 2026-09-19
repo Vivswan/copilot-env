@@ -74,7 +74,7 @@ function makeClaudeHome(mode: WiredMode): string {
   return home;
 }
 
-/** Only proxy wiring or `agent start --profile` creates a profile's daemon home, so its presence
+/** Only proxy wiring or `agent profile <name> start` creates a profile's daemon home, so its presence
  *  means a local proxy is in use. */
 function addProfileHome(): void {
   mkdirSync(join(dir, "profiles", "work"), { recursive: true });

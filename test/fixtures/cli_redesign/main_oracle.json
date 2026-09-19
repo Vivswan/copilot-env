@@ -9,7 +9,7 @@
   },
   "claude --check": {
     "exitCode": 2,
-    "stdout": "Claude provider mode: proxy (local copilot-api proxy)\nsettings.json: <HOME>/.claude/settings.json\napiKeyHelper: <ROOT>/bin/agent proxy-token --yes\nANTHROPIC_BASE_URL: http://127.0.0.1:4199\nClaude Desktop: Claude Desktop not detected on this machine; nothing to wire\n"
+    "stdout": "Claude provider mode: proxy (local copilot-api proxy)\nsettings.json: <HOME>/.claude/settings.json\napiKeyHelper: <ROOT>/bin/agent profile proxy-token --yes\nANTHROPIC_BASE_URL: http://127.0.0.1:4199\nClaude Desktop: Claude Desktop not detected on this machine; nothing to wire\n"
   },
   "codex --check": {
     "exitCode": 2,

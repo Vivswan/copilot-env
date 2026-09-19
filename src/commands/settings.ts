@@ -8,24 +8,31 @@ import {
   buildExportBundle,
   type ImportDeps,
   type ImportOutcome,
+  type ImportScope,
   parseSettingsBundle,
   planImport,
   rollbackCommand,
   serializeSettingsBundle,
+  type SettingsBundle,
   writeSettingsBackup,
 } from "../agents/transfer.ts";
 import {
   CONFIG_REGISTRY,
+  configKeyDef,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
+  type GlobalConfigData,
   type GlobalMapKey,
   isGlobalMapKey,
   isProfileMapKey,
   isProxyProjected,
   type ProfileMapKey,
+  profileSettingsKey,
 } from "../copilot_api/env_config.ts";
+import { assertProfileSlot } from "../copilot_api/env_state.ts";
 import {
   isValidProfileName,
+  parseProfileFlag,
   parseProfileName,
   type Profile,
   profileLabel,
@@ -128,8 +135,11 @@ export function importRestartHints(
   return [PROXY_RESTART_HINT_ALL, ...new Set(profiles.flatMap(warningsFor))];
 }
 
-function runExport(target: string | boolean, withCredentials: boolean): void {
-  const text = serializeSettingsBundle(buildExportBundle({ withCredentials }));
+/** The bundle a scope exports: the whole store (buildExportBundle) or one profile's projection. */
+type BundleBuilder = (options: { withCredentials: boolean }) => SettingsBundle;
+
+function runExport(target: string | boolean, withCredentials: boolean, build: BundleBuilder): void {
+  const text = serializeSettingsBundle(build({ withCredentials }));
   if (typeof target !== "string") {
     if (withCredentials) {
       logger.warn(
@@ -176,9 +186,19 @@ async function confirmImport(writeLines: string[], file: string): Promise<boolea
   return confirmed === true;
 }
 
+/** What a scope makes of the parsed bundle before the one import plans it: the whole store takes
+ *  it as it is; a profile's scope refuses a bundle of anything else and widens its projection
+ *  back to a store-shaped document over the current store. `plan` is the reach the planner is
+ *  told (a named profile's import never lands the default's wiring). */
+interface BundleScope {
+  widen(bundle: SettingsBundle, file: string): SettingsBundle;
+  plan: ImportScope;
+}
+
 async function runImport(
   action: Extract<SettingsAction, { kind: "import" }>,
   deps: SettingsDeps,
+  scope: BundleScope,
 ): Promise<void> {
   const file = action.file;
   let raw: string;
@@ -193,18 +213,18 @@ async function runImport(
   } catch {
     throw new Error(`${file} is not valid JSON`);
   }
-  const bundle = parseSettingsBundle(parsed);
+  const bundle = scope.widen(parseSettingsBundle(parsed), file);
 
   // One plan drives both the confirmation and the apply, so the prompt shows exactly what the
   // import OVERWRITES (planWrites), not every file it writes.
-  const plan = (deps.planImport ?? planImport)(bundle, deps);
+  const plan = (deps.planImport ?? planImport)(bundle, deps, scope.plan);
   if (action.dryRun) {
     // The same landing, recorded: the pre-import backup (its file, and the prune it triggers), then
     // every store slot and agent file the bundle would change, by key. The skips and failures the
     // apply would report are said, and fail the run, the same way. Only the confirmation is skipped.
     await runDryRun(async () => {
       if (!action.noBackup) writeSettingsBackup();
-      const outcome = await (deps.applyPlan ?? applyImportPlan)(plan, deps);
+      const outcome = await (deps.applyPlan ?? applyImportPlan)(plan, deps, scope.plan);
       for (const line of [...outcome.skipped, ...outcome.failures]) logger.warn(line);
       if (outcome.failures.length > 0) process.exitCode = 1;
     });
@@ -222,7 +242,7 @@ async function runImport(
 
   let outcome: ImportOutcome;
   try {
-    outcome = await (deps.applyPlan ?? applyImportPlan)(plan, deps);
+    outcome = await (deps.applyPlan ?? applyImportPlan)(plan, deps, scope.plan);
   } catch (e) {
     // A mid-import throw may leave the stores half-written, so the rollback hint rides the rendered
     // error.
@@ -265,15 +285,160 @@ async function runImport(
   }
 }
 
+/** `agent settings`: the whole store. */
 export async function runSettings(args: SettingsArgs, deps: SettingsDeps = {}): Promise<void> {
+  await runScopedSettings(args, deps, buildExportBundle, {
+    widen: (bundle) => bundle,
+    plan: { defaultWiring: true },
+  });
+}
+
+/** `agent profile [<name>] settings`: one profile's bundle. The default's is its credential, both
+ *  agents' mode, its own section, and the shared proxy and probe defaults; a named profile's is
+ *  its slot and its section. Both are store-shaped documents (the same format, the other parts
+ *  empty), so `agent settings --import` reads them too. */
+export async function runProfileSettings(
+  rawProfile: string | undefined,
+  args: SettingsArgs,
+  deps: SettingsDeps = {},
+): Promise<void> {
+  const profile = parseProfileFlag(rawProfile);
+  await runScopedSettings(
+    args,
+    deps,
+    (options) => {
+      // An export carries the profile's store slot (the import requires it back), so a name with
+      // a daemon home and no slot is refused here with its repair; an import is how a bundle
+      // creates a profile.
+      if (profile !== null) assertProfileSlot(profile);
+      return profileBundle(buildExportBundle(options), profile);
+    },
+    {
+      widen: (bundle, file) => {
+        assertProfileBundle(bundle, profile, file);
+        return widenToStore(bundle, profile);
+      },
+      plan: { defaultWiring: profile === null },
+    },
+  );
+}
+
+async function runScopedSettings(
+  args: SettingsArgs,
+  deps: SettingsDeps,
+  build: BundleBuilder,
+  scope: BundleScope,
+): Promise<void> {
   const action = parseSettingsAction(args);
   if (action.kind === "export") {
     if (action.dryRun) {
-      await runDryRun(() => Promise.resolve(runExport(action.target, action.withCredentials)));
+      await runDryRun(() =>
+        Promise.resolve(runExport(action.target, action.withCredentials, build))
+      );
     } else {
-      runExport(action.target, action.withCredentials);
+      runExport(action.target, action.withCredentials, build);
     }
     return;
   }
-  await runImport(action, deps);
+  await runImport(action, deps, scope);
+}
+
+// --- one profile's bundle ------------------------------------------------------------------------
+
+/** A shared profile default (scope "profile-default") lives in the global map beside the machine's
+ *  own keys; the default profile's bundle carries the former and never the latter. */
+function isSharedDefaultKey(key: string): boolean {
+  return configKeyDef(key)?.scope === "profile-default";
+}
+
+function pickGlobal(
+  global: GlobalConfigData,
+  keep: (key: string) => boolean,
+): GlobalConfigData {
+  return Object.fromEntries(
+    Object.entries(global).filter(([key]) => keep(key)),
+  ) as GlobalConfigData;
+}
+
+function pickSection<T>(sections: Record<string, T>, key: string): Record<string, T> {
+  return key in sections ? { [key]: sections[key] as T } : {};
+}
+
+/** The whole store's bundle narrowed to one profile. Exported for its tests. */
+export function profileBundle(whole: SettingsBundle, profile: Profile): SettingsBundle {
+  const section = pickSection(whole.config.profiles, profileSettingsKey(profile));
+  if (profile === null) {
+    return {
+      formatVersion: whole.formatVersion,
+      config: { global: pickGlobal(whole.config.global, isSharedDefaultKey), profiles: section },
+      credential: whole.credential,
+      profiles: {},
+      modes: whole.modes,
+    };
+  }
+  return {
+    formatVersion: whole.formatVersion,
+    config: { global: {}, profiles: section },
+    credential: { githubToken: null, authProvider: null, ghUser: null },
+    profiles: pickSection(whole.profiles, profile),
+    modes: { codex: "none", claude: "none" },
+  };
+}
+
+/** A profile's import takes a bundle of that profile alone: anything else in it would land on
+ *  another profile or the machine, which is `agent settings --import`'s scope. */
+function assertProfileBundle(bundle: SettingsBundle, profile: Profile, file: string): void {
+  const key = profileSettingsKey(profile);
+  const stray: string[] = [];
+  const foreignSections = Object.keys(bundle.config.profiles).filter((k) => k !== key);
+  if (foreignSections.length > 0) stray.push(`preferences of ${foreignSections.join(", ")}`);
+  const foreignGlobal = Object.keys(bundle.config.global).filter((k) =>
+    profile !== null || !isSharedDefaultKey(k)
+  );
+  if (foreignGlobal.length > 0) stray.push(`machine preferences (${foreignGlobal.join(", ")})`);
+  const foreignSlots = Object.keys(bundle.profiles).filter((k) => k !== profile);
+  if (foreignSlots.length > 0) stray.push(`the profiles ${foreignSlots.join(", ")}`);
+  if (profile !== null) {
+    const { githubToken, authProvider, ghUser } = bundle.credential;
+    if (githubToken !== null || authProvider !== null || ghUser !== null) {
+      stray.push("the default credential");
+    }
+    if (bundle.modes.codex !== "none" || bundle.modes.claude !== "none") {
+      stray.push("the default wiring modes");
+    }
+  }
+  if (stray.length > 0) {
+    throw new Error(
+      `${file} is not a bundle of ${profileLabel(profile)} alone: it carries ${
+        stray.join("; ")
+      }. The whole store imports with \`agent settings --import\`; one profile's bundle comes from ` +
+        "`agent profile [<name>] settings --export`.",
+    );
+  }
+  // Every genuine named-profile export carries the profile's slot under `profiles` (its `add`
+  // records a mode before anything else). Without it (a fresh machine's empty whole-store export,
+  // read as a profile's) the import would clear the profile's preferences and land no slot. The
+  // default's bundle has no such slot: before its first credential it is preferences alone.
+  if (profile !== null && !Object.hasOwn(bundle.profiles, profile)) {
+    throw new Error(
+      `${file} carries no slot for ${profileLabel(profile)}: not one profile's bundle. One comes ` +
+        `from \`agent profile ${profile} settings --export\`.`,
+    );
+  }
+}
+
+/** The profile's bundle as a store-shaped document over the CURRENT store, so the one import
+ *  (preferences full-replace, credentials preserve-if-absent) changes this profile's parts alone:
+ *  every other section and the machine's keys are the store's own values, and no other slot
+ *  travels. */
+function widenToStore(bundle: SettingsBundle, profile: Profile): SettingsBundle {
+  const current = new CopilotEnvConfig().read();
+  const key = profileSettingsKey(profile);
+  const profiles = { ...current.profiles };
+  delete profiles[key];
+  Object.assign(profiles, pickSection(bundle.config.profiles, key));
+  const global = profile === null
+    ? { ...pickGlobal(current.global, (k) => !isSharedDefaultKey(k)), ...bundle.config.global }
+    : current.global;
+  return { ...bundle, config: { global, profiles } };
 }

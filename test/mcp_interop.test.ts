@@ -1,4 +1,4 @@
-// Real MCP client libraries drive the real spawned `agent mcp --serve` process over stdio, so
+// Real MCP client libraries drive the real spawned `agent profile mcp --serve` process over stdio, so
 // client and server never share a process.
 //   v1 monolith SDK client (what Claude Code embeds)  -> the legacy `initialize` handshake
 //   v2 client pinned to 2026-07-28                    -> the modern era outright; the pin forbids the silent legacy fallback
@@ -19,7 +19,7 @@ afterEach(cleanupTmpDirs);
 function serverParams() {
   return {
     command: Deno.execPath(),
-    args: [...denoRunArgs(), join(ROOT, "src", "cli.ts"), "mcp", "--serve"],
+    args: [...denoRunArgs(), join(ROOT, "src", "cli.ts"), "profile", "mcp", "--serve"],
     env: mcpEnv(),
     stderr: "pipe" as const,
   };

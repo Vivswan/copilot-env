@@ -1,5 +1,5 @@
 # Dot-sourced from the PowerShell $PROFILE; the twin of shell/agents.bashrc.
-# It adds only what a subprocess cannot do: eval `agent env` into the current session.
+# It adds only what a subprocess cannot do: eval `agent profile env` into the current session.
 
 $script:AgentsDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $script:AgentPs1 = Join-Path $AgentsDir 'bin\agent.ps1'
@@ -19,19 +19,20 @@ function Invoke-Agent {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 @args
 }
 
-# `agent env` stdout carries only shell directives (src/commands/env.ts), so every line is
-# safe to Invoke-Expression. -Quiet drops stderr for the eager startup call alone, matching
-# agents.bashrc: the wrapper's refresh stays audible, the first-source call is silent.
+# `agent profile env` stdout carries only shell directives (src/commands/env.ts; the default
+# profile's), so every line is safe to Invoke-Expression. -Quiet drops stderr for the eager
+# startup call alone, matching agents.bashrc: the wrapper's refresh stays audible, the
+# first-source call is silent.
 function Import-CopilotEnv {
     param([switch]$Quiet)
-    $lines = if ($Quiet) { Invoke-Agent env --format powershell 2>$null } else { Invoke-Agent env --format powershell }
+    $lines = if ($Quiet) { Invoke-Agent profile env --format powershell 2>$null } else { Invoke-Agent profile env --format powershell }
     if ($LASTEXITCODE -ne 0) { return }
     foreach ($line in $lines) {
         if (-not [string]::IsNullOrWhiteSpace($line)) { Invoke-Expression $line }
     }
 }
 
-# `agent env` is the ONLY output this file ever evals, so a new subcommand never touches
+# `agent profile env` is the ONLY output this file ever evals, so a new subcommand never touches
 # this wrapper. The refresh is not -Quiet: a failed refresh should be visible.
 function agent {
     Invoke-Agent @args

@@ -977,7 +977,7 @@ skipWin(
     // key still names it as the home ...
     expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
     expect(effectiveCodexHome()).toBe(hostHome);
-    // ... so `agent env` exports it and names the drift beside it.
+    // ... so `agent profile env` exports it and names the drift beside it.
     const warned = await stderrDuring(() => {
       expect(managedCodexHome()).toEqual({ value: hostHome });
       return Promise.resolve();
@@ -1078,7 +1078,7 @@ skipWin(
     expect(occurrences(narrated, line)).toBe(1);
     // ... and a second resolution in the same process (a launch re-wires, then pins) stays quiet.
     expect(await stderrDuring(() => runCodex({ kind: "check" }))).not.toContain(line);
-    // A shell that agrees (the wrapper's `agent env` refresh) has nothing to be told.
+    // A shell that agrees (the wrapper's `agent profile env` refresh) has nothing to be told.
     process.env.CODEX_HOME = hostHome;
     expect(await stderrDuring(configureCodex)).not.toContain("Ignoring the shell's CODEX_HOME");
   },
@@ -1158,7 +1158,7 @@ skipWin(
 );
 
 skipWin(
-  "codex-home roots the write, the farm, `--check`, `agent env`, and the launch pin; a stale export is narrated once",
+  "codex-home roots the write, the farm, `--check`, `agent profile env`, and the launch pin; a stale export is narrated once",
   async () => {
     const { hostHome } = isolate();
     const root = join(dir, "explicit-root");
@@ -1193,10 +1193,10 @@ skipWin(
       'model_provider = "copilot-env"',
     );
     expect(occurrences(narrated, note(exported, root, "codex-home"))).toBe(1);
-    expect(pinned).toBe(root); // what `agent launch codex` pins into the child
+    expect(pinned).toBe(root); // what `agent profile launch codex` pins into the child
     expect(lexists(hostHome)).toBe(false);
     expect(effectiveCodexHome()).toBe(root);
-    expect(managedCodexHome()).toEqual({ value: root }); // what `agent env` exports
+    expect(managedCodexHome()).toEqual({ value: root }); // what `agent profile env` exports
     expect(codexHostDrift()).toBeNull();
     // A shell pointing elsewhere: the report names the home in use and narrates the export once.
     process.env.CODEX_HOME = other;
@@ -1207,7 +1207,7 @@ skipWin(
       `config.toml: ${join(root, "config.toml")}`,
     ]);
     expect(occurrences(checked.narrated, note(other, root, "codex-home"))).toBe(1);
-    process.env.CODEX_HOME = root; // the shell re-evaled `agent env`
+    process.env.CODEX_HOME = root; // the shell re-evaled `agent profile env`
     expect((await check()).narrated).toBe("");
 
     // The farm on too: it roots under the path, never at the default farm path.
@@ -1276,7 +1276,7 @@ skipWin(
     });
     await build();
     new CopilotEnvConfig().set({ "codex.host": false });
-    // The shell's inherited CODEX_HOME still carries the farm path; only the next `agent env` clears it.
+    // The shell's inherited CODEX_HOME still carries the farm path; only the next `agent profile env` clears it.
     process.env.CODEX_HOME = hostHome;
 
     await configureCodex();

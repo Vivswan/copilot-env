@@ -20,7 +20,7 @@ import { Credential } from "../copilot_api/credential.ts";
 import { configDefaultBoolean, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { profileLabel } from "../copilot_api/profile.ts";
+import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { type ManagedWrite, resolveCredentialWiring, resolvedDirectToken } from "./configure.ts";
@@ -91,13 +91,25 @@ function unjudged(enabled: boolean, reason: string): ClaudeDesktopStatus {
  *  silent (syncClaudeDesktopWiring in src/claude/desktop.ts).
  *
  *    quiet (the launcher hot path) -> cleanup only: no upsert, identity probe, discovery, or notice */
-export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {}): Promise<void> {
+/** `only` scopes the pass to one named profile's entry (a named import's reach): that target is
+ *  synced and nothing else is judged, swept, or reported; the default's entry and every other
+ *  profile's stay as they are. */
+export async function reconcileClaudeDesktopWiring(
+  opts: { quiet?: boolean; only?: ProfileName } = {},
+): Promise<void> {
   try {
     // Resolved targets gate EVERY cleanup, the key-off sweep included: a store that
     // cannot be trusted must not decide what is ours to remove.
     const resolution = resolveClaudeDesktopTargets();
     if (resolution.kind === "unresolvable") {
       logger.warn(`  Claude Desktop: ${resolution.reason}; leaving the config library alone.`);
+      return;
+    }
+    if (opts.only !== undefined) {
+      // Before the key-off sweep: a scoped pass syncs one entry and removes nothing, whoever's.
+      if (!new CopilotEnvConfig().claudeDesktopEnabled() || !claudeDesktopInstalled()) return;
+      const target = resolution.targets.find((t) => t.profile === opts.only);
+      if (target !== undefined) await syncTarget(target);
       return;
     }
     if (!new CopilotEnvConfig().claudeDesktopEnabled()) {

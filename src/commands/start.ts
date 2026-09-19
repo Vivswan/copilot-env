@@ -24,8 +24,13 @@ import {
   withStartLock,
 } from "../copilot_api/launch.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { daemonPolicy } from "../copilot_api/port.ts";
-import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import {
+  agentStartCommand,
+  agentStopCommand,
+  parseProfileFlag,
+  type Profile,
+  profileLabel,
+} from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
@@ -172,14 +177,16 @@ async function reportDryRun(
 }
 
 /** A manual start is a keep-alive against the idle watchdog, hence the heartbeat. */
-function reportStartNoOp(state: CopilotEnvRunState, port: number, profileFlag: string): void {
+function reportStartNoOp(state: CopilotEnvRunState, port: number, profile: Profile): void {
   state.set({ lastEnsureAt: Date.now() });
   consola.success(`Proxy already running on port ${port} - leaving it up.`);
   // "[start:noop]" is an external contract: CI's lifecycle smoke keys its managed-no-op gate on
   // this token.
   consola.info("[start:noop]");
   consola.info(
-    `Run \`agent start${profileFlag} --force\` to launch a fresh daemon (e.g. after a credential or config change).`,
+    `Run \`${
+      agentStartCommand(profile)
+    } --force\` to launch a fresh daemon (e.g. after a credential or config change).`,
   );
 }
 
@@ -278,7 +285,9 @@ async function reportStartSummary(
         "",
         `  • Launch an agent under this profile:  \`cl --profile ${profile}\` / \`cx --profile ${profile}\``,
         `    ...or \`claude --settings <the path cl --profile ${profile} resolves>\` / \`codex --profile ${profile}\`.`,
-        `  • \`agent stop --profile ${profile}\` stops this daemon (\`agent stop --all\` stops every one).`,
+        `  • \`${
+          agentStopCommand(profile)
+        }\` stops this daemon (\`agent stop --all\` stops every one).`,
       ].join("\n"),
   );
 }
@@ -323,6 +332,10 @@ export async function runStart(
   preflight: PreflightRunner = runPreflight,
 ): Promise<void> {
   const profile = action.profile;
+  // First, on every arm: a named profile hard-fails and never falls back, so a typo'd name is
+  // refused before a probe answers "not running" for a daemon that never existed, a heartbeat
+  // lands anywhere, or a launch makes a half-created daemon home behind its refusal.
+  if (profile !== null) assertProfileSlot(profile);
   if (action.kind === "check") {
     await reportCheckProbe(profile);
     return;
@@ -331,9 +344,6 @@ export async function runStart(
     recordHeartbeat(profile);
     return;
   }
-  // Before any directory is made: a launch of a profile that does not exist must not leave a
-  // half-created daemon home behind its refusal.
-  if (profile !== null) assertProfileSlot(profile);
   /** Resolved together so paths and stores can never disagree. */
   const launchContext = (): LaunchContext => {
     const paths = new CopilotApiPaths(profile);
@@ -363,11 +373,9 @@ export async function runStart(
   // before the command.
   const launch = readLaunchToken(profile);
 
-  // Every human-facing follow-up command must address THIS daemon.
-  const profileFlag = daemonPolicy(profile).flagSuffix;
   await withStartLock(async (lock) => {
     try {
-      await launchUnderLock(lock, action, profile, profileFlag, launchContext, launch);
+      await launchUnderLock(lock, action, profile, launchContext, launch);
     } finally {
       // On every exit path: a failed launch still gets its daily check, and its error passes
       // through.
@@ -380,7 +388,6 @@ async function launchUnderLock(
   lock: HeldStartLock,
   action: { force: boolean; port?: number },
   profile: Profile,
-  profileFlag: string,
   launchContext: () => LaunchContext,
   launch: LaunchToken,
 ): Promise<void> {
@@ -394,7 +401,7 @@ async function launchUnderLock(
   if (isIdempotentNoOp(action, ctx.envConfig)) {
     const status = await proxyStatus(profile);
     if (status.up) {
-      reportStartNoOp(ctx.state, status.port, profileFlag);
+      reportStartNoOp(ctx.state, status.port, profile);
       return;
     }
   }

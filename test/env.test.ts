@@ -30,7 +30,7 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-/** Everything `run` writes to stderr (the one place `agent env` may talk). */
+/** Everything `run` writes to stderr (the one place `agent profile env` may talk). */
 function stderrDuring(run: () => void): string {
   const original = process.stderr.write;
   let captured = "";
@@ -65,7 +65,7 @@ function isolate(): string {
   dir = tempDir("copilot-env-cmd-");
   process.env.HOME = dir;
   process.env.COPILOT_API_HOME = join(dir, "gw"); // empty state -> no host CODEX_HOME
-  // `agent env` emits or clears these exports based on their CURRENT values, so both must start unset.
+  // `agent profile env` emits or clears these exports based on their CURRENT values, so both must start unset.
   delete process.env.CODEX_HOME;
   delete process.env.ANTHROPIC_BASE_URL;
   const claudeHome = join(dir, ".claude");
@@ -74,7 +74,7 @@ function isolate(): string {
   return claudeHome;
 }
 
-// In production `agent env` is always a fresh process spawned by the shell wrapper, so these cases
+// In production `agent profile env` is always a fresh process spawned by the shell wrapper, so these cases
 // run runEnv the same way: a child whose spawn environment carries the isolated homes.
 function childEnvLines(env: Record<string, string | undefined>, profile?: string): string[] {
   const script = `import{runEnv}from${
@@ -106,7 +106,7 @@ function childBaseEnv(): Record<string, string | undefined> {
 
 function writeClaude(home: string, apiKeyHelper: string, baseUrl: string): void {
   writeClaudeSettings(home, { apiKeyHelper, baseUrl });
-  // The default slot's recorded mode is what `agent env` renders from; the file is an output.
+  // The default slot's recorded mode is what `agent profile env` renders from; the file is an output.
   new CopilotEnvState().recordDefaultMode(
     apiKeyHelper === proxyHelperCommand() ? "proxy" : "direct",
   );
@@ -317,7 +317,7 @@ skipWin(
   () => {
     isolate();
     new CopilotEnvConfig().set({ "codex.host": true });
-    const proc = runCli(["env"], {
+    const proc = runCli(["profile", "env"], {
       env: { ...process.env, ...childBaseEnv(), CONSOLA_LEVEL: "5" },
     });
     expect(proc.exitCode).toBe(0);
@@ -329,20 +329,20 @@ skipWin(
 // The wrappers eval these lines verbatim (agents.ps1 line by line inside a function, hence global:),
 // so the spellings are external contracts. PowerShell quotes the `--` because a bare `--` token would be eaten.
 const POSIX_LAUNCHER_LINES = [
-  'cl() { agent launch claude -- "$@"; }',
-  'co() { agent launch copilot -- "$@"; }',
-  'cx() { agent launch codex -- "$@"; }',
-  'clx() { agent launch claude --relaxed -- "$@"; }',
-  'cox() { agent launch copilot --relaxed -- "$@"; }',
-  'cxx() { agent launch codex --relaxed -- "$@"; }',
+  'cl() { agent profile launch claude -- "$@"; }',
+  'co() { agent profile launch copilot -- "$@"; }',
+  'cx() { agent profile launch codex -- "$@"; }',
+  'clx() { agent profile launch claude --relaxed -- "$@"; }',
+  'cox() { agent profile launch copilot --relaxed -- "$@"; }',
+  'cxx() { agent profile launch codex --relaxed -- "$@"; }',
 ];
 const PS_LAUNCHER_LINES = [
-  "function global:cl { agent launch claude '--' @args }",
-  "function global:co { agent launch copilot '--' @args }",
-  "function global:cx { agent launch codex '--' @args }",
-  "function global:clx { agent launch claude --relaxed '--' @args }",
-  "function global:cox { agent launch copilot --relaxed '--' @args }",
-  "function global:cxx { agent launch codex --relaxed '--' @args }",
+  "function global:cl { agent profile launch claude '--' @args }",
+  "function global:co { agent profile launch copilot '--' @args }",
+  "function global:cx { agent profile launch codex '--' @args }",
+  "function global:clx { agent profile launch claude --relaxed '--' @args }",
+  "function global:cox { agent profile launch copilot --relaxed '--' @args }",
+  "function global:cxx { agent profile launch codex --relaxed '--' @args }",
 ];
 
 test("launcherFunctionLines pins both platform flavors, feature-matched", () => {
@@ -359,7 +359,7 @@ test("env emits the launcher functions only when the launchers config key is on"
   expect(envLines()).toEqual([]); // stored false stays off, same as unset
 });
 
-// --- --profile ------------------------------------------------------------------
+// --- a named profile -----------------------------------------------------------
 
 function seedProfile(
   claudeHome: string,
@@ -381,7 +381,7 @@ function seedProfile(
   );
 }
 
-test("env --profile renders the profile's OWN settings file and port; without the flag the default wiring, profiles present or not", () => {
+test("a named profile's env renders the profile's OWN settings file and port; with no name the default wiring, profiles present or not", () => {
   const cases: {
     name: string;
     seed: "proxy" | "direct" | null;
@@ -402,14 +402,14 @@ test("env --profile renders the profile's OWN settings file and port; without th
     },
     // The default wiring sits on a DIFFERENT port, so the answer can only come from settings-work.json.
     {
-      name: "--profile, proxy profile",
+      name: "a named proxy profile",
       seed: "proxy",
       profile: "work",
       lines: ["export ANTHROPIC_BASE_URL='http://127.0.0.1:4242'"],
     },
     // The default stays PROXY-wired: a direct profile must not inherit its export.
     {
-      name: "--profile, direct profile clears its stale local URL",
+      name: "a named direct profile clears its stale local URL",
       seed: "direct",
       profile: "work",
       current: "http://127.0.0.1:4242",
@@ -427,10 +427,10 @@ test("env --profile renders the profile's OWN settings file and port; without th
   }
 });
 
-test("env --profile with an unknown name hard-fails naming the known profiles, and the CLI exits 1 with an EMPTY stdout (the eval contract)", () => {
+test("profile env with an unknown name hard-fails naming the known profiles, and the CLI exits 1 with an EMPTY stdout (the eval contract)", () => {
   const home = isolate();
   expect(() => envLines("nope")).toThrow("no such profile 'nope' (no profiles exist");
-  const proc = runCli(["env", "--profile", "nope"], {
+  const proc = runCli(["profile", "nope", "env"], {
     env: { ...process.env, ...childBaseEnv(), CONSOLA_LEVEL: "5" },
   });
   expect(proc.exitCode).toBe(1);

@@ -672,7 +672,22 @@ function planWrites(
 
 /** Compute the whole import plan against the CURRENT stores (one gh probe per
  *  pinned account, memoized, shared by every gh-cli slot and reused by the apply). */
-export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): ImportPlan {
+/** How far an import reaches. The whole store lands the default's credential and wiring and
+ *  reconciles every Desktop entry; one named profile's bundle (`agent profile <name> settings
+ *  --import`) never touches the default, so the default's rebake rules below stay off for it and
+ *  the apply leaves every other profile's Desktop entry as it is (its own profile's write carries
+ *  that profile's entry). */
+export interface ImportScope {
+  defaultWiring: boolean;
+}
+
+export const WHOLE_STORE: ImportScope = { defaultWiring: true };
+
+export function planImport(
+  bundle: SettingsBundle,
+  deps: ImportDeps = {},
+  scope: ImportScope = { defaultWiring: true },
+): ImportPlan {
   const ghTokens = new Map<string | null, string | null>();
   const gh = (ghUser: string | null): string | null => {
     let token = ghTokens.get(ghUser);
@@ -725,13 +740,13 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
     modes.codex = mode;
     modes.claude = mode;
   };
-  const pairUnstored = recorded === "direct" &&
+  const pairUnstored = scope.defaultWiring && recorded === "direct" &&
     (defaultSlot.action === "write" ||
       directPairIncomplete(null, directOverlayIn(bundle.config, null)));
   if (bundle.modes.codex === "none" && bundle.modes.claude === "none" && pairUnstored) {
     modes.codex = "direct";
     modes.claude = "direct";
-  } else if (oneNamed && recorded === null) {
+  } else if (scope.defaultWiring && oneNamed && recorded === null) {
     landBoth(
       named,
       `the default profile has no recorded mode, so the bundle's ${named} wiring lands for both agents`,
@@ -862,6 +877,7 @@ function keptCredential(state: CopilotEnvState, name: ProfileName): ProvisionedC
 export async function applyImportPlan(
   plan: ImportPlan,
   deps: ImportDeps = {},
+  scope: ImportScope = WHOLE_STORE,
 ): Promise<ImportOutcome> {
   const outcome: ImportOutcome = {
     modes: null,
@@ -888,8 +904,16 @@ export async function applyImportPlan(
     outcome.failures.push(...failures);
   }
   await importProfiles(plan, outcome);
-  // The imported `claude.desktop` preference lands even when no wiring was re-derived.
-  await reconcileClaudeDesktopWiring();
+  if (scope.defaultWiring) {
+    // The imported `claude.desktop` preference lands even when no wiring was re-derived.
+    await reconcileClaudeDesktopWiring();
+  } else {
+    // A named bundle reaches its profile's entry alone: a re-auth with no mode, or a preference
+    // its entry bakes (static-key), lands there and nowhere else.
+    for (const { name, landing } of plan.profiles) {
+      if (landing.action !== "skip") await reconcileClaudeDesktopWiring({ only: name });
+    }
+  }
   return outcome;
 }
 

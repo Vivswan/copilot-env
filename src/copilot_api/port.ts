@@ -25,8 +25,6 @@ export type DaemonPolicy =
     readonly port: { readonly source: "config" };
     readonly strictPortEligible: true;
     readonly releasesPortOnStop: true;
-    /** Follow-up-command hints carry this suffix. */
-    readonly flagSuffix: "";
   }
   | {
     readonly port: { readonly source: "reservation"; readonly name: ProfileName };
@@ -34,7 +32,6 @@ export type DaemonPolicy =
     readonly strictPortEligible: false;
     /** The baked agent wiring points at the reservation, so it survives a stop. */
     readonly releasesPortOnStop: false;
-    readonly flagSuffix: ` --profile ${string}`;
   };
 
 export function daemonPolicy(profile: Profile): DaemonPolicy {
@@ -43,14 +40,12 @@ export function daemonPolicy(profile: Profile): DaemonPolicy {
       port: { source: "config" },
       strictPortEligible: true,
       releasesPortOnStop: true,
-      flagSuffix: "",
     };
   }
   return {
     port: { source: "reservation", name: profile },
     strictPortEligible: false,
     releasesPortOnStop: false,
-    flagSuffix: ` --profile ${profile}`,
   };
 }
 
@@ -226,7 +221,7 @@ export function openaiBaseUrl(port: string): string {
 
 /** Any loopback hostname (isLoopbackHostname, THE one rule) is accepted on read: a hand-edit that
  *  still means the local proxy. Each read site layers its own port/path expectation on top
- *  (matchesProxyOrigin, or a bare null-test in `agent env`). */
+ *  (matchesProxyOrigin, or a bare null-test in `agent profile env`). */
 export function parseLoopbackProxyUrl(url: string): { port: string; path: string } | null {
   try {
     const u = new URL(url);

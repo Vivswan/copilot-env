@@ -1,6 +1,7 @@
-// The one implementation behind the cl/co/cx one-liners `agent env` emits on both platforms. The
-// child env is composed here rather than inherited: the wiring step may have just moved a port or
-// built the farm, and nothing refreshes the shell's env between wiring and exec inside one process.
+// The one implementation behind the cl/co/cx one-liners `agent profile env` emits on both
+// platforms. The child env is composed here rather than inherited: the wiring step may have just
+// moved a port or built the farm, and nothing refreshes the shell's env between wiring and exec
+// inside one process.
 //
 // Neither deno nor node exposes an execve-style replacement, so the agent runs as a child with
 // inherited stdio and its exit code (or 128+signal) passes through.
@@ -66,15 +67,16 @@ export function parseLaunchAction(flags: LaunchFlags): LaunchAction {
   const relaxed = Boolean(flags.relaxed);
   let profile = parseProfileFlag(flags.profile);
   let args = [...flags.args];
-  // The one-line wrappers cannot split `cl --profile work ...`, so a LEADING pair is hoisted here;
-  // with an explicit --profile the pair rides through to the agent CLI untouched. co never hoists.
+  // The one-line wrappers cannot split `cl --profile work ...`, so a LEADING pair is hoisted here
+  // into the named profile; under a named verb the pair rides through to the agent CLI untouched.
+  // co never hoists.
   if (cli !== "copilot" && profile === null && args[0] === "--profile" && args[1]) {
     profile = parseProfileName(args[1]);
     args = args.slice(2);
   }
   if (cli === "copilot") {
     if (profile !== null) {
-      throw new Error("--profile does not apply to copilot (profiles wire Codex and Claude)");
+      throw new Error("copilot takes no profile (profiles wire Codex and Claude)");
     }
     return { kind: "copilot", relaxed, args };
   }
@@ -152,7 +154,7 @@ async function wireDefaultProvider(
     await deps.wireProxyDefault(agent);
   } else if (mode === "other") {
     deps.notify(
-      `agent launch: ${display} has a custom or unrecognized provider config ` +
+      `agent profile launch: ${display} has a custom or unrecognized provider config ` +
         "(not managed by copilot-env); launching it as-is.",
     );
   }
@@ -183,7 +185,8 @@ export async function prepareLaunch(
         const mode = await ensureProfileReady(action.profile, deps);
         if (mode === null) return null;
         const settings = await deps.writeClaudeProfileSettings(action.profile, mode);
-        // The shell may carry the DEFAULT proxy's URL (from `agent env`), which would override the
+        // The shell may carry the DEFAULT proxy's URL (from `agent profile env`), which would
+        // override the
         // profile's own env block.
         plan.scrub.push(BASE_URL_ENV);
         plan.args = ["--settings", settings, ...flags, ...action.args];
@@ -208,7 +211,7 @@ export async function prepareLaunch(
           await deps.syncProfileWiring(action.profile, mode);
         } catch (e) {
           deps.notify(
-            "agent launch: could not refresh the profile wiring; launching with the " +
+            "agent profile launch: could not refresh the profile wiring; launching with the " +
               `existing config (${errMessage(e)}).`,
           );
         }

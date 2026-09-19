@@ -39,6 +39,7 @@ import { CopilotApiPaths, HELPERS_DIR_NAME, resolveRootHome } from "../copilot_a
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import {
   agentStartCommand,
+  isValidProfileName,
   parseProfileName,
   type Profile,
   profileLabel,
@@ -360,11 +361,15 @@ export const DESKTOP_DISPLAY_NAME = "GitHub Copilot";
  *  named profile never falls back to the default). Rows are Desktop's documented managedMcpServers
  *  shape (an ARRAY; an object keyed by name is rejected as invalid_type and silently dropped).
  *  Foreign rows survive by name; a value of any other shape is our own former object and goes. */
-const MCP_SERVER_NAME = "copilot-env";
+export const MCP_SERVER_NAME = "copilot-env";
+/** The `agent` subcommand a profile's entry spawns, `agent profile [<name>] mcp --serve`: one
+ *  spelling for the writer, the two readers below, and the 4.0.9 migration's rewrite of the old
+ *  shape. */
+export function mcpServeArgs(profile: Profile): string[] {
+  return ["profile", ...(profile === null ? [] : [profile]), "mcp", "--serve"];
+}
 function managedMcpServers(profile: Profile, existing: unknown): Record<string, unknown>[] {
-  const { command, args } = agentLauncherCommand(
-    profile === null ? ["mcp", "--serve"] : ["mcp", "--serve", "--profile", profile],
-  );
+  const { command, args } = agentLauncherCommand(mcpServeArgs(profile));
   const foreign = Array.isArray(existing)
     ? existing.filter((row): row is Record<string, unknown> =>
       isRecord(row) && row["name"] !== MCP_SERVER_NAME
@@ -712,7 +717,7 @@ export type DesktopWireOptions = ManagedWrite & {
   fetchImpl?: ProbeFetch;
 };
 
-/** The same parse `agent models` renders: one pipeline for both surfaces. */
+/** The same parse `agent profile models` renders: one pipeline for both surfaces. */
 function labelLookup(body: unknown): (id: string) => string | null {
   const names = new Map<string, string>();
   try {
@@ -1242,28 +1247,66 @@ export interface OwnedDesktopEntry {
   path: string;
 }
 
-/** The rename's retarget of an entry's own MCP row (the `copilot-env` server, never another
- *  program's): its `--profile <from>` becomes `--profile <to>`. True when a row changed. */
+/** The entry's `copilot-env` MCP row with an argv, or undefined. Exported for the migration. */
+export function ownMcpRow(
+  doc: Record<string, unknown>,
+): (Record<string, unknown> & { args: unknown[] }) | undefined {
+  const servers = doc["managedMcpServers"];
+  const ours = Array.isArray(servers)
+    ? servers.find((row) => isRecord(row) && row["name"] === MCP_SERVER_NAME)
+    : undefined;
+  if (!isRecord(ours) || !Array.isArray(ours.args)) return undefined;
+  return ours as Record<string, unknown> & { args: unknown[] };
+}
+
+/** The subcommand words of an `agent` launcher argv, whichever checkout the launcher path names:
+ *  on Windows the PowerShell prefix (`-NoProfile -ExecutionPolicy Bypass -File <path>`) is dropped
+ *  when its flags are there, so a row written by a moved checkout still reads as ours (the ledger,
+ *  not the path, says whose the entry is); on POSIX the argv is the subcommand. Exported for the
+ *  migration. */
+export function launcherSubcommandArgs(args: readonly unknown[]): unknown[] {
+  const prefix = agentLauncherCommand([]).args;
+  const fileIdx = prefix.indexOf("-File");
+  if (fileIdx === -1) return [...args];
+  const flagged = prefix.slice(0, fileIdx + 1).every((a, i) => args[i] === a) &&
+    typeof args[fileIdx + 1] === "string";
+  return flagged ? args.slice(prefix.length) : [...args];
+}
+
+/** The profile an entry's own MCP row serves: its subcommand is `mcpServeArgs(profile)`, so the
+ *  default is the three-word shape and a named profile the four-word one with its name second.
+ *  Undefined for a row of another shape, or no row of ours. */
+function profileOfMcpRow(doc: Record<string, unknown>): Profile | undefined {
+  const ours = ownMcpRow(doc);
+  if (ours === undefined) return undefined;
+  const args = launcherSubcommandArgs(ours.args);
+  const same = (expected: readonly string[]): boolean =>
+    args.length === expected.length && expected.every((a, i) => args[i] === a);
+  if (same(mcpServeArgs(null))) return null;
+  const name = args[1];
+  if (typeof name !== "string" || !isValidProfileName(name)) return undefined;
+  const profile = parseProfileName(name);
+  return same(mcpServeArgs(profile)) ? profile : undefined;
+}
+
+/** The rename's retarget of an entry's own MCP row: the row serving `from` is rewritten to serve
+ *  `to`. True when a row changed. */
 export function retargetEntryProfile(
   doc: Record<string, unknown>,
   from: ProfileName,
   to: ProfileName,
 ): boolean {
-  const servers = doc["managedMcpServers"];
-  const ours = Array.isArray(servers)
-    ? servers.find((row) => isRecord(row) && row["name"] === MCP_SERVER_NAME)
-    : undefined;
-  if (!isRecord(ours) || !Array.isArray(ours.args)) return false;
-  const at = ours.args.indexOf("--profile");
-  if (at === -1 || ours.args[at + 1] !== from) return false;
-  ours.args[at + 1] = to;
+  if (profileOfMcpRow(doc) !== from) return false;
+  const ours = ownMcpRow(doc);
+  if (ours === undefined) return false;
+  ours.args = agentLauncherCommand(mcpServeArgs(to)).args;
   return true;
 }
 
 /** Undefined when the document carries no wiring of ours (absent or damaged: no target can claim
- *  it, so it is an orphan). Attribution reads the managed MCP server's `--profile` argument, the one
- *  key both credential shapes write (a static entry names no helper script). An UNREADABLE
- *  document throws: a failed look is never "not ours". */
+ *  it, so it is an orphan). Attribution reads the managed MCP server's argv, the one key both
+ *  credential shapes write (a static entry names no helper script). An UNREADABLE document throws:
+ *  a failed look is never "not ours". */
 export function entryProfileAt(path: string): Profile | undefined {
   const raw = readFileOrNull(path);
   if (raw === null) return undefined;
@@ -1273,21 +1316,7 @@ export function entryProfileAt(path: string): Profile | undefined {
   } catch {
     return undefined;
   }
-  const servers = isRecord(doc) ? doc["managedMcpServers"] : undefined;
-  const ours = Array.isArray(servers)
-    ? servers.find((row) => isRecord(row) && row["name"] === MCP_SERVER_NAME)
-    : undefined;
-  const args = isRecord(ours) && Array.isArray(ours.args) ? ours.args : null;
-  if (args === null || !args.includes("--serve")) return undefined;
-  const at = args.indexOf("--profile");
-  if (at === -1) return null;
-  const name = args[at + 1];
-  if (typeof name !== "string") return undefined;
-  try {
-    return parseProfileName(name);
-  } catch {
-    return undefined;
-  }
+  return isRecord(doc) ? profileOfMcpRow(doc) : undefined;
 }
 
 interface OwnedLibrary {

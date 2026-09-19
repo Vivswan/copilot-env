@@ -2,8 +2,8 @@
 // `claude mcp add --scope user` writes), NOT settings.json: hence beside but apart from config.ts.
 // Claude Code rewrites this file constantly and owns its schema, so a surprising document is warned
 // about and left alone, never clobbered.
-//   machine-global file, `agent mcp --serve` without `--profile` -> default profile only; a named
-//                                                                  profile registers by hand
+//   machine-global file, `agent profile mcp --serve` -> the default profile's credential only; a
+//                                                      named profile registers by hand
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
@@ -30,7 +30,7 @@ export function claudeJsonPath(): string {
   return join(claudeConfigDirOverride() ?? homedir(), ".claude.json");
 }
 
-const CURRENT_MCP_SUBARGS: readonly string[] = ["mcp", "--serve"];
+const CURRENT_MCP_SUBARGS: readonly string[] = ["profile", "mcp", "--serve"];
 
 /** MCP clients start servers with a minimal environment and the gh-cli credential needs `gh`, so
  *  gh's directory goes in front of Claude Code's `${PATH}` expansion (nothing the client had is
@@ -53,10 +53,12 @@ function sameStrings(a: readonly unknown[], b: readonly string[]): boolean {
 }
 
 /** `ghPath` null means gh is unknown HERE, so a recorded env is taken as current rather than stale.
- */
+ *  `subArgs` is the subcommand the shape is judged against: the current one, or an old one the
+ *  4.0.9 migration rewrites (retargetMcpRegistration). */
 export function classifyMcpEntry(
   entry: unknown,
   ghPath: string | null = resolveExecutablePath("gh"),
+  subArgs: readonly string[] = CURRENT_MCP_SUBARGS,
 ): McpRegistrationStatus {
   if (entry === undefined) return "absent";
   if (!isRecord(entry)) return "foreign";
@@ -64,7 +66,7 @@ export function classifyMcpEntry(
   if (entry.type !== undefined && entry.type !== "stdio") return "foreign";
   const { command, args } = entry;
   if (typeof command !== "string" || !Array.isArray(args)) return "foreign";
-  const managed = agentLauncherCommand(CURRENT_MCP_SUBARGS);
+  const managed = agentLauncherCommand(subArgs);
   const wanted = serverPathEnv(ghPath);
   const sameEnv = wanted === undefined ||
     JSON.stringify(entry.env ?? null) === JSON.stringify(wanted);
@@ -83,13 +85,32 @@ export function classifyMcpEntry(
       managed.args.slice(0, fileIdx + 1).every((a, i) => args[i] === a) &&
       typeof args[fileIdx + 1] === "string" &&
       /[\\/]bin[\\/]agent\.ps1$/i.test(String(args[fileIdx + 1])) &&
-      sameStrings(args.slice(fileIdx + 2), CURRENT_MCP_SUBARGS);
+      sameStrings(args.slice(fileIdx + 2), subArgs);
     return shape ? "ours-stale" : "foreign";
   }
   // POSIX: a command ending in bin/agent (the checkout layout); a bare `agent` from someone's PATH
   // is NOT claimed.
-  const shape = /[\\/]bin[\\/]agent$/.test(command) && sameStrings(args, CURRENT_MCP_SUBARGS);
+  const shape = /[\\/]bin[\\/]agent$/.test(command) && sameStrings(args, subArgs);
   return shape ? "ours-stale" : "foreign";
+}
+
+/** The 4.0.9 migration's rewrite of a registration in an old argv shape (`legacySubArgs` behind
+ *  our launcher, the checkout moved or not) to the current one, env kept. False when no such
+ *  entry is there or the file could not be written. */
+export function retargetMcpRegistration(legacySubArgs: readonly string[]): boolean {
+  const loaded = loadClaudeJson();
+  if (loaded === null) return false;
+  const servers = loaded.doc.mcpServers;
+  if (!isRecord(servers)) return false;
+  const ghPath = resolveExecutablePath("gh");
+  const entry = servers[MCP_SERVER_NAME];
+  const status = classifyMcpEntry(entry, ghPath, legacySubArgs);
+  if (status !== "ours-current" && status !== "ours-stale") return false;
+  const doc = structuredClone(loaded.doc);
+  const table = isRecord(doc.mcpServers) ? doc.mcpServers : {};
+  doc.mcpServers = table;
+  table[MCP_SERVER_NAME] = managedEntry(ghPath, entry);
+  return writeClaudeJson(loaded, doc);
 }
 
 interface ClaudeJsonDoc {
@@ -144,7 +165,7 @@ function writeClaudeJson(loaded: ClaudeJsonDoc, doc: Record<string, unknown>): b
   return true;
 }
 
-/** What `agent mcp` (status) reports about the registration. */
+/** What `agent profile mcp` (status) reports about the registration. */
 export interface McpRegistrationInspection {
   path: string;
   /** "unreadable" when the file could not be read or parsed. */

@@ -3,7 +3,7 @@
 import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
 import { configGetCommand, configSetCommand } from "../copilot_api/env_config.ts";
 import { SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
-import { agentStartCommand, type ProfileName } from "../copilot_api/profile.ts";
+import { agentStartCommand, agentStopCommand, type ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../scripts/idle_watchdog.ts";
 import type { CommandLook } from "../utils/command.ts";
@@ -518,7 +518,7 @@ export function checkRuntimeOrphan(f: RuntimeTarget, p: DaemonProbeFacts): Check
         value: { orphan: false },
       };
     case "orphan": {
-      const stopFix = f.profile === null ? "agent stop" : `agent stop --profile ${f.profile}`;
+      const stopFix = agentStopCommand(f.profile);
       // An unproven identity scan means "not the tracked daemon" was never established: the
       // responder may well BE it. Warn with the honest detail instead of the orphan claim.
       if (p.pidScanUnproven && p.trackedPid !== null) {
@@ -765,7 +765,7 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
     ? {
       ...base,
       status: "ok",
-      detail: "enabled (the `shell.launchers` config key; `agent env` defines them)",
+      detail: "enabled (the `shell.launchers` config key; `agent profile env` defines them)",
     }
     : {
       ...base,

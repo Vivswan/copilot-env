@@ -1,5 +1,5 @@
 # Self-bootstrapping entry point (Windows); the mirror of bin/agent.
-#   stdout                        -> the CLI's own, forwarded as is; `agent env` is the text the `agent` profile function in shell/agents.ps1 evals
+#   stdout                        -> the CLI's own, forwarded as is; `agent profile env` is the text the `agent` profile function in shell/agents.ps1 evals
 #   `[Console]::Error.WriteLine`  -> every other line; the POSIX twin's `>&2` (a literal `1>&2` is reserved)
 $ErrorActionPreference = 'Stop'
 
@@ -7,9 +7,9 @@ $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Snap = (Resolve-Path (Join-Path $Here '..')).Path
 
 . (Join-Path $Snap 'scripts\ensure-deno.ps1')
-# `agent env` is the profile function's automatic refresh after every command: its
+# `agent profile env` is the profile function's automatic refresh after every command: its
 # bootstrap runs quiet so an old PATH deno warns once per command, not twice.
-Install-Deno -Root $Snap -Quiet:($args.Count -ge 1 -and $args[0] -eq 'env')
+Install-Deno -Root $Snap -Quiet:($args.Count -ge 2 -and $args[0] -eq 'profile' -and $args[1] -eq 'env')
 
 # A failed freshness read reinstalls (the self-healing direction) rather than reading as
 # "deps current" and running stale node_modules.

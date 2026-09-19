@@ -62,7 +62,7 @@ function movedCheckout(entry: Record<string, unknown>): Record<string, unknown> 
 }
 
 function managedEntry(): Record<string, unknown> {
-  const { command, args } = agentLauncherCommand(["mcp", "--serve"]);
+  const { command, args } = agentLauncherCommand(["profile", "mcp", "--serve"]);
   const env = serverPathEnv(resolveExecutablePath("gh"));
   return { "type": "stdio", "command": command, "args": args, ...(env ? { env } : {}) };
 }
@@ -79,7 +79,7 @@ test("serverPathEnv puts gh's directory in front of the client's PATH by expansi
 // keeps what an earlier one recorded, and a pass that can rewrites an env-less entry of ours. The
 // second row needs a real gh on PATH (CI has one).
 test("the PATH env follows gh's visibility: kept when gh is unseen, restored when it is seen", () => {
-  const { command, args } = agentLauncherCommand(["mcp", "--serve"]);
+  const { command, args } = agentLauncherCommand(["profile", "mcp", "--serve"]);
   const bare = { "type": "stdio", "command": command, "args": args };
   const recorded = { ...bare, env: { PATH: `/somewhere/bin${delimiter}\${PATH}` } };
   const gh = resolveExecutablePath("gh");
@@ -240,7 +240,7 @@ test("classifyMcpEntry: ours-current, ours-stale, foreign, and absent, from the 
       posix: true,
     },
     {
-      entry: { "type": "stdio", "command": "agent", "args": ["mcp", "--serve"] },
+      entry: { "type": "stdio", "command": "agent", "args": ["profile", "mcp", "--serve"] },
       status: "foreign",
       posix: true,
     },
@@ -250,7 +250,11 @@ test("classifyMcpEntry: ours-current, ours-stale, foreign, and absent, from the 
       posix: true,
     },
     {
-      entry: { "type": "stdio", "command": "/elsewhere/bin/agent", "args": ["mcp", "--serve"] },
+      entry: {
+        "type": "stdio",
+        "command": "/elsewhere/bin/agent",
+        "args": ["profile", "mcp", "--serve"],
+      },
       status: "ours-stale",
       posix: true,
     },

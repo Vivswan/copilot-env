@@ -36,9 +36,11 @@ import {
   moveProfilesToVerbTree,
   moveRootDaemonHome,
   renameAutoupdateThrottle,
+  rewriteDesktopMcpArgv,
   scopeStaticKeyBoolean,
   stripLaunchersBlocks,
   v409CodexProfileFiles,
+  v409DesktopMcpArgv,
   v409IdentityCache,
   v409IntegrationIdPin,
   v409LaunchersBlock,
@@ -50,7 +52,13 @@ import {
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { MARKER, MARKER_END } from "../src/shell/integration.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
-import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../src/claude/desktop.ts";
+import {
+  CLAUDE_DESKTOP_DIR_ENV,
+  mcpServeArgs,
+  META_FILENAME,
+  writeDesktopHelperScript,
+} from "../src/claude/desktop.ts";
+import { claudeJsonPath, inspectMcpRegistration } from "../src/claude/mcp_registration.ts";
 import {
   resetIntegrationIdentityCache,
   setIntegrationProbeFetch,
@@ -121,14 +129,16 @@ test("dueMigrations selects [from, to) in ascending order over the registry", ()
 test("the shipped registry holds exactly the named fix-ups in order, layout steps first", () => {
   // Pinned BY IDENTITY and in order: a count or a list of version strings could stay green while a
   // same-version fix-up was dropped in a merge. Each position has a reason:
-  //   layout steps first (store rename, the state.json fold, the root daemon home)
-  //                                                      -> later steps read stores at the new paths and
-  //                                                         through the new preference shape
+  //   layout steps first (store rename, the state.json fold, the root daemon home, the Desktop MCP
+  //   argv)                                              -> later steps read stores at the new paths,
+  //                                                         through the new preference shape, and
+  //                                                         the Desktop entries through the new reader
   //   Desktop helper move, then the Codex profile files  -> each needs the 4.0.0 rewrites done
   expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
     v402RootLayout,
     v409StateFold,
     v409RootDaemonHome,
+    v409DesktopMcpArgv,
     v400ShellFence,
     v400CodexWiring,
     v400ClaudeWiring,
@@ -1210,6 +1220,76 @@ function legacyHelperLine(profile: string): string {
   );
 }
 
+test("4.0.9 profile verb tree: a malformed Desktop index refuses a rename before its first delete, and the step reports it", async () => {
+  // Without the check the rename would move the store and home, write the new helper, delete
+  // the old one, then find the index unreadable and leave the owned entry pointing at the deleted
+  // helper with the old argv, while the step reported success.
+  const homes = isolateAgentHomes("copilot-mig-verb-tree-meta-", { mkdirs: true });
+  dir = homes.dir;
+  const desktop = join(dir, "desktop");
+  const library = join(desktop, "configLibrary");
+  mkdirSync(library, { recursive: true });
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
+  const SYNC = parseProfileName("sync");
+  try {
+    writeStore(join(homes.proxyHome, "state.json"), {
+      global: { "daemon.port": 4199 },
+      profiles: {
+        sync: { githubToken: "ghp_sync", authProvider: "gh-token", mode: "proxy" },
+      },
+    });
+    mkdirSync(join(homes.proxyHome, "profiles", "sync"), { recursive: true });
+    const helper = writeDesktopHelperScript("proxy", SYNC);
+    writeFileSync(join(library, META_FILENAME), "{ not json");
+    const before = fingerprintTree(dir);
+    const run = await captureChannels(() =>
+      expect(moveProfilesToVerbTree()).rejects.toThrow("not moved: profile 'sync'")
+    );
+    expect(run.all).toContain("could not move profile 'sync'");
+    expect(run.all).toContain("has an unexpected shape");
+    // Nothing moved, nothing deleted: the store slot, the daemon home, and the helper stand.
+    expect(fingerprintTree(dir)).toEqual(before);
+    expect(existsSync(helper)).toBe(true);
+    expect(new CopilotEnvState().profileNames()).toEqual([SYNC]);
+  } finally {
+    delete process.env[CLAUDE_DESKTOP_DIR_ENV];
+  }
+});
+
+test("4.0.9 profile verb tree: the default's MCP registration moves to `agent profile mcp --serve` on its own, with no re-render to redo it", async () => {
+  // A Direct default with no credential: its slot is incomplete, so the step retargets the
+  // registration and re-renders nothing, and the retarget alone must leave the entry current.
+  const homes = isolateAgentHomes("copilot-mig-verb-tree-mcp-", { mkdirs: true });
+  dir = homes.dir;
+  writeStore(join(homes.proxyHome, "state.json"), {
+    profiles: { default: { mode: "direct" } },
+  });
+  const legacyMcp = agentLauncherCommand(["mcp", "--serve"]);
+  writeFileSync(
+    claudeJsonPath(),
+    JSON.stringify({
+      mcpServers: {
+        "copilot-env": { type: "stdio", command: legacyMcp.command, args: legacyMcp.args },
+        "theirs": { type: "stdio", command: "x", args: [] },
+      },
+    }),
+  );
+  const run = await captureChannels(() => moveProfilesToVerbTree());
+  expect(run.all).toContain("default has no complete wiring to re-render");
+  expect(inspectMcpRegistration().status).toBe("ours-current");
+  const doc = JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as {
+    mcpServers: Record<string, { args: string[] }>;
+  };
+  expect(doc.mcpServers["copilot-env"]?.args).toEqual(
+    agentLauncherCommand(["profile", "mcp", "--serve"]).args,
+  );
+  expect(doc.mcpServers["theirs"]).toEqual({ type: "stdio", command: "x", args: [] });
+  // Idempotent: the second run finds the new shape and writes nothing.
+  const before = fingerprintTree(dir);
+  await captureChannels(() => moveProfilesToVerbTree());
+  expect(fingerprintTree(dir)).toEqual(before);
+});
+
 test(
   "4.0.9 profile verb tree, dry run: a moved profile home is a directory row the re-render builds under, and a retargeted settings file never prints its token",
   async () => {
@@ -1327,7 +1407,10 @@ test(
 );
 
 test(
-  "4.0.9 profile verb tree: a verb-named profile becomes the first free <name>-<n> with every artifact retargeted and re-rendered, a named Direct profile's resolver line moves to the new spelling, the user's keys survive, and a re-run writes nothing",
+  "4.0.9 profile verb tree: a verb-named profile becomes the first free <name>-<n> with every " +
+    "artifact retargeted and re-rendered, a named Direct profile's resolver line and the default's " +
+    "proxy line, MCP registration, and Desktop row move to the new spelling, the user's keys " +
+    "survive, and a re-run writes nothing",
   async () => {
     const homes = isolateAgentHomes("copilot-mig-verb-tree-", { mkdirs: true });
     dir = homes.dir;
@@ -1338,9 +1421,11 @@ test(
     const SYNC = parseProfileName("sync");
     const SYNC2 = parseProfileName("sync-2");
     const entryPath = join(library, "e1.json");
+    const defaultEntryPath = join(library, "e0.json");
     try {
-      // A proxy profile named like a verb, and a Direct profile whose files carry the 4.0.9 resolver
-      // line; the default's line (`agent auth --get`, the alias) is not touched.
+      // A proxy profile named like a verb, a Direct profile whose files carry the 4.0.9 resolver
+      // line, and a proxy default whose files, registration, and Desktop row carry the 4.0.9
+      // spellings too.
       writeStore(join(homes.proxyHome, "state.json"), {
         global: { "daemon.port": 4199 },
         profiles: {
@@ -1355,7 +1440,7 @@ test(
           // re-render probes for it (the stub accepts the first candidate) and stores it.
           work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "direct" },
         },
-        ownership: { claudeDesktopPaths: [entryPath] },
+        ownership: { claudeDesktopPaths: [entryPath, defaultEntryPath] },
       });
       writeRunState({ port: 4555 }, SYNC);
       writeFileSync(
@@ -1370,12 +1455,41 @@ test(
           hand: "kept",
         }),
       );
+      const legacyDefaultProxy = agentLauncherCommand(["proxy-token", "--yes"]);
+      writeFileSync(
+        join(homes.claudeHome, "settings.json"),
+        JSON.stringify({
+          apiKeyHelper: proxyHelperCommand().replace(
+            "profile proxy-token --yes",
+            "proxy-token --yes",
+          ),
+          env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4199" },
+          hand: "kept",
+        }),
+      );
+      const legacyMcp = agentLauncherCommand(["mcp", "--serve"]);
+      writeFileSync(
+        claudeJsonPath(),
+        JSON.stringify({
+          mcpServers: {
+            "copilot-env": { type: "stdio", command: legacyMcp.command, args: legacyMcp.args },
+          },
+        }),
+      );
       const legacyWork = agentLauncherCommand(["auth", "--get", "--profile", "work"]);
+      const defaultTable = managedProxyProvider("http://127.0.0.1:4199/v1", null, {
+        kind: "command",
+      }) as Record<string, unknown>;
+      defaultTable.auth = {
+        ...(defaultTable.auth as Record<string, unknown>),
+        args: legacyDefaultProxy.args,
+      };
       writeFileSync(
         join(homes.codexHome, "config.toml"),
         stringify({
           "model_provider": "copilot-env",
           "model_providers": {
+            "copilot-env": defaultTable,
             "copilot-env-work": {
               "name": "copilot-env-work",
               "base_url": "https://api.githubcopilot.com",
@@ -1397,7 +1511,17 @@ test(
         join(library, META_FILENAME),
         JSON.stringify({
           appliedId: "e1",
-          entries: [{ id: "e1", name: "copilot-env: sync", pinned: true }],
+          entries: [
+            { id: "e0", name: "copilot-env", pinned: false },
+            { id: "e1", name: "copilot-env: sync", pinned: true },
+          ],
+        }),
+      );
+      writeFileSync(
+        defaultEntryPath,
+        JSON.stringify({
+          inferenceGatewayBaseUrl: "http://127.0.0.1:4199",
+          managedMcpServers: [{ name: "copilot-env", args: legacyMcp.args }],
         }),
       );
       writeFileSync(
@@ -1416,6 +1540,15 @@ test(
         Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
       );
       resetIntegrationIdentityCache();
+      // The layout step runs first in a real update: the default's Desktop row is in the new shape
+      // before any reconcile reads it, and the foreign row is left as it was.
+      await captureChannels(() => Promise.resolve(rewriteDesktopMcpArgv()));
+      const defaultEntry = JSON.parse(readFileSync(defaultEntryPath, "utf8")) as {
+        managedMcpServers: { name: string; args: string[] }[];
+      };
+      expect(defaultEntry.managedMcpServers[0]?.args).toEqual(
+        agentLauncherCommand(mcpServeArgs(null)).args,
+      );
       // Each move is reported once: the reporter's line (Deno.stderr, so it is deferred and read
       // back), never a second narration line through consola.
       deferWriteReports();
@@ -1428,6 +1561,16 @@ test(
       expect(narrated).toHaveLength(1);
       expect(narrated[0]).toContain(join("profiles", "sync-2"));
       expect(run.all).toContain("re-rendered profile 'work'");
+      expect(run.all).toContain("re-rendered default's agent files");
+
+      // The default's proxy line moved in both agent files, the user's key survived, and the
+      // proxy re-render took the registration out (proxy wiring registers no server).
+      const settingsDefault = JSON.parse(
+        readFileSync(join(homes.claudeHome, "settings.json"), "utf8"),
+      );
+      expect(settingsDefault.apiKeyHelper).toBe(proxyHelperCommand());
+      expect(settingsDefault.hand).toBe("kept");
+      expect(inspectMcpRegistration().status).toBe("absent");
 
       const store = readStore(join(homes.proxyHome, "state.json"));
       const profiles = store.profiles as Record<string, Record<string, unknown>>;
@@ -1456,6 +1599,7 @@ test(
       const config = parse(readFileSync(join(homes.codexHome, "config.toml"), "utf8")) as {
         model_providers: Record<string, { name: string; auth: { args: string[] } }>;
       };
+      expect(config.model_providers["copilot-env"]?.auth.args).toEqual(proxyTokenCommand().args);
       expect(config.model_providers["copilot-env-work"]?.auth.args).toEqual(
         agentLauncherCommand(agentAuthGetArgs(parseProfileName("work"))).args,
       );
@@ -1475,7 +1619,16 @@ test(
 
       const meta = JSON.parse(readFileSync(join(library, META_FILENAME), "utf8"));
       expect(meta.appliedId).toBe("e1");
-      expect(meta.entries).toEqual([{ id: "e1", name: "copilot-env: sync-2", pinned: true }]);
+      expect(meta.entries).toContainEqual({ id: "e1", name: "copilot-env: sync-2", pinned: true });
+      // The default's entry keeps its id through the layout step, the re-render, and the
+      // reconcile; its row is the new shape.
+      expect(meta.entries).toContainEqual({ id: "e0", name: "copilot-env", pinned: false });
+      const defaultAfter = JSON.parse(readFileSync(defaultEntryPath, "utf8")) as {
+        managedMcpServers: { name: string; args: string[] }[];
+      };
+      expect(defaultAfter.managedMcpServers.find((r) => r.name === "copilot-env")?.args).toEqual(
+        agentLauncherCommand(mcpServeArgs(null)).args,
+      );
       const entry = JSON.parse(readFileSync(entryPath, "utf8")) as {
         managedMcpServers: { name: string; args: string[] }[];
       };

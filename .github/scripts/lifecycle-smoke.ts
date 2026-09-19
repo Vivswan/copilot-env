@@ -93,20 +93,20 @@ if (!cliOrExit(["list"], { stdout: "piped" }).includes(PROFILE)) {
 }
 const checkCode = cli(["profile", PROFILE, "check"]).code;
 if (checkCode !== 2) failOn(`profile work check should exit 2 (proxy), got ${checkCode}`);
-cliOrExit(["start", "--profile", PROFILE]);
-cliOrExit(["start", "--check", "--profile", PROFILE]);
+cliOrExit(["profile", PROFILE, "start"]);
+cliOrExit(["profile", PROFILE, "start", "--check"]);
 cliOrExit(["start", "--check"]);
 if (readPid() === readProfilePid()) failOn("profile daemon shares the default pid");
 const workPid = readProfilePid() ?? failOn("profile daemon recorded no pid");
-cliOrExit(["stop", "--profile", PROFILE]);
+cliOrExit(["profile", PROFILE, "stop"]);
 // `stop` clears the tracked pid, so `start --check` alone can't prove the PROCESS
 // died -- assert on the saved pid directly (SIGTERM is async; allow a short grace).
 for (let attempt = 0; attempt < 5 && daemonAlive(workPid); attempt++) {
   await sleep(1000);
 }
-if (daemonAlive(workPid)) failOn(`profile daemon (pid ${workPid}) survived stop --profile`);
-if (cli(["start", "--check", "--profile", PROFILE]).code === 0) {
-  failOn("profile daemon still up after stop --profile");
+if (daemonAlive(workPid)) failOn(`profile daemon (pid ${workPid}) survived profile stop`);
+if (cli(["profile", PROFILE, "start", "--check"]).code === 0) {
+  failOn("profile daemon still up after profile stop");
 }
 if (cli(["start", "--check"]).code !== 0) failOn("default daemon died with the profile daemon");
 cliOrExit(["profile", PROFILE, "del", "--yes"]);

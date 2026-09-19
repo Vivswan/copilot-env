@@ -63,7 +63,7 @@ export function managedCodexHome(): ManagedEnvValue {
 
 /** Read-only, from copilot-env's own state: the slot's recorded mode (the default's, or the named
  *  profile's) and the profile's resolved port, never reserving one; the settings file is an output
- *  and is not read. Shared by `agent env` and `agent launch`. */
+ *  and is not read. Shared by `agent profile env` and the launch verb. */
 export function managedClaudeBaseUrl(profile: Profile): ManagedEnvValue {
   const mode = new CopilotEnvState().readProfileSlot(profile).mode;
   if (mode === "proxy") return { value: proxyLoopbackOrigin(copilotApiResolvePort(profile)) };
@@ -86,7 +86,9 @@ const LAUNCHER_FUNCTIONS = [
 
 /**
  * These call the `agent` wrapper function (shell/agents.bashrc, agents.ps1), so the env refresh
- * after each launch keeps working. `agent launch` hoists a leading `--profile <name>` pair itself.
+ * after each launch keeps working. The default profile's launch verb: `agent profile launch`
+ * hoists a leading `--profile <name>` pair into the named profile itself, so `cl --profile work`
+ * is `agent profile work launch claude`.
  *   '--' quoted   -> unquoted it is PowerShell's own end-of-parameters token and would be swallowed
  *   global: scope -> agents.ps1 evals these inside a function; unscoped, they die with the call
  */
@@ -94,8 +96,8 @@ export function launcherFunctionLines(powershell: boolean): string[] {
   return LAUNCHER_FUNCTIONS.map(([name, cli, relaxed]) => {
     const flag = relaxed ? " --relaxed" : "";
     return powershell
-      ? `function global:${name} { agent launch ${cli}${flag} '--' @args }`
-      : `${name}() { agent launch ${cli}${flag} -- "$@"; }`;
+      ? `function global:${name} { agent profile launch ${cli}${flag} '--' @args }`
+      : `${name}() { agent profile launch ${cli}${flag} -- "$@"; }`;
   });
 }
 
@@ -145,8 +147,8 @@ export function runEnv(args: EnvArgs): void {
     }
   }
 
-  // The functions only delegate to `agent launch`, which never runs `agent env` itself, so this
-  // cannot recurse.
+  // The functions only delegate to the launch verb, which never runs `agent profile env` itself,
+  // so this cannot recurse.
   if (new CopilotEnvConfig().launchersEnabled()) {
     for (const line of launcherFunctionLines(isPowershell)) console.log(line);
   }

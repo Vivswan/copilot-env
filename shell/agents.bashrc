@@ -15,15 +15,15 @@ if [ -x "${_COPILOT_DENO_BIN}/deno" ] && ! command -v deno > /dev/null 2>&1; the
 fi
 unset _COPILOT_DENO_BIN
 
-# `agent env` is the ONLY output this file ever evals (src/commands/env.ts owns what it
-# prints), so a new subcommand never touches this wrapper.
+# `agent profile env` is the ONLY output this file ever evals (src/commands/env.ts owns what it
+# prints; the default profile's directives), so a new subcommand never touches this wrapper.
 function agent {
     "${_COPILOT_AGENTS_DIR}/bin/agent" "$@" || return $?
     # stderr stays unsilenced so a failed refresh is visible; the `&&` keeps it non-fatal.
-    _env="$("${_COPILOT_AGENTS_DIR}/bin/agent" env)" && eval "${_env}"
+    _env="$("${_COPILOT_AGENTS_DIR}/bin/agent" profile env)" && eval "${_env}"
     unset _env
 }
 
 # stderr is silenced here: bootstrap output on first source would trip Powerlevel10k's
 # instant-prompt guard. A failed resolution surfaces on the next `agent` call instead.
-eval "$("${_COPILOT_AGENTS_DIR}/bin/agent" env 2>/dev/null)"
+eval "$("${_COPILOT_AGENTS_DIR}/bin/agent" profile env 2>/dev/null)"

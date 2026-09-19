@@ -48,7 +48,7 @@ export interface ProxyTokenDeps {
   /** Prompts on stderr; EOF resolves "". */
   readAnswer(query: string): Promise<string>;
   recordHeartbeat(profile: Profile): void;
-  /** runPrintProxyToken in production. `agent launch` injects a keyless variant that runs the
+  /** runPrintProxyToken in production. `agent profile launch` injects a keyless variant that runs the
    *  Codex catalog refresh instead: launch needs reachability, not the credential. */
   printProxyToken(profile: Profile): Promise<void>;
   /** stderr, never stdout. */
@@ -58,13 +58,13 @@ export interface ProxyTokenDeps {
 /** Through bin/agent rather than in-process, so a dev checkout bootstraps deno and deps there.
  *   the child's stdio  -> placed so the caller's stdout stays untouched
  *   the exit status    -> unread; the follow-up proxyUp probe is the verdict
- *   `agent launch`     -> injects this as its own launchProxy dependency */
+ *   `agent profile launch`     -> injects this as its own launchProxy dependency */
 export function launchProxy(profile: Profile, output: LaunchOutput): void | Promise<void> {
   if (dryRunActive()) {
     return runStart({ kind: "launch", dryRun: true, force: false, port: undefined, profile });
   }
   const { command, args } = agentLauncherCommand(
-    profile === null ? ["start"] : ["start", "--profile", profile],
+    profile === null ? ["start"] : ["profile", profile, "start"],
   );
   spawnSync(command, args, {
     // `2` is our stderr fd: the visible child's start progress must show without touching our
@@ -124,6 +124,7 @@ export async function resolveProxyToken(
   const startHint = agentStartCommand(profile);
   // A named profile never falls back to the default credential, so its hint names its own slot.
   const authHint = profile === null ? "agent auth" : `agent profile ${profile} auth`;
+  const yesHint = `agent profile ${profile === null ? "" : `${profile} `}proxy-token --yes`;
   let suppressedStart = false;
   // A dry run asks nothing, and its start is the start's own preview (launchProxy under a dry
   // run), whose refusals stand; past it the resolve proceeds as if the daemon came up, since the
@@ -149,7 +150,7 @@ export async function resolveProxyToken(
     } else if (!action.assumeYes) {
       if (dryRunActive()) {
         throw promptRefusedInDryRun(
-          "start the proxy? `agent proxy-token --yes` answers it, and " +
+          `start the proxy? \`${yesHint}\` answers it, and ` +
             `\`${configSetCommand("daemon.auto-start", "true")}\` starts it for every launcher`,
         );
       }

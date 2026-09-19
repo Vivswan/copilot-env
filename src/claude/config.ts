@@ -565,7 +565,7 @@ function prepareWebSearchPair(
 /**
  * Re-derive the web-search pair for the current default wiring: direct applies it (per
  * `claude.wire-mcp`), proxy or none takes it back, a foreign settings.json is never touched.
- * `agent mcp --remove` stores `claude.wire-mcp false` before running this, which makes it a strip.
+ * `agent profile mcp --remove` stores `claude.wire-mcp false` before running this, which makes it a strip.
  */
 export function syncDefaultWebSearch(claudeHome = resolveClaudeHome()): void {
   const settingsPath = settingsPathFor(claudeHome);

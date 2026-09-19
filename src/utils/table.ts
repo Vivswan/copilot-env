@@ -4,7 +4,7 @@ import { COLOR_ENABLED, paintFor, palette, statusPaint } from "./ansi.ts";
 
 export type Align = "left" | "right";
 
-/** A heading spans the table between record rows (the vendor lines of `agent models`); the records
+/** A heading spans the table between record rows (the vendor lines of `agent profile models`); the records
  *  under one nest a GAP deeper than the heading. */
 export type TableRow = string[] | { heading: string };
 
@@ -91,7 +91,7 @@ export function printWrapped(text: string): void {
   console.log(wrapMessage(text, terminalWidth()));
 }
 
-/** A `key: value` status line (`agent mcp`, the `--check` reports): the key cyan, a status word in
+/** A `key: value` status line (`agent profile mcp`, the `--check` reports): the key cyan, a status word in
  *  its tone. Defaults to the command edge's COLOR_ENABLED; the argument is the test override. */
 export function keyValueLine(key: string, value: string, color = COLOR_ENABLED): string {
   return `${paintFor(color).cyan(key)}: ${statusPaint(value, color)}`;

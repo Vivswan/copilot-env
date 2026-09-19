@@ -3,11 +3,11 @@
 # which deno they use. Plain POSIX sh: bin/agent is `#!/bin/sh`.
 #
 # ensure_deno <repo-root> [quiet]
-#   every message                    -> stderr: bin/agent's stdout is the text the `agent env`
+#   every message                    -> stderr: bin/agent's stdout is the text the `agent profile env`
 #                                       wrapper evals
 #   deno on PATH, older than .dvmrc  -> one warning, used anyway (upgrading is the user's job)
 #   quiet non-empty                  -> no warning: the wrapper re-runs bin/agent for every
-#                                       `agent env` refresh and must not repeat it
+#                                       `agent profile env` refresh and must not repeat it
 #   no deno at all                   -> the latest release, once, into $DENO_INSTALL
 
 # The version of the deno executable $1 ("deno 2.9.5 (stable, ...)" -> "2.9.5"), or empty

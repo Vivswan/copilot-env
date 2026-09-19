@@ -163,23 +163,28 @@ test("renderModelTable groups by vendor, chat first, unknown vendor last", () =>
 
 // An empty COPILOT_API_HOME keeps every case offline: the proxy reads as down without a port
 // probe, and Direct fails on the missing credential before any fetch.
+/** `agent profile [<name>] models <args>` in a scratch data home. */
 function runModelsCli(
   args: string[],
   seed?: (home: string) => void,
+  profile?: string,
 ): { exitCode: number | null; out: string } {
   const home = tempDir("copilot-models-");
   try {
     seed?.(home);
-    const proc = runCli(["models", ...args], {
-      env: { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home },
-    });
+    const proc = runCli(
+      ["profile", ...(profile === undefined ? [] : [profile]), "models", ...args],
+      {
+        env: { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home },
+      },
+    );
     return { exitCode: proc.exitCode, out: proc.stdout + proc.stderr };
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 }
 
-/** profiles.<name> carries no credential, so `--profile <name>` must hard-fail. The root-level pair
+/** profiles.<name> carries no credential, so `agent profile <name> models` must hard-fail. The root-level pair
  *  is the pre-3.5.6 legacy shape: CopilotEnvState reads the default slot only from profiles.default
  *  (src/copilot_api/env_state.ts), so no resolvable default credential exists here for a fallback
  *  regression to reach. */
@@ -198,10 +203,10 @@ function seedDirectProfile(home: string, name: string): void {
   );
 }
 
-test("models --help surfaces --proxy / --direct / --json / --profile", () => {
+test("models --help surfaces --proxy / --direct / --json", () => {
   const { exitCode, out } = runModelsCli(["--help"]);
   expect(exitCode).toBe(0);
-  for (const flag of ["--proxy", "--direct", "--json", "--profile"]) {
+  for (const flag of ["--proxy", "--direct", "--json"]) {
     expect(out).toContain(flag);
   }
 });
@@ -227,22 +232,23 @@ test("models (auto) falls back to Direct and fails actionably with no credential
   expect(out).toContain("agent auth");
 });
 
-// --- --profile -------------------------------------------------------------------
+// --- a named profile ---------------------------------------------------------------
 
-test("models --profile with an unknown name hard-fails naming the known profiles", () => {
-  const none = runModelsCli(["--profile", "nope"]);
+test("profile models with an unknown name hard-fails naming the known profiles", () => {
+  const none = runModelsCli([], undefined, "nope");
   expect(none.exitCode).toBe(1);
   expect(none.out).toContain("no such profile 'nope' (no profiles exist");
 
-  const known = runModelsCli(["--profile", "nope"], (home) => seedDirectProfile(home, "p1"));
+  const known = runModelsCli([], (home) => seedDirectProfile(home, "p1"), "nope");
   expect(known.exitCode).toBe(1);
   expect(known.out).toContain("no such profile 'nope' (known profiles: p1)");
 });
 
-test("models --profile never falls back: a credential-less direct profile hard-fails", () => {
+test("profile models never falls back: a credential-less direct profile hard-fails", () => {
   const { exitCode, out } = runModelsCli(
-    ["--profile", "p1", "--direct"],
+    ["--direct"],
     (home) => seedDirectProfile(home, "p1"),
+    "p1",
   );
   expect(exitCode).toBe(1);
   expect(out).toContain("no GitHub credential configured for profile 'p1'");
@@ -250,12 +256,13 @@ test("models --profile never falls back: a credential-less direct profile hard-f
   expect(out).toContain("never falls back");
 });
 
-test("models --profile --proxy fails actionably when the profile's daemon is down", () => {
+test("profile models --proxy fails actionably when the profile's daemon is down", () => {
   const { exitCode, out } = runModelsCli(
-    ["--profile", "p1", "--proxy"],
+    ["--proxy"],
     (home) => seedDirectProfile(home, "p1"),
+    "p1",
   );
   expect(exitCode).toBe(1);
   expect(out).toContain("local proxy for profile 'p1' is not running");
-  expect(out).toContain("agent start --profile p1");
+  expect(out).toContain("agent profile p1 start");
 });

@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
-import { renameWithRetry } from "../src/utils/report_write.ts";
+import { renameWithRetry } from "../src/utils/fs_disk.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 let dir = "";

@@ -40,11 +40,9 @@ import {
   type Profile,
   profileLabel,
 } from "../copilot_api/profile.ts";
-import { nextProxyVersion } from "../proxy_float.ts";
-import { COLOR_ENABLED, paintFor } from "../utils/ansi.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
-import { versionLessThan } from "../utils/semver.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import stringWidth from "string-width";
 import { runDryRun } from "./dry_run.ts";
@@ -136,22 +134,6 @@ function noteHowItApplies(def: ConfigKeyDef, target: SettingTarget): void {
   );
 }
 
-/** A projected key the installed proxy is too old to read is a silent no-op until the float catches
- *  up. Null `installed` (a Direct-only setup) warns about nothing: the value applies once a
- *  new-enough proxy arrives. */
-export function sinceProxyVersionWarning(
-  def: ConfigKeyDef,
-  installed: string | null,
-): string | null {
-  const since = def.sinceProxyVersion;
-  if (since === undefined || installed === null) return null;
-  if (!versionLessThan(installed, since)) return null;
-  return (
-    `The installed proxy ${installed} does not read '${def.key}' (added in copilot-api ` +
-    `${since}); it applies once the proxy is >= ${since}.`
-  );
-}
-
 /** `platform` is the POSIX-only key guard's test seam. Synchronous unless it is a dry run (the
  *  plan print awaits the recording), so a key error still throws at the call. A write handler
  *  returns what to say once it landed; a dry run prints the plan in its place. */
@@ -208,30 +190,8 @@ function runSet(
   const target = new CopilotEnvConfig().assign(def, value, profile);
   return () => {
     consola.success(`set ${def.key} = ${formatConfigValue(value)}${targetSuffix(target)}`);
-    const warning = sinceProxyVersionWarning(def, nextProxyVersion());
-    if (warning !== null) consola.warn(warning);
-    // The warning supersedes only the generic restart hint (a restart cannot make an old proxy read
-    // the key); a bespoke applyHint often covers a non-proxy surface and still applies.
-    if (def.applyHint !== undefined || warning === null) noteHowItApplies(def, target);
+    noteHowItApplies(def, target);
   };
-}
-
-/** `agent start` prints these after projecting for ITS profile, passing the version its resolved
- *  entry runs, so a key set before the first start still gets its warning; callers without a
- *  resolved entry (`set`, the table, `settings --import`) take the read-only default. */
-export function unreadProjectedKeyWarnings(
-  envConfig: CopilotEnvConfig = new CopilotEnvConfig(),
-  proxyVersion: string | null = nextProxyVersion(),
-  profile: Profile = null,
-): string[] {
-  const data = envConfig.read();
-  const warnings: string[] = [];
-  for (const def of CONFIG_REGISTRY) {
-    if (!isStoredSource(resolveSettingIn(data, def.key, { profile }).source)) continue;
-    const warning = sinceProxyVersionWarning(def, proxyVersion);
-    if (warning !== null) warnings.push(warning);
-  }
-  return warnings;
 }
 
 function runUnset(key: string, profile: Profile): () => void {
@@ -289,7 +249,7 @@ function runGet(get: string | undefined, view: ConfigView, platform: NodeJS.Plat
     const origin = inert
       ? `${originLabel(def, "default", profile)} (the stored value is inert on this platform)`
       : originLabel(def, resolved.source, profile);
-    process.stderr.write(`${paintFor(COLOR_ENABLED).dim(`${def.key}: ${origin}`)}\n`);
+    process.stderr.write(`${paintFor(colorEnabled()).dim(`${def.key}: ${origin}`)}\n`);
     return;
   }
 
@@ -350,10 +310,6 @@ export interface ConfigTableOptions {
    *  from the global map, the viewed profile's own daemon for a value from its section. */
   daemonUp: boolean;
   profileDaemonUp: boolean;
-  /** A stored projected key the next proxy is too old to read earns no restart line, since no
-   *  restart makes it read. Null means the version cannot be known, and then NO row earns the line:
-   *  a missing hint is cheaper than a wrong one. */
-  proxyVersion: string | null;
   color: boolean;
 }
 
@@ -449,12 +405,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
       .map((line) => line.map((cell) => cell.paint(cell.text)).join(" "));
     const daemonReads = isProxyProjected(def) || def.restartToApply === true;
     const up = row.resolved.source === "profile" ? opts.profileDaemonUp : opts.daemonUp;
-    if (
-      row.stored && up && daemonReads && opts.proxyVersion !== null &&
-      sinceProxyVersionWarning(def, opts.proxyVersion) === null
-    ) {
-      right.push(paint.dim(paint.green(RESTART_LINE)));
-    }
+    if (row.stored && up && daemonReads) right.push(paint.dim(paint.green(RESTART_LINE)));
     right.push(...wrapNote(def.describe));
     const shownValue = row.value === UNSET_VALUE
       ? paint.dim(UNSET_VALUE)
@@ -573,7 +524,6 @@ export function configTableOutput(
     view,
     daemonUp: anyTrackedDaemonAlive(),
     profileDaemonUp: trackedDaemonAlive(viewProfile(view)),
-    proxyVersion: nextProxyVersion(),
-    color: COLOR_ENABLED,
+    color: colorEnabled(),
   });
 }

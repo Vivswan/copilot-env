@@ -1,12 +1,17 @@
-const NO_COLOR = (() => {
-  const env = process.env;
-  return Boolean(
-    env.NO_COLOR === "1" || env.TERM === "dumb" || env.TEST || env.CI || !process.stdout.isTTY,
-  );
-})();
+let colorDecided: boolean | null = null;
 
-/** For renderers that pad layouts and must know whether widths include escapes. */
-export const COLOR_ENABLED = !NO_COLOR;
+/** Whether output is painted: read from the environment on the first call, never at import, so a
+ *  process without env permission (the compile script's module graph) can load this module. For
+ *  renderers that pad layouts and must know whether widths include escapes. */
+export function colorEnabled(): boolean {
+  if (colorDecided === null) {
+    const env = process.env;
+    colorDecided = !(
+      env.NO_COLOR === "1" || env.TERM === "dumb" || env.TEST || env.CI || !process.stdout.isTTY
+    );
+  }
+  return colorDecided;
+}
 
 type Paint = (text: string) => string;
 
@@ -38,7 +43,7 @@ function sgr(tone: Tone): Paint {
   return (text: string): string => `${ESC}${open}m${text}${ESC}${close}m`;
 }
 
-/** The palette ungated: for a renderer that resolves COLOR_ENABLED once at its edge (the survey of
+/** The palette ungated: for a renderer that resolves colorEnabled() once at its edge (the survey of
  *  `agent profile identity`), so a test can force color on and pin what the escapes wrap. */
 export const palette: Record<Tone, Paint> = {
   bold: sgr("bold"),
@@ -57,13 +62,13 @@ export const plainPalette: Record<Tone, Paint> = Object.fromEntries(
 ) as Record<Tone, Paint>;
 
 /** The palette a renderer resolves once from its `color` argument (the command edge's
- *  COLOR_ENABLED, or a test's override): never the gated helpers, which read the environment. */
+ *  colorEnabled(), or a test's override): never the gated helpers, which read the environment. */
 export function paintFor(color: boolean): Record<Tone, Paint> {
   return color ? palette : plainPalette;
 }
 
 function gated(paint: Paint): Paint {
-  return (text: string): string => (NO_COLOR ? text : paint(text));
+  return (text: string): string => (colorEnabled() ? paint(text) : text);
 }
 
 export const bold = gated(palette.bold);
@@ -89,7 +94,7 @@ const STATUS_TONES: ReadonlyArray<readonly [RegExp, Tone]> = [
   [/^(down|stopped|-|none|unset|<unset>)$/i, "dim"],
 ];
 
-/** `color` is the command edge's COLOR_ENABLED, so a renderer never reads the environment and a
+/** `color` is the command edge's colorEnabled(), so a renderer never reads the environment and a
  *  test can force the escapes on. */
 export function statusPaint(word: string, color: boolean): string {
   if (!color) return word;

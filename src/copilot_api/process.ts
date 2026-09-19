@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
 import { devNull } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -559,7 +558,7 @@ export function daemonArgv(spec: DaemonSpec): string[] {
 
 export function launchDaemon(spec: DaemonSpec): number {
   const logFd = fs.openWriteFd(spec.logFile);
-  const devnull = openSync(devNull, "r");
+  const devnull = fs.openReadFd(devNull);
   const proc = spawn(spec.denoBin, daemonArgv(spec), {
     stdio: [devnull, logFd, logFd],
     detached: true,
@@ -568,8 +567,8 @@ export function launchDaemon(spec: DaemonSpec): number {
     env: daemonEnvironment(spec, process.env),
   });
   proc.unref();
-  closeSync(devnull);
-  closeSync(logFd);
+  fs.closeFd(devnull);
+  fs.closeFd(logFd);
   if (proc.pid === undefined) {
     throw new Error("Failed to start the proxy; check `agent health` and retry `agent start`");
   }

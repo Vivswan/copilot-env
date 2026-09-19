@@ -38,6 +38,7 @@
     "@std/testing": "jsr:@std/testing@^1.0.20",
     "commander": "npm:commander@^15.0.0",
     "consola": "npm:consola@^3.4.2",
+    "memfs": "npm:memfs@4.75.0",
     "semver": "jsr:@std/semver@^1.0.8",
     "smol-toml": "npm:smol-toml@^1.8.0",
     "undici": "npm:undici@^7.29.1",
@@ -109,7 +110,6 @@
       "src/utils/report_write.ts",
       "src/utils/table.ts",
       "src/utils/time.ts",
-      "src/utils/write_session.ts",
       "copilot-env.config",
       ".dvmrc",
       "deno.json"

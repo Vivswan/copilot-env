@@ -16,8 +16,8 @@ import { agentStartCommand, parseProfileFlag, type Profile } from "../copilot_ap
 import { errMessage } from "../utils/error.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { printWrappedToStderr, terminalWidth, wrapMessage } from "../utils/table.ts";
+import { promptRefusedInDryRun } from "../utils/dry_run.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
-import { promptRefusedInDryRun } from "../utils/write_session.ts";
 import { runPrintProxyToken } from "./auth.ts";
 import { runDryRun } from "./dry_run.ts";
 import { runStart } from "./start.ts";

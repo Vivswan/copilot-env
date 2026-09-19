@@ -6,8 +6,6 @@ import {
   configTableOutput,
   type ConfigView,
   runConfig,
-  sinceProxyVersionWarning,
-  unreadProjectedKeyWarnings,
 } from "../src/commands/config.ts";
 import {
   codexHomePrefsFor,
@@ -35,8 +33,7 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
-import { nextProxyVersion } from "../src/proxy_float.ts";
-import { COLOR_ENABLED } from "../src/utils/ansi.ts";
+import { colorEnabled } from "../src/utils/ansi.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
@@ -816,8 +813,7 @@ test("configTableOutput() takes the terminal's width from the one table seam: CO
       view: CONFIG,
       daemonUp: anyTrackedDaemonAlive(),
       profileDaemonUp: trackedDaemonAlive(null),
-      proxyVersion: nextProxyVersion(),
-      color: COLOR_ENABLED,
+      color: colorEnabled(),
     });
   const stdout = process.stdout as unknown as Record<string, unknown>;
   const orig = {
@@ -845,7 +841,6 @@ const PLAIN_TABLE = {
   view: CONFIG,
   daemonUp: false,
   profileDaemonUp: false,
-  proxyVersion: "1.16.3",
   color: false,
 } as const;
 
@@ -969,19 +964,6 @@ test("configTable() renders the header, the groups, and key=value rows with type
   };
   expect(restartUnder(live, "daemon.strict-port")).toBe(true);
   expect(restartUnder(live, "shell.launchers")).toBe(false);
-  // A restart line only when the proxy that runs next will read the key.
-  //   proxy older than the key's gate  -> no line (`set` suppresses its hint the same way)
-  //   new enough                       -> line
-  //   version unknown                  -> no line on any row
-  const gated = stored({ ...global, "proxy.alpha-search.model": "gpt-5" });
-  const restartLineFor = (proxyVersion: string | null, key: string): boolean =>
-    restartUnder(
-      configTable(gated, { ...PLAIN_TABLE, daemonUp: true, proxyVersion }).split("\n"),
-      key,
-    );
-  expect(restartLineFor("1.14.21", "proxy.alpha-search.model")).toBe(false);
-  expect(restartLineFor("1.16.3", "proxy.alpha-search.model")).toBe(true);
-  expect(restartLineFor(null, "daemon.strict-port")).toBe(false);
   // A value from the selected profile's section is read by THAT daemon: another daemon being up
   // earns it no restart line, its own does; a global-map value still follows any daemon.
   const overridden = stored(
@@ -1244,61 +1226,6 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
     JSON.stringify(d.proxyPath)
   );
   expect(new Set(allProjectedPaths).size).toBe(allProjectedPaths.length);
-});
-
-test("sinceProxyVersionWarning fires only when the installed proxy predates the key", () => {
-  const def = configKeyDef("proxy.alpha-search.model")!;
-  const warning = sinceProxyVersionWarning(def, "1.14.21");
-  expect(warning).toBe(
-    "The installed proxy 1.14.21 does not read 'proxy.alpha-search.model' (added in copilot-api " +
-      "1.16.3); it applies once the proxy is >= 1.16.3.",
-  );
-  expect(sinceProxyVersionWarning(def, "1.16.3")).toBeNull(); // equal: reads it
-  expect(sinceProxyVersionWarning(def, "1.17.0")).toBeNull(); // newer: reads it
-  // No proxy installed (a Direct-only setup may set keys for later): no warning.
-  expect(sinceProxyVersionWarning(def, null)).toBeNull();
-  // An ungated key never warns, however old the proxy.
-  expect(sinceProxyVersionWarning(configKeyDef("proxy.claude-token-multiplier")!, "1.11.0"))
-    .toBeNull();
-  // The gates pin the proxy versions that introduced each key (verified upstream): the aged float
-  // target can legitimately install an older proxy, which would silently ignore the projection.
-  expect(configKeyDef("proxy.claude-auto-model")?.sinceProxyVersion).toBe("1.14.22");
-  expect(configKeyDef("proxy.alpha-search.codex-priority")?.sinceProxyVersion).toBe("1.15.0");
-  expect(configKeyDef("proxy.alpha-search.model")?.sinceProxyVersion).toBe("1.16.3");
-  // Every pin must be strict x.y.z: versionLessThan fails OPEN on a malformed operand,
-  // so a typo'd pin would silently disable its warning.
-  for (const d of CONFIG_REGISTRY) {
-    if (d.sinceProxyVersion !== undefined) {
-      expect(d.sinceProxyVersion).toMatch(/^\d+\.\d+\.\d+$/);
-    }
-  }
-});
-
-test("unreadProjectedKeyWarnings covers stored gated keys at start time, for the daemon's profile", () => {
-  tmpHome();
-  const cfg = new CopilotEnvConfig();
-  // Nothing stored: nothing to warn about, however old the proxy.
-  expect(unreadProjectedKeyWarnings(cfg, "1.11.0")).toEqual([]);
-
-  cfg.set({
-    "proxy.alpha-search.model": "gpt-5",
-    "proxy.claude-token-multiplier": 1.5,
-    "daemon.auto-start": true,
-  });
-  // The stored gated key warns on an older proxy; the ungated and internal keys never do.
-  const warnings = unreadProjectedKeyWarnings(cfg, "1.14.21");
-  expect(warnings).toHaveLength(1);
-  expect(warnings[0]).toContain("proxy.alpha-search.model");
-  // New-enough or missing proxy: silent.
-  expect(unreadProjectedKeyWarnings(cfg, "1.16.3")).toEqual([]);
-  expect(unreadProjectedKeyWarnings(cfg, null)).toEqual([]);
-  // A gated key set for one profile alone warns for THAT profile's start, not the default's.
-  cfg.del("proxy.alpha-search.model");
-  cfg.setProfile(WORK, { "proxy.alpha-search.codex-priority": false });
-  expect(unreadProjectedKeyWarnings(cfg, "1.14.21", null)).toEqual([]);
-  const forWork = unreadProjectedKeyWarnings(cfg, "1.14.21", WORK);
-  expect(forWork).toHaveLength(1);
-  expect(forWork[0]).toContain("'proxy.alpha-search.codex-priority'");
 });
 
 test("one web-search default for both surfaces, and unset IS the default where the read sites layer their own", () => {

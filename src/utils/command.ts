@@ -2,10 +2,9 @@
 // in the same process that installed it. Its own module because importing setup.ts here would close
 // a cycle (setup -> codex/claude config -> agents/live_probe -> setup).
 import { execFile, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, win32 } from "node:path";
-import { removeScratchDir, scratchDir } from "./report_write.ts";
+import * as fs from "./fs_facade.ts";
 
 const POSIX_NVM_SH = '"$' + '{NVM_DIR:-$HOME/.nvm}/nvm.sh"';
 
@@ -36,7 +35,7 @@ export function scratchPowershellProfile(): {
   env: Record<string, string | undefined>;
   dispose(): void;
 } {
-  const profile = scratchDir(join(tmpdir(), "copilot-env-ps-"));
+  const profile = fs.scratchDir(join(tmpdir(), "copilot-env-ps-"));
   return {
     env: {
       ...process.env,
@@ -44,7 +43,7 @@ export function scratchPowershellProfile(): {
       APPDATA: join(profile, "AppData", "Roaming"),
       LOCALAPPDATA: join(profile, "AppData", "Local"),
     },
-    dispose: () => removeScratchDir(profile),
+    dispose: () => fs.removeScratchDir(profile),
   };
 }
 
@@ -278,5 +277,5 @@ export function verbatimCliSpawn(command: string, args: string[]): VerbatimCliSp
       binDir: resolved.includes("/") ? dirname(resolved) : null,
     };
   }
-  return pickVerbatimWindowsSpawn(command, windowsWhereCandidates(command), args, existsSync);
+  return pickVerbatimWindowsSpawn(command, windowsWhereCandidates(command), args, fs.exists);
 }

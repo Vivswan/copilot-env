@@ -69,12 +69,12 @@ import {
   profileLabel,
   type ProfileName,
 } from "../copilot_api/profile.ts";
-import { COLOR_ENABLED, cyan, palette } from "../utils/ansi.ts";
+import { colorEnabled, cyan, palette } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
 import { formatTable, printWrapped, terminalWidth, wrapLine, wrapMessage } from "../utils/table.ts";
+import { PLANNED_SECRET } from "../utils/dry_run.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
-import { PLANNED_SECRET } from "../utils/write_session.ts";
 import { runDryRun } from "./dry_run.ts";
 
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
@@ -849,7 +849,7 @@ const IDENTITY_NOTES: Record<string, string> = {
 };
 
 /** The survey's palette, `agent config`'s: bold header, cyan names, green accepted, yellow
- *  rejected, dim for the rest. Resolved once at the command edge (COLOR_ENABLED), so a test can
+ *  rejected, dim for the rest. Resolved once at the command edge (colorEnabled()), so a test can
  *  force it on. */
 type SurveyPaint = Record<"bold" | "cyan" | "dim" | "green" | "yellow", (text: string) => string>;
 const plainText = (text: string): string => text;
@@ -950,7 +950,7 @@ export interface IdentityTableInput {
    *  being sent right now. */
   daemonRunning: boolean;
   profile: Profile;
-  /** COLOR_ENABLED at the command edge; plain off a TTY. */
+  /** colorEnabled() at the command edge; plain off a TTY. */
   color: boolean;
 }
 
@@ -1150,7 +1150,7 @@ async function surveyAndTable(
       slot,
       daemonRunning: trackedDaemonAlive(profile),
       profile,
-      color: COLOR_ENABLED,
+      color: colorEnabled(),
     })
   ) {
     console.log(line);

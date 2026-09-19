@@ -962,13 +962,17 @@ test("a default-wiring failure surfaces into outcome.failures", async () => {
 // --- the command layer ----------------------------------------------------------
 
 test("settings requires exactly one of --export/--import and gates the modifier flags", async () => {
-  expect(runSettings({})).rejects.toThrow(/exactly one/);
-  expect(runSettings({ exportTo: true, importFrom: "x" })).rejects.toThrow(/exactly one/);
-  expect(runSettings({ importFrom: "x", withCredentials: true })).rejects.toThrow(
+  await expect(runSettings({})).rejects.toThrow(/exactly one/);
+  await expect(runSettings({ exportTo: true, importFrom: "x" })).rejects.toThrow(/exactly one/);
+  await expect(runSettings({ importFrom: "x", withCredentials: true })).rejects.toThrow(
     /--with-credentials only applies/,
   );
-  expect(runSettings({ exportTo: true, force: true })).rejects.toThrow(/only apply to --import/);
-  expect(runSettings({ exportTo: true, noBackup: true })).rejects.toThrow(/only apply to --import/);
+  await expect(runSettings({ exportTo: true, force: true })).rejects.toThrow(
+    /only apply to --import/,
+  );
+  await expect(runSettings({ exportTo: true, noBackup: true })).rejects.toThrow(
+    /only apply to --import/,
+  );
 });
 
 async function runSettingsCaptured(
@@ -1048,15 +1052,15 @@ test("--export --with-credentials ends 0600 even over a pre-existing looser file
 
 test("import rejects unreadable, non-JSON, and unknown-version files", async () => {
   const machine = isolate();
-  expect(runSettings({ importFrom: join(machine.dir, "missing.json") })).rejects.toThrow(
+  await expect(runSettings({ importFrom: join(machine.dir, "missing.json") })).rejects.toThrow(
     /could not read/,
   );
   const notJson = join(machine.dir, "not.json");
   writeFileSync(notJson, "{nope");
-  expect(runSettings({ importFrom: notJson })).rejects.toThrow(/not valid JSON/);
+  await expect(runSettings({ importFrom: notJson })).rejects.toThrow(/not valid JSON/);
   const wrongVersion = join(machine.dir, "v99.json");
   writeFileSync(wrongVersion, JSON.stringify({ formatVersion: 99 }));
-  expect(runSettings({ importFrom: wrongVersion })).rejects.toThrow(/formatVersion/);
+  await expect(runSettings({ importFrom: wrongVersion })).rejects.toThrow(/formatVersion/);
 });
 
 test("import confirms only for actual overwrites: stores with content, or wiring writes", async () => {
@@ -1066,12 +1070,12 @@ test("import confirms only for actual overwrites: stores with content, or wiring
   await runSettings({ exportTo: file, withCredentials: true });
 
   // Non-empty stores, non-TTY (deno test): the guard fires before the prompt.
-  expect(runSettings({ importFrom: file })).rejects.toThrow(/--force/);
+  await expect(runSettings({ importFrom: file })).rejects.toThrow(/--force/);
 
   // Fresh machine, EMPTY stores -- but the bundle rewrites both agents'
   // configs, so wiring alone still demands the confirmation.
   isolate();
-  expect(runSettings({ importFrom: file })).rejects.toThrow(/--force/);
+  await expect(runSettings({ importFrom: file })).rejects.toThrow(/--force/);
 
   // A fresh-empty target importing ONLY store content (no wiring change)
   // overwrites nothing, so no prompt -- and no backup (nothing to roll back).

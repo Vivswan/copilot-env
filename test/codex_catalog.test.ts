@@ -1,13 +1,6 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { parse } from "smol-toml";
 import {
   CATALOG_PATCH_VERSION,
   type CopilotCatalogModel,
@@ -18,27 +11,30 @@ import {
   patchModelCatalog,
   refreshCodexModelCatalogIfStale,
   resetCatalogProbeState,
-  withCatalogRefreshDeadline,
 } from "../src/codex/catalog.ts";
+import { refreshCodexCatalogAndSync } from "../src/codex/catalog_reference.ts";
+import { codexConfigPath } from "../src/codex/paths.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, codexUserAgent } from "../src/codex/user_agent.ts";
 import { runDryRun } from "../src/commands/dry_run.ts";
 import { directClientHeaders } from "../src/copilot_api/integration_identity.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import {
+  type FakeCodex,
+  fakeCodexOnPath,
+  type FakeCodexProbe,
+  type FakeCodexSpec,
+} from "./helpers/fake_codex.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 import { linesNaming } from "./helpers/dry_run.ts";
 
-const restoreEnv = envSnapshot([
-  "PATH",
-  CI_NO_LIVE_LOOKUPS_ENV,
-  "COPILOT_ENV_PROBE_SEEN",
-  "COPILOT_ENV_PROBE_RUNS",
-]);
+const restoreEnv = envSnapshot(["PATH", CI_NO_LIVE_LOOKUPS_ENV]);
 let dir = "";
 
 afterEach(() => {
@@ -628,11 +624,78 @@ test("every field of every bundled entry survives (tiers emptied, limits overlai
 });
 
 // --- generateCodexModelCatalog -----------------------------------------------
+// The production path end to end: the fake codex on PATH answers the bundled dump, the version,
+// and the acceptance probe; Copilot is a fetch that answers every request with one `/models` body.
 
 const BUNDLED = JSON.stringify({
   models: [{ slug: "gpt-5.5", context_window: 272_000, effective_context_window_percent: 95 }],
 });
-const GPT55_ONLY = modelsOf([["gpt-5.5", copilotModel(GPT55_LIMITS)]]);
+/** Copilot's `/models` body serving gpt-5.5 alone, at GPT55_LIMITS. */
+const GPT55_BODY = {
+  data: [{
+    id: "gpt-5.5",
+    "model_picker_enabled": true,
+    "supported_endpoints": ["/responses"],
+    capabilities: {
+      type: "chat",
+      limits: { "max_context_window_tokens": 1_050_000, "max_prompt_tokens": 922_000 },
+    },
+  }],
+};
+const TOKEN = "gho_x";
+
+/** Copilot as the direct fetch reaches it: every request (the identity probes, then GET /models)
+ *  answers 200 with `body`; null is a Copilot that cannot be reached. */
+async function withCopilot<T>(
+  body: unknown,
+  fn: () => Promise<T>,
+): Promise<{ result: T; sent: unknown[] }> {
+  const sent: unknown[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    sent.push(init?.headers);
+    if (body === null) return Promise.reject(new Error("offline"));
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  }) as typeof fetch;
+  try {
+    return { result: await fn(), sent };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+/** The opted-in isolated home with the fake codex on PATH: a bundled dump, an accepting probe. */
+function catalogFixture(spec: Partial<FakeCodexSpec> = {}): FakeCodex {
+  isolate();
+  return fakeCodexOnPath(dir, { bundled: BUNDLED, probe: "accept", ...spec });
+}
+
+/** The default credential the refresh resolves when no caller hands it a token. */
+function storeCredential(): void {
+  new CopilotEnvState().setCredential(null, { kind: "stored", provider: "gh-token", token: TOKEN });
+}
+
+function generate(body: unknown = GPT55_BODY): Promise<boolean> {
+  return withCopilot(body, () => generateCodexModelCatalog("direct", TOKEN))
+    .then(({ result }) => result);
+}
+
+async function stderrOf(fn: () => Promise<void>): Promise<string> {
+  let narrated = "";
+  const realWrite = process.stderr.write;
+  process.stderr.write = (chunk: string | Uint8Array): boolean => {
+    narrated += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    return true;
+  };
+  deferWriteReports();
+  try {
+    await fn();
+  } finally {
+    process.stderr.write = realWrite;
+    narrated += flushWriteReports().join("\n");
+  }
+  return narrated;
+}
 
 test("the Copilot seed asks the direct catalog with the exact header set Codex bakes", async () => {
   // The generated catalog is what Codex's OWN requests are then pinned to, and Copilot gates the
@@ -641,49 +704,21 @@ test("the Copilot seed asks the direct catalog with the exact header set Codex b
   // config sends: the versioned codex_exec UA, Openai-Intent, no id for the codex identity; the
   // identity probe and the `host auto` probe before it send the same set (the deadline
   // signal keeps them off the process memo, so each is its own request here).
-  isolate();
-  const sent: unknown[] = [];
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
-    sent.push(init?.headers);
-    const body = { data: [{ "id": "gpt-5.5", "capabilities": { "type": "chat" } }] };
-    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
-  }) as typeof fetch;
-  try {
-    // The fetch comes first; no bundled catalog then ends the run without a spawn.
-    await generateCodexModelCatalog("direct", {
-      directToken: "gho_x",
-      bundledCatalog: () => null,
-      acceptsCatalog: () => null,
-      codexVersion: () => null,
-    });
-  } finally {
-    globalThis.fetch = realFetch;
-  }
-  const asCodex = { ...directClientHeaders(codexUserAgent()), Authorization: "Bearer gho_x" };
+  catalogFixture();
+  const { sent } = await withCopilot(
+    { data: [{ "id": "gpt-5.5", "capabilities": { "type": "chat" } }] },
+    () => generateCodexModelCatalog("direct", TOKEN),
+  );
+  const asCodex = { ...directClientHeaders(codexUserAgent()), Authorization: `Bearer ${TOKEN}` };
   expect(sent).toEqual([asCodex, asCodex, asCodex]);
 });
 
 test("generateCodexModelCatalog writes the patched catalog file", async () => {
-  isolate();
-  let narrated = "";
-  const realWrite = process.stderr.write;
-  process.stderr.write = (chunk: string | Uint8Array): boolean => {
-    narrated += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    return true;
-  };
+  catalogFixture();
   let ok = false;
-  deferWriteReports();
-  try {
-    ok = await generateCodexModelCatalog("direct", {
-      bundledCatalog: () => BUNDLED,
-      fetchCopilotModels: async () => GPT55_ONLY,
-      acceptsCatalog: () => true,
-    });
-  } finally {
-    process.stderr.write = realWrite;
-    narrated += flushWriteReports().join("\n");
-  }
+  const narrated = await stderrOf(async () => {
+    ok = await generate();
+  });
   expect(ok).toBe(true);
   const file = new CopilotApiPaths().codexModelCatalogFile;
   // The catalog lives inside the data home: written, never named (stdout may be a token).
@@ -698,21 +733,13 @@ test("generateCodexModelCatalog writes the patched catalog file", async () => {
 test("a regenerated catalog identical to the one on disk previews as unchanged", async () => {
   // The catalog is written whole on every generation; a dry run over an unchanged upstream must
   // read the byte-identical rewrite as no change, as it does for config.toml and settings.json.
-  isolate();
-  const deps = {
-    bundledCatalog: () => BUNDLED,
-    fetchCopilotModels: async () => GPT55_ONLY,
-    acceptsCatalog: () => true,
-    codexVersion: () => null,
-  };
+  catalogFixture();
   await captureChannels(async () => {
-    expect(await generateCodexModelCatalog("direct", deps)).toBe(true);
+    expect(await generate()).toBe(true);
   });
   const file = new CopilotApiPaths().codexModelCatalogFile;
   const before = readFileSync(file, "utf8");
-  const { stdout } = await captureChannels(() =>
-    runDryRun(() => generateCodexModelCatalog("direct", deps))
-  );
+  const { stdout } = await captureChannels(() => runDryRun(() => generate()));
   // The print wraps to the terminal width (mid-path, or at the space after the verdict): the rows
   // are re-joined by their two-space indent, then the catalog's row is matched exactly.
   const rows = stdout.split("\n").slice(1).join("\n").split(/\n {2}(?! )/).map((row) =>
@@ -723,517 +750,376 @@ test("a regenerated catalog identical to the one on disk previews as unchanged",
 });
 
 test("generateCodexModelCatalog fetches Copilot FIRST (cheap fail skips the codex spawn)", async () => {
-  isolate();
-  let bundledCalled = false;
-  const ok = await generateCodexModelCatalog("direct", {
-    bundledCatalog: () => {
-      bundledCalled = true;
-      return BUNDLED;
-    },
-    fetchCopilotModels: async () => null,
-  });
-  expect(ok).toBe(false);
-  expect(bundledCalled).toBe(false);
+  const codex = catalogFixture();
+  expect(await generate(null)).toBe(false);
+  expect(codex.runs()).toEqual([]);
   expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(false);
 });
 
 test("a candidate the installed codex rejects is never written; an unverifiable one is", async () => {
-  isolate();
+  const codex = catalogFixture({ probe: "reject" });
   const file = new CopilotApiPaths().codexModelCatalogFile;
-  let probed = "";
-  expect(
-    await generateCodexModelCatalog("direct", {
-      bundledCatalog: () => BUNDLED,
-      fetchCopilotModels: async () => GPT55_ONLY,
-      acceptsCatalog: (json) => {
-        probed = json;
-        return false;
-      },
-    }),
-  ).toBe(false);
+  expect(await generate()).toBe(false);
   expect(existsSync(file)).toBe(false);
   // The probe judged the patched document, not the raw dump.
-  expect(JSON.parse(probed).models[0].context_window).toBe(1_050_000);
+  expect(JSON.parse(codex.seen() ?? "").models[0].context_window).toBe(1_050_000);
 
-  let narrated = "";
-  const realWrite = process.stderr.write;
-  process.stderr.write = (chunk: string | Uint8Array): boolean => {
-    narrated += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    return true;
-  };
+  codex.script({ probe: "dump-other" });
   let written = false;
-  deferWriteReports();
-  try {
-    written = await generateCodexModelCatalog("direct", {
-      bundledCatalog: () => BUNDLED,
-      fetchCopilotModels: async () => GPT55_ONLY,
-      acceptsCatalog: () => null,
-    });
-  } finally {
-    process.stderr.write = realWrite;
-    narrated += flushWriteReports().join("\n");
-  }
+  const narrated = await stderrOf(async () => {
+    written = await generate();
+  });
   expect(written).toBe(true);
   expect(existsSync(file)).toBe(true);
   expect(linesNaming(narrated, file)).toEqual([]); // in the data home: unnamed
 });
 
 test("a failed regeneration never touches an existing (stale but valid) catalog", async () => {
-  isolate();
-  const accept = { acceptsCatalog: () => true };
-  expect(
-    await generateCodexModelCatalog("direct", {
-      bundledCatalog: () => BUNDLED,
-      fetchCopilotModels: async () => GPT55_ONLY,
-      ...accept,
-    }),
-  ).toBe(true);
+  // No resolvable codex version: the acceptance record stays empty, so every judgement asks.
+  const codex = catalogFixture({ version: null });
+  expect(await generate()).toBe(true);
   const before = readFileSync(new CopilotApiPaths().codexModelCatalogFile, "utf8");
 
-  expect(
-    await generateCodexModelCatalog("direct", {
-      bundledCatalog: () => null,
-      fetchCopilotModels: async () => GPT55_ONLY,
-      ...accept,
-    }),
-  ).toBe(false);
-  expect(
-    await generateCodexModelCatalog("direct", {
-      bundledCatalog: () => BUNDLED,
-      fetchCopilotModels: async () => {
-        throw new Error("boom");
-      },
-      ...accept,
-    }),
-  ).toBe(false);
-  expect(
-    await generateCodexModelCatalog("direct", {
-      bundledCatalog: () => BUNDLED,
-      fetchCopilotModels: async () => GPT55_ONLY,
-      acceptsCatalog: () => false,
-    }),
-  ).toBe(false);
+  codex.script({ bundled: null });
+  expect(await generate()).toBe(false);
+  codex.script({ bundled: BUNDLED });
+  expect(await generate(null)).toBe(false);
+  codex.script({ probe: "reject" });
+  expect(await generate()).toBe(false);
   expect(readFileSync(new CopilotApiPaths().codexModelCatalogFile, "utf8")).toBe(before);
 });
 
 // --- refreshCodexModelCatalogIfStale -----------------------------------------
 
-test("refresh is attempt-throttled: a fresh timestamp skips deps entirely", async () => {
-  isolate();
-  const now = 1_700_000_000_000;
+test("refresh is attempt-throttled: a fresh timestamp fetches and spawns nothing", async () => {
+  const codex = catalogFixture();
+  storeCredential();
   new CopilotEnvState().set({
-    codexCatalogLastAttemptMs: now - 1000,
+    codexCatalogLastAttemptMs: Date.now() - 1000,
+    codexCatalogCodexVersion: "1.2.3",
     codexCatalogPatchVersion: CATALOG_PATCH_VERSION,
   });
-  let called = false;
-  await refreshCodexModelCatalogIfStale("direct", {
-    nowMs: () => now,
-    codexVersion: () => null,
-    fetchCopilotModels: async () => {
-      called = true;
-      return null;
-    },
-  });
-  expect(called).toBe(false);
+  const { result, sent } = await withCopilot(
+    GPT55_BODY,
+    () => refreshCodexModelCatalogIfStale("direct"),
+  );
+  expect(result).toBe(false);
+  expect(sent).toEqual([]);
+  expect(codex.runs()).toEqual([]);
 });
 
 test("refresh records the ATTEMPT timestamp even when generation fails", async () => {
-  isolate();
-  const now = 1_700_000_000_000;
-  new CopilotEnvState().set({ codexCatalogLastAttemptMs: now - MILLISECONDS_PER_DAY - 1 });
-  const regenerated = await refreshCodexModelCatalogIfStale("proxy", {
-    nowMs: () => now,
-    codexVersion: () => null,
-    bundledCatalog: () => null,
-    fetchCopilotModels: async () => GPT55_ONLY,
+  catalogFixture({ bundled: null });
+  storeCredential();
+  new CopilotEnvState().set({
+    codexCatalogLastAttemptMs: Date.now() - MILLISECONDS_PER_DAY - 1,
   });
-  expect(regenerated).toBe(false);
+  const before = Date.now();
+  const { result } = await withCopilot(GPT55_BODY, () => refreshCodexModelCatalogIfStale("direct"));
+  expect(result).toBe(false);
   // Attempt recorded BEFORE the (failed) generation: no retry storm on the
   // repeated direct launches.
-  expect(new CopilotEnvState().read().codexCatalogLastAttemptMs).toBe(now);
+  const attempt = new CopilotEnvState().read().codexCatalogLastAttemptMs;
+  expect(attempt).toBeGreaterThanOrEqual(before);
+  expect(attempt).toBeLessThanOrEqual(Date.now());
 });
 
 test("refresh regenerates when due and reports it", async () => {
-  isolate();
-  const now = 1_700_000_000_000;
-  const regenerated = await refreshCodexModelCatalogIfStale("direct", {
-    nowMs: () => now, // lastAttemptMs defaults to 0 => due
-    bundledCatalog: () => BUNDLED,
-    fetchCopilotModels: async () => GPT55_ONLY,
-    acceptsCatalog: () => true,
-  });
-  expect(regenerated).toBe(true);
-  expect(new CopilotEnvState().read().codexCatalogLastAttemptMs).toBe(now);
+  catalogFixture();
+  storeCredential();
+  // lastAttemptMs defaults to 0 => due
+  const { result } = await withCopilot(GPT55_BODY, () => refreshCodexModelCatalogIfStale("direct"));
+  expect(result).toBe(true);
+  expect(new CopilotEnvState().read().codexCatalogLastAttemptMs).toBeGreaterThan(0);
   expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(true);
+});
+
+test("past the refresh deadline the catalog is still written, but neither the acceptance memo nor the reference and its claim are", async () => {
+  catalogFixture({ version: "1.0.0" });
+  storeCredential();
+  // A managed config with no reference yet: the sync after the refresh would add one.
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  mkdirSync(codexHome, { recursive: true });
+  const configPath = codexConfigPath(codexHome);
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  writeFileSync(configPath, 'model_provider = "copilot-env"\n');
+  const reference = () =>
+    (parse(readFileSync(configPath, "utf8")) as Record<string, unknown>)
+      .model_catalog_json;
+  // The deadline is taken as the refresh starts; the clock then jumps past it while Copilot
+  // answers, so the probe, the memo, and the reference sync all run late.
+  const realNow = Date.now;
+  let skewMs = 0;
+  Date.now = () => realNow() + skewMs;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    skewMs = 60_000;
+    return Promise.resolve(new Response(JSON.stringify(GPT55_BODY), { status: 200 }));
+  }) as typeof fetch;
+  let said = "";
+  try {
+    said = await stderrOf(() => refreshCodexCatalogAndSync("direct"));
+  } finally {
+    globalThis.fetch = realFetch;
+    Date.now = realNow;
+  }
+  expect(existsSync(catalogFile)).toBe(true);
+  expect(new CopilotEnvState().read().codexCatalogAccepted).toBeNull();
+  expect(reference()).toBeUndefined();
+  expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(false);
+  // The logger wraps to the terminal width (mid-path included), so both sides drop whitespace.
+  const unwrapped = (text: string) => text.replace(/\s+/g, "");
+  expect(unwrapped(said)).toContain(unwrapped(
+    `catalog reference not set in ${configPath}: ownership could not be recorded; ` +
+      "the next wiring or direct launch retries",
+  ));
+  // Control: inside the deadline the same run records the acceptance, the reference, and the claim.
+  new CopilotEnvState().set({ codexCatalogLastAttemptMs: Date.now() - MILLISECONDS_PER_DAY - 1 });
+  await withCopilot(GPT55_BODY, () => refreshCodexCatalogAndSync("direct"));
+  expect(new CopilotEnvState().read().codexCatalogAccepted?.codexVersion).toBe("1.0.0");
+  expect(reference()).toBe(catalogFile);
+  expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(true);
 });
 
 // --- inspectCatalogFile -----------------------------------
 
 test("an accepted catalog is remembered by content and codex version: no re-probe until either changes", async () => {
-  isolate();
+  const codex = catalogFixture({ version: "1.0.0" });
   const file = new CopilotApiPaths().codexModelCatalogFile;
-  let probes = 0;
-  const probing = (verdict: boolean | null, version: string | null) => ({
-    acceptsCatalog: () => {
-      probes++;
-      return verdict;
-    },
-    codexVersion: () => version,
-  });
-  expect(
-    await generateCodexModelCatalog("direct", {
-      bundledCatalog: () => BUNDLED,
-      fetchCopilotModels: async () => GPT55_ONLY,
-      ...probing(true, "1.0.0"),
-    }),
-  ).toBe(true);
-  expect(probes).toBe(1);
+  expect(await generate()).toBe(true);
+  expect(codex.runs().filter((run) => !run.args.includes("--bundled")).length).toBe(2); // the candidate and the garbage control
   const recorded = new CopilotEnvState().read().codexCatalogAccepted;
   expect(recorded?.codexVersion).toBe("1.0.0");
   expect(recorded?.sha256).toMatch(/^[0-9a-f]{64}$/);
 
-  expect(inspectCatalogFile(file, probing(false, "1.0.0"))).toBe("accepted");
-  expect(probes).toBe(1);
+  // Same bytes, same codex: the record answers, and a codex that would now reject is never asked.
+  codex.script({ probe: "reject" });
+  expect(inspectCatalogFile(file)).toBe("accepted");
+  expect(codex.runs().length).toBe(3);
   // A codex upgrade asks again (and a rejection is not recorded).
-  expect(inspectCatalogFile(file, probing(false, "2.0.0"))).toBe("rejected");
-  expect(probes).toBe(2);
+  codex.script({ version: "2.0.0" });
+  expect(inspectCatalogFile(file)).toBe("rejected");
+  expect(codex.runs().length).toBe(5);
   expect(new CopilotEnvState().read().codexCatalogAccepted).toEqual(recorded);
-  expect(inspectCatalogFile(file, probing(true, "2.0.0"))).toBe("accepted");
-  expect(inspectCatalogFile(file, probing(false, "2.0.0"))).toBe("accepted");
-  expect(probes).toBe(3);
+  codex.script({ probe: "accept" });
+  expect(inspectCatalogFile(file)).toBe("accepted");
   expect(new CopilotEnvState().read().codexCatalogAccepted?.codexVersion).toBe("2.0.0");
-  // A changed file asks again; an unknown codex version never trusts the record.
+  codex.script({ probe: "reject" });
+  expect(inspectCatalogFile(file)).toBe("accepted");
+  // A changed file asks again; an unknown codex version never trusts or updates the record.
   writeFileSync(file, '{"models":[{"slug":"other"}]}');
-  expect(inspectCatalogFile(file, probing(false, "2.0.0"))).toBe("rejected");
-  expect(probes).toBe(4);
-  expect(inspectCatalogFile(file, probing(true, null))).toBe("accepted");
-  expect(inspectCatalogFile(file, probing(true, null))).toBe("accepted");
-  expect(probes).toBe(6);
+  expect(inspectCatalogFile(file)).toBe("rejected");
+  codex.script({ probe: "accept", version: null });
+  expect(inspectCatalogFile(file)).toBe("accepted");
+  expect(new CopilotEnvState().read().codexCatalogAccepted?.codexVersion).toBe("2.0.0");
+  codex.script({ probe: "reject" });
+  expect(inspectCatalogFile(file)).toBe("rejected");
 });
 
 test("a proven acceptance survives an acceptance cache that cannot be read or written", () => {
-  isolate();
+  catalogFixture({ version: "1.0.0" });
   const file = new CopilotApiPaths().codexModelCatalogFile;
   writeFileSync(file, '{"models":[{"slug":"x"}]}');
   // The state store's path is a directory: reads and writes both throw.
   const stateFile = join(dir, "state.json");
   rmSync(stateFile, { force: true });
   mkdirSync(stateFile);
-  const deps = { acceptsCatalog: () => true, codexVersion: () => "1.0.0" };
-  expect(inspectCatalogFile(file, deps)).toBe("accepted");
-  expect(inspectCatalogFile(file, deps)).toBe("accepted");
+  expect(inspectCatalogFile(file)).toBe("accepted");
+  expect(inspectCatalogFile(file)).toBe("accepted");
 });
 
 test("inspectCatalogFile: one read decides unusable, then hands the same bytes to the probe", () => {
-  isolate();
+  // An unknown codex version: nothing is recorded or trusted, every judgement probes.
+  const codex = catalogFixture({ version: null });
   const file = new CopilotApiPaths().codexModelCatalogFile;
-  let seen: string | null = null;
-  // An unknown codex version: nothing is recorded or trusted, every call probes.
-  const judging = (verdict: boolean | null) => ({
-    acceptsCatalog: (json: string) => {
-      seen = json;
-      return verdict;
-    },
-    codexVersion: () => null,
-  });
-  expect(inspectCatalogFile(file, judging(true))).toBe("unusable");
+  expect(inspectCatalogFile(file)).toBe("unusable");
   mkdirSync(file);
-  expect(inspectCatalogFile(file, judging(true))).toBe("unusable");
+  expect(inspectCatalogFile(file)).toBe("unusable");
   rmSync(file, { recursive: true });
   writeFileSync(file, "{ corrupt");
-  expect(inspectCatalogFile(file, judging(true))).toBe("unusable");
+  expect(inspectCatalogFile(file)).toBe("unusable");
   writeFileSync(file, '{"models":[]}');
-  expect(inspectCatalogFile(file, judging(true))).toBe("unusable");
-  expect(seen).toBeNull();
+  expect(inspectCatalogFile(file)).toBe("unusable");
+  expect(codex.runs()).toEqual([]);
   writeFileSync(file, '{"models":[{"slug":"x"}]}');
-  expect(inspectCatalogFile(file, judging(false))).toBe("rejected");
-  expect(seen).toBe('{"models":[{"slug":"x"}]}');
-  expect(inspectCatalogFile(file, judging(true))).toBe("accepted");
-  expect(inspectCatalogFile(file, judging(null))).toBe("unverifiable");
-  // The default probe is off under the suite's live-lookup seam: unverifiable.
+  codex.script({ probe: "reject" });
+  expect(inspectCatalogFile(file)).toBe("rejected");
+  expect(codex.seen()).toBe('{"models":[{"slug":"x"}]}');
+  codex.script({ probe: "accept" });
+  expect(inspectCatalogFile(file)).toBe("accepted");
+  codex.script({ probe: "dump-other" });
   expect(inspectCatalogFile(file)).toBe("unverifiable");
+  // The probe is off under the suite's live-lookup seam: unverifiable, without a spawn.
+  codex.script({ probe: "accept" });
+  process.env[CI_NO_LIVE_LOOKUPS_ENV] = "1";
+  const spawned = codex.runs().length;
+  expect(inspectCatalogFile(file)).toBe("unverifiable");
+  expect(codex.runs().length).toBe(spawned);
 });
 
-// --- the default probe's production path, through a fake `codex` on PATH ---------
-// (POSIX shell scripts; the Windows .cmd dispatch is covered by the launch tests.)
+// --- the probe's verdict rules, through the fake codex -----------------------------
 
-const onPosix = test.skipIf(process.platform === "win32");
-
-function fakeCodexHarness() {
-  isolate();
-  const bin = join(dir, "bin");
-  mkdirSync(bin);
-  process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
-  delete process.env[CI_NO_LIVE_LOOKUPS_ENV];
-  resetCatalogProbeState(); // a previous test's fake codex path must not be reused
-  const seen = join(dir, "probe-seen.json");
-  process.env.COPILOT_ENV_PROBE_SEEN = seen;
-  const runs = join(dir, "probe-runs");
-  process.env.COPILOT_ENV_PROBE_RUNS = runs;
+/** Distinct bytes per scenario: verdicts are memoized per content. */
+function writeCatalog(tag: string): string {
   const file = new CopilotApiPaths().codexModelCatalogFile;
-  // The referenced candidate path, if any (what a real codex would parse).
-  const readCandidate =
-    'candidate=$(sed -n \'s/^model_catalog_json = "\\(.*\\)"$/\\1/p\' "$CODEX_HOME/config.toml")';
-  return {
-    file,
-    seen,
-    readCandidate,
-    dump: `echo '{"models":[{"slug":"fake"}]}'`,
-    fake(body: string): void {
-      const script = [
-        "#!/bin/sh",
-        'if [ "$1" = "debug" ]; then echo "$(pwd -P) $(cd "$CODEX_HOME" && pwd -P)" >> "$COPILOT_ENV_PROBE_RUNS"; fi',
-        body,
-        "",
-      ].join("\n");
-      writeFileSync(join(bin, "codex"), script);
-      chmodSync(join(bin, "codex"), 0o755);
-    },
-    runs(): string[] {
-      return existsSync(runs) ? readFileSync(runs, "utf8").split("\n").filter(Boolean) : [];
-    },
-    /** Distinct bytes per scenario: verdicts are memoized per content. */
-    write(tag: string): string {
-      const content = `{"models":[{"slug":"${tag}"}]}`;
-      writeFileSync(file, content);
-      return content;
-    },
-  };
+  const content = `{"models":[{"slug":"${tag}"}]}`;
+  writeFileSync(file, content);
+  return content;
 }
 
-onPosix(
-  "rejected: the candidate run fails, the empty-config control dumps; the bytes judged are the file's, inside the throwaway home",
-  () => {
-    const h = fakeCodexHarness();
-    const content = h.write("rejected");
-    h.fake([
-      h.readCandidate,
-      'if [ -n "$candidate" ]; then cp "$candidate" "$COPILOT_ENV_PROBE_SEEN"; echo "Error: bad catalog" >&2; exit 1; fi',
-      h.dump,
-    ].join("\n"));
-    expect(inspectCatalogFile(h.file)).toBe("rejected");
-    expect(readFileSync(h.seen, "utf8")).toBe(content);
-    const runs = h.runs();
-    expect(runs.length).toBe(2); // the candidate run and its control
-    // codex reads project config from cwd, so every run sits in its throwaway home.
-    for (const line of runs) {
-      const [cwd, home] = line.split(" ");
-      expect(cwd).toBe(home);
-    }
-  },
-);
+test("rejected: the candidate run fails, the empty-config control dumps; the bytes judged are the file's, inside the throwaway home", () => {
+  const codex = catalogFixture({ probe: "reject" });
+  const content = writeCatalog("rejected");
+  expect(inspectCatalogFile(new CopilotApiPaths().codexModelCatalogFile)).toBe("rejected");
+  expect(codex.seen()).toBe(content);
+  const runs = codex.runs();
+  expect(runs.length).toBe(2); // the candidate run and its control
+  // codex reads project config from cwd, so every run sits in its throwaway home.
+  for (const run of runs) expect(run.cwd).toBe(run.home);
+});
 
-onPosix(
-  "accepted: the candidate parses and garbage through the same key fails; the same bytes are never judged twice",
-  () => {
-    const h = fakeCodexHarness();
-    h.write("accepted");
-    h.fake([
-      h.readCandidate,
-      'if ! grep -q \'"models"\' "$candidate"; then echo "Error: failed to parse model_catalog_json" >&2; exit 1; fi',
-      'cat "$candidate"',
-    ].join("\n"));
-    expect(inspectCatalogFile(h.file)).toBe("accepted");
-    expect(h.runs().length).toBe(2); // the candidate run and the garbage control
-    expect(inspectCatalogFile(h.file)).toBe("accepted");
-    expect(h.runs().length).toBe(2); // the later re-judgement spawns nothing
-  },
-);
+test("accepted: the candidate parses and garbage through the same key fails; the same bytes are never judged twice", () => {
+  // No resolvable version: the acceptance record stays empty, so the second look is answered by
+  // the per-process verdict memo, never the store.
+  const codex = catalogFixture({ probe: "accept", version: null });
+  writeCatalog("accepted");
+  const file = new CopilotApiPaths().codexModelCatalogFile;
+  expect(inspectCatalogFile(file)).toBe("accepted");
+  expect(codex.runs().length).toBe(2); // the candidate run and the garbage control
+  expect(inspectCatalogFile(file)).toBe("accepted");
+  expect(codex.runs().length).toBe(2); // the later re-judgement spawns nothing
+});
 
-onPosix("unverifiable: a run that proves nothing either way never becomes a verdict", () => {
-  const h = fakeCodexHarness();
-  const cases: [name: string, body: string][] = [
+test("unverifiable: a run that proves nothing either way never becomes a verdict", () => {
+  const codex = catalogFixture();
+  const cases: FakeCodexProbe[] = [
     // Exits 0 but dumps something other than the candidate: it was never read.
-    ["dumps-other-slugs", h.dump],
+    "dump-other",
     // Echoes the candidate's own slugs yet would swallow garbage too.
-    [
-      "echoes-candidate-swallows-garbage",
-      `echo '{"models":[{"slug":"echoes-candidate-swallows-garbage"}]}'`,
-    ],
+    "echo-any",
     // Fails with AND without the catalog: not the catalog's fault.
-    ["fails-either-way", 'echo "Error: config broken" >&2; exit 1'],
+    "fail-always",
     // Fails with the catalog, but the control exits 0 without a dump.
-    [
-      "blank-control",
-      [h.readCandidate, 'if [ -n "$candidate" ]; then exit 1; fi', "echo"].join("\n"),
-    ],
+    "blank-control",
     // Exits 0 without a catalog dump.
-    ["no-dump", "echo nothing"],
-    // Killed while judging the candidate (no exit code), though the control would dump.
-    [
-      "killed-candidate",
-      [h.readCandidate, 'if [ -n "$candidate" ]; then kill -TERM $$; fi', h.dump].join("\n"),
-    ],
+    "no-dump",
+    // Killed while judging the candidate (no exit code), though the control would dump. A Windows
+    // process ended by signal still reports an exit code, so that arm is POSIX-only.
+    ...(process.platform === "win32" ? [] : ["kill-candidate" as const]),
   ];
-  for (const [name, body] of cases) {
-    h.write(name);
-    h.fake(body);
-    expect([name, inspectCatalogFile(h.file)]).toEqual([name, "unverifiable"]);
+  for (const probe of cases) {
+    writeCatalog(probe);
+    codex.script({ probe });
+    expect([probe, inspectCatalogFile(new CopilotApiPaths().codexModelCatalogFile)])
+      .toEqual([probe, "unverifiable"]);
   }
 });
 
-onPosix("a spent probe budget judges nothing and spawns nothing", () => {
-  const h = fakeCodexHarness();
-  h.fake(h.dump);
+test("a spent probe budget judges nothing and spawns nothing", () => {
+  const codex = catalogFixture({ probe: "dump-other" });
+  const file = new CopilotApiPaths().codexModelCatalogFile;
   // Control: with budget, a judgement spawns the fake.
-  h.write("budgeted");
-  expect(inspectCatalogFile(h.file)).toBe("unverifiable");
-  expect(h.runs().length).toBe(1);
-  h.write("unbudgeted");
+  writeCatalog("budgeted");
+  expect(inspectCatalogFile(file)).toBe("unverifiable");
+  expect(codex.runs().length).toBe(1);
+  writeCatalog("unbudgeted");
   resetCatalogProbeState(0);
   try {
-    expect(inspectCatalogFile(h.file)).toBe("unverifiable");
-    expect(h.runs().length).toBe(1);
+    expect(inspectCatalogFile(file)).toBe("unverifiable");
+    expect(codex.runs().length).toBe(1);
   } finally {
     resetCatalogProbeState();
   }
 });
 
-test("past the refresh deadline the catalog is still written but its acceptance is not memoized", async () => {
-  isolate();
-  // The deadline is taken at the first tick; the clock then jumps past it.
-  const t0 = 1_700_000_000_000;
-  let calls = 0;
-  const deps = {
-    nowMs: () => (calls++ < 2 ? t0 : t0 + 60_000),
-    codexVersion: () => "1.0.0",
-    bundledCatalog: () => BUNDLED,
-    fetchCopilotModels: async () => GPT55_ONLY,
-    acceptsCatalog: () => true,
-  };
-  const regenerated = await withCatalogRefreshDeadline(
-    deps,
-    () => refreshCodexModelCatalogIfStale("direct", deps),
-  );
-  expect(regenerated).toBe(true);
-  expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(true);
-  expect(new CopilotEnvState().read().codexCatalogAccepted).toBeNull();
-  // Control: inside the deadline the same run records the acceptance.
-  const later = { ...deps, nowMs: () => t0 + 2 * MILLISECONDS_PER_DAY };
-  await withCatalogRefreshDeadline(later, () => refreshCodexModelCatalogIfStale("direct", later));
-  expect(new CopilotEnvState().read().codexCatalogAccepted?.codexVersion).toBe("1.0.0");
-});
-
 test("a codex version change bypasses the daily throttle (new bundled catalog within one cycle)", async () => {
-  isolate();
-  const now = 1_700_000_000_000;
+  const codex = catalogFixture({ version: "0.144.0" });
+  storeCredential();
   new CopilotEnvState().set({
-    codexCatalogLastAttemptMs: now - 1000,
+    codexCatalogLastAttemptMs: Date.now() - 1000,
     codexCatalogCodexVersion: "0.144.0",
     codexCatalogPatchVersion: CATALOG_PATCH_VERSION,
   });
-
-  let called = false;
-  const deps = {
-    nowMs: () => now,
-    bundledCatalog: () => BUNDLED,
-    acceptsCatalog: () => true,
-    fetchCopilotModels: async () => {
-      called = true;
-      return GPT55_ONLY;
-    },
-  };
-  expect(
-    await refreshCodexModelCatalogIfStale("direct", { ...deps, codexVersion: () => "0.144.0" }),
-  ).toBe(false);
-  expect(called).toBe(false);
+  const refresh = () => withCopilot(GPT55_BODY, () => refreshCodexModelCatalogIfStale("direct"));
+  expect((await refresh()).sent).toEqual([]);
 
   // Upgraded codex: the file REPLACES the bundled catalog, so the new binary's
   // models would stay hidden behind the throttle -- a version change regenerates now.
-  expect(
-    await refreshCodexModelCatalogIfStale("direct", { ...deps, codexVersion: () => "0.145.0" }),
-  ).toBe(true);
-  expect(called).toBe(true);
+  codex.script({ version: "0.145.0" });
+  const upgraded = await refresh();
+  expect(upgraded.result).toBe(true);
+  expect(upgraded.sent.length).toBeGreaterThan(0);
   expect(new CopilotEnvState().read().codexCatalogCodexVersion).toBe("0.145.0");
 
   // An unresolvable version (codex missing) is NOT a change -- still throttled.
-  called = false;
-  expect(
-    await refreshCodexModelCatalogIfStale("direct", { ...deps, codexVersion: () => null }),
-  ).toBe(false);
-  expect(called).toBe(false);
+  codex.script({ version: null });
+  const unresolved = await refresh();
+  expect(unresolved.result).toBe(false);
+  expect(unresolved.sent).toEqual([]);
 });
 
 test("a catalog patch-logic change bypasses the daily throttle", async () => {
-  isolate();
-  const now = 1_700_000_000_000;
+  catalogFixture({ version: "0.144.0" });
+  storeCredential();
   // A catalog written under the PREVIOUS patch logic may carry exactly what the new patch removes.
   new CopilotEnvState().set({
-    codexCatalogLastAttemptMs: now - 1000,
+    codexCatalogLastAttemptMs: Date.now() - 1000,
     codexCatalogCodexVersion: "0.144.0",
     codexCatalogPatchVersion: CATALOG_PATCH_VERSION - 1,
   });
-  const regenerated = await refreshCodexModelCatalogIfStale("direct", {
-    nowMs: () => now,
-    codexVersion: () => "0.144.0",
-    bundledCatalog: () => BUNDLED,
-    fetchCopilotModels: async () => GPT55_ONLY,
-    acceptsCatalog: () => true,
-  });
-  expect(regenerated).toBe(true);
+  const { result } = await withCopilot(GPT55_BODY, () => refreshCodexModelCatalogIfStale("direct"));
+  expect(result).toBe(true);
   expect(new CopilotEnvState().read().codexCatalogPatchVersion).toBe(CATALOG_PATCH_VERSION);
 });
 
 test("a failed post-upgrade regeneration does not retry on the next same-version call", async () => {
-  isolate();
-  const now = 1_700_000_000_000;
+  catalogFixture({ version: "0.145.0", bundled: null });
+  storeCredential();
   new CopilotEnvState().set({
-    codexCatalogLastAttemptMs: now - 1000,
+    codexCatalogLastAttemptMs: Date.now() - 1000,
     codexCatalogCodexVersion: "0.144.0",
     codexCatalogPatchVersion: CATALOG_PATCH_VERSION,
   });
 
   // Upgrade detected, but generation fails: the attempt AND new version are
   // recorded up front, so the failure is not retried on every launch.
-  let calls = 0;
-  const deps = {
-    nowMs: () => now,
-    codexVersion: () => "0.145.0",
-    bundledCatalog: () => null,
-    fetchCopilotModels: async () => {
-      calls++;
-      return GPT55_ONLY;
-    },
-  };
-  expect(await refreshCodexModelCatalogIfStale("direct", deps)).toBe(false);
-  expect(calls).toBe(1);
+  const first = await withCopilot(GPT55_BODY, () => refreshCodexModelCatalogIfStale("direct"));
+  expect(first.result).toBe(false);
+  expect(first.sent.length).toBeGreaterThan(0);
   expect(new CopilotEnvState().read().codexCatalogCodexVersion).toBe("0.145.0");
 
-  expect(await refreshCodexModelCatalogIfStale("direct", deps)).toBe(false);
-  expect(calls).toBe(1); // throttled: same version, fresh attempt timestamp
+  const second = await withCopilot(GPT55_BODY, () => refreshCodexModelCatalogIfStale("direct"));
+  expect(second.result).toBe(false);
+  expect(second.sent).toEqual([]); // throttled: same version, fresh attempt timestamp
 });
 
 // --- the opt-in gate ----------------------------------------------------------
 
 test("generate is a no-op when the catalog is not opted in", async () => {
-  isolate();
+  const codex = catalogFixture();
   new CopilotEnvConfig().del("codex.model-catalog");
-  const ok = await generateCodexModelCatalog("direct", {
-    bundledCatalog: () => {
-      throw new Error("must not be called");
-    },
-    fetchCopilotModels: async () => {
-      throw new Error("must not be called");
-    },
-  });
-  expect(ok).toBe(false);
+  const { result, sent } = await withCopilot(
+    GPT55_BODY,
+    () => generateCodexModelCatalog("direct", TOKEN),
+  );
+  expect(result).toBe(false);
+  expect(sent).toEqual([]);
+  expect(codex.runs()).toEqual([]);
   expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(false);
 });
 
 test("refresh is a no-op when disabled: no throttle state write", async () => {
-  isolate();
+  const codex = catalogFixture({ version: "1.0.0" });
+  storeCredential();
   new CopilotEnvConfig().set({ "codex.model-catalog": false });
-  const ok = await refreshCodexModelCatalogIfStale("direct", {
-    nowMs: () => 1_000_000,
-    codexVersion: () => "1.0.0",
-    bundledCatalog: () => {
-      throw new Error("must not be called");
-    },
-    fetchCopilotModels: async () => {
-      throw new Error("must not be called");
-    },
-  });
-  expect(ok).toBe(false);
+  const { result, sent } = await withCopilot(
+    GPT55_BODY,
+    () => refreshCodexModelCatalogIfStale("direct"),
+  );
+  expect(result).toBe(false);
+  expect(sent).toEqual([]);
+  expect(codex.runs()).toEqual([]);
   // The gate sits BEFORE the attempt recording: a disabled install must never
   // re-create the throttle fields cleanup deleted.
   const state = new CopilotEnvState().read();

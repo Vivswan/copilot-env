@@ -1,6 +1,7 @@
 // Codex's phone pairing needs the app on its DEFAULT OpenAI provider, so `agent codex-mobile`
 // temporarily removes the managed `model_provider`, walks the user through pairing in the app, then
 // restores it. There is no Linux Codex app, so it is gated to macOS/Windows.
+import { setTimeout as sleep } from "node:timers/promises";
 import { parse, stringify } from "smol-toml";
 import {
   appRunning,
@@ -37,21 +38,12 @@ function ensureNoForcedOpenaiAuth(doc: Record<string, unknown>): void {
   if (isRecord(table)) table.requires_openai_auth = false;
 }
 
-export function readModelProvider(configToml: string): string | null {
+/** A top-level string of config.toml; null when absent, not a string, or the TOML does not parse. */
+export function readTopLevelString(configToml: string, key: string): string | null {
   try {
     const doc = parse(configToml);
-    return isRecord(doc) && typeof doc.model_provider === "string" ? doc.model_provider : null;
-  } catch {
-    return null;
-  }
-}
-
-export function readModelCatalogJson(configToml: string): string | null {
-  try {
-    const doc = parse(configToml);
-    return isRecord(doc) && typeof doc.model_catalog_json === "string"
-      ? doc.model_catalog_json
-      : null;
+    const value = isRecord(doc) ? doc[key] : undefined;
+    return typeof value === "string" ? value : null;
   } catch {
     return null;
   }
@@ -80,8 +72,6 @@ export function restoreModelProvider(
 }
 
 // --- desktop app control ----------------------------------------------------
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Contract text, shared by the pre-swap close gate and the post-pairing close. */
 const RUNNING_SCAN_UNPROVEN_WARN =
@@ -139,121 +129,75 @@ export function postPairingCloseFromScan(scan: AppScan): { quit: boolean; warn: 
 /** Shared by the Windows running and installed looks. */
 const PS_PROCESS_SCAN = processScanScript(APP_NAME);
 
-/** The graceful-then-force `quit()` poll loop is shared; only the per-platform primitives differ.
- *  The executor, platform, and quit timing are injectable for tests only. */
-export class CodexAppController {
-  private readonly platform: string;
-  private readonly windows: boolean;
-  private readonly exec: (
-    file: string,
-    args: string[],
-  ) => Promise<{ exitCode: number; stdout: string; launchFailed?: true }>;
-  private readonly quitTimeoutMs: number;
-  private readonly quitPollMs: number;
+// The per-platform primitives: PowerShell scans and signals on Windows (nothing they start
+// outlives them, so runPowershell's scratch profile is theirs), open/pgrep/osascript/pkill on macOS.
 
-  constructor(
-    exec: (
-      file: string,
-      args: string[],
-    ) => Promise<{ exitCode: number; stdout: string; launchFailed?: true }> = runCaptured,
-    platform: string = process.platform,
-    timing: { timeoutMs: number; pollMs: number } = {
-      timeoutMs: QUIT_TIMEOUT_MS,
-      pollMs: QUIT_POLL_MS,
-    },
-  ) {
-    this.exec = exec;
-    this.platform = platform;
-    this.windows = platform === "win32";
-    this.quitTimeoutMs = timing.timeoutMs;
-    this.quitPollMs = timing.pollMs;
+/** Three-state look at whether the app appears installed (see AppScan). */
+export async function installedState(): Promise<AppScan> {
+  if (process.platform === "win32") {
+    // Under Stop, a Get-StartApps that cannot run (module missing, restricted host) exits
+    // nonzero, never a false 'absent'; 'absent' needs Start Apps empty AND the specific
+    // no-process error.
+    return appScanVerdict(
+      await runPowershell(
+        "$ErrorActionPreference = 'Stop'; " +
+          `try { $apps = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } } catch { exit 1 }; ` +
+          `if ($apps) { 'present' } else { ${PS_PROCESS_SCAN} }`,
+      ),
+    );
   }
+  // `open -Ra` exits 1 by convention when the app does not resolve, but open(1) documents no
+  // exclusive exit vocabulary, so an exotic LaunchServices failure could still exit 1 (stderr
+  // text is not a contract). Hence the absent arm's rendering stays hedged ("does not appear to
+  // be").
+  return appScanFromExit(await runCaptured("open", ["-Ra", APP_NAME]));
+}
 
-  private run(file: string, args: string[]) {
-    return this.exec(file, args);
-  }
+/** Three-state look at whether the app is currently running (see AppScan). */
+export function runningState(): Promise<AppScan> {
+  return appRunning(APP_NAME);
+}
 
-  /** Scans and signals: nothing they start outlives them, so the scratch profile is theirs. */
-  private ps(script: string) {
-    return runPowershell(script, this.exec);
-  }
-
-  /** Three-state look at whether the app appears installed (see AppScan). */
-  async installedState(): Promise<AppScan> {
-    if (this.windows) {
-      // Under Stop, a Get-StartApps that cannot run (module missing, restricted host) exits
-      // nonzero, never a false 'absent'; 'absent' needs Start Apps empty AND the specific
-      // no-process error.
-      return appScanVerdict(
-        await this.ps(
-          "$ErrorActionPreference = 'Stop'; " +
-            `try { $apps = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } } catch { exit 1 }; ` +
-            `if ($apps) { 'present' } else { ${PS_PROCESS_SCAN} }`,
-        ),
-      );
+/** On Windows, falls back to a manual prompt if it can't launch. The app this starts inherits
+ *  the spawn's environment, so the launch runs under the user's own profile, never the scans'
+ *  scratch one. */
+async function openApp(): Promise<void> {
+  if (process.platform === "win32") {
+    const r = await runCaptured("powershell", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `$a = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } | Select-Object -First 1;` +
+      `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
+    ]);
+    if (r.exitCode !== 0) {
+      await prompt(`Open the ${APP_NAME} app, then press Enter.`, { type: "text" });
     }
-    // `open -Ra` exits 1 by convention when the app does not resolve, but open(1) documents no
-    // exclusive exit vocabulary, so an exotic LaunchServices failure could still exit 1 (stderr
-    // text is not a contract). Hence the absent arm's rendering stays hedged ("does not appear to
-    // be").
-    return appScanFromExit(await this.run("open", ["-Ra", APP_NAME]));
+    return;
   }
+  await runCaptured("open", ["-a", APP_NAME]);
+}
 
-  /** Three-state look at whether the app is currently running (see AppScan). */
-  runningState(): Promise<AppScan> {
-    return appRunning(APP_NAME, this.exec, this.platform);
+/** Graceful quit, polled; the by-name force-quit fires at the deadline. */
+export async function quitApp(): Promise<void> {
+  if (process.platform === "win32") {
+    await runPowershell(
+      `Get-Process -Name '${APP_NAME}' -ErrorAction SilentlyContinue | ForEach-Object { $_.CloseMainWindow() | Out-Null }`,
+    );
+  } else {
+    await runCaptured("osascript", ["-e", `tell application "${APP_NAME}" to quit`]);
   }
-
-  /** On Windows, falls back to a manual prompt if it can't launch. The app this starts inherits
-   *  the spawn's environment, so the launch runs under the user's own profile, never the scans'
-   *  scratch one. */
-  async open(): Promise<void> {
-    if (this.windows) {
-      const r = await this.run("powershell", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `$a = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } | Select-Object -First 1;` +
-        `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
-      ]);
-      if (r.exitCode !== 0) await this.manualPromptOpen();
-      return;
-    }
-    await this.run("open", ["-a", APP_NAME]);
+  const deadline = Date.now() + QUIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    // Only a PROVEN absence ends the wait: an unproven look keeps polling toward the deadline,
+    // where the by-name force-quit fires and claims nothing about whether the app was running.
+    if ((await runningState()) === "absent") return;
+    await sleep(QUIT_POLL_MS);
   }
-
-  async quit(): Promise<void> {
-    await this.requestQuit();
-    const deadline = Date.now() + this.quitTimeoutMs;
-    while (Date.now() < deadline) {
-      // Only a PROVEN absence ends the wait: an unproven look keeps polling toward the deadline,
-      // where the by-name force-quit fires and claims nothing about whether the app was running.
-      if ((await this.runningState()) === "absent") return;
-      await sleep(this.quitPollMs);
-    }
-    await this.forceQuit();
-  }
-
-  private async requestQuit(): Promise<void> {
-    if (this.windows) {
-      await this.ps(
-        `Get-Process -Name '${APP_NAME}' -ErrorAction SilentlyContinue | ForEach-Object { $_.CloseMainWindow() | Out-Null }`,
-      );
-    } else {
-      await this.run("osascript", ["-e", `tell application "${APP_NAME}" to quit`]);
-    }
-  }
-
-  private async forceQuit(): Promise<void> {
-    if (this.windows) {
-      await this.ps(`Stop-Process -Name '${APP_NAME}' -Force -ErrorAction SilentlyContinue`);
-    } else {
-      await this.run("pkill", ["-x", APP_NAME]);
-    }
-  }
-
-  private manualPromptOpen(): Promise<unknown> {
-    return prompt(`Open the ${APP_NAME} app, then press Enter.`, { type: "text" });
+  if (process.platform === "win32") {
+    await runPowershell(`Stop-Process -Name '${APP_NAME}' -Force -ErrorAction SilentlyContinue`);
+  } else {
+    await runCaptured("pkill", ["-x", APP_NAME]);
   }
 }
 
@@ -291,18 +235,16 @@ export async function runCodexMobile(): Promise<void> {
     );
   }
 
-  const provider = readModelProvider(original);
+  const provider = readTopLevelString(original, "model_provider");
   if (provider === null) {
     throw new Error(
       "No model_provider is configured in config.toml - run `agent profile sync --codex` first, then retry --mobile.",
     );
   }
   // Captured alongside the provider so restore() puts BOTH keys back.
-  const catalogPath = readModelCatalogJson(original);
+  const catalogPath = readTopLevelString(original, "model_catalog_json");
 
-  const app = new CodexAppController();
-
-  const installGate = installGateFromScan(await app.installedState());
+  const installGate = installGateFromScan(await installedState());
   if (installGate.kind === "abort") {
     logger.warn(installGate.warn);
     logger.info(installGate.info);
@@ -321,7 +263,7 @@ export async function runCodexMobile(): Promise<void> {
   }
 
   // Close the app first (ask permission, default yes) so the config swap is clean.
-  const gate = closeGateFromScan(await app.runningState());
+  const gate = closeGateFromScan(await runningState());
   if (gate.close) {
     if (gate.warn !== null) logger.warn(gate.warn);
     const close = await prompt(gate.prompt, {
@@ -332,7 +274,7 @@ export async function runCodexMobile(): Promise<void> {
       logger.info("Aborted - the app must be closed to re-pair. Nothing was changed.");
       return;
     }
-    await app.quit();
+    await quitApp();
   }
 
   // A durable backup so a hard kill mid-pairing leaves a recovery file rather than a Codex with no
@@ -407,7 +349,7 @@ export async function runCodexMobile(): Promise<void> {
       detail: `Codex config, rewritten around the pairing (model_provider "${provider}")`,
     });
 
-    await app.open();
+    await openApp();
     logger.box(
       [
         "Pairing",
@@ -422,9 +364,9 @@ export async function runCodexMobile(): Promise<void> {
 
     // Restore itself is swap-tolerant (it re-reads the current file and falls back to the pre-flow
     // config), so an unproven look here only warns.
-    const afterPairing = postPairingCloseFromScan(await app.runningState());
+    const afterPairing = postPairingCloseFromScan(await runningState());
     if (afterPairing.warn !== null) logger.warn(afterPairing.warn);
-    if (afterPairing.quit) await app.quit();
+    if (afterPairing.quit) await quitApp();
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
@@ -439,7 +381,7 @@ export async function runCodexMobile(): Promise<void> {
     }
   }
 
-  await app.open();
+  await openApp();
   logger.box(
     [
       "Done",

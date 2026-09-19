@@ -172,7 +172,7 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
     // 4b. Claude Desktop's config library: owned entries and helper scripts only.
     () => {
       try {
-        removeAllClaudeDesktopWiring(undefined, ctx.targets.desktop);
+        removeAllClaudeDesktopWiring(ctx.targets.desktop);
       } catch (e) {
         consola.warn(`could not remove the Claude Desktop entries: ${errMessage(e)}`);
       }

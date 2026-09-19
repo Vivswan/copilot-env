@@ -22,7 +22,7 @@ import { appRunning, type AppScan } from "../utils/app_scan.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { isRecord, parseJsonRecord } from "../utils/json.ts";
+import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
 const logger = createStderrLogger();
@@ -42,6 +42,48 @@ export interface DesktopEnv {
   xdgConfigHome?: string;
 }
 
+/** Where the app lives on one platform. `data` is the third-party (Claude-3p) userData dir and
+ *  `standard` the default (claude.ai) one: Developer Mode is read from the latter even in
+ *  third-party mode, since the app resolves developer_settings.json before it switches its data
+ *  dir (Electron's default userData is the ROAMING AppData on Windows, unlike the Claude-3p dir).
+ *  `app` is where an install itself sits; Linux has no fixed install path. A null dir: the
+ *  platform's variable is unset, or the platform has no app. */
+export interface DesktopDirs {
+  data: string | null;
+  standard: string | null;
+  app: string[];
+}
+
+/** Platform-parameterized so every branch runs on every CI runner. The XDG spec reads an EMPTY or
+ *  RELATIVE variable as unset (a relative one would land the app files in the working directory). */
+export function desktopDirsFor(platform: string, home: string, env: DesktopEnv): DesktopDirs {
+  switch (platform) {
+    case "darwin": {
+      const support = join(home, "Library", "Application Support");
+      return {
+        data: join(support, "Claude-3p"),
+        standard: join(support, "Claude"),
+        app: ["/Applications/Claude.app", join(home, "Applications", "Claude.app")],
+      };
+    }
+    case "win32":
+      return {
+        data: env.localAppData ? join(env.localAppData, "Claude-3p") : null,
+        standard: env.appData ? join(env.appData, "Claude") : null,
+        app: env.localAppData === undefined
+          ? []
+          : [join(env.localAppData, "AnthropicClaude", "claude.exe")],
+      };
+    case "linux": {
+      const xdg = env.xdgConfigHome;
+      const root = xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".config");
+      return { data: join(root, "Claude-3p"), standard: join(root, "Claude"), app: [] };
+    }
+    default:
+      return { data: null, standard: null, app: [] };
+  }
+}
+
 function desktopEnv(): DesktopEnv {
   return {
     localAppData: process.env.LOCALAPPDATA,
@@ -50,45 +92,15 @@ function desktopEnv(): DesktopEnv {
   };
 }
 
-/** Electron's userData root on Linux. The XDG spec reads an EMPTY or RELATIVE variable as unset
- *  (a relative one would land the app files in the working directory). */
-function linuxConfigRoot(home: string, env: DesktopEnv): string {
-  const xdg = env.xdgConfigHome;
-  return xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".config");
-}
-
-/** Platform-parameterized so every branch runs on every CI runner. */
-export function desktopDataDirFor(platform: string, home: string, env: DesktopEnv): string | null {
-  if (platform === "darwin") return join(home, "Library", "Application Support", "Claude-3p");
-  if (platform === "win32") {
-    return env.localAppData ? join(env.localAppData, "Claude-3p") : null;
-  }
-  if (platform === "linux") return join(linuxConfigRoot(home, env), "Claude-3p");
-  return null;
-}
-
-/** The app's default (claude.ai) data dir. Developer Mode is read from here even in third-party
- *  mode: the app resolves developer_settings.json before it switches its data dir to Claude-3p.
- *  Electron's default userData is the ROAMING AppData on Windows, unlike the Claude-3p dir. */
-export function desktopStandardDataDirFor(
-  platform: string,
-  home: string,
-  env: DesktopEnv,
-): string | null {
-  if (platform === "darwin") return join(home, "Library", "Application Support", "Claude");
-  if (platform === "win32") {
-    return env.appData ? join(env.appData, "Claude") : null;
-  }
-  if (platform === "linux") return join(linuxConfigRoot(home, env), "Claude");
-  return null;
+function desktopDirs(): DesktopDirs {
+  return desktopDirsFor(process.platform, homedir(), desktopEnv());
 }
 
 /** Under the seam, the standard dir is the seam's `-1p` sibling. */
 export function resolveDesktopDataDirs(): { data: string; standard: string } | null {
   const seam = seamDir();
   if (seam !== null) return { data: seam, standard: `${seam}-1p` };
-  const data = desktopDataDirFor(process.platform, homedir(), desktopEnv());
-  const standard = desktopStandardDataDirFor(process.platform, homedir(), desktopEnv());
+  const { data, standard } = desktopDirs();
   return data === null || standard === null ? null : { data, standard };
 }
 
@@ -108,32 +120,20 @@ function seamDir(): string | null {
 }
 
 export function resolveDesktopLibraryDir(): string | null {
-  const seam = seamDir();
-  if (seam !== null) return desktopLibraryDirUnder(seam);
-  const dataDir = desktopDataDirFor(process.platform, homedir(), desktopEnv());
+  const dataDir = seamDir() ?? desktopDirs().data;
   return dataDir === null ? null : desktopLibraryDirUnder(dataDir);
 }
 
-/** Either data dir counts as installed too: an app installed somewhere unusual that has run. On
- *  Linux (no fixed install path) that is the only signal. */
+/** The app at an install path, or either data dir present: an app installed somewhere unusual
+ *  that has run (on Linux the only signal). */
 export function desktopAppInstalledFor(
   platform: string,
   exists: (path: string) => boolean,
   home: string,
   env: DesktopEnv,
 ): boolean {
-  for (const dir of [desktopDataDirFor, desktopStandardDataDirFor]) {
-    const dataDir = dir(platform, home, env);
-    if (dataDir !== null && exists(dataDir)) return true;
-  }
-  if (platform === "darwin") {
-    return exists("/Applications/Claude.app") || exists(join(home, "Applications", "Claude.app"));
-  }
-  if (platform === "win32") {
-    return env.localAppData !== undefined &&
-      exists(join(env.localAppData, "AnthropicClaude", "claude.exe"));
-  }
-  return false;
+  const dirs = desktopDirsFor(platform, home, env);
+  return [dirs.data, dirs.standard, ...dirs.app].some((path) => path !== null && exists(path));
 }
 
 export function claudeDesktopInstalled(): boolean {
@@ -238,10 +238,6 @@ export function saveJsonIfChanged(path: string, doc: unknown, detail?: string): 
   if (readFileOrNull(path) === text) return false;
   fs.writeText(path, text, { detail, secret: true });
   return true;
-}
-
-export function parsedRecord(raw: string | null): Doc | null {
-  return raw === null ? null : parseJsonRecord(raw);
 }
 
 /** A JSON write: the bytes land unless the file already holds them (true when written). `secretKeys`

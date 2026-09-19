@@ -1,14 +1,15 @@
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import {
   closeGateFromScan,
-  CodexAppController,
+  installedState,
   installGateFromScan,
   postPairingCloseFromScan,
-  readModelCatalogJson,
-  readModelProvider,
+  quitApp,
+  readTopLevelString,
   restoreModelProvider,
+  runningState,
   stripModelProvider,
 } from "../src/codex/mobile.ts";
 import { appScanFromExit, appScanVerdict } from "../src/utils/app_scan.ts";
@@ -36,9 +37,13 @@ const CONFIG = [
   "",
 ].join("\n");
 
-test("readModelProvider returns the configured provider, null when absent/malformed", () => {
+const readModelProvider = (toml: string) => readTopLevelString(toml, "model_provider");
+const readModelCatalogJson = (toml: string) => readTopLevelString(toml, "model_catalog_json");
+
+test("readTopLevelString returns the configured top-level string, null when absent, not a string, or malformed", () => {
   expect(readModelProvider(CONFIG)).toBe("copilot-env");
   expect(readModelProvider('web_search = "live"\n')).toBe(null);
+  expect(readTopLevelString("model_provider = 3\n", "model_provider")).toBe(null);
   expect(readModelProvider("{ not toml")).toBe(null);
 });
 
@@ -155,129 +160,106 @@ test("postPairingCloseFromScan: only PROVEN-present quits; unproven warns, never
   });
 });
 
-test("quit() ends early only on a PROVEN absence; anything else rides to the deadline force-quit", async () => {
-  const quitCalls = async (result: { exitCode: number; stdout: string; launchFailed?: true }) => {
-    const calls: { file: string; args: string[] }[] = [];
-    const app = new CodexAppController(
-      (file, args) => {
-        calls.push({ file, args });
-        return Promise.resolve(result);
-      },
-      "darwin",
-      { timeoutMs: 60, pollMs: 5 },
-    );
-    await app.quit();
-    return calls;
+// pgrep/open/osascript/pkill are the POSIX primitives; a PATH pinned to a dir holding ONLY the
+// fakes means the real tools can never answer for one, and a removed fake is a REAL spawn failure.
+const onPosix = test.skipIf(process.platform === "win32");
+
+function fakeTools(): {
+  dir: string;
+  fake: (tool: string, body: string) => void;
+  restore: () => void;
+} {
+  const dir = tempDir("codex-mobile-scan-");
+  const originalPath = process.env.PATH;
+  process.env.PATH = dir;
+  return {
+    dir,
+    fake: (tool, body) =>
+      writeFileSync(join(dir, tool), `#!/bin/sh\nPATH=/usr/bin:/bin\n${body}\n`, { mode: 0o755 }),
+    restore: () => {
+      process.env.PATH = originalPath;
+      rmSync(dir, { recursive: true, force: true });
+    },
   };
-
-  // Proven absence ends the wait on the first poll: no force-quit.
-  const absent = await quitCalls({ exitCode: 1, stdout: "" });
-  expect(absent[0]?.file).toBe("osascript");
-  expect(absent.some((c) => c.file === "pkill")).toBe(false);
-
-  // An unproven look cannot satisfy "ensure closed": the poll runs to the deadline force-quit.
-  const unproven = await quitCalls({ exitCode: 1, stdout: "", launchFailed: true });
-  expect(unproven.filter((c) => c.file === "pgrep").length).toBeGreaterThanOrEqual(1);
-  expect(unproven.at(-1)?.file).toBe("pkill");
-
-  const present = await quitCalls({ exitCode: 0, stdout: "" });
-  expect(present.at(-1)?.file).toBe("pkill");
-});
-
-function scannedController(
-  platform: "darwin" | "win32",
-  result: { exitCode: number; stdout: string; launchFailed?: true },
-  calls: { file: string; args: string[] }[] = [],
-): CodexAppController {
-  return new CodexAppController((file, args) => {
-    calls.push({ file, args });
-    return Promise.resolve(result);
-  }, platform);
 }
 
-test("runningState/installedState three-state their scans per platform", async () => {
-  // POSIX: the tools' own exit vocabulary, read through the launch-failure mark.
-  const posix = (result: { exitCode: number; stdout: string; launchFailed?: true }) =>
-    scannedController("darwin", result);
-  expect(await posix({ exitCode: 0, stdout: "" }).runningState()).toBe("present");
-  expect(await posix({ exitCode: 1, stdout: "" }).runningState()).toBe("absent");
-  expect(await posix({ exitCode: 1, stdout: "", launchFailed: true }).runningState())
-    .toBe("unproven"); // pgrep never ran: the coerced exit 1 must not read as absence
-  expect(await posix({ exitCode: 3, stdout: "" }).runningState()).toBe("unproven");
-  expect(await posix({ exitCode: 1, stdout: "", launchFailed: true }).installedState())
-    .toBe("unproven"); // same discipline on the install look (`open -Ra`)
-
-  // Windows: the scripts mint verdict words, and those are the ONLY confident
-  // readings -- a script that errored (exit 1, verdict-less) or a PowerShell that
-  // never launched can present none.
-  const win = (result: { exitCode: number; stdout: string; launchFailed?: true }) =>
-    scannedController("win32", result);
-  for (const method of ["runningState", "installedState"] as const) {
-    expect(await win({ exitCode: 0, stdout: "present\r\n" })[method]()).toBe("present");
-    expect(await win({ exitCode: 0, stdout: "absent\r\n" })[method]()).toBe("absent");
-    expect(await win({ exitCode: 1, stdout: "" })[method]()).toBe("unproven");
-    expect(await win({ exitCode: 1, stdout: "", launchFailed: true })[method]())
-      .toBe("unproven");
-    expect(await win({ exitCode: 0, stdout: "garbage" })[method]()).toBe("unproven");
-  }
-
-  // The scans are the documented primitives, and the Windows proven absence is the
-  // SPECIFIC no-match error id -- not any script failure flattened into one.
-  const calls: { file: string; args: string[] }[] = [];
-  await scannedController("darwin", { exitCode: 1, stdout: "" }, calls).runningState();
-  await scannedController("darwin", { exitCode: 1, stdout: "" }, calls).installedState();
-  expect(calls[0]?.file).toBe("pgrep");
-  expect(calls[0]?.args).toEqual(["-x", "Codex"]);
-  expect(calls[1]?.file).toBe("open");
-  expect(calls[1]?.args).toEqual(["-Ra", "Codex"]);
-
-  const winCalls: { file: string; args: string[] }[] = [];
-  await scannedController("win32", { exitCode: 0, stdout: "present" }, winCalls).runningState();
-  await scannedController("win32", { exitCode: 0, stdout: "present" }, winCalls).installedState();
-  expect(winCalls[0]?.file).toBe("powershell");
-  expect(winCalls[0]?.args.at(-1)).toContain("NoProcessFoundForGivenName");
-  expect(winCalls[1]?.args.at(-1)).toContain("Get-StartApps");
-  // The installed look's Get-Process fallback carries the SAME discriminant: a real
-  // Get-Process error is never suppressed into a proven "absent".
-  expect(winCalls[1]?.args.at(-1)).toContain("NoProcessFoundForGivenName");
-});
-
-// pgrep/open are the POSIX primitives.
-test.skipIf(process.platform === "win32")(
+onPosix(
   "the real POSIX scans three-state pgrep/open: 0 present, 1 proven absent, else unproven",
   async () => {
-    const dir = tempDir("codex-mobile-scan-");
-    const originalPath = process.env.PATH;
+    const tools = fakeTools();
     try {
-      // PATH pinned to a dir holding ONLY the fake tools, so the real ones can never
-      // answer for a fake and a removed fake is a REAL spawn failure.
-      const fake = (tool: string, exit: number) =>
-        writeFileSync(join(dir, tool), `#!/bin/sh\nexit ${exit}\n`, { mode: 0o755 });
-      process.env.PATH = dir;
       for (const [exit, want] of [[0, "present"], [1, "absent"], [3, "unproven"]] as const) {
-        fake("pgrep", exit);
-        expect(await new CodexAppController().runningState()).toBe(want);
-        fake("open", exit);
-        expect(await new CodexAppController().installedState()).toBe(want);
+        tools.fake("pgrep", `exit ${exit}`);
+        expect(await runningState()).toBe(want);
+        tools.fake("open", `exit ${exit}`);
+        expect(await installedState()).toBe(want);
       }
       // The spawn-failure arm: runCaptured coerces ENOENT to exit 1 WITH the mark --
       // never pgrep's own proven-absent exit 1.
-      rmSync(join(dir, "pgrep"));
-      expect(await new CodexAppController().runningState()).toBe("unproven");
+      rmSync(join(tools.dir, "pgrep"));
+      expect(await runningState()).toBe("unproven");
     } finally {
-      process.env.PATH = originalPath;
-      rmSync(dir, { recursive: true, force: true });
+      tools.restore();
     }
   },
 );
 
-// Drives real Windows PowerShell.
-test.skipIf(process.platform !== "win32")(
-  "the real Windows running scan mints a verdict word on a healthy host",
+/** A quitApp run over fake tools: `pgrep` answers `exits` in order (the last one repeats) and every
+ *  call is journaled; `osascript` and `pkill` leave markers. */
+async function quitOver(
+  exits: number[],
+): Promise<{ polls: number; asked: boolean; killed: boolean }> {
+  const tools = fakeTools();
+  try {
+    const asked = join(tools.dir, "asked");
+    const polls = join(tools.dir, "polls");
+    const killed = join(tools.dir, "killed");
+    tools.fake("osascript", `touch "${asked}"`);
+    tools.fake("pkill", `touch "${killed}"`);
+    tools.fake(
+      "pgrep",
+      [
+        `echo poll >> "${polls}"`,
+        `n=$(wc -l < "${polls}")`,
+        ...exits.map((exit, i) => `[ "$n" -eq ${i + 1} ] && exit ${exit}`),
+        `exit ${exits.at(-1)}`,
+      ].join("\n"),
+    );
+    await quitApp();
+    const count = existsSync(polls) ? readFileSync(polls, "utf8").trim().split("\n").length : 0;
+    return { polls: count, asked: existsSync(asked), killed: existsSync(killed) };
+  } finally {
+    tools.restore();
+  }
+}
+
+onPosix(
+  "quitApp asks the app to quit and polls until a PROVEN absence: one that left on its own is never force-quit",
   async () => {
-    // The completeness control: on a healthy host the script must RUN and mint a
+    // Still running on the first poll, gone on the second: exactly two polls, then the return.
+    expect(await quitOver([0, 1])).toEqual({ polls: 2, asked: true, killed: false });
+  },
+);
+
+// Rides the whole quit deadline (8s): the fact under test is what happens when the wait runs out.
+onPosix(
+  "quitApp force-quits at the deadline when no poll ever PROVES the app absent: an unproven look keeps polling, never ends the wait",
+  async () => {
+    const run = await quitOver([3]);
+    expect(run.killed).toBe(true);
+    expect(run.polls).toBeGreaterThan(1);
+  },
+);
+
+// Drives real Windows PowerShell, read-only: the scans alone. The quit scripts signal whatever
+// app is open on the host, so they are never run against it.
+test.skipIf(process.platform !== "win32")(
+  "the real Windows scans mint a verdict word on a healthy host",
+  async () => {
+    // The completeness control: on a healthy host the scripts must RUN and mint a
     // verdict word -- a PowerShell-5.1-incompatible script or a wrong no-match
     // discriminant would read "unproven" here and go red.
-    expect(["present", "absent"]).toContain(await new CodexAppController().runningState());
+    expect(["present", "absent"]).toContain(await runningState());
+    expect(["present", "absent"]).toContain(await installedState());
   },
 );

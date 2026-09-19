@@ -8,7 +8,6 @@ import { parse } from "smol-toml";
 import { directWiring } from "../src/agents/configure.ts";
 import { configureDefaultAgents, runAgentConfig } from "../src/agents/configure_defaults.ts";
 import { claudeAdapter, configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
-import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { codexAdapter, probeDirectWiring } from "../src/codex/config.ts";
 import { inspectCodexWiring } from "../src/codex/inspect.ts";
 import { runConfig } from "../src/commands/config.ts";
@@ -154,7 +153,7 @@ test("a Direct wiring bakes the copilot-host into both agents' base URLs; detect
   const seen: { host: string; id: string | null }[] = [];
   stubHosts(403, seen);
   const wire = async (): Promise<void> => {
-    for (const adapter of [codexAdapter(NOOP_CATALOG_DEPS), claudeAdapter()]) {
+    for (const adapter of [codexAdapter(), claudeAdapter()]) {
       await runAgentConfig(adapter, { kind: "configure", mode: "direct" }, { ghToken: "ghu_x" });
     }
   };
@@ -216,7 +215,7 @@ test("a Direct wiring bakes the copilot-host into both agents' base URLs; detect
   stubHosts(200, seen);
   const landing = await configureDefaultAgents(
     { codex: "direct", claude: "direct", ghToken: "ghu_x" },
-    [codexAdapter(NOOP_CATALOG_DEPS), claudeAdapter()],
+    [codexAdapter(), claudeAdapter()],
   );
   expect(landing.failures).toEqual([]);
   expect(codexBaseUrl(homes.codexHome)).toBe(DEFAULT_COPILOT_API_BASE);

@@ -37,7 +37,6 @@ import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../ut
 import { printKeyValue, printWrapped } from "../utils/table.ts";
 import {
   type CatalogFileVerdict,
-  type CodexCatalogDeps,
   generateCodexModelCatalog,
   inspectCatalogFile,
   parseCopilotModels,
@@ -257,36 +256,15 @@ function readConfigForRemoval(configPath: string): Record<string, unknown> | nul
   return read.doc;
 }
 
-function validateProxyOptions(
-  request: { baseUrl: string; credential: CredentialWiring },
-): CodexModeRequest {
-  if (!request.baseUrl) {
-    throw new Error("base_url not provided for the Codex proxy config");
-  }
-  if (!/^[A-Za-z0-9:/._-]+$/.test(request.baseUrl)) {
-    throw new Error(`base_url contains invalid characters: ${request.baseUrl}`);
-  }
-  return { ...request, mode: "proxy" };
-}
-
 /**
  * The write: every managed key enforced over config.toml (and a named profile's `<name>.config.toml`),
  * landed through the facade (a dry run previews it there). A named profile's selector lives in
  * `<name>.config.toml`, never at the top level of config.toml, so `codex --profile <name>` and plain
  * `codex` coexist.
  */
-export function configureCodexConfig(
-  codexHome: string,
-  request: CodexWriteRequest,
-  catalogDeps: CodexCatalogDeps = {},
-): void {
+export function configureCodexConfig(codexHome: string, request: CodexWriteRequest): void {
   const profile = request.profile ?? null;
   const providerId = codexProviderId(profile);
-  // The union guarantees a base URL exists; this rejects an empty or malformed one before anything
-  // below sees it.
-  const modeRequest: CodexModeRequest = request.mode === "proxy"
-    ? validateProxyOptions(request)
-    : request;
 
   const hostConfig = codexConfigPath(codexHome);
   // A present-but-UNPARSEABLE file throws rather than letting the caller clobber a config it could
@@ -340,7 +318,7 @@ export function configureCodexConfig(
     const previousRef = doc.model_catalog_json;
     const verdict: CatalogFileVerdict | "disabled" =
       new CopilotEnvConfig().codexModelCatalogEnabled()
-        ? inspectCatalogFile(catalogFile, catalogDeps)
+        ? inspectCatalogFile(catalogFile)
         : "disabled";
     if (verdict === "rejected") {
       logger.warn(
@@ -370,7 +348,7 @@ export function configureCodexConfig(
   // the user's own, which survive.
   const table = tableAt(tableAt(doc, "model_providers"), providerId);
   for (const key of MANAGED_PROVIDER_KEYS) delete table[key];
-  for (const [key, value] of Object.entries(managedProviderForMode(modeRequest, profile))) {
+  for (const [key, value] of Object.entries(managedProviderForMode(request, profile))) {
     table[key] = value;
   }
 
@@ -390,8 +368,8 @@ export function configureCodexConfig(
   const detail = ["Codex config", credentialLine, catalogRefLine].filter(Boolean).join("; ");
 
   // Reserved only now that the text is computed: a throw above leaves no reservation behind.
-  if (modeRequest.mode === "proxy" && modeRequest.plannedPort !== undefined) {
-    reservePlannedPort(profile, modeRequest.plannedPort);
+  if (request.mode === "proxy" && request.plannedPort !== undefined) {
+    reservePlannedPort(profile, request.plannedPort);
   }
   try {
     fs.mkdir(codexHome);
@@ -430,25 +408,26 @@ function codexWriteRequest(write: ManagedWrite, profile: Profile): CodexWriteReq
 /**
  * The caller persists CODEX_HOME to state and, for direct, has already resolved the client identity
  * carried in the write (this function never probes). Throws with the cause when the write cannot
- * proceed.
+ * proceed. `directToken` is that already-resolved credential, so the catalog seed's direct fetch
+ * never shells out to the gh-cli provider a second time.
  */
 export async function applyCodexConfig(
   codexHome: string,
   write: ManagedWrite,
-  catalogDeps?: CodexCatalogDeps,
+  directToken: string | null,
   profile: Profile = null,
 ): Promise<void> {
   // Seeded (best-effort, unthrottled) BEFORE the config write, so the very first wiring can already
   // reference the file; the launch-time refresh (src/commands/launch.ts) keeps it fresh afterwards.
   // Account-wide, keyed to the default credential, so named-profile writes never touch it.
-  if (profile === null) await generateCodexModelCatalog(write.mode, catalogDeps);
+  if (profile === null) await generateCodexModelCatalog(write.mode, directToken ?? undefined);
 
-  configureCodexConfig(codexHome, codexWriteRequest(write, profile), catalogDeps);
+  configureCodexConfig(codexHome, codexWriteRequest(write, profile));
 
   // When the catalog is disabled the write above only stripped the key in THIS home; the sync also
   // deletes the generated file and clears the throttle state, so a wiring pass finishes the
   // opt-out.
-  if (profile === null) syncCodexCatalogReference(catalogDeps);
+  if (profile === null) syncCodexCatalogReference();
 }
 
 /** The Direct facts a write bakes, resolved ONCE on the host in use: the `identity` pin, else
@@ -679,8 +658,7 @@ export function detectCodexDirect(
   );
 }
 
-/** `catalogDeps` is runCodex's test seam only; `agent profile` builds the adapter without it. */
-export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
+export function codexAdapter(): AgentAdapter {
   return {
     id: "codex",
     label: "Codex",
@@ -692,13 +670,10 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
         configureCodexConfig(effectiveCodexHome(), codexWriteRequest(write, profile));
         return;
       }
-      // The already-resolved credential feeds the catalog seed's direct fetch, so the gh-cli
-      // provider isn't shelled out to a second time.
-      const token = options.directToken;
-      const seedDeps = catalogDeps ??
-        (typeof token === "string" ? { directToken: token } : undefined);
       // The farm derivation decides the home the write lands in (and records it after).
-      await withCodexHostFarm((codexHome) => applyCodexConfig(codexHome, write, seedDeps, null));
+      await withCodexHostFarm((codexHome) =>
+        applyCodexConfig(codexHome, write, options.directToken ?? null, null)
+      );
     },
     removeProfile(name) {
       removeCodexProfile(effectiveCodexHome(), name);

@@ -104,14 +104,21 @@ live(
     const bundledSlugs = new Set(bundled.map((m) => String(m.slug)));
     expect(bundledSlugs.has(FIXTURE_ONLY)).toBe(false);
 
-    // Generation exactly as `agent profile sync --codex` runs it, minus the network: the fixture
-    // body stands in for Copilot's /models; dump and acceptance probe are the real CLI.
+    // Generation exactly as `agent profile sync --codex` runs it, minus the network: a fetch
+    // answering every request (the identity probes, GET /models) with the fixture body stands in
+    // for Copilot; dump and acceptance probe are the real CLI.
     const fixture = fixtureBodyFor(bundledSlugs);
     const fixtureModels: Map<string, CopilotCatalogModel> = parseCopilotModels(fixture);
     expect(fixtureModels.get(FIXTURE_ONLY)?.codexServable).toBe(true);
-    expect(
-      await generateCodexModelCatalog("direct", { fetchCopilotModels: async () => fixtureModels }),
-    ).toBe(true);
+    const realFetch = globalThis.fetch;
+    globalThis.fetch =
+      (() =>
+        Promise.resolve(new Response(JSON.stringify(fixture), { status: 200 }))) as typeof fetch;
+    try {
+      expect(await generateCodexModelCatalog("direct", "gho_fixture")).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
     const file = new CopilotApiPaths().codexModelCatalogFile;
     const generated = readFileSync(file, "utf8");
     const ours = (JSON.parse(generated) as { models: Model[] }).models;

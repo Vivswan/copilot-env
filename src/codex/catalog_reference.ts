@@ -14,7 +14,6 @@ import { createStderrLogger } from "../utils/logger.ts";
 import {
   catalogBookkeepingAllowed,
   type CatalogSource,
-  type CodexCatalogDeps,
   inspectCatalogFile,
   refreshCodexModelCatalogIfStale,
   UNVERIFIED_SUFFIX,
@@ -36,7 +35,7 @@ const logger = createStderrLogger();
  * a key already present -> never rewritten, ours or a user-pinned custom path; enforcing OUR path
  *                          is configureCodexConfig's
  */
-export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): void {
+export function syncCodexCatalogReference(): void {
   try {
     const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
     if (!new CopilotEnvConfig().codexModelCatalogEnabled()) {
@@ -47,7 +46,7 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
     // predates) is a Codex startup failure, so ours is stripped everywhere whatever the active
     // config's state; a rejected file stays for the next regeneration, and nothing is added
     // meanwhile.
-    const verdict = inspectCatalogFile(catalogFile, catalogDeps);
+    const verdict = inspectCatalogFile(catalogFile);
     if (verdict === "unusable" || verdict === "rejected") {
       if (stripCodexCatalogReferences(catalogFile).stripped) {
         logger.warn(
@@ -99,13 +98,10 @@ function recordCatalogOwnership(configPath: string): boolean {
 
 /** The one catalog freshness hook every launch path runs (the wiring write seeds, then syncs): the throttled regeneration,
  *  then the reference sync, under ONE refresh deadline so the two paths cannot drift. */
-export function refreshCodexCatalogAndSync(
-  source: CatalogSource,
-  deps: CodexCatalogDeps = {},
-): Promise<void> {
-  return withCatalogRefreshDeadline(deps, async () => {
-    await refreshCodexModelCatalogIfStale(source, deps);
-    syncCodexCatalogReference(deps);
+export function refreshCodexCatalogAndSync(source: CatalogSource): Promise<void> {
+  return withCatalogRefreshDeadline(async () => {
+    await refreshCodexModelCatalogIfStale(source);
+    syncCodexCatalogReference();
   });
 }
 

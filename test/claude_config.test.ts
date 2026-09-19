@@ -12,7 +12,6 @@ import { directWiring } from "../src/agents/configure.ts";
 import {
   AUTH_TOKEN_ENV,
   CLAUDE_HAIKU_ALIAS,
-  cmdHelperBody,
   configureClaudeConfig,
   CUSTOM_HEADERS_ENV,
   detectClaudeDirect,
@@ -26,6 +25,7 @@ import {
   WEBSEARCH_DENY_RULE,
 } from "../src/claude/config.ts";
 import { runClaude } from "../src/agents/configure_defaults.ts";
+import { cmdHelperBody } from "../src/claude/helper_body.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { resolveClaudeHome } from "../src/claude/paths.ts";
 import { runMcp } from "../src/commands/mcp.ts";

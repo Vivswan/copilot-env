@@ -1,6 +1,7 @@
 // The Codex home derivation (the `codex.home` root, the per-host farm under it, else ~/.codex) and
 // the per-host CODEX_HOME symlink farm (Linux/macOS), DERIVED from the `codex.host` config key by
 // every default Codex wiring pass.
+import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
 import { type CodexHomePrefs, CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -265,9 +266,7 @@ function readlinkOrEmpty(p: string): string {
 // An unreadable side counts as "not equal", so callers refuse rather than merge.
 function filesEqual(a: string, b: string): boolean {
   try {
-    const x = fs.readBytes(a);
-    const y = fs.readBytes(b);
-    return x.length === y.length && x.every((byte, i) => byte === y[i]);
+    return Buffer.compare(fs.readBytes(a), fs.readBytes(b)) === 0;
   } catch {
     return false;
   }
@@ -285,24 +284,13 @@ function isSymlinkPath(p: string): boolean {
 // Every mutation goes through the reporting seam, which names the path it changed (nothing hidden);
 // what the farm did to it rides as the line's detail.
 
-// Symlinked directories are not descended into; each level lists dirs before files.
+// Symlinked directories are not descended into.
 function listDescendants(root: string): string[] {
-  const results: string[] = [];
-  const stack: string[] = [root];
-  while (stack.length > 0) {
-    const dirpath = stack.pop() as string;
-    const entries = fs.readdirEntries(dirpath);
-    const dirnames: string[] = [];
-    const filenames: string[] = [];
-    for (const entry of entries) {
-      const isDirEntry = !entry.isSymbolicLink() && entry.isDirectory();
-      (isDirEntry ? dirnames : filenames).push(entry.name);
-    }
-    for (const name of dirnames) results.push(path.join(dirpath, name));
-    for (const name of filenames) results.push(path.join(dirpath, name));
-    for (const name of dirnames) stack.push(path.join(dirpath, name));
-  }
-  return results;
+  return fs.readdirEntries(root).flatMap((entry) => {
+    const entryPath = path.join(root, entry.name);
+    const descend = !entry.isSymbolicLink() && entry.isDirectory();
+    return descend ? [entryPath, ...listDescendants(entryPath)] : [entryPath];
+  });
 }
 
 // Symlinks are preserved as links.

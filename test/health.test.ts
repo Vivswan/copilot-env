@@ -631,7 +631,7 @@ test("gatherFacts probes the proxy at 127.0.0.1, never localhost (Windows IPv6 s
     await gatherFacts("runtime", {}, {
       reach: async (url: string) => {
         probed = url;
-        return { reachable: true, copilotApi: true };
+        return true;
       },
     });
     expect(probed).toBe("http://127.0.0.1:4141/");
@@ -1005,15 +1005,37 @@ test("runtime checks stamp the target's profile; environment checks stay null", 
   expect(checkCliVersion(BOOTSTRAP_OK).profile).toBeNull();
 });
 
-test("gatherFacts judges the responder's identity only when an agent routes through the proxy", async () => {
-  // Nothing routes to a both-direct port, so the responder's identity is never judged and the
-  // misroute warning is structurally unreachable there, not merely suppressed; one proxy-wired
-  // agent brings the judgement back and a foreign responder earns the warning.
+test("the identity probe (an extra request) is skipped in the fast runtime scope", async () => {
+  const restoreEnv = envSnapshot();
+  const home = isolateProxyHome("copilot-health-fast-scope-");
+  try {
+    writeRunState({ port: 4141 });
+    let identityCalls = 0;
+    const facts = await gatherFacts("runtime", {}, {
+      reach: async () => true,
+      proxyIdentity: async () => {
+        identityCalls++;
+        return true;
+      },
+    });
+    expect(identityCalls).toBe(0);
+    expect(probeOf(facts.runtimes?.[0]).identityConfirmed).toBeNull();
+  } finally {
+    restoreEnv();
+    removeDir(home);
+  }
+});
+
+test("gatherFacts probes identity only when an agent routes through the proxy", async () => {
+  // Nothing routes to a both-direct port, so the identity probe must not fire and the misroute
+  // warning is structurally unreachable there, not merely suppressed; one proxy-wired agent brings
+  // the probe back and a foreign responder earns the warning.
   const directHost = "https://api.githubcopilot.com";
   const rows: {
     name: string;
     codex: CodexConfigTomlOptions;
     claude: ClaudeSettingsOptions | null;
+    identityCalls: number;
     proxyExpected: boolean;
     identityConfirmed: boolean | null;
     identity: { status: CheckStatus; detail?: string };
@@ -1023,6 +1045,7 @@ test("gatherFacts judges the responder's identity only when an agent routes thro
       name: "both direct",
       codex: { baseUrl: directHost },
       claude: { apiKeyHelper: directHelperCommand(), baseUrl: directHost },
+      identityCalls: 0,
       proxyExpected: false,
       identityConfirmed: null,
       identity: { status: "ok" },
@@ -1032,6 +1055,7 @@ test("gatherFacts judges the responder's identity only when an agent routes thro
       name: "Codex through the proxy, Claude unconfigured",
       codex: { baseUrl: "http://127.0.0.1:4141/v1", envKey: "OPENAI_API_KEY" },
       claude: null,
+      identityCalls: 1,
       proxyExpected: true,
       identityConfirmed: false,
       identity: { status: "warn", detail: "misroute" },
@@ -1047,18 +1071,23 @@ test("gatherFacts judges the responder's identity only when an agent routes thro
       writeCodexConfigToml(codexHome, row.codex);
       const claudeHome = join(root, "claude-home");
       if (row.claude) writeClaudeSettings(claudeHome, row.claude);
+      let identityCalls = 0;
       const facts = await gatherFacts(
-        "proxy", // an identity-judging scope (unlike the fast `runtime` one)
+        "proxy", // an identity-probing scope (unlike the fast `runtime` one)
         {},
         {
-          // A listener answers on the port without the x-trace-id header: a foreign service.
-          reach: async () => ({ reachable: true, copilotApi: false }),
+          reach: async () => true, // a listener answers on the port
+          proxyIdentity: async () => {
+            identityCalls++;
+            return false; // no x-trace-id: a foreign service
+          },
           codexHome: () => codexHome,
           claudeHome: () => claudeHome,
         },
       );
       const target = facts.runtimes?.[0];
       if (!target) throw new Error(`${row.name}: expected the default runtime target`);
+      expect(identityCalls, row.name).toBe(row.identityCalls);
       expect(target.proxyExpected, row.name).toBe(row.proxyExpected);
       expect(probeOf(target).identityConfirmed, row.name).toBe(row.identityConfirmed);
       const identity = runIdentity(target);
@@ -1099,10 +1128,7 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
     };
 
     // Auto-start defaults off, so a down daemon is a FAIL here.
-    const down = await gatherFacts("proxy", {}, {
-      ...deps,
-      reach: async () => ({ reachable: false }),
-    });
+    const down = await gatherFacts("proxy", {}, { ...deps, reach: async () => false });
     const downTarget = down.runtimes?.[0];
     if (!downTarget) throw new Error("expected the default runtime target");
     expect(downTarget.proxyExpected).toBe(true);
@@ -1111,12 +1137,17 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
     expect(port.fix).toContain("agent start");
     expect(runPid(downTarget).status).toBe("fail");
 
-    // Reachable: the responder's identity is judged again (proxyExpected gates it).
-    const up = await gatherFacts(
-      "proxy",
-      {},
-      { ...deps, reach: async () => ({ reachable: true, copilotApi: true }) },
-    );
+    // Reachable: the identity probe fires again (proxyExpected gates it).
+    let identityCalls = 0;
+    const up = await gatherFacts("proxy", {}, {
+      ...deps,
+      reach: async () => true,
+      proxyIdentity: async () => {
+        identityCalls++;
+        return true;
+      },
+    });
+    expect(identityCalls).toBe(1);
     expect(probeOf(up.runtimes?.[0]).identityConfirmed).toBe(true);
   } finally {
     restoreEnv();
@@ -1177,9 +1208,9 @@ test("an unreadable codex config reaches health as other/read-error, never as no
   }
 });
 
-test("health's own proxy probe does not move the watchdog activity signal", async () => {
+test("health's own proxy probes do not move the watchdog activity signal", async () => {
   // lastRequestMs reads the observer's persisted `.activity.json` mark; only inference POSTs move
-  // it, so health's own GET probe cannot reset the idle signal.
+  // it, so health's own GET probes cannot reset the idle signal.
   const restoreEnv = envSnapshot();
   const home = isolateProxyHome("copilot-health-watchdog-");
   try {
@@ -1191,7 +1222,11 @@ test("health's own proxy probe does not move the watchdog activity signal", asyn
     const facts = await gatherFacts("proxy", {}, {
       reach: async () => {
         probes++;
-        return { reachable: true, copilotApi: true };
+        return true;
+      },
+      proxyIdentity: async () => {
+        probes++;
+        return true;
       },
       classifyTrackedPid: async () => "yes",
       now: () => 5_000_000,
@@ -1229,7 +1264,7 @@ test("gatherFacts derives proxy.floatSkips from the float's own predicate", asyn
     });
 
     const overrides = {
-      reach: async () => ({ reachable: false as const }),
+      reach: async () => false,
       codexHome: () => codexHome,
       claudeHome: () => claudeHome,
     };
@@ -1253,9 +1288,7 @@ test("with no recorded port the default target probes the configured port, marke
   const home = isolateProxyHome("copilot-health-fallback-");
   try {
     new CopilotEnvConfig().set({ "daemon.port": 4444 });
-    const facts = await gatherFacts("runtime", {}, {
-      reach: async () => ({ reachable: false }),
-    });
+    const facts = await gatherFacts("runtime", {}, { reach: async () => false });
     expect(facts.runtimes?.[0]).toMatchObject({ port: 4444, portPersisted: false });
   } finally {
     restoreEnv();
@@ -1274,7 +1307,7 @@ test("gatherFacts is read-only: no files appear in a fresh isolated home", async
       "proxy",
       {},
       {
-        reach: async () => ({ reachable: false }), // offline-deterministic; reach does no fs I/O
+        reach: async () => false, // keep the probe offline-deterministic; reach does no fs I/O
         codexHome: () => join(root, "codex-home"),
         claudeHome: () => join(root, "claude-home"),
       },

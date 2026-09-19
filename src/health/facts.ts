@@ -88,8 +88,8 @@ export interface DaemonProbeFacts {
   pidScanUnproven?: true;
   pidAlive: boolean;
   /** true = copilot-api (x-trace-id present), false = reachable but NOT copilot-api (a foreign
-   *  listener), null = not judged (port down, or proxyExpected false: no agent routes to the
-   *  port, so its occupant is not ours to interrogate). */
+   *  listener), null = not probed (port down, the fast `runtime` scope, or proxyExpected false:
+   *  no agent routes to the port, so its occupant is not ours to interrogate). */
   identityConfirmed: boolean | null;
   portState: PortState;
 }

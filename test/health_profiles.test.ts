@@ -115,7 +115,8 @@ function named(t: RuntimeTarget | undefined): NamedRuntimeTarget {
 /** Overrides that keep gatherFacts offline and deterministic (no ps/gh spawns). */
 function offlineDeps(extra: Partial<ProbeDeps> = {}): Partial<ProbeDeps> {
   return {
-    reach: async () => ({ reachable: false }),
+    reach: async () => false,
+    proxyIdentity: async () => null,
     classifyTrackedPid: async () => "no" as const,
     codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
     ghActiveLogin: () => Promise.resolve(null),
@@ -821,7 +822,7 @@ test("a named target's daemon is probed only on a proxy slot with a home and a p
     const deps = offlineDeps({
       reach: async (url) => {
         probed.push(url);
-        return { reachable: false };
+        return false;
       },
       codexHome: () => join(home, "no-codex"),
       claudeHome: () => join(home, "no-claude"),
@@ -888,7 +889,7 @@ test("a named profile narrows gathering to its target and excludes account-wide 
       offlineDeps({
         reach: async (url) => {
           probed.push(url);
-          return { reachable: false };
+          return false;
         },
         codexHome: () => codexHome,
         claudeHome: () => claudeHome,
@@ -1295,7 +1296,8 @@ describe("unproven tracked-pid scans", () => {
           "runtime",
           { profile: P },
           offlineDeps({
-            reach: async () => ({ reachable: true, copilotApi: true }),
+            reach: async () => true,
+            proxyIdentity: async () => true,
             classifyTrackedPid: async () => cls,
           }),
         );

@@ -140,8 +140,8 @@ function snapshotTarget(
   const state = CopilotEnvRunState.forProfile(profile).read();
   const portPersisted = state.port !== undefined;
   const port = state.port ?? copilotApiFallbackPort(profile);
-  // The observer's persisted `.activity.json` mark; our own reach GET is not an inference POST,
-  // so health observing the proxy never moves these numbers.
+  // The observer's persisted `.activity.json` mark; our own reach/identity GET probes are not inference
+  // POSTs, so health observing the proxy never moves these numbers.
   const lastRequestMs = persistedInferenceMs(profile);
   return {
     state,
@@ -161,8 +161,10 @@ function snapshotTarget(
   };
 }
 
-/** One GET on the port plus the pid scan, reconciled into the target's PortState. */
+/** The reach/pid probes plus (in the full/proxy scopes) the identity request, reconciled into the
+ *  target's PortState. */
 async function interrogateDaemon(
+  scope: HealthScope,
   deps: ProbeDeps,
   port: number,
   trackedPid: number | null,
@@ -174,37 +176,38 @@ async function interrogateDaemon(
   // The pid identity is three-state (deps.classifyTrackedPid): "no tracked pid" is a genuine
   // "no", but a FAILED scan is "unknown", carried as pidScanUnproven beside the pidTracked
   // flatten so a broken `ps` renders as "could not verify" instead of a confident verdict.
-  const [answer, pidClass] = await Promise.all([
+  const [reachable, pidClass] = await Promise.all([
     deps.reach(probeUrl, 2000),
     trackedPid !== null
       ? deps.classifyTrackedPid(trackedPid)
       : Promise.resolve<"yes" | "no" | "unknown">("no"),
   ]);
   const pidTracked = pidClass === "yes";
-  // The responder's identity counts only when this target's setup routes through the port: with
-  // both agents direct, nothing we manage talks to whatever answers, so its identity is never
-  // grounds for a misroute warning.
-  const identityConfirmed = answer.reachable && proxyExpected ? answer.copilotApi : null;
+  // The identity probe (an extra local request) runs only in the full/proxy scopes, never the
+  // fast `runtime` probe scope, and only when something is reachable AND this target's setup
+  // routes through the port: with both agents direct, nothing we manage talks to whatever
+  // answers, so its identity is never grounds for a misroute warning.
+  const identityConfirmed = BOOTSTRAP_SCOPES.includes(scope) && reachable && proxyExpected
+    ? await deps.proxyIdentity(probeUrl, 2000)
+    : null;
   return {
     kind: "probed",
-    reachable: answer.reachable,
+    reachable,
     trackedPid,
     pidTracked,
     ...(pidClass === "unknown" ? { pidScanUnproven: true as const } : {}),
     pidAlive: trackedPid !== null ? pidAlive(trackedPid) : false,
     identityConfirmed,
-    portState: classifyPortState({
-      proxyExpected,
-      reachable: answer.reachable,
-      pidTracked,
-      identityConfirmed,
-    }),
+    portState: classifyPortState({ proxyExpected, reachable, pidTracked, identityConfirmed }),
   };
 }
 
 /** Always interrogated, with the configured default port as the fallback: the historical
  *  fast-probe behavior. */
-async function gatherDefaultTarget(deps: ProbeDeps): Promise<DefaultRuntimeTarget> {
+async function gatherDefaultTarget(
+  scope: HealthScope,
+  deps: ProbeDeps,
+): Promise<DefaultRuntimeTarget> {
   // When nothing in the default setup routes to the local daemon (both agents direct AND
   // Claude's base URL not aimed at it), a down proxy must not read as a runtime failure.
   const { state, common } = snapshotTarget(null, deps, (targetPort) =>
@@ -216,7 +219,13 @@ async function gatherDefaultTarget(deps: ProbeDeps): Promise<DefaultRuntimeTarge
   return {
     profile: null,
     ...common,
-    probe: await interrogateDaemon(deps, common.port, state.pid ?? null, common.proxyExpected),
+    probe: await interrogateDaemon(
+      scope,
+      deps,
+      common.port,
+      state.pid ?? null,
+      common.proxyExpected,
+    ),
   };
 }
 
@@ -227,7 +236,11 @@ async function gatherDefaultTarget(deps: ProbeDeps): Promise<DefaultRuntimeTarge
  * persisted: a DIRECT profile has no daemon, a homeless proxy slot has no persisted port, and an
  * unpersisted candidate port is never probed.
  */
-async function gatherNamedTarget(name: ProfileName, deps: ProbeDeps): Promise<NamedRuntimeTarget> {
+async function gatherNamedTarget(
+  name: ProfileName,
+  scope: HealthScope,
+  deps: ProbeDeps,
+): Promise<NamedRuntimeTarget> {
   const slot = profileSlotFacts(name);
   const homeExists = profileHomeExists(name);
   const proxyExpected = slot.mode === "proxy" || (homeExists && !slot.exists);
@@ -246,7 +259,7 @@ async function gatherNamedTarget(name: ProfileName, deps: ProbeDeps): Promise<Na
     ...common,
     probe: skipWhy !== null
       ? { kind: "skipped", why: skipWhy }
-      : await interrogateDaemon(deps, common.port, state.pid ?? null, proxyExpected),
+      : await interrogateDaemon(scope, deps, common.port, state.pid ?? null, proxyExpected),
   };
 }
 
@@ -413,8 +426,8 @@ export async function gatherFacts(
       (async () => {
         // Exactly the addressed target: the default daemon, or the narrowed profile's.
         const target: RuntimeTarget = profile === null
-          ? await gatherDefaultTarget(deps)
-          : await gatherNamedTarget(profile, deps);
+          ? await gatherDefaultTarget(scope, deps)
+          : await gatherNamedTarget(profile, scope, deps);
         facts.runtimes = [target];
       })(),
     );

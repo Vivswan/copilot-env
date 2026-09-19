@@ -28,13 +28,10 @@ import {
 import type { CodexDirectAuthFacts, LiveProbeFacts } from "./facts.ts";
 import { claudeLiveLaunch, codexLiveLaunch, type LiveLaunch } from "./live_launch.ts";
 
-/** One GET on a daemon port: nothing answered, or the answer's identity. copilot-api stamps every
- *  response with an `x-trace-id` header (a cheap, unauthenticated identity marker), so a responder
- *  without it is a foreign service on the port. */
-export type DaemonReach = { reachable: false } | { reachable: true; copilotApi: boolean };
-
 export interface ProbeDeps {
-  reach(url: string, timeoutMs: number): Promise<DaemonReach>;
+  reach(url: string, timeoutMs: number): Promise<boolean>;
+  /** Whether the responder at `url` carries copilot-api's x-trace-id identity header. */
+  proxyIdentity(url: string, timeoutMs: number): Promise<boolean | null>;
   /** Three-state identity of the tracked pid (classifyDaemonPid): "unknown" means the scan
    *  FAILED and must render as "could not verify", never as a confident "not tracked"; the
    *  boolean flatten this replaced read a broken scan as an orphan. */
@@ -57,13 +54,25 @@ export interface ProbeDeps {
   claudeLive(home: string, profile: Profile): Promise<LiveProbeFacts>;
 }
 
-/** Any HTTP response (even an error status) means "reachable". */
-async function reachDaemon(url: string, timeoutMs: number): Promise<DaemonReach> {
+/** Probe the URL: any HTTP response (even an error status) means "reachable". */
+async function reachUrl(url: string, timeoutMs: number): Promise<boolean> {
+  try {
+    await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** copilot-api stamps every response with an `x-trace-id` header: a cheap, unauthenticated
+ *  identity marker. true when present, false when the responder answered without it (a foreign
+ *  service on the port), null when nothing answered. */
+async function proxyIdentity(url: string, timeoutMs: number): Promise<boolean | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-    return { reachable: true, copilotApi: res.headers.has("x-trace-id") };
+    return res.headers.has("x-trace-id");
   } catch {
-    return { reachable: false };
+    return null;
   }
 }
 
@@ -205,7 +214,8 @@ export function runLiveCli(
 
 export function defaultProbeDeps(): ProbeDeps {
   return {
-    reach: reachDaemon,
+    reach: reachUrl,
+    proxyIdentity,
     // The owner-gated three-state, not bare classifyDaemonPid: the boolean scan this replaced
     // was owner-filtered, so an elevated Windows health run must not start claiming another
     // user's daemon as our tracked pid.

@@ -399,6 +399,53 @@ test("withRequiredFileLockSync never runs fn unlocked: a holder past the wait is
   expect(existsSync(path)).toBe(false);
 });
 
+// The bounded wait measures one holder's silence, not the queue. Behind live writers the marker
+// changes at every hold (a release, then the successor's pid+ts), so a contender waits them all out
+// however long the queue is; only a marker unchanged for waitMs is a hung or leaked holder. The OS
+// lock is refused through the seam, and the marker at the path plays the other process.
+test("the bounded wait restarts on every holder change: live writers never starve a contender, a silent holder still gives up at waitMs", () => {
+  const path = tmp("queue.lock");
+  const OTHER = process.pid + 1;
+  const HOLDS = 20;
+  const policy = { staleMs: 10_000, waitMs: 40, retryMs: 5 };
+
+  // One writer that releases and re-acquires between every attempt (same pid, a new ts): HOLDS
+  // refusals x retryMs is far past waitMs, and the contender still takes the lock afterwards.
+  let attempts = 0;
+  const churning = (file: Deno.FsFile): boolean => {
+    attempts += 1;
+    if (attempts > HOLDS) return file.tryLockSync(true);
+    writeFileSync(path, marker(OTHER, 1_000 + attempts));
+    return false;
+  };
+  const t0 = Date.now();
+  const held = withRequiredFileLockSync(
+    path,
+    { ...policy, osLock: churning },
+    (lock) => lock.held,
+  );
+  expect({ held, attempts, outlastedWait: Date.now() - t0 >= policy.waitMs })
+    .toEqual({ held: true, attempts: HOLDS + 1, outlastedWait: true });
+  expect(existsSync(path)).toBe(false); // released on the way out
+
+  // The same refusals under a marker that never changes: a LockBusyError naming that pid at about
+  // waitMs, well short of the churning row's attempts, and the holder's marker untouched.
+  attempts = 0;
+  writeFileSync(path, marker(OTHER, 1_000));
+  const silent = (): boolean => {
+    attempts += 1;
+    return false;
+  };
+  let ran = false;
+  expect(() =>
+    withRequiredFileLockSync(path, { ...policy, osLock: silent }, () => {
+      ran = true;
+    })
+  ).toThrow(`pid ${OTHER}`);
+  expect({ ran, gaveUp: attempts <= HOLDS, leftover: readFileSync(path, "utf-8") })
+    .toEqual({ ran: false, gaveUp: true, leftover: marker(OTHER, 1_000) });
+});
+
 // The OS lock operation itself can throw (ENOLCK on a filesystem without locking, EACCES): the
 // lock's own I/O failing, so it rides the bounded wait like a refused marker write.
 test("a throwing OS lock operation is retried through the wait, then rethrown as itself (required) or not-held (best-effort)", () => {

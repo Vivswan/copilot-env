@@ -571,21 +571,6 @@ export const CODEX_SCENARIOS: readonly ReaderScenario<CodexReport>[] = [
       expect(byProvider.size).toBe(0);
     },
   },
-  {
-    name: "counts a root named twice once",
-    build(dir) {
-      const root = join(dir, "sessions");
-      writeRollout(root, "2026-06-01", "aaa", [
-        sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
-        turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
-        tokenCount("2026-06-01T10:00:05.000Z", codexUsage(100, 0, 10), codexUsage(100, 0, 10)),
-      ]);
-      return { roots: [root, root] };
-    },
-    check(byProvider) {
-      expect(gptRow(byProvider)?.events).toBe(1);
-    },
-  },
   // The archive path drops a leading byte order mark; the plain path does not, so its first
   // line stays unparseable and the session lands on the default provider.
   {
@@ -972,19 +957,6 @@ export const CLAUDE_SCENARIOS: readonly ReaderScenario<UsageReport>[] = [
       expect([...report.perDay.keys()]).toEqual([
         localDayKey(Date.parse("2026-06-01T10:00:00.000Z")),
       ]);
-    },
-  },
-  {
-    name: "counts a root named twice once",
-    build(dir) {
-      const root = join(dir, "projects");
-      writeTranscript(join(root, "-Users-x-proj"), "aaa.jsonl", [
-        assistantLine("2026-06-01T10:00:00.000Z", "claude-opus-4-8", "msg_1", claudeUsage(10, 20)),
-      ]);
-      return { roots: [root, root] };
-    },
-    check(report) {
-      expect(opusRow(report)?.events).toBe(1);
     },
   },
   {

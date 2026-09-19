@@ -22,9 +22,7 @@ import {
   CONTRIBUTION_VERSION,
   dedupKey,
   type FileRecord,
-  inWalkOrder,
   type ParsedFile,
-  parseEveryCandidate,
   type ParseTail,
   type ParseWhole,
   type Reconcile,
@@ -76,36 +74,24 @@ export function discoverClaudeSessionRoots(homes: string[] = [resolveClaudeHome(
  *  deno honors on unix only. */
 export async function readClaudeSessions(
   roots: string[],
-  sinceMs?: number,
-  timeZone?: string,
-  reconcile?: Reconcile,
+  sinceMs: number | undefined,
+  timeZone: string | undefined,
+  reconcile: Reconcile,
 ): Promise<UsageReport> {
   // Before any file read: an unknown zone must fail here, not inside the per-file parse catch.
   const dayKey = dayKeyIn(timeZone);
   const walked = walkClaudeSessions(roots, sinceMs);
-  const { records } = (reconcile ?? parseEveryCandidate)(
-    "claude",
-    walked,
-    parseClaudeWhole,
-    parseClaudeTail,
-  );
-  return foldClaude(inWalkOrder(walked, records), sinceMs, dayKey);
+  const { records } = reconcile("claude", walked, parseClaudeWhole, parseClaudeTail);
+  return foldClaude(records, sinceMs, dayKey);
 }
 
+/** Ascending by path. discoverClaudeSessionRoots hands over realpath-distinct `projects` directories,
+ *  and none nests in another, so no file is collected twice. */
 export function walkClaudeSessions(roots: string[], sinceMs: number | undefined): WalkedFile[] {
-  const collected: WalkedFile[] = [];
+  const files: WalkedFile[] = [];
   for (const root of roots) {
-    collectTranscriptFiles(root, 1, sinceMs, collected);
+    collectTranscriptFiles(root, 1, sinceMs, files);
   }
-  // Roots may overlap (the same directory named twice).
-  const seen = new Set<string>();
-  const files = collected.filter((f) => {
-    if (seen.has(f.path)) {
-      return false;
-    }
-    seen.add(f.path);
-    return true;
-  });
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return files;
 }

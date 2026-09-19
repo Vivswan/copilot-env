@@ -14,7 +14,7 @@ import {
   readClaudeSessions,
   walkClaudeSessions,
 } from "../src/usage/claude_sessions.ts";
-import { emptyIndexStats, type Reconcile, type WalkedFile } from "../src/usage/contribution.ts";
+import { parseEveryCandidate, type WalkedFile } from "../src/usage/contribution.ts";
 import { errMessage } from "../src/utils/error.ts";
 import { captureAllWrites } from "./helpers/output.ts";
 import {
@@ -25,23 +25,16 @@ import {
 import { CLAUDE_SCENARIOS, scenarioNamed } from "./helpers/session_scenarios.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
-// The index equivalence tests read the shared catalog scenarios three ways; this one
-// default-reconcile read covers the reader's own entry point.
-test("readClaudeSessions reads a catalog scenario without a reconcile", async () => {
-  const scenario = scenarioNamed(
-    CLAUDE_SCENARIOS,
-    "maps the four usage buckets and buckets by local day",
-  );
-  const { roots, sinceMs, timeZone } = scenario.build(tempDir("claude-sessions-"));
-  scenario.check(await readClaudeSessions(roots, sinceMs, timeZone));
-});
-
 test("readClaudeSessions counts an unterminated final line once its LF lands", async () => {
   const scenario = scenarioNamed(CLAUDE_SCENARIOS, "does not count an unterminated final line");
   const { roots, files } = scenario.build(tempDir("claude-sessions-"));
-  scenario.check(await readClaudeSessions(roots));
+  scenario.check(await readClaudeSessions(roots, undefined, undefined, parseEveryCandidate));
   appendFileSync(files![0]!, "\n");
-  expect((await readClaudeSessions(roots)).byModel.get("claude-opus-4.8")).toEqual({
+  expect(
+    (await readClaudeSessions(roots, undefined, undefined, parseEveryCandidate)).byModel.get(
+      "claude-opus-4.8",
+    ),
+  ).toEqual({
     input: 11,
     output: 22,
     cacheRead: 0,
@@ -55,35 +48,6 @@ test("walkClaudeSessions under a NaN cutoff keeps every file a candidate", () =>
   const { roots } = scenarioNamed(CLAUDE_SCENARIOS, "under a NaN cutoff counts nothing, as before")
     .build(tempDir("claude-sessions-"));
   expect(walkClaudeSessions(roots, Number.NaN).map((f) => f.candidate)).toEqual([true]);
-});
-
-const reversingReconcile: Reconcile = (_source, walked, parseWhole) => {
-  const records = walked
-    .filter((f) => f.candidate)
-    .map((f) => ({ path: f.path, contribution: parseWhole(f).contribution }));
-  return { records: records.reverse(), stats: emptyIndexStats() };
-};
-
-test("readClaudeSessions folds ascending by path whatever order the reconcile returns", async () => {
-  const scenario = scenarioNamed(
-    CLAUDE_SCENARIOS,
-    "books the same id on two days across two files on the first path's day",
-  );
-  const { roots } = scenario.build(tempDir("claude-sessions-"));
-  const viaReconcile = await readClaudeSessions(roots, undefined, undefined, reversingReconcile);
-  scenario.check(viaReconcile);
-  expect(viaReconcile).toEqual(await readClaudeSessions(roots));
-});
-
-test("readClaudeSessions walks a root named twice once, whatever the reconcile", async () => {
-  const { roots } = scenarioNamed(CLAUDE_SCENARIOS, "counts a root named twice once").build(
-    tempDir("claude-sessions-"),
-  );
-  expect(walkClaudeSessions(roots, undefined).length).toBe(1);
-  // The baseline is the root named ONCE; both duplicated-root reads must equal it.
-  const once = await readClaudeSessions([roots[0]!]);
-  expect(await readClaudeSessions(roots)).toEqual(once);
-  expect(await readClaudeSessions(roots, undefined, undefined, reversingReconcile)).toEqual(once);
 });
 
 test("discoverClaudeSessionRoots returns existing projects dirs only, deduped", async () => {

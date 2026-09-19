@@ -5,7 +5,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "./daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
-import type { HeldStartLock } from "./launch.ts";
 import { allDaemonHomes, CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { daemonPolicy } from "./port.ts";
 import {
@@ -245,12 +244,12 @@ function warnUnprovenTrackedPid(pid: number): void {
  *
  *   plan -> stop the tracked pid -> clear tracking -> holder and orphan sweeps
  *
- * The snapshot and sweeps are race-free only under the held start lock. Tracking is unbound before the
- * sweeps, so a throw there leaves no port pointing at a dead daemon. The residual is terminatePid's
- * SIGKILL gate: it signals on an UNREADABLE identity scan, so a pid recycled inside the grace still dies.
+ * The snapshot and sweeps are race-free only under the start lock (withStartLock, held by the one
+ * caller in commands/start.ts). Tracking is unbound before the sweeps, so a throw there leaves no port
+ * pointing at a dead daemon. The residual is terminatePid's SIGKILL gate: it signals on an UNREADABLE
+ * identity scan, so a pid recycled inside the grace still dies.
  */
 export async function cleanupExistingProxies(
-  _lock: HeldStartLock,
   profile: Profile,
   state: CopilotEnvRunState = CopilotEnvRunState.forProfile(profile),
   listPids: (myPid: number, myPpid: number) => Promise<number[] | "unproven"> = getOrphanPids,

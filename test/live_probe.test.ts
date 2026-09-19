@@ -419,29 +419,31 @@ test("probeDirectWorks spawns the CLI from inside the throwaway home, never the 
   expect(ok).toBe(true);
 });
 
-test("probeDirectWorks anchors a relative CLI path to the caller's cwd before the child leaves it", async () => {
-  // `command -v` under dash answers with the relative form for a relative or empty PATH entry
-  // (./node_modules/.bin/codex, or a bare `codex` for one in the caller's dir); spawned from
-  // inside the temp home that path is ENOENT and the verdict would fall to the proxy. Windows
-  // findCommand answers with a bare name on purpose (PATH resolves it), so the POSIX shape alone
-  // is pinned here.
-  if (process.platform === "win32") return;
-  let seen: { cliPath: string; path: string[] } | null = null;
-  const ok = await probeDirectWorks(FAKE_DESCRIPTOR, () => {}, fakeSmoke(), {
-    findCommand: (c: string) => ({ path: join(".", "tools", c) }),
-    runProbe: (cliPath, _args, env) => {
-      seen = { cliPath, path: (env.PATH ?? "").split(delimiter) };
-      return { ok: true };
-    },
-  });
-  expect(ok).toBe(true);
-  const got = seen as unknown as { cliPath: string; path: string[] };
-  expect(got.cliPath).toBe(resolve("tools", "claude"));
-  // Only the entries this probe ADDED (the CLI's and gh's shared bin dir, once): the inherited PATH
-  // may itself carry "." or the like.
-  const inherited = new Set((process.env.PATH ?? "").split(delimiter));
-  expect(got.path.filter((p) => !inherited.has(p))).toEqual([resolve("tools")]);
-});
+// `command -v` under dash answers with the relative form for a relative or empty PATH entry
+// (./node_modules/.bin/codex, or a bare `codex` for one in the caller's dir); spawned from
+// inside the temp home that path is ENOENT and the verdict would fall to the proxy. Windows
+// findCommand answers with a bare name on purpose (PATH resolves it), so the POSIX shape alone
+// is pinned here.
+test.skipIf(process.platform === "win32")(
+  "probeDirectWorks anchors a relative CLI path to the caller's cwd before the child leaves it",
+  async () => {
+    let seen: { cliPath: string; path: string[] } | null = null;
+    const ok = await probeDirectWorks(FAKE_DESCRIPTOR, () => {}, fakeSmoke(), {
+      findCommand: (c: string) => ({ path: join(".", "tools", c) }),
+      runProbe: (cliPath, _args, env) => {
+        seen = { cliPath, path: (env.PATH ?? "").split(delimiter) };
+        return { ok: true };
+      },
+    });
+    expect(ok).toBe(true);
+    const got = seen as unknown as { cliPath: string; path: string[] };
+    expect(got.cliPath).toBe(resolve("tools", "claude"));
+    // Only the entries this probe ADDED (the CLI's and gh's shared bin dir, once): the inherited PATH
+    // may itself carry "." or the like.
+    const inherited = new Set((process.env.PATH ?? "").split(delimiter));
+    expect(got.path.filter((p) => !inherited.has(p))).toEqual([resolve("tools")]);
+  },
+);
 
 // --- probeDirectWorks: env sanitization -------------------------------------
 

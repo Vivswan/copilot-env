@@ -1,11 +1,12 @@
 // BEFORE/AFTER `agent cost` for a PR: base and head over one synthetic tree on one runner;
-// a head JSON that differs from the base fails the job.
+// a head JSON that differs from the base fails the job, unless the PR carries the
+// `cost-metrics: intended` label, which declares the diff intended and turns it into a pass.
 //
 // `measure` runs head-controlled code, so it never holds a token; the workflow
 // (cost-metrics.yml) posts the comment file it leaves in --out, then `verdict` reads the
 // recorded verdict back as the exit status.
-//   measure --out <dir> [--base <ref>] [--mb <n>]  -> comment.md + verdict in <dir>
-//   verdict --in <dir>                               -> exit 1 when the JSON differs
+//   measure --out <dir> [--base <ref>] [--mb <n>] [--labels <a,b>]  -> comment.md + verdict in <dir>
+//   verdict --in <dir>                               -> exit 1 when the JSON differs unintendedly
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -57,7 +58,12 @@ const REPO_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 
 const SHA = /^[0-9a-f]{7,40}$/;
 
-type Verdict = "match" | "differs";
+/** `intended` is a differing JSON the PR declared on purpose with INTENDED_LABEL: a pass. */
+type Verdict = "match" | "differs" | "intended";
+
+/** The PR label that declares a differing JSON intended; the workflow passes the PR's labels in
+ *  PR_LABELS, comma-separated, so `measure` never asks GitHub. */
+const INTENDED_LABEL = "cost-metrics: intended";
 
 interface MeasureOptions {
   out: string;
@@ -66,6 +72,8 @@ interface MeasureOptions {
   mb: number;
   seed: number;
   fixturesScript: string;
+  /** The PR carries INTENDED_LABEL. */
+  intended: boolean;
 }
 
 interface VerdictOptions {
@@ -130,7 +138,7 @@ function usage(): never {
   console.error(
     [
       "usage: cost-metrics.ts measure --out <dir> [--base <ref>] [--head-sha <sha>] [--mb <n>]",
-      "                               [--seed <n>] [--fixtures <path>]",
+      "                               [--seed <n>] [--fixtures <path>] [--labels <a,b>]",
       "       cost-metrics.ts verdict --in <dir>",
     ].join("\n"),
   );
@@ -185,6 +193,7 @@ function parseMeasureOptions(argv: readonly string[]): MeasureOptions {
     seed: nonNegativeInt(flags.get("seed") ?? String(DEFAULT_SEED), "--seed"),
     fixturesScript: setting(flags, "fixtures", "COST_METRICS_FIXTURES_SCRIPT") ??
       DEFAULT_FIXTURES_SCRIPT,
+    intended: (setting(flags, "labels", "PR_LABELS") ?? "").split(",").includes(INTENDED_LABEL),
   };
 }
 
@@ -924,6 +933,12 @@ function renderComment(
     COMMENT_MARKER,
     `## Cost metrics: ${anyDiffers ? "JSON DIFFERS from base" : "JSON matches base"}`,
     "",
+    ...(anyDiffers && opts.intended
+      ? [
+        `The diff is declared intended via the \`${INTENDED_LABEL}\` label, so the check passes.`,
+        "",
+      ]
+      : []),
     "`agent cost --json --per-day` over one synthetic tree, base and head back to back on one runner.",
     "",
     ...results.flatMap((result) => [...renderWindowTable(result), ""]),
@@ -1038,7 +1053,7 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
 
     const body = renderComment(results, opts, baseSha, measuredSha, tree);
     const verdict: Verdict = results.some((result) => result.outcome.kind === "differs")
-      ? "differs"
+      ? (opts.intended ? "intended" : "differs")
       : "match";
     console.log(body);
     mkdirSync(opts.out, { recursive: true });
@@ -1067,10 +1082,11 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
 
 function readVerdict(dir: string): Verdict {
   const raw = readFileSync(join(dir, VERDICT_FILE), "utf8").trim();
-  if (raw === "match" || raw === "differs") return raw;
+  if (raw === "match" || raw === "differs" || raw === "intended") return raw;
   throw new Error(`${join(dir, VERDICT_FILE)}: unknown verdict ${JSON.stringify(raw)}`);
 }
 
+/** Only an undeclared diff fails; `intended` passes with the diff in the comment. */
 function runVerdict(opts: VerdictOptions): number {
   const verdict = readVerdict(opts.in);
   if (verdict === "differs") console.error("cost JSON differs from the base commit");

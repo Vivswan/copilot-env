@@ -3,12 +3,14 @@
 # `contents: read` and cannot post a PR comment. Three steps on purpose:
 #   measure  -> runs the PR's own code, so it never sees a token
 #   comment  -> the only step handed the token; posts the body the measurement wrote
-#   verdict  -> fails the job on a differing JSON
+#   verdict  -> fails the job on a differing JSON, unless the PR carries `cost-metrics: intended`
 
 name: Cost metrics
 
 on:
   pull_request:
+    # labeled/unlabeled: applying `cost-metrics: intended` re-runs the job with the new verdict.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     # The cost command's wiring in src/cli.ts is deliberately not a trigger (it does not move
     # the scan); deno.json and deno.lock are, because dependency or permission changes do.
     paths:
@@ -59,6 +61,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: >-
           deno run --allow-read --allow-write --allow-env --allow-run=git,deno
           .github/scripts/cost-metrics.ts measure --out "$RUNNER_TEMP/cost-metrics"

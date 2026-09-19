@@ -995,7 +995,7 @@ function buildCostJson(
     codexSessions,
     claudeSessions,
     note: "approximate numbers gathered from local logs and keyed by canonical model spellings " +
-      "(dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates (actual billing may differ); " +
+      "(dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates, GitHub's own where the two differ (actual billing may differ); " +
       "top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic " +
       "(proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",
     runtime: completeRuntime(measured),

@@ -10,7 +10,7 @@ import {
   inspectClaudeWiring,
 } from "../claude/config.ts";
 import { settingsPathFor } from "../claude/paths.ts";
-import { bakedCodexToken, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
+import { bakedCodexToken, type CodexWiringStatus, inspectCodexWiring } from "../codex/inspect.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {

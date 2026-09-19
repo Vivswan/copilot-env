@@ -18,12 +18,14 @@
 //   no-raw-fs-reads          the same, plus src/usage/ (read-only inputs no dry run touches, on
 //                            the `agent cost` hot path with partial reads through a fd the seam has
 //                            no primitive for) and node_compat_preload.ts (runs before the seam
-//                            exists).
+//                            exists). Two files may open a read handle raw, and nothing else
+//                            (checksums.ts streams the release binary it hashes, process.ts opens
+//                            `/dev/null` for the daemon's stdin): no run plans either file.
 //
 // A file handle (`open`, `openSync`, `Deno.open`) is a read to the read rule whatever its flags,
 // and a write to the write rule when its flag or options say so (or cannot be read): the seam's
-// openReadable / openReadFd / openWritable / openWriteFd are the way to one, and a read-exempt
-// file still may not open for writing.
+// openWritable / openWriteFd are the way to a write handle, and a read-exempt file still may not
+// open for writing.
 //
 // One more way to mutate without naming a write API is refused too: a child process running a
 // filesystem command (`rm`, `mv`, `cp`, `del`, `Remove-Item`, ...: spawned directly, or as the
@@ -49,6 +51,11 @@ const EXEMPT_PREFIX = "src/migrations/";
  *  path, over inputs no dry run touches) and the preload that runs before the seam exists. */
 const READ_ALLOWED = new Set(["src/scripts/node_compat_preload.ts"]);
 const READ_EXEMPT_PREFIX = "src/usage/";
+
+/** The two read handles no run plans, opened raw where they are used (the release binary the
+ *  updater hashes, the daemon's `/dev/null` stdin); every other read in these files still goes
+ *  through the seam. */
+const READ_HANDLE_ALLOWED = new Set(["src/install/checksums.ts", "src/copilot_api/process.ts"]);
 
 /** node:fs mutation entry points, sync and promise spellings alike. */
 const FS_WRITE_NAMES = new Set([
@@ -211,6 +218,10 @@ const DENO_OPEN_NAMES = new Set(["open", "openSync"]);
 /** Deno.open options that make the handle a write. */
 const DENO_OPEN_WRITE_OPTIONS = new Set(["write", "append", "create", "createNew", "truncate"]);
 
+function withoutOpens(names: ReadonlySet<string>): ReadonlySet<string> {
+  return new Set([...names].filter((name) => !FS_OPEN_NAMES.has(name)));
+}
+
 const CHILD_PROCESS_MODULE = "node:child_process";
 /** The spawn entry points whose first argument names the command (`exec*` take a command line). */
 const SPAWN_NAMES = new Set(["spawn", "spawnSync", "execFile", "execFileSync", "fork"]);
@@ -299,7 +310,7 @@ const WRITE_MESSAGE = "mutate the filesystem through src/utils/fs_facade.ts (wri
   "seam never sees";
 
 const READ_MESSAGE = "read the filesystem through src/utils/fs_facade.ts (readText, stat, " +
-  "readdir, exists, openReadable, ...) so a dry run answers from its planned state -- a raw read " +
+  "readdir, exists, ...) so a dry run answers from its planned state -- a raw read " +
   "here looks behind the plan";
 
 const HANDLE_MESSAGE = "open a file for writing through src/utils/fs_facade.ts (openWritable, " +
@@ -497,6 +508,14 @@ function reachVisitor(
       if (node.id.type === "Identifier") {
         if (isFsNamespace(node.init, fsNamespaces)) fsNamespaces.add(node.id.name);
         if (isDenoNamespace(node.init, denoAliases)) denoAliases.add(node.id.name);
+        // `const open = Deno.open;` / `const o = fs.openSync;`: an open under another name.
+        if (node.init.type === "MemberExpression") {
+          const name = memberName(node.init);
+          if (name !== null && FS_OPEN_NAMES.has(name)) {
+            if (isFsNamespace(node.init.object, fsNamespaces)) fsOpens.add(node.id.name);
+            if (isDenoNamespace(node.init.object, denoAliases)) denoOpens.add(node.id.name);
+          }
+        }
         return;
       }
       if (node.id.type !== "ObjectPattern") return;
@@ -634,9 +653,10 @@ const plugin: Deno.lint.Plugin = {
     "no-raw-fs-reads": {
       create(context) {
         if (!readGuarded(context.filename)) return {};
+        const handles = READ_HANDLE_ALLOWED.has(repoPath(context.filename) ?? "");
         return reachVisitor(context, {
-          fs: FS_READ_NAMES,
-          deno: DENO_READ_NAMES,
+          fs: handles ? withoutOpens(FS_READ_NAMES) : FS_READ_NAMES,
+          deno: handles ? withoutOpens(DENO_READ_NAMES) : DENO_READ_NAMES,
           message: READ_MESSAGE,
         });
       },

@@ -19,7 +19,7 @@ import {
 import { inspectClaudeWiring } from "../claude/config.ts";
 import { renderClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { inspectCodexWiring } from "../codex/config.ts";
+import { inspectCodexWiring } from "../codex/inspect.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";

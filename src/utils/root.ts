@@ -65,19 +65,11 @@ export function isVersionedInstallTop(top: string): boolean {
   return sameDir && !fs.entryAbsent(versionsDir);
 }
 
-/** No fixed dirname() hop count, so moving this file does not break resolution; bounded so a
- *  missing marker cannot loop. */
-function findCheckoutRoot(): string {
-  const start = dirname(fileURLToPath(import.meta.url));
-  let dir = start;
-  for (let i = 0; i < 64; i++) {
-    if (fs.exists(join(dir, "package.json"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) break; // reached the filesystem root
-    dir = parent;
-  }
-  return start;
-}
+/** The compiled binary's embedded VFS, or the checkout root in dev. Readable in-process only: never
+ *  hand an ASSET_ROOT path to another program, and never write under it. Distinct from PROJECT_ROOT
+ *  because an install materializes only some assets onto disk; `copilot-env.config` in particular
+ *  is read out of the binary. */
+export const ASSET_ROOT: string = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 /** Typed locally so the module also typechecks under non-Deno tooling. */
 interface DenoRuntimeGlobal {
@@ -121,7 +113,7 @@ export function derivedCompiledRoot(binaryPath: string): string {
 }
 
 function detectRootMode(): RootMode {
-  if (!isStandaloneBinary()) return { kind: "checkout", root: findCheckoutRoot() };
+  if (!isStandaloneBinary()) return { kind: "checkout", root: ASSET_ROOT };
   const override = process.env[ROOT_OVERRIDE_ENV];
   // Taken literally, never re-derived: `agent update` uses it to aim the staged binary inside a
   // not-yet-live version root.
@@ -150,12 +142,6 @@ export function installStateRoot(root: string = PROJECT_ROOT): string {
   }
   return resolved;
 }
-
-/** The compiled binary's embedded VFS, or the checkout root in dev. Readable in-process only: never
- *  hand an ASSET_ROOT path to another program, and never write under it. Distinct from PROJECT_ROOT
- *  because an install materializes only some assets onto disk; `copilot-env.config` in particular
- *  is read out of the binary. */
-export const ASSET_ROOT: string = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 /** Whole-root destructive operations (uninstall, update, the autoupdate preflight) refuse without
  *  `--force` on a checkout: it may hold uncommitted work, and a nuked clone is unrecoverable while

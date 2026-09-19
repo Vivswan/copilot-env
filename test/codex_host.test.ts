@@ -540,7 +540,7 @@ skipWin(
 // --- shared seeding (seedSharedCodexFileIfMissing, via AGENTS.md) -------------
 
 skipWin(
-  "the shared seed (AGENTS.md): a host-local copy is promoted to the shared root and replaced by a symlink, refilling an empty shared one; conflicting content keeps both copies unlinked (warned); a local symlink stays, the shared placeholder still lands",
+  "the shared seed (AGENTS.md): a host-local copy identical to the shared file is replaced by a symlink; differing content keeps both copies unlinked (warned); a local symlink stays; the shared placeholder always lands",
   async () => {
     const cases: {
       name: string;
@@ -549,21 +549,23 @@ skipWin(
       expected: (farm: Farm, warned: string) => void;
     }[] = [
       {
-        name: "local only: promoted and symlinked",
+        name: "identical content: the local copy becomes a symlink",
+        shared: "agents\n",
         local: "agents\n",
         expected: ({ sharedRoot, hostHome }) => {
-          expect(isRegularFile(join(sharedRoot, "AGENTS.md"))).toBe(true);
           expect(fs.readFileSync(join(sharedRoot, "AGENTS.md"), "utf8")).toBe("agents\n");
           expect(linkTarget(join(hostHome, "AGENTS.md"))).toBe(join(sharedRoot, "AGENTS.md"));
         },
       },
       {
-        name: "an empty shared copy is refilled from the local one",
-        shared: "",
+        name: "local only: the empty placeholder lands and the local copy stays unlinked",
         local: "agents\n",
-        expected: ({ sharedRoot, hostHome }) => {
-          expect(fs.readFileSync(join(sharedRoot, "AGENTS.md"), "utf8")).toBe("agents\n");
-          expect(linkTarget(join(hostHome, "AGENTS.md"))).toBe(join(sharedRoot, "AGENTS.md"));
+        expected: ({ sharedRoot, hostHome }, warned) => {
+          expect(fs.readFileSync(join(sharedRoot, "AGENTS.md"), "utf8")).toBe("");
+          const local = join(hostHome, "AGENTS.md");
+          expect(isSymlink(local)).toBe(false);
+          expect(fs.readFileSync(local, "utf8")).toBe("agents\n");
+          expect(warned).toContain(`Leaving existing Codex path unchanged: ${local}`);
         },
       },
       {
@@ -611,14 +613,18 @@ skipWin(
 
 // --- optional shared seeding (installation_id) --------------------------------
 
-skipWin("a host-local installation_id is promoted and symlinked; none is fabricated", async () => {
+skipWin("a host-local installation_id stays where it is (warned); none is fabricated", async () => {
   const { sharedRoot, hostHome } = isolate();
   fs.mkdirSync(hostHome, { recursive: true });
   fs.writeFileSync(join(hostHome, "installation_id"), "id-123");
 
-  await build();
-  expect(fs.readFileSync(join(sharedRoot, "installation_id"), "utf8")).toBe("id-123");
-  expect(linkTarget(join(hostHome, "installation_id"))).toBe(join(sharedRoot, "installation_id"));
+  const warned = await stderrDuring(build);
+  expect(lexists(join(sharedRoot, "installation_id"))).toBe(false);
+  expect(isSymlink(join(hostHome, "installation_id"))).toBe(false);
+  expect(fs.readFileSync(join(hostHome, "installation_id"), "utf8")).toBe("id-123");
+  expect(warned).toContain(
+    `Leaving existing Codex path unchanged: ${join(hostHome, "installation_id")}`,
+  );
   // The other optional file stays a dangling symlink (no placeholder).
   expect(linkTarget(join(hostHome, "shell-init.sh"))).toBe(join(sharedRoot, "shell-init.sh"));
   expect(lexists(join(sharedRoot, "shell-init.sh"))).toBe(false);

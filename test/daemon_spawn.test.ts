@@ -47,13 +47,8 @@ import {
   spawnChild,
 } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import {
-  envSnapshot,
-  FAKE_DAEMON_CREDENTIAL,
-  FAKE_DAEMON_HOST,
-  isolateProxyHome,
-  until,
-} from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
+import { FAKE_DAEMON_CREDENTIAL, FAKE_DAEMON_HOST, until } from "./helpers/daemon.ts";
 
 // Every daemon spawn derives from ONE DaemonSpec, so argv and environment are pinned against the
 // spec rather than a pile of optional arguments.

@@ -27,6 +27,7 @@ import { writeDaemonConfig } from "../src/proxy_float.ts";
 import { readProjectConfig } from "../src/utils/project_config.ts";
 import { ROOT, runSync } from "./helpers/run.ts";
 import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { tsFilesUnder as srcFiles } from "./helpers/tree.ts";
 
 // Shell cannot import TS, so the installers hand-roll lists TypeScript modules own; each guard
 // parses a list back out of the script text and pins it to its source of truth.
@@ -150,16 +151,6 @@ describe("compile.include matches what the binary actually needs", () => {
 describe("bundled-only assets are never read through PROJECT_ROOT", () => {
   // A bundled-only asset read through PROJECT_ROOT passes every checkout test (the two roots
   // coincide there) and fails only on a real install; such reads go through ASSET_ROOT.
-  function srcFiles(dir: string): string[] {
-    const files: string[] = [];
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) files.push(...srcFiles(path));
-      else if (entry.name.endsWith(".ts")) files.push(path);
-    }
-    return files;
-  }
-
   test("no src line names PROJECT_ROOT and a bundled-only asset together", () => {
     let projectRootLines = 0;
     for (const file of srcFiles(join(ROOT, "src"))) {

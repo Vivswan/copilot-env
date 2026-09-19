@@ -27,10 +27,10 @@ bash scripts/setup-env.sh   # one-shot env/worktree init (deno install --frozen)
 
 Two loopback fakes let the suite and CI run with no Copilot credential and no network:
 
-| Fake                          | Stands in for                                                                                                          | Used by                                              |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `test/copilot-api-fake.mjs`   | the copilot-api daemon: its admin routes and the `Listening on:` marker                                                | the start/stop lifecycle smoke (`COPILOT_API_ENTRY`) |
-| `test/fake_model_endpoint.ts` | the model endpoint: Anthropic Messages, OpenAI Responses and chat completions (streaming and not), Copilot's `/models` | the Direct smoke test, the real-CLI tests            |
+| Fake                                  | Stands in for                                                                                                          | Used by                                              |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `test/copilot-api-fake.mjs`           | the copilot-api daemon: its admin routes and the `Listening on:` marker                                                | the start/stop lifecycle smoke (`COPILOT_API_ENTRY`) |
+| `test/helpers/fake_model_endpoint.ts` | the model endpoint: Anthropic Messages, OpenAI Responses and chat completions (streaming and not), Copilot's `/models` | the Direct smoke test, the real-CLI tests            |
 
 ### The fake model endpoint
 

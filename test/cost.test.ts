@@ -9,7 +9,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { type IndexStats, parseEveryCandidate, type Reconcile } from "../src/usage/contribution.ts";
 import {
   buildSourceJson,
@@ -37,7 +36,6 @@ import {
 import { consola } from "consola";
 import { CopilotEnvConfig, OPENROUTER_MODELS_URL } from "../src/copilot_api/env_config.ts";
 import { openUsageIndex } from "../src/usage/index.ts";
-import { USAGE_INDEX_DB_NAME } from "../src/usage/index.ts";
 import { USAGE_INDEX_DIR_NAME } from "../src/copilot_api/paths.ts";
 import {
   estimateCost,
@@ -60,6 +58,7 @@ import {
   writeTranscript,
 } from "./helpers/session_fixtures.ts";
 import { expect, tempDir, test, TZ_PINNABLE } from "./helpers/testing.ts";
+import { indexDbFile, storedIndexPaths } from "./helpers/usage_index.ts";
 
 function usage(partial: Partial<ModelUsage>): ModelUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, events: 0, ...partial };
@@ -471,18 +470,9 @@ interface IndexSnapshot {
 }
 
 function snapshotIndex(home: string): IndexSnapshot {
-  const dbFile = join(home, USAGE_INDEX_DIR_NAME, USAGE_INDEX_DB_NAME);
+  const dbFile = indexDbFile(home);
   if (!existsSync(dbFile)) return { open: false, paths: [] };
-  const open = existsSync(`${dbFile}-wal`);
-  const db = new DatabaseSync(dbFile, { readOnly: true });
-  try {
-    const rows = db.prepare(`SELECT "path" FROM "files" ORDER BY "path"`).all() as {
-      path: string;
-    }[];
-    return { open, paths: rows.map((r) => r.path) };
-  } finally {
-    db.close();
-  }
+  return { open: existsSync(`${dbFile}-wal`), paths: storedIndexPaths(dbFile) };
 }
 
 /** Answers only once the index is closed with `parsedPath` stored. The readers store it and

@@ -22,7 +22,7 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseModelList } from "../src/copilot_api/models.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

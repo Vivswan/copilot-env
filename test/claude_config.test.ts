@@ -43,7 +43,9 @@ import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, linesNaming, writeClaudeSettings } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
+import { writeClaudeSettings } from "./helpers/fixtures.ts";
+import { linesNaming } from "./helpers/dry_run.ts";
 
 /** A recorded Direct default whose slot holds its pair, so a single-agent write is a re-render
  *  (zero probes, no credential needed); with no pair it would land both agents and ask to log in. */

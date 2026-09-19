@@ -32,7 +32,7 @@
 // first word of a shell's command line). A command the rule cannot read (a variable) passes, since
 // a spawn's command is often computed.
 // Registered in deno.json, unit-tested in test/fs_write_lint.test.ts.
-import { fileURLToPath } from "node:url";
+import { isDenoNamespace, memberName, repoPath } from "./test_tree.ts";
 
 const FS_MODULES = new Set(["node:fs", "node:fs/promises"]);
 
@@ -274,24 +274,6 @@ const MUTATING_COMMANDS = new Set([
   "clc",
 ]);
 
-function normalize(path: string): string {
-  return path.replaceAll("\\", "/");
-}
-
-/** The repository root, derived from THIS file (test/lint/). fileURLToPath, not
- *  URL.pathname: the latter yields "/C:/..." on Windows and would match nothing,
- *  silently disabling the rule. */
-const REPO_ROOT = normalize(fileURLToPath(new URL("../../", import.meta.url)));
-
-/** `filename` relative to the repo root, or null when it is outside it. Both the
- *  absolute paths `deno lint` passes and the repo-relative ones runPlugin takes. */
-function repoPath(filename: string): string | null {
-  const path = normalize(filename);
-  if (path.startsWith(REPO_ROOT)) return path.slice(REPO_ROOT.length);
-  if (!path.startsWith("/") && !/^[A-Za-z]:\//.test(path)) return path;
-  return null;
-}
-
 function guarded(filename: string): boolean {
   const relative = repoPath(filename);
   if (relative === null || !relative.startsWith("src/")) return false;
@@ -387,26 +369,6 @@ function isFsNamespace(node: Deno.lint.Node, locals: ReadonlySet<string>): boole
   if (node.type === "Identifier") return locals.has(node.name);
   return node.type === "MemberExpression" && memberName(node) === "promises" &&
     node.object.type === "Identifier" && locals.has(node.object.name);
-}
-
-/** Whether `node` is the `Deno` global: spelled bare, through globalThis, or by a local
- *  alias (`const deno = Deno`). */
-function isDenoNamespace(node: Deno.lint.Node, aliases: ReadonlySet<string>): boolean {
-  if (node.type === "Identifier") return node.name === "Deno" || aliases.has(node.name);
-  return node.type === "MemberExpression" &&
-    node.object.type === "Identifier" && node.object.name === "globalThis" &&
-    node.property.type === "Identifier" && node.property.name === "Deno";
-}
-
-/** The member name a MemberExpression reads, for both `a.b` and `a["b"]`. */
-function memberName(node: Deno.lint.MemberExpression): string | null {
-  if (!node.computed && node.property.type === "Identifier") return node.property.name;
-  if (
-    node.computed && node.property.type === "Literal" && typeof node.property.value === "string"
-  ) {
-    return node.property.value;
-  }
-  return null;
 }
 
 /** The API names one direction of the seam covers, and the message for reaching one raw. */

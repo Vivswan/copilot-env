@@ -10,7 +10,8 @@ import {
 } from "../src/commands/proxy_token.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
-import { envSnapshot, writeRunState } from "./helpers.ts";
+import { agentHomeEnv, envSnapshot } from "./helpers/env.ts";
+import { writeRunState } from "./helpers/fixtures.ts";
 import { importSpecifier, ROOT, runCli, runScript, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
@@ -199,15 +200,7 @@ test("resolveProxyToken: each (up, auto-start, --yes, answer, profile) row yield
 
 /** A hermetic child env: isolated agent homes, quiet consola. */
 function isolatedEnv(home: string): Record<string, string> {
-  return {
-    ...process.env as Record<string, string>,
-    CONSOLA_LEVEL: "5",
-    COPILOT_API_HOME: home,
-    HOME: home,
-    USERPROFILE: home,
-    CLAUDE_CONFIG_DIR: join(home, ".claude"),
-    CODEX_HOME: join(home, ".codex"),
-  };
+  return { ...process.env as Record<string, string>, CONSOLA_LEVEL: "5", ...agentHomeEnv(home) };
 }
 
 /** A daemon proxyStatus corroborates: a real deno process running a copilot-api-named entry with the

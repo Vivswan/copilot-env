@@ -17,7 +17,7 @@ import { readTextResult } from "../src/utils/fs_facade.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
 import { runSync } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

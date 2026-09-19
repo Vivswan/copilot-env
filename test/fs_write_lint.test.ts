@@ -173,7 +173,11 @@ test("scoped to src/, minus each rule's own exemptions", () => {
   expect(lint(read, "src\\install\\installer.ts").reads).toBe(1);
   // Tests, repo scripts and the CI helpers own their own files.
   for (
-    const outside of ["test/helpers.ts", "scripts/compile.ts", ".github/scripts/release-assets.ts"]
+    const outside of [
+      "test/helpers/env.ts",
+      "scripts/compile.ts",
+      ".github/scripts/release-assets.ts",
+    ]
   ) {
     expect(lint(write + read, outside), outside).toEqual({ writes: 0, reads: 0 });
   }

@@ -62,16 +62,10 @@ import { VERSIONS_DIR } from "../src/utils/root.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { denoRunArgs, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import {
-  changedPaths,
-  dryRunChanges,
-  envSnapshot,
-  fingerprintTree,
-  isolateProxyHome,
-  resetExitCode,
-  until,
-  writeRunState,
-} from "./helpers.ts";
+import { envSnapshot, isolateProxyHome, resetExitCode } from "./helpers/env.ts";
+import { writeRunState } from "./helpers/fixtures.ts";
+import { changedPaths, dryRunChanges, fingerprintTree } from "./helpers/dry_run.ts";
+import { until } from "./helpers/daemon.ts";
 
 const skipWin = test.skipIf(process.platform === "win32");
 const restoreEnv = envSnapshot([

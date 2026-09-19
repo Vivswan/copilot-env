@@ -48,7 +48,8 @@ import {
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, resetExitCode, stageRefusedStop } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers/env.ts";
+import { stageRefusedStop } from "./helpers/daemon.ts";
 
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");

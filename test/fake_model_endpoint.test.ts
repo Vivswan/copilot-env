@@ -17,7 +17,7 @@ import {
   type FakeModelEndpoint,
   hermeticEnv,
   SCENARIO_HEADER,
-} from "./fake_model_endpoint.ts";
+} from "./helpers/fake_model_endpoint.ts";
 import { jsonLines, startFakeEndpoint } from "./helpers/fake_endpoint.ts";
 import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 

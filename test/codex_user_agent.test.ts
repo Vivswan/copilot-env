@@ -8,7 +8,7 @@ import {
   resetCodexVersionMemo,
 } from "../src/codex/user_agent.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot(["PATH", CI_NO_LIVE_LOOKUPS_ENV]);
 let dir = "";

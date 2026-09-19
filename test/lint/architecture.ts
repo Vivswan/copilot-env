@@ -11,9 +11,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const ARCHITECTURE_FILE = "architecture.json";
+const ARCHITECTURE_FILE = "architecture.json";
 
-export interface Architecture {
+interface Architecture {
   /** layer -> the repo-relative paths it owns; a trailing slash means a directory. */
   readonly layers: Readonly<Record<string, readonly string[]>>;
   /** Paths (same grammar as a layer's) that are not SOURCES of the graph; an import into one is
@@ -84,7 +84,7 @@ function owns(paths: readonly string[], file: string): boolean {
 }
 
 /** The layer owning a repo-relative path, or undefined. */
-export function layerOf(arch: Architecture, file: string): string | undefined {
+function layerOf(arch: Architecture, file: string): string | undefined {
   return Object.entries(arch.layers).find(([, paths]) => owns(paths, file))?.[0];
 }
 

@@ -16,7 +16,7 @@ import {
   webSearch,
 } from "../src/copilot_api/web_search.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 // The credential/config stores live under COPILOT_API_HOME, and the env-token
 // fallback reads the GH token env vars -- isolate both per test (isolateProxyHome

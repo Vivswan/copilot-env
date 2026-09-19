@@ -1,8 +1,7 @@
-import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { rewriteEndpointsApi } from "../src/scripts/copilot_host_preload.ts";
-import { CHILD_VALUES, childValuesEnv, denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
-import { expect, tempDir, test } from "./helpers/testing.ts";
+import { CHILD_VALUES, childValuesEnv, ROOT, runWithPreload } from "./helpers/run.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // The shim wraps globalThis.fetch when COPILOT_ENV_DAEMON_COPILOT_HOST is set, so it is exercised
 // as a real `--preload` subprocess, the way launchDaemon loads it, against a loopback server that
@@ -14,38 +13,29 @@ const ACCOUNT = "https://api.enterprise.githubcopilot.com";
 
 /** Prints one line per path: `<status> <content-type> <endpoints.api>`. */
 function runPreloaded(host: string | null): string[] {
-  const dir = tempDir("copilot-host-preload-");
-  try {
-    const target = join(dir, "target.ts");
-    writeFileSync(
-      target,
-      [
-        `const account = ${CHILD_VALUES}.account;`,
-        "const server = Deno.serve({ port: 0, hostname: '127.0.0.1', onListen() {} }, (req) => {",
-        "  const path = new URL(req.url).pathname;",
-        "  const body = path === '/copilot_internal/v2/token'",
-        "    ? { token: 't', refresh_in: 1, endpoints: { api: account } }",
-        "    : { login: 'x', endpoints: { api: account } };",
-        "  return Response.json(body, { headers: { 'x-probe': path } });",
-        "});",
-        "const base = `http://127.0.0.1:${server.addr.port}`;",
-        "for (const path of ['/copilot_internal/user', '/copilot_internal/v2/token', '/other']) {",
-        "  const res = await fetch(base + path);",
-        "  const body = await res.json();",
-        "  console.log(`${res.status} ${res.headers.get('content-type')} ${res.headers.get('x-probe')} ${body.endpoints.api}`);",
-        "}",
-        "await server.shutdown();",
-      ].join("\n"),
-    );
-    const env: NodeJS.ProcessEnv = { ...process.env, ...childValuesEnv({ account: ACCOUNT }) };
-    delete env[HOST_ENV];
-    if (host !== null) env[HOST_ENV] = host;
-    const res = runSync(Deno.execPath(), [...denoRunArgs("--preload", SHIM), target], { env });
-    if (res.exitCode !== 0) throw new Error(`target failed: ${res.stderr}`);
-    return res.stdout.trim().split("\n");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const source = [
+    `const account = ${CHILD_VALUES}.account;`,
+    "const server = Deno.serve({ port: 0, hostname: '127.0.0.1', onListen() {} }, (req) => {",
+    "  const path = new URL(req.url).pathname;",
+    "  const body = path === '/copilot_internal/v2/token'",
+    "    ? { token: 't', refresh_in: 1, endpoints: { api: account } }",
+    "    : { login: 'x', endpoints: { api: account } };",
+    "  return Response.json(body, { headers: { 'x-probe': path } });",
+    "});",
+    "const base = `http://127.0.0.1:${server.addr.port}`;",
+    "for (const path of ['/copilot_internal/user', '/copilot_internal/v2/token', '/other']) {",
+    "  const res = await fetch(base + path);",
+    "  const body = await res.json();",
+    "  console.log(`${res.status} ${res.headers.get('content-type')} ${res.headers.get('x-probe')} ${body.endpoints.api}`);",
+    "}",
+    "await server.shutdown();",
+  ].join("\n");
+  const env: NodeJS.ProcessEnv = { ...process.env, ...childValuesEnv({ account: ACCOUNT }) };
+  delete env[HOST_ENV];
+  if (host !== null) env[HOST_ENV] = host;
+  const res = runWithPreload(SHIM, source, { env });
+  if (res.exitCode !== 0) throw new Error(`target failed: ${res.stderr}`);
+  return res.stdout.trim().split("\n");
 }
 
 // With the pin set, every /copilot_internal/ body's endpoints.api becomes the pin while status and

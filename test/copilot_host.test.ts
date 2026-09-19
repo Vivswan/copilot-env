@@ -26,7 +26,9 @@ import {
 } from "../src/copilot_api/integration_identity.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { codexConfigToml, envSnapshot, isolateAgentHomes, launchAuth } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
+import { codexConfigToml } from "./helpers/fixtures.ts";
+import { launchAuth } from "./helpers/daemon.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

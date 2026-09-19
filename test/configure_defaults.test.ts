@@ -14,7 +14,7 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
 import { runCli } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "./helpers.ts";
+import { agentHomeEnv, envSnapshot, isolateAgentHomes, isolateProxyHome } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot(["PATH"]);
 let dir = "";
@@ -35,11 +35,7 @@ function childCliEnv(codexHome: string, claudeHome: string): Record<string, stri
   return {
     ...process.env,
     CONSOLA_LEVEL: "5",
-    COPILOT_API_HOME: dir,
-    HOME: dir,
-    USERPROFILE: dir,
-    CODEX_HOME: codexHome,
-    CLAUDE_CONFIG_DIR: claudeHome,
+    ...agentHomeEnv(dir, { codexHome, claudeHome }),
     // No credential may leak in from the shell: the store alone decides what the children see.
     COPILOT_GITHUB_TOKEN: undefined,
     GH_TOKEN: undefined,

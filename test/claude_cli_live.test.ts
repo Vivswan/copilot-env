@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { CLAUDE_PROBE, PROBE_PROMPT } from "../src/agents/live_probe.ts";
 import { claudeLiveLaunch } from "../src/health/live_launch.ts";
 import { resolveCommand } from "../src/utils/command.ts";
-import type { FakeModelEndpoint } from "./fake_model_endpoint.ts";
+import type { FakeModelEndpoint } from "./helpers/fake_model_endpoint.ts";
 import {
   FAKE_CLAUDE_MODEL,
   FAKE_USER_AGENT,

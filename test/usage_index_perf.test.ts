@@ -2,16 +2,14 @@
 // bytes and re-parses nothing, an append is read as its new bytes plus the probe, a deleted
 // session leaves the index, and no planted text reaches the index file. Timings are logged,
 // never asserted. In process throughout; sized by COPILOT_ENV_USAGE_FIXTURE_MB (30 MiB unset).
-import { appendFileSync, existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { TAIL_PROBE_BYTES } from "../src/usage/contribution.ts";
 import type { CostRuntime } from "../src/usage/cost.ts";
-import { USAGE_INDEX_DB_NAME } from "../src/usage/index.ts";
-import { USAGE_INDEX_DIR_NAME } from "../src/copilot_api/paths.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 import { generateUsageTree } from "./helpers/usage_fixtures.ts";
 import { runCurrentCost, utcPinnable } from "./helpers/usage_goldens.ts";
+import { indexBytesOnDisk, indexDbFile, storedIndexPaths } from "./helpers/usage_index.ts";
 
 const DEFAULT_MB = 30;
 const MB = fixtureMb(process.env.COPILOT_ENV_USAGE_FIXTURE_MB);
@@ -28,26 +26,14 @@ function fixtureMb(raw: string | undefined): number {
 /** Every byte SQLite left on disk for the index, as latin1 text: the database itself (it
  *  must be there and be one) and whichever sidecars exist. */
 function indexBytes(home: string): string {
-  const db = join(home, USAGE_INDEX_DIR_NAME, USAGE_INDEX_DB_NAME);
-  let text = readFileSync(db).toString("latin1");
+  const text = indexBytesOnDisk(indexDbFile(home));
   expect(text.startsWith("SQLite format 3\0")).toBe(true);
-  for (const suffix of ["-wal", "-shm", "-journal"]) {
-    if (existsSync(`${db}${suffix}`)) text += readFileSync(`${db}${suffix}`).toString("latin1");
-  }
   return text;
 }
 
 /** The stored paths of the index at `home`, read through a second connection. */
 function storedPaths(home: string): Set<string> {
-  const db = new DatabaseSync(join(home, USAGE_INDEX_DIR_NAME, USAGE_INDEX_DB_NAME), {
-    readOnly: true,
-  });
-  try {
-    const rows = db.prepare(`SELECT "path" FROM "files"`).all() as { path: string }[];
-    return new Set(rows.map((row) => row.path));
-  } finally {
-    db.close();
-  }
+  return new Set(storedIndexPaths(indexDbFile(home)));
 }
 
 function log(label: string, runtime: CostRuntime): void {

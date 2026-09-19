@@ -9,11 +9,11 @@
 // TerminateProcess there), so they are POSIX-only.
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { consola } from "consola";
 import { pidAlive, terminatePid, type TerminateVerdict } from "../src/copilot_api/process.ts";
-import { killAndAwaitExit, until, withUnprovablePidProbe } from "./helpers.ts";
+import { killAndAwaitExit, until, withUnprovablePidProbe } from "./helpers/daemon.ts";
 import { CHILD_VALUES, childValuesEnv, denoRunArgs, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { captureAllWrites as withCapturedOutput } from "./helpers/output.ts";
 
 let dir = "";
 
@@ -56,31 +56,6 @@ function classifyStub(verdict: "yes" | "no" | "unknown"): {
       return Promise.resolve(verdict);
     },
   };
-}
-
-/** Run `body` with stdout/stderr captured (consola's warn goes through one of them). */
-async function withCapturedOutput(body: () => Promise<void>): Promise<string> {
-  const written: string[] = [];
-  const savedLevel = consola.level;
-  const origOut = process.stdout.write.bind(process.stdout);
-  const origErr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = (s: string | Uint8Array) => {
-    written.push(String(s));
-    return true;
-  };
-  process.stderr.write = (s: string | Uint8Array) => {
-    written.push(String(s));
-    return true;
-  };
-  try {
-    consola.level = 3; // ensure warn is not self-silenced under the test runner
-    await body();
-  } finally {
-    process.stdout.write = origOut;
-    process.stderr.write = origErr;
-    consola.level = savedLevel;
-  }
-  return written.join("");
 }
 
 // Each child ignores SIGTERM, so its death is attributable only to the SIGKILL.

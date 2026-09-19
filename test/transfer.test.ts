@@ -46,13 +46,9 @@ import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/de
 import { resolveRootHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
-import {
-  type AgentHomes,
-  envSnapshot,
-  isolateAgentHomes,
-  resetExitCode,
-  writeRunState,
-} from "./helpers.ts";
+import { type AgentHomes, envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers/env.ts";
+import { writeRunState } from "./helpers/fixtures.ts";
+import { captureChannels } from "./helpers/output.ts";
 
 const WIN = process.platform === "win32";
 const WORK = parseProfileName("work");
@@ -91,18 +87,7 @@ function applyImportBundle(bundle: SettingsBundle, deps: ImportDeps = {}): Promi
 
 /** stderr is the command's narration logger. */
 async function captureStderr(fn: () => Promise<void>): Promise<string> {
-  const original = process.stderr.write.bind(process.stderr);
-  let out = "";
-  process.stderr.write = (chunk: string | Uint8Array): boolean => {
-    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    return true;
-  };
-  try {
-    await fn();
-  } finally {
-    process.stderr.write = original;
-  }
-  return out;
+  return (await captureChannels(fn)).stderr;
 }
 
 /** claudeTokenMultiplier is a registry key newer than the bundle feature, so its round trip
@@ -982,18 +967,8 @@ test("settings requires exactly one of --export/--import and gates the modifier 
 async function runSettingsCaptured(
   args: Parameters<typeof runSettings>[0],
 ): Promise<{ stdout: string; stderr: string }> {
-  let stdout = "";
-  const original = process.stdout.write;
-  process.stdout.write = (chunk: string | Uint8Array): boolean => {
-    stdout += String(chunk);
-    return true;
-  };
-  try {
-    const stderr = await captureStderr(() => runSettings(args));
-    return { stdout, stderr };
-  } finally {
-    process.stdout.write = original;
-  }
+  const { stdout, stderr } = await captureChannels(() => runSettings(args));
+  return { stdout, stderr };
 }
 
 test("bare --export writes the redacted bundle to stdout; --with-credentials warns and includes the pricing-url", async () => {

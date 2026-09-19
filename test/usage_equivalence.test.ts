@@ -4,7 +4,6 @@
 // oracle for what the index did (parsed whole, reused, tail-parsed, deleted).
 import { appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { readClaudeSessions } from "../src/usage/claude_sessions.ts";
 import { readCodexSessions } from "../src/usage/codex_sessions.ts";
 import {
@@ -29,6 +28,7 @@ import {
   writeTranscript,
 } from "./helpers/session_fixtures.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
+import { storedIndexPaths } from "./helpers/usage_index.ts";
 
 const dirs: string[] = [];
 
@@ -132,13 +132,7 @@ for (const scenario of CLAUDE_SCENARIOS) {
 
 /** The paths stored in the index database at `indexDir` (opened read-only). */
 function storedPaths(indexDir: string): string[] {
-  const db = new DatabaseSync(join(indexDir, USAGE_INDEX_DB_NAME), { readOnly: true });
-  try {
-    const rows = db.prepare(`SELECT "path" FROM "files" ORDER BY "path"`).all();
-    return rows.map((row) => String((row as { path: unknown }).path));
-  } finally {
-    db.close();
-  }
+  return storedIndexPaths(join(indexDir, USAGE_INDEX_DB_NAME));
 }
 
 /** One source's append check, with the reader's result type tied to the event

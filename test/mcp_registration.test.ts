@@ -20,7 +20,7 @@ import {
 import { resolveExecutablePath } from "../src/utils/command.ts";
 import { agentLauncherCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot } from "./helpers.ts";
+import { envSnapshot } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

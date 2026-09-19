@@ -67,12 +67,13 @@ import type { Profile } from "../src/copilot_api/profile.ts";
 import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { resolveRootHome } from "../src/copilot_api/paths.ts";
-import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { agentLauncherCommand } from "../src/utils/root.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { expect, removeDir, test } from "./helpers/testing.ts";
 import { afterEach } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, linesNaming, resetExitCode } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers/env.ts";
+import { linesNaming } from "./helpers/dry_run.ts";
+import { captureChannels } from "./helpers/output.ts";
 
 const restoreEnv = envSnapshot();
 const WORK = parseProfileName("work");
@@ -986,24 +987,7 @@ test("quiet re-wire heals rows recorded without labels (no catalog fetch)", asyn
 /** Everything `fn` prints on BOTH streams (consola routes by level), the seam's deferred
  *  write reports appended. */
 async function captureAllWrites(fn: () => Promise<void> | void): Promise<string> {
-  const stdout = process.stdout.write.bind(process.stdout);
-  const stderr = process.stderr.write.bind(process.stderr);
-  let out = "";
-  const capture = (chunk: string | Uint8Array): boolean => {
-    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    return true;
-  };
-  process.stdout.write = capture;
-  process.stderr.write = capture;
-  deferWriteReports();
-  try {
-    await fn();
-  } finally {
-    process.stdout.write = stdout;
-    process.stderr.write = stderr;
-    out += flushWriteReports().map((line) => `${line}\n`).join("");
-  }
-  return out;
+  return (await captureChannels(fn, { writeReports: true })).all;
 }
 
 function count(text: string, needle: string): number {

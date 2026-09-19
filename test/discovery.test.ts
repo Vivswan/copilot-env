@@ -4,7 +4,7 @@ import {
   type ProbeFetch,
 } from "../src/copilot_api/integration_identity.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 // Verification verdicts persist in the shared state store, so every test isolates its own home.
 const restoreEnv = envSnapshot();

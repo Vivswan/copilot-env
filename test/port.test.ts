@@ -9,7 +9,7 @@ import {
   proxyPortInRange,
 } from "../src/copilot_api/port.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

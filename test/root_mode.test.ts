@@ -21,7 +21,7 @@ import {
 } from "../src/utils/root.ts";
 import { PROJECT_CONFIG_FILE, readProjectConfig } from "../src/utils/project_config.ts";
 import { expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
 
 test("PROJECT_ROOT is a real absolute directory on disk", () => {
   // The contract compiled mode exists to keep: external programs (codex, claude)

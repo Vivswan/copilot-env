@@ -12,7 +12,8 @@ import { loadPricing } from "../src/usage/pricing.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { runCli } from "./helpers/run.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
-import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
+import { writeClaudeSettings, writeCodexConfigToml } from "./helpers/fixtures.ts";
+import { agentHomeEnv } from "./helpers/env.ts";
 
 // HOME/USERPROFILE are isolated too: the codex host-farm and shell probes resolve through the home
 // directory, so a developer machine with a built farm or a wired rc file would leak into the
@@ -20,18 +21,9 @@ import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 function isolatedEnv(extra: Record<string, string> = {}): Record<string, string> {
   const home = tempDir("copilot-health-");
   writeFileSync(join(home, "state.json"), JSON.stringify({ global: { "daemon.port": 4199 } }));
-  return {
-    ...process.env,
-    CONSOLA_LEVEL: "5",
-    COPILOT_API_HOME: home,
-    HOME: home,
-    USERPROFILE: home,
-    // Pointed at THIS home: both override HOME, and the suite-wide sandbox always sets them,
-    // so inheriting would send the child's agent state outside the home built for it.
-    CLAUDE_CONFIG_DIR: join(home, ".claude"),
-    CODEX_HOME: join(home, ".codex"),
-    ...extra,
-  };
+  // Every agent home pointed at THIS home: the suite-wide sandbox always sets them, so
+  // inheriting would send the child's agent state outside the home built for it.
+  return { ...process.env, CONSOLA_LEVEL: "5", ...agentHomeEnv(home), ...extra };
 }
 
 function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, string> {

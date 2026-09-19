@@ -161,7 +161,7 @@ type TestBody = () => void | Promise<void>;
 
 type RegisterTest = (name: string, fn: TestBody, timeoutMs?: number) => void;
 
-export interface TestApi extends RegisterTest {
+interface TestApi extends RegisterTest {
   /** bun:test's conditional skip: `test.skipIf(cond)("name", fn)`. */
   skipIf(condition: boolean): RegisterTest;
 }
@@ -220,6 +220,17 @@ export const test: TestApi = Object.assign(register(it), {
     return condition ? register(it.skip) : register(it);
   },
 });
+
+/** A call's result as data, so a table row expects a value or an error side by side. */
+type Outcome<T> = { value: T } | { error: unknown };
+
+export function outcomeOf<T>(fn: () => T): Outcome<T> {
+  try {
+    return { value: fn() };
+  } catch (error) {
+    return { error };
+  }
+}
 
 /**
  * Deno honors a runtime `process.env.TZ` on unix only; on Windows the zone comes from the OS.

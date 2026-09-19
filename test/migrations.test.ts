@@ -69,14 +69,9 @@ import { runCli } from "./helpers/run.ts";
 import { consola } from "consola";
 import type { SemverString } from "../src/utils/semver.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import {
-  dryRunChanges,
-  envSnapshot,
-  fingerprintTree,
-  isolateAgentHomes,
-  isolateProxyHome,
-  writeRunState,
-} from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "./helpers/env.ts";
+import { writeRunState } from "./helpers/fixtures.ts";
+import { dryRunChanges, fingerprintTree } from "./helpers/dry_run.ts";
 
 // A synthetic registry: the real migrations' side effects never run here.
 const mig = (version: SemverString): Migration => ({

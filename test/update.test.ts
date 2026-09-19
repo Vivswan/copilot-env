@@ -7,7 +7,7 @@ import {
   resolveTarget,
 } from "../src/install/resolve-release.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
-import { envSnapshot, isolateProxyHome } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
 
 // resolve-release.ts is the single source of truth for which release `agent

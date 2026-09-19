@@ -202,6 +202,7 @@ test("isDue is false under a day, true at/after a day", () => {
 // evidence against a lock that is not THE update lock.
 
 const DEAD_PID = 2_147_483_646; // never alive -> pidAlive() returns false
+const marker = (pid: number, ts: number): string => `${pid}\n${ts}\n`;
 
 test("withUpdateLock holds across fn, reports a nested acquire not-held, releases on exit", async () => {
   const path = tmp("update.lock");
@@ -236,21 +237,21 @@ test("withUpdateLock takes a lock over an aged, dead-owner, or malformed leftove
   }[] = [
     {
       name: "older than 30 minutes, holder alive",
-      seed: JSON.stringify({ pid: process.pid, ts: now - 31 * 60 * 1000 }),
+      seed: marker(process.pid, now - 31 * 60 * 1000),
       leftBehind: false,
     },
     {
       name: "recent, holder dead",
-      seed: JSON.stringify({ pid: DEAD_PID, ts: now }),
+      seed: marker(DEAD_PID, now),
       leftBehind: false,
     },
-    { name: "malformed", seed: "not json", leftBehind: false },
+    { name: "malformed", seed: "garbage", leftBehind: false },
     {
       // Another pid's marker sits at the path at release time: not ours, so release must not
       // delete it.
       name: "another pid's marker at release",
-      seed: JSON.stringify({ pid: DEAD_PID, ts: now }),
-      inside: (path) => writeFileSync(path, JSON.stringify({ pid: process.pid + 1, ts: now })),
+      seed: marker(DEAD_PID, now),
+      inside: (path) => writeFileSync(path, marker(process.pid + 1, now)),
       leftBehind: true,
     },
   ];
@@ -259,7 +260,7 @@ test("withUpdateLock takes a lock over an aged, dead-owner, or malformed leftove
     writeFileSync(path, seed);
     await withUpdateLockForTests(path, now, (outcome) => {
       expect(outcome.held, name).toBe(true);
-      expect(JSON.parse(readFileSync(path, "utf-8")).pid, name).toBe(process.pid);
+      expect(readFileSync(path, "utf-8"), name).toBe(marker(process.pid, now));
       inside?.(path);
     });
     expect(existsSync(path), name).toBe(leftBehind);

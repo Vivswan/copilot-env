@@ -14,7 +14,6 @@ import { setTimeout as sleepAsync } from "node:timers/promises";
 import { isEnoentOrNotdir } from "./fs.ts";
 import * as fs from "./fs_facade.ts";
 import { dryRunActive } from "./fs_facade.ts";
-import { isRecord } from "./json.ts";
 import { sleepSync } from "./time.ts";
 
 // --- the shared bounded-wait acquisition policy --------------------------------
@@ -30,10 +29,6 @@ export interface FileLockOptions {
   /** One clock for the marker written and the age judgment, so an injected clock stays
    *  deterministic. */
   nowMs?: number;
-  /** The autoupdate lock's on-disk contract: a not-yet-updated reader parses only the JSON form,
-   *  and must still recognize a live holder during the upgrade window instead of stealing the lock
-   *  as malformed. */
-  jsonMarker?: boolean;
   /** The OS lock operation on the open sidecar, replaceable so a test can make it fail the way a
    *  filesystem without locking does (ENOLCK), which no scratch directory can. */
   osLock?: (file: Deno.FsFile) => boolean;
@@ -43,10 +38,8 @@ function tryLockExclusive(file: Deno.FsFile): boolean {
   return file.tryLockSync(true);
 }
 
-function renderMarker(nowMs: number, jsonMarker: boolean): string {
-  return jsonMarker
-    ? JSON.stringify({ pid: process.pid, ts: nowMs })
-    : `${process.pid}\n${nowMs}\n`;
+function renderMarker(nowMs: number): string {
+  return `${process.pid}\n${nowMs}\n`;
 }
 
 /** `busy` is a holder (another process, or this one); `unavailable` is the lock's own I/O failing
@@ -78,8 +71,8 @@ class HeldFileLock implements Disposable {
   }
 
   /** On a failed write the previous clock stays remembered; the file itself may be torn. */
-  refresh(nowMs: number, jsonMarker: boolean): Acquire {
-    const written = writeMarker(this.path, renderMarker(nowMs, jsonMarker));
+  refresh(nowMs: number): Acquire {
+    const written = writeMarker(this.path, renderMarker(nowMs));
     if (written.kind === "acquired") this.#ts = nowMs;
     return written;
   }
@@ -177,11 +170,10 @@ export function tryAcquireFileLock(
 
 function tryAcquire(lockPath: string, staleMs: number, opts: FileLockOptions): Acquire {
   const nowMs = opts.nowMs ?? Date.now();
-  const jsonMarker = opts.jsonMarker ?? false;
 
   const ours = HELD_LOCKS.get(lockPath);
   if (ours !== undefined) {
-    return ours.isAged(staleMs, nowMs) ? ours.refresh(nowMs, jsonMarker) : BUSY;
+    return ours.isAged(staleMs, nowMs) ? ours.refresh(nowMs) : BUSY;
   }
 
   // The lock's directory is the store's home, made through the seam so a home outside
@@ -208,7 +200,7 @@ function tryAcquire(lockPath: string, staleMs: number, opts: FileLockOptions): A
       return { kind: "unavailable", cause };
     }
     if (!locked) return BUSY;
-    const written = writeMarker(lockPath, renderMarker(nowMs, jsonMarker));
+    const written = writeMarker(lockPath, renderMarker(nowMs));
     if (written.kind !== "acquired") return written;
     HELD_LOCKS.set(lockPath, new HeldFileLock(lockPath, file, nowMs));
     kept = true;
@@ -280,21 +272,7 @@ function observeOsLock(lockPath: string): "held" | "free" | "unknown" {
  *  the ts half got corrupted. */
 function markerPid(raw: string): number | null {
   const pid = Number.parseInt(raw.split("\n")[0] ?? "", 10);
-  if (!Number.isNaN(pid) && pid > 0) return pid;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      isRecord(parsed) &&
-      typeof parsed.pid === "number" &&
-      Number.isInteger(parsed.pid) &&
-      parsed.pid > 0
-    ) {
-      return parsed.pid;
-    }
-  } catch {
-    // not JSON either -> no readable pid
-  }
-  return null;
+  return !Number.isNaN(pid) && pid > 0 ? pid : null;
 }
 
 /** The marker is deleted only while it is OURS: a release by a non-holder (a test's cleanup, a stray

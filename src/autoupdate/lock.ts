@@ -5,10 +5,6 @@
 //   best-effort, a once-a-day personal self-update -> not a distributed mutex
 //   STALE_LOCK_MS dwarfs any real update           -> a second scope in THIS process never
 //                                                     refresh-acquires a live update's lock
-//   marker is JSON `{pid,ts}` (`jsonMarker`)       -> an external contract with every installed
-//                                                     release; change it and a not-yet-updated
-//                                                     reader misjudges a live new lock as
-//                                                     malformed and steals it mid-update
 import { withFileLock } from "../utils/file_lock.ts";
 import { autoupdateLockFile } from "./paths.ts";
 
@@ -61,7 +57,7 @@ function updateLockScope<T>(
 ): Promise<T> {
   return withFileLock(
     lockPath,
-    { staleMs: STALE_LOCK_MS, waitMs: 0, nowMs, jsonMarker: true },
+    { staleMs: STALE_LOCK_MS, waitMs: 0, nowMs },
     (outcome) => fn(outcome.held ? HELD_UPDATE_LOCK : UPDATE_LOCK_NOT_HELD),
   );
 }

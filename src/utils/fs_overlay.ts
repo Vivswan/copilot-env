@@ -35,8 +35,6 @@ import {
   rmDirectoryRefused,
 } from "./fs_disk.ts";
 
-export type { DirEntry, EntryStats };
-
 /** What the run holds at a key, for the report: a planned file (its text when the run wrote it as
  *  text, else its bytes alone), a directory (fresh: the disk below it is hidden), a link, or a
  *  tombstone. */
@@ -778,16 +776,17 @@ export class Overlay {
     if (source === null) throw errno("ENOENT", "rename", from, to);
     this.landingParent(dst, "rename", from, to);
     if (isBelow(dst, src)) throw errno("EINVAL", "rename", from, to);
+    if (source.kind === "disk") this.absorb(src, source.stats, true);
     if (src === dst) {
       // One key: a case-only rename on Windows (or a path renamed onto itself), which the disk
       // performs as a no-op that takes the new spelling.
-      if (source.kind === "disk") this.absorb(src, source.stats, true);
       if (WINDOWS) this.spellings.set(src, basename(resolve(to)));
       this.set(src, resolve(to));
       return;
     }
-    if (source.kind === "disk") this.absorb(src, source.stats, true);
-    else if (source.stats.isDirectory() && !this.fresh.has(src)) this.absorbChildren(src);
+    if (source.kind === "own" && source.stats.isDirectory() && !this.fresh.has(src)) {
+      this.absorbChildren(src);
+    }
     const moved = this.subtree(src);
     this.dropBelow(src);
     this.markGone(src, resolve(from));
@@ -856,7 +855,7 @@ export class Overlay {
 }
 
 /** Whether `path` is a strict descendant of `dir` (both resolved). */
-export function isBelow(path: string, dir: string): boolean {
+function isBelow(path: string, dir: string): boolean {
   for (let cur = dirname(path);; cur = dirname(cur)) {
     if (cur === dir) return true;
     if (dirname(cur) === cur) return false;

@@ -156,7 +156,7 @@ flowchart LR
   shims -->|"every shim, warmed into the cache"| float
   float -->|"writes the import map and a marked .npmrc once, deno cache pins the lock"| dcfg
   float -->|"deno cache: the package and the shims"| cache
-  float -->|"writes the version, its DENO_DIR, the build fingerprint"| record
+  float -->|"writes the version and its DENO_DIR"| record
   record -->|"reads the daemon's entry"| spawn
   dcfg -->|"reads --config"| spawn
   shims -->|"the subset DaemonSpec derives"| spawn

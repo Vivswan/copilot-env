@@ -42,11 +42,6 @@ jobs:
       # binary a failure there, never a skip. Same install as the nightly (nightly.yml).
       - uses: ./.github/actions/install-agent-clis
 
-      # The installed-proxy guard (proxyInstallAssertStatus) is not wired here:
-      # asserting means floating first, which would hit the npm registry and warm a
-      # cache on every runner. `deno ci` already pins the proxy baseline this job
-      # builds against.
-
       - name: Typecheck
         if: runner.os == 'Linux'
         run: deno task typecheck

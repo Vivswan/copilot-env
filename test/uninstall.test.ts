@@ -600,7 +600,7 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   // A float cache recorded OUTSIDE the root home: only the plan can name it.
   const elsewhere = join(dir, "float-elsewhere");
   mkdirSync(elsewhere, { recursive: true });
-  writeResolvedVersionRecord(proxyHome, "1.10.30", Date.now(), elsewhere, "fp");
+  writeResolvedVersionRecord(proxyHome, "1.10.30", Date.now(), elsewhere);
   // A wired rc / PowerShell profile on a scratch home, resolved by the REAL shell
   // resolver (no injected remover): the plan must name the concrete file.
   const rcDir = join(dir, "rc");

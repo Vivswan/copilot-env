@@ -4,19 +4,16 @@ import { directHelperCommand } from "../src/claude/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
   daemonConfigFile,
-  daemonConfigFingerprint,
   DEFAULT_RELEASE_COOLDOWN_SECONDS,
   type DenoRunner,
   ensureProxyNpmrc,
   type FetchLike,
   floatProxy,
-  nextProxyVersion,
   NPMRC_MARKER,
   parseRegistryDoc,
   proxyDenoDir,
   proxyFloatSkips,
   proxyFloatVerifyStatus,
-  proxyInstallAssertStatus,
   proxyLockFile,
   readResolvedVersionRecord,
   removeProxyFloatArtifacts,
@@ -34,7 +31,6 @@ import {
 } from "../src/copilot_api/process.ts";
 import { DAEMON_SHIM_FILES } from "../src/copilot_api/shims.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
-import { installedProxyVersion } from "../src/copilot_api/version.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
@@ -194,31 +190,6 @@ beforeEach(() => {
   delete process.env[MIN_RELEASE_AGE_ENV];
   delete process.env[VERSION_ENV];
   delete process.env[ENTRY_ENV];
-});
-
-test("nextProxyVersion: the override is unknowable, a record wins, else the checkout's copy", () => {
-  // Judged without writing anything, unlike the entry resolution. The checkout's node_modules
-  // copy is the control: it exists here, so a null would be a wrong "unknown", not an absent package.
-  const installed = installedProxyVersion();
-  expect(installed).not.toBeNull();
-  expect(nextProxyVersion(dir)).toBe(installed);
-  seedFloat("1.99.0", NOW_MS);
-  const recordBefore = readFileSync(resolvedVersionFile(dir), "utf8");
-  expect(nextProxyVersion(dir)).toBe("1.99.0");
-  expect(readFileSync(resolvedVersionFile(dir), "utf8")).toBe(recordBefore);
-  process.env[ENTRY_ENV] = join(dir, "fake-proxy.mjs");
-  expect(nextProxyVersion(dir)).toBeNull();
-});
-
-test("nextProxyVersion: an exact pin the record does not match IS the next version; a tag pin is unknowable", () => {
-  seedFloat("1.16.3", NOW_MS);
-  const config = new CopilotEnvConfig();
-  config.set({ "daemon.version": "1.14.21" });
-  expect(nextProxyVersion(dir)).toBe("1.14.21");
-  config.set({ "daemon.version": "legacy" });
-  expect(nextProxyVersion(dir)).toBeNull();
-  config.set({ "daemon.version": "1.16.3" });
-  expect(nextProxyVersion(dir)).toBe("1.16.3");
 });
 
 afterEach(() => {
@@ -465,8 +436,10 @@ describe("floatProxy", () => {
       "version": "1.10.30",
       "resolvedAtMs": NOW_MS,
       "denoDir": proxyDenoDir(dir),
-      "buildFingerprint": daemonConfigFingerprint(),
     });
+    // The on-disk keys are the external contract.
+    const raw = JSON.parse(readFileSync(resolvedVersionFile(dir), "utf8"));
+    expect(Object.keys(raw).sort()).toEqual(["deno_dir", "resolved_at_ms", "version"]);
   });
 
   test("skips the cache write when the recorded target is already cached, refreshing the record", async () => {
@@ -477,11 +450,8 @@ describe("floatProxy", () => {
     await floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS));
 
     expect(cacheCalls(deno.calls)).toEqual([]);
-    // The record's timestamp refreshes so proxyFloatVerifyStatus stays on its offline fast
-    // path, and the fast path stamps the running build's identity too.
-    const record = readResolvedVersionRecord(dir);
-    expect(record?.resolvedAtMs).toBe(NOW_MS);
-    expect(record?.buildFingerprint).toBe(daemonConfigFingerprint());
+    // The record's timestamp refreshes so proxyFloatVerifyStatus stays on its offline fast path.
+    expect(readResolvedVersionRecord(dir)?.resolvedAtMs).toBe(NOW_MS);
   });
 
   test("a timestamp refresh preserves the record's own cache dir", async () => {
@@ -551,13 +521,11 @@ describe("floatProxy", () => {
     expect(warmed.map((c) => c.args[c.args.length - 1])).toEqual([`npm:${PROXY_PKG}@1.10.29`]);
     expect(warmed[0]?.args).toContain("--minimum-dependency-age=PT604800S");
     expect(warmed[0]?.env.DENO_DIR).toBe(proxyDenoDir(dir));
-    // The record repoints at the cache dir the warm landed in, restamped and refreshed.
-    const record = readResolvedVersionRecord(dir);
-    expect(record).toEqual({
+    // The record repoints at the cache dir the warm landed in, refreshed.
+    expect(readResolvedVersionRecord(dir)).toEqual({
       "version": "1.10.29",
       "resolvedAtMs": NOW_MS,
       "denoDir": proxyDenoDir(dir),
-      "buildFingerprint": daemonConfigFingerprint(),
     });
   });
 
@@ -788,51 +756,11 @@ describe("resolved-version record", () => {
   });
 });
 
-// The record remembers WHICH build's import map generated the daemon config, so an
-// `agent update` behind a still-young record (no float due) cannot leave the old build's
-// config steering daemon spawns until the record ages out of the cooldown window.
-describe("the build-identity fingerprint", () => {
-  test("a float-written record carries it; the on-disk key is the external contract", async () => {
-    const deno = fakeDeno();
-    await floatProxy(
-      deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, deno.runner, WEEK_SECONDS),
-    );
-    expect(readResolvedVersionRecord(dir)?.buildFingerprint).toBe(daemonConfigFingerprint());
-    const raw = JSON.parse(readFileSync(resolvedVersionFile(dir), "utf8"));
-    expect(Object.keys(raw).sort()).toEqual([
-      "build_fingerprint",
-      "deno_dir",
-      "resolved_at_ms",
-      "version",
-    ]);
-    // A record written without a fingerprint omits the key rather than writing a placeholder.
-    writeResolvedVersionRecord(dir, "1.10.30", NOW_MS);
-    const bare = JSON.parse(readFileSync(resolvedVersionFile(dir), "utf8"));
-    expect(Object.keys(bare).sort()).toEqual(["deno_dir", "resolved_at_ms", "version"]);
-  });
-
-  test("a malformed fingerprint reads as absent, never invalidating the record", async () => {
-    seedFloat("1.10.30", NOW_MS);
-    const raw = JSON.parse(readFileSync(resolvedVersionFile(dir), "utf8"));
-    raw.build_fingerprint = 42;
-    writeFileSync(resolvedVersionFile(dir), JSON.stringify(raw));
-    const record = readResolvedVersionRecord(dir);
-    expect(record?.version).toBe("1.10.30");
-    expect(record?.buildFingerprint).toBeUndefined();
-
-    // Any non-matching STRING behaves the same way -- the only consumer is equality
-    // with the computed hash, so garbage means "regenerate once, then stamp" too.
-    raw.build_fingerprint = "not-the-running-build";
-    writeFileSync(resolvedVersionFile(dir), JSON.stringify(raw));
-    await proxyFloatVerifyStatus(
-      deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS),
-    );
-    expect(readResolvedVersionRecord(dir)?.buildFingerprint).toBe(daemonConfigFingerprint());
-  });
-
-  test("a young record from an older build regenerates the daemon config on verify", async () => {
-    // An unstamped record (seedFloat writes none) stands for any build whose fingerprint
-    // is not the running one.
+// Every verify re-renders the daemon config from the running build's import map ahead of its cache
+// probes, so an `agent update` behind a still-young record (no float due) cannot leave the old
+// build's config steering daemon spawns until the record ages out of the cooldown window.
+describe("the daemon config on verify", () => {
+  test("a young record's stale config is regenerated offline; the resolution timestamp stays", async () => {
     seedFloat("1.10.30", NOW_MS - 1000);
     writeFileSync(daemonConfigFile(dir), '{"imports":{"stale":"npm:stale@1.0.0"}}\n');
     const offline = offlineFetch();
@@ -844,47 +772,10 @@ describe("the build-identity fingerprint", () => {
     const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
     expect(config.imports.stale).toBeUndefined();
     expect(config.imports[PROXY_PKG]).toBeDefined();
-    // Build identity must never extend the cooldown window, so the resolution timestamp stays.
+    // Regeneration must never extend the cooldown window, so the resolution timestamp stays.
     const record = readResolvedVersionRecord(dir);
-    expect(record?.buildFingerprint).toBe(daemonConfigFingerprint());
     expect(record?.resolvedAtMs).toBe(NOW_MS - 1000);
     expect(record?.denoDir).toBe(proxyDenoDir(dir));
-  });
-
-  test("a record stamped by THIS build leaves the config alone: regenerate once, then stop", async () => {
-    seedFloat("1.10.30", NOW_MS - 1000);
-    const d = deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS);
-    await proxyFloatVerifyStatus(d); // first verify stamps
-    const sentinel = '{"imports":{"sentinel":"npm:sentinel@1.0.0"}}\n';
-    writeFileSync(daemonConfigFile(dir), sentinel);
-    await proxyFloatVerifyStatus(d);
-    expect(readFileSync(daemonConfigFile(dir), "utf8")).toBe(sentinel);
-  });
-
-  test("the fingerprint is content-sensitive: it moves exactly when the rendered config would", () => {
-    const roots = (["a", "b"] as const).map((name) => {
-      const root = join(dir, `fp-${name}`);
-      mkdirSync(root, { recursive: true });
-      return root;
-    });
-    const [a, b] = roots as [string, string];
-    writeFileSync(join(a, "deno.json"), '{"imports":{"x":"npm:x@1.0.0"}}\n');
-    writeFileSync(join(b, "deno.json"), '{"imports":{"x":"npm:x@2.0.0"}}\n');
-    expect(daemonConfigFingerprint(a)).not.toBe(daemonConfigFingerprint(b));
-    // Identical content hashes identically, wherever it lives: the fingerprint is the
-    // rendered config's, not the source path's or the build's version string.
-    writeFileSync(join(b, "deno.json"), '{"imports":{"x":"npm:x@1.0.0"}}\n');
-    expect(daemonConfigFingerprint(b)).toBe(daemonConfigFingerprint(a));
-  });
-
-  test("a stamped record whose config file is gone regenerates it", async () => {
-    seedFloat("1.10.30", NOW_MS - 1000);
-    const d = deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS);
-    await proxyFloatVerifyStatus(d); // stamp
-    rmSync(daemonConfigFile(dir));
-    const status = await proxyFloatVerifyStatus(d);
-    expect(existsSync(daemonConfigFile(dir))).toBe(true);
-    expect(status.upToDate).toBe(true);
   });
 
   test("regeneration happens BEFORE the cache probe, so a changed map can trigger the re-warm", async () => {
@@ -1015,197 +906,6 @@ describe("proxyFloatVerifyStatus", () => {
       deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner),
     );
     expect(status.upToDate).toBe(true);
-  });
-});
-
-describe("proxyInstallAssertStatus", () => {
-  // status.ok carries the verdict; the messages are human copy, so the assertions
-  // pin only the identifiers each one must name (the package, the versions).
-  const WINDOW_TO_30: ProjectConfig = { "proxyMinVersion": "1.10.0", "proxyMaxVersion": "1.10.30" };
-  const SCRIPTED_30 = { "scripts": { "1.10.30": ["install"] } };
-  const rows: {
-    name: string;
-    record: string | null;
-    config?: ProjectConfig;
-    registry: unknown | "offline";
-    cached: string[];
-    ok: boolean;
-    names: string[];
-  }[] = [
-    {
-      "name": "fails when nothing is recorded",
-      "record": null,
-      "registry": "offline",
-      "cached": [],
-      "ok": false,
-      "names": [PROXY_PKG],
-    },
-    {
-      "name": "fails below the configured floor",
-      "record": "1.9.99",
-      "registry": "offline",
-      "cached": ["1.9.99"],
-      "ok": false,
-      "names": ["1.9.99", "1.10.0"],
-    },
-    {
-      "name": "fails above the configured ceiling",
-      "record": "1.10.31",
-      "config": WINDOW_TO_30,
-      "registry": "offline",
-      "cached": ["1.10.31"],
-      "ok": false,
-      "names": ["1.10.31", "1.10.30"],
-    },
-    {
-      "name": "fails when the recorded version is not in the deno cache",
-      "record": "1.10.30",
-      "registry": registryDoc({ "1.10.30": 8 }),
-      "cached": [],
-      "ok": false,
-      "names": ["deno cache"],
-    },
-    {
-      "name": "passes when the record matches the resolved float target",
-      "record": "1.10.15",
-      "config": WINDOW_TO_30,
-      "registry": registryDoc({ "1.10.15": 8, "1.10.31": 1 }),
-      "cached": ["1.10.15"],
-      "ok": true,
-      "names": [`${PROXY_PKG} 1.10.15`, "1.10.0", "1.10.30"],
-    },
-    {
-      "name": "fails when the record clears the bounds but misses the float target",
-      "record": "1.10.31",
-      "registry": registryDoc({ "1.10.30": 8, "1.10.31": 1 }),
-      "cached": ["1.10.31"],
-      "ok": false,
-      "names": ["1.10.31", "1.10.30"],
-    },
-    {
-      "name": "falls back to the bounds-only check when the registry is unreachable",
-      "record": "1.10.30",
-      "registry": "offline",
-      "cached": ["1.10.30"],
-      "ok": true,
-      "names": ["bounds only", "offline", "1.10.30"],
-    },
-    {
-      "name": "a refused newest target passes bounds-only",
-      "record": "1.10.29",
-      "registry": registryDoc({ "1.10.29": 40, "1.10.30": 8 }, SCRIPTED_30),
-      "cached": ["1.10.29"],
-      "ok": true,
-      "names": ["refused"],
-    },
-  ];
-
-  test("record, window, registry, and cache decide the verdict and what it names", async () => {
-    for (const row of rows) {
-      dir = removeDir(dir);
-      dir = isolateProxyHome("copilot-float-");
-      if (row.record !== null) seedFloat(row.record, NOW_MS);
-      const fetchLike = row.registry === "offline"
-        ? offlineFetch().fetchLike
-        : docFetch(row.registry).fetchLike;
-      const status = await proxyInstallAssertStatus({
-        ...deps(fetchLike, fakeDeno(row.cached).runner, WEEK_SECONDS),
-        "config": row.config ?? CONFIG,
-      });
-      expect(status.ok, row.name).toBe(row.ok);
-      for (const name of row.names) expect(status.message, row.name).toContain(name);
-    }
-  });
-
-  // An exact pin, from the env or the stored config, asserts recorded == pin and bypasses the
-  // bounds; a mismatch or a missing record fails naming both sides.
-  // A mismatch fails even when the pinned version itself sits in the cache: the record, not the
-  // cache, is what the pin is asserted against.
-  const pinRows: {
-    name: string;
-    env?: string;
-    stored?: string;
-    record: string | null;
-    cached: string[];
-    ok: boolean;
-    names: string[];
-  }[] = [
-    {
-      "name": "an env pin below the floor passes when recorded",
-      "env": "1.9.99",
-      "record": "1.9.99",
-      "cached": ["1.9.99"],
-      "ok": true,
-      "names": [`${PROXY_PKG} 1.9.99`],
-    },
-    {
-      "name": "an env pin the record does not match fails",
-      "env": "1.10.31",
-      "record": "1.9.99",
-      "cached": ["1.9.99", "1.10.31"],
-      "ok": false,
-      "names": ["1.9.99", "1.10.31"],
-    },
-    {
-      "name": "a pin with nothing recorded fails naming the pin",
-      "env": "1.10.30",
-      "record": null,
-      "cached": ["1.10.30"],
-      "ok": false,
-      "names": [`${PROXY_PKG}@1.10.30`],
-    },
-    {
-      "name": "a stored config pin passes when recorded",
-      "stored": "1.10.30",
-      "record": "1.10.30",
-      "cached": ["1.10.30"],
-      "ok": true,
-      "names": [],
-    },
-    {
-      "name": "a stored config pin the record does not match fails",
-      "stored": "1.10.30",
-      "record": "1.10.29",
-      "cached": ["1.10.29", "1.10.30"],
-      "ok": false,
-      "names": ["1.10.29", "1.10.30"],
-    },
-  ];
-
-  test("an exact pin asserts recorded == pin, bypassing bounds, from the env or the store", async () => {
-    for (const row of pinRows) {
-      dir = removeDir(dir);
-      dir = isolateProxyHome("copilot-float-");
-      if (row.env) process.env[VERSION_ENV] = row.env;
-      else delete process.env[VERSION_ENV];
-      if (row.stored) new CopilotEnvConfig().set({ "daemon.version": row.stored });
-      if (row.record !== null) seedFloat(row.record, NOW_MS);
-      const status = await proxyInstallAssertStatus(
-        deps(offlineFetch().fetchLike, fakeDeno(row.cached).runner),
-      );
-      expect(status.ok, row.name).toBe(row.ok);
-      for (const name of row.names) expect(status.message, row.name).toContain(name);
-    }
-  });
-
-  test("a non-semver tag pin is not equality-checked", async () => {
-    seedFloat("1.10.30", NOW_MS);
-    process.env[VERSION_ENV] = "latest";
-    const status = await proxyInstallAssertStatus(
-      deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner),
-    );
-    expect(status.ok).toBe(true);
-    expect(status.message).toContain("latest");
-  });
-
-  test("a pin bypasses the cooldown: a bad COPILOT_API_MIN_RELEASE_AGE is ignored", async () => {
-    seedFloat("1.9.99", NOW_MS);
-    process.env[VERSION_ENV] = "1.9.99";
-    process.env[MIN_RELEASE_AGE_ENV] = "not-a-number"; // would throw if resolved
-    const status = await proxyInstallAssertStatus(
-      deps(offlineFetch().fetchLike, fakeDeno(["1.9.99"]).runner),
-    );
-    expect(status.ok).toBe(true);
   });
 });
 

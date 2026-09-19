@@ -18,7 +18,7 @@ import {
   syncNamedProfiles,
 } from "../src/commands/profile.ts";
 import { runAuth } from "../src/commands/auth.ts";
-import { commandDeps } from "../src/commands/launch.ts";
+import { writeProfileSettings } from "../src/commands/launch.ts";
 import { runStart } from "../src/commands/start.ts";
 import { parseStopAction, runStop } from "../src/commands/stop.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
@@ -58,7 +58,7 @@ const WORK = parseProfileName("work");
 async function launcherHook(): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(WORK);
   if (slot.kind !== "complete") throw new Error("launcherHook: the work slot is not complete");
-  await commandDeps().writeClaudeProfileSettings(WORK, slot.mode);
+  await writeProfileSettings(WORK, slot.mode);
 }
 
 /** A named profile lands in two commands: `add` records the mode, `auth` lands the credential and
@@ -924,7 +924,7 @@ test("the cl --profile launch hook re-renders a Direct profile from the slot: no
     return Promise.resolve(new Response("PATs not supported", { status: 400 }));
   });
   resetIntegrationIdentityCache();
-  const path = await commandDeps().writeClaudeProfileSettings(WORK, "direct");
+  const path = await writeProfileSettings(WORK, "direct");
   expect(path).toBe(settingsPathFor(claudeHome, WORK));
   expect(probes).toBe(0);
   expect(bytes()).toEqual(before);

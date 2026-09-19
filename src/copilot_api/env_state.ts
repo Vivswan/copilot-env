@@ -19,6 +19,7 @@ import {
   DEFAULT_PROFILE_NAME,
   isReservedProfileWord,
   isValidProfileName,
+  parseProfileFlag,
   parseProfileName,
   type Profile,
   profileLabel,
@@ -333,6 +334,15 @@ export function assertKnownProfile(name: ProfileName): ProfileSlot {
   const { exists, slot } = new CopilotEnvState().profileSlotStatus(name);
   if (exists || profileHomeNames().includes(name)) return slot;
   throw unknownProfileError(name);
+}
+
+/** The `--profile` flag of a read command (models, credits, health): parsed, and a named profile
+ *  proven to exist before anything is probed or printed, so a typo never answers from the default
+ *  wiring under the wrong name. */
+export function knownProfile(raw: string | undefined): Profile {
+  const profile = parseProfileFlag(raw);
+  if (profile !== null) assertKnownProfile(profile);
+  return profile;
 }
 
 function unknownProfileError(name: ProfileName): Error {

@@ -34,7 +34,7 @@ import { isStandaloneBinary } from "../utils/root.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { ensureSidecar, resolveDenoBin } from "./sidecar.ts";
+import { detectSidecar, ensureSidecar, resolveDenoBin } from "./sidecar.ts";
 import {
   checkProxyPort,
   copilotApiFindPort,
@@ -153,6 +153,26 @@ export async function ensureProxyFloor(_lock: HeldStartLock): Promise<FloorCheck
 
   // A successful float just wrote the record, which moves the entry from the mapped fallback to the
   // floated version.
+  return judgeProxyFloor();
+}
+
+/** The start preview's floor gate, at the point in the order the live gate holds: the verify look
+ *  (read-only but for the daemon config it re-renders, which lands on the overlay) and the same
+ *  judgment of the resolved entry, without the float that would warm the real cache. The live gate
+ *  provisions a sidecar deno first; the preview downloads nothing, so with no deno to hand the look
+ *  (which spawns one) is skipped and the recorded entry alone is judged. A refusal is the live
+ *  gate's, word for word. */
+export async function previewProxyFloor(): Promise<void> {
+  if (resolveCopilotApiEntry().kind === "file") return;
+  if (detectSidecar(resolveRootHome()).kind !== "absent") {
+    const status = await proxyFloatVerifyStatus();
+    if (!status.upToDate) consola.info(status.message);
+  }
+  judgeProxyFloor();
+}
+
+/** The resolved entry against the floor: fail-closed on an unresolved version or one below it. */
+function judgeProxyFloor(): FloorCheckedEntry {
   const entry = resolveCopilotApiEntry();
   const version = entryProxyVersion(entry);
   if (version === null) {

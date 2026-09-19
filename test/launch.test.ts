@@ -1,33 +1,44 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
-import type { AgentProviderMode } from "../src/agents/provider_mode.ts";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
+import { settingsPathFor } from "../src/claude/paths.ts";
 import { staleCodexHomeExportLine } from "../src/codex/host.ts";
+import { codexConfigPath } from "../src/codex/paths.ts";
 import {
   type LaunchAction,
-  type LaunchDeps,
   type LaunchFlags,
   type LaunchPlan,
   parseLaunchAction,
   prepareLaunch,
 } from "../src/commands/launch.ts";
-import type { ManagedEnvValue } from "../src/utils/shell_quote.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import type { ProfileMode, ProfileSlot, TokenProvider } from "../src/copilot_api/env_state.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import {
+  resetIntegrationIdentityCache,
+  setIntegrationProbeFetch,
+} from "../src/copilot_api/integration_identity.ts";
 import { renderModelAliases } from "../src/copilot_api/launch.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
+import type { FileChange } from "../src/utils/dry_run.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
+import { captureChannels } from "./helpers/output.ts";
 import { runCli, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "./helpers/fixtures.ts";
-import { agentHomeEnv } from "./helpers/env.ts";
+import { agentHomeEnv, type AgentHomes, envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
+import { dryRunChanges } from "./helpers/dry_run.ts";
 
 const WORK = parseProfileName("work");
 const skipWin = test.skipIf(process.platform === "win32");
 
+const restoreEnv = envSnapshot();
 let roots: string[] = [];
 afterEach(() => {
+  setIntegrationProbeFetch(null);
+  resetIntegrationIdentityCache();
+  restoreEnv();
   for (const root of roots) rmSync(root, { recursive: true, force: true });
   roots = [];
 });
@@ -35,6 +46,13 @@ function e2eRoot(): string {
   const root = tempDir("copilot-launch-");
   roots.push(root);
   return root;
+}
+
+/** Isolated agent and proxy homes the in-process plans read and (on the overlay) write. */
+function scratchState(): AgentHomes {
+  const homes = isolateAgentHomes("copilot-launch-state-");
+  roots.push(homes.dir);
+  return homes;
 }
 
 // --- the alias table ------------------------------------------------------------
@@ -139,374 +157,195 @@ test("parseLaunchAction: each flag shape parses to its action or is rejected nam
   }
 });
 
-// --- prepareLaunch over scripted deps --------------------------------------------
-
-function completeSlot(mode: ProfileMode, provider: TokenProvider = "gh-token"): ProfileSlot {
-  return {
-    kind: "complete",
-    credential: { kind: "stored", provider, token: "tok" },
-    mode,
-  };
-}
-
-function partialSlot(mode: ProfileMode | null = null): ProfileSlot {
-  return {
-    kind: "partial",
-    credential: { kind: "none", provider: null },
-    mode,
-  };
-}
-
-interface DepsScript {
-  mode?: AgentProviderMode;
-  proxyUp?: boolean;
-  slot?: ProfileSlot;
-  claudeUrl?: ManagedEnvValue;
-  /** The home the child is pinned to (the farm with codex-host on, else the codex-home path or the
-   *  unmanaged home). */
-  codexHome?: string;
-  /** The farm exists only AFTER a wire/sync ran (a pass built and recorded it). */
-  codexHomeOnceWired?: boolean;
-  syncThrows?: boolean;
-}
-
-function scriptedDeps(script: DepsScript = {}): {
-  deps: LaunchDeps;
-  calls: string[];
-  notes: string[];
-} {
-  const calls: string[] = [];
-  const notes: string[] = [];
-  const deps: LaunchDeps = {
-    agentMode: (agent) => {
-      calls.push(`mode:${agent}`);
-      return script.mode ?? "direct";
-    },
-    ensureProxy: (profile) => {
-      calls.push(`ensure:${profile ?? "(default)"}`);
-      return Promise.resolve(script.proxyUp ?? true);
-    },
-    wireProxyDefault: (agent) => {
-      calls.push(`wire:${agent}`);
-      return Promise.resolve();
-    },
-    refreshCodexCatalog: () => {
-      calls.push("catalog:refresh");
-      return Promise.resolve();
-    },
-    profileSlot: (name) => {
-      calls.push(`slot:${name}`);
-      return script.slot ?? partialSlot();
-    },
-    writeClaudeProfileSettings: (name, mode) => {
-      calls.push(`settings:${name}:${mode}`);
-      return Promise.resolve(`/fake/settings-${name}.json`);
-    },
-    syncProfileWiring: (name, mode) => {
-      calls.push(`sync:${name}:${mode}`);
-      return script.syncThrows ? Promise.reject(new Error("boom")) : Promise.resolve();
-    },
-    managedClaudeBaseUrl: () => script.claudeUrl ?? null,
-    codexHome: () => {
-      const wired = calls.some((c) => c.startsWith("wire:") || c.startsWith("sync:"));
-      // Throw, not a fallback: an early read followed by a correct one must fail too.
-      if (script.codexHomeOnceWired && !wired) {
-        throw new Error("codexHome read before the wiring step");
-      }
-      return script.codexHome ?? "/fake/.codex";
-    },
-    notify: (line) => notes.push(line),
-  };
-  return { deps, calls, notes };
-}
-
-/** The plan (null = abort) or the thrown message. */
-type Outcome = { plan: LaunchPlan | null } | { throws: string };
-
-interface ScriptedRow {
-  name: string;
-  script: DepsScript;
-  action: LaunchAction;
-  outcome: Outcome;
-  calls: string[];
-  notes?: string[];
-}
-
-async function runScripted(rows: ScriptedRow[]): Promise<void> {
-  for (const row of rows) {
-    const { deps, calls, notes } = scriptedDeps(row.script);
-    const outcome: Outcome = await prepareLaunch(row.action, deps).then(
-      (plan) => ({ plan }),
-      (e: unknown) => ({ throws: (e as Error).message }),
-    );
-    expect({ name: row.name, outcome, calls, notes }).toEqual({
-      name: row.name,
-      outcome: row.outcome,
-      calls: row.calls,
-      notes: row.notes ?? [],
-    });
-  }
-}
+// --- prepareLaunch over a scratch state ------------------------------------------------
 
 const CLAUDE_FLAGS = ["--permission-mode", "auto", "--enable-auto-mode"];
 
-const defaultAction =
-  (kind: "claude" | "codex") => (relaxed = false, args: string[] = []): LaunchAction => ({
-    kind,
-    profile: null,
-    relaxed,
-    args,
+/** A Direct profile whose wiring hook re-renders from a probed pair: the probe it runs for a slot
+ *  without a stored pair is stubbed to accept. */
+function seedDirectProfile(): void {
+  new CopilotEnvState().commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "tok" },
+    mode: "direct",
   });
-const claudeDefault = defaultAction("claude");
-const codexDefault = defaultAction("codex");
+  setIntegrationProbeFetch(() =>
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+  );
+}
 
-// The default Claude launch by configured mode: ensure precedes the re-wire (a cold start may move
-// the port the wiring bakes), the base URL is read AFTER the wiring, and "other" is never touched.
-test("claude default: each provider mode composes its plan, calls, and note", () =>
-  runScripted([
+// A named profile by slot state: a partial slot hard-fails with the repair line rather than
+// falling back to the default credential; a complete Direct slot never touches the proxy, its
+// hook re-renders both agents from the slot (the writes are the plan), Claude gets the profile's
+// settings file with the shell's base URL scrubbed unconditionally, and Codex is pinned to the
+// home the sync resolved.
+test("--profile: a partial slot hard-fails naming its gap; a Direct slot syncs both agents and launches without the proxy", async () => {
+  const homes = scratchState();
+  await expect(prepareLaunch({ kind: "codex", profile: WORK, relaxed: false, args: [] })).rejects
+    .toThrow(
+      "profile 'work' does not exist - create it with `agent profile work add --direct|--proxy`",
+    );
+  const state = new CopilotEnvState();
+  state.commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "tok" },
+    mode: "proxy",
+  });
+  state.clearCredential(WORK);
+  await expect(prepareLaunch({ kind: "claude", profile: WORK, relaxed: false, args: [] })).rejects
+    .toThrow(
+      "profile 'work' has no credential - repair it with `agent profile work auth` or `agent profile work add`",
+    );
+  seedDirectProfile();
+  const settings = settingsPathFor(homes.claudeHome, WORK);
+  const codexConfig = codexConfigPath(homes.codexHome);
+  const rows: Array<{ action: LaunchAction; plan: LaunchPlan }> = [
     {
-      name: "direct: no proxy work, managed flags + env, stale local URL scrubbed",
-      script: { mode: "direct", claudeUrl: { unset: true } },
-      action: claudeDefault(false, ["--resume", "x"]),
-      outcome: {
-        plan: {
-          command: "claude",
-          args: [...CLAUDE_FLAGS, "--resume", "x"],
-          env: { CLAUDE_CODE_NO_FLICKER: "1" },
-          scrub: ["ANTHROPIC_BASE_URL"],
-        },
-      },
-      calls: ["mode:claude"],
-    },
-    ...(["proxy", "none"] as const).map((mode): ScriptedRow => ({
-      name: `${mode}: ensure THEN re-wire, fresh proxy URL exported`,
-      script: { mode, claudeUrl: { value: "http://127.0.0.1:4242" } },
-      action: claudeDefault(),
-      outcome: {
-        plan: {
-          command: "claude",
-          args: CLAUDE_FLAGS,
-          env: { CLAUDE_CODE_NO_FLICKER: "1", ANTHROPIC_BASE_URL: "http://127.0.0.1:4242" },
-          scrub: [],
-        },
-      },
-      calls: ["mode:claude", "ensure:(default)", "wire:claude"],
-    })),
-    {
-      name: "proxy: a failed ensure aborts before any wiring or launch",
-      script: { mode: "proxy", proxyUp: false },
-      action: claudeDefault(),
-      outcome: { plan: null },
-      calls: ["mode:claude", "ensure:(default)"],
-    },
-    {
-      name: "other: launched as-is with a note, config never touched",
-      script: { mode: "other" },
-      action: claudeDefault(),
-      outcome: {
-        plan: {
-          command: "claude",
-          args: CLAUDE_FLAGS,
-          env: { CLAUDE_CODE_NO_FLICKER: "1" },
-          scrub: [],
-        },
-      },
-      calls: ["mode:claude"],
-      notes: [
-        "agent profile launch: Claude has a custom or unrecognized provider config " +
-        "(not managed by copilot-env); launching it as-is.",
-      ],
-    },
-    {
-      name: "--relaxed: IS_SANDBOX=1 and the skip flag behind the managed set",
-      script: { mode: "direct" },
-      action: claudeDefault(true, ["hi"]),
-      outcome: {
-        plan: {
-          command: "claude",
-          args: [...CLAUDE_FLAGS, "--dangerously-skip-permissions", "hi"],
-          env: { CLAUDE_CODE_NO_FLICKER: "1", IS_SANDBOX: "1" },
-          scrub: [],
-        },
-      },
-      calls: ["mode:claude"],
-    },
-  ]));
-
-// A named profile by slot state: a proxy slot ensures its daemon FIRST (then syncs), a direct slot
-// never touches the proxy, and a partial slot hard-fails with the repair line rather than falling
-// back to the default credential. Claude's base URL is scrubbed unconditionally (the profile's own
-// settings file carries its URL); CODEX_HOME is read only AFTER the sync.
-test("--profile: each slot state syncs, launches, or hard-fails, for claude and codex", () =>
-  runScripted([
-    {
-      name: "claude proxy: settings synced, base URL scrubbed unconditionally",
-      script: { slot: completeSlot("proxy"), claudeUrl: { value: "http://127.0.0.1:4141" } },
       action: { kind: "claude", profile: WORK, relaxed: false, args: ["--resume"] },
-      outcome: {
-        plan: {
-          command: "claude",
-          args: ["--settings", "/fake/settings-work.json", ...CLAUDE_FLAGS, "--resume"],
-          env: { CLAUDE_CODE_NO_FLICKER: "1" },
-          scrub: ["ANTHROPIC_BASE_URL"],
-        },
+      plan: {
+        command: "claude",
+        args: ["--settings", settings, ...CLAUDE_FLAGS, "--resume"],
+        env: { CLAUDE_CODE_NO_FLICKER: "1" },
+        scrub: ["ANTHROPIC_BASE_URL"],
       },
-      calls: ["slot:work", "ensure:work", "settings:work:proxy"],
     },
     {
-      name: "claude direct: never touches the proxy",
-      script: { slot: completeSlot("direct", "copilot") },
-      action: { kind: "claude", profile: WORK, relaxed: false, args: [] },
-      outcome: {
-        plan: {
-          command: "claude",
-          args: ["--settings", "/fake/settings-work.json", ...CLAUDE_FLAGS],
-          env: { CLAUDE_CODE_NO_FLICKER: "1" },
-          scrub: ["ANTHROPIC_BASE_URL"],
-        },
-      },
-      calls: ["slot:work", "settings:work:direct"],
-    },
-    {
-      name: "codex, missing profile: hard-fails",
-      script: { slot: partialSlot() },
-      action: { kind: "codex", profile: WORK, relaxed: false, args: [] },
-      outcome: {
-        throws:
-          "profile 'work' does not exist - create it with `agent profile work add --direct|--proxy`",
-      },
-      calls: ["slot:work"],
-    },
-    {
-      name: "claude, credential-less profile: hard-fails",
-      script: { slot: partialSlot("proxy") },
-      action: { kind: "claude", profile: WORK, relaxed: false, args: [] },
-      outcome: {
-        throws: "profile 'work' has no credential - repair it with `agent profile work auth` " +
-          "or `agent profile work add`",
-      },
-      calls: ["slot:work"],
-    },
-    {
-      name:
-        "codex proxy: ensure daemon FIRST, then sync; the farm the sync built reaches the child",
-      script: {
-        slot: completeSlot("proxy"),
-        codexHome: "/fake/codex-farm",
-        codexHomeOnceWired: true,
-      },
       action: { kind: "codex", profile: WORK, relaxed: false, args: ["--resume"] },
-      outcome: {
-        plan: {
-          command: "codex",
-          args: ["--profile", "work", "--resume"],
-          env: { CODEX_HOME: "/fake/codex-farm" },
-          scrub: ["CODEX_HOME"],
-        },
+      plan: {
+        command: "codex",
+        args: ["--profile", "work", "--resume"],
+        env: { CODEX_HOME: homes.codexHome },
+        scrub: ["CODEX_HOME"],
       },
-      calls: ["slot:work", "ensure:work", "sync:work:proxy"],
     },
-    {
-      name: "codex proxy: a failed sync warns and launches with the existing config",
-      script: { slot: completeSlot("proxy"), syncThrows: true },
-      action: { kind: "codex", profile: WORK, relaxed: false, args: [] },
-      outcome: {
-        plan: {
-          command: "codex",
-          args: ["--profile", "work"],
-          env: { CODEX_HOME: "/fake/.codex" },
-          scrub: ["CODEX_HOME"],
-        },
-      },
-      calls: ["slot:work", "ensure:work", "sync:work:proxy"],
-      notes: [
-        "agent profile launch: could not refresh the profile wiring; launching with the " +
-        "existing config (boom).",
-      ],
-    },
-    // The account-wide catalog belongs to the default selection: a profile's launch is the
-    // profile's own wiring, so no catalog refresh appears among its calls.
-    {
-      name: "codex direct: synced without the proxy or the catalog",
-      script: { slot: completeSlot("direct") },
-      action: { kind: "codex", profile: WORK, relaxed: false, args: [] },
-      outcome: {
-        plan: {
-          command: "codex",
-          args: ["--profile", "work"],
-          env: { CODEX_HOME: "/fake/.codex" },
-          scrub: ["CODEX_HOME"],
-        },
-      },
-      calls: ["slot:work", "sync:work:direct"],
-    },
-  ]));
+  ];
+  for (const row of rows) {
+    // Each launch on its own overlay: its hook alone must re-render BOTH agents from the slot, in
+    // the slot's mode (a Direct base URL in each file, never the proxy's).
+    const { changes, result } = await dryRunChanges(() => prepareLaunch(row.action));
+    expect(result).toEqual(row.plan);
+    const baseUrlOf = (path: string, key: string): unknown =>
+      changes.find((c) => c.path === path)?.attributes.find((attr) => attr.key === key)?.next;
+    expect(baseUrlOf(settings, "env.ANTHROPIC_BASE_URL"), row.action.kind).toBe(DIRECT_BASE);
+    expect(baseUrlOf(codexConfig, "model_providers.copilot-env-work.base_url"), row.action.kind)
+      .toBe(DIRECT_BASE);
+  }
+});
 
-// The default Codex launch by mode: proxy ensures then re-wires (the farm the re-wire just built
-// must reach the child env) and leaves the catalog to the token step; direct refreshes the model
-// catalog BEFORE Codex starts, since Codex parses it at startup. Every inherited CODEX_HOME casing
-// is scrubbed before the pin lands.
-test("codex default: proxy ensures then re-wires; direct refreshes the catalog first", () =>
-  runScripted([
-    {
-      name: "proxy --relaxed: managed CODEX_HOME applied after the re-wire",
-      script: { mode: "proxy", codexHome: "/fake/codex-farm", codexHomeOnceWired: true },
-      action: codexDefault(true, ["exec", "ls"]),
-      outcome: {
-        plan: {
-          command: "codex",
-          args: ["--sandbox", "danger-full-access", "exec", "ls"],
-          env: { CODEX_HOME: "/fake/codex-farm" },
-          scrub: ["CODEX_HOME"],
-        },
-      },
-      calls: ["mode:codex", "ensure:(default)", "wire:codex"],
-    },
-    {
-      name: "proxy: a plain launch leaves the catalog to the token step",
-      script: { mode: "proxy", codexHome: "/fake/codex-farm", codexHomeOnceWired: true },
-      action: codexDefault(),
-      outcome: {
-        plan: {
-          command: "codex",
-          args: [],
-          env: { CODEX_HOME: "/fake/codex-farm" },
-          scrub: ["CODEX_HOME"],
-        },
-      },
-      calls: ["mode:codex", "ensure:(default)", "wire:codex"],
-    },
-    {
-      name: "direct: the catalog refresh precedes the launch",
-      script: { mode: "direct" },
-      action: codexDefault(),
-      outcome: {
-        plan: {
-          command: "codex",
-          args: [],
-          env: { CODEX_HOME: "/fake/.codex" },
-          scrub: ["CODEX_HOME"],
-        },
-      },
-      calls: ["mode:codex", "catalog:refresh"],
-    },
-  ]));
+// The Codex profile launch is where a stale wiring is felt, so a failed refresh must not block it:
+// the failure is said and the existing config is launched.
+test("codex --profile: a failed wiring refresh warns and launches with the existing config", async () => {
+  const homes = scratchState();
+  seedDirectProfile();
+  // A plain file where the Claude home should be: the settings write (mkdir over a file) fails for
+  // any uid, and the hook's wiring fails with it.
+  writeFileSync(homes.claudeHome, "");
+  let plan: LaunchPlan | null = null;
+  const { stderr } = await captureChannels(async () => {
+    ({ result: plan } = await dryRunChanges(() =>
+      prepareLaunch({ kind: "codex", profile: WORK, relaxed: false, args: [] })
+    ));
+  });
+  expect(stderr).toContain(
+    "agent profile launch: could not refresh the profile wiring; launching with the existing config (",
+  );
+  expect(plan).toEqual({
+    command: "codex",
+    args: ["--profile", "work"],
+    env: { CODEX_HOME: homes.codexHome },
+    scrub: ["CODEX_HOME"],
+  });
+});
+
+/** The default slot with a credential, its identity probe stubbed to accept. */
+function seedDefault(mode: "direct" | "proxy"): void {
+  const state = new CopilotEnvState();
+  state.setCredential(null, { kind: "stored", provider: "gh-token", token: "tok" });
+  state.recordDefaultMode(mode);
+  setIntegrationProbeFetch(() =>
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+  );
+}
+
+/** The `next` value of one attribute row of one planned file, or undefined. */
+function plannedValue(changes: FileChange[], path: string, key: string): unknown {
+  return changes.find((c) => c.path === path)?.attributes.find((row) => row.key === key)?.next;
+}
+
+// A cold start may move the port, so the default proxy launch ensures the daemon FIRST and wires
+// after it: the config the wire bakes carries the port the start took, never the stale record.
+test("codex default proxy: the daemon is ensured before the wiring, which bakes the port the start took", async () => {
+  const homes = scratchState();
+  seedDefault("proxy");
+  new CopilotEnvConfig().set({ "daemon.auto-start": true });
+  // A port left by a daemon that is gone: the start does not honor it for the default profile.
+  writeRunState({ port: 9999 });
+  const { changes, result } = await dryRunChanges(() =>
+    prepareLaunch({ kind: "codex", profile: null, relaxed: false, args: [] })
+  );
+  expect(result).toEqual({
+    command: "codex",
+    args: [],
+    env: { CODEX_HOME: homes.codexHome },
+    scrub: ["CODEX_HOME"],
+  });
+  const started = plannedValue(changes, new CopilotApiPaths().stateFile, "port");
+  expect(typeof started).toBe("number");
+  expect(started).not.toBe(9999);
+  expect(
+    plannedValue(changes, codexConfigPath(homes.codexHome), "model_providers.copilot-env.base_url"),
+  ).toBe(`http://127.0.0.1:${started}/v1`);
+});
+
+// Codex parses `model_catalog_json` at startup, so a direct default launch refreshes the catalog
+// while preparing and the plan is returned only once the refresh is through: the attempt is
+// recorded as it starts, and the reference sync that follows the generation (here: stripping the
+// reference to an unusable file) is in the plan too. The catalog is Codex's, so Claude's launch
+// touches neither.
+test("codex default direct: the catalog refresh runs to completion inside the preparation; claude's launch never runs it", async () => {
+  const homes = scratchState();
+  seedDefault("direct");
+  new CopilotEnvConfig().set({ "codex.model-catalog": true });
+  const paths = new CopilotApiPaths();
+  mkdirSync(homes.proxyHome, { recursive: true });
+  writeFileSync(paths.codexModelCatalogFile, "not a catalog\n");
+  writeCodexConfigToml(homes.codexHome, { baseUrl: DIRECT_BASE });
+  const config = codexConfigPath(homes.codexHome);
+  // Top level, ahead of the provider table the fixture ends with.
+  writeFileSync(
+    config,
+    `model_catalog_json = ${JSON.stringify(paths.codexModelCatalogFile)}\n${
+      readFileSync(config, "utf8")
+    }`,
+  );
+  const rowsOf = async (kind: "codex" | "claude"): Promise<[unknown, unknown]> => {
+    const { changes } = await dryRunChanges(() =>
+      prepareLaunch({ kind, profile: null, relaxed: false, args: [] })
+    );
+    return [
+      plannedValue(changes, paths.stateStoreFile, "global.codexCatalogLastAttemptMs"),
+      changes.find((c) => c.path === config)?.attributes.find((row) =>
+        row.key === "model_catalog_json"
+      )?.status,
+    ];
+  };
+  const [attempt, reference] = await rowsOf("codex");
+  expect(typeof attempt).toBe("number");
+  expect(reference).toBe("remove");
+  expect(await rowsOf("claude")).toEqual([undefined, undefined]);
+});
 
 test("copilot: the managed flag set verbatim, --relaxed adds --allow-all", async () => {
-  const { deps, calls } = scriptedDeps();
-  expect(await prepareLaunch({ kind: "copilot", relaxed: false, args: ["hey"] }, deps)).toEqual({
+  expect(await prepareLaunch({ kind: "copilot", relaxed: false, args: ["hey"] })).toEqual({
     command: "copilot",
     args: ["--autopilot", "--enable-reasoning-summaries", "--experimental", "hey"],
     env: {},
     scrub: [],
   });
-  expect(await prepareLaunch({ kind: "copilot", relaxed: true, args: [] }, deps)).toEqual({
+  expect(await prepareLaunch({ kind: "copilot", relaxed: true, args: [] })).toEqual({
     command: "copilot",
     args: ["--autopilot", "--enable-reasoning-summaries", "--experimental", "--allow-all"],
     env: {},
     scrub: [],
   });
-  expect(calls).toEqual([]);
 });
 
 // --- POSIX end-to-end against fake agent CLIs -------------------------------------

@@ -38,6 +38,7 @@ import {
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import {
+  agentAuthCommand,
   agentStopCommand,
   parseProfileFlag,
   type Profile,
@@ -687,53 +688,33 @@ async function runDel(profile: Profile): Promise<() => void> {
   // until it idled out; the SIGKILL grace VERIFIES it died so access is never falsely reported as
   // revoked.
   const stop = cleared ? await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, profile) : null;
+  // The default's wording is an output contract; a named profile's names its slot and its daemon.
+  const who = profile === null ? "" : ` ${profileLabel(profile)}`;
+  const its = profile === null ? "the" : "its";
+  const again = `\`${agentAuthCommand(profile)}\``;
   return () => {
     if (stop !== null) {
       const { signalled, stopped } = stop;
-      if (profile === null) {
-        // The wordings are an output contract. `stopped` first: a stop REFUSED (unprovable pid,
-        // nothing signalled) must report the still-running daemon, never the plain success.
-        if (!stopped) {
-          logger.warn(
-            "De-authenticated, but the proxy is still running and may keep serving the old " +
-              "credential -- stop it with `agent stop`.",
-          );
-        } else if (signalled) {
-          logger.success(
-            "De-authenticated and stopped the proxy. Run `agent auth` to log in again.",
-          );
-        } else {
-          logger.success("De-authenticated. Run `agent auth` to log in again.");
-        }
+      // `stopped` first: a stop REFUSED (unprovable pid, nothing signalled) must report the
+      // still-running daemon, never the plain success.
+      if (!stopped) {
+        logger.warn(
+          `De-authenticated${who}, but ${its} proxy is still running and may keep serving the ` +
+            `old credential -- stop it with \`${agentStopCommand(profile)}\`.`,
+        );
+      } else if (signalled) {
+        logger.success(
+          `De-authenticated${who} and stopped ${its} proxy. Run ${again} to log in again.`,
+        );
       } else {
-        const again = `\`agent profile ${profile} auth\``;
-        if (!stopped) {
-          logger.warn(
-            `De-authenticated ${
-              profileLabel(profile)
-            }, but its proxy is still running and may keep ` +
-              `serving the old credential -- stop it with \`${agentStopCommand(profile)}\`.`,
-          );
-        } else if (signalled) {
-          logger.success(
-            `De-authenticated ${
-              profileLabel(profile)
-            } and stopped its proxy. Run ${again} to log in again.`,
-          );
-        } else {
-          logger.success(
-            `De-authenticated ${profileLabel(profile)}. Run ${again} to log in again.`,
-          );
-        }
+        logger.success(`De-authenticated${who}. Run ${again} to log in again.`);
       }
-    } else if (profile === null) {
-      logger.info("Nothing to clear - not authenticated. Run `agent auth` to log in.");
-    } else if (profileSlotMissing(profile)) {
+    } else if (profile !== null && profileSlotMissing(profile)) {
       logger.info(`Nothing to clear - ${noSuchProfileHint(profile)}.`);
     } else {
       logger.info(
-        `Nothing to clear for ${profileLabel(profile)} - not authenticated. Run ` +
-          `\`agent profile ${profile} auth\` to log in.`,
+        `Nothing to clear${profile === null ? "" : ` for ${profileLabel(profile)}`} - not ` +
+          `authenticated. Run ${again} to log in.`,
       );
     }
     // Whatever the store held, a baked copy may still sit in the agent configs.
@@ -747,7 +728,7 @@ function runCheck(profile: Profile): void {
   // and label are empty).
   const credential = new Credential(undefined, profile);
   const { provider, resolves } = credential.status();
-  const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
+  const authCommand = agentAuthCommand(profile);
   const label = profile === null ? "" : ` (${profileLabel(profile)})`;
   if (provider === null) {
     if (profile !== null && profileSlotMissing(profile)) {
@@ -777,7 +758,7 @@ export async function ensureAuthenticated(profile: Profile = null): Promise<void
   if (new Credential(undefined, profile).isAuthenticated()) return;
   // A dry run never logs in, and the wiring it previews is decided with the credential.
   if (dryRunActive()) {
-    const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
+    const authCommand = agentAuthCommand(profile);
     throw new Error(
       `${profileLabel(profile)} is not authenticated, and a dry run never logs in; run ` +
         `\`${authCommand}\` first, then re-run with --dry-run`,
@@ -934,19 +915,14 @@ async function runAuthenticate(
     if (provider !== null && resolves) {
       const source = liveCredentialSourceLabel(credential.read()) ?? provider;
       return () => {
-        if (profile === null) {
-          // The default wording is an output contract -- keep it byte-identical.
-          logger.success(
-            `Already authenticated (${source}). Switch with ` +
-              `\`agent auth --provider <${PROVIDER_CHOICES}>\`, or clear it with \`agent auth --del\`.`,
-          );
-        } else {
-          logger.success(
-            `Already authenticated (${source}, ${profileLabel(profile)}). Switch with ` +
-              `\`agent profile ${profile} auth --provider <${PROVIDER_CHOICES}>\`, or clear it ` +
-              `with \`agent profile ${profile} auth --del\`.`,
-          );
-        }
+        // The default wording is an output contract -- keep it byte-identical.
+        const auth = agentAuthCommand(profile);
+        logger.success(
+          `Already authenticated (${source}${
+            profile === null ? "" : `, ${profileLabel(profile)}`
+          }). Switch with \`${auth} --provider <${PROVIDER_CHOICES}>\`, or clear it with ` +
+            `\`${auth} --del\`.`,
+        );
         noteStaticKeyStale(profile);
       };
     }

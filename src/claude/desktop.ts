@@ -420,7 +420,18 @@ export function removeAllClaudeDesktopWiring(
 ): void {
   // `artifacts` is the plan uninstall rendered as its dry run: exactly those paths go, so a claim
   // that appeared after planning stays.
-  if (artifacts.blocked) return;
+  if (artifacts.blocked) {
+    // The live run leaves the library silently; the preview names the consequence, since the plan
+    // has no row to carry it.
+    if (fs.dryRunActive()) {
+      logger.warn(
+        "Would leave Claude Desktop's config library alone (its _meta.json could not be read or " +
+          "parsed); its copilot-env entries will point at credential-helper scripts that go with " +
+          "the copilot-api home.",
+      );
+    }
+    return;
+  }
   const planned = new Set([...artifacts.entries, ...artifacts.staleClaims]);
   const entries = sweepOwnedEntries((owned) => planned.has(owned.path), dirOverride);
   if (entries.kind === "blocked") return;

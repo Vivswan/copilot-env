@@ -1,5 +1,6 @@
-// The `runtime` scope is the fast probe: the default daemon's rows alone, whose exit code is a
-// contract for scripts that branch on it (src/health/aggregate.ts, exitCodeFor).
+// The `runtime` scope is the fast probe: each addressed target's readiness rows alone (every
+// profile's daemon under `agent health`, one daemon under `agent profile [<name>] health`), whose
+// exit code is a contract for scripts that branch on it (src/health/aggregate.ts, exitCodeFor).
 import { allProfileNames, assertKnownProfile, type ProfileMode } from "../copilot_api/env_state.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { buildHealthJson, exitCodeFor, isHealthScope } from "../health/aggregate.ts";

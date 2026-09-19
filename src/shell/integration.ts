@@ -17,33 +17,18 @@ import * as fs from "../utils/fs_facade.ts";
 // The marker is a comment in both bash and PowerShell, so the wire/remove core is
 // shared; only the block body and the target files differ per OS.
 
+// The end marker closes the fenced block. An unfenced block (written before the end
+// fence existed) is converted in place by the 4.0.0 shell migration, never recognized
+// here: a marker with no end fence owns only its own line, and whatever follows is the
+// user's.
 export const MARKER = "# copilot-env shell integration";
 export const MARKER_END = `${MARKER} end`;
-/** A marker this module owns a block under. Every shape lookup is typed against this
- *  union, so an unknown marker is a compile error rather than a runtime throw. */
-export type BlockMarker = typeof MARKER;
-
-// Per marker: the end-marker line that closes its fenced block. An unfenced block
-// (written before the end fence existed) is converted in place by the 4.0.0 shell
-// migration, never recognized here: a marker with no end fence owns only its own
-// line, and whatever follows is the user's.
-const BLOCK_ENDS: Record<BlockMarker, string> = {
-  [MARKER]: MARKER_END,
-};
-
-// Derived from BLOCK_ENDS (the Record is exhaustive over BlockMarker), so a new
-// marker cannot land without joining these lists.
-const ALL_MARKERS = Object.keys(BLOCK_ENDS) as readonly BlockMarker[];
-const ALL_FENCE_LINES: readonly string[] = [
-  ...ALL_MARKERS,
-  ...ALL_MARKERS.map((m) => BLOCK_ENDS[m]),
-];
 
 /** The one spelling of an owned block: leading blank, open fence, body, end fence,
  *  trailing blank -- the trailing blank separates the block from whatever the user
  *  has next in the file, and the writer owns exactly that one line. */
-function fencedBlock(marker: BlockMarker, body: string[]): string {
-  return `\n${marker}\n${body.join("\n")}\n${BLOCK_ENDS[marker]}\n\n`;
+function fencedBlock(body: string[]): string {
+  return `\n${MARKER}\n${body.join("\n")}\n${MARKER_END}\n\n`;
 }
 
 /**
@@ -98,21 +83,17 @@ export function runShellIntegration(action: ShellIntegrationAction): void {
  * under an unclosed marker (null when that line is blank, another fence line, or
  * EOF), for the caller to warn about. A user's line is never inside the extent.
  */
-function blockExtent(
-  lines: string[],
-  idx: number,
-  marker: BlockMarker,
-): { end: number; leftBehind: string | null } {
+function blockExtent(lines: string[], idx: number): { end: number; leftBehind: string | null } {
   const lineAt = (i: number): string | null =>
     i < lines.length ? (lines[i] ?? "").replace(/\r$/, "") : null;
   for (let i = idx + 1; i < lines.length; i++) {
     const line = lineAt(i);
-    if (line === BLOCK_ENDS[marker]) return { end: i, leftBehind: null };
-    // Any other fence line means this block was never closed.
-    if (line !== null && ALL_FENCE_LINES.includes(line)) break;
+    if (line === MARKER_END) return { end: i, leftBehind: null };
+    // Another open fence means this block was never closed.
+    if (line === MARKER) break;
   }
   const next = lineAt(idx + 1);
-  const isUsers = next !== null && next !== "" && !ALL_FENCE_LINES.includes(next);
+  const isUsers = next !== null && next !== "" && next !== MARKER && next !== MARKER_END;
   return { end: idx, leftBehind: isUsers ? next : null };
 }
 
@@ -121,17 +102,13 @@ function blockExtent(
  *  blank, and never the file terminator, so user spacing beyond the one owned line
  *  survives), and the user lines an unclosed marker refused to claim, for the caller
  *  to warn about. */
-function ownedLineIndexes(
-  lines: string[],
-  markers: readonly BlockMarker[],
-): { skip: Set<number>; leftBehind: string[] } {
+function ownedLineIndexes(lines: string[]): { skip: Set<number>; leftBehind: string[] } {
   const skip = new Set<number>();
   const leftBehind: string[] = [];
   lines.forEach((line, idx) => {
-    const marker = markers.find((m) => lineIs(line, m));
-    if (marker === undefined) return;
+    if (!lineIs(line, MARKER)) return;
     if (idx > 0 && isBlankLine(lines[idx - 1])) skip.add(idx - 1);
-    const extent = blockExtent(lines, idx, marker);
+    const extent = blockExtent(lines, idx);
     for (let i = idx; i <= extent.end; i++) skip.add(i);
     // The ONE separating blank the block writes after its end fence is owned too --
     // but the lone final "" is the file terminator, not a blank line, so eating it
@@ -152,12 +129,9 @@ function ownedLineIndexes(
  * appends. Pure: `leftBehind` reports the lines an unclosed marker refused to claim.
  * Exported for tests only.
  */
-export function stripBlocks(
-  content: string,
-  markers: readonly BlockMarker[],
-): { content: string; leftBehind: string[] } {
+export function stripBlocks(content: string): { content: string; leftBehind: string[] } {
   const lines = content.split("\n");
-  const { skip, leftBehind } = ownedLineIndexes(lines, markers);
+  const { skip, leftBehind } = ownedLineIndexes(lines);
   if (skip.size === 0) return { content, leftBehind };
   return { content: lines.filter((_, idx) => !skip.has(idx)).join("\n"), leftBehind };
 }
@@ -176,7 +150,7 @@ function dominantEol(content: string): "\n" | "\r\n" {
 }
 
 /**
- * Insert or refresh ONE owned block, IN PLACE: the first `marker` block is replaced
+ * Insert or refresh ONE owned block, IN PLACE: the first block is replaced
  * where it sits (extent-bounded, plus its preceding blank and the one separating blank
  * after its end fence), so a stale block migrates without reordering the file
  * and an already-current one reproduces it byte-for-byte; later duplicates of the same
@@ -187,11 +161,10 @@ function dominantEol(content: string): "\n" | "\r\n" {
  */
 export function upsertBlock(
   content: string,
-  marker: BlockMarker,
   block: string,
 ): { content: string; leftBehind: string[] } {
   const lines = content.split("\n");
-  const idx = lines.findIndex((l) => lineIs(l, marker));
+  const idx = lines.findIndex((l) => lineIs(l, MARKER));
   // Absent: append at EOF (the block leads with a blank and ends in its separating
   // blank) in the file's dominant line ending.
   if (idx === -1) {
@@ -202,7 +175,7 @@ export function upsertBlock(
     };
   }
   const start = idx > 0 && isBlankLine(lines[idx - 1]) ? idx - 1 : idx;
-  const { end } = blockExtent(lines, idx, marker);
+  const { end } = blockExtent(lines, idx);
   let blockLines = block.split("\n");
   if (blockLines[blockLines.length - 1] === "") blockLines = blockLines.slice(0, -1); // trailing newline
   if (start === idx && blockLines[0] === "") blockLines = blockLines.slice(1); // no preceding blank to keep
@@ -214,7 +187,7 @@ export function upsertBlock(
   // Dedupe on the LINE array, not a string round-trip: "" is ambiguous there (no tail
   // vs one terminator line), which would flip the termination of USER content at EOF.
   const rest = lines.slice(end + 1);
-  const { skip: dupes, leftBehind } = ownedLineIndexes(rest, [marker]);
+  const { skip: dupes, leftBehind } = ownedLineIndexes(rest);
   let tail = dupes.size === 0 ? rest : rest.filter((_, i) => !dupes.has(i));
   // blockLines already ends in the block's ONE owned separating blank (fencedBlock
   // emits it), so a blank left over from the previous wire is REUSED: consume one
@@ -254,7 +227,7 @@ function warnLeftBehind(file: string, lines: readonly string[]): void {
 function wireBlocks(files: string[], mainBlock: string): void {
   for (const file of files) {
     const original = fs.exists(file) ? fs.readText(file) : "";
-    const upserted = upsertBlock(original, MARKER, mainBlock);
+    const upserted = upsertBlock(original, mainBlock);
     warnLeftBehind(file, upserted.leftBehind);
     if (upserted.content === original) {
       consola.info(`Shell integration already wired in ${file} -- skipping.`);
@@ -268,33 +241,19 @@ function wireBlocks(files: string[], mainBlock: string): void {
   }
 }
 
-function removeBlocksFrom(
-  files: string[],
-  markers: readonly BlockMarker[],
-  removedDetail: string,
-  missingMessage: string,
-): boolean {
+function removeFrom(files: string[]): boolean {
   let removedAny = false;
   for (const file of files) {
     if (!fs.exists(file)) continue;
     const content = fs.readText(file);
-    const stripped = stripBlocks(content, markers);
+    const stripped = stripBlocks(content);
     if (stripped.content === content) continue; // no owned block present
-    fs.writeText(file, stripped.content, { atomic: false, detail: removedDetail });
+    fs.writeText(file, stripped.content, { atomic: false, detail: "shell integration removed" });
     warnLeftBehind(file, stripped.leftBehind);
     removedAny = true;
   }
-  if (!removedAny) consola.info(missingMessage);
+  if (!removedAny) consola.info("No copilot-env shell integration found to remove.");
   return removedAny;
-}
-
-function removeFrom(files: string[]): boolean {
-  return removeBlocksFrom(
-    files,
-    ALL_MARKERS,
-    "shell integration removed",
-    "No copilot-env shell integration found to remove.",
-  );
 }
 
 /** The rc / PowerShell profile files on this machine that carry an owned block right
@@ -315,7 +274,7 @@ export function ownedShellTargets(): string[] {
           "the copilot-env shell block",
       );
     }
-    return read.kind === "text" && ALL_MARKERS.some((marker) => hasMarker(read.text, marker));
+    return read.kind === "text" && hasMarker(read.text, MARKER);
   });
 }
 
@@ -372,7 +331,7 @@ function quotePowerShellHomeAnchored(path: string): string {
 }
 
 export function posixBlock(agentsBashrc: string): string {
-  return fencedBlock(MARKER, [
+  return fencedBlock([
     `AGENTS_BASHRC=${quotePosixHomeAnchored(agentsBashrc)}`,
     `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`,
   ]);
@@ -381,7 +340,7 @@ export function posixBlock(agentsBashrc: string): string {
 export function windowsBlock(agentsPs1: string): string {
   // -LiteralPath so a path with PowerShell wildcard chars ([ ] * ?) isn't treated
   // as a pattern (the quoting handles spaces/quotes, not wildcard semantics).
-  return fencedBlock(MARKER, [
+  return fencedBlock([
     `$AgentsPs1 = ${quotePowerShellHomeAnchored(agentsPs1)}`,
     `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }`,
   ]);

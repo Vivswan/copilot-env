@@ -11,7 +11,6 @@
 
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import { wrapToTerminal } from "./utils/logger.ts";
@@ -27,7 +26,6 @@ import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
 import { resolveDenoBin } from "./copilot_api/sidecar.ts";
 import {
-  installedProxyVersion,
   PROXY_PACKAGE_NAME,
   proxyVersionBoundsStatus,
   proxyVersionFloorStatus,
@@ -252,17 +250,12 @@ export interface ResolvedVersionRecord {
   version: string;
   resolvedAtMs: number;
   denoDir: string;
-  /** daemonConfigFingerprint() of the build that stamped the record. */
-  buildFingerprint?: string;
 }
 
 const RECORD_SCHEMA = v.object({
   "version": v.pipe(v.string(), v.regex(SEMVER_RE)),
   "resolved_at_ms": v.pipe(v.number(), v.finite(), v.minValue(0)),
   "deno_dir": v.pipe(v.string(), v.minLength(1)),
-  // Lenient on purpose: an absent or malformed fingerprint reads as "regenerate the config once,
-  // then stamp", never invalidating the resolution.
-  "build_fingerprint": v.optional(v.unknown()),
 });
 
 export function proxyDenoDir(rootHome: string): string {
@@ -289,7 +282,8 @@ export function proxyLockFile(rootHome: string): string {
  *  purpose: `lock: {frozen: true}` would reject `npm:<proxy>@<floated>` (the frozen lock is a DEV
  *  contract), and `nodeModulesDir` would resolve through a node_modules tree a compiled install
  *  lacks. The source is read through ASSET_ROOT because a compiled install root carries no
- *  deno.json on disk. */
+ *  deno.json on disk. Every float and verify re-renders it first, so a young record from an older
+ *  build never keeps an outdated map steering daemon spawns until it ages out. */
 export function writeDaemonConfig(rootHome: string, sourceRoot: string = ASSET_ROOT): void {
   fs.writeText(daemonConfigFile(rootHome), renderDaemonConfig(sourceRoot), { secretKeys: [] });
 }
@@ -306,13 +300,6 @@ function renderDaemonConfig(sourceRoot: string): string {
   return `${JSON.stringify(config, null, 2)}\n`;
 }
 
-/** A content hash rather than the copilot-env version, so it moves exactly when the generated
- *  config would: it covers deno.json's `imports` and `compilerOptions`, so an update that touches
- *  neither regenerates nothing, and a dev checkout's edits are caught. */
-export function daemonConfigFingerprint(sourceRoot: string = ASSET_ROOT): string {
-  return createHash("sha256").update(renderDaemonConfig(sourceRoot)).digest("hex");
-}
-
 /** Malformed reads as null, the caller's "install needed" path: a corrupt record must never brick.
  */
 export function readResolvedVersionRecord(rootHome: string): ResolvedVersionRecord | null {
@@ -326,65 +313,29 @@ export function readResolvedVersionRecord(rootHome: string): ResolvedVersionReco
   }
   const parsed = v.safeParse(RECORD_SCHEMA, raw);
   if (!parsed.success) return null;
-  const fingerprint = parsed.output.build_fingerprint;
   return {
     "version": parsed.output.version,
     "resolvedAtMs": parsed.output.resolved_at_ms,
     "denoDir": parsed.output.deno_dir,
-    ...(typeof fingerprint === "string" ? { "buildFingerprint": fingerprint } : {}),
   };
 }
 
-/** The version the NEXT launch runs, in resolveCopilotApiEntry's precedence, but read-only (the
- *  entry resolution may write the daemon config), so a version gate on a read path (`agent config`)
- *  can use it. Null when unknowable: a tag pin (only the start path resolves tags), a
- *  COPILOT_API_ENTRY override, or nothing resolved or installed. */
-export function nextProxyVersion(rootHome: string = resolveRootHome()): string | null {
-  if (process.env.COPILOT_API_ENTRY?.trim()) return null;
-  const recorded = readResolvedVersionRecord(rootHome)?.version;
-  const pin = resolveProxyVersionOverride();
-  if (pin !== undefined && pin !== recorded) return SEMVER_RE.test(pin) ? pin : null;
-  return recorded ?? installedProxyVersion();
-}
-
 /** A timestamp refresh passes the record's own `denoDir` through, so the pointer never drifts from
- *  where the cache lives. An omitted `buildFingerprint` stays omitted: only a caller that just
- *  wrote the daemon config may claim the config is this build's. */
+ *  where the cache lives. */
 export function writeResolvedVersionRecord(
   rootHome: string,
   version: string,
   nowMs: number,
   denoDir: string = proxyDenoDir(rootHome),
-  buildFingerprint?: string,
 ): void {
   const record = {
     "version": version,
     "resolved_at_ms": nowMs,
     "deno_dir": denoDir,
-    ...(buildFingerprint === undefined ? {} : { "build_fingerprint": buildFingerprint }),
   };
   fs.writeText(resolvedVersionFile(rootHome), `${JSON.stringify(record, null, 2)}\n`, {
     secretKeys: [],
   });
-}
-
-/** The resolution timestamp stays untouched: build identity and freshness are separate questions,
- *  and this must never extend the cooldown window. Runs ahead of every verify and float so a young
- *  record from an older build cannot keep an outdated import map steering daemon spawns until it
- *  ages out. */
-function ensureDaemonConfigCurrent(rootHome: string): void {
-  const record = readResolvedVersionRecord(rootHome);
-  if (record === null) return; // nothing resolved -> the resolve-time paths own the config
-  const fingerprint = daemonConfigFingerprint();
-  if (record.buildFingerprint === fingerprint && fs.exists(daemonConfigFile(rootHome))) return;
-  writeDaemonConfig(rootHome);
-  writeResolvedVersionRecord(
-    rootHome,
-    record.version,
-    record.resolvedAtMs,
-    record.denoDir,
-    fingerprint,
-  );
 }
 
 // --- .npmrc trust policy ---------------------------------------------------------
@@ -624,19 +575,38 @@ export function proxyFloatArtifactPaths(rootHome: string): string[] {
 
 // --- Float actions -----------------------------------------------------------------
 
-/** Always stamped with this build's fingerprint: the daemon config beside it was just written, or
- *  ensured current, by this build. */
 function recordFloatResolution(
   ctx: FloatContext,
   version: string,
   denoDir: string = proxyDenoDir(ctx.rootHome),
 ): void {
-  writeResolvedVersionRecord(ctx.rootHome, version, ctx.nowMs, denoDir, daemonConfigFingerprint());
+  writeResolvedVersionRecord(ctx.rootHome, version, ctx.nowMs, denoDir);
 }
 
 function logNowUsing(ctx: FloatContext): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
   logger.success(`now using ${PROXY_PKG}@${record?.version ?? "unknown"}`);
+}
+
+/** Warms `version`, records it, and announces it; false when the warm failed, and the caller
+ *  decides what is kept. */
+function installVersion(ctx: FloatContext, version: string, cooldownSeconds: number): boolean {
+  if (denoCacheVersion(ctx, version, cooldownSeconds) !== 0) return false;
+  recordFloatResolution(ctx, version);
+  logNowUsing(ctx);
+  return true;
+}
+
+function installFailure(
+  ctx: FloatContext,
+  version: string,
+  kept: ResolvedVersionRecord | null,
+): Error {
+  return new Error(
+    `could not install ${PROXY_PKG}@${version} (offline?); recorded ${
+      kept?.version ?? "none"
+    } < floor ${ctx.config.proxyMinVersion}`,
+  );
 }
 
 /** The pin BYPASSES the refusal, so it only warns; the doc may be absent when the registry is
@@ -701,12 +671,7 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
 
   logger.info(`installing pinned ${PROXY_PKG}@${override} (cooldown bypassed)`);
   warnPinnedLifecycleScripts(doc, target);
-  const status = denoCacheVersion(ctx, target, 0);
-  if (status === 0) {
-    recordFloatResolution(ctx, target);
-    logNowUsing(ctx);
-    return;
-  }
+  if (installVersion(ctx, target, 0)) return;
   if (usableRecord(ctx) !== null) {
     logger.warn(`pin failed for ${PROXY_PKG}@${override}; keeping ${PROXY_PKG}@${record?.version}`);
     return;
@@ -725,17 +690,8 @@ function handleUnavailable(ctx: FloatContext, reason: string, cooldownSeconds: n
 
   const floor = ctx.config.proxyMinVersion;
   logger.warn(`update check failed (${reason}); installing floor ${PROXY_PKG}@${floor}`);
-  const status = denoCacheVersion(ctx, floor, cooldownSeconds);
-  if (status === 0) {
-    recordFloatResolution(ctx, floor);
-    logNowUsing(ctx);
-    return;
-  }
-  throw new Error(
-    `could not install ${PROXY_PKG}@${floor} (offline?); recorded ${
-      record?.version ?? "none"
-    } < floor ${floor}`,
-  );
+  if (installVersion(ctx, floor, cooldownSeconds)) return;
+  throw installFailure(ctx, floor, record);
 }
 
 /** Never installs the refused version. The kept record is re-warmed when its cache no longer
@@ -799,30 +755,21 @@ function handleResolved(
       `update needed: ${PROXY_PKG} ${record?.version ?? "none"} -> ${sel.version} (${sel.reason})`,
     );
   }
-  const status = denoCacheVersion(ctx, sel.version, cooldownSeconds);
-  if (status === 0) {
-    recordFloatResolution(ctx, sel.version);
-    logNowUsing(ctx);
-    return;
-  }
+  if (installVersion(ctx, sel.version, cooldownSeconds)) return;
 
   const kept = usableRecord(ctx);
   if (kept !== null && proxyVersionFloorStatus(kept.version, ctx.config).ok) {
     logger.warn(`update failed; keeping ${PROXY_PKG}@${kept.version}`);
     return;
   }
-  throw new Error(
-    `could not install ${PROXY_PKG}@${sel.version} (offline?); recorded ${
-      kept?.version ?? "none"
-    } < floor ${ctx.config.proxyMinVersion}`,
-  );
+  throw installFailure(ctx, sel.version, kept);
 }
 
 // --- Public float / verify API -----------------------------------------------
 
 export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
   const ctx = floatContext(deps);
-  ensureDaemonConfigCurrent(ctx.rootHome);
+  writeDaemonConfig(ctx.rootHome);
   const npmrc = ensureProxyNpmrc(ctx.rootHome);
   if (npmrc.kind === "kept-foreign") {
     logger.warn(`${npmrc.path} exists without the copilot-env marker; leaving it untouched`);
@@ -870,19 +817,39 @@ export type ProxyFloatVerifyStatus = {
   upToDate: boolean;
   message: string;
 };
-export type ProxyInstallAssertStatus = {
-  ok: boolean;
-  message: string;
-};
+
+/** The two verdicts a cache look forces, the same for a pin and for the recorded version. A failed
+ *  look is never "not in the cache"; upToDate:false still hands the decision to the float, whose
+ *  failure arms keep rather than discard. */
+function cacheLookStatus(
+  look: CacheLook,
+  version: string,
+  denoDir: string,
+): ProxyFloatVerifyStatus | null {
+  if (look === "unproven") {
+    return {
+      "upToDate": false,
+      "message":
+        `install unverified: could not verify ${PROXY_PKG}@${version} in the deno cache (${denoDir}); deno info failed to run`,
+    };
+  }
+  if (look === "missing") {
+    return {
+      "upToDate": false,
+      "message": `install needed: ${PROXY_PKG}@${version} is not in the deno cache (${denoDir})`,
+    };
+  }
+  return null;
+}
 
 /** Offline while the record is younger than the cooldown window; once stale the registry is
- *  re-consulted. Read-only by contract with ONE self-heal (ensureDaemonConfigCurrent); the record's
+ *  re-consulted. Read-only by contract but for the daemon config it re-renders; the record's
  *  timestamp only refreshes when the float itself runs. */
 export async function proxyFloatVerifyStatus(
   deps: ProxyFloatDeps = {},
 ): Promise<ProxyFloatVerifyStatus> {
   const ctx = floatContext(deps);
-  ensureDaemonConfigCurrent(ctx.rootHome);
+  writeDaemonConfig(ctx.rootHome);
   const record = readResolvedVersionRecord(ctx.rootHome);
 
   const override = resolveProxyVersionOverride();
@@ -902,24 +869,12 @@ export async function proxyFloatVerifyStatus(
         }`,
       };
     }
-    const look = cacheResolves(ctx, override, record.denoDir);
-    if (look === "unproven") {
-      // A failed look is never "not in the cache"; upToDate:false still hands the decision to the
-      // float, whose failure arms keep rather than discard.
-      return {
-        "upToDate": false,
-        "message":
-          `install unverified: could not verify ${PROXY_PKG}@${override} in the deno cache (${record.denoDir}); deno info failed to run`,
-      };
-    }
-    if (look === "missing") {
-      return {
-        "upToDate": false,
-        "message":
-          `install needed: ${PROXY_PKG}@${override} is not in the deno cache (${record.denoDir})`,
-      };
-    }
-    return { "upToDate": true, "message": `up to date: ${PROXY_PKG}@${override} pinned` };
+    return cacheLookStatus(
+      cacheResolves(ctx, override, record.denoDir),
+      override,
+      record.denoDir,
+    ) ??
+      { "upToDate": true, "message": `up to date: ${PROXY_PKG}@${override} pinned` };
   }
 
   if (record === null) {
@@ -939,22 +894,12 @@ export async function proxyFloatVerifyStatus(
     return { "upToDate": false, "message": `update needed: ${detail}` };
   }
 
-  const recordedLook = cacheResolves(ctx, record.version, record.denoDir);
-  if (recordedLook === "unproven") {
-    // Same arm as the pin path above: never "not in the cache" off a look that failed.
-    return {
-      "upToDate": false,
-      "message":
-        `install unverified: could not verify ${PROXY_PKG}@${record.version} in the deno cache (${record.denoDir}); deno info failed to run`,
-    };
-  }
-  if (recordedLook === "missing") {
-    return {
-      "upToDate": false,
-      "message":
-        `install needed: ${PROXY_PKG}@${record.version} is not in the deno cache (${record.denoDir})`,
-    };
-  }
+  const recordedLook = cacheLookStatus(
+    cacheResolves(ctx, record.version, record.denoDir),
+    record.version,
+    record.denoDir,
+  );
+  if (recordedLook !== null) return recordedLook;
 
   const cooldownSeconds = deps.cooldownSeconds ?? resolveMinimumReleaseAgeSeconds();
   const ageMs = ctx.nowMs - record.resolvedAtMs;
@@ -999,167 +944,6 @@ export async function proxyFloatVerifyStatus(
       return {
         "upToDate": true,
         "message": `no update check: ${selection.reason}; keeping ${PROXY_PKG}@${record.version}`,
-      };
-    default:
-      return assertNever(selection);
-  }
-}
-
-/** The float inside `agent start` is best-effort, so this is what makes silent failure visible: it
- *  asks whether the float left the record and cache as intended, since a satisfied version window
- *  alone would hide a failed cache write. Tests only: in CI it would float first and hit the npm
- *  registry on every runner.
- *
- *  exact semver pin                -> cached and EQUAL to the pin (bounds bypassed)
- *  tag pin                         -> cached; equality not verified (bounds bypassed)
- *  float target resolved           -> in bounds, cached, and EQUAL to the target
- *  target refused or unresolvable  -> in bounds and cached only */
-export async function proxyInstallAssertStatus(
-  deps: ProxyFloatDeps = {},
-): Promise<ProxyInstallAssertStatus> {
-  const ctx = floatContext(deps);
-  const record = readResolvedVersionRecord(ctx.rootHome);
-
-  const override = resolveProxyVersionOverride();
-  if (override) {
-    if (record === null) {
-      return {
-        "ok": false,
-        "message":
-          `proxy float did not install the pinned ${PROXY_PKG}@${override}; check the version/tag exists (offline?)`,
-      };
-    }
-    const pinLook = cacheResolves(ctx, record.version, record.denoDir);
-    if (pinLook === "unproven") {
-      // A hard check must not claim OK off a failed look, nor the specific "not in the cache" it
-      // never proved.
-      return {
-        "ok": false,
-        "message":
-          `could not verify ${PROXY_PKG}@${record.version} in the deno cache (${record.denoDir}); deno info failed to run`,
-      };
-    }
-    if (pinLook === "missing") {
-      return {
-        "ok": false,
-        "message":
-          `recorded ${PROXY_PKG}@${record.version} is not in the deno cache (${record.denoDir})`,
-      };
-    }
-    if (!SEMVER_RE.test(override)) {
-      return {
-        "ok": true,
-        "message":
-          `proxy float OK: ${PROXY_PKG} ${record.version} is cached; equality is not verified for the '${override}' tag pin (only exact semver pins are equality-checked)`,
-      };
-    }
-    if (record.version === override) {
-      return {
-        "ok": true,
-        "message": `proxy float OK: ${PROXY_PKG} ${record.version} matches the ${override} pin`,
-      };
-    }
-    return {
-      "ok": false,
-      "message":
-        `recorded ${PROXY_PKG} ${record.version} does not match the pinned ${override} (${PROXY_VERSION_ENV} or the daemon.version config) - the proxy float failed to apply the pin.`,
-    };
-  }
-
-  if (record === null) {
-    return {
-      "ok": false,
-      "message":
-        `proxy float did not record a resolved ${PROXY_PKG} version - the float (src/proxy_float.ts) is broken.`,
-    };
-  }
-  const bounds = proxyVersionBoundsStatus(record.version, ctx.config);
-  if (!bounds.ok) {
-    switch (bounds.reason) {
-      case "missing":
-        return {
-          "ok": false,
-          "message":
-            `proxy float recorded an unreadable ${PROXY_PKG} version - the float (src/proxy_float.ts) is broken.`,
-        };
-      case "belowFloor":
-        return {
-          "ok": false,
-          "message":
-            `recorded ${PROXY_PKG} ${bounds.version} is below the ${bounds.floor} floor - the proxy float failed to reach the floor.`,
-        };
-      case "aboveCeiling":
-        return {
-          "ok": false,
-          "message":
-            `recorded ${PROXY_PKG} ${bounds.version} is above the ${bounds.ceiling} ceiling - the proxy float overshot PROXY_MAX_VERSION.`,
-        };
-      default:
-        return assertNever(bounds);
-    }
-  }
-  const recordedLook = cacheResolves(ctx, record.version, record.denoDir);
-  if (recordedLook === "unproven") {
-    // Same arm as the pin path above: the could-not-verify reason, never the "did not land" it
-    // never proved.
-    return {
-      "ok": false,
-      "message":
-        `could not verify ${PROXY_PKG}@${record.version} in the deno cache (${record.denoDir}); deno info failed to run`,
-    };
-  }
-  if (recordedLook === "missing") {
-    return {
-      "ok": false,
-      "message":
-        `recorded ${PROXY_PKG}@${record.version} is not in the deno cache (${record.denoDir}) - the proxy float cache write did not land.`,
-    };
-  }
-
-  const window = ctx.config.proxyMaxVersion === null
-    ? `>= ${ctx.config.proxyMinVersion} floor`
-    : `within [${ctx.config.proxyMinVersion}, ${ctx.config.proxyMaxVersion}]`;
-  const cooldownSeconds = deps.cooldownSeconds ?? resolveMinimumReleaseAgeSeconds();
-  let doc: ProxyRegistryDoc;
-  try {
-    doc = await fetchRegistryDoc(ctx.fetchLike);
-  } catch (e) {
-    return {
-      "ok": true,
-      "message":
-        `proxy float OK (bounds only, ${window}): ${PROXY_PKG} ${record.version}; float target unresolved (${
-          errMessage(e)
-        })`,
-    };
-  }
-  const selection = selectProxyVersion(doc, ctx.config, cooldownSeconds, ctx.nowMs);
-  switch (selection.kind) {
-    case "resolved":
-      if (record.version !== selection.version) {
-        return {
-          "ok": false,
-          "message":
-            `recorded ${PROXY_PKG} ${record.version} does not match the float target ${selection.version} (${selection.reason}) - the proxy float did not land its target.`,
-        };
-      }
-      return {
-        "ok": true,
-        "message":
-          `proxy float OK: ${PROXY_PKG} ${record.version} matches the float target (${selection.reason}; ${window})`,
-      };
-    case "refused":
-      return {
-        "ok": true,
-        "message":
-          `proxy float OK (bounds only, ${window}): ${PROXY_PKG} ${record.version}; newest target refused (${
-            refusalMessage(selection)
-          })`,
-      };
-    case "unavailable":
-      return {
-        "ok": true,
-        "message":
-          `proxy float OK (bounds only, ${window}): ${PROXY_PKG} ${record.version}; float target unresolved (${selection.reason})`,
       };
     default:
       return assertNever(selection);

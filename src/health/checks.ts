@@ -3,7 +3,7 @@
 import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
 import { configGetCommand, configSetCommand } from "../copilot_api/env_config.ts";
 import { SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
-import { agentStartCommand, agentStopCommand, type ProfileName } from "../copilot_api/profile.ts";
+import { agentStartCommand, agentStopCommand } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../copilot_api/idle_watchdog.ts";
 import type { CommandLook } from "../utils/command.ts";
@@ -11,12 +11,13 @@ import { versionLessThan } from "../utils/semver.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import {
+  checkAgentLive,
   checkClaude,
   checkClaudeDesktop,
-  checkClaudeLive,
   checkCodex,
   checkCodexHost,
-  checkCodexLive,
+  ghAccountClause,
+  ghCouldNotCheck,
 } from "./checks_agents.ts";
 import type {
   AuthFacts,
@@ -31,12 +32,11 @@ import type {
   RuntimeTarget,
   ShellFacts,
 } from "./facts.ts";
-import type { CheckOutcome, CheckResult, HealthScope } from "./types.ts";
-import { ghCouldNotCheck } from "./checks_agents.ts";
+import type { CheckGroup, CheckId, CheckOutcome, CheckResult, HealthScope } from "./types.ts";
 import { meta, profileAddFix, SETUP_SCOPES as SETUP } from "./types.ts";
 
-/** THE predicate shared by checkAuth and checkProfileAuth: a stored token resolves by presence,
- *  gh-cli by the live gh probe, none never. */
+/** THE predicate of checkAuth, for both targets: a stored token resolves by presence, gh-cli by
+ *  the live gh probe, none never. */
 function credentialResolves(kind: StoredCredential["kind"], ghAuthenticated: boolean): boolean {
   switch (kind) {
     case "stored":
@@ -58,14 +58,14 @@ export function checkCliVersion(f: BootstrapFacts): CheckResult {
   };
 }
 
+/** Health runs on Deno, so the runtime is always present: the row names its version. */
 export function checkDeno(f: BootstrapFacts): CheckResult {
-  const { available, version } = f.deno;
-  const base = { ...meta("bootstrap.deno"), profile: null, value: { available, version } };
-  return available ? { ...base, status: "ok", detail: `deno ${version ?? "?"}` } : {
-    ...base,
-    status: "fail",
-    detail: "Deno runtime not detected",
-    fix: "install Deno (https://deno.com)",
+  return {
+    ...meta("bootstrap.deno"),
+    profile: null,
+    status: "ok",
+    detail: `deno ${f.denoVersion}`,
+    value: { available: true, version: f.denoVersion },
   };
 }
 
@@ -385,7 +385,7 @@ export function checkRuntimePaths(f: RuntimeTarget): CheckResult {
 
 export function checkRuntimeWatchdog(f: RuntimeTarget): CheckResult {
   const w = f.watchdog;
-  // Scoped to full + proxy, NOT the launchers' fast `runtime` probe (informational; reads the
+  // Scoped to full + proxy, NOT the fast `runtime` probe scope (informational; reads the
   // config and activity file). Always "ok": it reports state, it never fails a run.
   const base = { ...meta("runtime.watchdog"), profile: f.profile, status: "ok" as const };
   if (!f.proxyExpected) {
@@ -616,116 +616,6 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
   return { ...base, status: "ok", detail };
 }
 
-/** The account note for a gh-cli slot's verdict lines, on the failing and unproven lines too (no
- *  hidden information): the pinned login, or the account an auto slot follows right now (bare
- *  AUTO when the list was unreadable). */
-function ghAccountClause(pin: string | null, followed: string | null): string {
-  return pin !== null
-    ? `account '${pin}'`
-    : followed !== null
-    ? `AUTO - currently account ${followed}`
-    : "AUTO - follows gh's active account";
-}
-
-/**
- * A narrowed run's credential line, mirroring checkAuth's provider-driven verdict. `slot` null
- * means the store carries no slot at all (a half-created, home-only profile). Named profiles
- * never fall back to the default credential, so a missing or unresolvable one is a warn here
- * even when the default `setup.auth` is green.
- */
-export function checkProfileAuth(
-  name: ProfileName,
-  slot: ProfileAuthFacts | null,
-  resolution: {
-    storedToken: boolean;
-    ghAuthenticated: boolean;
-    ghUser?: string | null;
-    ghActiveLogin?: string | null;
-    ghCommand?: string;
-    ghDetail?: string;
-    ghAuthUnproven?: true;
-  },
-): CheckResult {
-  const base = {
-    ...meta("setup.auth"),
-    profile: name,
-    value: {
-      provider: slot?.provider ?? null,
-      mode: slot?.mode ?? null,
-      storedToken: resolution.storedToken,
-      ghAuthenticated: resolution.ghAuthenticated,
-      ...(resolution.ghAuthUnproven ? { ghAuthUnproven: true } : {}),
-    },
-  };
-  // A slot with no recorded mode (or none at all) needs an explicit mode flag on the re-add;
-  // with a mode recorded the bare re-add keeps it (sticky).
-  const addFix = slot === null || slot.mode === null
-    ? `agent profile ${name} add --direct|--proxy`
-    : profileAddFix(name);
-  if (slot === null || slot.provider === null) {
-    return {
-      ...base,
-      status: "warn",
-      detail: [
-        `no credential recorded for profile '${name}'`,
-        "named profiles never fall back to the default credential",
-      ].join("\n"),
-      fix: addFix,
-    };
-  }
-  const source = storedCredentialKind(slot.provider, resolution.storedToken);
-  const resolves = credentialResolves(source, resolution.ghAuthenticated);
-  // Always name the account (no hidden information), on the failing and unproven lines too.
-  const pin = resolution.ghUser ?? null;
-  const followed = resolution.ghActiveLogin ?? null;
-  const accountClause = ghAccountClause(pin, followed);
-  if (!resolves) {
-    // An unproven gh probe keeps this warn arm (the credential still is not shown to work) but
-    // must not claim gh IS unauthenticated: gh was never asked.
-    const unproven = slot.provider === "gh-cli" && resolution.ghAuthUnproven === true;
-    return {
-      ...base,
-      status: "warn",
-      detail: [
-        unproven
-          ? `provider 'gh-cli' is recorded for profile '${name}' but its credential could not be checked`
-          : `provider '${slot.provider}' is recorded for profile '${name}' but no credential resolves`,
-        slot.provider === "gh-cli"
-          ? unproven
-            ? ghCouldNotCheck(resolution.ghDetail, accountClause)
-            : pin === null
-            ? `\`gh\` is unauthenticated (${accountClause}) - run \`gh auth login\`, or re-provision the profile`
-            : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or re-provision the profile`
-          : `the slot's stored token is missing - run \`agent profile ${name} auth\` to re-provision`,
-      ].join("\n"),
-      fix: `agent profile ${name} auth`,
-    };
-  }
-  const how = slot.provider === "gh-cli"
-    ? pin !== null
-      ? resolution.ghCommand === undefined
-        ? `gh CLI (\`gh auth token --user ${pin}\`)`
-        : `gh CLI (\`${resolution.ghCommand}\`, account ${pin})`
-      : followed !== null
-      ? `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`
-      : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
-    : "stored GitHub token";
-  const start = agentStartCommand(name);
-  const usage = slot.mode === "proxy"
-    ? `resolved by \`agent profile ${name} auth --get\`; passed to the profile's daemon on \`${start}\``
-    : slot.mode === "direct"
-    ? `resolved by \`agent profile ${name} auth --get\` for Direct`
-    : `resolved by \`agent profile ${name} auth --get\``;
-  return {
-    ...base,
-    status: "ok",
-    detail: [
-      `credential: ${how} (provider: ${slot.provider}, mode: ${slot.mode ?? "none"})`,
-      usage,
-    ].join("\n"),
-  };
-}
-
 export function checkShellIntegration(f: ShellFacts): CheckResult {
   const base = {
     ...meta("setup.shell"),
@@ -775,39 +665,18 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
     };
 }
 
-export function checkCli(c: CliFacts): CheckResult {
+/** One PATH-look row, shared by the CLI census (checkCli) and the node/npm tools: only the
+ *  identity and the extra `value` fields differ. A FAILED look is not a proven absence: the same
+ *  warn + fix, honest words. */
+export function checkLook(
+  identity: { id: CheckId; label: string; group: CheckGroup; scopes: readonly HealthScope[] },
+  look: CommandLook,
+  value: Record<string, unknown> = {},
+): CheckResult {
   const base = {
-    // The one check family whose id is minted outside the descriptor table: the CLI list is
-    // runtime data (see CHECK_DESCRIPTORS).
-    id: `setup.cli.${c.command}` as const,
-    label: `${c.name} (${c.command})`,
-    group: "setup" as const,
+    ...identity,
     profile: null,
-    scopes: SETUP,
-    value: {
-      command: c.command,
-      resolved: c.look.path,
-      ...(c.look.launchFailed ? { lookFailed: true } : {}),
-    },
-  };
-  if (c.look.path !== null) return { ...base, status: "ok", detail: c.look.path };
-  // A FAILED look is not a proven absence: same warn + fix, honest words.
-  if (c.look.launchFailed) {
-    return {
-      ...base,
-      status: "warn",
-      detail: "could not check (the command probe failed to run)",
-      fix: "agent shell --clis",
-    };
-  }
-  return { ...base, status: "warn", detail: "not installed (optional)", fix: "agent shell --clis" };
-}
-
-export function checkTool(name: "node" | "npm", look: CommandLook): CheckResult {
-  const base = {
-    ...meta(`setup.tool.${name}`),
-    profile: null,
-    value: { resolved: look.path, ...(look.launchFailed ? { lookFailed: true } : {}) },
+    value: { ...value, resolved: look.path, ...(look.launchFailed ? { lookFailed: true } : {}) },
   };
   if (look.path !== null) return { ...base, status: "ok", detail: look.path };
   if (look.launchFailed) {
@@ -821,103 +690,173 @@ export function checkTool(name: "node" | "npm", look: CommandLook): CheckResult 
   return { ...base, status: "warn", detail: "not installed (optional)", fix: "agent shell --clis" };
 }
 
+/** The one check family whose id is minted outside the descriptor table: the CLI list is runtime
+ *  data (see CHECK_DESCRIPTORS). */
+export function checkCli(c: CliFacts): CheckResult {
+  return checkLook(
+    {
+      id: `setup.cli.${c.command}`,
+      label: `${c.name} (${c.command})`,
+      group: "setup",
+      scopes: SETUP,
+    },
+    c.look,
+    { command: c.command },
+  );
+}
+
+/**
+ * One credential line per target. The default's status is driven by the store's default
+ * credential; named profiles surface there as a detail line only, because a named profile never
+ * falls back to the default credential: its own line (a narrowed run's) warns when nothing
+ * resolves, even while the default `setup.auth` is green. A named `slot` of null means the store
+ * carries no slot at all (a half-created, home-only profile).
+ */
 export function checkAuth(f: AuthFacts): CheckResult {
-  // Named profiles surface as a detail line only: their hard-fail resolution is a per-profile
-  // concern, and the default credential drives this check's status.
-  const profileEntries = Object.entries(f.profiles).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  const profilesLine = profileEntries.length === 0 ? [] : [
-    `named profiles: ${
-      profileEntries
-        .map(([name, slot]) => {
-          return `${name} (${slot.provider ?? "no auth"}, ${slot.mode ?? "no mode"})`;
-        })
-        .join(", ")
-    }`,
-  ];
-  // A pin overrides the per-credential identity probe: the knob a fine-grained PAT needs
-  // (copilot-developer-cli) when auto-detection is off.
-  const identityLine = f.pinnedIntegrationId === null ? [] : [
-    `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`${
-      configGetCommand("identity")
-    }\`)`,
-  ];
+  const name = f.profile;
+  const slot: ProfileAuthFacts | null = f.profile === null
+    ? { provider: f.provider, mode: null }
+    : f.slot;
+  const resolution = {
+    storedToken: f.storedToken,
+    ghAuthenticated: f.ghAuthenticated,
+    ...(f.ghAuthUnproven ? { ghAuthUnproven: true } : {}),
+  };
+  // The default's trailing lines: its named profiles, and the identity pin that overrides the
+  // per-credential identity probe (the knob a fine-grained PAT needs, copilot-developer-cli, when
+  // auto-detection is off).
+  const tail: string[] = [];
+  if (f.profile === null) {
+    const profileEntries = Object.entries(f.profiles).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0
+    );
+    if (profileEntries.length > 0) {
+      tail.push(
+        `named profiles: ${
+          profileEntries
+            .map(([entry, s]) => `${entry} (${s.provider ?? "no auth"}, ${s.mode ?? "no mode"})`)
+            .join(", ")
+        }`,
+      );
+    }
+    if (f.pinnedIntegrationId !== null) {
+      tail.push(
+        `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`${
+          configGetCommand("identity")
+        }\`)`,
+      );
+    }
+  }
   const base = {
     ...meta("setup.auth"),
-    profile: null,
-    value: {
-      storedToken: f.storedToken,
-      ghAuthenticated: f.ghAuthenticated,
-      ...(f.ghAuthUnproven ? { ghAuthUnproven: true } : {}),
-      provider: f.provider,
-      profiles: f.profiles,
-      pinnedIntegrationId: f.pinnedIntegrationId,
-    },
+    profile: name,
+    value: f.profile === null
+      ? {
+        ...resolution,
+        provider: f.provider,
+        profiles: f.profiles,
+        pinnedIntegrationId: f.pinnedIntegrationId,
+      }
+      : { provider: slot?.provider ?? null, mode: slot?.mode ?? null, ...resolution },
   };
+  const authFix = name === null ? "agent auth" : `agent profile ${name} auth`;
   // Provider classification is storedCredentialKind()'s (env_state.ts); a chosen-but-unresolved
   // provider is a warn, not OK.
-  if (f.provider === null) {
+  if (slot === null || slot.provider === null) {
+    if (name === null) {
+      return {
+        ...base,
+        status: "warn",
+        detail: [
+          "not authenticated: no credential provider is configured",
+          "run `agent auth` (neither Direct nor `agent start` works without one)",
+          ...tail,
+        ].join("\n"),
+        fix: authFix,
+      };
+    }
+    // A slot with no recorded mode (or none at all) needs an explicit mode flag on the re-add;
+    // with a mode recorded the bare re-add keeps it (sticky).
     return {
       ...base,
       status: "warn",
       detail: [
-        "not authenticated: no credential provider is configured",
-        "run `agent auth` (neither Direct nor `agent start` works without one)",
-        ...profilesLine,
-        ...identityLine,
+        `no credential recorded for profile '${name}'`,
+        "named profiles never fall back to the default credential",
       ].join("\n"),
-      fix: "agent auth",
+      fix: slot === null || slot.mode === null
+        ? `agent profile ${name} add --direct|--proxy`
+        : profileAddFix(name),
     };
   }
-  const source = storedCredentialKind(f.provider, f.storedToken);
-  const resolves = credentialResolves(source, f.ghAuthenticated);
-  // Always name the account (no hidden information); see checkProfileAuth's twin.
+  const provider = slot.provider;
+  const resolves = credentialResolves(
+    storedCredentialKind(provider, f.storedToken),
+    f.ghAuthenticated,
+  );
+  // Always name the account (no hidden information), on the failing and unproven lines too.
   const pin = f.ghUser ?? null;
   const followed = f.ghActiveLogin ?? null;
-  if (resolves) {
-    const how = f.provider === "gh-cli"
-      ? pin !== null
-        ? f.ghCommand === undefined
-          ? `gh CLI (\`gh auth token --user ${pin}\`)`
-          : `gh CLI (\`${f.ghCommand}\`, account ${pin})`
-        : followed !== null
-        ? `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`
-        : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
-      : "stored GitHub token";
+  const accountClause = ghAccountClause(pin, followed);
+  if (!resolves) {
+    // An unproven gh probe keeps this warn arm (nothing was shown to resolve) but must not claim
+    // gh IS unauthenticated: `gh auth token` never ran to completion, so the `gh auth login`
+    // advice would be handed out unearned.
+    const unproven = provider === "gh-cli" && f.ghAuthUnproven === true;
+    const where = name === null ? "is selected" : `is recorded for profile '${name}'`;
+    // The default's other way out is another provider; a named slot is re-provisioned.
+    const orElse = name === null
+      ? pin === null ? "`agent auth` to switch provider" : "`agent auth` to switch"
+      : "re-provision the profile";
     return {
       ...base,
-      status: "ok",
+      status: "warn",
       detail: [
-        `credential: ${how} (provider: ${f.provider})`,
-        "resolved by `agent auth --get` for Direct; passed to the proxy on `agent start`",
-        ...profilesLine,
-        ...identityLine,
+        unproven
+          ? `provider 'gh-cli' ${where} but its credential could not be checked`
+          : `provider '${provider}' ${where} but no credential resolves`,
+        provider === "gh-cli"
+          ? unproven
+            ? ghCouldNotCheck(f.ghDetail, accountClause)
+            : pin === null
+            ? `\`gh\` is unauthenticated (${accountClause}) - run \`gh auth login\`, or ${orElse}`
+            : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or ${orElse}`
+          : name === null
+          ? "the stored token is missing - run `agent auth` to re-provision"
+          : `the slot's stored token is missing - run \`${authFix}\` to re-provision`,
+        ...tail,
       ].join("\n"),
+      fix: authFix,
     };
   }
-  // An unproven gh probe keeps this warn arm (nothing was shown to resolve) but must not claim
-  // gh IS unauthenticated: `gh auth token` never ran to completion, so the `gh auth login`
-  // advice would be handed out unearned.
-  const unproven = f.provider === "gh-cli" && f.ghAuthUnproven === true;
+  const how = provider === "gh-cli"
+    ? pin !== null
+      ? f.ghCommand === undefined
+        ? `gh CLI (\`gh auth token --user ${pin}\`)`
+        : `gh CLI (\`${f.ghCommand}\`, account ${pin})`
+      : followed !== null
+      ? `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`
+      : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
+    : "stored GitHub token";
+  const usage = name === null
+    ? "resolved by `agent auth --get` for Direct; passed to the proxy on `agent start`"
+    : slot.mode === "proxy"
+    ? `resolved by \`${authFix} --get\`; passed to the profile's daemon on \`${
+      agentStartCommand(name)
+    }\``
+    : slot.mode === "direct"
+    ? `resolved by \`${authFix} --get\` for Direct`
+    : `resolved by \`${authFix} --get\``;
   return {
     ...base,
-    status: "warn",
+    status: "ok",
     detail: [
-      unproven
-        ? "provider 'gh-cli' is selected but its credential could not be checked"
-        : `provider '${f.provider}' is selected but no credential resolves`,
-      f.provider === "gh-cli"
-        ? unproven
-          ? ghCouldNotCheck(f.ghDetail, ghAccountClause(pin, followed))
-          : pin === null
-          ? `\`gh\` is unauthenticated (${
-            ghAccountClause(pin, followed)
-          }) - run \`gh auth login\`, or \`agent auth\` to switch provider`
-          : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or \`agent auth\` to switch`
-        : "the stored token is missing - run `agent auth` to re-provision",
-      ...profilesLine,
-      ...identityLine,
+      `credential: ${how} (provider: ${provider}${
+        name === null ? "" : `, mode: ${slot.mode ?? "none"}`
+      })`,
+      usage,
+      ...tail,
     ].join("\n"),
-    fix: "agent auth",
   };
 }
 
@@ -981,22 +920,20 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   if (facts.shell) {
     out.push(checkShellIntegration(facts.shell), checkLaunchers(facts.shell));
   }
-  if (facts.clis) {
-    for (const c of facts.clis) out.push(checkCli(c));
-  }
+  for (const c of facts.clis ?? []) out.push(checkCli(c));
   if (facts.tools) {
-    out.push(checkTool("node", facts.tools.node), checkTool("npm", facts.tools.npm));
+    out.push(
+      checkLook(meta("setup.tool.node"), facts.tools.node),
+      checkLook(meta("setup.tool.npm"), facts.tools.npm),
+    );
   }
   if (facts.auth) out.push(checkAuth(facts.auth));
-  if (facts.profileAuth) {
-    out.push(checkProfileAuth(facts.profileAuth.name, facts.profileAuth.slot, facts.profileAuth));
-  }
   if (facts.codex) out.push(checkCodex(facts.codex, runProfile));
-  if (facts.codexLive) out.push(checkCodexLive(facts.codexLive, runProfile));
+  if (facts.codexLive) out.push(checkAgentLive("codex", facts.codexLive, runProfile));
   if (facts.codexHost) out.push(checkCodexHost(facts.codexHost));
   if (facts.claude) out.push(checkClaude(facts.claude, runProfile));
   if (facts.claudeDesktop) out.push(checkClaudeDesktop(facts.claudeDesktop));
-  if (facts.claudeLive) out.push(checkClaudeLive(facts.claudeLive, runProfile));
+  if (facts.claudeLive) out.push(checkAgentLive("claude", facts.claudeLive, runProfile));
   if (facts.autoupdate) out.push(checkAutoupdate(facts.autoupdate));
   // The single source of the scope rule, shared with the --json path and the unit tests.
   return filterByScope(out, scope);

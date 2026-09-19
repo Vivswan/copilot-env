@@ -1,8 +1,13 @@
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand } from "../src/claude/config.ts";
+import { inspectCodexWiring } from "../src/codex/inspect.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import type { TextReadResult } from "../src/utils/fs_facade.ts";
+import {
+  markInference,
+  resetInferenceActivityForTests,
+} from "../src/copilot_api/inference_activity.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
 import {
   buildHealthJson,
@@ -17,17 +22,13 @@ import {
   checkCliVersion,
   checkDeno,
   checkLaunchers,
+  checkLook,
   checkNodeModules,
   checkProxyPackage,
   checkProxyResolved,
   checkProxySidecar,
-  checkRuntimeIdentity,
-  checkRuntimeOrphan,
-  checkRuntimePid,
-  checkRuntimePort,
   checkRuntimeWatchdog,
   checkShellIntegration,
-  checkTool,
   evaluateAll,
 } from "../src/health/checks.ts";
 import { checkClaude, checkCodex } from "../src/health/checks_agents.ts";
@@ -46,17 +47,25 @@ import {
   type RuntimeTarget,
   type WatchdogFacts,
 } from "../src/health/facts.ts";
-import { evalCodex, evalShellFiles, gatherFacts } from "../src/health/probe.ts";
+import { gatherFacts } from "../src/health/probe.ts";
 import { runLiveCli } from "../src/health/probe_deps.ts";
-import type { CheckId, CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
-import { expect, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot } from "./helpers/env.ts";
+import {
+  type CheckId,
+  type CheckResult,
+  type CheckStatus,
+  type HealthScope,
+  meta,
+} from "../src/health/types.ts";
+import { probeOf, runIdentity, runOrphan, runPid, runPort } from "./helpers/health.ts";
+import { expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 import {
   type ClaudeSettingsOptions,
   codexConfigToml,
   type CodexConfigTomlOptions,
   writeClaudeSettings,
   writeCodexConfigToml,
+  writeRunState,
 } from "./helpers/fixtures.ts";
 
 // --- fixtures ---------------------------------------------------------------
@@ -92,16 +101,6 @@ function probedFrom(proxyExpected: boolean, o: TargetOverrides): DaemonProbed {
   };
   return { kind: "probed", ...raw, portState: classifyPortState({ proxyExpected, ...raw }) };
 }
-
-function probeOf(t: RuntimeTarget | undefined): DaemonProbed {
-  if (!t || t.probe.kind !== "probed") throw new Error("expected a probed runtime target");
-  return t.probe;
-}
-
-const runPort = (t: RuntimeTarget) => checkRuntimePort(t, probeOf(t));
-const runPid = (t: RuntimeTarget) => checkRuntimePid(t, probeOf(t));
-const runIdentity = (t: RuntimeTarget) => checkRuntimeIdentity(t, probeOf(t));
-const runOrphan = (t: RuntimeTarget) => checkRuntimeOrphan(t, probeOf(t));
 
 function defaultTarget(overrides: TargetOverrides = {}): DefaultRuntimeTarget {
   const proxyExpected = overrides.proxyExpected ?? true;
@@ -147,7 +146,7 @@ function profileTarget(name: string, overrides: TargetOverrides = {}): RuntimeTa
 
 const BOOTSTRAP_OK: BootstrapFacts = {
   cliVersion: "3.1.0",
-  deno: { available: true, version: "2.9.5" },
+  denoVersion: "2.9.5",
   nodeModules: { present: true, fresh: true },
 };
 
@@ -624,20 +623,22 @@ test("proxy resolved: no record is ok, a record with a missing cache fails", () 
 test("gatherFacts probes the proxy at 127.0.0.1, never localhost (Windows IPv6 safety)", async () => {
   // The daemon binds IPv4; on Windows `localhost` resolves to ::1 first with no fallback, so a
   // localhost probe falsely reports the proxy down.
-  let probed = "";
-  await gatherFacts(
-    "runtime",
-    {},
-    {
-      resolvePort: () => "4141",
-      readState: () => ({ pid: undefined, port: 4141 }),
+  const restoreEnv = envSnapshot();
+  const home = isolateProxyHome("copilot-health-loopback-");
+  try {
+    writeRunState({ port: 4141 });
+    let probed = "";
+    await gatherFacts("runtime", {}, {
       reach: async (url: string) => {
         probed = url;
         return true;
       },
-    },
-  );
-  expect(probed).toBe("http://127.0.0.1:4141/");
+    });
+    expect(probed).toBe("http://127.0.0.1:4141/");
+  } finally {
+    restoreEnv();
+    removeDir(home);
+  }
 });
 
 test("runtime port + pid verdicts over the probe states of a default target", () => {
@@ -1004,23 +1005,25 @@ test("runtime checks stamp the target's profile; environment checks stay null", 
   expect(checkCliVersion(BOOTSTRAP_OK).profile).toBeNull();
 });
 
-test("the identity probe (an extra request) is skipped in the launchers' fast runtime scope", async () => {
-  let identityCalls = 0;
-  const facts = await gatherFacts(
-    "runtime",
-    {},
-    {
-      resolvePort: () => "4141",
-      readState: () => ({ pid: undefined, port: 4141 }),
+test("the identity probe (an extra request) is skipped in the fast runtime scope", async () => {
+  const restoreEnv = envSnapshot();
+  const home = isolateProxyHome("copilot-health-fast-scope-");
+  try {
+    writeRunState({ port: 4141 });
+    let identityCalls = 0;
+    const facts = await gatherFacts("runtime", {}, {
       reach: async () => true,
       proxyIdentity: async () => {
         identityCalls++;
         return true;
       },
-    },
-  );
-  expect(identityCalls).toBe(0);
-  expect(probeOf(facts.runtimes?.[0]).identityConfirmed).toBeNull();
+    });
+    expect(identityCalls).toBe(0);
+    expect(probeOf(facts.runtimes?.[0]).identityConfirmed).toBeNull();
+  } finally {
+    restoreEnv();
+    removeDir(home);
+  }
 });
 
 test("gatherFacts probes identity only when an agent routes through the proxy", async () => {
@@ -1063,6 +1066,7 @@ test("gatherFacts probes identity only when an agent routes through the proxy", 
     const restoreEnv = envSnapshot();
     process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
     try {
+      writeRunState({ port: 4141 });
       const codexHome = join(root, "codex-home");
       writeCodexConfigToml(codexHome, row.codex);
       const claudeHome = join(root, "claude-home");
@@ -1072,8 +1076,6 @@ test("gatherFacts probes identity only when an agent routes through the proxy", 
         "proxy", // an identity-probing scope (unlike the fast `runtime` one)
         {},
         {
-          resolvePort: () => "4141",
-          readState: () => ({ port: 4141 }),
           reach: async () => true, // a listener answers on the port
           proxyIdentity: async () => {
             identityCalls++;
@@ -1121,8 +1123,6 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
       baseUrl: "http://127.0.0.1:4141",
     });
     const deps = {
-      resolvePort: () => "4141",
-      readState: () => ({}),
       codexHome: () => codexHome,
       claudeHome: () => claudeHome,
     };
@@ -1139,18 +1139,14 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
 
     // Reachable: the identity probe fires again (proxyExpected gates it).
     let identityCalls = 0;
-    const up = await gatherFacts(
-      "proxy",
-      {},
-      {
-        ...deps,
-        reach: async () => true,
-        proxyIdentity: async () => {
-          identityCalls++;
-          return true;
-        },
+    const up = await gatherFacts("proxy", {}, {
+      ...deps,
+      reach: async () => true,
+      proxyIdentity: async () => {
+        identityCalls++;
+        return true;
       },
-    );
+    });
     expect(identityCalls).toBe(1);
     expect(probeOf(up.runtimes?.[0]).identityConfirmed).toBe(true);
   } finally {
@@ -1160,63 +1156,70 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
 });
 
 test("an unreadable settings file reaches health as other/read-error, never as none", async () => {
-  // The settings file is read three-way (deps.readFileResult); readFileSafe's null would collapse an
-  // unreadable file into the absent/none verdict.
-  const claudeHome = "/hc";
-  const deps = {
-    claudeHome: () => claudeHome,
-    readFileSafe: () => null,
-    readFileResult: (): TextReadResult => ({ kind: "unreadable", error: "EACCES" }),
-    resolvePort: () => "4141",
-    authProvider: () => null,
-    storedTokenPresent: () => false,
-    codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
-    ghActiveLogin: () => Promise.resolve(null),
-  };
-  const facts = await gatherFacts("claude", {}, deps);
-  expect(facts.claude?.providerMode).toBe("other");
-  expect(facts.claude?.otherReason).toBe("read-error");
-  if (!facts.claude) throw new Error("expected claude facts");
-  const verdict = checkClaude(facts.claude);
-  expect(verdict.status).toBe("warn");
-  expect(verdict.detail).toContain("could not be read");
+  // The settings file is read three-way (readTextResult); a null read would collapse an unreadable
+  // file into the absent/none verdict. A directory at the file's path is unreadable on every OS.
+  const restoreEnv = envSnapshot();
+  const home = isolateProxyHome("copilot-health-unreadable-claude-");
+  try {
+    const claudeHome = join(home, "claude-home");
+    mkdirSync(join(claudeHome, "settings.json"), { recursive: true });
+    const facts = await gatherFacts("claude", {}, {
+      claudeHome: () => claudeHome,
+      codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+      ghActiveLogin: () => Promise.resolve(null),
+    });
+    expect(facts.claude?.providerMode).toBe("other");
+    expect(facts.claude?.otherReason).toBe("read-error");
+    if (!facts.claude) throw new Error("expected claude facts");
+    const verdict = checkClaude(facts.claude, null);
+    expect(verdict.status).toBe("warn");
+    expect(verdict.detail).toContain("could not be read");
+  } finally {
+    restoreEnv();
+    removeDir(home);
+  }
 });
 
 test("an unreadable codex config reaches health as other/read-error, never as none", async () => {
-  // The codex config.toml is read three-way too; readFileSafe's null once collapsed an unreadable
-  // config into the absent "not wired" OK verdict.
-  const deps = {
-    codexHome: () => "/hx",
-    readFileSafe: () => null,
-    readFileResult: (): TextReadResult => ({ kind: "unreadable", error: "EACCES" }),
-    resolvePort: () => "4141",
-    codexTokenInEnviron: () => false,
-    authProvider: () => null,
-    storedTokenPresent: () => false,
-    codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
-    ghActiveLogin: () => Promise.resolve(null),
-  };
-  const facts = await gatherFacts("codex", {}, deps);
-  expect(facts.codex?.providerMode).toBe("other");
-  expect(facts.codex?.otherReason).toBe("read-error");
-  expect(facts.codex?.configExists).toBe(true);
-  if (!facts.codex) throw new Error("expected codex facts");
-  const verdict = checkCodex(facts.codex);
-  expect(verdict.status).toBe("warn");
-  expect(verdict.detail).toContain("could not be read");
-  expect(verdict.fix).toContain("repair");
+  // The codex config.toml is read three-way too; a null read once collapsed an unreadable config
+  // into the absent "not wired" OK verdict.
+  const restoreEnv = envSnapshot(["OPENAI_API_KEY"]);
+  const home = isolateProxyHome("copilot-health-unreadable-codex-");
+  try {
+    delete process.env.OPENAI_API_KEY;
+    const codexHome = join(home, "codex-home");
+    mkdirSync(join(codexHome, "config.toml"), { recursive: true });
+    const facts = await gatherFacts("codex", {}, {
+      codexHome: () => codexHome,
+      codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+      ghActiveLogin: () => Promise.resolve(null),
+    });
+    expect(facts.codex?.providerMode).toBe("other");
+    expect(facts.codex?.otherReason).toBe("read-error");
+    expect(facts.codex?.configExists).toBe(true);
+    if (!facts.codex) throw new Error("expected codex facts");
+    const verdict = checkCodex(facts.codex, null);
+    expect(verdict.status).toBe("warn");
+    expect(verdict.detail).toContain("could not be read");
+    expect(verdict.fix).toContain("repair");
+  } finally {
+    restoreEnv();
+    removeDir(home);
+  }
 });
 
 test("health's own proxy probes do not move the watchdog activity signal", async () => {
   // lastRequestMs reads the observer's persisted `.activity.json` mark; only inference POSTs move
   // it, so health's own GET probes cannot reset the idle signal.
-  let probes = 0;
-  const facts = await gatherFacts(
-    "proxy",
-    {},
-    {
-      resolvePort: () => "4141",
-      readState: () => ({ pid: 123, port: 4141, lastEnsureAt: 1000 }),
+  const restoreEnv = envSnapshot();
+  const home = isolateProxyHome("copilot-health-watchdog-");
+  try {
+    writeRunState({ pid: 123, port: 4141, lastEnsureAt: 1000 });
+    new CopilotEnvConfig().set({ "daemon.auto-start": true, "daemon.idle-timeout": 60 });
+    resetInferenceActivityForTests();
+    markInference(100_000); // the persisted mark of an old real request
+    let probes = 0;
+    const facts = await gatherFacts("proxy", {}, {
       reach: async () => {
         probes++;
         return true;
@@ -1225,15 +1228,22 @@ test("health's own proxy probes do not move the watchdog activity signal", async
         probes++;
         return true;
       },
-      lastRequestMs: () => 100, // a fixed, old "last real request" (the persisted mark)
-      now: () => 5000,
-      autoStartEnabled: () => true,
-      idleTimeoutMs: () => 60_000,
-    },
-  );
-  expect(probes).toBeGreaterThan(0);
-  expect(facts.runtimes?.[0]?.watchdog.lastRequestMs).toBe(100);
-  expect(facts.runtimes?.[0]?.watchdog.now).toBe(5000);
+      classifyTrackedPid: async () => "yes",
+      now: () => 5_000_000,
+    });
+    expect(probes).toBeGreaterThan(0);
+    expect(facts.runtimes?.[0]?.watchdog).toEqual({
+      autoStart: true,
+      idleTimeoutMs: 60_000,
+      lastEnsureAt: 1000,
+      lastRequestMs: 100_000,
+      now: 5_000_000,
+    });
+  } finally {
+    resetInferenceActivityForTests();
+    restoreEnv();
+    removeDir(home);
+  }
 });
 
 test("gatherFacts derives proxy.floatSkips from the float's own predicate", async () => {
@@ -1254,8 +1264,6 @@ test("gatherFacts derives proxy.floatSkips from the float's own predicate", asyn
     });
 
     const overrides = {
-      resolvePort: () => "4141",
-      readState: () => ({}),
       reach: async () => false,
       codexHome: () => codexHome,
       claudeHome: () => claudeHome,
@@ -1273,25 +1281,19 @@ test("gatherFacts derives proxy.floatSkips from the float's own predicate", asyn
   }
 });
 
-test("a target's pid and port pair from ONE state snapshot (fallback never re-reads)", async () => {
-  // proxyStatus's rule: with no recorded port the fallback is fallbackPort, never a second read()
-  // that could pair the snapshot's pid with a newer port.
-  let stateReads = 0;
-  const facts = await gatherFacts(
-    "runtime",
-    {},
-    {
-      resolvePort: () => "4141", // the wiring expectation, not the target snapshot
-      readState: () => {
-        stateReads++;
-        return {}; // no recorded port -> the fallback path
-      },
-      fallbackPort: () => 4444,
-      reach: async () => false,
-    },
-  );
-  expect(stateReads).toBe(1);
-  expect(facts.runtimes?.[0]?.port).toBe(4444);
+test("with no recorded port the default target probes the configured port, marked unpersisted", async () => {
+  // proxyStatus's rule: the port comes from the run-state snapshot, else the configured default,
+  // and only a recorded port counts as persisted (a named target's probe gate).
+  const restoreEnv = envSnapshot();
+  const home = isolateProxyHome("copilot-health-fallback-");
+  try {
+    new CopilotEnvConfig().set({ "daemon.port": 4444 });
+    const facts = await gatherFacts("runtime", {}, { reach: async () => false });
+    expect(facts.runtimes?.[0]).toMatchObject({ port: 4444, portPersisted: false });
+  } finally {
+    restoreEnv();
+    removeDir(home);
+  }
 });
 
 test("gatherFacts is read-only: no files appear in a fresh isolated home", async () => {
@@ -1321,11 +1323,8 @@ test("gatherFacts is read-only: no files appear in a fresh isolated home", async
 
 // --- bootstrap checks -------------------------------------------------------
 
-test("deno unavailable fails; node_modules absent fails, stale warns, fresh ok", () => {
-  expect(checkDeno(BOOTSTRAP_OK).status).toBe("ok");
-  expect(checkDeno({ ...BOOTSTRAP_OK, deno: { available: false, version: null } }).status).toBe(
-    "fail",
-  );
+test("deno is named; node_modules absent fails, stale warns, fresh ok", () => {
+  expect(checkDeno(BOOTSTRAP_OK)).toMatchObject({ status: "ok", detail: "deno 2.9.5" });
   expect(checkNodeModules(BOOTSTRAP_OK).status).toBe("ok");
   expect(
     checkNodeModules({ ...BOOTSTRAP_OK, nodeModules: { present: false, fresh: false } }).status,
@@ -1378,10 +1377,17 @@ test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look 
   expect(unproven.fix).toBe("agent shell --clis");
   expect(unproven.value).toEqual({ command: "codex", resolved: null, lookFailed: true });
 
-  expect(checkTool("node", { path: "/usr/bin/node" }).status).toBe("ok");
-  expect(checkTool("npm", { path: null }).status).toBe("warn");
-  expect(checkTool("npm", { path: null }).detail).toBe("not installed (optional)");
-  const toolUnproven = checkTool("npm", { path: null, launchFailed: true });
+  // The tools share the CLI census's look row under their own registered ids.
+  expect(checkLook(meta("setup.tool.node"), { path: "/usr/bin/node" })).toMatchObject({
+    id: "setup.tool.node",
+    label: "node",
+    status: "ok",
+  });
+  expect(checkLook(meta("setup.tool.npm"), { path: null })).toMatchObject({
+    status: "warn",
+    detail: "not installed (optional)",
+  });
+  const toolUnproven = checkLook(meta("setup.tool.npm"), { path: null, launchFailed: true });
   expect(toolUnproven.status).toBe("warn");
   expect(toolUnproven.detail).toBe("could not check (the command probe failed to run)");
   expect(toolUnproven.value).toEqual({ resolved: null, lookFailed: true });
@@ -1391,6 +1397,7 @@ test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look 
 
 test("checkAuth: the default credential facts decide status, detail, and fix", () => {
   const base = {
+    profile: null,
     storedToken: false,
     ghAuthenticated: false,
     profiles: {},
@@ -1452,6 +1459,7 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     storedToken: false,
     ghAuthenticated: false,
     ghAuthUnproven: true,
+    profile: null,
     provider: "gh-cli",
     profiles: {},
     pinnedIntegrationId: null,
@@ -1468,6 +1476,7 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
   const proven = checkAuth({
     storedToken: false,
     ghAuthenticated: false,
+    profile: null,
     provider: "gh-cli",
     profiles: {},
     pinnedIntegrationId: null,
@@ -1482,6 +1491,7 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     storedToken: false,
     ghAuthenticated: false,
     ghActiveLogin: "octocat",
+    profile: null,
     provider: "gh-cli",
     profiles: {},
     pinnedIntegrationId: null,
@@ -1494,6 +1504,7 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     storedToken: false,
     ghAuthenticated: false,
     ghUser: "work-bot",
+    profile: null,
     provider: "gh-cli",
     profiles: {},
     pinnedIntegrationId: null,
@@ -1507,6 +1518,7 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     storedToken: false,
     ghAuthenticated: true,
     ghUser: "work-bot",
+    profile: null,
     provider: "gh-cli",
     profiles: {},
     pinnedIntegrationId: null,
@@ -1520,6 +1532,7 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     ghAuthenticated: true,
     ghUser: "work-bot",
     ghCommand: "gh auth token --hostname github.com",
+    profile: null,
     provider: "gh-cli",
     profiles: {},
     pinnedIntegrationId: null,
@@ -1532,6 +1545,7 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     storedToken: false,
     ghAuthenticated: true,
     ghActiveLogin: "octocat",
+    profile: null,
     provider: "gh-cli",
     profiles: {},
     pinnedIntegrationId: null,
@@ -1562,23 +1576,40 @@ test("evaluateAll(full) includes the live checks only when their facts are prese
   expect(evaluateAll("full", {}).map((r) => r.id)).not.toContain("codex.live");
 });
 
-// --- pure sub-evaluators ----------------------------------------------------
+// --- setup facts ------------------------------------------------------------
 
-test("evalShellFiles: launchersWired is the config key; the marker stays a per-file fact", () => {
-  const integration = "# copilot-env shell integration";
-  const facts = evalShellFiles([
-    { path: "/a", content: `before\n${integration}\nsource x\n` },
-    { path: "/b", content: "source y\n" },
-    { path: "/c", content: null },
-  ], true);
-  expect(facts.integrationWired).toBe(true);
-  expect(facts.launchersWired).toBe(true);
-  expect(facts.files.find((f) => f.path === "/c")?.hasIntegration).toBe(false);
-  for (const content of ["source y\n", "export FOO=1\n"]) {
-    expect(evalShellFiles([{ path: "/b", content }], false), content).toMatchObject({
-      integrationWired: false,
+test("the shell census reads each target file for the marker; launchersWired is the config key", async () => {
+  const restoreEnv = envSnapshot();
+  const home = isolateProxyHome("copilot-health-shell-");
+  try {
+    const wired = join(home, "rc-wired");
+    const bare = join(home, "rc-bare");
+    writeFileSync(wired, `before\n# copilot-env shell integration\nsource x\n`);
+    writeFileSync(bare, "source y\n");
+    const missing = join(home, "rc-missing");
+    const deps = {
+      shellTargets: () => [wired, bare, missing],
+      commandLook: () => ({ path: null }),
+      codexHome: () => join(home, "no-codex"),
+      claudeHome: () => join(home, "no-claude"),
+    };
+    const facts = await gatherFacts("setup", {}, deps);
+    expect(facts.shell).toEqual({
+      files: [
+        { path: wired, hasIntegration: true },
+        { path: bare, hasIntegration: false },
+        { path: missing, hasIntegration: false },
+      ],
+      integrationWired: true,
       launchersWired: false,
     });
+    // The marker decides per file; the launchers follow the `shell.launchers` key alone.
+    new CopilotEnvConfig().set({ "shell.launchers": true });
+    const unwired = await gatherFacts("setup", {}, { ...deps, shellTargets: () => [bare] });
+    expect(unwired.shell).toMatchObject({ integrationWired: false, launchersWired: true });
+  } finally {
+    restoreEnv();
+    removeDir(home);
   }
 });
 
@@ -1586,7 +1617,7 @@ function proxyToml(baseUrl: string): string {
   return codexConfigToml({ baseUrl, auth: proxyTokenCommand() });
 }
 
-test("evalCodex: config.toml, .env, and the environ decide the wiring facts", () => {
+test("inspectCodexWiring: config.toml, .env, and the environ decide the wiring facts", () => {
   const good = proxyToml("http://localhost:4141/v1");
   const env = "OPENAI_API_KEY=sk-test\n";
   const rows: {
@@ -1600,7 +1631,7 @@ test("evalCodex: config.toml, .env, and the environ decide the wiring facts", ()
       name: "no config.toml",
       toml: null,
       env: null,
-      facts: { configExists: false, providerWired: false, home: "/c", providerMode: "none" },
+      facts: { configExists: false, providerWired: false, providerMode: "none" },
     },
     {
       name: "managed proxy provider + .env key",
@@ -1664,13 +1695,12 @@ test("evalCodex: config.toml, .env, and the environ decide the wiring facts", ()
     },
   ];
   for (const row of rows) {
-    expect(evalCodex("/c", row.toml, row.env, 4141, row.environ ?? false), row.name).toMatchObject(
-      row.facts,
-    );
+    expect(inspectCodexWiring(row.toml, row.env, 4141, row.environ ?? false), row.name)
+      .toMatchObject(row.facts);
   }
 });
 
-test("evalCodex: base_url matches only the full http://localhost:<port>/v1 contract", () => {
+test("inspectCodexWiring: base_url matches only the full http://localhost:<port>/v1 contract", () => {
   const env = "OPENAI_API_KEY=x\n";
   const rows: { baseUrl: string; matches: boolean }[] = [
     { baseUrl: "http://localhost:4141/v1", matches: true },
@@ -1682,10 +1712,11 @@ test("evalCodex: base_url matches only the full http://localhost:<port>/v1 contr
     { baseUrl: "http://localhost:41410/v1", matches: false },
   ];
   for (const row of rows) {
-    expect(evalCodex("/c", proxyToml(row.baseUrl), env, 4141, false), row.baseUrl).toMatchObject({
-      baseUrlMatches: row.matches,
-      providerWired: row.matches,
-    });
+    expect(inspectCodexWiring(proxyToml(row.baseUrl), env, 4141, false), row.baseUrl)
+      .toMatchObject({
+        baseUrlMatches: row.matches,
+        providerWired: row.matches,
+      });
   }
 });
 
@@ -1757,7 +1788,7 @@ test("evaluateAll: each scope yields its own check ids", () => {
     exactly?: CheckId[];
     includes?: CheckId[];
   }[] = [
-    // The launchers' fast probe: exactly the two runtime checks, never the identity probe's extra request.
+    // The fast probe scope: exactly the two runtime checks.
     {
       scope: "runtime",
       facts: { runtimes: [defaultTarget()] },
@@ -1799,6 +1830,7 @@ test("checkAuth: an unproven pinned look names the gh call that timed out and ke
     ghAuthUnproven: true,
     ghUser: "work-bot",
     ghDetail: detail,
+    profile: null,
     provider: "gh-cli",
     profiles: {},
     pinnedIntegrationId: null,

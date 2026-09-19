@@ -19,8 +19,10 @@ import { sleepSync } from "./time.ts";
 // --- the shared bounded-wait acquisition policy --------------------------------
 //
 // For every millisecond-scale SYNC read-modify-write. A real critical section is milliseconds, so a
-// holder still there after the wait is hung or leaked; the outcome is then not-held, which a
-// best-effort reader (the usage index) degrades on and withRequiredFileLockSync makes an error.
+// holder whose marker has not changed for the wait is hung or leaked; the outcome is then not-held,
+// which a best-effort reader (the usage index) degrades on and withRequiredFileLockSync makes an
+// error. The wait is measured from the last holder change, never from the call: queued behind live
+// writers (each hold releases and a successor writes a new marker) a contender waits them out.
 const LOCK_STALE_MS = 10_000;
 const LOCK_WAIT_MS = 4_000;
 const LOCK_RETRY_MS = 15;
@@ -331,9 +333,11 @@ export type NotHeldOutcome =
 const HELD_OUTCOME: HeldLock = Object.freeze({ held: true } as HeldLock);
 const NOT_HELD_BUSY: NotHeldOutcome = Object.freeze({ held: false, reason: "busy" });
 
-/** `waitMs` Infinity never gives up, so the fn always observes `held`. `onWait` fires ONCE: on the
- *  first failed attempt, or with `noticeAfterMs` on the first failed attempt after more than that
- *  much waiting. */
+/** `waitMs` bounds the wait on ONE unchanged holder: the budget restarts whenever the marker read
+ *  after a failed attempt differs from the last one (a release, a successor, a refresh), and
+ *  Infinity never gives up, so the fn always observes `held`. `onWait` fires ONCE: on the first
+ *  failed attempt, or with `noticeAfterMs` on the first failed attempt after more than that much
+ *  waiting since the call. */
 export interface LockPolicy extends FileLockOptions {
   /** Governs only a second acquire from THIS process (another process's marker is never judged):
    *  Infinity never refresh-acquires this process's own live hold, however old, for a lock a
@@ -353,27 +357,51 @@ export const BOUNDED_LOCK_POLICY: LockPolicy = Object.freeze({
   retryMs: LOCK_RETRY_MS,
 });
 
+/** One wait's clocks: the notice runs from the call; the give-up runs from the last change of the
+ *  marker observed after a failed attempt (`observed` is its text, null while absent). */
+interface WaitState {
+  readonly startedMs: number;
+  noticed: boolean;
+  observed: string | null;
+  observedSinceMs: number;
+}
+
+function startWait(): WaitState {
+  const now = Date.now();
+  return { startedMs: now, noticed: false, observed: null, observedSinceMs: now };
+}
+
 /** Shared by the sync and async loops so the notice and give-up judgments cannot drift. `owned` is
  *  whether THIS attempt took the lock: a refresh of a lock this process already held joins the
  *  holding scopes instead. */
 function acquireStep(
   lockPath: string,
   policy: LockPolicy,
-  startedMs: number,
-  state: { noticed: boolean },
+  state: WaitState,
 ): { done: LockOutcome; owned: boolean } | { sleepMs: number } {
   const wasOurs = HELD_LOCKS.has(lockPath);
   const attempt = tryAcquire(lockPath, policy.staleMs, policy);
   if (attempt.kind === "acquired") {
     return { done: HELD_OUTCOME, owned: !wasOurs };
   }
-  const elapsed = Date.now() - startedMs;
+  const now = Date.now();
+  const marker = readMarker(lockPath);
+  // An unreadable marker (Windows: a scanner's momentary exclusive handle) is no observation:
+  // neither the refusal nor the read after it is holder progress.
+  if (marker.kind !== "unreadable") {
+    const observed = marker.kind === "present" ? marker.raw : null;
+    if (observed !== state.observed) {
+      state.observed = observed;
+      state.observedSinceMs = now;
+    }
+  }
+  const elapsed = now - state.startedMs;
   const noticeable = policy.noticeAfterMs === undefined || elapsed > policy.noticeAfterMs;
   if (policy.onWait && !state.noticed && noticeable) {
     state.noticed = true;
     policy.onWait();
   }
-  if (elapsed >= policy.waitMs) {
+  if (now - state.observedSinceMs >= policy.waitMs) {
     const done: NotHeldOutcome = attempt.kind === "busy"
       ? NOT_HELD_BUSY
       : { held: false, reason: "unavailable", cause: attempt.cause };
@@ -447,12 +475,11 @@ export function withFileLockSync<T>(
     assertNotThenable(result);
     return result;
   }
-  const startedMs = Date.now();
-  const state = { noticed: false };
+  const state = startWait();
   let outcome: LockOutcome;
   let holding: boolean;
   for (;;) {
-    const step = acquireStep(lockPath, policy, startedMs, state);
+    const step = acquireStep(lockPath, policy, state);
     if ("done" in step) {
       outcome = step.done;
       holding = outcome.held && enterHeldScope(lockPath, step.owned);
@@ -508,12 +535,11 @@ export async function withFileLock<T>(
   policy: LockPolicy,
   fn: (outcome: LockOutcome) => T | Promise<T>,
 ): Promise<T> {
-  const startedMs = Date.now();
-  const state = { noticed: false };
+  const state = startWait();
   let outcome: LockOutcome;
   let holding: boolean;
   for (;;) {
-    const step = acquireStep(lockPath, policy, startedMs, state);
+    const step = acquireStep(lockPath, policy, state);
     if ("done" in step) {
       outcome = step.done;
       holding = outcome.held && enterHeldScope(lockPath, step.owned);

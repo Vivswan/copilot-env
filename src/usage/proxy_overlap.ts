@@ -16,7 +16,8 @@ import type { CountedUsage, OnCounted, TokenBuckets, UsageRequest } from "./usag
 export const OVERLAP_WINDOW_MS = 60_000;
 
 /** The client's clock over the lines that make up one request: a Codex token_count is one line, a
- *  Claude message streams over several, first to last. */
+ *  Claude message streams over several, first to last, a final line that only repeats the counts
+ *  included. */
 interface Span {
   firstMs: number;
   lastMs: number;

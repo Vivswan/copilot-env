@@ -48,7 +48,8 @@ export interface CountedUsage {
 }
 
 /** A fold calls this for every increment it records, so a consumer sees exactly what was counted:
- *  after the fold's own dedup and window, never before. */
+ *  after the fold's own dedup and window, never before. A Claude line that repeats its message's
+ *  counts exactly is reported too, with zero buckets, so the message's clock runs to its last line. */
 export type OnCounted = (usage: CountedUsage) => void;
 
 /** One `token_usage_events` row: the proxy's record of one request. `tsMs` is the daemon's clock

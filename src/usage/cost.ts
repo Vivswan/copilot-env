@@ -50,12 +50,21 @@ import {
   type UsageRequest,
 } from "./usage.ts";
 
-const SOURCES_NOTE =
-  "Note: merges three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts " +
-  "(each agent's full traffic, Direct included). A request both the proxy and a client log recorded " +
-  "(same model, token counts, and time) is counted once; use --sources for per-source tables.\n" +
-  "Disclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates; " +
+const SOURCES_INTRO =
+  "Note: three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts " +
+  "(each agent's full traffic, Direct included). ";
+const DISCLAIMER =
+  "\nDisclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates; " +
   "actual billing may differ.";
+/** The combined table pairs a proxied request's two records; the per-source tables are each whole. */
+const COMBINED_NOTE = SOURCES_INTRO +
+  "The table merges all three; a request both the proxy and a client log recorded " +
+  "(same model, token counts, and time) is counted once. Use --sources for per-source tables." +
+  DISCLAIMER;
+const SOURCES_NOTE = SOURCES_INTRO +
+  "Each table is whole, so summing them double counts traffic that went through the proxy; " +
+  "the default view counts such a request once." +
+  DISCLAIMER;
 
 const EMPTY_REPORT: ReadonlyUsageReport = usageReport();
 
@@ -329,7 +338,7 @@ async function reportCost(
     printCombinedView(proxy, codexByProvider, claude, reportOpts, logs.clients);
   }
 
-  printWrapped(SOURCES_NOTE);
+  printWrapped(args.sources ? SOURCES_NOTE : COMBINED_NOTE);
   console.log("");
   if (logs.indexed) {
     printWrappedToStderr(describeIndexRun(logs.meter.stats));

@@ -159,7 +159,10 @@ function foldClaude(
             buckets.cacheRead === 0 &&
             buckets.cacheCreation === 0
           ) {
-            continue; // an exact repeat adds nothing
+            // An exact repeat adds nothing to the report, but it is still a line of the message,
+            // and the stream's final line often is one: the observer gets its clock.
+            onCounted?.({ id: idHash, tsMs, model, buckets });
+            continue;
           }
         }
       }

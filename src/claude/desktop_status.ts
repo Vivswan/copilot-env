@@ -102,19 +102,14 @@ export type ClaudeDesktopStatus =
   });
 
 /** Read-only port resolution: nothing is written or reserved. The caller supplies the targets (the
- *  default's and the profiles' modes come from the store, read above this module); `dirOverride` as in
- *  removeAllClaudeDesktopWiring. */
+ *  default's and the profiles' modes come from the store, read above this module). */
 export function inspectClaudeDesktopWiring(
-  promised: readonly DesktopTarget[] | DesktopTargetResolution,
-  dirOverride?: string | null,
+  resolution: DesktopTargetResolution,
 ): ClaudeDesktopStatus {
-  const resolution: DesktopTargetResolution = "kind" in promised
-    ? promised
-    : { kind: "resolved", targets: promised };
   // Library facts first: with the key off or the app absent, leftovers must still show whatever the
   // targets are.
-  const base = desktopStatusBase(dirOverride);
-  const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
+  const base = desktopStatusBase();
+  const dir = resolveDesktopLibraryDir();
   if (dir === null) return { ...base, kind: "no-library" };
   const library = readOwnedLibrary(dir);
   if (library === null) return { ...base, kind: "unreadable", metaPath: join(dir, META_FILENAME) };
@@ -164,10 +159,10 @@ export function inspectClaudeDesktopWiring(
   return status;
 }
 
-export function desktopStatusBase(dirOverride?: string | null): DesktopStatusBase {
+export function desktopStatusBase(): DesktopStatusBase {
   return {
     enabled: new CopilotEnvConfig().claudeDesktopEnabled(),
-    installed: dirOverride !== undefined ? dirOverride !== null : claudeDesktopInstalled(),
+    installed: claudeDesktopInstalled(),
     helperPaths: presentDesktopHelperScripts(resolveRootHome()),
   };
 }

@@ -70,7 +70,7 @@ import {
   proxyTokenCommand,
 } from "../utils/root.ts";
 import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
-import { cmdHelperBody, winQuote } from "./helper_body.ts";
+import { winQuote } from "./helper_body.ts";
 import { prepareClaudeMcpRemoval, registerClaudeMcpServer } from "./mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "./paths.ts";
 
@@ -88,10 +88,6 @@ export const CUSTOM_HEADERS_ENV = "ANTHROPIC_CUSTOM_HEADERS";
 // The static-key carrier: Claude sends it as `Authorization: Bearer`, which Copilot Direct and the
 // proxy both accept.
 export const AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN";
-
-/** Body builders live in helper_body.ts (shared with the Desktop wiring); cmdHelperBody stays
- *  re-exported here for its existing test/import surface. */
-export { cmdHelperBody };
 
 function shToken(s: string): string {
   return /^[A-Za-z0-9_.:/=-]+$/.test(s) ? s : quotePosix(s);

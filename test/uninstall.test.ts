@@ -413,8 +413,10 @@ test("uninstall --dry-run narrates every step and every path it would delete, an
   });
   new Credential().store("gh-token", "ghp_default");
 
-  // Owned and foreign Claude Desktop entries side by side, through the injected library dir.
-  const library = join(dir, "desktop-library");
+  // Owned and foreign Claude Desktop entries side by side, in the seam's library.
+  const desktopData = join(dir, "desktop");
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = desktopData;
+  const library = desktopLibraryDirUnder(desktopData);
   mkdirSync(library, { recursive: true });
   writeFileSync(join(library, "ours.json"), '{"inferenceGatewayBaseUrl":"x"}\n');
   writeFileSync(join(library, "theirs.json"), '{"userKey":1}\n');
@@ -431,7 +433,7 @@ test("uninstall --dry-run narrates every step and every path it would delete, an
   mkdirSync(dirname(helper), { recursive: true });
   writeFileSync(helper, "#!/bin/sh\n");
 
-  const deps = { ...tmpDeps(codexHome), claudeDesktopLibraryDir: library };
+  const deps = tmpDeps(codexHome);
   // The farm record is POSIX only (Windows builds no farm). No farm seam there, so the
   // narration reflects the REAL removal it describes (it reads the redirected run state).
   const farm = join(dir, "farm");
@@ -516,9 +518,11 @@ test.skipIf(process.platform === "win32")(
   },
 );
 
-test("uninstall removes owned Claude Desktop entries via the injected library dir", async () => {
+test("uninstall removes owned Claude Desktop entries from the seam's library", async () => {
   const { codexHome } = tmpHomes();
-  const library = join(dir, "desktop-library");
+  const desktopData = join(dir, "desktop");
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = desktopData;
+  const library = desktopLibraryDirUnder(desktopData);
   mkdirSync(library, { recursive: true });
   writeFileSync(join(library, "ours.json"), '{"inferenceGatewayBaseUrl":"x"}\n');
   writeFileSync(join(library, "theirs.json"), '{"userKey":1}\n');
@@ -533,7 +537,7 @@ test("uninstall removes owned Claude Desktop entries via the injected library di
   );
   new OwnershipLedger().record("claudeDesktop", join(library, "ours.json"));
 
-  const deps = { ...tmpDeps(codexHome), claudeDesktopLibraryDir: library };
+  const deps = tmpDeps(codexHome);
   await runUninstall({ yes: true }, deps);
 
   expect(existsSync(join(library, "ours.json"))).toBe(false);
@@ -609,10 +613,7 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
     : join(rcDir, ".bashrc");
   mkdirSync(dirname(rc), { recursive: true });
   writeFileSync(rc, `echo mine\n${SHELL_MARKER}\nsource ours\n${MARKER_END}\n`);
-  const { removeShellIntegration: _real, ...deps } = {
-    ...tmpDeps(codexHome),
-    claudeDesktopLibraryDir: library,
-  };
+  const { removeShellIntegration: _real, ...deps } = tmpDeps(codexHome);
 
   const ctx = resolveUninstallContext({ yes: true }, deps);
   expect(ctx.targets.desktop.helpers.sort()).toEqual([defaultHelper, workHelper].sort());

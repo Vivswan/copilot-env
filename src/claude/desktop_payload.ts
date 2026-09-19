@@ -12,6 +12,7 @@ import {
   type Profile,
   type ProfileName,
 } from "../copilot_api/profile.ts";
+import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { isRecord } from "../utils/json.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { type Doc, readFileOrNull } from "./desktop_library.ts";
@@ -57,7 +58,6 @@ export const DESKTOP_DISPLAY_NAME = "GitHub Copilot";
  *  named profile never falls back to the default). Rows are Desktop's documented managedMcpServers
  *  shape (an ARRAY; an object keyed by name is rejected as invalid_type and silently dropped).
  *  Foreign rows survive by name; a value of any other shape is our own former object and goes. */
-export const MCP_SERVER_NAME = "copilot-env";
 /** The `agent` subcommand a profile's entry spawns, `agent profile [<name>] mcp --serve`: one
  *  spelling for the writer, the two readers below, and the 4.0.9 migration's rewrite of the old
  *  shape. */

@@ -22,15 +22,14 @@ import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.
 import { agentStartCommand, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { isRecord } from "../utils/json.ts";
+import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import {
   desktopHelperPath,
   desktopHelperScriptWiring,
   landDesktopHelperScript,
-  prepareRemoveHelperScript,
-  prepareRemoveHelperScripts,
-  prepareRetireDesktopHelperScript,
+  planRemoveFiles,
+  planRemoveHelperScripts,
   presentDesktopHelperScripts,
   readDesktopHelperScript,
 } from "./desktop_helper_scripts.ts";
@@ -41,7 +40,6 @@ import {
   type DesktopMetaEntry,
   META_FILENAME,
   parseDesktopMeta,
-  parsedRecord,
   prepareClaudeDesktopAppFiles,
   readFileOrNull,
   removeFile,
@@ -229,7 +227,9 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   const configPath = configPathOf(entry.id);
   const existingRaw = readFileOrNull(configPath);
   // Unparseable content under our path (an in-app edit racing us) is rebuilt.
-  const existing: Record<string, unknown> = parsedRecord(existingRaw) ?? {};
+  const existing: Record<string, unknown> = existingRaw === null
+    ? {}
+    : parseJsonRecord(existingRaw) ?? {};
 
   // The launcher hot path (quiet) must NEVER run discovery: its probes are billed requests. It
   // reuses the recorded rows; `agent init`, `agent profile <name> add`, and `agent profile sync --claude` refresh live.
@@ -282,8 +282,8 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
 
   // The post-save steps take their looks before the first wiring write.
   const retire = credential.kind === "command"
-    ? prepareRetireDesktopHelperScript(opts.mode, opts.profile)
-    : prepareRemoveHelperScripts(opts.profile);
+    ? planRemoveHelperScripts(opts.profile, opts.mode)
+    : planRemoveHelperScripts(opts.profile);
   const appFiles = prepareClaudeDesktopAppFiles();
   // Reserved now that everything is computed: a refusal above leaves no reservation behind.
   if (plannedPort !== null) reservePlannedPort(opts.profile, plannedPort);
@@ -397,7 +397,7 @@ function removeOwned(
 ): void {
   try {
     // The helpers' looks come before the library is touched.
-    const helpers = helpersOf === undefined ? () => {} : prepareRemoveHelperScripts(helpersOf);
+    const helpers = helpersOf === undefined ? () => {} : planRemoveHelperScripts(helpersOf);
     const entries = sweepOwnedEntries(selects);
     if (entries.kind === "blocked") return;
     helpers();
@@ -412,20 +412,18 @@ function releaseClaims(paths: readonly string[]): void {
   for (const path of paths) ledger.release("claudeDesktop", path);
 }
 
-/** The uninstall sweep. `dirOverride` is the injected library dir (homedir() is not
- *  env-redirectable on Windows); null means "treat Desktop as absent". */
+/** The uninstall sweep. */
 export function removeAllClaudeDesktopWiring(
-  dirOverride?: string | null,
-  artifacts: ClaudeDesktopOwnedArtifacts = listClaudeDesktopOwnedArtifacts(dirOverride),
+  artifacts: ClaudeDesktopOwnedArtifacts = listClaudeDesktopOwnedArtifacts(),
 ): void {
   // `artifacts` is the plan uninstall rendered as its dry run: exactly those paths go, so a claim
   // that appeared after planning stays.
   if (artifacts.blocked) return;
   const planned = new Set([...artifacts.entries, ...artifacts.staleClaims]);
-  const entries = sweepOwnedEntries((owned) => planned.has(owned.path), dirOverride);
+  const entries = sweepOwnedEntries((owned) => planned.has(owned.path));
   if (entries.kind === "blocked") return;
   releaseClaims(entries.removed);
-  removeUnlistedClaudeDesktopClaims(dirOverride, (path) => planned.has(path));
+  removeUnlistedClaudeDesktopClaims((path) => planned.has(path));
   // Uninstall deletes the root home wholesale right after this step; the helpers still go here so
   // the step is complete on its own.
   for (const path of artifacts.helpers) removeFile(path);
@@ -452,14 +450,15 @@ export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {
   };
   // Every look before the first write: the helper listing and the unlisted claims are judged over
   // the library as it stands, and a listing that fails leaves it untouched.
-  const helpers = presentDesktopHelperScripts(resolveRootHome())
-    .filter((path) => desktopHelperScriptWiring(basename(path))?.profile !== null)
-    .map(prepareRemoveHelperScript);
-  const unlisted = unlistedClaims(undefined, sweepable);
+  const helpers = planRemoveFiles(
+    presentDesktopHelperScripts(resolveRootHome())
+      .filter((path) => desktopHelperScriptWiring(basename(path))?.profile !== null),
+  );
+  const unlisted = unlistedClaims(sweepable);
   const entries = sweepOwnedEntries((e) => sweepable(e.path));
   if (entries.kind === "blocked") return;
   if (unlisted.kind === "listed") { for (const path of unlisted.paths) removeFile(path, ENTRY); }
-  for (const remove of helpers) remove();
+  helpers();
   if (!opts.quiet) announceUnmanagedDefault();
   releaseClaims(entries.removed);
   if (unlisted.kind === "listed") releaseClaims(unlisted.paths);
@@ -501,11 +500,9 @@ export interface ClaudeDesktopOwnedArtifacts {
   blocked: boolean;
 }
 
-export function listClaudeDesktopOwnedArtifacts(
-  dirOverride?: string | null,
-): ClaudeDesktopOwnedArtifacts {
+export function listClaudeDesktopOwnedArtifacts(): ClaudeDesktopOwnedArtifacts {
   const helpers = presentDesktopHelperScripts(resolveRootHome());
-  const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
+  const dir = resolveDesktopLibraryDir();
   const none = { entries: [], staleClaims: [], helpers, metaRewrite: null };
   if (dir === null) return { ...none, blocked: false };
   const library = readOwnedLibrary(dir);
@@ -576,10 +573,9 @@ export function readOwnedLibrary(dir: string): OwnedLibrary | null {
 /** The ledger claims under the library that _meta.json no longer lists, narrowed by `selects`;
  *  "blocked" when _meta.json cannot be judged. */
 function unlistedClaims(
-  dirOverride: string | null | undefined,
   selects: (path: string) => boolean,
 ): { kind: "blocked" } | { kind: "listed"; paths: string[] } {
-  const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
+  const dir = resolveDesktopLibraryDir();
   if (dir === null) return { kind: "listed", paths: [] };
   const library = readOwnedLibrary(dir);
   if (library === null) return { kind: "blocked" };
@@ -587,13 +583,12 @@ function unlistedClaims(
 }
 
 /** The leftovers of a removal that failed after the meta save: their files deleted when present,
- *  then the claims released. `dirOverride` as in removeAllClaudeDesktopWiring; `selects` narrows
- *  the sweep (the key-off attribution). "blocked" when _meta.json cannot be judged. */
+ *  then the claims released. `selects` narrows the sweep (the key-off attribution). "blocked" when
+ *  _meta.json cannot be judged. */
 export function removeUnlistedClaudeDesktopClaims(
-  dirOverride?: string | null,
   selects: (path: string) => boolean = () => true,
 ): "swept" | "blocked" {
-  const unlisted = unlistedClaims(dirOverride, selects);
+  const unlisted = unlistedClaims(selects);
   if (unlisted.kind === "blocked") return "blocked";
   for (const path of unlisted.paths) removeFile(path, ENTRY);
   releaseClaims(unlisted.paths);
@@ -607,10 +602,9 @@ export function removeUnlistedClaudeDesktopClaims(
  *  may reference the helper scripts: keep them). */
 function sweepOwnedEntries(
   selects: (owned: OwnedDesktopEntry) => boolean,
-  dirOverride?: string | null,
 ): { kind: "blocked" } | { kind: "swept"; removed: string[] } {
   const swept = (removed: string[]) => ({ kind: "swept" as const, removed });
-  const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
+  const dir = resolveDesktopLibraryDir();
   if (dir === null) return swept([]);
   const metaPath = join(dir, META_FILENAME);
   const raw = readFileOrNull(metaPath);

@@ -51,8 +51,6 @@ export interface UninstallDeps {
   codexHomes?: string[];
   removeCodexHostFarm?: () => void;
   removeShellIntegration?: () => void;
-  /** Absent = resolve for this machine; null = treat Desktop as absent. */
-  claudeDesktopLibraryDir?: string | null;
   /** Injected rather than read from PROJECT_ROOT so the suite can exercise a real deletion and
    *  never reach the directory the test process runs from. */
   installRoot?: RootMode;
@@ -263,7 +261,7 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     },
     run: (ctx) => {
       try {
-        removeAllClaudeDesktopWiring(ctx.deps.claudeDesktopLibraryDir, ctx.targets.desktop);
+        removeAllClaudeDesktopWiring(ctx.targets.desktop);
       } catch (e) {
         consola.warn(`could not remove the Claude Desktop entries: ${errMessage(e)}`);
       }
@@ -396,7 +394,7 @@ export function resolveUninstallContext(
         home: profileHome(name),
       })),
       claudeMcpRegistration: plannedClaudeMcpRemoval(),
-      desktop: listClaudeDesktopOwnedArtifacts(deps.claudeDesktopLibraryDir),
+      desktop: listClaudeDesktopOwnedArtifacts(),
       floatArtifacts: proxyFloatArtifactPaths(rootHome),
       // A test substitute does its own (redirected) work, not this state-recorded rm.
       codexHostFarm: deps.removeCodexHostFarm === undefined ? recordedCodexHostFarm() : null,

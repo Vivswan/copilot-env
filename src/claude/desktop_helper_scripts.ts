@@ -38,8 +38,7 @@ export function readDesktopHelperScript(mode: ProfileMode, profile: Profile): De
 }
 
 /** The executable bit is healed even when the body matched (a chmod'd-away +x would otherwise
- *  survive every wire). The OTHER mode's script is retired separately
- *  (prepareRetireDesktopHelperScript)
+ *  survive every wire). The OTHER mode's script is retired separately (planRemoveHelperScripts)
  *  AFTER the entry saves, so a failed save never leaves the current entry pointing at a deleted
  *  helper. */
 export function landDesktopHelperScript({ path, body, current }: DesktopHelperScript): void {
@@ -68,34 +67,32 @@ export function helperExecutable(path: string): boolean {
   return WIN || (fs.stat(path).mode & 0o111) === 0o111;
 }
 
-/** A directory at a helper's path is warned once and left alone, in both runs; the entry the
- *  script served still lands or goes on its own. Any other failure is the caller's. */
-export function prepareRemoveHelperScript(path: string): () => void {
-  try {
-    fs.assertNotDirectory(path);
-  } catch (e) {
-    logger.warn(`  Claude Desktop: ${errMessage(e)}; left alone.`);
-    return () => {};
-  }
-  return () => removeFile(path);
-}
-
-/** The other mode's script goes, post-save on a wire. */
-export function prepareRetireDesktopHelperScript(mode: ProfileMode, profile: Profile): () => void {
-  const other: ProfileMode = mode === "direct" ? "proxy" : "direct";
-  return prepareRemoveHelperScript(desktopHelperPath(resolveRootHome(), other, profile));
-}
-
-/** Both modes' scripts. */
-export function prepareRemoveHelperScripts(profile: Profile): () => void {
-  const rootHome = resolveRootHome();
-  const steps = [
-    prepareRemoveHelperScript(desktopHelperPath(rootHome, "direct", profile)),
-    prepareRemoveHelperScript(desktopHelperPath(rootHome, "proxy", profile)),
-  ];
+/** The look now, the removal when the returned step runs (post-save). A directory at a path is
+ *  warned once and left alone, in both runs; the entry the script served still lands or goes on its
+ *  own. Any other failure is the caller's. */
+export function planRemoveFiles(paths: readonly string[]): () => void {
+  const removable = paths.filter((path) => {
+    try {
+      fs.assertNotDirectory(path);
+      return true;
+    } catch (e) {
+      logger.warn(`  Claude Desktop: ${errMessage(e)}; left alone.`);
+      return false;
+    }
+  });
   return () => {
-    for (const step of steps) step();
+    for (const path of removable) removeFile(path);
   };
+}
+
+/** `profile`'s helper scripts: both modes', or with `keep` (the mode a wire just landed) the OTHER
+ *  mode's alone. */
+export function planRemoveHelperScripts(profile: Profile, keep?: ProfileMode): () => void {
+  const rootHome = resolveRootHome();
+  const modes: ProfileMode[] = ["direct", "proxy"];
+  return planRemoveFiles(
+    modes.filter((mode) => mode !== keep).map((mode) => desktopHelperPath(rootHome, mode, profile)),
+  );
 }
 
 /** The filename grammar desktopHelperPath produces, either platform's extension. */

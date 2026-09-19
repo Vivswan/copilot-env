@@ -7,7 +7,6 @@ import {
   type ProvenanceVerifier,
   resolveProvenanceDecision,
 } from "../src/autoupdate/apply.ts";
-import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
 import { ATTESTATION_NAME } from "../src/install/attestation.ts";
 import { parseChecksums } from "../src/install/checksums.ts";
 import {
@@ -220,19 +219,13 @@ describe("applyUpdate", () => {
    *  run the full stage order (download -> verify -> attest -> ...) unchanged. */
   const acceptAll: ProvenanceVerifier = () => Promise.resolve({ signerIdentity: "test" });
 
-  /** Run applyUpdate the only way it can be run: under the update lock, whose held
-   *  branch mints the HeldLock evidence the signature demands (via the hermetic-path
-   *  test seam, so the suite never touches the install root's real lock). */
-  function applyLocked(
+  function apply(
     current: string,
     opts: Omit<ApplyUpdateOptions, "provenance"> & Partial<Pick<ApplyUpdateOptions, "provenance">>,
   ): Promise<void> {
-    return withUpdateLockForTests(join(root, "update.lock"), Date.now(), (outcome) => {
-      if (!outcome.held) throw new Error("test could not take its own update lock");
-      return applyUpdate(current, target, outcome, {
-        provenance: { kind: "verify", verifier: acceptAll },
-        ...opts,
-      });
+    return applyUpdate(current, target, {
+      provenance: { kind: "verify", verifier: acceptAll },
+      ...opts,
     });
   }
 
@@ -261,7 +254,7 @@ describe("applyUpdate", () => {
     const { logger, successes } = recordingLogger();
     const signerIdentity = "https://github.com/example/publish.yml@refs/heads/main";
 
-    await applyLocked("v9.9.8", {
+    await apply("v9.9.8", {
       root: installDir,
       logger,
       childStdoutToStderr: true,
@@ -294,7 +287,7 @@ describe("applyUpdate", () => {
     pointCurrentAt(installDir, "v9.9.8");
 
     await expect(
-      applyLocked("v9.9.8", {
+      apply("v9.9.8", {
         root: installDir,
         logger: quiet,
         provenance: {
@@ -321,7 +314,7 @@ describe("applyUpdate", () => {
       seedVersion("v9.9.8", "OLD");
       pointCurrentAt(installDir, "v9.9.8");
 
-      const err = await applyLocked("v9.9.8", { root: installDir, logger: quiet })
+      const err = await apply("v9.9.8", { root: installDir, logger: quiet })
         .catch((e: unknown) => e as Error);
       expect((err as Error).message, attestation).toContain("SHA256 verification failed");
       expect((err as Error).message, attestation).not.toContain("--no-verify");
@@ -338,7 +331,7 @@ describe("applyUpdate", () => {
     pointCurrentAt(installDir, "v9.9.8");
     let verifierCalls = 0;
 
-    const err = await applyLocked("v9.9.8", {
+    const err = await apply("v9.9.8", {
       root: installDir,
       logger: quiet,
       provenance: {
@@ -393,7 +386,7 @@ describe("applyUpdate", () => {
         pointCurrentAt(installDir, "v9.9.8");
         const recorder = recordingLogger();
 
-        await applyLocked("v9.9.8", {
+        await apply("v9.9.8", {
           root: installDir,
           logger: recorder.logger,
           childStdoutToStderr: true,
@@ -412,7 +405,7 @@ describe("applyUpdate", () => {
     pointCurrentAt(installDir, "v9.9.8");
     const { logger, infos } = recordingLogger();
 
-    await applyLocked("v9.9.8", {
+    await apply("v9.9.8", {
       root: installDir,
       logger,
       childStdoutToStderr: true,
@@ -457,7 +450,7 @@ describe("applyUpdate", () => {
     async () => {
       writeRelease(RECORDING_BINARY);
 
-      await applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
+      await apply("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
 
       expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
       expect(
@@ -474,7 +467,7 @@ describe("applyUpdate", () => {
     seedVersion("v9.9.8", "OLD");
     pointCurrentAt(installDir, "v9.9.8");
 
-    await applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
+    await apply("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
 
     expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(true);
     expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.8"))).toBe(true); // the rollback keep
@@ -497,7 +490,7 @@ describe("applyUpdate", () => {
     pointCurrentAt(installDir, "v9.9.8");
 
     await expect(
-      applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
+      apply("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
     ).rejects.toThrow("failed to lay down its runtime files");
 
     expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
@@ -514,7 +507,7 @@ describe("applyUpdate", () => {
     pointCurrentAt(installDir, "v9.9.9");
 
     await expect(
-      applyLocked("v9.9.8", { root: installDir, logger: quiet }),
+      apply("v9.9.8", { root: installDir, logger: quiet }),
     ).rejects.toThrow(
       "already points at v9.9.9; to refresh this version in place, re-run `agent install`",
     );
@@ -533,7 +526,7 @@ describe("applyUpdate", () => {
     writeFileSync(join(releaseDir, releaseAssetName(hostTarget())), "x");
 
     await expect(
-      applyLocked("v9.9.8", { root: installDir, logger: quiet }),
+      apply("v9.9.8", { root: installDir, logger: quiet }),
     ).rejects.toThrow(`checksums.txt has no entry for ${releaseAssetName(hostTarget())}`);
   });
 });

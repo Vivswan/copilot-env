@@ -3,61 +3,24 @@
 // file lock (utils/file_lock.ts, which also carries the no-flock rationale).
 //
 //   best-effort, a once-a-day personal self-update -> not a distributed mutex
-//   STALE_LOCK_MS dwarfs any real update           -> a second scope in THIS process never
+//   the 30-minute stale window dwarfs any update  -> a second scope in THIS process never
 //                                                     refresh-acquires a live update's lock
+import type { LockOutcome } from "../utils/file_lock.ts";
 import { withFileLock } from "../utils/file_lock.ts";
 import { autoupdateLockFile } from "./state.ts";
 
-// 30 minutes, chosen to dwarf any real update (the invariant above).
-const STALE_LOCK_MS = 30 * 60 * 1000;
+/** One acquisition attempt, never a retry; 30 minutes stale, chosen to dwarf any real update (the
+ *  invariant above). Tests lock a hermetic path under the same policy. */
+export const UPDATE_LOCK_POLICY = { staleMs: 30 * 60 * 1000, waitMs: 0 } as const;
 
-declare const updateLockBrand: unique symbol;
-
-/** Evidence that the UPDATE lock specifically is held: minted only by withUpdateLock's
- *  held branch (a generic file-lock scope cannot produce one), and the evidence
- *  applyUpdate demands. */
-export interface HeldUpdateLock {
-  readonly held: true;
-  readonly [updateLockBrand]: true;
-}
-
-export type UpdateLockOutcome = HeldUpdateLock | { readonly held: false };
-
-const HELD_UPDATE_LOCK: HeldUpdateLock = Object.freeze({ held: true } as HeldUpdateLock);
-const UPDATE_LOCK_NOT_HELD: UpdateLockOutcome = Object.freeze({ held: false });
-
-/** Always THE update lock: HeldUpdateLock is evidence about that one path, so no caller can aim
- *  this elsewhere and mint one anyway. One acquisition attempt, never a retry.
+/** Always THE update lock: no caller can aim it elsewhere.
  *
  *    the OS lock is free  -> taken over whatever marker is left, and `fn` sees `held: true`
  *    a holder is live     -> another update is running, and `fn` sees `held: false`
- *    we took it         -> released exactly once, and never another holder's lock */
+ *    we took it           -> released exactly once, and never another holder's lock */
 export function withUpdateLock<T>(
   nowMs: number,
-  fn: (outcome: UpdateLockOutcome) => T | Promise<T>,
+  fn: (outcome: LockOutcome) => T | Promise<T>,
 ): Promise<T> {
-  return updateLockScope(autoupdateLockFile(), nowMs, fn);
-}
-
-/** TEST-ONLY seam: withUpdateLock against a hermetic temp path, so suites never touch the
- *  install root's real lock. Production code calls withUpdateLock; the file-lock lint pin
- *  (test/file_lock.test.ts) keeps this name out of src/. */
-export function withUpdateLockForTests<T>(
-  lockPath: string,
-  nowMs: number,
-  fn: (outcome: UpdateLockOutcome) => T | Promise<T>,
-): Promise<T> {
-  return updateLockScope(lockPath, nowMs, fn);
-}
-
-function updateLockScope<T>(
-  lockPath: string,
-  nowMs: number,
-  fn: (outcome: UpdateLockOutcome) => T | Promise<T>,
-): Promise<T> {
-  return withFileLock(
-    lockPath,
-    { staleMs: STALE_LOCK_MS, waitMs: 0, nowMs },
-    (outcome) => fn(outcome.held ? HELD_UPDATE_LOCK : UPDATE_LOCK_NOT_HELD),
-  );
+  return withFileLock(autoupdateLockFile(), { ...UPDATE_LOCK_POLICY, nowMs }, fn);
 }

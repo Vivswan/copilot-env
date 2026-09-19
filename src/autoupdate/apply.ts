@@ -47,7 +47,6 @@ import {
 } from "../install/installer.ts";
 import type { Release } from "../install/resolve-release.ts";
 import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../install/targets.ts";
-import type { HeldUpdateLock } from "./lock.ts";
 import { errMessage } from "../utils/error.ts";
 import { installStateRoot, PROJECT_ROOT } from "../utils/root.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
@@ -392,12 +391,10 @@ export interface ApplyUpdateOptions {
 
 /** The one update implementation, shared by `agent update` (src/commands/update.ts) and the
  *  autoupdate preflight (./preflight.ts); callers own the up-to-date / `--check` /
- *  dev-checkout gates. `_lock` is the caller's evidence that the update lock is held (only
- *  withUpdateLock's held branch mints one), so every apply happens inside that lock's scope. */
+ *  dev-checkout gates and run it inside withUpdateLock's held branch. */
 export async function applyUpdate(
   current: string,
   target: Release,
-  _lock: HeldUpdateLock,
   opts: ApplyUpdateOptions,
 ): Promise<void> {
   const logger = opts.logger ?? consola;

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
+import { UPDATE_LOCK_POLICY } from "../src/autoupdate/lock.ts";
 import { runPreflight } from "../src/autoupdate/preflight.ts";
 import {
   autoupdateDir,
@@ -10,6 +10,7 @@ import {
   effectiveUpdateCooldownDays,
 } from "../src/autoupdate/state.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { type LockOutcome, withFileLock } from "../src/utils/file_lock.ts";
 import { isDue, MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { packageVersion } from "../src/utils/version.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
@@ -139,7 +140,8 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
     await runPreflight({
       nowMs: now,
       state: new AutoupdateState(path),
-      lock: (nowMs, fn) => withUpdateLockForTests(join(dir, "update.lock"), nowMs, fn),
+      lock: (nowMs, fn) =>
+        withFileLock(join(dir, "update.lock"), { ...UPDATE_LOCK_POLICY, nowMs }, fn),
     });
   } finally {
     globalThis.fetch = realFetch;
@@ -163,7 +165,7 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
       nowMs: now,
       state: new AutoupdateState(path),
       lock: (nowMs, fn) =>
-        withUpdateLockForTests(join(dir, "update.lock"), nowMs, (outcome) => {
+        withFileLock(join(dir, "update.lock"), { ...UPDATE_LOCK_POLICY, nowMs }, (outcome) => {
           writeFileSync(path, JSON.stringify(concurrent));
           return fn(outcome);
         }),
@@ -197,36 +199,35 @@ test("isDue is false under a day, true at/after a day", () => {
 });
 
 // --- lock -------------------------------------------------------------------
-// All through the test-only path seam: production withUpdateLock always locks autoupdateLockFile()
-// under the install root, so pointing these at a temp dir any other way would mint HeldUpdateLock
-// evidence against a lock that is not THE update lock.
+// The update lock is the shared file lock under UPDATE_LOCK_POLICY at autoupdateLockFile(); these
+// pin, at a hermetic path, the behaviours the preflight and `agent update` rely on.
 
 const DEAD_PID = 2_147_483_646; // never alive -> pidAlive() returns false
 const marker = (pid: number, ts: number): string => `${pid}\n${ts}\n`;
+const lockAt = <T>(path: string, nowMs: number, fn: (outcome: LockOutcome) => T | Promise<T>) =>
+  withFileLock(path, { ...UPDATE_LOCK_POLICY, nowMs }, fn);
 
-test("withUpdateLock holds across fn, reports a nested acquire not-held, releases on exit", async () => {
+test("the update lock holds across fn, reports a nested acquire not-held, releases on exit", async () => {
   const path = tmp("update.lock");
   const now = 1_000_000;
-  await withUpdateLockForTests(path, now, async (outer) => {
+  await lockAt(path, now, async (outer) => {
     expect(outer.held).toBe(true);
-    expect(Object.isFrozen(outer)).toBe(true); // the evidence singleton is immutable
     expect(existsSync(path)).toBe(true);
     // A fresh lock held by this (alive) pid blocks a second acquire ...
-    await withUpdateLockForTests(path, now, (inner) => {
+    await lockAt(path, now, (inner) => {
       expect(inner.held).toBe(false);
-      expect(Object.isFrozen(inner)).toBe(true);
     });
     // ... and the not-held scope must not have released the holder's lock.
     expect(existsSync(path)).toBe(true);
   });
   expect(existsSync(path)).toBe(false);
   // After release it can be acquired again.
-  await withUpdateLockForTests(path, now, (again) => {
+  await lockAt(path, now, (again) => {
     expect(again.held).toBe(true);
   });
 });
 
-test("withUpdateLock takes a lock over an aged, dead-owner, or malformed leftover; release spares a marker another pid wrote", async () => {
+test("the update lock takes over an aged, dead-owner, or malformed leftover; release spares a marker another pid wrote", async () => {
   const now = 100_000_000;
   const rows: {
     name: string;
@@ -258,7 +259,7 @@ test("withUpdateLock takes a lock over an aged, dead-owner, or malformed leftove
   for (const { name, seed, inside, leftBehind } of rows) {
     const path = tmp("update.lock");
     writeFileSync(path, seed);
-    await withUpdateLockForTests(path, now, (outcome) => {
+    await lockAt(path, now, (outcome) => {
       expect(outcome.held, name).toBe(true);
       expect(readFileSync(path, "utf-8"), name).toBe(marker(process.pid, now));
       inside?.(path);

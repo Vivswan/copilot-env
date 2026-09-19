@@ -312,8 +312,7 @@ export function releaseFileLock(lockPath: string): void {
 declare const heldLockBrand: unique symbol;
 
 /** Only the held branch of withFileLock/withFileLockSync mints one, so an API that demands lock
- *  evidence cannot be called without a lock scope. A domain that needs to name WHICH lock
- *  re-brands it (HeldUpdateLock, src/autoupdate/lock.ts). */
+ *  evidence cannot be called without a lock scope. */
 export interface HeldLock {
   readonly held: true;
   readonly [heldLockBrand]: true;

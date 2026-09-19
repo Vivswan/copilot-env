@@ -8,14 +8,11 @@ import { assertProfileSlot } from "../copilot_api/env_state.ts";
 import {
   applyDefaultConfig,
   awaitReadiness,
-  type CleanupAction,
-  cleanupExistingProxies,
   ensureProxyFloor,
   entryProxyVersion,
   type FloorCheckedEntry,
   type HeldStartLock,
   type LaunchToken,
-  planCleanup,
   readLaunchToken,
   resolveLaunchCredential,
   resolveStartPort,
@@ -23,6 +20,11 @@ import {
   syncAliasesAfterStart,
   withStartLock,
 } from "../copilot_api/launch.ts";
+import {
+  type CleanupAction,
+  cleanupExistingProxies,
+  planCleanup,
+} from "../copilot_api/launch_cleanup.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import {
   agentStartCommand,

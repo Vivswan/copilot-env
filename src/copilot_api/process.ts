@@ -196,6 +196,10 @@ export function isDaemonCommandLine(command: string): boolean {
  *  daemon, which imports no CLI module) and test/daemon_spawn.test.ts pins the two in order. */
 export const DAEMON_SIGKILL_GRACE_MS = 2_000;
 
+/** The launch pipeline's one-second wait: after the cleanup sweep, after a spawn before the pid is
+ *  judged, and per readiness tick, whose budget counts these in seconds. */
+export const LAUNCH_SETTLE_MS = 1_000;
+
 /** One arm per decision the escalation makes, so callers report what happened instead of guessing
  *  from a follow-up pidAlive read. */
 export type TerminateVerdict =
@@ -214,8 +218,8 @@ export type TerminateVerdict =
 /**
  * The caller proves `pid` is OURS before calling, but that authorizes the SIGTERM only: the grace is
  * long enough for the OS to recycle a died-in-grace pid, so the KILL re-proves identity at its own
- * signal boundary (the rule stopLockHolder and the orphan sweep in launch.ts share). `classify` is
- * the test seam.
+ * signal boundary (the rule stopLockHolder and the orphan sweep in launch_cleanup.ts share).
+ * `classify` is the test seam.
  */
 export async function terminatePid(
   pid: number,

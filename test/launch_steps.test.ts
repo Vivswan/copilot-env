@@ -23,18 +23,20 @@ import {
 import {
   applyDefaultConfig,
   awaitReadiness,
-  type CleanupAction,
-  cleanupExistingProxies,
   daemonLifecycleEnv,
   type FloorCheckedEntry,
   type HeldStartLock,
+  resolveStartPort,
+  withStartLock,
+} from "../src/copilot_api/launch.ts";
+import {
+  type CleanupAction,
+  cleanupExistingProxies,
   listUntrackedOrphans,
   lockProtectedDaemonPids,
   planCleanup,
-  resolveStartPort,
   trackedDaemonPids,
-  withStartLock,
-} from "../src/copilot_api/launch.ts";
+} from "../src/copilot_api/launch_cleanup.ts";
 import {
   classifyOwnedDaemonPid,
   type CopilotApiEntry,

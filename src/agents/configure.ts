@@ -7,9 +7,9 @@ import { Credential } from "../copilot_api/credential.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { wiringPortFor } from "../copilot_api/port.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { resolveDirectMode } from "./direct_detect.ts";
 import type { ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
 
 const logger = createStderrLogger();
@@ -280,7 +280,16 @@ export async function resolveDefaultMode(
     );
     return { mode: "proxy" };
   }
-  return (await resolveDirectMode(mode, () => adapter.detectDirect(direct, ghToken)))
-    ? { mode: "direct", direct }
-    : { mode: "proxy" };
+  // "auto" always probes: a stored credential is not evidence of Direct access (not every account
+  // or token can use it), so the probe judges the credential the command boundary just ensured.
+  switch (mode) {
+    case "direct":
+      return { mode: "direct", direct };
+    case "auto":
+      return (await adapter.detectDirect(direct, ghToken))
+        ? { mode: "direct", direct }
+        : { mode: "proxy" };
+    default:
+      return assertNever(mode);
+  }
 }

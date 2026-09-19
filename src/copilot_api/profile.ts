@@ -113,3 +113,9 @@ export function agentStartCommand(profile: Profile): string {
 export function agentStopCommand(profile: Profile): string {
   return profile === null ? "agent stop" : `agent profile ${profile} stop`;
 }
+
+/** The `agent auth` command addressed at a profile's own credential slot: a named profile never
+ *  falls back to the default credential, so its hint names its own slot. */
+export function agentAuthCommand(profile: Profile): string {
+  return profile === null ? "agent auth" : `agent profile ${profile} auth`;
+}

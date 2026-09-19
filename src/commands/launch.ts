@@ -14,8 +14,6 @@ import { BASE_URL_ENV, managedClaudeBaseUrl } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { narrateCodexHome, resolveCodexHome } from "../codex/host.ts";
-import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   CopilotEnvState,
   partialSlotGap,
@@ -33,12 +31,7 @@ import { errMessage } from "../utils/error.ts";
 import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
 import type { ManagedEnvValue } from "../utils/shell_quote.ts";
 import { runDryRun } from "./dry_run.ts";
-import {
-  launchProxy,
-  type ProxyTokenDeps,
-  readStartAnswer,
-  resolveProxyToken,
-} from "./proxy_token.ts";
+import { proxyTokenDeps, resolveProxyToken } from "./proxy_token.ts";
 import { printWrappedToStderr } from "../utils/table.ts";
 
 /** Each name is also the command spawned. */
@@ -255,20 +248,10 @@ export async function prepareLaunch(
  *  token-returning commands never write agent files. Default profile only, like every catalog
  *  write. */
 async function ensureProxyUp(profile: Profile): Promise<boolean> {
-  const deps: ProxyTokenDeps = {
-    proxyUp: async (p) => (await proxyStatus(p)).up,
-    autoStartEnabled: () => new CopilotEnvConfig().autoStartEnabled(),
-    launchProxy,
-    readAnswer: readStartAnswer,
-    recordHeartbeat,
-    printProxyToken: async (p) => {
-      if (p !== null) return;
-      await refreshCodexCatalogAndSync("proxy");
-    },
-    notify: (line) => {
-      printWrappedToStderr(line);
-    },
-  };
+  const deps = proxyTokenDeps(async (p) => {
+    if (p !== null) return;
+    await refreshCodexCatalogAndSync("proxy");
+  });
   return (await resolveProxyToken({ assumeYes: false, profile }, deps)) === 0;
 }
 

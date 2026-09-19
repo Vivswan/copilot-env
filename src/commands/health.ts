@@ -1,8 +1,8 @@
 // The `runtime` scope is the fast probe: each addressed target's readiness rows alone (every
 // profile's daemon under `agent health`, one daemon under `agent profile [<name>] health`), whose
 // exit code is a contract for scripts that branch on it (src/health/aggregate.ts, exitCodeFor).
-import { allProfileNames, assertKnownProfile, type ProfileMode } from "../copilot_api/env_state.ts";
-import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
+import { allProfileNames, knownProfile, type ProfileMode } from "../copilot_api/env_state.ts";
+import type { Profile } from "../copilot_api/profile.ts";
 import { buildHealthJson, exitCodeFor, isHealthScope } from "../health/aggregate.ts";
 import { evaluateAll } from "../health/checks.ts";
 import type { HealthFacts } from "../health/facts.ts";
@@ -61,8 +61,7 @@ export async function runHealth(args: HealthArgs): Promise<void> {
   const scope = parseScope(args.scope);
   // Before anything is probed: a typo'd name must error naming the known profiles, never
   // diagnose the default wiring under the wrong name.
-  const profile: Profile = parseProfileFlag(args.profile);
-  if (profile !== null) assertKnownProfile(profile);
+  const profile: Profile = knownProfile(args.profile);
   const facts = await gatherFacts(scope, { live: Boolean(args.live), profile });
   report(scope, evaluateAll(scope, facts), profileModes(facts), args.json, profile);
 }

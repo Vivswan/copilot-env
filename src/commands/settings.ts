@@ -53,10 +53,9 @@ export interface SettingsArgs {
   dryRun?: boolean;
 }
 
-/** The plan/apply steps are injectable so the failure path (rollback messaging) can be exercised
+/** The apply step is injectable so the rollback message of a mid-import failure can be exercised
  *  hermetically. */
 export interface SettingsDeps extends ImportDeps {
-  planImport?: typeof planImport;
   applyPlan?: typeof applyImportPlan;
 }
 
@@ -202,7 +201,7 @@ async function runImport(
 
   // One plan drives both the confirmation and the apply, so the prompt shows exactly what the
   // import OVERWRITES (planWrites), not every file it writes.
-  const plan = (deps.planImport ?? planImport)(bundle, deps, scope.plan);
+  const plan = planImport(bundle, deps, scope.plan);
   if (action.dryRun) {
     // The same landing, recorded: the pre-import backup (its file, and the prune it triggers), then
     // every store slot and agent file the bundle would change, by key. The skips and failures the

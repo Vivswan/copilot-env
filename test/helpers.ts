@@ -22,6 +22,7 @@ import {
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
+import { type FileChange, withDryRun } from "../src/utils/dry_run.ts";
 import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { pidAlive } from "../src/utils/pid.ts";
 import { denoRunArgs, ROOT, spawnChild } from "./helpers/run.ts";
@@ -418,4 +419,14 @@ export function stageRefusedStop(home: string, profile?: ProfileName): RefusedSt
  *  beside it shows up here. */
 export function linesNaming(text: string, path: string): string[] {
   return text.split("\n").filter((line) => line.includes(path));
+}
+
+/** `body` run as a dry run: the tree diff it would print and its result; a body that fails
+ *  rethrows, as the command does. */
+export async function dryRunChanges<T>(
+  body: () => Promise<T>,
+): Promise<{ changes: FileChange[]; result: T }> {
+  const run = await withDryRun(body);
+  if (run.status === "failed") throw run.error;
+  return { changes: run.changes, result: run.result };
 }

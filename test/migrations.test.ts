@@ -65,15 +65,15 @@ import {
 } from "../src/copilot_api/integration_identity.ts";
 import { managedProxyProvider } from "../src/codex/config.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
-import { renderDryRun } from "../src/agents/write_plan.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
-import { collectDryRun } from "../src/utils/write_session.ts";
+import { renderDryRun } from "../src/utils/dry_run_report.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { runCli } from "./helpers/run.ts";
 import { consola } from "consola";
 import type { SemverString } from "../src/utils/semver.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import {
+  dryRunChanges,
   envSnapshot,
   fingerprintTree,
   isolateAgentHomes,
@@ -1359,11 +1359,11 @@ test(
       resetIntegrationIdentityCache();
       const before = fingerprintTree(dir);
       let narrated = "";
-      const { files } = await collectDryRun(async () => {
+      const { changes } = await dryRunChanges(async () => {
         narrated = (await captureChannels(() => moveProfilesToVerbTree())).all;
       });
       expect(fingerprintTree(dir)).toEqual(before);
-      const rendered = renderDryRun(files);
+      const rendered = renderDryRun(changes);
       const newHome = join(homes.proxyHome, "profiles", "list-1");
       expect(rendered).toContain(`create ${newHome}${sep}`);
       expect(rendered.some((l) => l.startsWith(`create ${join(newHome, ".run")}${sep}`))).toBe(
@@ -1378,7 +1378,8 @@ test(
       expect(narrated).toContain("re-rendered profile 'list-1'");
       const text = rendered.join("\n");
       expect(text).not.toContain("example-secret-token");
-      expect(text).toContain("env.ANTHROPIC_AUTH_TOKEN  <redacted> -> <redacted>");
+      // The retargeted file is new at its path: its rows read from absent, the bearer redacted.
+      expect(text).toContain("env.ANTHROPIC_AUTH_TOKEN  (absent) -> <redacted>");
       // config.toml prints attribute by attribute (a whole-file secret flag would print the
       // rewrite bare): the table moves under the new id, its bearer redacted, and the profile
       // file's selector follows.
@@ -1397,7 +1398,7 @@ test(
       );
       expect(text).toContain("  sandbox_workspace_write.network_access  (absent) -> true");
       expect(rendered).toContain(`create ${join(homes.codexHome, "list-1.config.toml")}`);
-      expect(text).toContain('  model_provider  "copilot-env-list" -> "copilot-env-list-1"');
+      expect(text).toContain('  model_provider  (absent) -> "copilot-env-list-1"');
     } finally {
       delete process.env[CLAUDE_DESKTOP_DIR_ENV];
       setIntegrationProbeFetch(null);

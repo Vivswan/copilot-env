@@ -6,22 +6,9 @@
 //
 // Dedup is per path, with a delete as the epoch boundary: five saves of one path print once, and a
 // delete re-arms it.
-//
-// TRANSITION: the `*Reported` wrappers below are the names every writer still calls; each is the
-// facade call its row in docs/dry-run-facade.md names, and goes once its last caller has moved.
 import { resolve, sep } from "node:path";
-import { look, type ScratchDir } from "./fs_disk.ts";
-import * as fs from "./fs_facade.ts";
+import type { ScratchDir } from "./fs_disk.ts";
 import { terminalWidth, wrapMessage } from "./table.ts";
-import { plannedState } from "./write_session.ts";
-
-export {
-  assertNotDirectory,
-  refuseRmdir,
-  RenameRefusedError,
-  renameWithRetry,
-  type ScratchDir,
-} from "./fs_disk.ts";
 
 export type WriteKind = "created" | "rewritten" | "deleted" | "moved" | "linked";
 
@@ -144,91 +131,4 @@ export function flushWriteReports(): string[] {
   process.off("exit", flushWriteReports);
   for (const line of lines) emit(line);
   return lines;
-}
-
-// --- the wrappers every writer still calls ---------------------------------------------
-
-export function writeFileReported(
-  path: string,
-  data: string | Uint8Array,
-  options?: { mode?: number; detail?: string; secret?: boolean },
-): void {
-  const shared = { mode: options?.mode, detail: options?.detail, atomic: false };
-  if (typeof data === "string") fs.writeText(path, data, { ...shared, secret: options?.secret });
-  else fs.writeBytes(path, data, shared);
-}
-
-export function atomicWriteFile(
-  path: string,
-  text: string,
-  mode?: number,
-  detail?: string,
-  options?: { secret?: boolean },
-): void {
-  fs.writeText(path, text, { mode, detail, secret: options?.secret });
-}
-
-export function copyFileReported(from: string, to: string, detail?: string): void {
-  fs.copyFile(from, to, detail);
-}
-
-export function mkdirReported(path: string, mode?: number, detail?: string): void {
-  fs.mkdir(path, { mode, detail });
-}
-
-export function chmodReported(path: string, mode: number, detail?: string): void {
-  fs.chmod(path, mode, detail);
-}
-
-/** A directory at the path is refused (a caller that meant a file must never take a tree; a
- *  symlink is the link, not what it points at); a path this dry run already landed reads through
- *  its plan. */
-export function removeReported(path: string, detail?: string): boolean {
-  if (plannedState(path) === null) {
-    if (look(path).kind === "absent") return false;
-    fs.assertNotDirectory(path);
-  }
-  return fs.rm(path, { force: true, detail });
-}
-
-/** An absent tree (or a path under a file) is nothing to do, as the wrapper always read it. */
-export function removeTreeReported(path: string, detail?: string): boolean {
-  if (look(path, true).kind === "absent") return false;
-  return fs.rm(path, { recursive: true, force: true, detail });
-}
-
-/** Absent (to the disk, or to the plan) is nothing to do, as the wrapper always read it. */
-export function removeEmptyDirReported(path: string): void {
-  const state = plannedState(path);
-  if (state?.kind === "gone") return;
-  if (state === null && look(path).kind === "absent") return;
-  fs.rmdir(path);
-}
-
-export function renameReported(from: string, to: string): void {
-  fs.rename(from, to);
-}
-
-export function symlinkReported(target: string, path: string, type?: "junction"): void {
-  fs.symlink(target, path, type);
-}
-
-export function atomicSymlink(target: string, link: string): void {
-  fs.atomicSymlink(target, link);
-}
-
-export function openWritableReported(path: string, detail?: string): Promise<Deno.FsFile> {
-  return fs.openWritable(path, detail);
-}
-
-export function openWriteFdReported(path: string, detail?: string): number {
-  return fs.openWriteFd(path, detail);
-}
-
-export function scratchDir(prefix: string): ScratchDir {
-  return fs.scratchDir(prefix);
-}
-
-export function removeScratchDir(dir: ScratchDir): void {
-  fs.removeScratchDir(dir);
 }

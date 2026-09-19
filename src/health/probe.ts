@@ -3,7 +3,6 @@
 // spawns `ps`/PowerShell. The pure sub-evaluators (evalShellFiles, evalCodex) take raw content
 // so they unit-test without touching the world.
 import { spawn } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AGENT_CLIS } from "../agents/clis.ts";
 import {
@@ -74,7 +73,9 @@ import {
   resolveCommand,
 } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
-import { readTextOrNull, readTextResult, type TextReadResult } from "../utils/fs.ts";
+import { readTextOrNull } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
+import { readTextResult, type TextReadResult } from "../utils/fs_facade.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";
@@ -412,7 +413,7 @@ export function defaultProbeDeps(): ProbeDeps {
     proxyResolved: () => {
       const record = readResolvedVersionRecord(resolveRootHome());
       if (record === null) return null;
-      return { ...record, cached: existsSync(record.denoDir) };
+      return { ...record, cached: fs.exists(record.denoDir) };
     },
     sidecar: () => sidecarStatus(resolveRootHome()),
     projectConfig: () => readProjectConfig(),
@@ -448,18 +449,18 @@ export function defaultProbeDeps(): ProbeDeps {
     codexHostFarm,
     codexHostEnabled: () => new CopilotEnvConfig().codexHostEnabled(),
     claudeDesktop: claudeDesktopStatus,
-    dirExists: (path: string) => existsSync(path),
+    dirExists: (path: string) => fs.exists(path),
     readAutoupdate: () => ({
       ...new AutoupdateState().read(),
       enabled: new CopilotEnvConfig().autoUpdateEnabled(),
       cooldownDays: effectiveUpdateCooldownDays(),
     }),
-    nodeModulesPresent: () => existsSync(join(root, "node_modules")),
+    nodeModulesPresent: () => fs.exists(join(root, "node_modules")),
     nodeModulesFresh: () => {
       // Same predicate as bin/agent's freshness gate: node_modules at least as new as deno.lock.
       try {
-        const lock = statSync(join(root, "deno.lock")).mtimeMs;
-        const modules = statSync(join(root, "node_modules")).mtimeMs;
+        const lock = fs.stat(join(root, "deno.lock")).mtimeMs;
+        const modules = fs.stat(join(root, "node_modules")).mtimeMs;
         return modules >= lock;
       } catch {
         return false;

@@ -7,8 +7,7 @@ import { consola } from "consola";
 import { runCodexMobile } from "./codex/mobile.ts";
 import { configTableOutput, refuseProfileKey, runConfig } from "./commands/config.ts";
 import { runDryRun } from "./commands/dry_run.ts";
-import { spawnedByDryRun } from "./utils/dry_run.ts";
-import { collectDryRun } from "./utils/write_session.ts";
+import { spawnedByDryRun, withDryRun } from "./utils/dry_run.ts";
 import {
   helpNote,
   registerDaemonAliases,
@@ -392,7 +391,11 @@ if (import.meta.main) {
   // the one the spawning dry run minted (DRY_RUN_ENV), so a value that reached the environment any
   // other way changes nothing here.
   const run = (): Promise<unknown> => program.parseAsync(invocation.args, { from: "user" });
-  (spawnedByDryRun() ? collectDryRun(run) : run()).catch((e: unknown) => {
+  const silent = async (): Promise<void> => {
+    const outcome = await withDryRun(run);
+    if (outcome.status === "failed") throw outcome.error;
+  };
+  (spawnedByDryRun() ? silent() : run()).catch((e: unknown) => {
     consola.error(errMessage(e));
     // exitCode, not process.exit, so pending stderr writes flush.
     process.exitCode = 1;

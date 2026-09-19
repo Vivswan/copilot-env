@@ -26,6 +26,20 @@ export async function withDryRun<T>(body: () => Promise<T>): Promise<DryRunOutco
     : { status: "failed", error: run.error, changes };
 }
 
+/** The value a dry run lands in place of a secret it never acquires (a login that did not run).
+ *  A store leaf holding it is redacted like any secret, so it never prints, and nothing in the
+ *  same run may bake or send it: a Direct wiring or a model discovery planned from it would select
+ *  nothing. */
+export const PLANNED_SECRET = "<the value the real run lands>";
+
+/** The error a dry run raises where the real command would prompt: a preview never asks, and
+ *  guessing the answer would plan a run the user did not choose. `what` names the question. */
+export function promptRefusedInDryRun(what: string): Error {
+  return new Error(
+    `a dry run never prompts (${what}); pass the flag that answers it, or run for real`,
+  );
+}
+
 // --- the marker a run hands its children ---------------------------------------------------------
 
 /** Set in the environment of every process a dry run spawns (the Direct probes' agent CLIs, whose

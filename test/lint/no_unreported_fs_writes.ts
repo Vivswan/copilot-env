@@ -1,27 +1,34 @@
-// Deno lint plugin: runtime code may not mutate the filesystem behind the user's back.
+// Deno lint plugin: runtime code reaches the filesystem through the one seam, never around it.
 //
-// Every file a command creates, rewrites, deletes, moves or links outside copilot-env's
-// own homes is named on stderr by the one fs seam (src/utils/fs_facade.ts, whose disk side
-// src/utils/fs_disk.ts decides that a write inside a home is silent bookkeeping). A raw
-// node:fs (or Deno) write anywhere else in src/ is a mutation the seam never sees -- so
-// the ban is on REACHING a
-// write API at all: a named import of one from node:fs / node:fs/promises, a member read
-// of one off a node:fs namespace or default import, a destructure of one, and the Deno
-// namespace's own write calls. Read APIs stay legal everywhere.
+// Every file a command creates, rewrites, deletes, moves or links outside copilot-env's own homes
+// is named on stderr by the seam (src/utils/fs_facade.ts, whose disk side src/utils/fs_disk.ts
+// decides that a write inside a home is silent bookkeeping), and every read the seam answers sees
+// a dry run's planned state. A raw node:fs (or Deno) call anywhere else in src/ is a write the
+// seam never sees or a read that looks behind the plan -- so the ban is on REACHING the API at
+// all: a named import from node:fs / node:fs/promises, a member read off a node:fs namespace or
+// default import, a destructure of one, and the Deno namespace's own calls. Two rules, one per
+// direction, because their exemptions differ:
 //
-// Scope: src/, minus the seam's disk side, the dry-run marker (dry_run.ts, a lock-held
-// directory a child process probes, so it must be real), the lock protocol's internals
-// (file_lock.ts, whose per-acquisition marker file is a transient the seam documents), the
-// daemon preload that patches the proxy's own createWriteStream (log_mute_preload.ts, no
-// write of ours), and src/migrations/ (one-time fix-ups that narrate their own moves).
+//   no-unreported-fs-writes  src/ minus fs_disk.ts (the disk side), dry_run.ts (the marker: a
+//                            lock-held directory a child process probes, so it must be real),
+//                            file_lock.ts (the lock protocol's per-acquisition marker file, a
+//                            transient the seam documents), log_mute_preload.ts (patches the
+//                            PROXY's own createWriteStream, no write of ours), and
+//                            src/migrations/ (one-time fix-ups that narrate their own moves).
+//   no-raw-fs-reads          the same, plus src/usage/ (read-only inputs no dry run touches, on
+//                            the `agent cost` hot path with partial reads through a fd the seam has
+//                            no primitive for) and node_compat_preload.ts (runs before the seam
+//                            exists).
 //
-// Two more ways to mutate without naming a write API are refused too: a file handle opened
-// for writing (`open`/`openSync` with a flag other than read, `Deno.open`/`Deno.openSync` with
-// a write option; the seam's openWritableReported and openWriteFdReported are the way), and a
-// child process running a filesystem command (`rm`, `mv`, `cp`, `del`, `Remove-Item`, ...:
-// spawned directly, or as the first word of a shell's command line). A flag or command the
-// rule cannot read (a variable) is refused for the open, where every legal spelling is a
-// literal, and passed for the spawn, where the command is often computed.
+// A file handle (`open`, `openSync`, `Deno.open`) is a read to the read rule whatever its flags,
+// and a write to the write rule when its flag or options say so (or cannot be read): the seam's
+// openReadable / openReadFd / openWritable / openWriteFd are the way to one, and a read-exempt
+// file still may not open for writing.
+//
+// One more way to mutate without naming a write API is refused too: a child process running a
+// filesystem command (`rm`, `mv`, `cp`, `del`, `Remove-Item`, ...: spawned directly, or as the
+// first word of a shell's command line). A command the rule cannot read (a variable) passes, since
+// a spawn's command is often computed.
 // Registered in deno.json, unit-tested in test/fs_write_lint.test.ts.
 import { fileURLToPath } from "node:url";
 
@@ -37,6 +44,11 @@ const ALLOWED = new Set([
 ]);
 
 const EXEMPT_PREFIX = "src/migrations/";
+
+/** Raw reads the seam does not cover: the usage scanners (partial reads through a fd, on a hot
+ *  path, over inputs no dry run touches) and the preload that runs before the seam exists. */
+const READ_ALLOWED = new Set(["src/scripts/node_compat_preload.ts"]);
+const READ_EXEMPT_PREFIX = "src/usage/";
 
 /** node:fs mutation entry points, sync and promise spellings alike. */
 const FS_WRITE_NAMES = new Set([
@@ -98,6 +110,46 @@ const FS_WRITE_NAMES = new Set([
   "createWriteStream",
 ]);
 
+/** node:fs lookup and read entry points, and every open (a handle is the seam's to hand out). */
+const FS_READ_NAMES = new Set([
+  "readFile",
+  "readFileSync",
+  "readdir",
+  "readdirSync",
+  "stat",
+  "statSync",
+  "lstat",
+  "lstatSync",
+  "fstat",
+  "fstatSync",
+  "statfs",
+  "statfsSync",
+  "exists",
+  "existsSync",
+  "access",
+  "accessSync",
+  "readlink",
+  "readlinkSync",
+  "realpath",
+  "realpathSync",
+  "opendir",
+  "opendirSync",
+  "open",
+  "openSync",
+  "openAsBlob",
+  "read",
+  "readSync",
+  "readv",
+  "readvSync",
+  "createReadStream",
+  "ReadStream",
+  "glob",
+  "globSync",
+  "watch",
+  "watchFile",
+  "unwatchFile",
+]);
+
 /** The Deno namespace's mutation entry points. */
 const DENO_WRITE_NAMES = new Set([
   "writeFile",
@@ -132,7 +184,28 @@ const DENO_WRITE_NAMES = new Set([
   "chownSync",
 ]);
 
-/** The node:fs open calls: a read API by name, a write when the flag says so. */
+/** The Deno namespace's lookup and read entry points, every open included. */
+const DENO_READ_NAMES = new Set([
+  "readTextFile",
+  "readTextFileSync",
+  "readFile",
+  "readFileSync",
+  "stat",
+  "statSync",
+  "lstat",
+  "lstatSync",
+  "readDir",
+  "readDirSync",
+  "readLink",
+  "readLinkSync",
+  "realPath",
+  "realPathSync",
+  "open",
+  "openSync",
+  "watchFs",
+]);
+
+/** The node:fs open calls: a read by name, a write when the flag says so. */
 const FS_OPEN_NAMES = new Set(["open", "openSync"]);
 const DENO_OPEN_NAMES = new Set(["open", "openSync"]);
 /** Deno.open options that make the handle a write. */
@@ -215,9 +288,19 @@ function guarded(filename: string): boolean {
   return true;
 }
 
-const MESSAGE = "mutate the filesystem through src/utils/fs_facade.ts (writeText, rm, ...) so " +
-  "a write outside copilot-env's own homes is named on stderr -- a raw write here is one the " +
+function readGuarded(filename: string): boolean {
+  const relative = repoPath(filename);
+  if (relative === null || !guarded(filename)) return false;
+  return !relative.startsWith(READ_EXEMPT_PREFIX) && !READ_ALLOWED.has(relative);
+}
+
+const WRITE_MESSAGE = "mutate the filesystem through src/utils/fs_facade.ts (writeText, rm, ...) " +
+  "so a write outside copilot-env's own homes is named on stderr -- a raw write here is one the " +
   "seam never sees";
+
+const READ_MESSAGE = "read the filesystem through src/utils/fs_facade.ts (readText, stat, " +
+  "readdir, exists, openReadable, ...) so a dry run answers from its planned state -- a raw read " +
+  "here looks behind the plan";
 
 const HANDLE_MESSAGE = "open a file for writing through src/utils/fs_facade.ts (openWritable, " +
   "openWriteFd): a write handle opened here is a mutation the seam never sees";
@@ -315,191 +398,247 @@ function memberName(node: Deno.lint.MemberExpression): string | null {
   return null;
 }
 
+/** The API names one direction of the seam covers, and the message for reaching one raw. */
+interface Direction {
+  fs: ReadonlySet<string>;
+  deno: ReadonlySet<string>;
+  message: string;
+}
+
+/** Every way of reaching a node:fs or Deno filesystem API by name: a named import, a member read
+ *  off a module or Deno namespace (and any alias of either), a destructure, a re-export, a
+ *  dynamic import of the whole module. The `on` hook lets a rule add its own visitors. */
+function reachVisitor(
+  context: Deno.lint.RuleContext,
+  direction: Direction,
+  on: (
+    locals: {
+      fsNamespaces: Set<string>;
+      denoAliases: Set<string>;
+      fsOpens: Set<string>;
+      denoOpens: Set<string>;
+    },
+  ) => Deno.lint.LintVisitor = () => ({}),
+): Deno.lint.LintVisitor {
+  /** Local names bound to a whole node:fs module (`import * as fs`, `import fs`, the `promises`
+   *  namespace, and aliases of either). */
+  const fsNamespaces = new Set<string>();
+  /** Local aliases of the Deno global. */
+  const denoAliases = new Set<string>();
+  /** Local names bound to node:fs `open`/`openSync`, and to `Deno.open`/`Deno.openSync`. */
+  const fsOpens = new Set<string>();
+  const denoOpens = new Set<string>();
+  const extra = on({ fsNamespaces, denoAliases, fsOpens, denoOpens });
+  return {
+    ...extra,
+    "ImportDeclaration"(node) {
+      extra.ImportDeclaration?.(node);
+      if (node.importKind === "type") return;
+      const source = String(node.source.value);
+      if (!FS_MODULES.has(source)) return;
+      for (const specifier of node.specifiers) {
+        if (specifier.type === "ImportSpecifier") {
+          if (specifier.importKind === "type") continue; // erased: no runtime binding
+          const imported = specifier.imported.type === "Identifier"
+            ? specifier.imported.name
+            : String(specifier.imported.value);
+          if (direction.fs.has(imported)) {
+            context.report({ node: specifier, message: direction.message });
+          }
+          if (FS_OPEN_NAMES.has(imported)) fsOpens.add(specifier.local.name);
+          // `import { promises as fsp }`: a whole namespace.
+          if (imported === "promises") fsNamespaces.add(specifier.local.name);
+        } else {
+          fsNamespaces.add(specifier.local.name);
+        }
+      }
+    },
+    // `await import("node:fs")`: a whole module object the rule cannot follow.
+    "ImportExpression"(node) {
+      if (node.source.type === "Literal" && FS_MODULES.has(String(node.source.value))) {
+        context.report({ node, message: direction.message });
+      }
+    },
+    // `export * from "node:fs"` / `export { rmSync } from "node:fs"`: hands an API (or the whole
+    // module) to another module under a name the rule would not see.
+    "ExportAllDeclaration"(node) {
+      if (FS_MODULES.has(String(node.source.value))) {
+        context.report({ node, message: direction.message });
+      }
+    },
+    "ExportNamedDeclaration"(node) {
+      if (node.source === null || !FS_MODULES.has(String(node.source.value))) return;
+      for (const specifier of node.specifiers) {
+        // `local` is the name in the SOURCE module (`export { rm as remove }` -> rm).
+        const name = specifier.local.type === "Identifier"
+          ? specifier.local.name
+          : String(specifier.local.value);
+        // `default` and `promises` are the whole module under a name.
+        if (direction.fs.has(name) || name === "promises" || name === "default") {
+          context.report({ node: specifier, message: direction.message });
+        }
+      }
+    },
+    "MemberExpression"(node) {
+      const name = memberName(node);
+      if (name === null) return;
+      if (isFsNamespace(node.object, fsNamespaces)) {
+        if (direction.fs.has(name)) context.report({ node, message: direction.message });
+        return;
+      }
+      if (isDenoNamespace(node.object, denoAliases) && direction.deno.has(name)) {
+        context.report({ node, message: direction.message });
+      }
+    },
+    // `const { rmSync } = fs;` / `const { remove } = Deno;` / `const fsp = fs.promises;`
+    // / `const { promises: fsp } = fs;` / `const deno = Deno;`
+    "VariableDeclarator"(node) {
+      if (node.init === null) return;
+      if (node.id.type === "Identifier") {
+        if (isFsNamespace(node.init, fsNamespaces)) fsNamespaces.add(node.id.name);
+        if (isDenoNamespace(node.init, denoAliases)) denoAliases.add(node.id.name);
+        return;
+      }
+      if (node.id.type !== "ObjectPattern") return;
+      const fromFs = isFsNamespace(node.init, fsNamespaces);
+      const fromDeno = isDenoNamespace(node.init, denoAliases);
+      if (!fromFs && !fromDeno) return;
+      const names = fromFs ? direction.fs : direction.deno;
+      for (const property of node.id.properties) {
+        if (property.type !== "Property" || property.key.type !== "Identifier") continue;
+        if (names.has(property.key.name)) {
+          context.report({ node: property, message: direction.message });
+        } else if (
+          fromFs && property.key.name === "promises" && property.value.type === "Identifier"
+        ) {
+          fsNamespaces.add(property.value.name);
+        } else if (
+          fromFs && FS_OPEN_NAMES.has(property.key.name) && property.value.type === "Identifier"
+        ) {
+          fsOpens.add(property.value.name);
+        } else if (
+          fromDeno && DENO_OPEN_NAMES.has(property.key.name) &&
+          property.value.type === "Identifier"
+        ) {
+          denoOpens.add(property.value.name);
+        }
+      }
+    },
+  };
+}
+
 const plugin: Deno.lint.Plugin = {
   name: "copilot-env-src",
   rules: {
     "no-unreported-fs-writes": {
       create(context) {
         if (!guarded(context.filename)) return {};
-        /** Local names bound to a whole node:fs module (`import * as fs`, `import fs`,
-         *  the `promises` namespace, and aliases of either). */
-        const fsNamespaces = new Set<string>();
-        /** Local aliases of the Deno global. */
-        const denoAliases = new Set<string>();
-        /** Local names bound to node:fs `open`/`openSync`. */
-        const fsOpens = new Set<string>();
-        /** Local names bound to a child_process spawn entry point, by kind. */
-        const spawns = new Set<string>();
-        const execs = new Set<string>();
-        /** Local names bound to the whole child_process module. */
-        const childProcessNamespaces = new Set<string>();
-        const isChildProcess = (node: Deno.lint.Node): boolean =>
-          node.type === "Identifier" && childProcessNamespaces.has(node.name);
-        return {
-          "ImportDeclaration"(node) {
-            if (node.importKind === "type") return;
-            const source = String(node.source.value);
-            if (source === CHILD_PROCESS_MODULE) {
-              for (const specifier of node.specifiers) {
-                if (specifier.type !== "ImportSpecifier") {
-                  childProcessNamespaces.add(specifier.local.name);
-                  continue;
+        return reachVisitor(
+          context,
+          { fs: FS_WRITE_NAMES, deno: DENO_WRITE_NAMES, message: WRITE_MESSAGE },
+          ({ fsNamespaces, denoAliases, fsOpens, denoOpens }) => {
+            /** Local names bound to a child_process spawn entry point, by kind. */
+            const spawns = new Set<string>();
+            const execs = new Set<string>();
+            /** Local names bound to the whole child_process module. */
+            const childProcessNamespaces = new Set<string>();
+            const isChildProcess = (node: Deno.lint.Node): boolean =>
+              node.type === "Identifier" && childProcessNamespaces.has(node.name);
+            return {
+              "ImportDeclaration"(node) {
+                if (node.importKind === "type") return;
+                if (String(node.source.value) !== CHILD_PROCESS_MODULE) return;
+                for (const specifier of node.specifiers) {
+                  if (specifier.type !== "ImportSpecifier") {
+                    childProcessNamespaces.add(specifier.local.name);
+                    continue;
+                  }
+                  if (specifier.importKind === "type") continue;
+                  const imported = specifier.imported.type === "Identifier"
+                    ? specifier.imported.name
+                    : String(specifier.imported.value);
+                  if (SPAWN_NAMES.has(imported)) spawns.add(specifier.local.name);
+                  if (EXEC_NAMES.has(imported)) execs.add(specifier.local.name);
                 }
-                if (specifier.importKind === "type") continue;
-                const imported = specifier.imported.type === "Identifier"
-                  ? specifier.imported.name
-                  : String(specifier.imported.value);
-                if (SPAWN_NAMES.has(imported)) spawns.add(specifier.local.name);
-                if (EXEC_NAMES.has(imported)) execs.add(specifier.local.name);
-              }
-              return;
-            }
-            if (!FS_MODULES.has(source)) return;
-            for (const specifier of node.specifiers) {
-              if (specifier.type === "ImportSpecifier") {
-                if (specifier.importKind === "type") continue; // erased: no runtime binding
-                const imported = specifier.imported.type === "Identifier"
-                  ? specifier.imported.name
-                  : String(specifier.imported.value);
-                if (FS_WRITE_NAMES.has(imported)) {
-                  context.report({ node: specifier, message: MESSAGE });
+              },
+              // `openSync(path, "w")` / `fs.open(path, "a")` / `Deno.open(path, { write: true })`
+              // / `spawnSync("rm", [...])` / `cp.execSync("cp a b")`.
+              "CallExpression"(node) {
+                const callee = node.callee;
+                const [first, second] = node.arguments;
+                if (first === undefined) return;
+                if (callee.type === "Identifier") {
+                  if (fsOpens.has(callee.name) && fsFlagWrites(second)) {
+                    context.report({ node, message: HANDLE_MESSAGE });
+                  } else if (denoOpens.has(callee.name) && denoOptionsWrite(second)) {
+                    context.report({ node, message: HANDLE_MESSAGE });
+                  } else if (spawns.has(callee.name) && spawnMutates(first, second)) {
+                    context.report({ node, message: SPAWN_MESSAGE });
+                  } else if (execs.has(callee.name)) {
+                    const line = literalText(first);
+                    if (line !== null && commandLineMutates(line)) {
+                      context.report({ node, message: SPAWN_MESSAGE });
+                    }
+                  }
+                  return;
                 }
-                if (FS_OPEN_NAMES.has(imported)) fsOpens.add(specifier.local.name);
-                // `import { promises as fsp }`: a whole write-capable namespace.
-                if (imported === "promises") fsNamespaces.add(specifier.local.name);
-              } else {
-                fsNamespaces.add(specifier.local.name);
-              }
-            }
-          },
-          // `open(path, "w")` / `fs.openSync(path, "a")` / `Deno.open(path, { write: true })`.
-          "CallExpression"(node) {
-            const callee = node.callee;
-            const [first, second] = node.arguments;
-            if (first === undefined) return;
-            if (callee.type === "Identifier") {
-              if (fsOpens.has(callee.name) && fsFlagWrites(second)) {
-                context.report({ node, message: HANDLE_MESSAGE });
-              } else if (spawns.has(callee.name) && spawnMutates(first, second)) {
-                context.report({ node, message: SPAWN_MESSAGE });
-              } else if (execs.has(callee.name)) {
-                const line = literalText(first);
-                if (line !== null && commandLineMutates(line)) {
+                if (callee.type !== "MemberExpression") return;
+                const name = memberName(callee);
+                if (name === null) return;
+                if (isFsNamespace(callee.object, fsNamespaces)) {
+                  if (FS_OPEN_NAMES.has(name) && fsFlagWrites(second)) {
+                    context.report({ node, message: HANDLE_MESSAGE });
+                  }
+                  return;
+                }
+                if (isDenoNamespace(callee.object, denoAliases)) {
+                  if (DENO_OPEN_NAMES.has(name) && denoOptionsWrite(second)) {
+                    context.report({ node, message: HANDLE_MESSAGE });
+                  }
+                  return;
+                }
+                if (!isChildProcess(callee.object)) return;
+                if (SPAWN_NAMES.has(name) && spawnMutates(first, second)) {
+                  context.report({ node, message: SPAWN_MESSAGE });
+                } else if (EXEC_NAMES.has(name)) {
+                  const line = literalText(first);
+                  if (line !== null && commandLineMutates(line)) {
+                    context.report({ node, message: SPAWN_MESSAGE });
+                  }
+                }
+              },
+              // `new Deno.Command("rm", { args })`.
+              "NewExpression"(node) {
+                const callee = node.callee;
+                if (callee.type !== "MemberExpression" || memberName(callee) !== "Command") return;
+                if (!isDenoNamespace(callee.object, denoAliases)) return;
+                const [command, options] = node.arguments;
+                if (command === undefined) return;
+                const args = options?.type === "ObjectExpression"
+                  ? options.properties.find((property) =>
+                    property.type === "Property" && !property.computed &&
+                    ((property.key.type === "Identifier" && property.key.name === "args") ||
+                      (property.key.type === "Literal" && property.key.value === "args"))
+                  )
+                  : undefined;
+                const argsValue = args?.type === "Property" ? args.value : undefined;
+                if (spawnMutates(command, argsValue)) {
                   context.report({ node, message: SPAWN_MESSAGE });
                 }
-              }
-              return;
-            }
-            if (callee.type !== "MemberExpression") return;
-            const name = memberName(callee);
-            if (name === null) return;
-            if (isFsNamespace(callee.object, fsNamespaces)) {
-              if (FS_OPEN_NAMES.has(name) && fsFlagWrites(second)) {
-                context.report({ node, message: HANDLE_MESSAGE });
-              }
-            } else if (isDenoNamespace(callee.object, denoAliases)) {
-              if (DENO_OPEN_NAMES.has(name) && denoOptionsWrite(second)) {
-                context.report({ node, message: HANDLE_MESSAGE });
-              }
-            } else if (isChildProcess(callee.object)) {
-              if (SPAWN_NAMES.has(name) && spawnMutates(first, second)) {
-                context.report({ node, message: SPAWN_MESSAGE });
-              } else if (EXEC_NAMES.has(name)) {
-                const line = literalText(first);
-                if (line !== null && commandLineMutates(line)) {
-                  context.report({ node, message: SPAWN_MESSAGE });
-                }
-              }
-            }
+              },
+            };
           },
-          // `new Deno.Command("rm", { args })`.
-          "NewExpression"(node) {
-            const callee = node.callee;
-            if (callee.type !== "MemberExpression" || memberName(callee) !== "Command") return;
-            if (!isDenoNamespace(callee.object, denoAliases)) return;
-            const [command, options] = node.arguments;
-            if (command === undefined) return;
-            const args = options?.type === "ObjectExpression"
-              ? options.properties.find((property) =>
-                property.type === "Property" && !property.computed &&
-                ((property.key.type === "Identifier" && property.key.name === "args") ||
-                  (property.key.type === "Literal" && property.key.value === "args"))
-              )
-              : undefined;
-            const argsValue = args?.type === "Property" ? args.value : undefined;
-            if (spawnMutates(command, argsValue)) {
-              context.report({ node, message: SPAWN_MESSAGE });
-            }
-          },
-          // `await import("node:fs")`: a whole module object the rule cannot follow.
-          "ImportExpression"(node) {
-            if (node.source.type === "Literal" && FS_MODULES.has(String(node.source.value))) {
-              context.report({ node, message: MESSAGE });
-            }
-          },
-          // `export * from "node:fs"` / `export { rmSync } from "node:fs"`: hands a write
-          // API (or the whole module) to another module under a name the rule would not
-          // see. A read-only re-export is as legal as a read-only import.
-          "ExportAllDeclaration"(node) {
-            if (FS_MODULES.has(String(node.source.value))) {
-              context.report({ node, message: MESSAGE });
-            }
-          },
-          "ExportNamedDeclaration"(node) {
-            if (node.source === null || !FS_MODULES.has(String(node.source.value))) return;
-            for (const specifier of node.specifiers) {
-              // `local` is the name in the SOURCE module (`export { rm as remove }` -> rm).
-              const name = specifier.local.type === "Identifier"
-                ? specifier.local.name
-                : String(specifier.local.value);
-              // `default` and `promises` are the whole write-capable module under a name.
-              if (FS_WRITE_NAMES.has(name) || name === "promises" || name === "default") {
-                context.report({ node: specifier, message: MESSAGE });
-              }
-            }
-          },
-          "MemberExpression"(node) {
-            const name = memberName(node);
-            if (name === null) return;
-            if (isFsNamespace(node.object, fsNamespaces)) {
-              if (FS_WRITE_NAMES.has(name)) context.report({ node, message: MESSAGE });
-              return;
-            }
-            if (isDenoNamespace(node.object, denoAliases) && DENO_WRITE_NAMES.has(name)) {
-              context.report({ node, message: MESSAGE });
-            }
-          },
-          // `const { rmSync } = fs;` / `const { remove } = Deno;` / `const fsp = fs.promises;`
-          // / `const { promises: fsp } = fs;` / `const deno = Deno;`
-          "VariableDeclarator"(node) {
-            if (node.init === null) return;
-            if (node.id.type === "Identifier") {
-              if (isFsNamespace(node.init, fsNamespaces)) fsNamespaces.add(node.id.name);
-              if (isDenoNamespace(node.init, denoAliases)) denoAliases.add(node.id.name);
-              return;
-            }
-            if (node.id.type !== "ObjectPattern") return;
-            const fromFs = isFsNamespace(node.init, fsNamespaces);
-            const fromDeno = isDenoNamespace(node.init, denoAliases);
-            if (!fromFs && !fromDeno) return;
-            const names = fromFs ? FS_WRITE_NAMES : DENO_WRITE_NAMES;
-            for (const property of node.id.properties) {
-              if (property.type !== "Property" || property.key.type !== "Identifier") continue;
-              if (names.has(property.key.name)) {
-                context.report({ node: property, message: MESSAGE });
-              } else if (
-                fromFs && property.key.name === "promises" && property.value.type === "Identifier"
-              ) {
-                fsNamespaces.add(property.value.name);
-              } else if (
-                fromFs && FS_OPEN_NAMES.has(property.key.name) &&
-                property.value.type === "Identifier"
-              ) {
-                fsOpens.add(property.value.name);
-              }
-            }
-          },
-        };
+        );
+      },
+    },
+    "no-raw-fs-reads": {
+      create(context) {
+        if (!readGuarded(context.filename)) return {};
+        return reachVisitor(context, {
+          fs: FS_READ_NAMES,
+          deno: DENO_READ_NAMES,
+          message: READ_MESSAGE,
+        });
       },
     },
   },

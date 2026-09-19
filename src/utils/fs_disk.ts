@@ -1,9 +1,10 @@
-// The disk side of the fs seam (fs_facade.ts): the one place in src/ that mutates the filesystem.
-// Every write outside copilot-env's own homes is named on stderr through the ledger in
-// report_write.ts, and a write that failed is named only for what a before/after look PROVES
-// changed. test/lint/no_unreported_fs_writes.ts refuses a raw node:fs write anywhere else, bar the
-// lock protocol's internals (file_lock.ts), the dry-run marker (dry_run.ts), the preload that
-// patches the proxy's own stream (log_mute_preload.ts), and src/migrations/.
+// The disk side of the fs seam (fs_facade.ts): the one file in src/ that touches the filesystem,
+// reads included. Every write outside copilot-env's own homes is named on stderr through the ledger
+// in report_write.ts, and a write that failed is named only for what a before/after look PROVES
+// changed. test/lint/no_unreported_fs_writes.ts refuses a raw node:fs or Deno filesystem call
+// anywhere else, bar the lock protocol's internals (file_lock.ts), the dry-run marker (dry_run.ts),
+// the preloads that run before the seam or patch the proxy's own stream (src/scripts/), the usage
+// scanners' partial reads (src/usage/), and src/migrations/.
 //
 // What does not print:
 //
@@ -11,23 +12,19 @@
 //   scratch this process creates and removes     -> silent
 //   a recipe's transient side (a temp file)      -> silent
 //   a write that failed                          -> only what a before/after look PROVES changed
-//
-// TRANSITION BRIDGE. While the plan collector (collectDryRun, write_session.ts) is active, every
-// write here records itself as the plan rows the wrappers landed and touches nothing, and the
-// facade's reads answer from the plan's shadows: that is how a writer already on the facade
-// previews exactly as one still on the wrappers. The bridge (`planned` and what it calls) goes
-// with write_session.ts once every writer is on the facade and the collector is withDryRun.
 import {
   chmodSync,
   closeSync,
   copyFileSync,
   cpSync,
+  existsSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
+  readFileSync,
   readlinkSync,
   realpathSync,
   renameSync,
@@ -39,9 +36,8 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
-import { isDir, isEnoentOrNotdir, readTextResult } from "./fs.ts";
-import { rmDirectoryRefused } from "./fs_overlay.ts";
+import { basename, dirname, join } from "node:path";
+import { isEnoentOrNotdir } from "./fs.ts";
 import {
   forgetReported,
   kindOf,
@@ -51,32 +47,84 @@ import {
   untrackScratch,
 } from "./report_write.ts";
 import { sleepSync } from "./time.ts";
-import {
-  type AttributeRow,
-  bridgeRows,
-  carrySecret,
-  dryRunActive as planCollecting,
-  filePlan,
-  type FileVerdict,
-  landPlan,
-  plannedContent,
-  plannedMissingDirectories,
-  plannedState,
-  readPlannedDir,
-  readPlannedText,
-  recordBytes,
-  recordPlannedMode,
-  recordSecret,
-  recordShadow,
-  secretOf,
-  textVerdict,
-} from "./write_session.ts";
 
 declare const scratchBrand: unique symbol;
 
 /** The only thing removeScratchDir accepts, so a permanent directory can never be removed silently
  *  through the scratch path. */
 export type ScratchDir = string & { readonly [scratchBrand]: true };
+
+/** The subset of node's Stats the CLI reads; a real Stats satisfies it. */
+export interface EntryStats {
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+  mode: number;
+  size: number;
+  mtimeMs: number;
+}
+
+/** The subset of node's Dirent the CLI reads; a real Dirent satisfies it. */
+export interface DirEntry {
+  name: string;
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+// --- the reads -------------------------------------------------------------------------------------
+
+export function readText(path: string): string {
+  return readFileSync(path, "utf8");
+}
+
+export function readBytes(path: string): Uint8Array {
+  return new Uint8Array(readFileSync(path));
+}
+
+export function stat(path: string): Stats {
+  return statSync(path);
+}
+
+export function lstat(path: string): Stats {
+  return lstatSync(path);
+}
+
+export function exists(path: string): boolean {
+  return existsSync(path);
+}
+
+export function readdir(path: string): string[] {
+  return readdirSync(path);
+}
+
+export function readdirEntries(path: string): DirEntry[] {
+  return readdirSync(path, { withFileTypes: true });
+}
+
+export function readlink(path: string): string {
+  return readlinkSync(path);
+}
+
+/** The canonical path as the OS spells it (`realpathSync.native`): on Windows a junction and an
+ *  8.3 short name resolve, which the JS walk leaves alone. */
+export function realpath(path: string): string {
+  return realpathSync.native(path);
+}
+
+/** A file opened for reading, streamed (a release binary hashed by the updater). */
+export function openReadable(path: string): Promise<Deno.FsFile> {
+  return Deno.open(path, { read: true });
+}
+
+/** A read fd for a child's stdio (the daemon's `/dev/null` stdin). */
+export function openReadFd(path: string): number {
+  return openSync(path, "r");
+}
+
+export function closeFd(fd: number): void {
+  closeSync(fd);
+}
 
 // --- the before/after look -----------------------------------------------------------------------
 
@@ -155,193 +203,77 @@ function dropTransient(path: string, was: Look, recursive = false): void {
   }
 }
 
-// --- the transition bridge -------------------------------------------------------------------------
+// --- the errors node raises, spelled as it spells them -------------------------------------------
 
-/** How a recorded write renders.
- *    diff       -> the text it replaces is read too, so the plan shows the changed lines
- *    path-only  -> the path alone: a file holding credentials (a settings bundle), or a move, whose
- *                  "change" is the whole source file and may hold a store's tokens; a move's text
- *                  is still shadowed at the destination for the run's later readers */
-type PlannedRender = "diff" | "path-only";
+const ERRNO_TEXT: Record<string, string> = {
+  ENOENT: "no such file or directory",
+  EEXIST: "file already exists",
+  EISDIR: "illegal operation on a directory",
+  ENOTDIR: "not a directory",
+  ENOTEMPTY: "directory not empty",
+  EINVAL: "invalid argument",
+  EPERM: "operation not permitted",
+  ELOOP: "too many symbolic links encountered",
+};
 
-/** The refusals the syscall a write lands with makes, taken by the plan too: `syscall` is the
- *  phrase node:fs puts after the code; `directory` says which directory at the target the syscall
- *  refuses with EISDIR: the one an open reaches through a link (`followed`), the entry itself as a
- *  rename sees it (`entry`, a link there is replaced), or none (a directory move). */
-interface PlanRefusals {
-  syscall: string;
-  directory: "followed" | "entry" | "none";
+/** An error shaped as node:fs throws it, so `(e as NodeJS.ErrnoException).code` reads the same. */
+export function errno(code: string, syscall: string, path: string, dest?: string): Error {
+  const target = dest === undefined ? `'${path}'` : `'${path}' -> '${dest}'`;
+  const e: NodeJS.ErrnoException = new Error(`${code}: ${ERRNO_TEXT[code]}, ${syscall} ${target}`);
+  e.code = code;
+  e.syscall = syscall;
+  e.path = path;
+  return e;
 }
 
-/** A look through the run's own landings: a path this dry run planned gone is absent, one it
- *  planned written (text, bytes, a copy, a link, a directory) is present, whatever the disk still
- *  shows. */
-function plannedLook(path: string, deep = false): Look {
-  const state = plannedState(path);
-  if (state === null) return look(path, deep);
-  return state.kind === "gone" ? { kind: "absent" } : { kind: "present", fingerprint: "" };
+/** node's rmSync refusal of a directory without `recursive`: a SystemError, not an errno. */
+export function rmDirectoryRefused(path: string): Error {
+  const e: NodeJS.ErrnoException = new Error(
+    `Path is a directory: rm returned EISDIR (is a directory) ${path}`,
+  );
+  e.code = "ERR_FS_EISDIR";
+  return e;
 }
 
-function planned(
-  kind: FileVerdict,
-  path: string,
-  text: {
-    content?: string;
-    render: PlannedRender;
-    directory?: true;
-    attributes?: AttributeRow[];
-    /** The landing's text is secret: the renderer prints the verdict alone, whatever an earlier
-     *  landing of the path compared or declared. */
-    secret?: boolean;
-    /** Leaves declared secret for the path by this landing (carried by a move or a copy). */
-    secretKeys?: readonly string[];
-  } = { render: "diff" },
-  refusals?: PlanRefusals,
-): boolean {
-  if (!planCollecting() || underScratch(path)) return false;
-  if (refusals !== undefined && kind !== "delete") {
-    // Only a mkdir makes a parent: a create under one that is neither present nor planned by this
-    // run is the syscall's ENOENT. A directory at a file's target is its EISDIR.
-    // An open follows a link, so the parent that must be there is the link target's; the parent
-    // itself is judged as the syscall reaches it (through its own links).
-    const landing = refusals.directory === "followed"
-      ? followedTarget(path, refusals.syscall)
-      : path;
-    const parent = dirname(landing);
-    const parentState = plannedState(parent);
-    if (parentState?.kind === "gone") {
-      throw errno("ENOENT", `no such file or directory, ${refusals.syscall}`);
+/**
+ * The directories `mkdirSync(path, { recursive: true })` would create, outermost first: the walk up
+ * from `path` stops at the first entry that exists. The look is lstat's, so a symlink is an entry:
+ * one that resolves to a directory is that directory for mkdir, and one to a file or to nothing is
+ * the entry mkdir trips on. An existing entry that is NOT a directory (a regular file where a home
+ * should be, a dangling link at `~/.local`) is the error mkdir would raise, thrown here with
+ * mkdir's own code and message, so the walk fails exactly where the create would: EEXIST for the
+ * path itself or for a dangling link above it, ENOTDIR for a file above it. A stat that failed for
+ * another reason (EACCES) reads as present: the create itself then says what is wrong.
+ */
+export function missingDirectories(path: string): string[] {
+  const missing: string[] = [];
+  for (let cur = path;; cur = dirname(cur)) {
+    const entry = lookEntry(cur);
+    if (entry === "unreadable") return missing;
+    if (entry !== "absent") {
+      if (entry !== "dangling" && entry.isDirectory()) return missing;
+      throw errno(cur === path || entry === "dangling" ? "EEXIST" : "ENOTDIR", "mkdir", path);
     }
-    if (
-      parentState?.kind === "text" || parentState?.kind === "bytes" ||
-      (parentState?.kind === "opaque" && parentState.file)
-    ) {
-      throw underFileRefusal(refusals.syscall);
-    }
-    if (parentState === null || parentState.kind === "opaque") {
-      const refusal = parentRefusal(parent, refusals.syscall);
-      if (refusal !== null) throw refusal;
-    }
-    // The target as the run leaves it: a directory this run planned gone, or replaced with a
-    // file, is no directory; one still there (the disk's, or one this run made) is the syscall's
-    // EISDIR.
-    const state = plannedState(path);
-    const directory = refusals.directory === "none"
-      ? false
-      : state === null || (state.kind === "opaque" && !state.file)
-      ? (refusals.directory === "followed" ? isDir(path) : isDirectoryEntry(path))
-      : state.kind === "dir";
-    if (directory) {
-      // Windows opens a directory for writing with EINVAL; every other refusal here is EISDIR.
-      throw refusals.directory === "followed" && process.platform === "win32"
-        ? errno("EINVAL", `invalid argument, ${refusals.syscall}`)
-        : errno("EISDIR", `illegal operation on a directory, ${refusals.syscall}`);
-    }
+    missing.unshift(cur);
+    if (dirname(cur) === cur) return missing;
   }
-  if (text.render === "path-only") {
-    landPlan({
-      files: [{
-        ...filePlan(path, kind, {
-          ...(text.content === undefined ? {} : { content: text.content }),
-          ...(text.directory === undefined ? {} : { directory: text.directory }),
-        }),
-        ...(text.secret ? { secret: true } : {}),
-        ...(text.secretKeys !== undefined && text.secretKeys.length > 0
-          ? { secretKeys: text.secretKeys }
-          : {}),
-      }],
-      apply() {},
-    });
-    return true;
-  }
-  // A file that is not text (a directory, a binary) carries no `before`, and the plan names the
-  // path alone. `before` is the text as the run sees it: an earlier landing's planned text, else
-  // the disk's. So a second landing that restores the disk bytes records `rewrite` against the
-  // first's text, and the fold (first `before`, last `content`) prints the path as unchanged.
-  const was = kind === "create" ? null : readPlannedText(path);
-  const before = was === null ? null : was.kind === "text" ? was.text : undefined;
-  landPlan({
-    files: [{
-      ...filePlan(path, kind, {
-        before,
-        ...(text.content === undefined ? {} : { content: text.content }),
-        ...(text.directory === undefined ? {} : { directory: text.directory }),
-      }),
-      attributes: text.attributes ?? [],
-      ...(text.secretKeys !== undefined && text.secretKeys.length > 0
-        ? { secretKeys: text.secretKeys }
-        : {}),
-    }],
-    apply() {},
-  });
-  return true;
 }
 
-/** The render a caller's `secret` flag asks for. */
-function renderOf(secret: boolean | undefined): PlannedRender {
-  return secret ? "path-only" : "diff";
-}
-
-/** Where an open of `path` lands: the end of its symlink chain (each link resolved beside itself),
- *  else `path`. A chain the kernel would refuse (40 hops) is the open's ELOOP; a link that cannot
- *  be read ends the walk where it stands. */
-function followedTarget(path: string, syscall: string): string {
-  let current = path;
-  for (let hops = 0; hops < 40; hops++) {
-    try {
-      if (!lstatSync(current).isSymbolicLink()) return current;
-      // A relative target is relative to the link's REAL directory (a link on the way there is
-      // followed first), as the kernel resolves it; a directory that cannot be resolved stands.
-      const dir = dirname(current);
-      current = resolve(realpathOrSelf(dir), readlinkSync(current));
-    } catch {
-      return current;
-    }
-  }
-  throw errno("ELOOP", `too many symbolic links encountered, ${syscall}`);
-}
-
-function realpathOrSelf(path: string): string {
+/** What mkdir meets at `path`: the entry as it resolves (a symlink followed), a dangling link, or
+ *  nothing. `unreadable` is a look that failed for a reason other than absence. */
+function lookEntry(path: string): Stats | "dangling" | "absent" | "unreadable" {
+  let entry: Stats;
   try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-}
-
-/** The refusal a syscall makes reaching `parent` (followed, as it does): a missing component or a
- *  dangling link is ENOENT, a regular file on the way or at the end ENOTDIR, a link cycle ELOOP. */
-function parentRefusal(parent: string, syscall: string): NodeJS.ErrnoException | null {
-  try {
-    return statSync(parent).isDirectory() ? null : errno("ENOTDIR", `not a directory, ${syscall}`);
+    entry = lstatSync(path);
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ELOOP") return errno("ELOOP", `too many symbolic links encountered, ${syscall}`);
-    if (code === "ENOTDIR") return errno("ENOTDIR", `not a directory, ${syscall}`);
-    return errno("ENOENT", `no such file or directory, ${syscall}`);
+    return isEnoentOrNotdir(e) ? "absent" : "unreadable";
   }
-}
-
-/** What a lookup at or under a regular file raises: ENOTDIR on POSIX; Windows reports the path as
- *  not found (the overlay's table, fs_overlay.ts), except that node's own recursive mkdir says
- *  ENOTDIR. */
-function underFileRefusal(syscall: string): NodeJS.ErrnoException {
-  const notdir = process.platform !== "win32" || syscall.startsWith("mkdir");
-  return notdir
-    ? errno("ENOTDIR", `not a directory, ${syscall}`)
-    : errno("ENOENT", `no such file or directory, ${syscall}`);
-}
-
-/** The error node:fs raises for `code`, spelled as it spells it. */
-function errno(code: string, detail: string): NodeJS.ErrnoException {
-  const err: NodeJS.ErrnoException = new Error(`${code}: ${detail}`);
-  err.code = code;
-  return err;
-}
-
-/** A write's verdict from the look that precedes it. */
-function verdictOf(was: Look): FileVerdict {
-  return was.kind === "absent" ? "create" : "rewrite";
+  if (!entry.isSymbolicLink()) return entry;
+  try {
+    return statSync(path);
+  } catch (e) {
+    return isEnoentOrNotdir(e) ? "dangling" : "unreadable";
+  }
 }
 
 /** Whether the entry at `path` itself (a link never followed) is a directory. */
@@ -362,36 +294,6 @@ export function assertNotDirectory(path: string): void {
   }
 }
 
-/** rmdir's own refusals, taken before any plan so a dry run refuses where the real run does: a
- *  regular file (the disk's, or one this run planned) is not a directory, and a directory with
- *  entries (this run's planned deletions and creations counted) is unknown data. A link (a Windows
- *  junction at `current`) is the entry rmdir removes, never what it points at. Exported for the
- *  update planner, whose `current` flip takes the same decision. */
-export function refuseRmdir(path: string): void {
-  const state = plannedState(path);
-  if (
-    state?.kind === "text" || state?.kind === "bytes" ||
-    (state?.kind === "opaque" && state.file)
-  ) {
-    throw underFileRefusal(`rmdir '${path}'`);
-  }
-  if (state === null || state.kind === "opaque") {
-    // A plan without bytes (a chmod on a disk directory): the disk says which kind stands there.
-    let stat: Stats;
-    try {
-      stat = lstatSync(path);
-    } catch {
-      if (state === null) return;
-      throw underFileRefusal(`rmdir '${path}'`);
-    }
-    if (stat.isSymbolicLink()) return;
-    if (!stat.isDirectory()) throw underFileRefusal(`rmdir '${path}'`);
-  }
-  if (state?.kind !== "gone" && readPlannedDir(path).length > 0) {
-    throw errno("ENOTEMPTY", `directory not empty, rmdir '${path}'`);
-  }
-}
-
 // --- the writes ------------------------------------------------------------------------------------
 
 export interface WriteOptions {
@@ -402,77 +304,10 @@ export interface WriteOptions {
   atomic?: boolean;
   /** Rides on the stderr write line. */
   detail?: string;
-  /** Dotted keys of this file whose values a dry run prints as `<redacted>`. Declaring them (even
-   *  none) also lands the file's leaf rows under the plan collector. */
+  /** Dotted keys of this file whose values a dry run prints as `<redacted>`. */
   secretKeys?: Iterable<string>;
   /** The whole file holds secrets (a settings bundle): a dry run prints its verdict alone. */
   secret?: boolean;
-}
-
-/** How a bridged write renders: the file's leaf rows before and after when the writer declared
- *  its secret keys (a whole-file writer declares none and gets the line diff and the wrapper's
- *  verdict, as today); a declared document that does not parse prints its path alone, so no
- *  secret reaches a line diff. A declared document's verdict is the byte comparison, so a
- *  same-content re-render prints `unchanged` as the plan writers did. Read only while the
- *  collector is active: outside it the destination is never opened. */
-function bridgedRender(
-  path: string,
-  text: string,
-  options: WriteOptions,
-): {
-  render: PlannedRender;
-  attributes?: AttributeRow[];
-  verdict?: FileVerdict;
-  secret?: boolean;
-  secretKeys?: readonly string[];
-} {
-  if (!planCollecting()) return { render: renderOf(options.secret) };
-  recordSecret(path, { whole: options.secret, keys: options.secretKeys });
-  const secret = secretOf(path);
-  // A whole-file secret (declared now, or carried by a move or copy) prints its path alone
-  // whatever this write declares; an undeclared write over declared keys does too, since a line
-  // diff would print the old text.
-  if (secret.whole) return { render: "path-only", secret: true };
-  if (options.secretKeys === undefined) {
-    return secret.keys.size > 0 ? { render: "path-only", secret: true } : { render: "diff" };
-  }
-  // The bytes the write replaces, as the run sees them. An entry that stands but cannot be read
-  // (a dangling link the real write lands through) is a rewrite of unknown bytes, never a create.
-  const state = plannedState(path);
-  let before: string | null;
-  let unreadable = false;
-  if (state?.kind === "text") before = state.text;
-  else if (state?.kind === "bytes") {
-    before = new TextDecoder("utf-8", { ignoreBOM: true }).decode(state.bytes);
-  } else if (state?.kind === "gone") before = null;
-  else {
-    const read = readTextResult(path);
-    before = read.kind === "text" ? read.text : null;
-    unreadable = read.kind === "unreadable";
-  }
-  const verdict: FileVerdict = unreadable ? "rewrite" : textVerdict(before, text);
-  const rows = bridgeRows(path, before, text, secret.keys);
-  return rows === null
-    ? { render: "path-only", verdict, secret: true }
-    : { render: "diff", attributes: rows, verdict, secretKeys: [...secret.keys] };
-}
-
-/** A moved or copied file's content, as the run sees it, lands at `to` for the run's later
- *  readers, and its secret declarations travel with it. */
-function carryContent(from: string, to: string): void {
-  const content = plannedContent(from);
-  if (content instanceof Uint8Array) recordBytes(to, content);
-  else if (content !== null) recordShadow(to, content);
-  carrySecret(from, to);
-}
-
-/** The mode a fresh file takes with no explicit one: 0666 under the umask (none on Windows). */
-function defaultFileMode(): number {
-  try {
-    return 0o666 & ~process.umask();
-  } catch {
-    return 0o666;
-  }
 }
 
 export function writeText(path: string, text: string, options: WriteOptions = {}): void {
@@ -486,21 +321,7 @@ export function writeBytes(path: string, bytes: Uint8Array, options: WriteOption
 }
 
 function writeInPlace(path: string, data: string | Uint8Array, options: WriteOptions): void {
-  const was = plannedLook(path);
-  const content = typeof data === "string" ? data : undefined;
-  const bridged = content === undefined
-    ? { render: renderOf(options.secret) }
-    : bridgedRender(path, content, options);
-  if (
-    planned(bridged.verdict ?? verdictOf(was), path, { content, ...bridged }, {
-      syscall: `open '${path}'`,
-      directory: "followed",
-    })
-  ) {
-    if (typeof data !== "string") recordBytes(path, data);
-    if (options.mode !== undefined) recordPlannedMode(path, options.mode);
-    return;
-  }
+  const was = look(path);
   try {
     writeFileSync(path, data, { mode: options.mode });
   } catch (err) {
@@ -516,25 +337,8 @@ function writeInPlace(path: string, data: string | Uint8Array, options: WriteOpt
  *  already-restricted inode. */
 function writeStaged(path: string, data: string | Uint8Array, options: WriteOptions): void {
   mkdir(dirname(path));
-  const was = plannedLook(path);
+  const was = look(path);
   const tmp = join(dirname(path), `${basename(path)}.tmp.${process.pid}`);
-  const content = typeof data === "string" ? data : undefined;
-  const bridged = content === undefined
-    ? { render: renderOf(options.secret) }
-    : bridgedRender(path, content, options);
-  // The rename over the target is the write's landing: a directory entry there is its EISDIR (a
-  // link there is replaced, as rename replaces it).
-  if (
-    planned(bridged.verdict ?? verdictOf(was), path, { content, ...bridged }, {
-      syscall: `rename '${tmp}' -> '${path}'`,
-      directory: "entry",
-    })
-  ) {
-    if (typeof data !== "string") recordBytes(path, data);
-    // A staged write lands a fresh inode: its mode is the explicit one, else the default.
-    recordPlannedMode(path, options.mode ?? defaultFileMode());
-    return;
-  }
   // A stale temp from a crashed run under this pid goes first: `mode` applies only to a fresh
   // inode, so writing into it would publish its old permissions. Through the seam, because with pid
   // reuse the path could be a file the user made.
@@ -571,40 +375,7 @@ function writeStaged(path: string, data: string | Uint8Array, options: WriteOpti
 }
 
 export function copyFile(from: string, to: string, detail?: string): void {
-  const was = plannedLook(to);
-  // A copy of content the run declared secret (as a whole, or by key) prints its path alone, now
-  // and on a later write: a diff row would read the copied text as the text it replaces.
-  const carried = secretOf(from);
-  // A copy of declared content prints its path alone (a diff would read the copied text); a
-  // whole-file secret also silences every row an earlier landing of the destination declared, and
-  // carried keys redact them.
-  const render: PlannedRender = carried.whole || carried.keys.size > 0 ? "path-only" : "diff";
-  if (
-    planned(verdictOf(was), to, {
-      render,
-      secret: carried.whole,
-      secretKeys: [...carried.keys],
-    }, {
-      syscall: `copyfile '${from}' -> '${to}'`,
-      directory: "followed",
-    })
-  ) {
-    // The row is the wrapper's (the verdict alone); the source's content, as the run sees it, still
-    // lands at `to` for the run's later readers, and its secret declarations travel with it.
-    carryContent(from, to);
-    return;
-  }
-  if (planCollecting() && underScratch(to) && plannedState(from) !== null) {
-    // A probe's scratch copy of a file this run planned: the planned bytes land for real under
-    // scratch (silent, as every scratch write), never the disk's stale ones.
-    const source = plannedContent(from);
-    if (source === null) {
-      throw errno("ENOENT", `no such file or directory, copyfile '${from}' -> '${to}'`);
-    }
-    writeFileSync(to, source);
-    reportWrite(kindOf(was), to, detail);
-    return;
-  }
+  const was = look(to);
   try {
     copyFileSync(from, to);
   } catch (err) {
@@ -615,13 +386,9 @@ export function copyFile(from: string, to: string, detail?: string): void {
 }
 
 /** Names every directory actually created, outermost first; `detail` rides on the directory asked
- *  for. An ancestor that exists as a regular file is mkdir's ENOTDIR, in a dry run too. */
+ *  for. An ancestor that exists as a regular file is mkdir's ENOTDIR. */
 export function mkdir(path: string, mode?: number, detail?: string): void {
-  const missing = plannedMissingDirectories(path);
-  if (planCollecting() && !underScratch(path)) {
-    for (const made of missing) planned("create", made, { render: "diff", directory: true });
-    return;
-  }
+  const missing = missingDirectories(path);
   try {
     mkdirSync(path, { recursive: true, mode });
   } catch (err) {
@@ -634,10 +401,6 @@ export function mkdir(path: string, mode?: number, detail?: string): void {
 /** A mode change is a rewrite of the entry, deduped away when this process already announced the
  *  path. */
 export function chmod(path: string, mode: number, detail?: string): void {
-  if (planned("rewrite", path)) {
-    recordPlannedMode(path, mode);
-    return;
-  }
   chmodSync(path, mode);
   reportWrite("rewritten", path, detail);
 }
@@ -654,32 +417,21 @@ export interface RemoveOptions {
  *  whether anything was there. A removal that fails partway is named for what it provably changed. */
 export function rm(path: string, options: RemoveOptions = {}): boolean {
   const recursive = options.recursive ?? false;
-  const state = plannedState(path);
-  if (state?.kind === "gone") {
-    if (options.force) return false;
-    throw errno("ENOENT", `no such file or directory, lstat '${path}'`);
-  }
-  let was: Look = { kind: "present", fingerprint: "" };
-  if (state?.kind === "dir" && !recursive) throw rmDirectoryRefused(path);
-  if (state === null || (state.kind === "opaque" && !state.file)) {
-    // The disk's entry (unplanned, or planned without bytes: a chmod on a disk directory):
-    // node's own refusals, and a look that failed for another reason (EACCES) is left to the
-    // removal itself.
-    let entry: Stats | null = null;
-    try {
-      entry = lstatSync(path);
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" && state === null) {
-        if (options.force) return false;
-        throw errno("ENOENT", `no such file or directory, lstat '${path}'`);
-      }
-      if (code === "ENOTDIR") throw e;
+  // node's own refusals first; a look that failed for another reason (EACCES) is left to the
+  // removal itself.
+  let entry: Stats | null = null;
+  try {
+    entry = lstatSync(path);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      if (options.force) return false;
+      throw errno("ENOENT", "lstat", path);
     }
-    if (entry !== null && entry.isDirectory() && !recursive) throw rmDirectoryRefused(path);
-    if (state === null) was = look(path, recursive);
+    if (code === "ENOTDIR") throw e;
   }
-  if (planned("delete", path)) return true;
+  if (entry !== null && entry.isDirectory() && !recursive) throw rmDirectoryRefused(path);
+  const was = look(path, recursive);
   try {
     rmSync(path, { recursive, force: true });
   } catch (err) {
@@ -690,13 +442,9 @@ export function rm(path: string, options: RemoveOptions = {}): boolean {
   return true;
 }
 
-/** node's rmdirSync, named: ENOENT for an absent path, and refuseRmdir's own refusals. */
+/** node's rmdirSync, named: an empty directory (or a Windows junction) goes; entries (ENOTEMPTY),
+ *  a file (ENOTDIR, on Windows too), and an absent path (ENOENT) are its own refusals. */
 export function rmdir(path: string): void {
-  if (plannedLook(path).kind === "absent") {
-    throw errno("ENOENT", `no such file or directory, rmdir '${path}'`);
-  }
-  refuseRmdir(path);
-  if (planned("delete", path)) return;
   rmdirSync(path);
   reportWrite("deleted", path);
 }
@@ -704,37 +452,7 @@ export function rmdir(path: string): void {
 /** A move OUT of a scratch dir is the creation of `to` (the source never existed for the user); a
  *  move INTO one is the deletion of `from`. */
 export function rename(from: string, to: string): void {
-  const was = plannedLook(to, true);
-  // Real only between scratch paths: a move touching anything else is planned whole, so a dry run
-  // never takes a real source away.
-  if (planCollecting() && !(underScratch(from) && underScratch(to))) {
-    if (plannedLook(from).kind === "absent") {
-      throw errno("ENOENT", `no such file or directory, rename '${from}' -> '${to}'`);
-    }
-    // The plan names the move, never the text (a moved store holds its tokens); the moved content,
-    // as the run sees it, lands at `to` for the run's later readers with its secret declarations,
-    // which also govern every row the destination already has.
-    const carried = secretOf(from);
-    // A moved directory lands as one: the run's later mkdir and reads below it meet a directory
-    // there, as they do on the disk after the real move. The source's kind is the run's own first
-    // (a file planned where the disk holds a directory moves as a file), the disk's otherwise.
-    const source = plannedState(from);
-    const directory = source === null || (source.kind === "opaque" && !source.file)
-      ? isDirectoryEntry(from)
-      : source.kind === "dir";
-    planned(verdictOf(was), to, {
-      render: "path-only",
-      secret: carried.whole,
-      secretKeys: [...carried.keys],
-      ...(directory ? { directory: true as const } : {}),
-    }, {
-      syscall: `rename '${from}' -> '${to}'`,
-      directory: directory ? "none" : "entry",
-    });
-    carryContent(from, to);
-    planned("delete", from);
-    return;
-  }
+  const was = look(to, true);
   try {
     renameSync(from, to);
   } catch (e) {
@@ -768,18 +486,8 @@ export function rename(from: string, to: string): void {
   reportWrite("moved", to, `from ${from}`);
 }
 
+/** node's symlinkSync: an entry at the path is its EEXIST (atomicSymlink is the replacing shape). */
 export function symlink(target: string, path: string, type?: "junction"): void {
-  // node's symlinkSync never replaces: an entry at the path, the disk's or one this run planned,
-  // is its EEXIST, in the plan too (atomicSymlink is the replacing shape).
-  if (planCollecting() && plannedLook(path).kind !== "absent") {
-    throw errno("EEXIST", `file already exists, symlink '${target}' -> '${path}'`);
-  }
-  if (
-    planned("create", path, undefined, {
-      syscall: `symlink '${target}' -> '${path}'`,
-      directory: "none",
-    })
-  ) return;
   symlinkSync(target, path, type);
   reportWrite("linked", path, `to ${target}`);
 }
@@ -789,15 +497,8 @@ export function symlink(target: string, path: string, type?: "junction"): void {
 export function atomicSymlink(target: string, link: string): void {
   const staged = join(dirname(link), `.${basename(link)}-next-${process.pid}`);
   // A stale staging entry from a crashed run under this pid goes first, through the seam: with
-  // pid reuse the path could be a file the user made, so its removal is named, and planned before
-  // the link is (a dry run prints what the real run does).
+  // pid reuse the path could be a file the user made, so its removal is named.
   rm(staged, { force: true, detail: "stale staging file" });
-  if (
-    planned(verdictOf(plannedLook(link)), link, undefined, {
-      syscall: `rename '${staged}' -> '${link}'`,
-      directory: "entry",
-    })
-  ) return;
   const was = look(staged);
   symlinkSync(target, staged);
   try {
@@ -811,13 +512,10 @@ export function atomicSymlink(target: string, link: string): void {
 
 /**
  * A file opened for writing (created or truncated at the open, which is the mutation reported):
- * the one way runtime code streams bytes to a path (a release download, the daemon's log). A dry
- * run has no handle to hand back and refuses outside scratch: no dry-run path reaches a stream
- * write, and one that did would be a write behind the plan.
+ * the one way runtime code streams bytes to a path (a release download, the daemon's log).
  */
 export async function openWritable(path: string, detail?: string): Promise<Deno.FsFile> {
-  const was = plannedLook(path);
-  refuseHandleInDryRun(path);
+  const was = look(path);
   const file = await Deno.open(path, { write: true, create: true, truncate: true });
   reportWrite(kindOf(was), path, detail);
   return file;
@@ -825,17 +523,10 @@ export async function openWritable(path: string, detail?: string): Promise<Deno.
 
 /** openWritable as a node fd, for a child's stdio. */
 export function openWriteFd(path: string, detail?: string): number {
-  const was = plannedLook(path);
-  refuseHandleInDryRun(path);
+  const was = look(path);
   const fd = openSync(path, "w");
   reportWrite(kindOf(was), path, detail);
   return fd;
-}
-
-function refuseHandleInDryRun(path: string): void {
-  if (planCollecting() && !underScratch(path)) {
-    throw new Error(`${path}: a dry run opens no file for writing`);
-  }
 }
 
 /** Nothing written under it is reported, because removeScratchDir takes it all away before exit. */

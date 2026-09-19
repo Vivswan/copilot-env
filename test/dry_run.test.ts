@@ -46,21 +46,17 @@ import { CopilotApiPaths, profileHome, resolveRootHome } from "../src/copilot_ap
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { appRunning, type ScanExec } from "../src/utils/app_scan.ts";
 import { errMessage } from "../src/utils/error.ts";
-import { missingDirectories } from "../src/utils/fs.ts";
+import { missingDirectories } from "../src/utils/fs_disk.ts";
+import * as fs from "../src/utils/fs_facade.ts";
 import { wrapLine } from "../src/utils/table.ts";
 import { DRY_RUN_ENV, spawnedByDryRun } from "../src/utils/dry_run.ts";
-import {
-  deferWriteReports,
-  flushWriteReports,
-  removeReported,
-  writeFileReported,
-} from "../src/utils/report_write.ts";
-import { collectDryRun, filePlan, landPlan } from "../src/utils/write_session.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { runCli } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   type AgentHomes,
+  dryRunChanges,
   envSnapshot,
   fingerprintTree,
   isolateAgentHomes,
@@ -138,7 +134,7 @@ test("a dry run that fails partway prints the plan landed before the failure, th
   const path = join(dir, "slot.json");
   // The shape of a named `add` then `auth` when the Direct probe fails after the slot commit.
   const body = () => {
-    landPlan({ files: [filePlan(path, "create")], apply: () => writeFileSync(path, "{}") });
+    fs.writeText(path, "{}");
     return Promise.reject(new Error("the Direct probe failed"));
   };
   const { stdout } = await captureChannels(async () => {
@@ -194,13 +190,15 @@ test("`agent profile <name> add --dry-run` plans the mode alone; the credential 
   await captureChannels(() => runAuth({ set: WORK_TOKEN, profile: "work" }));
   expect(fingerprint(scratch().dir)).not.toEqual(untouched);
   expect(new CopilotEnvState().profileNames()).toEqual([WORK]);
-  // The daemon's activity mark is cleared by the stop the deletion runs first, outside any plan's
-  // apply: the seam previews it and leaves it (the fingerprint inside dryRun proves the file stays).
+  // The daemon's activity mark is cleared by the stop the deletion runs first; the seam previews
+  // it (the fingerprint inside dryRun proves the file stays), and the tree diff folds it into the
+  // one row of the profile home it goes with.
   const activity = new CopilotApiPaths(WORK).activityFile;
   mkdirSync(dirname(activity), { recursive: true });
   writeFileSync(activity, '{"lastInferenceMs":1}\n');
   const del = await dryRun(() => delProfile(WORK, true));
-  expect(del).toContain(`delete ${activity}`);
+  expect(del).toContain(`delete ${profileHome(WORK)}${sep}`);
+  expect(del).not.toContain(activity);
   expect(del).toContain(`delete ${settingsPathFor(claudeHome, WORK)}`);
   expect(del).toContain(`rewrite ${store}`);
   expect(del).toContain('profiles.work.mode  "direct" -> (absent)');
@@ -257,7 +255,7 @@ test("`auth --provider gh-cli --dry-run` plans the pin the real command resolves
     });
   });
   void real;
-  const { result } = await collectDryRun(() => acquireCredential(choose, null, seams));
+  const { result } = await dryRunChanges(() => acquireCredential(choose, null, seams));
   expect(result).toEqual({ kind: "gh-cli", ghUser: "octocat" });
 });
 
@@ -274,7 +272,7 @@ test("`auth --provider gh-cli --dry-run` runs the real `gh auth token` look: an 
     .rejects.toThrow(
       refusal,
     );
-  await expect(collectDryRun(() => acquireCredential(choose, null, seams))).rejects.toThrow(
+  await expect(dryRunChanges(() => acquireCredential(choose, null, seams))).rejects.toThrow(
     refusal,
   );
 });
@@ -285,9 +283,9 @@ test("`auth --provider gh-env --dry-run` reads the environment as the real comma
   const refusal = /no GitHub token in the environment/;
   await expect(captureChannels(async () => void await acquireCredential(env, null))).rejects
     .toThrow(refusal);
-  await expect(collectDryRun(() => acquireCredential(env, null))).rejects.toThrow(refusal);
+  await expect(dryRunChanges(() => acquireCredential(env, null))).rejects.toThrow(refusal);
   process.env.GH_TOKEN = "ghp_from_env";
-  const { result } = await collectDryRun(() => acquireCredential(env, null));
+  const { result } = await dryRunChanges(() => acquireCredential(env, null));
   expect(result).toEqual({ kind: "stored", provider: "gh-env", token: "ghp_from_env" });
 });
 
@@ -330,7 +328,7 @@ test("a dry run's auto-mode decision is the real one: the CLI smoke runs and its
   });
   // The real run reached the CLI smoke (the equality below is about a count that is not zero).
   expect(real.n).toBeGreaterThan(0);
-  const { result } = await collectDryRun(() => probe(dry));
+  const { result } = await dryRunChanges(() => probe(dry));
   expect({ dryVerdict: result, dryCalls: dry.n }).toEqual({ dryVerdict: false, dryCalls: real.n });
 });
 
@@ -371,8 +369,8 @@ skipWin(
       const before = fingerprint(dir);
       let planned: [string, string][] = [];
       const { all: previewed } = await captureChannels(async () => {
-        const { files } = await collectDryRun(verify);
-        planned = files.map((f) => [f.path, f.verdict]);
+        const { changes } = await dryRunChanges(verify);
+        planned = changes.map((c) => [c.path, c.verdict]);
       });
       expect(planned).toContainEqual([member, "create"]);
       expect(fingerprint(dir)).toEqual(before);
@@ -402,7 +400,7 @@ skipWin(
       writeFileSync(join(sharedRoot, "sessions"), "not a directory\n");
       const build = () => captureChannels(() => withCodexHostFarm(() => Promise.resolve()));
       const failure = /Failed to build the CODEX_HOME symlink farm at .*EEXIST/;
-      await expect(collectDryRun(build)).rejects.toThrow(failure);
+      await expect(dryRunChanges(build)).rejects.toThrow(failure);
       await expect(build()).rejects.toThrow(failure);
     } finally {
       process.env.PATH = savedPath;
@@ -445,18 +443,18 @@ skipWin(
       writeFileSync(join(hostHome, "AGENTS.md"), "rules\n");
       writeFileSync(join(sharedRoot, "AGENTS.md"), "");
       const build = () => captureChannels(() => withCodexHostFarm(() => Promise.resolve()));
-      const { files } = await collectDryRun(build);
-      const planned = files.map((f) => [f.path, f.verdict]);
+      const { changes } = await dryRunChanges(build);
+      const planned = changes.map((c) => [c.path, c.verdict]);
       expect(planned).not.toContainEqual([join(hostHome, "sessions"), "delete"]);
       expect(planned).toContainEqual([join(sharedRoot, "memories"), "create"]);
       expect(planned).toContainEqual([join(sharedRoot, "memories", "a.txt"), "create"]);
-      expect(planned).toContainEqual([join(hostHome, "memories"), "delete"]);
+      expect(planned).toContainEqual([join(hostHome, "memories"), "rewrite"]);
       expect(planned).not.toContainEqual([join(sharedRoot, "rules", "nested"), "rewrite"]);
-      expect(planned).toContainEqual([join(hostHome, "rules"), "delete"]);
+      expect(planned).toContainEqual([join(hostHome, "rules"), "rewrite"]);
       expect(planned).toContainEqual([join(sharedRoot, "skills", "new.md"), "create"]);
-      expect(planned).toContainEqual([join(hostHome, "skills"), "delete"]);
+      expect(planned).toContainEqual([join(hostHome, "skills"), "rewrite"]);
       expect(planned).toContainEqual([join(sharedRoot, "AGENTS.md"), "rewrite"]);
-      expect(planned).toContainEqual([join(hostHome, "AGENTS.md"), "delete"]);
+      expect(planned).toContainEqual([join(hostHome, "AGENTS.md"), "rewrite"]);
       // The real build lands exactly those decisions.
       await build();
       expect(lstatSync(join(hostHome, "sessions")).isDirectory()).toBe(true);
@@ -499,8 +497,8 @@ skipWin(
       new CopilotEnvConfig().set({ "codex.host": false, "codex.model-catalog": false });
       let planned: [string, string][] = [];
       await captureChannels(async () => {
-        const { files } = await collectDryRun(configure);
-        planned = files.map((f) => [f.path, f.verdict]);
+        const { changes } = await dryRunChanges(configure);
+        planned = changes.map((c) => [c.path, c.verdict]);
       });
       expect(planned).toContainEqual([farm, "delete"]);
       // The strip of the catalog reference never touches a config under the tree the run removes.
@@ -635,8 +633,9 @@ test("`settings --import --dry-run` over a pile of future-dated backups plans no
   const before = pile();
   const out = await dryRun(() => runSettings({ importFrom: bundle, dryRun: true }));
   expect(out).toContain('global."daemon.idle-timeout"  60 -> 45');
-  // Created then deleted inside the run: neither a `create` nor a `delete` row names the pile.
-  expect(out.split("\n").filter((line) => line.includes(`${backups}${sep}`))).toEqual([]);
+  // Created then deleted inside the run: neither a `create` nor a `delete` row names a backup (the
+  // directory's own row is its mode).
+  expect(out.split("\n").filter((line) => line.includes(`${backups}${sep}settings-`))).toEqual([]);
   await captureChannels(() => runSettings({ importFrom: bundle, force: true }));
   expect(pile()).toEqual(before);
   expect(new CopilotEnvConfig().read().global["daemon.idle-timeout"]).toBe(45);
@@ -811,30 +810,11 @@ test("`codex --dry-run` with the catalog disabled and a directory at the catalog
   expect(lstatSync(catalogFile).isDirectory()).toBe(true);
   let planned: [string, string][] = [];
   const dry = await captureChannels(async () => {
-    const { files } = await collectDryRun(() => Promise.resolve(syncCodexCatalogReference()));
-    planned = files.map((f) => [f.path, f.verdict]);
+    const { changes } = await dryRunChanges(() => Promise.resolve(syncCodexCatalogReference()));
+    planned = changes.map((c) => [c.path, c.verdict]);
   });
   expect(dry.stderr).toContain(warning);
   expect(planned).not.toContainEqual([catalogFile, "delete"]);
-});
-
-test("removeReported decides alike in both runs: a directory is refused, and a file this run planned is planned gone", async () => {
-  const { dir } = scratch();
-  const tree = join(dir, "tree");
-  mkdirSync(tree);
-  const refusal = /is a directory/;
-  expect(() => removeReported(tree)).toThrow(refusal);
-  await expect(collectDryRun(() => Promise.resolve(removeReported(tree)))).rejects.toThrow(refusal);
-  expect(existsSync(tree)).toBe(true);
-  // The prune of a backup pile removes the file the same run just wrote when it sorts oldest: the
-  // seam sees the planned write, not the disk, so the plan carries the removal too.
-  const file = join(dir, "planned.txt");
-  const { files } = await collectDryRun(() => {
-    writeFileReported(file, "x");
-    return Promise.resolve(removeReported(file));
-  });
-  expect(files.map((f) => [f.path, f.verdict])).toEqual([[file, "create"], [file, "delete"]]);
-  expect(existsSync(file)).toBe(false);
 });
 
 test("`agent profile mcp --remove --dry-run` names the registration, the deny, and the opt-out key it would take back", async () => {
@@ -858,8 +838,8 @@ test("`agent profile mcp --remove --dry-run` names the registration, the deny, a
 });
 
 test("a fresh HOME's plan names the homes the real run creates, outermost first, as directory rows", async () => {
-  // The apply's mkdir never runs in a dry run; the session derives the missing ancestors of every
-  // planned create instead, so the plan equals the real run's named set by construction.
+  // The writer's own mkdir runs in the dry run too, on the overlay, and the tree diff names each
+  // directory it made: the plan equals the real run's named set because it is the same code path.
   if (homes !== null) removeDir(homes.dir);
   homes = isolateAgentHomes("copilot-dry-run-fresh-");
   const { claudeHome, codexHome, dir } = homes;

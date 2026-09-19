@@ -9,7 +9,7 @@ import { codexUserAgent } from "../codex/user_agent.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { agentStartCommand, parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
-import { COLOR_ENABLED, palette } from "../utils/ansi.ts";
+import { colorEnabled, palette } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { formatTable, type TableRow, terminalWidth } from "../utils/table.ts";
 import { mergeUnlistedModels, type ModelListEntry, parseModelList } from "../copilot_api/models.ts";
@@ -50,7 +50,7 @@ function entryDetail(entry: ModelListEntry): string {
 export function renderModelTable(
   models: ModelListEntry[],
   width: number | null = terminalWidth(),
-  color = COLOR_ENABLED,
+  color = colorEnabled(),
 ): string {
   const byVendor = new Map<string, ModelListEntry[]>();
   for (const model of models) {

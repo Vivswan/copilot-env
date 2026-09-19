@@ -39,7 +39,7 @@ import {
 } from "./paths.ts";
 import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "../scripts/daemon_lock.ts";
 import { isStandaloneBinary } from "../utils/root.ts";
-import { COLOR_ENABLED, paintFor } from "../utils/ansi.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { ensureSidecar, resolveDenoBin } from "./sidecar.ts";
@@ -1039,7 +1039,7 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
 export function renderModelAliases(
   mappings: Record<string, string>,
   width: number | null = terminalWidth(),
-  color = COLOR_ENABLED,
+  color = colorEnabled(),
 ): string {
   const sources = Object.keys(mappings);
   const byTarget = new Map<string, string[]>();

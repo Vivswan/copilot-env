@@ -1,5 +1,5 @@
 import { consola } from "consola";
-import { COLOR_ENABLED, statusPaint } from "../utils/ansi.ts";
+import { colorEnabled, statusPaint } from "../utils/ansi.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import {
@@ -13,8 +13,8 @@ import { PROJECT_ROOT } from "../utils/root.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
 
-/** A status word in its tone, the edge's COLOR_ENABLED resolved once here. */
-const status = (word: string): string => statusPaint(word, COLOR_ENABLED);
+/** A status word in its tone, the edge's colorEnabled() resolved once here. */
+const status = (word: string): string => statusPaint(word, colorEnabled());
 
 export interface StopArgs {
   profile?: string;

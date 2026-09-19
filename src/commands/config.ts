@@ -41,7 +41,7 @@ import {
   profileLabel,
 } from "../copilot_api/profile.ts";
 import { nextProxyVersion } from "../proxy_float.ts";
-import { COLOR_ENABLED, paintFor } from "../utils/ansi.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { versionLessThan } from "../utils/semver.ts";
@@ -289,7 +289,7 @@ function runGet(get: string | undefined, view: ConfigView, platform: NodeJS.Plat
     const origin = inert
       ? `${originLabel(def, "default", profile)} (the stored value is inert on this platform)`
       : originLabel(def, resolved.source, profile);
-    process.stderr.write(`${paintFor(COLOR_ENABLED).dim(`${def.key}: ${origin}`)}\n`);
+    process.stderr.write(`${paintFor(colorEnabled()).dim(`${def.key}: ${origin}`)}\n`);
     return;
   }
 
@@ -574,6 +574,6 @@ export function configTableOutput(
     daemonUp: anyTrackedDaemonAlive(),
     profileDaemonUp: trackedDaemonAlive(viewProfile(view)),
     proxyVersion: nextProxyVersion(),
-    color: COLOR_ENABLED,
+    color: colorEnabled(),
   });
 }

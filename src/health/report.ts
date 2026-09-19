@@ -2,7 +2,7 @@
 // owns process.exitCode), like the builder/printer split in src/usage/cost.ts. The `--json` path
 // bypasses this entirely.
 import type { ProfileMode } from "../copilot_api/env_state.ts";
-import { COLOR_ENABLED, paintFor, statusPaint, type Tone } from "../utils/ansi.ts";
+import { colorEnabled, paintFor, statusPaint, type Tone } from "../utils/ansi.ts";
 import { printWrapped } from "../utils/table.ts";
 import { worstStatus } from "./aggregate.ts";
 import type { CheckGroup, CheckResult, CheckStatus, HealthScope } from "./types.ts";
@@ -41,7 +41,7 @@ export function renderReport(
   scope: HealthScope,
   results: CheckResult[],
   profileModes: ReadonlyMap<string, ProfileMode | null> = new Map(),
-  color = COLOR_ENABLED,
+  color = colorEnabled(),
 ): void {
   const paint = paintFor(color);
   printWrapped(paint.bold(`copilot-env health - scope: ${scope}`));

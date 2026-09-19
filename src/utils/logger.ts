@@ -9,7 +9,7 @@ import {
   type LogObject,
 } from "consola";
 import { format } from "node:util";
-import { COLOR_ENABLED, FG_CLOSE, palette, sgrOpen, type Tone } from "./ansi.ts";
+import { colorEnabled, FG_CLOSE, palette, sgrOpen, type Tone } from "./ansi.ts";
 import { terminalWidth, wrapMessage } from "./table.ts";
 
 const NO_DATE = { date: false } as const;
@@ -125,10 +125,10 @@ const LEVEL_TONES: Partial<Record<LogObject["type"], Tone>> = {
 
 /** Puts the wrapping reporter in front of the instance's own, budgeting for the one consola chose
  *  (fancy in a plain TTY; basic under CI, off a TTY, or for a `fancy: false` instance). `color`
- *  is the command edge's COLOR_ENABLED; `widthOf` is the test seam. */
+ *  is the command edge's colorEnabled(); `widthOf` is the test seam. */
 export function wrapToTerminal(
   instance: ConsolaInstance,
-  color = COLOR_ENABLED,
+  color = colorEnabled(),
   widthOf: WidthOf = terminalWidth,
 ): ConsolaInstance {
   const inner = instance.options.reporters;

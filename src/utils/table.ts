@@ -1,6 +1,6 @@
 import stringWidth from "string-width";
 import wrapAnsi from "wrap-ansi";
-import { COLOR_ENABLED, paintFor, palette, statusPaint } from "./ansi.ts";
+import { colorEnabled, paintFor, palette, statusPaint } from "./ansi.ts";
 
 export type Align = "left" | "right";
 
@@ -20,7 +20,7 @@ export interface TableOptions {
   /** Visible columns to fit; null never wraps. Defaults to the terminal's. */
   width?: number | null;
   /** `agent config`'s palette by construction: the header and headings bold, the key column (the
-   *  first) cyan. Defaults to the command edge's COLOR_ENABLED; the argument is the test override. */
+   *  first) cyan. Defaults to the command edge's colorEnabled(); the argument is the test override. */
   color?: boolean;
 }
 
@@ -92,12 +92,12 @@ export function printWrapped(text: string): void {
 }
 
 /** A `key: value` status line (`agent profile mcp`, the `--check` reports): the key cyan, a status word in
- *  its tone. Defaults to the command edge's COLOR_ENABLED; the argument is the test override. */
-export function keyValueLine(key: string, value: string, color = COLOR_ENABLED): string {
+ *  its tone. Defaults to the command edge's colorEnabled(); the argument is the test override. */
+export function keyValueLine(key: string, value: string, color = colorEnabled()): string {
   return `${paintFor(color).cyan(key)}: ${statusPaint(value, color)}`;
 }
 
-export function printKeyValue(key: string, value: string, color = COLOR_ENABLED): void {
+export function printKeyValue(key: string, value: string, color = colorEnabled()): void {
   printWrapped(keyValueLine(key, value, color));
 }
 
@@ -141,7 +141,7 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
     wrap = [],
     indent = GAP,
     width = terminalWidth(),
-    color = COLOR_ENABLED,
+    color = colorEnabled(),
   } = options;
   const tint = tintFor(color);
   const records = body.filter((row): row is string[] => !isHeading(row));

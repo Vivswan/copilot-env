@@ -265,7 +265,9 @@ test("proxy-token --dry-run takes the start's own preview, prints no key, and pl
     const state = changes.find((c) => c.path === stateFile);
     plannedPort = state?.attributes.find((row) => row.key === "port")?.next;
   });
-  const narrated = /Would launch the proxy on port (\d+) with the gh-token credential\./.exec(all);
+  const narrated = /Would spawn the proxy daemon on port (\d+) with the gh-token credential/.exec(
+    all,
+  );
   expect(narrated).not.toBeNull();
   expect(plannedPort).toBe(Number(narrated?.[1]));
   expect(fingerprintTree(dir)).toEqual(before);

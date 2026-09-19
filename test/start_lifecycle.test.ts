@@ -118,10 +118,13 @@ async function narrationOf(fn: () => Promise<void>): Promise<string> {
   return stdout + stderr;
 }
 
-function dryRunNarration(): Promise<string> {
-  return narrationOf(() =>
+/** Everything a bare `start --dry-run` prints: the narration (consola's streams) and the plan
+ *  block (console output), interleaved. */
+async function dryRunNarration(): Promise<string> {
+  const captured = await captureChannels(() =>
     runStart({ kind: "launch", dryRun: true, force: false, port: undefined, profile: null })
   );
+  return captured.all;
 }
 
 test("start --dry-run runs the launch's credential gate: no credential is the real refusal, a stored one is named in the plan", async () => {
@@ -137,18 +140,16 @@ test("start --dry-run runs the launch's credential gate: no credential is the re
   new Credential().store("gh-token", "ghp_fake_for_the_plan");
   stubIdentityProbe();
   // A bare `start --dry-run` collects its own plan: the port and the credential pair it would
-  // record print as store rows, and nothing is written.
+  // record print as store rows, the spawn as its one line, and nothing is written.
   const before = fingerprintTree(dir);
-  // The narration is consola's (streamsOf reads it); the plan block is console output
-  // (captureChannels reads it). A second preview costs nothing: neither writes.
-  expect(await dryRunNarration()).toMatch(
-    /Would launch the proxy on port \d+ with the gh-token credential\./,
-  );
-  const { stdout } = await captureChannels(() =>
+  const preview = await captureChannels(() =>
     runStart({ kind: "launch", dryRun: true, force: false, port: undefined, profile: null })
   );
-  expect(stdout).toContain("DRY RUN: nothing was written.");
-  expect(stdout).toMatch(/\bport {2}\(absent\) -> \d+/);
+  expect(preview.all).toMatch(
+    /Would spawn the proxy daemon on port \d+ with the gh-token credential/,
+  );
+  expect(preview.stdout).toContain("DRY RUN: nothing was written.");
+  expect(preview.stdout).toMatch(/\bport {2}\(absent\) -> \d+/);
   expect(fingerprintTree(dir)).toEqual(before);
   // The projected configuration lands in the preview as in the real start, so a config.json the
   // real start refuses to rewrite (not JSON) refuses the preview the same way.
@@ -259,11 +260,12 @@ test("parseStartAction: each flag shape is one action, or a boundary rejection",
   }
 });
 
-// The dry run narrates planCleanup (the SHARED decision source) and never acts on it. In the
-// refused-stop fixture the test process holds the lock through both dry runs, while the marker
-// and run state name a live local bystander the plan cannot corroborate.
+// The dry run plans through planCleanup (the SHARED decision source) and never acts on it: the
+// tracking clear lands as the plan's pid row, a signal is one line. In the refused-stop fixture the
+// test process holds the lock through both dry runs, while the marker and run state name a live
+// local bystander the plan cannot corroborate.
 test(
-  "start --dry-run narrates the refused holder and the tracking clear, and never acts",
+  "start --dry-run plans the refused holder and the tracking clear, and never acts",
   async () => {
     const home = tmpHome();
     // The plan runs the launch's credential gate first, so the preview needs a credential.
@@ -271,15 +273,16 @@ test(
     stubIdentityProbe();
     const fixture = stageRefusedStop(home);
     try {
-      const leaveLine = `Would leave the daemon.lock holder (pid=${fixture.bystanderPid}) alone`;
+      const leaveLine = `Would leave the daemon.lock holder alone (pid ${fixture.bystanderPid})`;
+      const clearRow = new RegExp(`\\bpid {2}${fixture.bystanderPid} -> \\(absent\\)`);
 
       // Tracked control: the lock's "alive" verdict plans no tracked signal -- only the
-      // state clear -- and the uncorroborated holder plans a leave, never a stop.
+      // tracking clear, landed as the pid row -- and the uncorroborated holder plans a leave,
+      // never a stop.
       const tracked = await dryRunNarration();
-      expect(tracked).toContain(`Would clear tracked run state (pid=${fixture.bystanderPid}).`);
+      expect(tracked).toMatch(clearRow);
       expect(tracked).toContain(leaveLine);
-      expect(tracked).not.toContain("Would stop tracked proxy");
-      expect(tracked).not.toContain("untracked daemon.lock holder");
+      expect(tracked).not.toContain("Would stop the proxy processes");
       // The honest "never acts" detector: the live cleanup ALWAYS clears a tracked pid
       // (even when it defers or refuses the signal), so tracking surviving the dry run
       // proves the cleanup never ran.
@@ -289,7 +292,7 @@ test(
       writeRunState({ pid: null, port: null });
       const untracked = await dryRunNarration();
       expect(untracked).toContain(leaveLine);
-      expect(untracked).not.toContain("Would clear tracked run state");
+      expect(untracked).not.toMatch(clearRow);
 
       // Never signalled: the bystander lives and the lock is still held over it.
       expect(pidAlive(fixture.bystanderPid)).toBe(true);
@@ -302,9 +305,9 @@ test(
 );
 
 // Stale tracking of a DEAD pid (live: a durable state-file clear) beside a corroborated
-// daemon.lock holder (live: the holder stop): the dry run must narrate both and perform neither.
+// daemon.lock holder (live: the holder stop): the dry run must plan both and perform neither.
 test(
-  "start --dry-run reports the corroborated holder stop and the dead-pid tracking clear without acting",
+  "start --dry-run plans the corroborated holder stop and the dead-pid tracking clear without acting",
   async () => {
     const home = tmpHome();
     // The plan runs the launch's credential gate first, so the preview needs a credential.
@@ -316,11 +319,11 @@ test(
       writeRunState({ pid: DEAD_PID, port: 4141 });
 
       const narration = await dryRunNarration();
-      expect(narration).toContain(`Would clear tracked run state (pid=${DEAD_PID}).`);
+      expect(narration).toMatch(new RegExp(`\\bpid {2}${DEAD_PID} -> \\(absent\\)`));
+      // The dead pid is never signalled: the holder alone is in the stop line.
       expect(narration).toContain(
-        `Would stop this home's untracked daemon.lock holder (pid=${daemonPid}).`,
+        `Would stop the proxy processes in the way first (pid ${daemonPid}).`,
       );
-      expect(narration).not.toContain("Would stop tracked proxy"); // dead: no signal to report
 
       // Never acts: the live cleanup would clear this tracking and stop this daemon.
       expect(new CopilotEnvRunState().read().pid).toBe(DEAD_PID);

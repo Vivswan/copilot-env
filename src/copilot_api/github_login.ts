@@ -6,6 +6,7 @@ import { isRecord } from "../utils/json.ts";
 import { errMessage } from "../utils/error.ts";
 import { defaultFetch } from "../utils/fetch.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
+import type { ProbeFetch } from "./integration_identity.ts";
 
 export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 export const GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code";
@@ -20,14 +21,12 @@ const DEVICE_FLOW_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 /** GitHub's `slow_down` asks for 5 more seconds between polls. */
 const SLOW_DOWN_EXTRA_S = 5;
 
-export type LoginFetch = (input: string, init?: RequestInit) => Promise<Response>;
-
 // A module-level seam so `runAuth` and `addProfile` stay hermetic in tests without threading a fetch through
 // every layer; the interactive pickers reach this through several calls.
-let defaultLoginFetch: LoginFetch = defaultFetch;
+let defaultLoginFetch: ProbeFetch = defaultFetch;
 
 /** Test hook. */
-export function setGithubLoginFetch(fetchImpl: LoginFetch | null): void {
+export function setGithubLoginFetch(fetchImpl: ProbeFetch | null): void {
   defaultLoginFetch = fetchImpl ?? defaultFetch;
 }
 
@@ -52,7 +51,7 @@ function parseViewerLogin(body: unknown): GithubLoginLook {
 
 export async function githubLoginLook(
   token: string,
-  fetchImpl: LoginFetch = defaultLoginFetch,
+  fetchImpl: ProbeFetch = defaultLoginFetch,
 ): Promise<GithubLoginLook> {
   let res: Response;
   try {
@@ -92,7 +91,7 @@ export interface DeviceCode {
 }
 
 export interface DeviceFlowDeps {
-  fetchImpl?: LoginFetch;
+  fetchImpl?: ProbeFetch;
   /** Waits `ms` between polls; the test seam. */
   sleep?: (ms: number) => Promise<void>;
   /** Tells the user where to go and what to type; runs once, before polling starts. */
@@ -106,7 +105,7 @@ const DEVICE_FLOW_HEADERS = {
 };
 
 async function postJson(
-  fetchImpl: LoginFetch,
+  fetchImpl: ProbeFetch,
   url: string,
   body: Record<string, string>,
 ): Promise<unknown> {

@@ -10,7 +10,7 @@ import {
 import type { Server } from "node:net";
 import { delimiter, join, relative } from "node:path";
 import { consola } from "consola";
-import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
+import { UPDATE_LOCK_POLICY } from "../src/autoupdate/lock.ts";
 import { type PreflightOptions, runPreflight } from "../src/autoupdate/preflight.ts";
 import { AutoupdateState } from "../src/autoupdate/state.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, resetCodexVersionMemo } from "../src/codex/user_agent.ts";
@@ -29,7 +29,7 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { daemonLockHolderPid } from "../src/copilot_api/daemon_lock.ts";
-import { probeFileLock } from "../src/utils/file_lock.ts";
+import { probeFileLock, withFileLock } from "../src/utils/file_lock.ts";
 import { packageVersion } from "../src/utils/version.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { ROOT } from "./helpers/run.ts";
@@ -364,7 +364,8 @@ test(
       return runPreflight({
         ...opts,
         state: new AutoupdateState(stateFile),
-        lock: (nowMs, fn) => withUpdateLockForTests(join(dir, "update.lock"), nowMs, fn),
+        lock: (nowMs, fn) =>
+          withFileLock(join(dir, "update.lock"), { ...UPDATE_LOCK_POLICY, nowMs }, fn),
       });
     };
     const urls: string[] = [];

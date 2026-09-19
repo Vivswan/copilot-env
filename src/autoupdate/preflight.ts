@@ -11,7 +11,7 @@ import { isDue } from "../utils/time.ts";
 import { packageVersion } from "../utils/version.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { applyUpdate, resolveProvenanceDecision } from "./apply.ts";
-import { type HeldUpdateLock, withUpdateLock } from "./lock.ts";
+import { withUpdateLock } from "./lock.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "./state.ts";
 
 const logger = createStderrLogger();
@@ -43,7 +43,7 @@ export async function runPreflight(opts: PreflightOptions): Promise<void> {
     // the unlocked read above and this acquire. This is what keeps two starts from applying
     // one release twice.
     if (!isDue(state.read().lastCheckMs, opts.nowMs)) return;
-    await checkAndApply(state, effectiveUpdateCooldownDays(), opts.nowMs, outcome);
+    await checkAndApply(state, effectiveUpdateCooldownDays(), opts.nowMs);
   });
 }
 
@@ -51,7 +51,6 @@ async function checkAndApply(
   state: AutoupdateState,
   cooldownDays: number,
   nowMs: number,
-  lock: HeldUpdateLock,
 ): Promise<void> {
   const current = `v${packageVersion()}`;
 
@@ -92,7 +91,7 @@ async function checkAndApply(
       undefined,
       new CopilotEnvConfig().verifyProvenanceEnabled(),
     );
-    await applyUpdate(current, target, lock, { logger, childStdoutToStderr: true, provenance });
+    await applyUpdate(current, target, { logger, childStdoutToStderr: true, provenance });
     state.set({ lastCheckMs: nowMs, lastResult: `updated ${target.tag}` });
     logger.info(`copilot-env updated to ${target.tag}; active on the next \`agent start\``);
   } catch (e) {

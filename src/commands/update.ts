@@ -198,6 +198,6 @@ async function runManualUpdate(
       consola.success(`copilot-env is already up to date (${currentNow}).`);
       return;
     }
-    await applyUpdate(currentNow, verdict.target, outcome, { provenance: args.provenance });
+    await applyUpdate(currentNow, verdict.target, { provenance: args.provenance });
   });
 }

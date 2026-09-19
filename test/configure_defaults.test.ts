@@ -112,11 +112,10 @@ function probeAdapter(id: ManagedAgentId, verdict: boolean, trace: string[]): Ag
     },
     resolveDirectWiring: () =>
       Promise.resolve(directWiring("copilot-developer-cli", "https://api.githubcopilot.com")),
-    configureDefault(write) {
+    configureProfile(_profile, write) {
       trace.push(`write:${id}:${write.mode}`);
       return Promise.resolve();
     },
-    configureProfile: () => {},
     removeProfile: () => {},
   };
 }
@@ -148,27 +147,34 @@ test("`agent init` (auto) probes both agents BEFORE any write and lands one mode
   }
 });
 
-// The record is the mode both agents share, so it is committed only once both writes succeeded
-// (commitDefaultWiring): a move one agent did not make leaves the previous record.
-test("a failed write in a both-agents landing leaves the previous record, and names the agent that did not move", async () => {
+// The record and the Direct pair are what both agents share, so they land only once both writes
+// succeeded (commitDefaultWiring, AFTER the writes; a named profile stores its pair before them):
+// a move one agent did not make leaves the previous record and stores no pair.
+test("a failed write in a both-agents landing leaves the previous record and no pair, and names the agent that did not move", async () => {
   const state = new CopilotEnvState();
-  state.recordDefaultMode("direct");
+  state.recordDefaultMode("proxy");
   const trace: string[] = [];
   const failing: AgentAdapter = {
-    ...probeAdapter("codex", false, trace),
-    configureDefault: () => Promise.reject(new Error("disk full")),
+    ...probeAdapter("codex", true, trace),
+    configureProfile: () => Promise.reject(new Error("disk full")),
   };
   const out = await configureDefaultAgents(
-    { codex: "proxy", claude: "proxy", ghToken: "ghu_test" },
-    [probeAdapter("claude", false, trace), failing],
+    { codex: "direct", claude: "direct", ghToken: "ghu_test" },
+    [probeAdapter("claude", true, trace), failing],
   );
-  expect({ ...out, trace, recorded: state.readProfileSlot(null).mode }).toEqual({
+  expect({
+    ...out,
+    trace,
+    recorded: state.readProfileSlot(null).mode,
+    pair: state.readProfileDirectPair(null),
+  }).toEqual({
     codex: "none",
-    claude: "proxy",
+    claude: "direct",
     failures: ["codex: disk full"],
     failedAgents: ["codex"],
-    trace: ["write:claude:proxy"],
-    recorded: "direct",
+    trace: ["write:claude:direct"],
+    recorded: "proxy",
+    pair: {},
   });
 });
 

@@ -15,10 +15,11 @@
 //                                                  the ledger write alone, never a take-back's owns() decision
 // The ledger is the `ownership` map of the one account-wide store (src/copilot_api/state_store.ts).
 import * as v from "valibot";
-import { CopilotApiConfig } from "./config.ts";
+import { isRecord } from "../utils/json.ts";
+import { CopilotApiConfig, ensureDict } from "./config.ts";
 import type { ProxyConfigPath } from "./env_config.ts";
 import type { CopilotApiPaths } from "./paths.ts";
-import { rootStateStore, StateSection } from "./state_store.ts";
+import { rootStateStore } from "./state_store.ts";
 
 /** The ledger's JSON key per ownership kind (external contracts: never rename). */
 const LEDGER_KEYS = {
@@ -51,23 +52,33 @@ const LEDGER_SCHEMA = v.object({
   codexCatalogConfigPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),
 });
 
+/** The store's `ownership` map (external contract: never rename). */
+const LEDGER_MAP = "ownership";
+
 export class OwnershipLedger {
-  private readonly store: StateSection;
+  private readonly store: CopilotApiConfig;
 
   constructor(paths?: CopilotApiPaths) {
-    this.store = new StateSection(
-      "ownership",
-      paths === undefined
-        ? rootStateStore()
-        : new CopilotApiConfig(paths.stateStoreFile, paths.stateStoreLock),
-    );
+    this.store = paths === undefined
+      ? rootStateStore()
+      : new CopilotApiConfig(paths.stateStoreFile, paths.stateStoreLock);
   }
 
   /** STRICT: this feeds owns(), the predicate every take-back gates on, and an unreadable store must
    *  surface rather than read as owns-nothing (which would strip a deny's replacement while leaving the
-   *  deny). Lock-free: it writes nothing. */
+   *  deny). An absent map, or one that is not an object, owns nothing. Lock-free: it writes nothing. */
   ownedPaths(kind: OwnedArtifactKind): string[] {
-    return v.parse(LEDGER_SCHEMA, this.store.loadStrict())[LEDGER_KEYS[kind]];
+    const map = this.store.loadStrict()[LEDGER_MAP];
+    return v.parse(LEDGER_SCHEMA, isRecord(map) ? map : {})[LEDGER_KEYS[kind]];
+  }
+
+  /** Mutates the map under the store's one lock; a map the mutation leaves empty is dropped from the file. */
+  private update(mutate: (map: Record<string, unknown>) => void): void {
+    this.store.update((doc) => {
+      const map = ensureDict(doc, LEDGER_MAP);
+      mutate(map);
+      if (Object.keys(map).length === 0) delete doc[LEDGER_MAP];
+    });
   }
 
   owns(kind: OwnedArtifactKind, artifactPath: string): boolean {
@@ -78,7 +89,7 @@ export class OwnershipLedger {
    *  write that must never leave an unrecorded artifact behind (the Codex catalog reference's wiring-time
    *  sync); the next cleanup sweep releases a claim on an unwritten path. */
   record(kind: OwnedArtifactKind, artifactPath: string): void {
-    this.store.update((d) => {
+    this.update((d) => {
       const key = LEDGER_KEYS[kind];
       const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
       list.push(artifactPath);
@@ -91,7 +102,7 @@ export class OwnershipLedger {
   release(kind: OwnedArtifactKind, artifactPath: string): void {
     if (!this.ownedPaths(kind).includes(artifactPath)) return;
     const key = LEDGER_KEYS[kind];
-    this.store.update((d) => {
+    this.update((d) => {
       const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
       if (list.length === 0) delete d[key];
       else d[key] = list;

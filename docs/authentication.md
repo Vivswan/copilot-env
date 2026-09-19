@@ -21,8 +21,8 @@ This page is about the credential and the profiles that carry one each. The wiri
 
 - `copilot` runs GitHub's device flow in copilot-env itself (VS Code Copilot's OAuth app, `read:user`), printing the URL and code on stderr; the token goes straight into the credential store, and no proxy-side token file is written.
 - `gh-cli` pins an account when you run `agent profile auth`: `--gh-user <login>` names it; without the flag, a single saved login or a headless run pins the active account, and a terminal asks when there are several logins or the only one comes from a token env var. Only the `auto` choice in that prompt follows a later `gh auth switch`; a pinned account stays until you re-run `agent profile auth`.
-- A pinned account resolves through `gh auth token --user <login>`. When that gh cannot serve it (gh before 2.40 has no `--user`; a `hosts.yml` login may not answer to it) and the pin is gh's active account, `gh auth token --hostname github.com` serves the same login.
-- The fallback keeps the pin honest: a `gh auth switch` to another account fails the pin instead of following it, an env token (`$GH_TOKEN`, `$GITHUB_TOKEN`) is never adopted, and a miss quotes the gh call and its stderr.
+- A pinned account resolves through `gh auth token --user <login>` (gh 2.40 or newer). A pin gh cannot serve fails with gh's own refusal; it never falls back to another account's token.
+- The pin follows no `gh auth switch`; it fails only when gh cannot serve that account (logged out, a hosts.yml login without an oauth token, or gh older than 2.40). An env token (`$GH_TOKEN`, `$GITHUB_TOKEN`) is never adopted for a pin, and a miss quotes the gh call and its stderr.
 - `gh-env` in a terminal always shows the var and its GitHub account first: one set asks yes/no, several set get a menu. Headless takes the most specific (servers).
 - Every pasted or copied token is labelled with the account GitHub reports for it (GraphQL `viewer`, no `gh` needed); a lookup miss only changes the label.
 - `--get` / `--del` / `--check` print, clear, or check that a credential resolves.

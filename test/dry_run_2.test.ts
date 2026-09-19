@@ -15,7 +15,6 @@ import {
 import { dirname, join } from "node:path";
 import { errMessage } from "../src/utils/error.ts";
 import { applyUpdate, previewUpdate } from "../src/autoupdate/apply.ts";
-import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
 import { runAuth } from "../src/commands/auth.ts";
 import { runLaunch } from "../src/commands/launch.ts";
 import { launchProxy, resolveProxyToken, runPrintProxyToken } from "../src/commands/proxy_token.ts";
@@ -660,7 +659,11 @@ fi
     // The bootstrap binary a flat install left behind goes too.
     const residue = join(installDir, "bin", installedBinaryName());
     const release = { tag: "v9.9.9", dateSeconds: 0 };
-    const quiet = { info: () => {}, warn: (line: string) => void warnings.push(line) };
+    const quiet = {
+      info: () => {},
+      warn: (line: string) => void warnings.push(line),
+      success: () => {},
+    };
     const warnings: string[] = [];
     // A directory at the bootstrap binary's name: the sweeper both runs share refuses it, so the
     // preview plans no delete there (a file there is swept below).
@@ -696,14 +699,11 @@ fi
       [residue, "delete"],
     ]);
     const before = fingerprintTree(installDir);
-    await withUpdateLockForTests(join(dir, "update.lock"), Date.now(), (outcome) => {
-      if (!outcome.held) throw new Error("test could not take its own update lock");
-      return applyUpdate("v9.9.8", release, outcome, {
-        root: installDir,
-        logger: { info: () => {}, warn: () => {}, success: () => {} },
-        childStdoutToStderr: true,
-        provenance: { kind: "verify", verifier: () => Promise.resolve({ signerIdentity: "test" }) },
-      });
+    await applyUpdate("v9.9.8", release, {
+      root: installDir,
+      logger: { info: () => {}, warn: () => {}, success: () => {} },
+      childStdoutToStderr: true,
+      provenance: { kind: "verify", verifier: () => Promise.resolve({ signerIdentity: "test" }) },
     });
     expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
     // Every planned path changed, and every change sits at or under a planned path; the fake

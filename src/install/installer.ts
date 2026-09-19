@@ -205,7 +205,7 @@ export function readCurrentVersionName(top: string): string | null {
  *  a rename refused by an open handle on the live file. Every shim write is announced here, once
  *  per path, on the caller's logger so an update inside the autoupdate preflight stays
  *  stderr-only. */
-function writeShimFile(to: string, text: string, executable: boolean, logger: ShimLogger): void {
+function writeShimFile(to: string, text: string, executable: boolean, logger: Logger): void {
   let current: string | null;
   try {
     current = fs.readText(to);
@@ -230,26 +230,29 @@ function writeShimFile(to: string, text: string, executable: boolean, logger: Sh
   logger.info(`Wrote launcher shim ${to}`);
 }
 
-/** Where a shim write is announced (the global consola, or an update's stderr logger). */
-export interface ShimLogger {
+/** Where progress and warnings are announced: the global consola, or an update's stderr-only
+ *  logger (src/autoupdate/preflight.ts), so a shim write or a post-flip problem inside
+ *  `agent start` never reaches stdout. */
+export interface Logger {
   info(message: string): void;
   warn(message: string): void;
+  success(message: string): void;
 }
 
 /** The stable PATH entries at `<top>/bin`, dispatching through the `current` link. */
-export function topLevelShims(top: string): ShimWrite[] {
+export function topLevelShims(top: string): FileWrite<string>[] {
   return [
-    { to: join(top, "bin", "agent"), text: POSIX_CURRENT_SHIM, executable: true },
-    { to: join(top, "bin", "agent.ps1"), text: POWERSHELL_CURRENT_SHIM, executable: false },
+    { to: join(top, "bin", "agent"), body: POSIX_CURRENT_SHIM, executable: true },
+    { to: join(top, "bin", "agent.ps1"), body: POWERSHELL_CURRENT_SHIM, executable: false },
   ];
 }
 
 /** Post-flip, so warned and never raised: a locked shim must not undo a landed flip, and a
  *  failure on one shim must not skip the other (Windows can lock `agent` while `agent.ps1` is
  *  absent, and the bootstrap binary goes right after). */
-function writeShimBestEffort(shim: ShimWrite, logger: ShimLogger): void {
+function writeShimBestEffort(shim: FileWrite<string>, logger: Logger): void {
   try {
-    writeShimFile(shim.to, shim.text, shim.executable, logger);
+    writeShimFile(shim.to, shim.body, shim.executable, logger);
   } catch (error) {
     logger.warn(`Could not refresh the launcher shim ${shim.to}: ${errMessage(error)}`);
   }
@@ -258,7 +261,7 @@ function writeShimBestEffort(shim: ShimWrite, logger: ShimLogger): void {
 /** Idempotent and cheap in the steady state (identical text is never rewritten), so every
  *  install and update commit can refresh the shims, which is also what heals a crash that
  *  flipped `current` but got no further. */
-export function writeTopLevelShims(top: string, logger: ShimLogger = consola): void {
+export function writeTopLevelShims(top: string, logger: Logger = consola): void {
   for (const shim of topLevelShims(top)) writeShimBestEffort(shim, logger);
 }
 
@@ -375,30 +378,18 @@ export interface ShellWiring {
   allHosts: boolean;
 }
 
-interface AssetCopy {
-  from: string;
+/** One file a plan lands: an embedded asset's bytes, or a shim's or the manifest's text. */
+export interface FileWrite<Body extends string | Uint8Array = string | Uint8Array> {
   to: string;
+  body: Body;
   executable: boolean;
 }
 
-interface ShimWrite {
-  to: string;
-  text: string;
-  executable: boolean;
-}
-
-/** The sentinel manifest write: `INSTALL_MANIFEST_FILE` at the version root. */
-interface ManifestWrite {
-  to: string;
-  text: string;
-}
-
-/** The complete materialization of ONE version root: every embedded asset,
- *  the per-version launcher shims, and the per-version install manifest. */
+/** The complete materialization of ONE version root, in landing order: every embedded asset,
+ *  the per-version launcher shims, and LAST the per-version install manifest, the sentinel root
+ *  detection reads (src/utils/root.ts), so a half-laid root never reads as installed. */
 interface Materialization {
-  copies: AssetCopy[];
-  shims: ShimWrite[];
-  manifest: ManifestWrite;
+  writes: FileWrite[];
 }
 
 export type InstallPlan =
@@ -406,9 +397,7 @@ export type InstallPlan =
   | {
     kind: "installed";
     root: string;
-    copies: AssetCopy[];
-    shims: ShimWrite[];
-    manifest: ManifestWrite;
+    writes: FileWrite[];
     shell: ShellWiring | null;
   }
   | {
@@ -416,15 +405,13 @@ export type InstallPlan =
     top: string;
     versionName: string;
     versionRoot: string;
-    copies: AssetCopy[];
-    shims: ShimWrite[];
-    manifest: ManifestWrite;
+    writes: FileWrite[];
     /** The compiled binary to place into the version root; null when it is already there, or
      *  when no standalone binary is running (a dev process aimed at a foreign root has none). */
     binary: { from: string; to: string } | null;
     /** The commit step: `<top>/current` linked to `target` (currentLinkTarget). */
     currentLink: { path: string; target: string };
-    topShims: ShimWrite[];
+    topShims: FileWrite<string>[];
     /** The bootstrap binary at `<top>/bin`, swept once the top shims dispatch through the link. */
     bootstrapBinaryRemovals: string[];
     /** The version range this install leaves behind, run post-flip by runPostFlipMigrations: the
@@ -478,23 +465,26 @@ function unsafeRootReason(root: string): string | null {
   return null;
 }
 
-/** Sorted for determinism. `.sh` files get the executable bit: they are the only embedded assets
- *  ever handed to an OS exec directly. */
-function collectAssetCopies(sourceRoot: string, root: string, dir: string): AssetCopy[] {
-  const copies: AssetCopy[] = [];
+/** The bytes are read here, in-process, rather than copied at apply time: the source side may be
+ *  a compiled VFS path, which only in-process reads reach. `.sh` files get the executable bit:
+ *  they are the only embedded assets ever handed to an OS exec directly. */
+function assetWrite(sourceRoot: string, root: string, rel: string): FileWrite {
+  return {
+    to: join(root, rel),
+    body: fs.readBytes(join(sourceRoot, rel)),
+    executable: rel.endsWith(".sh"),
+  };
+}
+
+/** Sorted for determinism. */
+function collectAssetCopies(sourceRoot: string, root: string, dir: string): FileWrite[] {
+  const copies: FileWrite[] = [];
   const walk = (rel: string): void => {
     const names = fs.readdir(join(sourceRoot, rel)).sort((a, b) => a.localeCompare(b));
     for (const name of names) {
       const entryRel = join(rel, name);
-      if (fs.stat(join(sourceRoot, entryRel)).isDirectory()) {
-        walk(entryRel);
-      } else {
-        copies.push({
-          from: join(sourceRoot, entryRel),
-          to: join(root, entryRel),
-          executable: name.endsWith(".sh"),
-        });
-      }
+      if (fs.stat(join(sourceRoot, entryRel)).isDirectory()) walk(entryRel);
+      else copies.push(assetWrite(sourceRoot, root, entryRel));
     }
   };
   walk(dir);
@@ -525,52 +515,40 @@ function guardInstalledTarget(root: string): void {
 
 /** Verifies the embedded assets, then lays out the copies, per-version shims, and manifest. */
 function planMaterialization(root: string, sourceRoot: string): Materialization {
-  const copies: AssetCopy[] = [];
+  // Every embedded asset is verified present first, the bundled-only ones included: those are
+  // read out of the VFS in-process and never copied.
+  const embedded = [
+    ...MATERIALIZED_ASSET_DIRS,
+    ...MATERIALIZED_ASSET_FILES,
+    ...BUNDLED_ONLY_ASSETS,
+  ];
+  for (const asset of embedded) {
+    if (!fs.exists(join(sourceRoot, asset))) {
+      throw new Error(
+        `embedded assets are missing ${asset}; deno.json compile.include did not embed it`,
+      );
+    }
+  }
+  const writes: FileWrite[] = [];
   for (const dir of MATERIALIZED_ASSET_DIRS) {
-    if (!fs.exists(join(sourceRoot, dir))) {
-      throw new Error(
-        `embedded assets are missing ${dir}; deno.json compile.include did not embed it`,
-      );
-    }
-    copies.push(...collectAssetCopies(sourceRoot, root, dir));
+    writes.push(...collectAssetCopies(sourceRoot, root, dir));
   }
-  for (const file of MATERIALIZED_ASSET_FILES) {
-    if (!fs.exists(join(sourceRoot, file))) {
-      throw new Error(
-        `embedded assets are missing ${file}; deno.json compile.include did not embed it`,
-      );
-    }
-    copies.push({
-      from: join(sourceRoot, file),
-      to: join(root, file),
-      executable: file.endsWith(".sh"),
-    });
-  }
-  // Verified, never copied: these are read out of the VFS in-process.
-  for (const file of BUNDLED_ONLY_ASSETS) {
-    if (!fs.exists(join(sourceRoot, file))) {
-      throw new Error(
-        `embedded assets are missing ${file}; deno.json compile.include did not embed it`,
-      );
-    }
-  }
-
+  for (const file of MATERIALIZED_ASSET_FILES) writes.push(assetWrite(sourceRoot, root, file));
   const manifest: InstallManifest = {
     version: packageVersion(),
     kind: "installed",
     assets: [...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES],
   };
-  return {
-    copies,
-    shims: [
-      { to: join(root, "bin", "agent"), text: POSIX_SHIM, executable: true },
-      { to: join(root, "bin", "agent.ps1"), text: POWERSHELL_SHIM, executable: false },
-    ],
-    manifest: {
+  writes.push(
+    { to: join(root, "bin", "agent"), body: POSIX_SHIM, executable: true },
+    { to: join(root, "bin", "agent.ps1"), body: POWERSHELL_SHIM, executable: false },
+    {
       to: join(root, INSTALL_MANIFEST_FILE),
-      text: JSON.stringify(manifest, null, 2) + "\n",
+      body: JSON.stringify(manifest, null, 2) + "\n",
+      executable: false,
     },
-  };
+  );
+  return { writes };
 }
 
 /** Null when this process is not a standalone binary: a dev run has no binary to contribute. */
@@ -646,27 +624,14 @@ export function buildInstallPlan(
   };
 }
 
-/** read+write instead of a copy: the source side may be a compiled VFS path, which is only
- *  guaranteed readable through in-process reads. In place: a same-version reinstall refreshes the
- *  live version root where it stands. */
+/** In place: a same-version reinstall refreshes the live version root where it stands. */
 function applyMaterialization(m: Materialization): void {
-  for (const copy of m.copies) {
-    fs.mkdir(dirname(copy.to));
-    fs.writeBytes(copy.to, fs.readBytes(copy.from), { atomic: false });
-    if (copy.executable) fs.chmod(copy.to, 0o755);
+  for (const { to, body, executable } of m.writes) {
+    fs.mkdir(dirname(to));
+    if (typeof body === "string") fs.writeText(to, body, { atomic: false });
+    else fs.writeBytes(to, body, { atomic: false });
+    if (executable) fs.chmod(to, 0o755);
   }
-  for (const shim of m.shims) {
-    fs.mkdir(dirname(shim.to));
-    fs.writeText(shim.to, shim.text, { atomic: false });
-    if (shim.executable) fs.chmod(shim.to, 0o755);
-  }
-  fs.mkdir(dirname(m.manifest.to));
-  fs.writeText(m.manifest.to, m.manifest.text, { atomic: false });
-}
-
-/** Where a post-flip problem is announced (the global consola, or an update's stderr logger). */
-export interface WarnLogger {
-  warn(message: string): void;
 }
 
 /**
@@ -683,7 +648,7 @@ export function runPostFlipMigrations(
   from: string,
   to: string,
   stdio: StdioOptions,
-  logger: WarnLogger,
+  logger: Logger,
 ): void {
   const args = ["migrate", stripV(from), stripV(to)];
   const retry = `re-run it with \`agent ${args.join(" ")}\``;

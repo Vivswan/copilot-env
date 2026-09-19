@@ -969,15 +969,6 @@ export function resolveSettingIn<K extends ConfigKey>(
   };
 }
 
-/** The store read once, then resolveSettingIn. */
-export function resolveSetting<K extends ConfigKey>(
-  key: K,
-  opts: ResolveOptions<ConfigValueTypes[K]>,
-  config: CopilotEnvConfig = new CopilotEnvConfig(),
-): ResolvedSetting<ConfigValueTypes[K]> {
-  return config.resolve(key, opts);
-}
-
 /** A stored value is what `unset` can revert: anything resolved from either map. */
 export function isStoredSource(source: SettingSource): boolean {
   return source === "profile" || source === "global";
@@ -1036,14 +1027,6 @@ export function configDefaultNumber(key: ConfigKey): number {
   const value = configDefaultValue(registryEntry(key));
   if (typeof value !== "number") {
     throw new Error(`config key '${key}' has no numeric built-in default`);
-  }
-  return value;
-}
-
-export function configDefaultString(key: ConfigKey): string {
-  const value = configDefaultValue(registryEntry(key));
-  if (typeof value !== "string") {
-    throw new Error(`config key '${key}' has no string built-in default`);
   }
   return value;
 }
@@ -1146,6 +1129,13 @@ export function pinnedIntegrationIdIn(data: CopilotEnvConfigData, profile: Profi
   return value === undefined || value.toLowerCase() === "auto" ? null : value;
 }
 
+/** A resolved setting whose registry entry carries a default is never undefined (resolveSettingIn
+ *  lands on the default); reaching here without one is a programmer error, not a fallback. */
+function settled<V>(key: ConfigKey, value: V | undefined): V {
+  if (value === undefined) throw new Error(`config key '${key}' has no built-in default`);
+  return value;
+}
+
 export class CopilotEnvConfig {
   private readonly store: CopilotApiConfig;
 
@@ -1175,25 +1165,34 @@ export class CopilotEnvConfig {
     return resolveSettingIn(this.read(), key, opts);
   }
 
+  /** For a key whose "unset" IS a value (a floating pin, no cooldown by hand). */
   private value<K extends GlobalKey>(key: K): ConfigValueTypes[K] | undefined {
     return this.resolve(key, { profile: null }).value;
   }
 
+  /** For a key with a registry default: resolveSettingIn lands on it when nothing is stored. */
+  private setting<K extends GlobalKey>(key: K): ConfigValueTypes[K] {
+    return settled(key, this.value(key));
+  }
+
+  /** The same on the degraded read, for the watchdog- and preflight-reachable gates. */
+  private degradedSetting<K extends GlobalKey>(key: K): ConfigValueTypes[K] {
+    return settled(key, resolveSettingIn(this.readDegraded(), key, { profile: null }).value);
+  }
+
   /** Watchdog-reachable, so the read degrades. */
   autoStartEnabled(): boolean {
-    return resolveSettingIn(this.readDegraded(), "daemon.auto-start", { profile: null }).value ??
-      configDefaultBoolean("daemon.auto-start");
+    return this.degradedSetting("daemon.auto-start");
   }
 
   /** Preflight-reachable, so the read degrades. */
   autoUpdateEnabled(): boolean {
-    return resolveSettingIn(this.readDegraded(), "update.auto", { profile: null }).value ??
-      configDefaultBoolean("update.auto");
+    return this.degradedSetting("update.auto");
   }
 
   /** OFF sweeps the profile entries and leaves the default's in place (src/claude/desktop.ts). */
   claudeDesktopEnabled(): boolean {
-    return this.value("claude.desktop") ?? configDefaultBoolean("claude.desktop");
+    return this.setting("claude.desktop");
   }
 
   codexHomePrefs(platform: NodeJS.Platform = process.platform): CodexHomePrefs {
@@ -1205,17 +1204,17 @@ export class CopilotEnvConfig {
   }
 
   codexModelCatalogEnabled(): boolean {
-    return this.value("codex.model-catalog") ?? configDefaultBoolean("codex.model-catalog");
+    return this.setting("codex.model-catalog");
   }
 
   launchersEnabled(): boolean {
-    return this.value("shell.launchers") ?? configDefaultBoolean("shell.launchers");
+    return this.setting("shell.launchers");
   }
 
   /** The agents in scope get the credential value baked by their writer (src/agents/configure.ts
    *  resolves it once per write) and run no copilot-env process at request time. */
   staticKeyScope(profile: Profile): StaticKeyScope {
-    return this.resolve("static-key", { profile }).value ?? STATIC_KEY_DEFAULT;
+    return settled("static-key", this.resolve("static-key", { profile }).value);
   }
 
   /** The per-agent question every writer asks, so no call site compares scope strings. */
@@ -1232,15 +1231,14 @@ export class CopilotEnvConfig {
   wireMcpResolved(): { value: boolean; source: "stored" | "default" } {
     const resolved = this.resolve("claude.wire-mcp", { profile: null });
     return {
-      value: resolved.value ?? configDefaultBoolean("claude.wire-mcp"),
+      value: settled("claude.wire-mcp", resolved.value),
       source: isStoredSource(resolved.source) ? "stored" : "default",
     };
   }
 
   /** On the STRICT read on purpose: an unreadable store fails the update rather than reading as "off". */
   verifyProvenanceEnabled(): boolean {
-    return this.value("update.verify-provenance") ??
-      configDefaultBoolean("update.verify-provenance");
+    return this.setting("update.verify-provenance");
   }
 
   /** `profile`'s `host` literal, or null for `auto`: the caller then resolves the host per credential
@@ -1262,23 +1260,23 @@ export class CopilotEnvConfig {
   }
 
   defaultPort(): number {
-    return this.value("daemon.port") ?? configDefaultNumber("daemon.port");
+    return this.setting("daemon.port");
   }
 
   minPort(): number {
-    return this.value("daemon.min-port") ?? configDefaultNumber("daemon.min-port");
+    return this.setting("daemon.min-port");
   }
 
   maxPort(): number {
-    return this.value("daemon.max-port") ?? configDefaultNumber("daemon.max-port");
+    return this.setting("daemon.max-port");
   }
 
   strictPortEnabled(): boolean {
-    return this.value("daemon.strict-port") ?? configDefaultBoolean("daemon.strict-port");
+    return this.setting("daemon.strict-port");
   }
 
   proxyLogsEnabled(): boolean {
-    return this.value("daemon.logs") ?? configDefaultBoolean("daemon.logs");
+    return this.setting("daemon.logs");
   }
 
   /** The `daemon.version` pin, or undefined to float (the COPILOT_API_VERSION env layer stays at the
@@ -1289,19 +1287,18 @@ export class CopilotEnvConfig {
 
   /** The COPILOT_API_MIN_RELEASE_AGE env layer stays at the read site (src/proxy_float.ts). */
   releaseCooldownSeconds(): number {
-    return this.value("daemon.release-cooldown") ?? configDefaultNumber("daemon.release-cooldown");
+    return this.setting("daemon.release-cooldown");
   }
 
   /** The COPILOT_API_IDLE_TIMEOUT env layer stays at the read site (src/scripts/idle_watchdog.ts).
    *  Watchdog-reachable, so the read degrades. */
   idleTimeoutSeconds(): number {
-    return resolveSettingIn(this.readDegraded(), "daemon.idle-timeout", { profile: null }).value ??
-      configDefaultNumber("daemon.idle-timeout");
+    return this.degradedSetting("daemon.idle-timeout");
   }
 
   /** The per-run `--pricing-url` layer stays at the read site (resolvePricingUrl in src/usage/cost.ts). */
   pricingUrl(): string {
-    return this.value("cost.pricing-url") ?? configDefaultString("cost.pricing-url");
+    return this.setting("cost.pricing-url");
   }
 
   /** The stored `cost.credits-target`, else null: `agent credits` then paces against the entitlement alone. */

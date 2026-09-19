@@ -81,7 +81,8 @@ export function dueMigrations(
   to: string,
   migrations: Migration[] = MIGRATIONS,
 ): Migration[] {
-  // The Migration type already demands a version-shaped literal; this catches a cast.
+  // SemverString is a template-literal type: "1.2.3-" and "1.2.3.4" satisfy it, and toSemverString
+  // rejects them, so a registry entry the range filter could never see is caught here by name.
   for (const m of migrations) {
     requireSemver(m.version, `registry version (${m.description})`);
   }

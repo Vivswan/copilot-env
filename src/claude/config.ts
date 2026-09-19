@@ -837,19 +837,18 @@ export function claudeAdapter(): AgentAdapter {
     detectDirect: detectClaudeDirect,
     // The skeleton passes the token it already resolved so gh-cli is not spawned twice.
     resolveDirectWiring: (ghToken) => probeDirectWiring(null, ghToken),
-    async configureDefault(write, ghToken) {
-      configureClaudeConfig(resolveClaudeHome(), write);
+    async configureProfile(profile, write, options) {
+      configureClaudeConfig(resolveClaudeHome(), { ...write, profile });
       // Desktop reads its own config library, not settings.json, so every rewire reconciles it.
-      await syncClaudeDesktopWiring({ ...write, profile: null, directToken: ghToken });
-    },
-    async configureProfile(name, write, options) {
-      configureClaudeConfig(resolveClaudeHome(), { ...write, profile: name });
-      // A static write already holds the token: Desktop's discovery must not resolve it again.
+      // The default's caller hands over the credential it resolved; a static write already holds
+      // the token: either way Desktop's discovery must not resolve it again.
       await syncClaudeDesktopWiring({
         ...write,
-        profile: name,
+        profile,
         quiet: options.quiet,
-        directToken: resolvedDirectToken(write.mode, write.credential),
+        directToken: options.directToken !== undefined
+          ? options.directToken
+          : resolvedDirectToken(write.mode, write.credential),
       });
     },
     removeProfile(name, options) {

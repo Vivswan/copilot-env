@@ -49,23 +49,25 @@ export function daemonPolicy(profile: Profile): DaemonPolicy {
   };
 }
 
-export function minProxyPort(): number {
-  return new CopilotEnvConfig().minPort();
+/** [daemon.min-port, daemon.max-port]; an inverted range is refused HERE, the one spelling every
+ *  port decision (a pin, the default, a reservation, the free-port scan) runs through. */
+export function proxyPortRange(config: CopilotEnvConfig): { min: number; max: number } {
+  const min = config.minPort();
+  const max = config.maxPort();
+  if (min > max) {
+    throw new Error(
+      `invalid port range: daemon.min-port (${min}) is greater than daemon.max-port (${max}); ` +
+        `fix it with \`${configSetCommand("daemon.min-port", "<n>")}\` / \`${
+          configSetCommand("daemon.max-port", "<n>")
+        }\`.`,
+    );
+  }
+  return { min, max };
 }
 
-export function maxProxyPort(): number {
-  return new CopilotEnvConfig().maxPort();
-}
-
-export function proxyPortInRange(port: number): boolean {
-  return Number.isInteger(port) && port >= minProxyPort() && port <= maxProxyPort();
-}
-
-export function defaultProxyPort(): number {
-  return new CopilotEnvConfig().defaultPort();
-}
-
-async function portFree(port: number): Promise<boolean> {
+/** No range policy: for callers honoring a port the range no longer covers (an existing profile
+ *  reservation after min/max narrowed). */
+export function proxyPortFree(port: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const s = new net.Socket();
     let settled = false;
@@ -81,27 +83,28 @@ async function portFree(port: number): Promise<boolean> {
   });
 }
 
-/** No range policy: for callers honoring a port the range no longer covers (an existing profile
- *  reservation after min/max narrowed). */
-export function proxyPortFree(port: number): Promise<boolean> {
-  return portFree(port);
-}
-
-export async function checkProxyPort(port: number): Promise<"free" | "busy" | "out-of-range"> {
-  if (!proxyPortInRange(port)) {
+export async function checkProxyPort(
+  port: number,
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+): Promise<"free" | "busy" | "out-of-range"> {
+  const { min, max } = proxyPortRange(config);
+  if (!Number.isInteger(port) || port < min || port > max) {
     return "out-of-range";
   }
-  return (await portFree(port)) ? "free" : "busy";
+  return (await proxyPortFree(port)) ? "free" : "busy";
 }
 
-export async function copilotApiFindPort(start: number = defaultProxyPort()): Promise<number> {
+/** From `start` (the configured default when omitted) up through the range, 50 ports at most. */
+export async function copilotApiFindPort(
+  start?: number,
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+): Promise<number> {
   const maxAttempts = 50;
-  const min = minProxyPort();
-  const max = maxProxyPort();
-  const from = Math.min(Math.max(start, min), max);
+  const { min, max } = proxyPortRange(config);
+  const from = Math.min(Math.max(start ?? config.defaultPort(), min), max);
   const to = Math.min(from + maxAttempts, max + 1);
   for (let port = from; port < to; port++) {
-    if (await portFree(port)) {
+    if (await proxyPortFree(port)) {
       return port;
     }
   }
@@ -128,18 +131,21 @@ export function copilotApiResolvePort(profile: Profile = null): string {
  * scan), so a caller holding a state snapshot (health's fact gathering) can fall back without a
  * concurrent write to that file steering the answer.
  */
-export function copilotApiFallbackPort(profile: Profile): number {
+export function copilotApiFallbackPort(
+  profile: Profile,
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+): number {
   const port = daemonPolicy(profile).port;
-  return port.source === "config" ? defaultProxyPort() : candidateProfilePort(port.name);
+  return port.source === "config" ? config.defaultPort() : candidateProfilePort(port.name, config);
 }
 
 /** Every profile the store or the disk knows (allProfileNames): a slot whose daemon home does not
  *  exist yet still holds its reservation once planned, so a dry run allocating two profiles in a
  *  row gives them distinct ports, as the real run does. */
-function recordedPorts(excluding: Profile): Set<number> {
-  const ports = new Set<number>([defaultProxyPort()]);
-  const defaultPort = new CopilotEnvRunState().read().port;
-  if (defaultPort !== undefined) ports.add(defaultPort);
+function recordedPorts(excluding: Profile, defaultPort: number): Set<number> {
+  const ports = new Set<number>([defaultPort]);
+  const recordedDefault = new CopilotEnvRunState().read().port;
+  if (recordedDefault !== undefined) ports.add(recordedDefault);
   for (const name of allProfileNames()) {
     if (name === excluding) continue;
     const port = CopilotEnvRunState.forProfile(name).read().port;
@@ -150,19 +156,14 @@ function recordedPorts(excluding: Profile): Set<number> {
 
 /** The scan starts just past the default daemon's port so profile reservations cluster beside it,
  *  then wraps to the bottom of the range. */
-function candidateProfilePort(excluding: Profile = null): number {
-  const min = minProxyPort();
-  const max = maxProxyPort();
-  if (min > max) {
-    throw new Error(
-      `invalid port range: daemon.min-port (${min}) is greater than daemon.max-port (${max}); ` +
-        `fix it with \`${configSetCommand("daemon.min-port", "<n>")}\` / \`${
-          configSetCommand("daemon.max-port", "<n>")
-        }\`.`,
-    );
-  }
-  const used = recordedPorts(excluding);
-  const from = Math.min(Math.max(defaultProxyPort() + 1, min), max);
+function candidateProfilePort(
+  excluding: Profile = null,
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+): number {
+  const { min, max } = proxyPortRange(config);
+  const defaultPort = config.defaultPort();
+  const used = recordedPorts(excluding, defaultPort);
+  const from = Math.min(Math.max(defaultPort + 1, min), max);
   for (let port = from; port <= max; port++) {
     if (!used.has(port)) return port;
   }

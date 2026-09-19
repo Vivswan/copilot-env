@@ -51,8 +51,6 @@ export interface AutoupdateData {
   lastResult: string;
 }
 
-type AutoupdatePatch = { [K in keyof AutoupdateData]?: AutoupdateData[K] | null };
-
 // Lenient read schema: absent or ill-typed fields fall back to safe defaults rather
 // than throwing. `lastCheckMs` must be finite (rejects NaN/Infinity).
 const AUTOUPDATE_SCHEMA = v.object({
@@ -76,17 +74,8 @@ export class AutoupdateState {
     return v.parse(AUTOUPDATE_SCHEMA, this.store.load());
   }
 
-  /** Merge `patch` into the file; a `null` (or `undefined`) value deletes its key. */
-  set(patch: AutoupdatePatch): void {
-    this.store.update((d) => {
-      for (const key of Object.keys(patch) as (keyof AutoupdatePatch)[]) {
-        const value = patch[key];
-        if (value === null || value === undefined) {
-          delete d[key];
-        } else {
-          d[key] = value;
-        }
-      }
-    });
+  /** Both fields land together; keys this schema does not know survive the write. */
+  set(data: AutoupdateData): void {
+    this.store.update((d) => Object.assign(d, data));
   }
 }

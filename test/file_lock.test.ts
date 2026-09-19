@@ -320,12 +320,11 @@ test("releaseFileLock refuses a scope-held path: the scope owns the release", ()
   expect(existsSync(path)).toBe(false); // the scope's own exit still released exactly once
 });
 
-test("the lock primitives and the update-lock test seam stay out of src/", () => {
+test("the lock primitives stay out of src/", () => {
   // The primitives are exported for the on-disk contract tests; production goes through the
   // scoped API, which keeps acquisition, release, and evidence in one owner. Each name is
   // allowed ONLY in its listed modules.
   //   tryAcquireFileLock, probeFileLock in daemon_lock.ts  -> released by process death, so no scope
-  //   withUpdateLockForTests                               -> suites lock a hermetic path
   const allowedIn: Record<string, string[]> = {
     tryAcquireFileLock: [
       join(ROOT, "src", "utils", "file_lock.ts"),
@@ -336,7 +335,6 @@ test("the lock primitives and the update-lock test seam stay out of src/", () =>
       join(ROOT, "src", "copilot_api", "daemon_lock.ts"),
     ],
     releaseFileLock: [join(ROOT, "src", "utils", "file_lock.ts")],
-    withUpdateLockForTests: [join(ROOT, "src", "autoupdate", "lock.ts")],
   };
   const found: string[] = [];
   const walk = (dirPath: string): void => {

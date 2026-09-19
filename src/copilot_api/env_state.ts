@@ -52,15 +52,14 @@ export type StoredCredential =
   | { kind: "none"; provider: TokenProvider | null }
   | ProvisionedCredential;
 
-/** For consumers that carry only token PRESENCE (health facts never hold the token). Must agree with
- *  parseStoredCredential; test/state.test.ts pins the pair. */
+/** For consumers that carry only token PRESENCE (health facts never hold the token): the read
+ *  boundary's own classification, with a placeholder standing in for the token. */
 export function storedCredentialKind(
   provider: string | null,
   hasStoredToken: boolean,
 ): StoredCredential["kind"] {
-  if (provider === null || !isAuthProvider(provider)) return "none";
-  if (provider === "gh-cli") return "gh-cli";
-  return hasStoredToken ? "stored" : "none";
+  const authProvider = provider !== null && isAuthProvider(provider) ? provider : null;
+  return parseStoredCredential(hasStoredToken ? "present" : null, authProvider, null).kind;
 }
 
 export function credentialProvider(credential: StoredCredential): AuthProvider | null {
@@ -88,9 +87,13 @@ function parseStoredCredential(
 
 /** The one choke point every credential write funnels through. The pin must match GH_LOGIN_RE
  *  because it becomes a `gh auth token --user` argv token: the shape gate keeps shell metacharacters out. */
-function rawCredentialPatch(
-  credential: ProvisionedCredential,
-): { githubToken: string | null; authProvider: AuthProvider; ghUser: string | null } {
+interface RawCredentialPatch {
+  githubToken: string | null;
+  authProvider: AuthProvider;
+  ghUser: string | null;
+}
+
+function rawCredentialPatch(credential: ProvisionedCredential): RawCredentialPatch {
   if (credential.kind === "gh-cli") {
     const ghUser = credential.ghUser?.trim() ?? null;
     if (ghUser !== null && !GH_LOGIN_RE.test(ghUser)) {
@@ -107,6 +110,15 @@ function rawCredentialPatch(
     );
   }
   return { githubToken: token, authProvider: credential.provider, ghUser: null };
+}
+
+/** A null token or pin is REMOVED from the slot, never stored as `null`. */
+function writeCredentialFields(raw: Record<string, unknown>, patch: RawCredentialPatch): void {
+  if (patch.githubToken !== null) raw.githubToken = patch.githubToken;
+  else delete raw.githubToken;
+  if (patch.ghUser !== null) raw.ghUser = patch.ghUser;
+  else delete raw.ghUser;
+  raw.authProvider = patch.authProvider;
 }
 
 // A profile is ONE credential slot plus ONE wiring mode, applied to BOTH agents; the default is a profile
@@ -463,17 +475,7 @@ export class CopilotEnvState {
         missing = true;
         return;
       }
-      if (patch.githubToken !== null) {
-        raw.githubToken = patch.githubToken;
-      } else {
-        delete raw.githubToken;
-      }
-      if (patch.ghUser !== null) {
-        raw.ghUser = patch.ghUser;
-      } else {
-        delete raw.ghUser;
-      }
-      raw.authProvider = patch.authProvider;
+      writeCredentialFields(raw, patch);
       // The pair was probed for the credential this write replaces: it goes with it, so the next
       // Direct re-render probes (the one gap) instead of baking another credential's pair.
       delete raw.integrationIdentity;
@@ -522,17 +524,7 @@ export class CopilotEnvState {
       const credentialUnchanged = (committed.githubToken ?? null) === next.githubToken &&
         (committed.authProvider ?? null) === next.authProvider &&
         (committed.ghUser ?? null) === next.ghUser;
-      if (next.githubToken !== null) {
-        committed.githubToken = next.githubToken;
-      } else {
-        delete committed.githubToken;
-      }
-      if (next.ghUser !== null) {
-        committed.ghUser = next.ghUser;
-      } else {
-        delete committed.ghUser;
-      }
-      committed.authProvider = next.authProvider;
+      writeCredentialFields(committed, next);
       committed.mode = slot.mode;
       if (!credentialUnchanged) {
         delete committed.integrationIdentity;

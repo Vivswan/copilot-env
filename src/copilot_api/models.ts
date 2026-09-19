@@ -14,7 +14,8 @@ export interface CatalogModel {
   is1m: boolean;
 }
 
-/** Malformed entries are skipped, never thrown on. */
+/** Malformed entries and bodies are skipped, never thrown on. Catalog order and duplicates are
+ *  kept: a `[1m]` sibling arrives as a second entry under the bare id. */
 export function parseCatalogModels(body: unknown): CatalogModel[] {
   const data = isRecord(body) && Array.isArray(body.data) ? body.data : [];
   const out: CatalogModel[] = [];
@@ -23,23 +24,12 @@ export function parseCatalogModels(body: unknown): CatalogModel[] {
       continue;
     }
     const suffixed = entry.id.endsWith(ONE_M_SUFFIX);
-    const rawId = suffixed ? entry.id.slice(0, -ONE_M_SUFFIX.length) : entry.id;
-    out.push({ id: rawId, is1m: suffixed || contextWindow(entry) === ONE_M_TOKENS });
+    out.push({
+      id: suffixed ? entry.id.slice(0, -ONE_M_SUFFIX.length) : entry.id,
+      is1m: suffixed || toEntry(entry, entry.id).contextWindow === ONE_M_TOKENS,
+    });
   }
   return out;
-}
-
-function contextWindow(entry: Record<string, unknown>): number | undefined {
-  const capabilities = entry.capabilities;
-  if (!isRecord(capabilities)) {
-    return undefined;
-  }
-  const limits = capabilities.limits;
-  if (!isRecord(limits)) {
-    return undefined;
-  }
-  const tokens = limits.max_context_window_tokens;
-  return typeof tokens === "number" ? tokens : undefined;
 }
 
 interface ParsedModel {

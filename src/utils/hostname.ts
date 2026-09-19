@@ -15,30 +15,11 @@ export function codexFarmHostsDir(root: string = path.join(homeDir(), ".codex"))
 }
 
 function normalizeHostnameValue(hostnameValue: string): string {
-  hostnameValue = hostnameValue.replace(/[^A-Za-z0-9._-]/g, "-");
-
-  while (hostnameValue) {
-    if ("._-".includes(hostnameValue[0]!)) {
-      hostnameValue = hostnameValue.slice(1);
-    } else if ("._-".includes(hostnameValue[hostnameValue.length - 1]!)) {
-      hostnameValue = hostnameValue.slice(0, -1);
-    } else {
-      break;
-    }
-  }
-
-  if (hostnameValue.length > 64) {
-    hostnameValue = hostnameValue.slice(0, 64);
-    while (hostnameValue) {
-      if ("._-".includes(hostnameValue[hostnameValue.length - 1]!)) {
-        hostnameValue = hostnameValue.slice(0, -1);
-      } else {
-        break;
-      }
-    }
-  }
-
-  return hostnameValue;
+  return hostnameValue
+    .replace(/[^A-Za-z0-9._-]/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, 64)
+    .replace(/[._-]+$/, "");
 }
 
 export function getSanitizedHostname(): string {

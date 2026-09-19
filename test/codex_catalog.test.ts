@@ -10,6 +10,7 @@ import {
   patchModelCatalog,
   refreshCodexModelCatalogIfStale,
   resetCatalogProbeState,
+  withCatalogRefreshDeadline,
 } from "../src/codex/catalog.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, codexUserAgent } from "../src/codex/user_agent.ts";
 import { runDryRun } from "../src/commands/dry_run.ts";
@@ -828,6 +829,38 @@ test("refresh regenerates when due and reports it", async () => {
   expect(result).toBe(true);
   expect(new CopilotEnvState().read().codexCatalogLastAttemptMs).toBeGreaterThan(0);
   expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(true);
+});
+
+test("past the refresh deadline the catalog is still written but its acceptance is not memoized", async () => {
+  catalogFixture({ version: "1.0.0" });
+  storeCredential();
+  // The deadline is taken as the refresh starts; the clock then jumps past it while Copilot
+  // answers, so the probe, the memo, and the reference sync all run late.
+  const realNow = Date.now;
+  let skewMs = 0;
+  Date.now = () => realNow() + skewMs;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    skewMs = 60_000;
+    return Promise.resolve(new Response(JSON.stringify(GPT55_BODY), { status: 200 }));
+  }) as typeof fetch;
+  try {
+    const late = await withCatalogRefreshDeadline(() => refreshCodexModelCatalogIfStale("direct"));
+    expect(late).toBe(true);
+    expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(true);
+    expect(new CopilotEnvState().read().codexCatalogAccepted).toBeNull();
+  } finally {
+    globalThis.fetch = realFetch;
+    Date.now = realNow;
+  }
+  // Control: inside the deadline the same run records the acceptance.
+  new CopilotEnvState().set({ codexCatalogLastAttemptMs: Date.now() - MILLISECONDS_PER_DAY - 1 });
+  const { result } = await withCopilot(
+    GPT55_BODY,
+    () => withCatalogRefreshDeadline(() => refreshCodexModelCatalogIfStale("direct")),
+  );
+  expect(result).toBe(true);
+  expect(new CopilotEnvState().read().codexCatalogAccepted?.codexVersion).toBe("1.0.0");
 });
 
 // --- inspectCatalogFile -----------------------------------

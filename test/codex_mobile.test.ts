@@ -6,6 +6,7 @@ import {
   installedState,
   installGateFromScan,
   postPairingCloseFromScan,
+  QUIT_TIMEOUT_MS,
   quitApp,
   readTopLevelString,
   restoreModelProvider,
@@ -253,11 +254,18 @@ onPosix(
 
 // Drives real Windows PowerShell.
 test.skipIf(process.platform !== "win32")(
-  "the real Windows running scan mints a verdict word on a healthy host",
+  "the real Windows scans mint a verdict word on a healthy host, and a quit with no app running ends on the proven absence",
   async () => {
-    // The completeness control: on a healthy host the script must RUN and mint a
+    // The completeness control: on a healthy host the scripts must RUN and mint a
     // verdict word -- a PowerShell-5.1-incompatible script or a wrong no-match
     // discriminant would read "unproven" here and go red.
     expect(["present", "absent"]).toContain(await runningState());
+    expect(["present", "absent"]).toContain(await installedState());
+    // No app of that name runs on a CI host: the graceful-quit script runs, the first poll proves
+    // the absence, and the call returns well inside the force-quit deadline (an unproven look
+    // would ride the whole deadline instead).
+    const started = Date.now();
+    await quitApp();
+    expect(Date.now() - started).toBeLessThan(QUIT_TIMEOUT_MS);
   },
 );

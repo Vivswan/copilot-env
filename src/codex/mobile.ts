@@ -27,7 +27,7 @@ const APP_NAME = "Codex";
 /** The one leaf a preview of the pairing's config writes must redact. */
 const CONFIG_SECRETS: readonly string[] = [codexBearerLeaf(CODEX_PROVIDER_ID)];
 const QUIT_POLL_MS = 500;
-const QUIT_TIMEOUT_MS = 8000;
+export const QUIT_TIMEOUT_MS = 8000;
 
 // --- pure config toggle (unit-tested) ---------------------------------------
 

@@ -333,6 +333,7 @@ test("a mode-only change is a rewrite with no row where the platform can change 
   dir = tempDir("copilot-facade-");
   const script = join(dir, "helper.sh");
   const both = join(dir, "both.sh");
+  const inplace = join(dir, "inplace.txt");
   const same = join(dir, "same.txt");
   const staged = join(dir, "staged.txt");
   const restaged = join(dir, "restaged.sh");
@@ -341,6 +342,13 @@ test("a mode-only change is a rewrite with no row where the platform can change 
   const doc = join(dir, "doc.json");
   writeFileSync(script, "#!/bin/sh\n");
   writeFileSync(both, "old\n");
+  // Both in-place writes below name 0600 over a 0644 file: the real one is the witness for what
+  // Deno's writeFileSync lands on an existing inode (its chmod after the write), the dry one the pin.
+  writeFileSync(inplace, "old\n");
+  chmodSync(inplace, 0o644);
+  writeFileSync(join(dir, "real-inplace"), "old\n");
+  chmodSync(join(dir, "real-inplace"), 0o644);
+  facade.writeText(join(dir, "real-inplace"), "new\n", { atomic: false, mode: 0o600 });
   writeFileSync(same, "keep");
   writeFileSync(staged, "keep");
   // Pinned away from 0600 so the staged write below is a mode change under any umask.
@@ -369,6 +377,10 @@ test("a mode-only change is a rewrite with no row where the platform can change 
   const lines = await dryRun(() => {
     facade.chmod(script, 0o700);
     facade.writeText(both, "new\n", { mode: 0o700 });
+    facade.writeText(inplace, "new\n", { atomic: false, mode: 0o600 });
+    expect((facade.stat(inplace).mode & 0o777).toString(8).padStart(4, "0")).toBe(
+      modeOf(join(dir, "real-inplace")),
+    );
     facade.writeText(same, "keep");
     facade.writeText(staged, "keep", { atomic: true, mode: 0o600 });
     facade.writeText(restaged, "#!/bin/sh\n", { atomic: true });
@@ -399,6 +411,9 @@ test("a mode-only change is a rewrite with no row where the platform can change 
   expect(lines).toEqual([
     modeOnly(script, afterChmod(0o700)),
     `rewrite ${both}`,
+    `  - old`,
+    `  + new`,
+    `rewrite ${inplace}`,
     `  - old`,
     `  + new`,
     `unchanged ${same}`,

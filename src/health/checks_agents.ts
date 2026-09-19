@@ -4,9 +4,9 @@
 // the environment and runtime checks.
 import { basename, dirname } from "node:path";
 import { type ClaudeDesktopStatus, renderClaudeDesktopStatus } from "../claude/desktop_status.ts";
-import { type CodexOtherReason, codexProviderId } from "../codex/config.ts";
 import { codexHostDriftFrom, codexHostDriftLine } from "../codex/host.ts";
-import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
+import type { CodexOtherReason } from "../codex/inspect.ts";
+import { codexConfigPath, codexProfileConfigPath, codexProviderId } from "../codex/paths.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
 import { isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { agentStartCommand, type Profile } from "../copilot_api/profile.ts";

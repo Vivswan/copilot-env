@@ -37,9 +37,8 @@ import {
 } from "../claude/desktop_payload.ts";
 import { retargetMcpRegistration } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { codexProviderId } from "../codex/config.ts";
 import { knownCodexHomes } from "../codex/host.ts";
-import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
+import { codexConfigPath, codexProfileConfigPath, codexProviderId } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { CopilotApiConfig, ensureDict, JSON_PARSE_DIAGNOSTIC } from "../copilot_api/config.ts";
 import { AUTOUPDATE_FILENAME, autoupdateDir } from "../autoupdate/paths.ts";

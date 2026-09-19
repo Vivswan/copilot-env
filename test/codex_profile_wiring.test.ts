@@ -7,12 +7,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse, stringify } from "smol-toml";
-import {
-  type CodexWiringStatus,
-  configureCodexConfig,
-  inspectCodexWiring,
-  removeCodexProfile,
-} from "../src/codex/config.ts";
+import { configureCodexConfig, removeCodexProfile } from "../src/codex/config.ts";
+import { type CodexWiringStatus, inspectCodexWiring } from "../src/codex/inspect.ts";
 import { codexProfileConfigPath } from "../src/codex/paths.ts";
 import { openaiBaseUrl } from "../src/copilot_api/port.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";

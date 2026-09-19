@@ -2,7 +2,7 @@
 // importing the config writer in src/codex/config.ts.
 import { homedir } from "node:os";
 import * as path from "node:path";
-import type { ProfileName } from "../copilot_api/profile.ts";
+import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 
 /** No process.env.HOME precedence: on Windows homedir() is %USERPROFILE%, where Codex reads, while
  *  HOME may be a Git-for-Windows/MSYS path. path.join, not string concat, so every writer and
@@ -20,6 +20,13 @@ export function plainCodexHome(): string {
 /** The `model_provider` a copilot-env-written config.toml selects, direct and proxy alike (the mode
  *  is read from the table's contents). */
 export const CODEX_PROVIDER_ID = "copilot-env";
+
+/** A named profile is selected by its own `<name>.config.toml` (`codex --profile <name>` layers it
+ *  over config.toml), whose top-level `model_provider` points here; config.toml's default selection
+ *  is never touched. */
+export function codexProviderId(profile: Profile = null): string {
+  return profile === null ? CODEX_PROVIDER_ID : `${CODEX_PROVIDER_ID}-${profile}`;
+}
 
 /** THE spelling of Codex's config file path, so every writer and checker agrees byte for byte. */
 export function codexConfigPath(codexHome: string): string {

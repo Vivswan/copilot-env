@@ -61,7 +61,7 @@ import {
   setIntegrationProbeFetch,
 } from "../src/copilot_api/integration_identity.ts";
 import { managedProxyProvider } from "../src/codex/config.ts";
-import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { renderDryRun } from "../src/utils/dry_run_report.ts";
 import { captureChannels } from "./helpers/output.ts";

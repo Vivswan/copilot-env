@@ -4,8 +4,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync
 import { homedir } from "node:os";
 import { isAbsolute, join, parse } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
-import { codexConfigPath } from "../src/codex/paths.ts";
+import { configureCodexConfig } from "../src/codex/config.ts";
+import { codexConfigPath, codexProviderId } from "../src/codex/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import {
   agentLauncherCommand,

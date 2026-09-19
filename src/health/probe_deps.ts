@@ -13,7 +13,7 @@ import { claudeDesktopStatus } from "../agents/claude_desktop.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import type { ClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
-import { CODEX_ENV_KEY } from "../codex/config.ts";
+import { CODEX_ENV_KEY } from "../codex/inspect.ts";
 import { type CodexHostFarm, codexHostFarm, effectiveCodexHome } from "../codex/host.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {
@@ -36,11 +36,11 @@ import { copilotApiFallbackPort, copilotApiResolvePort } from "../copilot_api/po
 import { classifyOwnedDaemonPid, pidAlive } from "../copilot_api/process.ts";
 import { type SidecarStatus, sidecarStatus } from "../copilot_api/sidecar.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
-import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
 import { readResolvedVersionRecord, resolveMinimumReleaseAgeSeconds } from "../proxy_float.ts";
-import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
-import { persistedInferenceMs } from "../scripts/inference_activity.ts";
+import { idleTimeoutMs } from "../copilot_api/idle_watchdog.ts";
+import { persistedInferenceMs } from "../copilot_api/inference_activity.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
 import {
   childEnvWithPath,

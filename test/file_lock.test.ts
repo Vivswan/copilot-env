@@ -329,11 +329,11 @@ test("the lock primitives and the update-lock test seam stay out of src/", () =>
   const allowedIn: Record<string, string[]> = {
     tryAcquireFileLock: [
       join(ROOT, "src", "utils", "file_lock.ts"),
-      join(ROOT, "src", "scripts", "daemon_lock.ts"),
+      join(ROOT, "src", "copilot_api", "daemon_lock.ts"),
     ],
     probeFileLock: [
       join(ROOT, "src", "utils", "file_lock.ts"),
-      join(ROOT, "src", "scripts", "daemon_lock.ts"),
+      join(ROOT, "src", "copilot_api", "daemon_lock.ts"),
     ],
     releaseFileLock: [join(ROOT, "src", "utils", "file_lock.ts")],
     withUpdateLockForTests: [join(ROOT, "src", "autoupdate", "lock.ts")],

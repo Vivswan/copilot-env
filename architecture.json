@@ -38,7 +38,6 @@
       "install",
       "mcp",
       "proxy_float",
-      "scripts",
       "shell",
       "usage",
       "utils"
@@ -55,7 +54,6 @@
       "codex",
       "copilot_api",
       "proxy_float",
-      "scripts",
       "shell",
       "utils"
     ],
@@ -73,7 +71,7 @@
       "shell",
       "utils"
     ],
-    "scripts": ["copilot_api", "utils"],
+    "scripts": ["copilot_api"],
     "utils": ["copilot_api"]
   }
 }

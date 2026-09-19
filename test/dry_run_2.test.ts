@@ -30,7 +30,7 @@ import {
   setIntegrationProbeFetch,
 } from "../src/copilot_api/integration_identity.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
-import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { ATTESTATION_NAME } from "../src/install/attestation.ts";
 import {
   applyInstallPlan,

@@ -46,7 +46,8 @@ import {
   type RuntimeTarget,
   type WatchdogFacts,
 } from "../src/health/facts.ts";
-import { evalCodex, evalShellFiles, gatherFacts, runLiveCli } from "../src/health/probe.ts";
+import { evalCodex, evalShellFiles, gatherFacts } from "../src/health/probe.ts";
+import { runLiveCli } from "../src/health/probe_deps.ts";
 import type { CheckId, CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 import {

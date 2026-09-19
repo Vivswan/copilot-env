@@ -144,7 +144,7 @@ export interface DirectProbeDeps {
 }
 
 /** Codex's model-catalog dump in probe output is noise, never the failure reason. Both failure
- *  formatters (summarizeProbeFailure here, formatLiveFailure in src/health/probe.ts) filter
+ *  formatters (summarizeProbeFailure here, formatLiveFailure in src/health/probe_deps.ts) filter
  *  through this one regex. */
 export const CODEX_CATALOG_NOISE_RE = /"capabilities"|"object":\s*"model"|model_picker/;
 

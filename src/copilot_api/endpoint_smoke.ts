@@ -13,10 +13,8 @@
 //   a probe.*-model key -> that model, as-is: one hop, no catalog fetch (the user chose it)
 import { errMessage } from "../utils/error.ts";
 import { defaultFetch } from "../utils/fetch.ts";
-import { CopilotEnvConfig } from "./env_config.ts";
 import { directClientHeaders, type ProbeFetch } from "./integration_identity.ts";
 import { fetchModelCatalog } from "./models_fetch.ts";
-import type { Profile } from "./profile.ts";
 
 /** The two Copilot wires the managed agents speak (Claude: Anthropic messages, Codex: responses). */
 export type DirectWire = "messages" | "responses";
@@ -59,21 +57,6 @@ export interface DirectSmoke {
   cliFallbackModel(): Promise<SmokeModelOutcome | null>;
   /** One minimal capped call to the wire with that model; 200 alone is Direct. */
   ping(model: string): Promise<EndpointSmokeOutcome>;
-}
-
-/** The registry keys naming each agent's own probe model (src/copilot_api/env_config.ts). */
-export type ProbeModelKey = "probe.claude-model" | "probe.codex-model";
-
-/** The user's probe model for one agent, null when unset. The CLI smoke runs for the DEFAULT
- *  wiring only today (a named profile lands through landDirectPair, without one), so its callers
- *  pass a null profile; the key's profile-default scope lets a profile's own value win once a
- *  probe runs for it. */
-export function probeModelPin(
-  key: ProbeModelKey,
-  profile: Profile,
-  config: CopilotEnvConfig = new CopilotEnvConfig(),
-): string | null {
-  return config.resolve(key, { profile }).value ?? null;
 }
 
 type CatalogLook = { ok: true; body: unknown } | { ok: false; detail: string };

@@ -6,10 +6,8 @@ import type { ProfileName } from "../copilot_api/profile.ts";
 /** Worst-to-best diagnostic outcome for a single check. */
 export type CheckStatus = "ok" | "warn" | "fail";
 
-/** Which diagnostic surface a `agent health` run targets. */
-export type HealthScope = "full" | "runtime" | "proxy" | "setup" | "auth" | "codex" | "claude";
-
-/** Declaration order doubles as the help/text-report ordering for scopes. */
+/** Which diagnostic surface a `agent health` run targets. Declaration order doubles as the
+ *  help/text-report ordering for scopes. */
 export const HEALTH_SCOPES = [
   "full",
   "runtime",
@@ -20,15 +18,12 @@ export const HEALTH_SCOPES = [
   "claude",
 ] as const;
 
+export type HealthScope = typeof HEALTH_SCOPES[number];
+
 // SINGLE SOURCE for scope membership, shared by the fact-gatherer (probe.ts gates which facts to
 // collect) and the check descriptors below (which stamp CheckResult.scopes), so the two cannot
 // drift. Every set includes "full".
 export const RUNTIME_SCOPES: readonly HealthScope[] = ["full", "proxy", "runtime"];
-// The named-profile runtime sweep joins only the diagnostic scopes, never the launchers' fast
-// `runtime` probe, whose row set and exit code are a contract of the DEFAULT daemon alone (a
-// stopped profile daemon must not fail a launcher's readiness gate). A named profile's narrowing
-// addresses its target in every runtime-bearing scope regardless.
-export const PROFILE_SWEEP_SCOPES: readonly HealthScope[] = ["full", "proxy"];
 export const BOOTSTRAP_SCOPES: readonly HealthScope[] = ["full", "proxy"];
 export const SETUP_SCOPES: readonly HealthScope[] = ["full", "setup"];
 // The GitHub credential underpins Direct for both agents but gets its own section rather than
@@ -54,7 +49,7 @@ interface CheckDescriptor {
  * The ids and labels are external contracts, so never rename them: `--json` consumers key on the
  * ids, and the labels are the report's row headers.
  *
- *   setup.auth          -> shared by checkAuth and checkProfileAuth: one credential line per target
+ *   setup.auth          -> checkAuth: one credential line per target (the default, a named profile)
  *   setup.cli.<command> -> the one id minted outside this table; the CLI list is runtime data
  */
 export const CHECK_DESCRIPTORS = {
@@ -74,8 +69,8 @@ export const CHECK_DESCRIPTORS = {
   "proxy.resolved": { label: "Proxy resolved + cached", group: "proxy", scopes: BOOTSTRAP_SCOPES },
   "runtime.port": { label: "Proxy port reachable", group: "runtime", scopes: RUNTIME_SCOPES },
   "runtime.pid": { label: "Tracked proxy process", group: "runtime", scopes: RUNTIME_SCOPES },
-  // Informational rows: full-scope only (paths), or full+proxy; never the launchers' fast
-  // `runtime` probe, whose row set and exit code are a contract.
+  // Informational rows: full-scope only (paths), or full+proxy; never the fast `runtime` probe
+  // scope, whose row set and exit code are a contract.
   "runtime.paths": { label: "Paths", group: "runtime", scopes: ["full"] },
   "runtime.watchdog": { label: "Idle watchdog", group: "runtime", scopes: ["full", "proxy"] },
   "runtime.identity": { label: "Proxy identity", group: "runtime", scopes: ["full", "proxy"] },

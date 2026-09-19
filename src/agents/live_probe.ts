@@ -143,10 +143,18 @@ export interface DirectProbeDeps {
   fetchImpl?: ProbeFetch;
 }
 
-/** Codex's model-catalog dump in probe output is noise, never the failure reason. Both failure
- *  formatters (summarizeProbeFailure here, formatLiveFailure in src/health/probe_deps.ts) filter
- *  through this one regex. */
+/** Codex's model-catalog dump in probe output is noise, never the failure reason. */
 export const CODEX_CATALOG_NOISE_RE = /"capabilities"|"object":\s*"model"|model_picker/;
+
+/** The CLI's output as the lines a failure reason is read from: stderr then stdout, blank and
+ *  catalog-noise lines dropped. Both failure formatters (summarizeProbeFailure here, health's
+ *  formatLiveFailure in src/health/probe_deps.ts) read through this one pipeline. */
+export function probeOutputLines(stdout: string, stderr: string): string[] {
+  return `${stderr}\n${stdout}`
+    .split(/\r?\n/)
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim() && !CODEX_CATALOG_NOISE_RE.test(l));
+}
 
 /** The failure text a JSON output line carries, or null for a non-JSON line and for a JSON event
  *  that reports no error. Claude's `--output-format json` / `stream-json` result event is ONE long
@@ -193,10 +201,7 @@ export function summarizeProbeFailure(
   // Scanned from the end of stderr-then-stdout: the last marker line in stdout wins, else the
   // last in stderr; within one stream that is the marker nearest the child's death. A JSON event
   // that reports an error is a marker by itself, and its reason text is what surfaces.
-  const lines = `${stderr}\n${stdout}`
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !CODEX_CATALOG_NOISE_RE.test(l));
+  const lines = probeOutputLines(stdout, stderr).map((l) => l.trim());
   const MARKER =
     /\b(error|unauthor|forbidden|denied|invalid|expired|panic|disconnect|refused|quota|rate.?limit|[45]\d\d|stdin)\b/i;
   for (let i = lines.length - 1; i >= 0; i--) {

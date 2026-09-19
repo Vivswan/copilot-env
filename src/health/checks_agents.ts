@@ -31,6 +31,17 @@ export function ghCouldNotCheck(detail: string | undefined, accountClause: strin
   return `could not check gh authentication (${why}; ${accountClause})`;
 }
 
+/** The account note for a gh-cli verdict line, on the failing and unproven lines too (no hidden
+ *  information): the pinned login, or the account an auto slot follows right now (bare AUTO when
+ *  the list was unreadable). */
+export function ghAccountClause(pin: string | null, followed: string | null): string {
+  return pin !== null
+    ? `account '${pin}'`
+    : followed !== null
+    ? `AUTO - currently account ${followed}`
+    : "AUTO - follows gh's active account";
+}
+
 /**
  * Shared by the Codex and Claude Direct checks: both mint the bearer via `gh auth token`.
  * Callers wrap `ghFix` in their own fix selection (a base-URL/provider fix takes precedence). An
@@ -48,11 +59,7 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
   //
   //   gh found, proven or unproven -> the line names the account
   //   command === null             -> not-found / could-not-check, with no account
-  const accountClause = (a.ghUser ?? null) !== null
-    ? `account '${a.ghUser}'`
-    : (a.ghActiveLogin ?? null) !== null
-    ? `AUTO - currently account ${a.ghActiveLogin}`
-    : "AUTO - follows gh's active account";
+  const accountClause = ghAccountClause(a.ghUser ?? null, a.ghActiveLogin ?? null);
   if (a.unproven) {
     return {
       ok: false,
@@ -111,7 +118,7 @@ function directAuthVerdict(
   },
   wiringOk: boolean,
   directFix: string,
-  profile: Profile = null,
+  profile: Profile,
 ): DirectAuthVerdict {
   const getCommand = profile === null ? "agent auth --get" : `agent profile ${profile} auth --get`;
   const authFix = profile === null ? "agent auth" : `agent profile ${profile} auth`;
@@ -173,7 +180,7 @@ function codexOtherLine(
   }
 }
 
-export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult {
+export function checkCodex(f: CodexFacts, profile: Profile): CheckResult {
   const configPath = codexConfigPath(f.home);
   // A named profile's selector lives in its own file, named on every row beside config.toml.
   const profileConfigPath = profile === null ? null : codexProfileConfigPath(f.home, profile);
@@ -385,7 +392,7 @@ function claudeOtherLine(f: ClaudeFacts & { providerMode: "other" }): string {
   }
 }
 
-export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResult {
+export function checkClaude(f: ClaudeFacts, profile: Profile): CheckResult {
   const directFix = profile === null ? "agent init --direct" : profileAddFix(profile);
   const base = {
     ...meta("setup.claude"),
@@ -572,10 +579,10 @@ export function checkClaudeDesktop(f: ClaudeDesktopStatus): CheckResult {
 }
 
 /** Shared by Codex and Claude: only the ids/labels/group/scopes/fix differ. */
-function checkAgentLive(
+export function checkAgentLive(
   agent: "codex" | "claude",
   f: LiveProbeFacts,
-  profile: Profile = null,
+  profile: Profile,
 ): CheckResult {
   const base = {
     ...meta(agent === "codex" ? "codex.live" : "claude.live"),
@@ -600,11 +607,4 @@ function checkAgentLive(
       detail: `read-only prompt failed (${f.cli})\n${f.detail}`,
       fix: profile === null ? `agent profile sync --${agent}` : profileAddFix(profile),
     };
-}
-
-export function checkCodexLive(f: LiveProbeFacts, profile: Profile = null): CheckResult {
-  return checkAgentLive("codex", f, profile);
-}
-export function checkClaudeLive(f: LiveProbeFacts, profile: Profile = null): CheckResult {
-  return checkAgentLive("claude", f, profile);
 }

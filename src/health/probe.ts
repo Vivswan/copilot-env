@@ -1,118 +1,126 @@
 // I/O fact-gathering for `agent health`. Each scope gathers ONLY the facts it needs; the
 // `runtime` scope stays minimal (no shell or CLI probes), though the tracked-pid check still
-// spawns `ps`/PowerShell. The pure sub-evaluators (evalShellFiles, evalCodex) take raw content
-// so they unit-test without touching the world.
+// spawns `ps`/PowerShell. Store, config, and file reads are direct calls against the isolated
+// home tests seed; the spawns, the network, the clock, and the agent homes are the ProbeDeps seams
+// (probe_deps.ts).
 import { join } from "node:path";
+import { claudeDesktopStatus } from "../agents/claude_desktop.ts";
+import { AGENT_CLIS } from "../agents/cli_install.ts";
 import { defaultSetupNeedsProxy } from "../agents/wiring.ts";
+import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import {
   bakedClaudeToken,
   type ClaudeWiringStatus,
   inspectClaudeWiring,
 } from "../claude/config.ts";
 import { settingsPathFor } from "../claude/paths.ts";
-import { bakedCodexToken, type CodexWiringStatus, inspectCodexWiring } from "../codex/inspect.ts";
+import {
+  bakedCodexToken,
+  CODEX_ENV_KEY,
+  type CodexWiringStatus,
+  inspectCodexWiring,
+} from "../codex/inspect.ts";
+import { codexHostFarm } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
+import { CopilotApiConfig } from "../copilot_api/config.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   type AuthProvider,
+  CopilotEnvState,
+  credentialProvider,
   type ProfileMode,
   storedCredentialKind,
 } from "../copilot_api/env_state.ts";
-import { proxyLoopbackOrigin } from "../copilot_api/port.ts";
+import { CopilotApiPaths, profileHomeExists, resolveRootHome } from "../copilot_api/paths.ts";
+import {
+  copilotApiFallbackPort,
+  copilotApiResolvePort,
+  proxyLoopbackOrigin,
+} from "../copilot_api/port.ts";
+import { pidAlive } from "../copilot_api/process.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
-import { proxyVersionBoundsStatus } from "../copilot_api/version.ts";
-import { proxyFloatSkips } from "../proxy_float.ts";
+import { sidecarStatus } from "../copilot_api/sidecar.ts";
+import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
+import { installedProxyVersion, proxyVersionBoundsStatus } from "../copilot_api/version.ts";
+import {
+  proxyFloatSkips,
+  readResolvedVersionRecord,
+  resolveMinimumReleaseAgeSeconds,
+} from "../proxy_float.ts";
+import { idleTimeoutMs } from "../copilot_api/idle_watchdog.ts";
+import { persistedInferenceMs } from "../copilot_api/inference_activity.ts";
 import { hasMarker, MARKER } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
-import type { TextReadResult } from "../utils/fs_facade.ts";
+import { readTextOrNull } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
+import { readProjectConfig } from "../utils/project_config.ts";
+import { PROJECT_ROOT } from "../utils/root.ts";
+import { packageVersion } from "../utils/version.ts";
 import {
   type BakedCredentialFreshness,
   classifyPortState,
-  type ClaudeFacts,
   type CodexDirectAuthFacts,
-  type CodexFacts,
   type DaemonProbed,
   type DefaultRuntimeTarget,
   type HealthFacts,
   type NamedRuntimeTarget,
+  type ProfileAuthFacts,
+  type ProfileSlotFacts,
+  runtimePathsView,
   type RuntimeTarget,
   type RuntimeTargetCommon,
-  type ShellFacts,
   type ShellFileFact,
 } from "./facts.ts";
 import { defaultProbeDeps, type ProbeDeps } from "./probe_deps.ts";
-import type { HealthScope } from "./types.ts";
 import {
-  AUTH_SCOPES as SCOPE_AUTH,
-  BOOTSTRAP_SCOPES as SCOPE_BOOTSTRAP,
-  CLAUDE_LIVE_SCOPES as SCOPE_CLAUDE_LIVE,
-  CLAUDE_SCOPES as SCOPE_CLAUDE,
-  CODEX_LIVE_SCOPES as SCOPE_CODEX_LIVE,
-  CODEX_SCOPES as SCOPE_CODEX,
-  PROFILE_SWEEP_SCOPES as SCOPE_PROFILE_SWEEP,
-  RUNTIME_SCOPES as SCOPE_RUNTIME,
-  SETUP_SCOPES as SCOPE_SETUP,
+  AUTH_SCOPES,
+  BOOTSTRAP_SCOPES,
+  CLAUDE_LIVE_SCOPES,
+  CLAUDE_SCOPES,
+  CODEX_LIVE_SCOPES,
+  CODEX_SCOPES,
+  type HealthScope,
+  RUNTIME_SCOPES,
+  SETUP_SCOPES,
 } from "./types.ts";
 
-// --- pure sub-evaluators (no I/O) -------------------------------------------
-
-/** launchersWired is the `shell.launchers` config key (see ShellFacts). */
-export function evalShellFiles(
-  contents: { path: string; content: string | null }[],
-  launchersEnabled: boolean,
-): ShellFacts {
-  const files: ShellFileFact[] = contents.map(({ path, content }) => ({
-    path,
-    hasIntegration: content !== null && hasMarker(content, MARKER),
-  }));
+/** A named profile's store slot view (never tokens): ONE profileSlotStatus() call snapshots the
+ *  whole slot, so consumers pairing its fields can never see a torn combination under a
+ *  concurrent credential write. */
+function profileSlotFacts(name: ProfileName): ProfileSlotFacts {
+  const { exists, slot } = new CopilotEnvState().profileSlotStatus(name);
   return {
-    files,
-    integrationWired: files.some((f) => f.hasIntegration),
-    launchersWired: launchersEnabled,
+    exists,
+    provider: credentialProvider(slot.credential),
+    mode: slot.mode,
+    storedToken: slot.credential.kind === "stored",
+    ghUser: slot.credential.kind === "gh-cli" ? slot.credential.ghUser : null,
   };
 }
 
-/** A thin wrapper over `inspectCodexWiring` (the single source of the wiring contract) that
- *  attaches the home being inspected. */
-export function evalCodex(
-  home: string,
-  configToml: TextReadResult | string | null,
-  envText: string | null,
-  expectedPort: number,
-  envKeyInEnviron: boolean,
-  directAuth: CodexDirectAuthFacts = { command: null, authenticated: false },
-  directNeedsNoGh = false,
-  // gatherFacts already inspected the wiring to gate the gh probe; accepting it avoids a second
-  // parse. Tests call without it and parse internally.
-  wiring: CodexWiringStatus = inspectCodexWiring(
-    configToml,
-    envText,
-    expectedPort,
-    envKeyInEnviron,
-  ),
-): CodexFacts {
-  return {
-    home,
-    directAuth,
-    directNeedsNoGh,
-    ...wiring,
-  };
+/** Named profiles: name -> recorded provider + mode (never tokens). Swept via profileNames() (the
+ *  store's validated, sorted view), never the raw record: its keys are a trust boundary, and only
+ *  profileNames() mints the brand. */
+function authProfiles(): Record<ProfileName, ProfileAuthFacts> {
+  const store = new CopilotEnvState();
+  const profiles: Record<ProfileName, ProfileAuthFacts> = {};
+  for (const name of store.profileNames()) {
+    const slot = store.readProfileSlot(name);
+    profiles[name] = { provider: credentialProvider(slot.credential), mode: slot.mode };
+  }
+  return profiles;
 }
 
-export function evalClaude(
-  home: string,
-  directAuth: CodexDirectAuthFacts,
-  directUsesToken: boolean,
-  wiring: ClaudeWiringStatus,
-  profile: Profile = null,
-): ClaudeFacts {
-  return {
-    home,
-    settingsPath: settingsPathFor(home, profile),
-    directAuth,
-    directUsesToken,
-    ...wiring,
-  };
+/** Same predicate as bin/agent's freshness gate: node_modules at least as new as deno.lock. */
+function nodeModulesFresh(): boolean {
+  try {
+    const lock = fs.stat(join(PROJECT_ROOT, "deno.lock")).mtimeMs;
+    const modules = fs.stat(join(PROJECT_ROOT, "node_modules")).mtimeMs;
+    return modules >= lock;
+  } catch {
+    return false;
+  }
 }
 
 // --- orchestration ----------------------------------------------------------
@@ -120,41 +128,41 @@ export function evalClaude(
 /**
  * READ-ONLY: nothing here writes a file or reserves a port. pid and port come from a single
  * run-state read (proxyStatus's rule), so a concurrent start/stop cannot pair one daemon's pid
- * with another's port; fallbackPort covers the no-recorded-port case without a second read. The
- * state is returned so the caller hands the SAME snapshot's pid to interrogateDaemon.
+ * with another's port; copilotApiFallbackPort covers the no-recorded-port case without a second
+ * read (it never re-reads the addressed profile's recorded port). The state is returned so the
+ * caller hands the SAME snapshot's pid to interrogateDaemon.
  */
 function snapshotTarget(
   profile: Profile,
   deps: ProbeDeps,
   proxyExpectedFor: (port: number) => boolean,
-): { state: ReturnType<ProbeDeps["readState"]>; common: RuntimeTargetCommon } {
-  const state = deps.readState(profile);
+): { state: { pid?: number }; common: RuntimeTargetCommon } {
+  const state = CopilotEnvRunState.forProfile(profile).read();
   const portPersisted = state.port !== undefined;
-  const port = state.port ?? deps.fallbackPort(profile);
+  const port = state.port ?? copilotApiFallbackPort(profile);
+  // The observer's persisted `.activity.json` mark; our own reach GET is not an inference POST,
+  // so health observing the proxy never moves these numbers.
+  const lastRequestMs = persistedInferenceMs(profile);
   return {
     state,
     common: {
       proxyExpected: proxyExpectedFor(port),
       port,
       portPersisted,
-      paths: deps.paths(profile),
+      paths: runtimePathsView(new CopilotApiPaths(profile)),
       watchdog: {
-        autoStart: deps.autoStartEnabled(),
-        idleTimeoutMs: deps.idleTimeoutMs(),
+        autoStart: new CopilotEnvConfig().autoStartEnabled(),
+        idleTimeoutMs: idleTimeoutMs(),
         lastEnsureAt: state.lastEnsureAt ?? null,
-        // The observer's persisted mark; our own reach/identity GET probes are not inference
-        // POSTs, so health observing the proxy never moves these numbers.
-        lastRequestMs: deps.lastRequestMs(profile),
+        lastRequestMs: lastRequestMs > 0 ? lastRequestMs : null,
         now: deps.now(),
       },
     },
   };
 }
 
-/** The reach/pid probes plus (in the full/proxy scopes) the identity request, reconciled into the
- *  target's PortState. */
+/** One GET on the port plus the pid scan, reconciled into the target's PortState. */
 async function interrogateDaemon(
-  scope: HealthScope,
   deps: ProbeDeps,
   port: number,
   trackedPid: number | null,
@@ -166,38 +174,37 @@ async function interrogateDaemon(
   // The pid identity is three-state (deps.classifyTrackedPid): "no tracked pid" is a genuine
   // "no", but a FAILED scan is "unknown", carried as pidScanUnproven beside the pidTracked
   // flatten so a broken `ps` renders as "could not verify" instead of a confident verdict.
-  const [reachable, pidClass] = await Promise.all([
+  const [answer, pidClass] = await Promise.all([
     deps.reach(probeUrl, 2000),
     trackedPid !== null
       ? deps.classifyTrackedPid(trackedPid)
       : Promise.resolve<"yes" | "no" | "unknown">("no"),
   ]);
   const pidTracked = pidClass === "yes";
-  // The identity probe (an extra local request) runs only in the full/proxy scopes, never the
-  // launchers' fast `runtime` probe, and only when something is reachable AND this target's
-  // setup routes through the port: with both agents direct, nothing we manage talks to whatever
-  // answers, so its identity is never grounds for a misroute warning.
-  const identityConfirmed = SCOPE_BOOTSTRAP.includes(scope) && reachable && proxyExpected
-    ? await deps.proxyIdentity(probeUrl, 2000)
-    : null;
+  // The responder's identity counts only when this target's setup routes through the port: with
+  // both agents direct, nothing we manage talks to whatever answers, so its identity is never
+  // grounds for a misroute warning.
+  const identityConfirmed = answer.reachable && proxyExpected ? answer.copilotApi : null;
   return {
     kind: "probed",
-    reachable,
+    reachable: answer.reachable,
     trackedPid,
     pidTracked,
     ...(pidClass === "unknown" ? { pidScanUnproven: true as const } : {}),
-    pidAlive: trackedPid !== null ? deps.isPidAlive(trackedPid) : false,
+    pidAlive: trackedPid !== null ? pidAlive(trackedPid) : false,
     identityConfirmed,
-    portState: classifyPortState({ proxyExpected, reachable, pidTracked, identityConfirmed }),
+    portState: classifyPortState({
+      proxyExpected,
+      reachable: answer.reachable,
+      pidTracked,
+      identityConfirmed,
+    }),
   };
 }
 
 /** Always interrogated, with the configured default port as the fallback: the historical
  *  fast-probe behavior. */
-async function gatherDefaultTarget(
-  scope: HealthScope,
-  deps: ProbeDeps,
-): Promise<DefaultRuntimeTarget> {
+async function gatherDefaultTarget(deps: ProbeDeps): Promise<DefaultRuntimeTarget> {
   // When nothing in the default setup routes to the local daemon (both agents direct AND
   // Claude's base URL not aimed at it), a down proxy must not read as a runtime failure.
   const { state, common } = snapshotTarget(null, deps, (targetPort) =>
@@ -209,31 +216,20 @@ async function gatherDefaultTarget(
   return {
     profile: null,
     ...common,
-    probe: await interrogateDaemon(
-      scope,
-      deps,
-      common.port,
-      state.pid ?? null,
-      common.proxyExpected,
-    ),
+    probe: await interrogateDaemon(deps, common.port, state.pid ?? null, common.proxyExpected),
   };
 }
 
 /**
  * `proxyExpected` derives from the slot's recorded mode, or, with no slot but a home, is assumed
  * (a homed daemon may be running, and a daemon past its start records its port in run state).
- * The
- * daemon is interrogated only when a proxy is expected, the home exists, AND the port is
+ * The daemon is interrogated only when a proxy is expected, the home exists, AND the port is
  * persisted: a DIRECT profile has no daemon, a homeless proxy slot has no persisted port, and an
  * unpersisted candidate port is never probed.
  */
-async function gatherNamedTarget(
-  name: ProfileName,
-  scope: HealthScope,
-  deps: ProbeDeps,
-): Promise<NamedRuntimeTarget> {
-  const slot = deps.profileSlot(name);
-  const homeExists = deps.profileHomeExists(name);
+async function gatherNamedTarget(name: ProfileName, deps: ProbeDeps): Promise<NamedRuntimeTarget> {
+  const slot = profileSlotFacts(name);
+  const homeExists = profileHomeExists(name);
   const proxyExpected = slot.mode === "proxy" || (homeExists && !slot.exists);
   const { state, common } = snapshotTarget(name, deps, () => proxyExpected);
   const skipWhy = !proxyExpected
@@ -250,36 +246,32 @@ async function gatherNamedTarget(
     ...common,
     probe: skipWhy !== null
       ? { kind: "skipped", why: skipWhy }
-      : await interrogateDaemon(scope, deps, common.port, state.pid ?? null, proxyExpected),
+      : await interrogateDaemon(deps, common.port, state.pid ?? null, proxyExpected),
   };
 }
 
 /** `opts.profile` narrows the run to ONE named profile: its runtime target, its credential slot,
  *  and its per-agent wiring. The account-wide fact groups (bootstrap, proxy package,
  *  shell/CLI/tool setup, autoupdate, codex.host) are not gathered at all, so they cannot leak
- *  into a narrowed report. */
-/** `profile` narrows the run to one named profile's target; with none, `namedSweep` (the
- *  default) adds every named profile's runtime target in the diagnostic scopes, and false is the
- *  default profile's own run: its daemon alone, as a named profile's run is its daemon alone. */
+ *  into a narrowed report. With no profile the run is the default's: its own daemon alone, as a
+ *  named profile's run is its daemon alone (`agent health` gathers every profile's run itself). */
 export async function gatherFacts(
   scope: HealthScope,
-  opts: { live?: boolean; profile?: Profile; namedSweep?: boolean } = {},
+  opts: { live?: boolean; profile?: Profile } = {},
   overrides?: Partial<ProbeDeps>,
 ): Promise<HealthFacts> {
   const deps: ProbeDeps = { ...defaultProbeDeps(), ...overrides };
   const profile = opts.profile ?? null;
-  const namedSweep = opts.namedSweep ?? true;
   // The addressed target's resolved port (READ-ONLY: a named profile's reservation is peeked,
   // never made). Lazy and cached: only the scopes that inspect wiring resolve it, so a
   // runtime/auth run never computes a named profile's candidate port at all.
   let wiringPortCache: number | undefined;
-  const wiringPort = (): number => (wiringPortCache ??= Number(deps.resolvePort(profile)));
+  const wiringPort = (): number => (wiringPortCache ??= Number(copilotApiResolvePort(profile)));
   const facts: HealthFacts = { profile };
 
-  // gh auth backs BOTH agents' direct mode: probed at most once per run AND per pinned account
-  // (a default sweep can cross slots pinned to different gh accounts), asynchronously, so each
-  // ~5s `gh auth token` call overlaps the other probes instead of serializing into the health
-  // timeout. Jobs addressing the same account await the same promise.
+  // gh auth backs BOTH agents' direct mode: probed at most once per run AND per pinned account,
+  // asynchronously, so each ~5s `gh auth token` call overlaps the other probes instead of
+  // serializing into the health timeout. Jobs addressing the same account await the same promise.
   const directAuthCache = new Map<string | null, Promise<CodexDirectAuthFacts>>();
   const sharedDirectAuth = (ghUser: string | null): Promise<CodexDirectAuthFacts> => {
     let probe = directAuthCache.get(ghUser);
@@ -312,36 +304,37 @@ export async function gatherFacts(
   // The credential the run's Direct wiring resolves: the default store pair, or the narrowed
   // profile's own slot (named profiles never fall back). `mode` is the named slot's recorded
   // mode; the default run leaves it null and judges from the agents' own wiring instead of the
-  // recorded default mode (recordDefaultMode). Cached; several jobs consult it.
+  // recorded default mode (recordDefaultMode). `slotExists` false is a named profile whose store
+  // WAS read and holds no slot (never an unproven empty; an unreadable store propagates,
+  // profileHomeNames' strict stance). One store read, cached; several jobs consult it.
   let credentialCache:
     | {
       provider: AuthProvider | null;
       storedToken: boolean;
       ghUser: string | null;
       mode: ProfileMode | null;
+      slotExists: boolean;
     }
     | undefined;
-  const runCredential = (): {
-    provider: AuthProvider | null;
-    storedToken: boolean;
-    ghUser: string | null;
-    mode: ProfileMode | null;
-  } => {
+  const runCredential = (): NonNullable<typeof credentialCache> => {
     if (credentialCache === undefined) {
       if (profile === null) {
+        const store = new CopilotEnvState().read();
         credentialCache = {
-          provider: deps.authProvider(),
-          storedToken: deps.storedTokenPresent(),
-          ghUser: deps.defaultGhUser(),
+          provider: store.authProvider,
+          storedToken: store.githubToken !== null,
+          ghUser: store.ghUser,
           mode: null,
+          slotExists: true,
         };
       } else {
-        const slot = deps.profileSlot(profile);
+        const slot = profileSlotFacts(profile);
         credentialCache = {
           provider: slot.provider,
           storedToken: slot.storedToken,
           ghUser: slot.ghUser,
           mode: slot.mode,
+          slotExists: slot.exists,
         };
       }
     }
@@ -372,16 +365,23 @@ export async function gatherFacts(
   };
 
   // A static wiring holds the credential itself, so the store is consulted for ONE thing only:
-  // whether the baked value is what a rewire would bake now. A store or daemon home that cannot
-  // answer reads "unchecked", never a failure of the agent check (the value in the config is what
-  // the agent uses) and never "fresh".
+  // whether the baked value is what a rewire would bake now: the slot's stored token VALUE
+  // (direct) or the profile daemon's minted API key (proxy), compared and never reported. A store
+  // or daemon home that cannot answer reads "unchecked", never a failure of the agent check (the
+  // value in the config is what the agent uses) and never "fresh".
   const bakedFreshness = (
     mode: "direct" | "proxy",
     baked: string | null,
   ): BakedCredentialFreshness => {
     if (baked === null) return "unchecked";
     try {
-      const expected = mode === "proxy" ? deps.proxyApiKey(profile) : deps.storedToken(profile);
+      let expected: string | null;
+      if (mode === "proxy") {
+        expected = CopilotApiConfig.forProfile(profile).apiKey();
+      } else {
+        const credential = new Credential(undefined, profile).read();
+        expected = credential.kind === "stored" ? credential.token : null;
+      }
       if (expected === null) return "unchecked";
       return expected === baked ? "fresh" : "stale";
     } catch {
@@ -408,47 +408,43 @@ export async function gatherFacts(
 
   const jobs: Promise<void>[] = [];
 
-  if (SCOPE_RUNTIME.includes(scope)) {
+  if (RUNTIME_SCOPES.includes(scope)) {
     jobs.push(
       (async () => {
-        if (profile !== null) {
-          // Narrowed: exactly the addressed profile's target.
-          facts.runtimes = [await gatherNamedTarget(profile, scope, deps)];
-          return;
-        }
-        // The default target first, then every named profile in sorted order, but only in the
-        // diagnostic scopes (PROFILE_SWEEP_SCOPES) of a sweeping run: the launchers' fast
-        // `runtime` probe and the default profile's own run stay the default daemon alone.
-        const names = namedSweep && SCOPE_PROFILE_SWEEP.includes(scope) ? deps.profileNames() : [];
-        facts.runtimes = await Promise.all<RuntimeTarget>([
-          gatherDefaultTarget(scope, deps),
-          ...names.map((name) => gatherNamedTarget(name, scope, deps)),
-        ]);
+        // Exactly the addressed target: the default daemon, or the narrowed profile's.
+        const target: RuntimeTarget = profile === null
+          ? await gatherDefaultTarget(deps)
+          : await gatherNamedTarget(profile, deps);
+        facts.runtimes = [target];
       })(),
     );
   }
 
-  if (profile === null && SCOPE_BOOTSTRAP.includes(scope)) {
+  if (profile === null && BOOTSTRAP_SCOPES.includes(scope)) {
     jobs.push(
       (async () => {
-        const sidecar = deps.sidecar();
+        const sidecar = sidecarStatus(resolveRootHome());
         facts.bootstrap = {
-          cliVersion: deps.cliVersion(),
-          deno: { available: deps.denoVersion() !== null, version: deps.denoVersion() },
+          cliVersion: packageVersion(),
+          denoVersion: Deno.version.deno,
           // A compiled binary embeds its dependencies: no node_modules to judge.
-          nodeModules: sidecar.standalone
-            ? null
-            : { present: deps.nodeModulesPresent(), fresh: deps.nodeModulesFresh() },
+          nodeModules: sidecar.standalone ? null : {
+            present: fs.exists(join(PROJECT_ROOT, "node_modules")),
+            fresh: nodeModulesFresh(),
+          },
         };
-        const resolved = deps.proxyResolved();
+        // The float's resolved-version record (null when it has never resolved here), with
+        // whether its cache directory is still on disk.
+        const record = readResolvedVersionRecord(resolveRootHome());
+        const resolved = record === null ? null : { ...record, cached: fs.exists(record.denoDir) };
         // The version that would actually RUN, in the daemon entry's own precedence: the float's
         // recorded resolution, else the deno.json baseline in node_modules. Judging bounds on
         // anything else would grade a copy the daemon never loads.
-        const version = resolved?.version ?? deps.installedProxyVersion();
+        const version = resolved?.version ?? installedProxyVersion(PROJECT_ROOT);
         // A bad COPILOT_API_MIN_RELEASE_AGE / cooldown setting must not crash health.
         let cooldownSeconds: number | null = null;
         try {
-          cooldownSeconds = deps.proxyCooldownSeconds();
+          cooldownSeconds = resolveMinimumReleaseAgeSeconds();
         } catch {
           cooldownSeconds = null;
         }
@@ -460,7 +456,7 @@ export async function gatherFacts(
         try {
           facts.proxy = {
             version,
-            bounds: proxyVersionBoundsStatus(version, deps.projectConfig()),
+            bounds: proxyVersionBoundsStatus(version, readProjectConfig()),
             configError: null,
             cooldownSeconds,
             floatSkips,
@@ -482,15 +478,15 @@ export async function gatherFacts(
     );
   }
 
-  if (SCOPE_CODEX.includes(scope)) {
+  if (CODEX_SCOPES.includes(scope)) {
     jobs.push(
       (async () => {
         const home = deps.codexHome();
-        // config.toml is read three-way (deps.readFileResult) so an unreadable file classifies
-        // other/read-error instead of collapsing into the absent/none verdict readFileSafe's null
-        // would produce; the .env read stays don't-care (absence and unreadability are alike).
-        const configRead = deps.readFileResult(codexConfigPath(home));
-        const envText = deps.readFileSafe(join(home, ".env"));
+        // config.toml is read three-way (readTextResult) so an unreadable file classifies
+        // other/read-error instead of collapsing into the absent/none verdict a null would
+        // produce; the .env read stays don't-care (absence and unreadability are alike).
+        const configRead = fs.readTextResult(codexConfigPath(home));
+        const envText = readTextOrNull(join(home, ".env"));
         // A named profile inspects ITS selection (`<name>.config.toml` over the suffixed provider
         // table in config.toml) against ITS resolved port; the profile file is read three-way for
         // the same reason config.toml is.
@@ -498,29 +494,21 @@ export async function gatherFacts(
           configRead,
           envText,
           wiringPort(),
-          deps.codexTokenInEnviron(),
+          Boolean(process.env[CODEX_ENV_KEY]),
           profile === null ? { profile } : {
             profile,
-            profileToml: deps.readFileResult(codexProfileConfigPath(home, profile)),
+            profileToml: fs.readTextResult(codexProfileConfigPath(home, profile)),
           },
         );
-        const { directAuth, noGhNeeded } = await directAuthFor(
-          authShapeOf(wiring),
-        );
-        // The wiring's `directUsesToken` stays a pure CONFIG fact; the store-aware "Direct needs
-        // no gh" verdict travels on its own field (`directNeedsNoGh`, what checkCodex consumes).
-        const codexFacts = evalCodex(
-          home,
-          configRead,
-          envText,
-          wiringPort(),
-          deps.codexTokenInEnviron(),
-          directAuth,
-          wiring.providerMode === "direct" && noGhNeeded,
-          wiring,
-        );
+        const { directAuth, noGhNeeded } = await directAuthFor(authShapeOf(wiring));
         facts.codex = {
-          ...codexFacts,
+          home,
+          directAuth,
+          // The wiring's `directUsesToken` stays a pure CONFIG fact; the store-aware "Direct
+          // needs no gh" verdict travels on its own field (`directNeedsNoGh`, what checkCodex
+          // consumes).
+          directNeedsNoGh: wiring.providerMode === "direct" && noGhNeeded,
+          ...wiring,
           ...storeFacts(wiring.credential),
           ...(wiring.credential === "static"
             ? {
@@ -535,27 +523,24 @@ export async function gatherFacts(
     );
   }
 
-  if (SCOPE_CLAUDE.includes(scope)) {
+  if (CLAUDE_SCOPES.includes(scope)) {
     jobs.push(
       (async () => {
         const home = deps.claudeHome();
         // A named profile answers from its own settings-<name>.json, read three-way
-        // (deps.readFileResult) so an unreadable file classifies other/read-error, not "none".
-        const settingsRead = deps.readFileResult(settingsPathFor(home, profile));
+        // (readTextResult) so an unreadable file classifies other/read-error, not "none".
+        const settingsPath = settingsPathFor(home, profile);
+        const settingsRead = fs.readTextResult(settingsPath);
         // "direct" here means the credential shape truly is ours, addressed at THIS profile (never
         // a stale/foreign/mis-addressed helper); directAuthFor then decides the gh probe.
         const wiring = inspectClaudeWiring(settingsRead, wiringPort(), profile);
-        const { directAuth, noGhNeeded } = await directAuthFor(
-          authShapeOf(wiring),
-        );
+        const { directAuth, noGhNeeded } = await directAuthFor(authShapeOf(wiring));
         facts.claude = {
-          ...evalClaude(
-            home,
-            directAuth,
-            wiring.providerMode === "direct" && noGhNeeded,
-            wiring,
-            profile,
-          ),
+          home,
+          settingsPath,
+          directAuth,
+          directUsesToken: wiring.providerMode === "direct" && noGhNeeded,
+          ...wiring,
           ...storeFacts(wiring.credential),
           ...(wiring.credential === "static"
             ? {
@@ -568,81 +553,62 @@ export async function gatherFacts(
         };
         // The Desktop library spans the default AND every profile, so it is judged once, on the
         // whole-environment run only.
-        if (profile === null) facts.claudeDesktop = deps.claudeDesktop();
+        if (profile === null) facts.claudeDesktop = claudeDesktopStatus();
       })(),
     );
   }
 
-  if (SCOPE_AUTH.includes(scope)) {
-    if (profile !== null) {
-      // The addressed profile's slot line only: a named profile never falls back to the default
-      // credential. Every field comes from ONE profileSlot() snapshot, so a concurrent write
-      // cannot pair its provider with another's token.
-      //
-      //   the store cannot be read -> the failure propagates (profileHomeNames' strict stance)
-      //   slot: null               -> the store WAS read and holds no slot, never an unproven empty
-      jobs.push(
-        (async () => {
-          const slot = deps.profileSlot(profile);
-          const gh = storedCredentialKind(slot.provider, slot.storedToken) === "gh-cli"
-            ? await slotGhFacts(slot.ghUser)
-            : null;
-          facts.profileAuth = {
-            name: profile,
-            slot: slot.exists
-              ? {
-                provider: slot.provider,
-                mode: slot.mode,
-              }
+  if (AUTH_SCOPES.includes(scope)) {
+    jobs.push(
+      (async () => {
+        // gh is a credential ONLY when storedCredentialKind() says gh-cli (no implicit fallback);
+        // reuses the shared (cached) gh probe, so no extra spawn. A named profile's line is its
+        // own slot alone (runCredential's one snapshot); it never falls back to the default
+        // credential.
+        const credential = runCredential();
+        const gh = storedCredentialKind(credential.provider, credential.storedToken) === "gh-cli"
+          ? await slotGhFacts(credential.ghUser)
+          : null;
+        const resolution = {
+          storedToken: credential.storedToken,
+          ghAuthenticated: gh?.authenticated ?? false,
+          ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
+          ...(gh?.ghActiveLogin != null ? { ghActiveLogin: gh.ghActiveLogin } : {}),
+          ...(gh?.ghCommand !== undefined ? { ghCommand: gh.ghCommand } : {}),
+          ...(gh?.ghDetail !== undefined ? { ghDetail: gh.ghDetail } : {}),
+          ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
+        };
+        facts.auth = profile === null
+          ? {
+            profile,
+            ...resolution,
+            provider: credential.provider,
+            profiles: authProfiles(),
+            // The `identity` config pin, or null when unset/`auto`.
+            pinnedIntegrationId: new CopilotEnvConfig().pinnedIntegrationId(null),
+          }
+          : {
+            profile,
+            ...resolution,
+            slot: credential.slotExists
+              ? { provider: credential.provider, mode: credential.mode }
               : null,
-            storedToken: slot.storedToken,
-            ghAuthenticated: gh?.authenticated ?? false,
-            ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
-            ...(gh?.ghActiveLogin != null ? { ghActiveLogin: gh.ghActiveLogin } : {}),
-            ...(gh?.ghCommand !== undefined ? { ghCommand: gh.ghCommand } : {}),
-            ...(gh?.ghDetail !== undefined ? { ghDetail: gh.ghDetail } : {}),
-            ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
           };
-        })(),
-      );
-    } else {
-      jobs.push(
-        (async () => {
-          // gh is a credential ONLY when storedCredentialKind() says gh-cli (no implicit
-          // fallback); reuses the shared (cached) gh probe, so no extra spawn.
-          const provider = deps.authProvider();
-          const storedToken = deps.storedTokenPresent();
-          const gh = storedCredentialKind(provider, storedToken) === "gh-cli"
-            ? await slotGhFacts(deps.defaultGhUser())
-            : null;
-          facts.auth = {
-            storedToken,
-            ghAuthenticated: gh?.authenticated ?? false,
-            ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
-            ...(gh?.ghActiveLogin != null ? { ghActiveLogin: gh.ghActiveLogin } : {}),
-            ...(gh?.ghCommand !== undefined ? { ghCommand: gh.ghCommand } : {}),
-            ...(gh?.ghDetail !== undefined ? { ghDetail: gh.ghDetail } : {}),
-            ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
-            provider,
-            profiles: deps.authProfiles(),
-            pinnedIntegrationId: deps.pinnedIntegrationId(),
-          };
-        })(),
-      );
-    }
+      })(),
+    );
   }
 
   // `--live` runs each agent's smoke prompt against its CONFIGURED home (a named profile's narrowing
   // routes it through that profile's wiring), only in the agent-focused scopes and only when
-  // asked for (a slow live model call). The default sweep never runs per-profile live probes.
-  if (opts.live && SCOPE_CODEX_LIVE.includes(scope)) {
+  // asked for (a slow live model call).
+  if (opts.live && CODEX_LIVE_SCOPES.includes(scope)) {
     jobs.push(
       (async () => {
         facts.codexLive = await deps.codexLive(deps.codexHome(), profile);
       })(),
     );
   }
-  if (opts.live && SCOPE_CLAUDE_LIVE.includes(scope)) {
+  if (opts.live && CLAUDE_LIVE_SCOPES.includes(scope)) {
     jobs.push(
       (async () => {
         facts.claudeLive = await deps.claudeLive(deps.claudeHome(), profile);
@@ -650,7 +616,7 @@ export async function gatherFacts(
     );
   }
 
-  if (profile === null && SCOPE_SETUP.includes(scope)) {
+  if (profile === null && SETUP_SCOPES.includes(scope)) {
     jobs.push(
       (async () => {
         // Resolving shell targets shells out to PowerShell on Windows and can throw; degrade to
@@ -663,18 +629,25 @@ export async function gatherFacts(
         } catch {
           targetsUnproven = true;
         }
-        const contents = targets.map((path) => ({ path, content: deps.readFileSafe(path) }));
+        const files: ShellFileFact[] = targets.map((path) => {
+          const content = readTextOrNull(path);
+          return { path, hasIntegration: content !== null && hasMarker(content, MARKER) };
+        });
         facts.shell = {
-          ...evalShellFiles(contents, new CopilotEnvConfig().launchersEnabled()),
+          files,
+          integrationWired: files.some((f) => f.hasIntegration),
+          // The `shell.launchers` config key (see ShellFacts).
+          launchersWired: new CopilotEnvConfig().launchersEnabled(),
           ...(targetsUnproven ? { targetsUnproven: true as const } : {}),
         };
-        facts.clis = deps.agentClis().map((c) => ({
+        facts.clis = AGENT_CLIS.map((c) => ({
           command: c.command,
           name: c.name,
           look: deps.commandLook(c.command),
         }));
         facts.tools = { node: deps.commandLook("node"), npm: deps.commandLook("npm") };
-        const farm = deps.codexHostFarm();
+        // The per-host farm on disk (path, present, wired), from its one predicate.
+        const farm = codexHostFarm();
         facts.codexHost = {
           supported: process.platform !== "win32",
           hostHome: farm.hostHome,
@@ -682,9 +655,13 @@ export async function gatherFacts(
           wired: farm.wired,
           probeError: farm.probeError,
           active: farm.active,
-          enabled: deps.codexHostEnabled(),
+          enabled: new CopilotEnvConfig().codexHostEnabled(),
         };
-        facts.autoupdate = deps.readAutoupdate();
+        facts.autoupdate = {
+          ...new AutoupdateState().read(),
+          enabled: new CopilotEnvConfig().autoUpdateEnabled(),
+          cooldownDays: effectiveUpdateCooldownDays(),
+        };
       })(),
     );
   }

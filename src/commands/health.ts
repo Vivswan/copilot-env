@@ -1,5 +1,5 @@
-// The launchers and shell scripts call `--scope runtime` and branch on its exit code, so that code
-// is a contract (src/health/aggregate.ts, exitCodeFor).
+// The `runtime` scope is the fast probe: the default daemon's rows alone, whose exit code is a
+// contract for scripts that branch on it (src/health/aggregate.ts, exitCodeFor).
 import { allProfileNames, assertKnownProfile, type ProfileMode } from "../copilot_api/env_state.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { buildHealthJson, exitCodeFor, isHealthScope } from "../health/aggregate.ts";
@@ -62,19 +62,15 @@ export async function runHealth(args: HealthArgs): Promise<void> {
   // diagnose the default wiring under the wrong name.
   const profile: Profile = parseProfileFlag(args.profile);
   if (profile !== null) assertKnownProfile(profile);
-  const facts = await gatherFacts(scope, {
-    live: Boolean(args.live),
-    profile,
-    namedSweep: false,
-  });
+  const facts = await gatherFacts(scope, { live: Boolean(args.live), profile });
   report(scope, evaluateAll(scope, facts), profileModes(facts), args.json, profile);
 }
 
 /** Every profile's checks (`agent health`): the default's run and each named profile's narrowed
  *  run, gathered at once (each probe has its own timeout budget, so ten profiles cost one, not
- *  ten) and folded in profile order, the default first. A check the default's sweep already
- *  produced for a profile (its runtime block, in the diagnostic scopes) is kept once, by (id,
- *  profile). */
+ *  ten) and folded in profile order, the default first. The rows keep the report's order: every
+ *  named profile's runtime block follows the default's, ahead of the default's remaining rows;
+ *  each profile's other rows (its credential, its wiring) come after them. */
 export async function runHealthEverywhere(args: Omit<HealthArgs, "profile">): Promise<void> {
   const scope = parseScope(args.scope);
   const live = Boolean(args.live);
@@ -84,16 +80,15 @@ export async function runHealthEverywhere(args: Omit<HealthArgs, "profile">): Pr
   ]);
   const results = evaluateAll(scope, facts);
   const modes = profileModes(facts);
-  const seenKey = (r: CheckResult): string => `${r.profile ?? ""}:${r.id}`;
-  const seen = new Set(results.map(seenKey));
+  const runtimeRows: CheckResult[] = [];
+  const otherRows: CheckResult[] = [];
   for (const gathered of named) {
     profileModes(gathered, modes);
     for (const result of evaluateAll(scope, gathered)) {
-      const key = seenKey(result);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      results.push(result);
+      (result.group === "runtime" ? runtimeRows : otherRows).push(result);
     }
   }
+  results.splice(results.findLastIndex((r) => r.group === "runtime") + 1, 0, ...runtimeRows);
+  results.push(...otherRows);
   report(scope, results, modes, args.json, null);
 }

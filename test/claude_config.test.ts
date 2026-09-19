@@ -29,7 +29,6 @@ import { runClaude } from "../src/agents/configure_defaults.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { resolveClaudeHome } from "../src/claude/paths.ts";
 import { runMcp } from "../src/commands/mcp.ts";
-import { probeModelPin } from "../src/copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import {
@@ -472,17 +471,11 @@ test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdic
     await detectClaudeDirect(DIRECT_NONE, "ghu_tok", { ...ok, runProbe: () => ({ ok: false }) }),
   )
     .toBe(false);
-  // A set probe.claude-model is the model the smoke runs, as-is: no alias, no catalog fetch. The
-  // key is profile-default, so a profile's own value wins over the global one for a probe run
-  // for that profile.
+  // A set probe.claude-model is the model the smoke runs, as-is: no alias, no catalog fetch.
   new CopilotEnvConfig().set({ "probe.claude-model": "claude-sonnet-5" });
   urls.length = 0;
   expect(await detectClaudeDirect(DIRECT_NONE, "ghu_tok", ok)).toBe(true);
   expect([urls, pinnedModel()]).toEqual([[], "claude-sonnet-5"]);
-  const work = parseProfileName("work");
-  new CopilotEnvConfig().setProfile(work, { "probe.claude-model": "claude-opus-5" });
-  expect([probeModelPin("probe.claude-model", work), probeModelPin("probe.claude-model", null)])
-    .toEqual(["claude-opus-5", "claude-sonnet-5"]);
   // No credential leaves nothing to smoke with: the proxy, before any call, CLI or not.
   urls.length = 0;
   let probeCalls = 0;

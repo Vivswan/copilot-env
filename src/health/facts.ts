@@ -88,8 +88,8 @@ export interface DaemonProbeFacts {
   pidScanUnproven?: true;
   pidAlive: boolean;
   /** true = copilot-api (x-trace-id present), false = reachable but NOT copilot-api (a foreign
-   *  listener), null = not probed (port down, the fast `runtime` scope, or proxyExpected false:
-   *  no agent routes to the port, so its occupant is not ours to interrogate). */
+   *  listener), null = not judged (port down, or proxyExpected false: no agent routes to the
+   *  port, so its occupant is not ours to interrogate). */
   identityConfirmed: boolean | null;
   portState: PortState;
 }
@@ -122,7 +122,7 @@ export interface RuntimeTargetCommon {
   watchdog: WatchdogFacts;
 }
 
-/** Always interrogated: the launchers' fast readiness probe is a contract of this daemon alone. */
+/** Always interrogated: the fast `runtime` probe scope is a contract of this daemon alone. */
 export type DefaultRuntimeTarget = RuntimeTargetCommon & {
   profile: null;
   probe: DaemonProbed;
@@ -155,7 +155,8 @@ export interface WatchdogFacts {
 
 export interface BootstrapFacts {
   cliVersion: string;
-  deno: { available: boolean; version: string | null };
+  /** The runtime health itself runs on. */
+  denoVersion: string;
   /** null when running as a compiled binary: dependencies are embedded, so there
    *  is no node_modules to judge. */
   nodeModules: { present: boolean; fresh: boolean } | null;
@@ -322,33 +323,15 @@ export interface HealthFacts {
   /** The profile the run was narrowed to (null/absent = the default/whole environment); the
    *  evaluator stamps it onto the codex/claude/live checks. */
   profile?: Profile;
-  /** The default first, then (in the full/proxy scopes) every named profile in sorted order, or
-   *  only the narrowed one. */
+  /** The run's one daemon target: the default's, or the narrowed profile's. */
   runtimes?: RuntimeTarget[];
   bootstrap?: BootstrapFacts;
   proxy?: ProxyFacts;
   shell?: ShellFacts;
   clis?: CliFacts[];
   tools?: ToolFacts;
+  /** The run's credential line: the default's, or the narrowed profile's own slot. */
   auth?: AuthFacts;
-  /** A narrowed run's credential line, mirroring the default checkAuth: `slot` is null when the
-   *  store carries no slot for the profile (a half-created, home-only profile). */
-  profileAuth?: {
-    name: ProfileName;
-    slot: ProfileAuthFacts | null;
-    storedToken: boolean;
-    ghAuthenticated: boolean;
-    /** The pinned gh account the probe asked about (see AuthFacts.ghUser). */
-    ghUser?: string | null;
-    /** An auto slot's followed account (see AuthFacts.ghActiveLogin). */
-    ghActiveLogin?: string | null;
-    /** The gh call that served the token (see CodexDirectAuthFacts.ghCommand). */
-    ghCommand?: string;
-    /** Why the look ended without a token (see CodexDirectAuthFacts.ghDetail). */
-    ghDetail?: string;
-    /** The gh probe never ran to completion (see AuthFacts.ghAuthUnproven). */
-    ghAuthUnproven?: true;
-  };
   codex?: CodexFacts;
   codexHost?: CodexHostFacts;
   claude?: ClaudeFacts;
@@ -360,39 +343,52 @@ export interface HealthFacts {
   autoupdate?: AutoupdateStatus;
 }
 
-/** Never tokens. The ProfileName key documents intent (TS erases a branded index to string); the
- *  actual guarantee is the producer, which sweeps the store via profileNames(), so a hand-edited
- *  invalid key never reaches the report. */
+/** Never tokens. The ProfileName key of AuthFacts.profiles documents intent (TS erases a branded
+ *  index to string); the actual guarantee is the producer, which sweeps the store via
+ *  profileNames(), so a hand-edited invalid key never reaches the report. */
 export type ProfileAuthFacts = {
   provider: AuthProvider | null;
   mode: ProfileMode | null;
 };
 
-/** The GitHub credential state, independent of any one agent. Direct resolves the credential at
- *  fetch time via `agent auth --get`, provider-driven (`gh-cli` -> `gh`, `copilot`/`gh-token`/`gh-env` ->
- *  the stored token; no provider -> nothing). */
-export interface AuthFacts {
-  storedToken: boolean;
-  ghAuthenticated: boolean;
-  /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
-   *  active account, so the check can name the account a pinned verdict is about. Optional so
-   *  fixtures stay valid. */
-  ghUser?: string | null;
-  /** An auto slot's followed account (see CodexDirectAuthFacts.ghActiveLogin). */
-  ghActiveLogin?: string | null;
-  /** The gh call that served the token (see CodexDirectAuthFacts.ghCommand). */
-  ghCommand?: string;
-  /** Why the look ended without a token: the gh call that failed or timed out, quoted, with what
-   *  the completed calls before it said (CodexDirectAuthFacts.ghDetail). */
-  ghDetail?: string;
-  /** The gh probe never ran to completion (CodexDirectAuthFacts.unproven): ghAuthenticated false
-   *  is then UNPROVEN, so the check says "could not check", never "gh is unauthenticated" plus
-   *  `gh auth login` advice. Optional so hand-built fixtures stay valid. */
-  ghAuthUnproven?: true;
-  /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token` | `gh-env`), or null. */
-  provider: AuthProvider | null;
-  /** Named profiles, keyed by validated name. */
-  profiles: Record<ProfileName, ProfileAuthFacts>;
-  /** The `identity` config pin (integration_identity.ts), or null when probing. */
-  pinnedIntegrationId: string | null;
-}
+/** The GitHub credential state of one target: the store's default credential (profile null), or
+ *  a named profile's own slot, which never falls back to the default. Direct resolves the
+ *  credential at fetch time via `agent auth --get`, provider-driven (`gh-cli` -> `gh`,
+ *  `copilot`/`gh-token`/`gh-env` -> the stored token; no provider -> nothing). */
+export type AuthFacts =
+  & {
+    storedToken: boolean;
+    ghAuthenticated: boolean;
+    /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
+     *  active account, so the check can name the account a pinned verdict is about. Optional so
+     *  fixtures stay valid. */
+    ghUser?: string | null;
+    /** An auto slot's followed account (see CodexDirectAuthFacts.ghActiveLogin). */
+    ghActiveLogin?: string | null;
+    /** The gh call that served the token (see CodexDirectAuthFacts.ghCommand). */
+    ghCommand?: string;
+    /** Why the look ended without a token: the gh call that failed or timed out, quoted, with what
+     *  the completed calls before it said (CodexDirectAuthFacts.ghDetail). */
+    ghDetail?: string;
+    /** The gh probe never ran to completion (CodexDirectAuthFacts.unproven): ghAuthenticated false
+     *  is then UNPROVEN, so the check says "could not check", never "gh is unauthenticated" plus
+     *  `gh auth login` advice. Optional so hand-built fixtures stay valid. */
+    ghAuthUnproven?: true;
+  }
+  & (
+    | {
+      profile: null;
+      /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token` | `gh-env`), or null. */
+      provider: AuthProvider | null;
+      /** Named profiles, keyed by validated name. */
+      profiles: Record<ProfileName, ProfileAuthFacts>;
+      /** The `identity` config pin (integration_identity.ts), or null when probing. */
+      pinnedIntegrationId: string | null;
+    }
+    | {
+      profile: ProfileName;
+      /** The store slot (never tokens); null when the store carries no slot for the profile (a
+       *  half-created, home-only profile). */
+      slot: ProfileAuthFacts | null;
+    }
+  );

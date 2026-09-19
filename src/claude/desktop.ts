@@ -39,7 +39,6 @@ import {
   desktopEntryName,
   type DesktopMeta,
   type DesktopMetaEntry,
-  entryExists,
   META_FILENAME,
   parseDesktopMeta,
   parsedRecord,
@@ -516,7 +515,7 @@ export function listClaudeDesktopOwnedArtifacts(
   const entries: string[] = [];
   const staleClaims: string[] = [];
   for (const path of [...library.owned.map((e) => e.path), ...library.unlisted]) {
-    (entryExists(path) ? entries : staleClaims).push(path);
+    (fs.entryAbsent(path) ? staleClaims : entries).push(path);
   }
   return {
     entries,

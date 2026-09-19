@@ -276,16 +276,6 @@ export function writeDesktopMeta(
   );
 }
 
-/** Fail-closed (entryAbsent): a failed look reads "may be there", a dangling symlink is present,
- *  and a removal that could not look never skips the file while still releasing its ownership. */
-export function entryExists(path: string): boolean {
-  try {
-    fs.lstat(path);
-    return true;
-  } catch (e) {
-    return !isEnoentOrNotdir(e);
-  }
-}
 /** A present file goes, named; an absent path, or one under a parent that is not a directory (a
  *  helpers dir replaced by a file), is nothing to do. A directory at the path is the seam's own
  *  refusal (assertNotDirectory), in a dry run too. */

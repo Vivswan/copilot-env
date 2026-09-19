@@ -11,6 +11,7 @@ import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.
 import type { Profile } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { type OwnedDesktopEntry, readOwnedLibrary } from "./desktop.ts";
 import {
@@ -24,7 +25,6 @@ import {
   claudeDesktopInstalled,
   type DesktopAppState,
   desktopEntryName,
-  entryExists,
   META_FILENAME,
   readDesktopAppState,
   readFileOrNull,
@@ -452,7 +452,7 @@ export function renderClaudeDesktopStatus(
   for (const { path } of status.unlisted) {
     lines.push(
       `${path} is still claimed in the ownership ledger but no longer listed in ${META_FILENAME}${
-        entryExists(path) ? "" : ", and its file is gone"
+        fs.entryAbsent(path) ? ", and its file is gone" : ""
       } (an interrupted removal)`,
     );
     fixes.add("agent profile sync --claude");

@@ -19,8 +19,8 @@ import { type CatalogModel, ONE_M_SUFFIX, parseCatalogModels } from "./models.ts
 import { PING_TIMEOUT_MS } from "./endpoint_smoke.ts";
 import { fetchModelCatalog } from "./models_fetch.ts";
 import { CopilotEnvState } from "./env_state.ts";
-import { isDue } from "../autoupdate/due.ts";
 import { errMessage } from "../utils/error.ts";
+import { isDue } from "../utils/time.ts";
 import { defaultFetch } from "../utils/fetch.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 

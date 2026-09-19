@@ -27,6 +27,12 @@ export function commandLookFromSpawn(
   return { path: resolvedPath() };
 }
 
+/** `powershell -File` passes argv literally: the one spelling for launching a `.ps1` with the
+ *  caller's args verbatim (the agent launcher, the npm `.ps1` shims). */
+export function powershellFileArgs(ps1: string, args: readonly string[]): string[] {
+  return ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, ...args];
+}
+
 /** A PowerShell process writes its profile scaffolding (AppData\\Roaming, the PSReadLine history)
  *  under the profile directories it inherits, so every PowerShell spawn of ours that launches
  *  nothing for the user runs under a scratch profile: the user's HOME (or a test's fingerprinted
@@ -239,11 +245,11 @@ export function pickVerbatimWindowsSpawn(
   args: string[],
   siblingExists: (path: string) => boolean,
 ): VerbatimCliSpawn {
-  // `powershell -File` passes argv literally. win32.dirname explicitly: the pure tests run on
-  // POSIX, where plain dirname would not split backslashes.
+  // win32.dirname explicitly: the pure tests run on POSIX, where plain dirname would not split
+  // backslashes.
   const psFile = (ps1: string): VerbatimCliSpawn => ({
     file: "powershell",
-    args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, ...args],
+    args: powershellFileArgs(ps1, args),
     shell: false,
     binDir: win32.dirname(ps1),
   });

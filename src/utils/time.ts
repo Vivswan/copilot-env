@@ -58,6 +58,14 @@ export function startOfLocalDay(ms: number, daysBack = 0): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() - daysBack).getTime();
 }
 
+/** Once a day: the pacing of every background refresh (the autoupdate preflight, the Codex
+ *  catalog, the discovery verdict). A `lastCheckMs` in the future (corrupt state or a backward
+ *  clock change) counts as due, so a bad timestamp cannot wedge a refresh off indefinitely. */
+export function isDue(lastCheckMs: number, nowMs: number): boolean {
+  if (lastCheckMs > nowMs) return true;
+  return nowMs - lastCheckMs >= MILLISECONDS_PER_DAY;
+}
+
 export function formatDuration(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000));
   if (total === 0) return "0s";

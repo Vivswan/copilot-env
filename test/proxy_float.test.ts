@@ -1364,44 +1364,41 @@ describe("proxyFloatSkips", () => {
 
 // --- the floated spawn, actually executed -------------------------------------
 describe("the floated spawn executes", () => {
-  test("a real floated install actually launches the proxy, with no node_modules", () => {
-    // Every other test here asserts the SHAPE of the argv, and a well-shaped argv no deno would
-    // run (frozen lock, import map incomplete under --cached-only) once passed both gates. The
-    // fixture is genuine float output built by scripts/warm-proxy-cache.ts while the container
-    // image still has a network, which keeps this offline and deterministic.
-    const record = readResolvedVersionRecord(PROXY_CACHE_FIXTURE);
-    if (record === null) {
-      // Never silently pass. In CI and the container the fixture always exists.
-      console.warn(
-        `skipping the floated-spawn execution: no float fixture at ${PROXY_CACHE_FIXTURE}. ` +
-          "Build it with `deno run -A scripts/warm-proxy-cache.ts`.",
-      );
-      return;
-    }
+  // Every other test here asserts the SHAPE of the argv, and a well-shaped argv no deno would
+  // run (frozen lock, import map incomplete under --cached-only) once passed both gates. The
+  // fixture is genuine float output built by scripts/warm-proxy-cache.ts while the container
+  // image still has a network, which keeps this offline and deterministic. In CI and the
+  // container the fixture always exists; a checkout without it (build one with
+  // `deno run -A scripts/warm-proxy-cache.ts`) reports this test ignored, never passed.
+  const record = readResolvedVersionRecord(PROXY_CACHE_FIXTURE);
+  test.skipIf(record === null)(
+    "a real floated install actually launches the proxy, with no node_modules",
+    () => {
+      if (record === null) throw new Error("unreachable: the fixture gate skipped this test");
+      process.env.COPILOT_API_HOME = PROXY_CACHE_FIXTURE;
+      const entry = resolveCopilotApiEntry();
+      if (entry.kind !== "floated") throw new Error(`expected a floated entry, got ${entry.kind}`);
+      expect(entry.version).toBe(record.version);
 
-    process.env.COPILOT_API_HOME = PROXY_CACHE_FIXTURE;
-    const entry = resolveCopilotApiEntry();
-    if (entry.kind !== "floated") throw new Error(`expected a floated entry, got ${entry.kind}`);
-    expect(entry.version).toBe(record.version);
+      // Merged over our own environment, as daemonEnvironment does in production: a child
+      // stripped of PATH/HOME would test something the daemon never does.
+      const result = runSync(Deno.execPath(), copilotApiArgv(["--help"], [], entry), {
+        env: { ...process.env, ...copilotApiEnv(entry) },
+        timeoutMs: 120_000,
+      });
+      const output = `${result.stdout}${result.stderr}`;
+      // Resolution: config, lockfile and cache must let deno assemble the whole graph offline.
+      // Both defects this test was written for surfaced exactly here.
+      expect(output).not.toContain("not found in cache");
+      expect(output).not.toContain("lockfile is out of date");
+      expect(output).not.toContain("Module not found");
 
-    // Merged over our own environment, as daemonEnvironment does in production: a child
-    // stripped of PATH/HOME would test something the daemon never does.
-    const result = runSync(Deno.execPath(), copilotApiArgv(["--help"], [], entry), {
-      env: { ...process.env, ...copilotApiEnv(entry) },
-      timeoutMs: 120_000,
-    });
-    const output = `${result.stdout}${result.stderr}`;
-    // Resolution: config, lockfile and cache must let deno assemble the whole graph offline.
-    // Both defects this test was written for surfaced exactly here.
-    expect(output).not.toContain("not found in cache");
-    expect(output).not.toContain("lockfile is out of date");
-    expect(output).not.toContain("Module not found");
-
-    // On Linux the launch completes only because every spawn preloads the node-compat shim:
-    // the proxy probes /proc at module load, which deno answers with a thrown NotCapable
-    // under any permission set short of all-access. The output rides in the assertion so
-    // a failure says WHY deno refused; the refusals this catches are all in stderr.
-    expect(`exit=${result.exitCode} ${output}`).toContain("exit=0");
-    expect(output).toContain("copilot-api");
-  });
+      // On Linux the launch completes only because every spawn preloads the node-compat shim:
+      // the proxy probes /proc at module load, which deno answers with a thrown NotCapable
+      // under any permission set short of all-access. The output rides in the assertion so
+      // a failure says WHY deno refused; the refusals this catches are all in stderr.
+      expect(`exit=${result.exitCode} ${output}`).toContain("exit=0");
+      expect(output).toContain("copilot-api");
+    },
+  );
 });

@@ -242,36 +242,42 @@ test("runningState/installedState three-state their scans per platform", async (
   expect(winCalls[1]?.args.at(-1)).toContain("NoProcessFoundForGivenName");
 });
 
-test("the real POSIX scans three-state pgrep/open: 0 present, 1 proven absent, else unproven", async () => {
-  if (process.platform === "win32") return; // pgrep/open are the POSIX primitives
-  const dir = tempDir("codex-mobile-scan-");
-  const originalPath = process.env.PATH;
-  try {
-    // PATH pinned to a dir holding ONLY the fake tools, so the real ones can never
-    // answer for a fake and a removed fake is a REAL spawn failure.
-    const fake = (tool: string, exit: number) =>
-      writeFileSync(join(dir, tool), `#!/bin/sh\nexit ${exit}\n`, { mode: 0o755 });
-    process.env.PATH = dir;
-    for (const [exit, want] of [[0, "present"], [1, "absent"], [3, "unproven"]] as const) {
-      fake("pgrep", exit);
-      expect(await new CodexAppController().runningState()).toBe(want);
-      fake("open", exit);
-      expect(await new CodexAppController().installedState()).toBe(want);
+// pgrep/open are the POSIX primitives.
+test.skipIf(process.platform === "win32")(
+  "the real POSIX scans three-state pgrep/open: 0 present, 1 proven absent, else unproven",
+  async () => {
+    const dir = tempDir("codex-mobile-scan-");
+    const originalPath = process.env.PATH;
+    try {
+      // PATH pinned to a dir holding ONLY the fake tools, so the real ones can never
+      // answer for a fake and a removed fake is a REAL spawn failure.
+      const fake = (tool: string, exit: number) =>
+        writeFileSync(join(dir, tool), `#!/bin/sh\nexit ${exit}\n`, { mode: 0o755 });
+      process.env.PATH = dir;
+      for (const [exit, want] of [[0, "present"], [1, "absent"], [3, "unproven"]] as const) {
+        fake("pgrep", exit);
+        expect(await new CodexAppController().runningState()).toBe(want);
+        fake("open", exit);
+        expect(await new CodexAppController().installedState()).toBe(want);
+      }
+      // The spawn-failure arm: runCaptured coerces ENOENT to exit 1 WITH the mark --
+      // never pgrep's own proven-absent exit 1.
+      rmSync(join(dir, "pgrep"));
+      expect(await new CodexAppController().runningState()).toBe("unproven");
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(dir, { recursive: true, force: true });
     }
-    // The spawn-failure arm: runCaptured coerces ENOENT to exit 1 WITH the mark --
-    // never pgrep's own proven-absent exit 1.
-    rmSync(join(dir, "pgrep"));
-    expect(await new CodexAppController().runningState()).toBe("unproven");
-  } finally {
-    process.env.PATH = originalPath;
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+  },
+);
 
-test("the real Windows running scan mints a verdict word on a healthy host", async () => {
-  if (process.platform !== "win32") return; // drives real Windows PowerShell
-  // The completeness control: on a healthy host the script must RUN and mint a
-  // verdict word -- a PowerShell-5.1-incompatible script or a wrong no-match
-  // discriminant would read "unproven" here and go red.
-  expect(["present", "absent"]).toContain(await new CodexAppController().runningState());
-});
+// Drives real Windows PowerShell.
+test.skipIf(process.platform !== "win32")(
+  "the real Windows running scan mints a verdict word on a healthy host",
+  async () => {
+    // The completeness control: on a healthy host the script must RUN and mint a
+    // verdict word -- a PowerShell-5.1-incompatible script or a wrong no-match
+    // discriminant would read "unproven" here and go red.
+    expect(["present", "absent"]).toContain(await new CodexAppController().runningState());
+  },
+);

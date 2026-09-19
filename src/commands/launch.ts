@@ -10,7 +10,7 @@ import { constants } from "node:os";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
 import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { runClaude, runCodex } from "../agents/configure_defaults.ts";
-import { BASE_URL_ENV } from "../claude/config.ts";
+import { BASE_URL_ENV, managedClaudeBaseUrl } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { narrateCodexHome, resolveCodexHome } from "../codex/host.ts";
@@ -31,8 +31,8 @@ import {
 import { childEnvWithPath, findCommand, verbatimCliSpawn } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
+import type { ManagedEnvValue } from "../utils/shell_quote.ts";
 import { runDryRun } from "./dry_run.ts";
-import { managedClaudeBaseUrl, type ManagedEnvValue } from "./env.ts";
 import {
   launchProxy,
   type ProxyTokenDeps,

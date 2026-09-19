@@ -246,7 +246,6 @@ Demonstrated by: [test/installer.test.ts](../test/installer.test.ts), [test/upda
 ```mermaid
 flowchart LR
   rcfile[("~/.bashrc, ~/.zshrc, or the PowerShell $PROFILE")]
-  settings[("~/.claude/settings.json<br>settings-{name}.json for a profile")]
   prefs[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)")]
   env["src/commands/env.ts<br>launcherFunctionLines() runEnv()"]
   rc["shell/agents.bashrc<br>shell/agents.ps1"]
@@ -260,8 +259,7 @@ flowchart LR
   catalog[("~/.local/share/copilot-env/codex-model-catalog.json")]
   agentcli[["the agent CLI: claude, codex, or copilot, a child with inherited stdio"]]
   rcfile -->|"the copilot-env block sources it"| rc
-  settings -->|"reads the wired base URL: managedClaudeBaseUrl()"| env
-  prefs -->|"reads codex-home, codex-host, launchers"| env
+  prefs -->|"reads codex-home, codex-host, launchers, and the recorded mode: managedCodexHome() in src/codex/host.ts, managedClaudeBaseUrl() in src/claude/config.ts"| env
   env -->|"the only output the agent function evals: CODEX_HOME, ANTHROPIC_BASE_URL, the cl co cx functions"| rc
   rc -->|"cl runs agent profile launch claude with the arguments"| bin
   bin --> cli
@@ -313,12 +311,7 @@ graph TD
   migrations["src/migrations/"]
   scripts["src/scripts/"]
   utils["src/utils/"]
-  cli --> codex
   cli --> commands
-  cli --> copilot_api
-  cli --> install
-  cli --> migrations
-  cli --> usage
   cli --> utils
   commands --> agents
   commands --> autoupdate
@@ -328,6 +321,7 @@ graph TD
   commands --> health
   commands --> install
   commands --> mcp
+  commands --> migrations
   commands --> proxy_float
   commands --> shell
   commands --> usage

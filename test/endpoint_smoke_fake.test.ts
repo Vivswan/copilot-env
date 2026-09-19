@@ -11,7 +11,7 @@ import { directSmoke } from "../src/copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../src/copilot_api/integration_identity.ts";
 import { type FakeModelEndpoint, SCENARIO_HEADER } from "./helpers/fake_model_endpoint.ts";
 import { type ScenarioName, startFakeEndpoint } from "./helpers/fake_endpoint.ts";
-import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 let fake: FakeModelEndpoint;
 let dir = "";
@@ -23,7 +23,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await fake.close();
-  dir = removeDir(dir);
 });
 
 function scenarioFetch(scenario: ScenarioName | null): ProbeFetch {

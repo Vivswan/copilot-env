@@ -47,7 +47,6 @@ let dir = "";
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 function tmpHome(): void {
@@ -172,6 +171,13 @@ test("the typed store: read() starts empty, each accessor answers stored else bu
       unset: OPENROUTER_MODELS_URL,
       read: (c) => c.pricingUrl(),
     },
+    {
+      key: "daemon.idle-timeout",
+      raw: "45",
+      stored: 45,
+      unset: 3600,
+      read: (c) => c.idleTimeoutSeconds(),
+    },
   ];
   for (const a of accessors) {
     expect(a.read(cfg), a.key).toBe(a.unset);
@@ -182,6 +188,13 @@ test("the typed store: read() starts empty, each accessor answers stored else bu
     expect(global()[a.key], a.key).toBeUndefined();
     expect(a.read(cfg), a.key).toBe(a.unset);
   }
+  // A key the registry does not carry is refused on set and unset alike.
+  expect(() =>
+    runConfig({ kind: "set", key: "bogus-key", value: "1", view: face("bogus-key"), dryRun: false })
+  ).toThrow(/unknown config key/);
+  expect(() =>
+    runConfig({ kind: "unset", key: "bogus-key", view: face("bogus-key"), dryRun: false })
+  ).toThrow(/unknown config key/);
 
   // A whole patch lands as given beside a profile section; deleting one key leaves the others
   // intact, and a section emptied by its last delete is removed, not left as `{}`.
@@ -220,19 +233,6 @@ test("the typed store: read() starts empty, each accessor answers stored else bu
   cfg.delProfile(null, "passthrough");
   expect(cfg.read().profiles).toEqual({});
   expect(cfg.passthroughOverride(null)).toBeUndefined();
-});
-
-test("the read schema is lenient: ill-typed / out-of-range stored values fall back to default", () => {
-  tmpHome();
-  new CopilotEnvConfig().set({ "daemon.port": 70000 as unknown as number });
-  // Out of range reads back as undefined, never a throw.
-  expect(new CopilotEnvConfig().read().global["daemon.port"]).toBeUndefined();
-
-  // A stored non-positive multiplier is equally junk: reads back as unset.
-  for (const junk of [0, -1.5, 5000]) {
-    new CopilotEnvConfig().set({ "proxy.claude-token-multiplier": junk as unknown as number });
-    expect(new CopilotEnvConfig().read().global["proxy.claude-token-multiplier"]).toBeUndefined();
-  }
 });
 
 test("the registry parsers accept valid input and reject bad input with a clear message", () => {
@@ -306,44 +306,6 @@ test("the registry parsers accept valid input and reject bad input with a clear 
     );
   }
   expect(configKeyDef("nope")).toBeUndefined();
-});
-
-test("set validates + persists; unset reverts; unknown key / bad value error", () => {
-  tmpHome();
-  runConfig({
-    kind: "set",
-    key: "daemon.idle-timeout",
-    value: "45",
-    view: face("daemon.idle-timeout"),
-    dryRun: false,
-  });
-  expect(new CopilotEnvConfig().read().global["daemon.idle-timeout"]).toBe(45);
-
-  runConfig({
-    kind: "unset",
-    key: "daemon.idle-timeout",
-    view: face("daemon.idle-timeout"),
-    dryRun: false,
-  });
-  expect(new CopilotEnvConfig().read().global["daemon.idle-timeout"]).toBeUndefined();
-
-  expect(() =>
-    runConfig({ kind: "set", key: "bogus-key", value: "1", view: face("bogus-key"), dryRun: false })
-  ).toThrow(/unknown config key/);
-  expect(() =>
-    runConfig({
-      kind: "set",
-      key: "daemon.port",
-      value: "notanumber",
-      view: face("daemon.port"),
-      dryRun: false,
-    })
-  ).toThrow(
-    /invalid value for 'daemon.port'/,
-  );
-  expect(() =>
-    runConfig({ kind: "unset", key: "bogus-key", view: face("bogus-key"), dryRun: false })
-  ).toThrow(/unknown config key/);
 });
 
 test("resolve: flag > profile > global > default, each layer only where the key's scope admits it", () => {
@@ -475,18 +437,23 @@ test("a named profile's set: a profile key lands in that profile's section, neve
   expect(new CopilotEnvConfig().read().profiles).not.toHaveProperty("other");
 });
 
-test("a credential-shaped key is rejected without echoing the value, and stored junk reads as unset", () => {
+test("set refuses a bad value naming the key and the reason (never echoing a credential-shaped one), a valid value lands and reads back, and stored junk reads as unset, never a throw", () => {
   // identity lands in HTTP headers (a header-splitting value is refused); cost.pricing-url may
   // carry a token in its query (https only, no userinfo). Junk pasted at either may be a token,
   // so the rejection never echoes it, and a hand-mangled STORED value degrades to unset (probe
-  // per credential / the built-in URL), never a baked header or a bad fetch.
+  // per credential / the built-in URL), never a baked header or a bad fetch. A machine key's
+  // stored junk (out of range, non-positive) degrades to its built-in default the same way.
   const cases: {
-    key: "identity" | "cost.pricing-url";
+    key: ConfigKey;
     bad: string;
-    leak: string;
     reason: string;
+    /** The credential-shaped fragment of `bad` the rejection must not echo. */
+    leak?: string;
     valid: string;
-    junk: (c: CopilotEnvConfig) => void;
+    parsed: unknown;
+    /** Values the typed store can hold but the read schema refuses. */
+    junk: unknown[];
+    store: (c: CopilotEnvConfig, value: unknown) => void;
     stored: (c: CopilotEnvConfig) => unknown;
     reads: (c: CopilotEnvConfig) => unknown;
     defaultReads: unknown;
@@ -494,10 +461,12 @@ test("a credential-shaped key is rejected without echoing the value, and stored 
     {
       key: "identity",
       bad: "evil\nX-Injected: 1",
-      leak: "evil",
       reason: "header-safe",
+      leak: "evil",
       valid: "copilot-developer-cli",
-      junk: (c) => c.setProfile(null, { identity: "evil\nX-Injected: 1" }),
+      parsed: "copilot-developer-cli",
+      junk: ["evil\nX-Injected: 1"],
+      store: (c, value) => c.setProfile(null, { identity: value as string }),
       stored: (c) => c.read().profiles.default?.identity,
       reads: (c) => c.pinnedIntegrationId(null),
       defaultReads: null,
@@ -505,13 +474,39 @@ test("a credential-shaped key is rejected without echoing the value, and stored 
     {
       key: "cost.pricing-url",
       bad: "http://user:secret@pricing.example/models",
-      leak: "secret",
       reason: "https://",
+      leak: "secret",
       valid: "https://pricing.example/models",
-      junk: (c) => c.set({ "cost.pricing-url": "not a url" }),
+      parsed: "https://pricing.example/models",
+      junk: ["not a url"],
+      store: (c, value) => c.set({ "cost.pricing-url": value as string }),
       stored: (c) => c.read().global["cost.pricing-url"],
       reads: (c) => c.pricingUrl(),
       defaultReads: OPENROUTER_MODELS_URL,
+    },
+    {
+      key: "daemon.port",
+      bad: "notanumber",
+      reason: "expected a whole number",
+      valid: "4250",
+      parsed: 4250,
+      junk: [70000], // out of range
+      store: (c, value) => c.set({ "daemon.port": value as number }),
+      stored: (c) => c.read().global["daemon.port"],
+      reads: (c) => c.defaultPort(),
+      defaultReads: 4141,
+    },
+    {
+      key: "proxy.claude-token-multiplier",
+      bad: "0",
+      reason: "greater than 0",
+      valid: "2",
+      parsed: 2,
+      junk: [0, -1.5, 5000], // non-positive or over the ceiling
+      store: (c, value) => c.set({ "proxy.claude-token-multiplier": value as number }),
+      stored: (c) => c.read().global["proxy.claude-token-multiplier"],
+      reads: (c) => c.resolve("proxy.claude-token-multiplier", { profile: null }).value,
+      defaultReads: 1.15,
     },
   ];
   for (const c of cases) {
@@ -525,14 +520,18 @@ test("a credential-shaped key is rejected without echoing the value, and stored 
     }
     expect(message, c.key).toContain(`invalid value for '${c.key}'`);
     expect(message, c.key).toContain(c.reason);
-    expect(message, c.key).not.toContain(c.leak);
+    if (c.leak !== undefined) expect(message, c.key).not.toContain(c.leak);
     expect(new CopilotEnvConfig().read(), c.key).toEqual(stored({})); // nothing written
     runConfig({ kind: "set", key: c.key, value: c.valid, view: face(c.key), dryRun: false });
-    expect(c.stored(new CopilotEnvConfig()), c.key).toBe(c.valid);
-    expect(c.reads(new CopilotEnvConfig()), c.key).toBe(c.valid);
-    c.junk(new CopilotEnvConfig());
-    expect(c.stored(new CopilotEnvConfig()), c.key).toBeUndefined();
-    expect(c.reads(new CopilotEnvConfig()), c.key).toBe(c.defaultReads);
+    expect(c.stored(new CopilotEnvConfig()), c.key).toBe(c.parsed);
+    expect(c.reads(new CopilotEnvConfig()), c.key).toBe(c.parsed);
+    for (const value of c.junk) {
+      c.store(new CopilotEnvConfig(), value);
+      expect(c.stored(new CopilotEnvConfig()), `${c.key} <- ${String(value)}`).toBeUndefined();
+      expect(c.reads(new CopilotEnvConfig()), `${c.key} <- ${String(value)}`).toBe(
+        c.defaultReads,
+      );
+    }
   }
   // identity alone: the probe sentinel parses, and `codex` is refused keeping the previous pin
   // (it is the ABSENCE of the header, so a pin, always sent as the header's value, cannot mean it).

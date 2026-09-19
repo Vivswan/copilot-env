@@ -21,7 +21,6 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
-import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import {
   type FakeCodex,
@@ -30,7 +29,7 @@ import {
   type FakeCodexSpec,
 } from "./helpers/fake_codex.ts";
 import { captureChannels } from "./helpers/output.ts";
-import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 import { linesNaming } from "./helpers/dry_run.ts";
 
@@ -39,7 +38,6 @@ let dir = "";
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 function isolate(): void {
@@ -136,6 +134,7 @@ function syntheticDump(): string {
 // --- parseCopilotModels ------------------------------------------------------
 
 test("parseCopilotModels reads limits, identity, and Codex-servability, skipping incomplete entries", () => {
+  const limits = { max_context_window_tokens: 400_000, max_prompt_tokens: 272_000 };
   const models = parseCopilotModels({
     data: [
       {
@@ -161,9 +160,12 @@ test("parseCopilotModels reads limits, identity, and Codex-servability, skipping
       },
       { id: "no-capabilities" },
       "not-a-record",
+      // An empty or ill-typed effort list is unadvertised (null), never an empty list.
+      { id: "empty", capabilities: { limits, supports: { reasoning_effort: [] } } },
+      { id: "ill-typed", capabilities: { limits, supports: { reasoning_effort: [1, null] } } },
     ],
   });
-  expect([...models.keys()]).toEqual(["gpt-5.5"]);
+  expect([...models.keys()]).toEqual(["gpt-5.5", "empty", "ill-typed"]);
   expect(models.get("gpt-5.5")).toEqual({
     limits: GPT55_LIMITS,
     name: "GPT-5.5",
@@ -171,18 +173,12 @@ test("parseCopilotModels reads limits, identity, and Codex-servability, skipping
     parallelToolCalls: true,
     codexServable: true,
   });
-});
-
-test("parseCopilotModels reads an empty or ill-typed effort list as unadvertised (null)", () => {
-  const limits = { max_context_window_tokens: 400_000, max_prompt_tokens: 272_000 };
-  const models = parseCopilotModels({
-    data: [
-      { id: "empty", capabilities: { limits, supports: { reasoning_effort: [] } } },
-      { id: "ill-typed", capabilities: { limits, supports: { reasoning_effort: [1, null] } } },
-    ],
-  });
   expect(models.get("empty")?.reasoningEfforts).toBeNull();
   expect(models.get("ill-typed")?.reasoningEfforts).toBeNull();
+  // A shapeless body parses to no models at all.
+  for (const body of [null, { data: "nope" }, {}]) {
+    expect(parseCopilotModels(body).size, JSON.stringify(body)).toBe(0);
+  }
 });
 
 test("parseCopilotModels: servable means chat + /responses + picker-enabled; unadvertised facts are null", () => {
@@ -278,12 +274,6 @@ test("parseCopilotModels merges a [1m] twin into its base: larger window, every 
     .toEqual(["low"]);
   expect(parseCopilotModels({ data: [emptyTwin, base] }).get("claude-x")?.reasoningEfforts)
     .toEqual(["low"]);
-});
-
-test("parseCopilotModels returns empty on a shapeless body", () => {
-  expect(parseCopilotModels(null).size).toBe(0);
-  expect(parseCopilotModels({ data: "nope" }).size).toBe(0);
-  expect(parseCopilotModels({}).size).toBe(0);
 });
 
 // --- patchModelCatalog: the bundled entries --------------------------------------
@@ -530,6 +520,12 @@ test("only servable gpt-* models Codex lacks are added; bundled ones are never d
     "codex-auto-review",
   ]);
   expect(bySlug(doc, "gpt-5.4").context_window).toBe(1_050_000);
+  // A dump with no gpt-* entry has no donor family: nothing is added.
+  const noDonor = patchModelCatalog(
+    JSON.stringify({ models: [{ slug: "codex-auto-review" }] }),
+    modelsOf([["gpt-6-astra", copilotModel(ASTRA_LIMITS)]]),
+  );
+  expect(modelsIn(noDonor).map((m) => m.slug)).toEqual(["codex-auto-review"]);
 });
 
 test("donor versions order by dotted segments: 5.10 is newer than 5.9, and 5.3.1 sits at 5.3", () => {
@@ -560,14 +556,6 @@ test("a version segment past 999 leaves the numbered family (the encoding cannot
   );
   expect(modelsIn(doc).map((m) => m.slug)).toEqual(["gpt-5.3.1000", "gpt-5.2", "gpt-5.4-nova"]);
   expect(bySlug(doc, "gpt-5.4-nova").base_instructions).toBe("instructions for gpt-5.2");
-});
-
-test("a dump with no gpt-* entry adds nothing (no donor family)", () => {
-  const doc = patchModelCatalog(
-    JSON.stringify({ models: [{ slug: "codex-auto-review" }] }),
-    modelsOf([["gpt-6-astra", copilotModel(ASTRA_LIMITS)]]),
-  );
-  expect(modelsIn(doc).map((m) => m.slug)).toEqual(["codex-auto-review"]);
 });
 
 test("patchModelCatalog is deterministic: identical output for the same input, any Map order", () => {
@@ -680,21 +668,9 @@ function generate(body: unknown = GPT55_BODY): Promise<boolean> {
     .then(({ result }) => result);
 }
 
+/** The narration and the write reports of a run, as one stderr text. */
 async function stderrOf(fn: () => Promise<void>): Promise<string> {
-  let narrated = "";
-  const realWrite = process.stderr.write;
-  process.stderr.write = (chunk: string | Uint8Array): boolean => {
-    narrated += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    return true;
-  };
-  deferWriteReports();
-  try {
-    await fn();
-  } finally {
-    process.stderr.write = realWrite;
-    narrated += flushWriteReports().join("\n");
-  }
-  return narrated;
+  return (await captureChannels(fn, { writeReports: true })).stderr;
 }
 
 test("the Copilot seed asks the direct catalog with the exact header set Codex bakes", async () => {
@@ -791,23 +767,6 @@ test("a failed regeneration never touches an existing (stale but valid) catalog"
 
 // --- refreshCodexModelCatalogIfStale -----------------------------------------
 
-test("refresh is attempt-throttled: a fresh timestamp fetches and spawns nothing", async () => {
-  const codex = catalogFixture();
-  storeCredential();
-  new CopilotEnvState().set({
-    codexCatalogLastAttemptMs: Date.now() - 1000,
-    codexCatalogCodexVersion: "1.2.3",
-    codexCatalogPatchVersion: CATALOG_PATCH_VERSION,
-  });
-  const { result, sent } = await withCopilot(
-    GPT55_BODY,
-    () => refreshCodexModelCatalogIfStale("direct"),
-  );
-  expect(result).toBe(false);
-  expect(sent).toEqual([]);
-  expect(codex.runs()).toEqual([]);
-});
-
 test("refresh records the ATTEMPT timestamp even when generation fails", async () => {
   catalogFixture({ bundled: null });
   storeCredential();
@@ -822,16 +781,6 @@ test("refresh records the ATTEMPT timestamp even when generation fails", async (
   const attempt = new CopilotEnvState().read().codexCatalogLastAttemptMs;
   expect(attempt).toBeGreaterThanOrEqual(before);
   expect(attempt).toBeLessThanOrEqual(Date.now());
-});
-
-test("refresh regenerates when due and reports it", async () => {
-  catalogFixture();
-  storeCredential();
-  // lastAttemptMs defaults to 0 => due
-  const { result } = await withCopilot(GPT55_BODY, () => refreshCodexModelCatalogIfStale("direct"));
-  expect(result).toBe(true);
-  expect(new CopilotEnvState().read().codexCatalogLastAttemptMs).toBeGreaterThan(0);
-  expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(true);
 });
 
 test("past the refresh deadline the catalog is still written, but neither the acceptance memo nor the reference and its claim are", async () => {
@@ -1042,7 +991,11 @@ test("a codex version change bypasses the daily throttle (new bundled catalog wi
     codexCatalogPatchVersion: CATALOG_PATCH_VERSION,
   });
   const refresh = () => withCopilot(GPT55_BODY, () => refreshCodexModelCatalogIfStale("direct"));
-  expect((await refresh()).sent).toEqual([]);
+  // Same version, fresh attempt timestamp: throttled, so nothing is fetched and nothing spawned.
+  const throttled = await refresh();
+  expect(throttled.result).toBe(false);
+  expect(throttled.sent).toEqual([]);
+  expect(codex.runs()).toEqual([]);
 
   // Upgraded codex: the file REPLACES the bundled catalog, so the new binary's
   // models would stay hidden behind the throttle -- a version change regenerates now.

@@ -27,7 +27,6 @@ let dir = "";
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 /** A fresh config dir; a case that runs several rows calls it once per row. */

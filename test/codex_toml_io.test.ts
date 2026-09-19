@@ -28,7 +28,6 @@ const COMMAND = { kind: "command" } as const;
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 // --- readCodexToml: the file's content decides the kind ---------------------------

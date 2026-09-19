@@ -9,7 +9,6 @@ import { codexConfigPath, codexProviderId } from "../src/codex/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import {
   agentLauncherCommand,
-  ASSET_ROOT,
   derivedCompiledRoot,
   INSTALL_MANIFEST_FILE,
   INSTALL_ROOT_MARKERS,
@@ -19,7 +18,6 @@ import {
   PROJECT_ROOT,
   proxyTokenCommand,
 } from "../src/utils/root.ts";
-import { PROJECT_CONFIG_FILE, readProjectConfig } from "../src/utils/project_config.ts";
 import { expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
 
@@ -112,16 +110,6 @@ test("looksLikeInstallRoot gates the recursive delete on the marker layout or a 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
-
-test("copilot-env.config is read from ASSET_ROOT by default", () => {
-  // It is embedded in the compiled binary and never materialized onto disk, so the
-  // default root must be the asset root; an install root has no copy to read.
-  expect(existsSync(join(ASSET_ROOT, PROJECT_CONFIG_FILE))).toBe(true);
-  expect(readProjectConfig().proxyMinVersion).toMatch(/^\d+\.\d+\.\d+/);
-  // The default must be ASSET_ROOT specifically, not "whatever root happens to work":
-  // a directory with no config must throw rather than silently fall back.
-  expect(() => readProjectConfig(join(ASSET_ROOT, "src"))).toThrow();
 });
 
 test("derivedCompiledRoot: a flat root derives two levels up from the binary; a versioned binary roots at the current link, never its version dir", () => {

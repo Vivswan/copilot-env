@@ -13,7 +13,7 @@ import {
 } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot();
@@ -21,7 +21,6 @@ let dir = "";
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 test("DEFAULT_HOME is copilot-env's own data dir", () => {

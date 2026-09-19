@@ -16,7 +16,7 @@ import { childEnvWithPath, cliSpawn, resolveCommand } from "../src/utils/command
 import { readTextResult } from "../src/utils/fs_facade.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
 import { runSync } from "./helpers/run.ts";
-import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot();
@@ -26,7 +26,6 @@ const COMMAND = { kind: "command" } as const;
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 const WORK = parseProfileName("work");
@@ -178,15 +177,133 @@ test("removing a profile deletes its file, or only our selector when the user's 
   expect(configText(codexHome)).toBe(before);
 });
 
-test("a base_url on the wrong port un-wires the proxy profile", () => {
-  const codexHome = isolate();
-  writeProxyProfile(codexHome);
-
-  const wiring = inspectWork(codexHome, { port: PROFILE_PORT + 1 });
-  expect(wiring.providerSelected).toBe(true);
-  expect(wiring.providerMode).toBe("proxy");
-  expect(wiring.baseUrlMatches).toBe(false);
-  expect(wiring.providerWired).toBe(false);
+test("one drifted detail on a named profile's provider table reads its mode but never wired: a base_url off the port, a foreign, default-addressed, or missing managed auth, or an env_key (alone or beside intact auth, proxy and direct)", () => {
+  const rows: {
+    drift: string;
+    mode: "proxy" | "direct";
+    mutate: ((doc: Record<string, unknown>) => void) | null;
+    inspect: Parameters<typeof inspectWork>[1];
+    wiring: Partial<CodexWiringStatus>;
+  }[] = [
+    {
+      drift: "base_url on the wrong port",
+      mode: "proxy",
+      mutate: null,
+      inspect: { port: PROFILE_PORT + 1 },
+      wiring: {
+        providerSelected: true,
+        providerMode: "proxy",
+        baseUrlMatches: false,
+        providerWired: false,
+      },
+    },
+    {
+      drift: "foreign auth command",
+      mode: "proxy",
+      mutate: (doc) => {
+        profileProvider(doc).auth = { "command": "/usr/local/bin/my-token", "args": [] };
+      },
+      inspect: {},
+      wiring: {
+        providerMode: "proxy",
+        baseUrlMatches: true,
+        envKeyMatches: false,
+        providerWired: false,
+      },
+    },
+    {
+      // The DEFAULT selection's managed auth would route the resolver at the default daemon,
+      // not this profile's.
+      drift: "the default selection's managed auth",
+      mode: "proxy",
+      mutate: (doc) => {
+        const auth = proxyTokenCommand();
+        profileProvider(doc).auth = { "command": auth.command, "args": auth.args };
+      },
+      inspect: {},
+      wiring: { envKeyMatches: false, providerWired: false },
+    },
+    {
+      drift: "auth deleted",
+      mode: "proxy",
+      mutate: (doc) => {
+        delete profileProvider(doc).auth;
+      },
+      inspect: {},
+      wiring: { providerWired: false },
+    },
+    {
+      // The exported token and the .env line are the default selection's facts; the named
+      // profile stays unwired.
+      drift: "env_key replacing auth, with the token exported and in .env",
+      mode: "proxy",
+      mutate: (doc) => {
+        const provider = profileProvider(doc);
+        delete provider.auth;
+        provider.env_key = "OPENAI_API_KEY";
+      },
+      inspect: { envText: "OPENAI_API_KEY=sk-user\n", envKey: true },
+      wiring: {
+        providerMode: "proxy",
+        envKeyMatches: false,
+        tokenAvailable: false,
+        providerWired: false,
+      },
+    },
+    {
+      // The writer strips env_key from a profile table and Codex rejects auth + env_key on one
+      // provider, so a stray env_key beside intact auth is drift and must not read as wired.
+      drift: "env_key beside intact managed auth",
+      mode: "proxy",
+      mutate: (doc) => {
+        profileProvider(doc).env_key = "OPENAI_API_KEY";
+      },
+      inspect: {},
+      wiring: {
+        providerMode: "proxy",
+        baseUrlMatches: true,
+        envKeyMatches: false,
+        providerWired: false,
+      },
+    },
+    {
+      drift: "env_key beside intact managed auth",
+      mode: "direct",
+      mutate: (doc) => {
+        profileProvider(doc).env_key = "OPENAI_API_KEY";
+      },
+      inspect: {},
+      wiring: {
+        providerMode: "direct",
+        directUsesToken: true,
+        envKeyMatches: false,
+        providerWired: false,
+      },
+    },
+  ];
+  for (const row of rows) {
+    const codexHome = isolate();
+    if (row.mode === "direct") {
+      configureCodexConfig(codexHome, {
+        mode: "direct",
+        direct: null,
+        credential: COMMAND,
+        profile: WORK,
+      });
+    } else {
+      writeProxyProfile(codexHome);
+    }
+    if (row.mutate !== null) mutateConfig(codexHome, row.mutate);
+    const wiring = inspectWork(codexHome, row.inspect);
+    const actual = Object.fromEntries(
+      Object.keys(row.wiring).map((key) => [key, wiring[key as keyof CodexWiringStatus]]),
+    );
+    expect({ drift: row.drift, mode: row.mode, wiring: actual }).toEqual({
+      drift: row.drift,
+      mode: row.mode,
+      wiring: row.wiring,
+    });
+  }
 });
 
 test("a repointed <name>.config.toml selector reads unselected (other)", () => {
@@ -201,83 +318,6 @@ test("a repointed <name>.config.toml selector reads unselected (other)", () => {
   expect(wiring.providerSelected).toBe(false);
   expect(wiring.providerMode).toBe("other");
   expect(wiring.providerWired).toBe(false);
-});
-
-test("foreign or missing managed proxy auth un-wires the profile", () => {
-  const codexHome = isolate();
-  writeProxyProfile(codexHome);
-
-  mutateConfig(codexHome, (doc) => {
-    profileProvider(doc).auth = { "command": "/usr/local/bin/my-token", "args": [] };
-  });
-  let wiring = inspectWork(codexHome);
-  expect(wiring.providerMode).toBe("proxy");
-  expect(wiring.baseUrlMatches).toBe(true);
-  expect(wiring.envKeyMatches).toBe(false);
-  expect(wiring.providerWired).toBe(false);
-
-  // The DEFAULT selection's managed auth would route the resolver at the default daemon, not this profile's.
-  mutateConfig(codexHome, (doc) => {
-    const auth = proxyTokenCommand();
-    profileProvider(doc).auth = { "command": auth.command, "args": auth.args };
-  });
-  wiring = inspectWork(codexHome);
-  expect(wiring.envKeyMatches).toBe(false);
-  expect(wiring.providerWired).toBe(false);
-
-  mutateConfig(codexHome, (doc) => {
-    delete profileProvider(doc).auth;
-  });
-  wiring = inspectWork(codexHome);
-  expect(wiring.providerWired).toBe(false);
-});
-
-test("an env_key never wires a named profile", () => {
-  const codexHome = isolate();
-  writeProxyProfile(codexHome);
-  mutateConfig(codexHome, (doc) => {
-    const provider = profileProvider(doc);
-    delete provider.auth;
-    provider.env_key = "OPENAI_API_KEY";
-  });
-
-  // The exported token and the .env line are the default selection's facts; the named profile stays unwired.
-  const wiring = inspectWork(codexHome, { envText: "OPENAI_API_KEY=sk-user\n", envKey: true });
-  expect(wiring.providerMode).toBe("proxy");
-  expect(wiring.envKeyMatches).toBe(false);
-  expect(wiring.tokenAvailable).toBe(false);
-  expect(wiring.providerWired).toBe(false);
-});
-
-test("an env_key alongside intact managed auth still un-wires a named profile", () => {
-  const codexHome = isolate();
-  writeProxyProfile(codexHome);
-  // The writer strips env_key from a profile table and Codex rejects auth + env_key on one
-  // provider, so a stray env_key beside intact auth is drift and must not read as wired.
-  mutateConfig(codexHome, (doc) => {
-    profileProvider(doc).env_key = "OPENAI_API_KEY";
-  });
-
-  const wiring = inspectWork(codexHome);
-  expect(wiring.providerMode).toBe("proxy");
-  expect(wiring.baseUrlMatches).toBe(true);
-  expect(wiring.envKeyMatches).toBe(false);
-  expect(wiring.providerWired).toBe(false);
-
-  configureCodexConfig(codexHome, {
-    mode: "direct",
-    direct: null,
-    credential: COMMAND,
-    profile: WORK,
-  });
-  mutateConfig(codexHome, (doc) => {
-    profileProvider(doc).env_key = "OPENAI_API_KEY";
-  });
-  const directWiring = inspectWork(codexHome);
-  expect(directWiring.providerMode).toBe("direct");
-  expect(directWiring.directUsesToken).toBe(true);
-  expect(directWiring.envKeyMatches).toBe(false);
-  expect(directWiring.providerWired).toBe(false);
 });
 
 test("a writer-produced direct profile inspects as wired via its own auth command", () => {
@@ -498,22 +538,6 @@ test("malformed TOML in either file reads other for the named view, naming the f
     otherReason: "profile-malformed",
     configExists: false,
   });
-});
-
-test("a script-shaped auth on a named profile's table never reads wired", () => {
-  // The 3.5.6 shape (the src/scripts resolver script): a table the migration never reached is
-  // unwired, addressed at this profile or not.
-  const codexHome = isolate();
-  writeProxyProfile(codexHome);
-  mutateConfig(codexHome, (doc) => {
-    profileProvider(doc).auth = {
-      "command": "/bin/sh",
-      "args": ["/r/src/scripts/proxy-token.sh", "--yes", "--profile", WORK],
-    };
-  });
-  const wiring = inspectWork(codexHome);
-  expect(wiring.envKeyMatches).toBe(false);
-  expect(wiring.providerWired).toBe(false);
 });
 
 // --- the installed Codex -----------------------------------------------------------

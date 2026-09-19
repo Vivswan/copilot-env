@@ -3,6 +3,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { IdMap, isClaudeUsageLine, isCodexUsageLine, scrubJsonl } from "../scripts/usage_corpus.ts";
+import { agentHomeEnv } from "./helpers/env.ts";
 import { ROOT, runCli, runScript } from "./helpers/run.ts";
 import { describe, expect, tempDir, test } from "./helpers/testing.ts";
 
@@ -256,13 +257,7 @@ describe("usage corpus recorder", () => {
         expect(existsSync(join(home, ".claude", ".claude.json"))).toBe(false);
         // The consumer's own command over the kept home reproduces the fake's token sums.
         const cost = runCli(["cost", "--json", "--days", "7"], {
-          env: {
-            ...process.env,
-            HOME: home,
-            CODEX_HOME: join(home, ".codex"),
-            CLAUDE_CONFIG_DIR: join(home, ".claude"),
-            COPILOT_API_HOME: join(home, "copilot-api"),
-          },
+          env: { ...process.env, ...agentHomeEnv(home, { proxyHome: join(home, "copilot-api") }) },
         });
         expect(cost.exitCode).toBe(0);
         const report: unknown = JSON.parse(cost.stdout);

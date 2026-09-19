@@ -7,16 +7,12 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pidAlive, pidLiveness } from "../src/utils/pid.ts";
 import { denoRunArgs, importSpecifier, ROOT, runSync } from "./helpers/run.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
 
 let dir = "";
-afterEach(() => {
-  dir = removeDir(dir);
-});
-
 test.skipIf(process.platform === "win32")(
   "pidLiveness: a denied signal (EPERM) is an EXISTING pid -- alive",
   () => {

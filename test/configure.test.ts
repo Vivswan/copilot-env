@@ -114,6 +114,8 @@ const CASES: {
   mode: RequestedMode;
   identity: () => Promise<string | null>;
   probe: boolean;
+  /** The landing's rejection; absent, the landing resolves and the write runs. */
+  rejects?: string;
   expected: Recorded;
 }[] = [
   {
@@ -180,23 +182,24 @@ const CASES: {
       writes: [{ mode: "proxy", credential: COMMAND }],
     },
   },
+  {
+    name: "--direct surfaces an identity rejection instead of silently writing proxy",
+    mode: "direct",
+    identity: rejected,
+    probe: true,
+    rejects: "rejected under every known client identity",
+    expected: { identityCalls: 1, probeIds: [], probeTokens: [], writes: [] },
+  },
 ];
 
 test("a landing resolves the identity once, before the probe, per mode", async () => {
   for (const c of CASES) {
     const { adapter, recorded } = fakeAdapter(c.identity, c.probe);
-    const chosen = await resolveDefaultMode(adapter, c.mode, "ghp_x");
-    await writeDefaultAgent(adapter, chosen, "ghp_x");
+    const landing = resolveDefaultMode(adapter, c.mode, "ghp_x");
+    if (c.rejects === undefined) await writeDefaultAgent(adapter, await landing, "ghp_x");
+    else await expect(landing, c.name).rejects.toThrow(c.rejects);
     expect({ name: c.name, ...recorded }).toEqual({ name: c.name, ...c.expected });
   }
-});
-
-test("--direct surfaces an identity rejection instead of silently writing proxy", async () => {
-  const { adapter, recorded } = fakeAdapter(rejected, true);
-  await expect(resolveDefaultMode(adapter, "direct", "ghp_x")).rejects.toThrow(
-    "rejected under every known client identity",
-  );
-  expect(recorded.writes).toEqual([]);
 });
 
 // --- runAgentConfig: one agent's re-render of the recorded default --------------------------------

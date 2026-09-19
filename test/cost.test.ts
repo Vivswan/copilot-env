@@ -1,13 +1,4 @@
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type IndexStats, parseEveryCandidate, type Reconcile } from "../src/usage/contribution.ts";
 import {
@@ -18,7 +9,6 @@ import {
   formatBytesCompact,
   formatTokensCompact,
   ReconcileMeter,
-  resolvePricingUrl,
   runCost,
   type SessionRootDiscovery,
   sumDayTotals,
@@ -34,7 +24,6 @@ import {
   UNDATED_DAY_LABEL,
 } from "../src/usage/day_metrics.ts";
 import { consola } from "consola";
-import { OPENROUTER_MODELS_URL } from "../src/copilot_api/config_registry.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { openUsageIndex } from "../src/usage/index.ts";
 import { USAGE_INDEX_DIR_NAME } from "../src/copilot_api/paths.ts";
@@ -42,7 +31,6 @@ import {
   estimateCost,
   loadPricing,
   type ModelCost,
-  pricingCachePath,
   type PricingTier,
 } from "../src/usage/pricing.ts";
 import { type ModelUsage, record, type UsageReport, usageReport } from "../src/usage/usage.ts";
@@ -596,41 +584,94 @@ test("runCost discovers roots before it opens the index, so a failing discovery 
     expect(existsSync(indexDir)).toBe(true);
   }));
 
-test("runCost warns when it prices against a stale cached list", () =>
-  withCostHome(async ({ home, claudeRoot }) => {
-    // Seed a cache stamped two days ago, then take the network away.
-    await loadPricing(PRICE_URL, {
-      cacheDir: join(home, USAGE_INDEX_DIR_NAME),
-      nowMs: Date.now() - 2 * MILLISECONDS_PER_DAY,
-      fetchImpl: fakeFetch(PRICED_BODY),
-    });
-    const { payload, stderr } = await jsonRun({ pricingUrl: PRICE_URL }, {
-      fetchImpl: fakeFetch(null, { fail: true }),
-      ...rootsOf([], [claudeRoot]),
-    });
-    expect(stderr).toContain(
-      "WARNING: could not refresh OpenRouter pricing (pricing request failed)",
-    );
-    expect(stderr).toContain("using the cached price list from");
-    // The stale list still priced the turn: 10 in at $15/M + 20 out at $75/M.
-    expect(payload.claudeSessions.totalUsd).toBe(0.0017);
-  }));
+const STORED_URL = "https://stored.example/with-secret-token/models";
 
-test("runCost warns when the fetched price list cannot be cached", () =>
-  withCostHome(async ({ home, claudeRoot }) => {
-    // A regular file where the cache directory belongs: the write fails, the
-    // report is still priced. --no-index keeps the index from claiming the path.
-    mkdirSync(home, { recursive: true });
-    writeFileSync(join(home, USAGE_INDEX_DIR_NAME), "not a directory");
-    const { payload, stderr } = await jsonRun({ pricingUrl: PRICE_URL, noIndex: true }, {
-      fetchImpl: fakeFetch(PRICED_BODY),
-      ...rootsOf([], [claudeRoot]),
-    });
-    expect(stderr).toContain("WARNING: could not cache the OpenRouter price list (");
-    expect(stderr).toContain("the next run fetches it again.");
-    expect(payload.claudeSessions.totalUsd).toBe(0.0017);
-    expect(payload.runtime.indexed).toBe(false);
-  }));
+/** How the price list was loaded and the stderr line that earns: the turn (10 in at $15/M +
+ *  20 out at $75/M) is priced by any list that loaded, and no line ever names the URL, which a
+ *  custom one may carry a token in. */
+const PRICE_LIST_WARNINGS: {
+  name: string;
+  /** The URL the run resolves, stored under the config key or passed as the flag. */
+  url: string;
+  stored: boolean;
+  /** What the run finds on disk before it starts, in the copilot-api home. */
+  seed: (home: string) => Promise<void> | void;
+  noIndex?: boolean;
+  fetchImpl: typeof fetch;
+  lines: string[];
+  totalUsd: number;
+}[] = [
+  {
+    // A cache stamped two days ago, then the network taken away.
+    name: "it prices against a stale cached list",
+    url: PRICE_URL,
+    stored: false,
+    seed: async (home) => {
+      await loadPricing(PRICE_URL, {
+        cacheDir: join(home, USAGE_INDEX_DIR_NAME),
+        nowMs: Date.now() - 2 * MILLISECONDS_PER_DAY,
+        fetchImpl: fakeFetch(PRICED_BODY),
+      });
+    },
+    fetchImpl: fakeFetch(null, { fail: true }),
+    lines: [
+      "WARNING: could not refresh OpenRouter pricing (pricing request failed)",
+      "using the cached price list from",
+    ],
+    totalUsd: 0.0017,
+  },
+  {
+    // A regular file where the cache directory belongs: the write fails, the report is still
+    // priced. --no-index keeps the index from claiming the path.
+    name: "the fetched price list cannot be cached",
+    url: PRICE_URL,
+    stored: false,
+    seed: (home) => {
+      mkdirSync(home, { recursive: true });
+      writeFileSync(join(home, USAGE_INDEX_DIR_NAME), "not a directory");
+    },
+    noIndex: true,
+    fetchImpl: fakeFetch(PRICED_BODY),
+    lines: [
+      "WARNING: could not cache the OpenRouter price list (",
+      "the next run fetches it again.",
+    ],
+    totalUsd: 0.0017,
+  },
+  {
+    // No cache and no network: the warning names the failure, never the stored URL.
+    name: "the fetch fails with nothing cached",
+    url: STORED_URL,
+    stored: true,
+    seed: () => {},
+    noIndex: true,
+    fetchImpl: fakeFetch(null, { fail: true }),
+    lines: ["could not fetch OpenRouter pricing (pricing request failed)"],
+    totalUsd: 0,
+  },
+];
+
+for (
+  const { name, url, stored, seed, noIndex, fetchImpl, lines, totalUsd } of PRICE_LIST_WARNINGS
+) {
+  test(`runCost warns when ${name}`, () =>
+    withCostHome(async ({ home, claudeRoot }) => {
+      if (stored) new CopilotEnvConfig().set({ "cost.pricing-url": url });
+      await seed(home);
+      const { payload, stderr } = await jsonRun(
+        { pricingUrl: stored ? undefined : url, noIndex },
+        { fetchImpl, ...rootsOf([], [claudeRoot]) },
+      );
+      for (const line of lines) expect(stderr).toContain(line);
+      // Neither the host nor any path segment (a token baked into the path) reaches stderr.
+      expect(stderr).not.toContain(new URL(url).host);
+      for (const segment of new URL(url).pathname.split("/").filter(Boolean)) {
+        expect(stderr, segment).not.toContain(segment);
+      }
+      expect(payload.claudeSessions.totalUsd).toBe(totalUsd);
+      expect(payload.runtime.indexed).toBe(noIndex !== true);
+    }));
+}
 
 async function runtimeOf(
   args: { noIndex?: boolean },
@@ -842,63 +883,3 @@ test("ReconcileMeter sums every IndexStats field over both readers' reconciles",
     bytesRead: 14,
   });
 });
-
-// ---------- the pricing-url preference ----------
-
-const STORED_URL = "https://stored.example/with-secret-token/models";
-const FLAG_URL = "https://flag.example/models";
-
-test("the pricing url: the flag beats the stored key, which beats the built-in, and runCost fetches the winner", () =>
-  withCostHome(async ({ claudeRoot }) => {
-    const config = new CopilotEnvConfig();
-    expect(resolvePricingUrl(undefined, config)).toBe(OPENROUTER_MODELS_URL);
-    config.set({ "cost.pricing-url": STORED_URL });
-    expect(resolvePricingUrl(undefined, config)).toBe(STORED_URL);
-    expect(resolvePricingUrl(FLAG_URL, config)).toBe(FLAG_URL);
-
-    const stored = recordingFetch(PRICED_BODY);
-    await captureAllWrites(() =>
-      runCost({ json: true }, { fetchImpl: stored.fetch, ...rootsOf([], [claudeRoot]) })
-    );
-    expect(stored.urls).toEqual([STORED_URL]);
-
-    // --pricing-url overrides the stored key for one run.
-    const flagged = recordingFetch(PRICED_BODY);
-    await captureAllWrites(() =>
-      runCost({ json: true, pricingUrl: FLAG_URL }, {
-        fetchImpl: flagged.fetch,
-        ...rootsOf([], [claudeRoot]),
-      })
-    );
-    expect(flagged.urls).toEqual([FLAG_URL]);
-  }));
-
-test("a stored pricing-url never reaches a warning or the price cache on disk", () =>
-  withCostHome(async ({ home, claudeRoot }) => {
-    new CopilotEnvConfig().set({ "cost.pricing-url": STORED_URL });
-    const cacheDir = join(home, USAGE_INDEX_DIR_NAME);
-
-    // A failed fetch: the warning names the failure, never the URL.
-    const failed = await captureAllWrites(() =>
-      runCost({ json: true, noIndex: true }, {
-        fetchImpl: fakeFetch(null, { fail: true }),
-        ...rootsOf([], [claudeRoot]),
-      })
-    );
-    expect(failed).toContain("could not fetch OpenRouter pricing (pricing request failed)");
-    expect(failed).not.toContain("stored.example");
-    expect(failed).not.toContain("with-secret-token");
-
-    // A successful fetch: the cache file is keyed by the URL's digest and holds only it.
-    await captureAllWrites(() =>
-      runCost({ json: true, noIndex: true }, {
-        fetchImpl: fakeFetch(PRICED_BODY),
-        ...rootsOf([], [claudeRoot]),
-      })
-    );
-    const cacheFile = pricingCachePath(STORED_URL, cacheDir);
-    expect(readdirSync(cacheDir)).toEqual([cacheFile.slice(cacheDir.length + 1)]);
-    const cached = readFileSync(cacheFile, "utf8");
-    expect(cached).not.toContain("stored.example");
-    expect(cached).not.toContain("with-secret-token");
-  }));

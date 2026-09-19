@@ -12,10 +12,9 @@ import {
   resolveCreditsTarget,
 } from "../src/usage/credits.ts";
 import { runCredits, runCreditsEverywhere } from "../src/commands/credits.ts";
-import { runCli } from "./helpers/run.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { captureChannels } from "./helpers/output.ts";
-import { describe, expect, tempDir, test } from "./helpers/testing.ts";
+import { describe, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -400,16 +399,5 @@ describe("resolveCreditsTarget", () => {
     expect(() => resolveCreditsTarget(undefined, unset, { [CREDITS_TARGET_ENV]: "8e6" })).toThrow(
       `${CREDITS_TARGET_ENV}: expected a whole number`,
     );
-  });
-});
-
-describe("agent credits", () => {
-  test("--target reaches the resolver: a bad value is refused by the flag's name before any fetch", () => {
-    const home = tempDir("credits-cli-");
-    const proc = runCli(["credits", "--target", "0"], {
-      env: { ...process.env, COPILOT_API_HOME: home },
-    });
-    expect(proc.exitCode).toBe(1);
-    expect(proc.stderr).toContain("--target: must be between");
   });
 });

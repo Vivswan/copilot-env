@@ -10,19 +10,17 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
-import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot();
-let dir = "";
 
 beforeEach(() => {
-  dir = isolateProxyHome("copilot-state-store-");
+  isolateProxyHome("copilot-state-store-");
 });
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 test("the three writers share one file under one lock, and each preserves the keys it does not own", () => {

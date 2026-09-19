@@ -10,16 +10,14 @@ import {
   withRequiredFileLockSync,
 } from "../src/utils/file_lock.ts";
 import { ROOT } from "./helpers/run.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
+import { tsFilesUnder } from "./helpers/tree.ts";
 
 // The multi-process mutual-exclusion proof is config_lock.test.ts. Here every judgment is
 // deterministic: probes use an injected clock or staleMs=Infinity, so a suspended test
 // process can never age a lock mid-test.
 
 let dir = "";
-afterEach(() => {
-  dir = removeDir(dir);
-});
 function tmp(name: string): string {
   dir = tempDir("copilot-env-file-lock-");
   return join(dir, name);
@@ -337,19 +335,12 @@ test("the lock primitives stay out of src/", () => {
     releaseFileLock: [join(ROOT, "src", "utils", "file_lock.ts")],
   };
   const found: string[] = [];
-  const walk = (dirPath: string): void => {
-    for (const entry of Deno.readDirSync(dirPath)) {
-      const p = join(dirPath, entry.name);
-      if (entry.isDirectory) walk(p);
-      else if (entry.name.endsWith(".ts")) {
-        const source = readFileSync(p, "utf-8");
-        for (const name of Object.keys(allowedIn)) {
-          if (source.includes(name)) found.push(`${p}: ${name}`);
-        }
-      }
+  for (const p of tsFilesUnder(join(ROOT, "src"))) {
+    const source = readFileSync(p, "utf-8");
+    for (const name of Object.keys(allowedIn)) {
+      if (source.includes(name)) found.push(`${p}: ${name}`);
     }
-  };
-  walk(join(ROOT, "src"));
+  }
   // Positive control: the scanner must find each name at each of its allowed sites, or a
   // zero-offender read below would prove nothing.
   for (const [name, files] of Object.entries(allowedIn)) {

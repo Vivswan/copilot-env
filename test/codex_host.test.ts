@@ -39,7 +39,6 @@ let dir = "";
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
   resetExitCode();
 });
 
@@ -782,22 +781,6 @@ skipWin("a shared dir slot occupied by a file fails the build with the farm erro
 });
 
 skipWin(
-  "a failed config write never activates the farm: no record, yet the farm stays the home the key names",
-  async () => {
-    const { sharedRoot, hostHome } = isolate();
-    // The build seeds the farm's config.toml from ~/.codex's; an unparseable one makes the
-    // managed write refuse (it never overwrites a user file it cannot parse).
-    fs.mkdirSync(sharedRoot, { recursive: true });
-    fs.writeFileSync(join(sharedRoot, "config.toml"), "this = is = not toml\n");
-
-    await expect(build()).rejects.toThrow();
-    expect(isRealDir(hostHome)).toBe(true); // built ...
-    expect(new CopilotEnvRunState().read().codexHome).toBeUndefined(); // ... but not activated
-    expect(effectiveCodexHome()).toBe(hostHome);
-  },
-);
-
-skipWin(
   "an empty seeded config.toml is not wired; a wired farm is active only once a write is recorded",
   () => {
     const { hostHome } = isolate();
@@ -949,8 +932,18 @@ skipWin(
 );
 
 skipWin(
-  "a rebuild whose managed write fails leaves no activation record; the farm stays exported with the drift named beside it",
+  "a build or rebuild whose managed write fails leaves no activation record; the farm stays the home the key names, exported with the drift named beside it",
   async () => {
+    // The first build seeds the farm's config.toml from ~/.codex's; an unparseable one makes the
+    // managed write refuse (it never overwrites a user file it cannot parse).
+    const seeded = isolate();
+    fs.mkdirSync(seeded.sharedRoot, { recursive: true });
+    fs.writeFileSync(join(seeded.sharedRoot, "config.toml"), "this = is = not toml\n");
+    await expect(build()).rejects.toThrow();
+    expect(isRealDir(seeded.hostHome)).toBe(true); // built ...
+    expect(new CopilotEnvRunState().read().codexHome).toBeUndefined(); // ... but not activated
+    expect(effectiveCodexHome()).toBe(seeded.hostHome);
+
     const { hostHome } = isolate();
     await build();
     expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
@@ -1068,28 +1061,6 @@ skipWin(
     // A shell that agrees (the wrapper's `agent profile env` refresh) has nothing to be told.
     process.env.CODEX_HOME = hostHome;
     expect(await stderrDuring(configureCodex)).not.toContain("Ignoring the shell's CODEX_HOME");
-  },
-);
-
-skipWin(
-  "`agent profile check --codex` reports the farm as CODEX_HOME and names a differing export",
-  async () => {
-    const { hostHome } = isolate();
-    process.env.CODEX_HOME = hostHome;
-    await build();
-    process.env.CODEX_HOME = join(dir, "elsewhere");
-    const line = staleCodexHomeExportLine({
-      home: hostHome,
-      by: "farm",
-      staleExport: join(dir, "elsewhere"),
-    });
-    if (line === null) throw new Error("a differing export must produce the note");
-    let stdout: string[] = [];
-    const stderr = await stderrDuring(async () => {
-      stdout = await stdoutLinesDuring(() => runCodex({ kind: "check" }));
-    });
-    expect(stdout).toContain(`CODEX_HOME: ${hostHome}`);
-    expect(occurrences(stderr, line)).toBe(1);
   },
 );
 

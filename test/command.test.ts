@@ -25,36 +25,65 @@ afterEach(() => {
   delete process.env.Copilot_Mixed_Var;
 });
 
-test("childPathPrepending and childEnvWithPath put dirs first, deduped, keeping the rest of PATH and other vars", () => {
-  process.env.PATH = `/usr/bin${SEP}/bin`;
+const BASE_PATH = `/usr/bin${SEP}/bin`;
+
+// The parent PATH is pinned per row, so the WHOLE child PATH is asserted, not just its head. A
+// key mapped to null must be absent from the child env, not merely empty.
+const CHILD_ENV_ROWS: {
+  name: string;
+  /** Set on process.env before the call; PATH itself is always BASE_PATH, set last. */
+  parent: Record<string, string>;
+  dirs: (string | null)[];
+  opts?: Parameters<typeof childEnvWithPath>[1];
+  path: string[];
+  keys: Record<string, string | null>;
+}[] = [
+  {
+    name: "dirs go first, ahead of the rest of PATH, and other vars ride along",
+    parent: { COPILOT_TEST_LEAK: "keep-me" },
+    dirs: ["/opt/cli/bin"],
+    path: ["/opt/cli/bin", "/usr/bin", "/bin"],
+    keys: { COPILOT_TEST_LEAK: "keep-me" },
+  },
+  {
+    // The Windows shape: process.env carries `Path` while we set canonical PATH; the child gets
+    // exactly one, and it is the new one.
+    name: "any case-variant PATH key is dropped (the Windows Path/PATH collision)",
+    parent: { Path: "C:\\stale\\only" },
+    dirs: ["/new/dir"],
+    path: ["/new/dir", "/usr/bin", "/bin"],
+    keys: { Path: null },
+  },
+  {
+    // The predicate sees the UPPERCASED key, mirroring Windows' case-insensitive env names; the
+    // original-cased key is what gets dropped.
+    name: "extra is applied and the omit predicate is honored case-insensitively",
+    parent: { Copilot_Mixed_Var: "leaked" },
+    dirs: [],
+    opts: { extra: { HOME_OVERRIDE: "/tmp/h" }, omit: (upper) => upper === "COPILOT_MIXED_VAR" },
+    path: ["/usr/bin", "/bin"],
+    keys: { HOME_OVERRIDE: "/tmp/h", Copilot_Mixed_Var: null },
+  },
+];
+
+test("childPathPrepending dedupes the dirs; childEnvWithPath builds the child env on top of it per row", () => {
+  process.env.PATH = BASE_PATH;
   const out = childPathPrepending(["/opt/gh/bin", "/opt/gh/bin", null]);
   expect(out.split(SEP)).toEqual(["/opt/gh/bin", "/usr/bin", "/bin"]);
 
-  process.env.COPILOT_TEST_LEAK = "keep-me";
-  const env = childEnvWithPath(["/opt/cli/bin"]);
-  expect(env.PATH?.split(SEP)).toEqual(["/opt/cli/bin", "/usr/bin", "/bin"]);
-  expect(env.COPILOT_TEST_LEAK).toBe("keep-me");
-});
-
-test("childEnvWithPath drops any case-variant PATH key (the Windows Path/PATH collision)", () => {
-  // The Windows shape: process.env carries `Path` while we set canonical PATH; the child gets exactly one.
-  process.env.Path = "C:\\stale\\only";
-  const env = childEnvWithPath(["/new/dir"]);
-  expect(Object.hasOwn(env, "Path")).toBe(false);
-  expect(env.PATH?.split(SEP)[0]).toBe("/new/dir");
-  expect(env.PATH).not.toBe("C:\\stale\\only");
-});
-
-test("childEnvWithPath applies extra and honors the omit predicate (case-insensitive)", () => {
-  // The predicate sees the UPPERCASED key, mirroring Windows' case-insensitive env names; the
-  // original-cased key is what gets dropped.
-  process.env.Copilot_Mixed_Var = "leaked";
-  const env = childEnvWithPath([], {
-    extra: { HOME_OVERRIDE: "/tmp/h" },
-    omit: (upper) => upper === "COPILOT_MIXED_VAR",
-  });
-  expect(env.HOME_OVERRIDE).toBe("/tmp/h");
-  expect(Object.hasOwn(env, "Copilot_Mixed_Var")).toBe(false);
+  for (const row of CHILD_ENV_ROWS) {
+    for (const [key, value] of Object.entries(row.parent)) process.env[key] = value;
+    process.env.PATH = BASE_PATH;
+    const env = childEnvWithPath(row.dirs, row.opts);
+    const keys = Object.fromEntries(
+      Object.keys(row.keys).map((key) => [key, Object.hasOwn(env, key) ? env[key] : null]),
+    );
+    expect({ name: row.name, path: env.PATH?.split(SEP), keys }).toEqual({
+      name: row.name,
+      path: row.path,
+      keys: row.keys,
+    });
+  }
 });
 
 // cmd.exe expands %VAR% even inside double quotes, so the Windows dispatch may fall back to it only

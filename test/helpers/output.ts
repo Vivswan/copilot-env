@@ -15,6 +15,8 @@ interface CaptureOptions {
    *  stderr at the end, one per line: they bypass process.stderr, so a capture that wants them
    *  in the narration must ask. */
   writeReports?: boolean;
+  /** Sees each stdout chunk as it lands, so a test can order output against its own events. */
+  onStdout?: (chunk: string) => void;
 }
 
 /** The consola level is raised for the span: under the test runner it self-silences warnings. */
@@ -31,6 +33,7 @@ function patchChannels(opts: CaptureOptions): () => CapturedOutput {
     const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
     channel.push(text);
     all.push(text);
+    if (channel === out) opts.onStdout?.(text);
     return true;
   };
   const logger = (channel: string[]) => (...args: unknown[]): void => {

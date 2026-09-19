@@ -18,13 +18,9 @@ import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { withDryRun } from "../src/utils/dry_run.ts";
 import { renderDryRun } from "../src/utils/dry_run_report.ts";
 import * as facade from "../src/utils/fs_facade.ts";
-import { afterEach, expect, outcomeOf, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { expect, outcomeOf, tempDir, test } from "./helpers/testing.ts";
 
 let dir = "";
-afterEach(() => {
-  dir = removeDir(dir);
-});
-
 const WINDOWS = Deno.build.os === "windows";
 
 /** The thrown code (or the error's name when it carries none), or "ok": the shape both modes are

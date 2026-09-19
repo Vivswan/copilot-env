@@ -18,16 +18,16 @@ import {
   resolveDenoBin,
   SIDECAR_DENO_ENV,
   sidecarBinPath,
-  sidecarStatus,
+  type SidecarState,
   unzipCommand,
 } from "../src/copilot_api/sidecar.ts";
+import { resolveRootHome } from "../src/copilot_api/paths.ts";
 import {
   afterEach,
   beforeEach,
   describe,
   expect,
   outcomeOf as caught,
-  removeDir,
   tempDir,
   test,
 } from "./helpers/testing.ts";
@@ -47,7 +47,6 @@ beforeEach(() => {
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 function runtimeExecPath(): string | undefined {
@@ -93,105 +92,17 @@ describe("parseAbsolutePath", () => {
   });
 });
 
-describe("resolveDenoBin", () => {
-  // The precedence ladder: override, then the running Deno, then a PATH deno, then the newest
-  // provisioned sidecar, else a hard error. A PATH deno beats a provisioned copy even when one
-  // exists (the user's toolchain always wins), and bare call sites default rootHome to the
-  // resolved root home, where ensureSidecar provisions (the compiled-install regression).
-  test("the precedence ladder: override, runtime, PATH, newest provisioned, else a hard error", () => {
+describe("the sidecar ladder", () => {
+  // One ladder, two readers: detectSidecar reports the rung as a state carrying exactly its own
+  // fields, and resolveDenoBin hands out that rung's binary or a hard error when nothing resolves.
+  // The rows walk the ladder top down; a row without opts is the bare call site.
+  test("each rung reports its own state and resolves to its binary; nothing resolving is a hard error", () => {
     const home = join(dir, "home");
     const provisioned = plantSidecar(home, PIN);
     const versions = join(dir, "versions");
-    plantSidecar(versions, "2.9.5");
-    const newest = plantSidecar(versions, "2.10.1");
-    plantSidecar(versions, "2.10.0");
-    const empty = join(dir, "empty");
-    mkdirSync(empty);
-    const live = runtimeExecPath() ?? "(not under deno)";
-
-    const rows: {
-      label: string;
-      override?: string;
-      rootHome: string | undefined;
-      opts?: Omit<Parameters<typeof detectSidecar>[1], "env">;
-      expected: Outcome<string>;
-    }[] = [
-      {
-        label: "the COPILOT_ENV_SIDECAR_DENO env override wins over everything",
-        override: "/opt/deno/bin/deno",
-        rootHome: undefined,
-        expected: { value: "/opt/deno/bin/deno" },
-      },
-      {
-        label: "a relative override is rejected at the boundary, never resolved against a cwd",
-        override: "deno",
-        rootHome: undefined,
-        expected: { error: "absolute path" },
-      },
-      {
-        // The suite runs under `deno test`, so the runtime fast path is live.
-        label: "without an override, the running Deno's own binary is used",
-        rootHome: undefined,
-        expected: { value: live },
-      },
-      {
-        label: "a checkout's own deno outranks a PATH deno: subprocesses match the parent",
-        rootHome: home,
-        opts: { "runtimeExecPath": "/checkout/deno", "findDeno": () => "/opt/homebrew/bin/deno" },
-        expected: { value: "/checkout/deno" },
-      },
-      {
-        label: "a compiled standalone uses the deno already on PATH, over a provisioned copy",
-        rootHome: home,
-        opts: {
-          "runtimeExecPath": null,
-          "platform": "linux",
-          "findDeno": () => "/opt/homebrew/bin/deno",
-        },
-        expected: { value: "/opt/homebrew/bin/deno" },
-      },
-      {
-        label: "no PATH deno: the NEWEST provisioned sidecar under the root home answers",
-        rootHome: versions,
-        opts: { "runtimeExecPath": null, "platform": "linux", "findDeno": () => null },
-        expected: { value: newest },
-      },
-      {
-        label: "rootHome DEFAULTS to the resolved root home, so bare call sites find the sidecar",
-        rootHome: undefined,
-        opts: { "runtimeExecPath": null, "platform": "linux", "findDeno": () => null },
-        expected: { value: provisioned },
-      },
-      {
-        label: "a compiled standalone with no deno anywhere is a hard, actionable error",
-        rootHome: empty,
-        opts: { "runtimeExecPath": null, "platform": "linux", "findDeno": () => null },
-        expected: { error: "no usable deno binary" },
-      },
-    ];
-    // The default-rootHome row must look under the home this test provisioned.
-    process.env.COPILOT_API_HOME = home;
-    delete process.env.COPILOT_ENV_ROOT_HOME;
-    for (const row of rows) {
-      if (row.override === undefined) delete process.env[SIDECAR_DENO_ENV];
-      else process.env[SIDECAR_DENO_ENV] = row.override;
-      const outcome = outcomeOf(() =>
-        row.opts === undefined && row.rootHome === undefined
-          ? resolveDenoBin()
-          : resolveDenoBin({}, row.rootHome, row.opts)
-      );
-      expectOutcome(row.label, outcome, row.expected);
-    }
-  });
-});
-
-describe("detectSidecar", () => {
-  // The same ladder as a whole state: each kind carries exactly its own fields. A provisioned
-  // binary lives at `<rootHome>/deno/<x.y.z>/deno`, `deno.exe` on win32 (the on-disk layout
-  // ensureSidecar writes and resolveDenoBin reads back).
-  test("each ladder rung reports its own kind and fields; a PATH deno outranks a provisioned copy", () => {
-    const provisionedHome = join(dir, "provisioned");
-    plantSidecar(provisionedHome, PIN, "darwin");
+    plantSidecar(versions, "2.9.5", "darwin");
+    const newest = plantSidecar(versions, "2.10.1", "darwin");
+    plantSidecar(versions, "2.10.0", "darwin");
     const windowsHome = join(dir, "windows");
     plantSidecar(windowsHome, PIN, "win32");
     const empty = join(dir, "empty");
@@ -199,69 +110,141 @@ describe("detectSidecar", () => {
     const neverProbed = (): never => {
       throw new Error("PATH must not be probed under an override");
     };
+    // The suite runs under `deno test`, so the runtime fast path is live.
+    const live = runtimeExecPath() ?? "(not under deno)";
+    const absent = { error: "no usable deno binary" };
 
     const rows: {
       label: string;
-      rootHome: string;
-      opts: Parameters<typeof detectSidecar>[1];
-      state: ReturnType<typeof detectSidecar>;
+      /** Undefined: the resolved root home (the bare call site's default). */
+      rootHome?: string;
+      /** Undefined: the bare call, reading process.env. */
+      opts?: Parameters<typeof detectSidecar>[1];
+      /** The override a bare call finds in the process environment. */
+      ambient?: string;
+      state: Outcome<SidecarState>;
+      resolved: Outcome<string>;
     }[] = [
       {
-        label: "env override reports its own kind and never probes PATH",
+        label:
+          "the COPILOT_ENV_SIDECAR_DENO env override wins over everything and never probes PATH",
         rootHome: empty,
-        opts: { "env": { [SIDECAR_DENO_ENV]: "/opt/deno/deno" }, "findDeno": neverProbed },
-        state: { "kind": "override", "denoBin": parseAbsolutePath("/opt/deno/deno") },
+        opts: { "env": { [SIDECAR_DENO_ENV]: "/opt/deno/bin/deno" }, "findDeno": neverProbed },
+        state: {
+          value: { "kind": "override", "denoBin": parseAbsolutePath("/opt/deno/bin/deno") },
+        },
+        resolved: { value: "/opt/deno/bin/deno" },
       },
       {
-        label: "a live Deno runtime reports dev with its own binary",
+        label: "a relative override is rejected at the boundary, never resolved against a cwd",
         rootHome: empty,
-        opts: { "env": {}, "runtimeExecPath": "/checkout/deno" },
-        state: { "kind": "dev", "denoBin": parseAbsolutePath("/checkout/deno") },
+        opts: { "env": { [SIDECAR_DENO_ENV]: "deno" }, "findDeno": neverProbed },
+        state: { error: "absolute path" },
+        resolved: { error: "absolute path" },
       },
       {
-        label: "a PATH deno reports path, ahead of any provisioned copy",
-        rootHome: provisionedHome,
+        label: "a bare call reads the override from the process environment",
+        ambient: "/opt/deno/bin/deno",
+        state: {
+          value: { "kind": "override", "denoBin": parseAbsolutePath("/opt/deno/bin/deno") },
+        },
+        resolved: { value: "/opt/deno/bin/deno" },
+      },
+      {
+        label: "without an override, the running Deno's own binary is used",
+        state: { value: { "kind": "dev", "denoBin": parseAbsolutePath(live) } },
+        resolved: { value: live },
+      },
+      {
+        label: "a checkout's own deno outranks a PATH deno: subprocesses match the parent",
+        rootHome: home,
+        opts: {
+          "env": {},
+          "runtimeExecPath": "/checkout/deno",
+          "findDeno": () => "/opt/homebrew/bin/deno",
+        },
+        state: { value: { "kind": "dev", "denoBin": parseAbsolutePath("/checkout/deno") } },
+        resolved: { value: "/checkout/deno" },
+      },
+      {
+        label: "a compiled standalone uses the deno already on PATH, over a provisioned copy",
+        rootHome: versions,
         opts: {
           "env": {},
           "runtimeExecPath": null,
           "platform": "darwin",
           "findDeno": () => "/usr/local/bin/deno",
         },
-        state: { "kind": "path", "denoBin": parseAbsolutePath("/usr/local/bin/deno") },
+        state: { value: { "kind": "path", "denoBin": parseAbsolutePath("/usr/local/bin/deno") } },
+        resolved: { value: "/usr/local/bin/deno" },
       },
       {
-        label: "a provisioned binary on disk is found when nothing else resolves",
-        rootHome: provisionedHome,
+        label: "no PATH deno: the NEWEST provisioned sidecar under the root home answers",
+        rootHome: versions,
         opts: { "env": {}, "runtimeExecPath": null, "platform": "darwin", "findDeno": () => null },
         state: {
-          "kind": "provisioned",
-          "denoBin": parseAbsolutePath(join(provisionedHome, "deno", PIN, "deno")),
-          "version": PIN,
+          value: {
+            "kind": "provisioned",
+            "denoBin": parseAbsolutePath(newest),
+            "version": "2.10.1",
+          },
         },
+        resolved: { value: newest },
       },
       {
         label: "a provisioned binary on win32 carries the .exe suffix",
         rootHome: windowsHome,
         opts: { "env": {}, "runtimeExecPath": null, "platform": "win32", "findDeno": () => null },
         state: {
-          "kind": "provisioned",
-          "denoBin": parseAbsolutePath(join(windowsHome, "deno", PIN, "deno.exe")),
-          "version": PIN,
+          value: {
+            "kind": "provisioned",
+            "denoBin": parseAbsolutePath(join(windowsHome, "deno", PIN, "deno.exe")),
+            "version": PIN,
+          },
         },
+        resolved: { value: join(windowsHome, "deno", PIN, "deno.exe") },
       },
       {
-        label: "nothing available is absent",
+        label: "rootHome DEFAULTS to the resolved root home, so bare call sites find the sidecar",
+        opts: { "env": {}, "runtimeExecPath": null, "platform": "linux", "findDeno": () => null },
+        state: {
+          value: {
+            "kind": "provisioned",
+            "denoBin": parseAbsolutePath(provisioned),
+            "version": PIN,
+          },
+        },
+        resolved: { value: provisioned },
+      },
+      {
+        label: "a compiled standalone with no deno anywhere is absent: a hard, actionable error",
         rootHome: empty,
-        opts: { "env": {}, "runtimeExecPath": null, "findDeno": () => null },
-        state: { "kind": "absent" },
+        opts: { "env": {}, "runtimeExecPath": null, "platform": "linux", "findDeno": () => null },
+        state: { value: { "kind": "absent" } },
+        resolved: absent,
       },
     ];
+    // The default-rootHome rows must look under the home this test provisioned.
+    process.env.COPILOT_API_HOME = home;
+    delete process.env.COPILOT_ENV_ROOT_HOME;
     for (const row of rows) {
-      expect({ label: row.label, state: detectSidecar(row.rootHome, row.opts) }).toEqual({
-        label: row.label,
-        state: row.state,
+      const { rootHome, opts } = row;
+      if (row.ambient === undefined) delete process.env[SIDECAR_DENO_ENV];
+      else process.env[SIDECAR_DENO_ENV] = row.ambient;
+      const state = outcomeOf(() =>
+        opts === undefined
+          ? detectSidecar(resolveRootHome())
+          : detectSidecar(rootHome ?? resolveRootHome(), opts)
+      );
+      expectOutcome(row.label, state, row.state);
+      const resolved = outcomeOf(() => {
+        if (opts === undefined) return resolveDenoBin();
+        const { env, ...rest } = opts;
+        return resolveDenoBin(env, rootHome, rest);
       });
+      expectOutcome(row.label, resolved, row.resolved);
     }
+    delete process.env[SIDECAR_DENO_ENV];
   });
 });
 
@@ -310,14 +293,6 @@ describe("denoReleaseTarget", () => {
     expect(() => denoReleaseTarget("linux", "ia32")).toThrow("linux-ia32");
     expect(() => denoReleaseTarget("linux", "ia32")).toThrow(
       Object.keys(DENO_RELEASE_TARGETS).join(", "),
-    );
-  });
-});
-
-describe("denoReleaseUrl", () => {
-  test("points at the versioned GitHub release asset", () => {
-    expect(denoReleaseUrl(PIN, "aarch64-apple-darwin")).toBe(
-      `https://github.com/denoland/deno/releases/download/v${PIN}/deno-aarch64-apple-darwin.zip`,
     );
   });
 });
@@ -559,18 +534,5 @@ describe("ensureSidecar", () => {
       `${denoReleaseUrl(latest, target)}.sha256sum`,
       denoReleaseUrl(latest, target),
     ]);
-  });
-});
-
-describe("sidecarStatus", () => {
-  test("reports the resolved kind, its version, and the tested reference", () => {
-    // The suite runs under deno, so the live status is the dev kind; the seam
-    // reads the running binary's own version.
-    const status = sidecarStatus(dir, () => "9.9.9");
-    expect(status.kind).toBe("dev");
-    expect(status.version).toBe("9.9.9");
-    expect(status.referenceVersion).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(status.denoBin).toBe(runtimeExecPath() ?? "(not under deno)");
-    expect(status.standalone).toBe(false);
   });
 });

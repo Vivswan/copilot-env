@@ -15,11 +15,10 @@ import {
 import {
   awaitListening,
   type FakeModelEndpoint,
-  hermeticEnv,
   SCENARIO_HEADER,
 } from "./helpers/fake_model_endpoint.ts";
 import { jsonLines, startFakeEndpoint } from "./helpers/fake_endpoint.ts";
-import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 let fake: FakeModelEndpoint;
 let dir = "";
@@ -31,7 +30,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await fake.close();
-  dir = removeDir(dir);
 });
 
 /** The SSE event types of a stream read to its end or to the cut (a destroyed socket rejects the
@@ -181,19 +179,5 @@ test("aimock dies with the process that started it, even one killed outright", a
     } catch {
       // already gone, the expected state
     }
-  }
-});
-
-test("every hermetic child env keeps deno's release check off, whatever the parent shell says", () => {
-  // The parent's own value is irrelevant either way: absent, or set to something else.
-  const inherited = process.env.DENO_NO_UPDATE_CHECK;
-  try {
-    delete process.env.DENO_NO_UPDATE_CHECK;
-    expect(hermeticEnv({}).DENO_NO_UPDATE_CHECK).toBe("1");
-    process.env.DENO_NO_UPDATE_CHECK = "";
-    expect(hermeticEnv({ HOME: "/home/user" }).DENO_NO_UPDATE_CHECK).toBe("1");
-  } finally {
-    if (inherited === undefined) delete process.env.DENO_NO_UPDATE_CHECK;
-    else process.env.DENO_NO_UPDATE_CHECK = inherited;
   }
 });

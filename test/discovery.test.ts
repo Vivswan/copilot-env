@@ -3,20 +3,18 @@ import {
   DEFAULT_COPILOT_API_BASE,
   type ProbeFetch,
 } from "../src/copilot_api/integration_identity.ts";
-import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 // Verification verdicts persist in the shared state store, so every test isolates its own home.
 const restoreEnv = envSnapshot();
-let dir = "";
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 function isolate(): void {
-  dir = isolateProxyHome("copilot-discovery-");
+  isolateProxyHome("copilot-discovery-");
 }
 
 interface StubOptions {
@@ -229,74 +227,47 @@ test("verification verdicts are cached: a rerun pays zero pings until the TTL la
   expect(third).toContain("ping:claude-fable-5");
 });
 
-test("transient probe trouble is never cached: the next run probes again", async () => {
-  isolate();
-  const opts = {
-    catalogs: {
-      "none": ["claude-haiku-4.5"],
-      "vscode-chat": ["claude-haiku-4.5"],
-      "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
-      "copilot-developer-sandbox": ["claude-haiku-4.5"],
-    },
-    allowlist: ["claude-fable-5"],
-  };
-  const t0 = 1_700_000_000_000;
-  // A 503 ping is "unknown": the model is excluded THIS run, but no verdict is
-  // written -- a wedged-out-for-a-day servable model is the failure mode this stops.
-  const first = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
-    fetchImpl: stubFetch({ ...opts, transient: ["claude-fable-5"] }),
-    nowMs: () => t0,
-  });
-  expect(first.unlisted).toEqual([]);
+// Only the exact 200 is a "yes" and only a 400 a "no"; anything else is "unknown": the model is
+// excluded THIS run, but no verdict is written -- a wedged-out-for-a-day servable model is the
+// failure mode this stops.
+test("an inconclusive ping (a 503, a non-200 2xx) is never servable and never cached: the next run probes again", async () => {
+  const rows: { ping: string; first: Pick<StubOptions, "transient" | "odd"> }[] = [
+    { ping: "transient 503", first: { transient: ["claude-fable-5"] } },
+    { ping: "odd 201", first: { odd: ["claude-fable-5"] } },
+  ];
+  for (const row of rows) {
+    isolate();
+    const opts = {
+      catalogs: {
+        "none": ["claude-haiku-4.5"],
+        "vscode-chat": ["claude-haiku-4.5"],
+        "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
+        "copilot-developer-sandbox": ["claude-haiku-4.5"],
+      },
+      allowlist: ["claude-fable-5"],
+    };
+    const t0 = 1_700_000_000_000;
+    const first = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
+      fetchImpl: stubFetch({ ...opts, ...row.first }),
+      nowMs: () => t0,
+    });
+    expect({ ping: row.ping, unlisted: first.unlisted }).toEqual({ ping: row.ping, unlisted: [] });
 
-  // Seconds later (same TTL window) the probes run again and the verdict lands.
-  const calls: string[] = [];
-  const second = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
-    fetchImpl: stubFetch({
-      ...opts,
-      servable: ["claude-fable-5"],
-      oneM: ["claude-fable-5"],
-      calls,
-    }),
-    nowMs: () => t0 + 1000,
-  });
-  expect(calls).toContain("ping:claude-fable-5");
-  expect(second.models).toContainEqual({ id: "claude-fable-5", is1m: true });
-});
-
-test("a non-200 2xx ping is unknown: never servable, never cached", async () => {
-  isolate();
-  const opts = {
-    catalogs: {
-      "none": ["claude-haiku-4.5"],
-      "vscode-chat": ["claude-haiku-4.5"],
-      "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
-      "copilot-developer-sandbox": ["claude-haiku-4.5"],
-    },
-    allowlist: ["claude-fable-5"],
-  };
-  const t0 = 1_700_000_000_000;
-  // Only the exact 200 is a "yes": a 201 is an unrecognized shape, so the model is
-  // excluded this run and NO verdict is written.
-  const first = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
-    fetchImpl: stubFetch({ ...opts, odd: ["claude-fable-5"] }),
-    nowMs: () => t0,
-  });
-  expect(first.unlisted).toEqual([]);
-
-  // Same TTL window: nothing was cached, so the ping runs again and can land.
-  const calls: string[] = [];
-  const second = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
-    fetchImpl: stubFetch({
-      ...opts,
-      servable: ["claude-fable-5"],
-      oneM: ["claude-fable-5"],
-      calls,
-    }),
-    nowMs: () => t0 + 1000,
-  });
-  expect(calls).toContain("ping:claude-fable-5");
-  expect(second.models).toContainEqual({ id: "claude-fable-5", is1m: true });
+    // Seconds later (same TTL window) the probes run again and the verdict lands.
+    const calls: string[] = [];
+    const second = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
+      fetchImpl: stubFetch({
+        ...opts,
+        servable: ["claude-fable-5"],
+        oneM: ["claude-fable-5"],
+        calls,
+      }),
+      nowMs: () => t0 + 1000,
+    });
+    expect({ ping: row.ping, pinged: calls.includes("ping:claude-fable-5") })
+      .toEqual({ ping: row.ping, pinged: true });
+    expect(second.models, row.ping).toContainEqual({ id: "claude-fable-5", is1m: true });
+  }
 });
 
 test("servable-yes with a transient 1m probe: listed without 1m, verdict uncached", async () => {

@@ -37,62 +37,83 @@ interface ToolCallView {
   content: { type: string; text?: string }[];
 }
 
-test(
-  "legacy era: the v1 SDK client lists web_search and gets the no-credential tool error",
-  async () => {
-    const client = new ClientV1({ name: "copilot-env-interop-v1", version: "0.0.0" });
-    try {
-      await client.connect(new StdioTransportV1(serverParams()));
-      expect(client.getServerVersion()?.name).toBe("copilot-env");
+/** What the shared body needs of a client, whichever era's library built it. */
+interface InteropClient {
+  listTools(): Promise<{ tools: { name: string; inputSchema?: unknown; annotations?: unknown }[] }>;
+  callTool(params: { name: string; arguments: Record<string, unknown> }): Promise<unknown>;
+  close(): Promise<void>;
+}
 
-      const { tools } = await client.listTools();
-      expect(tools.map((t: { name: string }) => t.name)).toEqual(["web_search"]);
-      expect(tools[0]?.inputSchema).toEqual(WEB_SEARCH_INPUT_SCHEMA);
-      expect(tools[0]?.annotations).toEqual(WEB_SEARCH_ANNOTATIONS);
+/** Connects, then runs that era's negotiation asserts; a failed assert still closes the client
+ *  (and with it the server it spawned). */
+async function connected<T, C extends InteropClient & { connect(transport: T): Promise<void> }>(
+  client: C,
+  transport: T,
+  negotiated: (client: C) => void,
+): Promise<C> {
+  await client.connect(transport);
+  try {
+    negotiated(client);
+  } catch (e) {
+    await client.close();
+    throw e;
+  }
+  return client;
+}
 
-      // v1's callTool return is a union with the pre-2024 compatibility shape;
-      // this server speaks the current shape, so view it structurally.
-      const res = (await client.callTool({
-        "name": "web_search",
-        "arguments": { "query": "anything" },
-      })) as ToolCallView;
-      expect(res.isError).toBe(true);
-      expect(res.content[0]?.text).toContain("agent auth");
-    } finally {
-      await client.close();
-    }
+/** One row per client era: connect() performs that era's handshake and its own negotiation asserts. */
+const eras: { era: string; connect: () => Promise<InteropClient> }[] = [
+  {
+    era: "legacy: the v1 SDK client",
+    connect: () =>
+      connected(
+        new ClientV1({ name: "copilot-env-interop-v1", version: "0.0.0" }),
+        new StdioTransportV1(serverParams()),
+        (client) => expect(client.getServerVersion()?.name).toBe("copilot-env"),
+      ),
   },
-  20_000,
-);
-
-test(
-  "modern era: the v2 client pinned to 2026-07-28 negotiates it and drives the same tool",
-  async () => {
-    const client = new ClientV2(
-      { name: "copilot-env-interop-v2", version: "0.0.0" },
-      { versionNegotiation: { mode: { pin: "2026-07-28" } } },
-    );
-    try {
-      await client.connect(new StdioTransportV2(serverParams()));
-      // The pin makes connect() fail loudly unless the server offered exactly this revision;
-      // asserted anyway so a future SDK default change cannot quietly make this a legacy test.
-      expect(client.getProtocolEra()).toBe("modern");
-      expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
-
-      const { tools } = await client.listTools();
-      expect(tools.map((t: { name: string }) => t.name)).toEqual(["web_search"]);
-      expect(tools[0]?.inputSchema).toEqual(WEB_SEARCH_INPUT_SCHEMA);
-      expect(tools[0]?.annotations).toEqual(WEB_SEARCH_ANNOTATIONS);
-
-      const res = (await client.callTool({
-        "name": "web_search",
-        "arguments": { "query": "anything" },
-      })) as ToolCallView;
-      expect(res.isError).toBe(true);
-      expect(res.content[0]?.text).toContain("agent auth");
-    } finally {
-      await client.close();
-    }
+  {
+    era: "modern: the v2 client pinned to 2026-07-28",
+    connect: () =>
+      connected(
+        new ClientV2(
+          { name: "copilot-env-interop-v2", version: "0.0.0" },
+          { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+        ),
+        new StdioTransportV2(serverParams()),
+        (client) => {
+          // The pin makes connect() fail loudly unless the server offered exactly this revision;
+          // asserted anyway so a future SDK default change cannot quietly make this a legacy test.
+          expect(client.getProtocolEra()).toBe("modern");
+          expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
+        },
+      ),
   },
-  20_000,
-);
+];
+
+for (const { era, connect } of eras) {
+  test(
+    `${era} lists web_search and gets the no-credential tool error`,
+    async () => {
+      const client = await connect();
+      try {
+        const { tools } = await client.listTools();
+        expect(tools.map((t) => t.name)).toEqual(["web_search"]);
+        expect(tools[0]?.inputSchema).toEqual(WEB_SEARCH_INPUT_SCHEMA);
+        expect(tools[0]?.annotations).toEqual(WEB_SEARCH_ANNOTATIONS);
+
+        // v1's callTool return is a union with the pre-2024 compatibility shape;
+        // this server speaks the current shape, so view it structurally.
+        const res = (await client.callTool({
+          "name": "web_search",
+          "arguments": { "query": "anything" },
+        })) as ToolCallView;
+        expect(res.isError).toBe(true);
+        expect(res.content[0]?.text).toContain("agent auth");
+      } finally {
+        await client.close();
+      }
+    },
+    20_000,
+  );
+}

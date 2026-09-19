@@ -68,7 +68,7 @@ import { captureChannels } from "./helpers/output.ts";
 import { runCli } from "./helpers/run.ts";
 import { consola } from "consola";
 import type { SemverString } from "../src/utils/semver.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "./helpers/env.ts";
 import { writeRunState } from "./helpers/fixtures.ts";
 import { dryRunChanges, fingerprintTree } from "./helpers/dry_run.ts";
@@ -97,7 +97,6 @@ function readStore(file: string): Record<string, unknown> {
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 test("dueMigrations selects [from, to) in ascending order over the registry", () => {

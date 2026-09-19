@@ -7,23 +7,21 @@ import {
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { directWiringFor } from "../src/codex/config.ts";
 import { directPairIncomplete, resolveDirectWiring } from "../src/agents/profile_wiring.ts";
-import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 const WORK = parseProfileName("work");
 const PIN = "copilot-developer-cli";
 
 const restoreEnv = envSnapshot();
-let dir = "";
 
 afterEach(() => {
   setIntegrationProbeFetch(null);
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 test("a pinned half is never a gap: the landing probes the other half once, and every re-render after it makes zero requests", async () => {
-  dir = isolateProxyHome("copilot-profile-wiring-");
+  isolateProxyHome("copilot-profile-wiring-");
   new CopilotEnvConfig().setProfile(WORK, { identity: PIN });
   // Fresh slot under a pin: the identity half is covered, the host half is not, so this IS a landing.
   expect(directPairIncomplete(WORK)).toBe(true);

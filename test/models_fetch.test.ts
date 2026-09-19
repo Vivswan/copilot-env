@@ -21,15 +21,13 @@ import {
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseModelList } from "../src/copilot_api/models.ts";
-import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot();
-let dir = "";
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 /** A duplicate id and an id-less entry: three raw entries, one model. */
@@ -65,7 +63,7 @@ test("the survey's model count is the listing's parse: one owner, one number", a
 });
 
 test("every consumer's GET /models carries its own identity pair and the bearer, on one URL", async () => {
-  dir = isolateProxyHome("copilot-models-fetch-");
+  isolateProxyHome("copilot-models-fetch-");
   const ua = "codex_exec/1";
   const seen: SeenRequest[] = [];
   const fetchImpl = recordingFetch(seen);
@@ -143,7 +141,7 @@ test("every consumer's GET /models carries its own identity pair and the bearer,
 });
 
 test("fetchRawModels(direct) reads the slot's stored pair: no probe, the GET on the stored host under the stored id", async () => {
-  dir = isolateProxyHome("copilot-models-fetch-stored-");
+  isolateProxyHome("copilot-models-fetch-stored-");
   // The slot holds the sandbox id on the account's host; a fresh selection would land on the codex
   // identity on the generic host (accepted there too), an identity the agents and the daemon never
   // send for this profile.

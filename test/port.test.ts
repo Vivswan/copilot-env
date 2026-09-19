@@ -8,19 +8,17 @@ import {
   proxyLoopbackOrigin,
   proxyPortRange,
 } from "../src/copilot_api/port.ts";
-import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
 const restoreEnv = envSnapshot();
-let dir = "";
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 function tmpHome(): void {
-  dir = isolateProxyHome("copilot-port-");
+  isolateProxyHome("copilot-port-");
 }
 
 // The allowed range is [min-port, max-port] from the config, [1024, 65535] by default: privileged,
@@ -124,8 +122,11 @@ test("matchesProxyOrigin: layers the per-site expected port and path on the gram
     ["http://127.0.0.1:4141/v1/", 4141, "/v1", true],
     // Wrong port, wrong path, or a cross-contract mixup is NOT a match.
     ["http://127.0.0.1:5151", 4141, "", false],
+    // The port must match whole: 41410 once satisfied 4141 as a substring.
+    ["http://localhost:41410/v1", 4141, "/v1", false],
     ["http://127.0.0.1:4141", 4141, "/v1", false],
     ["http://127.0.0.1:4141/v1", 4141, "", false],
+    ["http://localhost:4141/not-v1", 4141, "/v1", false],
     ["https://127.0.0.1:4141/v1", 4141, "/v1", false],
     ["not a url", 4141, "", false],
   ];

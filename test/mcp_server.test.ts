@@ -1,6 +1,7 @@
 import { consola } from "consola";
 import { redirectConsolaToStderr } from "../src/utils/logger.ts";
 import { cleanupTmpDirs, type JsonRpcMessage, McpClient } from "./helpers/mcp.ts";
+import { captureChannelsSync } from "./helpers/output.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 
 afterEach(cleanupTmpDirs);
@@ -114,29 +115,14 @@ test("a named profile without a credential hard-fails per call, never falling ba
 
 test("redirectConsolaToStderr moves global consola info lines off stdout", () => {
   const savedStdout = consola.options.stdout;
-  const savedLevel = consola.level;
-  const out: string[] = [];
-  const err: string[] = [];
-  const origOut = process.stdout.write.bind(process.stdout);
-  const origErr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = (s: string | Uint8Array) => {
-    out.push(String(s));
-    return true;
-  };
-  process.stderr.write = (s: string | Uint8Array) => {
-    err.push(String(s));
-    return true;
-  };
-  try {
-    consola.level = 3; // ensure info is not self-silenced under deno test
-    redirectConsolaToStderr();
-    consola.info("narration that must not corrupt the JSON-RPC stream");
-  } finally {
-    process.stdout.write = origOut;
-    process.stderr.write = origErr;
-    consola.options.stdout = savedStdout;
-    consola.level = savedLevel;
-  }
-  expect(out).toEqual([]);
-  expect(err.join("")).toContain("narration that must not corrupt");
+  const captured = captureChannelsSync(() => {
+    try {
+      redirectConsolaToStderr();
+      consola.info("narration that must not corrupt the JSON-RPC stream");
+    } finally {
+      consola.options.stdout = savedStdout;
+    }
+  });
+  expect(captured.stdout).toBe("");
+  expect(captured.stderr).toContain("narration that must not corrupt");
 });

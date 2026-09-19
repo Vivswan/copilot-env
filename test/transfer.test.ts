@@ -33,7 +33,11 @@ import { codexConfigPath } from "../src/codex/paths.ts";
 import { importRestartHints, runSettings } from "../src/commands/settings.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import {
+  CopilotEnvState,
+  type ProfileSlot,
+  type StoredCredential,
+} from "../src/copilot_api/env_state.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
   setIntegrationProbeFetch,
@@ -43,8 +47,8 @@ import { claudeDesktopStatus, reconcileClaudeDesktopWiring } from "../src/agents
 import { wireClaudeDesktopEntry } from "../src/claude/desktop.ts";
 import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop_library.ts";
 import { resolveRootHome } from "../src/copilot_api/paths.ts";
-import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { parseProfileName, type ProfileName } from "../src/copilot_api/profile.ts";
+import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
 import { type AgentHomes, envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers/env.ts";
 import { writeRunState } from "./helpers/fixtures.ts";
 import { captureChannels } from "./helpers/output.ts";
@@ -53,9 +57,6 @@ const WIN = process.platform === "win32";
 const WORK = parseProfileName("work");
 
 const restoreEnv = envSnapshot();
-// Round-trip tests isolate twice ("export machine", then a fresh "import
-// machine"), so cleanup tracks every temp dir created in a test.
-let dirs: string[] = [];
 
 // Direct wiring probes the Copilot integration identity over the network; the stub resolves
 // the default identity offline. Tests that must prove NO probe ran install a counting stub.
@@ -69,14 +70,10 @@ afterEach(() => {
   setIntegrationProbeFetch(null);
   restoreEnv();
   resetExitCode();
-  for (const dir of dirs) removeDir(dir);
-  dirs = [];
 });
 
 function isolate(): AgentHomes {
-  const homes = isolateAgentHomes("copilot-transfer-");
-  dirs.push(homes.dir);
-  return homes;
+  return isolateAgentHomes("copilot-transfer-");
 }
 
 /** Plan + apply in one call: these cases need no confirmation step between the two. */
@@ -472,78 +469,114 @@ for (
   });
 }
 
-test("a redacted bundle on a fresh machine imports prefs + proxy wiring, but no slot", async () => {
-  isolate();
-  await seedStores();
-  const bundle = buildExportBundle(); // redacted; modes are proxy/proxy
+/** A redacted bundle carries no token: each slot lands only if the target machine already
+ *  resolves a credential for it (the resulting-slot rule), and the marker never reaches the store.
+ *  Proxy default wiring needs no credential (`agent start` resolves its own), so it re-derives
+ *  regardless. */
+const REDACTED_LANDINGS: {
+  name: string;
+  /** The bundle; an export is built on its own machine first. */
+  bundle: () => Promise<SettingsBundle>;
+  /** The target machine's stores before the import. */
+  local: () => void;
+  /** Substrings of the skip hints; none means nothing was skipped. */
+  skipped: string[];
+  modes: ImportOutcome["modes"];
+  wiredProfiles: ProfileName[];
+  /** The whole profile map after the import, by name. */
+  profiles: ProfileName[];
+  defaultCredential: StoredCredential;
+  workSlot: ProfileSlot;
+}[] = [
+  {
+    name: "a fresh machine imports prefs + proxy wiring, but no slot",
+    bundle: async () => {
+      isolate();
+      await seedStores();
+      return buildExportBundle(); // redacted; modes are proxy/proxy
+    },
+    local: () => {},
+    skipped: ["run `agent auth`", "agent profile work add"],
+    modes: { codex: "proxy", claude: "proxy" },
+    wiredProfiles: [],
+    profiles: [],
+    defaultCredential: { kind: "none", provider: null },
+    // No artifacts, no placeholder token, no mode-only slot.
+    workSlot: { kind: "partial", credential: { kind: "none", provider: null }, mode: null },
+  },
+  {
+    name: "resolvable LOCAL credentials in both slots wire normally",
+    bundle: async () => {
+      isolate();
+      await seedStores();
+      return buildExportBundle();
+    },
+    local: () => {
+      const state = new CopilotEnvState();
+      new Credential(state).store("gh-token", "ghp_local_default");
+      state.commitProfile(WORK, {
+        credential: { kind: "stored", provider: "gh-token", token: "ghp_local_work" },
+        mode: "direct",
+      });
+    },
+    skipped: [],
+    modes: { codex: "proxy", claude: "proxy" },
+    wiredProfiles: [WORK],
+    profiles: [WORK],
+    defaultCredential: { kind: "stored", provider: "gh-token", token: "ghp_local_default" },
+    workSlot: {
+      kind: "complete",
+      credential: { kind: "stored", provider: "gh-token", token: "ghp_local_work" },
+      mode: "proxy",
+    },
+  },
+  {
+    // The default slot is empty in the bundle, so the local one is KEPT, not cleared; the work
+    // slot cannot resolve and lands nowhere.
+    name: "an unresolvable slot leaves the existing state untouched",
+    bundle: () =>
+      Promise.resolve(parseSettingsBundle(
+        rawBundle({
+          profiles: {
+            work: { githubToken: REDACTED_TOKEN, authProvider: "gh-token", mode: "proxy" },
+          },
+        }),
+      )),
+    local: () => new Credential().store("gh-token", "ghp_local_default"),
+    skipped: ["agent profile work add"],
+    modes: null,
+    wiredProfiles: [],
+    profiles: [],
+    defaultCredential: { kind: "stored", provider: "gh-token", token: "ghp_local_default" },
+    workSlot: { kind: "partial", credential: { kind: "none", provider: null }, mode: null },
+  },
+];
 
-  const machine2 = isolate();
-  const outcome = await applyImportBundle(bundle);
+for (const row of REDACTED_LANDINGS) {
+  test(`a redacted bundle over ${row.name}`, async () => {
+    const bundle = await row.bundle();
+    const machine = isolate();
+    row.local();
+    const before = new CopilotEnvState().read();
 
-  const skipped = outcome.skipped.join("\n");
-  expect(skipped).toContain("run `agent auth`");
-  expect(skipped).toContain("agent profile work add");
-  expect(outcome.wiredProfiles).toEqual([]);
-  // Proxy default wiring is credential-independent (`agent start` resolves the credential
-  // itself and refuses without one), so it re-derived even though no credential resolved.
-  expect(outcome.modes).toEqual({ codex: "proxy", claude: "proxy" });
-  expect(existsSync(settingsPathFor(machine2.claudeHome))).toBe(true);
-  // The profile slot stayed untouched: no artifacts, no placeholder token,
-  // no mode-only slot.
-  expect(existsSync(settingsPathFor(machine2.claudeHome, WORK))).toBe(false);
-  expect(new CopilotEnvConfig().read().global["daemon.auto-start"]).toBe(true);
-  const state = new CopilotEnvState().read();
-  expect(state.githubToken).toBeNull();
-  expect(state.authProvider).toBeNull();
-  expect(state.profiles).toEqual({});
-  expect(JSON.stringify(state)).not.toContain(REDACTED_TOKEN);
-});
+    const outcome = await applyImportBundle(bundle);
 
-test("a redacted bundle over resolvable LOCAL credentials wires normally (resulting-slot rule)", async () => {
-  isolate();
-  await seedStores();
-  const bundle = buildExportBundle(); // redacted
-  // The target machine has its own working credentials for both slots.
-  isolate();
-  const state = new CopilotEnvState();
-  new Credential(state).store("gh-token", "ghp_local_default");
-  state.commitProfile(WORK, {
-    credential: { kind: "stored", provider: "gh-token", token: "ghp_local_work" },
-    mode: "direct",
+    if (row.skipped.length === 0) expect(outcome.skipped).toEqual([]);
+    for (const hint of row.skipped) expect(outcome.skipped.join("\n")).toContain(hint);
+    expect(outcome.modes).toEqual(row.modes);
+    expect(outcome.wiredProfiles).toEqual(row.wiredProfiles);
+    expect(new CopilotEnvState().profileNames()).toEqual(row.profiles);
+    expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(row.modes !== null);
+    expect(existsSync(settingsPathFor(machine.claudeHome, WORK))).toBe(
+      row.wiredProfiles.length > 0,
+    );
+    const state = new CopilotEnvState();
+    expect(state.readCredential(null)).toEqual(row.defaultCredential);
+    expect(state.readProfileSlot(WORK)).toEqual(row.workSlot);
+    expect(JSON.stringify(state.read())).not.toContain(REDACTED_TOKEN);
+    if (row.modes === null) expect(state.read()).toEqual(before);
   });
-
-  const outcome = await applyImportBundle(bundle);
-
-  expect(outcome.skipped).toEqual([]);
-  expect(outcome.modes).toEqual({ codex: "proxy", claude: "proxy" });
-  expect(outcome.wiredProfiles).toEqual([WORK]);
-  expect(new Credential().resolve()).toBe("ghp_local_default");
-  expect(new Credential(undefined, WORK).resolve()).toBe("ghp_local_work");
-  const slot = new CopilotEnvState().readProfileSlot(WORK);
-  expect(slot.mode).toBe("proxy");
-  expect(JSON.stringify(new CopilotEnvState().read())).not.toContain(REDACTED_TOKEN);
-});
-
-test("an unresolvable slot leaves the existing state untouched", async () => {
-  isolate();
-  new Credential().store("gh-token", "ghp_local_default");
-  // The settings share the file and ARE rewritten by the import; the state keys are not.
-  const credentials = () => new CopilotEnvState().read();
-  const before = credentials();
-
-  const bundle = parseSettingsBundle(
-    rawBundle({
-      // Default slot: empty in the bundle -> the local one is KEPT, not cleared.
-      profiles: {
-        work: { githubToken: REDACTED_TOKEN, authProvider: "gh-token", mode: "proxy" },
-      },
-    }),
-  );
-  const outcome = await applyImportBundle(bundle);
-
-  expect(outcome.skipped.join("\n")).toContain("agent profile work add");
-  expect(credentials()).toEqual(before);
-});
+}
 
 test("the import's credential gate is direct-only: proxy wires without one", async () => {
   const machine = isolate();
@@ -704,7 +737,7 @@ test("a Direct default whose pair will not be stored at apply time rebakes both 
   expect(new CopilotEnvConfig().read().profiles).toEqual({});
 });
 
-test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the identity", async () => {
+test("gh-cli slots probe gh ONCE end to end: a failed probe skips them unless the local slot resolves, a pinned slot probes ITS account, and gh-cli wiring re-derives the identity", async () => {
   const machine = isolate();
   const bundle = parseSettingsBundle(
     rawBundle({
@@ -762,49 +795,47 @@ test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the id
     ghUser: null,
   });
   expect(new CopilotEnvState().profileNames()).toEqual([WORK]); // alt never landed
-});
 
-test("a pinned gh-cli bundle slot probes ITS account and lands the pin", async () => {
+  // A pinned slot probes ITS account, and the pin lands with the credential.
   isolate();
-  const bundle = parseSettingsBundle(
-    rawBundle({
-      credential: { githubToken: null, authProvider: "gh-cli", ghUser: "work-bot" },
-      modes: { codex: "none", claude: "none" },
-    }),
-  );
   const asked: Array<string | null> = [];
-  await applyImportBundle(bundle, {
-    ghAuthToken: (ghUser) => {
-      asked.push(ghUser ?? null);
-      return "gho_live";
+  await applyImportBundle(
+    parseSettingsBundle(
+      rawBundle({
+        credential: { githubToken: null, authProvider: "gh-cli", ghUser: "work-bot" },
+        modes: { codex: "none", claude: "none" },
+      }),
+    ),
+    {
+      ghAuthToken: (ghUser) => {
+        asked.push(ghUser ?? null);
+        return "gho_live";
+      },
     },
-  });
+  );
   expect(asked).toEqual(["work-bot"]);
   expect(new CopilotEnvState().readCredential(null)).toEqual({
     kind: "gh-cli",
     ghUser: "work-bot",
   });
-});
 
-test("a gh-cli default over a working local token falls through to the kept slot", async () => {
-  const machine = isolate();
+  // gh failing only rules out the BUNDLE's credential: over a working local token the
+  // default falls through to the kept slot, so wiring proceeds and the local credential
+  // survives untouched.
+  const local = isolate();
   new Credential().store("gh-token", "github_pat_local");
-  const bundle = parseSettingsBundle(
-    rawBundle({
-      credential: { githubToken: null, authProvider: "gh-cli" },
-      modes: { codex: "none", claude: "direct" },
-    }),
+  const keptLocal = await applyImportBundle(
+    parseSettingsBundle(
+      rawBundle({
+        credential: { githubToken: null, authProvider: "gh-cli" },
+        modes: { codex: "none", claude: "direct" },
+      }),
+    ),
+    { ghAuthToken: () => null },
   );
-
-  const outcome = await applyImportBundle(bundle, {
-    ghAuthToken: () => null,
-  });
-
-  // gh failing only rules out the BUNDLE's credential: the local slot resolves,
-  // so wiring proceeds and the local credential survives untouched.
-  expect(outcome.skipped).toEqual([]);
-  expect(outcome.modes?.claude).toBe("direct");
-  expect(existsSync(settingsPathFor(machine.claudeHome))).toBe(true);
+  expect(keptLocal.skipped).toEqual([]);
+  expect(keptLocal.modes?.claude).toBe("direct");
+  expect(existsSync(settingsPathFor(local.claudeHome))).toBe(true);
   expect(new CopilotEnvState().read().authProvider).toBe("gh-token");
   expect(new Credential().resolve()).toBe("github_pat_local");
 });
@@ -890,55 +921,78 @@ test("a profile wiring failure lands in failures and the command exits non-zero"
   });
 });
 
-test("a throwing profile COMMIT is contained per-slot: the rest of the import proceeds", async () => {
-  isolate();
-  const bundle = parseSettingsBundle(
-    rawBundle({
-      profiles: {
-        bad: { githubToken: "ghp_bad", authProvider: "gh-token", mode: "proxy" },
-        work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" },
-      },
-    }),
-  );
-  const plan = planImport(bundle);
-  // A whitespace token travels fine in the plan's types but rawCredentialPatch (inside
-  // commitProfile) rejects it, so the FIRST slot's commit itself throws. The commit sits
-  // INSIDE the per-profile containment: the slot is skipped whole and never blocks the
-  // profiles after it.
-  const bad = plan.profiles.find((p) => p.name === parseProfileName("bad"));
-  if (
-    bad === undefined || bad.landing.action !== "write" || bad.landing.credential.kind !== "stored"
-  ) {
-    throw new Error("plan did not stage the bad profile as a token write");
-  }
-  bad.landing.credential.token = "   ";
+/** One writer fails: the failure is one outcome.failures entry naming what failed, and the rest
+ *  of the import proceeds. */
+const FAILING_WRITERS: {
+  name: string;
+  /** Stages the plan on a fresh machine with the failure planted. */
+  plan: (machine: AgentHomes) => ImportPlan;
+  /** A substring of the one failures entry. */
+  failure: string;
+  wiredProfiles: ProfileName[];
+  /** The profiles in the store afterwards. */
+  profiles: ProfileName[];
+}[] = [
+  {
+    // A whitespace token travels fine in the plan's types but rawCredentialPatch (inside
+    // commitProfile) rejects it, so the FIRST slot's commit itself throws. The commit sits
+    // INSIDE the per-profile containment: the slot is skipped whole, lands NOWHERE (no half
+    // profile in the store), and never blocks the profiles after it.
+    name: "a throwing profile COMMIT is contained per-slot",
+    plan: () => {
+      const plan = planImport(parseSettingsBundle(
+        rawBundle({
+          profiles: {
+            bad: { githubToken: "ghp_bad", authProvider: "gh-token", mode: "proxy" },
+            work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" },
+          },
+        }),
+      ));
+      const bad = plan.profiles.find((p) => p.name === parseProfileName("bad"));
+      if (
+        bad === undefined || bad.landing.action !== "write" ||
+        bad.landing.credential.kind !== "stored"
+      ) {
+        throw new Error("plan did not stage the bad profile as a token write");
+      }
+      bad.landing.credential.token = "   ";
+      return plan;
+    },
+    failure: "profile 'bad'",
+    wiredProfiles: [WORK],
+    profiles: [WORK],
+  },
+  {
+    // CLAUDE_CONFIG_DIR pointing at a FILE makes the Claude writer throw.
+    name: "a default-wiring failure surfaces",
+    plan: (machine) => {
+      writeFileSync(join(machine.dir, "not-a-dir"), "");
+      process.env.CLAUDE_CONFIG_DIR = join(machine.dir, "not-a-dir");
+      return planImport(parseSettingsBundle(
+        rawBundle({
+          credential: { githubToken: "ghp_default", authProvider: "gh-token" },
+          modes: { codex: "none", claude: "proxy" },
+        }),
+      ));
+    },
+    failure: "Claude:",
+    wiredProfiles: [],
+    profiles: [],
+  },
+];
 
-  const outcome = await applyImportPlan(plan);
+for (const { name, plan, failure, wiredProfiles, profiles } of FAILING_WRITERS) {
+  test(`${name} into outcome.failures; the profiles after it land as planned`, async () => {
+    const machine = isolate();
 
-  expect(outcome.failures.length).toBe(1);
-  expect(outcome.failures[0]).toContain("profile 'bad'");
-  expect(outcome.wiredProfiles).toEqual([WORK]);
-  // The throwing slot landed NOWHERE: no half profile in the store.
-  expect(new CopilotEnvState().profileNames()).toEqual([WORK]);
-});
+    const outcome = await applyImportPlan(plan(machine));
 
-test("a default-wiring failure surfaces into outcome.failures", async () => {
-  const machine = isolate();
-  // CLAUDE_CONFIG_DIR pointing at a FILE makes the Claude writer throw.
-  writeFileSync(join(machine.dir, "not-a-dir"), "");
-  process.env.CLAUDE_CONFIG_DIR = join(machine.dir, "not-a-dir");
-  const bundle = parseSettingsBundle(
-    rawBundle({
-      credential: { githubToken: "ghp_default", authProvider: "gh-token" },
-      modes: { codex: "none", claude: "proxy" },
-    }),
-  );
-
-  const outcome = await applyImportBundle(bundle);
-
-  expect(outcome.failures.length).toBe(1);
-  expect(outcome.failures[0]).toContain("Claude:");
-});
+    expect(outcome.failures.length).toBe(1);
+    expect(outcome.failures[0]).toContain(failure);
+    expect(outcome.wiredProfiles).toEqual(wiredProfiles);
+    expect(new CopilotEnvState().profileNames()).toEqual(profiles);
+  });
+}
 
 // --- the command layer ----------------------------------------------------------
 

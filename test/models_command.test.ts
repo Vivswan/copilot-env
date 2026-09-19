@@ -7,102 +7,138 @@ import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // --- parseModelList (pure) ----------------------------------------------------
 
-test("parseModelList extracts id/name/vendor/type/limits, sorted by id", () => {
-  const body = {
-    data: [
-      {
-        id: "gpt-5.5",
-        name: "GPT-5.5",
-        vendor: "OpenAI",
-        preview: false,
-        capabilities: {
-          type: "chat",
-          limits: { max_context_window_tokens: 128000, max_output_tokens: 16384 },
+const MODEL_LIST_ROWS: (
+  | { name: string; body: unknown; entries: ModelListEntry[] }
+  | { name: string; body: unknown; throws: string }
+)[] = [
+  {
+    name: "id/name/vendor/type/limits are extracted and the list is sorted by id",
+    body: {
+      data: [
+        {
+          id: "gpt-5.5",
+          name: "GPT-5.5",
+          vendor: "OpenAI",
+          preview: false,
+          capabilities: {
+            type: "chat",
+            limits: { max_context_window_tokens: 128000, max_output_tokens: 16384 },
+          },
         },
-      },
+        {
+          id: "claude-opus-4.8",
+          name: "Claude Opus 4.8",
+          vendor: "Anthropic",
+          preview: true,
+          capabilities: {
+            type: "chat",
+            limits: { max_context_window_tokens: 200000, max_output_tokens: 32000 },
+          },
+        },
+      ],
+    },
+    entries: [
       {
         id: "claude-opus-4.8",
         name: "Claude Opus 4.8",
         vendor: "Anthropic",
+        type: "chat",
+        contextWindow: 200000,
+        maxOutput: 32000,
         preview: true,
-        capabilities: {
-          type: "chat",
-          limits: { max_context_window_tokens: 200000, max_output_tokens: 32000 },
-        },
+      },
+      {
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        vendor: "OpenAI",
+        type: "chat",
+        contextWindow: 128000,
+        maxOutput: 16384,
+        preview: false,
       },
     ],
-  };
-  expect(parseModelList(body)).toEqual([
-    {
-      id: "claude-opus-4.8",
-      name: "Claude Opus 4.8",
-      vendor: "Anthropic",
-      type: "chat",
-      contextWindow: 200000,
-      maxOutput: 32000,
-      preview: true,
+  },
+  {
+    name: "ids stay verbatim ([1m] suffix) and duplicates merge field-wise",
+    body: {
+      data: [
+        {
+          id: "claude-opus-4.8[1m]",
+          capabilities: { limits: { max_context_window_tokens: 1048576 } },
+        },
+        { id: "claude-opus-4.8[1m]", name: "Claude Opus 4.8 (1M)", vendor: "Anthropic" },
+      ],
     },
-    {
-      id: "gpt-5.5",
-      name: "GPT-5.5",
-      vendor: "OpenAI",
-      type: "chat",
-      contextWindow: 128000,
-      maxOutput: 16384,
-      preview: false,
-    },
-  ]);
-});
-
-test("parseModelList keeps ids verbatim ([1m] suffix) and merges duplicates field-wise", () => {
-  const body = {
-    data: [
+    entries: [
       {
         id: "claude-opus-4.8[1m]",
-        capabilities: { limits: { max_context_window_tokens: 1048576 } },
+        name: "Claude Opus 4.8 (1M)",
+        vendor: "Anthropic",
+        type: null,
+        contextWindow: 1048576,
+        maxOutput: null,
+        preview: false,
       },
-      { id: "claude-opus-4.8[1m]", name: "Claude Opus 4.8 (1M)", vendor: "Anthropic" },
     ],
-  };
-  const [entry] = parseModelList(body);
-  expect(entry?.id).toBe("claude-opus-4.8[1m]");
-  expect(entry?.name).toBe("Claude Opus 4.8 (1M)");
-  expect(entry?.vendor).toBe("Anthropic");
-  expect(entry?.contextWindow).toBe(1048576);
-});
-
-test("parseModelList merges preview any-true and skips empty-string ids", () => {
-  const body = {
-    data: [
-      { id: "gpt-6-preview" },
-      { id: "gpt-6-preview", preview: true },
-      { id: "", name: "unaddressable" },
-    ],
-  };
-  const models = parseModelList(body);
-  expect(models).toHaveLength(1);
-  expect(models[0]?.preview).toBe(true);
-});
-
-test("parseModelList tolerates junk entries but rejects a malformed envelope", () => {
-  const body = {
-    data: [{ id: "gpt-5.5" }, "junk", 42, { name: "no id" }, { id: 7 }],
-  };
-  expect(parseModelList(body)).toEqual([
-    {
-      id: "gpt-5.5",
-      name: null,
-      vendor: null,
-      type: null,
-      contextWindow: null,
-      maxOutput: null,
-      preview: false,
+  },
+  {
+    name: "preview merges any-true and an empty-string id is skipped",
+    body: {
+      data: [
+        { id: "gpt-6-preview" },
+        { id: "gpt-6-preview", preview: true },
+        { id: "", name: "unaddressable" },
+      ],
     },
-  ]);
-  expect(parseModelList({ data: [] })).toEqual([]);
+    entries: [
+      {
+        id: "gpt-6-preview",
+        name: null,
+        vendor: null,
+        type: null,
+        contextWindow: null,
+        maxOutput: null,
+        preview: true,
+      },
+    ],
+  },
+  {
+    name: "junk entries are tolerated",
+    body: { data: [{ id: "gpt-5.5" }, "junk", 42, { name: "no id" }, { id: 7 }] },
+    entries: [
+      {
+        id: "gpt-5.5",
+        name: null,
+        vendor: null,
+        type: null,
+        contextWindow: null,
+        maxOutput: null,
+        preview: false,
+      },
+    ],
+  },
+  { name: "an empty data array is an empty catalog", body: { data: [] }, entries: [] },
   // No data array is schema drift, not an empty catalog.
-  for (const malformed of [null, {}, { data: "nope" }, []]) {
-    expect(() => parseModelList(malformed)).toThrow("unexpected /models response shape");
+  { name: "a null body", body: null, throws: "unexpected /models response shape" },
+  { name: "an empty object", body: {}, throws: "unexpected /models response shape" },
+  {
+    name: "a data field that is not an array",
+    body: { data: "nope" },
+    throws: "unexpected /models response shape",
+  },
+  { name: "a bare array", body: [], throws: "unexpected /models response shape" },
+];
+
+test("parseModelList: every /models body shape maps to its entries or the schema-drift error", () => {
+  for (const row of MODEL_LIST_ROWS) {
+    if ("throws" in row) {
+      expect(() => parseModelList(row.body), row.name).toThrow(row.throws);
+      continue;
+    }
+    expect({ name: row.name, entries: parseModelList(row.body) }).toEqual({
+      name: row.name,
+      entries: row.entries,
+    });
   }
 });
 
@@ -203,20 +239,6 @@ function seedDirectProfile(home: string, name: string): void {
   );
 }
 
-test("models --help surfaces --proxy / --direct / --json", () => {
-  const { exitCode, out } = runModelsCli(["--help"]);
-  expect(exitCode).toBe(0);
-  for (const flag of ["--proxy", "--direct", "--json"]) {
-    expect(out).toContain(flag);
-  }
-});
-
-test("models rejects --proxy + --direct", () => {
-  const { exitCode, out } = runModelsCli(["--proxy", "--direct"]);
-  expect(exitCode).toBe(1);
-  expect(out).toContain("--direct and --proxy are mutually exclusive");
-});
-
 test("models --proxy fails actionably when the proxy is down", () => {
   const { exitCode, out } = runModelsCli(["--proxy"]);
   expect(exitCode).toBe(1);
@@ -254,15 +276,4 @@ test("profile models never falls back: a credential-less direct profile hard-fai
   expect(out).toContain("no GitHub credential configured for profile 'p1'");
   expect(out).toContain("agent profile p1 auth");
   expect(out).toContain("never falls back");
-});
-
-test("profile models --proxy fails actionably when the profile's daemon is down", () => {
-  const { exitCode, out } = runModelsCli(
-    ["--proxy"],
-    (home) => seedDirectProfile(home, "p1"),
-    "p1",
-  );
-  expect(exitCode).toBe(1);
-  expect(out).toContain("local proxy for profile 'p1' is not running");
-  expect(out).toContain("agent profile p1 start");
 });

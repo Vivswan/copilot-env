@@ -29,7 +29,6 @@ const skipWin = test.skipIf(process.platform === "win32");
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 /** Everything `run` writes to stderr (the one place `agent profile env` may talk). */

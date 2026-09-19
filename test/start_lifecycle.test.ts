@@ -34,7 +34,7 @@ import { writeResolvedVersionRecord } from "../src/proxy_float.ts";
 import { packageVersion } from "../src/utils/version.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { ROOT } from "./helpers/run.ts";
-import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { defaultHomeDir, envSnapshot, isolateProxyHome, resetExitCode } from "./helpers/env.ts";
 import { writeRunState } from "./helpers/fixtures.ts";
 import { fingerprintTree } from "./helpers/dry_run.ts";
@@ -64,7 +64,6 @@ afterEach(() => {
   resetIntegrationIdentityCache();
   restoreEnv();
   resetExitCode();
-  dir = removeDir(dir);
 });
 
 /** The start's credential resolution selects the daemon's identity over the network; the stub
@@ -77,46 +76,10 @@ function stubIdentityProbe(): void {
 
 /** Isolate a root and return the DEFAULT daemon's home under it (profiles/default,
  *  created on disk) -- what the dry-run plan and the lock/holder staging both
- *  resolve. `dir` (the root) owns cleanup. */
+ *  resolve. `dir` is the root. */
 function tmpHome(): string {
   dir = isolateProxyHome("copilot-lifecycle-");
   return defaultHomeDir();
-}
-
-/** Run `fn` and return what it wrote to each process stream; `onStdout` sees each stdout
- *  chunk as it lands, so a test can order output against its own events. */
-async function streamsOf(
-  fn: () => Promise<void>,
-  onStdout: (chunk: string) => void = () => {},
-): Promise<{ stdout: string; stderr: string }> {
-  const out: string[] = [];
-  const err: string[] = [];
-  const savedLevel = consola.level;
-  const origOut = process.stdout.write;
-  const origErr = process.stderr.write;
-  process.stdout.write = (s: string | Uint8Array) => {
-    out.push(String(s));
-    onStdout(String(s));
-    return true;
-  };
-  process.stderr.write = (s: string | Uint8Array) => {
-    err.push(String(s));
-    return true;
-  };
-  try {
-    consola.level = 3; // ensure info is not self-silenced under the test runner
-    await fn();
-  } finally {
-    process.stdout.write = origOut;
-    process.stderr.write = origErr;
-    consola.level = savedLevel;
-  }
-  return { stdout: out.join(""), stderr: err.join("") };
-}
-
-async function narrationOf(fn: () => Promise<void>): Promise<string> {
-  const { stdout, stderr } = await streamsOf(fn);
-  return stdout + stderr;
 }
 
 /** Everything a bare `start --dry-run` prints: the narration (consola's streams) and the plan
@@ -134,7 +97,7 @@ test("start --dry-run runs the launch's credential gate: no credential is the re
   await expect(dryRunNarration()).rejects.toThrow(refusal);
   // The real launch refuses the same way, before any side effect.
   await expect(
-    narrationOf(() =>
+    captureChannels(() =>
       runStart({ kind: "launch", dryRun: false, force: false, port: undefined, profile: null })
     ),
   ).rejects.toThrow(refusal);
@@ -166,7 +129,7 @@ test("start --dry-run runs the launch's credential gate: no credential is the re
   expect(refused.stdout).not.toContain(".state.json");
   expect(refused.stdout).not.toContain("integrationIdentity");
   await expect(
-    narrationOf(() =>
+    captureChannels(() =>
       runStart({ kind: "launch", dryRun: false, force: false, port: undefined, profile: null })
     ),
   ).rejects.toThrow(notJson);
@@ -421,7 +384,7 @@ test(
       // Key off (the default), a check long due: the no-op outcome, then the preflight
       // call, which checks nothing.
       writeFileSync(stateFile, JSON.stringify({ lastCheckMs: 1, lastResult: "old" }));
-      await streamsOf(() => runStart(launch, preflight), onStdout);
+      await captureChannels(() => runStart(launch, preflight), { onStdout });
       expect(events).toEqual(["noop", "preflight"]);
       expect(urls).toEqual([]);
       expect(JSON.parse(readFileSync(stateFile, "utf8"))).toEqual({
@@ -431,7 +394,9 @@ test(
 
       // Key on, still due: the release check runs and its result is recorded.
       config.set({ "update.auto": true });
-      const { stdout, stderr } = await streamsOf(() => runStart(launch, preflight), onStdout);
+      const { stdout, stderr } = await captureChannels(() => runStart(launch, preflight), {
+        onStdout,
+      });
       expect(events).toEqual(["noop", "preflight", "noop", "preflight"]);
       // Stream routing: the preflight's shared-consola line is the ONLY stderr output (its
       // prefix is consola's reporter glyph, which differs between a TTY and CI), and none

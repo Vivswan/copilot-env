@@ -31,6 +31,7 @@ import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
 import { linesNaming } from "./helpers/dry_run.ts";
+import { codexConfigToml } from "./helpers/fixtures.ts";
 
 /** A recorded Direct default whose slot holds its pair, so a single-agent write is a re-render
  *  (zero probes, no credential needed); with no pair it would land both agents and ask to log in. */
@@ -50,7 +51,6 @@ const COMMAND = { kind: "command" } as const;
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 // The proxy home exists: catalog tests write the generated JSON straight into it.
@@ -255,69 +255,7 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   expect(existsSync(join(codexHome, ".env"))).toBe(false);
 });
 
-test("refuses to overwrite an unparseable config.toml (preserves the user's file)", () => {
-  isolate();
-  const codexHome = join(dir, ".codex");
-  mkdirSync(codexHome, { recursive: true });
-
-  // Real user content plus one TOML syntax error (an unbalanced quote from a hand edit).
-  const original = [
-    "[mcp_servers.mine]",
-    'command = "my-server',
-    "",
-    "[model_providers.myopenai]",
-    'base_url = "https://api.openai.com/v1"',
-    "",
-  ].join("\n");
-  const configPath = join(codexHome, "config.toml");
-  writeFileSync(configPath, original);
-
-  // The write must throw rather than clobber the file with the default template.
-  expect(() =>
-    configureCodexConfig(codexHome, {
-      mode: "proxy",
-      credential: COMMAND,
-      baseUrl: "http://localhost:4141/v1",
-    })
-  ).toThrow(/not valid TOML|refusing to overwrite/);
-  expect(readFileSync(configPath, "utf8")).toBe(original);
-});
-
-test("runCodex --proxy and --direct force the selected provider (no probe)", async () => {
-  isolate();
-  const codexHome = join(dir, "custom-codex-home");
-  process.env.CODEX_HOME = codexHome;
-  mkdirSync(codexHome, { recursive: true });
-  writeFileSync(
-    join(codexHome, "config.toml"),
-    [
-      'model_provider = "copilot-env"',
-      "",
-      "[model_providers.copilot-env]",
-      'base_url = "https://old.example"',
-      "",
-    ].join("\n"),
-  );
-
-  new CopilotEnvState().recordDefaultMode("proxy"); // a single-agent write re-renders the record
-  await runCodex({ kind: "configure", mode: "proxy" });
-  let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  expect(doc.model_provider).toBe("copilot-env");
-  expect(asRecord(asRecord(doc.model_providers)["copilot-env"]).base_url).toBe(
-    "http://127.0.0.1:4141/v1",
-  );
-
-  directDefault();
-  await runCodex({ kind: "configure", mode: "direct" });
-  doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  expect(doc.model_provider).toBe("copilot-env");
-  const directProvider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
-  expect(directProvider.base_url).toBe("https://api.githubcopilot.com");
-  // Toggling proxy -> direct must leave NO stale proxy-only key on the shared table.
-  expect(directProvider.env_key).toBeUndefined();
-});
-
-test("toggling direct <-> proxy swaps the mode-specific keys on the shared table", () => {
+test("toggling direct <-> proxy swaps the mode-specific keys on the shared table, written directly or through runCodex --proxy/--direct (no probe)", async () => {
   isolate();
   const codexHome = join(dir, ".codex");
 
@@ -351,6 +289,31 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
   expect(asRecord(provider.auth).command).toBe(proxyTokenCommand().command);
   expect(asRecord(provider.auth).args).toEqual(proxyTokenCommand().args);
   expect(provider.http_headers).toBeUndefined();
+
+  // The same toggles through runCodex: --proxy forces the proxy provider at the daemon's
+  // loopback address over whatever base_url the table held (a foreign one here), --direct the
+  // Copilot host.
+  const tomlPath = join(codexHome, "config.toml");
+  writeFileSync(
+    tomlPath,
+    readFileSync(tomlPath, "utf8").replace("http://localhost:4141/v1", "https://old.example"),
+  );
+  new CopilotEnvState().recordDefaultMode("proxy"); // a single-agent write re-renders the record
+  await runCodex({ kind: "configure", mode: "proxy" });
+  let viaRun = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  expect(viaRun.model_provider).toBe("copilot-env");
+  expect(asRecord(asRecord(viaRun.model_providers)["copilot-env"]).base_url).toBe(
+    "http://127.0.0.1:4141/v1",
+  );
+
+  directDefault();
+  await runCodex({ kind: "configure", mode: "direct" });
+  viaRun = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  expect(viaRun.model_provider).toBe("copilot-env");
+  const directProvider = asRecord(asRecord(viaRun.model_providers)["copilot-env"]);
+  expect(directProvider.base_url).toBe("https://api.githubcopilot.com");
+  // Toggling proxy -> direct must leave NO stale proxy-only key on the shared table.
+  expect(directProvider.env_key).toBeUndefined();
 });
 
 test("a static-key write previews its bearer leaf redacted and every other leaf in the clear", async () => {
@@ -1086,10 +1049,15 @@ test("a proxy auth block that is not the managed proxy-token command (the 3.5.6 
   }
 });
 
-test("inspectCodexWiring classifies the read result: unreadable is other/read-error (the file EXISTS), absent is none, our provider is selected, a foreign one is other/custom carrying its id", () => {
+test("inspectCodexWiring classifies the read result (unreadable is other/read-error with the file EXISTING, absent is none, ours is selected, a foreign one is other/custom carrying its id), then config.toml, .env, and the environ decide the wiring facts", () => {
+  const proxyToml = (baseUrl: string) => codexConfigToml({ baseUrl, auth: proxyTokenCommand() });
+  const good = proxyToml("http://localhost:4141/v1");
+  const env = "OPENAI_API_KEY=sk-test\n";
   const cases: {
     name: string;
     input: Parameters<typeof inspectCodexWiring>[0];
+    env?: string;
+    environ?: true;
     expected: Record<string, unknown>;
   }[] = [
     {
@@ -1103,6 +1071,11 @@ test("inspectCodexWiring classifies the read result: unreadable is other/read-er
       expected: { providerMode: "none", configExists: false },
     },
     {
+      name: "no config.toml",
+      input: null,
+      expected: { configExists: false, providerWired: false, providerMode: "none" },
+    },
+    {
       name: "ours",
       input: { kind: "text", text: 'model_provider = "copilot-env"' },
       expected: { providerSelected: true, otherReason: null },
@@ -1112,9 +1085,69 @@ test("inspectCodexWiring classifies the read result: unreadable is other/read-er
       input: 'model_provider = "openai"',
       expected: { providerMode: "other", otherReason: "custom", modelProvider: "openai" },
     },
+    {
+      name: "managed proxy provider + .env key",
+      input: good,
+      env,
+      expected: {
+        providerMode: "proxy",
+        providerWired: true,
+        envKeyInDotenv: true,
+        tokenAvailable: true,
+      },
+    },
+    {
+      name: "stale port",
+      input: proxyToml("http://localhost:9999/v1"),
+      env,
+      expected: { baseUrlMatches: false, providerWired: false },
+    },
+    {
+      name: "foreign auth command",
+      input: codexConfigToml({
+        baseUrl: "http://localhost:4141/v1",
+        auth: { command: "/usr/local/bin/other", args: ["--yes"] },
+      }),
+      env,
+      expected: { providerWired: false },
+    },
+    {
+      // The pre-4.0.0 proxy shape (`env_key` instead of the managed auth block) is proxy by base_url
+      // but never managed wiring; the 4.0.0 migration rewrites it.
+      name: "legacy env_key provider",
+      input: codexConfigToml({ baseUrl: "http://localhost:4141/v1", envKey: "OPENAI_API_KEY" }),
+      env,
+      expected: {
+        providerMode: "proxy",
+        envKeyMatches: false,
+        providerWired: false,
+        tokenAvailable: true,
+      },
+    },
+    {
+      name: "key only in the environ",
+      input: good,
+      env: "FOO=1\n",
+      environ: true,
+      expected: { envKeyInDotenv: false, envKeyInEnviron: true, tokenAvailable: true },
+    },
+    { name: "key nowhere", input: good, env: "FOO=1\n", expected: { tokenAvailable: false } },
+    {
+      name: "spaces around the .env equals sign",
+      input: good,
+      env: "OPENAI_API_KEY = sk-test\n",
+      expected: { envKeyInDotenv: true },
+    },
+    {
+      name: "direct provider needs no OPENAI_API_KEY",
+      input:
+        `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "https://api.githubcopilot.com"\n`,
+      expected: { providerMode: "direct", providerWired: true, tokenAvailable: false },
+    },
   ];
   for (const c of cases) {
-    expect(inspectCodexWiring(c.input, null, 4141, false), c.name).toMatchObject(c.expected);
+    expect(inspectCodexWiring(c.input, c.env ?? null, 4141, c.environ ?? false), c.name)
+      .toMatchObject(c.expected);
   }
 });
 

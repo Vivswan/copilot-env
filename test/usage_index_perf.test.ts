@@ -1,7 +1,8 @@
-// The usage index on a seeded tree of real-log shape: a warm `agent cost` reads no session
-// bytes and re-parses nothing, an append is read as its new bytes plus the probe, a deleted
-// session leaves the index, and no planted text reaches the index file. Timings are logged,
-// never asserted. In process throughout; sized by COPILOT_ENV_USAGE_FIXTURE_MB (30 MiB unset).
+// The usage index on a seeded tree of real-log shape: the index agrees with the plain parse
+// cold and warm, a warm `agent cost` reads no session bytes and re-parses nothing, an append
+// is read as its new bytes plus the probe, a deleted session leaves the index, and no planted
+// text reaches the index file. Timings are logged, never asserted. In process throughout;
+// sized by COPILOT_ENV_USAGE_FIXTURE_MB (30 MiB unset).
 import { appendFileSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { TAIL_PROBE_BYTES } from "../src/usage/contribution.ts";
@@ -41,19 +42,32 @@ function log(label: string, runtime: CostRuntime): void {
 }
 
 test.skipIf(!utcPinnable())(
-  `a ${MB} MiB tree: warm reads nothing, an append reads its bytes, a delete leaves the index`,
+  `a ${MB} MiB tree: the index agrees with the plain parse, warm reads nothing, an append reads its bytes, a delete leaves the index`,
   async () => {
     const root = tempDir("usage-index-perf-");
     const tree = await generateUsageTree({ root, mb: MB, seed: 1 });
     const copilotApiHome = join(tempDir("usage-index-perf-"), "copilot-env");
 
+    // The three read paths agree: the plain parse, then the index cold and warm. The stats
+    // prove both readers went through the index: the cold run saw every file of the tree and
+    // parsed each whole, and the warm run reused exactly those rows.
+    const plain = await runCurrentCost(root, { noIndex: true });
+    log("plain", plain.runtime);
+    expect(plain.runtime.indexed).toBe(false);
     const cold = await runCurrentCost(root, { copilotApiHome });
     log("cold", cold.runtime);
     const warm = await runCurrentCost(root, { copilotApiHome });
     log("warm", warm.runtime);
+    expect(cold.payload).toEqual(plain.payload);
     expect(warm.payload).toEqual(cold.payload);
+    expect(cold.runtime.indexed).toBe(true);
+    expect(cold.runtime.index.filesSeen).toBe(tree.files.length);
     expect(cold.runtime.index.filesFailed).toBe(0);
     expect(cold.runtime.index.filesReused).toBe(0);
+    expect(cold.runtime.index.filesParsedTail).toBe(0);
+    expect(warm.runtime.indexed).toBe(true);
+    expect(warm.runtime.index.filesSeen).toBe(cold.runtime.index.filesSeen);
+    expect(warm.runtime.index.filesFailed).toBe(0);
     expect(warm.runtime.index.filesReused).toBe(cold.runtime.index.filesParsedWhole);
     expect(warm.runtime.index.filesParsedWhole + warm.runtime.index.filesParsedTail).toBe(0);
     expect(warm.runtime.index.bytesRead).toBe(0);
@@ -110,8 +124,8 @@ test.skipIf(!utcPinnable())(
     const remaining = storedPaths(copilotApiHome);
     for (const path of deleted) expect(remaining.has(path)).toBe(false);
     // The fold no longer carries them: the no-index parse of what is on disk agrees.
-    const plain = await runCurrentCost(root, { noIndex: true });
-    expect(afterDelete.payload).toEqual(plain.payload);
+    const remainingPlain = await runCurrentCost(root, { noIndex: true });
+    expect(afterDelete.payload).toEqual(remainingPlain.payload);
   },
   600_000,
 );

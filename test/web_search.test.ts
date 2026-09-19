@@ -7,7 +7,7 @@ import {
   resetIntegrationIdentityCache,
 } from "../src/copilot_api/integration_identity.ts";
 import { generateAliases, parseCatalogModels } from "../src/copilot_api/models.ts";
-import { parseProfileName } from "../src/copilot_api/profile.ts";
+import { parseProfileName, type ProfileName } from "../src/copilot_api/profile.ts";
 import {
   DEFAULT_WEB_SEARCH_MODEL,
   parseResponsesOutput,
@@ -26,7 +26,6 @@ let dir = "";
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 function tmpHome(): void {
@@ -129,37 +128,120 @@ test("parseResponsesOutput: message text concatenated with deduped sources appen
 
 // --- webSearch request shape -------------------------------------------------
 
-test("webSearch POSTs the verified request shape, no integration id for a gho_ token", async () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_stored");
-  const stub = fetchStub([hostProbeOk(), hostProbeOk(), okJson(responsesFixture())]);
+const GENERIC_HOST = "https://api.githubcopilot.com";
+const MODELS_URL = `${GENERIC_HOST}/models`;
+const RESPONSES_URL = `${GENERIC_HOST}/responses`;
+const ENTERPRISE = "https://api.enterprise.githubcopilot.com";
+const QUERY = "bun release";
 
-  const answer = await webSearch("bun release", { fetchImpl: stub.fetchImpl });
+/** A raw direct-catalog body for the alias-resolution tests. */
+function catalogFixture(): unknown {
+  return {
+    "data": [{ "id": "gpt-6" }, { "id": "gpt-6-mini" }, { "id": "claude-fable-5" }],
+  };
+}
 
-  expect(answer).toContain("Bun 1.3 shipped.");
-  // The identity probe (the codex identity accepted first) and the host probe (the same headers,
-  // the generic host) precede the one POST.
-  expect(stub.calls.map((c) => c.url)).toEqual([MODELS_URL, MODELS_URL, RESPONSES_URL]);
-  const call = stub.calls[2];
-  if (call === undefined) throw new Error("unreachable");
-  expect(call.init.method).toBe("POST");
-  const headers = call.init.headers as Record<string, string>;
-  expect(headers.Authorization).toBe("Bearer gho_stored");
-  expect(headers["Content-Type"]).toBe("application/json");
-  expect(headers["Openai-Intent"]).toBe("conversation-edits");
-  expect(headers["User-Agent"]).toBe("codex_exec");
-  expect(headers["Copilot-Integration-Id"]).toBeUndefined();
-  const body = JSON.parse(String(call.init.body)) as Record<string, unknown>;
-  expect(body).toEqual({
-    "model": DEFAULT_WEB_SEARCH_MODEL,
-    "stream": false,
-    "reasoning": { "effort": "low" },
-    "tools": [{ "type": "web_search" }],
-    "tool_choice": { "type": "web_search" }, // forced: the answer must come from a real search
-    "instructions": body.instructions,
-    "input": "bun release",
-  });
-  expect(String(body.instructions)).toContain("cite");
+/** Where webSearch gets the identity/host pair it sends under decides which probes precede the
+ *  POST; every request carries that pair's bearer and integration id. */
+const PAIR_SOURCES: {
+  name: string;
+  /** Stores what the search reads and returns the call's options. */
+  setup: () => { profile?: ProfileName; model?: string };
+  responses: () => Response[];
+  /** Every request in order: url, Copilot-Integration-Id (null when absent), Authorization. */
+  requests: [url: string, id: string | null, authorization: string][];
+  model: string;
+}[] = [
+  {
+    name: "a gho_ token probes the identity and the host, and sends no integration id",
+    setup: () => {
+      new Credential(undefined, null).store("gh-token", "gho_stored");
+      return {};
+    },
+    responses: () => [hostProbeOk(), hostProbeOk(), okJson(responsesFixture())],
+    requests: [
+      [MODELS_URL, null, "Bearer gho_stored"],
+      [MODELS_URL, null, "Bearer gho_stored"],
+      [RESPONSES_URL, null, "Bearer gho_stored"],
+    ],
+    model: DEFAULT_WEB_SEARCH_MODEL,
+  },
+  {
+    name: "a pinned integration id skips the identity probe",
+    setup: () => {
+      new Credential(undefined, null).store("gh-token", "gho_stored");
+      new CopilotEnvConfig().setProfile(null, { identity: "copilot-developer-cli" });
+      return {};
+    },
+    responses: () => [hostProbeOk(), okJson(responsesFixture())],
+    requests: [
+      [MODELS_URL, "copilot-developer-cli", "Bearer gho_stored"],
+      [RESPONSES_URL, "copilot-developer-cli", "Bearer gho_stored"],
+    ],
+    model: DEFAULT_WEB_SEARCH_MODEL,
+  },
+  {
+    name: "a named profile reads THAT slot's stored pair and probes nothing",
+    setup: () => {
+      const state = new CopilotEnvState();
+      new Credential(undefined, null).store("gh-token", "gho_default");
+      state.setProfileDirectPair(null, { integrationId: null, host: GENERIC_HOST });
+      const work = parseProfileName("work");
+      state.commitProfile(work, {
+        credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+        mode: "direct",
+      });
+      state.setProfileDirectPair(work, {
+        integrationId: "copilot-developer-sandbox",
+        host: ENTERPRISE,
+      });
+      return { profile: work, model: "gpt-latest" };
+    },
+    responses: () => [okJson(catalogFixture()), okJson(responsesFixture())],
+    requests: [
+      [`${ENTERPRISE}/models`, "copilot-developer-sandbox", "Bearer ghp_work"],
+      [`${ENTERPRISE}/responses`, "copilot-developer-sandbox", "Bearer ghp_work"],
+    ],
+    model: "gpt-6",
+  },
+];
+
+test("webSearch sends the verified request shape under the identity/host pair the store and the probes settle on", async () => {
+  for (const c of PAIR_SOURCES) {
+    dir = removeDir(dir);
+    tmpHome();
+    const options = c.setup();
+    const stub = fetchStub(c.responses());
+
+    const answer = await webSearch(QUERY, { ...options, fetchImpl: stub.fetchImpl });
+
+    expect(answer, c.name).toContain("Bun 1.3 shipped.");
+    expect(
+      stub.calls.map((call) => {
+        const headers = new Headers(call.init.headers);
+        return [call.url, headers.get("Copilot-Integration-Id"), headers.get("Authorization")];
+      }),
+      c.name,
+    ).toEqual(c.requests);
+    const post = stub.calls[stub.calls.length - 1];
+    if (post === undefined) throw new Error("unreachable");
+    expect(post.init.method, c.name).toBe("POST");
+    const headers = post.init.headers as Record<string, string>;
+    expect(headers["Content-Type"], c.name).toBe("application/json");
+    expect(headers["Openai-Intent"], c.name).toBe("conversation-edits");
+    expect(headers["User-Agent"], c.name).toBe("codex_exec");
+    const body = JSON.parse(String(post.init.body)) as Record<string, unknown>;
+    expect(body, c.name).toEqual({
+      "model": c.model,
+      "stream": false,
+      "reasoning": { "effort": "low" },
+      "tools": [{ "type": "web_search" }],
+      "tool_choice": { "type": "web_search" }, // forced: the answer must come from a real search
+      "instructions": body.instructions,
+      "input": QUERY,
+    });
+    expect(String(body.instructions), c.name).toContain("cite");
+  }
 });
 
 test("webSearch: a host `auto` moved to re-selects the identity there before the POST", async () => {
@@ -193,32 +275,6 @@ test("webSearch: a host `auto` moved to re-selects the identity there before the
   expect(answer).toContain("Bun 1.3 shipped.");
   expect(posts).toEqual([{ url: `${enterprise}/responses`, id: "copilot-developer-cli" }]);
 });
-
-test("webSearch sends the pinned integration id without probing", async () => {
-  tmpHome();
-  new Credential(undefined, null).store("gh-token", "gho_stored");
-  new CopilotEnvConfig().setProfile(null, { identity: "copilot-developer-cli" });
-  const stub = fetchStub([hostProbeOk(), okJson(responsesFixture())]);
-
-  await webSearch("q", { fetchImpl: stub.fetchImpl });
-
-  // The pin skips the identity probe; the host probe stays, and it already carries the pin.
-  expect(stub.calls.map((c) => c.url)).toEqual([MODELS_URL, RESPONSES_URL]);
-  for (const call of stub.calls) {
-    const headers = call.init.headers as Record<string, string>;
-    expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
-  }
-});
-
-/** A raw direct-catalog body for the alias-resolution tests. */
-function catalogFixture(): unknown {
-  return {
-    "data": [{ "id": "gpt-6" }, { "id": "gpt-6-mini" }, { "id": "claude-fable-5" }],
-  };
-}
-
-const MODELS_URL = "https://api.githubcopilot.com/models";
-const RESPONSES_URL = "https://api.githubcopilot.com/responses";
 
 test("webSearch model resolution: the flag beats the stored key, aliases resolve against the live catalog (asked under the request's identity), an unknown value or a failed catalog fetch passes the raw value through", async () => {
   // A configured model (flag or stored key) consults the live catalog first for alias resolution
@@ -470,35 +526,4 @@ test("DEFAULT_WEB_SEARCH_MODEL is a raw catalog id, never an alias", () => {
     }),
   );
   expect(aliases[DEFAULT_WEB_SEARCH_MODEL]).toBeUndefined();
-});
-
-test("webSearch on a named profile reads THAT slot's stored pair: no probe, the catalog and the POST under the stored identity on the stored host", async () => {
-  tmpHome();
-  // The default slot stores the codex identity on the generic host; the work slot stores the
-  // sandbox id on the account's host. A web search for work must send work's pair, never the
-  // default's, and never probe: the pair is the truth.
-  const state = new CopilotEnvState();
-  new Credential(undefined, null).store("gh-token", "gho_default");
-  state.setProfileDirectPair(null, { integrationId: null, host: "https://api.githubcopilot.com" });
-  const work = parseProfileName("work");
-  state.commitProfile(work, {
-    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
-    mode: "direct",
-  });
-  const enterprise = "https://api.enterprise.githubcopilot.com";
-  state.setProfileDirectPair(work, {
-    integrationId: "copilot-developer-sandbox",
-    host: enterprise,
-  });
-  const stub = fetchStub([okJson(catalogFixture()), okJson(responsesFixture())]);
-
-  await webSearch("q", { profile: work, fetchImpl: stub.fetchImpl, model: "gpt-latest" });
-
-  expect(stub.calls.map((c) => c.url)).toEqual([`${enterprise}/models`, `${enterprise}/responses`]);
-  for (const call of stub.calls) {
-    const headers = call.init.headers as Record<string, string>;
-    expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-sandbox");
-    expect(headers.Authorization).toBe("Bearer ghp_work");
-  }
-  expect(JSON.parse(String(stub.calls[1]?.init.body)).model).toBe("gpt-6");
 });

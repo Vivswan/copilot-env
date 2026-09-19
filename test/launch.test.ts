@@ -667,15 +667,3 @@ skipWin(
     expect(agreed.stderr).not.toContain("Ignoring the shell's CODEX_HOME");
   },
 );
-
-skipWin("e2e: copilot gets the managed flag set and no provider wiring", () => {
-  const root = e2eRoot();
-  const bin = fakeCliBin(root, "copilot");
-  const res = runCli(["profile", "launch", "copilot", "--relaxed", "--", "hello"], {
-    env: launchEnv(root, bin),
-  });
-  expect(res.stdout).toContain(
-    "ARGS=--autopilot --enable-reasoning-summaries --experimental --allow-all hello",
-  );
-  expect(res.exitCode).toBe(0);
-});

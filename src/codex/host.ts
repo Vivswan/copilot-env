@@ -506,44 +506,13 @@ function seedLocalCodexFileIfMissing(
   }
 }
 
-/** What the shared copy holds after the seed: the local file's bytes (just copied), or whatever
- *  was there. The link step takes the copy as equal without a byte compare, as the copy IS the
- *  local file. */
-type SharedSeed = "copy-of-local" | "as-is";
-
-// Shared desktop state files need a one-time promotion from the host-local CODEX_HOME into ~/.codex
-// so existing installs keep their saved projects. Without `createPlaceholder` the shared file only
-// appears when a host-local copy exists to promote.
-function seedSharedCodexFileIfMissing(
-  sharedPath: string,
-  localPath: string,
-  createPlaceholder: boolean,
-): SharedSeed {
-  const sharedExists = lexists(sharedPath);
-
-  if (isFilePath(localPath) && !isSymlinkPath(localPath)) {
-    if (!sharedExists) {
-      ensureParentDir(sharedPath);
-      fs.copyFile(localPath, sharedPath, `copied from ${localPath}`);
-      return "copy-of-local";
-    }
-
-    if (
-      isFilePath(sharedPath) &&
-      fs.stat(sharedPath).size === 0 &&
-      fs.stat(localPath).size > 0
-    ) {
-      fs.copyFile(localPath, sharedPath, `copied from ${localPath}`);
-      return "copy-of-local";
-    }
-    return "as-is";
-  }
-
-  if (createPlaceholder && !sharedExists) {
+// Without `createPlaceholder` the shared file only appears once Codex writes it (the host symlink
+// dangles until then).
+function seedSharedCodexFileIfMissing(sharedPath: string, createPlaceholder: boolean): void {
+  if (createPlaceholder && !lexists(sharedPath)) {
     ensureParentDir(sharedPath);
     fs.writeText(sharedPath, "", { atomic: false, detail: "empty seed", secretKeys: [] });
   }
-  return "as-is";
 }
 
 function ensureCodexDirSymlink(localPath: string, sharedPath: string): void {
@@ -565,16 +534,16 @@ function ensureCodexDirSymlink(localPath: string, sharedPath: string): void {
   }
 }
 
-// A host-local copy identical to the seeded shared file becomes a symlink, so future desktop
-// updates read and write the same shared state.
-function ensureCodexFileSymlink(localPath: string, sharedPath: string, seed: SharedSeed): void {
+// A host-local copy identical to the shared file becomes a symlink, so future desktop updates read
+// and write the same shared state.
+function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
   if (isSymlinkPath(localPath)) {
     if (readlinkOrEmpty(localPath) !== sharedPath) warnExistingCodexPath(localPath);
     return;
   }
 
   if (isFilePath(localPath)) {
-    if (seed !== "copy-of-local" && !filesEqual(localPath, sharedPath)) {
+    if (!filesEqual(localPath, sharedPath)) {
       warnExistingCodexPath(localPath);
       return;
     }
@@ -625,9 +594,8 @@ const SHARED_DIRS = [
   "worktrees", // Shared worktree metadata used across checkouts.
 ];
 
-// Seeded at the shared root, symlinked from the host home. `placeholder: false` marks state only
-// worth syncing when a host already has it, so no empty shared file is fabricated (the host symlink
-// dangles).
+// Seeded at the shared root, symlinked from the host home. `placeholder: false` marks state Codex
+// itself creates, so no empty shared file is fabricated (the host symlink dangles until it exists).
 const SHARED_FILES: readonly { name: string; placeholder: boolean }[] = [
   { name: ".codex-global-state.json", placeholder: true }, // Desktop workspace and project state.
   { name: "AGENTS.md", placeholder: true }, // Shared agent instructions exposed inside Codex home.
@@ -688,12 +656,8 @@ function buildCodexSymlinkFarm(codexHome: string): void {
   }
 
   for (const { name, placeholder } of SHARED_FILES) {
-    const seed = seedSharedCodexFileIfMissing(
-      path.join(sharedRoot, name),
-      path.join(codexHome, name),
-      placeholder,
-    );
-    ensureCodexFileSymlink(path.join(codexHome, name), path.join(sharedRoot, name), seed);
+    seedSharedCodexFileIfMissing(path.join(sharedRoot, name), placeholder);
+    ensureCodexFileSymlink(path.join(codexHome, name), path.join(sharedRoot, name));
   }
 }
 

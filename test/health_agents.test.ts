@@ -11,7 +11,6 @@ import {
   checkCodex,
   checkCodexHost,
   checkCodexLive,
-  profileTableRepair,
 } from "../src/health/checks_agents.ts";
 import type {
   ClaudeFacts,
@@ -20,8 +19,6 @@ import type {
   LiveProbeFacts,
 } from "../src/health/facts.ts";
 import type { CheckResult, CheckStatus } from "../src/health/types.ts";
-import { v409CodexProfileFiles } from "../src/migrations/4.0.9.ts";
-import { dueMigrations } from "../src/migrations/index.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 // --- codex wiring -----------------------------------------------------------
@@ -132,45 +129,6 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(namedFileMalformed.detail).toContain("work.config.toml is present but not valid TOML");
   expect(namedFileMalformed.fix).toBe(
     `repair ${join("/c", "work.config.toml")}, then re-run \`agent profile work add\``,
-  );
-  // A profile-v1 leftover is not repaired by a re-add (the writer never deletes it), so the fix
-  // names the migration by its explicit `agent migrate <from> <installed>` command: a re-run of
-  // `agent update` on an install that already updated reports up to date and runs nothing. A
-  // top-level `profile` key names the line to delete.
-  const legacyTable = checkCodex(
-    { ...foreign, modelProvider: null, otherReason: "legacy-profile-table" },
-    parseProfileName("work"),
-  );
-  expect(legacyTable.status).toBe("warn");
-  expect(legacyTable.detail).toContain("[profiles.work]");
-  expect(legacyTable.fix).toBe(
-    `${profileTableRepair("work.config.toml")}, then re-run \`agent profile work add\``,
-  );
-  // The command the fix names must be one the runner selects the table step for: the bounds are
-  // parsed back out of the rendered text and fed to the runner's own selection, with the reversed
-  // range as the control. A binary built from a checkout still at the step's own version (the
-  // package.json on this branch) renders an empty range, so its repair must promise no command.
-  const released = profileTableRepair("work.config.toml", "4.0.10");
-  const bounds = /run `agent migrate (\S+) (\S+)` \(moves the table into work\.config\.toml\)/.exec(
-    released,
-  );
-  expect(bounds).not.toBeNull();
-  const [, from = "", to = ""] = bounds ?? [];
-  expect(dueMigrations(from, to)).toContain(v409CodexProfileFiles);
-  expect(dueMigrations(to, from)).toEqual([]);
-  expect(profileTableRepair("work.config.toml", v409CodexProfileFiles.version)).toBe(
-    "move the table into work.config.toml by hand",
-  );
-  const legacyKey = checkCodex({
-    ...foreign,
-    modelProvider: null,
-    otherReason: "legacy-profile-key",
-  });
-  expect(legacyKey.status).toBe("warn");
-  expect(legacyKey.fix).toBe(
-    `delete the \`profile\` line from ${
-      join("/c", "config.toml")
-    }, then re-run \`agent profile sync --codex\``,
   );
   // With no config.toml beside it the broken file still owns the repair: `agent profile <name> add`
   // would refuse that file, so "not wired, re-add" is the wrong fix.

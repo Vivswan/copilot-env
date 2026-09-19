@@ -6,17 +6,11 @@ import { basename, dirname } from "node:path";
 import { type ClaudeDesktopStatus, renderClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import { type CodexOtherReason, codexProviderId } from "../codex/config.ts";
 import { codexHostDriftFrom, codexHostDriftLine } from "../codex/host.ts";
-import {
-  CODEX_PROFILE_TABLES_LAST_VERSION,
-  codexConfigPath,
-  codexProfileConfigPath,
-} from "../codex/paths.ts";
+import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
 import { isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { agentStartCommand, type Profile } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
-import { versionLessThan } from "../utils/semver.ts";
-import { packageVersion } from "../utils/version.ts";
 import type {
   BakedCredentialFreshness,
   ClaudeFacts,
@@ -146,10 +140,8 @@ function directAuthVerdict(
 }
 
 /** Keyed off the reason the classifier minted (exhaustive, so a new reason forces a verdict), with
- *  the repair: `repair <file>` for a broken one, or the one step that lifts a profile-v1 shape (a
- *  rewire never removes it, so `agent profile <name> add` alone would leave Codex refusing). Null =
- *  "custom": a foreign selection is re-wirable, so checkCodex's generic model_provider reporting
- *  owns it. */
+ *  the repair: `repair <file>` for the broken one. Null = "custom": a foreign selection is
+ *  re-wirable, so checkCodex's generic model_provider reporting owns it. */
 function codexOtherLine(
   reason: CodexOtherReason,
   configPath: string,
@@ -174,38 +166,11 @@ function codexOtherLine(
         line: `${basename(profileFile)} exists but could not be read`,
         repair: `repair ${profileFile}`,
       };
-    case "legacy-profile-key":
-      return {
-        line:
-          "config.toml carries a top-level `profile` key, which Codex no longer supports (every launch refuses to start)",
-        repair: `delete the \`profile\` line from ${configPath}`,
-      };
-    case "legacy-profile-table":
-      return {
-        line:
-          `config.toml carries a [profiles.${profile}] table, which Codex no longer supports (\`codex --profile ${profile}\` refuses to start)`,
-        repair: profileTableRepair(basename(profileFile)),
-      };
     case "custom":
       return null;
     default:
       return assertNever(reason);
   }
-}
-
-/** A binary built from a checkout still at that version renders an EMPTY [from, to) range (the
- *  runner's selection rule, src/migrations/index.ts; the domain never imports a migration), so that
- *  install gets no command to run. `agent update` is not the route: an already-updated install runs
- *  no migration. */
-export function profileTableRepair(
-  profileFile: string,
-  installed: string = packageVersion(),
-): string {
-  const from = CODEX_PROFILE_TABLES_LAST_VERSION;
-  const byHand = `move the table into ${profileFile} by hand`;
-  return versionLessThan(from, installed)
-    ? `run \`agent migrate ${from} ${installed}\` (moves the table into ${profileFile}), or ${byHand}`
-    : byHand;
 }
 
 export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult {

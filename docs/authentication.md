@@ -108,7 +108,6 @@ agent profile set static-key all     # both agents and Claude Desktop
 - The value does not follow a credential change. A named profile's `agent profile <name> auth` rewires both agents itself, so its baked value is fresh at once. The default's `agent auth` only stores the credential: re-run `agent init` after it, which notes that the agents in scope keep their baked value until that rewire.
 - Proxy mode loses the resolver's side effects for the agent in scope: the daemon is not auto-started and no idle heartbeat is recorded. Start it with `agent start`, or launch through `cl` / `cx`, which do.
 - `agent profile check` (`--claude` / `--codex`) and `agent health` report the static shape as wired. `agent health` also warns when the baked value no longer matches the store (or the daemon's key), naming the rewire.
-- The key was a boolean through 4.0.9. Updating past 4.0.9 runs the migration that turns a stored `true` into `all` and drops a stored `false`; `true` and `false` are now rejected.
 
 ## Profiles
 
@@ -127,7 +126,6 @@ agent profile work del --yes  # stop its daemon, clear its credential, strip bot
 - **No fallback:** a named profile hard-fails rather than falling back to the default credential. Re-authenticate one with `agent profile <name> auth`.
 - **Own daemon:** a proxy-mode profile runs in an isolated home (`<copilot-api home>/profiles/<name>`) on a stable reserved port, managed via `agent profile <name> start` / `stop`.
 - **Own files:** Claude reads `~/.claude/settings-<name>.json`; Codex reads `~/.codex/<name>.config.toml`, whose top-level `model_provider` selects the `[model_providers.copilot-env-<name>]` table in `config.toml` (`codex --profile <name>` layers the file over `config.toml`). Your own keys in the profile file survive a rewire. Both files are in the [write list](getting-started.md#what-a-wiring-pass-writes).
-- **Legacy shape:** Codex 0.134 and later refuse to start `--profile <name>` on a `[profiles.<name>]` table, and refuse every launch on a top-level `profile` key. The 4.0.9 migration, through `agent update`, moves each table copilot-env wrote into `<name>.config.toml` and reports the ones it did not write; `agent health` reports a leftover as broken wiring with that repair, never as wired.
 - **Switch mode:** re-run `add` with the other mode flag.
 - **Web-search caveat:** a DIRECT profile over a PROXY default has no search path in Claude. The builtin 400s on Direct, and the machine-global MCP server is only registered while the default wiring is direct ([web search](usage.md#web-search-for-claude-code)).
 - **Workaround:** register the server by hand there, under a name other than `copilot-env`. A hand-written entry under that name reads as foreign, so a later default wiring leaves it alone and cannot register its own.

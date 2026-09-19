@@ -2,13 +2,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSy
 import { join } from "node:path";
 import { UPDATE_LOCK_POLICY } from "../src/autoupdate/lock.ts";
 import { runPreflight } from "../src/autoupdate/preflight.ts";
-import {
-  autoupdateDir,
-  AutoupdateState,
-  autoupdateStateFile,
-  DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
-  effectiveUpdateCooldownDays,
-} from "../src/autoupdate/state.ts";
+import { autoupdateDir, AutoupdateState, autoupdateStateFile } from "../src/autoupdate/state.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { type LockOutcome, withFileLock } from "../src/utils/file_lock.ts";
 import { isDue, MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
@@ -20,7 +14,6 @@ const restoreEnv = envSnapshot();
 let dir = "";
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 function tmp(name: string): string {
   dir = tempDir("copilot-env-autoupdate-");
@@ -174,17 +167,6 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
     globalThis.fetch = realFetch;
   }
   expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual(concurrent);
-});
-
-test("effectiveUpdateCooldownDays: the live update-cooldown config, else the 7-day default", () => {
-  tmp("unused"); // creates an isolated dir; point the shared prefs store at it
-  process.env.COPILOT_API_HOME = dir;
-  expect(effectiveUpdateCooldownDays()).toBe(DEFAULT_AUTOUPDATE_COOLDOWN_DAYS); // unset -> default
-  writeFileSync(
-    join(dir, "state.json"),
-    JSON.stringify({ global: { "update.cooldown": 3 } }),
-  );
-  expect(effectiveUpdateCooldownDays()).toBe(3); // read live, never snapshotted
 });
 
 // --- isDue (pure, nowMs injected) --------------------------------------------

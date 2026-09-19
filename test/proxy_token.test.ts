@@ -24,7 +24,6 @@ let dir = "";
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 // --- the deps-level decision matrix -------------------------------------------

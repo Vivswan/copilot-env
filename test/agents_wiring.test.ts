@@ -13,7 +13,7 @@ import {
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
 import { getHostLocalCodexHome } from "../src/codex/host.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 import { writeClaudeSettings, writeCodexConfigToml } from "./helpers/fixtures.ts";
 
@@ -33,7 +33,6 @@ beforeEach(() => {
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 const DIRECT_BASE = "https://api.githubcopilot.com";

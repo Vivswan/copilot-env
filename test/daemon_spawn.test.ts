@@ -46,7 +46,7 @@ import {
   runSync,
   spawnChild,
 } from "./helpers/run.ts";
-import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, expect, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 import { FAKE_DAEMON_CREDENTIAL, FAKE_DAEMON_HOST, until } from "./helpers/daemon.ts";
 
@@ -64,7 +64,6 @@ beforeEach(() => {
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 const BASE: DaemonSpec = {
@@ -113,6 +112,15 @@ test("the preload set and its environment derive from the spec, in load order", 
     COPILOT_API_ENTERPRISE_URL: "ghe.example",
     COPILOT_API_OAUTH_APP: "opencode",
   };
+  // Our own environment already carries both credential keys (an earlier launch in this shell):
+  // the credential environment is always set from the spec, so a stale value can never leak in.
+  const stale = {
+    [DAEMON_GH_TOKEN_ENV]: "gho_from_an_earlier_run",
+    [DAEMON_CLIENT_HEADERS_ENV]: '{"User-Agent":"stale"}',
+    COPILOT_API_OAUTH_APP: "opencode",
+  };
+  // The codex identity names the id header as a deletion, so the proxy's own cannot stand in.
+  const CODEX_HEADERS = daemonClientHeaders("codex_exec/1", null);
   interface Row {
     spec: Partial<DaemonSpec>;
     preloads: string[];
@@ -136,8 +144,52 @@ test("the preload set and its environment derive from the spec, in load order", 
       ],
     },
     {
+      // Every credential rides with its identity's header set, as the shim parses it back. The
+      // rewrite rides copilot-api's default upstream path, so the opencode app switch is scrubbed
+      // for every credential.
+      spec: { credential: { kind: "token", token: "gho_new", clientHeaders: CODEX_HEADERS } },
+      preloads: base,
+      env: [{
+        inherited: stale,
+        keys: {
+          [DAEMON_GH_TOKEN_ENV]: "gho_new",
+          [DAEMON_CLIENT_HEADERS_ENV]: JSON.stringify(CODEX_HEADERS),
+          COPILOT_API_OAUTH_APP: undefined,
+        },
+      }],
+    },
+    {
       spec: { credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI_HEADERS } },
       preloads: [...base, "pat_passthrough_preload.ts"],
+      env: [{
+        inherited: stale,
+        keys: {
+          [DAEMON_GH_TOKEN_ENV]: "ghp_x",
+          [DAEMON_CLIENT_HEADERS_ENV]: JSON.stringify(CLI_HEADERS),
+          COPILOT_API_OAUTH_APP: undefined,
+        },
+      }],
+    },
+    {
+      // The daemon inherits our TLS/proxy environment; the spec's own wiring wins over an inherited
+      // copy, and deno's release check stays off.
+      spec: { home: "/profiles/work" },
+      preloads: base,
+      env: [{
+        inherited: {
+          NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
+          DENO_TLS_CA_STORE: "system",
+          HTTPS_PROXY: "http://corp:3128",
+          COPILOT_API_HOME: "/the/default/home",
+        },
+        keys: {
+          NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
+          DENO_TLS_CA_STORE: "system",
+          HTTPS_PROXY: "http://corp:3128",
+          COPILOT_API_HOME: "/profiles/work",
+          DENO_NO_UPDATE_CHECK: "1",
+        },
+      }],
     },
     {
       spec: { idleWatchdog: true },
@@ -354,7 +406,7 @@ test("launchDaemon spawns exactly the spec's denoBin, never a re-derived one", a
     // realpath both sides: Deno.execPath() canonicalizes, and the OS tmpdir may be a symlink.
     expect(realpathSync(reported)).toBe(realpathSync(sidecar));
   } finally {
-    // On Windows the afterEach removeDir would race a still-running copied deno.exe, so wait until
+    // On Windows the isolate root's removal would race a still-running copied deno.exe, so wait until
     // the pid is genuinely gone.
     try {
       process.kill(pid, "SIGKILL");
@@ -366,54 +418,6 @@ test("launchDaemon spawns exactly the spec's denoBin, never a re-derived one", a
 }, 30_000); // a real daemon boot on a loaded runner
 
 // --- the daemon environment ----------------------------------------------------------
-
-test("the credential environment is always set from the spec, so a stale value can never leak in", () => {
-  // Our own environment already carries both keys (an earlier launch in this shell).
-  const stale = {
-    [DAEMON_GH_TOKEN_ENV]: "gho_from_an_earlier_run",
-    [DAEMON_CLIENT_HEADERS_ENV]: '{"User-Agent":"stale"}',
-    COPILOT_API_OAUTH_APP: "opencode",
-  };
-
-  // Every credential rides with its identity's header set, as the shim parses it back: the codex
-  // identity names the id header as a deletion, so the proxy's own cannot stand in.
-  const codex = daemonClientHeaders("codex_exec/1", null);
-  const token = daemonEnvironment(
-    { ...BASE, credential: { kind: "token", token: "gho_new", clientHeaders: codex } },
-    stale,
-  );
-  expect(token[DAEMON_GH_TOKEN_ENV]).toBe("gho_new");
-  expect(JSON.parse(token[DAEMON_CLIENT_HEADERS_ENV] ?? "")).toEqual(codex);
-  // The rewrite rides copilot-api's default upstream path, so the opencode app switch is scrubbed
-  // for every credential.
-  expect(token.COPILOT_API_OAUTH_APP).toBeUndefined();
-
-  const cli = daemonClientHeaders("codex_exec/1", "copilot-developer-cli");
-  const pat = daemonEnvironment(
-    { ...BASE, credential: { kind: "pat", token: "ghp_new", clientHeaders: cli } },
-    stale,
-  );
-  expect(pat[DAEMON_GH_TOKEN_ENV]).toBe("ghp_new");
-  expect(JSON.parse(pat[DAEMON_CLIENT_HEADERS_ENV] ?? "")).toEqual(cli);
-  expect(pat.COPILOT_API_OAUTH_APP).toBeUndefined();
-});
-
-test("the daemon inherits our TLS/proxy environment, and the spec's own wiring wins", () => {
-  const env = daemonEnvironment(
-    { ...BASE, home: "/profiles/work" },
-    {
-      NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
-      DENO_TLS_CA_STORE: "system",
-      HTTPS_PROXY: "http://corp:3128",
-      COPILOT_API_HOME: "/the/default/home",
-    },
-  );
-  expect(env.NODE_EXTRA_CA_CERTS).toBe("/etc/corp.pem");
-  expect(env.DENO_TLS_CA_STORE).toBe("system");
-  expect(env.HTTPS_PROXY).toBe("http://corp:3128");
-  expect(env.COPILOT_API_HOME).toBe("/profiles/work");
-  expect(env.DENO_NO_UPDATE_CHECK).toBe("1");
-});
 
 test("NO_PROXY gains the loopback hosts without losing the user's own", () => {
   expect(noProxyWithLoopback(undefined)).toBe("127.0.0.1,::1,localhost");

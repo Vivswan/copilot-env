@@ -25,18 +25,16 @@ import {
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes } from "./helpers/env.ts";
 import { codexConfigToml } from "./helpers/fixtures.ts";
 import { launchAuth } from "./helpers/daemon.ts";
 
 const restoreEnv = envSnapshot();
-let dir = "";
 
 afterEach(() => {
   restoreEnv();
   setIntegrationProbeFetch(null);
-  dir = removeDir(dir);
 });
 
 const ENTERPRISE = "https://api.enterprise.githubcopilot.com";
@@ -78,7 +76,7 @@ function claudeBaseUrl(claudeHome: string): unknown {
 }
 
 test("agent config: copilot-host takes `auto` or an https origin and refuses anything else", () => {
-  dir = isolateAgentHomes("copilot-host-config-").dir;
+  isolateAgentHomes("copilot-host-config-");
   const def = configKeyDef("host");
   expect(def?.parse("AUTO")).toBe("auto");
   // Canonical origin: scheme and host lowercased, the trailing slash dropped.
@@ -150,7 +148,6 @@ test("agent config: copilot-host takes `auto` or an https origin and refuses any
 
 test("a Direct wiring bakes the copilot-host into both agents' base URLs; detection keys on our markers, not the host", async () => {
   const homes = isolateAgentHomes("copilot-host-wiring-");
-  dir = homes.dir;
   const seen: { host: string; id: string | null }[] = [];
   stubHosts(403, seen);
   const wire = async (): Promise<void> => {
@@ -225,7 +222,6 @@ test("a Direct wiring bakes the copilot-host into both agents' base URLs; detect
 
 test("a wiring baked for one host stays ours after the copilot-host literal changes: the rewire moves it", async () => {
   const homes = isolateAgentHomes("copilot-host-move-");
-  dir = homes.dir;
   const work = parseProfileName("work");
   new CopilotEnvState().commitProfile(work, {
     credential: { kind: "stored", provider: "gh-token", token: "ghu_work" },
@@ -254,7 +250,7 @@ test("a wiring baked for one host stays ours after the copilot-host literal chan
 });
 
 test("directWiringFor probe: under auto, a PAT moved off a blocked generic host is probed again on the host that serves it", async () => {
-  dir = isolateAgentHomes("copilot-host-reprobe-").dir;
+  isolateAgentHomes("copilot-host-reprobe-");
   const seen: { host: string; id: string | null }[] = [];
   // The generic host is blocked for every identity (403 -> inconclusive, so the identity probe
   // keeps its default); the account's host accepts the CLI id alone.
@@ -296,7 +292,7 @@ test("directWiringFor probe: under auto, a PAT moved off a blocked generic host 
 });
 
 test("a daemon launch pairs identity and host: re-selected where auto moves, passthrough or not, refused without a credential", async () => {
-  dir = isolateAgentHomes("copilot-host-daemon-").dir;
+  isolateAgentHomes("copilot-host-daemon-");
   const state = new CopilotEnvState();
   const UA = "codex_exec/1";
   const seen: { host: string; id: string | null }[] = [];

@@ -5,6 +5,7 @@ import {
 } from "../.github/scripts/floated-smoke.ts";
 import { CONTAINER_MARKERS, homeIsDisposable } from "../.github/scripts/smoke-support.ts";
 import { existsSync } from "node:fs";
+import { agentHomeEnv } from "./helpers/env.ts";
 import { ROOT, runScript } from "./helpers/run.ts";
 import { describe, expect, tempDir, test } from "./helpers/testing.ts";
 
@@ -58,12 +59,9 @@ describe("the smokes' disposable-HOME guard", () => {
         const proc = runScript(join(ROOT, ".github", "scripts", script), [], {
           env: {
             ...process.env,
+            ...agentHomeEnv(scratch, { proxyHome: scratch }),
             "GITHUB_ACTIONS": "",
             "PATH": join(scratch, "no-bin"),
-            "HOME": scratch,
-            "COPILOT_API_HOME": scratch,
-            "CODEX_HOME": join(scratch, ".codex"),
-            "CLAUDE_CONFIG_DIR": join(scratch, ".claude"),
           },
         });
         // The guard's line must be the LAST thing on stderr and stdout stays empty: a guard

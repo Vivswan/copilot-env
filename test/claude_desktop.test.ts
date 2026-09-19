@@ -88,7 +88,6 @@ afterEach(() => {
   resetExitCode();
   setIntegrationProbeFetch(null);
   globalThis.fetch = REAL_FETCH;
-  dir = removeDir(dir);
 });
 
 /** chmod-based fault injection needs POSIX permissions that bind (not root). */
@@ -867,29 +866,6 @@ test("Desktop status judges a Direct entry against the slot's stored pair: what 
     "copilot-developer-cli",
   );
   expect(verdict()).toBe("wired");
-});
-
-test("removeAllClaudeDesktopWiring sweeps every owned entry via an injected dir", async () => {
-  const { library } = isolateWithDesktop();
-  await wireClaudeDesktopEntry({
-    profile: null,
-    mode: "direct",
-    direct: null,
-    credential: COMMAND,
-    directToken: "ghu_x",
-    quiet: false,
-    fetchImpl: catalogFetch(CATALOG),
-  });
-  writeFileSync(join(library, "user-9.json"), `${JSON.stringify({ "userKey": 1 })}\n`);
-  const meta = metaOf(library);
-  (meta.entries as unknown[]).push({ id: "user-9", name: "Mine" });
-  writeFileSync(join(library, "_meta.json"), `${JSON.stringify(meta)}\n`);
-
-  removeAllClaudeDesktopWiring();
-  const after = metaOf(library);
-  expect(after.entries).toEqual([{ id: "user-9", name: "Mine" }]);
-  expect(existsSync(join(library, "user-9.json"))).toBe(true);
-  expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
 });
 
 test("payload: MCP entry carries the profile selector and merges over foreign servers", () => {

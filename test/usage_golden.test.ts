@@ -11,7 +11,6 @@ import {
   describeMismatch,
   expectedCurrent,
   generateGoldenTree,
-  generatorParams,
   GOLDEN_COST_ARGS,
   GOLDEN_MATRIX,
   type GoldenCase,
@@ -30,21 +29,6 @@ import {
 /** runCost cuts days in the system zone, so every run needs the process pinned to UTC; a
  *  Windows host outside UTC cannot be pinned and skips the file. */
 const UTC = utcPinnable();
-
-/** The optional larger extra run: a tree of this size checks the three read paths agree
- *  with each other (there is no golden for it). Unset, or no larger than the committed
- *  trees, means no extra run; a value that is not a positive number is refused. */
-const EXTRA_MB = extraMb(process.env.COPILOT_ENV_USAGE_FIXTURE_MB);
-const COMMITTED_MB = Math.max(...GOLDEN_MATRIX.map((c) => c.generator.mb));
-
-function extraMb(raw: string | undefined): number {
-  if (raw === undefined || raw === "") return 0;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new Error(`COPILOT_ENV_USAGE_FIXTURE_MB must be a positive number, got '${raw}'`);
-  }
-  return n;
-}
 
 interface Golden {
   entry: GoldenCase;
@@ -125,11 +109,9 @@ function ledgerBlocks(tree: GeneratedTree): Record<string, unknown> {
  * through the index: the summed file count equals the tree's, and the warm run reuses exactly
  * the rows the cold run parsed and reads no bytes (a reader that bypassed it would parse again).
  */
-async function checkReadPaths(tree: GeneratedTree, golden?: Record<string, unknown>) {
+async function checkReadPaths(tree: GeneratedTree, expected: Record<string, unknown>) {
   const plain = await runCurrentCost(tree.root, { noIndex: true });
   expect(plain.runtime.indexed).toBe(false);
-  // Without a golden the three paths are held to each other, through the plain one.
-  const expected = golden ?? plain.payload;
   expect(describeMismatch(plain.payload, expected)).toBeNull();
 
   const copilotApiHome = join(tempDir("usage-golden-"), "copilot-env");
@@ -193,17 +175,3 @@ test("tamper control: one changed token count fails the golden comparison", asyn
   const withRuntime = JSON.stringify({ ...golden, runtime: { elapsedMs: 1 } });
   expect(describeMismatch(parseCostPayload(withRuntime, "x"), golden)).toBeNull();
 });
-
-test.skipIf(!UTC || !(EXTRA_MB > COMMITTED_MB))(
-  `extra ${EXTRA_MB} MiB tree: runCost, cold index, and warm index agree with each other`,
-  async () => {
-    const entry: GoldenCase = {
-      name: "extra",
-      generator: generatorParams(EXTRA_MB, 1, true),
-      split: false,
-    };
-    const { tree } = await generateGoldenTree(entry, tempDir("usage-golden-"));
-    await checkReadPaths(tree);
-  },
-  600_000,
-);

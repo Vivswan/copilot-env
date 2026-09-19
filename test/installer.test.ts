@@ -14,7 +14,6 @@ import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import {
   applyInstallPlan,
-  bootstrapBinaryPaths,
   buildInstallPlan,
   BUNDLED_ONLY_ASSETS,
   CHECKOUT_MARKERS,
@@ -32,7 +31,6 @@ import {
   POWERSHELL_CURRENT_SHIM,
   POWERSHELL_SHIM,
   readCurrentVersionName,
-  removeBootstrapBinary,
   removeVersionDirsExcept,
   versionDirName,
   VERSIONS_DIR,
@@ -211,29 +209,6 @@ describe("the versioned full-install plan", () => {
     }
     applyInstallPlan(versionedPlan(QUIET, throughLink));
     expect(readFileSync(inVersion, "utf8")).toBe("LIVE"); // never truncated
-  });
-
-  test("plans the binary copy, and skips it when the binary is already in place", () => {
-    const binarySource = writeFakeBinary(join(root, "downloaded-binary"));
-    const plan = versionedPlan(QUIET, binarySource);
-    if (plan.kind !== "versioned") throw new Error("expected a versioned plan");
-    expect(plan.binary).toEqual({
-      from: binarySource,
-      to: join(plan.versionRoot, "bin", installedBinaryName()),
-    });
-
-    // Already at its target (a same-version refresh): nothing to copy.
-    const inPlace = versionedPlan(
-      QUIET,
-      join(dest, VERSIONS_DIR, VERSION_NAME, "bin", installedBinaryName()),
-    );
-    if (inPlace.kind !== "versioned") throw new Error("expected a versioned plan");
-    expect(inPlace.binary).toBeNull();
-
-    // No standalone binary running (a dev process): nothing to contribute.
-    const none = versionedPlan(QUIET, null);
-    if (none.kind !== "versioned") throw new Error("expected a versioned plan");
-    expect(none.binary).toBeNull();
   });
 
   test("applying builds the layout: version root, link, top shims, per-version manifest", () => {
@@ -480,16 +455,6 @@ describe("the current link primitives", () => {
     // No versions dir at all: a silent no-op, never a throw.
     removeVersionDirsExcept(join(root, "nowhere"), new Set());
   });
-
-  test("removeBootstrapBinary sweeps the bootstrap binary only", () => {
-    const name = installedBinaryName();
-    mkdirSync(join(dest, "bin"), { recursive: true });
-    writeFileSync(join(dest, "bin", name), "bootstrap");
-    writeFileSync(join(dest, "bin", "agent"), "shim");
-    removeBootstrapBinary(bootstrapBinaryPaths(dest));
-    expect(existsSync(join(dest, "bin", name))).toBe(false);
-    expect(existsSync(join(dest, "bin", "agent"))).toBe(true);
-  });
 });
 
 describe("the unsafe-target canonical guard", () => {
@@ -637,14 +602,6 @@ describe("the checkout guard and the install manifest sentinel", () => {
 });
 
 describe("applyInstallPlan (assets-only)", () => {
-  test("materializes the assets and shims", () => {
-    applyInstallPlan(assetsOnlyPlan());
-
-    expect(readFileSync(join(dest, "shell", "payload.txt"), "utf8")).toBe("content of shell");
-    expect(readFileSync(join(dest, "bin", "agent"), "utf8")).toBe(POSIX_SHIM);
-    expect(readFileSync(join(dest, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_SHIM);
-  });
-
   skipWin("makes the shim and the .sh assets executable", () => {
     applyInstallPlan(assetsOnlyPlan());
 

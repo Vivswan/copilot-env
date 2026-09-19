@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
 import { BASE_URL_ENV, proxyHelperCommand } from "../src/claude/config.ts";
@@ -968,7 +968,7 @@ function snapshotTree(dir: string, prefix = ""): Map<string, string> {
   return out;
 }
 
-test("health gathering does zero writes over a home with seeded profiles", async () => {
+test("health gathering does zero writes over a home with seeded profiles, and creates nothing over an absent one", async () => {
   // No port reservation for the homeless proxy slot, no state, activity, or home creation anywhere.
   const home = isolateProxyHome("copilot-health-zerowrites-");
   try {
@@ -998,6 +998,26 @@ test("health gathering does zero writes over a home with seeded profiles", async
     await gatherFacts("runtime", { profile: parseProfileName("r-half") }, deps);
     const after = snapshotTree(home);
     expect(after).toEqual(before);
+
+    // An absent home: gatherFacts must not mkdir it, nor a run dir or port reservation beside it.
+    const root = tempDir("copilot-health-zerowrites-absent-");
+    try {
+      const absent = join(root, "api-home");
+      process.env.COPILOT_API_HOME = absent;
+      const facts = await gatherFacts(
+        "proxy",
+        {},
+        offlineDeps({
+          codexHome: () => join(root, "codex-home"),
+          claudeHome: () => join(root, "claude-home"),
+        }),
+      );
+      expect(facts.runtimes?.map((t) => t.profile)).toEqual([null]);
+      expect(existsSync(absent)).toBe(false);
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      removeDir(root);
+    }
   } finally {
     restoreEnv();
     removeDir(home);

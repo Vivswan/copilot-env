@@ -130,6 +130,21 @@ const CONTRACTS: ContractCase[] = [
       `created -> ${join(dir, "secret")}`,
     ],
   },
+  {
+    name: "a stale staging file at the link's staging path is named before the link lands",
+    // Creating a symlink needs a privilege Windows does not grant by default.
+    skip: process.platform === "win32",
+    setup: (dir) =>
+      writeFileSync(join(dir, `.current-next-${process.pid}`), "left by a crashed run"),
+    run: (dir) => {
+      fs.atomicSymlink("versions/v1", join(dir, "current"));
+      expect(readlinkSync(join(dir, "current"))).toBe("versions/v1");
+    },
+    lines: (dir) => [
+      `deleted -> ${join(dir, `.current-next-${process.pid}`)} (stale staging file)`,
+      `linked -> ${join(dir, "current")} (to versions/v1)`,
+    ],
+  },
 ];
 
 test("the transient cleanup names only a proven change", () => {
@@ -214,28 +229,6 @@ test("a real store update into a fresh data home names the home and its parents,
     removeDir(dir);
   }
 });
-
-// Creating a symlink needs a privilege Windows does not grant by default.
-test.skipIf(process.platform === "win32")(
-  "a stale staging file at the link's staging path is named before the link lands",
-  () => {
-    const dir = tempDir("copilot-report-staging-");
-    try {
-      const link = join(dir, "current");
-      const staging = join(dir, `.current-next-${process.pid}`);
-      writeFileSync(staging, "left by a crashed run");
-      deferWriteReports();
-      fs.atomicSymlink("versions/v1", link);
-      expect(flushWriteReports()).toEqual([
-        `deleted -> ${staging} (stale staging file)`,
-        `linked -> ${link} (to versions/v1)`,
-      ]);
-      expect(readlinkSync(link)).toBe("versions/v1");
-    } finally {
-      removeDir(dir);
-    }
-  },
-);
 
 test("writes inside copilot-env's own homes print nothing; the same write outside does", () => {
   const { dir: home, proxyHome } = isolateAgentHomes("copilot-report-scope-");

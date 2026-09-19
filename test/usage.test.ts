@@ -310,78 +310,15 @@ function seedUsageDb(path: string): void {
   db.close();
 }
 
-test("readUsage sums tokens per model and splits them by local day, the split reconciling with byModel", () => {
-  dir = tempDir("copilot-usage-");
-  const path = join(dir, "copilot-api.sqlite");
-  seedUsageDb(path);
-
-  const report = readUsage([path]);
-
-  expect(report.byModel.get("claude-opus-4.8")).toEqual({
-    input: 200,
-    output: 100,
-    cacheRead: 10,
-    cacheCreation: 0,
-    events: 2,
-  });
-  expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
-  expect([...report.perDay.keys()].sort()).toEqual([
-    day("2026-06-01T00:00:00Z"),
-    day("2026-06-02T00:00:00Z"),
-  ]);
-  expect(report.perDay.get(day("2026-06-01T00:00:00Z"))?.get("claude-opus-4.8")).toEqual({
-    input: 200,
-    output: 100,
-    cacheRead: 10,
-    cacheCreation: 0,
-    events: 2,
-  });
-  expect(report.perDay.get(day("2026-06-02T00:00:00Z"))?.get("gpt-5.5")?.input).toBe(200);
-  expect(report.perDay.get(day("2026-06-02T00:00:00Z"))?.has("claude-opus-4.8")).toBe(false);
-});
-
-test("readUsage folds divergent spellings of one model into the canonical row", () => {
-  dir = tempDir("copilot-usage-");
-  const path = join(dir, "copilot-api.sqlite");
-  const db = new DatabaseSync(path);
-  db.exec(`CREATE TABLE token_usage_events (
-    model TEXT NOT NULL,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    cache_read_input_tokens INTEGER,
-    cache_creation_input_tokens INTEGER,
-    created_at_ms INTEGER,
-    created_at_utc TEXT
-  )`);
-  const insert = db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)");
-  // Anthropic dashed, Copilot dotted, and dated-snapshot ids of one model.
-  const at = "2026-06-01T00:00:00Z";
-  insert.run("claude-opus-4-8", 1, 2, 0, 0, ms(at), at);
-  insert.run("claude-opus-4.8", 10, 20, 0, 0, ms(at), at);
-  insert.run("claude-opus-4-8-20260101", 100, 200, 0, 0, ms(at), at);
-  db.close();
-
-  const report = readUsage([path]);
-
-  expect(report.byModel.get("claude-opus-4.8")).toEqual({
-    input: 111,
-    output: 222,
-    cacheRead: 0,
-    cacheCreation: 0,
-    events: 3,
-  });
-  expect(report.byModel.size).toBe(1);
-  expect(report.perDay.get(day(at))?.get("claude-opus-4.8")?.events).toBe(3);
-});
-
-test("readUsage sums tokens by model and unions active days across two DBs", () => {
+test("readUsage sums tokens per canonical model across DBs and splits them by local day, the split reconciling with byModel", () => {
   dir = tempDir("copilot-usage-");
   const pathA = join(dir, "a.sqlite");
   const pathB = join(dir, "b.sqlite");
   seedUsageDb(pathA);
 
   // B shares a model and a day with A, plus a fresh model and a fresh day: SUM, not overwrite,
-  // and a UNION of days, not a per-DB reset.
+  // and a UNION of days, not a per-DB reset. Its shared model is spelled the Anthropic dashed,
+  // Copilot dotted, and dated-snapshot ways: one canonical row, never three.
   const db = new DatabaseSync(pathB);
   db.exec(`CREATE TABLE token_usage_events (
     model TEXT NOT NULL,
@@ -393,22 +330,31 @@ test("readUsage sums tokens by model and unions active days across two DBs", () 
     created_at_utc TEXT
   )`);
   const insert = db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)");
-  insert.run("claude-opus-4.8", 5, 7, 1, 2, ms("2026-06-01T00:00:00Z"), "2026-06-01T00:00:00Z");
-  insert.run("gemini-3.0", 9, 0, 0, 0, ms("2026-06-03T00:00:00Z"), "2026-06-03T00:00:00Z");
+  const day1 = "2026-06-01T00:00:00Z";
+  const day3 = "2026-06-03T00:00:00Z";
+  insert.run("claude-opus-4-8", 1, 2, 1, 2, ms(day1), day1);
+  insert.run("claude-opus-4.8", 10, 20, 0, 0, ms(day1), day1);
+  insert.run("claude-opus-4-8-20260101", 100, 200, 0, 0, ms(day1), day1);
+  insert.run("gemini-3.0", 9, 0, 0, 0, ms(day3), day3);
   db.close();
 
   const report = readUsage([pathA, pathB]);
 
-  expect(report.byModel.get("claude-opus-4.8")).toEqual({
-    input: 205,
-    output: 107,
-    cacheRead: 11,
-    cacheCreation: 2,
-    events: 3,
-  });
-  expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
-  expect(report.byModel.get("gemini-3.0")?.input).toBe(9);
-  expect(report.perDay.size).toBe(3);
+  // A's 200/100/10/0 over two events plus B's 111/222/1/2 over three.
+  const claude = { input: 311, output: 322, cacheRead: 11, cacheCreation: 2, events: 5 };
+  const gpt = { input: 200, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 };
+  const gemini = { input: 9, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 };
+  expect(report.byModel).toEqual(
+    new Map([["claude-opus-4.8", claude], ["gpt-5.5", gpt], ["gemini-3.0", gemini]]),
+  );
+  // Every model's usage sits on one day, so each day's row is that model's byModel row.
+  expect(report.perDay).toEqual(
+    new Map([
+      [day(day1), new Map([["claude-opus-4.8", claude]])],
+      [day("2026-06-02T00:00:00Z"), new Map([["gpt-5.5", gpt]])],
+      [day(day3), new Map([["gemini-3.0", gemini]])],
+    ]),
+  );
 });
 
 test("readUsage sinceMs filters older rows from token totals and active days", () => {
@@ -518,13 +464,9 @@ for (const { name, files, inputs, days } of UNREADABLE_SETS) {
 /** A home's directory tree (paths relative to the home) and the databases the sweep must find. */
 const LAYOUTS: { name: string; dirs?: string[]; files: string[]; found: string[] }[] = [
   {
-    name: "the per-host DBs under .run",
-    files: [".run/host-a/copilot-api.sqlite"],
-    found: [".run/host-a/copilot-api.sqlite"],
-  },
-  {
-    // A profile home with no DB yet contributes nothing.
-    name: "named profile daemon homes too",
+    // The per-host DBs under .run, the default home's and each named profile home's; a profile
+    // home with no DB yet contributes nothing.
+    name: "the per-host DBs under .run in the default and named profile daemon homes",
     dirs: ["profiles/fresh"],
     files: [".run/host-a/copilot-api.sqlite", "profiles/work/.run/host-a/copilot-api.sqlite"],
     found: [".run/host-a/copilot-api.sqlite", "profiles/work/.run/host-a/copilot-api.sqlite"],

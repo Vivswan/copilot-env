@@ -20,10 +20,10 @@ import {
 import { runAuth } from "../src/commands/auth.ts";
 import { writeProfileSettings } from "../src/commands/launch.ts";
 import { runStart } from "../src/commands/start.ts";
-import { parseStopAction, runStop } from "../src/commands/stop.ts";
+import { runStop } from "../src/commands/stop.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import { CopilotEnvState, partialSlotGap } from "../src/copilot_api/env_state.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { setGithubLoginFetch } from "../src/copilot_api/github_login.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
@@ -94,7 +94,6 @@ afterEach(() => {
   restoreEnv();
   // A check test's exit 1/2 must never leak into the whole `deno test` run.
   resetExitCode();
-  dir = removeDir(dir);
 });
 
 function tmpProxyHome(): string {
@@ -133,56 +132,72 @@ test("parseProfileName accepts kebab names and rejects reserved/invalid ones", (
 
 // --- credential store slots -----------------------------------------------------
 
-test("a named credential write requires the profile to exist (no half-profile auto-create)", () => {
-  tmpProxyHome();
-  const state = new CopilotEnvState();
-  new Credential(state).store("gh-token", "ghp_default");
-  const work = new Credential(state, WORK);
-
-  // Hard-fail: no slot of its own -> null, even though the default resolves.
-  expect(work.resolve()).toBeNull();
-  expect(work.isAuthenticated()).toBe(false);
-
-  // Profiles are created ONLY by the atomic commit, so the write is a rejection, never a half profile.
-  expect(() => work.store("gh-token", "ghp_work")).toThrow(/no such profile 'work'/);
-  expect(state.profileNames()).toEqual([]);
-  expect(new Credential(state).resolve()).toBe("ghp_default"); // default untouched
-});
-
-test("a home-only half profile gets the half-created repair message on re-auth", () => {
-  tmpProxyHome();
-  mkdirSync(profileHome(WORK), { recursive: true });
-  // The home makes the profile KNOWN (env/models/health address it), but the
-  // credential write still needs a store slot: only `add` creates one.
-  expect(() => new Credential(undefined, WORK).store("gh-token", "ghp_x")).toThrow(
-    /half-created.*agent profile work add/,
-  );
-  expect(new CopilotEnvState().profileNames()).toEqual([]);
-});
-
-test("named credential slots are isolated and never fall back to the default", () => {
-  tmpProxyHome();
-  const state = new CopilotEnvState();
-  new Credential(state).store("gh-token", "ghp_default");
-  state.commitProfile(WORK, {
-    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
-    mode: "direct",
-  });
-  const work = new Credential(state, WORK);
-  expect(work.resolve()).toBe("ghp_work");
-  expect(new Credential(state).resolve()).toBe("ghp_default");
-
-  // Re-auth targets the existing slot only; the default stays untouched.
-  work.store("gh-token", "ghp_rotated");
-  expect(work.resolve()).toBe("ghp_rotated");
-  expect(new Credential(state).resolve()).toBe("ghp_default");
-
-  // De-auth clears the credential half (mode stays: de-auth is not deletion),
-  // and the emptied credential never falls back to the default.
-  expect(work.clear()).toBe(true);
-  expect(work.resolve()).toBeNull();
-  expect(state.readProfileSlot(WORK).mode).toBe("direct");
-  expect(new Credential(state).resolve()).toBe("ghp_default");
+test("a named credential slot per state: a write needs the committed profile (no slot or a home-only half is a rejection, never an auto-created half), a committed slot re-auths and de-auths in place, and the default is never read or touched", () => {
+  const rows: {
+    name: string;
+    arrange: (state: CopilotEnvState) => void;
+    /** resolve() before the write: the slot's own token or null, never the default's. */
+    before: string | null;
+    write: { throws: RegExp } | { lands: string };
+    /** Whether the store knows the profile after the write. */
+    known: boolean;
+  }[] = [
+    {
+      // Profiles are created ONLY by the atomic commit, so the write is a rejection, never a half
+      // profile.
+      name: "no slot",
+      arrange: () => {},
+      before: null,
+      write: { throws: /no such profile 'work'/ },
+      known: false,
+    },
+    {
+      // The home makes the profile KNOWN (env/models/health address it), but the credential write
+      // still needs a store slot: only `add` creates one.
+      name: "home-only half profile",
+      arrange: () => mkdirSync(profileHome(WORK), { recursive: true }),
+      before: null,
+      write: { throws: /half-created.*agent profile work add/ },
+      known: false,
+    },
+    {
+      // Re-auth targets the existing slot only.
+      name: "committed slot",
+      arrange: (state) =>
+        state.commitProfile(WORK, {
+          credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+          mode: "direct",
+        }),
+      before: "ghp_work",
+      write: { lands: "ghp_rotated" },
+      known: true,
+    },
+  ];
+  for (const row of rows) {
+    dir = removeDir(dir);
+    tmpProxyHome();
+    const state = new CopilotEnvState();
+    new Credential(state).store("gh-token", "ghp_default");
+    row.arrange(state);
+    const work = new Credential(state, WORK);
+    // Hard-fail: no slot of its own -> null, even though the default resolves.
+    expect(work.resolve(), row.name).toBe(row.before);
+    expect(work.isAuthenticated(), row.name).toBe(row.before !== null);
+    if ("throws" in row.write) {
+      expect(() => work.store("gh-token", "ghp_rotated"), row.name).toThrow(row.write.throws);
+    } else {
+      work.store("gh-token", row.write.lands);
+      expect(work.resolve(), row.name).toBe(row.write.lands);
+      expect(new Credential(state).resolve(), row.name).toBe("ghp_default");
+      // De-auth clears the credential half (mode stays: de-auth is not deletion), and the
+      // emptied credential never falls back to the default.
+      expect(work.clear(), row.name).toBe(true);
+      expect(state.readProfileSlot(WORK).mode, row.name).toBe("direct");
+    }
+    expect(work.resolve(), row.name).toBeNull();
+    expect(state.profileNames(), row.name).toEqual(row.known ? [WORK] : []);
+    expect(new Credential(state).resolve(), row.name).toBe("ghp_default"); // default untouched
+  }
 });
 
 test("the default credential lives in the reserved default slot on disk", () => {
@@ -530,30 +545,6 @@ test("profile <name> check is store-driven: exit 1 unknown/incomplete, 2 proxy, 
   expect(process.exitCode).toBe(0);
 });
 
-test("partialSlotGap: the ONE spelling of a partial slot's repair line (output contract)", () => {
-  // Rendered at three sites (`profile <name> check`, the `cl --profile` launcher, `agent profile launch`); pinned once here,
-  // byte for byte (launch.test.ts matches both lines end to end, but only as substrings).
-  expect(
-    partialSlotGap(WORK, {
-      kind: "partial",
-      credential: { kind: "none", provider: null },
-      mode: null,
-    }),
-  ).toBe(
-    "profile 'work' does not exist - create it with `agent profile work add --direct|--proxy`",
-  );
-  expect(
-    partialSlotGap(WORK, {
-      kind: "partial",
-      credential: { kind: "none", provider: null },
-      mode: "proxy",
-    }),
-  ).toBe(
-    "profile 'work' has no credential - repair it with `agent profile work auth` " +
-      "or `agent profile work add`",
-  );
-});
-
 test("renderProfileTable aligns columns under a header and flags incomplete slots", () => {
   // Rows carry branded names (every real row is built from branded sources).
   const table = renderProfileTable([
@@ -673,16 +664,8 @@ test("profile <name> add requires a mode for a new profile", async () => {
   await expect(addProfile(WORK, { mode: "auto", noAuth: true })).rejects.toThrow(
     /--direct or --proxy/,
   );
-  // --direct --proxy is rejected at the CLI boundary (provider_mode.test.ts), never here.
-});
-
-test("parseStopAction: all/profile/default arms; --all on a named profile is a rejection", () => {
-  expect(parseStopAction({})).toEqual({ kind: "default" });
-  expect(parseStopAction({ all: true })).toEqual({ kind: "all" });
-  expect(parseStopAction({ profile: "work" })).toEqual({ kind: "profile", name: WORK });
-  expect(() => parseStopAction({ all: true, profile: "work" })).toThrow(
-    "--all stops every daemon; it takes no profile name",
-  );
+  // --direct --proxy is rejected at the CLI boundary (cli.smoke.test.ts, "the mode conflict is
+  // rejected at the boundary on every command that takes the pair"), never here.
 });
 
 // --- the refused stop's consumers (guard + summary line) ---------------------------------

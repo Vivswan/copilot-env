@@ -16,23 +16,21 @@ import {
   markInference,
   resetInferenceActivityForTests,
 } from "../src/copilot_api/inference_activity.ts";
-import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 import { writeRunState } from "./helpers/fixtures.ts";
 
 const restoreEnv = envSnapshot([IDLE_TIMEOUT_ENV, DAEMON_KEEP_PORT_ENV]);
-let dir = "";
 
 afterEach(() => {
   resetInferenceActivityForTests();
   resetDaemonShutdownForTests();
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 // Isolate the config store (idleTimeoutMs reads it when the env knob is unset).
 function tmpHome(): void {
-  dir = isolateProxyHome("copilot-idle-");
+  isolateProxyHome("copilot-idle-");
 }
 
 test("idleCheck: recent observed inference keeps a long-started daemon alive", () => {
@@ -56,53 +54,40 @@ test("idleCheck: recent observed inference keeps a long-started daemon alive", (
   expect(new CopilotEnvRunState().read().pid).toBe(process.pid); // never cleared -- the daemon stayed up
 });
 
-test("idleCheck: with no activity past the window, clears run state and exits", () => {
-  tmpHome();
-  new CopilotEnvConfig().set({ "daemon.auto-start": true });
-  const state = new CopilotEnvRunState();
-  state.set({ pid: process.pid, port: 4141, lastEnsureAt: 1 });
-  const realExit = Deno.exit;
-  let exitCode: number | undefined = -1;
-  Deno.exit = ((code?: number): never => {
-    exitCode = code;
-    throw new Error("exit"); // the shutdown path ends here, like the real Deno.exit
-  }) as typeof Deno.exit;
-  try {
-    // All marks ancient -> idle -> the shared shutdown path. No server was recorded in
-    // this process, so there is nothing to drain and the exit is immediate.
-    expect(() => idleCheck(2, 1)).toThrow("exit");
-  } finally {
-    Deno.exit = realExit;
+// All marks ancient -> idle -> the shared shutdown path. No server was recorded in this process,
+// so there is nothing to drain and the exit is immediate. clearIfPid wipes the daemon tracking
+// (pid matches this process); whether the port goes with it is the spawn's keep-port value: unset
+// or the default daemon's "0" releases it, a named profile's "1" keeps the stable reservation the
+// baked wiring points at.
+test("idleCheck: with no activity past the window, clears run state and exits; keep-port decides the port", () => {
+  const rows: { keepPort: string | undefined; port: number | undefined }[] = [
+    { keepPort: undefined, port: undefined },
+    { keepPort: "0", port: undefined },
+    { keepPort: "1", port: 4242 },
+  ];
+  for (const row of rows) {
+    tmpHome();
+    new CopilotEnvConfig().set({ "daemon.auto-start": true });
+    const state = new CopilotEnvRunState();
+    state.set({ pid: process.pid, port: 4242, lastEnsureAt: 1 });
+    if (row.keepPort === undefined) delete process.env[DAEMON_KEEP_PORT_ENV];
+    else process.env[DAEMON_KEEP_PORT_ENV] = row.keepPort;
+    const realExit = Deno.exit;
+    let exitCode: number | undefined = -1;
+    Deno.exit = ((code?: number): never => {
+      exitCode = code;
+      throw new Error("exit"); // the shutdown path ends here, like the real Deno.exit
+    }) as typeof Deno.exit;
+    try {
+      expect(() => idleCheck(2, 1), String(row.keepPort)).toThrow("exit");
+    } finally {
+      Deno.exit = realExit;
+    }
+    expect(exitCode, String(row.keepPort)).toBe(0);
+    const after = state.read();
+    expect({ ...row, pid: after.pid, lastEnsureAt: after.lastEnsureAt, port: after.port })
+      .toEqual({ ...row, pid: undefined, lastEnsureAt: undefined });
   }
-  expect(exitCode).toBe(0);
-  // clearIfPid wiped the daemon tracking (pid matches this process).
-  const after = state.read();
-  expect(after.pid).toBeUndefined();
-  expect(after.port).toBeUndefined();
-  expect(after.lastEnsureAt).toBeUndefined();
-});
-
-test("idleCheck: the spawn's keep-port value preserves a profile reservation across auto-stop", () => {
-  tmpHome();
-  new CopilotEnvConfig().set({ "daemon.auto-start": true });
-  const state = new CopilotEnvRunState();
-  state.set({ pid: process.pid, port: 4242, lastEnsureAt: 1 });
-  // A named profile's daemon is spawned with keep-port "1": auto-stop clears the pid, but the
-  // port (the profile's stable reservation the baked wiring points at) must survive. The default
-  // daemon's "0" is pinned above (port cleared).
-  process.env[DAEMON_KEEP_PORT_ENV] = "1";
-  const realExit = Deno.exit;
-  Deno.exit = ((): never => {
-    throw new Error("exit");
-  }) as typeof Deno.exit;
-  try {
-    expect(() => idleCheck(2, 1)).toThrow("exit");
-  } finally {
-    Deno.exit = realExit;
-  }
-  const after = state.read();
-  expect(after.pid).toBeUndefined();
-  expect(after.port).toBe(4242);
 });
 
 // The knob's precedence is env > config > default, in whole seconds; 0 or a negative value

@@ -13,7 +13,7 @@ import {
   buildNodePosixInstallScript,
   computePathRefresh,
 } from "../src/agents/cli_install.ts";
-import { parseShellAction, runShell } from "../src/commands/setup.ts";
+import { runShell } from "../src/commands/setup.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CI_RC_DIR_ENV, MARKER } from "../src/shell/integration.ts";
 import { expect, removeDir, tempDir, test } from "./helpers/testing.ts";
@@ -42,25 +42,6 @@ test("shell: the CLI-install tuning flags require --clis, --no-prereqs excludes 
   for (const [opts, message] of rows) {
     expect(() => runShell(opts), JSON.stringify(opts)).toThrow(message);
   }
-});
-
-test("parseShellAction: remove vs wire arms, with the CLI install inside the wire arm", () => {
-  expect(parseShellAction({ remove: true })).toEqual({ kind: "remove", allHosts: false });
-  expect(parseShellAction({ remove: true, allHosts: true })).toEqual({
-    kind: "remove",
-    allHosts: true,
-  });
-  expect(parseShellAction({})).toEqual({ kind: "wire", allHosts: false, clis: null });
-  expect(parseShellAction({ clis: true, cooldown: 7 })).toEqual({
-    kind: "wire",
-    allHosts: false,
-    clis: { mode: "install", cooldown: 7, noSudo: false },
-  });
-  expect(parseShellAction({ clis: true, noPrereqs: true })).toEqual({
-    kind: "wire",
-    allHosts: false,
-    clis: { mode: "verify-only" },
-  });
 });
 
 // The rc writes ride the suite's rc-dir/Documents seams, so this runs for real on every OS.

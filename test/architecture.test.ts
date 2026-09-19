@@ -100,40 +100,63 @@ test("the imports under src/ match architecture.json exactly", () => {
   expect(lintArchitecture(arch, graph())).toEqual([]);
 });
 
-test("an undeclared edge fails as a forbidden import naming both files", () => {
-  // `cli -> commands` is the edge src/cli.ts draws to every command file.
-  const withoutEdge = {
-    ...arch,
-    edges: { ...arch.edges, cli: (arch.edges.cli ?? []).filter((to) => to !== "commands") },
-  };
-  const problems = lintArchitecture(withoutEdge, graph());
-  expect(problems).toHaveLength(1);
-  expect(problems[0]).toMatch(
-    /^forbidden import cli -> commands: src\/cli\.ts -> src\/commands\/[a-z_]+\.ts, .*; move it or declare the edge$/,
-  );
-});
-
-test("a declared edge no file draws fails as a stale allowance", () => {
-  // Nothing under src/ imports src/cli.ts.
-  const withStale = {
-    ...arch,
-    edges: { ...arch.edges, utils: [...(arch.edges.utils ?? []), "cli"] },
-  };
-  expect(lintArchitecture(withStale, graph())).toEqual([
-    "stale allowance utils -> cli: no file draws it; remove it from architecture.json",
-  ]);
-});
-
-test("a src file outside every layer is reported, as a source and as a target", () => {
-  const { proxy_float: _dropped, ...layers } = arch.layers;
-  const edges = Object.fromEntries(
-    Object.entries(arch.edges)
-      .filter(([from]) => from !== "proxy_float")
-      .map(([from, targets]) => [from, targets.filter((to) => to !== "proxy_float")]),
-  );
-  const problems = lintArchitecture({ ...arch, layers, edges }, graph());
-  expect(problems).toContain("src/proxy_float.ts belongs to no layer in architecture.json");
-  expect(problems).toContain(
-    "src/proxy_float.ts (imported by src/copilot_api/launch.ts) belongs to no layer in architecture.json",
-  );
+// Each row breaks the declaration one way; the lint must name the break and nothing else.
+test("a forbidden import, a stale allowance, and a file no layer owns are each named exactly", () => {
+  type Architecture = ReturnType<typeof readArchitecture>;
+  const cliImports = graph().get("src/cli.ts") ?? [];
+  const proxyFloatImporters = [...graph()]
+    .filter(([, targets]) => targets.includes("src/proxy_float.ts"))
+    .map(([file]) => file);
+  // Both derivations must find something, or a row below would pin an empty message.
+  expect(cliImports.some((to) => to.startsWith("src/commands/"))).toBe(true);
+  expect(proxyFloatImporters).not.toEqual([]);
+  const rows: { name: string; edit: (arch: Architecture) => Architecture; problems: string[] }[] = [
+    {
+      // `cli -> commands` is the edge src/cli.ts draws to every command file.
+      name: "an undeclared edge fails as a forbidden import naming both files",
+      edit: (arch) => ({
+        ...arch,
+        edges: { ...arch.edges, cli: (arch.edges.cli ?? []).filter((to) => to !== "commands") },
+      }),
+      problems: [
+        `forbidden import cli -> commands: ${
+          cliImports.filter((to) => to.startsWith("src/commands/"))
+            .map((to) => `src/cli.ts -> ${to}`).join(", ")
+        }; move it or declare the edge`,
+      ],
+    },
+    {
+      // Nothing under src/ imports src/cli.ts.
+      name: "a declared edge no file draws fails as a stale allowance",
+      edit: (arch) => ({
+        ...arch,
+        edges: { ...arch.edges, utils: [...(arch.edges.utils ?? []), "cli"] },
+      }),
+      problems: [
+        "stale allowance utils -> cli: no file draws it; remove it from architecture.json",
+      ],
+    },
+    {
+      name: "a src file outside every layer is reported, as a source and as a target",
+      edit: (arch) => {
+        const { proxy_float: _dropped, ...layers } = arch.layers;
+        const edges = Object.fromEntries(
+          Object.entries(arch.edges)
+            .filter(([from]) => from !== "proxy_float")
+            .map(([from, targets]) => [from, targets.filter((to) => to !== "proxy_float")]),
+        );
+        return { ...arch, layers, edges };
+      },
+      problems: [
+        "src/proxy_float.ts belongs to no layer in architecture.json",
+        ...proxyFloatImporters.map((file) =>
+          `src/proxy_float.ts (imported by ${file}) belongs to no layer in architecture.json`
+        ),
+      ],
+    },
+  ];
+  for (const row of rows) {
+    const problems = lintArchitecture(row.edit(arch), graph()).sort();
+    expect({ name: row.name, problems }).toEqual({ name: row.name, problems: row.problems.sort() });
+  }
 });

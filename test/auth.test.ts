@@ -67,7 +67,6 @@ afterEach(() => {
   restoreEnv();
   resetExitCode();
   setGithubLoginFetch(null);
-  dir = removeDir(dir);
 });
 
 /** Every token this file provisions reads as octocat's; a test that cares stubs its own. */
@@ -347,82 +346,95 @@ test("githubLoginLook asks GraphQL for the viewer and reads a login, a 401, or a
   });
 });
 
-test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile <name> add`", async () => {
-  isolate();
-  // Recommending a re-auth would hit the no-store-slot gate, so the hint reuses the store's
-  // no-such-profile phrasing. Asserted without backticks: consola renders code spans, stripping
-  // them.
-  const addHint = "no such profile 'ghost' - create it with ";
-  const addCommand = "agent profile ghost add --direct|--proxy";
-  const got = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
-  expect(got).toContain(addHint);
-  expect(got).toContain(addCommand);
-  expect(got).not.toContain("ghost auth");
-  expect(process.exitCode).toBe(1);
-  resetExitCode();
-  const deleted = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
-  expect(deleted).toContain("Nothing to clear");
-  expect(deleted).toContain(addCommand);
-  const checked = await captureStdout(() => runAuth({ check: true, profile: "ghost" }));
-  expect(checked).toContain(addHint);
-  expect(checked).toContain(addCommand);
-  expect(process.exitCode).toBe(1);
-  resetExitCode();
-
-  // A partial slot (de-authed, mode kept) re-auths in place, so the hint stays
-  // `agent profile <name> auth`.
+test("auth --get/--del/--check on a named profile per slot state: nonexistent hints at `agent profile <name> add`, half-created reuses the store's missing-slot phrasing, partial (de-authed, mode kept) re-auths in place", async () => {
   const ghost = parseProfileName("ghost");
-  state().commitProfile(ghost, {
-    credential: { kind: "stored", provider: "gh-token", token: "ghu_old" },
-    mode: "direct",
-  });
-  state().clearCredential(ghost);
-  const gotExisting = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
-  expect(gotExisting).toContain("agent profile ghost auth");
-  expect(gotExisting).not.toContain("ghost add");
-  const deletedExisting = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
-  expect(deletedExisting).toContain("Nothing to clear for profile 'ghost'");
-  expect(deletedExisting).toContain("agent profile ghost auth");
-  expect(deletedExisting).not.toContain("ghost add");
-  const checkedExisting = await captureStdout(() => runAuth({ check: true, profile: "ghost" }));
-  expect(checkedExisting).toContain("run `agent profile ghost auth`");
-});
-
-test("auth --get/--del/--check on a HALF-CREATED profile reuse the store's missing-slot phrasing", async () => {
-  isolate();
-  // A daemon home without a store slot (an interrupted add): the store's own write gate words this
-  // "half-created", so the read-back hints must say the same, never "no such profile".
-  const ghost = parseProfileName("ghost");
-  mkdirSync(profileHome(ghost), { recursive: true });
-  const phrase = "profile 'ghost' has no store slot (half-created; its daemon home exists)";
+  // Asserted without backticks: consola renders code spans, stripping them.
   const addCommand = "agent profile ghost add --direct|--proxy";
-  // Alignment pin: the store's own gate renders the same phrase + command, so a
-  // rewording on either side fails here.
-  let storeMessage = "";
-  try {
-    assertProfileSlot(ghost);
-  } catch (e) {
-    storeMessage = errMessage(e);
+  const rows: {
+    name: string;
+    /** Stages the slot and returns the needle --check's hint must carry (for the half-created
+     *  slot, the store's WHOLE message: --check prints the raw hint through console.log, no
+     *  consola rendering, so byte-level drift fails there). */
+    arrange: () => string;
+    /** Needles every verb's output carries. */
+    says: string[];
+    /** A needle --get and --del never carry: the other slot state's hint. */
+    never: string;
+    delSays: string;
+  }[] = [
+    {
+      // Recommending a re-auth would hit the no-store-slot gate, so the hint reuses the store's
+      // no-such-profile phrasing.
+      name: "nonexistent",
+      arrange: () => "no such profile 'ghost' - create it with ",
+      says: ["no such profile 'ghost' - create it with ", addCommand],
+      never: "ghost auth",
+      delSays: "Nothing to clear - ",
+    },
+    {
+      // A daemon home without a store slot (an interrupted add): the store's own write gate words
+      // this "half-created", so the read-back hints must say the same, never "no such profile".
+      name: "half-created",
+      arrange: () => {
+        mkdirSync(profileHome(ghost), { recursive: true });
+        // Alignment pin: the store's own gate renders the same phrase + command, so a rewording
+        // on either side fails here.
+        let storeMessage = "";
+        try {
+          assertProfileSlot(ghost);
+        } catch (e) {
+          storeMessage = errMessage(e);
+        }
+        expect(storeMessage).toContain(
+          "profile 'ghost' has no store slot (half-created; its daemon home exists)",
+        );
+        expect(storeMessage).toContain(addCommand);
+        return storeMessage;
+      },
+      says: [
+        "profile 'ghost' has no store slot (half-created; its daemon home exists)",
+        addCommand,
+      ],
+      never: "no such profile",
+      delSays: "Nothing to clear - ",
+    },
+    {
+      // A partial slot (de-authed, mode kept) re-auths in place, so the hint stays
+      // `agent profile <name> auth`.
+      name: "partial",
+      arrange: () => {
+        state().commitProfile(ghost, {
+          credential: { kind: "stored", provider: "gh-token", token: "ghu_old" },
+          mode: "direct",
+        });
+        state().clearCredential(ghost);
+        return "run `agent profile ghost auth`";
+      },
+      says: ["agent profile ghost auth"],
+      never: "ghost add",
+      delSays: "Nothing to clear for profile 'ghost'",
+    },
+  ];
+  for (const row of rows) {
+    dir = removeDir(dir);
+    isolate();
+    const checkSays = row.arrange();
+    const got = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
+    expect(process.exitCode, row.name).toBe(1);
+    resetExitCode();
+    const deleted = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
+    for (const out of [got, deleted]) {
+      for (const needle of row.says) expect(out, row.name).toContain(needle);
+      expect(out, row.name).not.toContain(row.never);
+    }
+    expect(deleted, row.name).toContain(row.delSays);
+    resetExitCode();
+    const checked = await captureStdout(() => runAuth({ check: true, profile: "ghost" }));
+    for (const needle of row.says) expect(checked, row.name).toContain(needle);
+    expect(checked, row.name).toContain(checkSays);
+    expect(process.exitCode, row.name).toBe(1);
+    resetExitCode();
   }
-  expect(storeMessage).toContain(phrase);
-  expect(storeMessage).toContain(addCommand);
-
-  const got = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
-  expect(got).toContain(phrase);
-  expect(got).toContain(addCommand);
-  expect(got).not.toContain("no such profile");
-  expect(process.exitCode).toBe(1);
-  resetExitCode();
-  const deleted = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
-  expect(deleted).toContain("Nothing to clear");
-  expect(deleted).toContain(phrase);
-  expect(deleted).toContain(addCommand);
-  const checked = await captureStdout(() => runAuth({ check: true, profile: "ghost" }));
-  // --check prints the raw hint (console.log, no consola rendering), so the
-  // WHOLE store message pins verbatim -- byte-level drift fails here.
-  expect(checked).toContain(storeMessage);
-  expect(process.exitCode).toBe(1);
-  resetExitCode();
 });
 
 // --- integration identities -------------------------------------------------

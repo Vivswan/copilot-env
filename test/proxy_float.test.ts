@@ -194,7 +194,6 @@ beforeEach(() => {
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 describe("selectProxyVersion", () => {
@@ -478,18 +477,6 @@ describe("floatProxy", () => {
     expect(proxyCacheCalls(deno.calls)).toHaveLength(1);
   });
 
-  test("refuses a lifecycle-scripted target outright on a fresh install", async () => {
-    const { fetchLike } = docFetch(
-      registryDoc({ "1.10.30": 8 }, { "scripts": { "1.10.30": ["postinstall"] } }),
-    );
-    const deno = fakeDeno();
-
-    await expect(floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS))).rejects.toThrow(
-      "lifecycle scripts",
-    );
-    expect(cacheCalls(deno.calls)).toEqual([]);
-  });
-
   test("a refused target keeps a usable in-bounds recorded version", async () => {
     seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
     const { fetchLike } = docFetch(
@@ -529,23 +516,29 @@ describe("floatProxy", () => {
     });
   });
 
-  test("a cold record the registry cannot vet is never re-warmed: scripted, or unlisted", async () => {
-    // An explicit pin bypasses the refusal, so a scripted version can be on record (e.g. the
-    // pin was later removed); re-warming it automatically would install the refused version
-    // without the pin's consent. A record the doc does not list cannot have its scripts vetted
-    // at all, and fails closed the same way.
-    const doc = registryDoc({ "1.10.30": 8 }, { "scripts": { "1.10.30": ["install"] } });
-    for (const recorded of ["1.10.30", "1.10.5"]) {
+  test("a lifecycle-scripted target is refused outright with nothing usable on record: fresh, cold scripted, or cold unlisted", async () => {
+    // A fresh install has nothing to keep. An explicit pin bypasses the refusal, so a scripted
+    // version can be on record (e.g. the pin was later removed); re-warming it automatically would
+    // install the refused version without the pin's consent. A record the doc does not list cannot
+    // have its scripts vetted at all, and fails closed the same way.
+    const rows: { recorded: string | null; script: string }[] = [
+      { recorded: null, script: "postinstall" },
+      { recorded: "1.10.30", script: "install" },
+      { recorded: "1.10.5", script: "install" },
+    ];
+    for (const row of rows) {
+      const label = JSON.stringify(row);
+      const doc = registryDoc({ "1.10.30": 8 }, { "scripts": { "1.10.30": [row.script] } });
       dir = removeDir(dir);
       dir = isolateProxyHome("copilot-float-");
-      seedFloat(recorded, NOW_MS - 30 * MILLISECONDS_PER_DAY);
+      if (row.recorded !== null) seedFloat(row.recorded, NOW_MS - 30 * MILLISECONDS_PER_DAY);
       const deno = fakeDeno(); // cold: the keep-without-install path is not available
 
       await expect(
         floatProxy(deps(docFetch(doc).fetchLike, deno.runner, WEEK_SECONDS)),
-        recorded,
+        label,
       ).rejects.toThrow("lifecycle scripts");
-      expect(cacheCalls(deno.calls), recorded).toEqual([]);
+      expect(cacheCalls(deno.calls), label).toEqual([]);
     }
   });
 
@@ -648,7 +641,7 @@ describe("floatProxy", () => {
     );
   });
 
-  test("an exact env pin bypasses window, cooldown, and a bad cooldown env", async () => {
+  test("an exact env pin bypasses window, cooldown, and a bad cooldown env, at the float and at verify", async () => {
     process.env[VERSION_ENV] = "1.9.99"; // below CONFIG's floor on purpose
     process.env[MIN_RELEASE_AGE_ENV] = "not-a-number"; // would throw if resolved
     const deno = fakeDeno();
@@ -660,6 +653,10 @@ describe("floatProxy", () => {
     expect(cache[0]?.args).toContain("--minimum-dependency-age=0");
     expect(cache[0]?.args).toContain(`npm:${PROXY_PKG}@1.9.99`);
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.9.99");
+
+    // The same pin, now recorded and cached, verifies up to date under the same bad cooldown env.
+    const status = await proxyFloatVerifyStatus(deps(offlineFetch().fetchLike, deno.runner));
+    expect(status.upToDate).toBe(true);
   });
 
   test("an exact pin already recorded and cached is a no-op", async () => {
@@ -896,16 +893,6 @@ describe("proxyFloatVerifyStatus", () => {
     // A dist-tag pin always re-resolves -> never "up to date".
     process.env[VERSION_ENV] = "latest";
     expect((await proxyFloatVerifyStatus(d)).upToDate).toBe(false);
-  });
-
-  test("a pin bypasses the cooldown: a bad COPILOT_API_MIN_RELEASE_AGE is ignored", async () => {
-    seedFloat("1.10.30", NOW_MS);
-    process.env[VERSION_ENV] = "1.10.30";
-    process.env[MIN_RELEASE_AGE_ENV] = "not-a-number"; // would throw if resolved
-    const status = await proxyFloatVerifyStatus(
-      deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner),
-    );
-    expect(status.upToDate).toBe(true);
   });
 });
 

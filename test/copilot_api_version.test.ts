@@ -5,6 +5,7 @@ import {
   PROXY_PACKAGE_NAME,
   proxyVersionBoundsStatus,
   proxyVersionFloorStatus,
+  type ProxyVersionStatus,
 } from "../src/copilot_api/version.ts";
 import { isRecord } from "../src/utils/json.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
@@ -55,41 +56,37 @@ describe("installedProxyVersion", () => {
 });
 
 describe("proxy version status", () => {
-  test("checks the startup floor separately from the release ceiling", () => {
-    expect(proxyVersionFloorStatus(null, CONFIG)).toEqual({
-      "ok": false,
-      "reason": "missing",
-      "version": null,
-    });
-    expect(proxyVersionFloorStatus("1.9.99", CONFIG)).toEqual({
-      "floor": "1.10.0",
-      "ok": false,
-      "reason": "belowFloor",
-      "version": "1.9.99",
-    });
-    expect(proxyVersionFloorStatus("1.10.31", CONFIG)).toEqual({
-      "ok": true,
-      "version": "1.10.31",
-    });
-  });
-
-  test("checks the install assertion floor and ceiling", () => {
-    expect(proxyVersionBoundsStatus("1.9.99", CONFIG)).toEqual({
-      "floor": "1.10.0",
-      "ok": false,
-      "reason": "belowFloor",
-      "version": "1.9.99",
-    });
-    expect(proxyVersionBoundsStatus("1.10.31", CONFIG)).toEqual({
-      "ceiling": "1.10.30",
-      "ok": false,
-      "reason": "aboveCeiling",
-      "version": "1.10.31",
-    });
-    expect(proxyVersionBoundsStatus("1.10.30", CONFIG)).toEqual({
-      "ok": true,
-      "version": "1.10.30",
-    });
+  // The startup check holds the floor only, so a newer proxy still serves; the install assertion
+  // holds the release ceiling as well.
+  test("the startup floor lets a newer proxy through; the install bounds refuse above the ceiling", () => {
+    const checks = { floor: proxyVersionFloorStatus, bounds: proxyVersionBoundsStatus };
+    const rows: {
+      check: keyof typeof checks;
+      version: string | null;
+      status: ProxyVersionStatus;
+    }[] = [
+      { check: "floor", version: null, status: { ok: false, reason: "missing", version: null } },
+      {
+        check: "floor",
+        version: "1.9.99",
+        status: { ok: false, reason: "belowFloor", version: "1.9.99", floor: "1.10.0" },
+      },
+      { check: "floor", version: "1.10.31", status: { ok: true, version: "1.10.31" } },
+      {
+        check: "bounds",
+        version: "1.9.99",
+        status: { ok: false, reason: "belowFloor", version: "1.9.99", floor: "1.10.0" },
+      },
+      {
+        check: "bounds",
+        version: "1.10.31",
+        status: { ok: false, reason: "aboveCeiling", version: "1.10.31", ceiling: "1.10.30" },
+      },
+      { check: "bounds", version: "1.10.30", status: { ok: true, version: "1.10.30" } },
+    ];
+    for (const row of rows) {
+      expect({ ...row, status: checks[row.check](row.version, CONFIG) }).toEqual(row);
+    }
   });
 });
 

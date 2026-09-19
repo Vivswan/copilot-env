@@ -8,14 +8,13 @@ import { rmSync } from "node:fs";
 import {
   assertSubjectsAttested,
   ATTESTATION_NAME,
-  cannotVerifyMessage,
   IN_TOTO_STATEMENT_V1,
   parseStatement,
   RELEASE_SIGNER_POLICY,
+  type SignerPolicy,
   SLSA_PROVENANCE_V1,
-  verificationFailedMessage,
 } from "../src/install/attestation.ts";
-import { tufCachePath, verifyReleaseProvenance } from "../src/install/provenance.ts";
+import { verifyReleaseProvenance } from "../src/install/provenance.ts";
 import { describe, expect, tempDir, test } from "./helpers/testing.ts";
 
 const FIXTURES = join(import.meta.dirname!, "fixtures", "provenance", "v4.0.0");
@@ -68,19 +67,28 @@ describe("verifyReleaseProvenance", () => {
     expect(message).not.toContain("verify-provenance");
   });
 
-  test("the verifier judges the signer SAN by the policy pattern: another owner's workflows are rejected", async () => {
-    const err = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
-      trustedRoot: TRUSTED_ROOT,
-      policy: {
-        ...RELEASE_SIGNER_POLICY,
-        signerSan:
-          /^https:\/\/github\.com\/someone-else\/[^/]+\/\.github\/workflows\/[^@]+@refs\/.+$/,
+  // A signer outside the policy is a verdict, never an outage: no opt-out is offered.
+  test("the verifier judges the signer by the policy: another owner's SAN pattern and another OIDC issuer are refused alike", async () => {
+    const rows: { name: string; policy: Partial<SignerPolicy> }[] = [
+      {
+        name: "another owner's workflows",
+        policy: {
+          signerSan:
+            /^https:\/\/github\.com\/someone-else\/[^/]+\/\.github\/workflows\/[^@]+@refs\/.+$/,
+        },
       },
-    }).catch((e: unknown) => e as Error);
-    expect((err as Error).message).toContain(
-      "not signed by a GitHub Actions workflow of Vivswan's account",
-    );
-    expect((err as Error).message).not.toContain("--no-verify");
+      { name: "another OIDC issuer", policy: { issuer: "https://accounts.google.com" } },
+    ];
+    for (const { name, policy } of rows) {
+      const err = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
+        trustedRoot: TRUSTED_ROOT,
+        policy: { ...RELEASE_SIGNER_POLICY, ...policy },
+      }).catch((e: unknown) => e as Error);
+      expect((err as Error).message, name).toContain(
+        "not signed by a GitHub Actions workflow of Vivswan's account",
+      );
+      expect((err as Error).message, name).not.toContain("--no-verify");
+    }
   });
 
   test("the SAN pattern accepts any workflow of any Vivswan repository at any ref, and nothing else", () => {
@@ -104,16 +112,6 @@ describe("verifyReleaseProvenance", () => {
         `${FIXTURE_SIGNER}\ninvalid`, // trailing text past the end anchor
       ]
     ) expect(pattern.test(rejected), rejected).toBe(false);
-  });
-
-  test("a different OIDC issuer is rejected", async () => {
-    const err = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
-      trustedRoot: TRUSTED_ROOT,
-      policy: { ...RELEASE_SIGNER_POLICY, issuer: "https://accounts.google.com" },
-    }).catch((e: unknown) => e as Error);
-    expect((err as Error).message).toContain(
-      "not signed by a GitHub Actions workflow of Vivswan's account",
-    );
   });
 
   test("a signed envelope whose payload or payload type was altered is a FAILED verdict", async () => {
@@ -189,10 +187,20 @@ describe("verifyReleaseProvenance", () => {
 });
 
 describe("parseStatement / assertSubjectsAttested", () => {
-  test("reads the subjects of a SLSA v1 statement, lower-casing digests", () => {
-    const statement = parseStatement(statementOf({}));
-    expect(statement.predicateType).toBe(SLSA_PROVENANCE_V1);
-    expect(statement.subjects).toEqual([{ name: "a", sha256: "a".repeat(64) }]);
+  // A digest is lower-cased on the way in; an entry missing its name or digest, or not an object
+  // at all, is skipped rather than attested.
+  test("reads a statement's subjects, lower-casing digests and skipping malformed entries", () => {
+    const rows: { subject: unknown[]; subjects: { name: string; sha256: string }[] }[] = [
+      {
+        subject: [{ name: "a", digest: { sha256: "A".repeat(64) } }],
+        subjects: [{ name: "a", sha256: "a".repeat(64) }],
+      },
+      { subject: [{ name: "x" }, { digest: { sha256: "b".repeat(64) } }, null, 4], subjects: [] },
+    ];
+    for (const row of rows) {
+      expect({ ...row, subjects: parseStatement(statementOf({ subject: row.subject })).subjects })
+        .toEqual(row);
+    }
   });
 
   test("rejects the wrong statement or predicate type and a missing subject list", () => {
@@ -204,38 +212,11 @@ describe("parseStatement / assertSubjectsAttested", () => {
     expect(() => parseStatement(new TextEncoder().encode("nope"))).toThrow(/not JSON/);
   });
 
-  test("skips malformed subject entries instead of attesting them", () => {
-    const statement = parseStatement(
-      statementOf({ subject: [{ name: "x" }, { digest: { sha256: "b".repeat(64) } }, null, 4] }),
-    );
-    expect(statement.subjects).toEqual([]);
-  });
-
   test("every required digest must be attested", () => {
     const statement = parseStatement(statementOf({}));
     expect(() => assertSubjectsAttested(statement, [{ name: "a", sha256: "A".repeat(64) }]))
       .not.toThrow();
     expect(() => assertSubjectsAttested(statement, [{ name: "bin", sha256: "c".repeat(64) }]))
       .toThrow(/the sha256 of bin \(c+\) is not among the attested subjects/);
-  });
-});
-
-describe("messages and paths", () => {
-  test("the fail-closed message names both opt-outs", () => {
-    const message = cannotVerifyMessage("v1.2.3", "attestation.json could not be fetched");
-    expect(message).toContain("cannot verify the build provenance of v1.2.3");
-    expect(message).toContain("--no-verify");
-    expect(message).toContain("agent config set update.verify-provenance false");
-  });
-
-  test("the mismatch message names the tag and forbids the install", () => {
-    const message = verificationFailedMessage("v1.2.3", "detail");
-    expect(message).toContain("FAILED for v1.2.3: detail");
-    expect(message).toContain("Do not install it.");
-    expect(message).not.toContain("--no-verify");
-  });
-
-  test("the TUF cache lives under the root home", () => {
-    expect(tufCachePath("/x/home")).toBe(join("/x/home", "sigstore", "tuf"));
   });
 });

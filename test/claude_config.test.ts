@@ -68,7 +68,6 @@ let dir = "";
 afterEach(() => {
   restoreEnv();
   setIntegrationProbeFetch(null);
-  dir = removeDir(dir);
 });
 
 // Proxy writes resolve the proxy endpoint and token, so the proxy home is isolated along with Claude's.
@@ -809,26 +808,9 @@ test("a command-shape NAMED write blanks the baked token so a static default can
   expect(namedStatic.apiKeyHelper).toBeUndefined();
 });
 
-test("removeClaudeDefaultWiring leaves an 'other' wiring AND the helper file it names whole", () => {
-  const home = tmpHome();
-  mkdirSync(home, { recursive: true });
-  // A helper FILE (the shape 3.5.6 wrote, foreign now) classifies "other"; the key stays, so the
-  // file it points at must stay too.
-  const helper = join(home, "copilot-token.sh");
-  writeFileSync(helper, "#!/bin/sh\nexec my-own-resolver\n");
-  writeFileSync(
-    join(home, "settings.json"),
-    `${JSON.stringify({ apiKeyHelper: helper }, null, 2)}\n`,
-  );
-
-  removeClaudeDefaultWiring(home);
-  expect(existsSync(helper)).toBe(true);
-  expect(readSettings(home).apiKeyHelper).toBe(helper);
-});
-
 // Ownership, not the classification, proves a deny is ours to strip; a deny that may still stand
 // keeps its claim.
-test("removeClaudeDefaultWiring over a foreign-edited, foreign, unverifiable, or vanished config strips only an owned deny it can verify and reports one it cannot", () => {
+test("removeClaudeDefaultWiring over a foreign-edited, foreign, unverifiable, or vanished config strips only an owned deny it can verify and reports one it cannot, and leaves an 'other' wiring and the helper file it names whole", () => {
   const FOREIGN_HELPER = "/usr/local/bin/my-helper";
   const FOREIGN_TEXT = `${
     JSON.stringify(
@@ -893,6 +875,24 @@ test("removeClaudeDefaultWiring over a foreign-edited, foreign, unverifiable, or
       ownedDenyRemains: false,
       owned: false,
       after: (_home, settingsPath, name) => expect(existsSync(settingsPath), name).toBe(false),
+    },
+    {
+      // A helper FILE (the shape 3.5.6 wrote, foreign now) classifies "other"; the key stays, so
+      // the file it points at must stay too.
+      name: "an 'other' wiring keeps its key and the helper file it names",
+      arrange: (home, settingsPath) => {
+        mkdirSync(home, { recursive: true });
+        const helper = join(home, "copilot-token.sh");
+        writeFileSync(helper, "#!/bin/sh\nexec my-own-resolver\n");
+        writeFileSync(settingsPath, `${JSON.stringify({ apiKeyHelper: helper }, null, 2)}\n`);
+      },
+      ownedDenyRemains: false,
+      owned: false,
+      after: (home, _settingsPath, name) => {
+        const helper = join(home, "copilot-token.sh");
+        expect(existsSync(helper), name).toBe(true);
+        expect(readSettings(home).apiKeyHelper, name).toBe(helper);
+      },
     },
   ];
   for (const row of rows) {

@@ -75,7 +75,6 @@ afterEach(() => {
   restoreEnv();
   resetIntegrationIdentityCache();
   setIntegrationProbeFetch(null);
-  dir = removeDir(dir);
 });
 
 /** Returns the DEFAULT daemon's home, not the isolated root; `dir` (the root) owns cleanup. */

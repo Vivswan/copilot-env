@@ -92,7 +92,6 @@ afterEach(() => {
   resetIntegrationIdentityCache();
   restoreEnv();
   resetExitCode();
-  dir = removeDir(dir);
 });
 
 /** The plan a body would land, with the tree proven untouched by it. */
@@ -354,16 +353,6 @@ test("settings --export <file> --dry-run names the file it would write, prints n
   expect(again).not.toContain("ghu_x");
 });
 
-test("settings --export into a missing directory fails the dry run with the real export's ENOENT: no parent is invented", async () => {
-  dir = isolateProxyHome("copilot-dry2-export-enoent-");
-  const target = join(dir, "missing", "bundle.json");
-  const enoent = /ENOENT: no such file or directory, open '/;
-  await expect(captureChannels(() => runSettings({ exportTo: target }))).rejects.toThrow(enoent);
-  await expect(captureChannels(() => runSettings({ exportTo: target, dryRun: true }))).rejects
-    .toThrow(enoent);
-  expect(existsSync(dirname(target))).toBe(false);
-});
-
 /** The message the real run refuses with, so the dry run is held to the OS's own code. */
 async function realRefusal(body: () => Promise<unknown>): Promise<string> {
   try {
@@ -374,78 +363,107 @@ async function realRefusal(body: () => Promise<unknown>): Promise<string> {
   throw new Error("the real run did not refuse");
 }
 
-test("settings --export onto a directory takes the real write's refusal in the dry run, never a planned rewrite", async () => {
-  dir = isolateProxyHome("copilot-dry2-export-dir-");
-  // The plain export's open: EISDIR on POSIX, EINVAL on Windows; the dry run says what the OS says.
-  const openRefusal = await realRefusal(() => runSettings({ exportTo: dir }));
-  expect(openRefusal).toMatch(/^E(ISDIR|INVAL): /);
-  await expect(captureChannels(() => runSettings({ exportTo: dir, dryRun: true }))).rejects
-    .toThrow(openRefusal);
-  // The credential export lands by rename: EISDIR on POSIX. Windows reshapes its refusal through
-  // the rename retry (RenameRefusedError), a code this test does not pin.
-  if (process.platform !== "win32") {
-    const args = { exportTo: dir, withCredentials: true };
-    const renameRefusal = await realRefusal(() => runSettings(args));
-    expect(renameRefusal).toMatch(/^EISDIR: illegal operation on a directory, rename /);
-    await expect(captureChannels(() => runSettings({ ...args, dryRun: true }))).rejects.toThrow(
-      renameRefusal,
-    );
+// A refused export is the OS's own refusal in both runs: the dry run neither invents a parent nor
+// plans a rewrite where the real open, mkdir, or rename fails. Symlink fixtures are POSIX semantics
+// (a dangling link, a link cycle, a link to a directory), which Windows junctions and file links do
+// not reproduce, so those rows skip there.
+test("settings --export refuses in the dry run where the real write refuses: a missing parent, a directory, and every symlink shape", async () => {
+  dir = isolateProxyHome("copilot-dry2-export-refusals-");
+  const posix = process.platform !== "win32";
+  const dangling = join(dir, "dangling.json");
+  const chained = join(dir, "chained.json");
+  const alias = join(dir, "alias");
+  const loop = join(dir, "loop.json");
+  const linkToDir = join(dir, "link-to-dir");
+  if (posix) {
+    symlinkSync(join(dir, "missing", "target.json"), dangling);
+    symlinkSync(dangling, chained);
+    symlinkSync(join(dir, "gone"), alias);
+    symlinkSync(loop, loop);
+    symlinkSync(dir, linkToDir);
   }
-});
-
-// Symlink fixtures: POSIX semantics (a dangling link, a link cycle, a link to a directory), which
-// Windows junctions and file links do not reproduce.
-skipWin(
-  "settings --export through symlinks refuses in the dry run where the real open refuses: dangling, chained, cyclic, and a link to a directory",
-  async () => {
-    dir = isolateProxyHome("copilot-dry2-export-links-");
-    const enoent = /ENOENT: no such file or directory, open '/;
+  const enoent = /ENOENT: no such file or directory, open '/;
+  const rows: {
+    name: string;
+    posixOnly?: boolean;
+    args: { exportTo: string; withCredentials?: boolean };
+    refusal: RegExp;
+    /** A path both refused runs must leave absent: no parent or link target is invented. */
+    stillAbsent?: string;
+  }[] = [
+    {
+      name: "a missing parent",
+      args: { exportTo: join(dir, "missing", "bundle.json") },
+      refusal: enoent,
+      stillAbsent: join(dir, "missing"),
+    },
+    // The plain export's open: EISDIR on POSIX, EINVAL on Windows; the dry run says what the OS says.
+    { name: "onto a directory", args: { exportTo: dir }, refusal: /^E(ISDIR|INVAL): / },
+    // The credential export lands by rename: EISDIR on POSIX. Windows reshapes its refusal through
+    // the rename retry (RenameRefusedError), a code this test does not pin.
+    {
+      name: "onto a directory, with credentials",
+      posixOnly: true,
+      args: { exportTo: dir, withCredentials: true },
+      refusal: /^EISDIR: illegal operation on a directory, rename /,
+    },
     // A dangling link whose target's parent is missing, and a link to that link: the open follows
     // the chain into the same ENOENT. A dangling DIRECTORY link as the parent is ENOENT too.
-    const dangling = join(dir, "dangling.json");
-    symlinkSync(join(dir, "missing", "target.json"), dangling);
-    const chained = join(dir, "chained.json");
-    symlinkSync(dangling, chained);
-    const alias = join(dir, "alias");
-    symlinkSync(join(dir, "gone"), alias);
-    for (const exportTo of [dangling, chained, join(alias, "export.json")]) {
-      await expect(captureChannels(() => runSettings({ exportTo }))).rejects.toThrow(enoent);
-      await expect(captureChannels(() => runSettings({ exportTo, dryRun: true }))).rejects
-        .toThrow(enoent);
-    }
+    { name: "a dangling link", posixOnly: true, args: { exportTo: dangling }, refusal: enoent },
+    {
+      name: "a link to a dangling link",
+      posixOnly: true,
+      args: { exportTo: chained },
+      refusal: enoent,
+    },
+    {
+      name: "under a dangling directory link",
+      posixOnly: true,
+      args: { exportTo: join(alias, "export.json") },
+      refusal: enoent,
+    },
     // A link to itself is the open's ELOOP.
-    const loop = join(dir, "loop.json");
-    symlinkSync(loop, loop);
-    const eloop = /ELOOP: too many symbolic links encountered, open '/;
-    await expect(captureChannels(() => runSettings({ exportTo: loop }))).rejects.toThrow(eloop);
-    await expect(captureChannels(() => runSettings({ exportTo: loop, dryRun: true }))).rejects
-      .toThrow(eloop);
-    // The credential export mkdirs the parent: over a dangling link that is mkdir's EEXIST.
-    const eexist = /EEXIST: file already exists, mkdir '/;
-    const under = { exportTo: join(alias, "bundle.json"), withCredentials: true };
-    await expect(captureChannels(() => runSettings(under))).rejects.toThrow(eexist);
-    await expect(captureChannels(() => runSettings({ ...under, dryRun: true }))).rejects.toThrow(
-      eexist,
-    );
-    expect(existsSync(alias)).toBe(false);
-    // A link to a directory: the plain export's open follows it (EISDIR both ways); the credential
-    // export's rename replaces the link (a rewrite both ways).
-    const linkToDir = join(dir, "link-to-dir");
-    symlinkSync(dir, linkToDir);
-    const eisdir = /EISDIR: illegal operation on a directory, open '/;
-    await expect(captureChannels(() => runSettings({ exportTo: linkToDir }))).rejects.toThrow(
-      eisdir,
-    );
-    await expect(captureChannels(() => runSettings({ exportTo: linkToDir, dryRun: true }))).rejects
-      .toThrow(eisdir);
+    {
+      name: "a link cycle",
+      posixOnly: true,
+      args: { exportTo: loop },
+      refusal: /ELOOP: too many symbolic links encountered, open '/,
+    },
+    // The credential export mkdirs the parent: over a dangling link that is mkdir's EEXIST, and the
+    // link stays dangling.
+    {
+      name: "under a dangling directory link, with credentials",
+      posixOnly: true,
+      args: { exportTo: join(alias, "bundle.json"), withCredentials: true },
+      refusal: /EEXIST: file already exists, mkdir '/,
+      stillAbsent: alias,
+    },
+    // A link to a directory: the plain export's open follows it.
+    {
+      name: "a link to a directory",
+      posixOnly: true,
+      args: { exportTo: linkToDir },
+      refusal: /EISDIR: illegal operation on a directory, open '/,
+    },
+  ];
+  for (const { name, posixOnly, args, refusal, stillAbsent } of rows) {
+    if (posixOnly && !posix) continue;
+    const real = await realRefusal(() => runSettings(args));
+    expect(real, name).toMatch(refusal);
+    expect(await realRefusal(() => runSettings({ ...args, dryRun: true })), name).toBe(real);
+    if (stillAbsent !== undefined) expect(existsSync(stillAbsent), name).toBe(false);
+  }
+  // The one link shape neither run refuses: the credential export's rename replaces a link to a
+  // directory with the file (a rewrite both ways), and the dry run leaves the link in place.
+  if (posix) {
     const credentials = { exportTo: linkToDir, withCredentials: true };
     const { stdout } = await captureChannels(() => runSettings({ ...credentials, dryRun: true }));
     expect(stdout).toContain(`rewrite ${linkToDir}`);
     expect(lstatSync(linkToDir).isSymbolicLink()).toBe(true);
     await captureChannels(() => runSettings(credentials));
     expect(lstatSync(linkToDir).isFile()).toBe(true);
-  },
-);
+  }
+});
 
 test("the seam decides an empty-directory removal alike in both runs: entries refuse it, and the run's own planned removals count", async () => {
   dir = isolateProxyHome("copilot-dry2-rmdir-");

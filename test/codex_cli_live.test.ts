@@ -19,7 +19,7 @@ import {
   startFakeEndpoint,
   writeCodexFakeConfig,
 } from "./helpers/fake_endpoint.ts";
-import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 const LIVE_ENV = "COPILOT_ENV_LIVE_CLIS";
 const codexPath = resolveCommand("codex");
@@ -38,7 +38,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await fake.close();
-  home = removeDir(home);
 });
 
 /** The probe's exact argv against a scratch CODEX_HOME, under a hermetic env (fakeCliEnv). */

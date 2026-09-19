@@ -46,7 +46,7 @@ import type { FileChange } from "../src/utils/dry_run.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { ROOT } from "./helpers/run.ts";
-import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers/env.ts";
 import { stageRefusedStop } from "./helpers/daemon.ts";
 import { dryRunChanges } from "./helpers/dry_run.ts";
@@ -67,7 +67,6 @@ afterEach(() => {
   process.chdir(startCwd);
   // An aborted run's exit 1 must never leak into the whole `deno test` run.
   resetExitCode();
-  dir = removeDir(dir);
 });
 
 function tmpHomes(): { proxyHome: string; claudeHome: string; codexHome: string } {
@@ -105,26 +104,41 @@ function desktopLibrary(): string {
 const skipWin = test.skipIf(process.platform === "win32");
 
 skipWin(
-  "the recorded farm is planned and deleted only while it still carries our config.toml; a foreign directory at the recorded path is left alone",
+  "the codex farm is planned and deleted only while run state records it AND it still carries our config.toml",
   async () => {
     tmpHomes();
     // A farm under a `codex-home` root the user has since removed stays recorded until the next
-    // wiring pass; the only difference between ours and a replacement is the config inside.
-    const recorded = join(dir, "old-root", "hosts", "box");
-    for (const ours of [true, false]) {
-      mkdirSync(recorded, { recursive: true });
-      if (ours) {
-        configureCodexConfig(recorded, { credential: COMMAND, mode: "direct", direct: null });
-      } else writeFileSync(join(recorded, "config.toml"), 'model_provider = "openai"\n');
-      new CopilotEnvRunState().set({ codexHome: recorded });
-      // A fresh sandbox per pass: the live apply deletes it.
+    // wiring pass; the only difference between ours and a replacement is the config inside. An
+    // untracked directory carrying our config, as a wiring pass leaves a farm, is never touched:
+    // the record alone selects the farm.
+    const rows: { recorded: boolean; ours: boolean; deleted: boolean }[] = [
+      { recorded: true, ours: true, deleted: true },
+      { recorded: true, ours: false, deleted: false },
+      { recorded: false, ours: true, deleted: false },
+    ];
+    // Carries our config and is never recorded: the record alone selects the farm, so it outlives
+    // every apply below, the one that deletes the recorded farm included.
+    const bystander = join(dir, "bystander", "hosts", "box");
+    mkdirSync(bystander, { recursive: true });
+    configureCodexConfig(bystander, { credential: COMMAND, mode: "direct", direct: null });
+    for (const row of rows) {
+      const farm = join(dir, row.recorded ? "old-root" : "untracked", "hosts", "box");
+      mkdirSync(farm, { recursive: true });
+      if (row.ours) {
+        configureCodexConfig(farm, { credential: COMMAND, mode: "direct", direct: null });
+      } else writeFileSync(join(farm, "config.toml"), 'model_provider = "openai"\n');
+      if (row.recorded) new CopilotEnvRunState().set({ codexHome: farm });
+      // A fresh sandbox per row: the live apply deletes it.
       const ctx = resolveUninstallContext({ yes: true }, sandboxRoot());
-      expect(ctx.targets.codexHostFarm).toBe(ours ? recorded : null);
+      expect({ ...row, farm: ctx.targets.codexHostFarm })
+        .toEqual({ ...row, farm: row.deleted ? farm : null });
       const { changes } = await dryRunChanges(() => applyUninstall(ctx));
-      expect(changes.some((c) => c.path === recorded && c.verdict === "delete")).toBe(ours);
-      expect(existsSync(recorded)).toBe(true);
+      const planned = changes.some((c) => c.path === farm && c.verdict === "delete");
+      expect({ ...row, planned }).toEqual({ ...row, planned: row.deleted });
+      expect(existsSync(farm)).toBe(true);
       await applyUninstall(ctx);
-      expect(existsSync(recorded)).toBe(!ours);
+      expect({ ...row, deleted: !existsSync(farm) }).toEqual(row);
+      expect(existsSync(bystander), "bystander").toBe(true);
     }
   },
 );
@@ -467,24 +481,6 @@ test("uninstall --dry-run prints every file and store slot it would take as the 
   expect(existsSync(helper)).toBe(true);
   if (posix) expect(existsSync(farm)).toBe(true);
 });
-
-test.skipIf(process.platform === "win32")(
-  "uninstall removes only the run-state-recorded codex farm, never an untracked dir",
-  async () => {
-    tmpHomes();
-    const farm = join(dir, "farm");
-    const untracked = join(dir, "untracked-farm");
-    // Both carry our config, as a wiring pass leaves a farm; the record alone separates them.
-    configureCodexConfig(farm, { credential: COMMAND, mode: "direct", direct: null });
-    configureCodexConfig(untracked, { credential: COMMAND, mode: "direct", direct: null });
-    new CopilotEnvRunState().set({ codexHome: farm });
-
-    await runUninstall({ yes: true }, sandboxRoot());
-
-    expect(existsSync(farm)).toBe(false);
-    expect(existsSync(untracked)).toBe(true);
-  },
-);
 
 test("uninstall removes owned Claude Desktop entries from the library the env seam names", async () => {
   tmpHomes();

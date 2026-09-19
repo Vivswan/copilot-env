@@ -480,14 +480,6 @@ test.skipIf(process.platform !== "win32")(
   },
 );
 
-test("the PowerShell agent wrapper evals every env line, mirroring the POSIX eval", () => {
-  // agents.bashrc evals the whole `agent profile env` output unconditionally; the PS wrapper must do
-  // the same, so a new upstream directive shape is never silently dropped on Windows.
-  const ps1 = readFileSync(join(process.cwd(), "shell", "agents.ps1"), "utf8");
-  expect(ps1).toContain("Invoke-Expression");
-  expect(ps1).not.toContain("$line -match");
-});
-
 test("env-refresh stderr parity: eager source is silenced, the agent wrapper's refresh is not (POSIX)", () => {
   const posix = readFileSync(join(process.cwd(), "shell", "agents.bashrc"), "utf8");
 
@@ -506,8 +498,13 @@ test("env-refresh stderr parity: eager source is silenced, the agent wrapper's r
   expect(refresh).not.toContain("2>/dev/null");
 });
 
-test("env-refresh stderr parity: Import-CopilotEnv takes -Quiet, eager passes it, the agent wrapper omits it (PowerShell)", () => {
+test("the PowerShell twin evals every env line; Import-CopilotEnv takes -Quiet, eager passes it, the agent wrapper omits it", () => {
   const powershell = readFileSync(join(process.cwd(), "shell", "agents.ps1"), "utf8");
+
+  // agents.bashrc evals the whole `agent profile env` output unconditionally; the PS wrapper must do
+  // the same, so a new upstream directive shape is never silently dropped on Windows.
+  expect(powershell).toContain("Invoke-Expression");
+  expect(powershell).not.toContain("$line -match");
 
   expect(powershell).toMatch(/function Import-CopilotEnv\s*\{\s*param\(\[switch\]\$Quiet\)/);
   expect(powershell).toMatch(

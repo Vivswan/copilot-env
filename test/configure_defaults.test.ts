@@ -25,7 +25,6 @@ beforeEach(() => {
 
 afterEach(() => {
   restoreEnv();
-  dir = removeDir(dir);
 });
 
 // --- the CLI dispatch hooks, end-to-end (src/cli.ts) -------------------------------

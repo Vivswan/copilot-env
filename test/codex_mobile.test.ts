@@ -12,7 +12,7 @@ import {
   runningState,
   stripModelProvider,
 } from "../src/codex/mobile.ts";
-import { appScanFromExit, appScanVerdict } from "../src/utils/app_scan.ts";
+import { type AppScan, appScanFromExit, appScanVerdict } from "../src/utils/app_scan.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -40,13 +40,6 @@ const CONFIG = [
 const readModelProvider = (toml: string) => readTopLevelString(toml, "model_provider");
 const readModelCatalogJson = (toml: string) => readTopLevelString(toml, "model_catalog_json");
 
-test("readTopLevelString returns the configured top-level string, null when absent, not a string, or malformed", () => {
-  expect(readModelProvider(CONFIG)).toBe("copilot-env");
-  expect(readModelProvider('web_search = "live"\n')).toBe(null);
-  expect(readTopLevelString("model_provider = 3\n", "model_provider")).toBe(null);
-  expect(readModelProvider("{ not toml")).toBe(null);
-});
-
 test("stripModelProvider removes model_provider, forces requires_openai_auth=false, keeps the rest", () => {
   const doc = asRecord(parse(stripModelProvider(CONFIG)));
   expect(doc.model_provider).toBeUndefined();
@@ -58,7 +51,11 @@ test("stripModelProvider removes model_provider, forces requires_openai_auth=fal
   expect(asRecord(providers.other).base_url).toBe("https://api.githubcopilot.com");
 });
 
-test("restoreModelProvider puts the provider back and round-trips through strip", () => {
+test("restoreModelProvider puts the provider back and round-trips through strip; the read is null when the key is absent, not a string, or the TOML is malformed", () => {
+  expect(readModelProvider(CONFIG)).toBe("copilot-env");
+  expect(readModelProvider('web_search = "live"\n')).toBe(null);
+  expect(readModelProvider("model_provider = 3\n")).toBe(null);
+  expect(readModelProvider("{ not toml")).toBe(null);
   const stripped = stripModelProvider(CONFIG);
   expect(readModelProvider(stripped)).toBe(null);
   const restored = restoreModelProvider(stripped, "copilot-env");
@@ -95,22 +92,39 @@ test("strip removes model_catalog_json; restore puts it back only when captured"
 
 // --- the three-state app scans and their gates --------------------------------
 
-test("closeGateFromScan: proven absence proceeds silently; present and unproven take the gate", () => {
-  expect(closeGateFromScan("absent")).toEqual({ close: false });
-
-  expect(closeGateFromScan("present")).toEqual({
-    close: true,
-    warn: null,
-    prompt: "The Codex app is open. Close it now?",
-  });
-
-  // A failed look takes the same gate, never the silent proceed that would swap config under
-  // a possibly-open app; the prompt says "possibly open", never "is open".
-  expect(closeGateFromScan("unproven")).toEqual({
-    close: true,
-    warn: "The process scan failed, so it could not prove the Codex app is closed.",
-    prompt: "Treat the Codex app as possibly open and close it now?",
-  });
+test("the close gates over one scan state: proven absence proceeds silently; present takes the gate and quits; unproven takes the gate, warns, and never quits", () => {
+  const unprovenWarn = "The process scan failed, so it could not prove the Codex app is closed.";
+  const rows: {
+    scan: AppScan;
+    close: ReturnType<typeof closeGateFromScan>;
+    postPairing: ReturnType<typeof postPairingCloseFromScan>;
+  }[] = [
+    { scan: "absent", close: { close: false }, postPairing: { quit: false, warn: null } },
+    {
+      scan: "present",
+      close: { close: true, warn: null, prompt: "The Codex app is open. Close it now?" },
+      postPairing: { quit: true, warn: null },
+    },
+    // A failed look takes the same gate, never the silent proceed that would swap config under
+    // a possibly-open app; the prompt says "possibly open", never "is open". After pairing it
+    // does not escalate into quit(); the warn stays, so restore proceeds knowingly.
+    {
+      scan: "unproven",
+      close: {
+        close: true,
+        warn: unprovenWarn,
+        prompt: "Treat the Codex app as possibly open and close it now?",
+      },
+      postPairing: { quit: false, warn: unprovenWarn },
+    },
+  ];
+  for (const row of rows) {
+    expect({
+      ...row,
+      close: closeGateFromScan(row.scan),
+      postPairing: postPairingCloseFromScan(row.scan),
+    }).toEqual(row);
+  }
 });
 
 test("appScanFromExit: only an UNMARKED exit 1 is the proven absence", () => {
@@ -122,17 +136,15 @@ test("appScanFromExit: only an UNMARKED exit 1 is the proven absence", () => {
   expect(appScanFromExit({ exitCode: 3 })).toBe("unproven"); // the tool's own hard error
 });
 
-test("appScanVerdict: a verdict word only counts with exit 0 (killed-after-speaking)", () => {
-  expect(appScanVerdict({ exitCode: 0, stdout: "present\n" })).toBe("present");
-  expect(appScanVerdict({ exitCode: 0, stdout: "absent" })).toBe("absent");
+test("appScanVerdict: a verdict word counts only with exit 0 (killed-after-speaking); anything else is unproven", () => {
   // A scan killed AFTER printing its verdict (a timeout kill, OOM, an interrupt)
   // exits nonzero with a valid word already on stdout: the exit-0 guard is the
   // sole protection against that look minting a proven reading.
-  expect(appScanVerdict({ exitCode: 1, stdout: "present\n" })).toBe("unproven");
-  expect(appScanVerdict({ exitCode: 1, stdout: "absent\n" })).toBe("unproven");
-  // A clean exit without a verdict word proves nothing either.
+  expect(appScanVerdict({ exitCode: 0, stdout: "present\n" })).toBe("present");
   expect(appScanVerdict({ exitCode: 0, stdout: "garbled" })).toBe("unproven");
   expect(appScanVerdict({ exitCode: 0, stdout: "" })).toBe("unproven");
+  expect(appScanVerdict({ exitCode: 1, stdout: "present\n" })).toBe("unproven");
+  expect(appScanVerdict({ exitCode: 1, stdout: "absent\n" })).toBe("unproven");
 });
 
 test("installGateFromScan: present proceeds; proven absence aborts; unproven asks", () => {
@@ -147,16 +159,6 @@ test("installGateFromScan: present proceeds; proven absence aborts; unproven ask
     kind: "confirm",
     warn: "The install scan failed, so it could not check whether the Codex app is installed.",
     prompt: "Continue with pairing anyway?",
-  });
-});
-
-test("postPairingCloseFromScan: only PROVEN-present quits; unproven warns, never quits", () => {
-  expect(postPairingCloseFromScan("present")).toEqual({ quit: true, warn: null });
-  expect(postPairingCloseFromScan("absent")).toEqual({ quit: false, warn: null });
-  // The failed look does not escalate into quit(); the warn stays, so restore proceeds knowingly.
-  expect(postPairingCloseFromScan("unproven")).toEqual({
-    quit: false,
-    warn: "The process scan failed, so it could not prove the Codex app is closed.",
   });
 });
 

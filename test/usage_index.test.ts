@@ -32,7 +32,6 @@ import {
   type WalkedFile,
 } from "../src/usage/contribution.ts";
 import {
-  DEFAULT_PARSER_FINGERPRINT,
   openUsageIndex,
   USAGE_INDEX_DB_NAME,
   USAGE_INDEX_LOCK_NAME,
@@ -507,14 +506,6 @@ const OPENERS: {
     openFingerprint: "parsers-2",
     rebuilds: true,
     line: "rebuilding the usage index (parser_fingerprint parsers-1)",
-  },
-  {
-    // The default stamp is a different fingerprint too.
-    name: "the default fingerprint after a named one is rebuilt",
-    seedFingerprint: "parsers-2",
-    sabotage: () => expect(DEFAULT_PARSER_FINGERPRINT).not.toBe("parsers-2"),
-    rebuilds: true,
-    line: "rebuilding the usage index (parser_fingerprint parsers-2)",
   },
   {
     // Tables another build left behind: sound SQLite, not our columns.

@@ -6,7 +6,7 @@
 //   STALE_LOCK_MS dwarfs any real update           -> a second scope in THIS process never
 //                                                     refresh-acquires a live update's lock
 import { withFileLock } from "../utils/file_lock.ts";
-import { autoupdateLockFile } from "./paths.ts";
+import { autoupdateLockFile } from "./state.ts";
 
 // 30 minutes, chosen to dwarf any real update (the invariant above).
 const STALE_LOCK_MS = 30 * 60 * 1000;

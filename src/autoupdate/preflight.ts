@@ -7,10 +7,10 @@ import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { isProtectedRoot } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
+import { isDue } from "../utils/time.ts";
 import { packageVersion } from "../utils/version.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { applyUpdate, resolveProvenanceDecision } from "./apply.ts";
-import { isDue } from "./due.ts";
 import { type HeldUpdateLock, withUpdateLock } from "./lock.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "./state.ts";
 

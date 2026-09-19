@@ -12,6 +12,8 @@ import {
   type TokenProvider,
 } from "./env_state.ts";
 import {
+  activeGhLogin,
+  GH_COPILOT_HOST,
   type GhAccount,
   ghAuthStatusSpawnSpec,
   ghAuthTokenSpawnSpec,

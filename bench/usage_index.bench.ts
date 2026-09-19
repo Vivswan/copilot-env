@@ -2,7 +2,7 @@
 // Sized by COPILOT_ENV_USAGE_FIXTURE_MB (30 MiB unset); `deno task bench`.
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { removeDir, tmpDir } from "../test/helpers.ts";
+import { tempDir } from "../test/helpers/testing.ts";
 import { generateUsageTree } from "../test/helpers/usage_fixtures.ts";
 import { runCurrentCost } from "../test/helpers/usage_goldens.ts";
 
@@ -11,12 +11,9 @@ if (!Number.isFinite(MB) || MB <= 0) {
   throw new Error("COPILOT_ENV_USAGE_FIXTURE_MB must be a positive number");
 }
 
-const root = tmpDir("usage-index-bench-");
-const homes = tmpDir("usage-index-bench-home-");
-globalThis.addEventListener("unload", () => {
-  removeDir(root);
-  removeDir(homes);
-});
+// Both live under the isolate root testing.ts removes on unload.
+const root = tempDir("usage-index-bench-");
+const homes = tempDir("usage-index-bench-home-");
 await generateUsageTree({ root, mb: MB, seed: 1 });
 
 const warmHome = join(homes, "warm");

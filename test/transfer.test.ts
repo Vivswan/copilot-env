@@ -12,9 +12,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
-  applyImportBundle,
   applyImportPlan,
   buildExportBundle,
+  type ImportDeps,
+  type ImportOutcome,
   type ImportPlan,
   parseSettingsBundle,
   planImport,
@@ -23,6 +24,7 @@ import {
   serializeSettingsBundle,
   SETTINGS_BACKUP_KEEP,
   settingsBackupDir,
+  type SettingsBundle,
 } from "../src/agents/transfer.ts";
 import { runClaude, runCodex } from "../src/agents/configure_defaults.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
@@ -76,6 +78,11 @@ function isolate(): AgentHomes {
   const homes = isolateAgentHomes("copilot-transfer-");
   dirs.push(homes.dir);
   return homes;
+}
+
+/** Plan + apply in one call: these cases need no confirmation step between the two. */
+function applyImportBundle(bundle: SettingsBundle, deps: ImportDeps = {}): Promise<ImportOutcome> {
+  return applyImportPlan(planImport(bundle, deps), deps);
 }
 
 /** stderr is the command's narration logger. */

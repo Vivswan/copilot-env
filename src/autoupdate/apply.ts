@@ -35,19 +35,18 @@ import {
   currentLinkPath,
   INSTALL_ROOT_ENV,
   isCheckoutShapedRoot,
+  type Logger,
   pointCurrentAt,
   readCurrentVersionName,
   removeBootstrapBinary,
   removeVersionDirsExcept,
   runPostFlipMigrations,
-  type ShimLogger,
   versionDirName,
   versionRootPath,
   writeTopLevelShims,
 } from "../install/installer.ts";
 import type { Release } from "../install/resolve-release.ts";
 import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../install/targets.ts";
-import type { HeldUpdateLock } from "./lock.ts";
 import { errMessage } from "../utils/error.ts";
 import { installStateRoot, PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
@@ -60,13 +59,6 @@ const CHECKSUMS_NAME = "checksums.txt";
  *  The same hook install.sh / install.ps1 honor, so a smoke test can drive the
  *  whole update against locally built artifacts. */
 const DOWNLOAD_BASE_ENV = "COPILOT_ENV_DOWNLOAD_BASE";
-
-/** Minimal sink so the preflight can route progress to a stderr-only logger. */
-interface UpdateLogger {
-  info(message: string): void;
-  warn(message: string): void;
-  success(message: string): void;
-}
 
 /** Verifies a release's attestation.json text against the digests about to be
  *  installed; resolves with the workflow identity that signed it, rejects with
@@ -102,16 +94,11 @@ const defaultVerifier: ProvenanceVerifier = async (tag, bundleJson, required) =>
   return await verifyReleaseProvenance(tag, bundleJson, required);
 };
 
-// Stage tokens: each stage hands a branded token forward. The brand is a module-private
-// symbol, so no caller outside this file can fabricate one and skip a stage; that is what
-// makes "committed a version nobody provisioned" unrepresentable rather than merely untrue
-// today:
+// What each stage hands the next; applyUpdate nests the calls, so the order is fixed there:
 //   download -> Downloaded -> verify -> Verified -> attest -> Attested
 //   -> stage -> Staged -> provision -> Provisioned -> commit -> Committed -> (migrate, GC)
-declare const stageBrand: unique symbol;
 
 interface Downloaded {
-  readonly [stageBrand]: "downloaded";
   /** The downloaded binary, still in the temp directory. */
   readonly path: string;
   /** Its release-asset name, i.e. the key to look up in the manifest. */
@@ -126,7 +113,6 @@ interface Downloaded {
 }
 
 interface Verified {
-  readonly [stageBrand]: "verified";
   readonly path: string;
   readonly asset: string;
   readonly sha256: string;
@@ -136,13 +122,11 @@ interface Verified {
 }
 
 interface Attested {
-  readonly [stageBrand]: "attested";
   readonly path: string;
   readonly sha256: string;
 }
 
 interface Staged {
-  readonly [stageBrand]: "staged";
   /** The new binary, on disk inside its NOT-yet-live version root. */
   readonly binary: string;
   readonly versionName: string;
@@ -153,14 +137,12 @@ interface Staged {
 }
 
 interface Provisioned {
-  readonly [stageBrand]: "provisioned";
   readonly binary: string;
   readonly versionName: string;
   readonly previous: string | null;
 }
 
 interface Committed {
-  readonly [stageBrand]: "committed";
   readonly binary: string;
   readonly versionName: string;
   readonly previous: string | null;
@@ -223,7 +205,7 @@ async function download(tag: string, dir: string): Promise<Downloaded> {
     checksumsPath: manifest,
     source,
     dir,
-  } as Downloaded;
+  };
 }
 
 /** Stage 2: hash what actually landed and refuse anything the release manifest
@@ -243,7 +225,7 @@ async function verify(downloaded: Downloaded): Promise<Verified> {
     checksumsSha256: await fileSha256(downloaded.checksumsPath),
     source: downloaded.source,
     dir: downloaded.dir,
-  } as Verified;
+  };
 }
 
 /**
@@ -260,7 +242,7 @@ async function attest(
   verified: Verified,
   tag: string,
   decision: ProvenanceDecision,
-  logger: UpdateLogger,
+  logger: Logger,
 ): Promise<Attested> {
   if (decision.kind === "skip") {
     logger.warn(
@@ -269,7 +251,7 @@ async function attest(
         : "Skipping build-provenance verification (update.verify-provenance is false; " +
           `\`${configDelCommand("update.verify-provenance")}\` restores it).`,
     );
-    return { path: verified.path, sha256: verified.sha256 } as Attested;
+    return { path: verified.path, sha256: verified.sha256 };
   }
   const bundlePath = join(verified.dir, ATTESTATION_NAME);
   try {
@@ -287,7 +269,7 @@ async function attest(
   logger.success(
     `Build provenance verified: attested by GitHub Actions for Vivswan/copilot-env (${signerIdentity}).`,
   );
-  return { path: verified.path, sha256: verified.sha256 } as Attested;
+  return { path: verified.path, sha256: verified.sha256 };
 }
 
 /** `current` already at the target (a checkout updated with --force, then asked again from its old
@@ -313,7 +295,7 @@ function stage(attested: Attested, top: string, versionName: string): Staged {
   const binary = join(binDir, installedBinaryName());
   if (process.platform !== "win32") fs.chmod(attested.path, 0o755);
   fs.rename(attested.path, binary);
-  return { binary, versionName, versionRoot, previous } as Staged;
+  return { binary, versionName, versionRoot, previous };
 }
 
 /**
@@ -353,7 +335,7 @@ function provision(staged: Staged, stdio: StdioOptions): Provisioned {
     binary: staged.binary,
     versionName: staged.versionName,
     previous: staged.previous,
-  } as Provisioned;
+  };
 }
 
 /**
@@ -363,14 +345,14 @@ function provision(staged: Staged, stdio: StdioOptions): Provisioned {
  *   shim text already identical  -> no-op on a healthy install, a repair after a crashed commit
  *   checkout-shaped root         -> keeps its own bin/agent; that file is source
  */
-function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Committed {
+function commit(provisioned: Provisioned, top: string, logger: Logger): Committed {
   pointCurrentAt(top, provisioned.versionName);
   if (!isCheckoutShapedRoot(top)) writeTopLevelShims(top, logger);
   return {
     binary: provisioned.binary,
     versionName: provisioned.versionName,
     previous: provisioned.previous,
-  } as Committed;
+  };
 }
 
 /**
@@ -385,7 +367,7 @@ function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Co
 export function previewUpdate(
   target: Release,
   root: string = PROJECT_ROOT,
-  logger: ShimLogger = consola,
+  logger: Logger = consola,
 ): void {
   const top = installStateRoot(root);
   const versionName = versionDirName(target.tag);
@@ -410,7 +392,7 @@ export function previewUpdate(
 
 export interface ApplyUpdateOptions {
   /** Where progress/warnings go (default: the global stdout consola). */
-  logger?: UpdateLogger;
+  logger?: Logger;
   /** Send the children's stdout to stderr so migration output cannot pollute stdout. The
    *  preflight sets this: an autoupdate inside `agent start` is stderr-only end to end. */
   childStdoutToStderr?: boolean;
@@ -423,12 +405,10 @@ export interface ApplyUpdateOptions {
 
 /** The one update implementation, shared by `agent update` (src/commands/update.ts) and the
  *  autoupdate preflight (./preflight.ts); callers own the up-to-date / `--check` /
- *  dev-checkout gates. `_lock` is the caller's evidence that the update lock is held (only
- *  withUpdateLock's held branch mints one), so every apply happens inside that lock's scope. */
+ *  dev-checkout gates and run it inside withUpdateLock's held branch. */
 export async function applyUpdate(
   current: string,
   target: Release,
-  _lock: HeldUpdateLock,
   opts: ApplyUpdateOptions,
 ): Promise<void> {
   const logger = opts.logger ?? consola;

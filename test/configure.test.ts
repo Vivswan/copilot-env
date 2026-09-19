@@ -96,11 +96,10 @@ function fakeAdapter(
       recorded.identityCalls++;
       return identity().then((id) => directWiring(id, HOST));
     },
-    configureDefault(write) {
+    configureProfile(_profile, write) {
       recorded.writes.push(write);
       return Promise.resolve();
     },
-    configureProfile: () => {},
     removeProfile: () => {},
   };
   return { adapter, recorded };

@@ -55,11 +55,6 @@ export function parseReleasesJson(jsonText: string, includePrereleases = false):
   return releases;
 }
 
-/** Newest release (the first after sorting), or null. */
-export function pickLatest(releases: Release[]): Release | null {
-  return releases[0] ?? null;
-}
-
 /** Newest release aged >= `days`, falling back to the oldest known release. */
 export function pickAged(releases: Release[], nowSeconds: number, days: number): Release | null {
   const cutoff = nowSeconds - days * SECONDS_PER_DAY;
@@ -122,7 +117,8 @@ export async function resolveTarget(
   const releases = parseReleasesJson(text, exactTag !== null);
   if (releases.length === 0) return null;
   if (exactTag !== null) return pickTag(releases, exactTag);
+  // No cooldown: the newest (the first after sorting).
   return cooldownDays === null
-    ? pickLatest(releases)
+    ? releases[0] ?? null
     : pickAged(releases, Date.now() / 1000, cooldownDays);
 }

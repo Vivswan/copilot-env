@@ -590,12 +590,11 @@ test("equal-version fix-ups keep their registry order across the sort", () => {
 });
 
 test("an unparseable registry version throws instead of silently never running", () => {
-  // The type demands a version-shaped literal, so only a cast reaches runtime -- but a
-  // registry entry the range filter cannot see is a migration that never fires, so the
-  // guard stays and names the offender.
-  const bad = [mig("1.2.1"), { ...mig("1.2.5"), version: "oops" as SemverString }];
+  // SemverString admits "1.2.3-", which toSemverString rejects; a registry entry the range filter
+  // cannot see is a migration that never fires, so the guard names the offender.
+  const bad = [mig("1.2.1"), { ...mig("1.2.5"), version: "1.2.3-" as SemverString }];
   expect(() => dueMigrations("1.0.0", "2.0.0", bad)).toThrow(
-    'registry version (1.2.5) "oops" is not a semver version',
+    'registry version (1.2.5) "1.2.3-" is not a semver version',
   );
 });
 

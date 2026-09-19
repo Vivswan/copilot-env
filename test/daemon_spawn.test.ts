@@ -223,6 +223,18 @@ test("with no float record the argv runs the mapped package, offline-only, endin
   expect(daemonEnvironment(BASE, {}).DENO_DIR).toBeUndefined();
 });
 
+test("a daemon config with no float record runs the mapped package under that config, like the file override does", () => {
+  // One rule for every non-floated entry: the float's generated config wherever it exists, else the
+  // checkout's deno.json. The file override already answered this way; the package entry now agrees.
+  delete process.env.COPILOT_API_ENTRY;
+  writeDaemonConfig(dir, ROOT);
+  expect(resolveCopilotApiEntry()).toEqual({
+    kind: "package",
+    specifier: PROXY_PACKAGE_NAME,
+    configFile: daemonConfigFile(dir),
+  });
+});
+
 test("a float record moves the entry to that exact version, run out of the cache it warmed", () => {
   delete process.env.COPILOT_API_ENTRY;
   const denoDir = join(dir, "deno", "cache");

@@ -37,8 +37,8 @@ export type CopilotApiEntry =
     readonly denoDir: string;
     readonly configFile: string;
   }
-  /** deno.json's mapped specifier: resolved through the frozen lock in a checkout,
-   *  or through the generated daemon config on a compiled root. */
+  /** deno.json's mapped specifier, resolved through the config entryConfigFile picks: the daemon
+   *  config wherever the float has written one, else the checkout's frozen-lock deno.json. */
   | { readonly kind: "package"; readonly specifier: string; readonly configFile: string };
 
 /** Regenerated on every call (the float rewrites the same content on every warm), so a stale or
@@ -49,9 +49,10 @@ function ensuredDaemonConfig(rootHome: string): string {
 }
 
 /**
- * A compiled root ALWAYS answers with the daemon config: an install root deliberately carries no
- * deno.json on disk (there it is a checkout marker). The preload shims resolve their own imports
- * through whichever config is passed, which is why every spawn passes one.
+ * The ONE rule for which config a non-floated entry runs under. A compiled root ALWAYS answers with
+ * the daemon config: an install root deliberately carries no deno.json on disk (there it is a
+ * checkout marker). The preload shims resolve their own imports through whichever config is passed,
+ * which is why every spawn passes one.
  */
 function entryConfigFile(rootHome: string, mode: RootMode): string {
   if (mode.kind === "compiled") return ensuredDaemonConfig(rootHome);
@@ -85,9 +86,7 @@ export function resolveCopilotApiEntry(mode: RootMode = rootMode()): CopilotApiE
   return {
     kind: "package",
     specifier: PROXY_PACKAGE_NAME,
-    configFile: mode.kind === "compiled"
-      ? ensuredDaemonConfig(rootHome)
-      : join(mode.root, "deno.json"),
+    configFile: entryConfigFile(rootHome, mode),
   };
 }
 

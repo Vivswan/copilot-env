@@ -24,11 +24,11 @@ export const ATTESTATION_NAME = "attestation.json";
  * GitHub Actions under this account signed the bytes; the release download URL, not the
  * certificate, pins the repository.
  */
-export const RELEASE_SIGNER_SAN =
+const RELEASE_SIGNER_SAN =
   /^https:\/\/github\.com\/Vivswan\/[^/]+\/\.github\/workflows\/[^@]+@refs\/.+$/;
 
 /** GitHub Actions' OIDC issuer, as recorded in the signing certificate. */
-export const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
+const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 
 /** The DSSE payload type of an in-toto statement. */
 export const IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json";
@@ -56,7 +56,7 @@ export interface AttestedSubject {
   sha256: string;
 }
 
-export interface ProvenanceStatement {
+interface ProvenanceStatement {
   predicateType: string;
   subjects: AttestedSubject[];
 }

@@ -82,14 +82,14 @@ export function sidecarBinPath(
  *    path         -> a deno on PATH
  *    provisioned  -> the newest `<rootHome>/deno/<x.y.z>/` from an earlier download
  *    absent       -> ensureSidecar downloads the LATEST release */
-export type SidecarState =
+type SidecarState =
   | { kind: "override"; denoBin: AbsolutePath }
   | { kind: "dev"; denoBin: AbsolutePath }
   | { kind: "path"; denoBin: AbsolutePath }
   | { kind: "provisioned"; denoBin: AbsolutePath; version: string }
   | { kind: "absent" };
 
-export interface SidecarDetectOptions {
+interface SidecarDetectOptions {
   env?: Record<string, string | undefined>;
   platform?: string;
   /** The default applies the standalone guard (devDenoExecPath): a compiled binary must never
@@ -168,7 +168,7 @@ export const DENO_RELEASE_TARGETS = {
   "win32-x64": "x86_64-pc-windows-msvc",
 } as const;
 
-export type DenoReleaseTarget = (typeof DENO_RELEASE_TARGETS)[keyof typeof DENO_RELEASE_TARGETS];
+type DenoReleaseTarget = (typeof DENO_RELEASE_TARGETS)[keyof typeof DENO_RELEASE_TARGETS];
 
 export function denoReleaseTarget(
   platform: string = process.platform,
@@ -246,12 +246,12 @@ export function unzipCommand(
   return { "command": "unzip", "args": ["-o", "-q", zipPath, "-d", destDir] };
 }
 
-export interface UnzipRunResult {
+interface UnzipRunResult {
   status: number;
   stderr: string;
 }
 
-export interface SidecarDownloadSeams {
+interface SidecarDownloadSeams {
   fetchLike?: typeof fetch;
   runner?: (command: string, args: string[]) => UnzipRunResult | Promise<UnzipRunResult>;
   platform?: string;
@@ -369,7 +369,7 @@ export async function ensureSidecar(
   return await downloadSidecar(version, rootHome, sha256, download);
 }
 
-export function denoBinaryVersion(bin: string): string | null {
+function denoBinaryVersion(bin: string): string | null {
   const result = spawnSync(bin, ["--version"], {
     "encoding": "utf8",
     "stdio": ["ignore", "pipe", "ignore"],

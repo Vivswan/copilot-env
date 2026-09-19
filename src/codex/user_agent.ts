@@ -88,7 +88,7 @@ function latestNpmCodexVersion(): string | null {
  *  stronger editor-client identity than the baked fallback, so the installed codex is asked first,
  *  then npm; null (fully offline, no codex) leaves the caller its fallback. Memoized per process, so
  *  one run resolves once. */
-export function codexUserAgentVersion(): string | null {
+function codexUserAgentVersion(): string | null {
   return installedCodexVersion() ?? latestNpmCodexVersion();
 }
 

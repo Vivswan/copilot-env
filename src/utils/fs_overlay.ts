@@ -44,7 +44,7 @@ export type OverlayEntry =
   | { kind: "link"; target: string }
   | { kind: "gone" };
 
-export interface OverlayWrite {
+interface OverlayWrite {
   mode?: number;
   /** The write lands a fresh inode (a staged file renamed over the path), so the file takes a fresh
    *  inode's mode even when it exists. */

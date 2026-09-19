@@ -104,7 +104,7 @@ interface MeasuredRun {
   now: () => number;
 }
 
-export function addIndexStats(into: IndexStats, more: IndexStats): void {
+function addIndexStats(into: IndexStats, more: IndexStats): void {
   into.filesSeen += more.filesSeen;
   into.filesReused += more.filesReused;
   into.filesParsedWhole += more.filesParsedWhole;
@@ -356,7 +356,7 @@ async function readSessionLogs(
   }
 }
 
-export function describeIndexRun(stats: IndexStats): string {
+function describeIndexRun(stats: IndexStats): string {
   return `usage index: ${stats.filesReused} files reused, ${stats.filesParsedTail} tail-parsed, ${stats.filesParsedWhole} whole-parsed, ${
     formatBytesCompact(stats.bytesRead)
   } read`;

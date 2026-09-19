@@ -18,7 +18,7 @@ import { runDryRun } from "./dry_run.ts";
 
 // resolveTarget is shared with the autoupdate preflight so the release-pick logic has one home.
 
-export interface UpdateArgs {
+interface UpdateArgs {
   check?: boolean;
   force?: boolean;
   autoStatus?: boolean;
@@ -29,7 +29,7 @@ export interface UpdateArgs {
   dryRun?: boolean;
 }
 
-export type UpdateAction =
+type UpdateAction =
   | { kind: "check" }
   | { kind: "auto-status" }
   | { kind: "apply"; force: boolean; verify: boolean | undefined; dryRun: boolean };
@@ -40,7 +40,7 @@ export type UpdateAction =
  * be the failed look: `unproven`, never a green "already up to date" over a skipped update. Falling
  * back to the pre-lock target would defeat the downgrade guard the re-check exists for.
  */
-export type RecheckVerdict =
+type RecheckVerdict =
   | { kind: "apply"; target: Release }
   | { kind: "up-to-date" }
   | { kind: "unproven" };

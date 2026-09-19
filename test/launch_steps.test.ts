@@ -313,7 +313,7 @@ test("resolveLaunchCredential: a pinned integration-id reaches the probe as the 
     { token: "ghp_pinned", userAgent: UA, pinned: "copilot-developer-sandbox" },
   ]);
   // The probe ran under the pin, so only the host half is the probe's own answer and only it is
-  // stored (landDirectWiring's rule): the identity half stays unprobed for the day the pin clears.
+  // stored (landDirectPair's rule): the identity half stays unprobed for the day the pin clears.
   expect(new CopilotEnvState().readProfileDirectPair(null)).toEqual({
     host: DEFAULT_COPILOT_API_BASE,
   });

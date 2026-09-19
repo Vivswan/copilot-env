@@ -191,7 +191,7 @@ export function cliSpawn(
 
 /** `binDir` is for callers that prepend it to the child PATH: an npm/nvm shim needs node beside it.
  */
-export interface VerbatimCliSpawn {
+interface VerbatimCliSpawn {
   file: string;
   args: string[];
   shell: boolean;
@@ -211,9 +211,8 @@ function windowsWhereCandidates(pattern: string): string[] {
   return (result.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 }
 
-/** A shim script cannot stand in for a binary another process spawns as its runtime. Exported for
- *  tests. */
-export function pickWindowsExecutable(candidates: string[]): string | null {
+/** A shim script cannot stand in for a binary another process spawns as its runtime. */
+function pickWindowsExecutable(candidates: string[]): string | null {
   return candidates.find((candidate) => {
     const lower = candidate.toLowerCase();
     return lower.endsWith(".exe") || lower.endsWith(".com");

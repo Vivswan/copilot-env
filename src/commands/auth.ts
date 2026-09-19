@@ -114,7 +114,7 @@ type ResolvedAcquisition =
 /** A `--set` token can only travel inside the gh-token variant, and a `--gh-user` pin inside the
  *  gh-cli one, so `authenticate` cannot receive either under the wrong provider and silently drop
  *  it. */
-export type CredentialAcquisition = { kind: "choose" } | ResolvedAcquisition;
+type CredentialAcquisition = { kind: "choose" } | ResolvedAcquisition;
 
 function acquisitionForProvider(provider: AuthProvider): ResolvedAcquisition {
   switch (provider) {
@@ -209,7 +209,7 @@ async function chooseProvider(): Promise<AuthProvider> {
  */
 /** How the chooser may settle: `interactive` asks; `headless` (no TTY) and `dry-run` (a preview
  *  never asks) pin the active account or refuse with the flag that answers. */
-export type GhAccountChooserMode = "interactive" | "headless" | "dry-run";
+type GhAccountChooserMode = "interactive" | "headless" | "dry-run";
 
 export async function chooseGhAccount(
   look: () => GhAccountsLook = ghAccountsLook,
@@ -487,7 +487,7 @@ function assertGhCliResolves(
 
 /** Whether `credential` is a dry run's stand-in for a login that did not run (PLANNED_SECRET).
  *  Only inside a dry run: a real token spelled like the placeholder is a token. */
-export function isPlannedCredential(credential: ProvisionedCredential): boolean {
+function isPlannedCredential(credential: ProvisionedCredential): boolean {
   return dryRunActive() && credential.kind === "stored" && credential.token === PLANNED_SECRET;
 }
 
@@ -610,7 +610,7 @@ export async function acquireCredential(
  *  profile is rebaked here with a fresh selection: the credential write took the previous
  *  credential's stored pair with it, and every re-render bakes the slot's pair, so the landing is
  *  where the new one is probed and stored. */
-export async function authenticate(
+async function authenticate(
   acquisition: CredentialAcquisition,
   profile: Profile,
 ): Promise<AuthProvider> {
@@ -775,7 +775,7 @@ export async function ensureAuthenticated(profile: Profile = null): Promise<void
 /** `choose` is the bare flag: the interactive pick, in a terminal (src/commands/identity.ts). */
 type IdentityRequest = IdentityChoice | { kind: "choose" };
 
-export type AuthAction =
+type AuthAction =
   | { kind: "get"; profile: Profile }
   | { kind: "del"; profile: Profile; dryRun: boolean }
   | { kind: "check"; profile: Profile }
@@ -802,7 +802,7 @@ function ghUserConflictError(): Error {
   );
 }
 
-export function parseAuthAction(args: AuthArgs): AuthAction {
+function parseAuthAction(args: AuthArgs): AuthAction {
   const subActions = [
     args.get,
     args.del,

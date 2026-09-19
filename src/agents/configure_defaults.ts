@@ -123,7 +123,7 @@ export async function runCodex(action: AgentRunAction): Promise<void> {
 /** null leaves that agent alone (its own re-render, or nothing) unless the default has no record,
  *  where the other agent's request is the first landing and wires both. Indexed by `adapter.id`,
  *  so a new agent in bothAgents() is a compile error here until the request names it. */
-export interface DefaultAgentRequest {
+interface DefaultAgentRequest {
   codex: RequestedMode | null;
   claude: RequestedMode | null;
   /** Pre-resolved default credential for BOTH writers (undefined = each writer
@@ -131,7 +131,7 @@ export interface DefaultAgentRequest {
   ghToken?: string | null;
 }
 
-export interface DefaultAgentsOutcome {
+interface DefaultAgentsOutcome {
   codex: AgentProviderMode;
   claude: AgentProviderMode;
   failures: string[];

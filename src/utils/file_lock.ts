@@ -1,6 +1,6 @@
 // Exclusion is the OS advisory lock (flock/LockFileEx via Deno.FsFile.tryLockSync), which a crashed
 // holder releases automatically. The pid+ts marker in the lock file names the holder for the probes
-// (probeFileLock, the daemon verdict in src/scripts/daemon_lock.ts) and is never judged by an
+// (probeFileLock, the daemon verdict in src/copilot_api/daemon_lock.ts) and is never judged by an
 // acquirer that holds the OS lock: a marker under a free OS lock is a leftover (a crashed holder, or
 // the delete Windows refused while a scanner had the file open), whatever its pid or age.
 //
@@ -27,7 +27,7 @@ const LOCK_STALE_MS = 10_000;
 const LOCK_WAIT_MS = 4_000;
 const LOCK_RETRY_MS = 15;
 
-export interface FileLockOptions {
+interface FileLockOptions {
   /** One clock for the marker written and the age judgment, so an injected clock stays
    *  deterministic. */
   nowMs?: number;
@@ -156,7 +156,7 @@ export function removeMarkerWithRetry(
 }
 
 /** A primitive: production code scopes lock lifetimes through withFileLock/withFileLockSync, bar
- *  src/scripts/daemon_lock.ts, and this stays exported for the on-disk contract tests.
+ *  src/copilot_api/daemon_lock.ts, and this stays exported for the on-disk contract tests.
  *
  *  the OS lock is held elsewhere                 -> false
  *  our own hold, marker still fresh              -> false
@@ -215,7 +215,7 @@ function tryAcquire(lockPath: string, staleMs: number, opts: FileLockOptions): A
 /** `markerPid` is the holder's (`held`) or the LAST holder's (`free`), so a consumer can tie the
  *  verdict to a specific pid; `absent` means no marker file is there NOW, which a completed
  *  release also leaves behind. */
-export type FileLockProbe =
+type FileLockProbe =
   | { readonly kind: "held"; readonly markerPid: number | null }
   | { readonly kind: "free"; readonly markerPid: number | null }
   | { readonly kind: "absent" }
@@ -308,14 +308,14 @@ export function releaseFileLock(lockPath: string): void {
 // --- the scoped lock API --------------------------------------------------------
 //
 // Production takes a lock through these: wait, critical section, and release live in one scope, so
-// no call site can leak a lock across an early return or a throw. src/scripts/daemon_lock.ts is the
+// no call site can leak a lock across an early return or a throw. src/copilot_api/daemon_lock.ts is the
 // one exception, holding the primitive's lock until the process dies.
 
 declare const heldLockBrand: unique symbol;
 
 /** Only the held branch of withFileLock/withFileLockSync mints one, so an API that demands lock
  *  evidence cannot be called without a lock scope. */
-export interface HeldLock {
+interface HeldLock {
   readonly held: true;
   readonly [heldLockBrand]: true;
 }
@@ -325,7 +325,7 @@ export interface HeldLock {
  *  from a holder, so nobody is told to stop a process that holds nothing. */
 export type LockOutcome = HeldLock | NotHeldOutcome;
 
-export type NotHeldOutcome =
+type NotHeldOutcome =
   | { readonly held: false; readonly reason: "busy" }
   | { readonly held: false; readonly reason: "unavailable"; readonly cause: unknown };
 

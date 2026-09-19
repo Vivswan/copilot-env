@@ -27,7 +27,7 @@ const LEDGER_KEYS = {
   codexCatalog: "codexCatalogConfigPaths",
 } as const;
 
-export type OwnedArtifactKind = keyof typeof LEDGER_KEYS;
+type OwnedArtifactKind = keyof typeof LEDGER_KEYS;
 
 /** The ledger's keys as stored: what `agent config` refuses to set by name (src/commands/config.ts). */
 export const LEDGER_KEY_NAMES: readonly string[] = Object.values(LEDGER_KEYS);

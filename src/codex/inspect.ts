@@ -64,7 +64,7 @@ function isStaticAuthorization(table: unknown): boolean {
 }
 
 /** Which managed credential shape the table carries; "none" is a foreign or missing one. */
-export type CodexManagedCredential = "command" | "static" | "none";
+type CodexManagedCredential = "command" | "static" | "none";
 
 /** The bearer a static write baked into `profile`'s provider table, for the health freshness
  *  compare only (the inspector never carries the value). Null unless the file parses and the table
@@ -105,7 +105,7 @@ export type CodexOtherReason =
 /** What selects the inspected wiring: config.toml's top-level key for the default, and for a
  *  named profile the top-level key of its `<name>.config.toml`, read alongside config.toml. A
  *  named inspection without its profile read is unrepresentable. */
-export type CodexSelectionRead =
+type CodexSelectionRead =
   | { profile: null }
   | { profile: ProfileName; profileToml: TextReadResult };
 

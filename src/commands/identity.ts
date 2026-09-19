@@ -28,7 +28,7 @@ import {
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../copilot_api/integration_identity.ts";
 import { agentStartCommand, agentStopCommand, type Profile } from "../copilot_api/profile.ts";
-import { colorEnabled, palette } from "../utils/ansi.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
@@ -55,16 +55,17 @@ const IDENTITY_NOTES: Record<string, string> = {
 /** The survey's palette, `agent config`'s: bold header, cyan names, green accepted, yellow
  *  rejected, dim for the rest. Resolved once at the command edge (colorEnabled()), so a test can
  *  force it on. */
-type SurveyPaint = Record<"bold" | "cyan" | "dim" | "green" | "yellow", (text: string) => string>;
+type SurveyPaint = ReturnType<typeof paintFor>;
 const plainText = (text: string): string => text;
-const PLAIN_PAINT: SurveyPaint = {
-  bold: plainText,
-  cyan: plainText,
-  dim: plainText,
-  green: plainText,
-  yellow: plainText,
-};
-const ANSI_PAINT: SurveyPaint = palette;
+
+function verdictOf(column: IdentityHostSurvey, name: string): IdentityVerdict | undefined {
+  return column.verdicts.find((v) => v.name === name)?.verdict;
+}
+
+/** Every identity the survey probed, in first-seen order across the hosts. */
+function surveyedNames(survey: IdentitySurvey): string[] {
+  return [...new Set(survey.hosts.flatMap((h) => h.verdicts.map((v) => v.name)))];
+}
 
 /** The cell carries the verdict and a tag (status or "network error"); the full reason follows the
  *  table, so a 160-char rejection body never widens it. `mark` is `*` (in use) or `>` (the next
@@ -162,14 +163,12 @@ export interface IdentityTableInput {
  *  use, or `>` the next landing's pick while the slot is empty; the notes name what would move it. */
 export function identityTableLines(input: IdentityTableInput): string[] {
   const width = terminalWidth();
-  const paint = input.color ? ANSI_PAINT : PLAIN_PAINT;
+  const paint = paintFor(input.color);
   const { survey, pinned, configuredHost, stored, hostInUse, slot, daemonRunning } = input;
   const inUse = slot.kind === "in-use" ? slot.identity : null;
   const wouldPick = slot.kind === "empty" ? slot.wouldPick : null;
   const inUseColumn = survey.hosts.find((h) => sameOrigin(h.apiBase, hostInUse)) ?? null;
-  const names = [...new Set(survey.hosts.flatMap((h) => h.verdicts.map((v) => v.name)))];
-  const verdictOf = (column: IdentityHostSurvey, name: string): IdentityVerdict | undefined =>
-    column.verdicts.find((v) => v.name === name)?.verdict;
+  const names = surveyedNames(survey);
   const mark = (column: IdentityHostSurvey, name: string): string => {
     if (column !== inUseColumn) return "";
     if (inUse === name) return "*";
@@ -290,9 +289,7 @@ function nextLandingPick(
 ): string | null {
   const column = survey.hosts.find((h) => sameOrigin(h.apiBase, hostInUse));
   if (column === undefined) return null;
-  const accepted = (name: string): boolean =>
-    column.verdicts.find((v) => v.name === name)?.verdict.kind === "accepted";
-  return candidates.find((c) => accepted(c.name))?.name ?? null;
+  return candidates.find((c) => verdictOf(column, c.name)?.kind === "accepted")?.name ?? null;
 }
 
 async function surveyAndTable(
@@ -361,16 +358,13 @@ export async function runIdentities(profile: Profile, token: string): Promise<vo
 export async function chooseIdentity(profile: Profile, token: string): Promise<IdentityChoice> {
   const pinned = new CopilotEnvConfig().pinnedIntegrationId(profile);
   const survey = await surveyAndTable(profile, token, pinned);
-  const verdictOn = (column: IdentityHostSurvey, name: string): IdentityVerdict | undefined =>
-    column.verdicts.find((v) => v.name === name)?.verdict;
-  const names = [...new Set(survey.hosts.flatMap((h) => h.verdicts.map((v) => v.name)))]
-    .filter((name) =>
-      name !== CODEX_IDENTITY_NAME &&
-      survey.hosts.some((c) => verdictOn(c, name)?.kind === "accepted")
-    );
+  const names = surveyedNames(survey).filter((name) =>
+    name !== CODEX_IDENTITY_NAME &&
+    survey.hosts.some((c) => verdictOf(c, name)?.kind === "accepted")
+  );
   const cell = (column: IdentityHostSurvey, name: string): string => {
-    const verdict = verdictOn(column, name);
-    return verdict === undefined ? "not probed" : verdictCell(verdict, "", PLAIN_PAINT);
+    const verdict = verdictOf(column, name);
+    return verdict === undefined ? "not probed" : verdictCell(verdict, "", paintFor(false));
   };
   const current = (name: string): string => name === pinned ? " (current pin)" : "";
   const value = await prompt("Which Copilot client identity should be pinned?", {

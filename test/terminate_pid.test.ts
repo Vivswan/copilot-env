@@ -66,7 +66,7 @@ function classifyStub(verdict: "yes" | "no" | "unknown"): {
 //   "yes"     -> killed
 //   "unknown" -> killed all the same: a scan that cannot answer must not strand the stop, since
 //                every caller gates its TERM on an identity read at least as demanding (contrast
-//                corroborateLockHolder in launch.ts, which fails closed with no recent read)
+//                corroborateLockHolder in launch_cleanup.ts, which fails closed with no recent read)
 test.skipIf(process.platform === "win32")(
   "the KILL-boundary verdict: 'no' is spared and reported, 'yes' and 'unknown' draw the SIGKILL",
   async () => {

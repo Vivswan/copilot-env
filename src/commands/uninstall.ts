@@ -38,7 +38,7 @@ import * as fs from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
 import { deleteProfileEverywhere } from "./profile.ts";
 
-export interface UninstallArgs {
+interface UninstallArgs {
   yes?: boolean;
   dryRun?: boolean;
   force?: boolean;
@@ -86,7 +86,7 @@ async function stopAllDaemons(profiles: ProfileName[]): Promise<void> {
 
 /** Resolved once before any step runs: the dry run plans exactly these and the live run removes
  *  exactly these, so neither can name (or take) a path the other did not. */
-export interface UninstallTargets {
+interface UninstallTargets {
   desktop: ClaudeDesktopOwnedArtifacts;
   /** Named on its own because the float's cache may sit OUTSIDE the root home. */
   floatArtifacts: string[];
@@ -97,7 +97,7 @@ export interface UninstallTargets {
   claudeMcpRegistration: string | null;
 }
 
-export interface UninstallContext {
+interface UninstallContext {
   profiles: ProfileName[];
   codexHomes: string[];
   codexSweepComplete: boolean;

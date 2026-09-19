@@ -82,7 +82,7 @@ export async function githubLoginLook(
 // --- the device flow ----------------------------------------------------------------------------
 
 /** What GitHub hands back for the user to act on; `deviceCode` is the poll handle. */
-export interface DeviceCode {
+interface DeviceCode {
   deviceCode: string;
   userCode: string;
   verificationUri: string;
@@ -90,7 +90,7 @@ export interface DeviceCode {
   intervalS: number;
 }
 
-export interface DeviceFlowDeps {
+interface DeviceFlowDeps {
   fetchImpl?: ProbeFetch;
   /** Waits `ms` between polls; the test seam. */
   sleep?: (ms: number) => Promise<void>;

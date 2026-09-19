@@ -289,7 +289,7 @@ export async function classifyDaemonPid(pid: number): Promise<"yes" | "no" | "un
 /** `selfPid` is the scan's control: a readable `ps -U <uid>` always contains the calling process, so
  *  rows without it prove the scan FAILED (ps error, truncation), which is "unknown", never a confident
  *  "no" a broken `ps` could pass off as "definitely not a daemon". */
-export function classifyPidFromRows(
+function classifyPidFromRows(
   rows: ProcessRow[],
   pid: number,
   selfPid: number,
@@ -390,7 +390,7 @@ async function scanCopilotApiPidsWindows(): Promise<number[] | "unproven"> {
 
 /** `ucomm` is the executable name as the process table reports it; the runtime gate reads THIS, never
  *  argv text. */
-export interface ProcessRow {
+interface ProcessRow {
   pid: number;
   ucomm: string;
   command: string;

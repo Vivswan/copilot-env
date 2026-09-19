@@ -10,18 +10,13 @@ import { CopilotEnvRunState } from "./run_state.ts";
 
 // --- the per-daemon policy ------------------------------------------------------
 
-/** Where a daemon's port comes from when its run state records none. */
-export type DaemonPortSource =
-  | { readonly source: "config" }
-  | { readonly source: "reservation"; readonly name: ProfileName };
-
 /**
  * THE one place the default profile's default-only behavior is decided: launch, status, and stop
  * read these fields instead of re-deriving from `profile === null`. Two literal shapes, so a
  * contradictory combination is unrepresentable. No home field on purpose: a daemon's home is paths.ts's
  * to resolve.
  */
-export type DaemonPolicy =
+type DaemonPolicy =
   | {
     readonly port: { readonly source: "config" };
     readonly strictPortEligible: true;
@@ -236,7 +231,7 @@ export function parseLoopbackProxyUrl(url: string): { port: string; path: string
 }
 
 /** "" is the bare origin Claude bakes; "/v1" is Codex's OpenAI-wire base. */
-export type ProxyPathContract = "" | "/v1";
+type ProxyPathContract = "" | "/v1";
 
 export function matchesProxyOrigin(
   url: string,

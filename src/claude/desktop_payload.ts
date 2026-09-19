@@ -88,7 +88,7 @@ export type DesktopCredential =
   | { kind: "command"; helperPath: string }
   | { kind: "static"; token: string };
 
-export type DesktopPayloadOptions = ManagedMode & {
+type DesktopPayloadOptions = ManagedMode & {
   profile: Profile;
   baseUrl: string;
   credential: DesktopCredential;

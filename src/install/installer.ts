@@ -65,6 +65,7 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/copilot_api/config.ts",
   "src/copilot_api/config_registry.ts",
   "src/copilot_api/daemon_lock.ts",
+  "src/copilot_api/daemon_shutdown.ts",
   "src/copilot_api/env_config.ts",
   "src/copilot_api/idle_watchdog.ts",
   "src/copilot_api/inference_activity.ts",
@@ -113,7 +114,7 @@ export function versionDirName(version: string): string {
   return `v${stripV(version)}`;
 }
 
-export function versionsDirPath(top: string): string {
+function versionsDirPath(top: string): string {
   return join(top, VERSIONS_DIR);
 }
 
@@ -128,7 +129,7 @@ export function currentLinkPath(top: string): string {
 /** The link target in the spelling the platform stores: RELATIVE on POSIX (the install stays
  *  relocatable), ABSOLUTE on Windows (a junction has no relative form). The plan and the flip
  *  both take it from here, so the dry run and the seam cannot disagree. */
-export function currentLinkTarget(top: string, versionName: string): string {
+function currentLinkTarget(top: string, versionName: string): string {
   return process.platform === "win32"
     ? versionRootPath(top, versionName)
     : join(VERSIONS_DIR, versionName);
@@ -241,7 +242,7 @@ export interface Logger {
 }
 
 /** The stable PATH entries at `<top>/bin`, dispatching through the `current` link. */
-export function topLevelShims(top: string): FileWrite<string>[] {
+function topLevelShims(top: string): FileWrite<string>[] {
   return [
     { to: join(top, "bin", "agent"), body: POSIX_CURRENT_SHIM, executable: true },
     { to: join(top, "bin", "agent.ps1"), body: POWERSHELL_CURRENT_SHIM, executable: false },
@@ -375,12 +376,12 @@ export const CHECKOUT_MARKERS = ["package.json", "deno.json"] as const;
 
 /** One shell-integration pass (Windows may need two: per-host and all-hosts profiles are
  *  separate targets). */
-export interface ShellWiring {
+interface ShellWiring {
   allHosts: boolean;
 }
 
 /** One file a plan lands: an embedded asset's bytes, or a shim's or the manifest's text. */
-export interface FileWrite<Body extends string | Uint8Array = string | Uint8Array> {
+interface FileWrite<Body extends string | Uint8Array = string | Uint8Array> {
   to: string;
   body: Body;
   executable: boolean;

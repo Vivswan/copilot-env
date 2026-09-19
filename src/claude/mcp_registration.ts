@@ -166,7 +166,7 @@ function writeClaudeJson(loaded: ClaudeJsonDoc, doc: Record<string, unknown>): b
 }
 
 /** What `agent profile mcp` (status) reports about the registration. */
-export interface McpRegistrationInspection {
+interface McpRegistrationInspection {
   path: string;
   /** "unreadable" when the file could not be read or parsed. */
   status: McpRegistrationStatus | "unreadable";

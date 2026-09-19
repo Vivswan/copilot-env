@@ -110,7 +110,7 @@ function tierOf(pricing: Record<string, unknown>): PricingTier | null {
 }
 
 /** `fetchedAtMs` is the cache stamp: when the returned list was fetched. */
-export type LoadedPricing =
+type LoadedPricing =
   | { source: "cache"; pricing: Map<string, PricingTier>; fetchedAtMs: number }
   | {
     source: "fetched";

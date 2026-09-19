@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { childEnvWithPath, cliSpawn } from "../utils/command.ts";
 
 /** Most specific first; reading a token from the environment keeps the secret out of argv and shell history. */
-export const GH_TOKEN_ENV_VARS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
+const GH_TOKEN_ENV_VARS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
 
 /** Help text and prompt labels derive from the list so they can never drift from what ghTokenFromEnv reads. */
 export function ghTokenEnvVarsLabel(separator = "/"): string {
@@ -15,7 +15,7 @@ export function ghTokenEnvVarsList(): string {
   return GH_TOKEN_ENV_VARS.join(" / ");
 }
 
-export type GhTokenEnvVar = (typeof GH_TOKEN_ENV_VARS)[number];
+type GhTokenEnvVar = (typeof GH_TOKEN_ENV_VARS)[number];
 
 export interface GhEnvToken {
   name: GhTokenEnvVar;
@@ -37,7 +37,7 @@ export function ghTokenFromEnv(env: NodeJS.ProcessEnv = process.env): string | n
 }
 
 /** Shared by every "is gh authenticated?" probe. */
-export const GH_AUTH_TIMEOUT_MS = 5000;
+const GH_AUTH_TIMEOUT_MS = 5000;
 
 /** A pinned account is chosen from this host's logins, so the pinned resolve names it explicitly:
  *  otherwise a GH_HOST override would point `--user` at another host's accounts. */

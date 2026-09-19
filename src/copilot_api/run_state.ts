@@ -5,7 +5,7 @@ import { CopilotApiPaths } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 
 /** Per-host runtime state (`.run/<host>/.state.json`). */
-export interface CopilotEnvRunStateData {
+interface CopilotEnvRunStateData {
   port?: number;
   pid?: number;
   /** The per-host Codex farm, recorded by the `codex.host` derivation (src/codex/host.ts). */

@@ -2,7 +2,7 @@
 // direct identity resolved once and baked into both. Needs BOTH src/codex/ and src/claude/, so
 // it lives in src/agents/ like wiring.ts.
 import { claudeAdapter } from "../claude/config.ts";
-import { codexAdapter, landDirectWiring } from "../codex/config.ts";
+import { codexAdapter, directWiringFor } from "../codex/config.ts";
 import { type DirectOverlay, directOverlay, renderDirectPair } from "../copilot_api/direct_pair.ts";
 import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
@@ -71,10 +71,9 @@ export async function wireProfileAgents(
   const identity: ManagedMode = mode === "direct"
     ? {
       mode,
-      direct:
-        await (direct === "probe"
-          ? landDirectWiring(name, token)
-          : resolveDirectWiring(name, token)),
+      direct: await (direct === "probe"
+        ? directWiringFor(name, token, "land")
+        : resolveDirectWiring(name, token)),
     }
     : { mode };
   const failures: string[] = [];
@@ -96,7 +95,7 @@ export async function wireProfileAgents(
  * read from the same store the pair comes from. A pin is never stored, so a half it covers stays
  * unprobed by design and must not read as a gap: a pinned profile probes once, at its landing, and
  * every re-render after that makes zero requests. The default (configureDefaultAgents) and a named
- * profile (landDirectWiring) take this one rule; an import's plan passes the overlay the bundle
+ * profile (resolveDirectWiring) take this one rule; an import's plan passes the overlay the bundle
  * WILL put in force (directOverlayIn), so plan and apply judge the same document.
  */
 export function directPairIncomplete(
@@ -126,7 +125,9 @@ export async function resolveDirectWiring(
   profile: Profile,
   credentialToken?: string | null,
 ): Promise<DirectWiring> {
-  if (directPairIncomplete(profile)) return await landDirectWiring(profile, credentialToken);
+  if (directPairIncomplete(profile)) {
+    return await directWiringFor(profile, credentialToken, "land");
+  }
   const rendered = renderDirectWiring(profile);
   if (rendered === null) {
     throw new Error(`${profileLabel(profile)}'s stored Direct pair did not render`);

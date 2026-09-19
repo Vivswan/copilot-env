@@ -6,7 +6,7 @@
 
 /** Structural on purpose: the handle is recorded by shape rather than by matching Deno's full
  *  HttpServer type. */
-export interface DrainableServer {
+interface DrainableServer {
   shutdown(): Promise<void>;
 }
 

@@ -17,10 +17,6 @@
 import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
 
-/** The file's top-level maps (external contracts: never rename). */
-export const STATE_TOP_KEYS = ["global", "profiles", "ownership"] as const;
-export type StateTopKey = (typeof STATE_TOP_KEYS)[number];
-
 /** The root store over `state.json` (one file, one lock under `locks/`). */
 export function rootStateStore(path?: string): CopilotApiConfig {
   if (path !== undefined) return new CopilotApiConfig(path);

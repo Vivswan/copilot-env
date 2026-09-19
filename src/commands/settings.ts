@@ -57,17 +57,17 @@ export interface SettingsArgs {
 
 /** The apply step is injectable so the rollback message of a mid-import failure can be exercised
  *  hermetically. */
-export interface SettingsDeps extends ImportDeps {
+interface SettingsDeps extends ImportDeps {
   applyPlan?: typeof applyImportPlan;
 }
 
-export type SettingsAction =
+type SettingsAction =
   | { kind: "export"; target: string | boolean; withCredentials: boolean; dryRun: boolean }
   | { kind: "import"; file: string; force: boolean; noBackup: boolean; dryRun: boolean };
 
 const EXACTLY_ONE = "pass exactly one of --export [file], --import <file>";
 
-export function parseSettingsAction(args: SettingsArgs): SettingsAction {
+function parseSettingsAction(args: SettingsArgs): SettingsAction {
   if (args.importFrom !== undefined) {
     if (args.exportTo !== undefined) throw new Error(EXACTLY_ONE);
     if (args.withCredentials) {
@@ -348,8 +348,8 @@ function pickSection<T>(sections: Record<string, T>, key: string): Record<string
   return key in sections ? { [key]: sections[key] as T } : {};
 }
 
-/** The whole store's bundle narrowed to one profile. Exported for its tests. */
-export function profileBundle(whole: SettingsBundle, profile: Profile): SettingsBundle {
+/** The whole store's bundle narrowed to one profile. */
+function profileBundle(whole: SettingsBundle, profile: Profile): SettingsBundle {
   const section = pickSection(whole.config.profiles, profileSettingsKey(profile));
   if (profile === null) {
     return {

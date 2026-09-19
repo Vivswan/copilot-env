@@ -14,13 +14,13 @@ import * as disk from "./fs_disk.ts";
 import type { Overlay, OverlayEntry } from "./fs_overlay.ts";
 import { isRecord, parseJsonRecord } from "./json.ts";
 
-export type FileVerdict = "create" | "rewrite" | "same" | "delete";
+type FileVerdict = "create" | "rewrite" | "same" | "delete";
 
-export type AttributeStatus = "set" | "change" | "same" | "remove";
+type AttributeStatus = "set" | "change" | "same" | "remove";
 
 /** One leaf of one file. `current` and `next` are the values as the file holds them (undefined =
  *  absent); a `secret` value never prints. */
-export interface AttributeRow {
+interface AttributeRow {
   key: string;
   status: AttributeStatus;
   current: unknown;

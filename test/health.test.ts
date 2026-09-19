@@ -1430,7 +1430,7 @@ test("checkAuth: the default credential facts decide status, detail, and fix", (
       fix: "agent auth",
     },
     {
-      // Only validated names arrive here: the producer sweeps via profileNames() (pinned in state.test.ts).
+      // Only validated names arrive here: the producer sweeps via profileNames() (pinned in env_state.test.ts).
       name: "named profiles line",
       facts: {
         ...base,

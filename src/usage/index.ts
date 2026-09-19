@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS "files" (
 );
 `;
 
-export interface OpenUsageIndexOptions {
+interface OpenUsageIndexOptions {
   dir?: string;
   /** A database stamped differently is rebuilt. */
   fingerprint?: string;

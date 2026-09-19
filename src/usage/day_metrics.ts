@@ -76,7 +76,7 @@ export interface DayMetrics extends DayTotals {
 
 /** The discriminant replaces a magic day label; the "(undated)" spelling is applied at render time
  *  only. */
-export type PerDayRow =
+type PerDayRow =
   | ({ kind: "dated" } & DayMetrics)
   | ({ kind: "undated" } & DayTotals);
 

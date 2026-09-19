@@ -57,7 +57,7 @@ export function renderDirectPair(
   return { integrationId, apiBase: host };
 }
 
-export interface LandDirectPairOptions extends DirectOverlay {
+interface LandDirectPairOptions extends DirectOverlay {
   fetchImpl?: ProbeFetch;
   signal?: AbortSignal;
   /** Callers whose stdout is a contract pass a stderr logger. */

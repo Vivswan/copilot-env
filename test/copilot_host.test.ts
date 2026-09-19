@@ -8,7 +8,7 @@ import { parse } from "smol-toml";
 import { directWiring } from "../src/agents/configure.ts";
 import { configureDefaultAgents, runAgentConfig } from "../src/agents/configure_defaults.ts";
 import { claudeAdapter, configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
-import { codexAdapter, probeDirectWiring } from "../src/codex/config.ts";
+import { codexAdapter, directWiringFor } from "../src/codex/config.ts";
 import { inspectCodexWiring } from "../src/codex/inspect.ts";
 import { runConfig } from "../src/commands/config.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
@@ -253,7 +253,7 @@ test("a wiring baked for one host stays ours after the copilot-host literal chan
   expect(settings.env.ANTHROPIC_BASE_URL).toBe(other);
 });
 
-test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is probed again on the host that serves it", async () => {
+test("directWiringFor probe: under auto, a PAT moved off a blocked generic host is probed again on the host that serves it", async () => {
   dir = isolateAgentHomes("copilot-host-reprobe-").dir;
   const seen: { host: string; id: string | null }[] = [];
   // The generic host is blocked for every identity (403 -> inconclusive, so the identity probe
@@ -276,7 +276,7 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
         : new Response("Personal Access Tokens are not supported", { status: 400 }),
     );
   });
-  expect(await probeDirectWiring(null, "github_pat_x")).toEqual(
+  expect(await directWiringFor(null, "github_pat_x", "probe")).toEqual(
     directWiring(COPILOT_CLI_INTEGRATION_ID, ENTERPRISE),
   );
   // Without the second pass the default identity (no header) would be baked for a host that 400s it.
@@ -288,7 +288,7 @@ test("probeDirectWiring: under auto, a PAT moved off a blocked generic host is p
   // reaches the generic host (whose 403 would leave the probe inconclusive, baking the default).
   new CopilotEnvConfig().setProfile(null, { host: GHE });
   seen.length = 0;
-  expect(await probeDirectWiring(null, "github_pat_y")).toEqual(
+  expect(await directWiringFor(null, "github_pat_y", "probe")).toEqual(
     directWiring(COPILOT_CLI_INTEGRATION_ID, GHE),
   );
   expect(seen.length).toBeGreaterThan(0);

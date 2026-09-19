@@ -372,7 +372,7 @@ export function checkRuntimePid(f: RuntimeTarget, p: DaemonProbeFacts): CheckRes
   return { ...base, status: "fail", detail, fix: agentStartCommand(f.profile), value };
 }
 
-export function checkRuntimePaths(f: RuntimeTarget): CheckResult {
+function checkRuntimePaths(f: RuntimeTarget): CheckResult {
   // Multi-line detail: report.ts indents each line so state/log sit on their own.
   return {
     ...meta("runtime.paths"),

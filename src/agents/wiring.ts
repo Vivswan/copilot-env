@@ -13,7 +13,7 @@ import { readTextResult } from "../utils/fs_facade.ts";
 
 /** Overrides for tests and callers that already resolved the homes/port; the defaults are the
  *  effective ones (effectiveCodexHome, resolveClaudeHome, copilotApiResolvePort). */
-export interface AgentWiringOptions {
+interface AgentWiringOptions {
   codexHome?: string;
   claudeHome?: string;
   expectedPort?: number;

@@ -17,7 +17,7 @@ import { directClientHeaders, type ProbeFetch } from "./integration_identity.ts"
 import { fetchModelCatalog } from "./models_fetch.ts";
 
 /** The two Copilot wires the managed agents speak (Claude: Anthropic messages, Codex: responses). */
-export type DirectWire = "messages" | "responses";
+type DirectWire = "messages" | "responses";
 
 const WIRE_PATHS: Record<DirectWire, string> = {
   "messages": "/v1/messages",
@@ -42,7 +42,7 @@ export interface EndpointSmoke {
 }
 
 /** A failure always carries its one-line reason, so a fall to the proxy is never silent. */
-export type EndpointSmokeOutcome = { ok: true } | { ok: false; detail: string };
+type EndpointSmokeOutcome = { ok: true } | { ok: false; detail: string };
 
 export type SmokeModelOutcome = { ok: true; model: string } | { ok: false; detail: string };
 

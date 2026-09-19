@@ -41,7 +41,7 @@ export function stripExtendedLengthPrefix(target: string): string {
  *  beside an unrelated `<x>/current` directory would be misrooted, and the destructive gates would
  *  then aim at `<x>`. A dangling link still qualifies: readlink works without a target, and a
  *  broken link is repairable. */
-export function isVersionedInstallTop(top: string): boolean {
+function isVersionedInstallTop(top: string): boolean {
   const link = join(top, CURRENT_LINK);
   try {
     if (!fs.lstat(link).isSymbolicLink()) return false;
@@ -167,7 +167,7 @@ export interface InstallManifest {
 
 /** `unreadable` means we could not even look; the destructive gates read it as "cannot prove",
  *  never as `absent`. */
-export type InstallManifestReading =
+type InstallManifestReading =
   | { kind: "absent" }
   | { kind: "unreadable" }
   | { kind: "invalid" }
@@ -231,7 +231,7 @@ const AGENT_LAUNCHER_PS1: string = join(PROJECT_ROOT, "bin", "agent.ps1");
  *  verify site stay byte-identical; if they drift, health stops recognizing the config the writer
  *  just wrote. The default profile's resolver (`agent auth` is the default's alias of `agent
  *  profile auth`); a named profile's puts its name after `profile`. */
-export const AGENT_AUTH_GET_ARGS: readonly string[] = ["auth", "--get"];
+const AGENT_AUTH_GET_ARGS: readonly string[] = ["auth", "--get"];
 
 export function agentAuthGetArgs(profile: Profile = null): string[] {
   return profile === null ? [...AGENT_AUTH_GET_ARGS] : ["profile", profile, "auth", "--get"];

@@ -36,7 +36,7 @@ function fencedBlock(body: string[]): string {
  * block, or strip the owned block. A union so a wire can never carry removal knobs
  * and vice versa.
  */
-export type ShellIntegrationAction =
+type ShellIntegrationAction =
   | { kind: "wire"; allHosts: boolean }
   | { kind: "remove"; allHosts: boolean };
 
@@ -346,7 +346,7 @@ export function windowsBlock(agentsPs1: string): string {
   ]);
 }
 
-export function windowsExecutionPolicyCommand(): string {
+function windowsExecutionPolicyCommand(): string {
   return (
     "$ErrorActionPreference='Stop'; " +
     // When Windows PowerShell 5.1 is spawned as a child of pwsh 7 (the usual case -- the
@@ -458,7 +458,7 @@ function profilePathsUnder(documentRoots: string[], names: string[]): string[] {
  *  relaxWindowsExecutionPolicy accepts nothing else -- so a redirected run cannot relax
  *  it even by mistake. `paths` is ONE filename (current-host or all-hosts) under BOTH
  *  edition directories, present or not: wireBlocks creates the one that is missing. */
-export type WindowsProfileTarget =
+type WindowsProfileTarget =
   | { paths: string[]; source: "system" }
   | { paths: string[]; source: "redirected" };
 

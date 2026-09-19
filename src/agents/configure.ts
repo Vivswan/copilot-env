@@ -15,7 +15,7 @@ import type { ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
 const logger = createStderrLogger();
 
 /** The two Direct facts a wiring bakes, resolved ONCE above the writers and handed down, so no
- *  writer probes. Producible only through directWiring(): a probe's answer (probeDirectWiring in
+ *  writer probes. Producible only through directWiring(): a probe's answer (directWiringFor in
  *  src/codex/config.ts) or the slot's rendered pair (renderDirectWiring in profile_wiring.ts); a
  *  hand-built literal cannot carry the brand, so no writer can bake a pair of its own making. */
 export interface DirectWiring {
@@ -148,7 +148,7 @@ export interface AgentRunOptions {
 }
 
 /** Knobs of one write; the mode and direct identity travel in the ManagedWrite beside it. */
-export interface AgentProfileWriteOptions {
+interface AgentProfileWriteOptions {
   quiet: boolean;
   /** The GitHub credential the default's writers already resolved: a string is reused by the
    *  Codex catalog seed and Claude Desktop's discovery, so gh-cli is never spawned twice; null

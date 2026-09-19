@@ -70,7 +70,7 @@ flowchart TD
   config["src/copilot_api/env_config.ts<br>CopilotEnvConfig"]
   state["src/copilot_api/env_state.ts<br>CopilotEnvState StoredDirectPair"]
   wire["src/agents/profile_wiring.ts<br>wireBothAgents() DirectResolution resolveDirectWiring()"]
-  probe["src/codex/config.ts<br>probeDirectWiring() landDirectWiring()"]
+  probe["src/codex/config.ts<br>directWiringFor()"]
   select["src/copilot_api/integration_identity.ts<br>selectDirectIdentityAndHost() IdentityAndHost probeIntegrationIdentity()"]
   pair["src/copilot_api/direct_pair.ts<br>directOverlay() renderDirectPair() landDirectPair()"]
   launch["src/copilot_api/launch.ts<br>resolveLaunchCredential()"]
@@ -86,7 +86,7 @@ flowchart TD
   models -->|"first 2xx wins, per identity, on the host in use"| select
   user -->|"endpoints.api: the account's designated host"| select
   select -->|"identity on the host in use, then the host under it, then re-select where auto moved"| probe
-  probe -->|"landDirectWiring() for a profile, commitDefaultWiring() for the default: setProfileDirectPair() writes the halves the probe answered, the pair's only writers"| slotout
+  probe -->|"directWiringFor() landing for a profile, commitDefaultWiring() for the default: setProfileDirectPair() writes the halves the probe answered, the pair's only writers"| slotout
   wire -->|"both agents, the same pair"| codexfile
   wire -->|"both agents, the same pair"| claudefile
   state -->|"readProfileDirectPair(): the stored halves"| pair
@@ -339,7 +339,6 @@ graph TD
   codex --> copilot_api
   codex --> utils
   copilot_api --> proxy_float
-  copilot_api --> scripts
   copilot_api --> utils
   proxy_float --> agents
   proxy_float --> copilot_api

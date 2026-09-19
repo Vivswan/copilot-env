@@ -4,7 +4,7 @@ import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { discoverServableClaudeModels } from "../copilot_api/discovery.ts";
 import { renderDirectWiring } from "../agents/profile_wiring.ts";
-import { probeDirectWiring } from "../codex/config.ts";
+import { directWiringFor } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
 import { knownProfile } from "../copilot_api/env_state.ts";
@@ -14,7 +14,7 @@ import { errMessage } from "../utils/error.ts";
 import { formatTable, type TableRow, terminalWidth } from "../utils/table.ts";
 import { mergeUnlistedModels, type ModelListEntry, parseModelList } from "../copilot_api/models.ts";
 
-export interface ModelsArgs {
+interface ModelsArgs {
   mode: RequestedMode;
   json?: boolean;
   profile?: string;
@@ -126,8 +126,8 @@ export async function runModels(args: ModelsArgs): Promise<void> {
       const token = resolved.token;
       // A listing renders what the wiring bakes (renderDirectWiring: the pin and literal over the
       // slot's probed halves) and writes nothing; a half never probed is probed here, and even that
-      // answer is not stored: storing is the landing commands' (landDirectWiring).
-      const direct = renderDirectWiring(profile) ?? await probeDirectWiring(profile, token);
+      // answer is not stored: storing is the landing commands' (directWiringFor's `land`).
+      const direct = renderDirectWiring(profile) ?? await directWiringFor(profile, token, "probe");
       const discovered = await discoverServableClaudeModels(
         token,
         codexUserAgent(),

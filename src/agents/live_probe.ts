@@ -44,7 +44,7 @@ export const PROBE_TIMEOUT_MS = 60_000;
  *  and timeout failures would fail every hop the same way; a rejection must name the model (its
  *  id, the word, or the claude CLI's "selected model") beside a 400/404 or a not-found,
  *  unknown, unsupported, or does-not-support phrasing. */
-export function isModelRejection(detail: string | undefined, model: string): boolean {
+function isModelRejection(detail: string | undefined, model: string): boolean {
   if (detail === undefined || /\b5\d\d\b/.test(detail)) return false;
   const namesModel = detail.includes(model) || /\bmodel\b/i.test(detail);
   const refused =
@@ -73,7 +73,7 @@ export interface ProbeDescriptor {
  *
  *  The health probe (src/health/probe.ts) strips none of these; it tests the real environment,
  *  dropping only ANTHROPIC_BASE_URL for a named profile (claudeLiveOmitEnv). */
-export const PROVIDER_ENV_PREFIXES = ["OPENAI_", "ANTHROPIC_", "CODEX_", "CLAUDE_"];
+const PROVIDER_ENV_PREFIXES = ["OPENAI_", "ANTHROPIC_", "CODEX_", "CLAUDE_"];
 
 export const CODEX_PROBE: ProbeDescriptor = {
   cli: "codex",

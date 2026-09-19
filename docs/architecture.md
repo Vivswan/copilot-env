@@ -311,12 +311,7 @@ graph TD
   migrations["src/migrations/"]
   scripts["src/scripts/"]
   utils["src/utils/"]
-  cli --> codex
   cli --> commands
-  cli --> copilot_api
-  cli --> install
-  cli --> migrations
-  cli --> usage
   cli --> utils
   commands --> agents
   commands --> autoupdate
@@ -326,6 +321,7 @@ graph TD
   commands --> health
   commands --> install
   commands --> mcp
+  commands --> migrations
   commands --> proxy_float
   commands --> scripts
   commands --> shell

@@ -6,33 +6,24 @@
 import type { Command } from "commander";
 import { parseModeFlags } from "../agents/provider_mode.ts";
 import type { ProfileVerb } from "../copilot_api/profile.ts";
-import { gray } from "../utils/ansi.ts";
-import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import { runCredits, runCreditsEverywhere } from "./credits.ts";
 import { runEnv } from "./env.ts";
 import { runHealth, runHealthEverywhere } from "./health.ts";
 import { parseLaunchAction, runLaunch } from "./launch.ts";
 import { runMcp } from "./mcp.ts";
 import { runModels } from "./models.ts";
-import type { Opts } from "./profile_verbs.ts";
 import { runProxyToken } from "./proxy_token.ts";
+import { DRY_RUN_HELP, helpNote, type Opts } from "./registration.ts";
 import { runProfileSettings, runSettings, type SettingsArgs } from "./settings.ts";
 import { parseStartAction, runStart } from "./start.ts";
 import { runStop } from "./stop.ts";
 
 /** What the tree owner (registerProfileCommand) lends the verbs: the name from the word position,
- *  the verb factory, the stray-word refusal, and the one `--dry-run` wording. */
+ *  the verb factory, and the stray-word refusal. */
 export interface ProfileOpsContext {
   rawProfile: string | null;
   verb(name: ProfileVerb, description: string): Command;
   refuseStrayWords(cmd: Command, verb: ProfileVerb): void;
-  dryRunHelp: string;
-}
-
-/** Help paragraphs Commander prints verbatim: dim, one blank line before each, wrapped at help
- *  time to the terminal the way the option descriptions above them are. */
-export function helpNote(...paragraphs: string[]): string {
-  return wrapMessage(paragraphs.map((p) => `\n${gray(p)}`).join("\n"), terminalWidth());
 }
 
 function parsePort(raw: unknown): number | undefined {
@@ -50,11 +41,11 @@ function parsePort(raw: unknown): number | undefined {
 
 // --- the flags each alias and its verb share, in one wording ------------------------------------
 
-function addStartOptions(cmd: Command, dryRunHelp: string): Command {
+function addStartOptions(cmd: Command): Command {
   return cmd
     .option(
       "--dry-run",
-      `${dryRunHelp} The resolved startup plan; proxy runtime state is untouched.`,
+      `${DRY_RUN_HELP} The resolved startup plan; proxy runtime state is untouched.`,
     )
     .option(
       "--port <port>",
@@ -84,31 +75,31 @@ function startAction(opts: Opts, profile: string | undefined): Promise<void> {
   );
 }
 
-function addStopOptions(cmd: Command, dryRunHelp: string): Command {
+function addStopOptions(cmd: Command): Command {
   return cmd
     .option("--all", "Stop the default daemon and every named profile's daemon.")
-    .option("--dry-run", `${dryRunHelp} The daemon is named, not signalled.`);
+    .option("--dry-run", `${DRY_RUN_HELP} The daemon is named, not signalled.`);
 }
 
 function stopAction(opts: Opts, profile: string | undefined): Promise<void> {
   return runStop({ profile, all: Boolean(opts.all), dryRun: Boolean(opts.dryRun) });
 }
 
-function addProxyTokenOptions(cmd: Command, dryRunHelp: string): Command {
+function addProxyTokenOptions(cmd: Command): Command {
   return cmd
     .option(
       "--yes",
       "Never prompt (headless): when the proxy is down and daemon.auto-start is off, exit 1 " +
         "instead of offering to start it.",
     )
-    .option("--dry-run", `${dryRunHelp} No daemon starts and no key prints.`);
+    .option("--dry-run", `${DRY_RUN_HELP} No daemon starts and no key prints.`);
 }
 
 function proxyTokenAction(opts: Opts, profile: string | undefined): Promise<void> {
   return runProxyToken({ yes: Boolean(opts.yes), profile, dryRun: Boolean(opts.dryRun) });
 }
 
-function addMcpOptions(cmd: Command, dryRunHelp: string): Command {
+function addMcpOptions(cmd: Command): Command {
   return cmd
     .option("--serve", "Run the MCP stdio server on stdio (the argv MCP clients register).")
     .option(
@@ -120,7 +111,7 @@ function addMcpOptions(cmd: Command, dryRunHelp: string): Command {
       "--model <id>",
       "With --serve: web-search model for this process (overrides proxy.message-websearch-model).",
     )
-    .option("--dry-run", `${dryRunHelp} With --remove.`);
+    .option("--dry-run", `${DRY_RUN_HELP} With --remove.`);
 }
 
 function mcpAction(opts: Opts, profile: string | undefined): Promise<void> {
@@ -176,7 +167,7 @@ const IMPORT_SEMANTICS_HELP =
   "built-in default), while credentials are PRESERVE-IF-ABSENT (a slot whose token is redacted " +
   "or missing never overwrites a working local credential).";
 
-function addSettingsOptions(cmd: Command, dryRunHelp: string): Command {
+function addSettingsOptions(cmd: Command): Command {
   return cmd
     .option(
       "--export [file]",
@@ -196,7 +187,7 @@ function addSettingsOptions(cmd: Command, dryRunHelp: string): Command {
     )
     .option("--force", "With --import: skip the confirmation prompt (headless use).")
     .option("--no-backup", "With --import: skip the automatic pre-import settings backup.")
-    .option("--dry-run", `${dryRunHelp} With --import (no confirmation) or --export <file>.`)
+    .option("--dry-run", `${DRY_RUN_HELP} With --import (no confirmation) or --export <file>.`)
     .addHelpText("after", () => helpNote(IMPORT_SEMANTICS_HELP));
 }
 
@@ -216,7 +207,7 @@ function settingsFlags(opts: Opts): SettingsArgs {
 /** The ten runtime verbs on the `profile` tree; `rawProfile` is the word-position name, passed on
  *  as the string each command function validates in its own order (null = the default). */
 export function registerProfileOps(ctx: ProfileOpsContext): void {
-  const { rawProfile, verb, refuseStrayWords, dryRunHelp } = ctx;
+  const { rawProfile, verb, refuseStrayWords } = ctx;
   const profile = rawProfile ?? undefined;
   const forWhom = "the named profile, or the default profile when no name is given";
 
@@ -236,7 +227,7 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
       "Add the agent's most-relaxed flag: Claude --dangerously-skip-permissions " +
         "(with IS_SANDBOX=1), Codex --sandbox danger-full-access, Copilot --allow-all.",
     )
-    .option("--dry-run", `${dryRunHelp} The wiring the launch lands; the agent is not spawned.`)
+    .option("--dry-run", `${DRY_RUN_HELP} The wiring the launch lands; the agent is not spawned.`)
     .action((cli: string, args: string[], opts: Opts) =>
       runLaunch(
         parseLaunchAction({ cli, args, profile, relaxed: Boolean(opts.relaxed) }),
@@ -268,7 +259,6 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
         "lifecycle (`daemon.auto-start`) is on - the resolver behind the proxy-mode Codex/Claude " +
         "wiring and the cl/cx launchers. Only the key touches stdout.",
     ),
-    dryRunHelp,
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "proxy-token");
     return proxyTokenAction(opts, profile);
@@ -281,7 +271,6 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
         `server (web_search via GitHub Copilot /responses) with the credential of ${forWhom}, ` +
         "for Claude, Codex, or any MCP client.",
     ),
-    dryRunHelp,
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "mcp");
     return mcpAction(opts, profile);
@@ -293,7 +282,6 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
       `Start the proxy daemon of ${forWhom} in the background, detached (a named profile's own ` +
         "home and port, its own credential); `agent start` is the default's alias.",
     ),
-    dryRunHelp,
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "start");
     return startAction(opts, profile);
@@ -305,7 +293,6 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
       `Stop the proxy daemon of ${forWhom} on this host; --all stops every profile's. ` +
         "`agent stop` is the default's alias.",
     ),
-    dryRunHelp,
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "stop");
     return stopAction(opts, profile);
@@ -355,7 +342,6 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
         "credential, mode, and preferences (the default's: its credential, both agents' mode, " +
         "its section, and the shared proxy.*/probe.* defaults). The whole store is `agent settings`.",
     ),
-    dryRunHelp,
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "settings");
     return runProfileSettings(profile, settingsFlags(opts));
@@ -365,7 +351,7 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
 // --- the top level -------------------------------------------------------------------------------
 
 /** `agent start` and `agent stop`: the default profile's verbs, as their own commands. */
-export function registerDaemonAliases(program: Command, dryRunHelp: string): void {
+export function registerDaemonAliases(program: Command): void {
   addStartOptions(
     program
       .command("start")
@@ -374,7 +360,6 @@ export function registerDaemonAliases(program: Command, dryRunHelp: string): voi
         "Start the proxy in the background, detached: the same as `agent profile start`. A named " +
           "profile's daemon is `agent profile <name> start`.",
       ),
-    dryRunHelp,
   ).action((opts: Opts) => startAction(opts, undefined));
 
   addStopOptions(
@@ -385,13 +370,12 @@ export function registerDaemonAliases(program: Command, dryRunHelp: string): voi
         "Stop the proxy on this host: the same as `agent profile stop`; --all stops every " +
           "profile's daemon.",
       ),
-    dryRunHelp,
   ).action((opts: Opts) => stopAction(opts, undefined));
 }
 
 /** `agent health`, `agent credits`, `agent settings`: every profile, every distinct account, the
  *  whole store. One profile's scope is the verb of the same name. */
-export function registerEverywhereCommands(program: Command, dryRunHelp: string): void {
+export function registerEverywhereCommands(program: Command): void {
   addHealthOptions(
     program
       .command("health")
@@ -424,6 +408,5 @@ export function registerEverywhereCommands(program: Command, dryRunHelp: string)
           "profiles, wiring modes) as one JSON bundle: the whole store. One profile's bundle is " +
           "`agent profile [<name>] settings`.",
       ),
-    dryRunHelp,
   ).action((opts: Opts) => runSettings(settingsFlags(opts)));
 }

@@ -148,11 +148,34 @@ const RESHAPED: { name: string; reshape: (text: string) => string; problem: stri
   },
   {
     // 27 models, 7 tiers, 15 cache-write rates: every count clears a cold cache's one-model seed,
-    // so only the seed's own ids tell this truncated file from a full one.
+    // so only the alias map tells this truncated file from a full one.
     name: "both gpt-5.6-sol rows removed",
     reshape: (text) =>
       text.split(/\n(?=- model:)/).filter((row) => !row.includes("GPT-5.6 Sol")).join("\n"),
-    problem: "the card no longer prices openai/gpt-5.6-sol",
+    problem: "the card lacks openai/gpt-5.6-sol",
+  },
+  {
+    // Every seed id present, complete pairs, and still a fragment: the first mapped model it lacks
+    // is named, with the count of the rest.
+    name: "only the sol and astra rows kept",
+    reshape: (text) =>
+      text.split(/\n(?=- model:)/)
+        .filter((row) => !row.startsWith("- model") || /GPT-5\.6 Sol|GPT-6 Astra/.test(row))
+        .join("\n"),
+    problem: "the card lacks openai/gpt-5-mini and 25 more",
+  },
+  {
+    // Every mapped model present and every count above the seed's, yet sol is flat: its
+    // long-context row gone and its base row's threshold and tier with it.
+    name: "sol made flat",
+    reshape: (text) =>
+      text.split(/\n(?=- model:)/)
+        .filter((row) => !(row.includes("GPT-5.6 Sol") && row.includes("Long context")))
+        .map((row) =>
+          row.includes("GPT-5.6 Sol") ? row.replace(/^ {2}(?:threshold|tier): .*\n/gm, "") : row
+        )
+        .join("\n"),
+    problem: "the card lacks the long-context tier of openai/gpt-5.6-sol",
   },
 ];
 

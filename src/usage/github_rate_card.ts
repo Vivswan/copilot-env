@@ -303,9 +303,10 @@ function timeoutError(timeout: AbortSignal): Error | null {
 }
 
 /** A fresh cache answers without the network. Otherwise today's card is fetched and parsed whole;
- *  a fetch or parse failure, or a card with fewer models, long-context tiers, or cache-write rates
- *  than the one it replaces, keeps the cached card (expired or not), else the built-in table, and
- *  names the problem. A cache stamped in the future (clock moved back) is expired, never fresh. */
+ *  a fetch or parse failure, a card with fewer models, long-context tiers, or cache-write rates
+ *  than the one it replaces, or (with no card to replace) one lacking a mapped model, keeps the
+ *  cached card (expired or not), else the built-in table, and names the problem. A cache stamped
+ *  in the future (clock moved back) is expired, never fresh. */
 export async function loadGitHubRateCard(
   url: string,
   opts: {
@@ -341,14 +342,24 @@ export async function loadGitHubRateCard(
     fewer("models", card.rates.size, lastGood.card.rates.size);
     fewer("long-context tiers", card.longContext.size, lastGood.card.longContext.size);
     fewer("cache-write rates", cacheWriteRates(card), cacheWriteRates(lastGood.card));
-    // The seed's models are the ones this program relies on: a card without them is truncated,
-    // whatever its counts say against a one-model seed on a cold cache.
-    const missing = [
-      ...[...BUILT_IN_RATE_CARD.rates.keys()].filter((id) => !card.rates.has(id)),
-      ...[...BUILT_IN_RATE_CARD.longContext.keys()].filter((id) => !card.longContext.has(id)),
-    ];
-    if (missing.length > 0) {
-      throw new Error(`the card no longer prices ${[...new Set(missing)].sort().join(", ")}`);
+    // With no card to shrink against, the bar is the alias map itself, plus the seed's tiers: a
+    // card may add models freely, it may not lack one the map names (a retired model leaves the
+    // map in the same change) or a long-context tier the seed prices. The seed's counts alone are
+    // too small to tell a truncated response from a full one.
+    if (cached === null) {
+      const missing = [
+        ...[...DISPLAY_NAME_IDS.values()]
+          .filter((id): id is string => id !== null && !card.rates.has(id)),
+        ...[...BUILT_IN_RATE_CARD.longContext.keys()]
+          .filter((id) => !card.longContext.has(id))
+          .map((id) => `the long-context tier of ${id}`),
+      ];
+      if (missing.length > 0) {
+        const rest = missing.length - 1;
+        throw new Error(
+          `the card lacks ${missing[0]}${rest > 0 ? ` and ${rest} more` : ""}`,
+        );
+      }
     }
   } catch (e) {
     return { ...lastGood, problem: errMessage(e) };

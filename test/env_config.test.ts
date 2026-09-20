@@ -910,25 +910,25 @@ test("configTable() renders the header, the groups, and key=value rows with type
     `  * codex.host=true`.padEnd(column) + "[bool] default false",
   );
   expect(lines[rowAt("codex.host") + 1]).toBe(" ".repeat(column) + "(inert on this platform)");
-  // The description follows the type line at the column, wrapped on spaces to the width and
-  // re-joining to the registry text; a long one takes more than one line.
+  // The description follows the type line at the column; every registry describe is short enough
+  // to take ONE line there at 80 columns, so `agent config` never wraps a description.
   const describeLines = (key: string): string[] => {
     const out: string[] = [];
     for (const l of lines.slice(rowAt(key) + 1)) {
-      if (!l.startsWith(" ".repeat(column)) || l.startsWith(" ".repeat(column + 1))) break;
-      out.push(l.slice(column));
+      if (l.startsWith(" ".repeat(column)) && !l.startsWith(" ".repeat(column + 1))) {
+        out.push(l.slice(column));
+      } else if (out.length === 0 && /^ {6}\S/.test(l)) {
+        continue; // the remainder of a key=value lead wider than the column
+      } else break;
     }
     // The right column's `[type]` line sits on the row line, or below it for an overflowing
     // key=value; either way the description is what remains.
     return out.filter((l) => !l.startsWith("["));
   };
   // Among the UNSTORED keys, whose right column is the type line and the description only.
-  const longest = CONFIG_REGISTRY.filter((d) => d.scope !== "profile" && !(d.key in global)).reduce(
-    (a, b) => a.describe.length > b.describe.length ? a : b,
-  );
-  expect(longest.describe.length).toBeGreaterThan(PLAIN_TABLE.width - column);
-  expect(describeLines(longest.key).length).toBeGreaterThan(1);
-  expect(describeLines(longest.key).join(" ")).toBe(longest.describe);
+  for (const def of CONFIG_REGISTRY.filter((d) => d.scope !== "profile" && !(d.key in global))) {
+    expect(describeLines(def.key), def.key).toEqual([def.describe]);
+  }
   // With no daemon the restart line never prints; with one, only a stored key the daemon read
   // at launch (projected or restartToApply) gets it -- not a stored key applied another way.
   expect(rendered).not.toContain("restart the proxy to apply");
@@ -1130,7 +1130,8 @@ test("configTable() narrows with the width: the header packs to it, the right co
   const strict = out.indexOf("  * daemon.strict-port=true");
   expect(strict).toBeGreaterThan(0);
   expect(out[strict + 1]).toBe("      [bool] default false");
-  expect(out[strict + 2]?.startsWith("      Fail start on a busy port")).toBe(true);
+  const strictDescribe = CONFIG_REGISTRY.find((d) => d.key === "daemon.strict-port")?.describe;
+  expect(out[strict + 2]).toBe(`      ${strictDescribe}`);
   // A banner whose title leaves the note too little room stacks it under the title instead of
   // running past the width: the longest profile name fills the width on its own.
   const longName = parseProfileName("a".repeat(32));

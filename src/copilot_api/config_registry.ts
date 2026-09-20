@@ -491,7 +491,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "claude.desktop",
     scope: "global",
-    describe: "Wire Claude Desktop's config library; false unwires profiles only",
+    describe: "Also wire Claude Desktop",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint:
@@ -500,7 +500,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "claude.wire-mcp",
     scope: "global",
-    describe: "Wire the copilot-env MCP server + WebSearch deny on direct writes",
+    describe: "Give Claude Code web search (MCP)",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint: "Applies at the next `agent profile sync --claude`/`agent init` direct wiring.",
@@ -508,9 +508,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "codex.home",
     scope: "global",
-    describe: "Root of the Codex home copilot-env writes and exports; auto is ~/.codex, or the " +
-      "shell's CODEX_HOME (never our own farm export) while codex.host is off; codex.host farms " +
-      "under it",
+    describe: "Codex home root; auto detects it",
     ...ABSOLUTE_PATH_DOMAIN,
     defaultValue: CODEX_HOME_AUTO,
     applyHint:
@@ -520,8 +518,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "codex.host",
     scope: "global",
-    describe:
-      "Per-host CODEX_HOME at `<codex.home>/hosts/<hostname>` via `agent profile env` (Linux/macOS)",
+    describe: "One Codex home per host (POSIX)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     posixOnly: true,
@@ -531,7 +528,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "codex.model-catalog",
     scope: "global",
-    describe: "Patched Codex model catalog with Copilot's real context windows",
+    describe: "Patch the Codex model catalog",
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint:
@@ -541,16 +538,14 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "cost.credits-target",
     scope: "global",
-    describe:
-      "Copilot AI credits (100 to the dollar) to stay under per month; unset paces against the plan's entitlement alone",
+    describe: "Monthly credits to stay under",
     ...wholeNumberDomain(1, MAX_CREDITS, "credits"),
     applyHint: "Applies to the next `agent credits` run.",
   },
   {
     key: "cost.github-pricing-url",
     scope: "global",
-    describe:
-      "GitHub's Copilot rate card (the docs pricing data file) for `agent cost`; cached for a day like the OpenRouter list",
+    describe: "GitHub's Copilot rate card URL",
     ...HTTPS_URL_DOMAIN,
     defaultValue: GITHUB_RATE_CARD_URL,
     applyHint: "Applies to the next `agent cost` run.",
@@ -558,7 +553,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "cost.pricing-url",
     scope: "global",
-    describe: "OpenRouter models API URL for `agent cost`; `--pricing-url` overrides once",
+    describe: "OpenRouter models API URL",
     ...HTTPS_URL_DOMAIN,
     defaultValue: OPENROUTER_MODELS_URL,
     applyHint: "Applies to the next `agent cost` run.",
@@ -566,14 +561,14 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.auto-start",
     scope: "global",
-    describe: "Auto-start the proxy on agent open and auto-stop it when idle",
+    describe: "Auto-start and idle-stop the proxy",
     ...BOOL_DOMAIN,
     defaultValue: false,
   },
   {
     key: "daemon.idle-timeout",
     scope: "global",
-    describe: "Idle auto-stop window in seconds; 0 disables",
+    describe: "Idle stop after N seconds; 0 never",
     ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
     defaultValue: 3600,
     restartToApply: true,
@@ -581,7 +576,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.logs",
     scope: "global",
-    describe: "Proxy request logging under `<home>/logs`; false discards the writes",
+    describe: "Proxy request log in `<home>/logs`",
     ...BOOL_DOMAIN,
     defaultValue: false,
     restartToApply: true,
@@ -589,7 +584,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.max-port",
     scope: "global",
-    describe: "Upper bound of the allowed proxy port range",
+    describe: "Highest proxy port to try",
     ...wholeNumberDomain(1, 65535),
     defaultValue: 65535,
     restartToApply: true,
@@ -597,7 +592,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.min-port",
     scope: "global",
-    describe: "Lower bound of the allowed proxy port range",
+    describe: "Lowest proxy port to try",
     ...wholeNumberDomain(1, 65535),
     defaultValue: 1024,
     restartToApply: true,
@@ -605,7 +600,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.port",
     scope: "global",
-    describe: "Default proxy port; the next free one is used when busy",
+    describe: "Proxy port; next free one if busy",
     ...wholeNumberDomain(1, 65535),
     defaultValue: 4141,
     restartToApply: true,
@@ -613,14 +608,14 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.release-cooldown",
     scope: "global",
-    describe: "Age in seconds a proxy release must reach before the float adopts it",
+    describe: "Min proxy release age in seconds",
     ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
     defaultValue: 7 * SECONDS_PER_DAY,
   },
   {
     key: "daemon.strict-port",
     scope: "global",
-    describe: "Fail start on a busy port instead of auto-incrementing",
+    describe: "Fail on a busy port, never move",
     ...BOOL_DOMAIN,
     defaultValue: false,
     restartToApply: true,
@@ -628,14 +623,13 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.version",
     scope: "global",
-    describe: "Pin the floated proxy to a version or tag; unset floats to the latest",
+    describe: "Pin the proxy version or tag",
     ...PROXY_VERSION_DOMAIN,
   },
   {
     key: "host",
     scope: "profile",
-    describe:
-      "Copilot API host for every mode: `auto` probes api.githubcopilot.com and falls back to the account's designated host, or an https origin",
+    describe: "Copilot API host; auto probes it",
     ...COPILOT_HOST_DOMAIN,
     defaultValue: COPILOT_HOST_AUTO,
     applyHint:
@@ -644,7 +638,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "identity",
     scope: "profile",
-    describe: "Copilot-Integration-Id header to send; auto probes it per credential",
+    describe: "Client identity; auto probes it",
     ...INTEGRATION_ID_DOMAIN,
     defaultValue: "auto",
     applyHint:
@@ -655,7 +649,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "passthrough",
     scope: "profile",
-    describe: "Use a PAT-shaped token as the bearer directly; auto detects the token",
+    describe: "Send a PAT as-is; auto detects it",
     ...PASSTHROUGH_DOMAIN,
     defaultValue: "auto",
     restartToApply: true,
@@ -663,23 +657,21 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "probe.claude-model",
     scope: "profile-default",
-    describe: "Model the Direct probe's claude smoke prompt runs, sent as-is; unset tries the " +
-      "CLI's haiku alias, then the newest claude model in the catalog",
+    describe: "Claude model for the Direct probe",
     ...MODEL_ID_DOMAIN,
     applyHint: PROBE_HINT,
   },
   {
     key: "probe.codex-model",
     scope: "profile-default",
-    describe: "Model the Direct probe's codex smoke prompt runs, sent as-is; unset prefers a " +
-      "reduced GPT tier from the catalog, else its first codex-servable model",
+    describe: "Codex model for the Direct probe",
     ...MODEL_ID_DOMAIN,
     applyHint: PROBE_HINT,
   },
   {
     key: "proxy.alpha-search.codex-priority",
     scope: "profile-default",
-    describe: "Prefer Codex for the proxy's /alpha/search (Codex search)",
+    describe: "Prefer Codex for /alpha/search",
     ...BOOL_DOMAIN,
     defaultValue: true,
     proxyProjected: true,
@@ -688,7 +680,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.alpha-search.model",
     scope: "profile-default",
-    describe: "Responses model for /alpha/search when the requested model cannot search",
+    describe: "/alpha/search fallback model",
     ...MODEL_ID_DOMAIN,
     defaultValue: "gpt-5-mini",
     proxyProjected: true,
@@ -697,7 +689,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.claude-auto-model",
     scope: "profile-default",
-    describe: "Model for Claude Code's background security-monitor requests; unset disables",
+    describe: "Claude security-monitor model",
     ...MODEL_ID_DOMAIN,
     proxyProjected: true,
     proxyPath: ["claudeAutoModel"],
@@ -705,7 +697,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.claude-token-multiplier",
     scope: "profile-default",
-    describe: "Multiplier the proxy applies when estimating Claude token usage",
+    describe: "Claude token estimate multiplier",
     ...positiveDecimalDomain(MAX_TOKEN_MULTIPLIER),
     defaultValue: 1.15,
     proxyProjected: true,
@@ -714,7 +706,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.message-websearch-model",
     scope: "profile-default",
-    describe: "Web-search model: proxy Messages-API path and MCP web_search tool",
+    describe: "Web-search model (Messages + MCP)",
     ...MODEL_ID_DOMAIN,
     // Must equal DEFAULT_WEB_SEARCH_MODEL in web_search.ts, which imports the store over this module and
     // so cannot be referenced here; a registry test pins the two.
@@ -727,7 +719,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.messages-api",
     scope: "profile-default",
-    describe: "Proxy Messages-API (Anthropic-shaped) endpoint",
+    describe: "Prefer the native Messages API",
     ...BOOL_DOMAIN,
     proxyDefault: true,
     proxyPath: ["useMessagesApi"],
@@ -735,7 +727,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.responses.context-management",
     scope: "profile-default",
-    describe: "Proxy Responses-API server-side context management",
+    describe: "Responses API context management",
     ...BOOL_DOMAIN,
     defaultValue: false,
     proxyProjected: true,
@@ -744,7 +736,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.responses.websearch",
     scope: "profile-default",
-    describe: "Proxy Responses-API web search",
+    describe: "Responses API web search",
     ...BOOL_DOMAIN,
     proxyDefault: true,
     proxyPath: ["useResponsesApiWebSearch"],
@@ -752,7 +744,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.responses.websocket",
     scope: "profile-default",
-    describe: "Proxy Responses-API over WebSocket instead of HTTP/SSE",
+    describe: "Responses API over WebSocket",
     ...BOOL_DOMAIN,
     proxyDefault: true,
     proxyPath: ["useResponsesApiWebSocket"],
@@ -768,7 +760,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "shell.launchers",
     scope: "global",
-    describe: "Shell launchers cl / co / cx (+ clx / cox / cxx) in `agent profile env`",
+    describe: "Shell launchers cl / co / cx",
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint: "New shells pick a change up; the current one picks up an ENABLE on the next " +
@@ -777,7 +769,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "static-key",
     scope: "profile",
-    describe: "Whose config carries the credential value itself, not a resolver command",
+    describe: "Which agent configs bake the token",
     ...STATIC_KEY_DOMAIN,
     defaultValue: STATIC_KEY_DEFAULT,
     applyHint: `${WIRING_HINT}. ` +
@@ -786,7 +778,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "update.auto",
     scope: "global",
-    describe: "Daily self-update on `agent start`, honoring update.cooldown",
+    describe: "Daily self-update on agent start",
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint:
@@ -795,13 +787,13 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "update.cooldown",
     scope: "global",
-    describe: "Min release age in days for updates; unset means none by hand, 7 for auto",
+    describe: "Update only to releases N days old",
     ...wholeNumberDomain(0, MAX_DAYS, "days"),
   },
   {
     key: "update.verify-provenance",
     scope: "global",
-    describe: "Verify `agent update` downloads against Sigstore provenance",
+    describe: "Sigstore-verify update downloads",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint:

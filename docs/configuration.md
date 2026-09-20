@@ -42,12 +42,12 @@ Which a key is, is a per-key fact: `set` and `unset` refuse a state key by name,
 
 ## profile
 
-| Key           | Scope     | Default                       | Effect                                                                                                                                   |
-| ------------- | --------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `host`        | `profile` | `auto`                        | Copilot API host for every mode: `auto` probes api.githubcopilot.com and falls back to the account's designated host, or an https origin |
-| `identity`    | `profile` | `auto` (probe per credential) | Copilot-Integration-Id header to send; auto probes it per credential                                                                     |
-| `passthrough` | `profile` | `auto`                        | Use a PAT-shaped token as the bearer directly; auto detects the token                                                                    |
-| `static-key`  | `profile` | `none`                        | Whose config carries the credential value itself, not a resolver command                                                                 |
+| Key           | Scope     | Default                       | Effect                             |
+| ------------- | --------- | ----------------------------- | ---------------------------------- |
+| `host`        | `profile` | `auto`                        | Copilot API host; auto probes it   |
+| `identity`    | `profile` | `auto` (probe per credential) | Client identity; auto probes it    |
+| `passthrough` | `profile` | `auto`                        | Send a PAT as-is; auto detects it  |
+| `static-key`  | `profile` | `none`                        | Which agent configs bake the token |
 
 `identity` is surveyed by `agent profile [<name>] identity` and pinned by `agent profile [<name>] set identity <id|auto>` ([client identity](authentication.md#client-identity)); `passthrough` is explained under [PAT passthrough](authentication.md#pat-passthrough) and `static-key` under [static key](authentication.md#static-key).
 
@@ -90,34 +90,34 @@ Applies at the next wiring pass (`agent profile [<name>] add` / `sync`, `agent s
 
 ## daemon
 
-| Key                       | Scope    | Default           | Effect                                                                |
-| ------------------------- | -------- | ----------------- | --------------------------------------------------------------------- |
-| `daemon.auto-start`       | `global` | `false`           | Auto-start the proxy on agent open and auto-stop it when idle         |
-| `daemon.idle-timeout`     | `global` | `3600`            | Idle auto-stop window in seconds; 0 disables                          |
-| `daemon.min-port`         | `global` | `1024`            | Lower bound of the allowed proxy port range                           |
-| `daemon.max-port`         | `global` | `65535`           | Upper bound of the allowed proxy port range                           |
-| `daemon.port`             | `global` | `4141`            | Default proxy port; the next free one is used when busy               |
-| `daemon.logs`             | `global` | `false`           | Proxy request logging under `<home>/logs`; false discards the writes  |
-| `daemon.version`          | `global` | latest (floated)  | Pin the floated proxy to a version or tag; unset floats to the latest |
-| `daemon.release-cooldown` | `global` | `604800` (7 days) | Age in seconds a proxy release must reach before the float adopts it  |
-| `daemon.strict-port`      | `global` | `false`           | Fail start on a busy port instead of auto-incrementing                |
+| Key                       | Scope    | Default           | Effect                             |
+| ------------------------- | -------- | ----------------- | ---------------------------------- |
+| `daemon.auto-start`       | `global` | `false`           | Auto-start and idle-stop the proxy |
+| `daemon.idle-timeout`     | `global` | `3600`            | Idle stop after N seconds; 0 never |
+| `daemon.min-port`         | `global` | `1024`            | Lowest proxy port to try           |
+| `daemon.max-port`         | `global` | `65535`           | Highest proxy port to try          |
+| `daemon.port`             | `global` | `4141`            | Proxy port; next free one if busy  |
+| `daemon.logs`             | `global` | `false`           | Proxy request log in `<home>/logs` |
+| `daemon.version`          | `global` | latest (floated)  | Pin the proxy version or tag       |
+| `daemon.release-cooldown` | `global` | `604800` (7 days) | Min proxy release age in seconds   |
+| `daemon.strict-port`      | `global` | `false`           | Fail on a busy port, never move    |
 
 `daemon.auto-start` and `daemon.idle-timeout` are the [managed lifecycle](usage.md#managed-proxy-lifecycle-auto-start); `daemon.version` and `daemon.release-cooldown` are the [proxy float](#environment-overrides).
 
 ## proxy
 
-| Key                                  | Scope             | Default      | Effect                                                                       |
-| ------------------------------------ | ----------------- | ------------ | ---------------------------------------------------------------------------- |
-| `proxy.alpha-search.codex-priority`  | `profile-default` | `true`       | Prefer Codex for the proxy's /alpha/search (Codex search)                    |
-| `proxy.alpha-search.model`           | `profile-default` | `gpt-5-mini` | Responses model for /alpha/search when the requested model cannot search     |
-| `proxy.claude-auto-model`            | `profile-default` | unset        | Model for Claude Code's background security-monitor requests; unset disables |
-| `proxy.claude-token-multiplier`      | `profile-default` | `1.15`       | Multiplier the proxy applies when estimating Claude token usage              |
-| `proxy.message-websearch-model`      | `profile-default` | `gpt-5-mini` | Web-search model: proxy Messages-API path and MCP web_search tool            |
-| `proxy.messages-api`                 | `profile-default` | `true`       | Proxy Messages-API (Anthropic-shaped) endpoint                               |
-| `proxy.responses.context-management` | `profile-default` | `false`      | Proxy Responses-API server-side context management                           |
-| `proxy.responses.websearch`          | `profile-default` | `true`       | Proxy Responses-API web search                                               |
-| `proxy.responses.websocket`          | `profile-default` | `true`       | Proxy Responses-API over WebSocket instead of HTTP/SSE                       |
-| `proxy.small-model`                  | `profile-default` | `gpt-5-mini` | Small/fast model the proxy uses                                              |
+| Key                                  | Scope             | Default      | Effect                            |
+| ------------------------------------ | ----------------- | ------------ | --------------------------------- |
+| `proxy.alpha-search.codex-priority`  | `profile-default` | `true`       | Prefer Codex for /alpha/search    |
+| `proxy.alpha-search.model`           | `profile-default` | `gpt-5-mini` | /alpha/search fallback model      |
+| `proxy.claude-auto-model`            | `profile-default` | unset        | Claude security-monitor model     |
+| `proxy.claude-token-multiplier`      | `profile-default` | `1.15`       | Claude token estimate multiplier  |
+| `proxy.message-websearch-model`      | `profile-default` | `gpt-5-mini` | Web-search model (Messages + MCP) |
+| `proxy.messages-api`                 | `profile-default` | `true`       | Prefer the native Messages API    |
+| `proxy.responses.context-management` | `profile-default` | `false`      | Responses API context management  |
+| `proxy.responses.websearch`          | `profile-default` | `true`       | Responses API web search          |
+| `proxy.responses.websocket`          | `profile-default` | `true`       | Responses API over WebSocket      |
+| `proxy.small-model`                  | `profile-default` | `gpt-5-mini` | Small/fast model the proxy uses   |
 
 **The `proxy.*` keys** are projected into the proxy's own `config.json` at `agent start`, resolved for the daemon's profile, so changing one needs that daemon restarted. That file sits in the daemon's profile home, `~/.local/share/copilot-env/profiles/<name>/config.json`, with `default` as the default profile's name.
 
@@ -125,11 +125,13 @@ Applies at the next wiring pass (`agent profile [<name>] add` / `sync`, `agent s
 
 ## codex
 
-| Key                   | Scope    | Default | Effect                                                                                                                                                                            |
-| --------------------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `codex.home`          | `global` | `auto`  | Root of the Codex home copilot-env writes and exports; auto is ~/.codex, or the shell's CODEX_HOME (never our own farm export) while codex.host is off; codex.host farms under it |
-| `codex.host`          | `global` | `false` | Per-host CODEX_HOME at `<codex.home>/hosts/<hostname>` via `agent profile env` (Linux/macOS)                                                                                      |
-| `codex.model-catalog` | `global` | `false` | Patched Codex model catalog with Copilot's real context windows                                                                                                                   |
+| Key                   | Scope    | Default | Effect                           |
+| --------------------- | -------- | ------- | -------------------------------- |
+| `codex.home`          | `global` | `auto`  | Codex home root; auto detects it |
+| `codex.host`          | `global` | `false` | One Codex home per host (POSIX)  |
+| `codex.model-catalog` | `global` | `false` | Patch the Codex model catalog    |
+
+`codex.home` at `auto` is `~/.codex`, or the shell's own `CODEX_HOME` while `codex.host` is off (never copilot-env's farm export); `codex.host` builds its farm under whichever `codex.home` resolves to.
 
 ### Codex model catalog
 
@@ -160,10 +162,10 @@ agent config set codex.host true    # false removes the farm again
 
 ## claude
 
-| Key               | Scope    | Default | Effect                                                            |
-| ----------------- | -------- | ------- | ----------------------------------------------------------------- |
-| `claude.desktop`  | `global` | `true`  | Wire Claude Desktop's config library; false unwires profiles only |
-| `claude.wire-mcp` | `global` | `true`  | Wire the copilot-env MCP server + WebSearch deny on direct writes |
+| Key               | Scope    | Default | Effect                            |
+| ----------------- | -------- | ------- | --------------------------------- |
+| `claude.desktop`  | `global` | `true`  | Also wire Claude Desktop          |
+| `claude.wire-mcp` | `global` | `true`  | Give Claude Code web search (MCP) |
 
 `claude.wire-mcp` is the opt-out for [web search](usage.md#web-search-for-claude-code).
 
@@ -187,10 +189,10 @@ The files these land in, what writes and removes them, and where they sit on eac
 
 ## probe
 
-| Key                  | Scope             | Default                                                                                                 | Effect                                                                                                                                               |
-| -------------------- | ----------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `probe.claude-model` | `profile-default` | unset tries the claude CLI's `haiku` alias, then the newest claude model in the catalog                 | Model the Direct probe's claude smoke prompt runs, sent as-is; unset tries the CLI's haiku alias, then the newest claude model in the catalog        |
-| `probe.codex-model`  | `profile-default` | unset prefers a reduced GPT tier (`mini`, `nano`) from the catalog, else its first codex-servable model | Model the Direct probe's codex smoke prompt runs, sent as-is; unset prefers a reduced GPT tier from the catalog, else its first codex-servable model |
+| Key                  | Scope             | Default                                                                                                 | Effect                            |
+| -------------------- | ----------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `probe.claude-model` | `profile-default` | unset tries the claude CLI's `haiku` alias, then the newest claude model in the catalog                 | Claude model for the Direct probe |
+| `probe.codex-model`  | `profile-default` | unset prefers a reduced GPT tier (`mini`, `nano`) from the catalog, else its first codex-servable model | Codex model for the Direct probe  |
 
 The Direct probe behind `auto` (`agent profile add` with neither `--direct` nor `--proxy`; a re-render of a recorded mode never probes) runs each CLI's read-only smoke prompt against a throwaway Direct config. A set value is the model that prompt runs, sent as-is: no alias, no catalog check.
 
@@ -202,29 +204,29 @@ Unset, the claude smoke runs `--model haiku` (the CLI resolves its own alias, so
 
 ## shell
 
-| Key               | Scope    | Default | Effect                                                                  |
-| ----------------- | -------- | ------- | ----------------------------------------------------------------------- |
-| `shell.launchers` | `global` | `false` | Shell launchers cl / co / cx (+ clx / cox / cxx) in `agent profile env` |
+| Key               | Scope    | Default | Effect                       |
+| ----------------- | -------- | ------- | ---------------------------- |
+| `shell.launchers` | `global` | `false` | Shell launchers cl / co / cx |
 
 The functions are described under [launchers](usage.md#launchers).
 
 ## update
 
-| Key                        | Scope    | Default                             | Effect                                                                    |
-| -------------------------- | -------- | ----------------------------------- | ------------------------------------------------------------------------- |
-| `update.auto`              | `global` | `false`                             | Daily self-update on `agent start`, honoring update.cooldown              |
-| `update.cooldown`          | `global` | none by hand, `7` for `update.auto` | Min release age in days for updates; unset means none by hand, 7 for auto |
-| `update.verify-provenance` | `global` | `true`                              | Verify `agent update` downloads against Sigstore provenance               |
+| Key                        | Scope    | Default                             | Effect                             |
+| -------------------------- | -------- | ----------------------------------- | ---------------------------------- |
+| `update.auto`              | `global` | `false`                             | Daily self-update on agent start   |
+| `update.cooldown`          | `global` | none by hand, `7` for `update.auto` | Update only to releases N days old |
+| `update.verify-provenance` | `global` | `true`                              | Sigstore-verify update downloads   |
 
 What `agent update` verifies is under [updating](getting-started.md#updating); `agent update --auto-status` shows the last check `update.auto` made.
 
 ## cost
 
-| Key                       | Scope    | Default                                                                                         | Effect                                                                                                              |
-| ------------------------- | -------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `cost.pricing-url`        | `global` | `https://openrouter.ai/api/v1/models`                                                           | OpenRouter models API URL for `agent cost`; `--pricing-url` overrides once                                          |
-| `cost.github-pricing-url` | `global` | `https://raw.githubusercontent.com/github/docs/main/data/tables/copilot/models-and-pricing.yml` | GitHub's Copilot rate card (the docs pricing data file) for `agent cost`; cached for a day like the OpenRouter list |
-| `cost.credits-target`     | `global` | none                                                                                            | Copilot AI credits (100 to the dollar) to stay under per month; unset paces against the plan's entitlement alone    |
+| Key                       | Scope    | Default                                                                                         | Effect                         |
+| ------------------------- | -------- | ----------------------------------------------------------------------------------------------- | ------------------------------ |
+| `cost.pricing-url`        | `global` | `https://openrouter.ai/api/v1/models`                                                           | OpenRouter models API URL      |
+| `cost.github-pricing-url` | `global` | `https://raw.githubusercontent.com/github/docs/main/data/tables/copilot/models-and-pricing.yml` | GitHub's Copilot rate card URL |
+| `cost.credits-target`     | `global` | none                                                                                            | Monthly credits to stay under  |
 
 What `agent cost` reads and stores is under [cost reporting](usage.md#cost-reporting).
 

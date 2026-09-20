@@ -112,6 +112,28 @@ export function refuseProfileKey(key: string): void {
   );
 }
 
+/** The set verbs take two spellings, `set <key> <value>` and `set <key>=<value>`, and the body
+ *  takes one pair. The one-word form splits at the first `=`, so a URL value keeps its query; an
+ *  empty value after it (`<key>=`) reaches the key's parser, which decides. `face` is the verb's
+ *  own spelling for the refusals (`agent config set`, `agent profile work set`). Neither refusal
+ *  echoes an operand: a value may be a credential (static-key, a price-list URL's userinfo). */
+export function resolveSetPair(
+  key: string,
+  value: string | undefined,
+  face: string,
+): { key: string; value: string } {
+  const at = key.indexOf("=");
+  const forms = `\`${face} <key> <value>\` or \`${face} <key>=<value>\``;
+  if (value === undefined) {
+    if (at === -1) throw new Error(`missing value: use ${forms}`);
+    return { key: key.slice(0, at), value: key.slice(at + 1) };
+  }
+  if (at !== -1) {
+    throw new Error(`the value is given twice (after \`=\` and as a second word): use ${forms}`);
+  }
+  return { key, value };
+}
+
 /** The daemon that reads a projected or launch-time key is the profile's own, so the restart the
  *  hint names is that daemon's. Hints stay shell-neutral (no `&&`) for Windows PowerShell 5.1. */
 function proxyRestartHint(profile: Profile): string {
@@ -435,7 +457,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     : `agent profile${profile === null ? "" : ` ${profile}`}`;
   const headerParts = [
     `${storedCount} of ${rows.length} keys set (*).`,
-    `${face} set <key> <value>`,
+    `${face} set <key> <value> (or <key>=<value>)`,
     `${face} unset <key> reverts`,
     opts.view.kind === "config"
       ? "a profile's own keys: agent profile [<name>] set|unset|get"

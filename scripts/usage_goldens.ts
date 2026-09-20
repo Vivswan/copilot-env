@@ -23,6 +23,9 @@ import {
   utcPinnable,
 } from "../test/helpers/usage_goldens.ts";
 
+/** The payload's explanatory text, the one key the two implementations may word differently. */
+const NOTE_KEY = "note";
+
 function usage(): string {
   return `Usage: deno task usage:goldens [--out DIR]
 
@@ -142,6 +145,9 @@ async function recordEntry(
     throw new Error(`${entry.name}: the old cli read nothing from ${silent.join(", ") || "codex"}`);
   }
   const { payload: current } = await runCurrentCost(root, { noIndex: true });
+  // The note is the command's explanatory text, not a reading: the golden carries the
+  // current wording so it pins the numbers, and a reworded note never fails the compare.
+  if (typeof current[NOTE_KEY] === "string") payload[NOTE_KEY] = current[NOTE_KEY];
   const mismatch = describeMismatch(current, expectedCurrent(payload, generated));
   if (mismatch !== null) {
     throw new Error(

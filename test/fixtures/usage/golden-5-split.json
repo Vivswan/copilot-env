@@ -4,125 +4,163 @@
   "activeDays": 0,
   "avgCostPerDayUsd": null,
   "claudeSessions": {
-    "activeDayPercent": 15,
+    "activeDayPercent": 25,
     "activeDaySpan": 20,
-    "activeDays": 3,
+    "activeDays": 5,
     "avgCostPerDayUsd": 0,
     "medianCostPerDayUsd": 0,
     "perDay": [
       {
-        "cacheCreation": 12292,
-        "cacheRead": 938303,
+        "cacheCreation": 52022,
+        "cacheRead": 4551893,
         "costUsd": 0,
-        "day": "2026-08-08",
-        "input": 10,
-        "output": 5988,
-        "requests": 5,
-        "total": 956593
+        "day": "2026-08-04",
+        "input": 2995,
+        "output": 12359,
+        "requests": 20,
+        "total": 4619269
       },
       {
-        "cacheCreation": 495396,
-        "cacheRead": 5938155,
+        "cacheCreation": 3774,
+        "cacheRead": 57192,
+        "costUsd": 0,
+        "day": "2026-08-05",
+        "input": 318,
+        "output": 151,
+        "requests": 1,
+        "total": 61435
+      },
+      {
+        "cacheCreation": 4961,
+        "cacheRead": 798154,
         "costUsd": 0,
         "day": "2026-08-10",
-        "input": 17878,
-        "output": 20599,
-        "requests": 28,
-        "total": 6472028
+        "input": 3982,
+        "output": 1600,
+        "requests": 6,
+        "total": 808697
       },
       {
-        "cacheCreation": 579291,
-        "cacheRead": 5266137,
+        "cacheCreation": 14575,
+        "cacheRead": 962207,
         "costUsd": 0,
-        "day": "2026-08-27",
-        "input": 9236,
-        "output": 19930,
-        "requests": 21,
-        "total": 5874594
+        "day": "2026-08-12",
+        "input": 519,
+        "output": 4836,
+        "requests": 5,
+        "total": 982137
+      },
+      {
+        "cacheCreation": 2340,
+        "cacheRead": 685758,
+        "costUsd": 0,
+        "day": "2026-08-23",
+        "input": 61,
+        "output": 1548,
+        "requests": 3,
+        "total": 689707
       }
     ],
     "perModel": {},
     "roots": 1,
     "totalUsd": 0,
     "unpriced": [
-      "claude-fable-5",
-      "claude-fable-5.1",
-      "claude-opus-5"
+      "claude-haiku-4.5",
+      "claude-opus-4.8",
+      "claude-sonnet-4.6"
     ],
     "usageByModel": {
-      "claude-fable-5": {
-        "cacheCreation": 604245,
-        "cacheRead": 8185671,
-        "events": 34,
-        "input": 12040,
-        "output": 27733
+      "claude-haiku-4.5": {
+        "cacheCreation": 3774,
+        "cacheRead": 57192,
+        "events": 1,
+        "input": 318,
+        "output": 151
       },
-      "claude-fable-5.1": {
-        "cacheCreation": 457488,
-        "cacheRead": 2575731,
-        "events": 13,
-        "input": 13552,
-        "output": 8488
+      "claude-opus-4.8": {
+        "cacheCreation": 56983,
+        "cacheRead": 5350047,
+        "events": 26,
+        "input": 6977,
+        "output": 13959
       },
-      "claude-opus-5": {
-        "cacheCreation": 25246,
-        "cacheRead": 1381193,
-        "events": 7,
-        "input": 1532,
-        "output": 10296
+      "claude-sonnet-4.6": {
+        "cacheCreation": 16915,
+        "cacheRead": 1647965,
+        "events": 8,
+        "input": 580,
+        "output": 6384
       }
     }
   },
   "codexSessions": {
     "providers": {
       "copilot-env": {
-        "activeDayPercent": 22,
-        "activeDaySpan": 9,
-        "activeDays": 2,
+        "activeDayPercent": 18,
+        "activeDaySpan": 17,
+        "activeDays": 3,
         "avgCostPerDayUsd": 0,
         "medianCostPerDayUsd": 0,
         "perDay": [
           {
             "cacheCreation": 0,
-            "cacheRead": 205392,
+            "cacheRead": 175529,
             "costUsd": 0,
-            "day": "2026-07-26",
-            "input": 333967,
-            "output": 7270,
-            "requests": 5,
-            "total": 546629
+            "day": "2026-08-03",
+            "input": 591899,
+            "output": 11263,
+            "requests": 17,
+            "total": 778691
           },
           {
             "cacheCreation": 0,
-            "cacheRead": 1541489,
+            "cacheRead": 236118,
             "costUsd": 0,
-            "day": "2026-08-03",
-            "input": 1248286,
-            "output": 14303,
-            "requests": 23,
-            "total": 2804078
+            "day": "2026-08-08",
+            "input": 669888,
+            "output": 11937,
+            "requests": 22,
+            "total": 917943
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 80453,
+            "costUsd": 0,
+            "day": "2026-08-19",
+            "input": 298351,
+            "output": 3079,
+            "requests": 9,
+            "total": 381883
           }
         ],
         "perModel": {},
         "totalUsd": 0,
         "unpriced": [
-          "gpt-5.5",
-          "gpt-5.6-sol"
+          "gpt-5-mini",
+          "gpt-5.4",
+          "gpt-5.6"
         ],
         "usageByModel": {
-          "gpt-5.5": {
+          "gpt-5-mini": {
             "cacheCreation": 0,
-            "cacheRead": 1541489,
-            "events": 23,
-            "input": 1248286,
-            "output": 14303
+            "cacheRead": 175529,
+            "events": 17,
+            "input": 591899,
+            "output": 11263
           },
-          "gpt-5.6-sol": {
+          "gpt-5.4": {
             "cacheCreation": 0,
-            "cacheRead": 205392,
-            "events": 5,
-            "input": 333967,
-            "output": 7270
+            "cacheRead": 48473,
+            "events": 2,
+            "input": 90075,
+            "output": 585
+          },
+          "gpt-5.6": {
+            "cacheCreation": 0,
+            "cacheRead": 268098,
+            "events": 29,
+            "input": 878164,
+            "output": 14431
           }
         }
       }

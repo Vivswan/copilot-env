@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { join, parse, posix } from "node:path";
@@ -25,7 +26,7 @@ import {
 import { readDvmrcPin } from "../src/copilot_api/sidecar.ts";
 import { writeDaemonConfig } from "../src/proxy_float.ts";
 import { readProjectConfig } from "../src/utils/project_config.ts";
-import { ROOT, runSync } from "./helpers/run.ts";
+import { ROOT, runScript, runSync } from "./helpers/run.ts";
 import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import { tsFilesUnder as srcFiles } from "./helpers/tree.ts";
 
@@ -314,6 +315,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     root: string,
     downloadDir: string,
     extraEnv: Record<string, string> = {},
+    extraArgs: string[] = [],
   ): ReturnType<typeof runSync> {
     const env: Record<string, string | undefined> = {
       ...process.env,
@@ -337,9 +339,44 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
         join(ROOT, "install.ps1"),
         "-InstallDir",
         root,
+        ...extraArgs,
       ], { env });
     }
-    return runSync("bash", [join(ROOT, "install.sh"), "--dir", root], { env });
+    return runSync("bash", [join(ROOT, "install.sh"), "--dir", root, ...extraArgs], { env });
+  }
+
+  /** install.sh on a pseudo-terminal (`script`), CI unset, so the shell-reload offer at the end
+   *  is reachable; $SHELL is a stand-in that records `$0.ran` when the reload execs it. Stdin is
+   *  at EOF, so an offer that IS made reads no answer and declines. */
+  function runInstallerOnTty(
+    root: string,
+    downloadDir: string,
+    extraArgs: string[],
+  ): { res: ReturnType<typeof runSync>; reloaded: boolean } {
+    const shell = join(downloadDir, "reload-shell.sh");
+    writeFileSync(shell, '#!/usr/bin/env bash\ntouch "$0.ran"\nexit 0\n', { mode: 0o755 });
+    // $SHELL rides the command, not script's environment: util-linux script runs its -c string
+    // through $SHELL, which would exec the stand-in in place of the installer.
+    const command = [
+      "env",
+      `SHELL=${shell}`,
+      "bash",
+      join(ROOT, "install.sh"),
+      "--dir",
+      root,
+      ...extraArgs,
+    ];
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      "COPILOT_ENV_DOWNLOAD_BASE": downloadDir,
+      "CI": undefined,
+      "COPILOT_ENV_NO_EXEC_SHELL": undefined,
+    };
+    // BSD script (macOS) takes the command as trailing argv; util-linux takes one -c string.
+    const res = Deno.build.os === "darwin"
+      ? runSync("script", ["-q", "/dev/null", ...command], { env })
+      : runSync("script", ["-qec", command.map((a) => `'${a}'`).join(" "), "/dev/null"], { env });
+    return { res, reloaded: existsSync(`${shell}.ran`) };
   }
 
   function cleanup(...dirs: string[]): void {
@@ -444,6 +481,49 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       }
     },
   );
+
+  test("the installer refuses --yes together with --no before any other work", () => {
+    // An empty download directory keeps a regressed run off the network: it fails at the local copy.
+    const root = tempDir("ce-guard-conflict-");
+    const downloadDir = tempDir("ce-guard-dl-empty-");
+    try {
+      const args = Deno.build.os === "windows" ? ["-Yes", "-No"] : ["--yes", "--no"];
+      const res = runInstaller(root, downloadDir, {}, args);
+      const why = evidence(res, root);
+      expectRefused(res, why);
+      expect(res.stderr, why).toContain("conflict");
+      expect(existsSync(join(root, "bin")), why).toBe(false);
+    } finally {
+      cleanup(root, downloadDir);
+    }
+  });
+
+  skipWin("on a terminal, --no skips the reload offer and --yes takes it without asking", () => {
+    const downloadDir = makeDownloadDir();
+    const prompt = "Reload your shell now to activate copilot-env?";
+    const rows: { args: string[]; prompted: boolean; reloaded: boolean }[] = [
+      // Control: the offer is made here, so an absence below is the flag's doing.
+      { args: [], prompted: true, reloaded: false },
+      { args: ["--no"], prompted: false, reloaded: false },
+      { args: ["--yes"], prompted: false, reloaded: true },
+    ];
+    for (const row of rows) {
+      const root = makeRoot("deno.json", "none");
+      try {
+        const { res, reloaded } = runInstallerOnTty(root, downloadDir, row.args);
+        const why = `${row.args.join(" ") || "(no flag)"}\n${evidence(res, root)}`;
+        expect(res.exitCode, why).toBe(0);
+        // The handoff ran, so the offer at the end was reached rather than skipped by a refusal.
+        expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(true);
+        expect(res.stdout.includes(prompt), why).toBe(row.prompted);
+        expect(reloaded, why).toBe(row.reloaded);
+      } finally {
+        cleanup(root);
+        rmSync(join(downloadDir, "reload-shell.sh.ran"), { force: true });
+      }
+    }
+    cleanup(downloadDir);
+  });
 
   test("the installer refuses the lexically unsafe targets before any other work", () => {
     // The installer keeps only a lexical pre-check (the canonical one is in the binary); it
@@ -557,7 +637,82 @@ describe("the install task spawns what it is allowed to run", () => {
     // spawn must match the script's own declaration, not a lowest common sh.
     const shebang = installSh.split("\n", 1)[0] ?? "";
     expect(shebang).toContain("bash");
-    expect(installLocal).toContain('run("bash", [join(ROOT, "install.sh")]');
+    expect(installLocal).toContain('run("bash", [join(ROOT, "install.sh")');
+  });
+});
+
+// POSIX only: the stand-ins are shell scripts found through PATH, which Windows' spawn does not
+// honour for `deno` and `powershell`.
+describe("the install task's arguments", () => {
+  const skipWin = test.skipIf(Deno.build.os === "windows");
+  const task = join(ROOT, "scripts", "install_local.ts");
+
+  /** Stand-ins for the task's two spawns, first on PATH: `deno` (the compile) and `bash` (the
+   *  installer) each record their argv, one per line, instead of building or installing. */
+  function standIns(): {
+    env: Record<string, string | undefined>;
+    argvOf: (name: string) => string[] | null;
+    remove: () => void;
+  } {
+    const bin = tempDir("ce-task-bin-");
+    for (const name of ["deno", "bash"]) {
+      const record = join(bin, `${name}.argv`);
+      writeFileSync(join(bin, name), `#!/bin/sh\nprintf '%s\\n' "$@" > '${record}'\n`, {
+        mode: 0o755,
+      });
+    }
+    return {
+      env: { ...process.env, "PATH": `${bin}:${process.env.PATH ?? ""}` },
+      argvOf: (name) => {
+        const file = join(bin, `${name}.argv`);
+        return existsSync(file) ? readFileSync(file, "utf8").split("\n").slice(0, -1) : null;
+      },
+      remove: () => removeDir(bin),
+    };
+  }
+
+  skipWin("a bad argument is refused before anything is compiled", () => {
+    const refused: { args: string[]; reason: string }[] = [
+      { args: ["--yes", "--no"], reason: "conflict" },
+      { args: ["--bogus"], reason: "unknown argument '--bogus'" },
+      // The task installs the binary it just compiled; a release tag has nothing to select.
+      { args: ["--version", "v1.2.3"], reason: "--version is not accepted" },
+      { args: ["--dir"], reason: "--dir needs a DIR argument" },
+      // PowerShell refuses a repeated parameter, which would land after --force's deletion.
+      { args: ["--dir", "/tmp/a", "--dir", "/tmp/b"], reason: "--dir given more than once" },
+      { args: ["--all-hosts"], reason: "install.sh has no such flag" },
+    ];
+    for (const { args, reason } of refused) {
+      const stubs = standIns();
+      try {
+        const res = runScript(task, args, { env: stubs.env });
+        const why = `${args.join(" ")}\n${res.stderr}`;
+        expect(res.exitCode, why).toBe(2);
+        expect(res.stderr, why).toContain(reason);
+        expect(stubs.argvOf("deno"), why).toBeNull();
+      } finally {
+        stubs.remove();
+      }
+    }
+  });
+
+  skipWin("the installer flags reach install.sh's argv after the compile, --dir absolute", () => {
+    // A relative --dir is resolved against the task's cwd: --force and the installer would
+    // otherwise name it from different rules (realpath here, install.sh's "." refusal there).
+    const stubs = standIns();
+    try {
+      const res = runScript(task, ["--dir", "./local-install", "--yes"], { env: stubs.env });
+      expect(res.exitCode, res.stderr).toBe(0);
+      expect(stubs.argvOf("deno")?.slice(0, 2), res.stderr).toEqual(["task", "compile"]);
+      expect(stubs.argvOf("bash"), res.stderr).toEqual([
+        join(ROOT, "install.sh"),
+        "--dir",
+        join(ROOT, "local-install"),
+        "--yes",
+      ]);
+    } finally {
+      stubs.remove();
+    }
   });
 });
 

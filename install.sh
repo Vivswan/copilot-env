@@ -13,8 +13,7 @@ BINARY_NAME="copilot-env"
 INSTALL_DIR_ARG=""
 VERSION_ARG=""
 SKIP_SHELL_INTEGRATION=false
-EXEC_SHELL=true
-[ -n "${COPILOT_ENV_NO_EXEC_SHELL:-}" ] && EXEC_SHELL=false
+RELOAD_SHELL=ask # ask | yes | no: the answer to the shell-reload offer at the end
 # The Authorization header goes only to api.github.com (tag resolution);
 # release-asset downloads ride the public URL (curl >= 7.58 would drop the
 # header on the cross-host CDN redirect anyway).
@@ -23,7 +22,7 @@ PUBLIC_CURL_ARGS=(-H "User-Agent: copilot-env")
 
 usage() {
     cat <<'EOF'
-Usage: install.sh [--dir DIR] [--version TAG] [--no-shell-integration] [--no-exec-shell]
+Usage: install.sh [--dir DIR] [--version TAG] [--no-shell-integration] [--yes | --no]
 
 Installs copilot-env into ~/.copilot-env by downloading the compiled agent
 binary for this platform from the selected GitHub release, verifying its
@@ -41,9 +40,10 @@ Options:
                          $COPILOT_ENV_INSTALL_REF.
   --no-shell-integration Do not wire ~/.bashrc / ~/.zshrc. Run
                          `agent shell` later to enable it.
-  --no-exec-shell        Do not offer to reload your shell at the end. The
-                         offer is also skipped when non-interactive or under CI,
-                         or when $COPILOT_ENV_NO_EXEC_SHELL is set.
+  --yes                  Reload your shell at the end without asking.
+  --no                   Do not reload your shell at the end, and do not ask.
+                         The offer is also skipped when non-interactive or under
+                         CI, or when $COPILOT_ENV_NO_EXEC_SHELL is set.
 
 Environment:
   COPILOT_ENV_DOWNLOAD_BASE  Directory or URL to fetch the agent binary and
@@ -190,11 +190,21 @@ while [ $# -gt 0 ]; do
             VERSION_ARG="${1#*=}"
             [ -n "$VERSION_ARG" ] || die "--version= needs a value, e.g. --version=v3.5.6." ;;
         --no-shell-integration) SKIP_SHELL_INTEGRATION=true ;;
-        --no-exec-shell) EXEC_SHELL=false ;;
+        --yes)
+            [ "$RELOAD_SHELL" != no ] || die "--yes and --no conflict; pass one."
+            RELOAD_SHELL=yes ;;
+        --no)
+            [ "$RELOAD_SHELL" != yes ] || die "--yes and --no conflict; pass one."
+            RELOAD_SHELL=no ;;
         *) die "unknown argument '$1' (try --help)" ;;
     esac
     shift
 done
+
+# An explicit flag wins over the environment.
+if [ "$RELOAD_SHELL" = ask ] && [ -n "${COPILOT_ENV_NO_EXEC_SHELL:-}" ]; then
+    RELOAD_SHELL=no
+fi
 
 INSTALL_DIR="${INSTALL_DIR_ARG:-${COPILOT_ENV_DIR:-$HOME/.copilot-env}}"
 resolve_safe_install_dir "$INSTALL_DIR"
@@ -286,11 +296,15 @@ fi
 # A child cannot source into its parent shell, so the reload is an `exec` of a fresh
 # interactive shell on the tty, which reads the rc the integration now lives in. exec skips
 # the EXIT trap, so the temp dir is removed first.
-if [ "$SKIP_SHELL_INTEGRATION" = false ] && [ "$EXEC_SHELL" = true ] && [ -z "${CI:-}" ] \
+if [ "$SKIP_SHELL_INTEGRATION" = false ] && [ "$RELOAD_SHELL" != no ] && [ -z "${CI:-}" ] \
     && [ -e /dev/tty ] && { [ -t 0 ] || [ -t 1 ]; }; then
-    printf 'Reload your shell now to activate copilot-env? [Y/n] ' >/dev/tty
-    _ans=""
-    IFS= read -r _ans </dev/tty || _ans="n"
+    if [ "$RELOAD_SHELL" = yes ]; then
+        _ans="y"
+    else
+        printf 'Reload your shell now to activate copilot-env? [Y/n] ' >/dev/tty
+        _ans=""
+        IFS= read -r _ans </dev/tty || _ans="n"
+    fi
     case "$_ans" in
         [Nn]*) : ;;
         *)
@@ -302,4 +316,6 @@ if [ "$SKIP_SHELL_INTEGRATION" = false ] && [ "$EXEC_SHELL" = true ] && [ -z "${
             exec "$_reload_shell" </dev/tty >/dev/tty 2>/dev/tty
             ;;
     esac
+elif [ "$RELOAD_SHELL" = yes ]; then
+    echo "--yes: nothing to reload (no shell integration, CI, or no terminal)." >&2
 fi

@@ -113,12 +113,14 @@ test("usage_profile requires --out and refuses a path inside the repository befo
   expect(missing.stderr).toContain("--out FILE is required");
   expect(missing.stderr).toContain("Usage: deno task usage:profile --out FILE");
 
-  // The committed fixture's own path, relative to the checkout the way `deno task` runs it.
-  const fixture = join("test", "fixtures", "usage", "profile.json");
-  const inside = runScript(script, ["--out", fixture], { env, cwd: ROOT });
-  expect(inside.exitCode).toBe(1);
-  expect(inside.stderr).toContain(`refusing to write ${fixture}: it lies inside the repository`);
-  expect(inside.stderr).not.toContain("profiling");
+  // The committed fixture's own path, relative to the checkout the way `deno task` runs it, and
+  // the checkout root itself: both refused before the first log is read.
+  for (const target of [join("test", "fixtures", "usage", "profile.json"), "."]) {
+    const inside = runScript(script, ["--out", target], { env, cwd: ROOT });
+    expect(inside.exitCode).toBe(1);
+    expect(inside.stderr).toContain(`refusing to write ${target}: it lies inside the repository`);
+    expect(inside.stderr).not.toContain("profiling");
+  }
 
   // A path outside the checkout is accepted: the refusal is about the place, not the flag.
   const accepted = runScript(script, ["--out", join(root, "profile.json")], { env, cwd: ROOT });

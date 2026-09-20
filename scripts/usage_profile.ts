@@ -94,9 +94,9 @@ function realTarget(file: string): string {
   }
 }
 
-/** Whether `file` would land inside this checkout. */
+/** Whether `file` would land inside this checkout, the checkout root itself included. */
 function insideRepository(file: string): boolean {
-  const rel = path.relative(REPO_ROOT, path.dirname(realTarget(file)));
+  const rel = path.relative(REPO_ROOT, realTarget(file));
   return rel === "" || (!path.isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${path.sep}`));
 }
 

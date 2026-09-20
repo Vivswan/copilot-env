@@ -66,7 +66,7 @@ function startAction(opts: Opts, profile: string | undefined): Promise<void> {
 
 function addStopOptions(cmd: Command): Command {
   return cmd
-    .option("--all", "Stop every profile's daemon.")
+    .option("--all", "Stop every profile's daemon (no name).")
     .option("--dry-run", DRY_RUN_HELP);
 }
 
@@ -87,9 +87,9 @@ function proxyTokenAction(opts: Opts, profile: string | undefined): Promise<void
 function addMcpOptions(cmd: Command): Command {
   return cmd
     .option("--serve", "Run the MCP server on stdio.")
-    .option("--remove", "Unregister the server from Claude Code.")
+    .option("--remove", "Unregister the server (no profile name).")
     .option("--model <id>", "Web-search model for --serve.")
-    .option("--dry-run", DRY_RUN_HELP);
+    .option("--dry-run", "Preview --remove.");
 }
 
 function mcpAction(opts: Opts, profile: string | undefined): Promise<void> {
@@ -148,7 +148,7 @@ function addSettingsOptions(cmd: Command): Command {
     .option("--with-credentials", "Export the real tokens too.")
     .option("--force", "Import without asking.")
     .option("--no-backup", "Import without the backup.")
-    .option("--dry-run", DRY_RUN_HELP);
+    .option("--dry-run", "Show what would change: --import, --export <file>.");
 }
 
 function settingsFlags(opts: Opts): SettingsArgs {

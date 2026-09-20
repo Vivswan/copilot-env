@@ -500,7 +500,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "claude.wire-mcp",
     scope: "global",
-    describe: "Give Claude Code web search (MCP)",
+    describe: "Direct Claude Code web search",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint: "Applies at the next `agent profile sync --claude`/`agent init` direct wiring.",
@@ -508,7 +508,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "codex.home",
     scope: "global",
-    describe: "Codex home root; auto detects it",
+    describe: "Codex home root; auto detects",
     ...ABSOLUTE_PATH_DOMAIN,
     defaultValue: CODEX_HOME_AUTO,
     applyHint:
@@ -518,7 +518,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "codex.host",
     scope: "global",
-    describe: "One Codex home per host (POSIX)",
+    describe: "Codex home per host (POSIX)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     posixOnly: true,
@@ -561,14 +561,14 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.auto-start",
     scope: "global",
-    describe: "Auto-start and idle-stop the proxy",
+    describe: "Auto-start and idle-stop proxy",
     ...BOOL_DOMAIN,
     defaultValue: false,
   },
   {
     key: "daemon.idle-timeout",
     scope: "global",
-    describe: "Idle stop after N seconds; 0 never",
+    describe: "Idle stop in seconds; 0 never",
     ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
     defaultValue: 3600,
     restartToApply: true,
@@ -576,7 +576,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.logs",
     scope: "global",
-    describe: "Proxy request log in `<home>/logs`",
+    describe: "Request log in `<home>/logs`",
     ...BOOL_DOMAIN,
     defaultValue: false,
     restartToApply: true,
@@ -600,7 +600,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.port",
     scope: "global",
-    describe: "Proxy port; next free one if busy",
+    describe: "Proxy port; next free if busy",
     ...wholeNumberDomain(1, 65535),
     defaultValue: 4141,
     restartToApply: true,
@@ -608,14 +608,14 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "daemon.release-cooldown",
     scope: "global",
-    describe: "Min proxy release age in seconds",
+    describe: "Min proxy release age, seconds",
     ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
     defaultValue: 7 * SECONDS_PER_DAY,
   },
   {
     key: "daemon.strict-port",
     scope: "global",
-    describe: "Fail on a busy port, never move",
+    describe: "Busy port fails (default only)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     restartToApply: true,
@@ -629,7 +629,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "host",
     scope: "profile",
-    describe: "Copilot API host; auto probes it",
+    describe: "Copilot API host; auto probes",
     ...COPILOT_HOST_DOMAIN,
     defaultValue: COPILOT_HOST_AUTO,
     applyHint:
@@ -638,7 +638,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "identity",
     scope: "profile",
-    describe: "Client identity; auto probes it",
+    describe: "Client identity; auto probes",
     ...INTEGRATION_ID_DOMAIN,
     defaultValue: "auto",
     applyHint:
@@ -649,7 +649,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "passthrough",
     scope: "profile",
-    describe: "Send a PAT as-is; auto detects it",
+    describe: "Send a PAT as-is; auto detects",
     ...PASSTHROUGH_DOMAIN,
     defaultValue: "auto",
     restartToApply: true,
@@ -657,14 +657,14 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "probe.claude-model",
     scope: "profile-default",
-    describe: "Claude model for the Direct probe",
+    describe: "Direct probe's claude model",
     ...MODEL_ID_DOMAIN,
     applyHint: PROBE_HINT,
   },
   {
     key: "probe.codex-model",
     scope: "profile-default",
-    describe: "Codex model for the Direct probe",
+    describe: "Direct probe's codex model",
     ...MODEL_ID_DOMAIN,
     applyHint: PROBE_HINT,
   },
@@ -697,7 +697,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.claude-token-multiplier",
     scope: "profile-default",
-    describe: "Claude token estimate multiplier",
+    describe: "Claude token count multiplier",
     ...positiveDecimalDomain(MAX_TOKEN_MULTIPLIER),
     defaultValue: 1.15,
     proxyProjected: true,
@@ -706,7 +706,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.message-websearch-model",
     scope: "profile-default",
-    describe: "Web-search model (Messages + MCP)",
+    describe: "Web-search model, Messages+MCP",
     ...MODEL_ID_DOMAIN,
     // Must equal DEFAULT_WEB_SEARCH_MODEL in web_search.ts, which imports the store over this module and
     // so cannot be referenced here; a registry test pins the two.
@@ -727,7 +727,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.responses.context-management",
     scope: "profile-default",
-    describe: "Responses API context management",
+    describe: "Responses context management",
     ...BOOL_DOMAIN,
     defaultValue: false,
     proxyProjected: true,
@@ -752,7 +752,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.small-model",
     scope: "profile-default",
-    describe: "Small/fast model the proxy uses",
+    describe: "The proxy's small/fast model",
     ...MODEL_ID_DOMAIN,
     proxyDefault: "gpt-5-mini",
     proxyPath: ["smallModel"],
@@ -769,7 +769,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "static-key",
     scope: "profile",
-    describe: "Which agent configs bake the token",
+    describe: "Which configs bake the token",
     ...STATIC_KEY_DOMAIN,
     defaultValue: STATIC_KEY_DEFAULT,
     applyHint: `${WIRING_HINT}. ` +
@@ -778,7 +778,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "update.auto",
     scope: "global",
-    describe: "Daily self-update on agent start",
+    describe: "Daily self-update at start",
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint:
@@ -787,13 +787,13 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "update.cooldown",
     scope: "global",
-    describe: "Update only to releases N days old",
+    describe: "Min release age in days",
     ...wholeNumberDomain(0, MAX_DAYS, "days"),
   },
   {
     key: "update.verify-provenance",
     scope: "global",
-    describe: "Sigstore-verify update downloads",
+    describe: "Sigstore-verify updates",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint:

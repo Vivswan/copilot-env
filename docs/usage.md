@@ -224,4 +224,4 @@ Re-parsing every log on each run is slow, so the readers keep a usage index.
 - **Also there:** the two things that ARE cached, the public OpenRouter price list (`pricing-*.json`) and GitHub's rate card (`rate-card-*.json`), each with a 24-hour TTL. `agent uninstall` removes all of it.
 - **Verify it:** `agent cost --no-index` parses every file from scratch.
 
-`agent credits` reports this month's Copilot AI credits: spent, projected, and paced against the plan and the optional [`cost.credits-target`](configuration.md#cost). It is one live read of GitHub's meter; nothing local.
+`agent credits` reports this month's Copilot AI credits: spent, projected, and paced against the plan and the optional [`cost.credits-target`](configuration.md#cost). Credits are 100 to the dollar. It is one live read of GitHub's meter; nothing local.

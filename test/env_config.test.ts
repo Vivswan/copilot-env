@@ -828,12 +828,14 @@ const PLAIN_TABLE = {
 
 test("configTable() renders the header, the groups, and key=value rows with type, default, and description in one 80-column layout", () => {
   // Stored: a plain flag, a key applied without the daemon, a POSIX-only key on Windows (inert
-  // there), and the key whose default is a URL too long to share a line with its type.
+  // there), the key whose default is a URL too long to share a line with its type, and a model id
+  // long enough to push the right column to its 30-column floor.
   const global = {
     "daemon.strict-port": true,
     "shell.launchers": true,
     "codex.host": true,
     "cost.pricing-url": "https://prices.example/api/v1/models/latest",
+    "proxy.alpha-search.model": "gpt-5.6-sol-preview",
   };
   const data = stored(global);
   const rendered = configTable(data, { ...PLAIN_TABLE, platform: "win32" });
@@ -841,7 +843,7 @@ test("configTable() renders the header, the groups, and key=value rows with type
   // The header's halves pack to the width like words; at 80 the count and the set syntax share
   // the first line, the rest the second.
   expect(lines.slice(0, 4)).toEqual([
-    `4 of ${MACHINE_AND_SHARED_KEYS} keys set (*).  |  agent config set <key> <value> (or <key>=<value>)`,
+    `5 of ${MACHINE_AND_SHARED_KEYS} keys set (*).  |  agent config set <key> <value> (or <key>=<value>)`,
     "agent config unset <key> reverts",
     "a profile's own keys: agent profile [<name>] set|unset|get",
     "",
@@ -910,8 +912,10 @@ test("configTable() renders the header, the groups, and key=value rows with type
     `  * codex.host=true`.padEnd(column) + "[bool] default false",
   );
   expect(lines[rowAt("codex.host") + 1]).toBe(" ".repeat(column) + "(inert on this platform)");
-  // The description follows the type line at the column; every registry describe is short enough
-  // to take ONE line there at 80 columns, so `agent config` never wraps a description.
+  // The description follows the type line at the column. The stored model id above has pushed the
+  // right column down to its 30-column floor, and every registry describe still takes ONE line
+  // there, so `agent config` never wraps a description at 80 columns whatever value is stored.
+  expect(column).toBe(PLAIN_TABLE.width - 30);
   const describeLines = (key: string): string[] => {
     const out: string[] = [];
     for (const l of lines.slice(rowAt(key) + 1)) {
@@ -936,13 +940,12 @@ test("configTable() renders the header, the groups, and key=value rows with type
     "\n",
   );
   // The right column's cells may wrap before the restart line, so it is looked for anywhere
-  // under the row.
+  // under the row; a table without the wide stored value has a narrower column, so the indent is
+  // not pinned here.
   const restartUnder = (out: string[], key: string): boolean => {
     const at = out.findIndex((l) => rowRe.exec(l)?.[2] === key);
     const under = out.slice(at + 1).findIndex((l) => rowRe.test(l) || l === "");
-    return out.slice(at + 1, at + 1 + under).includes(
-      " ".repeat(column) + "restart the proxy to apply",
-    );
+    return out.slice(at + 1, at + 1 + under).some((l) => l.trim() === "restart the proxy to apply");
   };
   expect(restartUnder(live, "daemon.strict-port")).toBe(true);
   expect(restartUnder(live, "shell.launchers")).toBe(false);

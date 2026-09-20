@@ -105,15 +105,17 @@ const ORPHAN_GRACE_MS = 5_000;
 
 /** Whether anything listens on aimock's port. Read at the socket, not the pid: an orphan that
  *  exited under a pid 1 that reaps nothing (the docker run's `deno task test`) stays a zombie,
- *  which a signal-0 probe reads as alive. A refusal is the one answer that means "gone"; any
- *  other failure throws, so it can never pass as one. */
-async function aimockPort(url: string): Promise<"listening" | "refused"> {
+ *  which a signal-0 probe reads as alive. A refusal is the one answer that means "gone". A reset
+ *  is what a listener closing mid-handshake looks like on macOS (Linux refuses instead), so the
+ *  poll asks again. Any other failure throws, so it can never pass as gone. */
+async function aimockPort(url: string): Promise<"listening" | "reset" | "refused"> {
   try {
     const conn = await Deno.connect({ hostname: "127.0.0.1", port: Number(new URL(url).port) });
     conn.close();
     return "listening";
   } catch (e) {
     if (e instanceof Deno.errors.ConnectionRefused) return "refused";
+    if (e instanceof Deno.errors.ConnectionReset) return "reset";
     throw e;
   }
 }
@@ -167,7 +169,7 @@ test("aimock dies with the process that started it, even one killed outright", a
     }
     const deadline = Date.now() + ORPHAN_GRACE_MS;
     let port = await aimockPort(aimock.aimockUrl);
-    while (port === "listening" && Date.now() < deadline) {
+    while (port !== "refused" && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       port = await aimockPort(aimock.aimockUrl);
     }

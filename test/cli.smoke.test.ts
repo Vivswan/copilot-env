@@ -92,11 +92,16 @@ test("the command listings fit 80 columns one row each, and the root help lists 
   for (const verb of PROFILE_VERBS) {
     expect(root.stdout, verb).toMatch(new RegExp(`^  profile \\[<name>\\] ${verb} +\\S`, "m"));
   }
-  // The verb rows are a rendering of the root help alone: a verb typed as a top-level command is
-  // unknown with no suggestion, as on a plain Commander program.
-  const stray = runCli(["models"], { env: { ...process.env, CONSOLA_LEVEL: "5" } });
+  // The default profile's `identity` and `models` are rows of their own, right after `auth`.
+  const rowAt = (name: string) => root.stdout.search(new RegExp(`^  ${name} \\[options\\] `, "m"));
+  expect(rowAt("auth")).toBeGreaterThan(-1);
+  expect(rowAt("identity")).toBeGreaterThan(rowAt("auth"));
+  expect(rowAt("models")).toBeGreaterThan(rowAt("identity"));
+  // The verb rows are a rendering of the root help alone: a verb with no top-level command of its
+  // own, typed as one, is unknown with no suggestion, as on a plain Commander program.
+  const stray = runCli(["env"], { env: { ...process.env, CONSOLA_LEVEL: "5" } });
   expect(stray.exitCode).toBe(1);
-  expect(stray.stderr).toContain("unknown command 'models'");
+  expect(stray.stderr).toContain("unknown command 'env'");
   expect(stray.stderr).not.toContain("Did you mean");
 });
 
@@ -668,6 +673,8 @@ test("--full-help prints the overview plus every subcommand's help, the profile 
   for (
     const needle of [
       "agent init",
+      "agent identity\n",
+      "agent models\n",
       "agent profile add",
       "agent profile check",
       "agent codex-mobile",

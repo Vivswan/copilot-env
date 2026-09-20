@@ -46,6 +46,8 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
 agent list                 # every profile: NAME  MODE  PROVIDER  DAEMON (also bare `agent profile`)
 agent init [--direct|--proxy|--auto] [--yes] [--no-auth]  # = agent profile add for the default profile
 agent auth <flags>         # = agent profile auth for the default profile
+agent identity <flags>     # = agent profile identity for the default profile
+agent models <flags>       # = agent profile models for the default profile
 agent start <flags>        # = agent profile start for the default profile
 agent stop <flags>         # = agent profile stop for the default profile (--all stops every daemon)
 agent sync                 # every profile's sync, the default's included

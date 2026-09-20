@@ -333,26 +333,17 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       return runConfig({ kind: "get", key, view: view() });
     });
 
-  verb(
-    "identity",
-    "Show or pin the Copilot client identity",
-    "Show the Copilot client identities this profile's credential is accepted under (* marks " +
-      "the one in effect). A read, unless a flag pins, prints, or drops the pin.",
-  )
-    .option("--set <id|auto>", "Pin the identity (probed first); `auto` restores probing.")
-    .option("--get", "Print the pin (`auto` when probing).")
-    .option("--del", "Drop the pin (back to auto).")
-    .action((opts: Opts, cmd: Command) => {
-      refuseStrayWords(cmd, "identity", rawProfile);
-      const flags = [opts.set !== undefined, Boolean(opts.get), Boolean(opts.del)].filter(Boolean);
-      if (flags.length > 1) throw new Error("--set, --get, and --del are mutually exclusive");
-      if (opts.set !== undefined) return setIdentity(rawProfile, String(opts.set), false);
-      if (opts.get) return runConfig({ kind: "get", key: "identity", view: view() });
-      if (opts.del) {
-        return runConfig({ kind: "unset", key: "identity", view: view(), dryRun: false });
-      }
-      return runAuth({ identities: true, profile: rawProfile ?? undefined });
-    });
+  addIdentityOptions(
+    verb(
+      "identity",
+      "Show or pin the Copilot client identity",
+      "Show the Copilot client identities this profile's credential is accepted under (* marks " +
+        "the one in effect). A read, unless a flag pins, prints, or drops the pin.",
+    ),
+  ).action((opts: Opts, cmd: Command) => {
+    refuseStrayWords(cmd, "identity", rawProfile);
+    return identityAction(opts, rawProfile);
+  });
 
   verb(
     "sync",
@@ -425,6 +416,28 @@ function setIdentity(rawProfile: string | null, value: string, dryRun: boolean):
   if (rawProfile !== null) assertKnownProfile(parseProfileName(rawProfile));
   const pin = () => runAuth({ identity: value, profile: rawProfile ?? undefined });
   return dryRun ? runDryRun(pin) : pin();
+}
+
+// --- the flags the identity verb and `agent identity` share, in one wording ----------------------
+
+function addIdentityOptions(cmd: Command): Command {
+  return cmd
+    .option("--set <id|auto>", "Pin the identity (probed first); `auto` restores probing.")
+    .option("--get", "Print the pin (`auto` when probing).")
+    .option("--del", "Drop the pin (back to auto).");
+}
+
+function identityAction(opts: Opts, rawProfile: string | null): void | Promise<void> {
+  const flags = [opts.set !== undefined, Boolean(opts.get), Boolean(opts.del)].filter(Boolean);
+  if (flags.length > 1) throw new Error("--set, --get, and --del are mutually exclusive");
+  if (opts.set !== undefined) return setIdentity(rawProfile, String(opts.set), false);
+  const view: ConfigView = {
+    kind: "profile",
+    profile: rawProfile === null ? null : parseProfileName(rawProfile),
+  };
+  if (opts.get) return runConfig({ kind: "get", key: "identity", view });
+  if (opts.del) return runConfig({ kind: "unset", key: "identity", view, dryRun: false });
+  return runAuth({ identities: true, profile: rawProfile ?? undefined });
 }
 
 /** `agent init`: the default's `agent profile add`, as its own command. */
@@ -501,4 +514,19 @@ export function registerAuthCommand(program: Command): void {
           "use it. Named profile: `agent profile <name> auth`.",
       ),
   ).action((opts: Opts) => runAuth(authArgs(opts)));
+}
+
+/** `agent identity`: the default's `agent profile identity`, as its own command. */
+export function registerIdentityCommand(program: Command): void {
+  addIdentityOptions(
+    program
+      .command("identity")
+      .helpGroup("Settings:")
+      .summary("Show or pin the default profile's identity")
+      .description(
+        "Show the Copilot client identities the default profile's credential is accepted " +
+          "under; --set <id|auto> pins one, --get prints the pin, --del drops it. " +
+          "Named profile: `agent profile <name> identity`.",
+      ),
+  ).action((opts: Opts) => identityAction(opts, null));
 }

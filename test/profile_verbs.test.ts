@@ -3,8 +3,9 @@
 // spelling printed (stdout, exit code) in a scratch HOME, and the new spelling must print the same.
 // verbs_oracle.json is the same kind of pin for the verbs' own output, captured when the tree only
 // routed onto the flat commands' bodies: with the bodies folded under the verbs, each verb still
-// names the same files in the same order. The two kept aliases (`agent init`, `agent auth`) are
-// proven against their verbs live, in twin homes. The verbs are reserved names, pinned at the CLI.
+// names the same files in the same order. The kept aliases (`agent init`, `agent auth`, `agent
+// identity`) are proven against their verbs live, in twin homes. The verbs are reserved names,
+// pinned at the CLI.
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { changedPaths } from "./helpers/dry_run.ts";
@@ -281,12 +282,15 @@ test(
 );
 
 test(
-  "the identity verb's flags are the set/get/unset spellings: same store bytes, same output",
+  "the identity verb's flags are the set/get/unset spellings, and `agent identity` is the default's verb: same store bytes, same output",
   () => {
     const pairs: [string[], string[]][] = [
       [["profile", "set", "identity", "auto"], ["profile", "identity", "--set", "auto"]],
       [["profile", "get", "identity"], ["profile", "identity", "--get"]],
       [["profile", "unset", "identity"], ["profile", "identity", "--del"]],
+      // The top-level alias reaches the same pin arm and the same read.
+      [["profile", "identity", "--set", "auto"], ["identity", "--set", "auto"]],
+      [["profile", "identity", "--get"], ["identity", "--get"]],
     ];
     const twins = [scratchHome(), scratchHome()] as const;
     for (const s of twins) expect(observe(["auth", "--set", "ghu_test"], s).exitCode).toBe(0);
@@ -297,9 +301,14 @@ test(
       );
       expect(seen.exitCode, verb.join(" ")).toBe(0);
     }
-    // Eight cold CLI spawns; generous headroom for loaded Windows CI runners.
+    // The alias takes no name: a word after it never runs the default's verb; the refusal names it.
+    const strayName = observe(["identity", "work"], twins[0]);
+    expect(strayName.exitCode).toBe(1);
+    expect(strayName.stdout).toBe("");
+    expect(strayName.stderr).toContain("work");
+    // Thirteen cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
-  240_000,
+  300_000,
 );
 
 test(

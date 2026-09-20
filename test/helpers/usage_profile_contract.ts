@@ -16,7 +16,7 @@ export const OTHER_LINE_TYPE = "other";
 export const TORN_LINE_TYPE = "torn";
 
 /**
- * The Codex line types a profile may name, as observed on real rollouts: a CLOSED set, so a
+ * The Codex line types a profile may name, the type words the Codex CLI writes: a CLOSED set, so a
  * type word carrying anything else folds to OTHER_LINE_TYPE before it can reach a committed
  * file. Extend deliberately when the writer adds a type.
  */

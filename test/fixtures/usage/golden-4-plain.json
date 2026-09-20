@@ -4,171 +4,171 @@
   "activeDays": 0,
   "avgCostPerDayUsd": null,
   "claudeSessions": {
-    "activeDayPercent": 48,
-    "activeDaySpan": 33,
+    "activeDayPercent": 44,
+    "activeDaySpan": 36,
     "activeDays": 16,
     "avgCostPerDayUsd": 0,
     "medianCostPerDayUsd": 0,
     "perDay": [
       {
-        "cacheCreation": 1321235,
-        "cacheRead": 26956305,
+        "cacheCreation": 122112,
+        "cacheRead": 5292547,
         "costUsd": 0,
         "day": "2026-07-23",
-        "input": 59021,
-        "output": 120303,
-        "requests": 113,
-        "total": 28456864
+        "input": 5073,
+        "output": 21785,
+        "requests": 46,
+        "total": 5441517
       },
       {
-        "cacheCreation": 4713,
-        "cacheRead": 1291787,
+        "cacheCreation": 90951,
+        "cacheRead": 9365134,
         "costUsd": 0,
         "day": "2026-07-26",
-        "input": 3251,
-        "output": 1806,
-        "requests": 4,
-        "total": 1301557
+        "input": 9964,
+        "output": 37047,
+        "requests": 56,
+        "total": 9503096
       },
       {
-        "cacheCreation": 55007,
-        "cacheRead": 3457258,
+        "cacheCreation": 41886,
+        "cacheRead": 5374967,
         "costUsd": 0,
-        "day": "2026-07-29",
-        "input": 2788,
-        "output": 5124,
-        "requests": 14,
-        "total": 3520177
+        "day": "2026-07-27",
+        "input": 3664,
+        "output": 17843,
+        "requests": 33,
+        "total": 5438360
       },
       {
-        "cacheCreation": 552425,
-        "cacheRead": 2621640,
+        "cacheCreation": 80194,
+        "cacheRead": 6605523,
         "costUsd": 0,
-        "day": "2026-07-31",
-        "input": 3415,
-        "output": 6755,
-        "requests": 13,
-        "total": 3184235
+        "day": "2026-07-28",
+        "input": 5237,
+        "output": 20984,
+        "requests": 36,
+        "total": 6711938
       },
       {
-        "cacheCreation": 15483,
-        "cacheRead": 2447986,
-        "costUsd": 0,
-        "day": "2026-08-02",
-        "input": 3911,
-        "output": 7962,
-        "requests": 11,
-        "total": 2475342
-      },
-      {
-        "cacheCreation": 282281,
-        "cacheRead": 690837,
-        "costUsd": 0,
-        "day": "2026-08-03",
-        "input": 4681,
-        "output": 2942,
-        "requests": 3,
-        "total": 980741
-      },
-      {
-        "cacheCreation": 121473,
-        "cacheRead": 5059631,
+        "cacheCreation": 7950,
+        "cacheRead": 659731,
         "costUsd": 0,
         "day": "2026-08-06",
-        "input": 3872,
-        "output": 12741,
-        "requests": 20,
-        "total": 5197717
+        "input": 95,
+        "output": 2684,
+        "requests": 5,
+        "total": 670460
       },
       {
-        "cacheCreation": 106240,
-        "cacheRead": 1287112,
+        "cacheCreation": 32229,
+        "cacheRead": 3085530,
         "costUsd": 0,
         "day": "2026-08-07",
-        "input": 8,
-        "output": 4811,
-        "requests": 4,
-        "total": 1398171
+        "input": 2450,
+        "output": 9361,
+        "requests": 20,
+        "total": 3129570
       },
       {
-        "cacheCreation": 3997,
-        "cacheRead": 983022,
+        "cacheCreation": 50922,
+        "cacheRead": 1280048,
         "costUsd": 0,
         "day": "2026-08-09",
-        "input": 1271,
-        "output": 467,
-        "requests": 3,
-        "total": 988757
+        "input": 764,
+        "output": 2064,
+        "requests": 9,
+        "total": 1333798
       },
       {
-        "cacheCreation": 1893152,
-        "cacheRead": 49444233,
+        "cacheCreation": 174771,
+        "cacheRead": 14585935,
         "costUsd": 0,
         "day": "2026-08-10",
-        "input": 52165,
-        "output": 154020,
-        "requests": 182,
-        "total": 51543570
+        "input": 15381,
+        "output": 51981,
+        "requests": 78,
+        "total": 14828068
       },
       {
-        "cacheCreation": 14272,
-        "cacheRead": 1601131,
+        "cacheCreation": 2350,
+        "cacheRead": 427190,
         "costUsd": 0,
-        "day": "2026-08-14",
-        "input": 1314,
-        "output": 11636,
-        "requests": 7,
-        "total": 1628353
+        "day": "2026-08-15",
+        "input": 285,
+        "output": 2753,
+        "requests": 3,
+        "total": 432578
       },
       {
-        "cacheCreation": 97687,
-        "cacheRead": 4107557,
+        "cacheCreation": 5950,
+        "cacheRead": 756595,
         "costUsd": 0,
-        "day": "2026-08-18",
-        "input": 10124,
-        "output": 19006,
-        "requests": 23,
-        "total": 4234374
+        "day": "2026-08-16",
+        "input": 23,
+        "output": 687,
+        "requests": 2,
+        "total": 763255
       },
       {
-        "cacheCreation": 6664,
-        "cacheRead": 1363447,
+        "cacheCreation": 160518,
+        "cacheRead": 11740678,
         "costUsd": 0,
         "day": "2026-08-19",
-        "input": 950,
-        "output": 2136,
-        "requests": 5,
-        "total": 1373197
+        "input": 11347,
+        "output": 50522,
+        "requests": 79,
+        "total": 11963065
       },
       {
-        "cacheCreation": 906544,
-        "cacheRead": 20018481,
+        "cacheCreation": 27630,
+        "cacheRead": 1276142,
         "costUsd": 0,
         "day": "2026-08-20",
-        "input": 14874,
-        "output": 76698,
-        "requests": 76,
-        "total": 21016597
+        "input": 921,
+        "output": 6819,
+        "requests": 8,
+        "total": 1311512
       },
       {
-        "cacheCreation": 2503,
-        "cacheRead": 40764,
+        "cacheCreation": 43643,
+        "cacheRead": 1335975,
         "costUsd": 0,
-        "day": "2026-08-22",
-        "input": 4,
-        "output": 401,
-        "requests": 2,
-        "total": 43672
+        "day": "2026-08-23",
+        "input": 210,
+        "output": 3600,
+        "requests": 8,
+        "total": 1383428
       },
       {
-        "cacheCreation": 925485,
-        "cacheRead": 29032645,
+        "cacheCreation": 11555,
+        "cacheRead": 879644,
         "costUsd": 0,
         "day": "2026-08-24",
-        "input": 46318,
-        "output": 82263,
-        "requests": 118,
-        "total": 30086711
+        "input": 101,
+        "output": 4461,
+        "requests": 6,
+        "total": 895761
+      },
+      {
+        "cacheCreation": 1984,
+        "cacheRead": 63229,
+        "costUsd": 0,
+        "day": "2026-08-25",
+        "input": 25,
+        "output": 734,
+        "requests": 1,
+        "total": 65972
+      },
+      {
+        "cacheCreation": 18379,
+        "cacheRead": 1339239,
+        "costUsd": 0,
+        "day": "2026-08-27",
+        "input": 113,
+        "output": 6050,
+        "requests": 11,
+        "total": 1363781
       }
     ],
     "perModel": {},
@@ -176,173 +176,353 @@
     "totalUsd": 0,
     "unpriced": [
       "claude-fable-5",
-      "claude-opus-5"
+      "claude-haiku-4.5",
+      "claude-opus-4.8",
+      "claude-sonnet-4.6"
     ],
     "usageByModel": {
       "claude-fable-5": {
-        "cacheCreation": 5599053,
-        "cacheRead": 141927672,
-        "events": 556,
-        "input": 196026,
-        "output": 475956
+        "cacheCreation": 16127,
+        "cacheRead": 1379378,
+        "events": 11,
+        "input": 129,
+        "output": 6560
       },
-      "claude-opus-5": {
-        "cacheCreation": 710108,
-        "cacheRead": 8476164,
-        "events": 42,
-        "input": 11941,
-        "output": 33115
+      "claude-haiku-4.5": {
+        "cacheCreation": 91239,
+        "cacheRead": 2697930,
+        "events": 17,
+        "input": 1270,
+        "output": 5135
+      },
+      "claude-opus-4.8": {
+        "cacheCreation": 641624,
+        "cacheRead": 48686115,
+        "events": 301,
+        "input": 44814,
+        "output": 175568
+      },
+      "claude-sonnet-4.6": {
+        "cacheCreation": 124034,
+        "cacheRead": 11304684,
+        "events": 72,
+        "input": 9440,
+        "output": 52112
       }
     }
   },
   "codexSessions": {
     "providers": {
       "azure": {
-        "activeDayPercent": 14,
-        "activeDaySpan": 35,
+        "activeDayPercent": 13,
+        "activeDaySpan": 40,
         "activeDays": 5,
         "avgCostPerDayUsd": 0,
         "medianCostPerDayUsd": 0,
         "perDay": [
           {
             "cacheCreation": 0,
-            "cacheRead": 3977251,
+            "cacheRead": 85534,
             "costUsd": 0,
             "day": "2026-07-23",
-            "input": 2331552,
-            "output": 43000,
-            "requests": 68,
-            "total": 6351803
+            "input": 93082,
+            "output": 3115,
+            "requests": 7,
+            "total": 181731
           },
           {
             "cacheCreation": 0,
-            "cacheRead": 162915,
-            "costUsd": 0,
-            "day": "2026-07-28",
-            "input": 284401,
-            "output": 3807,
-            "requests": 6,
-            "total": 451123
-          },
-          {
-            "cacheCreation": 0,
-            "cacheRead": 704271,
+            "cacheRead": 4926,
             "costUsd": 0,
             "day": "2026-08-01",
-            "input": 457088,
-            "output": 5090,
-            "requests": 10,
-            "total": 1166449
+            "input": 92946,
+            "output": 1474,
+            "requests": 1,
+            "total": 99346
           },
           {
             "cacheCreation": 0,
-            "cacheRead": 204878,
+            "cacheRead": 231833,
             "costUsd": 0,
-            "day": "2026-08-24",
-            "input": 386882,
-            "output": 1789,
-            "requests": 5,
-            "total": 593549
+            "day": "2026-08-07",
+            "input": 597932,
+            "output": 16142,
+            "requests": 21,
+            "total": 845907
           },
           {
             "cacheCreation": 0,
-            "cacheRead": 4578076,
+            "cacheRead": 106818,
             "costUsd": 0,
             "day": "2026-08-26",
-            "input": 3027067,
-            "output": 53486,
-            "requests": 87,
-            "total": 7658629
+            "input": 120928,
+            "output": 6827,
+            "requests": 7,
+            "total": 234573
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 2511,
+            "costUsd": 0,
+            "day": "2026-08-31",
+            "input": 179929,
+            "output": 1231,
+            "requests": 1,
+            "total": 183671
           }
         ],
         "perModel": {},
         "totalUsd": 0,
         "unpriced": [
-          "gpt-5.6-sol"
+          "gpt-5.4",
+          "gpt-5.5",
+          "gpt-5.6"
         ],
         "usageByModel": {
-          "gpt-5.6-sol": {
+          "gpt-5.4": {
             "cacheCreation": 0,
-            "cacheRead": 9627391,
-            "events": 176,
-            "input": 6486990,
-            "output": 107172
+            "cacheRead": 30291,
+            "events": 2,
+            "input": 56834,
+            "output": 847
+          },
+          "gpt-5.5": {
+            "cacheCreation": 0,
+            "cacheRead": 234344,
+            "events": 22,
+            "input": 777861,
+            "output": 17373
+          },
+          "gpt-5.6": {
+            "cacheCreation": 0,
+            "cacheRead": 166987,
+            "events": 13,
+            "input": 250122,
+            "output": 10569
           }
         }
       },
       "copilot-env": {
-        "activeDayPercent": 100,
-        "activeDaySpan": 1,
-        "activeDays": 1,
+        "activeDayPercent": 34,
+        "activeDaySpan": 29,
+        "activeDays": 10,
         "avgCostPerDayUsd": 0,
         "medianCostPerDayUsd": 0,
         "perDay": [
           {
             "cacheCreation": 0,
-            "cacheRead": 3501489,
+            "cacheRead": 56623,
+            "costUsd": 0,
+            "day": "2026-07-23",
+            "input": 57077,
+            "output": 4461,
+            "requests": 6,
+            "total": 118161
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 579820,
+            "costUsd": 0,
+            "day": "2026-07-28",
+            "input": 1230512,
+            "output": 23824,
+            "requests": 51,
+            "total": 1834156
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 177918,
+            "costUsd": 0,
+            "day": "2026-07-30",
+            "input": 469976,
+            "output": 3099,
+            "requests": 10,
+            "total": 650993
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 10154,
+            "costUsd": 0,
+            "day": "2026-07-31",
+            "input": 114771,
+            "output": 1092,
+            "requests": 2,
+            "total": 126017
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 746764,
             "costUsd": 0,
             "day": "2026-08-05",
-            "input": 1526162,
-            "output": 50170,
-            "requests": 67,
-            "total": 5077821
+            "input": 2334722,
+            "output": 31795,
+            "requests": 62,
+            "total": 3113281
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 118355,
+            "costUsd": 0,
+            "day": "2026-08-07",
+            "input": 266179,
+            "output": 6342,
+            "requests": 15,
+            "total": 390876
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 145337,
+            "costUsd": 0,
+            "day": "2026-08-10",
+            "input": 778678,
+            "output": 11995,
+            "requests": 16,
+            "total": 936010
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 98319,
+            "costUsd": 0,
+            "day": "2026-08-12",
+            "input": 221421,
+            "output": 6410,
+            "requests": 13,
+            "total": 326150
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 32631,
+            "costUsd": 0,
+            "day": "2026-08-16",
+            "input": 10035,
+            "output": 2102,
+            "requests": 3,
+            "total": 44768
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 5383,
+            "costUsd": 0,
+            "day": "2026-08-20",
+            "input": 34011,
+            "output": 462,
+            "requests": 1,
+            "total": 39856
           }
         ],
         "perModel": {},
         "totalUsd": 0,
         "unpriced": [
-          "gpt-5.6-sol"
+          "gpt-5-mini",
+          "gpt-5.4",
+          "gpt-5.5",
+          "gpt-5.6"
         ],
         "usageByModel": {
-          "gpt-5.6-sol": {
+          "gpt-5-mini": {
             "cacheCreation": 0,
-            "cacheRead": 3501489,
-            "events": 67,
-            "input": 1526162,
-            "output": 50170
+            "cacheRead": 177918,
+            "events": 10,
+            "input": 469976,
+            "output": 3099
+          },
+          "gpt-5.4": {
+            "cacheCreation": 0,
+            "cacheRead": 61587,
+            "events": 6,
+            "input": 116114,
+            "output": 2547
+          },
+          "gpt-5.5": {
+            "cacheCreation": 0,
+            "cacheRead": 886699,
+            "events": 90,
+            "input": 2482379,
+            "output": 47269
+          },
+          "gpt-5.6": {
+            "cacheCreation": 0,
+            "cacheRead": 845100,
+            "events": 73,
+            "input": 2448913,
+            "output": 38667
           }
         }
       },
       "openai": {
-        "activeDayPercent": 29,
-        "activeDaySpan": 7,
-        "activeDays": 2,
+        "activeDayPercent": 11,
+        "activeDaySpan": 28,
+        "activeDays": 3,
         "avgCostPerDayUsd": 0,
         "medianCostPerDayUsd": 0,
         "perDay": [
           {
             "cacheCreation": 0,
-            "cacheRead": 244597,
+            "cacheRead": 1257684,
             "costUsd": 0,
-            "day": "2026-08-20",
-            "input": 239085,
-            "output": 4209,
-            "requests": 7,
-            "total": 487891
+            "day": "2026-07-30",
+            "input": 3171093,
+            "output": 66083,
+            "requests": 111,
+            "total": 4494860
           },
           {
             "cacheCreation": 0,
-            "cacheRead": 408808,
+            "cacheRead": 1069834,
+            "costUsd": 0,
+            "day": "2026-08-09",
+            "input": 1761122,
+            "output": 45883,
+            "requests": 80,
+            "total": 2876839
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 287909,
             "costUsd": 0,
             "day": "2026-08-26",
-            "input": 370439,
-            "output": 2681,
-            "requests": 6,
-            "total": 781928
+            "input": 865956,
+            "output": 28025,
+            "requests": 25,
+            "total": 1181890
           }
         ],
         "perModel": {},
         "totalUsd": 0,
         "unpriced": [
-          "gpt-5.6-sol"
+          "gpt-5-mini",
+          "gpt-5.4",
+          "gpt-5.5",
+          "gpt-5.6"
         ],
         "usageByModel": {
-          "gpt-5.6-sol": {
+          "gpt-5-mini": {
             "cacheCreation": 0,
-            "cacheRead": 653405,
-            "events": 13,
-            "input": 609524,
-            "output": 6890
+            "cacheRead": 134997,
+            "events": 12,
+            "input": 317778,
+            "output": 7130
+          },
+          "gpt-5.4": {
+            "cacheCreation": 0,
+            "cacheRead": 1472828,
+            "events": 120,
+            "input": 3571756,
+            "output": 71091
+          },
+          "gpt-5.5": {
+            "cacheCreation": 0,
+            "cacheRead": 407245,
+            "events": 38,
+            "input": 906062,
+            "output": 36133
+          },
+          "gpt-5.6": {
+            "cacheCreation": 0,
+            "cacheRead": 600357,
+            "events": 46,
+            "input": 1002575,
+            "output": 25637
           }
         }
       }

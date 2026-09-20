@@ -18,7 +18,7 @@ import {
   generateUsageTree,
 } from "./helpers/usage_fixtures.ts";
 
-const PINNED_CORPUS_DIGEST = "c690363809f606f6f680264f49d9aba0fac771ee171a38f848d613eea6694a16";
+const PINNED_CORPUS_DIGEST = "6b772b285c440909add90b3ff7a438833c664a89a585475b1802ef9b0dd8b5b0";
 
 /** The ledger with its raw model ids folded onto the readers' canonical spelling. */
 function canonical(report: ExpectedReport): ExpectedReport {

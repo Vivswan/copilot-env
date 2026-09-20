@@ -1,4 +1,4 @@
-// The usage index on a seeded tree of real-log shape: the index agrees with the plain parse
+// The usage index on a seeded synthetic tree: the index agrees with the plain parse
 // cold and warm, a warm `agent cost` reads no session bytes and re-parses nothing, an append
 // is read as its new bytes plus the probe, a deleted session leaves the index, and no planted
 // text reaches the index file. Timings are logged, never asserted. In process throughout;

@@ -1,6 +1,12 @@
-// Synthetic Codex rollout and Claude transcript trees for the usage readers: a PROFILE measured
-// from real logs (numbers and schema words only) and a GENERATOR sampling it into real-shaped
-// files, deterministic per seed on every OS (one PRNG, no clock, no environment, UTC), with a ledger.
+// Synthetic Codex rollout and Claude transcript trees for the usage readers. A PROFILE holds
+// distributions (quantile ladders, shares, schema words); a GENERATOR samples it into log-shaped
+// files with a ledger of what it planted. Generation is deterministic per seed on every OS: one
+// PRNG, no clock, no environment, UTC.
+//
+// The committed profile (test/fixtures/usage/profile.json) is HAND-AUTHORED: round numbers on
+// simple ladders, invented for the generator and derived from no one's logs. The profiler
+// (scripts/usage_profile.ts) writes the same schema from a machine's logs for local experiments;
+// its output is personal data and never replaces the committed file.
 import { Buffer } from "node:buffer";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -887,8 +893,8 @@ function codexRoundTrip(
   }
 }
 
-/** File and line sizes both follow the profile and the event count per file emerges, as in the
- *  real logs: the LAST turn runs until the file reaches its sampled size, capped at
+/** File and line sizes both follow the profile and the event count per file emerges, as it
+ *  does in a rollout: the LAST turn runs until the file reaches its sampled size, capped at
  *  MAX_EVENTS_PER_TURN round trips. */
 function codexTurn(
   g: Generator,

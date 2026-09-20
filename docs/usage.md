@@ -72,7 +72,7 @@ agent --full-help          # help for agent and every subcommand, every flag inc
 
 `agent install` and `agent migrate <from> <to>` are run for you by the installer and `agent update`. You run one by hand only when a message tells you to: `agent migrate <from> <to>` after a migration step did not complete, or `agent install` to refresh the current version in place.
 
-`agent settings --import` is non-destructive: preferences are full-replace, credentials are preserve-if-absent, and the stores are backed up first. A rollback re-imports the backup but never deletes profiles.
+`agent settings --export` redacts every token unless `--with-credentials`. `agent settings --import` is non-destructive: preferences are full-replace, credentials are preserve-if-absent, and the stores are backed up first. A rollback re-imports the backup but never deletes profiles.
 
 On Windows the same commands run via `agent` once the profile is wired, or directly: `powershell -ExecutionPolicy Bypass -File bin\agent.ps1 <cmd>`.
 
@@ -225,4 +225,4 @@ Re-parsing every log on each run is slow, so the readers keep a usage index.
 - **Also there:** the two things that ARE cached, the public OpenRouter price list (`pricing-*.json`) and GitHub's rate card (`rate-card-*.json`), each with a 24-hour TTL. `agent uninstall` removes all of it.
 - **Verify it:** `agent cost --no-index` parses every file from scratch.
 
-`agent credits` reports this month's Copilot AI credits: spent, projected, and paced against the plan and the optional [`cost.credits-target`](configuration.md#cost). It is one live read of GitHub's meter; nothing local.
+`agent credits` reports this month's Copilot AI credits: spent, projected, and paced against the plan and the optional [`cost.credits-target`](configuration.md#cost). Credits are 100 to the dollar. It is one live read of GitHub's meter; nothing local.

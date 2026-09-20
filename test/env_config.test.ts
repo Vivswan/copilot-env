@@ -828,12 +828,14 @@ const PLAIN_TABLE = {
 
 test("configTable() renders the header, the groups, and key=value rows with type, default, and description in one 80-column layout", () => {
   // Stored: a plain flag, a key applied without the daemon, a POSIX-only key on Windows (inert
-  // there), and the key whose default is a URL too long to share a line with its type.
+  // there), the key whose default is a URL too long to share a line with its type, and a model id
+  // long enough to push the right column to its 30-column floor.
   const global = {
     "daemon.strict-port": true,
     "shell.launchers": true,
     "codex.host": true,
     "cost.pricing-url": "https://prices.example/api/v1/models/latest",
+    "proxy.alpha-search.model": "gpt-5.6-sol-preview",
   };
   const data = stored(global);
   const rendered = configTable(data, { ...PLAIN_TABLE, platform: "win32" });
@@ -841,7 +843,7 @@ test("configTable() renders the header, the groups, and key=value rows with type
   // The header's halves pack to the width like words; at 80 the count and the set syntax share
   // the first line, the rest the second.
   expect(lines.slice(0, 4)).toEqual([
-    `4 of ${MACHINE_AND_SHARED_KEYS} keys set (*).  |  agent config set <key> <value> (or <key>=<value>)`,
+    `5 of ${MACHINE_AND_SHARED_KEYS} keys set (*).  |  agent config set <key> <value> (or <key>=<value>)`,
     "agent config unset <key> reverts",
     "a profile's own keys: agent profile [<name>] set|unset|get",
     "",
@@ -910,25 +912,27 @@ test("configTable() renders the header, the groups, and key=value rows with type
     `  * codex.host=true`.padEnd(column) + "[bool] default false",
   );
   expect(lines[rowAt("codex.host") + 1]).toBe(" ".repeat(column) + "(inert on this platform)");
-  // The description follows the type line at the column, wrapped on spaces to the width and
-  // re-joining to the registry text; a long one takes more than one line.
+  // The description follows the type line at the column. The stored model id above has pushed the
+  // right column down to its 30-column floor, and every registry describe still takes ONE line
+  // there, so `agent config` never wraps a description at 80 columns whatever value is stored.
+  expect(column).toBe(PLAIN_TABLE.width - 30);
   const describeLines = (key: string): string[] => {
     const out: string[] = [];
     for (const l of lines.slice(rowAt(key) + 1)) {
-      if (!l.startsWith(" ".repeat(column)) || l.startsWith(" ".repeat(column + 1))) break;
-      out.push(l.slice(column));
+      if (l.startsWith(" ".repeat(column)) && !l.startsWith(" ".repeat(column + 1))) {
+        out.push(l.slice(column));
+      } else if (out.length === 0 && /^ {6}\S/.test(l)) {
+        continue; // the remainder of a key=value lead wider than the column
+      } else break;
     }
     // The right column's `[type]` line sits on the row line, or below it for an overflowing
     // key=value; either way the description is what remains.
     return out.filter((l) => !l.startsWith("["));
   };
   // Among the UNSTORED keys, whose right column is the type line and the description only.
-  const longest = CONFIG_REGISTRY.filter((d) => d.scope !== "profile" && !(d.key in global)).reduce(
-    (a, b) => a.describe.length > b.describe.length ? a : b,
-  );
-  expect(longest.describe.length).toBeGreaterThan(PLAIN_TABLE.width - column);
-  expect(describeLines(longest.key).length).toBeGreaterThan(1);
-  expect(describeLines(longest.key).join(" ")).toBe(longest.describe);
+  for (const def of CONFIG_REGISTRY.filter((d) => d.scope !== "profile" && !(d.key in global))) {
+    expect(describeLines(def.key), def.key).toEqual([def.describe]);
+  }
   // With no daemon the restart line never prints; with one, only a stored key the daemon read
   // at launch (projected or restartToApply) gets it -- not a stored key applied another way.
   expect(rendered).not.toContain("restart the proxy to apply");
@@ -936,13 +940,12 @@ test("configTable() renders the header, the groups, and key=value rows with type
     "\n",
   );
   // The right column's cells may wrap before the restart line, so it is looked for anywhere
-  // under the row.
+  // under the row; a table without the wide stored value has a narrower column, so the indent is
+  // not pinned here.
   const restartUnder = (out: string[], key: string): boolean => {
     const at = out.findIndex((l) => rowRe.exec(l)?.[2] === key);
     const under = out.slice(at + 1).findIndex((l) => rowRe.test(l) || l === "");
-    return out.slice(at + 1, at + 1 + under).includes(
-      " ".repeat(column) + "restart the proxy to apply",
-    );
+    return out.slice(at + 1, at + 1 + under).some((l) => l.trim() === "restart the proxy to apply");
   };
   expect(restartUnder(live, "daemon.strict-port")).toBe(true);
   expect(restartUnder(live, "shell.launchers")).toBe(false);
@@ -1132,7 +1135,8 @@ test("configTable() narrows with the width: the header packs to it, the right co
   const strict = out.indexOf("  * daemon.strict-port=true");
   expect(strict).toBeGreaterThan(0);
   expect(out[strict + 1]).toBe("      [bool] default false");
-  expect(out[strict + 2]?.startsWith("      Fail start on a busy port")).toBe(true);
+  const strictDescribe = CONFIG_REGISTRY.find((d) => d.key === "daemon.strict-port")?.describe;
+  expect(out[strict + 2]).toBe(`      ${strictDescribe}`);
   // A banner whose title leaves the note too little room stacks it under the title instead of
   // running past the width: the longest profile name fills the width on its own.
   const longName = parseProfileName("a".repeat(32));

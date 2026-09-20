@@ -566,6 +566,27 @@ test("`agent config set --dry-run` shows the preference's stored value moving, a
   expect(new CopilotEnvConfig().read().global["daemon.idle-timeout"]).toBe(30);
 });
 
+// Both price-source URLs may carry a token in their query, so the store's plan redacts their leaf
+// while every other preference prints in the clear.
+for (const key of ["cost.pricing-url", "cost.github-pricing-url"] as const) {
+  test(`\`agent config set ${key} --dry-run\` redacts the URL's row`, async () => {
+    const out = await dryRun(() =>
+      Promise.resolve(
+        runConfig({
+          kind: "set",
+          key,
+          value: "https://prices.example/list?token=SECRET-URL-TOKEN",
+          view: { kind: "config" },
+          dryRun: true,
+        }),
+      )
+    );
+    expect(out).toContain(`global."${key}"  (absent) -> <redacted>`);
+    expect(out).not.toContain("SECRET-URL-TOKEN");
+    expect(out).not.toContain("prices.example");
+  });
+}
+
 // The import previews the bundle's changes, the pre-import backup, and the prune that backup
 // triggers, with no confirmation or write; the plan's rows on the pile equal the real run's change
 // set there.

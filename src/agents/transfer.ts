@@ -97,7 +97,10 @@ export interface SettingsBundle {
 /** Preferences whose VALUE may carry a credential (a price-list URL can hold a token in its
  *  query): exported as REDACTED_TOKEN by default and, on import, treated like a redacted token
  *  (the local value stays). Absence still means unset, as for every other preference. */
-const CREDENTIAL_BEARING_PREFS = ["cost.pricing-url"] as const satisfies readonly GlobalMapKey[];
+const CREDENTIAL_BEARING_PREFS = [
+  "cost.pricing-url",
+  "cost.github-pricing-url",
+] as const satisfies readonly GlobalMapKey[];
 
 /** Whether the bundle carries the redaction marker for `key` instead of a value. */
 function isRedactedPref(config: CopilotEnvConfigData, key: GlobalMapKey): boolean {
@@ -962,7 +965,7 @@ function pruneSettingsBackups(dir: string, landed: string): void {
 }
 
 /** The bundle's token-bearing leaves, redacted in a preview of the backup: every slot's token and
- *  the one credential-bearing preference. */
+ *  the credential-bearing preferences. */
 function backupSecretKeys(bundle: SettingsBundle): string[] {
   return [
     "credential.githubToken",

@@ -1,6 +1,11 @@
 // Measure this machine's Codex and Claude session logs, read-only, into the DISTRIBUTIONS the
 // generator (test/helpers/usage_fixtures.ts) samples from: quantile tables, shares and schema
-// words only, never text, ids or paths. Invoked as `deno task usage:profile [-- --out FILE]`.
+// words only, never text, ids or paths. Invoked as `deno task usage:profile --out FILE`.
+//
+// The output is personal data (one machine's usage fingerprint), so `--out` is required and
+// must point outside the repository: a path inside this checkout is refused before any log is
+// read. The committed profile (test/fixtures/usage/profile.json) is hand-authored, never this
+// script's output.
 import { Buffer } from "node:buffer";
 import {
   createReadStream,
@@ -12,13 +17,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { zstdDecompressSync } from "node:zlib";
 import { resolveClaudeHome } from "../src/claude/paths.ts";
 import { knownCodexHomes } from "../src/codex/host.ts";
 import { isEnoentOrNotdir } from "../src/utils/fs.ts";
 import { isRecord } from "../src/utils/json.ts";
 import { localDayKey } from "../src/utils/time.ts";
-import { mulberry32, PROFILE_PATH, type Rng } from "../test/helpers/usage_fixtures.ts";
+import { mulberry32, type Rng } from "../test/helpers/usage_fixtures.ts";
 import {
   claudeLineType,
   codexLineType,
@@ -47,13 +53,17 @@ const CODEX_MAX_DEPTH = 4;
 const CLAUDE_FILE = /\.jsonl$/;
 const CLAUDE_MAX_DEPTH = 8;
 const SYNTHETIC_MODEL = "<synthetic>";
+/** This checkout, symlinks resolved: the one place the profile must never be written. */
+const REPO_ROOT = realpathSync(fileURLToPath(new URL("..", import.meta.url)));
 
 function usage(): string {
-  return `Usage: deno task usage:profile [-- --out FILE] [--seed N]
+  return `Usage: deno task usage:profile --out FILE [--seed N]
 
 Walks the Codex session roots (sessions/, archived_sessions/ under every known
 Codex home) and the Claude transcript root (<claude-home>/projects) read-only
-and writes a distributions-only profile to FILE (default: ${PROFILE_PATH}).`;
+and writes a distributions-only profile to FILE. The profile is personal data
+(this machine's usage fingerprint): FILE is required and must lie outside the
+repository; a path inside this checkout is refused.`;
 }
 
 function die(message: string): never {
@@ -66,8 +76,33 @@ interface Args {
   seed: number;
 }
 
+/** `file` resolved against the cwd with the symlinks of its longest existing prefix followed:
+ *  a link into the checkout, whether the file itself or a directory above it, names the checkout. */
+function realTarget(file: string): string {
+  let existing = path.resolve(file);
+  const missing: string[] = [];
+  for (;;) {
+    try {
+      return path.join(realpathSync(existing), ...missing);
+    } catch {
+      const parent = path.dirname(existing);
+      // A root that cannot be resolved (an absent drive): the lexical path is all there is.
+      if (parent === existing) return path.join(existing, ...missing);
+      missing.unshift(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+/** Whether `file` would land inside this checkout. */
+function insideRepository(file: string): boolean {
+  const rel = path.relative(REPO_ROOT, path.dirname(realTarget(file)));
+  return rel === "" || (!path.isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${path.sep}`));
+}
+
 function parseArgs(argv: string[]): Args {
-  const args: Args = { out: PROFILE_PATH, seed: 1 };
+  let out: string | undefined;
+  let seed = 1;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
@@ -76,17 +111,23 @@ function parseArgs(argv: string[]): Args {
     }
     const value = argv[i + 1];
     if (arg === "--out" && value !== undefined) {
-      args.out = value;
+      out = value;
       i++;
     } else if (arg === "--seed" && value !== undefined) {
-      args.seed = Number(value);
-      if (!Number.isInteger(args.seed)) die(`--seed must be an integer, got '${value}'`);
+      seed = Number(value);
+      if (!Number.isInteger(seed)) die(`--seed must be an integer, got '${value}'`);
       i++;
     } else {
       die(`unknown argument '${arg}'\n\n${usage()}`);
     }
   }
-  return args;
+  if (out === undefined) die(`--out FILE is required\n\n${usage()}`);
+  if (insideRepository(out)) {
+    die(
+      `refusing to write ${out}: it lies inside the repository checkout (${REPO_ROOT}); the profile is personal data, name a path outside it`,
+    );
+  }
+  return { out, seed };
 }
 
 // ---------- accumulators ----------

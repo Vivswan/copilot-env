@@ -1,6 +1,8 @@
 // The profiler cuts lines the way the readers do: on LF alone. Over one transcript whose
 // content carries U+2028, U+2029, NEL, a CRLF ending, a raw CR, and an unterminated final
 // fragment, the profile counts three lines; node:readline read the same file as seven.
+// Its output is personal data: `--out` is required and a path inside the checkout is refused
+// before any log is read.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { zstdCompressSync } from "node:zlib";
 import { join } from "node:path";
@@ -99,4 +101,26 @@ test("usage_profile reads LF-terminated lines only: separators, a raw CR, and a 
   });
   expect(Object.keys(claude.models)).toEqual(["claude-opus-4-8"]);
   expect(claude.models["claude-opus-4-8"]?.output).toMatchObject({ count: 2, p5: 2, p99: 20 });
+});
+
+test("usage_profile requires --out and refuses a path inside the repository before reading a log", () => {
+  const root = tempDir("usage-profile-out-");
+  const script = join(ROOT, "scripts", "usage_profile.ts");
+  const env = { ...process.env, ...usageTreeEnv(root), COPILOT_ENV_ROOT_HOME: undefined };
+
+  const missing = runScript(script, [], { env });
+  expect(missing.exitCode).toBe(1);
+  expect(missing.stderr).toContain("--out FILE is required");
+  expect(missing.stderr).toContain("Usage: deno task usage:profile --out FILE");
+
+  // The committed fixture's own path, relative to the checkout the way `deno task` runs it.
+  const fixture = join("test", "fixtures", "usage", "profile.json");
+  const inside = runScript(script, ["--out", fixture], { env, cwd: ROOT });
+  expect(inside.exitCode).toBe(1);
+  expect(inside.stderr).toContain(`refusing to write ${fixture}: it lies inside the repository`);
+  expect(inside.stderr).not.toContain("profiling");
+
+  // A path outside the checkout is accepted: the refusal is about the place, not the flag.
+  const accepted = runScript(script, ["--out", join(root, "profile.json")], { env, cwd: ROOT });
+  expect(accepted.stderr).toContain("profiling 0 codex rollout files");
 });

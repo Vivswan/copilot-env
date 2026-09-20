@@ -221,7 +221,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     .option("--proxy", "Wire to the local proxy (a named profile: its own daemon).")
     .option("--auto", AUTO_HELP)
     .option("--yes", "Switch a recorded mode without asking.")
-    .option("--no-auth", "Record the mode only; sign in later with `auth`.")
+    .option("--no-auth", "Skip the sign-in; with no credential pass --direct or --proxy.")
     .option("--dry-run", DRY_RUN_HELP)
     .action(async (opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "add", rawProfile);
@@ -372,11 +372,10 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   verb(
     "check",
     "Report its recorded mode by exit code",
-    "Report this profile's recorded mode by exit code: 0 Direct, 2 proxy, 1 none or partial. " +
-      "With --claude | --codex, that agent's own file: 0 Direct, 2 proxy or none, 1 other.",
+    "Report this profile's recorded mode by exit code: 0 Direct, 2 proxy, 1 none or partial.",
   )
-    .option("--claude", "Check Claude Code's settings file.")
-    .option("--codex", "Check Codex's config.")
+    .option("--claude", "Claude Code's settings file: 0 Direct, 2 proxy or none, 1 other.")
+    .option("--codex", "Codex's config: 0 Direct, 2 proxy or none, 1 other.")
     .action((opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "check", rawProfile);
       const agent = agentFlag(opts);
@@ -443,7 +442,7 @@ export function registerInitCommand(program: Command): void {
     .option("--proxy", "Wire both agents to the local proxy; no probe.")
     .option("--auto", AUTO_HELP)
     .option("--yes", "Switch a recorded mode without asking.")
-    .option("--no-auth", "Skip the sign-in step; `agent auth` runs it later.")
+    .option("--no-auth", "Skip the sign-in; with no credential pass --direct or --proxy.")
     .option("--dry-run", DRY_RUN_HELP)
     .action(async (opts: Opts) => {
       await confirmModeChange(opts, null);

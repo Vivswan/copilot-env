@@ -227,6 +227,6 @@ Re-parsing every log on each run is slow, so the readers keep a usage index.
 
 `--days N` takes a whole number as local calendar days (`1` = today, `7` = today and the six days before) and a decimal as an exact span of 24-hour days (`0.5` = the last 12 hours).
 
-Active days are the local calendar days with at least one request across the shown sources; Avg/day divides each total by their count, and Median/day takes each column's median across them, so the columns need not sum.
+Active days are the local calendar days with at least one request in the table's sources; Avg/day divides each total by their count, and Median/day takes each column's median across them, so the columns need not sum.
 
 `agent credits` reports this month's Copilot AI credits: spent, projected, and paced against the plan and the optional [`cost.credits-target`](configuration.md#cost). Credits are 100 to the dollar. It is one live read of GitHub's meter; nothing local.

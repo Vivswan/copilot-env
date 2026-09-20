@@ -143,10 +143,10 @@ export function registerMachineCommands(program: Command): void {
     .helpGroup("Maintenance:")
     .summary("Update copilot-env to the latest release")
     .description(
-      "Update copilot-env to the latest release: download it, verify its provenance, swap it " +
-        "in, and run the migrations due.",
+      "Update copilot-env to the latest release: download it, verify its provenance unless " +
+        "opted out, swap it in, and run the migrations due.",
     )
-    .option("--check", "Report only; exit 0 current, 1 update, 2 no release.")
+    .option("--check", "Report only; exit 0 current, 1 update, 2 unresolved.")
     .option("--force", "Update a source checkout too (overwrites local files).")
     .option("--auto-status", "Report the daily self-update's status and exit.")
     .option("--verify", "Verify Sigstore provenance (the default).")
@@ -178,7 +178,7 @@ export function registerMachineCommands(program: Command): void {
       coerceDays,
     )
     .option("--no-sudo", "With --clis: no sudo or system package managers.")
-    .option("--no-prereqs", "With --clis: check prerequisites only, install nothing.")
+    .option("--no-prereqs", "With --clis: check prerequisites and CLIs; install nothing.")
     .option("--all-hosts", "Windows: wire the CurrentUserAllHosts profile.")
     .option("--remove", "Take the block out again (config keys untouched).")
     .option("--dry-run", DRY_RUN_HELP)

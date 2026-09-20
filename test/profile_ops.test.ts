@@ -2,7 +2,7 @@
 // health models credits settings) route onto the functions the base's flat `--profile <name>`
 // spellings called. The oracle is the base's own output: test/fixtures/cli_redesign/
 // profile_ops_oracle.json holds what each old spelling printed (stdout, exit code) in a scratch
-// HOME, and the new spelling must print the same. The two default-profile aliases (start, stop)
+// HOME, and the new spelling must print the same. The default-profile aliases (start, stop, models)
 // are proven against their verbs live, in twin homes; the flat spellings are gone; a profile's
 // settings bundle is that profile alone.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -126,7 +126,7 @@ test(
 );
 
 test(
-  "the default-profile aliases are one code path with their verbs: start and stop in twin homes",
+  "the default-profile aliases are one code path with their verbs: start, stop, and models in twin homes",
   () => {
     const twins = [scratchHome(), scratchHome()] as const;
     for (const s of twins) {
@@ -146,6 +146,19 @@ test(
       );
       expect(seen.exitCode, alias.join(" ")).toBe(exitCode);
     }
+    // The proxy catalog with no daemon names the daemon to start (auto would fall through to
+    // Direct and the network, where the two would fail alike for the wrong reason).
+    const models = expectIdentical(
+      { args: ["models", "--proxy"], scratch: twins[0] },
+      { args: ["profile", "models", "--proxy"], scratch: twins[1] },
+    );
+    expect(models.exitCode).toBe(1);
+    expect(models.stderr).toContain("the local proxy is not running");
+    // An alias takes no name: a word after it never runs the default's verb; the refusal names it.
+    const strayName = observe(["models", "work"], twins[0]);
+    expect(strayName.exitCode).toBe(1);
+    expect(strayName.stdout).toBe("");
+    expect(strayName.stderr).toContain("work");
     // --all takes no name: the named verb refuses it.
     const namedAll = observe(["profile", "work", "stop", "--all"], twins[0]);
     expect(namedAll.exitCode).toBe(1);
@@ -156,7 +169,7 @@ test(
     expect(ghost.exitCode).toBe(1);
     expect(ghost.stdout).toBe("");
     expect(ghost.stderr).toContain("no such profile 'ghost'");
-    // Fourteen cold CLI spawns; generous headroom for loaded Windows CI runners.
+    // Seventeen cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
   300_000,
 );

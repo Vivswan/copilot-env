@@ -6,9 +6,14 @@ import "./utils/dotenv.ts";
 import { Command, Help, type Option } from "commander";
 import { consola } from "consola";
 import { registerMachineCommands } from "./commands/machine.ts";
-import { registerDaemonAliases, registerEverywhereCommands } from "./commands/profile_ops.ts";
+import {
+  registerDaemonAliases,
+  registerEverywhereCommands,
+  registerModelsCommand,
+} from "./commands/profile_ops.ts";
 import {
   registerAuthCommand,
+  registerIdentityCommand,
   registerInitCommand,
   registerListCommand,
   registerProfileCommand,
@@ -90,7 +95,10 @@ program.configureHelp(HELP_STYLES);
 // Commander renders help groups in first-appearance order, so `init` and `profile` come first.
 registerInitCommand(program);
 const profile = registerProfileCommand(program, invocation.profile);
+// The default profile's `auth`, `identity`, and `models`, one row after the other.
 registerAuthCommand(program);
+registerIdentityCommand(program);
+registerModelsCommand(program);
 registerListCommand(program);
 registerSyncCommand(program);
 // The default profile's `start` and `stop`, then the every-profile `health`, `credits`, and
@@ -103,8 +111,9 @@ registerMachineCommands(program);
 // The root help lists the profile verbs too, right after the `profile` row, one row per verb as
 // `profile [<name>] <verb>` with the summary `agent profile --help` shows for it. The listing is a
 // private renderer, never the program's configured help: Commander draws its unknown-command
-// suggestions from the configured `visibleCommands`, so a verb there would make `agent models`
-// suggest `models`. The subcommands keep the plain configuration they copied above.
+// suggestions from the configured `visibleCommands`, so a verb there would make `agent env`
+// suggest `env`, a command that does not exist (a verb with a top-level command of its own,
+// `models` say, is that command). The subcommands keep the plain configuration they copied above.
 const plainHelp = new Help();
 const rootListing = Object.assign(new Help(), HELP_STYLES, {
   visibleCommands: (cmd: Command): Command[] => {

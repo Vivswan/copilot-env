@@ -1,8 +1,9 @@
 // The runtime verbs of `agent profile [<name>] <verb>`: launch, env, proxy-token, mcp, start, stop,
 // health, models, credits, settings, each routed onto the command function that owned the flat
 // `--profile <name>` spelling. Registered from src/commands/profile_verbs.ts, which owns the tree
-// and hands over the name. The top-level `start` and `stop` are the default profile's aliases;
-// the top-level `health`, `credits`, and `settings` are the every-profile scope of the same words.
+// and hands over the name. The top-level `models`, `start`, and `stop` are the default profile's
+// aliases; the top-level `health`, `credits`, and `settings` are the every-profile scope of the
+// same words.
 import type { Command } from "commander";
 import { parseModeFlags } from "../agents/provider_mode.ts";
 import type { ProfileVerb } from "../copilot_api/profile.ts";
@@ -100,6 +101,17 @@ function mcpAction(opts: Opts, profile: string | undefined): Promise<void> {
     model: opts.model === undefined ? undefined : String(opts.model),
     dryRun: Boolean(opts.dryRun),
   });
+}
+
+function addModelsOptions(cmd: Command): Command {
+  return cmd
+    .option("--proxy", "Read the running proxy's catalog.")
+    .option("--direct", "Fetch from GitHub Copilot Direct.")
+    .option("--json", "Print JSON instead of the table.");
+}
+
+function modelsAction(opts: Opts, profile: string | undefined): Promise<void> {
+  return runModels({ mode: parseModeFlags(opts), json: Boolean(opts.json), profile });
 }
 
 function addHealthOptions(cmd: Command): Command {
@@ -264,19 +276,17 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
     return runHealth({ ...healthFlags(opts), profile });
   });
 
-  verb(
-    "models",
-    "List the models its credential can use",
-    "List the models GitHub Copilot serves this profile's credential, from its running proxy " +
-      "or from Direct.",
-  )
-    .option("--proxy", "Read the running proxy's catalog.")
-    .option("--direct", "Fetch from GitHub Copilot Direct.")
-    .option("--json", "Print JSON instead of the table.")
-    .action((opts: Opts, cmd: Command) => {
-      refuseStrayWords(cmd, "models");
-      return runModels({ mode: parseModeFlags(opts), json: Boolean(opts.json), profile });
-    });
+  addModelsOptions(
+    verb(
+      "models",
+      "List the models its credential can use",
+      "List the models GitHub Copilot serves this profile's credential, from its running proxy " +
+        "or from Direct.",
+    ),
+  ).action((opts: Opts, cmd: Command) => {
+    refuseStrayWords(cmd, "models");
+    return modelsAction(opts, profile);
+  });
 
   addCreditsOptions(
     verb(
@@ -304,6 +314,20 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
 }
 
 // --- the top level -------------------------------------------------------------------------------
+
+/** `agent models`: the default profile's verb, as its own command. */
+export function registerModelsCommand(program: Command): void {
+  addModelsOptions(
+    program
+      .command("models")
+      .helpGroup("Settings:")
+      .summary("List the models the default profile can use")
+      .description(
+        "List the models GitHub Copilot serves the default profile's credential, from its " +
+          "running proxy or from Direct. Named profile: `agent profile <name> models`.",
+      ),
+  ).action((opts: Opts) => modelsAction(opts, undefined));
+}
 
 /** `agent start` and `agent stop`: the default profile's verbs, as their own commands. */
 export function registerDaemonAliases(program: Command): void {

@@ -4,9 +4,9 @@
 // PRNG, no clock, no environment, UTC.
 //
 // The committed profile (test/fixtures/usage/profile.json) is HAND-AUTHORED: round numbers on
-// simple ladders, invented for the generator and derived from no one's logs. The profiler
-// (scripts/usage_profile.ts) writes the same schema from a machine's logs for local experiments;
-// its output is personal data and never replaces the committed file.
+// simple ladders, invented for the generator, and never regenerated from real logs. The profiler
+// (scripts/usage_profile.ts) writes the same schema from a machine's logs; its output is personal
+// data, so run it only with `--out` pointing outside the repository.
 import { Buffer } from "node:buffer";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";

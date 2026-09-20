@@ -31,9 +31,12 @@ precedence over $env:COPILOT_ENV_INSTALL_REF.
 .PARAMETER NoShellIntegration
 Do not wire the PowerShell $PROFILE. Run `agent shell` later to enable it.
 
-.PARAMETER NoExecShell
-Do not offer to reload your shell at the end. The offer is also skipped when
-non-interactive or under CI, or when $env:COPILOT_ENV_NO_EXEC_SHELL is set.
+.PARAMETER Yes
+Reload your shell at the end without asking.
+
+.PARAMETER No
+Do not reload your shell at the end, and do not ask. The offer is also skipped
+when non-interactive or under CI, or when $env:COPILOT_ENV_NO_EXEC_SHELL is set.
 
 .PARAMETER AllHosts
 Wire the shell integration into the CurrentUserAllHosts PowerShell profile
@@ -48,10 +51,12 @@ param(
     [string]$InstallDir = '',
     [string]$Version = '',
     [switch]$NoShellIntegration,
-    [switch]$NoExecShell
+    [switch]$Yes,
+    [switch]$No
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Yes -and $No) { throw '-Yes and -No conflict; pass one.' }
 $PSNativeCommandUseErrorActionPreference = $false
 
 # Windows PowerShell 5.1 inherits .NET Framework's protocol default, which can exclude the
@@ -266,15 +271,22 @@ if ($LASTEXITCODE -ne 0) { throw 'copilot-env install failed.' }
 # UserInteractive plus an unredirected stdin is the PowerShell form of install.sh's tty gate.
 # PowerShell has no `exec`, so the reload is a nested interactive shell: it loads the $PROFILE
 # the integration now lives in, and control returns here when the user exits it.
-$execShell = -not $NoExecShell -and -not $env:COPILOT_ENV_NO_EXEC_SHELL
+# The answer to the offer: an explicit switch wins over the environment.
+$reloadShell = if ($Yes) { 'yes' }
+elseif ($No -or $env:COPILOT_ENV_NO_EXEC_SHELL) { 'no' }
+else { 'ask' }
 $canPrompt = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
-if (-not $NoShellIntegration -and $execShell -and -not $env:CI -and $canPrompt) {
-    # Read-Host can still fail on hosts with no real console; skip the offer rather than
-    # abort a successful install if it does.
-    try {
-        $answer = Read-Host 'Reload your shell now to activate copilot-env? [Y/n]'
-    } catch {
-        $answer = 'n'
+if (-not $NoShellIntegration -and $reloadShell -ne 'no' -and -not $env:CI -and $canPrompt) {
+    if ($reloadShell -eq 'yes') {
+        $answer = 'y'
+    } else {
+        # Read-Host can still fail on hosts with no real console; skip the offer rather than
+        # abort a successful install if it does.
+        try {
+            $answer = Read-Host 'Reload your shell now to activate copilot-env? [Y/n]'
+        } catch {
+            $answer = 'n'
+        }
     }
     if ($answer -notmatch '^[Nn]') {
         $shellExe = (Get-Process -Id $PID).Path
@@ -282,4 +294,6 @@ if (-not $NoShellIntegration -and $execShell -and -not $env:CI -and $canPrompt) 
         Write-Host "Reloading $shellExe ..."
         & $shellExe -NoLogo
     }
+} elseif ($reloadShell -eq 'yes') {
+    [Console]::Error.WriteLine('-Yes: nothing to reload (no shell integration, CI, or no terminal).')
 }

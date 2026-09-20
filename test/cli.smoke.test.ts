@@ -315,7 +315,7 @@ test("codex exposes and runs check mode", () => {
     env: isolatedEnv({ CODEX_HOME: codexHome }),
   });
   expect(conflicting.exitCode).toBe(1);
-  expect(conflicting.stderr).toContain("--direct and --proxy are mutually exclusive");
+  expect(conflicting.stderr).toContain("--direct, --proxy, and --auto are mutually exclusive");
 });
 
 test("claude exposes and runs check mode", () => {
@@ -354,7 +354,7 @@ test("claude exposes and runs check mode", () => {
     env: isolatedEnv({ CLAUDE_CONFIG_DIR: proxyHome }),
   });
   expect(conflicting.exitCode).toBe(1);
-  expect(conflicting.stderr).toContain("--direct and --proxy are mutually exclusive");
+  expect(conflicting.stderr).toContain("--direct, --proxy, and --auto are mutually exclusive");
 });
 
 test("launch --help documents the contract; bad invocations are boundary rejections", () => {
@@ -427,11 +427,12 @@ test("profile add reconciles the Desktop library after its write; --check report
   expect(after.stdout).toMatch(/Claude Desktop: "copilot-env" \(proxy\) wired at /);
 }, 60_000);
 
-test("init configures both agents and rejects --direct + --proxy", () => {
+test("init configures both agents, probes with no flag exactly as with --auto, and rejects a mode-flag pair", () => {
   const help = helpScreen("init", "--help");
   expect(help.exitCode).toBe(0);
   expect(help.output).toContain("--direct");
   expect(help.output).toContain("--proxy");
+  expect(help.output).toContain("--auto");
 
   // --proxy forces BOTH agents to the proxy (no probe). Every wiring write logs in first, so
   // the headless run needs a stored credential.
@@ -440,6 +441,17 @@ test("init configures both agents and rejects --direct + --proxy", () => {
     CODEX_HOME: join(root, ".codex"),
     CLAUDE_CONFIG_DIR: join(root, ".claude"),
   });
+  // No flag and --auto are one path: with nothing to probe with (no credential, --no-auth), both
+  // refuse with the same line, before any mode is recorded.
+  const probing = ["--no-auth", "--auto --no-auth"].map((flags) =>
+    runCli(["init", ...flags.split(" ")], { env })
+  );
+  for (const refused of probing) {
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain(
+      "no credential to probe with; pass --direct or --proxy, or run without --no-auth",
+    );
+  }
   expect(runCli(["profile", "auth", "--set", "ghu_test"], { env }).exitCode).toBe(0);
   const proc = runCli(["init", "--proxy"], { env });
   expect(proc.exitCode).toBe(0);
@@ -448,9 +460,19 @@ test("init configures both agents and rejects --direct + --proxy", () => {
   expect(existsSync(join(root, ".codex", "config.toml"))).toBe(true);
   expect(existsSync(join(root, ".claude", "settings.json"))).toBe(true);
 
-  const conflict = runCli(["init", "--direct", "--proxy"], { env: isolatedEnv() });
+  // A NAMED profile with no flag stays sticky: a fresh one names its three choices (headless, so
+  // --no-auth keeps the credential step out of the way), and --auto without a credential has
+  // nothing to probe with.
+  const fresh = runCli(["profile", "work", "add", "--no-auth"], { env });
+  expect(fresh.exitCode).toBe(1);
+  expect(fresh.stderr).toContain("pass --direct, --proxy, or --auto: profile 'work'");
+  const freshAuto = runCli(["profile", "work", "add", "--auto", "--no-auth"], { env });
+  expect(freshAuto.exitCode).toBe(1);
+  expect(freshAuto.stderr).toContain("no credential to probe with");
+
+  const conflict = runCli(["init", "--auto", "--proxy"], { env: isolatedEnv() });
   expect(conflict.exitCode).toBe(1);
-  expect(conflict.stderr).toContain("--direct and --proxy are mutually exclusive");
+  expect(conflict.stderr).toContain("--direct, --proxy, and --auto are mutually exclusive");
 });
 
 test("the mode conflict is rejected at the boundary on every command that takes the pair", () => {
@@ -463,16 +485,16 @@ test("the mode conflict is rejected at the boundary on every command that takes 
     },
     {
       argv: ["init", "--direct", "--proxy"],
-      needle: "--direct and --proxy are mutually exclusive",
+      needle: "--direct, --proxy, and --auto are mutually exclusive",
     },
     {
       argv: ["profile", "add", "--direct", "--proxy"],
-      needle: "--direct and --proxy are mutually exclusive",
+      needle: "--direct, --proxy, and --auto are mutually exclusive",
     },
     // profile add keeps its own wording: a profile is one credential + one mode.
     {
       argv: ["profile", "work", "add", "--direct", "--proxy"],
-      needle: "--direct and --proxy are mutually exclusive (a profile has ONE mode)",
+      needle: "--direct, --proxy, and --auto are mutually exclusive (a profile has ONE mode)",
     },
   ];
   for (const { argv, needle } of rows) {

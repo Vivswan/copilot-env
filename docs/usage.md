@@ -12,9 +12,10 @@ The `agent` subcommands and the mechanisms behind the ones that need more than a
 
 ```bash
 agent profile [<name>] <verb>  # everything about ONE profile; no name = the default profile
-                           #   add --direct|--proxy [--yes] [--no-auth]  its mode (both agents), then the credential
-                           #                              step unless --no-auth; the default with no flag probes
-                           #                              direct vs proxy; a mode change asks first
+                           #   add --direct|--proxy|--auto [--yes] [--no-auth]  its mode (both agents), then the credential
+                           #                              step unless --no-auth; --auto signs in first and probes direct vs
+                           #                              proxy under that credential (the default with no flag probes
+                           #                              every run); a mode change asks first
                            #   del [--yes]                delete the named profile everywhere (asks first)
                            #   show                       mode, provider, daemon
                            #   auth                       its credential: --provider copilot|gh-cli|gh-token|gh-env,
@@ -43,7 +44,7 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #   settings --export|--import a bundle of this profile alone (same flags as agent settings)
                            #   reserved words, never a new profile's name: the verbs, help, and list
 agent list                 # every profile: NAME  MODE  PROVIDER  DAEMON (also bare `agent profile`)
-agent init [--direct|--proxy] [--yes] [--no-auth]  # = agent profile add for the default profile
+agent init [--direct|--proxy|--auto] [--yes] [--no-auth]  # = agent profile add for the default profile
 agent auth <flags>         # = agent profile auth for the default profile
 agent start <flags>        # = agent profile start for the default profile
 agent stop <flags>         # = agent profile stop for the default profile (--all stops every daemon)

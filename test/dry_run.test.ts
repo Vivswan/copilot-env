@@ -317,6 +317,7 @@ test("a dry run's auto-mode decision is the real one: the CLI smoke runs and its
   const descriptor: ProbeDescriptor = {
     cli: "claude",
     homeEnvVar: "CLAUDE_CONFIG_DIR",
+    updateCommand: "claude update",
     args: (prompt) => ["-p", prompt],
   };
   const smoke: DirectSmoke = {

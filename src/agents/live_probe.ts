@@ -13,6 +13,9 @@
 //                   (auth, network, 5xx, timeout) stops -> Direct on a pass, else the local proxy
 //                   with the last reason
 //   CLI absent   -> one minimal call to the wire with the wire pick, else the proxy
+//   CLI too old  -> Copilot's "does not support this model; version X or newer is required" reply
+//                   is no verdict: the probe throws CliTooOldError and the command exits 1 with the
+//                   repair, nothing recorded or written
 //
 //   a provider env var in the shell        -> dropped, so a leaked export cannot hijack auth
 //   the caller's cwd                       -> replaced by the temp home, so a project's own
@@ -63,6 +66,8 @@ export interface ProbeDescriptor {
   /** `home` is the temp config dir the probe points the CLI at; `model` pins the call to the
    *  catalog pick (null = the CLI's own choice). The per-CLI notes below say how. */
   args: (prompt: string, home: string, model: string | null) => string[];
+  /** What the too-old refusal (CliTooOldError) tells the user to run. */
+  updateCommand: string;
 }
 
 /** Stripped from the probe child so a stray export (an api key, an org, a base url, a config
@@ -78,6 +83,7 @@ const PROVIDER_ENV_PREFIXES = ["OPENAI_", "ANTHROPIC_", "CODEX_", "CLAUDE_"];
 export const CODEX_PROBE: ProbeDescriptor = {
   cli: "codex",
   homeEnvVar: "CODEX_HOME",
+  updateCommand: "agent shell --clis",
   // --skip-git-repo-check: the throwaway home has no `[projects]` trust list, so without it
   // codex refuses unless the cwd happens to be a git repo, and Direct detection would depend on
   // where `agent init` was invoked:
@@ -97,6 +103,7 @@ export const CODEX_PROBE: ProbeDescriptor = {
 export const CLAUDE_PROBE: ProbeDescriptor = {
   cli: "claude",
   homeEnvVar: "CLAUDE_CONFIG_DIR",
+  updateCommand: "claude update",
   // --bare forces auth through the apiKeyHelper alone (no OAuth, no keychain), so a Claude
   // subscription login cannot make Direct look available when the managed path is broken.
   //
@@ -118,6 +125,35 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
     prompt,
   ],
 };
+
+/** Copilot's reply when the CLI that made the call is older than the model needs ("Claude Code
+ *  2.1.181 does not support this model; version 2.1.251 or newer is required. Run 'claude update'
+ *  ..."), read by shape: the two versions around the fixed phrase, never a version literal. */
+const CLI_TOO_OLD_RE =
+  /(\d+(?:\.\d+)+) does not support this model; version (\d+(?:\.\d+)+) or newer is required/i;
+
+/** The one probe failure that is no verdict: an outdated CLI cannot judge Direct for the
+ *  credential, and a fall to the proxy would hide the repair. The probe stops here, before any
+ *  mode is recorded or any agent file is written, and the command exits 1 with this line. */
+export class CliTooOldError extends Error {
+  constructor(descriptor: ProbeDescriptor, installed: string, required: string) {
+    super(
+      `${descriptor.cli} is too old for Copilot Direct (${installed} installed, ${required} or ` +
+        `newer required); run \`${descriptor.updateCommand}\`, then retry (or pass --direct / ` +
+        "--proxy to skip the probe)",
+    );
+    this.name = "CliTooOldError";
+  }
+}
+
+/** Throws CliTooOldError when `detail` carries Copilot's too-old reply; every other detail is the
+ *  caller's to weigh (a model hop, or the proxy verdict). */
+function refuseTooOldCli(descriptor: ProbeDescriptor, detail: string | undefined): void {
+  const match = detail === undefined ? null : CLI_TOO_OLD_RE.exec(detail);
+  if (match === null) return;
+  const [, installed = "", required = ""] = match;
+  throw new CliTooOldError(descriptor, installed, required);
+}
 
 /** `detail` is the one-line failure reason lifted from the child's output, so a fallback to
  *  the proxy is never silent. */
@@ -336,6 +372,7 @@ export async function probeDirectWorks(
       );
       return true;
     }
+    refuseTooOldCli(descriptor, outcome.detail);
     logger.log(
       `    • the endpoint check did not succeed (${outcome.detail}) → using the local proxy`,
     );
@@ -380,6 +417,7 @@ export async function probeDirectWorks(
     };
     let outcome = await run(first.model);
     if (outcome.ok) return true;
+    refuseTooOldCli(descriptor, outcome.detail);
     let lastDetail = outcome.detail;
     const next = isModelRejection(lastDetail, first.model) ? await smoke.cliFallbackModel() : null;
     if (next !== null && !next.ok) {
@@ -392,6 +430,7 @@ export async function probeDirectWorks(
       );
       outcome = await run(next.model);
       if (outcome.ok) return true;
+      refuseTooOldCli(descriptor, outcome.detail);
       lastDetail = outcome.detail;
     }
     logger.log(
@@ -401,6 +440,7 @@ export async function probeDirectWorks(
     );
     return false;
   } catch (e) {
+    if (e instanceof CliTooOldError) throw e;
     logger.log(`    • the Direct probe errored (${errMessage(e)}) → using the local proxy`);
     return false;
   } finally {

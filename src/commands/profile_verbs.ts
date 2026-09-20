@@ -29,16 +29,22 @@ import { type ConfigView, resolveSetPair, runConfig } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
 import {
   type AddArgs,
+  type AddMode,
   addProfile,
   checkProfile,
   delProfile,
   listProfiles,
+  modeSwitchQuestion,
   showProfile,
   syncEveryProfile,
   syncProfile,
 } from "./profile.ts";
 import { registerProfileOps } from "./profile_ops.ts";
 import { DRY_RUN_HELP, type Opts } from "./registration.ts";
+
+/** The `--auto` option line `add` and `init` share. */
+const AUTO_HELP =
+  "Probe Copilot Direct vs the proxy and record the verdict (the default profile does this when no mode flag is given).";
 
 // Keyed exhaustively on AuthProvider so a membership change in env_state.ts fails the compile here
 // instead of drifting the help.
@@ -120,29 +126,34 @@ async function confirmOrRefuse(question: string, opts: Opts, what: string): Prom
   if (confirmed !== true) throw new Error(`${what} aborted - nothing was changed`);
 }
 
-const ONE_MODE = "--direct and --proxy are mutually exclusive (a profile has ONE mode)";
+const ONE_MODE = "--direct, --proxy, and --auto are mutually exclusive (a profile has ONE mode)";
 
-/** `add`'s question, asked only when an explicit flag moves a recorded mode. */
-async function confirmModeChange(opts: Opts, rawProfile: string | null): Promise<void> {
+/** The three mode flags as the body's AddMode: `auto` for --auto, `unflagged` for none. */
+function parseAddMode(opts: Opts): AddMode {
+  if ([opts.direct, opts.proxy, opts.auto].filter(Boolean).length > 1) throw new Error(ONE_MODE);
+  if (opts.auto) return "auto";
   const mode = parseModeFlags(opts, ONE_MODE);
-  if (mode === "auto") return;
+  return mode === "auto" ? "unflagged" : mode;
+}
+
+/** `add`'s question, asked here only when an explicit flag moves a recorded mode; a probe's
+ *  verdict that differs from the record is asked by the landing, after the probe. */
+async function confirmModeChange(opts: Opts, rawProfile: string | null): Promise<void> {
+  const mode = parseAddMode(opts);
+  if (mode === "auto" || mode === "unflagged") return;
   const profile = rawProfile === null ? null : parseProfileName(rawProfile);
   const recorded = new CopilotEnvState().readProfileSlot(profile).mode;
   if (recorded === null || recorded === mode) return;
-  const whose = rawProfile === null ? "the default profile" : `profile '${rawProfile}'`;
-  await confirmOrRefuse(
-    `Switch ${whose} from ${recorded} to ${mode}? Both agents' files are rewritten.`,
-    opts,
-    "switch the mode",
-  );
+  await confirmOrRefuse(modeSwitchQuestion(profile, recorded, mode), opts, "switch the mode");
 }
 
 /** The add flags as the body's arguments (Commander stores a `--no-<x>` flag as `<x>: false`). */
 function addArgs(opts: Opts): AddArgs {
   return {
-    mode: parseModeFlags(opts, ONE_MODE),
+    mode: parseAddMode(opts),
     dryRun: Boolean(opts.dryRun),
     noAuth: opts.auth === false,
+    yes: Boolean(opts.yes),
   };
 }
 
@@ -213,14 +224,18 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     "add",
     "Create or re-wire the profile, both agents",
     `Create or re-wire ${forWhom}: one mode (GitHub Copilot Direct or the local proxy) for both ` +
-      "Codex and Claude. With no flag, a fresh default profile probes which mode works for you " +
-      "and picks it (a recorded mode is re-wired as it is), then prints the next steps. A named " +
-      "profile records the mode, then runs the sign-in step (which wires both agents) unless " +
-      "--no-auth. Re-run with the other flag to switch modes; it asks first. " +
+      "Codex and Claude. --auto probes which mode works for your credential and records the " +
+      "verdict; the default profile probes this way every run when no mode flag is given, and a " +
+      "verdict that differs from the recorded mode asks before switching. A named profile with " +
+      "no flag re-wires its recorded mode (a fresh one needs --direct, --proxy, or --auto). With " +
+      "--direct or --proxy it records the mode, then runs the sign-in step (which wires both " +
+      "agents) unless --no-auth; --auto signs in first, since the probe needs the credential. " +
+      "Re-run with the other flag to switch modes; it asks first. " +
       "See also: `agent init`, the same command for the default profile.",
   )
     .option("--direct", "Wire to GitHub Copilot Direct.")
     .option("--proxy", "Wire to the local copilot-api proxy (a named profile: its own daemon).")
+    .option("--auto", AUTO_HELP)
     .option("--yes", "Switch a recorded mode without asking (headless use).")
     .option("--no-auth", "Record the mode alone; the credential step is left to `auth`.")
     .option("--dry-run", DRY_RUN_HELP)
@@ -457,15 +472,17 @@ export function registerInitCommand(program: Command): void {
     .helpGroup("Setup:")
     .summary("Set up Codex and Claude for the default profile")
     .description(
-      "Set up Codex and Claude for the default profile. With no flag, a fresh default profile " +
-        "probes whether GitHub Copilot Direct or the local proxy works for you and picks it (a " +
-        "recorded mode is re-wired as it is); both agents are wired to that mode, the sign-in " +
-        "step runs, and the next steps print. --direct or --proxy picks the mode yourself; " +
-        "re-run with the other flag to switch (asks first). " +
+      "Set up Codex and Claude for the default profile. With no flag (or --auto) it probes, every " +
+        "run, whether GitHub Copilot Direct or the local proxy works for your credential; the " +
+        "verdict is wired into both agents, and a verdict that differs from the recorded mode " +
+        "asks before switching (a script keeps the recorded mode). The sign-in step runs when " +
+        "no credential is stored, and the next steps print. --direct or --proxy picks the mode " +
+        "yourself with no probe; re-run with the other flag to switch (asks first). " +
         "See also: `agent profile [<name>] add`, the same command for any profile.",
     )
     .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
     .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
+    .option("--auto", AUTO_HELP)
     .option("--yes", "Switch a recorded mode without asking (headless use).")
     .option("--no-auth", "Print the credential step instead of running it; `agent auth` is it.")
     .option("--dry-run", DRY_RUN_HELP)

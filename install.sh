@@ -177,14 +177,18 @@ while [ $# -gt 0 ]; do
         -h|--help) usage; exit 0 ;;
         --dir)
             shift
-            [ $# -gt 0 ] || die "--dir needs a directory argument."
+            case "${1:-}" in
+                "" | --*) die "--dir needs a directory argument; a path that starts with -- is spelled --dir=DIR." ;;
+            esac
             INSTALL_DIR_ARG="$1" ;;
         --dir=*)
             INSTALL_DIR_ARG="${1#*=}"
             [ -n "$INSTALL_DIR_ARG" ] || die "--dir= needs a value, e.g. --dir=/opt/copilot-env." ;;
         --version)
             shift
-            [ $# -gt 0 ] || die "--version needs a release tag argument."
+            case "${1:-}" in
+                "" | --*) die "--version needs a release tag argument; a tag that starts with -- is spelled --version=TAG." ;;
+            esac
             VERSION_ARG="$1" ;;
         --version=*)
             VERSION_ARG="${1#*=}"

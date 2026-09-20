@@ -482,19 +482,27 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     },
   );
 
-  test("the installer refuses --yes together with --no before any other work", () => {
+  test("the installer refuses a bad argument before any other work", () => {
     // An empty download directory keeps a regressed run off the network: it fails at the local copy.
-    const root = tempDir("ce-guard-conflict-");
-    const downloadDir = tempDir("ce-guard-dl-empty-");
-    try {
-      const args = Deno.build.os === "windows" ? ["-Yes", "-No"] : ["--yes", "--no"];
-      const res = runInstaller(root, downloadDir, {}, args);
-      const why = evidence(res, root);
-      expectRefused(res, why);
-      expect(res.stderr, why).toContain("conflict");
-      expect(existsSync(join(root, "bin")), why).toBe(false);
-    } finally {
-      cleanup(root, downloadDir);
+    const win = Deno.build.os === "windows";
+    const refused: { args: string[]; reason: string }[] = [
+      { args: win ? ["-Yes", "-No"] : ["--yes", "--no"], reason: "conflict" },
+      // A flag where --dir's value should be is a missing value, not a path named "--yes";
+      // install.ps1 refuses the missing argument natively.
+      ...(win ? [] : [{ args: ["--dir", "--yes"], reason: "--dir needs a directory argument" }]),
+    ];
+    for (const { args, reason } of refused) {
+      const root = tempDir("ce-guard-refused-");
+      const downloadDir = tempDir("ce-guard-dl-empty-");
+      try {
+        const res = runInstaller(root, downloadDir, {}, args);
+        const why = `${args.join(" ")}\n${evidence(res, root)}`;
+        expectRefused(res, why);
+        expect(res.stderr, why).toContain(reason);
+        expect(existsSync(join(root, "bin")), why).toBe(false);
+      } finally {
+        cleanup(root, downloadDir);
+      }
     }
   });
 
@@ -507,22 +515,25 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       { args: ["--no"], prompted: false, reloaded: false },
       { args: ["--yes"], prompted: false, reloaded: true },
     ];
-    for (const row of rows) {
-      const root = makeRoot("deno.json", "none");
-      try {
-        const { res, reloaded } = runInstallerOnTty(root, downloadDir, row.args);
-        const why = `${row.args.join(" ") || "(no flag)"}\n${evidence(res, root)}`;
-        expect(res.exitCode, why).toBe(0);
-        // The handoff ran, so the offer at the end was reached rather than skipped by a refusal.
-        expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(true);
-        expect(res.stdout.includes(prompt), why).toBe(row.prompted);
-        expect(reloaded, why).toBe(row.reloaded);
-      } finally {
-        cleanup(root);
-        rmSync(join(downloadDir, "reload-shell.sh.ran"), { force: true });
+    try {
+      for (const row of rows) {
+        const root = makeRoot("deno.json", "none");
+        try {
+          const { res, reloaded } = runInstallerOnTty(root, downloadDir, row.args);
+          const why = `${row.args.join(" ") || "(no flag)"}\n${evidence(res, root)}`;
+          expect(res.exitCode, why).toBe(0);
+          // The handoff ran, so the offer at the end was reached rather than skipped by a refusal.
+          expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(true);
+          expect(res.stdout.includes(prompt), why).toBe(row.prompted);
+          expect(reloaded, why).toBe(row.reloaded);
+        } finally {
+          cleanup(root);
+          rmSync(join(downloadDir, "reload-shell.sh.ran"), { force: true });
+        }
       }
+    } finally {
+      cleanup(downloadDir);
     }
-    cleanup(downloadDir);
   });
 
   test("the installer refuses the lexically unsafe targets before any other work", () => {
@@ -678,6 +689,8 @@ describe("the install task's arguments", () => {
       // The task installs the binary it just compiled; a release tag has nothing to select.
       { args: ["--version", "v1.2.3"], reason: "--version is not accepted" },
       { args: ["--dir"], reason: "--dir needs a DIR argument" },
+      // A flag where the value should be is a missing value, not a path named "--yes".
+      { args: ["--dir", "--yes"], reason: "--dir needs a DIR argument" },
       // PowerShell refuses a repeated parameter, which would land after --force's deletion.
       { args: ["--dir", "/tmp/a", "--dir", "/tmp/b"], reason: "--dir given more than once" },
       { args: ["--all-hosts"], reason: "install.sh has no such flag" },

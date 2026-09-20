@@ -110,7 +110,15 @@ while (args.length > 0) {
     continue;
   }
   const value = inlineValue ?? args.shift();
-  if (value === undefined || value === "") die(`${flag.posix} needs a ${flag.value} argument.`);
+  // A separated value that looks like a flag is a missing value, not a path: `--dir --yes` must
+  // not install into <cwd>/--yes.
+  if (
+    value === undefined || value === "" || (inlineValue === undefined && value.startsWith("--"))
+  ) {
+    die(
+      `${flag.posix} needs a ${flag.value} argument; a ${flag.value} that starts with -- is spelled ${flag.posix}=${flag.value}.`,
+    );
+  }
   // An absolute --dir: the --force deletion and the installer then name the same path, and the
   // installer's lexical refusal of "." components cannot fire after the deletion.
   forwarded.push({ flag, value: flag.posix === "--dir" ? resolve(value) : value });
@@ -124,6 +132,8 @@ function run(command: string, args: string[], env: Record<string, string> = {}):
     args,
     cwd: ROOT,
     env,
+    // stdin too: install.ps1 gates its reload offer on an unredirected console input.
+    stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
   }).outputSync();

@@ -49,6 +49,44 @@ export interface CostEstimate {
   perModel: Record<string, ModelCost>;
   totalUsd: number;
   unpriced: string[];
+  /** Models priced at a GitHub rate the list does not carry: the card's own rate for the model, or
+   *  the long-context tier that applied to part of its usage. Sorted. */
+  githubRated: string[];
+}
+
+// GitHub's rate card for Copilot, USD per million tokens, read 2026-09-19 from
+// https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing and keyed by
+// the OpenRouter id the list spells. Static on purpose: the page is not fetched.
+
+/** The models GitHub prices differently from the OpenRouter list; every other model's card
+ *  matches the list. Applied over the loaded list by withGitHubRates. */
+const GITHUB_RATES: ReadonlyMap<string, PricingTier> = new Map([
+  ["openai/gpt-5.6-sol", { input: 4, output: 20, cacheRead: 0.4, cacheCreation: 5 }],
+]);
+
+/** A request whose prompt (input plus cached input) exceeds this is billed at the long-context
+ *  tier below. OpenAI models only: Anthropic's are flat at any size. */
+export const LONG_CONTEXT_PROMPT_TOKENS = 272_000;
+
+const LONG_CONTEXT_RATES: ReadonlyMap<string, PricingTier> = new Map([
+  ["openai/gpt-6-astra", { input: 20, output: 75, cacheRead: 2, cacheCreation: 25 }],
+  ["openai/gpt-5.6-sol", { input: 8, output: 30, cacheRead: 0.8, cacheCreation: 10 }],
+]);
+
+/** A copy of the list with GitHub's rates in place of its own; the list itself (and its cache on
+ *  disk) is left as fetched. */
+export function withGitHubRates(
+  pricing: ReadonlyMap<string, PricingTier>,
+): Map<string, PricingTier> {
+  const out = new Map(pricing);
+  for (const [id, tier] of GITHUB_RATES) out.set(id, tier);
+  return out;
+}
+
+/** GitHub meters in AI credits, 1 credit = $0.01; a transcript's `total_nano_aiu` is the request's
+ *  bill in nano credits. */
+export function nanoAiuToUsd(nanoAiu: number): number {
+  return (nanoAiu / 1e9) * 0.01;
 }
 
 /** Keyed by lowercased OpenRouter id. Errors are fixed text (plus a numeric HTTP status), never the
@@ -346,41 +384,77 @@ export function resolvePricingId(model: string, catalogIds: Set<string>): string
   return null;
 }
 
-export function estimateCost(
-  usageByModel: ReadonlyMap<string, UsageTokens>,
-  pricing: Map<string, PricingTier>,
-): CostEstimate {
+/** What estimateCost prices: a roll-up and, of it, the share from requests whose prompt exceeded
+ *  LONG_CONTEXT_PROMPT_TOKENS (usage.ts's record() keeps it a subset). A UsageReport is one. */
+export interface UsageToPrice {
+  byModel: ReadonlyMap<string, UsageTokens>;
+  longContext?: { byModel: ReadonlyMap<string, UsageTokens> };
+}
+
+export function estimateCost(usage: UsageToPrice, pricing: Map<string, PricingTier>): CostEstimate {
   const lookup = pricingLookupFor(pricing);
   const perModel: Record<string, ModelCost> = {};
   const unpriced: string[] = [];
+  const githubRated: string[] = [];
   let totalUsd = 0;
 
-  for (const [model, usage] of usageByModel) {
+  for (const [model, total] of usage.byModel) {
     const reference = lookup.resolve(model);
     const tier = reference ? pricing.get(reference) : undefined;
-    if (!reference || !tier || !tierCoversUsage(tier, usage)) {
+    if (!reference || !tier || !tierCoversUsage(tier, total)) {
       unpriced.push(model);
       continue;
     }
-
-    const inputCostUsd = tokenCost(usage.input, tier.input);
-    const outputCostUsd = tokenCost(usage.output, tier.output);
-    const cacheReadCostUsd = tokenCost(usage.cacheRead, tier.cacheRead);
-    const cacheCreationCostUsd = tokenCost(usage.cacheCreation, tier.cacheCreation);
-    const estimatedCostUsd = inputCostUsd + outputCostUsd + cacheReadCostUsd + cacheCreationCostUsd;
-    totalUsd += estimatedCostUsd;
-
-    perModel[model] = {
-      pricingReference: reference,
-      estimatedCostUsd,
-      inputCostUsd,
-      outputCostUsd,
-      cacheReadCostUsd,
-      cacheCreationCostUsd,
-    };
+    // The long-context share at its tier and the rest at the base tier, so the model's row shows
+    // one blended cost. A model with no long-context tier is flat at any size; a bucket the tier
+    // leaves out keeps the base rate.
+    const longTier = LONG_CONTEXT_RATES.get(reference);
+    const long = longTier === undefined ? undefined : usage.longContext?.byModel.get(model);
+    const parts: [UsageTokens, PricingTier][] = long === undefined
+      ? [[total, tier]]
+      : [[tokensMinus(total, long), tier], [long, { ...tier, ...longTier }]];
+    const cost = blendedCost(reference, parts);
+    totalUsd += cost.estimatedCostUsd;
+    perModel[model] = cost;
+    if (GITHUB_RATES.has(reference) || (long !== undefined && hasTokens(long))) {
+      githubRated.push(model);
+    }
   }
 
-  return { perModel, totalUsd, unpriced: unpriced.sort() };
+  return { perModel, totalUsd, unpriced: unpriced.sort(), githubRated: githubRated.sort() };
+}
+
+/** Each bucket summed over its parts, each part's tokens at that part's tier. */
+function blendedCost(reference: string, parts: readonly [UsageTokens, PricingTier][]): ModelCost {
+  const bucket = (
+    tokens: (u: UsageTokens) => number,
+    rate: (t: PricingTier) => number | undefined,
+  ): number => parts.reduce((sum, [u, t]) => sum + tokenCost(tokens(u), rate(t)), 0);
+  const inputCostUsd = bucket((u) => u.input, (t) => t.input);
+  const outputCostUsd = bucket((u) => u.output, (t) => t.output);
+  const cacheReadCostUsd = bucket((u) => u.cacheRead, (t) => t.cacheRead);
+  const cacheCreationCostUsd = bucket((u) => u.cacheCreation, (t) => t.cacheCreation);
+  return {
+    pricingReference: reference,
+    estimatedCostUsd: inputCostUsd + outputCostUsd + cacheReadCostUsd + cacheCreationCostUsd,
+    inputCostUsd,
+    outputCostUsd,
+    cacheReadCostUsd,
+    cacheCreationCostUsd,
+  };
+}
+
+function hasTokens(u: UsageTokens): boolean {
+  return u.input + u.output + u.cacheRead + u.cacheCreation > 0;
+}
+
+function tokensMinus(total: UsageTokens, part: UsageTokens): UsageTokens {
+  return {
+    input: total.input - part.input,
+    output: total.output - part.output,
+    cacheRead: total.cacheRead - part.cacheRead,
+    cacheCreation: total.cacheCreation - part.cacheCreation,
+  };
 }
 
 // ---------- internals ----------

@@ -20,6 +20,7 @@ import {
   describeDaysWindow,
   median,
   parseDaysWindow,
+  parseWindowFlags,
   perDayRows,
   UNDATED_DAY_LABEL,
 } from "../src/usage/day_metrics.ts";
@@ -119,7 +120,7 @@ test("computeDayMetrics sums tokens per day and reconciles cost with the aggrega
     ["openai/gpt-5.5", { input: 1.25, output: 10 }],
     ["anthropic/claude-opus-4.8", { input: 15, output: 75, cacheRead: 1.5, cacheCreation: 18.75 }],
   ]);
-  const estimate = estimateCost(report.byModel, pricing);
+  const estimate = estimateCost(report, pricing);
   const days = computeDayMetrics(report, pricing, estimate).sort((a, b) =>
     a.day.localeCompare(b.day)
   );
@@ -151,7 +152,7 @@ test("computeDayMetrics keeps a model unpriced in the aggregate at $0 every day"
   const pricing = new Map<string, PricingTier>([
     ["anthropic/claude-opus-4.8", { input: 1, output: 2 }], // no cacheCreation rate
   ]);
-  const estimate = estimateCost(report.byModel, pricing);
+  const estimate = estimateCost(report, pricing);
 
   expect(estimate.unpriced).toContain("anthropic/claude-opus-4.8");
   expect(estimate.totalUsd).toBe(0);
@@ -176,7 +177,7 @@ test("sumDayTotals carries the aggregate's cost numbers, bit-exact", () => {
     "2026-06-02": { "openai/gpt-5.5": usage({ input: 4_996, events: 1 }) },
   });
   const pricing = new Map<string, PricingTier>([["openai/gpt-5.5", { input: 1 }]]);
-  const estimate = estimateCost(report.byModel, pricing);
+  const estimate = estimateCost(report, pricing);
   const days = computeDayMetrics(report, pricing, estimate);
 
   // Control: this fixture really does regroup differently.
@@ -202,7 +203,7 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
     { "openai/gpt-5.5": usage({ input: 1_000_000, events: 1 }) },
   );
   const pricing = new Map<string, PricingTier>([["openai/gpt-5.5", { input: 1 }]]);
-  const estimate = estimateCost(report.byModel, pricing);
+  const estimate = estimateCost(report, pricing);
 
   // computeDayMetrics stays dated-only (per-day medians are per-DAY statistics).
   expect(computeDayMetrics(report, pricing, estimate).map((d) => d.day).sort()).toEqual([
@@ -231,7 +232,7 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
   expect(estimate.totalUsd).toBe(2);
 
   const allUndated = makeReport({}, { "openai/gpt-5.5": usage({ input: 42, events: 1 }) });
-  const undatedEstimate = estimateCost(allUndated.byModel, pricing);
+  const undatedEstimate = estimateCost(allUndated, pricing);
   expect(perDayRows(allUndated, pricing, undatedEstimate).map((r) => r.kind)).toEqual([
     "undated",
   ]);
@@ -240,7 +241,7 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
     "2026-06-01": { "openai/gpt-5.5": usage({ input: 5, events: 1 }) },
   });
   expect(
-    perDayRows(dated, pricing, estimateCost(dated.byModel, pricing))
+    perDayRows(dated, pricing, estimateCost(dated, pricing))
       .map((r) => (r.kind === "dated" ? r.day : r.kind)),
   ).toEqual(["2026-06-01"]);
 
@@ -275,7 +276,7 @@ test("buildSourceJson rounds every USD field once at the boundary", () => {
   const pricing = new Map<string, PricingTier>([
     ["openai/gpt-5.5", { input: 1.5, output: 1.5, cacheRead: 1.5, cacheCreation: 1.5 }],
   ]);
-  const estimate = estimateCost(report.byModel, pricing);
+  const estimate = estimateCost(report, pricing);
   expect(estimate.totalUsd).not.toBe(2); // control: the input is unrounded
 
   const json = buildSourceJson(report, estimate, pricing, { perDay: true });
@@ -403,6 +404,34 @@ test.skipIf(!TZ_PINNABLE)(
   },
 );
 
+// The month is GitHub's own period (agent credits reports the same one): it starts at 00:00 UTC
+// on the 1st in every zone, where a calendar day starts at the LOCAL midnight.
+test.skipIf(!TZ_PINNABLE)(
+  "the month window starts at 00:00 UTC on the 1st, not at the local midnight a calendar day uses",
+  () => {
+    const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    try {
+      // UTC+14: local Sep 1 begins at Aug 31 10:00Z, fourteen hours before GitHub's month.
+      process.env.TZ = "Pacific/Kiritimati";
+      const now = Date.parse("2026-09-01T02:00:00Z");
+      const monthStart = daysCutoffMs({ kind: "month" }, now);
+      const todayStart = daysCutoffMs({ kind: "calendar", days: 1 }, now);
+      expect(new Date(monthStart).toISOString()).toBe("2026-09-01T00:00:00.000Z");
+      expect(new Date(todayStart).toISOString()).toBe("2026-08-31T10:00:00.000Z");
+      // A request late on Aug 31 UTC is inside "today" locally and outside the month GitHub bills.
+      const lateAugust = Date.parse("2026-08-31T23:30:00Z");
+      expect(lateAugust >= todayStart).toBe(true);
+      expect(lateAugust >= monthStart).toBe(false);
+    } finally {
+      process.env.TZ = savedTz;
+    }
+    expect(parseWindowFlags(undefined, true)).toEqual({ kind: "month" });
+    expect(parseWindowFlags("7", false)).toEqual({ kind: "calendar", days: 7 });
+    expect(() => parseWindowFlags("7", true)).toThrow("--month and --days");
+    expect(describeDaysWindow({ kind: "month" })).toBe("this month (UTC)");
+  },
+);
+
 test("describeDaysWindow phrases each window kind for the report header", () => {
   expect(describeDaysWindow(undefined)).toBe("all time");
   expect(describeDaysWindow({ kind: "calendar", days: 1 })).toBe("today");
@@ -516,7 +545,7 @@ function rootsOf(codex: string[], claude: string[]): { sessionRoots: SessionRoot
 interface CostJson {
   runtime: CostRuntime;
   usageByModel: Record<string, ModelUsage>;
-  claudeSessions: { totalUsd: number };
+  claudeSessions: { totalUsd: number; billedUsd?: number };
 }
 
 /** Parses the WHOLE of stdout: a stray line there breaks every consumer, so it fails here. */
@@ -687,6 +716,61 @@ async function runtimeOf(
   });
   return payload.runtime;
 }
+
+test("a message's GitHub bill lands once in billedUsd and in one report line, however often its line repeats", async () => {
+  const claudeRoot = join(tempDir("cost-billed-"), "projects");
+  const proj = join(claudeRoot, "-Users-x-proj");
+  const billed = assistantLine(
+    "2026-06-01T10:00:00.000Z",
+    "claude-fable-5-1",
+    "msg_billed",
+    claudeUsage(4, 262, 912_223, 6_399),
+    { "copilot_usage": { "token_details": [], "total_nano_aiu": 40_000_000_000 } },
+  );
+  writeTranscript(proj, "aaa.jsonl", [
+    billed,
+    assistantLine("2026-06-01T10:01:00.000Z", "claude-fable-5-1", "msg_plain", claudeUsage(10, 20)),
+  ]);
+  writeTranscript(proj, "bbb.jsonl", [billed]);
+  const fable = {
+    data: [{
+      id: "anthropic/claude-fable-5.1",
+      pricing: {
+        prompt: "0.00001",
+        completion: "0.00005",
+        "input_cache_read": "0.00000025",
+        "input_cache_write": "0.0000125",
+      },
+    }],
+  };
+  const deps = { fetchImpl: fakeFetch(fable), ...rootsOf([], [claudeRoot]) };
+
+  // 40 credits at $0.01, once. The proxy block carried no bill and has no key for it.
+  const { payload } = await jsonRun({ pricingUrl: PRICE_URL, noIndex: true }, deps);
+  expect(payload.claudeSessions.billedUsd).toBe(0.4);
+  expect("billedUsd" in payload).toBe(false);
+
+  // The like-for-like line: GitHub's bill against OUR price for that one request (4 input, 262
+  // output, 912,223 cache reads, 6,399 cache writes at fable's card = $0.32).
+  const { stdout } = await captureChannels(() =>
+    runCost({ pricingUrl: PRICE_URL, noIndex: true }, deps)
+  );
+  expect(stdout).toContain(
+    "GitHub billed $0.40 for the 1 request that carried a bill; our estimate for those same requests: $0.32",
+  );
+
+  // No price list at all (a URL with no cached copy, and the fetch fails): the bill still prints,
+  // and the estimate is named unpriced, never $0.
+  const tokensOnly = await captureChannels(() =>
+    runCost({ pricingUrl: "https://pricing.example/unreachable-models", noIndex: true }, {
+      fetchImpl: fakeFetch(null, { fail: true }),
+      ...rootsOf([], [claudeRoot]),
+    })
+  );
+  expect(tokensOnly.stdout).toContain(
+    "GitHub billed $0.40 for the 1 request that carried a bill; our estimate for those same requests: unpriced (claude-fable-5.1)",
+  );
+});
 
 test("runCost --json keeps stdout pure JSON while the index narrates a rebuild on stderr", () =>
   withCostHome(async ({ home, claudeRoot }) => {

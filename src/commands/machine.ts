@@ -103,15 +103,20 @@ export function registerMachineCommands(program: Command): void {
     .summary("Estimate token spend from proxy and agent logs")
     .description(
       "Estimate the cost of your usage: token totals from the proxy's usage databases, the Codex " +
-        "session logs, and the Claude transcripts, priced at public OpenRouter rates. --days " +
-        "narrows the window, --per-day and --sources break the totals down, --json emits the " +
-        "numbers as data.",
+        "session logs, and the Claude transcripts, priced at public OpenRouter rates (GitHub's " +
+        "own where the two differ). --days or --month narrows the window, --per-day and " +
+        "--sources break the totals down, --json emits the numbers as data.",
     )
     .option(
       "--days <days>",
       "Only include usage from the last N days (default: all). A whole number counts local " +
         "calendar days (1 = today, 7 = today plus the six days before); a decimal is an exact " +
         "span of 24-hour days (1.0 = the last 24 hours, 0.5 = the last 12).",
+    )
+    .option(
+      "--month",
+      "Only this month's usage, from 00:00 UTC on the 1st: the period agent credits meters. " +
+        "Not with --days.",
     )
     .option("--json", "Emit a JSON object instead of a formatted report.")
     .option("--per-day", "Also print a day-by-day cost/token breakdown.")
@@ -151,6 +156,7 @@ export function registerMachineCommands(program: Command): void {
       redirectConsolaToStderr();
       return runCost({
         days: opts.days as string | undefined,
+        month: Boolean(opts.month),
         json: Boolean(opts.json),
         perDay: Boolean(opts.perDay),
         pricingUrl: opts.pricingUrl === undefined ? undefined : String(opts.pricingUrl),

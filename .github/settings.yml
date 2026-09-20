@@ -37,6 +37,10 @@ labels:
     - name: bug
       color: d73a4a
       description: Something isn't working
+    - name: "cost-metrics: intended"
+      color: BFD4F2
+      description: This PR changes agent cost's numbers on purpose; the Cost metrics
+        check reports the diff and passes
     - name: deno
       color: 70ffaf
       description: Pull requests that update deno code

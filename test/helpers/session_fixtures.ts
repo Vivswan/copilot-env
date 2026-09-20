@@ -62,19 +62,21 @@ export function writeRollout(dir: string, localDate: string, id: string, lines: 
 
 // ---------- Claude ----------
 
-/** One assistant transcript line; Claude's input_tokens EXCLUDES the cache buckets. */
+/** One assistant transcript line; Claude's input_tokens EXCLUDES the cache buckets. `message`
+ *  adds further message fields (`copilot_usage`, GitHub's own bill). */
 export function assistantLine(
   timestamp: string,
   model: string,
   id: string | undefined,
   usage: Record<string, unknown>,
+  message: Record<string, unknown> = {},
 ): string {
   return JSON.stringify({
     type: "assistant",
     timestamp,
     uuid: "u",
     sessionId: "s",
-    message: { ...(id === undefined ? {} : { id }), model, role: "assistant", usage },
+    message: { ...(id === undefined ? {} : { id }), model, role: "assistant", usage, ...message },
   });
 }
 

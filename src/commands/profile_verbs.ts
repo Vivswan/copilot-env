@@ -40,26 +40,19 @@ import {
   syncProfile,
 } from "./profile.ts";
 import { registerProfileOps } from "./profile_ops.ts";
-import { DRY_RUN_HELP, type Opts } from "./registration.ts";
+import { DRY_RUN_HELP, type Opts, valueList } from "./registration.ts";
 
 /** The `--auto` option line `add` and `init` share. */
-const AUTO_HELP =
-  "Probe Copilot Direct vs the proxy and record the verdict (the default profile does this when no mode flag is given).";
+const AUTO_HELP = "Probe Direct vs the proxy and record the verdict.";
 
 // Keyed exhaustively on AuthProvider so a membership change in env_state.ts fails the compile here
 // instead of drifting the help.
 const AUTH_PROVIDER_HELP: Record<AuthProvider, string> = {
-  "copilot": "device flow, read:user scope",
-  "gh-cli": "use the machine's gh login",
-  "gh-token": "paste a GitHub token, or --set <token>",
-  "gh-env": `copy a token from ${ghTokenEnvVarsLabel()} - for headless servers`,
+  "copilot": "device flow in the browser",
+  "gh-cli": "the machine's gh login",
+  "gh-token": "paste a GitHub token (or --set <token>)",
+  "gh-env": ghTokenEnvVarsLabel(),
 };
-
-/** The providers as natural-language help: "'a' (...), 'b' (...), or 'c' (...)". */
-function authProviderChoicesHelp(): string {
-  const parts = AUTH_PROVIDERS.map((p) => `'${p}' (${AUTH_PROVIDER_HELP[p]})`);
-  return `${parts.slice(0, -1).join(", ")}, or ${parts[parts.length - 1]}`;
-}
 
 const VERB_LIST = PROFILE_VERBS.join(" | ");
 
@@ -173,8 +166,6 @@ const PROFILE_VERB_GROUP = "Profile:";
  *  Returns the `profile` command, whose subcommands are the verbs. */
 export function registerProfileCommand(program: Command, rawProfile: string | null): Command {
   const minted = (): Profile => rawProfile === null ? null : parseProfileName(rawProfile);
-  /** The optional name in each verb's help. */
-  const forWhom = "the named profile, or the default profile when no name is given";
 
   const profile = program
     .command("profile")
@@ -190,10 +181,9 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     .helpCommand(true)
     .summary("Manage one profile; its verbs are listed below")
     .description(
-      "Manage one profile: `agent profile [<name>] <verb>`. A profile is one GitHub Copilot " +
-        "credential and one mode (Direct or the local proxy), wired into both Codex and Claude. " +
-        "Give no name for the default profile. Bare `agent profile` lists every profile. " +
-        "See also: `agent list`.",
+      "Manage one profile, `agent profile [<name>] <verb>`: one Copilot credential and one mode, " +
+        "wired into both Codex and Claude. No name is the default profile; bare `agent profile` " +
+        "lists them all.",
     )
     .allowExcessArguments()
     .action((_opts: Opts, cmd: Command) => {
@@ -223,21 +213,15 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   verb(
     "add",
     "Create or re-wire the profile, both agents",
-    `Create or re-wire ${forWhom}: one mode (GitHub Copilot Direct or the local proxy) for both ` +
-      "Codex and Claude. --auto probes which mode works for your credential and records the " +
-      "verdict; the default profile probes this way every run when no mode flag is given, and a " +
-      "verdict that differs from the recorded mode asks before switching. A named profile with " +
-      "no flag re-wires its recorded mode (a fresh one needs --direct, --proxy, or --auto). With " +
-      "--direct or --proxy it records the mode, then runs the sign-in step (which wires both " +
-      "agents) unless --no-auth; --auto signs in first, since the probe needs the credential. " +
-      "Re-run with the other flag to switch modes; it asks first. " +
-      "See also: `agent init`, the same command for the default profile.",
+    "Create or re-wire this profile: one mode for both Codex and Claude, plus the sign-in step " +
+      "if needed (a mode change asks first). A fresh named profile needs --direct, --proxy, or --auto; " +
+      "with no flag a named profile keeps its recorded mode and the default profile probes.",
   )
     .option("--direct", "Wire to GitHub Copilot Direct.")
-    .option("--proxy", "Wire to the local copilot-api proxy (a named profile: its own daemon).")
+    .option("--proxy", "Wire to the local proxy (a named profile: its own daemon).")
     .option("--auto", AUTO_HELP)
-    .option("--yes", "Switch a recorded mode without asking (headless use).")
-    .option("--no-auth", "Record the mode alone; the credential step is left to `auth`.")
+    .option("--yes", "Switch a recorded mode without asking.")
+    .option("--no-auth", "Skip the sign-in; with no credential pass --direct or --proxy.")
     .option("--dry-run", DRY_RUN_HELP)
     .action(async (opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "add", rawProfile);
@@ -251,12 +235,10 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   verb(
     "del",
     "Delete the named profile everywhere",
-    "Delete the named profile everywhere: stop its daemon, clear its credential, strip both " +
-      "agents' wiring, and remove its daemon home. Asks first; --yes answers. The default " +
-      "profile cannot be deleted. See also: `agent uninstall` removes everything; `unset " +
-      "<key>` drops a single preference.",
+    "Delete the named profile everywhere: its daemon, credential, both agents' wiring, and " +
+      "daemon home. Asks first; the default profile cannot be deleted.",
   )
-    .option("--yes", "Delete without asking (headless use).")
+    .option("--yes", "Delete without asking.")
     .option("--dry-run", DRY_RUN_HELP)
     .action(async (opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "del", rawProfile);
@@ -278,7 +260,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   verb(
     "show",
     "Show its mode, provider, and daemon status",
-    `Show the mode, provider, and daemon status of ${forWhom}.`,
+    "Show this profile's mode, provider, and daemon status.",
   )
     .action((_opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "show", rawProfile);
@@ -289,11 +271,8 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     verb(
       "auth",
       "Sign in, or manage its Copilot credential",
-      `Sign in to GitHub Copilot for ${forWhom}, or manage its credential: pick how to sign in ` +
-        "(--provider), store a token (--set), print the resolved token (--get), clear it " +
-        "(--del), or check it (--check). Both agents use this one credential in Direct mode; a " +
-        "named profile always uses its own, never the default's. " +
-        "See also: `agent auth`, the same command for the default profile.",
+      "Sign this profile in to GitHub Copilot, or manage its credential; both agents use it. " +
+        "Default profile: `agent auth`.",
     ),
   ).action((opts: Opts, cmd: Command) => {
     refuseStrayWords(cmd, "auth", rawProfile);
@@ -306,19 +285,12 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   verb(
     "set",
     "Set one of its preferences",
-    `Set a preference of ${forWhom}. A profile key (host, identity, passthrough, static-key) ` +
-      "lands in the profile's own section; a named profile may also override a proxy.* or " +
-      "probe.* key for itself. With no name, a proxy.* or probe.* key sets the shared default " +
-      "every profile follows. `set identity <id|auto>` probes the id against the hosts before " +
-      "pinning it; `auto` goes back to probing. Both `set <key> <value>` and `set " +
-      "<key>=<value>` are accepted. " +
-      "See also: `agent config set`, which writes the same shared default.",
+    "Set one of this profile's preferences: a profile key, or a named profile's override of a " +
+      "proxy.* / probe.* key. With no name a proxy.* / probe.* key sets the shared default, as " +
+      "`agent config set` does.",
   )
-    .argument("<key>", "A key of the PROFILE block of `agent profile get`, or `<key>=<value>`.")
-    .argument(
-      "[value]",
-      "The value, parsed by the key's type; omitted when the key slot spells `<key>=<value>`.",
-    )
+    .argument("<key>", "A key of `agent profile get`, or `<key>=<value>`.")
+    .argument("[value]", "The value; omit it with `<key>=<value>`.")
     .option("--dry-run", DRY_RUN_HELP)
     .action((rawKey: string, rawValue: string | undefined, opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "set", rawProfile);
@@ -337,11 +309,10 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   verb(
     "unset",
     "Drop one of its preferences",
-    `Drop a preference of ${forWhom}: the value falls back to the shared default, then to the ` +
-      "built-in one. With no name, a proxy.* or probe.* key's shared default is dropped. " +
-      "See also: `agent config unset`, which drops the same shared default.",
+    "Drop one of this profile's preferences, back to the shared or built-in default. " +
+      "With no name a proxy.* / probe.* key's shared default is dropped.",
   )
-    .argument("<key>", "A key of the PROFILE block of `agent profile get`.")
+    .argument("<key>", "A key of `agent profile get`.")
     .option("--dry-run", DRY_RUN_HELP)
     .action((key: string, opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "unset", rawProfile);
@@ -352,10 +323,10 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   verb(
     "get",
     "Show a preference in effect, and its origin",
-    `Show a preference of ${forWhom} as it resolves: the value on stdout and where it comes ` +
-      "from on stderr. With no key, every key of the profile with its origin.",
+    "Show a preference as it resolves: the value on stdout, its origin on stderr. " +
+      "No key: every key of the profile.",
   )
-    .argument("[key]", "A key of the PROFILE block of `agent profile get`.")
+    .argument("[key]", "A key of the profile.")
     .action((key: string | undefined, _opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "get", rawProfile);
       if (key !== undefined) refuseGlobalKey(key);
@@ -365,11 +336,8 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   verb(
     "identity",
     "Show or pin the Copilot client identity",
-    `Show the Copilot client identities the credential of ${forWhom} is accepted under, on ` +
-      "the Direct host and the proxy host (* marks the one in effect). A read, never a write, " +
-      "unless a flag asks for one: --set <id|auto> pins an identity (the same as `set " +
-      "identity`), --get prints the pin (`auto` when probing; `get identity`), --del drops " +
-      "the pin (`unset identity`).",
+    "Show the Copilot client identities this profile's credential is accepted under (* marks " +
+      "the one in effect). A read, unless a flag pins, prints, or drops the pin.",
   )
     .option("--set <id|auto>", "Pin the identity (probed first); `auto` restores probing.")
     .option("--get", "Print the pin (`auto` when probing).")
@@ -389,9 +357,8 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   verb(
     "sync",
     "Rewrite its Codex and Claude config files",
-    `Rewrite the agent files of ${forWhom} from its recorded mode: both agents, or one with ` +
-      "--claude | --codex. Use it when a file is stale or a hand edit went wrong; sync never " +
-      "changes the recorded mode. See also: `agent sync` for every profile at once.",
+    "Rewrite this profile's Codex and Claude files from its recorded mode, both agents or one. " +
+      "Every profile: `agent sync`.",
   )
     .option("--claude", "Re-render Claude Code alone.")
     .option("--codex", "Re-render Codex alone.")
@@ -405,13 +372,10 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   verb(
     "check",
     "Report its recorded mode by exit code",
-    `Report the recorded mode of ${forWhom} by exit code: 0 Direct, 2 proxy, 1 no or ` +
-      "incomplete profile (what the launchers probe). With --claude | --codex, that agent's " +
-      "own file instead: 0 Direct, 2 proxy or none, 1 other; the default profile's Claude " +
-      "check adds the Claude Desktop status.",
+    "Report this profile's recorded mode by exit code: 0 Direct, 2 proxy, 1 none or partial.",
   )
-    .option("--claude", "Claude Code's configured provider (its settings file).")
-    .option("--codex", "Codex's configured provider (its config selection).")
+    .option("--claude", "Claude Code's settings file: 0 Direct, 2 proxy or none, 1 other.")
+    .option("--codex", "Codex's config: 0 Direct, 2 proxy or none, 1 other.")
     .action((opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "check", rawProfile);
       const agent = agentFlag(opts);
@@ -435,8 +399,7 @@ export function registerListCommand(program: Command): void {
     .helpGroup("Settings:")
     .summary("List profiles: mode, provider, daemon status")
     .description(
-      "List every profile with its mode, provider, and daemon status, one row each. " +
-        "See also: bare `agent profile` prints the same list.",
+      "List every profile: mode, provider, daemon status. Bare `agent profile` prints the same.",
     )
     .action(() => listProfiles());
 }
@@ -448,9 +411,8 @@ export function registerSyncCommand(program: Command): void {
     .helpGroup("Settings:")
     .summary("Rewrite every profile's Codex and Claude files")
     .description(
-      "Rewrite every profile's Codex and Claude config files (a named profile's own copies) " +
-        "from the recorded modes, the default profile included. Use it when a file is stale or a " +
-        "hand edit went wrong. See also: `agent profile [<name>] sync` for one profile.",
+      "Rewrite every profile's Codex and Claude config files from the recorded modes. " +
+        "One profile: `agent profile [<name>] sync`.",
     )
     .option("--dry-run", DRY_RUN_HELP)
     .action((opts: Opts) => syncEveryProfile(Boolean(opts.dryRun)));
@@ -472,19 +434,15 @@ export function registerInitCommand(program: Command): void {
     .helpGroup("Setup:")
     .summary("Set up Codex and Claude for the default profile")
     .description(
-      "Set up Codex and Claude for the default profile. With no flag (or --auto) it probes, every " +
-        "run, whether GitHub Copilot Direct or the local proxy works for your credential; the " +
-        "verdict is wired into both agents, and a verdict that differs from the recorded mode " +
-        "asks before switching (a script keeps the recorded mode). The sign-in step runs when " +
-        "no credential is stored, and the next steps print. --direct or --proxy picks the mode " +
-        "yourself with no probe; re-run with the other flag to switch (asks first). " +
-        "See also: `agent profile [<name>] add`, the same command for any profile.",
+      "Set up Codex and Claude for the default profile: sign in if needed, probe whether Direct " +
+        "or the local proxy works, and wire both agents (a mode change asks first). " +
+        "Any profile: `agent profile [<name>] add`.",
     )
-    .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
-    .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
+    .option("--direct", "Wire both agents to GitHub Copilot Direct; no probe.")
+    .option("--proxy", "Wire both agents to the local proxy; no probe.")
     .option("--auto", AUTO_HELP)
-    .option("--yes", "Switch a recorded mode without asking (headless use).")
-    .option("--no-auth", "Print the credential step instead of running it; `agent auth` is it.")
+    .option("--yes", "Switch a recorded mode without asking.")
+    .option("--no-auth", "Skip the sign-in; with no credential pass --direct or --proxy.")
     .option("--dry-run", DRY_RUN_HELP)
     .action(async (opts: Opts) => {
       await confirmModeChange(opts, null);
@@ -496,29 +454,18 @@ export function registerInitCommand(program: Command): void {
 function addAuthOptions(cmd: Command): Command {
   return cmd
     .option(
-      "--provider <provider>",
-      `How to authenticate (no flag => interactive choice): ${authProviderChoicesHelp()}.`,
+      "--provider <name>",
+      valueList(
+        "How to sign in (no flag: you choose interactively):",
+        AUTH_PROVIDERS.map((p) => [p, AUTH_PROVIDER_HELP[p]] as const),
+      ),
     )
-    .option(
-      "--set <token>",
-      "Non-interactive gh-token: store this token verbatim. Implies --provider gh-token.",
-    )
-    .option(
-      "--gh-user <login>",
-      "Pin gh-cli to this logged-in gh account (omit = follow gh's active account). " +
-        "Implies --provider gh-cli.",
-    )
-    .option(
-      "--get",
-      "Print the resolved token to stdout (provider-driven: gh-cli → `gh auth token`, " +
-        "copilot/gh-token/gh-env → the stored token). The resolver the agent files shell into.",
-    )
-    .option("--del", "Clear the stored token (de-authenticate).")
-    .option("--check", "Report auth status and exit (0 authenticated, 1 not).")
-    .option(
-      "--dry-run",
-      `${DRY_RUN_HELP} No login runs: the slot write is planned from --set or --gh-user (a device flow is named, not run), so --provider is required when no credential resolves.`,
-    );
+    .option("--set <token>", "Store this token (implies --provider gh-token).")
+    .option("--gh-user <login>", "Use this gh account (implies --provider gh-cli).")
+    .option("--get", "Print the resolved GitHub token.")
+    .option("--del", "Clear the stored token.")
+    .option("--check", "Exit 0 if a credential resolves, else 1.")
+    .option("--dry-run", "Show what would change; no login runs.");
 }
 
 /** The shared flags as runAuth's arguments; the caller adds `profile`. */
@@ -550,10 +497,8 @@ export function registerAuthCommand(program: Command): void {
       .helpGroup("Settings:")
       .summary("Manage the default profile's Copilot credential")
       .description(
-        "Sign the default profile in to GitHub Copilot, or manage its credential: pick how to " +
-          "sign in (--provider), store a token (--set), print the resolved token (--get), clear " +
-          "it (--del), or check it (--check). Both agents use this one credential in Direct " +
-          "mode. See also: `agent profile <name> auth` for a named profile.",
+        "Sign the default profile in to GitHub Copilot, or manage its credential; both agents " +
+          "use it. Named profile: `agent profile <name> auth`.",
       ),
   ).action((opts: Opts) => runAuth(authArgs(opts)));
 }

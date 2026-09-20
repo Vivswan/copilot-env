@@ -26,6 +26,7 @@ This page is about the credential and the profiles that carry one each. The wiri
 - `gh-env` in a terminal always shows the var and its GitHub account first: one set asks yes/no, several set get a menu. Headless takes the most specific (servers).
 - Every pasted or copied token is labelled with the account GitHub reports for it (GraphQL `viewer`, no `gh` needed); a lookup miss only changes the label.
 - `--get` / `--del` / `--check` print, clear, or check that a credential resolves.
+- `--dry-run` runs no login: it plans the slot write from `--set` or `--gh-user` (a device flow is named, not run), so it needs `--provider`, `--set <token>`, or `--gh-user <login>` when no credential resolves.
 - `agent profile <name> auth` addresses one [profile](#profiles)'s slot; bare `agent profile` lists every profile with its provider.
 
 ## PAT passthrough

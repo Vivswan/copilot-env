@@ -4,14 +4,13 @@
 // (src/commands/profile_verbs.ts, profile_ops.ts), in this order, so the help groups keep theirs.
 import type { Command } from "commander";
 import { runCodexMobile } from "../codex/mobile.ts";
-import { OPENROUTER_MODELS_URL } from "../copilot_api/config_registry.ts";
 import { runInstall } from "../install/installer.ts";
 import { runMigrations } from "../migrations/index.ts";
 import { runCost } from "../usage/cost.ts";
 import { redirectConsolaToStderr } from "../utils/logger.ts";
 import { configTableOutput, refuseProfileKey, resolveSetPair, runConfig } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
-import { DRY_RUN_HELP, helpNote, type Opts } from "./registration.ts";
+import { DRY_RUN_HELP, type Opts } from "./registration.ts";
 import { DEFAULT_CLI_COOLDOWN_DAYS, runShell } from "./setup.ts";
 import { runUninstall } from "./uninstall.ts";
 import { runUpdate } from "./update.ts";
@@ -48,11 +47,9 @@ export function registerMachineCommands(program: Command): void {
     .usage("<verb> [options]")
     .summary("Set, get, or unset this machine's preferences")
     .description(
-      "Set, get, or unset this machine's preferences: `agent config set|get|unset <key>`. These " +
-        "are the daemon.*, codex.*, claude.*, shell.*, update.*, and cost.* keys, plus the " +
-        "shared default of every proxy.* / probe.* key. Bare `agent config` lists every key with " +
-        "its value. See also: `agent profile [<name>] set|get|unset` for a profile's own keys " +
-        "(identity, host, passthrough, static-key) and a named profile's overrides.",
+      "Set, get, or unset this machine's preferences and the shared proxy.* / probe.* " +
+        "defaults; bare `agent config` lists every key. A profile's own keys: " +
+        "`agent profile [<name>] set|get|unset`.",
     )
     // A function, not a string baked at startup, so the values are the store's at help-render time.
     .addHelpText("after", () => `\n${configTableOutput(process.platform, CONFIG_VIEW)}`)
@@ -61,14 +58,10 @@ export function registerMachineCommands(program: Command): void {
     .command("set")
     .summary("Set a machine key or a shared default")
     .description(
-      "Set a machine key, or the shared default of a proxy.* / probe.* key. Both `set <key> " +
-        "<value>` and `set <key>=<value>` are accepted.",
+      "Set a machine key, or the shared default of a proxy.* / probe.* key.",
     )
-    .argument("<key>", "A key of the table `agent config --help` prints, or `<key>=<value>`.")
-    .argument(
-      "[value]",
-      "The value, parsed by the key's type; omitted when the key slot spells `<key>=<value>`.",
-    )
+    .argument("<key>", "A key of `agent config`, or `<key>=<value>`.")
+    .argument("[value]", "The value; omit it with `<key>=<value>`.")
     .option("--dry-run", DRY_RUN_HELP)
     .action((rawKey: string, rawValue: string | undefined, opts: Opts) => {
       const { key, value } = resolveSetPair(rawKey, rawValue, "agent config set");
@@ -85,10 +78,9 @@ export function registerMachineCommands(program: Command): void {
     .command("get")
     .summary("Show a key's value and where it comes from")
     .description(
-      "Show one key's value in effect (stdout) and where it comes from (stderr), or every key " +
-        "with no key.",
+      "Show a key's value (stdout) and its origin (stderr). No key: every key.",
     )
-    .argument("[key]", "A key of the table `agent config --help` prints.")
+    .argument("[key]", "A key of `agent config`.")
     .action((key: string | undefined) => {
       if (key !== undefined) refuseProfileKey(key);
       return runConfig({ kind: "get", key, view: CONFIG_VIEW });
@@ -96,8 +88,8 @@ export function registerMachineCommands(program: Command): void {
   config
     .command("unset")
     .summary("Drop a key, back to its built-in default")
-    .description("Drop a key: back to its built-in default.")
-    .argument("<key>", "A key of the table `agent config --help` prints.")
+    .description("Drop a key, back to its built-in default.")
+    .argument("<key>", "A key of `agent config`.")
     .option("--dry-run", DRY_RUN_HELP)
     .action((key: string, opts: Opts) => {
       refuseProfileKey(key);
@@ -109,55 +101,17 @@ export function registerMachineCommands(program: Command): void {
     .helpGroup("Daemon:")
     .summary("Estimate token spend from proxy and agent logs")
     .description(
-      "Estimate the cost of your usage: token totals from the proxy's usage databases, the Codex " +
-        "session logs, and the Claude transcripts, priced at public OpenRouter rates with GitHub's " +
-        "published Copilot rate card over them (fetched and cached for a day, like the list). " +
-        "--days or --month narrows the window, --per-day and " +
-        "--sources break the totals down, --json emits the numbers as data.",
+      "Estimate your token spend from the proxy's usage databases and the Codex and Claude " +
+        "session logs, at OpenRouter rates with GitHub's Copilot rate card over them. " +
+        "A request both the proxy and a log recorded counts once.",
     )
-    .option(
-      "--days <days>",
-      "Only include usage from the last N days (default: all). A whole number counts local " +
-        "calendar days (1 = today, 7 = today plus the six days before); a decimal is an exact " +
-        "span of 24-hour days (1.0 = the last 24 hours, 0.5 = the last 12).",
-    )
-    .option(
-      "--month",
-      "Only this month's usage, from 00:00 UTC on the 1st: the period agent credits meters. " +
-        "Not with --days.",
-    )
-    .option("--json", "Emit a JSON object instead of a formatted report.")
-    .option("--per-day", "Also print a day-by-day cost/token breakdown.")
-    .option(
-      "--sources",
-      "Print full per-source tables (proxy + each Codex provider + Claude) with day stats instead of the combined table.",
-    )
-    .option(
-      "--pricing-url <url>",
-      "OpenRouter models API URL for the public price list (cached for a day), overriding the " +
-        `cost.pricing-url config key for this run (built-in: ${OPENROUTER_MODELS_URL}).`,
-    )
-    .option(
-      "--no-index",
-      "Parse every session log instead of reading through the usage index (never opens or writes it).",
-    )
-    .addHelpText(
-      "after",
-      () =>
-        helpNote(
-          "Sources: the proxy's per-host SQLite DBs (default + every profile daemon home; " +
-            "proxied traffic only), the Codex CLI's local session logs, and Claude Code's local " +
-            "transcripts (each agent's FULL traffic, Direct included). The default table merges " +
-            "all three and counts a request the proxy and a client log both recorded once; use " +
-            "--sources for per-source tables.",
-          "Active days: distinct local calendar days (your timezone) that recorded at " +
-            "least one request, unioned across the displayed sources. The header also shows " +
-            "the inclusive min..max calendar span and what percent of it was active. Avg/day " +
-            "divides each total by the active-day count; Median/day takes the median of each " +
-            "column independently across the active days (so columns need not sum, but " +
-            "each is robust to a few outlier days). Idle days are never counted in either.",
-        ),
-    )
+    .option("--days <days>", "Only the last N days; 0.5 = the last 12 hours.")
+    .option("--month", "Only this month, from 00:00 UTC on the 1st.")
+    .option("--json", "Print JSON instead of the report.")
+    .option("--per-day", "Also print a day-by-day breakdown.")
+    .option("--sources", "One table per source instead of the merged one.")
+    .option("--pricing-url <url>", "OpenRouter price list URL for this run.")
+    .option("--no-index", "Parse every log; never touch the usage index.")
     .action((opts: Opts) => {
       // The report (and the --json payload) owns stdout; every consola line from any module the
       // readers reach is narration.
@@ -189,33 +143,15 @@ export function registerMachineCommands(program: Command): void {
     .helpGroup("Maintenance:")
     .summary("Update copilot-env to the latest release")
     .description(
-      "Update copilot-env to the latest GitHub release: download it, verify its provenance " +
-        "(unless --no-verify or the update.verify-provenance key opts out), swap it in, and run " +
-        "the migrations due. --check only reports whether an update exists.",
+      "Update copilot-env to the latest release: download it, verify its provenance unless " +
+        "opted out, swap it in, and run the migrations due.",
     )
-    .option(
-      "--check",
-      "Report update status and exit - no changes (0 up to date, 1 update available, 2 no release resolved).",
-    )
-    .option(
-      "--force",
-      "Update even when this is a source checkout; the sync overwrites local files.",
-    )
-    .option(
-      "--auto-status",
-      "Report autoupdate status and exit (the update.auto config key, cooldown, last check, last result).",
-    )
-    .option(
-      "--verify",
-      "Verify the download against the release's Sigstore build-provenance attestation " +
-        "(the default; the update.verify-provenance config key persists a choice).",
-    )
-    .option(
-      "--no-verify",
-      "Skip build-provenance verification for this run (the SHA256 check against checksums.txt " +
-        "still applies).",
-    )
-    .option("--dry-run", `${DRY_RUN_HELP} The release is resolved, nothing is downloaded.`)
+    .option("--check", "Report only; exit 0 current, 1 update, 2 unresolved.")
+    .option("--force", "Update a source checkout too (overwrites local files).")
+    .option("--auto-status", "Report the daily self-update's status and exit.")
+    .option("--verify", "Verify Sigstore provenance (the default).")
+    .option("--no-verify", "Skip provenance verification; SHA256 is still checked.")
+    .option("--dry-run", "Resolve the release; download nothing.")
     .action((opts: Opts) =>
       runUpdate({
         check: Boolean(opts.check),
@@ -231,31 +167,21 @@ export function registerMachineCommands(program: Command): void {
     .helpGroup("Setup:")
     .summary("Wire your shell; --clis also installs the CLIs")
     .description(
-      "Wire copilot-env into your shell: one block in the rc file (bash, zsh) or the PowerShell " +
-        "$PROFILE defines `agent` and, when the `shell.launchers` key is on, the cl / co / cx " +
-        "launchers. --clis also installs or updates the claude, codex, and copilot CLIs; " +
-        "--remove takes the block out again.",
+      "Wire copilot-env into your shell: one block in your rc file or PowerShell $PROFILE " +
+        "defines `agent` and, with `shell.launchers` on, cl / co / cx. " +
+        "--clis also installs or updates the agent CLIs.",
     )
-    .option(
-      "--clis",
-      "Also install the optional claude / copilot / codex agent CLIs, updating an outdated npm install.",
-    )
+    .option("--clis", "Also install or update the claude, codex, copilot CLIs.")
     .option(
       "--cooldown [days]",
-      `With --clis: target the newest agent-CLI npm releases aged >= DAYS. Bare --cooldown uses ${DEFAULT_CLI_COOLDOWN_DAYS} days.`,
+      `With --clis: CLI releases at least N days old (bare: ${DEFAULT_CLI_COOLDOWN_DAYS}).`,
       coerceDays,
     )
-    .option(
-      "--no-sudo",
-      "With --clis: avoid sudo/system package managers; use only user-local tooling.",
-    )
-    .option("--no-prereqs", "With --clis: verify prerequisites and CLIs only; install nothing.")
-    .option("--all-hosts", "Windows only: target the CurrentUserAllHosts profile.")
-    .option(
-      "--remove",
-      "Unwire the integration (the `shell.launchers` config key is left as it is).",
-    )
-    .option("--dry-run", `${DRY_RUN_HELP} Each rc file with its block diff; no CLI installs.`)
+    .option("--no-sudo", "With --clis: no sudo or system package managers.")
+    .option("--no-prereqs", "With --clis: check prerequisites and CLIs; install nothing.")
+    .option("--all-hosts", "Windows: wire the CurrentUserAllHosts profile.")
+    .option("--remove", "Take the block out again (config keys untouched).")
+    .option("--dry-run", DRY_RUN_HELP)
     .action((opts: Opts) =>
       runShell({
         remove: Boolean(opts.remove),
@@ -273,20 +199,12 @@ export function registerMachineCommands(program: Command): void {
     .helpGroup("Maintenance:")
     .summary("Finalize an install root (run by the installer)")
     .description(
-      "Finalize this install root: write the runtime files and launcher shims shipped inside " +
-        "this binary, then wire the shell integration. install.sh and install.ps1 run it for " +
-        "you; run it by hand only to refresh the current version in place.",
+      "Finalize this install root: write the runtime files and shims inside this binary, then " +
+        "wire the shell. The installer runs it for you; by hand it refreshes the current version.",
     )
-    .option(
-      "--no-shell-integration",
-      "Skip the shell wiring pass (no block is added to your rc file). A reinstall over an older " +
-        "release still runs its migrations, which may rewrite or remove a copilot-env block already there.",
-    )
-    .option("--all-hosts", "Windows only: wire the AllHosts PowerShell profile.")
-    .option(
-      "--assets-only",
-      "Refresh the runtime files and shims only - no shell wiring, no summary. Used by `agent update` after it swaps the binary.",
-    )
+    .option("--no-shell-integration", "Skip the shell wiring pass.")
+    .option("--all-hosts", "Windows: wire the AllHosts PowerShell profile.")
+    .option("--assets-only", "Runtime files and shims only; used by `agent update`.")
     .option("--dry-run", DRY_RUN_HELP)
     .action((opts: Opts) => {
       // Commander's --no-<x> sets opts.shellIntegration=false, so read the positive form.
@@ -310,9 +228,9 @@ export function registerMachineCommands(program: Command): void {
       "Remove copilot-env from this machine: daemons, profiles, agent wiring, shell " +
         "integration, data, and the install itself. Asks first; --yes answers.",
     )
-    .option("--yes", "Skip the confirmation prompt (headless use).")
-    .option("--dry-run", "Print what would be removed without changing anything.")
-    .option("--force", "Also delete the install directory when it is a source checkout.")
+    .option("--yes", "Remove without asking.")
+    .option("--dry-run", "Show what would be removed and remove nothing.")
+    .option("--force", "Also delete a source-checkout install directory.")
     .action((opts: Opts) =>
       runUninstall({
         yes: Boolean(opts.yes),
@@ -329,13 +247,12 @@ export function registerMachineCommands(program: Command): void {
     .helpGroup("Maintenance:")
     .summary("Run the migration steps between two versions")
     .description(
-      "Run the migration steps due between two versions. `agent update` and a reinstall run it " +
-        "for you after swapping in a release; run it by hand only when a message tells you to. " +
-        "Safe to re-run: every step is idempotent.",
+      "Run the migration steps due between two versions; `agent update` and a reinstall run it " +
+        "for you. Safe to re-run.",
     )
-    .argument("<from>", "Version being updated away from.")
-    .argument("<to>", "Version being updated to.")
-    .option("--dry-run", `${DRY_RUN_HELP} Each step's moves and removals, by path.`)
+    .argument("<from>", "The version updated away from.")
+    .argument("<to>", "The version updated to.")
+    .option("--dry-run", "Show each step's moves and removals; change nothing.")
     .action((from: string, to: string, opts: Opts) =>
       opts.dryRun ? runDryRun(() => runMigrations(from, to)) : runMigrations(from, to)
     );

@@ -1,7 +1,5 @@
 // What every Commander registration shares, in one place: the options bag Commander hands an
-// action, the one wording of `--dry-run`, and the dim help paragraph.
-import { gray } from "../utils/ansi.ts";
-import { terminalWidth, wrapMessage } from "../utils/table.ts";
+// action, the one wording of `--dry-run`, and the one-value-per-line help of a choice flag.
 
 /** Commander hands action callbacks an options bag of mixed-typed values. */
 export type Opts = Record<string, unknown>;
@@ -15,10 +13,4 @@ export const DRY_RUN_HELP = "Show what would change and write nothing.";
 export function valueList(lead: string, values: readonly (readonly [string, string])[]): string {
   const column = Math.max(...values.map(([name]) => name.length)) + 3;
   return [lead, ...values.map(([name, what]) => `${name.padEnd(column)}${what}`)].join("\n");
-}
-
-/** Help paragraphs Commander prints verbatim: dim, one blank line before each, wrapped at help
- *  time to the terminal the way the option descriptions above them are. */
-export function helpNote(...paragraphs: string[]): string {
-  return wrapMessage(paragraphs.map((p) => `\n${gray(p)}`).join("\n"), terminalWidth());
 }

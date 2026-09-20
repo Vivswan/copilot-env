@@ -7,6 +7,7 @@ import {
   type AgentAdapter,
   configuringLine,
   decideDefaultMode,
+  type DirectWiring,
   type ManagedAgentId,
   probedVerdict,
   type RemoveProfileOptions,
@@ -29,6 +30,7 @@ import { effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
+import { directOverlay, storeProbedPair } from "../copilot_api/direct_pair.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   allProfileNames,
@@ -423,11 +425,13 @@ async function addNamedProbed(
   }
   const { credential, token } = resolved;
   const land = async (): Promise<Narration> => {
-    // The probe runs as THIS profile: its own pair selection, and its token baked into the
-    // throwaway config the agent CLI runs against (a fresh name has no slot a resolver command
-    // could read).
+    // The probe runs as THIS profile: its own pair, selected ONCE and shared by both agents' probes
+    // and the landing (the pair the probe validated is the pair that lands), and its token baked
+    // into the throwaway config the agent CLI runs against (a fresh name has no slot a resolver
+    // command could read).
+    let selection: Promise<DirectWiring> | null = null;
     const chosen = await decideDefaultMode(adapters, token, {
-      resolveDirect: () => directWiringFor(name, token, "probe"),
+      resolveDirect: () => selection ??= directWiringFor(name, token, "probe"),
       credential: { kind: "static", token },
     });
     const verdict = probedVerdict(chosen);
@@ -435,7 +439,10 @@ async function addNamedProbed(
       ? verdict
       : await followProbe(name, slot.mode, verdict, args);
     await stopIfLeavingProxy(name, slot.mode, mode);
-    return landNamed(name, slot.mode, mode, credential, adapters);
+    // A direct verdict resolved the one selection for every agent; a kept direct record over a
+    // proxy verdict has no validated pair and lands as `add --direct` does.
+    const validated = verdict === "direct" && selection !== null ? await selection : null;
+    return landNamed(name, slot.mode, mode, credential, adapters, validated);
   };
   if (args.dryRun) await runDryRun(land);
   else (await land())();
@@ -460,17 +467,27 @@ async function stopIfLeavingProxy(
 
 /** The wiring of a named profile whose credential resolves: one atomic commit of the whole slot
  *  BEFORE the writes, so the store never holds a half profile; a wiring failure leaves a
- *  complete-but-unwired slot that a re-add or `agent sync` re-derives. */
+ *  complete-but-unwired slot that a re-add or `agent sync` re-derives. `validated` is the Direct
+ *  pair a probe already selected and passed: it is stored and rendered as it is, so both agents
+ *  bake what was validated; null (a flagged add) selects at the landing. */
 async function landNamed(
   name: ProfileName,
   previous: ProfileMode | null,
   mode: ProfileMode,
   credential: ProvisionedCredential,
   adapters: readonly AgentAdapter[],
+  validated: DirectWiring | null = null,
 ): Promise<Narration> {
   logger.log(configuringLine(profileLabel(name), mode, " (both agents)"));
   new CopilotEnvState().commitProfile(name, { credential, mode });
-  await wireProfileAgents(name, mode, false, "probe", adapters);
+  if (validated !== null) {
+    storeProbedPair(
+      name,
+      { integrationId: validated.directIntegrationId, apiBase: validated.directBaseUrl },
+      directOverlay(name),
+    );
+  }
+  await wireProfileAgents(name, mode, false, validated === null ? "probe" : "stored", adapters);
   return () => {
     logger.success(`${profileLabel(name)} is ready${switchedFrom(previous, mode)}.`);
     logger.log(`  Launch it:  cl --profile ${name}  /  cx --profile ${name}`);

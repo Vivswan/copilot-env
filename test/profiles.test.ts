@@ -3,11 +3,12 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
-import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
+import type { AgentAdapter } from "../src/agents/configure.ts";
+import { claudeAdapter, configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
 import { desktopHelperPath } from "../src/claude/desktop_helper_scripts.ts";
 import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop_library.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
-import { configureCodexConfig } from "../src/codex/config.ts";
+import { codexAdapter, configureCodexConfig } from "../src/codex/config.ts";
 import { codexProfileConfigPath, codexProviderId } from "../src/codex/paths.ts";
 import {
   addProfile,
@@ -822,6 +823,59 @@ test("a direct profile probes ONCE and bakes the accepted identity into BOTH age
   await syncNamedProfiles();
   expect(probes).toBe(0);
   expect(baked().claudeHost).toBe(DEFAULT_COPILOT_API_BASE);
+});
+
+test("a named `add --auto` lands the pair its probe accepted: the slot and both agents' files hold it, not the pair stored before", async () => {
+  tmpProxyHome();
+  const claudeHome = tmpClaudeHome();
+  const codexHome = tmpCodexHome();
+  const baked = (): { claude: string; codex: string | undefined } => {
+    const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, WORK), "utf8"));
+    const doc = readToml(join(codexHome, "config.toml"));
+    const providers = doc.model_providers as Record<string, Record<string, unknown>>;
+    const headers = providers[codexProviderId(WORK)]?.http_headers as Record<string, string>;
+    return {
+      claude: settings.env.ANTHROPIC_CUSTOM_HEADERS,
+      codex: headers["Copilot-Integration-Id"],
+    };
+  };
+  // The one identity Copilot accepts; it moves after the first landing stored the other.
+  let accepted = "copilot-developer-cli";
+  setIntegrationProbeFetch((input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/copilot_internal/user")) {
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }
+    const id = new Headers(init?.headers).get("Copilot-Integration-Id");
+    return Promise.resolve(
+      id === accepted
+        ? new Response(JSON.stringify({ data: [] }), { status: 200 })
+        : new Response("PATs not supported", { status: 400 }),
+    );
+  });
+  await addWork("direct", "github_pat_worktoken");
+  expect(new CopilotEnvState().readProfileDirectPair(WORK).integrationId).toBe(
+    "copilot-developer-cli",
+  );
+
+  // Copilot now rejects the stored identity. The verdict is faked (no CLI runs); the pair
+  // selection and both writes are the real adapters'. The landing must render what the probe
+  // selected, never the pair the slot held before it.
+  accepted = "copilot-developer-sandbox";
+  const direct = (adapter: AgentAdapter): AgentAdapter => ({
+    ...adapter,
+    detectDirect: () => Promise.resolve(true),
+  });
+  resetIntegrationIdentityCache();
+  await captureAllWrites(() =>
+    addProfile(WORK, { mode: "auto" }, [direct(claudeAdapter()), direct(codexAdapter())])
+  );
+  expect(new CopilotEnvState().readProfileDirectPair(WORK)).toEqual({
+    integrationId: "copilot-developer-sandbox",
+    host: DEFAULT_COPILOT_API_BASE,
+  });
+  expect(baked().codex).toBe("copilot-developer-sandbox");
+  expect(baked().claude).toContain("Copilot-Integration-Id: copilot-developer-sandbox");
 });
 
 test("a Claude-only launch write wires BOTH agents from the slot: a pin change is rendered with no request, and a slot never probed is probed once", async () => {

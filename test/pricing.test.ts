@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { canonicalPricingUrl } from "../src/copilot_api/config_registry.ts";
+import { BUILT_IN_RATE_CARD, type RateCardSource } from "../src/usage/github_rate_card.ts";
 import {
   canonicalModelName,
   estimateCost,
@@ -128,6 +129,26 @@ const RESOLUTIONS: { name: string; id: string; catalog: Set<string>; resolved: s
     id: "gpt-9.9",
     catalog: new Set(["anthropic/claude-opus-4.8"]),
     resolved: null,
+  },
+  // The bare ids the logs spell for the card's other vendors reach the card's provider-prefixed
+  // ids; a vendor the map does not know stays unpriced.
+  {
+    name: "a bare grok id infers x-ai",
+    id: "grok-4.5",
+    catalog: new Set(["x-ai/grok-4.5"]),
+    resolved: "x-ai/grok-4.5",
+  },
+  {
+    name: "a bare kimi id infers moonshotai",
+    id: "kimi-k3",
+    catalog: new Set(["moonshotai/kimi-k3"]),
+    resolved: "moonshotai/kimi-k3",
+  },
+  {
+    name: "a bare mai id infers microsoft",
+    id: "mai-code-1.1-flash",
+    catalog: new Set(["microsoft/mai-code-1.1-flash"]),
+    resolved: "microsoft/mai-code-1.1-flash",
   },
 ];
 
@@ -276,6 +297,9 @@ const ONE_MILLION_EACH: UsageTokens = {
   cacheCreation: 1_000_000,
 };
 
+/** The built-in card, as the run applies it when no card was ever fetched. */
+const BUILT_IN: RateCardSource = { source: "built-in" };
+
 test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and every other model as they are, and names it", () => {
   const list = new Map<string, PricingTier>([
     ["openai/gpt-5.6-sol", { input: 2, output: 10, cacheRead: 0.2, cacheCreation: 2.5 }],
@@ -285,7 +309,10 @@ test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and e
     "claude-fable-5.1",
     ONE_MILLION_EACH,
   ]]);
-  const estimate = estimateCost({ byModel: usage }, withGitHubRates(list));
+  const estimate = estimateCost(
+    { byModel: usage },
+    withGitHubRates(list, BUILT_IN_RATE_CARD, BUILT_IN),
+  );
   // GitHub's card for Sol: 4 / 20 / 0.40 / 5 per million (input, output, cache read, cache write).
   expect(estimate.perModel["gpt-5.6-sol"]).toEqual({
     pricingReference: "openai/gpt-5.6-sol",
@@ -303,16 +330,34 @@ test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and e
   // The list is copied, never edited: its cache on disk stays the list as fetched.
   expect(list.get("openai/gpt-5.6-sol")?.input).toBe(2);
   // The card stands on its own: a list without the model still prices it.
-  expect(estimateCost({ byModel: usage }, withGitHubRates(new Map())).unpriced).toEqual([
-    "claude-fable-5.1",
-  ]);
+  expect(
+    estimateCost({ byModel: usage }, withGitHubRates(new Map(), BUILT_IN_RATE_CARD, BUILT_IN))
+      .unpriced,
+  ).toEqual(["claude-fable-5.1"]);
+  // A card that agrees with the list changes no price, so it names no model: the footer is about
+  // prices the card moved.
+  const agreeing = {
+    ...BUILT_IN_RATE_CARD,
+    rates: new Map([["anthropic/claude-fable-5.1", list.get("anthropic/claude-fable-5.1")!]]),
+  };
+  expect(estimateCost({ byModel: usage }, withGitHubRates(list, agreeing, BUILT_IN)).githubRated)
+    .toEqual([]);
 });
 
 test("estimateCost bills an OpenAI long-context share at its tier and an Anthropic one flat", () => {
-  const pricing = new Map<string, PricingTier>([
-    ["openai/gpt-6-astra", { input: 10, output: 50, cacheRead: 1, cacheCreation: 12.5 }],
-    ["anthropic/claude-fable-5.1", { input: 10, output: 50, cacheRead: 0.25, cacheCreation: 12.5 }],
-  ]);
+  const pricing = withGitHubRates(
+    new Map<string, PricingTier>([
+      ["openai/gpt-6-astra", { input: 10, output: 50, cacheRead: 1, cacheCreation: 12.5 }],
+      ["anthropic/claude-fable-5.1", {
+        input: 10,
+        output: 50,
+        cacheRead: 0.25,
+        cacheCreation: 12.5,
+      }],
+    ]),
+    BUILT_IN_RATE_CARD,
+    BUILT_IN,
+  );
   const total = { input: 1_000_000, output: 100_000, cacheRead: 2_000_000, cacheCreation: 0 };
   const long = { input: 400_000, output: 40_000, cacheRead: 1_000_000, cacheCreation: 0 };
   const { perModel, githubRated } = estimateCost({

@@ -153,6 +153,7 @@
     "exclude": [
       "test/fixtures/provenance/v4.0.0/attestation.json",
       "test/fixtures/provenance/v4.0.0/trusted_root.json",
+      "test/fixtures/github-rate-card.yml",
       "AGENTS.md",
       "CLAUDE.md",
       ".github/agents.md",

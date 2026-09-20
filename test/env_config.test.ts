@@ -604,6 +604,7 @@ const ROUND_TRIP_RAW: Record<ConfigKey, string> = {
   "codex.host": "true",
   "codex.model-catalog": "true",
   "cost.credits-target": "8000000",
+  "cost.github-pricing-url": "https://rates.example/models-and-pricing.yml",
   "cost.pricing-url": "https://pricing.example/models",
   "daemon.auto-start": "true",
   "daemon.idle-timeout": "120",

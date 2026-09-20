@@ -26,12 +26,14 @@ import {
   UNDATED_DAY_LABEL,
 } from "./day_metrics.ts";
 import { openUsageIndex } from "./index.ts";
+import { loadGitHubRateCard, type RateCardSource } from "./github_rate_card.ts";
 import {
   type CostEstimate,
   estimateCost,
   loadPricing,
   type ModelCost,
   nanoAiuToUsd,
+  PriceList,
   type PricingTier,
   roundUsd,
   withGitHubRates,
@@ -187,12 +189,14 @@ export async function runCost(args: CostArgs, deps: CostDeps = {}): Promise<void
   const window = parseWindowFlags(args.days, args.month === true);
   // Up front, so an unreadable preference store rejects the command before any source is read
   // rather than degrading to a token-only report.
-  const pricingUrl = resolvePricingUrl(args.pricingUrl);
+  const config = new CopilotEnvConfig();
+  const pricingUrl = resolvePricingUrl(args.pricingUrl, config);
   await reportCost(args, deps.sessionRoots ?? DEFAULT_SESSION_ROOTS, {
     window,
     startedAt,
     now,
     pricingUrl,
+    rateCardUrl: config.githubPricingUrl(),
     fetchImpl: deps.fetchImpl,
   });
 }
@@ -202,6 +206,8 @@ interface CostRun {
   startedAt: number;
   now: () => number;
   pricingUrl: string;
+  /** The stored `cost.github-pricing-url` key, else the built-in. */
+  rateCardUrl: string;
   fetchImpl: typeof fetch | undefined;
 }
 
@@ -241,25 +247,44 @@ async function reportCost(
   // After the readers, never beside them: they are synchronous, so a fetch in flight across them
   // could make no progress and its timeout fired the moment the event loop was free again. A fetch
   // failure prices from an expired cache when one exists, and reports tokens only when none does.
-  // GitHub's own rates go over the loaded list; the list and its cache stay as fetched.
-  let pricing = new Map<string, PricingTier>();
+  // GitHub's rate card goes over the loaded list (the list and its cache stay as fetched), so it is
+  // read only once a list loaded; a card that could not be read today falls back to the last good
+  // one and says so.
+  let priced: PriceList | undefined;
   const pricingWaitStartedAt = now();
   let pricingWaitMs = 0;
+  const loadRates = async () => {
+    const list = await loadPricing(run.pricingUrl, { fetchImpl: run.fetchImpl });
+    const card = await loadGitHubRateCard(run.rateCardUrl, { fetchImpl: run.fetchImpl });
+    return { list, card };
+  };
   try {
-    const loaded = await loadPricing(run.pricingUrl, { fetchImpl: run.fetchImpl }).finally(() => {
+    const { list, card } = await loadRates().finally(() => {
       pricingWaitMs = now() - pricingWaitStartedAt;
     });
-    pricing = withGitHubRates(loaded.pricing);
-    if (loaded.source === "stale-cache") {
+    priced = withGitHubRates(list.pricing, card.card, card.from);
+    if (list.source === "stale-cache") {
       consola.warn(
-        `WARNING: could not refresh OpenRouter pricing (${loaded.fetchError}); using the cached price list from ${
-          formatDuration(Date.now() - loaded.fetchedAtMs)
+        `WARNING: could not refresh OpenRouter pricing (${list.fetchError}); using the cached price list from ${
+          formatDuration(Date.now() - list.fetchedAtMs)
         } ago.`,
       );
     }
-    if (loaded.source === "fetched" && loaded.cacheWriteError !== undefined) {
+    if (list.source === "fetched" && list.cacheWriteError !== undefined) {
       consola.warn(
-        `WARNING: could not cache the OpenRouter price list (${loaded.cacheWriteError}); the next run fetches it again.`,
+        `WARNING: could not cache the OpenRouter price list (${list.cacheWriteError}); the next run fetches it again.`,
+      );
+    }
+    if (card.problem !== undefined) {
+      consola.warn(
+        `GitHub rate card could not be read today (${card.problem}); using ${
+          card.from.source === "built-in" ? "built-in" : `cached ${isoDay(card.from.fetchedAtMs)}`
+        } rates.`,
+      );
+    }
+    if (card.cacheWriteError !== undefined) {
+      consola.warn(
+        `WARNING: could not cache GitHub's rate card (${card.cacheWriteError}); the next run fetches it again.`,
       );
     }
   } catch (e) {
@@ -267,6 +292,8 @@ async function reportCost(
       `WARNING: could not fetch OpenRouter pricing (${errMessage(e)}); reporting tokens only.`,
     );
   }
+  // Tokens only when no list loaded: an empty list prices nothing.
+  const pricing: Map<string, PricingTier> = priced ?? new Map();
 
   const measured: MeasuredRun = {
     indexed: logs.indexed,
@@ -317,6 +344,7 @@ async function reportCost(
           Boolean(args.perDay),
           codexSessions,
           claudeSessions,
+          priced?.from,
           measured,
         ),
         null,
@@ -335,6 +363,7 @@ async function reportCost(
   };
   const reportOpts: ReportOpts = {
     pricing,
+    rateCard: priced?.from,
     window,
     perDay: Boolean(args.perDay),
     roots: sessionRoots.length,
@@ -345,6 +374,16 @@ async function reportCost(
     printCombinedView(proxy, codexByProvider, claude, reportOpts, logs.clients);
   }
 
+  if (priced !== undefined && priced.card.unmapped.length > 0) {
+    printWrapped(
+      paintFor(colorEnabled()).dim(
+        `  GitHub's rate card also lists models with no id here (unmapped): ${
+          priced.card.unmapped.join(", ")
+        }`,
+      ),
+    );
+    console.log("");
+  }
   printBilledCheck([proxyReport, ...codexByProvider.values(), claudeReport], pricing);
   printWrapped(args.sources ? SOURCES_NOTE : COMBINED_NOTE);
   console.log("");
@@ -446,6 +485,8 @@ export function formatBytesCompact(bytes: number): string {
 
 interface ReportOpts {
   pricing: Map<string, PricingTier>;
+  /** The card `pricing` carries GitHub's rates from; absent in a tokens-only run. */
+  rateCard: RateCardSource | undefined;
   window: DaysWindow | undefined;
   perDay: boolean;
   roots: number;
@@ -471,10 +512,9 @@ function printSeparateReports(
   opts: ReportOpts,
 ): void {
   if (proxy.dbCount > 0) {
-    printCostReport(proxy.report, proxy.estimate, opts.pricing, {
+    printCostReport(proxy.report, proxy.estimate, opts, {
       title: "Proxy usage by model",
       sourceLabel: `${proxy.dbCount} db${proxy.dbCount === 1 ? "" : "s"}`,
-      window: opts.window,
     });
     if (opts.perDay) {
       printPerDayReport(proxy.report, opts.pricing, proxy.estimate, "Per-day breakdown (proxy)");
@@ -487,10 +527,9 @@ function printSeparateReports(
   for (const provider of [...codexByProvider.keys()].sort()) {
     const report = codexByProvider.get(provider) ?? EMPTY_REPORT;
     const estimate = estimateCost(report, opts.pricing);
-    printCostReport(report, estimate, opts.pricing, {
+    printCostReport(report, estimate, opts, {
       title: `Codex sessions (provider: ${provider}) by model`,
       sourceLabel: `${opts.roots} root${opts.roots === 1 ? "" : "s"}`,
-      window: opts.window,
     });
     if (opts.perDay) {
       printPerDayReport(report, opts.pricing, estimate, `Per-day breakdown (codex: ${provider})`);
@@ -499,10 +538,9 @@ function printSeparateReports(
 
   if (claude.roots > 0) {
     const estimate = estimateCost(claude.report, opts.pricing);
-    printCostReport(claude.report, estimate, opts.pricing, {
+    printCostReport(claude.report, estimate, opts, {
       title: "Claude sessions by model",
       sourceLabel: `${claude.roots} root${claude.roots === 1 ? "" : "s"}`,
-      window: opts.window,
     });
     if (opts.perDay) {
       printPerDayReport(claude.report, opts.pricing, estimate, "Per-day breakdown (claude)");
@@ -537,13 +575,12 @@ function printCombinedView(
   if (claude.roots > 0) {
     parts.push(`${claude.roots} claude projects root${claude.roots === 1 ? "" : "s"}`);
   }
-  printCostReport(merged, estimate, opts.pricing, {
+  printCostReport(merged, estimate, opts, {
     title: "Usage by model",
     sourceLabel: parts.join(" + "),
     requestsNote: paired > 0
       ? ` (${paired} seen in both a proxy row and a client log, counted once)`
       : "",
-    window: opts.window,
   });
   if (opts.perDay) {
     printPerDayReport(merged, opts.pricing, estimate, "Per-day breakdown");
@@ -787,17 +824,16 @@ function buildAggregateFooter(
 function printCostReport(
   report: ReadonlyUsageReport,
   estimate: CostEstimate,
-  pricing: Map<string, PricingTier>,
-  opts: {
+  opts: ReportOpts,
+  view: {
     title: string;
     sourceLabel: string;
     /** Follows the request count; empty when there is nothing to say about it. */
     requestsNote?: string;
-    window: DaysWindow | undefined;
   },
 ): void {
   const activeDays = report.perDay.size;
-  const dayMetrics = computeDayMetrics(report, pricing, estimate);
+  const dayMetrics = computeDayMetrics(report, opts.pricing, estimate);
   const { rows, sum } = buildModelRows(report, estimate);
   const footer = buildAggregateFooter(sum, estimate, activeDays, dayMetrics);
   const cells = renderCostRows(rows, footer);
@@ -812,8 +848,8 @@ function printCostReport(
     : "0 active days";
   printWrapped(
     paintFor(colorEnabled()).bold(
-      `${opts.title} - ${period} | ${opts.sourceLabel} | ${sum.reqs} requests${
-        opts.requestsNote ?? ""
+      `${view.title} - ${period} | ${view.sourceLabel} | ${sum.reqs} requests${
+        view.requestsNote ?? ""
       } | ${activeDaysLabel}`,
     ),
   );
@@ -831,15 +867,27 @@ function printCostReport(
       ),
     );
   }
-  if (estimate.githubRated.length > 0) {
+  if (estimate.githubRated.length > 0 && opts.rateCard !== undefined) {
     console.log("");
     printWrapped(
       paintFor(colorEnabled()).dim(
-        `  Priced at GitHub's rate, not OpenRouter's: ${estimate.githubRated.join(", ")}`,
+        `  Priced at GitHub's rate card (${describeRateCard(opts.rateCard)}), not OpenRouter's: ${
+          estimate.githubRated.join(", ")
+        }`,
       ),
     );
   }
   console.log("");
+}
+
+/** "fetched 2026-09-19" (today, or the day the cached copy was) or "built-in table". */
+function describeRateCard(from: RateCardSource): string {
+  return from.source === "built-in" ? "built-in table" : `fetched ${isoDay(from.fetchedAtMs)}`;
+}
+
+/** The UTC calendar day of a timestamp, YYYY-MM-DD. */
+function isoDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 function dayRow(label: string, d: DayTotals): CostRow {
@@ -984,6 +1032,8 @@ function buildCostJson(
   perDay: boolean,
   codexSessions: { roots: number; providers: Record<string, Record<string, unknown>> },
   claudeSessions: Record<string, unknown>,
+  /** The card the run priced GitHub-rated models from; absent when no price list loaded. */
+  rateCard: RateCardSource | undefined,
   measured: MeasuredRun,
 ): Record<string, unknown> {
   // Property order is evaluation order: `runtime` last, so its `total` covers the construction of
@@ -994,6 +1044,11 @@ function buildCostJson(
     ...buildSourceJson(report, estimate, pricing, { perDay }),
     codexSessions,
     claudeSessions,
+    ...(rateCard === undefined ? {} : {
+      githubRates: rateCard.source === "built-in"
+        ? { source: rateCard.source }
+        : { source: rateCard.source, fetchedAt: new Date(rateCard.fetchedAtMs).toISOString() },
+    }),
     note: "approximate numbers gathered from local logs and keyed by canonical model spellings " +
       "(dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates, GitHub's own where the two differ (actual billing may differ); " +
       "top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic " +

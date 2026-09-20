@@ -26,6 +26,7 @@ export interface ConfigValueTypes {
   "codex.host": boolean;
   "codex.model-catalog": boolean;
   "cost.credits-target": number;
+  "cost.github-pricing-url": string;
   "cost.pricing-url": string;
   "daemon.auto-start": boolean;
   "daemon.idle-timeout": number;
@@ -358,6 +359,11 @@ export function parseIntegrationIdPin(raw: string): string {
  *  closure and the usage layer must not (test/installer_pinning.test.ts). */
 export const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 
+/** The data file behind GitHub's Copilot models-and-pricing docs page: the page renders this list
+ *  through a Liquid loop, so the file IS the table the page shows. */
+export const GITHUB_RATE_CARD_URL =
+  "https://raw.githubusercontent.com/github/docs/main/data/tables/copilot/models-and-pricing.yml";
+
 /** Userinfo is refused because fetch rejects a `user:password@` URL, so it could only fail at run time.
  *  Neither rejection echoes the value: a custom price-list URL may carry credentials. */
 function pricingUrlRejection(raw: string): string | null {
@@ -539,6 +545,15 @@ const CONFIG_REGISTRY_LITERAL = [
       "Copilot AI credits (100 to the dollar) to stay under per month; unset paces against the plan's entitlement alone",
     ...wholeNumberDomain(1, MAX_CREDITS, "credits"),
     applyHint: "Applies to the next `agent credits` run.",
+  },
+  {
+    key: "cost.github-pricing-url",
+    scope: "global",
+    describe:
+      "GitHub's Copilot rate card (the docs pricing data file) for `agent cost`; cached for a day like the OpenRouter list",
+    ...HTTPS_URL_DOMAIN,
+    defaultValue: GITHUB_RATE_CARD_URL,
+    applyHint: "Applies to the next `agent cost` run.",
   },
   {
     key: "cost.pricing-url",

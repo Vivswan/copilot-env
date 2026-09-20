@@ -1,5 +1,14 @@
-import { appendFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
+import { GITHUB_RATE_CARD_URL } from "../src/copilot_api/config_registry.ts";
 import { type IndexStats, parseEveryCandidate, type Reconcile } from "../src/usage/contribution.ts";
 import {
   buildSourceJson,
@@ -35,6 +44,7 @@ import {
   type PricingTier,
 } from "../src/usage/pricing.ts";
 import { type ModelUsage, record, type UsageReport, usageReport } from "../src/usage/usage.ts";
+import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { localDayKey, MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { captureAllWrites, captureChannels } from "./helpers/output.ts";
 import {
@@ -454,7 +464,9 @@ const PRICED_BODY = {
   }],
 };
 
-/** `fail` rejects with the TypeError shape the real transport throws. */
+/** `fail` rejects with the TypeError shape the real transport throws. Serves `body` to every URL,
+ *  the rate card's included: the card then fails to parse and the run prices from the built-in
+ *  table, which is the fallback these tests price against. */
 function fakeFetch(body: unknown, opts: { fail?: boolean } = {}): typeof fetch {
   return ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     if (init?.signal?.aborted) return Promise.reject(init.signal.reason);
@@ -468,6 +480,26 @@ function fakeFetch(body: unknown, opts: { fail?: boolean } = {}): typeof fetch {
       }),
     );
   }) as typeof fetch;
+}
+
+/** GitHub's published rate card, as the parser fixture holds it. */
+const RATE_CARD_TEXT = readFileSync(
+  join(PROJECT_ROOT, "test", "fixtures", "github-rate-card.yml"),
+  "utf8",
+);
+
+/** `body` for the price list and `card` for the rate card at `cardUrl` (the built-in URL unless a
+ *  test stored another). */
+function routedFetch(
+  body: unknown,
+  card: string,
+  cardUrl: string = GITHUB_RATE_CARD_URL,
+): typeof fetch {
+  const list = fakeFetch(body);
+  return ((input: string | URL | Request, init?: RequestInit): Promise<Response> =>
+    String(input) === cardUrl
+      ? Promise.resolve(new Response(card, { status: 200 }))
+      : list(input, init)) as typeof fetch;
 }
 
 function recordingFetch(body: unknown, opts: { fail?: boolean } = {}): {
@@ -497,14 +529,19 @@ function snapshotIndex(home: string): IndexSnapshot {
 
 /** Answers only once the index is closed with `parsedPath` stored. The readers store it and
  *  the index closes after both return, fold included, so such a request was made after the
- *  whole synchronous parse. */
+ *  whole synchronous parse. Only the FIRST request looks at the index: the look itself (a
+ *  read-only connection) leaves a WAL sidecar behind that a later look would read as open. */
 function afterParseFetch(home: string, parsedPath: string, body: unknown): {
   fetch: typeof fetch;
   sawAtRequests: () => IndexSnapshot[];
+  requests: () => number;
 } {
   const seen: IndexSnapshot[] = [];
+  let requests = 0;
   const inner = fakeFetch(body);
   const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => {
+    requests++;
+    if (requests > 1) return inner(input, init);
     const snapshot = snapshotIndex(home);
     seen.push(snapshot);
     if (snapshot.open || !snapshot.paths.includes(parsedPath)) {
@@ -512,7 +549,7 @@ function afterParseFetch(home: string, parsedPath: string, body: unknown): {
     }
     return inner(input, init);
   }) as typeof fetch;
-  return { fetch: fetchImpl, sawAtRequests: () => seen };
+  return { fetch: fetchImpl, sawAtRequests: () => seen, requests: () => requests };
 }
 
 interface CostHome {
@@ -546,6 +583,7 @@ interface CostJson {
   runtime: CostRuntime;
   usageByModel: Record<string, ModelUsage>;
   claudeSessions: { totalUsd: number; billedUsd?: number };
+  githubRates?: { source: string; fetchedAt?: string };
 }
 
 /** Parses the WHOLE of stdout: a stray line there breaks every consumer, so it fails here. */
@@ -574,12 +612,14 @@ test("a cold run fetches the price list only after the synchronous parse, so the
     // answered until they do; the fake refuses one made that early.
     const transcript = join(claudeRoot, "-Users-x-proj", "aaa.jsonl");
     const net = afterParseFetch(home, transcript, PRICED_BODY);
-    // No price cache exists yet, so this run has to go to the network.
+    // No price cache exists yet, so this run has to go to the network: the list, then the card.
     const { payload, stderr } = await jsonRun({ pricingUrl: PRICE_URL }, {
       fetchImpl: net.fetch,
       ...rootsOf([], [claudeRoot]),
     });
-    expect(net.sawAtRequests()).toEqual([{ open: false, paths: [transcript] }]);
+    const afterParse = { open: false, paths: [transcript] };
+    expect(net.sawAtRequests()).toEqual([afterParse]);
+    expect(net.requests()).toBe(2);
     expect(stderr).not.toContain("could not fetch OpenRouter pricing");
     // Priced: 10 in at $15/M + 20 out at $75/M.
     expect(payload.claudeSessions.totalUsd).toBe(0.0017);
@@ -815,13 +855,14 @@ test("runtime.timing.pricing is the wait for the price list alone, never the war
         });
         return payload.runtime;
       };
-      // Rejected load: the warning prints, the clock jumps, pricing stays at the wait.
+      // Rejected load: the warning prints, the clock jumps, pricing stays at the wait. The rate
+      // card is not asked for when the list failed, so the one warning is the list's.
       const failed = await runtime(fakeFetch(null, { fail: true }));
       expect(failed.timing.pricing).toBe(0);
       expect(failed.timing.total).toBe(warnedMs);
-      // Seed the price cache with one fetched run; a fresh cache then answers without
-      // the network, so the load reads as exactly 0, no warning.
-      await runtime(fakeFetch(PRICED_BODY));
+      // Seed both caches with one fetched run; fresh caches then answer without the network, so
+      // the load reads as exactly 0, no warning.
+      await runtime(routedFetch(PRICED_BODY, RATE_CARD_TEXT));
       nowMs = 0;
       const cached = await runtime(fakeFetch(null, { fail: true }));
       expect(cached.timing.pricing).toBe(0);
@@ -829,6 +870,61 @@ test("runtime.timing.pricing is the wait for the price list alone, never the war
     } finally {
       consola.warn = originalWarn;
     }
+  }));
+
+test("runCost reads GitHub's card from the stored URL, prices at it, names the card and its day, and falls back to the built-in table in one line when it cannot be read", () =>
+  withCostHome(async ({ claudeRoot }) => {
+    const cardUrl = "https://rates.example/models-and-pricing.yml";
+    new CopilotEnvConfig().set({ "cost.github-pricing-url": cardUrl });
+    // The published card plus a row this build has no id for.
+    const card =
+      `${RATE_CARD_TEXT}\n- model: GPT-7\n  provider: openai\n  input: $1.00\n  cached_input: $0.10\n  output: $2.00\n`;
+    const deps = (text: string, url = cardUrl): CostDeps => ({
+      fetchImpl: routedFetch(PRICED_BODY, text, url),
+      ...rootsOf([], [claudeRoot]),
+    });
+
+    // The list prices opus-4.8 at $15/M in and $75/M out, the card at $5/M and $25/M: the card
+    // wins (10 in + 20 out = $0.00055), and --json names today's fetch.
+    const before = Date.now();
+    const fetched = await jsonRun({ pricingUrl: PRICE_URL, noIndex: true }, deps(card));
+    expect(fetched.stderr).not.toContain("GitHub rate card");
+    expect(fetched.payload.claudeSessions.totalUsd).toBe(0.0006);
+    expect(fetched.payload.githubRates?.source).toBe("fetched");
+    const fetchedAt = fetched.payload.githubRates?.fetchedAt ?? "";
+    expect(Date.parse(fetchedAt) >= before && Date.parse(fetchedAt) <= Date.now()).toBe(true);
+
+    // Inside the day the cache answers, so the garbled card is never read: the footer names the
+    // day the card was fetched and the row it has no id for; --json says cached, same stamp.
+    const { stdout } = await captureChannels(() =>
+      runCost({ pricingUrl: PRICE_URL, noIndex: true }, deps("not a card"))
+    );
+    expect(stdout).toContain(
+      `Priced at GitHub's rate card (fetched ${
+        fetchedAt.slice(0, 10)
+      }), not OpenRouter's: claude-opus-4.8`,
+    );
+    expect(stdout).toContain(
+      "GitHub's rate card also lists models with no id here (unmapped): GPT-7",
+    );
+    const cached = await jsonRun({ pricingUrl: PRICE_URL, noIndex: true }, deps("not a card"));
+    expect(cached.payload.githubRates).toEqual({ source: "cached", fetchedAt });
+
+    // A URL with no cached card that serves something that is not the card: one line names the
+    // problem (never the URL), the built-in table stands in, and the list's own price holds.
+    const garbledUrl = "https://rates.example/with-secret-token/garbled.yml";
+    new CopilotEnvConfig().set({ "cost.github-pricing-url": garbledUrl });
+    const fallback = await jsonRun(
+      { pricingUrl: PRICE_URL, noIndex: true },
+      deps("not a card", garbledUrl),
+    );
+    expect(fallback.stderr).toContain(
+      'GitHub rate card could not be read today (rate card line 1 is not a "key: value" row field); using built-in rates.',
+    );
+    expect(fallback.stderr).not.toContain("rates.example");
+    expect(fallback.stderr).not.toContain("with-secret-token");
+    expect(fallback.payload.githubRates).toEqual({ source: "built-in" });
+    expect(fallback.payload.claudeSessions.totalUsd).toBe(0.0017);
   }));
 
 function codexRootWithTwoRollouts(dir: string): string {

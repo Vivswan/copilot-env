@@ -11,6 +11,7 @@ order: 3
 ```bash
 agent config get                                   # every machine key and shared default, with its origin
 agent config set daemon.auto-start true            # a machine key
+agent config set daemon.auto-start=true            # the same, in one word
 agent config unset daemon.idle-timeout             # back to its built-in default
 agent config set proxy.small-model gpt-5           # the shared default every profile follows
 agent profile set identity copilot-developer-cli   # a profile key, for the default profile
@@ -29,6 +30,8 @@ Every key has one scope:
 | `global`          | How this machine runs; a profile never carries it.                                                                                   | The global map only                                          | `agent config set\|get\|unset`                                                    |
 
 Every read resolves one way: **explicit flag or env (per invocation) > the profile's own value > the global value > the built-in default**, each layer only where the key's scope admits it (a `global` key never resolves from a profile's section).
+
+Both faces take `set <key> <value>` or `set <key>=<value>`, split at the first `=`, so a URL value keeps its `?a=b`.
 
 The two faces write the same store. With no name, `agent profile set|unset|get <proxy.*|probe.*>` is an alias of `agent config set|unset|get`: the same store bytes, the same output. A machine key under `agent profile set`, or a profile key under `agent config set`, is refused with the other face's verb.
 

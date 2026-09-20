@@ -115,6 +115,7 @@ The `cl` / `co` / `cx` launchers are opt-in shell functions over `agent profile 
 
 ```bash
 agent config set shell.launchers true
+agent config set shell.launchers=true    # the same, in one word
 agent config set shell.launchers false
 ```
 

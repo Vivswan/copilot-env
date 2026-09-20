@@ -9,7 +9,7 @@ import { runInstall } from "../install/installer.ts";
 import { runMigrations } from "../migrations/index.ts";
 import { runCost } from "../usage/cost.ts";
 import { redirectConsolaToStderr } from "../utils/logger.ts";
-import { configTableOutput, refuseProfileKey, runConfig } from "./config.ts";
+import { configTableOutput, refuseProfileKey, resolveSetPair, runConfig } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
 import { DRY_RUN_HELP, helpNote, type Opts } from "./registration.ts";
 import { DEFAULT_CLI_COOLDOWN_DAYS, runShell } from "./setup.ts";
@@ -60,11 +60,18 @@ export function registerMachineCommands(program: Command): void {
   config
     .command("set")
     .summary("Set a machine key or a shared default")
-    .description("Set a machine key, or the shared default of a proxy.* / probe.* key.")
-    .argument("<key>", "A key of the table `agent config --help` prints.")
-    .argument("<value>", "The value, parsed by the key's type.")
+    .description(
+      "Set a machine key, or the shared default of a proxy.* / probe.* key. Both `set <key> " +
+        "<value>` and `set <key>=<value>` are accepted.",
+    )
+    .argument("<key>", "A key of the table `agent config --help` prints, or `<key>=<value>`.")
+    .argument(
+      "[value]",
+      "The value, parsed by the key's type; omitted when the key slot spells `<key>=<value>`.",
+    )
     .option("--dry-run", DRY_RUN_HELP)
-    .action((key: string, value: string, opts: Opts) => {
+    .action((rawKey: string, rawValue: string | undefined, opts: Opts) => {
+      const { key, value } = resolveSetPair(rawKey, rawValue, "agent config set");
       refuseProfileKey(key);
       return runConfig({
         kind: "set",

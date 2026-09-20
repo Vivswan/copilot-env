@@ -661,8 +661,8 @@ test("profile <name> add requires a mode for a new profile", async () => {
   tmpProxyHome();
   tmpClaudeHome();
   tmpCodexHome();
-  await expect(addProfile(WORK, { mode: "auto", noAuth: true })).rejects.toThrow(
-    /--direct or --proxy/,
+  await expect(addProfile(WORK, { mode: "unflagged", noAuth: true })).rejects.toThrow(
+    /--direct, --proxy, or --auto/,
   );
   // --direct --proxy is rejected at the CLI boundary (cli.smoke.test.ts, "the mode conflict is
   // rejected at the boundary on every command that takes the pair"), never here.
@@ -994,7 +994,7 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
   await syncNamedProfiles();
   expect(entryNames()).toEqual([]);
 
-  await addProfile(WORK, { mode: "auto", noAuth: true });
+  await addProfile(WORK, { mode: "unflagged", noAuth: true });
   expect(entryNames()).toEqual([]);
   new CopilotEnvConfig().del("claude.desktop");
   await syncNamedProfiles();

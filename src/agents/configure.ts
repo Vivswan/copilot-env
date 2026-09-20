@@ -7,6 +7,7 @@ import { Credential } from "../copilot_api/credential.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { wiringPortFor } from "../copilot_api/port.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -182,13 +183,18 @@ export interface AgentAdapter {
   /** Prints the configured provider and sets the exit code (providerModeExitCode). Per-agent
    *  because the printed fields are (CODEX_HOME + config.toml vs settings.json + apiKeyHelper). */
   check(): void;
-  /** Live Direct probe behind "auto": can the stored credential use Direct from this machine?
-   *  The scratch config bakes `direct` (identity and host) so the smoke call sends the same request
-   *  the real wiring would; without it a PAT that needs `copilot-developer-cli` fails the probe.
-   *  `ghToken` (the credential runAgentConfig already resolved) feeds the Copilot smoke
+  /** Live Direct probe behind "auto": can `ghToken` use Direct from this machine? The scratch
+   *  config bakes `direct` (identity and host) so the smoke call sends the same request the real
+   *  wiring would; without it a PAT that needs `copilot-developer-cli` fails the probe. It
+   *  authenticates with `credential`: the resolver command for the default profile, a named
+   *  profile's token baked (ProbeSubject). `ghToken` feeds the Copilot smoke
    *  (src/copilot_api/endpoint_smoke.ts) that picks the probe's model and, with no CLI on the
    *  machine, pings the wire itself; null (nothing stored) is the proxy verdict. */
-  detectDirect(direct: DirectWiring, ghToken: string | null): Promise<boolean>;
+  detectDirect(
+    direct: DirectWiring,
+    ghToken: string | null,
+    credential: CredentialWiring,
+  ): Promise<boolean>;
   /** The DEFAULT credential's Direct client identity (config pin, else probe) and host
    *  (`host` literal, else probe). On the adapter because this module must not import the
    *  per-agent probe machinery. */
@@ -233,18 +239,38 @@ export async function writeDefaultAgent(
   await adapter.configureProfile(null, write, { quiet: false, directToken: ghToken });
 }
 
+/** Whose Direct access the probe judges: how its pair is selected (the default's adapter selection,
+ *  or a named slot's own), and what the throwaway config the agent CLI runs against authenticates
+ *  with (the default's resolver command; a named profile's token baked, since a fresh name has no
+ *  slot a command could read). */
+export interface ProbeSubject {
+  resolveDirect: (adapter: AgentAdapter) => Promise<DirectWiring>;
+  credential: CredentialWiring;
+}
+
+function defaultProbeSubject(ghToken: string | null): ProbeSubject {
+  return {
+    resolveDirect: (adapter) => adapter.resolveDirectWiring(ghToken),
+    credential: { kind: "command" },
+  };
+}
+
 /**
- * A both-agents auto request (`agent init` with no flag) decides ONE mode before any write: every
- * agent's probe runs first, Direct only when each accepts, else proxy for both. So the default is
- * never left with one agent wired and the other refused when the two probes disagree.
+ * A both-agents auto request (`agent init`, `agent profile <name> add --auto`) decides ONE mode
+ * before any write: every agent's probe runs first, Direct only when each accepts, else proxy for
+ * both. So a profile is never left with one agent wired and the other refused when the two probes
+ * disagree. Every probe line the two agents print comes out under the one header printed here.
  */
 export async function decideDefaultMode(
   adapters: readonly AgentAdapter[],
   ghToken: string | null,
+  subject: ProbeSubject = defaultProbeSubject(ghToken),
 ): Promise<Map<ManagedAgentId, ManagedMode>> {
+  logger.log("");
+  logger.log(bold("▸ Copilot Direct probe (one mode for both agents)"));
   const verdicts = new Map<ManagedAgentId, ManagedMode>();
   for (const adapter of adapters) {
-    verdicts.set(adapter.id, await resolveDefaultMode(adapter, "auto", ghToken));
+    verdicts.set(adapter.id, await resolveDefaultMode(adapter, "auto", ghToken, subject));
   }
   if ([...verdicts.values()].every((v) => v.mode === "direct")) return verdicts;
   if ([...verdicts.values()].some((v) => v.mode === "direct")) {
@@ -255,23 +281,29 @@ export async function decideDefaultMode(
   );
 }
 
+/** The one mode decideDefaultMode landed on every agent. */
+export function probedVerdict(chosen: ReadonlyMap<ManagedAgentId, ManagedMode>): ManagedAgentMode {
+  return [...chosen.values()].every((mode) => mode.mode === "direct") ? "direct" : "proxy";
+}
+
 /**
- * The mode one agent LANDS for a request, with its Direct wiring freshly probed
- * (adapter.resolveDirectWiring): explicit flag > live probe of the stored credential. The identity
- * and host come BEFORE the probe: a credential rejected under every known identity cannot use
- * Direct, which under "auto" is the proxy verdict, not a failure, while `--direct` surfaces it.
+ * The mode one agent LANDS for a request, with its Direct wiring freshly probed for `subject` (the
+ * default by default): explicit flag > live probe of the stored credential. The identity and host
+ * come BEFORE the probe: a credential rejected under every known identity cannot use Direct, which
+ * under "auto" is the proxy verdict, not a failure, while `--direct` surfaces it.
  */
 export async function resolveDefaultMode(
   adapter: AgentAdapter,
   mode: RequestedMode,
   ghToken: string | null,
+  subject: ProbeSubject = defaultProbeSubject(ghToken),
 ): Promise<ManagedMode> {
   if (mode === "proxy") return { mode };
   // Refused for `auto` too: a proxy landing on a credential that does not resolve serves nothing.
   if (ghToken === null) throw directNeedsCredentialError(null);
   let direct: DirectWiring;
   try {
-    direct = await adapter.resolveDirectWiring(ghToken);
+    direct = await subject.resolveDirect(adapter);
   } catch (e) {
     if (mode === "direct") throw e;
     logger.log(
@@ -285,7 +317,7 @@ export async function resolveDefaultMode(
     case "direct":
       return { mode: "direct", direct };
     case "auto":
-      return (await adapter.detectDirect(direct, ghToken))
+      return (await adapter.detectDirect(direct, ghToken, subject.credential))
         ? { mode: "direct", direct }
         : { mode: "proxy" };
     default:

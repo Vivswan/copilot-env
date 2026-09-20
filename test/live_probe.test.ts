@@ -41,6 +41,7 @@ test("the probe descriptors carry each CLI's mandatory flags: codex --skip-git-r
 const FAKE_DESCRIPTOR: ProbeDescriptor = {
   cli: "claude",
   homeEnvVar: "CLAUDE_CONFIG_DIR",
+  updateCommand: "claude update",
   args: (prompt, _home, model) => ["-p", prompt, ...(model === null ? [] : ["--model", model])],
 };
 
@@ -261,6 +262,41 @@ test("probeDirectWorks: a CLI that ran and failed is final; the endpoint ping is
   expect([ok, smoke.pings]).toEqual([false, 0]);
 });
 
+test("probeDirectWorks: Copilot's too-old-CLI reply is no verdict: the probe throws the repair on either arm, and no second hop runs", async () => {
+  // The reply names the model too, so without this arm it would read as a model rejection and
+  // the second hop would fail the same way, leaving the user on the proxy with the real cause
+  // buried in a narration line.
+  const tooOld =
+    "API Error: 400 Claude Code 2.1.181 does not support this model; version 2.1.251 or newer is required. Run 'claude update' to update.";
+  const repair =
+    "claude is too old for Copilot Direct (2.1.181 installed, 2.1.251 or newer required); run `claude update`, then retry (or pass --direct / --proxy to skip the probe)";
+  // The CLI arm: the smoke prompt's failure carries the reply.
+  const smoke = fakeSmoke(undefined, true, {
+    first: "haiku",
+    next: { ok: true, model: "claude-fable-5" },
+  });
+  let runs = 0;
+  await expect(probeDirectWorks(
+    FAKE_DESCRIPTOR,
+    () => {},
+    smoke,
+    passingDeps(() => {
+      runs++;
+      return { ok: false, detail: tooOld };
+    }),
+  )).rejects.toThrow(repair);
+  expect([runs, smoke.fallbackAsks]).toEqual([1, 0]);
+  // The endpoint arm (no CLI on the machine): the ping's failure detail carries the same reply.
+  const pinging: DirectSmoke = {
+    ...fakeSmoke(),
+    ping: () =>
+      Promise.resolve({ ok: false, detail: `POST /v1/messages returned 400 (${tooOld})` }),
+  };
+  await expect(probeDirectWorks(FAKE_DESCRIPTOR, () => {}, pinging, {
+    findCommand: () => ({ path: null }),
+  })).rejects.toThrow(repair);
+});
+
 // --- probeDirectWorks: no drivable model means no CLI run ----------------------
 
 test("probeDirectWorks: a catalog with no drivable model is the proxy before the CLI runs", async () => {
@@ -313,6 +349,17 @@ test("probeDirectWorks walks the smoke's model hops on a MODEL rejection only: t
       name: "the CLI's model-not-available wording on the alias, the newest passes",
       details: [
         "There's an issue with the selected model (claude-haiku-4-5-20251001). It may not exist or you may not have access to it.",
+        "",
+      ],
+      ok: true,
+      models: ["haiku", "claude-fable-5"],
+    },
+    {
+      // Copilot's reply when the model is not on this client identity's list: a model rejection
+      // like any other, so the next hop runs.
+      name: "the integrator-list rejection on the alias, the newest passes",
+      details: [
+        'API Error: 400 The requested model is not available for integrator "x". Available models: [claude-fable-5]',
         "",
       ],
       ok: true,
@@ -404,6 +451,7 @@ test("probeDirectWorks spawns the CLI from inside the throwaway home, never the 
   const descriptor: ProbeDescriptor = {
     cli: "deno",
     homeEnvVar: "CLAUDE_CONFIG_DIR",
+    updateCommand: "claude update",
     args: (_prompt, home) => ["run", "--allow-read", join(home, script)],
   };
   const ok = await probeDirectWorks(
@@ -462,6 +510,7 @@ test("the real probe child never sees a provider variable the parent shell expor
   const descriptor: ProbeDescriptor = {
     cli: "deno",
     homeEnvVar: "CLAUDE_CONFIG_DIR",
+    updateCommand: "claude update",
     args: (_prompt, home) => ["run", "--allow-env", join(home, script)],
   };
   try {

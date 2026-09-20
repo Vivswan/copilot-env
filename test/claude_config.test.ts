@@ -464,24 +464,27 @@ test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdic
     const args = seenArgs as unknown as string[];
     return args[args.indexOf("--model") + 1];
   };
-  expect(await detectClaudeDirect(DIRECT_NONE, "ghu_tok", ok)).toBe(true);
+  expect(await detectClaudeDirect(DIRECT_NONE, "ghu_tok", COMMAND, ok)).toBe(true);
   expect([urls, pinnedModel()]).toEqual([[], CLAUDE_HAIKU_ALIAS]);
   expect(
-    await detectClaudeDirect(DIRECT_NONE, "ghu_tok", { ...ok, runProbe: () => ({ ok: false }) }),
+    await detectClaudeDirect(DIRECT_NONE, "ghu_tok", COMMAND, {
+      ...ok,
+      runProbe: () => ({ ok: false }),
+    }),
   )
     .toBe(false);
   // A set probe.claude-model is the model the smoke runs, as-is: no alias, no catalog fetch.
   new CopilotEnvConfig().set({ "probe.claude-model": "claude-sonnet-5" });
   urls.length = 0;
-  expect(await detectClaudeDirect(DIRECT_NONE, "ghu_tok", ok)).toBe(true);
+  expect(await detectClaudeDirect(DIRECT_NONE, "ghu_tok", COMMAND, ok)).toBe(true);
   expect([urls, pinnedModel()]).toEqual([[], "claude-sonnet-5"]);
   // No credential leaves nothing to smoke with: the proxy, before any call, CLI or not.
   urls.length = 0;
   let probeCalls = 0;
   const spy = { ...ok, runProbe: () => ({ ok: ++probeCalls > 0 }) };
-  expect(await detectClaudeDirect(DIRECT_NONE, null, spy)).toBe(false);
+  expect(await detectClaudeDirect(DIRECT_NONE, null, COMMAND, spy)).toBe(false);
   expect(
-    await detectClaudeDirect(DIRECT_NONE, null, {
+    await detectClaudeDirect(DIRECT_NONE, null, COMMAND, {
       ...spy,
       findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
     }),
@@ -489,7 +492,7 @@ test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdic
   expect([probeCalls, urls]).toEqual([0, []]);
   // A pasted or device-flow token needs no gh on the machine.
   expect(
-    await detectClaudeDirect(DIRECT_NONE, "ghu_tok", {
+    await detectClaudeDirect(DIRECT_NONE, "ghu_tok", COMMAND, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
     }),
@@ -514,6 +517,7 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
   const verdict = await detectClaudeDirect(
     directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
     "ghu_tok",
+    COMMAND,
     {
       findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
       runProbe: () => ({ ok: false }), // must never run: no CLI was found

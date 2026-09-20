@@ -476,24 +476,27 @@ test("detectCodexDirect: the CLI runs the catalog's codex-servable model and its
     const args = seenArgs as unknown as string[];
     return args[args.indexOf("--model") + 1];
   };
-  expect(await detectCodexDirect(DIRECT_NONE, "ghu_tok", ok)).toBe(true);
+  expect(await detectCodexDirect(DIRECT_NONE, "ghu_tok", COMMAND, ok)).toBe(true);
   expect([probeCalls, fetches, pinnedModel()]).toEqual([1, 1, "gpt-6-nano"]);
   // A set probe.codex-model is the model the smoke runs, as-is, with no catalog fetch.
   new CopilotEnvConfig().set({ "probe.codex-model": "gpt-6" });
-  expect(await detectCodexDirect(DIRECT_NONE, "ghu_tok", ok)).toBe(true);
+  expect(await detectCodexDirect(DIRECT_NONE, "ghu_tok", COMMAND, ok)).toBe(true);
   expect([probeCalls, fetches, pinnedModel()]).toEqual([2, 1, "gpt-6"]);
   new CopilotEnvConfig().del("probe.codex-model");
   // The live read-only prompt failed -> proxy.
   expect(
-    await detectCodexDirect(DIRECT_NONE, "ghu_tok", { ...ok, runProbe: () => ({ ok: false }) }),
+    await detectCodexDirect(DIRECT_NONE, "ghu_tok", COMMAND, {
+      ...ok,
+      runProbe: () => ({ ok: false }),
+    }),
   )
     .toBe(false);
 
   // No credential returns false WITHOUT calling runProbe, with or without a CLI.
   probeCalls = 0;
-  expect(await detectCodexDirect(DIRECT_NONE, null, ok)).toBe(false);
+  expect(await detectCodexDirect(DIRECT_NONE, null, COMMAND, ok)).toBe(false);
   expect(
-    await detectCodexDirect(DIRECT_NONE, null, {
+    await detectCodexDirect(DIRECT_NONE, null, COMMAND, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "codex" ? null : `/bin/${c}` }),
     }),
@@ -502,7 +505,7 @@ test("detectCodexDirect: the CLI runs the catalog's codex-servable model and its
 
   // A pasted or device-flow token needs no gh on the machine: the probe still runs.
   expect(
-    await detectCodexDirect(DIRECT_NONE, "ghu_tok", {
+    await detectCodexDirect(DIRECT_NONE, "ghu_tok", COMMAND, {
       ...ok,
       findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
     }),
@@ -554,7 +557,7 @@ test("detectCodexDirect: with no codex CLI the endpoint smoke pings the first co
       new Response(requests.length === 1 ? JSON.stringify(catalog) : "{}", { status: 200 }),
     );
   };
-  const verdict = await detectCodexDirect(DIRECT_NONE, "ghu_tok", {
+  const verdict = await detectCodexDirect(DIRECT_NONE, "ghu_tok", COMMAND, {
     findCommand: (c: string) => ({ path: c === "codex" ? null : `/bin/${c}` }),
     runProbe: () => ({ ok: false }), // must never run: no CLI was found
     fetchImpl,
@@ -594,6 +597,7 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
   const verdict = await detectCodexDirect(
     directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
     "ghu_tok",
+    COMMAND,
     {
       findCommand: (c: string) => ({ path: `/bin/${c}` }),
       runProbe: (_cli: string, _args: string[], env: Record<string, string>, cwd: string) => {

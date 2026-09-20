@@ -6,7 +6,9 @@ import { claudeDesktopStatus, reconcileClaudeDesktopWiring } from "../agents/cla
 import {
   type AgentAdapter,
   configuringLine,
+  decideDefaultMode,
   type ManagedAgentId,
+  probedVerdict,
   type RemoveProfileOptions,
 } from "../agents/configure.ts";
 import { configureDefaultAgents, runClaude, runCodex } from "../agents/configure_defaults.ts";
@@ -14,12 +16,14 @@ import { bothAgents, wireBothAgents, wireProfileAgents } from "../agents/profile
 import {
   type AgentProviderMode,
   MANAGED_MODE_DETAIL,
+  type ManagedAgentMode,
   providerModeExitCode,
   type RequestedMode,
 } from "../agents/provider_mode.ts";
 import { inspectClaudeWiring } from "../claude/config.ts";
 import { renderClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
+import { directWiringFor } from "../codex/config.ts";
 import { inspectCodexWiring } from "../codex/inspect.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
@@ -34,6 +38,8 @@ import {
   credentialProvider,
   partialSlotGap,
   type ProfileMode,
+  type ProvisionedCredential,
+  type StoredCredential,
 } from "../copilot_api/env_state.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
@@ -51,9 +57,9 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { createStderrLogger } from "../utils/logger.ts";
+import { createStderrLogger, prompt } from "../utils/logger.ts";
 import { formatTable, printKeyValue, printWrapped, terminalWidth } from "../utils/table.ts";
-import { ensureAuthenticated } from "./auth.ts";
+import { acquireCredential, ensureAuthenticated } from "./auth.ts";
 import { runDryRun } from "./dry_run.ts";
 
 // Narration to stderr, so a verb whose stdout is a payload keeps it clean.
@@ -65,14 +71,72 @@ type Narration = () => void;
 
 // --- add ---------------------------------------------------------------------------------------
 
+/** What `add` was asked for, past the flag parse (src/commands/profile_verbs.ts): a flag's mode,
+ *  `auto` (--auto: the Direct-vs-proxy probe's verdict), or `unflagged` (no mode flag). The default
+ *  profile probes on `unflagged` exactly as on `auto`, every run; a named profile re-wires its
+ *  recorded mode on `unflagged` and refuses a fresh one (a profile always has exactly one mode). */
+export type AddMode = ManagedAgentMode | "auto" | "unflagged";
+
 export interface AddArgs {
-  /** `auto` re-wires the recorded mode; on a fresh default it is the Direct-vs-proxy probe, and a
-   *  fresh named profile refuses it (a profile always has exactly one mode). */
-  mode: RequestedMode;
+  mode: AddMode;
   /** Print what the landing would write, attribute by attribute, and write nothing. */
   dryRun?: boolean;
   /** Record the mode alone and print the credential step instead of running it. */
   noAuth?: boolean;
+  /** Move a recorded mode without asking: to the flag's mode, or to the probe's verdict. */
+  yes?: boolean;
+}
+
+/** `add`'s question before a recorded mode moves, in one wording: asked at the CLI boundary for a
+ *  flag, and by the landing for a probe verdict that differs from the record (followProbe). */
+export function modeSwitchQuestion(
+  profile: Profile,
+  recorded: ProfileMode,
+  mode: ProfileMode,
+): string {
+  return `Switch ${whose(profile)} from ${recorded} to ${mode}? Both agents' files are rewritten.`;
+}
+
+function whose(profile: Profile): string {
+  return profile === null ? "the default profile" : profileLabel(profile);
+}
+
+/** Whether this add decides its mode by the probe (which needs the credential first). */
+function probes(profile: Profile, mode: AddMode): boolean {
+  return mode === "auto" || (mode === "unflagged" && profile === null);
+}
+
+const NO_CREDENTIAL_TO_PROBE =
+  "no credential to probe with; pass --direct or --proxy, or run without --no-auth";
+
+const AUTH_PROVIDERS_HELP = `--provider <${
+  AUTH_PROVIDERS.join("|")
+}>  (or --set <token>, --gh-user <login>)`;
+
+/** The landing's answer when the probe's verdict differs from the recorded mode: one line says so,
+ *  then the question a flag-driven switch asks. `--yes` answers it; a script (no terminal), a dry
+ *  run, or a "no" keeps the record and names the flag that would move it. */
+async function followProbe(
+  profile: Profile,
+  recorded: ProfileMode,
+  verdict: ProfileMode,
+  args: AddArgs,
+): Promise<ProfileMode> {
+  logger.log(`  The probe says ${verdict}; ${whose(profile)} records ${recorded}.`);
+  if (args.yes) return verdict;
+  const keep = (why: string): ProfileMode => {
+    logger.log(
+      `  Keeping ${recorded}${why}; pass --${verdict} to switch, or --yes to follow the probe.`,
+    );
+    return recorded;
+  };
+  if (args.dryRun) return keep(" (a dry run asks nothing)");
+  if (!process.stdin.isTTY) return keep(" (not a terminal)");
+  const confirmed = await prompt(modeSwitchQuestion(profile, recorded, verdict), {
+    type: "confirm",
+    initial: false,
+  });
+  return confirmed === true ? verdict : keep("");
 }
 
 /** The box the default's `add` closes with: what each agent was wired to and the next steps. */
@@ -169,12 +233,9 @@ function credentialStep(profile: Profile, args: AddArgs): () => Promise<void> {
   // Resolving, not merely stored: a gh-cli slot whose gh login is gone is as good as none.
   if (new Credential(undefined, profile).isAuthenticated()) return () => Promise.resolve();
   const authCommand = agentAuthCommand(profile);
-  const providers = `--provider <${
-    AUTH_PROVIDERS.join("|")
-  }>  (or --set <token>, --gh-user <login>)`;
   if (args.noAuth) {
     return () => {
-      logger.log(`  Next:  ${authCommand} ${providers}`);
+      logger.log(`  Next:  ${authCommand} ${AUTH_PROVIDERS_HELP}`);
       return Promise.resolve();
     };
   }
@@ -184,52 +245,68 @@ function credentialStep(profile: Profile, args: AddArgs): () => Promise<void> {
       return Promise.resolve();
     };
   }
-  if (!process.stdin.isTTY) {
-    throw new Error(
-      `not a terminal - pass --no-auth to record the mode alone, then \`${authCommand} ${providers}\``,
-    );
-  }
+  if (!process.stdin.isTTY) throw notATerminal(profile, args.mode);
   return () => ensureAuthenticated(profile);
+}
+
+/** A script without a credential: a probing add has nothing to probe with, a flagged one can
+ *  record its mode alone. */
+function notATerminal(profile: Profile, mode: AddMode): Error {
+  const record = probes(profile, mode)
+    ? "pass --direct or --proxy with --no-auth to record the mode alone"
+    : "pass --no-auth to record the mode alone";
+  return new Error(
+    `not a terminal - ${record}, then \`${agentAuthCommand(profile)} ${AUTH_PROVIDERS_HELP}\``,
+  );
 }
 
 /** `agent profile [<name>] add` and `agent init`: the mode for BOTH agents, then the credential
  *  step when the profile has none (a profile without a credential records its mode alone; the
- *  credential landing wires both agents). */
-export async function addProfile(profile: Profile, args: AddArgs): Promise<void> {
+ *  credential landing wires both agents). `--auto` on a named profile runs the two in the other
+ *  order, since the probe needs the credential. `adapters` is the landing's pair (the test seam). */
+export async function addProfile(
+  profile: Profile,
+  args: AddArgs,
+  adapters: readonly AgentAdapter[] = bothAgents(),
+): Promise<void> {
+  if (profile === null) return addDefault(args, credentialStep(null, args), adapters);
+  if (args.mode === "auto") return addNamedProbed(profile, args, adapters);
   const step = credentialStep(profile, args);
-  if (profile === null) return addDefault(args, step);
-  const land = () => addNamed(profile, args.mode);
+  const requested = args.mode;
+  const land = () => addNamed(profile, requested, adapters);
   if (args.dryRun) await runDryRun(land);
   else (await land())();
   await step();
 }
 
-/** The probe sets a mode on a fresh default; a recorded one is re-wired as it is (a flag moves it,
- *  and the CLI asks first), so no unflagged add can move a mode by a probe's answer. The landing
- *  needs the credential (it probes and writes with the token), so without one the default records
- *  its mode alone, as a named profile does, and the credential step follows; the landing runs
- *  after a login, and waits for `agent init` after --no-auth. */
-async function addDefault(args: AddArgs, step: () => Promise<void>): Promise<void> {
-  const mode: RequestedMode = args.mode === "auto"
-    ? new CopilotEnvState().readProfileSlot(null).mode ?? "auto"
+/** `agent init`: the default's landing. No flag, or --auto, probes EVERY run and lands the
+ *  verdict; a verdict that differs from the record asks first (followProbe). --direct / --proxy
+ *  land that mode with no probe (the CLI asked before a move). The landing probes and writes with
+ *  the credential, so a flagged default without one records its mode alone and the credential step
+ *  follows, while a probing default has nothing to record until the step lands the credential
+ *  (--no-auth is refused). */
+async function addDefault(
+  args: AddArgs,
+  step: () => Promise<void>,
+  adapters: readonly AgentAdapter[],
+): Promise<void> {
+  const flagged: ManagedAgentMode | null = args.mode === "auto" || args.mode === "unflagged"
+    ? null
     : args.mode;
   if (!new Credential().isAuthenticated()) {
-    if (mode === "auto") {
-      if (args.noAuth) {
-        throw new Error(
-          "pass --direct or --proxy: the default profile has no recorded mode yet, and a " +
-            "profile always has exactly one mode",
-        );
-      }
+    if (flagged === null) {
+      if (args.noAuth) throw new Error(NO_CREDENTIAL_TO_PROBE);
     } else {
       const record = () => {
-        new CopilotEnvState().recordDefaultMode(mode);
+        new CopilotEnvState().recordDefaultMode(flagged);
         return Promise.resolve();
       };
       if (args.dryRun) await runDryRun(record);
       else {
         await record();
-        logger.success(`the default profile records ${mode}; both agents wait for its credential.`);
+        logger.success(
+          `the default profile records ${flagged}; both agents wait for its credential.`,
+        );
       }
     }
     await step();
@@ -241,7 +318,12 @@ async function addDefault(args: AddArgs, step: () => Promise<void>): Promise<voi
     // Every mode, proxy included: a failed login throws, so no agent is configured without a
     // credential. The auto probe below then judges THIS credential's Direct access.
     await ensureAuthenticated();
-    const outcome = await configureDefaultAgents({ codex: mode, claude: mode });
+    const mode: RequestedMode = flagged ?? "auto";
+    const outcome = await configureDefaultAgents({
+      codex: mode,
+      claude: mode,
+      onVerdict: (recorded, verdict) => followProbe(null, recorded, verdict, args),
+    }, adapters);
     // configureDefaultAgents wrote only the default's Desktop entry; this covers the named
     // profiles.
     await reconcileClaudeDesktopWiring();
@@ -255,44 +337,133 @@ async function addDefault(args: AddArgs, step: () => Promise<void>): Promise<voi
   printGuidance(codex, claude, new CopilotEnvState().read().githubToken !== null, failedAgents);
 }
 
-async function addNamed(name: ProfileName, requested: RequestedMode): Promise<Narration> {
+/** A named profile's credential as the landing wires it: a stored token as it is, a gh-cli slot
+ *  through gh (a login that is gone is as good as none). Null when nothing resolves. */
+function resolveProvisioned(
+  credential: StoredCredential,
+): { credential: ProvisionedCredential; token: string } | null {
+  if (credential.kind === "stored") return { credential, token: credential.token };
+  if (credential.kind === "gh-cli") {
+    const token = ghAuthToken(credential.ghUser);
+    return token === null ? null : { credential, token };
+  }
+  return null;
+}
+
+/** `agent profile <name> add [--direct|--proxy]`: the flag's mode, or the recorded one with no
+ *  flag (a fresh name needs a flag, or --auto). The credential is `auth`'s: with none, or one
+ *  that no longer resolves, the mode lands alone and the wiring waits for the credential landing,
+ *  which wires both agents itself. */
+async function addNamed(
+  name: ProfileName,
+  requested: ManagedAgentMode | "unflagged",
+  adapters: readonly AgentAdapter[],
+): Promise<Narration> {
   const state = new CopilotEnvState();
   const slot = state.readProfileSlot(name);
-  const previous = slot.mode;
-  const mode: ProfileMode | null = requested === "auto" ? previous : requested;
+  const mode: ProfileMode | null = requested === "unflagged" ? slot.mode : requested;
   if (mode === null) {
     throw new Error(
-      `pass --direct or --proxy: ${profileLabel(name)} does not exist yet, and a profile ` +
-        "always has exactly one mode",
+      `pass --direct, --proxy, or --auto: ${profileLabel(name)} does not exist yet, and a ` +
+        "profile always has exactly one mode",
     );
   }
-  // Switching away from proxy strands the profile's daemon: nothing will route to it anymore (a dry
-  // run takes the same path and sends no signal: stopTrackedProxy).
-  if (previous === "proxy" && mode === "direct") {
-    const { signalled } = await stopTrackedProxy(0, name);
-    if (signalled) logger.log(`  Stopped ${profileLabel(name)}'s proxy daemon (now direct).`);
-  }
-  const switched = previous !== null && previous !== mode ? ` (switched from ${previous})` : "";
-  // The credential is `auth`'s: with none, or one that no longer resolves, the mode lands alone
-  // and the wiring waits for the credential landing, which wires both agents itself.
-  const credential = slot.credential;
-  const resolves = credential.kind === "stored" ||
-    (credential.kind === "gh-cli" && ghAuthToken(credential.ghUser) !== null);
-  if (!resolves) {
+  const resolved = resolveProvisioned(slot.credential);
+  await stopIfLeavingProxy(name, slot.mode, mode);
+  if (resolved === null) {
     state.recordProfileMode(name, mode);
     return () => {
       logger.success(
-        `${profileLabel(name)} records ${mode}${switched}; both agents wait for its credential.`,
+        `${profileLabel(name)} records ${mode}${
+          switchedFrom(slot.mode, mode)
+        }; both agents wait for its credential.`,
       );
     };
   }
+  return landNamed(name, slot.mode, mode, resolved.credential, adapters);
+}
+
+/** `agent profile <name> add --auto`: the profile's own credential first (acquired, not yet
+ *  recorded: a fresh name has no slot for `auth` to land in), then the Direct-vs-proxy probe under
+ *  it, then credential and verdict committed together and both agents wired. A recorded mode the
+ *  verdict differs from asks first (followProbe). Without a credential there is nothing to probe
+ *  with: --no-auth is refused, and a dry run names the credential step and plans nothing. */
+async function addNamedProbed(
+  name: ProfileName,
+  args: AddArgs,
+  adapters: readonly AgentAdapter[],
+): Promise<void> {
+  const slot = new CopilotEnvState().readProfileSlot(name);
+  let resolved = resolveProvisioned(slot.credential);
+  if (resolved === null) {
+    if (args.noAuth) throw new Error(NO_CREDENTIAL_TO_PROBE);
+    if (args.dryRun) {
+      logger.log(
+        `  Would run the credential step (${agentAuthCommand(name)}); a dry run never logs in.`,
+      );
+      return;
+    }
+    if (!process.stdin.isTTY) throw notATerminal(name, args.mode);
+    logger.log(
+      `  ${profileLabel(name)} is not authenticated yet - let's log in to GitHub Copilot.`,
+    );
+    resolved = resolveProvisioned(await acquireCredential({ kind: "choose" }, name));
+    if (resolved === null) {
+      throw new Error(`${profileLabel(name)}'s new credential does not resolve; retry the login`);
+    }
+  }
+  const { credential, token } = resolved;
+  const land = async (): Promise<Narration> => {
+    // The probe runs as THIS profile: its own pair selection, and its token baked into the
+    // throwaway config the agent CLI runs against (a fresh name has no slot a resolver command
+    // could read).
+    const chosen = await decideDefaultMode(adapters, token, {
+      resolveDirect: () => directWiringFor(name, token, "probe"),
+      credential: { kind: "static", token },
+    });
+    const verdict = probedVerdict(chosen);
+    const mode = slot.mode === null || slot.mode === verdict
+      ? verdict
+      : await followProbe(name, slot.mode, verdict, args);
+    await stopIfLeavingProxy(name, slot.mode, mode);
+    return landNamed(name, slot.mode, mode, credential, adapters);
+  };
+  if (args.dryRun) await runDryRun(land);
+  else (await land())();
+}
+
+function switchedFrom(previous: ProfileMode | null, mode: ProfileMode): string {
+  return previous !== null && previous !== mode ? ` (switched from ${previous})` : "";
+}
+
+/** Switching away from proxy strands the profile's daemon: nothing will route to it anymore (a dry
+ *  run takes the same path and sends no signal: stopTrackedProxy). Runs at the mode decision,
+ *  whether or not a credential lets the wiring follow. */
+async function stopIfLeavingProxy(
+  name: ProfileName,
+  previous: ProfileMode | null,
+  mode: ProfileMode,
+): Promise<void> {
+  if (previous !== "proxy" || mode !== "direct") return;
+  const { signalled } = await stopTrackedProxy(0, name);
+  if (signalled) logger.log(`  Stopped ${profileLabel(name)}'s proxy daemon (now direct).`);
+}
+
+/** The wiring of a named profile whose credential resolves: one atomic commit of the whole slot
+ *  BEFORE the writes, so the store never holds a half profile; a wiring failure leaves a
+ *  complete-but-unwired slot that a re-add or `agent sync` re-derives. */
+async function landNamed(
+  name: ProfileName,
+  previous: ProfileMode | null,
+  mode: ProfileMode,
+  credential: ProvisionedCredential,
+  adapters: readonly AgentAdapter[],
+): Promise<Narration> {
   logger.log(configuringLine(profileLabel(name), mode, " (both agents)"));
-  // One atomic commit of the whole slot BEFORE the wiring, so the store never holds a half profile;
-  // a wiring failure leaves a complete-but-unwired slot that a re-add or `agent sync` re-derives.
-  state.commitProfile(name, { credential, mode });
-  await wireBothAgents(name, mode, false, "probe");
+  new CopilotEnvState().commitProfile(name, { credential, mode });
+  await wireProfileAgents(name, mode, false, "probe", adapters);
   return () => {
-    logger.success(`${profileLabel(name)} is ready${switched}.`);
+    logger.success(`${profileLabel(name)} is ready${switchedFrom(previous, mode)}.`);
     logger.log(`  Launch it:  cl --profile ${name}  /  cx --profile ${name}`);
     if (mode === "proxy") {
       logger.log(

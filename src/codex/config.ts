@@ -611,14 +611,19 @@ const CODEX_PROBE_PROVIDER_ID = `${CODEX_PROVIDER_ID}-probe`;
 /** The detect probe's throwaway config: the Direct provider table and its selector, nothing else.
  *  The real write's top-level extras (`web_search`, the generated `model_catalog_json`) belong to
  *  the user's wiring, not to Direct, and a catalog file produced under another credential would
- *  colour the verdict. Shares managedDirectProvider, so the table is byte-identical to the real one. */
-function writeCodexProbeConfig(tmpHome: string, direct: DirectWiring): void {
+ *  colour the verdict. Shares managedDirectProvider, so the table is byte-identical to the real one;
+ *  `credential` is the probe subject's (the resolver command, or a named profile's token baked). */
+function writeCodexProbeConfig(
+  tmpHome: string,
+  direct: DirectWiring,
+  credential: CredentialWiring,
+): void {
   saveCodexToml(codexConfigPath(tmpHome), {
     ...defaultConfig(),
     "model_provider": CODEX_PROBE_PROVIDER_ID,
     "model_providers": {
       [CODEX_PROBE_PROVIDER_ID]: managedDirectProvider(
-        COMMAND_SHAPE,
+        credential,
         null,
         direct.directIntegrationId,
         codexUserAgent(),
@@ -634,11 +639,12 @@ function writeCodexProbeConfig(tmpHome: string, direct: DirectWiring): void {
 export function detectCodexDirect(
   direct: DirectWiring,
   ghToken: string | null,
+  credential: CredentialWiring,
   deps?: DirectProbeDeps,
 ): Promise<boolean> {
   return probeDirectWorks(
     CODEX_PROBE,
-    (tmpHome) => writeCodexProbeConfig(tmpHome, direct),
+    (tmpHome) => writeCodexProbeConfig(tmpHome, direct, credential),
     ghToken === null ? null : directSmoke(
       CODEX_ENDPOINT_SMOKE,
       ghToken,

@@ -772,17 +772,19 @@ export const CLAUDE_ENDPOINT_SMOKE: EndpointSmoke = {
 
 /** Writes a throwaway direct config and runs `claude -p --model <catalog pick>` against it
  *  (src/agents/live_probe.ts); with no claude CLI on the machine the endpoint smoke judges the
- *  credential instead. False means the caller writes proxy. */
+ *  credential instead. False means the caller writes proxy. `credential` is the probe subject's:
+ *  the resolver command, or a named profile's token baked. */
 export function detectClaudeDirect(
   direct: DirectWiring,
   ghToken: string | null,
+  credential: CredentialWiring,
   deps?: DirectProbeDeps,
 ): Promise<boolean> {
   return probeDirectWorks(
     CLAUDE_PROBE,
     (tmpHome) => {
       // The scratch config is the probe's own: under a scratch dir the seam writes and plans nothing.
-      configureClaudeConfig(tmpHome, { mode: "direct", direct, credential: { kind: "command" } });
+      configureClaudeConfig(tmpHome, { mode: "direct", direct, credential });
     },
     ghToken === null ? null : directSmoke(
       CLAUDE_ENDPOINT_SMOKE,

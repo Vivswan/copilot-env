@@ -8,7 +8,8 @@
 //   `agent init`, an import naming both agents
 //       -> configureDefaultAgents: the landing. Both writes, then the record and pair land together;
 //          a failed write leaves the previous record, and the guidance names the agent that did not
-//          move and the repair.
+//          move and the repair. An `auto` request probes EVERY run; when the verdict differs from
+//          the recorded mode, the caller's `onVerdict` (the CLI's question) says which one lands.
 //   `agent profile sync --codex`, `agent profile sync --claude`, an import naming one agent, the launchers' proxy wire
 //       -> runAgentConfig. On a recorded mode: a re-render of it that never moves the record or the
 //          pair; a flag naming another mode is refused before any file is written. On NO record, or
@@ -29,6 +30,7 @@ import {
   decideDefaultMode,
   type ManagedAgentId,
   type ManagedMode,
+  probedVerdict,
   resolveDefaultMode,
   writeDefaultAgent,
 } from "./configure.ts";
@@ -129,6 +131,10 @@ interface DefaultAgentRequest {
   /** Pre-resolved default credential for BOTH writers (undefined = each writer
    *  resolves from the store itself) -- see AgentRunOptions.ghToken. */
   ghToken?: string | null;
+  /** A both-`auto` request whose probe verdict differs from the recorded mode asks this which one
+   *  lands (the CLI asks the user; a script or a dry run keeps the record). Absent, the verdict
+   *  lands, as it does on a fresh default. */
+  onVerdict?: (recorded: ProfileMode, verdict: ProfileMode) => Promise<ProfileMode>;
 }
 
 interface DefaultAgentsOutcome {
@@ -169,9 +175,19 @@ export async function configureDefaultAgents(
   if (bothNamed) {
     const modes = named.map((adapter) => request[adapter.id]);
     if (modes.every((mode) => mode === "auto")) {
-      logger.log("");
-      logger.log(bold("▸ Copilot Direct probe (one mode for both agents)"));
       for (const [id, mode] of await decideDefaultMode(adapters, ghToken)) chosen.set(id, mode);
+      const verdict = probedVerdict(chosen);
+      const recorded = new CopilotEnvState().readProfileSlot(null).mode;
+      const landing = recorded === null || recorded === verdict || request.onVerdict === undefined
+        ? verdict
+        : await request.onVerdict(recorded, verdict);
+      if (landing !== verdict) {
+        // The record stays: the same landing `agent init --<recorded>` runs, selection included.
+        chosen.clear();
+        for (const adapter of named) {
+          chosen.set(adapter.id, await resolveDefaultMode(adapter, landing, ghToken));
+        }
+      }
     }
   }
   for (const adapter of named) {

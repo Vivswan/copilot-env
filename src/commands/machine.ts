@@ -103,8 +103,9 @@ export function registerMachineCommands(program: Command): void {
     .summary("Estimate token spend from proxy and agent logs")
     .description(
       "Estimate the cost of your usage: token totals from the proxy's usage databases, the Codex " +
-        "session logs, and the Claude transcripts, priced at public OpenRouter rates (GitHub's " +
-        "own where the two differ). --days or --month narrows the window, --per-day and " +
+        "session logs, and the Claude transcripts, priced at public OpenRouter rates with GitHub's " +
+        "published Copilot rate card over them (fetched and cached for a day, like the list). " +
+        "--days or --month narrows the window, --per-day and " +
         "--sources break the totals down, --json emits the numbers as data.",
     )
     .option(

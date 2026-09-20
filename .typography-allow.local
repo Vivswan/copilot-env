@@ -1,0 +1,5 @@
+# Path prefixes exempt from the check-typography action, one per line, relative to the
+# repository root (read alongside the managed .typography-allow).
+# GitHub's published rate card data file, kept byte-for-byte as a parser fixture: its threshold
+# cells spell "<=" with U+2264.
+test/fixtures/github-rate-card.yml

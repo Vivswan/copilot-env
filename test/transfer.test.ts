@@ -136,18 +136,25 @@ test("export redacts every token by default; withCredentials includes them", asy
   // A stored price-list URL may carry a credential in its query: without the tokens
   // it travels as the tokens' own redaction marker, never as its value.
   const secretUrl = "https://pricing.example/models?token=SECRET-PRICING-TOKEN";
-  new CopilotEnvConfig().set({ "cost.pricing-url": secretUrl });
+  const secretCardUrl = "https://rates.example/models-and-pricing.yml?token=SECRET-CARD-TOKEN";
+  new CopilotEnvConfig().set({
+    "cost.pricing-url": secretUrl,
+    "cost.github-pricing-url": secretCardUrl,
+  });
 
   const redacted = buildExportBundle();
   expect(redacted.credential.githubToken).toBe(REDACTED_TOKEN);
   expect(redacted.profiles.work?.githubToken).toBe(REDACTED_TOKEN);
   expect(redacted.config.global["cost.pricing-url"]).toBe(REDACTED_TOKEN);
+  expect(redacted.config.global["cost.github-pricing-url"]).toBe(REDACTED_TOKEN);
   expect(redacted.config.global["daemon.port"]).toBe(5050);
   const redactedText = JSON.stringify(redacted);
   expect(redactedText).not.toContain("ghp_");
   expect(redactedText).not.toContain("SECRET-PRICING-TOKEN");
   expect(redactedText).not.toContain("pricing.example");
-  // The parser admits the marker on this key alone; every other key keeps its own
+  expect(redactedText).not.toContain("SECRET-CARD-TOKEN");
+  expect(redactedText).not.toContain("rates.example");
+  // The parser admits the marker on the credential-bearing keys; every other key keeps its own
   // domain, so a string is fine where the key takes one and junk where it does not.
   expect(parseSettingsBundle(JSON.parse(redactedText)).config.global["cost.pricing-url"]).toBe(
     REDACTED_TOKEN,
@@ -165,6 +172,7 @@ test("export redacts every token by default; withCredentials includes them", asy
   expect(full.credential.githubToken).toBe("ghp_default");
   expect(full.profiles.work?.githubToken).toBe("ghp_work");
   expect(full.config.global["cost.pricing-url"]).toBe(secretUrl);
+  expect(full.config.global["cost.github-pricing-url"]).toBe(secretCardUrl);
 });
 
 test("the per-profile settings section travels: export, then import on a fresh machine, restores it verbatim", async () => {
@@ -1028,6 +1036,7 @@ test("bare --export writes the redacted bundle to stdout; --with-credentials war
   await seedStores();
   new CopilotEnvConfig().set({
     "cost.pricing-url": "https://pricing.example/models?token=SECRET-URL",
+    "cost.github-pricing-url": "https://rates.example/card.yml?token=SECRET-CARD-URL",
   });
 
   const redacted = await runSettingsCaptured({ exportTo: true });
@@ -1039,14 +1048,20 @@ test("bare --export writes the redacted bundle to stdout; --with-credentials war
   expect(doc.formatVersion).toBe(2);
   expect(doc.credential.githubToken).toBe(REDACTED_TOKEN);
   expect(doc.config.global["cost.pricing-url"]).toBe(REDACTED_TOKEN);
+  expect(doc.config.global["cost.github-pricing-url"]).toBe(REDACTED_TOKEN);
   expect(redacted.stdout).not.toContain("SECRET-URL");
+  expect(redacted.stdout).not.toContain("SECRET-CARD-URL");
   expect(redacted.stderr).not.toContain("REAL tokens");
 
   const full = await runSettingsCaptured({ exportTo: true, withCredentials: true });
   expect(full.stderr).toContain("REAL tokens (and any stored pricing-url)");
   expect(full.stderr).not.toContain("SECRET-URL");
-  expect(JSON.parse(full.stdout).config.global["cost.pricing-url"]).toBe(
+  const fullDoc = JSON.parse(full.stdout) as { config: { global: Record<string, unknown> } };
+  expect(fullDoc.config.global["cost.pricing-url"]).toBe(
     "https://pricing.example/models?token=SECRET-URL",
+  );
+  expect(fullDoc.config.global["cost.github-pricing-url"]).toBe(
+    "https://rates.example/card.yml?token=SECRET-CARD-URL",
   );
 });
 

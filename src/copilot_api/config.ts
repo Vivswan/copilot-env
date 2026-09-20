@@ -13,8 +13,9 @@ import type { Profile } from "./profile.ts";
 const logger = taggedLogger("copilot_api.config");
 
 /** The leaves a dry run redacts across every store this class fronts: a slot's GitHub token, the
- *  daemon's API keys, and the pricing URL (it may embed a key). */
-const SECRET_STORE_LEAF = /(^|\.)(githubToken|adminApiKey|apiKeys|"cost\.pricing-url")$/;
+ *  daemon's API keys, and the two price-source URLs (either may embed a key). */
+const SECRET_STORE_LEAF =
+  /(^|\.)(githubToken|adminApiKey|apiKeys|"cost\.pricing-url"|"cost\.github-pricing-url")$/;
 
 /** The bytes save() lands, keys sorted. */
 function storeText(data: Record<string, unknown>): string {

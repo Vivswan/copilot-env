@@ -12,6 +12,7 @@ import { errMessage } from "../utils/error.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
+import type { GitHubRateCard, RateCardSource } from "./github_rate_card.ts";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const PER_MILLION = 1_000_000;
@@ -49,38 +50,61 @@ export interface CostEstimate {
   perModel: Record<string, ModelCost>;
   totalUsd: number;
   unpriced: string[];
-  /** Models priced at a GitHub rate the list does not carry: the card's own rate for the model, or
-   *  the long-context tier that applied to part of its usage. Sorted. */
+  /** Models priced at GitHub's card rather than the list's own rate: the card's rate for the model
+   *  differs from the list's (or the list lacks it), or the long-context tier applied to part of
+   *  its usage. Sorted. */
   githubRated: string[];
 }
 
-// GitHub's rate card for Copilot, USD per million tokens, read 2026-09-19 from
-// https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing and keyed by
-// the OpenRouter id the list spells. Static on purpose: the page is not fetched.
-
-/** The models GitHub prices differently from the OpenRouter list; every other model's card
- *  matches the list. Applied over the loaded list by withGitHubRates. */
-const GITHUB_RATES: ReadonlyMap<string, PricingTier> = new Map([
-  ["openai/gpt-5.6-sol", { input: 4, output: 20, cacheRead: 0.4, cacheCreation: 5 }],
-]);
-
-/** A request whose prompt (input plus cached input) exceeds this is billed at the long-context
- *  tier below. OpenAI models only: Anthropic's are flat at any size. */
+/** A request whose prompt (input plus cached input) exceeds this is billed at the model's
+ *  long-context tier, when its card has one (OpenAI models; Anthropic's are flat at any size). The
+ *  readers bucket usage on this one size, so a card tier cut at or below it covers the bucket and
+ *  one cut above it (none today) would over-price it and is not applied. */
 export const LONG_CONTEXT_PROMPT_TOKENS = 272_000;
 
-const LONG_CONTEXT_RATES: ReadonlyMap<string, PricingTier> = new Map([
-  ["openai/gpt-6-astra", { input: 20, output: 75, cacheRead: 2, cacheCreation: 25 }],
-  ["openai/gpt-5.6-sol", { input: 8, output: 30, cacheRead: 0.8, cacheCreation: 10 }],
-]);
+/** The OpenRouter list with GitHub's rate card over it: the card's rate for every model it names, the
+ *  card's long-context tiers, and the card itself for the report's footer. estimateCost prices a
+ *  plain Map at the list's rates alone. */
+export class PriceList extends Map<string, PricingTier> {
+  constructor(
+    entries: Iterable<readonly [string, PricingTier]>,
+    readonly card: GitHubRateCard,
+    readonly from: RateCardSource,
+    /** The ids whose card rate is not the list's (a differing rate, or one the list lacks). */
+    readonly githubRated: ReadonlySet<string>,
+  ) {
+    super(entries);
+  }
+}
 
-/** A copy of the list with GitHub's rates in place of its own; the list itself (and its cache on
- *  disk) is left as fetched. */
+/** The list is copied, never edited: its cache on disk stays the list as fetched. A model the card
+ *  prices at the list's own rate is not GitHub-rated: the footer names only the models whose price
+ *  the card changed. */
 export function withGitHubRates(
   pricing: ReadonlyMap<string, PricingTier>,
-): Map<string, PricingTier> {
-  const out = new Map(pricing);
-  for (const [id, tier] of GITHUB_RATES) out.set(id, tier);
-  return out;
+  card: GitHubRateCard,
+  from: RateCardSource,
+): PriceList {
+  // Bucket by bucket: a rate the card leaves out ("Not applicable" cache writes on a pre-5.6 OpenAI
+  // or Google model) keeps the list's, so usage the list priced stays priced.
+  const merged = new Map(pricing);
+  const changed = new Set<string>();
+  for (const [id, tier] of card.rates) {
+    const listed = pricing.get(id);
+    const over = overTier(listed ?? {}, tier);
+    merged.set(id, over);
+    if (listed === undefined || !sameTier(listed, over)) changed.add(id);
+  }
+  return new PriceList(merged, card, from, changed);
+}
+
+/** Per-million rates agree within a nano-dollar: the list's per-token strings scaled up
+ *  (0.0000002 * 1e6) land a float ulp off the card's 0.2 and are the same price. */
+function sameTier(a: PricingTier, b: PricingTier): boolean {
+  const same = (x: number | undefined, y: number | undefined): boolean =>
+    x === undefined || y === undefined ? x === y : Math.abs(x - y) < 1e-9;
+  return same(a.input, b.input) && same(a.output, b.output) &&
+    same(a.cacheRead, b.cacheRead) && same(a.cacheCreation, b.cacheCreation);
 }
 
 /** GitHub meters in AI credits, 1 credit = $0.01; a transcript's `total_nano_aiu` is the request's
@@ -393,6 +417,7 @@ export interface UsageToPrice {
 
 export function estimateCost(usage: UsageToPrice, pricing: Map<string, PricingTier>): CostEstimate {
   const lookup = pricingLookupFor(pricing);
+  const book = pricing instanceof PriceList ? pricing : null;
   const perModel: Record<string, ModelCost> = {};
   const unpriced: string[] = [];
   const githubRated: string[] = [];
@@ -408,20 +433,39 @@ export function estimateCost(usage: UsageToPrice, pricing: Map<string, PricingTi
     // The long-context share at its tier and the rest at the base tier, so the model's row shows
     // one blended cost. A model with no long-context tier is flat at any size; a bucket the tier
     // leaves out keeps the base rate.
-    const longTier = LONG_CONTEXT_RATES.get(reference);
-    const long = longTier === undefined ? undefined : usage.longContext?.byModel.get(model);
-    const parts: [UsageTokens, PricingTier][] = long === undefined
+    const over = longContextTierFor(book, reference);
+    const long = over === undefined ? undefined : usage.longContext?.byModel.get(model);
+    const parts: [UsageTokens, PricingTier][] = over === undefined || long === undefined
       ? [[total, tier]]
-      : [[tokensMinus(total, long), tier], [long, { ...tier, ...longTier }]];
+      : [[tokensMinus(total, long), tier], [long, overTier(tier, over)]];
     const cost = blendedCost(reference, parts);
     totalUsd += cost.estimatedCostUsd;
     perModel[model] = cost;
-    if (GITHUB_RATES.has(reference) || (long !== undefined && hasTokens(long))) {
+    if (book?.githubRated.has(reference) || (long !== undefined && hasTokens(long))) {
       githubRated.push(model);
     }
   }
 
   return { perModel, totalUsd, unpriced: unpriced.sort(), githubRated: githubRated.sort() };
+}
+
+/** The card's long-context tier for `reference` when the readers' bucket lies within it (see
+ *  LONG_CONTEXT_PROMPT_TOKENS); a plain list has none. */
+function longContextTierFor(book: PriceList | null, reference: string): PricingTier | undefined {
+  const long = book?.card.longContext.get(reference);
+  return long !== undefined && long.promptTokens <= LONG_CONTEXT_PROMPT_TOKENS
+    ? long.tier
+    : undefined;
+}
+
+/** `tier` with `over`'s rates in place of its own, bucket by bucket, where `over` has one. */
+function overTier(tier: PricingTier, over: PricingTier): PricingTier {
+  return {
+    input: over.input ?? tier.input,
+    output: over.output ?? tier.output,
+    cacheRead: over.cacheRead ?? tier.cacheRead,
+    cacheCreation: over.cacheCreation ?? tier.cacheCreation,
+  };
 }
 
 /** Each bucket summed over its parts, each part's tokens at that part's tier. */
@@ -492,17 +536,21 @@ function normalizeModelName(model: string): string {
     .replace(/-1m$/, "");
 }
 
+/** The OpenRouter provider a bare model id belongs to, so a log's `grok-4.5` reaches the card's
+ *  `x-ai/grok-4.5`. */
+const PROVIDER_BY_PREFIX: readonly [prefix: string, provider: string][] = [
+  ["claude-", "anthropic"],
+  ["gpt-", "openai"],
+  ["gemini-", "google"],
+  ["grok-", "x-ai"],
+  ["kimi-", "moonshotai"],
+  ["mai-", "microsoft"],
+];
+
 function inferProviders(slug: string): string[] {
-  if (ANTHROPIC_FAMILY_SLUGS.has(slug) || slug.startsWith("claude-")) {
-    return ["anthropic"];
-  }
-  if (slug.startsWith("gpt-")) {
-    return ["openai"];
-  }
-  if (slug.startsWith("gemini-")) {
-    return ["google"];
-  }
-  return [];
+  if (ANTHROPIC_FAMILY_SLUGS.has(slug)) return ["anthropic"];
+  const hit = PROVIDER_BY_PREFIX.find(([prefix]) => slug.startsWith(prefix));
+  return hit === undefined ? [] : [hit[1]];
 }
 
 function chooseBestMatch(matches: string[], requestedSlug: string): string | null {

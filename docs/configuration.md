@@ -220,10 +220,11 @@ What `agent update` verifies is under [updating](getting-started.md#updating); `
 
 ## cost
 
-| Key                   | Scope    | Default                               | Effect                                                                                                           |
-| --------------------- | -------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `cost.pricing-url`    | `global` | `https://openrouter.ai/api/v1/models` | OpenRouter models API URL for `agent cost`; `--pricing-url` overrides once                                       |
-| `cost.credits-target` | `global` | none                                  | Copilot AI credits (100 to the dollar) to stay under per month; unset paces against the plan's entitlement alone |
+| Key                       | Scope    | Default                                                                                         | Effect                                                                                                              |
+| ------------------------- | -------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `cost.pricing-url`        | `global` | `https://openrouter.ai/api/v1/models`                                                           | OpenRouter models API URL for `agent cost`; `--pricing-url` overrides once                                          |
+| `cost.github-pricing-url` | `global` | `https://raw.githubusercontent.com/github/docs/main/data/tables/copilot/models-and-pricing.yml` | GitHub's Copilot rate card (the docs pricing data file) for `agent cost`; cached for a day like the OpenRouter list |
+| `cost.credits-target`     | `global` | none                                                                                            | Copilot AI credits (100 to the dollar) to stay under per month; unset paces against the plan's entitlement alone    |
 
 What `agent cost` reads and stores is under [cost reporting](usage.md#cost-reporting).
 

@@ -17,7 +17,8 @@ import {
   walkCodexSessions,
 } from "../src/usage/codex_sessions.ts";
 import { dedupKey, parseEveryCandidate, type WalkedFile } from "../src/usage/contribution.ts";
-import { estimateCost, type PricingTier } from "../src/usage/pricing.ts";
+import { BUILT_IN_RATE_CARD } from "../src/usage/github_rate_card.ts";
+import { estimateCost, type PricingTier, withGitHubRates } from "../src/usage/pricing.ts";
 import { errMessage } from "../src/utils/error.ts";
 import { dayKeyIn } from "../src/utils/time.ts";
 import { captureAllWrites } from "./helpers/output.ts";
@@ -228,9 +229,13 @@ test("foldCodex books a request over 272K prompt tokens as long-context and one 
   expect(report.longContext.perDay.get("2026-06-01")?.get("gpt-6-astra")).toEqual(long);
 
   // Priced: the first request at astra's card, the second at its long-context tier (20/75/2).
-  const pricing = new Map<string, PricingTier>([
-    ["openai/gpt-6-astra", { input: 10, output: 50, cacheRead: 1, cacheCreation: 12.5 }],
-  ]);
+  const pricing = withGitHubRates(
+    new Map<string, PricingTier>([
+      ["openai/gpt-6-astra", { input: 10, output: 50, cacheRead: 1, cacheCreation: 12.5 }],
+    ]),
+    BUILT_IN_RATE_CARD,
+    { source: "built-in" },
+  );
   const cost = estimateCost(report, pricing).perModel["gpt-6-astra"];
   const perMillion = 1e-6;
   expect(cost?.estimatedCostUsd).toBeCloseTo(

@@ -207,13 +207,20 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
 
 ## Cost reporting
 
-`agent cost` prices the proxy's usage DBs plus the Codex and Claude session logs at public OpenRouter rates ([`cost.pricing-url`](configuration.md#cost)), at GitHub's own rate where the two differ (the report's footer names those models), and a Codex request on `gpt-6-astra` or `gpt-5.6-sol` whose prompt exceeds 272K tokens at GitHub's long-context tier. Re-parsing every log on each run is slow, so the readers keep a usage index.
+`agent cost` prices the proxy's usage DBs plus the Codex and Claude session logs. Two public price sources, each fetched once a day:
+
+- **OpenRouter's model list** ([`cost.pricing-url`](configuration.md#cost)): the base rate for every model.
+- **GitHub's published Copilot rate card** ([`cost.github-pricing-url`](configuration.md#cost), the data file behind the docs' models-and-pricing page): its rate wins for every model it names, and a Codex request on a model whose card has a long-context tier (the OpenAI and xAI rows) with a prompt over 272K tokens is priced at that tier. The report's footer names the models whose price the card changed and the day it was read.
+
+A card that cannot be read or does not parse whole is never priced from: the last cached card, else the built-in table, prices the run, and one stderr line says so.
+
+Re-parsing every log on each run is slow, so the readers keep a usage index.
 
 - **What it stores:** per-file facts only. The path, size, mtime, how far it was parsed, and its contribution (token counts, timestamps, model names, hashed dedup keys).
 - **What it never stores:** message text or any other session content.
 - **Pre-index, not a cache:** every run folds the report fresh from the files that exist right now, so a deleted session drops out of the next report.
 - **Where:** `<copilot-api home>/usage-index/index.sqlite`, by default `~/.local/share/copilot-env/usage-index/index.sqlite`.
-- **Also there:** the one thing that IS cached, the public OpenRouter price list (`pricing-*.json`, 24-hour TTL). `agent uninstall` removes both.
+- **Also there:** the two things that ARE cached, the public OpenRouter price list (`pricing-*.json`) and GitHub's rate card (`rate-card-*.json`), each with a 24-hour TTL. `agent uninstall` removes all of it.
 - **Verify it:** `agent cost --no-index` parses every file from scratch.
 
 `agent credits` reports this month's Copilot AI credits: spent, projected, and paced against the plan and the optional [`cost.credits-target`](configuration.md#cost). It is one live read of GitHub's meter; nothing local.

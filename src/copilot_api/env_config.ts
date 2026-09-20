@@ -428,6 +428,11 @@ export class CopilotEnvConfig {
     return this.setting("cost.pricing-url");
   }
 
+  /** Stored key, else the built-in data-file URL; `agent cost` has no per-run flag for it. */
+  githubPricingUrl(): string {
+    return this.setting("cost.github-pricing-url");
+  }
+
   /** The stored `cost.credits-target`, else null: `agent credits` then paces against the entitlement alone. */
   creditsTarget(): number | null {
     return this.value("cost.credits-target") ?? null;

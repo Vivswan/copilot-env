@@ -341,6 +341,15 @@ export async function loadGitHubRateCard(
     fewer("models", card.rates.size, lastGood.card.rates.size);
     fewer("long-context tiers", card.longContext.size, lastGood.card.longContext.size);
     fewer("cache-write rates", cacheWriteRates(card), cacheWriteRates(lastGood.card));
+    // The seed's models are the ones this program relies on: a card without them is truncated,
+    // whatever its counts say against a one-model seed on a cold cache.
+    const missing = [
+      ...[...BUILT_IN_RATE_CARD.rates.keys()].filter((id) => !card.rates.has(id)),
+      ...[...BUILT_IN_RATE_CARD.longContext.keys()].filter((id) => !card.longContext.has(id)),
+    ];
+    if (missing.length > 0) {
+      throw new Error(`the card no longer prices ${[...new Set(missing)].sort().join(", ")}`);
+    }
   } catch (e) {
     return { ...lastGood, problem: errMessage(e) };
   }

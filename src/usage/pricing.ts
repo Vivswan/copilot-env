@@ -85,15 +85,26 @@ export function withGitHubRates(
   card: GitHubRateCard,
   from: RateCardSource,
 ): PriceList {
-  const changed = [...card.rates]
-    .filter(([id, tier]) => !sameTier(pricing.get(id), tier))
-    .map(([id]) => id);
-  return new PriceList([...pricing, ...card.rates], card, from, new Set(changed));
+  // Bucket by bucket: a rate the card leaves out ("Not applicable" cache writes on a pre-5.6 OpenAI
+  // or Google model) keeps the list's, so usage the list priced stays priced.
+  const merged = new Map(pricing);
+  const changed = new Set<string>();
+  for (const [id, tier] of card.rates) {
+    const listed = pricing.get(id);
+    const over = overTier(listed ?? {}, tier);
+    merged.set(id, over);
+    if (listed === undefined || !sameTier(listed, over)) changed.add(id);
+  }
+  return new PriceList(merged, card, from, changed);
 }
 
-function sameTier(a: PricingTier | undefined, b: PricingTier): boolean {
-  return a !== undefined && a.input === b.input && a.output === b.output &&
-    a.cacheRead === b.cacheRead && a.cacheCreation === b.cacheCreation;
+/** Per-million rates agree within a nano-dollar: the list's per-token strings scaled up
+ *  (0.0000002 * 1e6) land a float ulp off the card's 0.2 and are the same price. */
+function sameTier(a: PricingTier, b: PricingTier): boolean {
+  const same = (x: number | undefined, y: number | undefined): boolean =>
+    x === undefined || y === undefined ? x === y : Math.abs(x - y) < 1e-9;
+  return same(a.input, b.input) && same(a.output, b.output) &&
+    same(a.cacheRead, b.cacheRead) && same(a.cacheCreation, b.cacheCreation);
 }
 
 /** GitHub meters in AI credits, 1 credit = $0.01; a transcript's `total_nano_aiu` is the request's

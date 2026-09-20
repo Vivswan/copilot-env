@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { canonicalPricingUrl } from "../src/copilot_api/config_registry.ts";
-import { BUILT_IN_RATE_CARD, type RateCardSource } from "../src/usage/github_rate_card.ts";
+import {
+  BUILT_IN_RATE_CARD,
+  type GitHubRateCard,
+  type RateCardSource,
+} from "../src/usage/github_rate_card.ts";
 import {
   canonicalModelName,
   estimateCost,
@@ -342,6 +346,45 @@ test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and e
   };
   expect(estimateCost({ byModel: usage }, withGitHubRates(list, agreeing, BUILT_IN)).githubRated)
     .toEqual([]);
+});
+
+test("withGitHubRates merges a card tier bucket by bucket and reads a float-ulp difference as the same price", () => {
+  // The list's per-token strings scaled to per-million: 0.0000002 * 1e6 is not 0.2 to a float.
+  const listRate = (perToken: number) => perToken * 1_000_000;
+  const list = new Map<string, PricingTier>([
+    ["google/gemini-3.6-flash", {
+      input: listRate(0.00000075),
+      output: listRate(0.00000375),
+      cacheRead: listRate(0.000000075),
+      cacheCreation: listRate(0.0000009),
+    }],
+    ["openai/gpt-5.6-luna", {
+      input: listRate(0.0000002),
+      output: listRate(0.0000012),
+      cacheRead: listRate(0.00000002),
+      cacheCreation: listRate(0.00000025),
+    }],
+  ]);
+  // The card prices gemini without a cache-write rate ("Not applicable") and luna at the same
+  // numbers the list carries, spelled exactly.
+  const card: GitHubRateCard = {
+    ...BUILT_IN_RATE_CARD,
+    rates: new Map([
+      ["google/gemini-3.6-flash", { input: 0.75, output: 3.75, cacheRead: 0.075 }],
+      ["openai/gpt-5.6-luna", { input: 0.2, output: 1.2, cacheRead: 0.02, cacheCreation: 0.25 }],
+    ]),
+  };
+  const usage = new Map([["gemini-3.6-flash", ONE_MILLION_EACH], [
+    "gpt-5.6-luna",
+    ONE_MILLION_EACH,
+  ]]);
+  const estimate = estimateCost({ byModel: usage }, withGitHubRates(list, card, BUILT_IN));
+  // Gemini's cache writes stay priced at the list's rate rather than becoming unpriced.
+  expect(estimate.unpriced).toEqual([]);
+  expect(estimate.perModel["gemini-3.6-flash"]?.cacheCreationCostUsd).toBeCloseTo(0.9, 10);
+  expect(estimate.perModel["gemini-3.6-flash"]?.inputCostUsd).toBeCloseTo(0.75, 10);
+  // Neither model's price moved, so the footer names neither.
+  expect(estimate.githubRated).toEqual([]);
 });
 
 test("estimateCost bills an OpenAI long-context share at its tier and an Anthropic one flat", () => {

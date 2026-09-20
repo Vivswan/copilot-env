@@ -210,7 +210,7 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
 `agent cost` prices the proxy's usage DBs plus the Codex and Claude session logs. Two public price sources, each fetched once a day:
 
 - **OpenRouter's model list** ([`cost.pricing-url`](configuration.md#cost)): the base rate for every model.
-- **GitHub's published Copilot rate card** ([`cost.github-pricing-url`](configuration.md#cost), the data file behind the docs' models-and-pricing page): its rate wins for every model it names, and a Codex request on an OpenAI model whose prompt exceeds 272K tokens is priced at its long-context tier. The report's footer names the models whose price the card changed and the day it was read.
+- **GitHub's published Copilot rate card** ([`cost.github-pricing-url`](configuration.md#cost), the data file behind the docs' models-and-pricing page): its rate wins for every model it names, and a Codex request on a model whose card has a long-context tier (the OpenAI and xAI rows) with a prompt over 272K tokens is priced at that tier. The report's footer names the models whose price the card changed and the day it was read.
 
 A card that cannot be read or does not parse whole is never priced from: the last cached card, else the built-in table, prices the run, and one stderr line says so.
 

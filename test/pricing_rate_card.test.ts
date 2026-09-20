@@ -146,6 +146,14 @@ const RESHAPED: { name: string; reshape: (text: string) => string; problem: stri
     reshape: (text) => text.replace(/^ {2}cache_write: .*\n/gm, ""),
     problem: "the card maps 0 cache-write rates, fewer than the 3 it did",
   },
+  {
+    // 27 models, 7 tiers, 15 cache-write rates: every count clears a cold cache's one-model seed,
+    // so only the seed's own ids tell this truncated file from a full one.
+    name: "both gpt-5.6-sol rows removed",
+    reshape: (text) =>
+      text.split(/\n(?=- model:)/).filter((row) => !row.includes("GPT-5.6 Sol")).join("\n"),
+    problem: "the card no longer prices openai/gpt-5.6-sol",
+  },
 ];
 
 for (const { name, reshape, problem } of RESHAPED) {

@@ -330,6 +330,11 @@ test("`agent init` probes every run: an agreeing verdict re-wires, a differing o
     const keptAuto = await initOn({ mode: "auto" }, false);
     expect([keptAuto.trace, keptAuto.recorded]).toEqual([kept.trace, "direct"]);
     expect(keptAuto.said).toContain("Keeping direct (not a terminal)");
+    // A dry run probes too, keeps the record without asking, and plans the re-wire of it.
+    const planned = await initOn({ mode: "unflagged", dryRun: true }, false);
+    expect([planned.trace, planned.recorded]).toEqual([[...PROBED, ...WROTE("direct")], "direct"]);
+    expect(planned.said).toContain("Keeping direct (a dry run asks nothing)");
+    expect(planned.said).toContain("DRY RUN: nothing was written");
     // --yes follows the probe: both agents move, and the record with them.
     const moved = await initOn({ mode: "unflagged", yes: true }, false);
     expect([moved.trace, moved.recorded]).toEqual([[...PROBED, ...WROTE("proxy")], "proxy"]);
@@ -384,6 +389,57 @@ test("`agent profile <name> add --auto` probes under the profile's own credentia
     trace.length = 0;
     await captureAllWrites(() => addProfile(work, { mode: "unflagged" }, probePair(false, trace)));
     expect(trace).toEqual(WROTE("direct"));
+  } finally {
+    process.stdin.isTTY = hadTty;
+    setIntegrationProbeFetch(null);
+  }
+});
+
+test("`add --auto` on a mode-only named profile records the sign-in before the probe, so a probe that throws costs no second login; a fresh name still lands credential and verdict together", async () => {
+  const homes = isolateAgentHomes("copilot-named-login-", { mkdirs: true });
+  dir = homes.dir;
+  setIntegrationProbeFetch(() =>
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+  );
+  const work = parseProfileName("work");
+  const state = new CopilotEnvState();
+  // `agent profile work add --proxy --no-auth`: a slot with a mode and no credential.
+  state.recordProfileMode(work, "proxy");
+  const credential = { kind: "stored", provider: "gh-token", token: "ghu_work" } as const;
+  let logins = 0;
+  const signIn = () => {
+    logins++;
+    return Promise.resolve(credential);
+  };
+  const tooOld = (id: ManagedAgentId): AgentAdapter => ({
+    ...probeAdapter(id, true, []),
+    detectDirect: () => Promise.reject(new CliTooOldError(CLAUDE_PROBE, "2.1.181", "2.1.251")),
+  });
+  const hadTty = process.stdin.isTTY;
+  process.stdin.isTTY = true;
+  try {
+    await expect(addProfile(work, { mode: "auto" }, [tooOld("claude"), tooOld("codex")], signIn))
+      .rejects.toThrow("claude is too old for Copilot Direct");
+    // The completed sign-in is stored; the mode did not move.
+    expect([logins, state.readProfileSlot(work)]).toEqual([
+      1,
+      { kind: "complete", credential, mode: "proxy" },
+    ]);
+    // The retry after the update: no second login, the verdict lands.
+    const trace: string[] = [];
+    await captureAllWrites(() =>
+      addProfile(work, { mode: "auto", yes: true }, probePair(true, trace), signIn)
+    );
+    expect([logins, trace, state.readProfileSlot(work).mode]).toEqual([
+      1,
+      [...PROBED_AS("ghu_work"), ...WROTE("direct")],
+      "direct",
+    ]);
+    // A fresh name has no slot to record into: the abort leaves no half profile behind.
+    const fast = parseProfileName("fast");
+    await expect(addProfile(fast, { mode: "auto" }, [tooOld("claude"), tooOld("codex")], signIn))
+      .rejects.toThrow("claude is too old for Copilot Direct");
+    expect([logins, state.profileSlotStatus(fast).exists]).toEqual([2, false]);
   } finally {
     process.stdin.isTTY = hadTty;
     setIntegrationProbeFetch(null);

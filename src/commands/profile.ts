@@ -101,11 +101,6 @@ function whose(profile: Profile): string {
   return profile === null ? "the default profile" : profileLabel(profile);
 }
 
-/** Whether this add decides its mode by the probe (which needs the credential first). */
-function probes(profile: Profile, mode: AddMode): boolean {
-  return mode === "auto" || (mode === "unflagged" && profile === null);
-}
-
 const NO_CREDENTIAL_TO_PROBE =
   "no credential to probe with; pass --direct or --proxy, or run without --no-auth";
 
@@ -228,8 +223,9 @@ function printGuidance(
 /** The credential step `add` runs on a profile that has none: `auth`'s interactive flow, which
  *  then wires both agents. `noAuth` leaves it to `auth` and says so; a dry run names it; a script
  *  with neither is refused BEFORE the mode lands, so nothing is half done. A profile with a
- *  credential is never asked again. */
-function credentialStep(profile: Profile, args: AddArgs): () => Promise<void> {
+ *  credential is never asked again. `probing`: this add decides its mode by the probe, which
+ *  needs the credential first (the refusal's advice differs). */
+function credentialStep(profile: Profile, args: AddArgs, probing: boolean): () => Promise<void> {
   // Resolving, not merely stored: a gh-cli slot whose gh login is gone is as good as none.
   if (new Credential(undefined, profile).isAuthenticated()) return () => Promise.resolve();
   const authCommand = agentAuthCommand(profile);
@@ -245,14 +241,14 @@ function credentialStep(profile: Profile, args: AddArgs): () => Promise<void> {
       return Promise.resolve();
     };
   }
-  if (!process.stdin.isTTY) throw notATerminal(profile, args.mode);
+  if (!process.stdin.isTTY) throw notATerminal(profile, probing);
   return () => ensureAuthenticated(profile);
 }
 
 /** A script without a credential: a probing add has nothing to probe with, a flagged one can
  *  record its mode alone. */
-function notATerminal(profile: Profile, mode: AddMode): Error {
-  const record = probes(profile, mode)
+function notATerminal(profile: Profile, probing: boolean): Error {
+  const record = probing
     ? "pass --direct or --proxy with --no-auth to record the mode alone"
     : "pass --no-auth to record the mode alone";
   return new Error(
@@ -260,18 +256,28 @@ function notATerminal(profile: Profile, mode: AddMode): Error {
   );
 }
 
+/** How a named `--auto` signs the profile in: `auth`'s interactive choice (the test seam). */
+type AcquireNamedCredential = (name: ProfileName) => Promise<ProvisionedCredential>;
+
 /** `agent profile [<name>] add` and `agent init`: the mode for BOTH agents, then the credential
  *  step when the profile has none (a profile without a credential records its mode alone; the
  *  credential landing wires both agents). `--auto` on a named profile runs the two in the other
- *  order, since the probe needs the credential. `adapters` is the landing's pair (the test seam). */
+ *  order, since the probe needs the credential. `adapters` is the landing's pair and `acquire` the
+ *  sign-in (the test seams). */
 export async function addProfile(
   profile: Profile,
   args: AddArgs,
   adapters: readonly AgentAdapter[] = bothAgents(),
+  acquire: AcquireNamedCredential = (name) => acquireCredential({ kind: "choose" }, name),
 ): Promise<void> {
-  if (profile === null) return addDefault(args, credentialStep(null, args), adapters);
-  if (args.mode === "auto") return addNamedProbed(profile, args, adapters);
-  const step = credentialStep(profile, args);
+  if (profile === null) {
+    const flagged: ManagedAgentMode | null = args.mode === "auto" || args.mode === "unflagged"
+      ? null
+      : args.mode;
+    return addDefault(args, flagged, credentialStep(null, args, flagged === null), adapters);
+  }
+  if (args.mode === "auto") return addNamedProbed(profile, args, adapters, acquire);
+  const step = credentialStep(profile, args, false);
   const requested = args.mode;
   const land = () => addNamed(profile, requested, adapters);
   if (args.dryRun) await runDryRun(land);
@@ -279,20 +285,18 @@ export async function addProfile(
   await step();
 }
 
-/** `agent init`: the default's landing. No flag, or --auto, probes EVERY run and lands the
- *  verdict; a verdict that differs from the record asks first (followProbe). --direct / --proxy
- *  land that mode with no probe (the CLI asked before a move). The landing probes and writes with
- *  the credential, so a flagged default without one records its mode alone and the credential step
- *  follows, while a probing default has nothing to record until the step lands the credential
- *  (--no-auth is refused). */
+/** `agent init`: the default's landing. `flagged` null (no flag, or --auto) probes EVERY run and
+ *  lands the verdict; a verdict that differs from the record asks first (followProbe). --direct /
+ *  --proxy land that mode with no probe (the CLI asked before a move). The landing probes and
+ *  writes with the credential, so a flagged default without one records its mode alone and the
+ *  credential step follows, while a probing default has nothing to record until the step lands the
+ *  credential (--no-auth is refused). */
 async function addDefault(
   args: AddArgs,
+  flagged: ManagedAgentMode | null,
   step: () => Promise<void>,
   adapters: readonly AgentAdapter[],
 ): Promise<void> {
-  const flagged: ManagedAgentMode | null = args.mode === "auto" || args.mode === "unflagged"
-    ? null
-    : args.mode;
   if (!new Credential().isAuthenticated()) {
     if (flagged === null) {
       if (args.noAuth) throw new Error(NO_CREDENTIAL_TO_PROBE);
@@ -383,17 +387,20 @@ async function addNamed(
   return landNamed(name, slot.mode, mode, resolved.credential, adapters);
 }
 
-/** `agent profile <name> add --auto`: the profile's own credential first (acquired, not yet
- *  recorded: a fresh name has no slot for `auth` to land in), then the Direct-vs-proxy probe under
- *  it, then credential and verdict committed together and both agents wired. A recorded mode the
- *  verdict differs from asks first (followProbe). Without a credential there is nothing to probe
- *  with: --no-auth is refused, and a dry run names the credential step and plans nothing. */
+/** `agent profile <name> add --auto`: the profile's own credential first, then the Direct-vs-proxy
+ *  probe under it, then the verdict landed and both agents wired. A slot a flagged `add` created
+ *  records the sign-in at once, as `agent auth` would, so a probe that then throws costs no second
+ *  login; a fresh name has no slot to record into, and its credential lands with the verdict in
+ *  one commit. A recorded mode the verdict differs from asks first (followProbe). Without a
+ *  credential there is nothing to probe with: --no-auth is refused, and a dry run names the
+ *  credential step and plans nothing. */
 async function addNamedProbed(
   name: ProfileName,
   args: AddArgs,
   adapters: readonly AgentAdapter[],
+  acquire: AcquireNamedCredential,
 ): Promise<void> {
-  const slot = new CopilotEnvState().readProfileSlot(name);
+  const { exists, slot } = new CopilotEnvState().profileSlotStatus(name);
   let resolved = resolveProvisioned(slot.credential);
   if (resolved === null) {
     if (args.noAuth) throw new Error(NO_CREDENTIAL_TO_PROBE);
@@ -403,11 +410,13 @@ async function addNamedProbed(
       );
       return;
     }
-    if (!process.stdin.isTTY) throw notATerminal(name, args.mode);
+    if (!process.stdin.isTTY) throw notATerminal(name, true);
     logger.log(
       `  ${profileLabel(name)} is not authenticated yet - let's log in to GitHub Copilot.`,
     );
-    resolved = resolveProvisioned(await acquireCredential({ kind: "choose" }, name));
+    const acquired = await acquire(name);
+    if (exists) new Credential(undefined, name).record(acquired);
+    resolved = resolveProvisioned(acquired);
     if (resolved === null) {
       throw new Error(`${profileLabel(name)}'s new credential does not resolve; retry the login`);
     }

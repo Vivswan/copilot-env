@@ -1,5 +1,90 @@
 # Changelog
 
+## [5.0.0](https://github.com/Vivswan/copilot-env/compare/v4.0.9...v5.0.0) (2026-09-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **compat:** an install older than 4.0.0 is no longer migrated; reinstall.
+* **state:** the root home holds state.json ({ global, profiles.<name>, ownership }: settings and state keys side by side, the ledger as its own map) instead of credentials.json, preferences.json, and ownership.json, under one lock; a 4.0.9 migration folds the three files, removes their lock sidecars, opencode/github_token, and codex-model-catalog.json.bak, and renames .autoupdate/state.json to .autoupdate/autoupdate.json; agent config --set/--del refuse a state key by name.
+* **update:** the update verifier no longer pins the signing workflow file, the source repository id (Fulcio extension 15), or the source repository ref (Fulcio extension 14); any workflow of any repository under Vivswan's GitHub account, at any ref, may sign a release. The FAILED log markers "not signed by the release workflow" and "the download is not what GitHub Actions built from Vivswan/copilot-env" are replaced by "not signed by a GitHub Actions workflow of Vivswan's account"; the message names only the checks the verifier performs.
+* **identity:** credentials.json profile slots lose integrationIdentity, copilotHost, copilotHostIdentity, and copilotHostSource (a 4.0.9 migration drops all four; the next Direct rewire probes once and stores the probed identity and host as state); the settings bundle's profile slots no longer carry integrationIdentity; no command reads config.toml or settings.json to learn a profile's mode, identity, or host (agent env, the launchers, the Claude Desktop targets, the bundle's modes, and the web-search sync read the state file); health JSON loses the slot identity fields and the expected-host drift note.
+* **config:** the settings bundle is formatVersion 2 (config.global + config.profiles); v1 bundles are rejected
+* an install older than 4.0.0 is no longer migrated; run agent install fresh
+* **build:** allow every network host and drop the copilot-host grant warning ([#261](https://github.com/Vivswan/copilot-env/issues/261))
+
+### Features
+
+* **auth:** color the identities survey like agent config ([#294](https://github.com/Vivswan/copilot-env/issues/294)) ([c603c5e](https://github.com/Vivswan/copilot-env/commit/c603c5ee5cf1c8d28f8d505df7cc5037b1ea07dd))
+* **auth:** list vscode-chat again, mark the would-be pick, and wrap the survey to the terminal width ([#288](https://github.com/Vivswan/copilot-env/issues/288)) ([a30b15f](https://github.com/Vivswan/copilot-env/commit/a30b15f9ee69b79d91ae997ded7f841a2e3244b3))
+* **auth:** survey every Copilot client identity and pin one with --identities / --identity ([#228](https://github.com/Vivswan/copilot-env/issues/228)) ([9db1b4e](https://github.com/Vivswan/copilot-env/commit/9db1b4e524dd5f6053588df4b39b21e77ef0f37e))
+* **build:** allow every network host and drop the copilot-host grant warning ([#261](https://github.com/Vivswan/copilot-env/issues/261)) ([c2253a2](https://github.com/Vivswan/copilot-env/commit/c2253a279714c0e2b9ed4d06c6ec6f6b703a96e8))
+* **cli:** --dry-run on the remaining writers: shell, migrate, proxy-token, auth --del, settings --export, stop, launch, update, install ([#310](https://github.com/Vivswan/copilot-env/issues/310)) ([25f2eea](https://github.com/Vivswan/copilot-env/commit/25f2eead870797abbeaf75d5bae84f43405fc8f5))
+* **cli:** --dry-run prints the attribute-level plan for every writing command ([#303](https://github.com/Vivswan/copilot-env/issues/303)) ([38b0769](https://github.com/Vivswan/copilot-env/commit/38b0769d53d3f09359360f78450c7019ad7322ed))
+* **cli:** agent config set|get|unset are verbs for machine keys and shared defaults; profile keys live under profile ([#330](https://github.com/Vivswan/copilot-env/issues/330)) ([632fc13](https://github.com/Vivswan/copilot-env/commit/632fc133d081f04500b30a44c772ba40d1bc8b42))
+* **cli:** agent models and agent identity are the default profile's verbs at the top level ([#377](https://github.com/Vivswan/copilot-env/issues/377)) ([a5b1620](https://github.com/Vivswan/copilot-env/commit/a5b16209fd92dddadaa115620516c0f04e13423a))
+* **cli:** agent profile [&lt;name&gt;] &lt;verb&gt; routes every per-profile command; no name means the default profile ([#323](https://github.com/Vivswan/copilot-env/issues/323)) ([52f39ae](https://github.com/Vivswan/copilot-env/commit/52f39aefa11e0359cc4844530272d5b5535f36f6))
+* **cli:** color every table and report with agent config's palette ([#308](https://github.com/Vivswan/copilot-env/issues/308)) ([2c294a5](https://github.com/Vivswan/copilot-env/commit/2c294a5f2fe180bd359267ffd17bd28e71636bf5))
+* **cli:** every per-profile command is a profile verb; health, credits, settings are all-scope at the top ([#327](https://github.com/Vivswan/copilot-env/issues/327)) ([c3c9714](https://github.com/Vivswan/copilot-env/commit/c3c97145afd3b896c87b7d2ea7016a8c1fb7663a))
+* **cli:** one-line command summaries and the profile verbs in the top-level help ([#363](https://github.com/Vivswan/copilot-env/issues/363)) ([748a380](https://github.com/Vivswan/copilot-env/commit/748a3806181514cc2db32d6cd788c521ac0beabc))
+* **cli:** wrap tables to the terminal width ([#239](https://github.com/Vivswan/copilot-env/issues/239)) ([ad68a41](https://github.com/Vivswan/copilot-env/commit/ad68a412f397bd543b4e3e6e04fb23f633061111))
+* **codex:** pin the Codex home copilot-env wrote and add codex-home to choose it ([#244](https://github.com/Vivswan/copilot-env/issues/244)) ([cddb14a](https://github.com/Vivswan/copilot-env/commit/cddb14afa14ee4fdf4e155ad009a046c9c58d348))
+* **config:** accept key=value in agent config set and agent profile set ([#370](https://github.com/Vivswan/copilot-env/issues/370)) ([38ced2d](https://github.com/Vivswan/copilot-env/commit/38ced2de44836508323c229d29127c43e42d7de4))
+* **config:** add copilot-host to choose the Copilot API host for every mode ([#252](https://github.com/Vivswan/copilot-env/issues/252)) ([e0cb286](https://github.com/Vivswan/copilot-env/commit/e0cb28698b170cea01cc3b2d0bb9586aecfcd856))
+* **config:** render profile and global keys under two banners derived from each key's scope ([#276](https://github.com/Vivswan/copilot-env/issues/276)) ([85a2fef](https://github.com/Vivswan/copilot-env/commit/85a2fef68fdd44235acedfb0962c53c007b1c92c))
+* **config:** scope keys to profile or global, group them by dotted name, and resolve with one precedence rule ([58f9a00](https://github.com/Vivswan/copilot-env/commit/58f9a008201a3f5707bb4e5428d5234121c84fdb))
+* **config:** scope static-key to none, claude, codex, or all ([#245](https://github.com/Vivswan/copilot-env/issues/245)) ([b0abef2](https://github.com/Vivswan/copilot-env/commit/b0abef266065c0d6bd4ca0069cec97649fa3f6a8))
+* **cost:** price from GitHub's published rate card, fetched and cached like the OpenRouter list ([#368](https://github.com/Vivswan/copilot-env/issues/368)) ([6adbc51](https://github.com/Vivswan/copilot-env/commit/6adbc51d7ed399624d9e23d5e8bef38c3280b904))
+* **dry-run:** overlay filesystem facade and tree-diff report ([#318](https://github.com/Vivswan/copilot-env/issues/318)) ([e280859](https://github.com/Vivswan/copilot-env/commit/e280859b4e2df617a686f481b38473c4b88683d8))
+* **identity:** one probed client identity per credential for Direct and the proxy alike ([#267](https://github.com/Vivswan/copilot-env/issues/267)) ([e80bc63](https://github.com/Vivswan/copilot-env/commit/e80bc6357080644521f54692f21cb2405d1d0932))
+* **init:** enter accepts the probe's verdict when it differs from the recorded mode ([#379](https://github.com/Vivswan/copilot-env/issues/379)) ([a7ef840](https://github.com/Vivswan/copilot-env/commit/a7ef8404b6c9c106b3a3d61942208fd9be0ba4a1))
+* **install:** --yes and --no answer the shell-reload prompt; --no replaces --no-exec-shell ([#371](https://github.com/Vivswan/copilot-env/issues/371)) ([bfec716](https://github.com/Vivswan/copilot-env/commit/bfec7162ef5d473bf1929120564889e9f5c9b2ec))
+
+
+### Bug Fixes
+
+* **agents:** pin the Direct smoke probe to the cheapest Copilot catalog model ([#226](https://github.com/Vivswan/copilot-env/issues/226)) ([c939829](https://github.com/Vivswan/copilot-env/commit/c939829e1521325326d13e16cae2e27cbb5dad76))
+* **agents:** probe from the throwaway home under the agents' own identity ([#237](https://github.com/Vivswan/copilot-env/issues/237)) ([b0d47e3](https://github.com/Vivswan/copilot-env/commit/b0d47e3c4eca3b3f9f7c5da3c4b2d9d10eb3be67))
+* **auth:** run the device flow in copilot-env and land its token in the credential slot ([#292](https://github.com/Vivswan/copilot-env/issues/292)) ([73bce6b](https://github.com/Vivswan/copilot-env/commit/73bce6bc10accda3bbbe236face65a07315c6223))
+* **auth:** serve a pinned gh login through the plain token when --user cannot, and quote gh's refusal ([#289](https://github.com/Vivswan/copilot-env/issues/289)) ([7c9affc](https://github.com/Vivswan/copilot-env/commit/7c9affc5fc1d60747372bcfbaee5314858b895e5))
+* **auth:** token-returning commands never write agent files; the catalog sync runs from wiring and launch ([#302](https://github.com/Vivswan/copilot-env/issues/302)) ([0ff0a1f](https://github.com/Vivswan/copilot-env/commit/0ff0a1f5cd9eb4155824e019a1f005be30c1fc32))
+* **bench:** the usage index bench typechecks again and stays covered ([#333](https://github.com/Vivswan/copilot-env/issues/333)) ([6a7eafb](https://github.com/Vivswan/copilot-env/commit/6a7eafbd4fc08aa94795f861fbce7ba4347d046a))
+* **cli:** every command's --help says the necessary things only ([#372](https://github.com/Vivswan/copilot-env/issues/372)) ([d37a62b](https://github.com/Vivswan/copilot-env/commit/d37a62bf2e0f5871c2cf484b3ca7b1d2e8c065a2))
+* **cli:** every prose line wraps to the terminal width at the logger ([#299](https://github.com/Vivswan/copilot-env/issues/299)) ([8707b19](https://github.com/Vivswan/copilot-env/commit/8707b19fa935a091d927e7a77713213d23d99d22))
+* **cli:** every table wraps to the terminal width through the one table renderer ([#290](https://github.com/Vivswan/copilot-env/issues/290)) ([d3a3e67](https://github.com/Vivswan/copilot-env/commit/d3a3e67aca7d7c559f43e56576f19d5f567e62a4))
+* **cli:** the remaining commands' --help says the necessary things only ([#375](https://github.com/Vivswan/copilot-env/issues/375)) ([0f583bb](https://github.com/Vivswan/copilot-env/commit/0f583bb62d737369e83cc0046dd597200a587ec2))
+* **codex:** resolve the Direct User-Agent version as a chain, the baked version last ([#243](https://github.com/Vivswan/copilot-env/issues/243)) ([0efc1c7](https://github.com/Vivswan/copilot-env/commit/0efc1c78a87af412981fd83bff1ce9b47066243d))
+* **codex:** write named profiles as &lt;name&gt;.config.toml (Codex profile v2) ([#241](https://github.com/Vivswan/copilot-env/issues/241)) ([678700a](https://github.com/Vivswan/copilot-env/commit/678700a95854a82749cb0f7ee8c0e09fd2117d68))
+* **cost:** count a request once when the proxy DB and a client log both record it ([#366](https://github.com/Vivswan/copilot-env/issues/366)) ([4b2f372](https://github.com/Vivswan/copilot-env/commit/4b2f37287a93de2306aa6ba8f73f098a18f10505))
+* **cost:** price Codex usage at GitHub's rates, with the long-context tier and a UTC month window ([#365](https://github.com/Vivswan/copilot-env/issues/365)) ([d7eebfa](https://github.com/Vivswan/copilot-env/commit/d7eebfae6d0aff40d3dc67071565c1d03413bbf0))
+* **docs:** drop the migrations edges and box symbol the no-compat sweep removed ([#269](https://github.com/Vivswan/copilot-env/issues/269)) ([c4e5d2b](https://github.com/Vivswan/copilot-env/commit/c4e5d2bed8d0998b74d8936bb04401d5a4eb783c))
+* **health:** name the explicit migrate command in the legacy profile-table repair ([#251](https://github.com/Vivswan/copilot-env/issues/251)) ([0483f7c](https://github.com/Vivswan/copilot-env/commit/0483f7cf9083e7fa1505632f9fa2e7f12158caeb))
+* **health:** run the live probe the way the launchers start the CLIs ([#233](https://github.com/Vivswan/copilot-env/issues/233)) ([001e168](https://github.com/Vivswan/copilot-env/commit/001e1682610034ce776d656f05962121126a3345))
+* **init:** agent init probes Copilot Direct every run and asks before moving a recorded mode ([#373](https://github.com/Vivswan/copilot-env/issues/373)) ([0c894fe](https://github.com/Vivswan/copilot-env/commit/0c894fe6faa607b338d0c9603c3051f833c942a0))
+* **install:** run the due migrations when agent install replaces a prior version ([#272](https://github.com/Vivswan/copilot-env/issues/272)) ([068a902](https://github.com/Vivswan/copilot-env/commit/068a902ca17086a4475c26d2808d7125982ab4b1))
+* **lock:** a leftover marker no longer holds writers hostage, and a bounded wait never writes unlocked ([#337](https://github.com/Vivswan/copilot-env/issues/337)) ([03bc678](https://github.com/Vivswan/copilot-env/commit/03bc678131ecba481d072c42a5ce047b62e7ddf9))
+* **lock:** the bounded wait measures holder progress, not total queueing ([#356](https://github.com/Vivswan/copilot-env/issues/356)) ([4f6fd03](https://github.com/Vivswan/copilot-env/commit/4f6fd03e0f03df5122c827841d3a42284f117df8))
+* **probe:** the claude smoke uses the CLI's haiku alias, a configurable probe model per agent, and surfaces the error text ([#317](https://github.com/Vivswan/copilot-env/issues/317)) ([8f9855e](https://github.com/Vivswan/copilot-env/commit/8f9855e1f726e164cc3e5ba5a28478ec7495004f))
+* **scripts:** mark setup-env.sh executable ([#278](https://github.com/Vivswan/copilot-env/issues/278)) ([92b661d](https://github.com/Vivswan/copilot-env/commit/92b661d7855e7629f2835037cb3b5bc73be5d74c))
+* **start:** refuse to start the proxy without a stored credential; the daemon never logs in on its own ([#306](https://github.com/Vivswan/copilot-env/issues/306)) ([c8cc91e](https://github.com/Vivswan/copilot-env/commit/c8cc91eec3dbb3c33aecc2ef2dc9c0cc8542c290))
+* **test:** the fake model endpoint exits with its parent ([#329](https://github.com/Vivswan/copilot-env/issues/329)) ([ac11f56](https://github.com/Vivswan/copilot-env/commit/ac11f566c26252346deb5b0fa41bc7022b4ba324))
+* **test:** the test deadline alone bounds the MCP client's reads ([#273](https://github.com/Vivswan/copilot-env/issues/273)) ([63c95e9](https://github.com/Vivswan/copilot-env/commit/63c95e929ab76dffd97cfca792ee2e4838f64c87))
+* **update:** accept a release signed by any GitHub Actions workflow of Vivswan's account ([555a8fb](https://github.com/Vivswan/copilot-env/commit/555a8fbc646894253d3ff3f2e60434f4f1c0736b))
+* **update:** look up releases without a token ([#242](https://github.com/Vivswan/copilot-env/issues/242)) ([1454906](https://github.com/Vivswan/copilot-env/commit/1454906e479d467ec52c416941197824b17b1d77))
+
+
+### Miscellaneous Chores
+
+* release the next version as 5.0.0 ([4f9b325](https://github.com/Vivswan/copilot-env/commit/4f9b325aa2157faf534b65fbb9bf3c5810d642a6))
+
+
+### Code Refactoring
+
+* **compat:** drop the pre-4.0 readers and the 3.5.6 migration ([b7a9b9a](https://github.com/Vivswan/copilot-env/commit/b7a9b9a180013b08dd9a42c22ae1c9c021a3bbbb))
+* delete every pre-4.0 compatibility path outside src/migrations ([b4f424e](https://github.com/Vivswan/copilot-env/commit/b4f424ede53f2908708118555f3d43b0d21586f1))
+* **identity:** the slot holds the probed identity and host as state; rewires never re-derive ([dd4eb83](https://github.com/Vivswan/copilot-env/commit/dd4eb83ee36c98104e0ec72ea2e776cf12c1410b))
+* **state:** fold credentials.json, preferences.json, and ownership.json into one state.json ([3d9b144](https://github.com/Vivswan/copilot-env/commit/3d9b1447e0e1ee8d44c8f81ba0e43d229bef6776))
+
 ## [4.0.9](https://github.com/Vivswan/copilot-env/compare/v4.0.8...v4.0.9) (2026-09-15)
 
 

@@ -111,8 +111,10 @@ const AUTH_PROVIDERS_HELP = `--provider <${
 }>  (or --set <token>, --gh-user <login>)`;
 
 /** The landing's answer when the probe's verdict differs from the recorded mode: one line says so,
- *  then the question a flag-driven switch asks. `--yes` answers it; a script (no terminal), a dry
- *  run, or a "no" keeps the record and names the flag that would move it. */
+ *  then the question a flag-driven switch asks, defaulting to yes: Enter follows the probe, a "no"
+ *  keeps the record, and Ctrl+C aborts the run (the default policy would answer the default).
+ *  `--yes` answers it; a script (no terminal) or a dry run asks nothing and keeps the record,
+ *  naming the flag that would move it. */
 async function followProbe(
   profile: Profile,
   recorded: ProfileMode,
@@ -131,7 +133,8 @@ async function followProbe(
   if (!process.stdin.isTTY) return keep(" (not a terminal)");
   const confirmed = await prompt(modeSwitchQuestion(profile, recorded, verdict), {
     type: "confirm",
-    initial: false,
+    initial: true,
+    cancel: "reject",
   });
   return confirmed === true ? verdict : keep("");
 }

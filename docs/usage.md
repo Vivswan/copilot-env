@@ -15,7 +15,8 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #   add --direct|--proxy|--auto [--yes] [--no-auth]  its mode (both agents), then the credential
                            #                              step unless --no-auth; --auto signs in first and probes direct vs
                            #                              proxy under that credential (the default with no flag probes
-                           #                              every run); a mode change asks first
+                           #                              every run); a mode change asks first, and when the probe's
+                           #                              verdict differs from the recorded mode Enter accepts it
                            #   del [--yes]                delete the named profile everywhere (asks first)
                            #   show                       mode, provider, daemon
                            #   auth                       its credential: --provider copilot|gh-cli|gh-token|gh-env,

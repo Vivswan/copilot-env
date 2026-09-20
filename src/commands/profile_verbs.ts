@@ -25,7 +25,7 @@ import {
 } from "../copilot_api/profile.ts";
 import { prompt } from "../utils/logger.ts";
 import { runAuth } from "./auth.ts";
-import { type ConfigView, runConfig } from "./config.ts";
+import { type ConfigView, resolveSetPair, runConfig } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
 import {
   type AddArgs,
@@ -295,14 +295,23 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       "lands in the profile's own section; a named profile may also override a proxy.* or " +
       "probe.* key for itself. With no name, a proxy.* or probe.* key sets the shared default " +
       "every profile follows. `set identity <id|auto>` probes the id against the hosts before " +
-      "pinning it; `auto` goes back to probing. " +
+      "pinning it; `auto` goes back to probing. Both `set <key> <value>` and `set " +
+      "<key>=<value>` are accepted. " +
       "See also: `agent config set`, which writes the same shared default.",
   )
-    .argument("<key>", "A key of the PROFILE block of `agent profile get`.")
-    .argument("<value>", "The value, parsed by the key's type.")
+    .argument("<key>", "A key of the PROFILE block of `agent profile get`, or `<key>=<value>`.")
+    .argument(
+      "[value]",
+      "The value, parsed by the key's type; omitted when the key slot spells `<key>=<value>`.",
+    )
     .option("--dry-run", DRY_RUN_HELP)
-    .action((key: string, value: string, opts: Opts, cmd: Command) => {
+    .action((rawKey: string, rawValue: string | undefined, opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "set", rawProfile);
+      const { key, value } = resolveSetPair(
+        rawKey,
+        rawValue,
+        `agent profile${rawProfile === null ? "" : ` ${rawProfile}`} set`,
+      );
       refuseGlobalKey(key);
       if (configKeyDef(key)?.key === "identity") {
         return setIdentity(rawProfile, value, Boolean(opts.dryRun));

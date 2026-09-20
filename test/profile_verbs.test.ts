@@ -138,6 +138,47 @@ test(
 );
 
 test(
+  "`set <key>=<value>` is `set <key> <value>` on both faces: same output, same bytes; the split is at the first `=`; a value given twice or not at all is refused naming both forms",
+  () => {
+    const fresh = [scratchHome(), scratchHome()] as const;
+    const machine = expectIdentical(
+      { args: ["config", "set", "proxy.small-model", "gpt-x"], scratch: fresh[0] },
+      { args: ["config", "set", "proxy.small-model=gpt-x"], scratch: fresh[1] },
+    );
+    expect(machine.exitCode).toBe(0);
+    const profiled = expectIdentical(
+      { args: ["profile", "set", "passthrough", "off"], scratch: fresh[0] },
+      { args: ["profile", "set", "passthrough=off"], scratch: fresh[1] },
+    );
+    expect(profiled.exitCode).toBe(0);
+    expect(readFileSync(join(fresh[1].home, "state.json"), "utf8")).toContain('"gpt-x"');
+    // Only the first `=` splits: a URL value keeps its query string whole.
+    const url = "https://prices.example/v1/models?tier=all&fmt=json";
+    expect(observe(["config", "set", `cost.pricing-url=${url}`], fresh[1]).exitCode).toBe(0);
+    expect(observe(["config", "get", "cost.pricing-url"], fresh[1]).stdout).toBe(`${url}\n`);
+    const refusals: [string[], string[]][] = [
+      [["config", "set", "proxy.small-model=gpt-x", "gpt-y"], ["the value is given twice"]],
+      [["config", "set", "proxy.small-model"], [
+        "missing value",
+        "agent config set <key> <value>",
+        "agent config set <key>=<value>",
+      ]],
+      [["profile", "work", "set", "passthrough"], [
+        "agent profile work set <key> <value>",
+        "agent profile work set <key>=<value>",
+      ]],
+    ];
+    for (const [args, needles] of refusals) {
+      const proc = observe(args, fresh[1]);
+      expect(proc.exitCode, args.join(" ")).toBe(1);
+      for (const needle of needles) expect(proc.stderr, args.join(" ")).toContain(needle);
+    }
+    // Nine cold CLI spawns; generous headroom for loaded Windows CI runners.
+  },
+  300_000,
+);
+
+test(
   "the verbs with their bodies folded under them print what the routing-only tree printed: the same files in the same order, the same rows",
   () => {
     const scratch = scratchHome();

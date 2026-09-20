@@ -841,7 +841,7 @@ test("configTable() renders the header, the groups, and key=value rows with type
   // The header's halves pack to the width like words; at 80 the count and the set syntax share
   // the first line, the rest the second.
   expect(lines.slice(0, 4)).toEqual([
-    `4 of ${MACHINE_AND_SHARED_KEYS} keys set (*).  |  agent config set <key> <value>`,
+    `4 of ${MACHINE_AND_SHARED_KEYS} keys set (*).  |  agent config set <key> <value> (or <key>=<value>)`,
     "agent config unset <key> reverts",
     "a profile's own keys: agent profile [<name>] set|unset|get",
     "",
@@ -1101,14 +1101,16 @@ test("configTable() narrows with the width: the header packs to it, the right co
     configTable(stored({ "daemon.strict-port": true }), { ...PLAIN_TABLE, width }).split("\n");
   const headers: [number, string[]][] = [
     [60, [
-      `1 of ${MACHINE_AND_SHARED_KEYS} keys set (*).  |  agent config set <key> <value>`,
+      `1 of ${MACHINE_AND_SHARED_KEYS} keys set (*).`,
+      "agent config set <key> <value> (or <key>=<value>)",
       "agent config unset <key> reverts",
       "a profile's own keys: agent profile [<name>] set|unset|get",
       "",
     ]],
     [40, [
       `1 of ${MACHINE_AND_SHARED_KEYS} keys set (*).`,
-      "agent config set <key> <value>",
+      "agent config set <key> <value> (or",
+      "<key>=<value>)",
       "agent config unset <key> reverts",
       "a profile's own keys: agent profile",
       "[<name>] set|unset|get",

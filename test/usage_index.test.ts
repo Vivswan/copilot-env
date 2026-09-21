@@ -850,8 +850,9 @@ const UNREMOVABLE: { name: string; sabotage: () => void; line: () => string }[] 
       rmSync(`${dbPath()}-shm`, { force: true });
       mkdirSync(dbPath());
     },
-    line: () =>
-      `could not open the usage index (unable to open database file: ${dbPath()}); running without it.`,
+    // The path after the colon is spelled by the SQLite binding (Deno 2.9.7 resolves symlinks, so
+    // macOS's /tmp prints as /private/tmp); the cause is the contract, the spelling is not.
+    line: () => "could not open the usage index (unable to open database file: ",
   },
   {
     name: "a directory that cannot be created",

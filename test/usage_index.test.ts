@@ -831,7 +831,7 @@ function diskState(path: string): unknown {
 }
 
 /** Index locations that fail to open as OUR database without proving they are nobody's. */
-const UNREMOVABLE: { name: string; sabotage: () => void; line: () => string }[] = [
+const UNREMOVABLE: { name: string; sabotage: () => void; line: () => string | RegExp }[] = [
   {
     name: "a corrupt database (valid header, garbage pages)",
     sabotage: () => {
@@ -850,9 +850,10 @@ const UNREMOVABLE: { name: string; sabotage: () => void; line: () => string }[] 
       rmSync(`${dbPath()}-shm`, { force: true });
       mkdirSync(dbPath());
     },
-    // The path after the colon is spelled by the SQLite binding (Deno 2.9.7 resolves symlinks, so
-    // macOS's /tmp prints as /private/tmp); the cause is the contract, the spelling is not.
-    line: () => "could not open the usage index (unable to open database file: ",
+    // The path is spelled by the SQLite binding (Deno 2.9.7 resolves symlinks, so macOS's /tmp
+    // prints as /private/tmp); the cause and the fallback are the contract, the spelling is not.
+    line: () =>
+      /could not open the usage index \(unable to open database file: .*\); running without it\./,
   },
   {
     name: "a directory that cannot be created",

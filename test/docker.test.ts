@@ -3,15 +3,6 @@ import { join } from "node:path";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { expect, test } from "./helpers/testing.ts";
 
-// .dvmrc is the one source of truth for the runtime pin; the Dockerfile ARG default is a copy
-// for bare `docker build`, so a version bump must not fork them.
-test("Dockerfile's DENO_VERSION default tracks .dvmrc", () => {
-  const dvmrc = readFileSync(join(PROJECT_ROOT, ".dvmrc"), "utf8").trim();
-  const dockerfile = readFileSync(join(PROJECT_ROOT, "Dockerfile"), "utf8");
-  const arg = dockerfile.match(/^ARG DENO_VERSION=(\S+)$/m);
-  expect(arg?.[1]).toBe(dvmrc);
-});
-
 // Podman resolves unqualified image names against configurable registries and prompts when
 // ambiguous; a fully-qualified ref keeps the build engine-agnostic.
 test("Dockerfile FROM is fully qualified for podman", () => {

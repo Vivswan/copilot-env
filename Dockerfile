@@ -1,7 +1,7 @@
 # Hermetic test-runner image: the throwaway HOME the lifecycle smoke needs.
 #   fully-qualified ref, ARG before FROM, no BuildKit-only syntax  -> builds under Podman too
-#   DENO_VERSION default                                           -> tracks .dvmrc; test/docker.test.ts guards the pair
-ARG DENO_VERSION=2.9.6
+#   DENO_VERSION has no default                                     -> .dvmrc is the only pin; `deno task test:docker` passes it
+ARG DENO_VERSION
 FROM docker.io/denoland/deno:${DENO_VERSION}
 
 # Daemon pid discovery shells `ps`; the base image lacks procps.

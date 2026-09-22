@@ -17,7 +17,8 @@ import {
   VERSION_KEYS,
   VERSION_RE,
 } from "./scrub_vocabulary.ts";
-import { isRecord, ROLLOUT_FILE_RE, type Source, walkJsonl } from "./transcripts.ts";
+import { isRecord } from "../../src/utils/json.ts";
+import { ROLLOUT_FILE_RE, type Source, walkJsonl } from "./transcripts.ts";
 
 const PLACEHOLDER = "SCRUBBED";
 /** The number every other number becomes. */

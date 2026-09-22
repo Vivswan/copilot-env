@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { childPathPrepending, verbatimCliSpawn } from "../../src/utils/command.ts";
 import { log, writeFile } from "./cli.ts";
-import { isRecord } from "./transcripts.ts";
+import { isRecord } from "../../src/utils/json.ts";
 
 const TURN_TIMEOUT_MS = 40_000;
 /** How long a killed child tree may take to report its exit before that counts as a failure. */

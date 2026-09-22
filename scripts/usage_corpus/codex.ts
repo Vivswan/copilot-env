@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { ledger, writeFile } from "./cli.ts";
 import { registry, runTurn } from "./children.ts";
 import type { MinuteStraddle } from "./fake.ts";
-import { filesFor, isRecord } from "./transcripts.ts";
+import { isRecord, parseJsonRecord } from "../../src/utils/json.ts";
+import { filesFor } from "./transcripts.ts";
 
 const CODEX_MODEL = "gpt-5.4";
 /** The Codex provider table the fake is wired through; `model_provider` selects it. */
@@ -23,12 +24,8 @@ export interface CodexIds {
 function codexThreadId(stdout: string): string | null {
   for (const line of stdout.split("\n")) {
     if (!line.includes("thread.started")) continue;
-    try {
-      const parsed: unknown = JSON.parse(line);
-      if (isRecord(parsed) && typeof parsed.thread_id === "string") return parsed.thread_id;
-    } catch {
-      // not JSON
-    }
+    const parsed = parseJsonRecord(line);
+    if (parsed !== null && typeof parsed.thread_id === "string") return parsed.thread_id;
   }
   return null;
 }

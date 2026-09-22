@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { stableStringify } from "../../src/utils/json.ts";
+import { isRecord, stableStringify } from "../../src/utils/json.ts";
 
 /** Leads both the comment body and the failure summary, so either is recognizable as this script's. */
 const COMMENT_MARKER = "<!-- cost-metrics -->";
@@ -380,9 +380,7 @@ function localMidnightMs(day: string, what: string): number {
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
+  return isRecord(value) ? value : undefined;
 }
 
 function parseTreeSummary(line: string): TreeSummary {

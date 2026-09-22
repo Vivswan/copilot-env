@@ -58,7 +58,3 @@ export function writeFile(path: string, data: string | Uint8Array): void {
   writeFileSync(path, data);
   ledger.written.push(relative(ledger.out, path).replaceAll("\\", "/"));
 }
-
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

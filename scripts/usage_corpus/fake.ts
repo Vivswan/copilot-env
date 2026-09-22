@@ -1,6 +1,7 @@
 // The fake inference backend's side of a run: the minute straddle its beforeReply hook runs,
 // and the request trace it reports, checked against what the scripted turns must have made.
-import { log, sleep } from "./cli.ts";
+import { setTimeout as sleep } from "node:timers/promises";
+import { log } from "./cli.ts";
 import { registry } from "./children.ts";
 import type { Source } from "./transcripts.ts";
 

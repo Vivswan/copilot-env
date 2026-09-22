@@ -5,7 +5,7 @@ import { taggedLogger } from "../utils/logger.ts";
 import { BOUNDED_LOCK_POLICY, withRequiredFileLockSync } from "../utils/file_lock.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { isRecord } from "../utils/json.ts";
+import { isRecord, stableStringify } from "../utils/json.ts";
 import { sleepSync } from "../utils/time.ts";
 import { CopilotApiPaths, PROXY_CONFIG_FILENAME } from "./paths.ts";
 import type { Profile } from "./profile.ts";
@@ -19,7 +19,7 @@ const SECRET_STORE_LEAF =
 
 /** The bytes save() lands, keys sorted. */
 function storeText(data: Record<string, unknown>): string {
-  return `${JSON.stringify(sortKeys(data), null, 2)}\n`;
+  return `${stableStringify(data)}\n`;
 }
 
 /** A segment carrying a dot or a space is quoted, so a dotted key never reads as two levels. */
@@ -309,18 +309,4 @@ export function ensureDict(parent: Record<string, unknown>, key: string): Record
   const fresh: Record<string, unknown> = {};
   parent[key] = fresh;
   return fresh;
-}
-
-function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortKeys);
-  }
-  if (isRecord(value)) {
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) {
-      out[key] = sortKeys(value[key]);
-    }
-    return out;
-  }
-  return value;
 }

@@ -8,6 +8,7 @@
 //
 // `--allow-run` is unscoped: the pid probe signals the daemon's pid, which `--allow-run=deno`
 // cannot express.
+import { setTimeout as sleep } from "node:timers/promises";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { pidLiveness } from "../../src/utils/pid.ts";
@@ -28,10 +29,6 @@ function readPid(): number | undefined {
 
 function readProfilePid(): number | undefined {
   return CopilotEnvRunState.forProfile(PROFILE).read().pid;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Whether the daemon at `pid` is still there. A probe that could not judge (no run

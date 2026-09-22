@@ -9,6 +9,7 @@
 //   with its `--preload` shims -> runs with the passed token, which upstream rejects
 //
 // On a developer machine: deno task test:docker --floated-lifecycle
+import { type Dirent, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { cli, fail, requireDisposableHome, runnerOs } from "./smoke-support.ts";
 
@@ -47,23 +48,16 @@ export function floatedSmokeFailure(evidence: FloatedSmokeEvidence): string | nu
   return null;
 }
 
-/** The first file named `.log` under `dir`, or null. A missing `dir` is "no log". */
+/** A file named `.log` under `dir`, or null. A missing `dir` is "no log". */
 function findProxyLog(dir: string): string | null {
-  let entries: Deno.DirEntry[];
+  let entries: Dirent[];
   try {
-    entries = [...Deno.readDirSync(dir)];
+    entries = readdirSync(dir, { recursive: true, withFileTypes: true });
   } catch {
     return null;
   }
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
-    if (entry.isFile && entry.name === ".log") return path;
-    if (entry.isDirectory) {
-      const found = findProxyLog(path);
-      if (found !== null) return found;
-    }
-  }
-  return null;
+  const log = entries.find((entry) => entry.isFile() && entry.name === ".log");
+  return log === undefined ? null : join(log.parentPath, log.name);
 }
 
 function dirExists(path: string): boolean {

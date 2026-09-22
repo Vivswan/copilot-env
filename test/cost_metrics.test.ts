@@ -63,6 +63,21 @@ test("two payloads match once runtime is dropped; a changed cost differs with it
     outcome: { kind: "differs", labels: ["warm"], diff: "diff:warm" },
     rechecked: true,
   });
+
+  // A base that disagrees with its own recheck names what moved, so a run stamp that leaked
+  // outside `runtime` is read off the failure instead of re-run into.
+  const recheck = comparable({
+    ...BASE,
+    claudeSessions: { ...BASE.claudeSessions, totalUsd: 1.7 },
+  });
+  await expect(
+    classifyPayloads(
+      base,
+      [{ label: "cold", text: changed }],
+      () => Promise.resolve(recheck),
+      (text) => Promise.resolve(`diff:${text === recheck ? "recheck" : "other"}`),
+    ),
+  ).rejects.toThrow(/outside "runtime":\ndiff:recheck$/);
 });
 
 test("the window table has a row per measure with base, head, and a signed delta", () => {

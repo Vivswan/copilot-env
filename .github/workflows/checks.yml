@@ -163,43 +163,48 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Bounded cost: only the change classes that can plausibly break the float
-      # or the daemon spawn are worth a live-registry run.
+      # Bounded cost: only the change classes that can plausibly break the float or the daemon
+      # spawn are worth a live-registry run. The token is empty on purpose: the all-green caller
+      # grants contents: read only, so the action diffs the full-history checkout above with git
+      # instead of asking the pull-request API.
       - name: Decide whether this change can affect the floated spawn
         id: scope
-        shell: bash
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-        run: |
-          if [ -z "$BASE" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"   # push/dispatch: always run
-            exit 0
-          fi
-          changed="$(git diff --name-only "$BASE"...HEAD)"
-          scope='^(deno\.(json|lock)|copilot-env\.config|src/proxy_float\.ts'
-          scope="$scope|src/copilot_api/(process|launch|sidecar|shims|paths)\.ts|src/scripts/"
-          scope="$scope|\.github/scripts/(floated-smoke|lifecycle-smoke|smoke-support)\.ts|scripts/test_docker\.ts)"
-          if printf '%s\n' "$changed" | grep -qE "$scope"; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "no float/spawn/lockfile changes; skipping the live-registry run"
-          fi
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          token: ""
+          base: ${{ github.event.pull_request.base.sha }}
+          filters: |
+            float:
+              - deno.json
+              - deno.lock
+              - copilot-env.config
+              - src/proxy_float.ts
+              - src/copilot_api/process.ts
+              - src/copilot_api/launch.ts
+              - src/copilot_api/sidecar.ts
+              - src/copilot_api/shims.ts
+              - src/copilot_api/paths.ts
+              - src/scripts/**
+              - .github/scripts/floated-smoke.ts
+              - .github/scripts/lifecycle-smoke.ts
+              - .github/scripts/smoke-support.ts
+              - scripts/test_docker.ts
 
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        if: steps.scope.outputs.run == 'true'
+        if: github.event_name != 'pull_request' || steps.scope.outputs.float == 'true'
         with:
           deno-version-file: .dvmrc
           cache: true
 
       - name: Install dependencies
-        if: steps.scope.outputs.run == 'true'
+        if: github.event_name != 'pull_request' || steps.scope.outputs.float == 'true'
         run: deno ci
 
       # No COPILOT_API_ENTRY: `agent start` resolves and runs the real proxy.
       # The runner's HOME is disposable, which is what the smoke's guard wants.
       - name: Float the proxy and assert the daemon reaches auth
-        if: steps.scope.outputs.run == 'true'
+        if: github.event_name != 'pull_request' || steps.scope.outputs.float == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: deno run --allow-env --allow-read --allow-run=deno .github/scripts/floated-smoke.ts

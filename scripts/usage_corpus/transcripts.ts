@@ -1,16 +1,13 @@
 // The two sources' transcript trees: the roster, JSONL reading, and which files a session owns.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { parseJsonRecord } from "../../src/utils/json.ts";
 
 export const SUMMARY_SOURCES = ["claude", "codex"] as const;
 export type Source = (typeof SUMMARY_SOURCES)[number];
 
 export const ROLLOUT_FILE_RE =
   /^rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 export function walkJsonl(dir: string, out: string[]): void {
   if (!existsSync(dir)) return;
@@ -25,13 +22,8 @@ export function walkJsonl(dir: string, out: string[]): void {
 function readRecords(file: string): Record<string, unknown>[] {
   const records: Record<string, unknown>[] = [];
   for (const line of readFileSync(file, "utf8").split("\n")) {
-    if (line === "") continue;
-    try {
-      const parsed: unknown = JSON.parse(line);
-      if (isRecord(parsed)) records.push(parsed);
-    } catch {
-      // torn line
-    }
+    const record = parseJsonRecord(line);
+    if (record !== null) records.push(record);
   }
   return records;
 }

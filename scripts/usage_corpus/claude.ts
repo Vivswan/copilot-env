@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { ledger } from "./cli.ts";
 import { registry, runTurn } from "./children.ts";
 import type { MinuteStraddle } from "./fake.ts";
-import { filesFor, isRecord } from "./transcripts.ts";
+import { isRecord, parseJsonRecord } from "../../src/utils/json.ts";
+import { filesFor } from "./transcripts.ts";
 
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
@@ -19,13 +20,8 @@ export interface ClaudeIds {
 
 /** `session_id` from a `--output-format json` result, or null. */
 function claudeSessionId(stdout: string): string | null {
-  try {
-    const parsed: unknown = JSON.parse(stdout);
-    if (isRecord(parsed) && typeof parsed.session_id === "string") return parsed.session_id;
-  } catch {
-    // not JSON
-  }
-  return null;
+  const parsed = parseJsonRecord(stdout);
+  return parsed !== null && typeof parsed.session_id === "string" ? parsed.session_id : null;
 }
 
 export async function recordClaude(

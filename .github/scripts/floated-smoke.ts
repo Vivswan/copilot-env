@@ -11,6 +11,7 @@
 // On a developer machine: deno task test:docker --floated-lifecycle
 import { type Dirent, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { isDir } from "../../src/utils/fs.ts";
 import { cli, fail, requireDisposableHome, runnerOs } from "./smoke-support.ts";
 
 /** What the smoke observed, gathered before any verdict is drawn. */
@@ -60,14 +61,6 @@ function findProxyLog(dir: string): string | null {
   return log === undefined ? null : join(log.parentPath, log.name);
 }
 
-function dirExists(path: string): boolean {
-  try {
-    return Deno.statSync(path).isDirectory;
-  } catch {
-    return false;
-  }
-}
-
 if (import.meta.main) {
   requireDisposableHome("floated-smoke.ts", "floats a real proxy into", "--floated-lifecycle");
   const home = Deno.env.get("HOME") ?? fail("HOME is unset");
@@ -92,7 +85,7 @@ if (import.meta.main) {
   const failure = floatedSmokeFailure({
     startOutput,
     proxyLog,
-    legacyHomeExists: dirExists(join(home, ".local", "share", "copilot-api")),
+    legacyHomeExists: isDir(join(home, ".local", "share", "copilot-api")),
   });
   if (failure !== null) fail(failure);
   console.log(

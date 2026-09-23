@@ -1,6 +1,7 @@
 // Shared by the two daemon smokes (lifecycle-smoke.ts, floated-smoke.ts): the
 // disposable-HOME guard, the `::error::` failure exit, and the `agent` CLI spawn
 // under the production permission set.
+import { isFile } from "../../src/utils/fs.ts";
 
 /** The files whose presence marks a container: docker's and podman's. */
 export const CONTAINER_MARKERS: readonly string[] = ["/.dockerenv", "/run/.containerenv"];
@@ -17,19 +18,11 @@ export function homeIsDisposable(
   return githubActions === "true" || CONTAINER_MARKERS.some(exists);
 }
 
-function isRegularFile(path: string): boolean {
-  try {
-    return Deno.statSync(path).isFile;
-  } catch {
-    return false;
-  }
-}
-
 /** Exit 1 with a `::error::` annotation unless the HOME is disposable: both smokes
  *  mutate (or float a real proxy into) whatever HOME they run in. `dockerFlag` names
  *  the test:docker mode that gives a developer machine a throwaway HOME. */
 export function requireDisposableHome(script: string, what: string, dockerFlag: string): void {
-  if (homeIsDisposable(Deno.env.get("GITHUB_ACTIONS"), isRegularFile)) return;
+  if (homeIsDisposable(Deno.env.get("GITHUB_ACTIONS"), isFile)) return;
   console.error(
     `::error::${script} ${what} the HOME it runs in; use 'deno task test:docker ${dockerFlag}' on a developer machine`,
   );

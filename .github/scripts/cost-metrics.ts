@@ -776,9 +776,12 @@ export async function classifyPayloads(
   if ([first, ...rest].every(({ text }) => text === recheckText)) {
     return { outcome: { kind: "transient", labels }, rechecked: true };
   }
+  // The diff names the moving key: live pricing or the day boundary is a re-run, a run stamp
+  // outside `runtime` is a payload bug (src/usage/cost.ts owns what sits under `runtime`).
   throw new Error(
     "the base payload changed between two runs and the head matches neither; the inputs " +
-      "are unstable (pricing or the day boundary moved), re-run the job",
+      "are unstable (pricing or the day boundary moved: re-run the job) or the payload carries " +
+      `a run fact outside ${JSON.stringify(RUNTIME_KEY)}:\n${await diff(recheckText)}`,
   );
 }
 

@@ -116,6 +116,10 @@ export interface CostRuntime {
   indexed: boolean;
   index: IndexStats;
   timing: { walk: number; parse: number; fold: number; pricing: number; total: number };
+  /** Where the GitHub rate card came from; absent when no price list loaded. Under `runtime`
+   *  with the other run facts: a fetched and a cached run price the same, and the fetch stamp
+   *  would otherwise make two runs over one tree differ. */
+  githubRates?: { source: "built-in" } | { source: "fetched" | "cached"; fetchedAt: string };
 }
 
 /** `total` is missing because only the payload's builder can stamp it: it is the last thing
@@ -1013,11 +1017,19 @@ export function buildSourceJson(
   };
 }
 
-function completeRuntime(measured: MeasuredRun): CostRuntime {
+function completeRuntime(
+  measured: MeasuredRun,
+  rateCard: RateCardSource | undefined,
+): CostRuntime {
   return {
     indexed: measured.indexed,
     index: measured.index,
     timing: { ...measured.timing, total: Math.round(measured.now() - measured.startedAt) },
+    ...(rateCard === undefined ? {} : {
+      githubRates: rateCard.source === "built-in"
+        ? { source: rateCard.source }
+        : { source: rateCard.source, fetchedAt: new Date(rateCard.fetchedAtMs).toISOString() },
+    }),
   };
 }
 
@@ -1044,15 +1056,10 @@ function buildCostJson(
     ...buildSourceJson(report, estimate, pricing, { perDay }),
     codexSessions,
     claudeSessions,
-    ...(rateCard === undefined ? {} : {
-      githubRates: rateCard.source === "built-in"
-        ? { source: rateCard.source }
-        : { source: rateCard.source, fetchedAt: new Date(rateCard.fetchedAtMs).toISOString() },
-    }),
     note: "approximate numbers gathered from local logs and keyed by canonical model spellings " +
       "(dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates, GitHub's own where the two differ (actual billing may differ); " +
       "top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic " +
       "(proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",
-    runtime: completeRuntime(measured),
+    runtime: completeRuntime(measured, rateCard),
   };
 }

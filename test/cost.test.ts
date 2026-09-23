@@ -583,7 +583,13 @@ interface CostJson {
   runtime: CostRuntime;
   usageByModel: Record<string, ModelUsage>;
   claudeSessions: { totalUsd: number; billedUsd?: number };
-  githubRates?: { source: string; fetchedAt?: string };
+}
+
+/** The payload minus `runtime`: what two runs over the same logs must agree on, and what the
+ *  cost-metrics check (.github/scripts/cost-metrics.ts) compares between base and head. */
+function withoutRuntime(payload: CostJson): Omit<CostJson, "runtime"> {
+  const { runtime: _runtime, ...usage } = payload;
+  return usage;
 }
 
 /** Parses the WHOLE of stdout: a stray line there breaks every consumer, so it fails here. */
@@ -872,6 +878,9 @@ test("runtime.timing.pricing is the wait for the price list alone, never the war
     }
   }));
 
+// The card's provenance (source, fetch stamp) sits under `runtime`: a fetched and a cached run
+// over the same logs must otherwise agree, or the cost-metrics check reads its own base twice
+// and calls the inputs unstable.
 test("runCost reads GitHub's card from the stored URL, prices at it, names the card and its day, and falls back to the built-in table in one line when it cannot be read", () =>
   withCostHome(async ({ claudeRoot }) => {
     const cardUrl = "https://rates.example/models-and-pricing.yml";
@@ -890,8 +899,9 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
     const fetched = await jsonRun({ pricingUrl: PRICE_URL, noIndex: true }, deps(card));
     expect(fetched.stderr).not.toContain("GitHub rate card");
     expect(fetched.payload.claudeSessions.totalUsd).toBe(0.0006);
-    expect(fetched.payload.githubRates?.source).toBe("fetched");
-    const fetchedAt = fetched.payload.githubRates?.fetchedAt ?? "";
+    const provenance = fetched.payload.runtime.githubRates;
+    expect(provenance?.source).toBe("fetched");
+    const fetchedAt = provenance?.source === "built-in" ? "" : provenance?.fetchedAt ?? "";
     expect(Date.parse(fetchedAt) >= before && Date.parse(fetchedAt) <= Date.now()).toBe(true);
 
     // Inside the day the cache answers, so the garbled card is never read: the footer names the
@@ -908,7 +918,8 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
       "GitHub's rate card also lists models with no id here (unmapped): GPT-7",
     );
     const cached = await jsonRun({ pricingUrl: PRICE_URL, noIndex: true }, deps("not a card"));
-    expect(cached.payload.githubRates).toEqual({ source: "cached", fetchedAt });
+    expect(cached.payload.runtime.githubRates).toEqual({ source: "cached", fetchedAt });
+    expect(withoutRuntime(cached.payload)).toEqual(withoutRuntime(fetched.payload));
 
     // A URL with no cached card that serves something that is not the card: one line names the
     // problem (never the URL), the built-in table stands in, and the list's own price holds.
@@ -923,7 +934,7 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
     );
     expect(fallback.stderr).not.toContain("rates.example");
     expect(fallback.stderr).not.toContain("with-secret-token");
-    expect(fallback.payload.githubRates).toEqual({ source: "built-in" });
+    expect(fallback.payload.runtime.githubRates).toEqual({ source: "built-in" });
     expect(fallback.payload.claudeSessions.totalUsd).toBe(0.0017);
   }));
 

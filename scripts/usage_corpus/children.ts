@@ -2,8 +2,9 @@
 // (and its process group), and one scripted turn.
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { childPathPrepending, verbatimCliSpawn } from "../../src/utils/command.ts";
-import { log, sleep, writeFile } from "./cli.ts";
+import { log, writeFile } from "./cli.ts";
 import { isRecord } from "./transcripts.ts";
 
 const TURN_TIMEOUT_MS = 40_000;

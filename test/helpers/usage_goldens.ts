@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import * as v from "valibot";
 import { SHA256_HEX_SCHEMA } from "../../src/copilot_api/config_registry.ts";
+import { stableStringify } from "../../src/utils/json.ts";
 import { type CostRuntime, runCost } from "../../src/usage/cost.ts";
 import { canonicalModelName } from "../../src/usage/pricing.ts";
 import { type ModelUsage, type ReadonlyUsageReport, usageReport } from "../../src/usage/usage.ts";
@@ -331,24 +332,6 @@ export function expectedCurrent(
 }
 
 // ---------- serialization and comparison ----------
-
-/** JSON with every object's keys sorted, two-space indented, no trailing newline: the one
- *  form goldens are written in and compared through, so a mismatch diffs line by line. */
-export function stableStringify(value: unknown): string {
-  return JSON.stringify(sortKeys(value), null, 2);
-}
-
-function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeys);
-  if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) {
-      out[key] = sortKeys((value as Record<string, unknown>)[key]);
-    }
-    return out;
-  }
-  return value;
-}
 
 export function describeMismatch(actual: unknown, expected: unknown): string | null {
   const a = stableStringify(actual).split("\n");

@@ -62,6 +62,7 @@
     "@std/fs@1.0.24": {
       "integrity": "f3061b45b81673a2bece689da041df32d174be064c89eb6397fb5718d3fb7877",
       "dependencies": [
+        "jsr:@std/internal@^1.0.14",
         "jsr:@std/path@^1.1.5"
       ]
     },
@@ -1230,6 +1231,7 @@
       "jsr:@std/crypto@^1.1.0",
       "jsr:@std/dotenv@~0.225.8",
       "jsr:@std/expect@^1.0.20",
+      "jsr:@std/fs@^1.0.24",
       "jsr:@std/semver@^1.0.8",
       "jsr:@std/testing@^1.0.20",
       "npm:@copilotkit/aimock@1.41.0",

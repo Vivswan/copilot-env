@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { stableStringify } from "../../src/utils/json.ts";
 
 /** Leads both the comment body and the failure summary, so either is recognizable as this script's. */
 const COMMENT_MARKER = "<!-- cost-metrics -->";
@@ -457,16 +458,12 @@ function localTodayMs(): number {
 
 /** Every entry under `root` (symlinks not followed), sorted by relative path. */
 function treeEntries(root: string): { rel: string; path: string }[] {
-  const entries: { rel: string; path: string }[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      entries.push({ rel: relative(root, path), path });
-      if (entry.isDirectory()) walk(path);
-    }
-  };
-  walk(root);
-  return entries.sort((a, b) => a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0);
+  return readdirSync(root, { recursive: true, withFileTypes: true })
+    .map((entry) => {
+      const path = join(entry.parentPath, entry.name);
+      return { rel: relative(root, path), path };
+    })
+    .sort((a, b) => a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0);
 }
 
 /** Read-only tree while it is measured: a cost run must not write the sessions it reads. */
@@ -509,19 +506,9 @@ async function supportsNoIndex(dir: string, env: Record<string, string>): Promis
   return help.stdout.includes(NO_INDEX_FLAG);
 }
 
-/** Recursively key-sorted copy, so two payloads with the same content stringify identically. */
-export function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  const rec = record(value);
-  if (rec !== undefined) {
-    return Object.fromEntries(Object.keys(rec).sort().map((key) => [key, canonical(rec[key])]));
-  }
-  return value;
-}
-
 export function comparable(json: Record<string, unknown>): string {
   const { [RUNTIME_KEY]: _runtime, ...kept } = json;
-  return `${JSON.stringify(canonical(kept), null, 2)}\n`;
+  return `${stableStringify(kept)}\n`;
 }
 
 async function measure(

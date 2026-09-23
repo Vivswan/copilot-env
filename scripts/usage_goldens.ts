@@ -17,11 +17,11 @@ import {
   type Recording,
   runCurrentCost,
   sourceEventCounts,
-  stableStringify,
   treeSha256,
   usageTreeEnv,
   utcPinnable,
 } from "../test/helpers/usage_goldens.ts";
+import { stableStringify } from "../src/utils/json.ts";
 
 /** The payload's explanatory text, the one key the two implementations may word differently. */
 const NOTE_KEY = "note";

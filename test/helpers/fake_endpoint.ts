@@ -6,6 +6,7 @@
 // the request a Direct wiring makes; the scenario rides in the same knob as one more header.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { stringify } from "smol-toml";
 import {
   AUTH_TOKEN_ENV,
@@ -234,10 +235,6 @@ export async function runFakeCli(
     stderr: late === null ? "" : decoder.decode(late.stderr),
     timedOut: true,
   };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** One JSON object per stdout line; a line that is not one is skipped. */

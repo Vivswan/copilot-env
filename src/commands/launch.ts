@@ -180,7 +180,9 @@ export async function prepareLaunch(action: LaunchAction): Promise<LaunchPlan | 
     }
     case "codex": {
       const plan: LaunchPlan = { command: "codex", args: [], env: {}, scrub: [] };
-      const flags = relaxed ? ["--sandbox", "danger-full-access"] : [];
+      const flags = relaxed
+        ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"]
+        : [];
       if (action.profile !== null) {
         const mode = await ensureProfileReady(action.profile);
         if (mode === null) return null;

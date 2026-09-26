@@ -129,11 +129,11 @@ agent config set shell.launchers false
 
 Each has a more-permissive variant that adds the agent's most-relaxed flag (`agent profile launch ... --relaxed`):
 
-| Launcher | Adds                             |
-| -------- | -------------------------------- |
-| `clx`    | `--dangerously-skip-permissions` |
-| `cox`    | `--allow-all`                    |
-| `cxx`    | `--sandbox danger-full-access`   |
+| Launcher | Adds                                                                         |
+| -------- | ---------------------------------------------------------------------------- |
+| `clx`    | `--dangerously-skip-permissions`                                             |
+| `cox`    | `--allow-all`                                                                |
+| `cxx`    | `--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust` |
 
 `agent profile [<name>] launch <claude|codex|copilot> [--relaxed] -- <args...>` works directly too, without the shell functions.
 

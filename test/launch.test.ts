@@ -208,10 +208,16 @@ test("--profile: a partial slot hard-fails naming its gap; a Direct slot syncs b
       },
     },
     {
-      action: { kind: "codex", profile: WORK, relaxed: false, args: ["--resume"] },
+      action: { kind: "codex", profile: WORK, relaxed: true, args: ["--resume"] },
       plan: {
         command: "codex",
-        args: ["--profile", "work", "--resume"],
+        args: [
+          "--profile",
+          "work",
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--dangerously-bypass-hook-trust",
+          "--resume",
+        ],
         env: { CODEX_HOME: homes.codexHome },
         scrub: ["CODEX_HOME"],
       },

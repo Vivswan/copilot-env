@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { CODEX_PROBE, PROBE_PROMPT, summarizeProbeFailure } from "../src/agents/live_probe.ts";
 import { codexLiveLaunch } from "../src/health/live_launch.ts";
 import { resolveCommand } from "../src/utils/command.ts";
+import { isRecord } from "../src/utils/json.ts";
 import type { FakeModelEndpoint } from "./helpers/fake_model_endpoint.ts";
 import {
   FAKE_CODEX_MODEL,
@@ -30,6 +31,11 @@ const TEST_TIMEOUT_MS = 180_000;
 
 let fake: FakeModelEndpoint;
 let home = "";
+
+/** The health probe's own read of a codex stream: did the model answer? */
+const answered = (stdout: string) => codexLiveLaunch(home, null).answered(stdout);
+const isAgentMessage = (e: Record<string, unknown>) =>
+  e.type === "item.completed" && isRecord(e.item) && e.item.type === "agent_message";
 
 beforeEach(async () => {
   home = tempDir("codex-live-");
@@ -60,9 +66,12 @@ live(
     const run = await runCodex("ok");
     expect(run.exitCode, run.stderr).toBe(0);
     // The health probe's own read of the same stream: the model answered.
-    expect(codexLiveLaunch(home, null).answered(run.stdout)).toBe(true);
-    const answer = jsonLines(run.stdout).find((e) => e.type === "item.completed");
-    expect(answer).toMatchObject({ "item": { "type": "agent_message", "text": "OK" } });
+    expect(answered(run.stdout)).toBe(true);
+    // Since 0.158 an `item.completed` whose item is an `error` (a model-metadata warning for an
+    // id outside codex's built-in table) precedes the turn, so the answer is the agent_message
+    // item, never the first item.
+    const answer = jsonLines(run.stdout).find(isAgentMessage);
+    expect(answer).toMatchObject({ "item": { "text": "OK" } });
     expect(jsonLines(run.stdout).some((e) => e.type === "turn.completed")).toBe(true);
 
     // What codex sent: `http_headers` verbatim (the bearer present; aimock redacts its value),
@@ -88,7 +97,7 @@ live(
     expect(run.exitCode).toBe(1);
     const events = jsonLines(run.stdout);
     expect(events.some((e) => e.type === "turn.failed")).toBe(true);
-    expect(events.some((e) => e.type === "item.completed")).toBe(false);
+    expect(answered(run.stdout)).toBe(false);
     expect(summarizeProbeFailure(1, null, undefined, run.stdout, run.stderr)).toMatch(/401/);
     // The first attempt plus codex's five reconnects, every one the same rejected request.
     const attempts = (await fake.journal()).filter((r) => r.path.startsWith("/responses"));
@@ -109,7 +118,7 @@ live(
     expect(failed).toMatchObject({
       "error": { "message": expect.stringContaining("stream disconnected before completion") },
     });
-    expect(events.some((e) => e.type === "item.completed")).toBe(false);
+    expect(answered(run.stdout)).toBe(false);
     // The first attempt plus codex's five reconnects, each a stream the fake cut mid-way.
     const attempts = (await fake.journal()).filter((r) => r.path.startsWith("/responses"));
     expect(attempts.length).toBe(6);

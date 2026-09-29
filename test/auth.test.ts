@@ -1076,12 +1076,15 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
   });
   expect(settled).toEqual({ ghUser: null, activeLogin: "work" });
   expect(asked).toEqual(["work", null]);
-  // The logger renders backticks away on stderr.
-  expect(fallback).toContain(
+  // consola's fancy reporter renders backticks away and its basic reporter keeps them, so the
+  // capture is normalized before the whole line is pinned.
+  expect(fallback.replaceAll("`", "")).toContain(
     "gh cannot serve account work by name (gh auth token --user work --hostname github.com " +
-      "exited 1: no oauth token found), so the credential follows gh's active account (auto)",
+      "exited 1: no oauth token found), so the credential follows gh's active account (auto) - " +
+      "the same account while it is the only login. To pin it, run gh auth login for work on gh " +
+      "2.40 or newer (the login rewrites hosts.yml into the layout --user reads), then re-run " +
+      "agent auth --provider gh-cli.",
   );
-  expect(fallback).toContain("run gh auth login for work");
   expect(fallback).toContain("Using the gh CLI login on AUTO (currently account work;");
   expect(() => loginWithGhCli(SOLE_WORK, pinnedMiss)).toThrow(PIN_MISS);
   expect(() => loginWithGhCli(SOLE_WORK, (ghUser) => (ghUser === null ? killed : miss))).toThrow(

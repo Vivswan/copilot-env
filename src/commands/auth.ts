@@ -493,7 +493,9 @@ function settleGhCliAccount(
   if (pinned.token !== null) return { ghUser: account.login, activeLogin: null };
   // A pin the user chose, or a look gh never answered: the miss is final.
   if (account.kind === "pinned" || pinned.unproven) throw ghCliMiss(pinned, account.login);
-  if (look(null).token === null) throw ghCliMiss(pinned, account.login);
+  const plain = look(null);
+  if (plain.unproven) throw ghCliMiss(plain, null);
+  if (plain.token === null) throw ghCliMiss(pinned, account.login);
   logger.info(
     `gh cannot serve account ${account.login} by name (${pinned.detail ?? "no token"}), so the ` +
       "credential follows gh's active account (auto) - the same account while it is the only " +

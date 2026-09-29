@@ -1058,8 +1058,8 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
 
   // A SOLE login (the chooser's one-saved-account selection) pins when gh serves it by name;
   // when only the plain call answers, the slot follows the active account and the line names the
-  // cause and the recovery. A miss on both calls is the pinned wording; an unanswered pinned
-  // look is could-not-check, with no second call.
+  // cause and the recovery. A miss on both calls is the pinned wording; an unanswered look,
+  // either of them, is could-not-check (the pinned one with no second call).
   const served = (ghUser: string | null) => {
     asked.push(ghUser);
     return ghUser === null ? { token: "gho_active" } : miss;
@@ -1084,6 +1084,9 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
   expect(fallback).toContain("run gh auth login for work");
   expect(fallback).toContain("Using the gh CLI login on AUTO (currently account work;");
   expect(() => loginWithGhCli(SOLE_WORK, pinnedMiss)).toThrow(PIN_MISS);
+  expect(() => loginWithGhCli(SOLE_WORK, (ghUser) => (ghUser === null ? killed : miss))).toThrow(
+    "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
+  );
   asked.length = 0;
   expect(() => loginWithGhCli(SOLE_WORK, (ghUser) => (asked.push(ghUser), killed))).toThrow(
     "could not check gh authentication",

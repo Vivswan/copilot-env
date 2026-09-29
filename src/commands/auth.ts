@@ -91,18 +91,27 @@ function asProvider(provider: string): AuthProvider {
   throw new Error(`--provider must be one of: ${AUTH_PROVIDERS.join(", ")} (got '${provider}')`);
 }
 
-/** Auto is never a flag value: it is what `choose` may SETTLE to (SettledGhAccount), carrying the
+/** Auto is never a flag value: it is what `choose` may select (GhAccountSelection), carrying the
  *  active login so the narration names the account in use when gh reports one. */
 type GhCliAccountChoice =
   | { kind: "pinned"; login: string }
   | { kind: "choose" };
 
-/** PINNING IS THE ONLY DEFAULT: the credential must never follow an account the user did not
- *  choose, or their Copilot credit would burn on it after a `gh auth login`. Auto is solely the
- *  picker's explicit last option. */
-type SettledGhAccount =
+/** PINNING IS THE ONLY DEFAULT: the credential never follows an account the user did not choose,
+ *  or their Copilot credit would burn on it after a `gh auth login`. Auto is the picker's explicit
+ *  last option, and the settlement of a SOLE saved login gh cannot serve by name: the only account
+ *  there is, with nothing to escape to. The gh looks at write time settle the selection into the
+ *  slot (settleGhCliAccount). */
+type GhAccountSelection =
   | { kind: "auto"; activeLogin: string | null }
-  | { kind: "pinned"; login: string };
+  | { kind: "pinned"; login: string }
+  | { kind: "sole"; login: string };
+
+/** What a gh-cli slot records, plus the account an auto slot follows right now when known. */
+interface GhCliSlot {
+  ghUser: string | null;
+  activeLogin: string | null;
+}
 
 /** gh-token's null token means "prompt for a paste"; the env read is gh-env's whole job. */
 type ResolvedAcquisition =
@@ -200,9 +209,12 @@ async function chooseProvider(): Promise<AuthProvider> {
 
 /**
  * Pinning is the only default: a later `gh auth login` must never switch whose Copilot credit gets
- * spent. When nothing can be pinned honestly this throws naming the escape hatches; never auto.
- *   one login        -> pins itself, unless env-only under a TTY: its pin may fail verification
- *                       with nothing to escape to, so the user decides
+ * spent. When nothing can be pinned honestly this throws naming the escape hatches; the one auto
+ * settlement is a sole saved login gh cannot serve by name.
+ *   one saved login  -> SOLE: pinned when gh serves it by name, else followed as auto (the slot
+ *                       write settles it, settleGhCliAccount)
+ *   one env-only     -> pins itself without a TTY (its pin may fail verification with nothing to
+ *                       escape to); under a TTY the user decides
  *   several, no TTY  -> pins the active one when pickable, else errors
  *   several, TTY     -> the picker lists the accounts first, auto as the explicit LAST option
  * `look` is a test seam.
@@ -214,7 +226,7 @@ type GhAccountChooserMode = "interactive" | "headless" | "dry-run";
 export async function chooseGhAccount(
   look: () => GhAccountsLook = ghAccountsLook,
   mode: GhAccountChooserMode = process.stdin.isTTY ? "interactive" : "headless",
-): Promise<SettledGhAccount> {
+): Promise<GhAccountSelection> {
   const interactive = mode === "interactive";
   const { accounts, unproven } = look();
   if (unproven) {
@@ -250,12 +262,11 @@ export async function chooseGhAccount(
   }
   if (logins.length === 1 && allLogins.length === 1) {
     const only = logins[0] ?? "";
+    if (envOnly(only) === null) return { kind: "sole", login: only };
     // A sole env-only login's pin can fail verification with no other account to escape to;
     // interactively the user decides, without a TTY the pin proceeds and a failure names the
     // recovery.
-    if (!interactive || envOnly(only) === null) {
-      return { kind: "pinned", login: only };
-    }
+    if (!interactive) return { kind: "pinned", login: only };
   }
   if (!interactive) {
     // Anything but the active account would guess whose credit to spend, so it is an error, never a
@@ -439,50 +450,72 @@ async function loginWithGhEnv(): Promise<string> {
   return chosen.token;
 }
 
-/** `activeLogin` names the account an auto slot follows right now, when the account list was
- *  readable: the user sees WHICH account their credential follows whenever that is known. `look` is
- *  a test seam; exported for the wording tests. */
+/** The settled slot, verified, then the success line: an auto slot names the account it follows
+ *  right now whenever that is known (nothing hidden). `look` is a test seam; exported for the
+ *  wording tests. */
 export function loginWithGhCli(
-  ghUser: string | null,
+  account: GhAccountSelection,
   look: (ghUser: string | null) => GhTokenLook = ghAuthTokenLook,
-  activeLogin: string | null = null,
-): void {
-  assertGhCliResolves(ghUser, look);
+): GhCliSlot {
+  const slot = settleGhCliAccount(account, look);
   logger.success(
-    ghUser !== null
-      ? `  Using the gh CLI login (account ${ghUser}) as the Direct credential.`
-      : activeLogin !== null
-      ? `  Using the gh CLI login on AUTO (currently account ${activeLogin}; follows gh ` +
+    slot.ghUser !== null
+      ? `  Using the gh CLI login (account ${slot.ghUser}) as the Direct credential.`
+      : slot.activeLogin !== null
+      ? `  Using the gh CLI login on AUTO (currently account ${slot.activeLogin}; follows gh ` +
         "account switches) as the Direct credential."
       : "  Using the gh CLI login on AUTO (follows gh account switches) as the Direct credential.",
   );
+  return slot;
 }
 
 /** Verified BEFORE recording, or a failed check would point `--get` at a `gh` that cannot produce
  *  a token. An UNPROVEN look wears its own words: "not authenticated" and the `gh auth login`
  *  advice are wrong when gh was never asked. Every miss quotes the gh call and its stderr: the
  *  fix differs by cause (an old gh, a missing login, a switched account, an env token), and the
- *  look named it. Read-only, so a dry run runs it too. */
-function assertGhCliResolves(
-  ghUser: string | null,
+ *  look named it. Read-only, so a dry run runs it too.
+ *
+ *  A SOLE saved login is pinned when `gh auth token --user` serves it. When that call misses but
+ *  the plain call (scoped to the same host) answers, gh cannot serve the account by name (a
+ *  pre-2.40 single-account hosts.yml with no `users:` map, or a gh without `--user`) and the slot
+ *  follows gh's active account instead: with one login that is the same account, and the line
+ *  says how a pin becomes servable. */
+function settleGhCliAccount(
+  account: GhAccountSelection,
   look: (ghUser: string | null) => GhTokenLook,
-): void {
-  const gh = look(ghUser);
-  if (gh.token === null) {
-    const detail = gh.detail ?? "`gh auth token` gave no token";
-    if (gh.unproven) {
-      throw new Error(
-        `could not check gh authentication (${detail}) - retry \`agent auth\``,
-      );
-    }
-    throw new Error(
-      ghUser === null
-        ? `gh is not authenticated (${detail}) - run \`gh auth login\`, then retry \`agent auth\``
-        : `gh has no saved credential for account '${ghUser}' (${detail}) - ` +
-          `run \`gh auth login\` for that account, pass --gh-user <login> for another, ` +
-          "or choose auto interactively via `agent auth --provider gh-cli`",
-    );
+): GhCliSlot {
+  if (account.kind === "auto") {
+    const gh = look(null);
+    if (gh.token === null) throw ghCliMiss(gh, null);
+    return { ghUser: null, activeLogin: account.activeLogin };
   }
+  const pinned = look(account.login);
+  if (pinned.token !== null) return { ghUser: account.login, activeLogin: null };
+  // A pin the user chose, or a look gh never answered: the miss is final.
+  if (account.kind === "pinned" || pinned.unproven) throw ghCliMiss(pinned, account.login);
+  if (look(null).token === null) throw ghCliMiss(pinned, account.login);
+  logger.info(
+    `gh cannot serve account ${account.login} by name (${pinned.detail ?? "no token"}), so the ` +
+      "credential follows gh's active account (auto) - the same account while it is the only " +
+      `login. To pin it, run \`gh auth login\` for ${account.login} on gh 2.40 or newer (the login ` +
+      "rewrites hosts.yml into the layout `--user` reads), then re-run `agent auth --provider gh-cli`.",
+  );
+  return { ghUser: null, activeLogin: account.login };
+}
+
+function ghCliMiss(gh: GhTokenLook, ghUser: string | null): Error {
+  const detail = gh.detail ?? "`gh auth token` gave no token";
+  if (gh.unproven) {
+    return new Error(`could not check gh authentication (${detail}) - retry \`agent auth\``);
+  }
+  return new Error(
+    ghUser === null
+      ? `gh is not authenticated (${detail}) - run \`gh auth login\`, then retry \`agent auth\``
+      : `gh cannot serve account '${ghUser}' by name (${detail}) - run \`gh auth login\` for ` +
+        "that account (a logged-out login and a hosts.yml written before gh 2.40 both need it), " +
+        "pass --gh-user <login> for another, or drop --gh-user and let " +
+        "`agent auth --provider gh-cli` settle the account (auto included)",
+  );
 }
 
 /** Whether `credential` is a dry run's stand-in for a login that did not run (PLANNED_SECRET).
@@ -500,7 +533,7 @@ async function plannedAcquisition(
   acquisition: CredentialAcquisition,
   profile: Profile,
   look: (ghUser: string | null) => GhTokenLook,
-  chooseAccount: () => Promise<SettledGhAccount>,
+  chooseAccount: () => Promise<GhAccountSelection>,
 ): Promise<ProvisionedCredential> {
   const slot = profile === null
     ? "the default profile's credential slot"
@@ -546,16 +579,15 @@ async function plannedAcquisition(
       const account = acquisition.account.kind === "choose"
         ? await chooseAccount()
         : acquisition.account;
-      const pinned = account.kind === "pinned" ? account.login : null;
-      // The same read-only `gh auth token` check, refused the same way (an env-only account has no
-      // saved credential to pin).
-      assertGhCliResolves(pinned, look);
+      // The same read-only `gh auth token` looks, refused and settled the same way (an env-only
+      // account has no saved credential to pin).
+      const settled = settleGhCliAccount(account, look);
       logger.log(
         `  Would record the gh CLI login (${
-          pinned === null ? "the active account" : `account ${pinned}`
+          settled.ghUser === null ? "the active account" : `account ${settled.ghUser}`
         }) as ${slot}.`,
       );
-      return { kind: "gh-cli", ghUser: pinned };
+      return { kind: "gh-cli", ghUser: settled.ghUser };
     }
     default:
       return assertNever(acquisition);
@@ -570,7 +602,7 @@ export async function acquireCredential(
   profile: Profile = null,
   seams: {
     look?: (ghUser: string | null) => GhTokenLook;
-    chooseAccount?: () => Promise<SettledGhAccount>;
+    chooseAccount?: () => Promise<GhAccountSelection>;
   } = {},
 ): Promise<ProvisionedCredential> {
   if (dryRunActive()) {
@@ -594,15 +626,10 @@ export async function acquireCredential(
     return { kind: "stored", provider: "copilot", token: await loginWithCopilot() };
   }
   const look = seams.look ?? ghAuthTokenLook;
-  const account: SettledGhAccount = resolved.account.kind === "choose"
+  const account: GhAccountSelection = resolved.account.kind === "choose"
     ? await (seams.chooseAccount ?? chooseGhAccount)()
     : resolved.account;
-  if (account.kind === "pinned") {
-    loginWithGhCli(account.login, look);
-    return { kind: "gh-cli", ghUser: account.login };
-  }
-  loginWithGhCli(null, look, account.activeLogin);
-  return { kind: "gh-cli", ghUser: null };
+  return { kind: "gh-cli", ghUser: loginWithGhCli(account, look).ghUser };
 }
 
 /** A named profile's slot must already exist (`agent profile <name> add` is the only creator), and the

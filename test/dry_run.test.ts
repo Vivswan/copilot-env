@@ -268,7 +268,7 @@ test("`auth --provider <gh-cli|gh-env> --dry-run` resolves what the real command
         look: (ghUser) => ({ token: null, detail: `no saved login for ${ghUser}` }),
         chooseAccount: pinned,
       },
-      outcome: { refusal: /gh has no saved credential for account 'octocat'/ },
+      outcome: { refusal: /gh cannot serve account 'octocat' by name/ },
     },
     {
       name: "gh-env with nothing set",

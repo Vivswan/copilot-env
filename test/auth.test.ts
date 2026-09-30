@@ -1004,6 +1004,10 @@ test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven",
   });
 });
 
+const AUTO = { kind: "auto", activeLogin: null } as const;
+const PINNED_WORK = { kind: "pinned", login: "work" } as const;
+const SOLE_WORK = { kind: "sole", login: "work" } as const;
+
 test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quotes gh and keeps the advice", async () => {
   isolate(); // clears GH_TOKEN/GITHUB_TOKEN so a runner credential never shapes the wording
   const killed: GhTokenLook = {
@@ -1011,18 +1015,18 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
     unproven: true,
     detail: "`gh auth token` did not complete (killed)",
   };
-  expect(() => loginWithGhCli(null, () => killed)).toThrow(
+  expect(() => loginWithGhCli(AUTO, () => killed)).toThrow(
     "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
   );
   expect(() =>
-    loginWithGhCli(null, () => ({ token: null, detail: "`gh auth token` exited 1: not logged in" }))
+    loginWithGhCli(AUTO, () => ({ token: null, detail: "`gh auth token` exited 1: not logged in" }))
   ).toThrow(
     "gh is not authenticated (`gh auth token` exited 1: not logged in) - run `gh auth login`, then retry `agent auth`",
   );
-  expect(() => loginWithGhCli(null, () => ({ token: "tok" }))).not.toThrow();
+  expect(() => loginWithGhCli(AUTO, () => ({ token: "tok" }))).not.toThrow();
   // The auto success line names the followed account when known (nothing hidden).
   const named = await captureStderr(() => {
-    loginWithGhCli(null, () => ({ token: "tok" }), "octocat");
+    loginWithGhCli({ kind: "auto", activeLogin: "octocat" }, () => ({ token: "tok" }));
     return Promise.resolve();
   });
   expect(named).toContain(
@@ -1040,13 +1044,55 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
     asked.push(ghUser);
     return miss;
   };
-  expect(() => loginWithGhCli("work", pinnedMiss)).toThrow(
-    "gh has no saved credential for account 'work' (`gh auth token --user work --hostname " +
-      "github.com` exited 1: no oauth token found) - run `gh auth login` for that account, pass " +
-      "--gh-user <login> for another, or choose auto interactively via `agent auth --provider gh-cli`",
-  );
-  expect(() => loginWithGhCli("work", () => killed)).toThrow(
+  const PIN_MISS =
+    "gh cannot serve account 'work' by name (`gh auth token --user work --hostname " +
+    "github.com` exited 1: no oauth token found) - run `gh auth login` for that account (a " +
+    "logged-out login and a hosts.yml written before gh 2.40 both need it), pass --gh-user <login> " +
+    "for another, or drop --gh-user and let `agent auth --provider gh-cli` settle the account " +
+    "(auto included)";
+  expect(() => loginWithGhCli(PINNED_WORK, pinnedMiss)).toThrow(PIN_MISS);
+  expect(() => loginWithGhCli(PINNED_WORK, () => killed)).toThrow(
     "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
+  );
+  expect(asked).toEqual(["work"]);
+
+  // A SOLE login (the chooser's one-saved-account selection) pins when gh serves it by name;
+  // when only the plain call answers, the slot follows the active account and the line names the
+  // cause and the recovery. A miss on both calls is the pinned wording; an unanswered look,
+  // either of them, is could-not-check (the pinned one with no second call).
+  const served = (ghUser: string | null) => {
+    asked.push(ghUser);
+    return ghUser === null ? { token: "gho_active" } : miss;
+  };
+  asked.length = 0;
+  expect(loginWithGhCli(SOLE_WORK, () => ({ token: "tok" }))).toEqual({
+    ghUser: "work",
+    activeLogin: null,
+  });
+  let settled: ReturnType<typeof loginWithGhCli> | undefined;
+  const fallback = await captureStderr(() => {
+    settled = loginWithGhCli(SOLE_WORK, served);
+    return Promise.resolve();
+  });
+  expect(settled).toEqual({ ghUser: null, activeLogin: "work" });
+  expect(asked).toEqual(["work", null]);
+  // consola's fancy reporter renders backticks away and its basic reporter keeps them, so the
+  // capture is normalized before the whole line is pinned.
+  expect(fallback.replaceAll("`", "")).toContain(
+    "gh cannot serve account work by name (gh auth token --user work --hostname github.com " +
+      "exited 1: no oauth token found), so the credential follows gh's active account (auto) - " +
+      "the same account while it is the only login. To pin it, run gh auth login for work on gh " +
+      "2.40 or newer (the login rewrites hosts.yml into the layout --user reads), then re-run " +
+      "agent auth --provider gh-cli.",
+  );
+  expect(fallback).toContain("Using the gh CLI login on AUTO (currently account work;");
+  expect(() => loginWithGhCli(SOLE_WORK, pinnedMiss)).toThrow(PIN_MISS);
+  expect(() => loginWithGhCli(SOLE_WORK, (ghUser) => (ghUser === null ? killed : miss))).toThrow(
+    "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
+  );
+  asked.length = 0;
+  expect(() => loginWithGhCli(SOLE_WORK, (ghUser) => (asked.push(ghUser), killed))).toThrow(
+    "could not check gh authentication",
   );
   expect(asked).toEqual(["work"]);
 });
@@ -1116,8 +1162,11 @@ test("ghAuthTokenLookVia: one gh call per look; a pin gh cannot serve is a prove
       label: "auto follows gh's active account through the plain call",
       ghUser: null,
       reply: { status: 1, stderr: "not logged in" },
-      look: { token: null, detail: "`gh auth token` exited 1: not logged in" },
-      calls: ["auth token"],
+      look: {
+        token: null,
+        detail: "`gh auth token --hostname github.com` exited 1: not logged in",
+      },
+      calls: ["auth token --hostname github.com"],
     },
   ];
   for (const row of rows) {
@@ -1169,17 +1218,22 @@ function fakeGhOnPath(script: string): void {
 }
 
 /** A gh whose `--user work-bot` call answers `user` (exit 0 serves the token, exit 1 refuses the
- *  pin) and whose status prints `status` with `statusExit`. Every other call is a test failure. */
+ *  pin), whose plain `auth token` serves `plain` when given, and whose status prints `status`
+ *  with `statusExit`. Every other call is a test failure. */
 function ghScript(
   user: { reply: string; exit: number },
   status: string,
   statusExit: number,
+  plain?: string,
 ): string {
   return [
     'case "$*" in',
     `  "auth token --user work-bot --hostname github.com") echo "${user.reply}"${
       user.exit === 0 ? "" : " >&2"
     }; exit ${user.exit};;`,
+    ...(plain === undefined
+      ? []
+      : [`  "auth token --hostname github.com") echo "${plain}"; exit 0;;`]),
     `  "auth status --hostname github.com") cat <<'STATUS'\n${status}STATUS\n    exit ${statusExit};;`,
     '  *) echo "unexpected gh call: $*" >&2; exit 2;;',
     "esac",
@@ -1210,12 +1264,26 @@ onPosix(
         message = errMessage(e);
       }
       expect(message).toBe(
-        "gh has no saved credential for account 'work-bot' (`gh auth token --user " +
-          "work-bot --hostname github.com` exited 1: no oauth token found for github.com " +
-          "account work-bot) - run `gh auth login` for that account, pass --gh-user <login> for " +
-          "another, or choose auto interactively via `agent auth --provider gh-cli`",
+        "gh cannot serve account 'work-bot' by name (`gh auth token --user work-bot --hostname " +
+          "github.com` exited 1: no oauth token found for github.com account work-bot) - run " +
+          "`gh auth login` for that account (a logged-out login and a hosts.yml written before " +
+          "gh 2.40 both need it), pass --gh-user <login> for another, or drop --gh-user and let " +
+          "`agent auth --provider gh-cli` settle the account (auto included)",
       );
       expect(state().read().authProvider).toBeNull();
+      // The pre-2.40 single-account hosts.yml (a workspace launcher wrote it, no `users:` map):
+      // status lists the one login, `--user` refuses it, the plain call serves it. The slot lands
+      // as auto, says why, and resolves through the plain call.
+      isolate();
+      fakeGhOnPath(
+        ghScript({ reply: NO_TOKEN_FOR_USER.stderr, exit: 1 }, HOSTS_YML_STATUS, 1, "gho_legacy"),
+      );
+      const legacy = await captureStderr(() => runAuth({ provider: "gh-cli" }));
+      expect(legacy).toContain("gh cannot serve account work-bot by name");
+      expect(legacy).toContain("Using the gh CLI login on AUTO (currently account work-bot;");
+      const landed = state().read();
+      expect([landed.authProvider, landed.ghUser]).toEqual(["gh-cli", null]);
+      expect(new Credential().resolveWithReason()).toEqual({ token: "gho_legacy", reason: null });
     } finally {
       process.stdin.isTTY = hadTty;
     }
@@ -1315,9 +1383,11 @@ test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins
   expect(parseGhAuthStatusAccounts(TWO_ACCOUNT_STATUS + TWO_ACCOUNT_STATUS).length).toBe(2);
 });
 
-test("the gh spawn recipes: a pinned account adds --user on github.com; auto stays byte-identical", () => {
-  expect(ghAuthTokenSpawnSpec("/opt/gh/gh").args).toEqual(["auth", "token"]);
-  expect(ghAuthTokenSpawnSpec("/opt/gh/gh", null).args).toEqual(["auth", "token"]);
+test("the gh spawn recipes: every token call names github.com, a pinned account adds --user", () => {
+  // Host-scoped both ways: a bare `gh auth token` follows a GH_HOST override to another host.
+  const AUTO_CALL = ["auth", "token", "--hostname", "github.com"];
+  expect(ghAuthTokenSpawnSpec("/opt/gh/gh").args).toEqual(AUTO_CALL);
+  expect(ghAuthTokenSpawnSpec("/opt/gh/gh", null).args).toEqual(AUTO_CALL);
   // The pin was chosen from github.com's logins, so the resolve names the host:
   // a GH_HOST override must not point --user at another host's accounts.
   expect(ghAuthTokenSpawnSpec("/opt/gh/gh", "work-bot").args).toEqual([
@@ -1376,9 +1446,9 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
     await expect(chooseGhAccount(() => ({ accounts: [] }))).rejects.toThrow(
       "gh has no logged-in github.com account - run `gh auth login`, then retry `agent auth`",
     );
-    // One account: PINNED to it, so a later login cannot switch the credential.
+    // One saved account: SOLE, which the slot write pins when gh serves it by name.
     expect(await chooseGhAccount(() => ({ accounts: [acct("solo", true)] }))).toEqual({
-      kind: "pinned",
+      kind: "sole",
       login: "solo",
     });
     // Another host's login is not a github.com choice (Copilot's host).
@@ -1391,7 +1461,7 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
           source: "keyring",
         }],
       })),
-    ).toEqual({ kind: "pinned", login: "solo" });
+    ).toEqual({ kind: "sole", login: "solo" });
     // 2+ logins, non-TTY: the ACTIVE one is pinned, with a hint naming it and
     // the escape hatches (an env-token source is still a choice - it may
     // shadow a saved credential; the verify step is the gate, never the menu).

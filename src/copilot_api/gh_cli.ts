@@ -39,8 +39,8 @@ export function ghTokenFromEnv(env: NodeJS.ProcessEnv = process.env): string | n
 /** Shared by every "is gh authenticated?" probe. */
 const GH_AUTH_TIMEOUT_MS = 5000;
 
-/** A pinned account is chosen from this host's logins, so the pinned resolve names it explicitly:
- *  otherwise a GH_HOST override would point `--user` at another host's accounts. */
+/** Every gh token call names this host: a pin is chosen from its logins, and a bare
+ *  `gh auth token` would follow a GH_HOST override to another host's credential. */
 export const GH_COPILOT_HOST = "github.com";
 
 /** A GitHub login: 1-39 alphanumerics and dashes, plus underscore for EMU accounts ("user_shortcode").
@@ -60,7 +60,7 @@ export function ghAuthTokenSpawnSpec(ghPath: string, ghUser: string | null = nul
   const s = cliSpawn(
     ghPath,
     ghUser === null
-      ? ["auth", "token"]
+      ? ["auth", "token", "--hostname", GH_COPILOT_HOST]
       : ["auth", "token", "--user", ghUser, "--hostname", GH_COPILOT_HOST],
   );
   return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };

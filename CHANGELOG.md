@@ -1,5 +1,20 @@
 # Changelog
 
+## [5.0.1](https://github.com/Vivswan/copilot-env/compare/v5.0.0...v5.0.1) (2026-09-30)
+
+
+### Features
+
+* **launch:** cxx bypasses codex approvals, sandbox, and hook trust ([#391](https://github.com/Vivswan/copilot-env/issues/391)) ([f21924b](https://github.com/Vivswan/copilot-env/commit/f21924bcd1fcb3ef26143314331fced224531321))
+
+
+### Bug Fixes
+
+* **auth:** a sole gh login that gh cannot serve by name follows the active account instead of failing ([#395](https://github.com/Vivswan/copilot-env/issues/395)) ([277b7b8](https://github.com/Vivswan/copilot-env/commit/277b7b8bc1ba363e94d5b3015c0b794b6bf84911))
+* **cost:** keep the rate card's fetch stamp under runtime so two runs over one tree agree ([#390](https://github.com/Vivswan/copilot-env/issues/390)) ([9152841](https://github.com/Vivswan/copilot-env/commit/9152841b34be2c2d360678255c84478e6b6193a9))
+* **docker:** .dvmrc is the only Deno pin; the Dockerfile ARG has no default ([#384](https://github.com/Vivswan/copilot-env/issues/384)) ([9e6478f](https://github.com/Vivswan/copilot-env/commit/9e6478fff60f5ac021719955a1d6cec8e287ac6e))
+* **test:** read codex's answer as the agent_message item, not the first completed item ([#394](https://github.com/Vivswan/copilot-env/issues/394)) ([2a6df7a](https://github.com/Vivswan/copilot-env/commit/2a6df7afe0e82f7aca560281d97fff6bb07ed0d7))
+
 ## [5.0.0](https://github.com/Vivswan/copilot-env/compare/v4.0.9...v5.0.0) (2026-09-20)
 
 

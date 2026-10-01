@@ -17,7 +17,8 @@
     "npm:@copilotkit/aimock@1.41.0": "1.41.0",
     "npm:@jeffreycao/copilot-api@^2.3.14": "2.3.14",
     "npm:@modelcontextprotocol/client@2": "2.0.0",
-    "npm:@modelcontextprotocol/sdk@^1.30.0": "1.30.0_zod@4.5.4",
+    "npm:@modelcontextprotocol/sdk@^1.30.0": "1.30.1_zod@4.6.5",
+    "npm:@modelcontextprotocol/sdk@^1.30.1": "1.30.1_zod@4.6.5",
     "npm:@modelcontextprotocol/server@2": "2.0.0",
     "npm:@sigstore/bundle@5": "5.0.0",
     "npm:@sigstore/protobuf-specs@~0.5.2": "0.5.2",
@@ -98,7 +99,7 @@
     "@gar/promise-retry@1.0.3": {
       "integrity": "sha512-GmzA9ckNokPypTg10pgpeHNQe7ph+iIKKmhKu3Ob9ANkswreCx7R3cKmY781K8QK3AqVL3xVh9A42JvIAbkkSA=="
     },
-    "@hono/node-server@2.1.0_hono@4.13.5": {
+    "@hono/node-server@2.1.0_hono@4.13.9": {
       "integrity": "sha512-XovyyCCnBzW+zKu+z/zq8hwNs4KOR5rEMAOxo2f40Q5xoOI37IMm6MIg2COOUtUApo0i6850MTBKH2u4QLGIqg==",
       "dependencies": [
         "hono"
@@ -310,8 +311,8 @@
         "zod"
       ]
     },
-    "@modelcontextprotocol/sdk@1.30.0_zod@4.5.4": {
-      "integrity": "sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA==",
+    "@modelcontextprotocol/sdk@1.30.1_zod@4.6.5": {
+      "integrity": "sha512-H2HxLvC3HDNybePJaLdSrU1hhUK5iQw+WvV1b01myFyI7sdVGe1u/IPTE5D9fGCiJDVtgMV/lmFkQXLmQyIFYA==",
       "dependencies": [
         "@hono/node-server",
         "ajv",
@@ -738,8 +739,8 @@
         "function-bind"
       ]
     },
-    "hono@4.13.5": {
-      "integrity": "sha512-O6+/eCYRkzzzy0rPWwKLiGBR1nFuUPZynnwjxN1MBA62NNqbT0wQEzQyK2gSO5yDIDB336sXQleAhOHrzlYyKw=="
+    "hono@4.13.9": {
+      "integrity": "sha512-7dMkQmZoC4E6F7AtaQSPhlWAdnBti+j7rreMZl8QB4jFiEhP9TWbGWUMi8WYzBCgmgulxuvLQupKqo+Co6Omyg=="
     },
     "http-errors@2.0.1": {
       "integrity": "sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==",
@@ -1216,14 +1217,14 @@
     "yoctocolors@2.2.0": {
       "integrity": "sha512-xYqdZFUK/VYazNl/oCDYN+3WloWQwMfZxBoiNt6qNyk+xfOdi598muWE42rNZFp1kNOiqW936q5RhUdnpqElSg=="
     },
-    "zod-to-json-schema@3.25.2_zod@4.5.4": {
+    "zod-to-json-schema@3.25.2_zod@4.6.5": {
       "integrity": "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==",
       "dependencies": [
         "zod"
       ]
     },
-    "zod@4.5.4": {
-      "integrity": "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="
+    "zod@4.6.5": {
+      "integrity": "sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q=="
     }
   },
   "workspace": {
@@ -1238,6 +1239,7 @@
       "npm:@jeffreycao/copilot-api@^2.3.14",
       "npm:@modelcontextprotocol/client@2",
       "npm:@modelcontextprotocol/sdk@^1.30.0",
+      "npm:@modelcontextprotocol/sdk@^1.30.1",
       "npm:@modelcontextprotocol/server@2",
       "npm:@sigstore/bundle@5",
       "npm:@sigstore/protobuf-specs@~0.5.2",

@@ -26,7 +26,7 @@
     "@modelcontextprotocol/client/": "npm:/@modelcontextprotocol/client@^2.0.0/",
     "@modelcontextprotocol/sdk": "npm:@modelcontextprotocol/sdk@^1.30.1",
     "@modelcontextprotocol/sdk/": "npm:/@modelcontextprotocol/sdk@^1.30.0/",
-    "@modelcontextprotocol/server": "npm:@modelcontextprotocol/server@^2.0.0",
+    "@modelcontextprotocol/server": "npm:@modelcontextprotocol/server@^2.1.0",
     "@modelcontextprotocol/server/": "npm:/@modelcontextprotocol/server@^2.0.0/",
     "@sigstore/bundle": "npm:@sigstore/bundle@^5.0.0",
     "@sigstore/protobuf-specs": "npm:@sigstore/protobuf-specs@^0.5.2",

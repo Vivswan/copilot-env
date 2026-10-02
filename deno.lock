@@ -19,7 +19,8 @@
     "npm:@modelcontextprotocol/client@2": "2.0.0",
     "npm:@modelcontextprotocol/sdk@^1.30.0": "1.30.1_zod@4.6.5",
     "npm:@modelcontextprotocol/sdk@^1.30.1": "1.30.1_zod@4.6.5",
-    "npm:@modelcontextprotocol/server@2": "2.0.0",
+    "npm:@modelcontextprotocol/server@2": "2.1.0",
+    "npm:@modelcontextprotocol/server@^2.1.0": "2.1.0",
     "npm:@sigstore/bundle@5": "5.0.0",
     "npm:@sigstore/protobuf-specs@~0.5.2": "0.5.2",
     "npm:@sigstore/tuf@5": "5.0.0",
@@ -296,7 +297,7 @@
     "@modelcontextprotocol/client@2.0.0": {
       "integrity": "sha512-8f1OghQ2rjzIOfqgUCP+8GiUWqRs89njoWLNqAe8kWmDePv3s1fZXseej+QXemssEuuOvLLmLO/kqM3IQHtISw==",
       "dependencies": [
-        "@modelcontextprotocol/core",
+        "@modelcontextprotocol/core@2.0.0",
         "cross-spawn",
         "eventsource",
         "eventsource-parser",
@@ -307,6 +308,12 @@
     },
     "@modelcontextprotocol/core@2.0.0": {
       "integrity": "sha512-pJCEwGG7Lfr/+PQp9ZTwKXNeO5wzbfKL7H3MYpCorM4oFBoQrdjnBgEoqG+RjhsvS1FKrDbKux+M1HhlnGWqcA==",
+      "dependencies": [
+        "zod"
+      ]
+    },
+    "@modelcontextprotocol/core@2.1.0": {
+      "integrity": "sha512-YdFj5gMRHr0gYNAhTbQDgjLHiEJdIAUYxomhKseUNye7ZGlISQmUoLh2sveFFCiQ7j2YMffT1kgSND0FSfIFjQ==",
       "dependencies": [
         "zod"
       ]
@@ -333,10 +340,10 @@
         "zod-to-json-schema"
       ]
     },
-    "@modelcontextprotocol/server@2.0.0": {
-      "integrity": "sha512-YhHWdHfpFMQfd0prsEnxKeS3Qz3ytIGmsS0sth4KDjnacIT7hxk6hXHkJ9KysxlkvTM+WZAtQbbcUhdoP4Hvtw==",
+    "@modelcontextprotocol/server@2.1.0": {
+      "integrity": "sha512-FdvwZU5N03O77Suh35JqjAqq5R1ZTEPFtwu6N4BgBq28qrQtrCnpbLL5U2pwYCuE194jAw0xnlOVmIqhfoYuUQ==",
       "dependencies": [
-        "@modelcontextprotocol/core",
+        "@modelcontextprotocol/core@2.1.0",
         "zod"
       ]
     },
@@ -1241,6 +1248,7 @@
       "npm:@modelcontextprotocol/sdk@^1.30.0",
       "npm:@modelcontextprotocol/sdk@^1.30.1",
       "npm:@modelcontextprotocol/server@2",
+      "npm:@modelcontextprotocol/server@^2.1.0",
       "npm:@sigstore/bundle@5",
       "npm:@sigstore/protobuf-specs@~0.5.2",
       "npm:@sigstore/tuf@5",

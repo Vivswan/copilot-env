@@ -16,7 +16,8 @@
     "jsr:@std/testing@^1.0.21": "1.0.21",
     "npm:@copilotkit/aimock@1.41.0": "1.41.0",
     "npm:@jeffreycao/copilot-api@^2.3.14": "2.3.14",
-    "npm:@modelcontextprotocol/client@2": "2.0.0",
+    "npm:@modelcontextprotocol/client@2": "2.1.0",
+    "npm:@modelcontextprotocol/client@^2.1.0": "2.1.0",
     "npm:@modelcontextprotocol/sdk@^1.30.0": "1.30.1_zod@4.6.5",
     "npm:@modelcontextprotocol/sdk@^1.30.1": "1.30.1_zod@4.6.5",
     "npm:@modelcontextprotocol/server@2": "2.1.0",
@@ -294,21 +295,15 @@
         "tslib"
       ]
     },
-    "@modelcontextprotocol/client@2.0.0": {
-      "integrity": "sha512-8f1OghQ2rjzIOfqgUCP+8GiUWqRs89njoWLNqAe8kWmDePv3s1fZXseej+QXemssEuuOvLLmLO/kqM3IQHtISw==",
+    "@modelcontextprotocol/client@2.1.0": {
+      "integrity": "sha512-mDVhoy5WjDb0U+4dQPzLcciC2erSex/GRVQqnoZdiuMoE3YiTZdiS7ezNcFwX4XEOWOaj7jZr0kLYnILnL8orA==",
       "dependencies": [
-        "@modelcontextprotocol/core@2.0.0",
+        "@modelcontextprotocol/core",
         "cross-spawn",
         "eventsource",
         "eventsource-parser",
         "jose",
         "pkce-challenge",
-        "zod"
-      ]
-    },
-    "@modelcontextprotocol/core@2.0.0": {
-      "integrity": "sha512-pJCEwGG7Lfr/+PQp9ZTwKXNeO5wzbfKL7H3MYpCorM4oFBoQrdjnBgEoqG+RjhsvS1FKrDbKux+M1HhlnGWqcA==",
-      "dependencies": [
         "zod"
       ]
     },
@@ -343,7 +338,7 @@
     "@modelcontextprotocol/server@2.1.0": {
       "integrity": "sha512-FdvwZU5N03O77Suh35JqjAqq5R1ZTEPFtwu6N4BgBq28qrQtrCnpbLL5U2pwYCuE194jAw0xnlOVmIqhfoYuUQ==",
       "dependencies": [
-        "@modelcontextprotocol/core@2.1.0",
+        "@modelcontextprotocol/core",
         "zod"
       ]
     },
@@ -1245,6 +1240,7 @@
       "npm:@copilotkit/aimock@1.41.0",
       "npm:@jeffreycao/copilot-api@^2.3.14",
       "npm:@modelcontextprotocol/client@2",
+      "npm:@modelcontextprotocol/client@^2.1.0",
       "npm:@modelcontextprotocol/sdk@^1.30.0",
       "npm:@modelcontextprotocol/sdk@^1.30.1",
       "npm:@modelcontextprotocol/server@2",

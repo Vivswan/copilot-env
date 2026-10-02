@@ -30,7 +30,7 @@
     "npm:smol-toml@^1.8.0": "1.8.0",
     "npm:string-width@^8.2.2": "8.2.2",
     "npm:undici@^7.29.1": "7.29.1",
-    "npm:valibot@^1.4.2": "1.4.2",
+    "npm:valibot@^1.5.0": "1.5.0",
     "npm:wrap-ansi@^10.0.1": "10.0.1"
   },
   "jsr": {
@@ -1188,8 +1188,8 @@
     "unpipe@1.0.0": {
       "integrity": "sha512-pjy2bYhSsufwWlKwPc+l3cN7+wuJlK6uz0YdJEOlQDbl6jo/YlPi4mb8agUkVC8BF7V8NuzeyPNqRksA3hztKQ=="
     },
-    "valibot@1.4.2": {
-      "integrity": "sha512-gjdCvJ6d3RyHAneqxMYMW9QMCwYMb3jpOO0IyHZV1bnRHFBHrX3VkIILt5XYR0WhwHiH7Mty8ovuPZ/O3gamrg=="
+    "valibot@1.5.0": {
+      "integrity": "sha512-nil6AkP2TChWL43Z5uJ6GTxX01CUA+g8LWUM+N/rB9NBbkUMaUsi9PUNzlUPgoKASgmx9f7eGOYpJ04/fSa6FQ=="
     },
     "vary@1.1.2": {
       "integrity": "sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg=="
@@ -1251,7 +1251,7 @@
       "npm:smol-toml@^1.8.0",
       "npm:string-width@^8.2.2",
       "npm:undici@^7.29.1",
-      "npm:valibot@^1.4.2",
+      "npm:valibot@^1.5.0",
       "npm:wrap-ansi@^10.0.1"
     ]
   }

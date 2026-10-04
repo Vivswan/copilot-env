@@ -8,6 +8,7 @@ import { floatProxy, proxyFloatVerifyStatus } from "../proxy_float.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { withFileLock } from "../utils/file_lock.ts";
+import { pidAlive } from "../utils/pid.ts";
 import { isRecord } from "../utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { CopilotAdminClient } from "./admin.ts";
@@ -35,6 +36,7 @@ import {
   copilotApiResolvePort,
   daemonPolicy,
   proxyPortFree,
+  proxyPortRange,
   reserveProfilePort,
 } from "./port.ts";
 import {
@@ -42,11 +44,10 @@ import {
   type DaemonCredential,
   LAUNCH_SETTLE_MS,
   launchDaemon,
-  pidAlive,
   printLogTail,
   resolveCopilotApiEntry,
 } from "./process.ts";
-import type { Profile } from "./profile.ts";
+import { agentAuthCommand, type Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./run_state.ts";
 import { installedProxyVersion, PROXY_PACKAGE_NAME, proxyVersionFloorStatus } from "./version.ts";
 
@@ -187,16 +188,7 @@ export async function resolveStartPort(
   reserve: boolean,
   config: CopilotEnvConfig = new CopilotEnvConfig(),
 ): Promise<number> {
-  const min = config.minPort();
-  const max = config.maxPort();
-  if (min > max) {
-    throw new Error(
-      `invalid port range: daemon.min-port (${min}) is greater than daemon.max-port (${max}); ` +
-        `fix it with \`${configSetCommand("daemon.min-port", "<n>")}\` / \`${
-          configSetCommand("daemon.max-port", "<n>")
-        }\`.`,
-    );
-  }
+  const { min, max } = proxyPortRange(config);
   if (pinned !== undefined) {
     switch (await checkProxyPort(pinned)) {
       case "out-of-range":
@@ -437,7 +429,7 @@ export function spawnConfiguredDaemon(opts: {
  *  credential needs the passthrough; anything else needs a Copilot-capable login. */
 function copilotTokenFailureHint(log: string, profile: Profile): string | null {
   if (!/Failed to get Copilot token/i.test(log)) return null;
-  const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
+  const authCommand = agentAuthCommand(profile);
   return (
     "The credential was not accepted by Copilot's token exchange. For a gh-cli or PAT credential, " +
     `enable passthrough (\`${

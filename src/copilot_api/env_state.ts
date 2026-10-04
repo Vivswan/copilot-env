@@ -22,6 +22,7 @@ import {
   parseProfileFlag,
   parseProfileName,
   type Profile,
+  profileKey,
   profileLabel,
   type ProfileName,
 } from "./profile.ts";
@@ -141,10 +142,6 @@ function refuseReservedWord(name: ProfileName): void {
   if (isReservedProfileWord(name)) {
     throw new Error(`profile name '${name}' is reserved (it is a verb of \`agent profile\`)`);
   }
-}
-
-function slotKey(profile: Profile): string {
-  return profile ?? DEFAULT_PROFILE_KEY;
 }
 
 export interface ProfileCredentialData {
@@ -474,7 +471,7 @@ export class CopilotEnvState {
     let missing = false;
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
-      const key = slotKey(profile);
+      const key = profileKey(profile);
       const existing = Object.hasOwn(profiles, key) ? profiles[key] : undefined;
       let raw: Record<string, unknown>;
       if (isRecord(existing)) {
@@ -504,7 +501,7 @@ export class CopilotEnvState {
     let had = false;
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
-      const key = slotKey(profile);
+      const key = profileKey(profile);
       const raw = Object.hasOwn(profiles, key) ? profiles[key] : undefined;
       if (!isRecord(raw)) return;
       had = raw.githubToken !== undefined || raw.authProvider !== undefined;
@@ -576,7 +573,7 @@ export class CopilotEnvState {
    *  never probed. */
   readProfileDirectPair(profile: Profile): StoredDirectPair {
     const profiles = this.store.loadStrict().profiles;
-    const raw = isRecord(profiles) ? profiles[slotKey(profile)] : undefined;
+    const raw = isRecord(profiles) ? profiles[profileKey(profile)] : undefined;
     if (!isRecord(raw)) return {};
     const pair = v.parse(DIRECT_PAIR_SCHEMA, raw);
     return {
@@ -597,7 +594,7 @@ export class CopilotEnvState {
   setProfileDirectPair(profile: Profile, probed: StoredDirectPair): void {
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
-      const key = slotKey(profile);
+      const key = profileKey(profile);
       const existing = Object.hasOwn(profiles, key) ? profiles[key] : undefined;
       if (!isRecord(existing) && profile !== null) return;
       const raw: Record<string, unknown> = isRecord(existing) ? existing : {};

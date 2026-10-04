@@ -1,4 +1,10 @@
-import { isUpToDate, pickAgedVersion, stripV, versionLessThan } from "../src/utils/semver.ts";
+import {
+  isUpToDate,
+  pickAgedVersion,
+  publishTimesMs,
+  stripV,
+  versionLessThan,
+} from "../src/utils/semver.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -113,6 +119,6 @@ test("pickAgedVersion picks the newest stable release published at or before the
     },
   ];
   for (const { name, time, minAgeMs, pick } of rows) {
-    expect(pickAgedVersion(time, minAgeMs, NOW), name).toBe(pick);
+    expect(pickAgedVersion(publishTimesMs(time), minAgeMs, NOW), name).toBe(pick);
   }
 });

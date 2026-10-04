@@ -8,7 +8,7 @@ import { assertNever } from "../utils/assert.ts";
 import { childEnvWithPath, commandExists, findCommand, resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
-import { pickAgedVersion, versionLessThan } from "../utils/semver.ts";
+import { pickAgedVersion, publishTimesMs, versionLessThan } from "../utils/semver.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 
@@ -324,7 +324,7 @@ function resolveAgedVersion(packageName: string, days: number): string {
     throw new Error(`npm publish times for ${packageName} were not an object`);
   }
   const version = pickAgedVersion(
-    parsed as Record<string, string>,
+    publishTimesMs(parsed as Record<string, string>),
     days * MILLISECONDS_PER_DAY,
     Date.now(),
   );

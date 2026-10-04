@@ -31,7 +31,8 @@ import {
   planCleanup,
   trackedDaemonPids,
 } from "../src/copilot_api/launch_cleanup.ts";
-import { classifyOwnedDaemonPid, isCopilotApiPid, pidAlive } from "../src/copilot_api/process.ts";
+import { classifyOwnedDaemonPid, isCopilotApiPid } from "../src/copilot_api/process.ts";
+import { pidAlive } from "../src/utils/pid.ts";
 import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";

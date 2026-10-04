@@ -23,7 +23,8 @@ import {
 } from "../src/copilot_api/integration_identity.ts";
 import { portListening } from "../src/copilot_api/daemon.ts";
 import { startLockPath } from "../src/copilot_api/launch.ts";
-import { classifyDaemonPid, pidAlive } from "../src/copilot_api/process.ts";
+import { classifyDaemonPid } from "../src/copilot_api/process.ts";
+import { pidAlive } from "../src/utils/pid.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";

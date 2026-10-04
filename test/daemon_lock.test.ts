@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { anyTrackedDaemonAlive, proxyStatus, stopTrackedProxy } from "../src/copilot_api/daemon.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { launchDaemon, pidAlive } from "../src/copilot_api/process.ts";
+import { launchDaemon } from "../src/copilot_api/process.ts";
+import { pidAlive } from "../src/utils/pid.ts";
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import {

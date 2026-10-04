@@ -45,20 +45,29 @@ export function isStableVersion(v: string): boolean {
   return /^\d+\.\d+\.\d+$/.test(v);
 }
 
-/** The newest stable version published at or before `nowMs - minimumAgeMs`. `timeMap` is the npm
- *  packument's `time` object: version -> publish date, plus the created/modified keys, which
- *  isStableVersion skips along with prereleases. */
+/** The npm packument's `time` object (version -> publish date, plus the created/modified keys) as
+ *  version -> publish ms. A date that does not parse drops its version: it can never prove its age. */
+export function publishTimesMs(timeMap: Record<string, string>): Map<string, number> {
+  const times = new Map<string, number>();
+  for (const [version, iso] of Object.entries(timeMap)) {
+    const published = Date.parse(iso);
+    if (!Number.isNaN(published)) times.set(version, published);
+  }
+  return times;
+}
+
+/** The newest stable version published at or before `nowMs - minimumAgeMs`; isStableVersion skips
+ *  prereleases and the packument's bookkeeping keys. */
 export function pickAgedVersion(
-  timeMap: Record<string, string>,
+  publishedAtMs: ReadonlyMap<string, number>,
   minimumAgeMs: number,
   nowMs: number,
 ): string | null {
   const cutoff = nowMs - minimumAgeMs;
   let best: string | null = null;
-  for (const [version, iso] of Object.entries(timeMap)) {
+  for (const [version, published] of publishedAtMs) {
     if (!isStableVersion(version)) continue;
-    const published = Date.parse(iso);
-    if (Number.isNaN(published) || published > cutoff) continue;
+    if (published > cutoff) continue;
     if (best === null || versionLessThan(best, version)) best = version;
   }
   return best;

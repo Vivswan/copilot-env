@@ -137,9 +137,6 @@ export function copilotApiArgv(
   ];
 }
 
-// Re-exported so lifecycle callers keep one import site; the file-lock staleness check shares the primitive.
-export { pidAlive };
-
 // THE daemon signature, pinned by test/daemon_spawn.test.ts. The sweep SIGKILLs what it matches, so every
 // tolerance below biases against false positives: a substring match once killed an agent CLI whose prompt
 // text mentioned copilot-api and start. A match needs a whole daemon-shaped invocation:

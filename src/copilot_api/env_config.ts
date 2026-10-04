@@ -26,11 +26,11 @@ import {
   type StaticKeyScope,
 } from "./config_registry.ts";
 import { rootStateStore } from "./state_store.ts";
-import type { Profile, ProfileName } from "./profile.ts";
+import { DEFAULT_PROFILE_NAME, type Profile, profileKey, type ProfileName } from "./profile.ts";
 import { isRecord } from "../utils/json.ts";
 
 /** The store as read: both maps always present. `profiles` is keyed by profile name, the default
- *  profile under PROFILE_SETTINGS_DEFAULT_KEY. */
+ *  profile under PROFILE_SETTINGS_DEFAULT_KEY (profileKey). */
 export interface CopilotEnvConfigData {
   global: GlobalConfigData;
   profiles: Record<string, ProfileConfigData>;
@@ -41,11 +41,7 @@ export type GlobalPatch = { [K in GlobalMapKey]?: ConfigValueTypes[K] | null };
 export type ProfilePatch = { [K in ProfileMapKey]?: ConfigValueTypes[K] | null };
 
 /** The default profile's map name: one `profiles.default` holds its settings and its credential slot. */
-export const PROFILE_SETTINGS_DEFAULT_KEY = "default";
-
-export function profileSettingsKey(profile: Profile): string {
-  return profile ?? PROFILE_SETTINGS_DEFAULT_KEY;
-}
+export const PROFILE_SETTINGS_DEFAULT_KEY = DEFAULT_PROFILE_NAME;
 
 // The preference commands a message may point at, spelled ONCE. The key is typed, so a renamed key
 // cannot leave a stale hint behind, and test/config_key_lint.test.ts refuses a hand-spelled one.
@@ -154,7 +150,7 @@ export function resolveSettingIn<K extends ConfigKey>(
   const def = registryEntry(key);
   if (def.scope !== "global") {
     // The section's type is a subset of every key's, so the widening is a plain assignment.
-    const section: Partial<ConfigValueTypes> = data.profiles[profileSettingsKey(opts.profile)] ??
+    const section: Partial<ConfigValueTypes> = data.profiles[profileKey(opts.profile)] ??
       {};
     const own = section[key];
     if (own !== undefined) return { value: own, source: "profile" };
@@ -526,7 +522,7 @@ export class CopilotEnvConfig {
   private writeProfile(profile: Profile, patch: Record<string, unknown>): void {
     this.store.update((d) => {
       const profiles = ensureDict(d, "profiles");
-      const name = profileSettingsKey(profile);
+      const name = profileKey(profile);
       const section = ensureDict(profiles, name);
       applyPatch(section, patch);
       if (Object.keys(section).length === 0) delete profiles[name];

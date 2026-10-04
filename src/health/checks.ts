@@ -3,7 +3,7 @@
 import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
 import { configGetCommand, configSetCommand } from "../copilot_api/env_config.ts";
 import { SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
-import { agentStartCommand, agentStopCommand } from "../copilot_api/profile.ts";
+import { agentAuthCommand, agentStartCommand, agentStopCommand } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../copilot_api/idle_watchdog.ts";
 import type { CommandLook } from "../utils/command.ts";
@@ -759,7 +759,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
       }
       : { provider: slot?.provider ?? null, mode: slot?.mode ?? null, ...resolution },
   };
-  const authFix = name === null ? "agent auth" : `agent profile ${name} auth`;
+  const authFix = agentAuthCommand(name);
   // Provider classification is storedCredentialKind()'s (env_state.ts); a chosen-but-unresolved
   // provider is a warn, not OK.
   if (slot === null || slot.provider === null) {

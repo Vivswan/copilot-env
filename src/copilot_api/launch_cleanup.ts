@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "./daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
+import { pidAlive } from "../utils/pid.ts";
 import { allDaemonHomes, CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { daemonPolicy } from "./port.ts";
 import {
@@ -14,7 +15,6 @@ import {
   getOrphanPids,
   isCopilotApiPid,
   LAUNCH_SETTLE_MS,
-  pidAlive,
   terminatePid,
 } from "./process.ts";
 import type { Profile } from "./profile.ts";

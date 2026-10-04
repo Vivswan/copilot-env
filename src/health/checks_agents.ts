@@ -9,7 +9,7 @@ import type { CodexOtherReason } from "../codex/inspect.ts";
 import { codexConfigPath, codexProfileConfigPath, codexProviderId } from "../codex/paths.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
 import { isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
-import { agentStartCommand, type Profile } from "../copilot_api/profile.ts";
+import { agentAuthCommand, agentStartCommand, type Profile } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import type {
   BakedCredentialFreshness,
@@ -120,8 +120,8 @@ function directAuthVerdict(
   directFix: string,
   profile: Profile,
 ): DirectAuthVerdict {
-  const getCommand = profile === null ? "agent auth --get" : `agent profile ${profile} auth --get`;
-  const authFix = profile === null ? "agent auth" : `agent profile ${profile} auth`;
+  const getCommand = `${agentAuthCommand(profile)} --get`;
+  const authFix = agentAuthCommand(profile);
   if (f.credential === "static") {
     const baked = bakedCredentialClause(f.bakedCredential, directFix);
     const authLine = `auth: GitHub token baked into the config (static-key${baked.clause})`;

@@ -25,7 +25,6 @@ import {
   formatConfigValue,
   isStoredSource,
   isStoredValueInert,
-  profileSettingsKey,
   resolveSettingIn,
   type SettingSource,
   type SettingTarget,
@@ -40,6 +39,7 @@ import {
   agentStartCommand,
   agentStopCommand,
   type Profile,
+  profileKey,
   profileLabel,
 } from "../copilot_api/profile.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
@@ -494,7 +494,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     const profileBlock = [
       [
         banner(
-          `PROFILE ${profileSettingsKey(profile)}`,
+          `PROFILE ${profileKey(profile)}`,
           `this profile's keys; another profile: agent profile <name> get`,
         ),
         ...rows.filter((row) => row.def.scope === "profile").flatMap(renderRow),

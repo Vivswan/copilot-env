@@ -21,10 +21,10 @@ import {
   launchDaemon,
   noProxyWithLoopback,
   parseProcessRows,
-  pidAlive,
   resolveCopilotApiEntry,
 } from "../src/copilot_api/process.ts";
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
+import { pidAlive } from "../src/utils/pid.ts";
 import {
   DAEMON_CLIENT_HEADERS_ENV,
   DAEMON_COPILOT_HOST_ENV,

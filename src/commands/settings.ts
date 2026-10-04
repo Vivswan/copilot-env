@@ -26,13 +26,14 @@ import {
   isProxyProjected,
   type ProfileMapKey,
 } from "../copilot_api/config_registry.ts";
-import {
-  CopilotEnvConfig,
-  type CopilotEnvConfigData,
-  profileSettingsKey,
-} from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig, type CopilotEnvConfigData } from "../copilot_api/env_config.ts";
 import { assertProfileSlot } from "../copilot_api/env_state.ts";
-import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import {
+  parseProfileFlag,
+  type Profile,
+  profileKey,
+  profileLabel,
+} from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
@@ -350,7 +351,7 @@ function pickSection<T>(sections: Record<string, T>, key: string): Record<string
 
 /** The whole store's bundle narrowed to one profile. */
 function profileBundle(whole: SettingsBundle, profile: Profile): SettingsBundle {
-  const section = pickSection(whole.config.profiles, profileSettingsKey(profile));
+  const section = pickSection(whole.config.profiles, profileKey(profile));
   if (profile === null) {
     return {
       formatVersion: whole.formatVersion,
@@ -372,7 +373,7 @@ function profileBundle(whole: SettingsBundle, profile: Profile): SettingsBundle 
 /** A profile's import takes a bundle of that profile alone: anything else in it would land on
  *  another profile or the machine, which is `agent settings --import`'s scope. */
 function assertProfileBundle(bundle: SettingsBundle, profile: Profile, file: string): void {
-  const key = profileSettingsKey(profile);
+  const key = profileKey(profile);
   const stray: string[] = [];
   const foreignSections = Object.keys(bundle.config.profiles).filter((k) => k !== key);
   if (foreignSections.length > 0) stray.push(`preferences of ${foreignSections.join(", ")}`);
@@ -417,7 +418,7 @@ function assertProfileBundle(bundle: SettingsBundle, profile: Profile, file: str
  *  travels. */
 function widenToStore(bundle: SettingsBundle, profile: Profile): SettingsBundle {
   const current = new CopilotEnvConfig().read();
-  const key = profileSettingsKey(profile);
+  const key = profileKey(profile);
   const profiles = { ...current.profiles };
   delete profiles[key];
   Object.assign(profiles, pickSection(bundle.config.profiles, key));

@@ -153,7 +153,7 @@ const CODEX_UNCONFIGURED: CodexFacts = {
   envKeyInDotenv: false,
   envKeyInEnviron: false,
   tokenAvailable: false,
-  directAuth: { command: null, authenticated: false },
+  directAuth: { kind: "absent", command: null },
   directUsesToken: false,
   directNeedsNoGh: false,
   otherReason: null,
@@ -1062,7 +1062,7 @@ test("an unreadable agent config reaches health as other/read-error, never as no
     const deps = {
       claudeHome: () => claudeHome,
       codexHome: () => codexHome,
-      codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+      codexDirectAuth: () => Promise.resolve({ kind: "absent" as const, command: null }),
       ghActiveLogin: () => Promise.resolve(null),
     };
 
@@ -1436,13 +1436,16 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
 
 // --- live (--live) checks ---------------------------------------------------
 
-test("runLiveCli: a FAILED CLI look skips MARKED; a proven absence skips unmarked", async () => {
+test("runLiveCli: a FAILED CLI look skips as look-failed; a proven absence as not-installed", async () => {
   const launch = codexLiveLaunch("/tmp", null);
   expect(await runLiveCli(launch, () => ({ kind: "unproven" }))).toEqual({
     kind: "skipped",
-    lookFailed: true,
+    reason: "look-failed",
   });
-  expect(await runLiveCli(launch, () => ({ kind: "absent" }))).toEqual({ kind: "skipped" });
+  expect(await runLiveCli(launch, () => ({ kind: "absent" }))).toEqual({
+    kind: "skipped",
+    reason: "not-installed",
+  });
 });
 
 // --- setup facts ------------------------------------------------------------
@@ -1538,7 +1541,7 @@ test("evaluateAll: each scope yields its own check ids", () => {
       providerMode: "none",
       wired: false,
       otherReason: null,
-      directAuth: { command: null, authenticated: false },
+      directAuth: { kind: "absent", command: null },
       directUsesToken: false,
     },
     claudeDesktop: { kind: "no-library", enabled: true, installed: false, helperPaths: [] },

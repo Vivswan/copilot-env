@@ -27,9 +27,9 @@ import * as fs from "../utils/fs_facade.ts";
  *  active login is still an account the user never chose to abandon, so a healthy bystander is
  *  never pinned over it. A login seen only broken could never verify its pin. */
 function soleGhLogin(look: () => GhAccountsLook): string | null {
-  const { accounts, unproven } = look();
-  if (unproven) return null;
-  const github = accounts.filter((a) => a.host === GH_COPILOT_HOST);
+  const listing = look();
+  if (listing.kind === "unproven") return null;
+  const github = listing.accounts.filter((a) => a.host === GH_COPILOT_HOST);
   const logins = [...new Set(github.map((a) => a.login))];
   if (logins.length !== 1) return null;
   if (!github.some((a) => a.broken !== true)) return null;

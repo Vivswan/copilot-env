@@ -51,6 +51,7 @@ import {
 import { idleTimeoutMs } from "../copilot_api/idle_watchdog.ts";
 import { persistedInferenceMs } from "../copilot_api/inference_activity.ts";
 import { hasMarker, MARKER } from "../shell/integration.ts";
+import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { readTextOrNull } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -58,6 +59,7 @@ import { readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";
 import {
+  type AuthFacts,
   type BakedCredentialFreshness,
   classifyPortState,
   type CodexDirectAuthFacts,
@@ -110,6 +112,40 @@ function authProfiles(): Record<ProfileName, ProfileAuthFacts> {
     profiles[name] = { provider: credentialProvider(slot.credential), mode: slot.mode };
   }
   return profiles;
+}
+
+/** AuthFacts carries a slot's gh verdict flattened (its keys are the health JSON's); null is a
+ *  credential gh never backs. */
+function ghResolutionFacts(
+  gh: CodexDirectAuthFacts | null,
+): Pick<
+  AuthFacts,
+  "ghAuthenticated" | "ghUser" | "ghActiveLogin" | "ghCommand" | "ghDetail" | "ghAuthUnproven"
+> {
+  if (gh === null) return { ghAuthenticated: false };
+  const account = {
+    ...(gh.ghUser != null ? { ghUser: gh.ghUser } : {}),
+    ...(gh.ghActiveLogin != null ? { ghActiveLogin: gh.ghActiveLogin } : {}),
+  };
+  switch (gh.kind) {
+    case "found":
+      return { ghAuthenticated: true, ...account, ghCommand: gh.ghCommand };
+    case "absent":
+      return {
+        ghAuthenticated: false,
+        ...account,
+        ...(gh.command === null ? {} : { ghDetail: gh.ghDetail }),
+      };
+    case "unproven":
+      return {
+        ghAuthenticated: false,
+        ...account,
+        ...(gh.command === null ? {} : { ghDetail: gh.ghDetail }),
+        ghAuthUnproven: true,
+      };
+    default:
+      return assertNever(gh);
+  }
 }
 
 /** Same predicate as bin/agent's freshness gate: node_modules at least as new as deno.lock. */
@@ -363,7 +399,9 @@ export async function gatherFacts(
   const directAuthFor = async (
     credential: "command" | "static" | "none",
   ): Promise<{ directAuth: CodexDirectAuthFacts; noGhNeeded: boolean }> => {
-    const noProbe = { command: null, authenticated: false };
+    // Reported as the unprobed `{"command":null,"authenticated":false}` row. The auth VERDICT never
+    // reads it: directAuthVerdict (checks_agents.ts) judges a gh-cli provider only, which probes.
+    const noProbe: CodexDirectAuthFacts = { kind: "absent", command: null };
     if (credential === "static") return { directAuth: noProbe, noGhNeeded: true };
     const managed = credential === "command";
     const { provider, storedToken, ghUser } = runCredential();
@@ -584,12 +622,7 @@ export async function gatherFacts(
           : null;
         const resolution = {
           storedToken: credential.storedToken,
-          ghAuthenticated: gh?.authenticated ?? false,
-          ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
-          ...(gh?.ghActiveLogin != null ? { ghActiveLogin: gh.ghActiveLogin } : {}),
-          ...(gh?.ghCommand !== undefined ? { ghCommand: gh.ghCommand } : {}),
-          ...(gh?.ghDetail !== undefined ? { ghDetail: gh.ghDetail } : {}),
-          ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
+          ...ghResolutionFacts(gh),
         };
         facts.auth = profile === null
           ? {

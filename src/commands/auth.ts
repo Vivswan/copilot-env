@@ -228,13 +228,14 @@ export async function chooseGhAccount(
   mode: GhAccountChooserMode = process.stdin.isTTY ? "interactive" : "headless",
 ): Promise<GhAccountSelection> {
   const interactive = mode === "interactive";
-  const { accounts, unproven } = look();
-  if (unproven) {
+  const listing = look();
+  if (listing.kind === "unproven") {
     throw new Error(
       "could not list gh accounts (`gh auth status` did not run to completion) - " +
         "retry `agent auth`, or pass --gh-user <login>",
     );
   }
+  const { accounts } = listing;
   // The SOURCE never filters the menu: gh's status shows only the winning source per login, so an
   // exported GH_TOKEN shadows a saved keyring credential the pick may still land on.
   //

@@ -7,6 +7,7 @@
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
+import { sameStrings } from "../utils/assert.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
@@ -46,10 +47,6 @@ function managedEntry(ghPath: string | null, previous?: unknown): Record<string,
   const recorded = isRecord(previous) && isRecord(previous.env) ? previous.env : undefined;
   const env = serverPathEnv(ghPath) ?? recorded;
   return { "type": "stdio", "command": command, "args": args, ...(env ? { env } : {}) };
-}
-
-function sameStrings(a: readonly unknown[], b: readonly string[]): boolean {
-  return a.length === b.length && b.every((v, i) => a[i] === v);
 }
 
 /** `ghPath` null means gh is unknown HERE, so a recorded env is taken as current rather than stale.

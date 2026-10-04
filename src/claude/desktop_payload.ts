@@ -13,6 +13,7 @@ import {
   type ProfileName,
 } from "../copilot_api/profile.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
+import { sameStrings } from "../utils/assert.ts";
 import { isRecord } from "../utils/json.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { type Doc, readFileOrNull } from "./desktop_library.ts";
@@ -54,16 +55,17 @@ export function desktopModelLabel(id: string): string {
 /** The provider label Desktop shows (sidebar footer / user menu). */
 export const DESKTOP_DISPLAY_NAME = "GitHub Copilot";
 
-/** The profile selector rides along so a named profile's web search resolves ITS credential (a
- *  named profile never falls back to the default). Rows are Desktop's documented managedMcpServers
- *  shape (an ARRAY; an object keyed by name is rejected as invalid_type and silently dropped).
- *  Foreign rows survive by name; a value of any other shape is our own former object and goes. */
 /** The `agent` subcommand a profile's entry spawns, `agent profile [<name>] mcp --serve`: one
  *  spelling for the writer, the two readers below, and the 4.0.9 migration's rewrite of the old
  *  shape. */
 export function mcpServeArgs(profile: Profile): string[] {
   return ["profile", ...(profile === null ? [] : [profile]), "mcp", "--serve"];
 }
+
+/** The profile selector rides along so a named profile's web search resolves ITS credential (a
+ *  named profile never falls back to the default). Rows are Desktop's documented managedMcpServers
+ *  shape (an ARRAY; an object keyed by name is rejected as invalid_type and silently dropped).
+ *  Foreign rows survive by name; a value of any other shape is our own former object and goes. */
 function managedMcpServers(profile: Profile, existing: unknown): Record<string, unknown>[] {
   const { command, args } = agentLauncherCommand(mcpServeArgs(profile));
   const foreign = Array.isArray(existing)
@@ -264,13 +266,11 @@ function profileOfMcpRow(doc: Record<string, unknown>): Profile | undefined {
   const ours = ownMcpRow(doc);
   if (ours === undefined) return undefined;
   const args = launcherSubcommandArgs(ours.args);
-  const same = (expected: readonly string[]): boolean =>
-    args.length === expected.length && expected.every((a, i) => args[i] === a);
-  if (same(mcpServeArgs(null))) return null;
+  if (sameStrings(args, mcpServeArgs(null))) return null;
   const name = args[1];
   if (typeof name !== "string" || !isValidProfileName(name)) return undefined;
   const profile = parseProfileName(name);
-  return same(mcpServeArgs(profile)) ? profile : undefined;
+  return sameStrings(args, mcpServeArgs(profile)) ? profile : undefined;
 }
 
 /** The rename's retarget of an entry's own MCP row: the row serving `from` is rewritten to serve

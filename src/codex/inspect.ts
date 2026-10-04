@@ -7,7 +7,7 @@ import { type AgentProviderMode, MANAGED_MODE_DETAIL } from "../agents/provider_
 import { DEFAULT_COPILOT_API_BASE, isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { matchesProxyOrigin } from "../copilot_api/port.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
-import { assertNever } from "../utils/assert.ts";
+import { assertNever, sameStrings } from "../utils/assert.ts";
 import type { TextReadResult } from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
@@ -37,13 +37,8 @@ function authMatches(
   auth: unknown,
   expected: { command: string; args: readonly string[] },
 ): boolean {
-  if (!isRecord(auth)) return false;
-  return (
-    auth.command === expected.command &&
-    Array.isArray(auth.args) &&
-    auth.args.length === expected.args.length &&
-    auth.args.every((a, i) => a === expected.args[i])
-  );
+  return isRecord(auth) && auth.command === expected.command &&
+    sameStrings(auth.args, expected.args);
 }
 
 function isManagedDirectAuth(auth: unknown, profile: Profile = null): boolean {

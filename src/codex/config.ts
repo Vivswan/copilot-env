@@ -15,6 +15,7 @@ import {
 import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
 import { providerModeExitCode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { staticKeyDetail } from "../copilot_api/credential_detail.ts";
 import { directOverlay, landDirectPair } from "../copilot_api/direct_pair.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -27,7 +28,7 @@ import {
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
-import { agentStartCommand, type Profile, type ProfileName } from "../copilot_api/profile.ts";
+import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -362,9 +363,7 @@ export function configureCodexConfig(codexHome: string, request: CodexWriteReque
   // the detail says nothing profile-specific (`agent profile` prints the launch hint).
   const credentialLine = request.credential.kind === "command"
     ? null
-    : request.mode === "direct"
-    ? "static key"
-    : `static key, start the proxy yourself (${agentStartCommand(profile)}, or the cx launcher)`;
+    : staticKeyDetail(request.mode, profile, "cx");
   const detail = ["Codex config", credentialLine, catalogRefLine].filter(Boolean).join("; ");
 
   // Reserved only now that the text is computed: a throw above leaves no reservation behind.

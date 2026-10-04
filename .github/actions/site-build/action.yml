@@ -15,9 +15,10 @@ description: |
   The caller owes both inputs, derived from the repository name, and a checkout of the judged commit. Nothing is installed beforehand. A build brings its own setup steps.
 
   A `dist` the fleet refuses, turning the leg red with the path named:
-    - an absolute path
-    - one that leaves the repository, by `..` or a symlink
+    - one that is not slash-joined segments of letters, digits, dots, underscores, and dashes
+    - one with an empty, `.`, or `..` segment, which rules out `./dist`, `dist/`, and an absolute path
     - a missing directory
+    - a symlink resolving outside the repository
     - one without an `index.html`
 
 inputs:

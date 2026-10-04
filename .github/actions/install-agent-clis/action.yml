@@ -6,10 +6,12 @@ description: |
 
   Unpinned on purpose. The tests that need these binaries exist to catch a CLI release changing the output shape our Direct probe and health checks parse, so the latest release is the one under test.
 
-  The one install every real-CLI job runs, so no two jobs can install differently:
+  Its three callers, which therefore share one install:
     - checks.yml `check`, the matrix test job (COPILOT_ENV_LIVE_CLIS)
     - checks.yml `session-log-drift` (COPILOT_ENV_LIVE_CORPUS)
     - nightly.yml `checks` (COPILOT_ENV_LIVE_CLIS)
+
+  checks.yml `codex-catalog-drift` is the one real-CLI job outside it. It needs Codex alone, so it installs that package with a plain `npm install -g`.
 
   Each CLI is installed globally and then run with `--version`. One that does not run is uninstalled and installed once more. A second failure fails the step with the npm output attached.
 

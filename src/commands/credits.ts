@@ -3,7 +3,7 @@
 // of GitHub's meter per account; no local log is touched.
 import { Credential } from "../copilot_api/credential.ts";
 import { allProfileNames, DEFAULT_PROFILE_KEY, knownProfile } from "../copilot_api/env_state.ts";
-import { type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, profileKey, profileLabel } from "../copilot_api/profile.ts";
 import {
   type CreditsFetch,
   creditsJson,
@@ -74,7 +74,7 @@ export async function runCreditsEverywhere(
       logger.warn(`${profileLabel(profile)}: ${reason}`);
       continue;
     }
-    byToken.set(token, [...(byToken.get(token) ?? []), profile ?? DEFAULT_PROFILE_KEY]);
+    byToken.set(token, [...(byToken.get(token) ?? []), profileKey(profile)]);
   }
   if (byToken.size === 0) {
     throw new Error(

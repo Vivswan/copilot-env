@@ -6,7 +6,12 @@ import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { wiringPortFor } from "../copilot_api/port.ts";
-import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import {
+  agentAuthCommand,
+  type Profile,
+  profileLabel,
+  type ProfileName,
+} from "../copilot_api/profile.ts";
 import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
@@ -34,7 +39,7 @@ const DIRECT_WIRING: unique symbol = Symbol("DirectWiring");
  *  every re-render replays. So the landing is refused before any write, and the user is asked to
  *  log in (configureClaudeConfig refuses a named Direct profile the same way). */
 export function directNeedsCredentialError(profile: Profile): Error {
-  const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
+  const authCommand = agentAuthCommand(profile);
   return new Error(
     `a Direct wiring needs a credential and none resolves for ${profileLabel(profile)}; run ` +
       `\`${authCommand}\` first (a selection made without one would bake the fallback identity ` +
@@ -98,7 +103,7 @@ export function resolveCredentialWiring(
     ? { token: directToken, reason: null }
     : new Credential(undefined, profile).resolveWithReason();
   if (resolved.token === null) {
-    const authCommand = profile === null ? "agent auth" : `agent profile ${profile} auth`;
+    const authCommand = agentAuthCommand(profile);
     throw new Error(
       `static-key is ${config.staticKeyScope(profile)} but no credential resolves to bake: ` +
         `${resolved.reason}. Run \`${authCommand}\`, or \`${

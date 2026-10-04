@@ -38,11 +38,11 @@ import {
   copilotApiResolvePort,
   proxyLoopbackOrigin,
 } from "../copilot_api/port.ts";
-import { pidAlive } from "../copilot_api/process.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { sidecarStatus } from "../copilot_api/sidecar.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { installedProxyVersion, proxyVersionBoundsStatus } from "../copilot_api/version.ts";
+import { pidAlive } from "../utils/pid.ts";
 import {
   proxyFloatSkips,
   readResolvedVersionRecord,

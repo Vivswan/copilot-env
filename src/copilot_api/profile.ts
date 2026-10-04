@@ -64,33 +64,29 @@ const RESERVED_PROFILE_NAMES = [DEFAULT_PROFILE_NAME, "direct", "proxy", "all"] 
  *  everywhere. Exported for every consumer that turns external strings into filenames (Desktop entry ids). */
 export const WINDOWS_DEVICE_NAME_RE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
 
+function profileNameRejection(name: string): string | null {
+  if ((RESERVED_PROFILE_NAMES as readonly string[]).includes(name)) {
+    return `profile name '${name}' is reserved${
+      name === DEFAULT_PROFILE_NAME ? " (give no name for the default profile)" : ""
+    }`;
+  }
+  if (WINDOWS_DEVICE_NAME_RE.test(name)) {
+    return `profile name '${name}' is a Windows reserved device name and cannot be a directory there`;
+  }
+  if (!PROFILE_NAME_RE.test(name)) {
+    return `invalid profile name '${name}' (want 1-32 chars of [a-z0-9-], starting with a letter or digit)`;
+  }
+  return null;
+}
+
 export function isValidProfileName(name: string): boolean {
-  return (
-    PROFILE_NAME_RE.test(name) &&
-    !WINDOWS_DEVICE_NAME_RE.test(name) &&
-    !(RESERVED_PROFILE_NAMES as readonly string[]).includes(name)
-  );
+  return profileNameRejection(name) === null;
 }
 
 /** THE smart constructor: the cast below is the brand's single minting point. */
 export function parseProfileName(name: string): ProfileName {
-  if ((RESERVED_PROFILE_NAMES as readonly string[]).includes(name)) {
-    throw new Error(
-      `profile name '${name}' is reserved${
-        name === DEFAULT_PROFILE_NAME ? " (give no name for the default profile)" : ""
-      }`,
-    );
-  }
-  if (WINDOWS_DEVICE_NAME_RE.test(name)) {
-    throw new Error(
-      `profile name '${name}' is a Windows reserved device name and cannot be a directory there`,
-    );
-  }
-  if (!PROFILE_NAME_RE.test(name)) {
-    throw new Error(
-      `invalid profile name '${name}' (want 1-32 chars of [a-z0-9-], starting with a letter or digit)`,
-    );
-  }
+  const rejection = profileNameRejection(name);
+  if (rejection !== null) throw new Error(rejection);
   return name as ProfileName;
 }
 
@@ -101,6 +97,12 @@ export function parseProfileFlag(raw: string | undefined): Profile {
 
 export function profileLabel(profile: Profile): string {
   return profile === null ? DEFAULT_PROFILE_NAME : `profile '${profile}'`;
+}
+
+/** The store key of `profile`'s slot in both maps (env_state.ts credentials, env_config.ts
+ *  settings): its name, or DEFAULT_PROFILE_NAME for the default. */
+export function profileKey(profile: Profile): string {
+  return profile ?? DEFAULT_PROFILE_NAME;
 }
 
 /** The `agent start` command addressed at a profile's own daemon; a bare `agent start` would leave

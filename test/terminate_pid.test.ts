@@ -9,7 +9,8 @@
 // TerminateProcess there), so they are POSIX-only.
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pidAlive, terminatePid, type TerminateVerdict } from "../src/copilot_api/process.ts";
+import { terminatePid, type TerminateVerdict } from "../src/copilot_api/process.ts";
+import { pidAlive } from "../src/utils/pid.ts";
 import { killAndAwaitExit, until, withUnprovablePidProbe } from "./helpers/daemon.ts";
 import { CHILD_VALUES, childValuesEnv, denoRunArgs, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";

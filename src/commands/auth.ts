@@ -5,8 +5,6 @@ import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
 import {
-  AUTH_PROVIDERS,
-  type AuthProvider,
   Credential,
   type GhAccountsLook,
   ghAccountsLook,
@@ -18,6 +16,8 @@ import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   assertProfileSlot,
+  AUTH_PROVIDERS,
+  type AuthProvider,
   CopilotEnvState,
   type ProvisionedCredential,
 } from "../copilot_api/env_state.ts";
@@ -207,6 +207,10 @@ async function chooseProvider(): Promise<AuthProvider> {
   return asProvider(String(value));
 }
 
+/** How the chooser may settle: `interactive` asks; `headless` (no TTY) and `dry-run` (a preview
+ *  never asks) pin the active account or refuse with the flag that answers. */
+type GhAccountChooserMode = "interactive" | "headless" | "dry-run";
+
 /**
  * Pinning is the only default: a later `gh auth login` must never switch whose Copilot credit gets
  * spent. When nothing can be pinned honestly this throws naming the escape hatches; the one auto
@@ -219,10 +223,6 @@ async function chooseProvider(): Promise<AuthProvider> {
  *   several, TTY     -> the picker lists the accounts first, auto as the explicit LAST option
  * `look` is a test seam.
  */
-/** How the chooser may settle: `interactive` asks; `headless` (no TTY) and `dry-run` (a preview
- *  never asks) pin the active account or refuse with the flag that answers. */
-type GhAccountChooserMode = "interactive" | "headless" | "dry-run";
-
 export async function chooseGhAccount(
   look: () => GhAccountsLook = ghAccountsLook,
   mode: GhAccountChooserMode = process.stdin.isTTY ? "interactive" : "headless",

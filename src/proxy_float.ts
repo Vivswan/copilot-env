@@ -182,11 +182,11 @@ export function selectProxyVersion(
   cooldownSeconds: number,
   nowMs: number,
 ): RegistrySelection {
-  const timeMap: Record<string, string> = {};
+  const publishedAtMs = new Map<string, number>();
   for (const release of doc.releases.values()) {
-    timeMap[release.version] = new Date(release.publishedAtMs).toISOString();
+    publishedAtMs.set(release.version, release.publishedAtMs);
   }
-  const aged = pickAgedVersion(timeMap, cooldownSeconds * 1000, nowMs);
+  const aged = pickAgedVersion(publishedAtMs, cooldownSeconds * 1000, nowMs);
 
   let candidate: string;
   let reason: string;

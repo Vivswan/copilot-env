@@ -1,6 +1,5 @@
 // Status, liveness, heartbeat, and teardown for the proxy daemon, kept out of the command files so
 // models, profile, auth, and uninstall never import another command.
-import { connect } from "node:net";
 import { consola } from "consola";
 import { clearPersistedInferenceActivity } from "./inference_activity.ts";
 import { daemonLockVerdict } from "./daemon_lock.ts";
@@ -8,8 +7,9 @@ import { assertNever } from "../utils/assert.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
-import { daemonPolicy } from "./port.ts";
-import { classifyDaemonPid, isCopilotApiPid, pidAlive, terminatePid } from "./process.ts";
+import { daemonPolicy, loopbackListening } from "./port.ts";
+import { pidAlive } from "../utils/pid.ts";
+import { classifyDaemonPid, isCopilotApiPid, terminatePid } from "./process.ts";
 import type { Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./run_state.ts";
 
@@ -69,26 +69,14 @@ export async function proxyStatus(profile: Profile = null): Promise<ProxyStatus>
   return (await portListening(probePort)) ? { up: true, port: probePort } : { up: false };
 }
 
-// A bare TCP connect, no HTTP: `--check` runs from an open agent's resolver and from monitors, and must
-// leave no trace in the daemon's access log. Both loopbacks are probed CONCURRENTLY and the FIRST
-// success wins (fetch's localhost happy-eyeballs), so only a both-fail result waits, for at most one timeout.
+// `--check` runs from an open agent's resolver and from monitors. Both loopbacks are probed
+// CONCURRENTLY and the FIRST success wins (fetch's localhost happy-eyeballs), so only a both-fail
+// result waits, for at most one timeout.
 export function portListening(port: number, timeoutMs = 2000): Promise<boolean> {
-  const tryHost = (host: string): Promise<boolean> =>
-    new Promise((resolve) => {
-      const socket = connect({ host, port });
-      const finish = (ok: boolean): void => {
-        socket.destroy();
-        resolve(ok);
-      };
-      socket.setTimeout(timeoutMs);
-      socket.once("connect", () => finish(true));
-      socket.once("timeout", () => finish(false));
-      socket.once("error", () => finish(false));
-    });
   return new Promise((resolve) => {
     let remaining = 2;
-    for (const host of ["127.0.0.1", "::1"]) {
-      void tryHost(host).then((ok) => {
+    for (const host of ["127.0.0.1", "::1"] as const) {
+      void loopbackListening(host, port, timeoutMs).then((ok) => {
         if (ok) {
           resolve(true);
         } else if (--remaining === 0) resolve(false);

@@ -16,6 +16,7 @@
 //   the proxy's own editor UA, with or without id   -> 40-41 models, no Fable
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
+import { defaultFetch } from "../utils/fetch.ts";
 import { isRecord } from "../utils/json.ts";
 import { CODEX_IDENTITY_NAME, isLoopbackHostname } from "./config_registry.ts";
 import type { AuthProvider } from "./env_state.ts";
@@ -72,11 +73,11 @@ export type ProbeFetch = (input: string | URL | Request, init?: RequestInit) => 
 
 // A module-level seam, not only a per-call arg, so command entry points reached through many layers
 // (runClaude, applyCodexConfig, agent start) stay hermetic in tests without threading a dep through every one.
-let defaultProbeFetch: ProbeFetch = (input, init) => globalThis.fetch(input, init);
+let defaultProbeFetch: ProbeFetch = defaultFetch;
 
 /** Test hook. Clears the memo so a new fetch is actually exercised. */
 export function setIntegrationProbeFetch(fetchImpl: ProbeFetch | null): void {
-  defaultProbeFetch = fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
+  defaultProbeFetch = fetchImpl ?? defaultFetch;
   hostMemo.clear();
   verdictMemo.clear();
 }

@@ -61,22 +61,30 @@ export function proxyPortRange(config: CopilotEnvConfig): { min: number; max: nu
   return { min, max };
 }
 
-/** No range policy: for callers honoring a port the range no longer covers (an existing profile
- *  reservation after min/max narrowed). */
-export function proxyPortFree(port: number): Promise<boolean> {
+/** A bare TCP connect, no HTTP: the daemon's access log never sees a probe. A connect that neither
+ *  completes nor errors within `timeoutMs` reads as not listening. */
+export function loopbackListening(
+  host: "127.0.0.1" | "::1",
+  port: number,
+  timeoutMs = 2000,
+): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
-    const s = new net.Socket();
-    let settled = false;
-    const done = (available: boolean): void => {
-      if (settled) return;
-      settled = true;
-      s.destroy();
-      resolve(available);
+    const socket = net.connect({ host, port });
+    const finish = (listening: boolean): void => {
+      socket.destroy();
+      resolve(listening);
     };
-    s.once("connect", () => done(false));
-    s.once("error", () => done(true));
-    s.connect(port, "127.0.0.1");
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
   });
+}
+
+/** No range policy: for callers honoring a port the range no longer covers (an existing profile
+ *  reservation after min/max narrowed). IPv4 only, the address the daemon binds. */
+export async function proxyPortFree(port: number): Promise<boolean> {
+  return !(await loopbackListening("127.0.0.1", port));
 }
 
 export async function checkProxyPort(
